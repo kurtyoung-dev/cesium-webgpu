@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Matrix4 Depth Range Test</title>
+    <style>
+      body {
+        margin: 20px;
+        font-family: monospace;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      h1 {
+        color: #67b7ff;
+      }
+
+      .test-section {
+        margin: 20px 0;
+        padding: 15px;
+        background: rgba(42, 42, 42, 0.95);
+        border-radius: 6px;
+      }
+
+      .pass {
+        color: #5fd35f;
+      }
+
+      .fail {
+        color: #ff6b6b;
+      }
+
+      pre {
+        background: #2a2a2a;
+        padding: 10px;
+        border-radius: 4px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Matrix4 Depth Range Test</h1>
+    <p>Testing renderer-aware perspective projection matrix generation</p>
+
+    <div id="results"></div>
+
+    <script type="module">
+      // Import from Cesium build
+      import Matrix4 from "../../Build/CesiumUnminified/Core/Matrix4.js";
+
+      const resultsDiv = document.getElementById("results");
+
+      function addResult(title, content, pass = true) {
+        const section = document.createElement("div");
+        section.className = "test-section";
+        section.innerHTML = `
+        <h3 class="${pass ? "pass" : "fail"}">${pass ? "✓" : "✗"} ${title}</h3>
+        <pre>${content}</pre>
+      `;
+        resultsDiv.appendChild(section);
+      }
+
+      function matrixToString(m) {
+        return `[${m[0].toFixed(4)}, ${m[4].toFixed(4)}, ${m[8].toFixed(4)}, ${m[12].toFixed(4)}]
+[${m[1].toFixed(4)}, ${m[5].toFixed(4)}, ${m[9].toFixed(4)}, ${m[13].toFixed(4)}]
+[${m[2].toFixed(4)}, ${m[6].toFixed(4)}, ${m[10].toFixed(4)}, ${m[14].toFixed(4)}]
+[${m[3].toFixed(4)}, ${m[7].toFixed(4)}, ${m[11].toFixed(4)}, ${m[15].toFixed(4)}]`;
+      }
+
+      try {
+        // Test 1: Default behavior (WebGL)
+        const fov = Math.PI / 4;
+        const aspect = 16 / 9;
+        const near = 0.1;
+        const far = 100.0;
+
+        const webglMatrix = new Matrix4();
+        Matrix4.computePerspectiveFieldOfView(
+          fov,
+          aspect,
+          near,
+          far,
+          webglMatrix,
+        );
+
+        addResult(
+          "WebGL Depth Range (default: -1 to 1)",
+          `FOV: ${fov.toFixed(4)}, Aspect: ${aspect.toFixed(4)}, Near: ${near}, Far: ${far}
+
+Matrix[10] (z-scale): ${webglMatrix[10].toFixed(6)}
+Matrix[14] (z-translate): ${webglMatrix[14].toFixed(6)}
+
+Full Matrix:
+${matrixToString(webglMatrix)}
+
+Expected for WebGL:
+  Matrix[10] = (far + near) / (near - far) ≈ ${((far + near) / (near - far)).toFixed(6)}
+  Matrix[14] = (2 * far * near) / (near - far) ≈ ${((2.0 * far * near) / (near - far)).toFixed(6)}`,
+        );
+
+        // Test 2: Switch to WebGPU
+        Matrix4.setDepthRangeType("webgpu");
+
+        const webgpuMatrix = new Matrix4();
+        Matrix4.computePerspectiveFieldOfView(
+          fov,
+          aspect,
+          near,
+          far,
+          webgpuMatrix,
+        );
+
+        const expectedZ = far / (near - far);
+        const expectedW = (near * far) / (near - far);
+        const zMatches = Math.abs(webgpuMatrix[10] - expectedZ) < 0.0001;
+        const wMatches = Math.abs(webgpuMatrix[14] - expectedW) < 0.0001;
+
+        addResult(
+          "WebGPU Depth Range (0 to 1)",
+          `FOV: ${fov.toFixed(4)}, Aspect: ${aspect.toFixed(4)}, Near: ${near}, Far: ${far}
+
+Matrix[10] (z-scale): ${webgpuMatrix[10].toFixed(6)}
+Matrix[14] (z-translate): ${webgpuMatrix[14].toFixed(6)}
+
+Full Matrix:
+${matrixToString(webgpuMatrix)}
+
+Expected for WebGPU:
+  Matrix[10] = far / (near - far) ≈ ${expectedZ.toFixed(6)} ${zMatches ? "✓" : "✗"}
+  Matrix[14] = (near * far) / (near - far) ≈ ${expectedW.toFixed(6)} ${wMatches ? "✓" : "✗"}`,
+          zMatches && wMatches,
+        );
+
+        // Test 3: Compare WebGL vs WebGPU
+        const different =
+          webglMatrix[10] !== webgpuMatrix[10] ||
+          webglMatrix[14] !== webgpuMatrix[14];
+
+        addResult(
+          "Depth Range Difference Verification",
+          `WebGL Matrix[10]: ${webglMatrix[10].toFixed(6)}
+WebGPU Matrix[10]: ${webgpuMatrix[10].toFixed(6)}
+Different: ${different ? "YES ✓" : "NO ✗"}
+
+WebGL Matrix[14]: ${webglMatrix[14].toFixed(6)}
+WebGPU Matrix[14]: ${webgpuMatrix[14].toFixed(6)}
+Different: ${different ? "YES ✓" : "NO ✗"}
+
+The matrices SHOULD be different for WebGL vs WebGPU depth ranges.`,
+          different,
+        );
+
+        // Test 4: Switch back to WebGL
+        Matrix4.setDepthRangeType("webgl");
+
+        const webglMatrix2 = new Matrix4();
+        Matrix4.computePerspectiveFieldOfView(
+          fov,
+          aspect,
+          near,
+          far,
+          webglMatrix2,
+        );
+
+        const sameAsOriginal = Matrix4.equals(webglMatrix, webglMatrix2);
+
+        addResult(
+          "Switch Back to WebGL",
+          `After switching back to WebGL, matrix should match original WebGL matrix:
+Matrices Equal: ${sameAsOriginal ? "YES ✓" : "NO ✗"}
+
+Matrix[10]: ${webglMatrix2[10].toFixed(6)} (should be ${webglMatrix[10].toFixed(6)})
+Matrix[14]: ${webglMatrix2[14].toFixed(6)} (should be ${webglMatrix[14].toFixed(6)})`,
+          sameAsOriginal,
+        );
+
+        // Test 5: Test computePerspectiveOffCenter
+        Matrix4.setDepthRangeType("webgpu");
+        const offCenterMatrix = new Matrix4();
+        Matrix4.computePerspectiveOffCenter(
+          -1,
+          1,
+          -1,
+          1,
+          near,
+          far,
+          offCenterMatrix,
+        );
+
+        const offCenterZMatches =
+          Math.abs(offCenterMatrix[10] - expectedZ) < 0.0001;
+        const offCenterWMatches =
+          Math.abs(offCenterMatrix[14] - expectedW) < 0.0001;
+
+        addResult(
+          "computePerspectiveOffCenter (WebGPU)",
+          `Off-center perspective also using WebGPU depth range:
+
+Matrix[10]: ${offCenterMatrix[10].toFixed(6)} (expected: ${expectedZ.toFixed(6)}) ${offCenterZMatches ? "✓" : "✗"}
+Matrix[14]: ${offCenterMatrix[14].toFixed(6)} (expected: ${expectedW.toFixed(6)}) ${offCenterWMatches ? "✓" : "✗"}`,
+          offCenterZMatches && offCenterWMatches,
+        );
+
+        console.log("All tests completed successfully!");
+      } catch (error) {
+        addResult("ERROR", error.toString(), false);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

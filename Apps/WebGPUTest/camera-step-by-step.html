@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Camera Step-by-Step Test</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #controls {
+        position: absolute;
+        top: 120px;
+        left: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        min-width: 250px;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px;
+        margin: 5px 0;
+        background: #4a90e2;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      button:hover {
+        background: #67b7ff;
+      }
+
+      button.active {
+        background: #2d5f2e;
+      }
+
+      #log {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        max-width: 400px;
+        font-size: 11px;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>🔍 Camera Step-by-Step Test</h1>
+        <p>Click buttons to test different matrix setups</p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="controls">
+      <h3 style="color: #67b7ff; margin-top: 0">Test Modes:</h3>
+      <button id="btn1">1. Identity (should see red square)</button>
+      <button id="btn2">2. Simple Translate Z=-2</button>
+      <button id="btn3">3. Orthographic Projection</button>
+      <button id="btn4">4. Perspective Projection</button>
+      <button id="btn5">5. Full Camera (View + Projection)</button>
+    </div>
+
+    <div id="log">
+      <strong>Test Log:</strong>
+    </div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+      const logEl = document.getElementById("log");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function log(msg) {
+        const entry = document.createElement("div");
+        entry.style.margin = "3px 0";
+        entry.style.color = msg.startsWith("✓")
+          ? "#5FD35F"
+          : msg.startsWith("TEST")
+            ? "#FFD700"
+            : "#67B7FF";
+        entry.textContent = msg;
+        logEl.appendChild(entry);
+        console.log(msg);
+      }
+
+      async function main() {
+        try {
+          log("🚀 Initializing...");
+
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+          log("✓ WebGPU initialized");
+
+          // Small cube
+          const size = 0.3;
+          const vertices = new Float32Array([
+            -size,
+            -size,
+            0,
+            1,
+            0,
+            0,
+            size,
+            -size,
+            0,
+            1,
+            0,
+            0,
+            size,
+            size,
+            0,
+            1,
+            0,
+            0,
+            -size,
+            size,
+            0,
+            1,
+            0,
+            0,
+          ]);
+
+          const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+
+          const uniformBuffer = device.createBuffer({
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          log("✓ Buffers created");
+
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+          });
+
+          log("✓ Pipeline created");
+
+          // Matrix functions
+          function createIdentity() {
+            return new Float32Array([
+              1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+            ]);
+          }
+
+          function createTranslation(x, y, z) {
+            return new Float32Array([
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              x,
+              y,
+              z,
+              1,
+            ]);
+          }
+
+          function createOrthographic(left, right, bottom, top, near, far) {
+            const w = right - left;
+            const h = top - bottom;
+            const d = far - near;
+            return new Float32Array([
+              2 / w,
+              0,
+              0,
+              0,
+              0,
+              2 / h,
+              0,
+              0,
+              0,
+              0,
+              -1 / d,
+              0,
+              -(right + left) / w,
+              -(top + bottom) / h,
+              -near / d,
+              1,
+            ]);
+          }
+
+          function createPerspective(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            const rangeInv = 1.0 / (near - far);
+            return new Float32Array([
+              f / aspect,
+              0,
+              0,
+              0,
+              0,
+              f,
+              0,
+              0,
+              0,
+              0,
+              far * rangeInv,
+              -1,
+              0,
+              0,
+              near * far * rangeInv,
+              0,
+            ]);
+          }
+
+          function normalize(v) {
+            const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return [v[0] / len, v[1] / len, v[2] / len];
+          }
+
+          function subtract(a, b) {
+            return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+          }
+
+          function cross(a, b) {
+            return [
+              a[1] * b[2] - a[2] * b[1],
+              a[2] * b[0] - a[0] * b[2],
+              a[0] * b[1] - a[1] * b[0],
+            ];
+          }
+
+          function dot(a, b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+          }
+
+          function createLookAt(eye, target, up) {
+            const zAxis = normalize(subtract(eye, target));
+            const xAxis = normalize(cross(up, zAxis));
+            const yAxis = cross(zAxis, xAxis);
+
+            return new Float32Array([
+              xAxis[0],
+              yAxis[0],
+              zAxis[0],
+              0,
+              xAxis[1],
+              yAxis[1],
+              zAxis[1],
+              0,
+              xAxis[2],
+              yAxis[2],
+              zAxis[2],
+              0,
+              -dot(xAxis, eye),
+              -dot(yAxis, eye),
+              -dot(zAxis, eye),
+              1,
+            ]);
+          }
+
+          function multiply(a, b) {
+            const result = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+              for (let j = 0; j < 4; j++) {
+                result[i * 4 + j] =
+                  a[i * 4 + 0] * b[0 * 4 + j] +
+                  a[i * 4 + 1] * b[1 * 4 + j] +
+                  a[i * 4 + 2] * b[2 * 4 + j] +
+                  a[i * 4 + 3] * b[3 * 4 + j];
+              }
+            }
+            return result;
+          }
+
+          let currentMatrix = createIdentity();
+          let currentMode = 1;
+
+          // Button handlers
+          document.getElementById("btn1").addEventListener("click", () => {
+            currentMatrix = createIdentity();
+            currentMode = 1;
+            log("TEST 1: Identity matrix");
+            updateActiveButton(1);
+          });
+
+          document.getElementById("btn2").addEventListener("click", () => {
+            currentMatrix = createTranslation(0, 0, -2);
+            currentMode = 2;
+            log("TEST 2: Translate Z=-2 (should move back)");
+            updateActiveButton(2);
+          });
+
+          document.getElementById("btn3").addEventListener("click", () => {
+            const aspect = canvas.width / canvas.height;
+            currentMatrix = createOrthographic(
+              -aspect,
+              aspect,
+              -1,
+              1,
+              0.1,
+              100,
+            );
+            currentMode = 3;
+            log("TEST 3: Orthographic projection");
+            updateActiveButton(3);
+          });
+
+          document.getElementById("btn4").addEventListener("click", () => {
+            const aspect = canvas.width / canvas.height;
+            const translation = createTranslation(0, 0, -2);
+            const projection = createPerspective(
+              Math.PI / 4,
+              aspect,
+              0.1,
+              100.0,
+            );
+            currentMatrix = multiply(projection, translation);
+            currentMode = 4;
+            log("TEST 4: Perspective + Translate");
+            updateActiveButton(4);
+          });
+
+          document.getElementById("btn5").addEventListener("click", () => {
+            const aspect = canvas.width / canvas.height;
+            const view = createLookAt([0, 1, 3], [0, 0, 0], [0, 1, 0]);
+            const projection = createPerspective(
+              Math.PI / 4,
+              aspect,
+              0.1,
+              100.0,
+            );
+            currentMatrix = multiply(projection, view);
+            currentMode = 5;
+            log("TEST 5: Full camera (view + projection)");
+            updateActiveButton(5);
+          });
+
+          function updateActiveButton(mode) {
+            document.querySelectorAll("button").forEach((btn, i) => {
+              btn.classList.toggle("active", i + 1 === mode);
+            });
+          }
+
+          updateActiveButton(1);
+          log("✓ Click buttons to test different transforms");
+
+          function render() {
+            device.queue.writeBuffer(uniformBuffer, 0, currentMatrix);
+
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(6);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            requestAnimationFrame(render);
+          }
+
+          requestAnimationFrame(render);
+        } catch (error) {
+          console.error("Error:", error);
+          log(`✗ Error: ${error.message}`);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

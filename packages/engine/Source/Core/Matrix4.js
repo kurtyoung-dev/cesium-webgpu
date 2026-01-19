@@ -96,6 +96,35 @@ function Matrix4(
 Matrix4.packedLength = 16;
 
 /**
+ * The current depth range type used for projection matrices.
+ * This is set by the active renderer (WebGL or WebGPU).
+ *
+ * @private
+ * @type {string}
+ * @default 'webgl'
+ */
+Matrix4._depthRangeType = "webgl";
+
+/**
+ * Sets the depth range type for projection matrix calculations.
+ * WebGL uses a -1 to 1 depth range in NDC, while WebGPU uses 0 to 1.
+ * This should be called by the active renderer when it's initialized.
+ *
+ * @param {string} type - Either 'webgl' or 'webgpu'
+ * @private
+ */
+Matrix4.setDepthRangeType = function (type) {
+  //>>includeStart('debug', pragmas.debug);
+  if (type !== "webgl" && type !== "webgpu") {
+    throw new DeveloperError(
+      'Depth range type must be either "webgl" or "webgpu"',
+    );
+  }
+  //>>includeEnd('debug');
+  Matrix4._depthRangeType = type;
+};
+
+/**
  * Stores the provided instance into the provided array.
  *
  * @param {Matrix4} value The value to pack.
@@ -849,8 +878,20 @@ Matrix4.computePerspectiveFieldOfView = function (
 
   const column1Row1 = 1.0 / bottom;
   const column0Row0 = column1Row1 / aspectRatio;
-  const column2Row2 = (far + near) / (near - far);
-  const column3Row2 = (2.0 * far * near) / (near - far);
+
+  // Adapt projection based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
+  let column2Row2;
+  let column3Row2;
+
+  if (Matrix4._depthRangeType === "webgpu") {
+    // WebGPU uses 0 to 1 depth range
+    column2Row2 = far / (near - far);
+    column3Row2 = (near * far) / (near - far);
+  } else {
+    // WebGL uses -1 to 1 depth range (default)
+    column2Row2 = (far + near) / (near - far);
+    column3Row2 = (2.0 * far * near) / (near - far);
+  }
 
   result[0] = column0Row0;
   result[1] = 0.0;
@@ -908,10 +949,24 @@ Matrix4.computeOrthographicOffCenter = function (
 
   const tx = -(right + left) * a;
   const ty = -(top + bottom) * b;
-  const tz = -(far + near) * c;
+
+  // Adapt based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
+  let tz;
+  let cScale;
+
+  if (Matrix4._depthRangeType === "webgpu") {
+    // WebGPU uses 0 to 1 depth range
+    tz = -near * c;
+    cScale = -1.0;
+  } else {
+    // WebGL uses -1 to 1 depth range (default)
+    tz = -(far + near) * c;
+    cScale = -2.0;
+  }
+
   a *= 2.0;
   b *= 2.0;
-  c *= -2.0;
+  c *= cScale;
 
   result[0] = a;
   result[1] = 0.0;
@@ -967,9 +1022,21 @@ Matrix4.computePerspectiveOffCenter = function (
   const column1Row1 = (2.0 * near) / (top - bottom);
   const column2Row0 = (right + left) / (right - left);
   const column2Row1 = (top + bottom) / (top - bottom);
-  const column2Row2 = -(far + near) / (far - near);
   const column2Row3 = -1.0;
-  const column3Row2 = (-2.0 * far * near) / (far - near);
+
+  // Adapt projection based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
+  let column2Row2;
+  let column3Row2;
+
+  if (Matrix4._depthRangeType === "webgpu") {
+    // WebGPU uses 0 to 1 depth range
+    column2Row2 = far / (near - far);
+    column3Row2 = (near * far) / (near - far);
+  } else {
+    // WebGL uses -1 to 1 depth range (default)
+    column2Row2 = -(far + near) / (far - near);
+    column3Row2 = (-2.0 * far * near) / (far - near);
+  }
 
   result[0] = column0Row0;
   result[1] = 0.0;
@@ -1022,9 +1089,21 @@ Matrix4.computeInfinitePerspectiveOffCenter = function (
   const column1Row1 = (2.0 * near) / (top - bottom);
   const column2Row0 = (right + left) / (right - left);
   const column2Row1 = (top + bottom) / (top - bottom);
-  const column2Row2 = -1.0;
   const column2Row3 = -1.0;
-  const column3Row2 = -2.0 * near;
+
+  // Adapt based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
+  let column2Row2;
+  let column3Row2;
+
+  if (Matrix4._depthRangeType === "webgpu") {
+    // WebGPU uses 0 to 1 depth range (infinite far plane)
+    column2Row2 = -1.0;
+    column3Row2 = -near;
+  } else {
+    // WebGL uses -1 to 1 depth range (default, infinite far plane)
+    column2Row2 = -1.0;
+    column3Row2 = -2.0 * near;
+  }
 
   result[0] = column0Row0;
   result[1] = 0.0;

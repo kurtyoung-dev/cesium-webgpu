@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU 3D Rotating Quad - Phase 4.3</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #info h1 {
+        margin: 0 0 10px 0;
+        font-size: 24px;
+        color: #67b7ff;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 10px;
+      }
+
+      .status-success {
+        background: #2d5f2e;
+        color: #5fd35f;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #log {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        max-width: 350px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>
+          🔄 WebGPU 3D Rotating Quad
+          <span class="status status-success" id="status">Ready</span>
+        </h1>
+        <p>Phase 4.3: Testing camera matrices and 3D transformations</p>
+        <p>
+          <strong>Features:</strong> 3D position • Perspective projection •
+          Model rotation • Uniform buffers
+        </p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="log"><strong>Test Log:</strong></div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+      const logEl = document.getElementById("log");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function log(msg) {
+        const entry = document.createElement("div");
+        entry.style.margin = "5px 0";
+        entry.style.color = msg.startsWith("✓") ? "#5FD35F" : "#67B7FF";
+        entry.textContent = msg;
+        logEl.appendChild(entry);
+        console.log(msg);
+      }
+
+      async function main() {
+        try {
+          log("🚀 Initializing...");
+
+          // WebGPU setup
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+          log("✓ WebGPU initialized");
+
+          // Quad vertices in 3D space
+          const vertices = new Float32Array([
+            // x,    y,    z,    r,    g,    b
+            -0.7,
+            -0.7,
+            0.0,
+            1.0,
+            0.0,
+            0.0, // Bottom-left (red)
+            0.7,
+            -0.7,
+            0.0,
+            0.0,
+            1.0,
+            0.0, // Bottom-right (green)
+            0.7,
+            0.7,
+            0.0,
+            0.0,
+            0.0,
+            1.0, // Top-right (blue)
+            -0.7,
+            0.7,
+            0.0,
+            1.0,
+            1.0,
+            0.0, // Top-left (yellow)
+          ]);
+
+          const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+          // Create buffers
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+          log("✓ Buffers created");
+
+          // Create uniform buffer for model-view-projection matrix
+          const uniformBuffer = device.createBuffer({
+            size: 64, // mat4x4 = 16 floats * 4 bytes
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          log("✓ Uniform buffer created");
+
+          // Shader with MVP matrix
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+          log("✓ Shader compiled");
+
+          // Create bind group layout and bind group
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          // Create pipeline
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+          log("✓ Pipeline created");
+          log("✓ Starting render loop...");
+
+          // Simple matrix creation
+          function createIdentity() {
+            return new Float32Array([
+              1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+            ]);
+          }
+
+          function createRotationY(angle) {
+            const c = Math.cos(angle);
+            const s = Math.sin(angle);
+            return new Float32Array([
+              c,
+              0,
+              s,
+              0,
+              0,
+              1,
+              0,
+              0,
+              -s,
+              0,
+              c,
+              0,
+              0,
+              0,
+              0,
+              1,
+            ]);
+          }
+
+          function createScale(sx, sy, sz) {
+            return new Float32Array([
+              sx,
+              0,
+              0,
+              0,
+              0,
+              sy,
+              0,
+              0,
+              0,
+              0,
+              sz,
+              0,
+              0,
+              0,
+              0,
+              1,
+            ]);
+          }
+
+          function multiplyMatrices(a, b) {
+            const result = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+              for (let j = 0; j < 4; j++) {
+                result[i * 4 + j] =
+                  a[i * 4 + 0] * b[0 * 4 + j] +
+                  a[i * 4 + 1] * b[1 * 4 + j] +
+                  a[i * 4 + 2] * b[2 * 4 + j] +
+                  a[i * 4 + 3] * b[3 * 4 + j];
+              }
+            }
+            return result;
+          }
+
+          // Animation
+          let rotation = 0;
+          let lastTime = performance.now();
+
+          function animate(time) {
+            const deltaTime = (time - lastTime) / 1000;
+            lastTime = time;
+            rotation += deltaTime;
+
+            // Create rotation matrix
+            const rotationMatrix = createRotationY(rotation);
+
+            // Scale down a bit
+            const scaleMatrix = createScale(0.8, 0.8, 0.8);
+
+            // Combine (scale then rotate)
+            const mvpMatrix = multiplyMatrices(rotationMatrix, scaleMatrix);
+
+            // Update uniform buffer
+            device.queue.writeBuffer(uniformBuffer, 0, mvpMatrix);
+
+            // Render
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(6);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+            requestAnimationFrame(animate);
+          }
+
+          requestAnimationFrame(animate);
+          log("✓ Rendering!");
+        } catch (error) {
+          console.error("Error:", error);
+          log(`✗ Error: ${error.message}`);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

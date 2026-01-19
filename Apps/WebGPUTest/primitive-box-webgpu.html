@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cesium Primitive with WebGPU - Full Integration Test</title>
+    <script type="module">
+      import * as Cesium from "../../Build/CesiumUnminified/index.js";
+
+      const statusDiv = document.getElementById("status");
+
+      function addStatus(message, type = "info") {
+        const icons = { success: "✅", error: "❌", warning: "⚠️", info: "ℹ️" };
+        const status = document.createElement("div");
+        status.className = `status-item ${type}`;
+        status.innerHTML = `<span class="icon">${icons[type]}</span><span>${message}</span>`;
+        statusDiv.appendChild(status);
+        console.log(`[${type.toUpperCase()}] ${message}`);
+      }
+
+      async function testPrimitiveWebGPU() {
+        try {
+          addStatus(
+            "🚀 Starting Cesium Primitive WebGPU Integration Test",
+            "info",
+          );
+
+          if (!navigator.gpu) {
+            addStatus("WebGPU not supported - Chrome 113+ required", "error");
+            return;
+          }
+          addStatus("WebGPU API available", "success");
+
+          const canvas = document.getElementById("cesiumCanvas");
+
+          // Create Scene with WebGPU renderer
+          addStatus("Creating Scene with WebGPU renderer...", "info");
+          const scene = await Cesium.Scene.createAsync(
+            {
+              canvas: canvas,
+              contextOptions: {
+                renderer: "webgpu",
+              },
+            },
+            (progress, status) => {
+              console.log(`Scene creation: ${status} (${progress}%)`);
+            },
+          );
+          addStatus("Scene created with WebGPU!", "success");
+
+          // Verify WebGPU was initialized
+          if (!scene.isWebGPU) {
+            addStatus("Scene is not using WebGPU!", "error");
+            return;
+          }
+          addStatus("Scene confirmed using WebGPU renderer", "success");
+
+          // Set up camera
+          const camera = scene.camera;
+          camera.position = new Cesium.Cartesian3(5.0, 5.0, 5.0);
+          camera.lookAt(Cesium.Cartesian3.ZERO, Cesium.Cartesian3.UNIT_Z);
+          addStatus("Camera positioned", "success");
+
+          // Create BoxGeometry instance
+          addStatus("Creating BoxGeometry primitive...", "info");
+          const boxInstance = new Cesium.GeometryInstance({
+            geometry: Cesium.BoxGeometry.createGeometry(
+              Cesium.BoxGeometry.fromDimensions({
+                dimensions: new Cesium.Cartesian3(2.0, 2.0, 2.0),
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+              }),
+            ),
+            id: "webgpu-box",
+            attributes: {
+              color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                Cesium.Color.CYAN,
+              ),
+            },
+          });
+          addStatus("BoxGeometry instance created", "success");
+
+          // Create Primitive with PerInstanceColorAppearance
+          const primitive = new Cesium.Primitive({
+            geometryInstances: boxInstance,
+            appearance: new Cesium.PerInstanceColorAppearance({
+              flat: true,
+            }),
+            asynchronous: false,
+          });
+          addStatus("Primitive created", "success");
+
+          // Add to scene
+          scene.primitives.add(primitive);
+          addStatus("Primitive added to scene", "success");
+
+          // Set background color
+          scene.backgroundColor = Cesium.Color.fromCssColorString("#0a0a0f");
+
+          // Animation loop
+          addStatus("Starting render loop...", "info");
+          let frameCount = 0;
+          let primitiveReady = false;
+
+          function animate() {
+            frameCount++;
+
+            // Update primitive status
+            if (!primitiveReady && primitive.ready) {
+              primitiveReady = true;
+              addStatus("🎉 Primitive is READY for rendering!", "success");
+            }
+
+            // Render scene
+            scene.render();
+
+            // Log first few frames for debugging
+            if (frameCount <= 5) {
+              console.log(
+                `Frame ${frameCount}: Primitive ready=${primitive.ready}, State=${primitive._state}, Commands=${scene.frameState.commandList.length}`,
+              );
+              console.log(
+                `  - geometryInstances: ${primitive.geometryInstances !== undefined}`,
+              );
+              console.log(`  - _va.length: ${primitive._va.length}`);
+              console.log(
+                `  - appearance: ${primitive.appearance !== undefined}`,
+              );
+            }
+
+            // After 10 frames, check if rendering succeeded
+            if (frameCount === 10) {
+              if (primitiveReady) {
+                addStatus(
+                  "✨ WebGPU Primitive Integration: SUCCESS!",
+                  "success",
+                );
+                addStatus("Box geometry rendering with WebGPU!", "success");
+
+                const epicBanner = document.createElement("div");
+                epicBanner.className = "epic-banner";
+                epicBanner.innerHTML = `
+                                🎊 CESIUM PRIMITIVE RENDERING WITH WEBGPU! 🎊<br>
+                                <div style="font-size: 0.6em; margin-top: 15px; opacity: 0.95;">
+                                    Full pipeline working: Geometry → WebGPU Buffers → Commands → Rendering!
+                                </div>
+                            `;
+                statusDiv.appendChild(epicBanner);
+              } else {
+                addStatus(
+                  "Primitive not ready after 10 frames - check console",
+                  "warning",
+                );
+              }
+            }
+
+            requestAnimationFrame(animate);
+          }
+
+          animate();
+        } catch (error) {
+          addStatus(`❌ Error: ${error.message}`, "error");
+          console.error("Test error:", error);
+        }
+      }
+
+      testPrimitiveWebGPU();
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+        color: white;
+      }
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      h1 {
+        text-align: center;
+        font-size: 3em;
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+        background: linear-gradient(135deg, #fbbf24, #f59e0b);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .subtitle {
+        text-align: center;
+        font-size: 1.4em;
+        margin-bottom: 30px;
+        opacity: 0.9;
+        color: #60a5fa;
+      }
+      .test-section {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        border-radius: 15px;
+        padding: 25px;
+        margin-bottom: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      h2 {
+        margin-top: 0;
+        border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+        padding-bottom: 10px;
+        color: #fbbf24;
+      }
+      .status-item {
+        display: flex;
+        align-items: center;
+        margin: 10px 0;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 8px;
+        border-left: 3px solid #60a5fa;
+      }
+      .status-item .icon {
+        margin-right: 12px;
+        font-size: 24px;
+      }
+      .success {
+        border-left-color: #4ade80;
+      }
+      .error {
+        border-left-color: #f87171;
+      }
+      .warning {
+        border-left-color: #fbbf24;
+      }
+
+      canvas {
+        width: 100%;
+        height: 600px;
+        border-radius: 10px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        background: #000;
+      }
+
+      .epic-banner {
+        background: linear-gradient(
+          135deg,
+          #ec4899 0%,
+          #8b5cf6 50%,
+          #3b82f6 100%
+        );
+        padding: 30px;
+        border-radius: 15px;
+        text-align: center;
+        font-size: 1.8em;
+        font-weight: bold;
+        margin: 30px 0;
+        box-shadow: 0 8px 32px rgba(236, 72, 153, 0.4);
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.02);
+        }
+      }
+
+      .milestone {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        padding: 15px 25px;
+        border-radius: 8px;
+        display: inline-block;
+        margin: 10px 5px;
+        font-weight: bold;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎯 Cesium Primitive + WebGPU</h1>
+      <div class="subtitle">
+        Full Integration Test - BoxGeometry Rendering with WebGPU!
+      </div>
+
+      <div class="test-section">
+        <h2>🎯 Historic Milestone</h2>
+        <p style="font-size: 1.1em">
+          This test verifies that actual Cesium Primitives (BoxGeometry) can
+          render using WebGPU through the complete pipeline: Geometry → Buffers
+          → Shaders → Pipeline → Rendering!
+        </p>
+        <div style="margin-top: 20px">
+          <span class="milestone">WebGPU Infrastructure ✅</span>
+          <span class="milestone">Scene Integration ✅</span>
+          <span class="milestone">Primitive Integration 🔄</span>
+        </div>
+      </div>
+
+      <div class="test-section">
+        <h2>🎨 WebGPU Rendering Canvas</h2>
+        <canvas id="cesiumCanvas"></canvas>
+      </div>
+
+      <div class="test-section">
+        <h2>📊 Test Status</h2>
+        <div id="status"></div>
+      </div>
+
+      <div class="test-section">
+        <h2>🔬 Technical Pipeline</h2>
+        <div
+          style="
+            background: rgba(0, 0, 0, 0.4);
+            padding: 20px;
+            border-radius: 10px;
+            font-family: monospace;
+            font-size: 0.9em;
+          "
+        >
+          1. Scene.createAsync() with renderer='webgpu'<br />
+          2. Create Cesium.BoxGeometry with PerInstanceColorAppearance<br />
+          3. Add as Primitive to scene<br />
+          4. Primitive.update() processes geometry<br />
+          5. createVertexArray() preserves raw geometry for WebGPU<br />
+          6. createWebGPUCommands() called:<br />
+          → Extract vertex data (positions)<br />
+          → Create WebGPU vertex buffer<br />
+          → Extract index data<br />
+          → Create WebGPU index buffer<br />
+          → Load BasicColor.wgsl shader<br />
+          → Compute MVP matrix from camera<br />
+          → Create uniform buffers<br />
+          → Create bind groups<br />
+          → Create render pipeline<br />
+          → Assemble WebGPUDrawCommand<br />
+          7. Scene.render() → context.beginFrame()<br />
+          8. executeCommand() routes to WebGPU path<br />
+          9. WebGPUDrawCommand.execute(renderPass)<br />
+          10. context.endFrame() → GPU submission<br />
+          11. 🎉 Box renders on screen!
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

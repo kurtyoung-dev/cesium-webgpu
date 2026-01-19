@@ -2,5 +2,6 @@
 packages/sandcastle/node_modules
 /ThirdParty
 /Tools/**
+/migration_doc/**
 
 LICENSE.md

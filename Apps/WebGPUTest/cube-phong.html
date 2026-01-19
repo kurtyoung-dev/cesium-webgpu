@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Phong Lighting Cube - Phase 4.4</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+        overflow: hidden;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+        z-index: 10;
+      }
+
+      #info h1 {
+        margin: 0 0 10px 0;
+        font-size: 24px;
+        color: #67b7ff;
+      }
+
+      #info p {
+        margin: 5px 0;
+        font-size: 14px;
+        color: #aaa;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 10px;
+      }
+
+      .status-success {
+        background: #2d5f2e;
+        color: #5fd35f;
+      }
+
+      .status-error {
+        background: #5f2d2d;
+        color: #ff6b6b;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #controls {
+        position: absolute;
+        top: 120px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        min-width: 250px;
+        font-size: 13px;
+      }
+
+      .control-group {
+        margin: 10px 0;
+      }
+
+      .control-group label {
+        display: block;
+        margin-bottom: 5px;
+        color: #67b7ff;
+      }
+
+      input[type="range"] {
+        width: 100%;
+      }
+
+      #stats {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-family: monospace;
+      }
+    </style>
+    <!-- Use wgpu-matrix library for standalone testing (no CORS issues with CDN) -->
+    <!-- Production code will use Cesium's Matrix4 with setDepthRangeType('webgpu') -->
+    <script src="https://wgpu-matrix.org/dist/2.x/wgpu-matrix.js"></script>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>
+          🎨 WebGPU Phong Lighting Test
+          <span class="status" id="status">Initializing...</span>
+        </h1>
+        <p>
+          Phase 4.4: Camera & View Integration - Testing PhongLighting with
+          proper perspective projection
+        </p>
+        <p>
+          <strong>Features:</strong> Camera matrices • Model transformation •
+          Directional light • Depth buffer • Rotation animation • LookAt camera
+        </p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="controls">
+      <h3 style="margin-top: 0; color: #67b7ff">⚙️ Controls</h3>
+
+      <div class="control-group">
+        <label>Light Intensity: <span id="intensityValue">1.0</span></label>
+        <input
+          type="range"
+          id="intensity"
+          min="0"
+          max="2"
+          step="0.1"
+          value="1.0"
+        />
+      </div>
+
+      <div class="control-group">
+        <label>Shininess: <span id="shininessValue">32</span></label>
+        <input
+          type="range"
+          id="shininess"
+          min="1"
+          max="128"
+          step="1"
+          value="32"
+        />
+      </div>
+
+      <div class="control-group">
+        <label>Rotation Speed: <span id="speedValue">1.0</span></label>
+        <input type="range" id="speed" min="0" max="3" step="0.1" value="1.0" />
+      </div>
+
+      <div class="control-group">
+        <label><input type="checkbox" id="rotate" checked /> Auto-rotate</label>
+      </div>
+    </div>
+
+    <div id="stats">
+      <strong>Performance:</strong><br />
+      FPS: <span id="fps">0</span><br />
+      Frame: <span id="frame">0</span>
+    </div>
+
+    <script type="module">
+      /* global wgpuMatrix */
+      // NOTE: This standalone test uses wgpu-matrix CDN to avoid CORS issues with file:// protocol
+      // PRODUCTION CODE will use: Matrix4.setDepthRangeType('webgpu') and Cesium's Matrix4
+      // See: migration_doc/MATRIX4_DEPTH_RANGE.md for production usage
+
+      const canvas = document.getElementById("canvas");
+      const statusEl = document.getElementById("status");
+
+      // Controls
+      const intensitySlider = document.getElementById("intensity");
+      const shininessSlider = document.getElementById("shininess");
+      const speedSlider = document.getElementById("speed");
+      const rotateCheckbox = document.getElementById("rotate");
+
+      // Stats
+      const fpsEl = document.getElementById("fps");
+      const frameEl = document.getElementById("frame");
+
+      let frameCount = 0;
+      let lastFpsUpdate = performance.now();
+
+      // Resize canvas
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function setStatus(text, success) {
+        statusEl.textContent = text;
+        statusEl.className = `status ${success ? "status-success" : "status-error"}`;
+      }
+
+      // ========================================
+      // PHASE 4.4: Camera & View Integration
+      // Using wgpu-matrix library for correct WebGPU matrices
+      // ========================================
+
+      const mat4 = wgpuMatrix.mat4;
+      console.log("✓ Phase 4.4: Using wgpu-matrix library");
+
+      // Cube geometry (positions and normals)
+      function createCubeGeometry() {
+        // Positions and normals for a cube (scaled to 0.5 for better viewing)
+        const scale = 0.5;
+        const positions = new Float32Array([
+          // Front face
+          -scale,
+          -scale,
+          scale,
+          -scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          -scale,
+          scale,
+          // Back face
+          -scale,
+          -scale,
+          -scale,
+          -scale,
+          scale,
+          -scale,
+          scale,
+          scale,
+          -scale,
+          scale,
+          -scale,
+          -scale,
+          // Top face
+          -scale,
+          scale,
+          -scale,
+          -scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          -scale,
+          // Bottom face
+          -scale,
+          -scale,
+          -scale,
+          -scale,
+          -scale,
+          scale,
+          scale,
+          -scale,
+          scale,
+          scale,
+          -scale,
+          -scale,
+          // Right face
+          scale,
+          -scale,
+          -scale,
+          scale,
+          scale,
+          -scale,
+          scale,
+          scale,
+          scale,
+          scale,
+          -scale,
+          scale,
+          // Left face
+          -scale,
+          -scale,
+          -scale,
+          -scale,
+          scale,
+          -scale,
+          -scale,
+          scale,
+          scale,
+          -scale,
+          -scale,
+          scale,
+        ]);
+
+        const normals = new Float32Array([
+          // Front
+          0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
+          // Back
+          0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1,
+          // Top
+          0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
+          // Bottom
+          0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0,
+          // Right
+          1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
+          // Left
+          -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0,
+        ]);
+
+        // Indices (two triangles per face)
+        const indices = new Uint16Array([
+          0,
+          1,
+          2,
+          0,
+          2,
+          3, // Front
+          4,
+          6,
+          5,
+          4,
+          7,
+          6, // Back
+          8,
+          9,
+          10,
+          8,
+          10,
+          11, // Top
+          12,
+          14,
+          13,
+          12,
+          15,
+          14, // Bottom
+          16,
+          17,
+          18,
+          16,
+          18,
+          19, // Right
+          20,
+          22,
+          21,
+          20,
+          23,
+          22, // Left
+        ]);
+
+        return { positions, normals, indices };
+      }
+
+      // Simplified Phong shader (no textures for this test)
+      const shaderCode = `
+      struct VertexInput {
+        @location(0) position: vec3<f32>,
+        @location(1) normal: vec3<f32>,
+      }
+
+      struct VertexOutput {
+        @builtin(position) position: vec4<f32>,
+        @location(0) worldPosition: vec3<f32>,
+        @location(1) normal: vec3<f32>,
+      }
+
+      struct CameraUniforms {
+        viewProjectionMatrix: mat4x4<f32>,
+        cameraPosition: vec3<f32>,
+        _padding: f32,
+      }
+
+      struct ModelUniforms {
+        modelMatrix: mat4x4<f32>,
+        normalMatrix: mat4x4<f32>,
+      }
+
+      struct LightUniforms {
+        lightDirection: vec3<f32>,
+        _padding1: f32,
+        lightColor: vec3<f32>,
+        lightIntensity: f32,
+        ambientColor: vec3<f32>,
+        _padding2: f32,
+        diffuseColor: vec3<f32>,
+        _padding3: f32,
+        specularColor: vec3<f32>,
+        shininess: f32,
+      }
+
+      @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+      @group(0) @binding(1) var<uniform> model: ModelUniforms;
+      @group(0) @binding(2) var<uniform> light: LightUniforms;
+
+      @vertex
+      fn vertexMain(input: VertexInput) -> VertexOutput {
+        var output: VertexOutput;
+        let worldPos = model.modelMatrix * vec4<f32>(input.position, 1.0);
+        output.worldPosition = worldPos.xyz;
+        output.position = camera.viewProjectionMatrix * worldPos;
+        output.normal = normalize((model.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz);
+        return output;
+      }
+
+      @fragment
+      fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+        // Debug: Output normals as colors to verify geometry is rendering
+        let N = normalize(input.normal);
+        let normalColor = N * 0.5 + 0.5; // Map from -1,1 to 0,1
+        return vec4<f32>(normalColor, 1.0);
+      }
+    `;
+
+      async function init() {
+        try {
+          console.log(
+            "🚀 Initializing WebGPU Phong lighting test (Phase 4.4)...",
+          );
+
+          // Check WebGPU support
+          if (!navigator.gpu) {
+            throw new Error("WebGPU not supported");
+          }
+
+          // Get adapter and device
+          const adapter = await navigator.gpu.requestAdapter({
+            powerPreference: "high-performance",
+          });
+          if (!adapter) throw new Error("No adapter found");
+
+          const device = await adapter.requestDevice();
+          console.log("✅ Device acquired");
+
+          // Configure canvas
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format, alphaMode: "opaque" });
+          console.log("✅ Canvas configured");
+
+          // Create geometry
+          const { positions, normals, indices } = createCubeGeometry();
+
+          // Create buffers
+          const positionBuffer = device.createBuffer({
+            size: positions.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+          });
+          new Float32Array(positionBuffer.getMappedRange()).set(positions);
+          positionBuffer.unmap();
+
+          const normalBuffer = device.createBuffer({
+            size: normals.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+          });
+          new Float32Array(normalBuffer.getMappedRange()).set(normals);
+          normalBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+          console.log("✅ Geometry buffers created");
+
+          // Create uniform buffers
+          const cameraUniformBuffer = device.createBuffer({
+            size: 80, // mat4x4 + vec4
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          const modelUniformBuffer = device.createBuffer({
+            size: 128, // 2x mat4x4
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          const lightUniformBuffer = device.createBuffer({
+            size: 128, // Various light parameters
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          console.log("✅ Uniform buffers created");
+
+          // Create shader module
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+          console.log("✅ Shader compiled");
+
+          // Create bind group layout
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: "uniform" },
+              },
+              {
+                binding: 1,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+              {
+                binding: 2,
+                visibility: GPUShaderStage.FRAGMENT,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          // Create bind group
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [
+              { binding: 0, resource: { buffer: cameraUniformBuffer } },
+              { binding: 1, resource: { buffer: modelUniformBuffer } },
+              { binding: 2, resource: { buffer: lightUniformBuffer } },
+            ],
+          });
+
+          // Create depth texture
+          let depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: "depth24plus",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          });
+
+          // Create pipeline
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 12,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                  ],
+                },
+                {
+                  arrayStride: 12,
+                  attributes: [
+                    { shaderLocation: 1, offset: 0, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+            depthStencil: {
+              format: "depth24plus",
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+          console.log("✅ Pipeline created");
+
+          setStatus("Rendering", true);
+
+          // Animation state
+          let rotation = 0;
+          let lastTime = performance.now();
+
+          // Handle window resize
+          window.addEventListener("resize", () => {
+            depthTexture.destroy();
+            depthTexture = device.createTexture({
+              size: [canvas.width, canvas.height],
+              format: "depth24plus",
+              usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            });
+          });
+
+          // Control handlers
+          intensitySlider.addEventListener("input", (e) => {
+            document.getElementById("intensityValue").textContent =
+              e.target.value;
+          });
+          shininessSlider.addEventListener("input", (e) => {
+            document.getElementById("shininessValue").textContent =
+              e.target.value;
+          });
+          speedSlider.addEventListener("input", (e) => {
+            document.getElementById("speedValue").textContent = e.target.value;
+          });
+
+          // Render loop
+          function render(time) {
+            const deltaTime = (time - lastTime) / 1000;
+            lastTime = time;
+
+            // Update rotation
+            if (rotateCheckbox.checked) {
+              rotation += deltaTime * parseFloat(speedSlider.value);
+            }
+
+            // Update camera matrices (Phase 4.4: proper perspective)
+            const aspect = canvas.width / canvas.height;
+            const eye = [0, 1, 3]; // Camera position - adjusted for better view
+            const target = [0, 0, 0]; // Look at origin
+            const up = [0, 1, 0]; // Up direction
+
+            const viewMatrix = mat4.lookAt(eye, target, up);
+            const projectionMatrix = mat4.perspective(
+              Math.PI / 4,
+              aspect,
+              0.1,
+              100.0,
+            );
+            const viewProjectionMatrix = mat4.multiply(
+              projectionMatrix,
+              viewMatrix,
+            );
+
+            const cameraData = new Float32Array(20);
+            cameraData.set(viewProjectionMatrix, 0);
+            cameraData[16] = eye[0];
+            cameraData[17] = eye[1];
+            cameraData[18] = eye[2]; // camera position
+            device.queue.writeBuffer(cameraUniformBuffer, 0, cameraData);
+
+            // Update model matrix
+            const modelMatrix = mat4.identity();
+            mat4.rotateY(modelMatrix, rotation, modelMatrix);
+            const normalMatrix = modelMatrix; // For simple rotation, same as model
+            const modelData = new Float32Array(32);
+            modelData.set(modelMatrix, 0);
+            modelData.set(normalMatrix, 16);
+            device.queue.writeBuffer(modelUniformBuffer, 0, modelData);
+
+            // Update light uniforms
+            const lightData = new Float32Array(32);
+            lightData[0] = 0.5;
+            lightData[1] = -1;
+            lightData[2] = -0.5; // Light direction
+            lightData[4] = 1;
+            lightData[5] = 1;
+            lightData[6] = 1; // Light color (white)
+            lightData[7] = parseFloat(intensitySlider.value); // Intensity
+            lightData[8] = 0.5;
+            lightData[9] = 0.5;
+            lightData[10] = 0.6; // Ambient (much brighter)
+            lightData[12] = 0.6;
+            lightData[13] = 0.8;
+            lightData[14] = 1.0; // Diffuse (bright blue)
+            lightData[16] = 1;
+            lightData[17] = 1;
+            lightData[18] = 1; // Specular
+            lightData[19] = parseFloat(shininessSlider.value); // Shininess
+            device.queue.writeBuffer(lightUniformBuffer, 0, lightData);
+
+            // Render
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+            const depthView = depthTexture.createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+              depthStencilAttachment: {
+                view: depthView,
+                depthClearValue: 1.0,
+                depthLoadOp: "clear",
+                depthStoreOp: "store",
+              },
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, positionBuffer);
+            renderPass.setVertexBuffer(1, normalBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(indices.length);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            // Update stats
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsUpdate >= 1000) {
+              fpsEl.textContent = frameCount;
+              frameCount = 0;
+              lastFpsUpdate = now;
+            }
+            frameEl.textContent = Math.floor(time / 16);
+
+            requestAnimationFrame(render);
+          }
+
+          console.log("✅ Starting render loop...");
+          requestAnimationFrame(render);
+        } catch (error) {
+          console.error("❌ Error:", error);
+          setStatus("Failed: " + error.message, false);
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>

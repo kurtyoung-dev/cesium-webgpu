@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Matrix Depth Range Standalone Test</title>
+    <style>
+      body {
+        margin: 20px;
+        font-family: monospace;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      h1 {
+        color: #67b7ff;
+      }
+
+      .test-section {
+        margin: 20px 0;
+        padding: 15px;
+        background: rgba(42, 42, 42, 0.95);
+        border-radius: 6px;
+      }
+
+      .pass {
+        color: #5fd35f;
+      }
+
+      .fail {
+        color: #ff6b6b;
+      }
+
+      pre {
+        background: #2a2a2a;
+        padding: 10px;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Matrix4 Depth Range - Standalone Test</h1>
+    <p>Verifying WebGL vs WebGPU perspective projection formulas</p>
+
+    <div id="results"></div>
+
+    <script>
+      const resultsDiv = document.getElementById("results");
+
+      function addResult(title, content, pass = true) {
+        const section = document.createElement("div");
+        section.className = "test-section";
+        section.innerHTML = `
+        <h3 class="${pass ? "pass" : "fail"}">${pass ? "✓" : "✗"} ${title}</h3>
+        <pre>${content}</pre>
+      `;
+        resultsDiv.appendChild(section);
+      }
+
+      function matrixToString(m) {
+        return `[${m[0].toFixed(4)}, ${m[4].toFixed(4)}, ${m[8].toFixed(4)}, ${m[12].toFixed(4)}]
+[${m[1].toFixed(4)}, ${m[5].toFixed(4)}, ${m[9].toFixed(4)}, ${m[13].toFixed(4)}]
+[${m[2].toFixed(4)}, ${m[6].toFixed(4)}, ${m[10].toFixed(4)}, ${m[14].toFixed(4)}]
+[${m[3].toFixed(4)}, ${m[7].toFixed(4)}, ${m[11].toFixed(4)}, ${m[15].toFixed(4)}]`;
+      }
+
+      // Simplified Matrix4-like perspective function
+      function computePerspective(
+        fovY,
+        aspect,
+        near,
+        far,
+        depthRangeType = "webgl",
+      ) {
+        const matrix = new Float32Array(16);
+
+        const tanHalfFov = Math.tan(fovY * 0.5);
+        const column1Row1 = 1.0 / tanHalfFov;
+        const column0Row0 = column1Row1 / aspect;
+
+        let column2Row2, column3Row2;
+
+        if (depthRangeType === "webgpu") {
+          // WebGPU: 0 to 1 depth range
+          column2Row2 = far / (near - far);
+          column3Row2 = (near * far) / (near - far);
+        } else {
+          // WebGL: -1 to 1 depth range
+          column2Row2 = (far + near) / (near - far);
+          column3Row2 = (2.0 * far * near) / (near - far);
+        }
+
+        matrix[0] = column0Row0;
+        matrix[5] = column1Row1;
+        matrix[10] = column2Row2;
+        matrix[11] = -1.0;
+        matrix[14] = column3Row2;
+
+        return matrix;
+      }
+
+      try {
+        const fov = Math.PI / 4; // 45 degrees
+        const aspect = 16 / 9;
+        const near = 0.1;
+        const far = 100.0;
+
+        // Test 1: WebGL matrices
+        const webglMatrix = computePerspective(fov, aspect, near, far, "webgl");
+
+        const expectedWebGLZ = (far + near) / (near - far);
+        const expectedWebGLW = (2.0 * far * near) / (near - far);
+
+        addResult(
+          "WebGL Perspective Matrix (Depth: -1 to 1)",
+          `Parameters: FOV=${((fov * 180) / Math.PI).toFixed(1)}°, Aspect=${aspect.toFixed(4)}, Near=${near}, Far=${far}
+
+Key Depth Coefficients:
+  Matrix[10] (z-scale):     ${webglMatrix[10].toFixed(6)}
+  Matrix[14] (z-translate): ${webglMatrix[14].toFixed(6)}
+
+Formula Used (WebGL):
+  column2Row2 = (far + near) / (near - far)
+  column3Row2 = (2 * far * near) / (near - far)
+
+Calculated:
+  column2Row2 = ${expectedWebGLZ.toFixed(6)} ${Math.abs(webglMatrix[10] - expectedWebGLZ) < 0.0001 ? "✓" : "✗"}
+  column3Row2 = ${expectedWebGLW.toFixed(6)} ${Math.abs(webglMatrix[14] - expectedWebGLW) < 0.0001 ? "✓" : "✗"}
+
+Full Matrix:
+${matrixToString(webglMatrix)}`,
+        );
+
+        // Test 2: WebGPU matrices
+        const webgpuMatrix = computePerspective(
+          fov,
+          aspect,
+          near,
+          far,
+          "webgpu",
+        );
+
+        const expectedWebGPUZ = far / (near - far);
+        const expectedWebGPUW = (near * far) / (near - far);
+
+        const webgpuZMatches =
+          Math.abs(webgpuMatrix[10] - expectedWebGPUZ) < 0.0001;
+        const webgpuWMatches =
+          Math.abs(webgpuMatrix[14] - expectedWebGPUW) < 0.0001;
+
+        addResult(
+          "WebGPU Perspective Matrix (Depth: 0 to 1)",
+          `Parameters: FOV=${((fov * 180) / Math.PI).toFixed(1)}°, Aspect=${aspect.toFixed(4)}, Near=${near}, Far=${far}
+
+Key Depth Coefficients:
+  Matrix[10] (z-scale):     ${webgpuMatrix[10].toFixed(6)}
+  Matrix[14] (z-translate): ${webgpuMatrix[14].toFixed(6)}
+
+Formula Used (WebGPU):
+  column2Row2 = far / (near - far)
+  column3Row2 = (near * far) / (near - far)
+
+Calculated:
+  column2Row2 = ${expectedWebGPUZ.toFixed(6)} ${webgpuZMatches ? "✓" : "✗"}
+  column3Row2 = ${expectedWebGPUW.toFixed(6)} ${webgpuWMatches ? "✓" : "✗"}
+
+Full Matrix:
+${matrixToString(webgpuMatrix)}`,
+          webgpuZMatches && webgpuWMatches,
+        );
+
+        // Test 3: Side-by-side comparison
+        const zDifferent = webglMatrix[10] !== webgpuMatrix[10];
+        const wDifferent = webglMatrix[14] !== webgpuMatrix[14];
+        const xyIdentical =
+          webglMatrix[0] === webgpuMatrix[0] &&
+          webglMatrix[5] === webgpuMatrix[5];
+
+        addResult(
+          "WebGL vs WebGPU Comparison",
+          `Matrix[0] (x-scale):  WebGL=${webglMatrix[0].toFixed(6)}, WebGPU=${webgpuMatrix[0].toFixed(6)} ${xyIdentical ? "(Same ✓)" : "(Different ✗)"}
+Matrix[5] (y-scale):  WebGL=${webglMatrix[5].toFixed(6)}, WebGPU=${webgpuMatrix[5].toFixed(6)} ${xyIdentical ? "(Same ✓)" : "(Different ✗)"}
+Matrix[10] (z-scale): WebGL=${webglMatrix[10].toFixed(6)}, WebGPU=${webgpuMatrix[10].toFixed(6)} ${zDifferent ? "(Different ✓)" : "(Same ✗)"}
+Matrix[14] (z-trans): WebGL=${webglMatrix[14].toFixed(6)}, WebGPU=${webgpuMatrix[14].toFixed(6)} ${wDifferent ? "(Different ✓)" : "(Same ✗)"}
+
+Analysis:
+- XY scaling should be IDENTICAL (independent of depth range)
+- Z coefficients should be DIFFERENT (depth range affects Z mapping)
+
+Test Result: ${xyIdentical && zDifferent && wDifferent ? "PASS ✓" : "FAIL ✗"}`,
+          xyIdentical && zDifferent && wDifferent,
+        );
+
+        // Test 4: Numerical verification
+        addResult(
+          "Depth Range Formulas - Numerical Breakdown",
+          `Given: near=${near}, far=${far}
+
+WebGL (-1 to 1 depth):
+  (far + near) / (near - far) = (${far} + ${near}) / (${near} - ${far})
+                                = ${far + near} / ${near - far}
+                                = ${expectedWebGLZ.toFixed(6)}
+  
+  (2 * far * near) / (near - far) = (2 * ${far} * ${near}) / (${near} - ${far})
+                                   = ${2 * far * near} / ${near - far}
+                                   = ${expectedWebGLW.toFixed(6)}
+
+WebGPU (0 to 1 depth):
+  far / (near - far) = ${far} / (${near} - ${far})
+                     = ${far} / ${near - far}
+                     = ${expectedWebGPUZ.toFixed(6)}
+  
+  (near * far) / (near - far) = (${near} * ${far}) / (${near} - ${far})
+                               = ${near * far} / ${near - far}
+                               = ${expectedWebGPUW.toFixed(6)}
+
+The key difference: WebGPU has simpler formulas without the "2*" multiplier and "far + near" term.`,
+        );
+
+        console.log("✓ All tests completed!");
+      } catch (error) {
+        addResult("ERROR", error.toString(), false);
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

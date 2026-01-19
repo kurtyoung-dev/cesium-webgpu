@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Rotating Cube - Phase 4.4</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #info h1 {
+        margin: 0 0 10px 0;
+        font-size: 24px;
+        color: #67b7ff;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 10px;
+      }
+
+      .status-success {
+        background: #2d5f2e;
+        color: #5fd35f;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #log {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        max-width: 350px;
+        font-size: 12px;
+      }
+    </style>
+    <!-- Use wgpu-matrix library for standalone testing (no CORS issues with CDN) -->
+    <!-- Production code will use Cesium's Matrix4 with setDepthRangeType('webgpu') -->
+    <script src="https://wgpu-matrix.org/dist/2.x/wgpu-matrix.js"></script>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>
+          🧊 WebGPU Rotating Cube
+          <span class="status status-success" id="status">Ready</span>
+        </h1>
+        <p>
+          Phase 4.4: Camera & View Integration - Full perspective projection
+          with lookAt camera
+        </p>
+        <p>
+          <strong>Features:</strong> 24 vertices • 36 indices • Depth buffer •
+          Rotation • Per-face colors • Perspective camera
+        </p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="log">
+      <strong>Test Log:</strong>
+    </div>
+
+    <div
+      style="
+        position: absolute;
+        top: 150px;
+        left: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+      "
+    >
+      <strong style="color: #67b7ff">Controls:</strong><br />
+      <label style="color: white; margin: 5px 0; display: block">
+        <input type="checkbox" id="wireframe" /> Wireframe Mode
+      </label>
+      <label style="color: white; margin: 5px 0; display: block">
+        <input type="checkbox" id="culling" checked /> Back-face Culling
+      </label>
+    </div>
+
+    <script type="module">
+      /* global wgpuMatrix */
+      // NOTE: This standalone test uses wgpu-matrix CDN to avoid CORS issues with file:// protocol
+      // PRODUCTION CODE will use: Matrix4.setDepthRangeType('webgpu') and Cesium's Matrix4
+      // See: migration_doc/MATRIX4_DEPTH_RANGE.md for production usage
+
+      const canvas = document.getElementById("canvas");
+      const logEl = document.getElementById("log");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function log(msg) {
+        const entry = document.createElement("div");
+        entry.style.margin = "5px 0";
+        entry.style.color = msg.startsWith("✓") ? "#5FD35F" : "#67B7FF";
+        entry.textContent = msg;
+        logEl.appendChild(entry);
+        console.log(msg);
+      }
+
+      async function main() {
+        try {
+          log("🚀 Initializing Phase 4.4...");
+
+          // WebGPU setup
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+          log("✓ WebGPU initialized");
+
+          // Cube vertices (24 vertices - 4 per face, each face has unique vertices for proper colors)
+          const vertices = new Float32Array([
+            // Front face (red)
+            -0.5, -0.5, 0.5, 1, 0, 0, 0.5, -0.5, 0.5, 1, 0, 0, 0.5, 0.5, 0.5, 1,
+            0, 0, -0.5, 0.5, 0.5, 1, 0, 0,
+
+            // Back face (cyan)
+            -0.5, -0.5, -0.5, 0, 1, 1, 0.5, -0.5, -0.5, 0, 1, 1, 0.5, 0.5, -0.5,
+            0, 1, 1, -0.5, 0.5, -0.5, 0, 1, 1,
+
+            // Top face (green)
+            -0.5, 0.5, -0.5, 0, 1, 0, -0.5, 0.5, 0.5, 0, 1, 0, 0.5, 0.5, 0.5, 0,
+            1, 0, 0.5, 0.5, -0.5, 0, 1, 0,
+
+            // Bottom face (magenta)
+            -0.5, -0.5, -0.5, 1, 0, 1, -0.5, -0.5, 0.5, 1, 0, 1, 0.5, -0.5, 0.5,
+            1, 0, 1, 0.5, -0.5, -0.5, 1, 0, 1,
+
+            // Right face (blue)
+            0.5, -0.5, -0.5, 0, 0, 1, 0.5, 0.5, -0.5, 0, 0, 1, 0.5, 0.5, 0.5, 0,
+            0, 1, 0.5, -0.5, 0.5, 0, 0, 1,
+
+            // Left face (yellow)
+            -0.5, -0.5, -0.5, 1, 1, 0, -0.5, 0.5, -0.5, 1, 1, 0, -0.5, 0.5, 0.5,
+            1, 1, 0, -0.5, -0.5, 0.5, 1, 1, 0,
+          ]);
+
+          // Indices (2 triangles per face, 6 faces = 36 indices)
+          const indices = new Uint16Array([
+            0,
+            1,
+            2,
+            0,
+            2,
+            3, // Front
+            4,
+            6,
+            5,
+            4,
+            7,
+            6, // Back (reversed winding)
+            8,
+            9,
+            10,
+            8,
+            10,
+            11, // Top
+            12,
+            14,
+            13,
+            12,
+            15,
+            14, // Bottom (reversed)
+            16,
+            17,
+            18,
+            16,
+            18,
+            19, // Right
+            20,
+            22,
+            21,
+            20,
+            23,
+            22, // Left (reversed)
+          ]);
+          log(`✓ Geometry: 24 vertices, 36 indices`);
+
+          // Create buffers
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+
+          const uniformBuffer = device.createBuffer({
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          log("✓ Buffers created");
+
+          // Shader
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          // Create depth texture
+          const depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: "depth24plus",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          });
+
+          // Create filled pipeline (no culling)
+          const pipelineFilled = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+            depthStencil: {
+              format: "depth24plus",
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+
+          // Create filled pipeline WITH culling
+          const pipelineFilledCulled = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "back" },
+            depthStencil: {
+              format: "depth24plus",
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+
+          // Create wireframe pipeline (line-list)
+          const pipelineWireframe = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "line-list", cullMode: "none" },
+            depthStencil: {
+              format: "depth24plus",
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+
+          log("✓ Pipelines created (filled + culled + wireframe)");
+          log("✓ Starting animation...");
+
+          // ========================================
+          // PHASE 4.4: Camera & View Integration
+          // Using wgpu-matrix library for correct WebGPU matrices
+          // ========================================
+
+          const mat4 = wgpuMatrix.mat4;
+          log("✓ Phase 4.4: Using wgpu-matrix library");
+
+          // Controls
+          const wireframeCheckbox = document.getElementById("wireframe");
+          const cullingCheckbox = document.getElementById("culling");
+
+          // Animation
+          let rotation = 0;
+          let lastTime = performance.now();
+          let frameCount = 0;
+
+          function animate(time) {
+            const deltaTime = (time - lastTime) / 1000;
+            lastTime = time;
+            rotation += deltaTime * 0.7;
+
+            // Model transformation (rotation)
+            const modelMatrix = mat4.identity();
+            mat4.rotateY(modelMatrix, rotation, modelMatrix);
+            mat4.rotateX(modelMatrix, rotation * 0.5, modelMatrix);
+
+            // View transformation (camera position)
+            const eye = [0, 1, 3]; // Camera position
+            const target = [0, 0, 0]; // Look at origin
+            const up = [0, 1, 0]; // Up direction
+            const viewMatrix = mat4.lookAt(eye, target, up);
+
+            // Projection transformation
+            const aspect = canvas.width / canvas.height;
+            const projectionMatrix = mat4.perspective(
+              Math.PI / 4,
+              aspect,
+              0.1,
+              100.0,
+            );
+
+            // Combine: MVP = Projection * View * Model
+            const viewProjectionMatrix = mat4.multiply(
+              projectionMatrix,
+              viewMatrix,
+            );
+            const mvpMatrix = mat4.multiply(viewProjectionMatrix, modelMatrix);
+
+            // Update uniform
+            device.queue.writeBuffer(uniformBuffer, 0, mvpMatrix);
+
+            // Render
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+            const depthView = depthTexture.createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+              depthStencilAttachment: {
+                view: depthView,
+                depthClearValue: 1.0,
+                depthLoadOp: "clear",
+                depthStoreOp: "store",
+              },
+            });
+
+            // Choose pipeline based on controls
+            let activePipeline;
+            if (wireframeCheckbox.checked) {
+              activePipeline = pipelineWireframe;
+            } else if (cullingCheckbox.checked) {
+              activePipeline = pipelineFilledCulled;
+            } else {
+              activePipeline = pipelineFilled;
+            }
+
+            renderPass.setPipeline(activePipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(36);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            frameCount++;
+            if (frameCount === 60) {
+              log(`✓ Phase 4.4: Camera working! (Frame ${frameCount})`);
+            }
+
+            requestAnimationFrame(animate);
+          }
+
+          requestAnimationFrame(animate);
+          log("✓ Cube rotating with camera!");
+        } catch (error) {
+          console.error("Error:", error);
+          log(`✗ Error: ${error.message}`);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

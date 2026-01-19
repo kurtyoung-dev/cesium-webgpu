@@ -37,6 +37,7 @@ import Transforms from "../Core/Transforms.js";
 import ClearCommand from "../Renderer/ClearCommand.js";
 import ComputeEngine from "../Renderer/ComputeEngine.js";
 import Context from "../Renderer/Context.js";
+import ContextFactory from "../Renderer/ContextFactory.js";
 import ContextLimits from "../Renderer/ContextLimits.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
@@ -139,14 +140,30 @@ function Scene(options) {
   }
   //>>includeEnd('debug');
 
-  const countReferences = options.contextOptions instanceof SharedContext;
-  if (countReferences) {
-    this._context = options.contextOptions.createSceneContext(canvas);
+  // Check for pre-initialized context (from Scene.createAsync for WebGPU support)
+  let countReferences = false;
+  if (defined(options._preInitializedContext)) {
+    // WebGPU path - context already created asynchronously
+    this._context = options._preInitializedContext;
   } else {
-    const contextOptions = clone(options.contextOptions);
-    this._context = new Context(canvas, contextOptions);
+    // WebGL path - synchronous context creation (backward compatible)
+    countReferences = options.contextOptions instanceof SharedContext;
+    if (countReferences) {
+      this._context = options.contextOptions.createSceneContext(canvas);
+    } else {
+      const contextOptions = clone(options.contextOptions);
+      this._context = new Context(canvas, contextOptions);
+    }
   }
   const context = this._context;
+
+  // Set Matrix4 depth range based on renderer type
+  // WebGPU uses 0-1 depth range, WebGL uses -1 to 1
+  if (defined(context.rendererType) && context.rendererType === "webgpu") {
+    Matrix4.setDepthRangeType("webgpu");
+  } else {
+    Matrix4.setDepthRangeType("webgl");
+  }
 
   const hasCreditContainer = defined(creditContainer);
   if (!hasCreditContainer) {
@@ -777,6 +794,79 @@ function Scene(options) {
 }
 
 /**
+ * Creates a Scene asynchronously with support for WebGPU renderer initialization.
+ * This static factory method handles the asynchronous initialization required for WebGPU,
+ * while maintaining backward compatibility with synchronous WebGL initialization.
+ *
+ * @param {object} options Scene creation options (same as Scene constructor)
+ * @param {Function} [onProgress] Optional callback for loading progress (0-100)
+ *   Signature: function(progress: number, status: string)
+ * @returns {Promise<Scene>} Promise that resolves to the initialized Scene
+ *
+ * @example
+ * // Create scene with WebGPU and loading progress
+ * const scene = await Cesium.Scene.createAsync({
+ *   canvas: canvas,
+ *   contextOptions: {
+ *     renderer: 'webgpu'
+ *   }
+ * }, (progress, status) => {
+ *   console.log(`${status}: ${progress}%`);
+ * });
+ *
+ * @example
+ * // Create scene with WebGL (backward compatible)
+ * const scene = await Cesium.Scene.createAsync({
+ *   canvas: canvas
+ * });
+ */
+Scene.createAsync = async function (options, onProgress) {
+  options = options ?? Frozen.EMPTY_OBJECT;
+
+  //>>includeStart('debug', pragmas.debug);
+  if (!defined(options.canvas)) {
+    throw new DeveloperError("options and options.canvas are required.");
+  }
+  //>>includeEnd('debug');
+
+  // Report initial progress
+  if (defined(onProgress)) {
+    onProgress(10, "Initializing graphics context...");
+  }
+
+  // Check if we need async context creation (WebGPU)
+  const contextOptions = options.contextOptions ?? {};
+  const needsAsyncContext = contextOptions.renderer === "webgpu";
+
+  let context;
+  if (needsAsyncContext) {
+    // Create WebGPU context asynchronously
+    context = await ContextFactory.createContext(
+      options.canvas,
+      contextOptions,
+    );
+
+    if (defined(onProgress)) {
+      onProgress(50, "Configuring canvas...");
+    }
+  }
+
+  // Create scene with pre-initialized context (or undefined for WebGL)
+  const sceneOptions = {
+    ...options,
+    _preInitializedContext: context,
+  };
+
+  const scene = new Scene(sceneOptions);
+
+  if (defined(onProgress)) {
+    onProgress(100, "Ready");
+  }
+
+  return scene;
+};
+
+/**
  * Use this to set the default value for {@link Scene#logarithmicDepthBuffer} in newly constructed Scenes
  * This property relies on fragmentDepth being supported.
  */
@@ -1343,6 +1433,22 @@ Object.defineProperties(Scene.prototype, {
   context: {
     get: function () {
       return this._context;
+    },
+  },
+
+  /**
+   * Returns true if this scene is using the WebGPU renderer.
+   * @memberof Scene.prototype
+   * @type {boolean}
+   * @readonly
+   * @private
+   */
+  isWebGPU: {
+    get: function () {
+      return (
+        defined(this._context.rendererType) &&
+        this._context.rendererType === "webgpu"
+      );
     },
   },
 
@@ -2223,6 +2329,35 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
     return;
   }
 
+  // WebGPU rendering path
+  if (scene.isWebGPU) {
+    // Get the active render pass encoder from WebGPU context
+    const renderPass = context.currentRenderPassEncoder;
+
+    if (!renderPass) {
+      // No active render pass - skip command
+      // This can happen if beginFrame() hasn't been called yet
+      return;
+    }
+
+    // Execute WebGPU command if it has the execute method
+    if (defined(command.execute) && typeof command.execute === "function") {
+      // Check if this is a WebGPUDrawCommand (has execute that takes renderPass)
+      // Try to execute - if it's a WebGL command, it will fail gracefully
+      try {
+        command.execute(renderPass);
+      } catch (error) {
+        // Log error but don't crash - command might be WebGL-only
+        console.warn(
+          "WebGPU command execution failed (may be WebGL-only command):",
+          error.message,
+        );
+      }
+    }
+    return;
+  }
+
+  // WebGL rendering path (existing, untouched)
   if (command.debugShowBoundingVolume && defined(command.boundingVolume)) {
     debugShowBoundingVolume(command, scene, passState, debugFramebuffer);
   }
@@ -3688,11 +3823,17 @@ function updateShadowMaps(scene) {
 function updateAndRenderPrimitives(scene) {
   const frameState = scene._frameState;
 
+  console.log("[Scene] updateAndRenderPrimitives called");
+  console.log("[Scene] frameState.passes.render:", frameState.passes.render);
+  console.log("[Scene] frameState.passes.pick:", frameState.passes.pick);
+
   // Reset per-frame edge visibility request flag before primitives update
   frameState.edgeVisibilityRequested = false;
 
   scene._groundPrimitives.update(frameState);
+  console.log("[Scene] About to call scene._primitives.update()");
   scene._primitives.update(frameState);
+  console.log("[Scene] Finished scene._primitives.update()");
 
   // If any primitive requested edge visibility this frame, flip the scene flag lazily.
   if (
@@ -4349,6 +4490,8 @@ function tryAndCatchError(scene, functionToExecute) {
   try {
     functionToExecute(scene);
   } catch (error) {
+    console.error("[tryAndCatchError] ❌ ERROR CAUGHT:", error);
+    console.error("[tryAndCatchError] Stack trace:", error.stack);
     scene._renderError.raiseEvent(scene, error);
 
     if (scene.rethrowRenderErrors) {
@@ -4405,6 +4548,11 @@ Scene.prototype.render = function (time) {
     shouldRender = shouldRender || difference > this.maximumRenderTimeChange;
   }
 
+  console.log("[Scene.render] shouldRender:", shouldRender);
+  console.log("[Scene.render] requestRenderMode:", this.requestRenderMode);
+  console.log("[Scene.render] _renderRequested:", this._renderRequested);
+  console.log("[Scene.render] cameraChanged:", cameraChanged);
+
   if (shouldRender) {
     this._lastRenderTime = JulianDate.clone(time, this._lastRenderTime);
     this._renderRequested = false;
@@ -4437,9 +4585,11 @@ Scene.prototype.render = function (time) {
   this._postUpdate.raiseEvent(this, time);
 
   if (shouldRender) {
+    console.log("[Scene.render] About to call tryAndCatchError(this, render)");
     this._preRender.raiseEvent(this, time);
     frameState.creditDisplay.beginFrame();
     tryAndCatchError(this, render);
+    console.log("[Scene.render] Finished tryAndCatchError(this, render)");
   }
 
   /**

@@ -47,7 +47,7 @@ function View(scene, camera, viewport) {
   }
 
   let oit;
-  if (scene._useOIT && context.depthTexture) {
+  if (scene._useOIT && context.depthTexture && !context.isWebGPU) {
     oit = new OIT(context);
   }
 

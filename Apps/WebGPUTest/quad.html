@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Quad Test - Phase 4.3</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #info h1 {
+        margin: 0 0 10px 0;
+        font-size: 24px;
+        color: #67b7ff;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 10px;
+      }
+
+      .status-success {
+        background: #2d5f2e;
+        color: #5fd35f;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #log {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        max-width: 400px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>
+          ⬜ WebGPU Indexed Quad Test
+          <span class="status status-success" id="status">Ready</span>
+        </h1>
+        <p>Phase 4.3: Testing indexed drawing with 4 vertices and 6 indices</p>
+        <p>
+          <strong>Goal:</strong> Render a simple quad using index buffer
+          (scaling up from triangle)
+        </p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="log">
+      <strong>Test Log:</strong>
+    </div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+      const logEl = document.getElementById("log");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function log(message, type = "info") {
+        const entry = document.createElement("div");
+        entry.style.margin = "5px 0";
+        entry.style.padding = "5px";
+        entry.style.borderLeft =
+          "3px solid " + (type === "success" ? "#5FD35F" : "#67B7FF");
+        entry.style.paddingLeft = "10px";
+        entry.style.color = type === "success" ? "#5FD35F" : "#67B7FF";
+        entry.textContent = message;
+        logEl.appendChild(entry);
+        console.log(`[${type.toUpperCase()}] ${message}`);
+      }
+
+      async function initWebGPU() {
+        try {
+          log("Checking WebGPU...", "info");
+          if (!navigator.gpu) {
+            throw new Error("WebGPU not supported");
+          }
+          log("✓ WebGPU API detected", "success");
+
+          const adapter = await navigator.gpu.requestAdapter({
+            powerPreference: "high-performance",
+          });
+          if (!adapter) throw new Error("No adapter");
+          log("✓ Adapter acquired", "success");
+
+          const device = await adapter.requestDevice();
+          log("✓ Device acquired", "success");
+
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format, alphaMode: "opaque" });
+          log(`✓ Canvas configured (${format})`, "success");
+
+          return { device, context, format };
+        } catch (error) {
+          log(`✗ Error: ${error.message}`, "error");
+          throw error;
+        }
+      }
+
+      async function createQuad(device, format) {
+        log("Creating quad geometry...", "info");
+
+        // Quad: 4 vertices (bottom-left, bottom-right, top-right, top-left)
+        // Using indexed drawing (6 indices for 2 triangles)
+        const vertices = new Float32Array([
+          // x,    y,     r,    g,    b
+          -0.5,
+          -0.5,
+          1.0,
+          0.0,
+          0.0, // Bottom-left (red)
+          0.5,
+          -0.5,
+          0.0,
+          1.0,
+          0.0, // Bottom-right (green)
+          0.5,
+          0.5,
+          0.0,
+          0.0,
+          1.0, // Top-right (blue)
+          -0.5,
+          0.5,
+          1.0,
+          1.0,
+          0.0, // Top-left (yellow)
+        ]);
+
+        // Indices for 2 triangles (CCW winding)
+        const indices = new Uint16Array([
+          0,
+          1,
+          2, // First triangle
+          0,
+          2,
+          3, // Second triangle
+        ]);
+
+        log(`Quad: 4 vertices, 6 indices (2 triangles)`, "info");
+
+        // Create vertex buffer
+        const vertexBuffer = device.createBuffer({
+          size: vertices.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true,
+        });
+        new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+        vertexBuffer.unmap();
+        log("✓ Vertex buffer created", "success");
+
+        // Create index buffer
+        const indexBuffer = device.createBuffer({
+          size: indices.byteLength,
+          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true,
+        });
+        new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+        indexBuffer.unmap();
+        log("✓ Index buffer created", "success");
+
+        // Simple shader (same as triangle)
+        const shaderCode = `
+        struct VertexInput {
+          @location(0) position: vec2<f32>,
+          @location(1) color: vec3<f32>,
+        }
+
+        struct VertexOutput {
+          @builtin(position) position: vec4<f32>,
+          @location(0) color: vec3<f32>,
+        }
+
+        @vertex
+        fn vertexMain(input: VertexInput) -> VertexOutput {
+          var output: VertexOutput;
+          output.position = vec4<f32>(input.position, 0.0, 1.0);
+          output.color = input.color;
+          return output;
+        }
+
+        @fragment
+        fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+          return vec4<f32>(input.color, 1.0);
+        }
+      `;
+
+        const shaderModule = device.createShaderModule({ code: shaderCode });
+        log("✓ Shader compiled", "success");
+
+        // Create pipeline
+        const pipeline = device.createRenderPipeline({
+          layout: "auto",
+          vertex: {
+            module: shaderModule,
+            entryPoint: "vertexMain",
+            buffers: [
+              {
+                arrayStride: 5 * 4,
+                attributes: [
+                  { shaderLocation: 0, offset: 0, format: "float32x2" },
+                  { shaderLocation: 1, offset: 2 * 4, format: "float32x3" },
+                ],
+              },
+            ],
+          },
+          fragment: {
+            module: shaderModule,
+            entryPoint: "fragmentMain",
+            targets: [{ format }],
+          },
+          primitive: {
+            topology: "triangle-list",
+            cullMode: "none",
+          },
+        });
+        log("✓ Pipeline created", "success");
+
+        return {
+          vertexBuffer,
+          indexBuffer,
+          pipeline,
+          indexCount: indices.length,
+        };
+      }
+
+      function render(
+        device,
+        context,
+        pipeline,
+        vertexBuffer,
+        indexBuffer,
+        indexCount,
+      ) {
+        const textureView = context.getCurrentTexture().createView();
+        const commandEncoder = device.createCommandEncoder();
+
+        const renderPass = commandEncoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: textureView,
+              clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+              loadOp: "clear",
+              storeOp: "store",
+            },
+          ],
+        });
+
+        renderPass.setPipeline(pipeline);
+        renderPass.setVertexBuffer(0, vertexBuffer);
+        renderPass.setIndexBuffer(indexBuffer, "uint16");
+
+        // Draw indexed (6 indices, 1 instance)
+        renderPass.drawIndexed(indexCount, 1, 0, 0, 0);
+        renderPass.end();
+
+        device.queue.submit([commandEncoder.finish()]);
+      }
+
+      async function main() {
+        try {
+          log("=== Starting Quad Test ===", "info");
+
+          const { device, context, format } = await initWebGPU();
+          const { vertexBuffer, indexBuffer, pipeline, indexCount } =
+            await createQuad(device, format);
+
+          log("Rendering quad...", "info");
+          render(
+            device,
+            context,
+            pipeline,
+            vertexBuffer,
+            indexBuffer,
+            indexCount,
+          );
+          log("✓ Quad rendered!", "success");
+          log("=== Test Complete ===", "success");
+
+          // Animate
+          let frame = 0;
+          function animate() {
+            render(
+              device,
+              context,
+              pipeline,
+              vertexBuffer,
+              indexBuffer,
+              indexCount,
+            );
+            frame++;
+            if (frame % 120 === 0) {
+              log(`Frame ${frame}`, "info");
+            }
+            requestAnimationFrame(animate);
+          }
+
+          log("Starting animation...", "info");
+          animate();
+        } catch (error) {
+          log(`✗ Fatal error: ${error.message}`, "error");
+          console.error(error);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

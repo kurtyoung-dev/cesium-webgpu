@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Matrix Order Test</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #controls {
+        position: absolute;
+        top: 120px;
+        left: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        min-width: 300px;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px;
+        margin: 5px 0;
+        background: #4a90e2;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      button:hover {
+        background: #67b7ff;
+      }
+
+      button.active {
+        background: #2d5f2e;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>🔍 Matrix Order Test - ROW vs COLUMN Major</h1>
+        <p>Testing if the issue is matrix storage order</p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="controls">
+      <h3 style="color: #67b7ff; margin-top: 0">Matrix Storage:</h3>
+      <button id="btnRow">ROW-MAJOR (current approach)</button>
+      <button id="btnCol">COLUMN-MAJOR (transposed)</button>
+      <p style="color: #aaa; font-size: 12px; margin-top: 15px">
+        WGSL uses COLUMN-MAJOR storage by default!
+      </p>
+    </div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      async function main() {
+        try {
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+
+          // 3D cube
+          const vertices = new Float32Array([
+            -0.5, -0.5, 0.5, 1, 0, 0, 0.5, -0.5, 0.5, 1, 0, 0, 0.5, 0.5, 0.5, 1,
+            0, 0, -0.5, 0.5, 0.5, 1, 0, 0,
+          ]);
+
+          const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+
+          const uniformBuffer = device.createBuffer({
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+          });
+
+          // Matrix functions
+          function normalize(v) {
+            const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return [v[0] / len, v[1] / len, v[2] / len];
+          }
+
+          function subtract(a, b) {
+            return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+          }
+
+          function cross(a, b) {
+            return [
+              a[1] * b[2] - a[2] * b[1],
+              a[2] * b[0] - a[0] * b[2],
+              a[0] * b[1] - a[1] * b[0],
+            ];
+          }
+
+          function dot(a, b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+          }
+
+          // ROW-MAJOR lookAt
+          function createLookAtRowMajor(eye, target, up) {
+            const zAxis = normalize(subtract(eye, target));
+            const xAxis = normalize(cross(up, zAxis));
+            const yAxis = cross(zAxis, xAxis);
+
+            return new Float32Array([
+              xAxis[0],
+              yAxis[0],
+              zAxis[0],
+              0,
+              xAxis[1],
+              yAxis[1],
+              zAxis[1],
+              0,
+              xAxis[2],
+              yAxis[2],
+              zAxis[2],
+              0,
+              -dot(xAxis, eye),
+              -dot(yAxis, eye),
+              -dot(zAxis, eye),
+              1,
+            ]);
+          }
+
+          // COLUMN-MAJOR lookAt (transposed)
+          function createLookAtColumnMajor(eye, target, up) {
+            const zAxis = normalize(subtract(eye, target));
+            const xAxis = normalize(cross(up, zAxis));
+            const yAxis = cross(zAxis, xAxis);
+
+            return new Float32Array([
+              xAxis[0],
+              xAxis[1],
+              xAxis[2],
+              -dot(xAxis, eye),
+              yAxis[0],
+              yAxis[1],
+              yAxis[2],
+              -dot(yAxis, eye),
+              zAxis[0],
+              zAxis[1],
+              zAxis[2],
+              -dot(zAxis, eye),
+              0,
+              0,
+              0,
+              1,
+            ]);
+          }
+
+          // ROW-MAJOR perspective
+          function createPerspectiveRowMajor(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            const rangeInv = 1.0 / (near - far);
+            return new Float32Array([
+              f / aspect,
+              0,
+              0,
+              0,
+              0,
+              f,
+              0,
+              0,
+              0,
+              0,
+              far * rangeInv,
+              -1,
+              0,
+              0,
+              near * far * rangeInv,
+              0,
+            ]);
+          }
+
+          // COLUMN-MAJOR perspective (transposed)
+          function createPerspectiveColumnMajor(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            const rangeInv = 1.0 / (near - far);
+            return new Float32Array([
+              f / aspect,
+              0,
+              0,
+              0,
+              0,
+              f,
+              0,
+              0,
+              0,
+              0,
+              far * rangeInv,
+              near * far * rangeInv,
+              0,
+              0,
+              -1,
+              0,
+            ]);
+          }
+
+          function multiply(a, b) {
+            const result = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+              for (let j = 0; j < 4; j++) {
+                result[i * 4 + j] =
+                  a[i * 4 + 0] * b[0 * 4 + j] +
+                  a[i * 4 + 1] * b[1 * 4 + j] +
+                  a[i * 4 + 2] * b[2 * 4 + j] +
+                  a[i * 4 + 3] * b[3 * 4 + j];
+              }
+            }
+            return result;
+          }
+
+          const aspect = canvas.width / canvas.height;
+          let currentMatrix;
+
+          // Row-major (original approach)
+          const viewRowMajor = createLookAtRowMajor(
+            [0, 0, 5],
+            [0, 0, 0],
+            [0, 1, 0],
+          );
+          const projRowMajor = createPerspectiveRowMajor(
+            Math.PI / 4,
+            aspect,
+            0.1,
+            100.0,
+          );
+          const mvpRowMajor = multiply(projRowMajor, viewRowMajor);
+
+          // Column-major (transposed)
+          const viewColMajor = createLookAtColumnMajor(
+            [0, 0, 5],
+            [0, 0, 0],
+            [0, 1, 0],
+          );
+          const projColMajor = createPerspectiveColumnMajor(
+            Math.PI / 4,
+            aspect,
+            0.1,
+            100.0,
+          );
+          const mvpColMajor = multiply(projColMajor, viewColMajor);
+
+          currentMatrix = mvpRowMajor;
+
+          document.getElementById("btnRow").addEventListener("click", () => {
+            currentMatrix = mvpRowMajor;
+            console.log("Using ROW-MAJOR matrices");
+            document.getElementById("btnRow").classList.add("active");
+            document.getElementById("btnCol").classList.remove("active");
+          });
+
+          document.getElementById("btnCol").addEventListener("click", () => {
+            currentMatrix = mvpColMajor;
+            console.log("Using COLUMN-MAJOR matrices");
+            document.getElementById("btnCol").classList.add("active");
+            document.getElementById("btnRow").classList.remove("active");
+          });
+
+          document.getElementById("btnRow").classList.add("active");
+          console.log("Testing matrix storage order...");
+          console.log("If COLUMN-MAJOR button shows the cube, that's the fix!");
+
+          function render() {
+            device.queue.writeBuffer(uniformBuffer, 0, currentMatrix);
+
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(6);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            requestAnimationFrame(render);
+          }
+
+          requestAnimationFrame(render);
+        } catch (error) {
+          console.error("Error:", error);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

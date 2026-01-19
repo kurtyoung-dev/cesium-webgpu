@@ -16,6 +16,7 @@ export default [
       "index.html",
       "index.release.html",
       "Apps/HelloWorld.html",
+      "Apps/WebGPUTest/**/*",
       "Apps/Sandcastle/jsHintOptions.js",
       "Apps/Sandcastle/gallery/gallery-index.js",
       "Apps/Sandcastle2/",

@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <title>WebGPU Scene Test</title>
+    <script src="../../Build/Cesium/Cesium.js"></script>
+    <style>
+      @import url(../../Build/Cesium/Widgets/widgets.css);
+
+      html,
+      body,
+      #cesiumContainer {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family: sans-serif;
+      }
+
+      #controls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px 20px;
+        border-radius: 6px;
+        z-index: 1000;
+        color: white;
+        min-width: 300px;
+      }
+
+      #controls h3 {
+        margin: 0 0 15px 0;
+        font-size: 16px;
+        color: #67b7ff;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+
+      button {
+        flex: 1;
+        padding: 10px 15px;
+        background: #4a90e2;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+      }
+
+      button:hover {
+        background: #357abd;
+      }
+
+      button:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+
+      #status {
+        margin-top: 15px;
+        padding: 10px;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 4px;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .status-success {
+        color: #5fd35f;
+      }
+
+      .status-error {
+        color: #ff6b6b;
+      }
+
+      .status-info {
+        color: #67b7ff;
+      }
+
+      .status-warning {
+        color: #ffa500;
+      }
+
+      #progress-container {
+        margin-top: 10px;
+        display: none;
+      }
+
+      #progress-bar-bg {
+        width: 100%;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 5px;
+      }
+
+      #progress-bar {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, #4a90e2, #67b7ff);
+        transition: width 0.3s ease;
+      }
+
+      #progress-text {
+        font-size: 12px;
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+
+    <div id="controls">
+      <h3>🧪 Scene.createAsync() Test</h3>
+
+      <div class="button-group">
+        <button id="testWebGL">Test WebGL</button>
+        <button id="testWebGPU">Test WebGPU</button>
+      </div>
+
+      <div class="button-group">
+        <button id="testSync">Test Sync (Legacy)</button>
+        <button id="clearScene">Clear Scene</button>
+      </div>
+
+      <div id="progress-container">
+        <div id="progress-bar-bg">
+          <div id="progress-bar"></div>
+        </div>
+        <div id="progress-text"></div>
+      </div>
+
+      <div id="status">
+        <div class="status-info">Ready to test Scene.createAsync()</div>
+        <div style="margin-top: 10px; font-size: 11px; color: #888">
+          Phase 3.1: Async Scene creation with WebGPU support
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      let currentScene = null;
+      const canvas = document.createElement("canvas");
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
+      canvas.style.display = "block";
+      document.getElementById("cesiumContainer").appendChild(canvas);
+
+      function log(message, type = "info") {
+        const status = document.getElementById("status");
+        const timestamp = new Date().toLocaleTimeString();
+        const className = `status-${type}`;
+        status.innerHTML =
+          `<div class="${className}">[${timestamp}] ${message}</div>` +
+          status.innerHTML;
+        console.log(`[${type.toUpperCase()}] ${message}`);
+      }
+
+      function showProgress(show) {
+        document.getElementById("progress-container").style.display = show
+          ? "block"
+          : "none";
+        if (!show) {
+          document.getElementById("progress-bar").style.width = "0%";
+          document.getElementById("progress-text").textContent = "";
+        }
+      }
+
+      function updateProgress(progress, status) {
+        document.getElementById("progress-bar").style.width = `${progress}%`;
+        document.getElementById("progress-text").textContent =
+          `${Math.round(progress)}% - ${status}`;
+      }
+
+      function clearScene() {
+        if (currentScene) {
+          currentScene.destroy();
+          currentScene = null;
+          log("Scene destroyed", "info");
+        }
+      }
+
+      // Test WebGL (async but should be fast)
+      document
+        .getElementById("testWebGL")
+        .addEventListener("click", async () => {
+          try {
+            clearScene();
+            log("Creating Scene with WebGL (async)...", "info");
+            showProgress(true);
+
+            const startTime = performance.now();
+
+            const scene = await Cesium.Scene.createAsync(
+              {
+                canvas: canvas,
+                contextOptions: {
+                  renderer: "webgl",
+                },
+              },
+              updateProgress,
+            );
+
+            const endTime = performance.now();
+            const duration = (endTime - startTime).toFixed(2);
+
+            currentScene = scene;
+            showProgress(false);
+
+            log(
+              `✅ WebGL Scene created successfully in ${duration}ms`,
+              "success",
+            );
+            log(`   Renderer: ${scene.context.constructor.name}`, "info");
+            log(
+              `   Drawing buffer: ${scene.drawingBufferWidth}x${scene.drawingBufferHeight}`,
+              "info",
+            );
+          } catch (error) {
+            showProgress(false);
+            log(`❌ Error creating WebGL scene: ${error.message}`, "error");
+            console.error(error);
+          }
+        });
+
+      // Test WebGPU (async with actual initialization)
+      document
+        .getElementById("testWebGPU")
+        .addEventListener("click", async () => {
+          try {
+            clearScene();
+            log("Creating Scene with WebGPU (async)...", "info");
+            showProgress(true);
+
+            const startTime = performance.now();
+
+            const scene = await Cesium.Scene.createAsync(
+              {
+                canvas: canvas,
+                contextOptions: {
+                  renderer: "webgpu",
+                },
+              },
+              updateProgress,
+            );
+
+            const endTime = performance.now();
+            const duration = (endTime - startTime).toFixed(2);
+
+            currentScene = scene;
+            showProgress(false);
+
+            log(
+              `✅ WebGPU Scene created successfully in ${duration}ms`,
+              "success",
+            );
+            log(`   Renderer: ${scene.context.constructor.name}`, "info");
+            log(
+              `   Drawing buffer: ${scene.drawingBufferWidth}x${scene.drawingBufferHeight}`,
+              "info",
+            );
+          } catch (error) {
+            showProgress(false);
+            log(
+              `❌ WebGPU not available or error: ${error.message}`,
+              "warning",
+            );
+            log(
+              "   This is expected if WebGPU is not supported in your browser",
+              "info",
+            );
+            console.error(error);
+          }
+        });
+
+      // Test synchronous (legacy)
+      document.getElementById("testSync").addEventListener("click", () => {
+        try {
+          clearScene();
+          log("Creating Scene synchronously (legacy WebGL)...", "info");
+
+          const startTime = performance.now();
+
+          const scene = new Cesium.Scene({
+            canvas: canvas,
+          });
+
+          const endTime = performance.now();
+          const duration = (endTime - startTime).toFixed(2);
+
+          currentScene = scene;
+
+          log(`✅ Synchronous Scene created in ${duration}ms`, "success");
+          log(`   Renderer: ${scene.context.constructor.name}`, "info");
+          log(`   This is the traditional, backward-compatible path`, "info");
+        } catch (error) {
+          log(`❌ Error creating synchronous scene: ${error.message}`, "error");
+          console.error(error);
+        }
+      });
+
+      // Clear scene
+      document.getElementById("clearScene").addEventListener("click", () => {
+        clearScene();
+      });
+
+      // Initial log
+      log("Scene.createAsync() test page loaded", "success");
+      log("Click buttons above to test different renderer modes", "info");
+
+      // Check WebGPU availability
+      if (navigator.gpu) {
+        log("WebGPU API detected in browser ✓", "success");
+      } else {
+        log("WebGPU API not available in this browser", "warning");
+        log("WebGL fallback will be used automatically", "info");
+      }
+    </script>
+  </body>
+</html>

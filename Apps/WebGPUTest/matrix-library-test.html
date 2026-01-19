@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Matrix Library Test</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+    </style>
+    <!-- Use wgpu-matrix library (WebGPU-specific) -->
+    <script src="https://wgpu-matrix.org/dist/2.x/wgpu-matrix.js"></script>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>🧊 Matrix Library Test - Using wgpu-matrix</h1>
+        <p>Testing with a proven WebGPU matrix library</p>
+        <p>Cube at origin, Camera at (0, 0, 5)</p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+      const mat4 = wgpuMatrix.mat4;
+      const vec3 = wgpuMatrix.vec3;
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      async function main() {
+        try {
+          console.log("🚀 Testing with wgpu-matrix library...");
+
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+
+          console.log("✓ WebGPU initialized");
+
+          // 3D cube vertices
+          const vertices = new Float32Array([
+            // Front face (red)
+            -0.5, -0.5, 0.5, 1, 0, 0, 0.5, -0.5, 0.5, 1, 0, 0, 0.5, 0.5, 0.5, 1,
+            0, 0, -0.5, 0.5, 0.5, 1, 0, 0,
+          ]);
+
+          const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+
+          const uniformBuffer = device.createBuffer({
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          console.log("✓ Buffers created");
+
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+          });
+
+          console.log("✓ Pipeline created");
+
+          // Use wgpu-matrix to create matrices
+          console.log("✓ Creating matrices with wgpu-matrix...");
+          const aspect = canvas.width / canvas.height;
+
+          // Create projection matrix (wgpu-matrix handles WebGPU's 0-1 depth range)
+          const projectionMatrix = mat4.perspective(
+            Math.PI / 4, // 45 degree FOV
+            aspect,
+            0.1, // near
+            100.0, // far
+          );
+
+          // Create view matrix
+          const eye = [0, 0, 5];
+          const target = [0, 0, 0];
+          const up = [0, 1, 0];
+          const viewMatrix = mat4.lookAt(eye, target, up);
+
+          // Combine into MVP
+          const mvpMatrix = mat4.multiply(projectionMatrix, viewMatrix);
+
+          console.log("✓ Matrices created with wgpu-matrix");
+          console.log("MVP Matrix:", mvpMatrix);
+          console.log("✓ Rendering...");
+
+          function render() {
+            device.queue.writeBuffer(uniformBuffer, 0, mvpMatrix);
+
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(6);
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            requestAnimationFrame(render);
+          }
+
+          requestAnimationFrame(render);
+          console.log("✓ If you see a RED SQUARE, wgpu-matrix works!");
+          console.log("This would confirm our matrix creation is the problem.");
+        } catch (error) {
+          console.error("✗ Error:", error);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

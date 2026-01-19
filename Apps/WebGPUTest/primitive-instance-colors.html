@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebGPU Per-Instance Colors Test</title>
+    <script type="module">
+      import * as Cesium from "../../Build/CesiumUnminified/index.js";
+
+      window.CESIUM_BASE_URL = "../../Build/CesiumUnminified";
+
+      async function main() {
+        const statusDiv = document.getElementById("status");
+        const canvasDiv = document.getElementById("cesiumContainer");
+
+        try {
+          statusDiv.innerHTML = "⏳ Initializing WebGPU Scene...";
+
+          // Create scene with WebGPU renderer
+          const scene = await Cesium.Scene.createAsync({
+            canvas: document.getElementById("renderCanvas"),
+            contextOptions: {
+              renderer: "webgpu",
+            },
+          });
+
+          statusDiv.innerHTML = "✅ WebGPU Scene initialized<br>";
+
+          // Configure camera
+          const camera = scene.camera;
+          camera.position = new Cesium.Cartesian3(0, 0, 10000000);
+          camera.direction = new Cesium.Cartesian3(0, 0, -1);
+          camera.up = new Cesium.Cartesian3(0, 1, 0);
+          camera.frustum.fov = Cesium.Math.toRadians(60);
+          camera.frustum.near = 1.0;
+          camera.frustum.far = 50000000.0;
+
+          statusDiv.innerHTML += "✅ Camera configured<br>";
+
+          // Create box geometry instances with different colors
+          const instances = [
+            // Red box
+            new Cesium.GeometryInstance({
+              geometry: Cesium.BoxGeometry.fromDimensions({
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                dimensions: new Cesium.Cartesian3(
+                  1000000.0,
+                  1000000.0,
+                  1000000.0,
+                ),
+              }),
+              modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                Cesium.Transforms.eastNorthUpToFixedFrame(
+                  Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 0),
+                ),
+                new Cesium.Cartesian3(0, 0, 500000),
+                new Cesium.Matrix4(),
+              ),
+              id: "redBox",
+              attributes: {
+                color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                  Cesium.Color.RED,
+                ),
+              },
+            }),
+
+            // Green box
+            new Cesium.GeometryInstance({
+              geometry: Cesium.BoxGeometry.fromDimensions({
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                dimensions: new Cesium.Cartesian3(
+                  1000000.0,
+                  1000000.0,
+                  1000000.0,
+                ),
+              }),
+              modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                Cesium.Transforms.eastNorthUpToFixedFrame(
+                  Cesium.Cartesian3.fromDegrees(-73.0, 40.0, 0),
+                ),
+                new Cesium.Cartesian3(0, 0, 500000),
+                new Cesium.Matrix4(),
+              ),
+              id: "greenBox",
+              attributes: {
+                color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                  Cesium.Color.GREEN,
+                ),
+              },
+            }),
+
+            // Blue box
+            new Cesium.GeometryInstance({
+              geometry: Cesium.BoxGeometry.fromDimensions({
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                dimensions: new Cesium.Cartesian3(
+                  1000000.0,
+                  1000000.0,
+                  1000000.0,
+                ),
+              }),
+              modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                Cesium.Transforms.eastNorthUpToFixedFrame(
+                  Cesium.Cartesian3.fromDegrees(-71.0, 40.0, 0),
+                ),
+                new Cesium.Cartesian3(0, 0, 500000),
+                new Cesium.Matrix4(),
+              ),
+              id: "blueBox",
+              attributes: {
+                color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                  Cesium.Color.BLUE,
+                ),
+              },
+            }),
+
+            // Yellow box
+            new Cesium.GeometryInstance({
+              geometry: Cesium.BoxGeometry.fromDimensions({
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                dimensions: new Cesium.Cartesian3(
+                  1000000.0,
+                  1000000.0,
+                  1000000.0,
+                ),
+              }),
+              modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                Cesium.Transforms.eastNorthUpToFixedFrame(
+                  Cesium.Cartesian3.fromDegrees(-69.0, 40.0, 0),
+                ),
+                new Cesium.Cartesian3(0, 0, 500000),
+                new Cesium.Matrix4(),
+              ),
+              id: "yellowBox",
+              attributes: {
+                color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                  Cesium.Color.YELLOW,
+                ),
+              },
+            }),
+
+            // Magenta box (semi-transparent)
+            new Cesium.GeometryInstance({
+              geometry: Cesium.BoxGeometry.fromDimensions({
+                vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                dimensions: new Cesium.Cartesian3(
+                  1000000.0,
+                  1000000.0,
+                  1000000.0,
+                ),
+              }),
+              modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                Cesium.Transforms.eastNorthUpToFixedFrame(
+                  Cesium.Cartesian3.fromDegrees(-67.0, 40.0, 0),
+                ),
+                new Cesium.Cartesian3(0, 0, 500000),
+                new Cesium.Matrix4(),
+              ),
+              id: "magentaBox",
+              attributes: {
+                color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                  new Cesium.Color(1.0, 0.0, 1.0, 0.8),
+                ),
+              },
+            }),
+          ];
+
+          statusDiv.innerHTML +=
+            "✅ Created 5 box instances with different colors<br>";
+
+          // Create primitive with per-instance color appearance
+          const primitive = new Cesium.Primitive({
+            geometryInstances: instances,
+            appearance: new Cesium.PerInstanceColorAppearance({
+              closed: true,
+              translucent: false,
+            }),
+            asynchronous: false,
+          });
+
+          scene.primitives.add(primitive);
+          statusDiv.innerHTML += "✅ Primitive added to scene<br>";
+
+          // Position camera to view all boxes
+          camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(-71.0, 40.0, 3000000),
+            orientation: {
+              heading: Cesium.Math.toRadians(0),
+              pitch: Cesium.Math.toRadians(-45),
+              roll: 0.0,
+            },
+          });
+
+          statusDiv.innerHTML += "✅ Camera positioned<br>";
+
+          // Render loop
+          let frameCount = 0;
+          const startTime = Date.now();
+
+          function render() {
+            scene.render(Cesium.JulianDate.now());
+
+            frameCount++;
+            if (frameCount % 60 === 0) {
+              const elapsed = (Date.now() - startTime) / 1000;
+              const fps = (frameCount / elapsed).toFixed(1);
+              document.getElementById("fps").textContent = `FPS: ${fps}`;
+            }
+
+            requestAnimationFrame(render);
+          }
+
+          statusDiv.innerHTML += "✅ Starting render loop...<br><br>";
+          statusDiv.innerHTML += "<strong>Expected Result:</strong><br>";
+          statusDiv.innerHTML += "• 5 boxes arranged horizontally<br>";
+          statusDiv.innerHTML +=
+            "• Colors: Red, Green, Blue, Yellow, Magenta<br>";
+          statusDiv.innerHTML +=
+            "• Each box should have its own color (not cyan)<br><br>";
+          statusDiv.innerHTML += '<div id="fps">FPS: 0</div>';
+
+          render();
+        } catch (error) {
+          console.error("Error:", error);
+          statusDiv.innerHTML = `❌ Error: ${error.message}<br><pre>${error.stack}</pre>`;
+        }
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", main);
+      } else {
+        main();
+      }
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: #1a1a1a;
+        color: #fff;
+        overflow: hidden;
+      }
+      #cesiumContainer {
+        width: 100vw;
+        height: 100vh;
+        position: relative;
+      }
+      #renderCanvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #status {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 15px;
+        border-radius: 8px;
+        font-size: 14px;
+        max-width: 500px;
+        z-index: 1000;
+        line-height: 1.6;
+      }
+      #fps {
+        margin-top: 10px;
+        padding: 8px;
+        background: rgba(0, 150, 255, 0.2);
+        border-radius: 4px;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer">
+      <canvas id="renderCanvas"></canvas>
+      <div id="status">Initializing...</div>
+    </div>
+  </body>
+</html>

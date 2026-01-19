@@ -1,0 +1,99 @@
+# Cline Rules for CesiumJS WebGPU Project
+
+## Core Principles
+
+### 1. **Preserve Existing Functionality**
+- **NEVER** break existing WebGL renderer functionality
+- All existing APIs must continue to work as expected
+- Maintain backward compatibility with existing CesiumJS applications
+- Ensure all existing tests continue to pass
+
+### 2. **Separation of Concerns**
+- All new WebGPU functionality must be **separate** from WebGL implementation
+- WebGPU renderer must be a **PURE WebGPU** implementation - no WebGL code mixing
+- WebGPU renderer must be optional and configurable via startup parameters
+- Use feature detection to gracefully fallback to WebGL when WebGPU is not available
+- When WebGPU is selected, show loading state during async initialization
+
+### 3. **Configuration-Based Approach**
+- New renderer must be selectable via initialization parameters (e.g., `renderer: 'webgpu'` or `renderer: 'webgl'`)
+- Default behavior should maintain current WebGL renderer unless explicitly specified
+- Example: `new Cesium.Viewer('cesiumContainer', { renderer: 'webgpu' });`
+
+## Project-Specific Guidelines
+
+### Architecture
+- Create parallel rendering paths for WebGL and WebGPU
+- Use abstract interfaces/base classes where possible to share common logic
+- Maintain renderer abstraction layer to switch between implementations
+
+### Performance
+- Identify performance-critical code paths for WebAssembly conversion
+- Profile before and after optimizations
+- Document performance improvements with benchmarks
+
+### Testing
+- All new WebGPU features require corresponding tests
+- Test both WebGPU and WebGL paths
+- Include feature detection and fallback tests
+- Run existing test suite to verify no regressions
+
+### Code Organization
+- Place WebGPU-specific code in dedicated modules/directories
+- Use clear naming conventions (e.g., `*WebGPU.js`, `*WebGL.js`)
+- Share common utilities when possible
+
+### Documentation
+- Document all new configuration options
+- Provide migration guide for users wanting to adopt WebGPU
+- Include WebGPU feature support matrix
+- Document WebAssembly optimizations
+
+## Development Workflow
+
+1. **Before Starting Any Task**
+   - Review these cline-rules
+   - Check that the approach maintains backward compatibility
+   - Verify new features are optional and configurable
+
+2. **During Development**
+   - Write tests alongside implementation
+   - Run existing tests frequently to catch regressions early
+   - Update documentation as you go
+
+3. **Before Completing Any Task**
+   - Verify all tests pass (both new and existing)
+   - Ensure WebGL renderer still works
+   - Confirm new features are opt-in only
+
+## Preferred Tech Stack
+
+### Technology Preferences
+- **WebGPU**: Always prefer WebGPU over WebGL for new rendering features when possible
+- **WebAssembly**: Use WebAssembly for performance-critical code paths (terrain processing, matrix operations, culling algorithms, etc.)
+  - Use **threading in WebAssembly** when it provides measurable performance benefits
+  - Profile before and after to validate performance gains
+- **TypeScript**: Prefer TypeScript over JavaScript for new code to improve type safety and maintainability
+- **RxJS**: Use RxJS for reactive programming patterns, event handling, and asynchronous operations where appropriate
+  - **Prefer RxJS over async/await**: For both production code and test pages, prefer RxJS observables over async/await promises
+  - Async/await tends to be more error-prone with complex asynchronous flows
+  - Only use async/await if performance is a critical concern and has been measured
+  - Use RxJS operators for composing asynchronous operations (e.g., `from()`, `switchMap()`, `mergeMap()`, `catchError()`)
+- **Service Workers**: Utilize service workers for:
+  - Asset caching and offline capabilities
+  - Background processing of large datasets
+  - Only implement if performance benefits are significant and measurable
+
+### Migration Strategy
+- Gradually migrate existing JavaScript code to TypeScript
+- Identify and convert performance bottlenecks to WebAssembly
+- Use RxJS for new event-driven features and data streams
+- Implement WebAssembly threading for parallel processing opportunities
+- Consider service workers for expensive operations that can be offloaded
+- Always profile and benchmark before adding complexity
+- Ensure all tech stack choices maintain backward compatibility
+
+## Notes
+- This file will be updated as the project evolves
+- Consult team before adding major architectural rules
+- Keep rules focused and actionable

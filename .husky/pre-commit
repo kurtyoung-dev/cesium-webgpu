@@ -1,1 +1,4 @@
-npx lint-staged
+#!/usr/bin/env sh
+
+# Run lint-staged directly from node_modules/.bin
+node_modules/.bin/lint-staged

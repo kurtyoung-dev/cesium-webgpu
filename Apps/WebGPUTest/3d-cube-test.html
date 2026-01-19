@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU 3D Cube Test</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: white;
+      }
+
+      #container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #info {
+        padding: 20px;
+        background: rgba(42, 42, 42, 0.95);
+        border-bottom: 2px solid #4a90e2;
+      }
+
+      #canvas {
+        flex: 1;
+        display: block;
+      }
+
+      #log {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: rgba(42, 42, 42, 0.95);
+        padding: 15px;
+        border-radius: 6px;
+        max-width: 400px;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <h1>🧊 3D Cube Test - World Space</h1>
+        <p>Testing 3D cube in world space with proper camera</p>
+        <p>Cube at (0,0,0), Camera at (0,0,5) looking at origin</p>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="log">
+      <strong>Test Log:</strong>
+    </div>
+
+    <script type="module">
+      const canvas = document.getElementById("canvas");
+      const logEl = document.getElementById("log");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function log(msg) {
+        const entry = document.createElement("div");
+        entry.style.margin = "5px 0";
+        entry.style.color = msg.startsWith("✓") ? "#5FD35F" : "#67B7FF";
+        entry.textContent = msg;
+        logEl.appendChild(entry);
+        console.log(msg);
+      }
+
+      async function main() {
+        try {
+          log("🚀 Testing 3D cube in world space...");
+
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+          const context = canvas.getContext("webgpu");
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          context.configure({ device, format });
+          log("✓ WebGPU initialized");
+
+          // 3D cube vertices in WORLD SPACE (not clip space)
+          // Cube centered at origin, 1 unit size
+          const vertices = new Float32Array([
+            // Front face (red) - Z = +0.5
+            -0.5, -0.5, 0.5, 1, 0, 0, 0.5, -0.5, 0.5, 1, 0, 0, 0.5, 0.5, 0.5, 1,
+            0, 0, -0.5, 0.5, 0.5, 1, 0, 0,
+
+            // Back face (cyan) - Z = -0.5
+            -0.5, -0.5, -0.5, 0, 1, 1, 0.5, -0.5, -0.5, 0, 1, 1, 0.5, 0.5, -0.5,
+            0, 1, 1, -0.5, 0.5, -0.5, 0, 1, 1,
+          ]);
+
+          const indices = new Uint16Array([
+            // Front and back faces only for simplicity
+            0,
+            1,
+            2,
+            0,
+            2,
+            3, // Front
+            4,
+            6,
+            5,
+            4,
+            7,
+            6, // Back
+          ]);
+
+          log("✓ Created 3D cube (world space, size=1, center=origin)");
+
+          const vertexBuffer = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true,
+          });
+          new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+          vertexBuffer.unmap();
+
+          const indexBuffer = device.createBuffer({
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX,
+            mappedAtCreation: true,
+          });
+          new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+          indexBuffer.unmap();
+
+          const uniformBuffer = device.createBuffer({
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          log("✓ Buffers created");
+
+          const shaderCode = `
+          struct Uniforms {
+            mvpMatrix: mat4x4<f32>,
+          }
+          
+          @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+          struct VertexInput {
+            @location(0) position: vec3<f32>,
+            @location(1) color: vec3<f32>,
+          }
+
+          struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec3<f32>,
+          }
+
+          @vertex
+          fn vertexMain(input: VertexInput) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+            output.color = input.color;
+            return output;
+          }
+
+          @fragment
+          fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+            return vec4<f32>(input.color, 1.0);
+          }
+        `;
+
+          const shaderModule = device.createShaderModule({ code: shaderCode });
+
+          const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 3 * 4, format: "float32x3" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+          });
+
+          log("✓ Pipeline created");
+
+          // Matrix functions
+          function normalize(v) {
+            const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return [v[0] / len, v[1] / len, v[2] / len];
+          }
+
+          function subtract(a, b) {
+            return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+          }
+
+          function cross(a, b) {
+            return [
+              a[1] * b[2] - a[2] * b[1],
+              a[2] * b[0] - a[0] * b[2],
+              a[0] * b[1] - a[1] * b[0],
+            ];
+          }
+
+          function dot(a, b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+          }
+
+          function createLookAt(eye, target, up) {
+            const zAxis = normalize(subtract(eye, target));
+            const xAxis = normalize(cross(up, zAxis));
+            const yAxis = cross(zAxis, xAxis);
+
+            return new Float32Array([
+              xAxis[0],
+              yAxis[0],
+              zAxis[0],
+              0,
+              xAxis[1],
+              yAxis[1],
+              zAxis[1],
+              0,
+              xAxis[2],
+              yAxis[2],
+              zAxis[2],
+              0,
+              -dot(xAxis, eye),
+              -dot(yAxis, eye),
+              -dot(zAxis, eye),
+              1,
+            ]);
+          }
+
+          // WebGPU perspective matrix (0-1 depth range)
+          function createPerspective(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            const rangeInv = 1.0 / (near - far);
+
+            return new Float32Array([
+              f / aspect,
+              0,
+              0,
+              0,
+              0,
+              f,
+              0,
+              0,
+              0,
+              0,
+              far * rangeInv,
+              -1,
+              0,
+              0,
+              near * far * rangeInv,
+              0,
+            ]);
+          }
+
+          function multiply(a, b) {
+            const result = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+              for (let j = 0; j < 4; j++) {
+                result[i * 4 + j] =
+                  a[i * 4 + 0] * b[0 * 4 + j] +
+                  a[i * 4 + 1] * b[1 * 4 + j] +
+                  a[i * 4 + 2] * b[2 * 4 + j] +
+                  a[i * 4 + 3] * b[3 * 4 + j];
+              }
+            }
+            return result;
+          }
+
+          log("✓ Setting up camera:");
+          log("  Eye: (0, 0, 5)");
+          log("  Target: (0, 0, 0)");
+          log("  FOV: 45°, Near: 0.1, Far: 100");
+
+          const aspect = canvas.width / canvas.height;
+          const viewMatrix = createLookAt([0, 0, 5], [0, 0, 0], [0, 1, 0]);
+          const projectionMatrix = createPerspective(
+            Math.PI / 4,
+            aspect,
+            0.1,
+            100.0,
+          );
+          const mvpMatrix = multiply(projectionMatrix, viewMatrix);
+
+          log("✓ MVP matrix computed");
+          log("✓ Rendering...");
+
+          function render() {
+            device.queue.writeBuffer(uniformBuffer, 0, mvpMatrix);
+
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = context.getCurrentTexture().createView();
+
+            const renderPass = commandEncoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: textureView,
+                  clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1.0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.setIndexBuffer(indexBuffer, "uint16");
+            renderPass.drawIndexed(12); // 2 faces
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            requestAnimationFrame(render);
+          }
+
+          requestAnimationFrame(render);
+          log("If you see RED (front) and/or CYAN (back) faces, it works!");
+        } catch (error) {
+          console.error("Error:", error);
+          log(`✗ Error: ${error.message}`);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

@@ -187,9 +187,12 @@ function RenderState(renderState) {
     : undefined;
 
   //>>includeStart('debug', pragmas.debug);
+  // Only validate lineWidth for WebGL contexts (where limits are initialized)
+  // WebGPU doesn't support lineWidth configuration
   if (
-    this.lineWidth < ContextLimits.minimumAliasedLineWidth ||
-    this.lineWidth > ContextLimits.maximumAliasedLineWidth
+    ContextLimits.maximumAliasedLineWidth > 0 &&
+    (this.lineWidth < ContextLimits.minimumAliasedLineWidth ||
+      this.lineWidth > ContextLimits.maximumAliasedLineWidth)
   ) {
     throw new DeveloperError(
       "renderState.lineWidth is out of range.  Check minimumAliasedLineWidth and maximumAliasedLineWidth.",
