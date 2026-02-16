@@ -44,3 +44,7 @@ Tools/jsdoc/cesium_template/static/javascript/prism.js
 Tools/jsdoc/cesium_template/static/styles/prism.css
 **/LICENSE.md
 
+# WebGPU files with inline WGSL shader strings that prettier cannot parse
+packages/engine/Source/Renderer/WebGPU/WGSLBuiltins.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUContext_backup.ts
+

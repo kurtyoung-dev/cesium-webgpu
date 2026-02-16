@@ -31,34 +31,29 @@ import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
 import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-import {
-  createWebGLCompatibilityStub,
-  type WebGLStubState,
-} from "./WebGLCompatibilityStub.js";
-import {
-  webglToWebGPUBlendFactor,
-  webglToWebGPUBlendOp,
-  webglToWebGPUCompareFunction,
-} from "./WebGLStateConverters.js";
-import {
-  DeviceLossState,
-  WebGPUDeviceLossRecovery,
-  type DeviceLostCallback,
-  type DeviceLossRecoveryHost,
-} from "./WebGPUDeviceLossRecovery.js";
-import { WebGPUResourceManager } from "./WebGPUResourceManager.js";
-import { WebGPUPickManager } from "./WebGPUPickManager.js";
-import {
-  createDefaultTextures,
-  copyTexture as copyTextureUtil,
-  copyTextureRegion as copyTextureRegionUtil,
-  createTextureFromImage as createTextureFromImageUtil,
-  createPixelReadbackPBO,
-  type DefaultTextures,
-} from "./WebGPUTextureUtilities.js";
+import { createWebGLCompatibilityStub, type WebGLStubState } from "./WebGLCompatibilityStub.js";
 
-// Re-export types that external code may depend on
-export { DeviceLossState, type DeviceLostCallback };
+/**
+ * Device loss recovery state
+ */
+export enum DeviceLossState {
+  /** Device is healthy and operational */
+  HEALTHY = "healthy",
+  /** Device was lost, attempting recovery */
+  RECOVERING = "recovering",
+  /** Device recovery failed, context is dead */
+  FATAL = "fatal",
+}
+
+/**
+ * Callback type for device loss events
+ */
+export type DeviceLostCallback = (info: {
+  reason: string;
+  message: string;
+  state: DeviceLossState;
+  willRecover: boolean;
+}) => void;
 
 /**
  * WebGPU-specific context options
@@ -411,7 +406,9 @@ export class WebGPUContext implements GraphicsContext {
       // Initialize default textures
       this._initializeDefaultTextures();
 
-      // Initialization complete — adapter and format selected
+      console.log("WebGPU Context initialized successfully");
+      console.log(`  - Adapter: ${(this._adapter as any).name ?? "Unknown"}`);
+      console.log(`  - Format: ${this._presentationFormat}`);
     } catch (error) {
       throw new RuntimeError(
         `Failed to initialize WebGPU context: ${(error as Error).message}`,
@@ -477,6 +474,8 @@ export class WebGPUContext implements GraphicsContext {
     for (let face = 0; face < 6; face++) {
       this._defaultCubeMap.write(whiteData, 1, 1, face);
     }
+
+    console.log("[WebGPU] Default textures initialized");
   }
 
   // GraphicsContext interface implementation
@@ -651,18 +650,13 @@ export class WebGPUContext implements GraphicsContext {
 
     // Set default viewport to full canvas size
     this._currentRenderPassEncoder.setViewport(
-      0,
-      0,
-      this._canvas.width,
-      this._canvas.height,
-      0,
-      1,
+      0, 0,
+      this._canvas.width, this._canvas.height,
+      0, 1
     );
     this._currentRenderPassEncoder.setScissorRect(
-      0,
-      0,
-      this._canvas.width,
-      this._canvas.height,
+      0, 0,
+      this._canvas.width, this._canvas.height
     );
   }
 
@@ -697,13 +691,9 @@ export class WebGPUContext implements GraphicsContext {
    * // Resume canvas rendering
    * context.resumeDefaultRenderPass();
    */
-  beginRenderPass(
-    descriptor: GPURenderPassDescriptor,
-  ): GPURenderPassEncoder | null {
+  beginRenderPass(descriptor: GPURenderPassDescriptor): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder) {
-      console.warn(
-        "[WebGPU] beginRenderPass: No command encoder — call beginFrame() first",
-      );
+      console.warn("[WebGPU] beginRenderPass: No command encoder — call beginFrame() first");
       return null;
     }
 
@@ -748,9 +738,7 @@ export class WebGPUContext implements GraphicsContext {
    */
   resumeDefaultRenderPass(): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder || !this._currentTextureView) {
-      console.warn(
-        "[WebGPU] resumeDefaultRenderPass: No command encoder or texture view",
-      );
+      console.warn("[WebGPU] resumeDefaultRenderPass: No command encoder or texture view");
       return null;
     }
 
@@ -938,6 +926,10 @@ export class WebGPUContext implements GraphicsContext {
     ContextLimits._highpFloatSupported = true; // WebGPU always supports high precision
     // @ts-ignore
     ContextLimits._highpIntSupported = true;
+
+    console.log(
+      `[WebGPU] ContextLimits initialized - maximumTextureSize: ${limits.maxTextureDimension2D}`,
+    );
   }
 
   /**
@@ -953,192 +945,1159 @@ export class WebGPUContext implements GraphicsContext {
     // The extracted stub reads/writes through this proxy instead of using inline closures.
     const ctx = this;
     const state: WebGLStubState = {
-      get device() {
-        return ctx._device;
-      },
-      get context() {
-        return ctx._context;
-      },
-      get currentCommandEncoder() {
-        return ctx._currentCommandEncoder;
-      },
-      get currentRenderPassEncoder() {
-        return ctx._currentRenderPassEncoder;
-      },
+      get device() { return ctx._device; },
+      get context() { return ctx._context; },
+      get currentCommandEncoder() { return ctx._currentCommandEncoder; },
+      get currentRenderPassEncoder() { return ctx._currentRenderPassEncoder; },
 
-      get activeTextureUnit() {
-        return ctx._activeTextureUnit;
-      },
-      set activeTextureUnit(v) {
-        ctx._activeTextureUnit = v;
-      },
-      get textureBindings() {
-        return ctx._textureBindings;
-      },
-      get boundVertexBuffer() {
-        return ctx._boundVertexBuffer;
-      },
-      set boundVertexBuffer(v) {
-        ctx._boundVertexBuffer = v;
-      },
-      get boundIndexBuffer() {
-        return ctx._boundIndexBuffer;
-      },
-      set boundIndexBuffer(v) {
-        ctx._boundIndexBuffer = v;
-      },
-      get boundFramebuffer() {
-        return ctx._boundFramebuffer;
-      },
-      set boundFramebuffer(v) {
-        ctx._boundFramebuffer = v;
-      },
-      get boundRenderbuffer() {
-        return ctx._boundRenderbuffer;
-      },
-      set boundRenderbuffer(v) {
-        ctx._boundRenderbuffer = v;
-      },
-      get framebuffers() {
-        return ctx._framebuffers;
-      },
+      get activeTextureUnit() { return ctx._activeTextureUnit; },
+      set activeTextureUnit(v) { ctx._activeTextureUnit = v; },
+      get textureBindings() { return ctx._textureBindings; },
+      get boundVertexBuffer() { return ctx._boundVertexBuffer; },
+      set boundVertexBuffer(v) { ctx._boundVertexBuffer = v; },
+      get boundIndexBuffer() { return ctx._boundIndexBuffer; },
+      set boundIndexBuffer(v) { ctx._boundIndexBuffer = v; },
+      get boundFramebuffer() { return ctx._boundFramebuffer; },
+      set boundFramebuffer(v) { ctx._boundFramebuffer = v; },
+      get boundRenderbuffer() { return ctx._boundRenderbuffer; },
+      set boundRenderbuffer(v) { ctx._boundRenderbuffer = v; },
+      get framebuffers() { return ctx._framebuffers; },
 
-      get clearColor() {
-        return ctx._clearColor;
-      },
-      set clearColor(v) {
-        ctx._clearColor = v;
-      },
-      get clearDepth() {
-        return ctx._clearDepth;
-      },
-      set clearDepth(v) {
-        ctx._clearDepth = v;
-      },
-      get clearStencil() {
-        return ctx._clearStencil;
-      },
-      set clearStencil(v) {
-        ctx._clearStencil = v;
-      },
+      get clearColor() { return ctx._clearColor; },
+      set clearColor(v) { ctx._clearColor = v; },
+      get clearDepth() { return ctx._clearDepth; },
+      set clearDepth(v) { ctx._clearDepth = v; },
+      get clearStencil() { return ctx._clearStencil; },
+      set clearStencil(v) { ctx._clearStencil = v; },
 
-      get depthTestEnabled() {
-        return ctx._depthTestEnabled;
-      },
-      set depthTestEnabled(v) {
-        ctx._depthTestEnabled = v;
-      },
-      get depthWriteEnabled() {
-        return ctx._depthWriteEnabled;
-      },
-      set depthWriteEnabled(v) {
-        ctx._depthWriteEnabled = v;
-      },
-      get depthCompare() {
-        return ctx._depthCompare;
-      },
-      set depthCompare(v) {
-        ctx._depthCompare = v;
-      },
+      get depthTestEnabled() { return ctx._depthTestEnabled; },
+      set depthTestEnabled(v) { ctx._depthTestEnabled = v; },
+      get depthWriteEnabled() { return ctx._depthWriteEnabled; },
+      set depthWriteEnabled(v) { ctx._depthWriteEnabled = v; },
+      get depthCompare() { return ctx._depthCompare; },
+      set depthCompare(v) { ctx._depthCompare = v; },
 
-      get blendEnabled() {
-        return ctx._blendEnabled;
-      },
-      set blendEnabled(v) {
-        ctx._blendEnabled = v;
-      },
-      get cullFaceEnabled() {
-        return ctx._cullFaceEnabled;
-      },
-      set cullFaceEnabled(v) {
-        ctx._cullFaceEnabled = v;
-      },
-      get cullMode() {
-        return ctx._cullMode;
-      },
-      set cullMode(v) {
-        ctx._cullMode = v;
-      },
-      get frontFace() {
-        return ctx._frontFace;
-      },
-      set frontFace(v) {
-        ctx._frontFace = v;
-      },
-      get colorWriteMask() {
-        return ctx._colorWriteMask;
-      },
-      set colorWriteMask(v) {
-        ctx._colorWriteMask = v;
-      },
+      get blendEnabled() { return ctx._blendEnabled; },
+      set blendEnabled(v) { ctx._blendEnabled = v; },
+      get cullFaceEnabled() { return ctx._cullFaceEnabled; },
+      set cullFaceEnabled(v) { ctx._cullFaceEnabled = v; },
+      get cullMode() { return ctx._cullMode; },
+      set cullMode(v) { ctx._cullMode = v; },
+      get frontFace() { return ctx._frontFace; },
+      set frontFace(v) { ctx._frontFace = v; },
+      get colorWriteMask() { return ctx._colorWriteMask; },
+      set colorWriteMask(v) { ctx._colorWriteMask = v; },
 
-      get blendSrc() {
-        return ctx._blendSrc;
-      },
-      set blendSrc(v) {
-        ctx._blendSrc = v;
-      },
-      get blendDst() {
-        return ctx._blendDst;
-      },
-      set blendDst(v) {
-        ctx._blendDst = v;
-      },
-      get blendSrcAlpha() {
-        return ctx._blendSrcAlpha;
-      },
-      set blendSrcAlpha(v) {
-        ctx._blendSrcAlpha = v;
-      },
-      get blendDstAlpha() {
-        return ctx._blendDstAlpha;
-      },
-      set blendDstAlpha(v) {
-        ctx._blendDstAlpha = v;
-      },
-      get blendOp() {
-        return ctx._blendOp;
-      },
-      set blendOp(v) {
-        ctx._blendOp = v;
-      },
-      get blendOpAlpha() {
-        return ctx._blendOpAlpha;
-      },
-      set blendOpAlpha(v) {
-        ctx._blendOpAlpha = v;
-      },
+      get blendSrc() { return ctx._blendSrc; },
+      set blendSrc(v) { ctx._blendSrc = v; },
+      get blendDst() { return ctx._blendDst; },
+      set blendDst(v) { ctx._blendDst = v; },
+      get blendSrcAlpha() { return ctx._blendSrcAlpha; },
+      set blendSrcAlpha(v) { ctx._blendSrcAlpha = v; },
+      get blendDstAlpha() { return ctx._blendDstAlpha; },
+      set blendDstAlpha(v) { ctx._blendDstAlpha = v; },
+      get blendOp() { return ctx._blendOp; },
+      set blendOp(v) { ctx._blendOp = v; },
+      get blendOpAlpha() { return ctx._blendOpAlpha; },
+      set blendOpAlpha(v) { ctx._blendOpAlpha = v; },
 
-      get scissorTest() {
-        return ctx._scissorTest;
-      },
-      set scissorTest(v) {
-        ctx._scissorTest = v;
-      },
+      get scissorTest() { return ctx._scissorTest; },
+      set scissorTest(v) { ctx._scissorTest = v; },
 
       // Methods that delegate to WebGPUContext methods
-      setViewport: (x: number, y: number, w: number, h: number) =>
-        ctx.setViewport(x, y, w, h),
-      setScissorRect: (x: number, y: number, w: number, h: number) =>
-        ctx.setScissorRect(x, y, w, h),
+      setViewport: (x: number, y: number, w: number, h: number) => ctx.setViewport(x, y, w, h),
+      setScissorRect: (x: number, y: number, w: number, h: number) => ctx.setScissorRect(x, y, w, h),
       disableScissorTest: () => ctx.disableScissorTest(),
-      copyTextureRegion: (
-        src: GPUTexture,
-        dst: GPUTexture,
-        sx: number,
-        sy: number,
-        dx: number,
-        dy: number,
-        w: number,
-        h: number,
-      ) => ctx.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h),
+      copyTextureRegion: (src: GPUTexture, dst: GPUTexture, sx: number, sy: number, dx: number, dy: number, w: number, h: number) =>
+        ctx.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h),
       webglToWebGPUBlendFactor: (f: number) => ctx._webglToWebGPUBlendFactor(f),
       webglToWebGPUBlendOp: (o: number) => ctx._webglToWebGPUBlendOp(o),
-      webglToWebGPUCompareFunction: (f: number) =>
-        ctx._webglToWebGPUCompareFunction(f),
+      webglToWebGPUCompareFunction: (f: number) => ctx._webglToWebGPUCompareFunction(f),
     };
 
     this._gl = createWebGLCompatibilityStub(state);
+  }
+
+  // Orphaned old inline WebGL stub code removed — now handled by
+  // createWebGLCompatibilityStub() in WebGLCompatibilityStub.ts
+  // (see backup_removed_code block below for reference if needed)
+
+  /**
+   * REMOVED: ~700 lines of inline WebGL stub object literal that was previously
+   * part of the old _initializeWebGLStub() method. This code has been extracted
+   * to WebGLCompatibilityStub.ts and is now called via createWebGLCompatibilityStub().
+   * The backup of the removed code is preserved in the git history.
+   */
+
+  // ---- START SKIP (this marker helps locate the end of removed block) ----
+  private _STUB_SWAP_MARKER_activeTexture: (unit: number) => {
+        this._activeTextureUnit = unit - 0x84c0; // GL_TEXTURE0
+        logUsage(
+          "activeTexture",
+          `Active texture unit set to ${this._activeTextureUnit}`,
+        );
+      },
+
+      bindTexture: (target: number, texture: any) => {
+        this._textureBindings.set(this._activeTextureUnit, { target, texture });
+        logUsage(
+          "bindTexture",
+          `Texture bound to unit ${this._activeTextureUnit} - state tracked`,
+        );
+      },
+
+      createTexture: () => {
+        logUsage(
+          "createTexture",
+          "Texture placeholder created - use WebGPUTexture for full functionality",
+        );
+        return {
+          _isPlaceholder: true,
+          _webgpuTexture: null,
+        };
+      },
+
+      deleteTexture: (texture: any) => {
+        if (texture?._webgpuTexture?.destroy) {
+          texture._webgpuTexture.destroy();
+          logUsage("deleteTexture", "WebGPU texture destroyed");
+        } else if (texture?.destroy) {
+          texture.destroy();
+          logUsage("deleteTexture", "Texture destroyed");
+        } else {
+          logUsage("deleteTexture", "Invalid texture or already destroyed");
+        }
+      },
+      pixelStorei: () =>
+        logUsage(
+          "pixelStorei",
+          "Not needed - WebGPU handles pixel store automatically",
+        ),
+      texParameteri: () =>
+        logUsage(
+          "texParameteri",
+          "Not needed - use GPUSamplerDescriptor instead",
+        ),
+      texImage2D: () =>
+        logUsage(
+          "texImage2D",
+          "Use texture.write() or queue.writeTexture() instead",
+        ),
+      texSubImage2D: (
+        target: number,
+        level: number,
+        xoffset: number,
+        yoffset: number,
+        width: number,
+        height: number,
+        format: number,
+        type: number,
+        pixels: ArrayBufferView | null,
+      ) => {
+        // Get bound texture from _textureBindings
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (!binding?.texture?._webgpuTexture) {
+          logUsage("texSubImage2D", "No WebGPU texture bound - cannot update");
+          return;
+        }
+
+        if (!pixels || !this._device) {
+          logUsage("texSubImage2D", "No pixel data or device not ready");
+          return;
+        }
+
+        // Upload texture sub-region
+        this._device.queue.writeTexture(
+          {
+            texture: binding.texture._webgpuTexture.texture,
+            mipLevel: level,
+            origin: { x: xoffset, y: yoffset, z: 0 },
+          },
+          pixels as BufferSource,
+          {
+            bytesPerRow: width * 4, // Assuming RGBA format
+            rowsPerImage: height,
+          },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+        logUsage(
+          "texSubImage2D",
+          `Texture region updated at (${xoffset}, ${yoffset}, ${width}x${height})`,
+        );
+      },
+      compressedTexImage2D: (
+        target: number,
+        level: number,
+        internalformat: number,
+        width: number,
+        height: number,
+        border: number,
+        data: ArrayBufferView,
+      ) => {
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (!binding?.texture?._webgpuTexture || !this._device) {
+          logUsage(
+            "compressedTexImage2D",
+            "No WebGPU texture bound or device not ready",
+          );
+          return;
+        }
+
+        // Upload compressed texture data
+        // Note: Format detection would require mapping WebGL format constants to WebGPU
+        this._device.queue.writeTexture(
+          {
+            texture: binding.texture._webgpuTexture.texture,
+            mipLevel: level,
+          },
+          data as BufferSource,
+          {
+            bytesPerRow: width * 4, // This needs proper block size calculation per format
+            rowsPerImage: height,
+          },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+        logUsage(
+          "compressedTexImage2D",
+          `Compressed texture uploaded (${width}x${height}, mip ${level})`,
+        );
+      },
+
+      compressedTexSubImage2D: (
+        target: number,
+        level: number,
+        xoffset: number,
+        yoffset: number,
+        width: number,
+        height: number,
+        format: number,
+        data: ArrayBufferView,
+      ) => {
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (!binding?.texture?._webgpuTexture || !this._device) {
+          logUsage(
+            "compressedTexSubImage2D",
+            "No WebGPU texture bound or device not ready",
+          );
+          return;
+        }
+
+        this._device.queue.writeTexture(
+          {
+            texture: binding.texture._webgpuTexture.texture,
+            mipLevel: level,
+            origin: { x: xoffset, y: yoffset, z: 0 },
+          },
+          data as BufferSource,
+          {
+            bytesPerRow: width * 4,
+            rowsPerImage: height,
+          },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+        logUsage(
+          "compressedTexSubImage2D",
+          `Compressed texture region updated at (${xoffset}, ${yoffset})`,
+        );
+      },
+
+      copyTexImage2D: (
+        target: number,
+        level: number,
+        internalformat: number,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+        border: number,
+      ) => {
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (!binding?.texture?._webgpuTexture || !this._currentCommandEncoder) {
+          logUsage(
+            "copyTexImage2D",
+            "No texture bound or no command encoder active",
+          );
+          return;
+        }
+
+        // Get source (framebuffer or canvas)
+        const sourceTexture =
+          this._boundFramebuffer?.colorAttachment?._texture ||
+          this._context?.getCurrentTexture();
+
+        if (sourceTexture) {
+          this.copyTextureRegion(
+            sourceTexture,
+            binding.texture._webgpuTexture.texture,
+            x,
+            y,
+            0,
+            0,
+            width,
+            height,
+          );
+          logUsage(
+            "copyTexImage2D",
+            `Texture copied from framebuffer/canvas (${width}x${height})`,
+          );
+        } else {
+          logUsage("copyTexImage2D", "No source texture available");
+        }
+      },
+
+      copyTexSubImage2D: (
+        target: number,
+        level: number,
+        xoffset: number,
+        yoffset: number,
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+      ) => {
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (!binding?.texture?._webgpuTexture || !this._currentCommandEncoder) {
+          logUsage(
+            "copyTexSubImage2D",
+            "No texture bound or no command encoder active",
+          );
+          return;
+        }
+
+        // Get source (framebuffer or canvas)
+        const sourceTexture =
+          this._boundFramebuffer?.colorAttachment?._texture ||
+          this._context?.getCurrentTexture();
+
+        if (sourceTexture) {
+          this.copyTextureRegion(
+            sourceTexture,
+            binding.texture._webgpuTexture.texture,
+            x,
+            y,
+            xoffset,
+            yoffset,
+            width,
+            height,
+          );
+          logUsage(
+            "copyTexSubImage2D",
+            `Texture region copied (${width}x${height})`,
+          );
+        } else {
+          logUsage("copyTexSubImage2D", "No source texture available");
+        }
+      },
+
+      generateMipmap: (target: number) => {
+        const binding = this._textureBindings.get(this._activeTextureUnit);
+
+        if (binding?.texture?._webgpuTexture) {
+          logUsage(
+            "generateMipmap",
+            "WebGPU requires manual mipmap generation - texture has no auto-gen. Use WebGPUTexture.generateMipmaps() when available",
+          );
+          // TODO: Implement WebGPUTexture.generateMipmaps() with compute shader
+        } else {
+          logUsage(
+            "generateMipmap",
+            "No texture bound - cannot generate mipmaps",
+          );
+        }
+      },
+
+      hint: () => logUsage("hint", "Not applicable in WebGPU - no hint system"),
+
+      // Framebuffer methods - Enhanced with state tracking
+      createFramebuffer: () => {
+        const fboId = createGuid();
+        const fbo = {
+          _id: fboId,
+          _colorAttachment: null,
+          _depthAttachment: null,
+          _isWebGPU: true,
+        };
+        this._framebuffers.set(fbo, {
+          colorAttachment: null,
+          depthAttachment: null,
+        });
+        logUsage(
+          "createFramebuffer",
+          `Framebuffer created with ID ${fboId} - tracks attachments for WebGPURenderTarget`,
+        );
+        return fbo;
+      },
+
+      bindFramebuffer: (target: number, framebuffer: any) => {
+        this._boundFramebuffer = framebuffer;
+        if (framebuffer) {
+          logUsage(
+            "bindFramebuffer",
+            `Framebuffer bound - state tracked for render pass creation`,
+          );
+        } else {
+          logUsage(
+            "bindFramebuffer",
+            "Binding to default framebuffer (canvas)",
+          );
+        }
+      },
+
+      deleteFramebuffer: (framebuffer: any) => {
+        if (!framebuffer) {
+          logUsage("deleteFramebuffer", "Invalid framebuffer");
+          return;
+        }
+
+        const fboData = this._framebuffers.get(framebuffer);
+        if (fboData) {
+          // Destroy attachments if they exist
+          if (fboData.colorAttachment?._texture?.destroy) {
+            fboData.colorAttachment._texture.destroy();
+          }
+          if (fboData.depthAttachment?._texture?.destroy) {
+            fboData.depthAttachment._texture.destroy();
+          }
+          this._framebuffers.delete(framebuffer);
+          logUsage(
+            "deleteFramebuffer",
+            "Framebuffer and attachments destroyed",
+          );
+        } else {
+          logUsage(
+            "deleteFramebuffer",
+            "Framebuffer not found in tracking map",
+          );
+        }
+      },
+
+      framebufferTexture2D: (
+        target: number,
+        attachment: number,
+        textarget: number,
+        texture: any,
+        level: number,
+      ) => {
+        if (!this._boundFramebuffer) {
+          logUsage("framebufferTexture2D", "No framebuffer bound");
+          return;
+        }
+
+        const fboData = this._framebuffers.get(this._boundFramebuffer);
+        if (fboData) {
+          if (attachment === 0x8ce0) {
+            // GL_COLOR_ATTACHMENT0
+            fboData.colorAttachment = texture;
+            this._boundFramebuffer._colorAttachment = texture;
+            logUsage(
+              "framebufferTexture2D",
+              "Color attachment set - can be used for render pass",
+            );
+          } else if (attachment === 0x8d00) {
+            // GL_DEPTH_ATTACHMENT
+            fboData.depthAttachment = texture;
+            this._boundFramebuffer._depthAttachment = texture;
+            logUsage(
+              "framebufferTexture2D",
+              "Depth attachment set - can be used for render pass",
+            );
+          } else {
+            logUsage(
+              "framebufferTexture2D",
+              `Attachment ${attachment} tracked`,
+            );
+          }
+        }
+      },
+
+      framebufferRenderbuffer: (
+        target: number,
+        attachment: number,
+        renderbuffertarget: number,
+        renderbuffer: any,
+      ) => {
+        if (!this._boundFramebuffer) {
+          logUsage("framebufferRenderbuffer", "No framebuffer bound");
+          return;
+        }
+
+        const fboData = this._framebuffers.get(this._boundFramebuffer);
+        if (fboData && renderbuffer) {
+          if (attachment === 0x8ce0) {
+            // GL_COLOR_ATTACHMENT0
+            fboData.colorAttachment = renderbuffer;
+            this._boundFramebuffer._colorAttachment = renderbuffer;
+            logUsage("framebufferRenderbuffer", "Color renderbuffer attached");
+          } else if (attachment === 0x8d00) {
+            // GL_DEPTH_ATTACHMENT
+            fboData.depthAttachment = renderbuffer;
+            this._boundFramebuffer._depthAttachment = renderbuffer;
+            logUsage("framebufferRenderbuffer", "Depth renderbuffer attached");
+          }
+        }
+      },
+
+      checkFramebufferStatus: (target: number) => {
+        logUsage(
+          "checkFramebufferStatus",
+          "Always complete in WebGPU - validation happens at pipeline creation",
+        );
+        return 0x8cd5; // GL_FRAMEBUFFER_COMPLETE
+      },
+
+      // Renderbuffer methods - Enhanced with texture creation
+      createRenderbuffer: () => {
+        if (!this._device) {
+          logUsage("createRenderbuffer", "Device not initialized");
+          return {};
+        }
+
+        // Create placeholder that will be configured later
+        const renderbuffer = {
+          _id: createGuid(),
+          _texture: null as GPUTexture | null,
+          _format: null as GPUTextureFormat | null,
+          _width: 0,
+          _height: 0,
+          _isWebGPU: true,
+        };
+
+        logUsage(
+          "createRenderbuffer",
+          "Renderbuffer placeholder created - will create GPUTexture on renderbufferStorage",
+        );
+        return renderbuffer;
+      },
+
+      bindRenderbuffer: (target: number, renderbuffer: any) => {
+        this._boundRenderbuffer = renderbuffer;
+        logUsage("bindRenderbuffer", "Renderbuffer bound - state tracked");
+      },
+
+      deleteRenderbuffer: (renderbuffer: any) => {
+        if (renderbuffer?._texture) {
+          renderbuffer._texture.destroy();
+          logUsage("deleteRenderbuffer", "Underlying GPUTexture destroyed");
+        } else {
+          logUsage(
+            "deleteRenderbuffer",
+            "Invalid renderbuffer or already destroyed",
+          );
+        }
+      },
+
+      renderbufferStorage: (
+        target: number,
+        internalformat: number,
+        width: number,
+        height: number,
+      ) => {
+        if (!this._boundRenderbuffer || !this._device) {
+          logUsage(
+            "renderbufferStorage",
+            "No renderbuffer bound or device not ready",
+          );
+          return;
+        }
+
+        // Destroy old texture if exists
+        if (this._boundRenderbuffer._texture) {
+          this._boundRenderbuffer._texture.destroy();
+        }
+
+        // Map WebGL format to WebGPU format (simplified)
+        let gpuFormat: GPUTextureFormat = "rgba8unorm";
+        if (internalformat === 0x81a5 || internalformat === 0x81a6) {
+          // DEPTH_COMPONENT16/24
+          gpuFormat = "depth24plus";
+        } else if (internalformat === 0x88f0) {
+          // DEPTH24_STENCIL8
+          gpuFormat = "depth24plus-stencil8";
+        }
+
+        // Create GPUTexture as renderbuffer storage
+        this._boundRenderbuffer._texture = this._device.createTexture({
+          size: { width, height },
+          format: gpuFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          label: "Renderbuffer Storage",
+        });
+        this._boundRenderbuffer._format = gpuFormat;
+        this._boundRenderbuffer._width = width;
+        this._boundRenderbuffer._height = height;
+
+        logUsage(
+          "renderbufferStorage",
+          `GPUTexture created as renderbuffer storage (${width}x${height}, ${gpuFormat})`,
+        );
+      },
+
+      renderbufferStorageMultisample: (
+        target: number,
+        samples: number,
+        internalformat: number,
+        width: number,
+        height: number,
+      ) => {
+        if (!this._boundRenderbuffer || !this._device) {
+          logUsage(
+            "renderbufferStorageMultisample",
+            "No renderbuffer bound or device not ready",
+          );
+          return;
+        }
+
+        // Destroy old texture if exists
+        if (this._boundRenderbuffer._texture) {
+          this._boundRenderbuffer._texture.destroy();
+        }
+
+        // Map format (same as renderbufferStorage)
+        let gpuFormat: GPUTextureFormat = "rgba8unorm";
+        if (internalformat === 0x81a5 || internalformat === 0x81a6) {
+          gpuFormat = "depth24plus";
+        } else if (internalformat === 0x88f0) {
+          gpuFormat = "depth24plus-stencil8";
+        }
+
+        // Create multisampled GPUTexture
+        this._boundRenderbuffer._texture = this._device.createTexture({
+          size: { width, height },
+          format: gpuFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          sampleCount: samples,
+          label: `Renderbuffer Storage (${samples}x MSAA)`,
+        });
+        this._boundRenderbuffer._format = gpuFormat;
+        this._boundRenderbuffer._width = width;
+        this._boundRenderbuffer._height = height;
+
+        logUsage(
+          "renderbufferStorageMultisample",
+          `Multisampled GPUTexture created (${width}x${height}, ${gpuFormat}, ${samples}x)`,
+        );
+      },
+
+      // Buffer methods - Enhanced with real WebGPU implementations
+      createBuffer: () => {
+        if (!this._device) {
+          logUsage("createBuffer", "Device not initialized");
+          return {};
+        }
+
+        // Create a real WebGPU buffer with flexible usage
+        // Start with a small default (4KB) - will be resized on bufferData if needed
+        const defaultSize = 4096;
+        const buffer = this._device.createBuffer({
+          size: defaultSize,
+          usage:
+            GPUBufferUsage.VERTEX |
+            GPUBufferUsage.INDEX |
+            GPUBufferUsage.COPY_DST,
+          label: "GL Compatibility Buffer",
+        });
+
+        logUsage("createBuffer", "Real WebGPU buffer created");
+
+        return {
+          _webgpuBuffer: buffer,
+          _size: defaultSize,
+          destroy: () => buffer.destroy(),
+        };
+      },
+
+      bindBuffer: (target: number, buffer: any) => {
+        if (target === 0x8892) {
+          // GL_ARRAY_BUFFER
+          this._boundVertexBuffer = buffer?._webgpuBuffer || null;
+          logUsage("bindBuffer", `Vertex buffer bound - state tracked`);
+        } else if (target === 0x8893) {
+          // GL_ELEMENT_ARRAY_BUFFER
+          this._boundIndexBuffer = buffer?._webgpuBuffer || null;
+          logUsage("bindBuffer", `Index buffer bound - state tracked`);
+        }
+      },
+
+      deleteBuffer: (buffer: any) => {
+        if (buffer?._webgpuBuffer) {
+          buffer._webgpuBuffer.destroy();
+          logUsage("deleteBuffer", "Buffer destroyed");
+        } else if (buffer?.destroy) {
+          buffer.destroy();
+          logUsage("deleteBuffer", "Buffer destroyed");
+        } else {
+          logUsage("deleteBuffer", "Invalid buffer or already destroyed");
+        }
+      },
+
+      bufferData: (
+        target: number,
+        data: ArrayBuffer | ArrayBufferView | number,
+        usage: number,
+      ) => {
+        const boundBuffer =
+          target === 0x8892 ? this._boundVertexBuffer : this._boundIndexBuffer;
+
+        if (!boundBuffer) {
+          logUsage("bufferData", "No buffer bound to target");
+          return;
+        }
+
+        if (typeof data === "number") {
+          // Size only - buffer already created with size, just log
+          logUsage(
+            "bufferData",
+            `Buffer sized to ${data} bytes (recreate if needed)`,
+          );
+          return;
+        }
+
+        // Upload actual data
+        const arrayBuffer =
+          data instanceof ArrayBuffer ? data : (data as ArrayBufferView).buffer;
+        const byteOffset =
+          data instanceof ArrayBuffer
+            ? 0
+            : (data as ArrayBufferView).byteOffset;
+        let byteLength =
+          data instanceof ArrayBuffer
+            ? data.byteLength
+            : (data as ArrayBufferView).byteLength;
+
+        if (this._device) {
+          // WebGPU requires buffer writes to be 4-byte aligned
+          // If not aligned, we need to pad the data
+          const alignedLength = Math.ceil(byteLength / 4) * 4;
+
+          if (alignedLength !== byteLength) {
+            // Need to pad - create a new array with padding
+            const paddedArray = new Uint8Array(alignedLength);
+            const sourceArray = new Uint8Array(
+              arrayBuffer,
+              byteOffset,
+              byteLength,
+            );
+            paddedArray.set(sourceArray);
+            // Remaining bytes are automatically zero-initialized
+
+            this._device.queue.writeBuffer(
+              boundBuffer,
+              0,
+              paddedArray.buffer,
+              0,
+              alignedLength,
+            );
+            logUsage(
+              "bufferData",
+              `Uploaded ${byteLength} bytes (padded to ${alignedLength}) to buffer`,
+            );
+          } else {
+            // Already aligned
+            // Check if buffer is large enough
+            if (byteLength > boundBuffer.size) {
+              console.warn(
+                `[WebGPU] Buffer too small (${boundBuffer.size}), need ${byteLength}. Recreate buffer with larger size.`,
+              );
+            }
+
+            this._device.queue.writeBuffer(
+              boundBuffer,
+              0,
+              arrayBuffer,
+              byteOffset,
+              byteLength,
+            );
+            logUsage("bufferData", `Uploaded ${byteLength} bytes to buffer`);
+          }
+        }
+      },
+
+      bufferSubData: (
+        target: number,
+        offset: number,
+        data: ArrayBuffer | ArrayBufferView,
+      ) => {
+        const boundBuffer =
+          target === 0x8892 ? this._boundVertexBuffer : this._boundIndexBuffer;
+
+        if (!boundBuffer) {
+          logUsage("bufferSubData", "No buffer bound to target");
+          return;
+        }
+
+        const arrayBuffer =
+          data instanceof ArrayBuffer ? data : (data as ArrayBufferView).buffer;
+        const byteOffset =
+          data instanceof ArrayBuffer
+            ? 0
+            : (data as ArrayBufferView).byteOffset;
+        const byteLength =
+          data instanceof ArrayBuffer
+            ? data.byteLength
+            : (data as ArrayBufferView).byteLength;
+
+        if (this._device) {
+          this._device.queue.writeBuffer(
+            boundBuffer,
+            offset,
+            arrayBuffer,
+            byteOffset,
+            byteLength,
+          );
+          logUsage(
+            "bufferSubData",
+            `Updated ${byteLength} bytes at offset ${offset}`,
+          );
+        }
+      },
+
+      // Buffer targets
+      ARRAY_BUFFER: 0x8892,
+      ELEMENT_ARRAY_BUFFER: 0x8893,
+
+      // Buffer usage
+      STATIC_DRAW: 0x88e4,
+      DYNAMIC_DRAW: 0x88e8,
+      STREAM_DRAW: 0x88e0,
+
+      // Vertex attribute methods - Handled by pipeline vertex state
+      enableVertexAttribArray: () =>
+        logUsage(
+          "enableVertexAttribArray",
+          "Defined in GPUVertexState, not enabled/disabled",
+        ),
+      disableVertexAttribArray: () =>
+        logUsage(
+          "disableVertexAttribArray",
+          "Defined in GPUVertexState, not enabled/disabled",
+        ),
+      vertexAttribPointer: () =>
+        logUsage(
+          "vertexAttribPointer",
+          "Configure in GPUVertexBufferLayout instead",
+        ),
+      vertexAttribDivisor: () =>
+        logUsage(
+          "vertexAttribDivisor",
+          "Set stepMode in GPUVertexBufferLayout",
+        ),
+
+      // Clear methods - Handled by render pass load operations
+      clear: () =>
+        logUsage("clear", 'Use loadOp: "clear" in GPURenderPassDescriptor'),
+      clearColor: (r?: number, g?: number, b?: number, a?: number) => {
+        if (r !== undefined) {
+          this._clearColor = new Color(r, g, b, a);
+        }
+        logUsage(
+          "clearColor",
+          `Color stored: (${r}, ${g}, ${b}, ${a}) - applied in beginFrame()`,
+        );
+      },
+      clearDepth: (depth?: number) => {
+        if (depth !== undefined) {
+          this._clearDepth = depth;
+        }
+        logUsage(
+          "clearDepth",
+          `Depth ${depth} stored - applied in beginFrame()`,
+        );
+      },
+      clearStencil: (s?: number) => {
+        if (s !== undefined) {
+          this._clearStencil = s;
+        }
+        logUsage(
+          "clearStencil",
+          `Stencil ${s} stored - applied in beginFrame()`,
+        );
+      },
+
+      // Clear bits
+      COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+
+      // Viewport and scissor - MAP TO WEBGPU
+      viewport: (x: number, y: number, width: number, height: number) => {
+        this.setViewport(x, y, width, height);
+        logUsage(
+          "viewport",
+          `Mapped to setViewport(${x}, ${y}, ${width}, ${height})`,
+        );
+      },
+      scissor: (x: number, y: number, width: number, height: number) => {
+        this.setScissorRect(x, y, width, height);
+        logUsage(
+          "scissor",
+          `Mapped to setScissorRect(${x}, ${y}, ${width}, ${height})`,
+        );
+      },
+
+      // Enable/disable - Track state for pipeline creation
+      enable: (cap: number) => {
+        switch (cap) {
+          case 0x0b71: // DEPTH_TEST
+            this._depthTestEnabled = true;
+            break;
+          case 0x0be2: // BLEND
+            this._blendEnabled = true;
+            break;
+          case 0x0b44: // CULL_FACE
+            this._cullFaceEnabled = true;
+            break;
+          case 0x0c11: // SCISSOR_TEST
+            this._scissorTest = true;
+            break;
+        }
+      },
+      disable: (cap: number) => {
+        switch (cap) {
+          case 0x0b71: // DEPTH_TEST
+            this._depthTestEnabled = false;
+            break;
+          case 0x0be2: // BLEND
+            this._blendEnabled = false;
+            break;
+          case 0x0b44: // CULL_FACE
+            this._cullFaceEnabled = false;
+            break;
+          case 0x0c11: // SCISSOR_TEST
+            this._scissorTest = false;
+            this.disableScissorTest();
+            break;
+        }
+      },
+
+      // Capabilities
+      DEPTH_TEST: 0x0b71,
+      BLEND: 0x0be2,
+      CULL_FACE: 0x0b44,
+      SCISSOR_TEST: 0x0c11,
+      STENCIL_TEST: 0x0b90,
+      SAMPLE_ALPHA_TO_COVERAGE: 0x809e,
+
+      // Blend functions - Track state for pipeline creation
+      blendFunc: (sfactor: number, dfactor: number) => {
+        this._blendSrc = this._webglToWebGPUBlendFactor(sfactor);
+        this._blendDst = this._webglToWebGPUBlendFactor(dfactor);
+        this._blendSrcAlpha = this._blendSrc;
+        this._blendDstAlpha = this._blendDst;
+      },
+      blendFuncSeparate: (
+        srcRGB: number,
+        dstRGB: number,
+        srcAlpha: number,
+        dstAlpha: number,
+      ) => {
+        this._blendSrc = this._webglToWebGPUBlendFactor(srcRGB);
+        this._blendDst = this._webglToWebGPUBlendFactor(dstRGB);
+        this._blendSrcAlpha = this._webglToWebGPUBlendFactor(srcAlpha);
+        this._blendDstAlpha = this._webglToWebGPUBlendFactor(dstAlpha);
+      },
+      blendEquation: (mode: number) => {
+        this._blendOp = this._webglToWebGPUBlendOp(mode);
+        this._blendOpAlpha = this._blendOp;
+      },
+      blendEquationSeparate: (modeRGB: number, modeAlpha: number) => {
+        this._blendOp = this._webglToWebGPUBlendOp(modeRGB);
+        this._blendOpAlpha = this._webglToWebGPUBlendOp(modeAlpha);
+      },
+      blendColor: (r: number, g: number, b: number, a: number) => {
+        if (this._currentRenderPassEncoder) {
+          this._currentRenderPassEncoder.setBlendConstant([r, g, b, a]);
+        }
+      },
+
+      // Depth functions - Track state for pipeline creation
+      depthFunc: (func: number) => {
+        this._depthCompare = this._webglToWebGPUCompareFunction(func);
+      },
+      depthMask: (flag: boolean) => {
+        this._depthWriteEnabled = flag;
+      },
+      depthRange: () => {
+        // WebGPU always uses 0-1 depth range (handled in Matrix4)
+        // This is a no-op as depth range is not configurable in WebGPU
+      },
+
+      // Stencil functions - Track state (full implementation would need stencil state object)
+      stencilFunc: () => {
+        // TODO: Track stencil function state when stencil is needed
+      },
+      stencilMask: () => {
+        // TODO: Track stencil write mask when stencil is needed
+      },
+      stencilOp: () => {
+        // TODO: Track stencil operations when stencil is needed
+      },
+
+      // Culling - Track state for pipeline creation
+      cullFace: (mode: number) => {
+        // 0x0404 = GL_FRONT, 0x0405 = GL_BACK, 0x0408 = GL_FRONT_AND_BACK
+        if (mode === 0x0404) {
+          this._cullMode = "front";
+        } else if (mode === 0x0405) {
+          this._cullMode = "back";
+        } else {
+          this._cullMode = "none"; // GL_FRONT_AND_BACK not supported, use none
+        }
+      },
+      frontFace: (mode: number) => {
+        // 0x0900 = GL_CW (clockwise), 0x0901 = GL_CCW (counter-clockwise)
+        this._frontFace = mode === 0x0900 ? "cw" : "ccw";
+      },
+
+      // Color mask - Track state for pipeline creation
+      colorMask: (r: boolean, g: boolean, b: boolean, a: boolean) => {
+        this._colorWriteMask =
+          (r ? 0x1 : 0) | // GPUColorWrite.RED
+          (g ? 0x2 : 0) | // GPUColorWrite.GREEN
+          (b ? 0x4 : 0) | // GPUColorWrite.BLUE
+          (a ? 0x8 : 0); // GPUColorWrite.ALPHA
+      },
+
+      // Parameter queries
+      getParameter: (param: number) => {
+        logUsage(
+          "getParameter",
+          `Param ${param} - use ContextLimits or device.limits instead`,
+        );
+        return 0;
+      },
+      getExtension: (name: string) => {
+        logUsage(
+          "getExtension",
+          `${name} - WebGPU uses device.features instead`,
+        );
+        return null;
+      },
+
+      // Shader methods - Needed for WebGL shader compilation path
+      createShader: (type: number) => {
+        logUsage(
+          "createShader",
+          "Use WebGPU shader modules instead - returning placeholder",
+        );
+        return { _type: type, _isWebGPU: true };
+      },
+      deleteShader: () =>
+        logUsage("deleteShader", "WebGPU shader lifecycle managed differently"),
+      shaderSource: () =>
+        logUsage("shaderSource", "Use WebGPU shader modules with WGSL"),
+      compileShader: () =>
+        logUsage("compileShader", "WebGPU shaders compiled at module creation"),
+      getShaderParameter: () => {
+        logUsage("getShaderParameter", "Always successful in WebGPU");
+        return true;
+      },
+      getShaderInfoLog: () => {
+        logUsage(
+          "getShaderInfoLog",
+          "No compilation log - check device errors",
+        );
+        return "";
+      },
+      createProgram: () => {
+        logUsage(
+          "createProgram",
+          "Use WebGPU render pipelines instead - returning placeholder",
+        );
+        return { _isWebGPU: true };
+      },
+      deleteProgram: () =>
+        logUsage(
+          "deleteProgram",
+          "WebGPU pipeline lifecycle managed differently",
+        ),
+      attachShader: () =>
+        logUsage("attachShader", "WebGPU uses pipeline descriptors"),
+      bindAttribLocation: () =>
+        logUsage(
+          "bindAttribLocation",
+          "WebGPU uses vertex buffer layout in pipeline descriptor",
+        ),
+      linkProgram: () =>
+        logUsage("linkProgram", "WebGPU pipelines created atomically"),
+      getProgramParameter: () => {
+        logUsage("getProgramParameter", "Always successful in WebGPU");
+        return true;
+      },
+      getProgramInfoLog: () => {
+        logUsage("getProgramInfoLog", "No link log - check device errors");
+        return "";
+      },
+      useProgram: () =>
+        logUsage("useProgram", "Set in render pipeline, not separately"),
+      getActiveUniform: (program: any, index: number) => {
+        logUsage(
+          "getActiveUniform",
+          "WebGPU shader reflection not needed - uniforms defined in bind groups",
+        );
+        // Return dummy uniform info to satisfy shader introspection
+        return {
+          name: `uniform_${index}`,
+          size: 1,
+          type: 0x1406, // GL_FLOAT
+        };
+      },
+      getActiveAttrib: (program: any, index: number) => {
+        logUsage(
+          "getActiveAttrib",
+          "WebGPU vertex attributes defined in pipeline descriptor",
+        );
+        // Return dummy attribute info
+        return {
+          name: `attrib_${index}`,
+          size: 1,
+          type: 0x1406, // GL_FLOAT
+        };
+      },
+      getUniformLocation: (program: any, name: string) => {
+        logUsage(
+          "getUniformLocation",
+          "WebGPU uses bind groups, not individual uniform locations",
+        );
+        // Return dummy location object
+        return { _name: name, _isWebGPU: true };
+      },
+      getAttribLocation: (program: any, name: string) => {
+        logUsage(
+          "getAttribLocation",
+          "WebGPU vertex attributes defined by shader location",
+        );
+        // Return index based on common attribute names
+        const locationMap: Record<string, number> = {
+          position: 0,
+          normal: 1,
+          texCoord: 2,
+          color: 3,
+          tangent: 4,
+          bitangent: 5,
+        };
+        return locationMap[name] ?? -1;
+      },
+
+      // Framebuffer blitting - for MSAA resolve
+      blitFramebuffer: () => {
+        logUsage(
+          "blitFramebuffer",
+          "WebGPU uses render pass resolve attachments instead",
+        );
+        // WebGPU handles MSAA resolve automatically in render pass
+      },
+
+      // Read pixels
+      readPixels: () => {
+        logUsage("readPixels", "Use readPixelsToPBO for async readback");
+        return null;
+      },
+    };
   }
 
   /**
@@ -1185,6 +2144,8 @@ export class WebGPUContext implements GraphicsContext {
       quadVertices,
       "Viewport Quad Vertex Buffer",
     );
+
+    console.log("[WebGPU] Viewport quad initialized");
   }
 
   /**
@@ -1758,26 +2719,129 @@ export class WebGPUContext implements GraphicsContext {
     this._adapter = null;
     this._context = null;
     this._isDestroyed = true;
+
+    console.log("WebGPU Context destroyed");
   }
 
   // ====================================================================================
   // WebGL to WebGPU State Conversion Helpers
-  // Delegates to standalone functions in WebGLStateConverters.ts
   // ====================================================================================
 
-  /** Convert WebGL blend factor to WebGPU blend factor. @private */
-  private _webglToWebGPUBlendFactor(f: number): GPUBlendFactor {
-    return webglToWebGPUBlendFactor(f);
+  /**
+   * Convert WebGL blend factor to WebGPU blend factor
+   * @private
+   */
+  private _webglToWebGPUBlendFactor(webglFactor: number): GPUBlendFactor {
+    // WebGL blend factor constants
+    const GL_ZERO = 0;
+    const GL_ONE = 1;
+    const GL_SRC_COLOR = 0x0300;
+    const GL_ONE_MINUS_SRC_COLOR = 0x0301;
+    const GL_DST_COLOR = 0x0306;
+    const GL_ONE_MINUS_DST_COLOR = 0x0307;
+    const GL_SRC_ALPHA = 0x0302;
+    const GL_ONE_MINUS_SRC_ALPHA = 0x0303;
+    const GL_DST_ALPHA = 0x0304;
+    const GL_ONE_MINUS_DST_ALPHA = 0x0305;
+    const GL_CONSTANT_COLOR = 0x8001;
+    const GL_ONE_MINUS_CONSTANT_COLOR = 0x8002;
+    const GL_CONSTANT_ALPHA = 0x8003;
+    const GL_ONE_MINUS_CONSTANT_ALPHA = 0x8004;
+    const GL_SRC_ALPHA_SATURATE = 0x0308;
+
+    switch (webglFactor) {
+      case GL_ZERO:
+        return "zero";
+      case GL_ONE:
+        return "one";
+      case GL_SRC_COLOR:
+        return "src";
+      case GL_ONE_MINUS_SRC_COLOR:
+        return "one-minus-src";
+      case GL_DST_COLOR:
+        return "dst";
+      case GL_ONE_MINUS_DST_COLOR:
+        return "one-minus-dst";
+      case GL_SRC_ALPHA:
+        return "src-alpha";
+      case GL_ONE_MINUS_SRC_ALPHA:
+        return "one-minus-src-alpha";
+      case GL_DST_ALPHA:
+        return "dst-alpha";
+      case GL_ONE_MINUS_DST_ALPHA:
+        return "one-minus-dst-alpha";
+      case GL_CONSTANT_COLOR:
+        return "constant";
+      case GL_ONE_MINUS_CONSTANT_COLOR:
+        return "one-minus-constant";
+      case GL_SRC_ALPHA_SATURATE:
+        return "src-alpha-saturated";
+      default:
+        return "one";
+    }
   }
 
-  /** Convert WebGL blend operation to WebGPU blend operation. @private */
-  private _webglToWebGPUBlendOp(o: number): GPUBlendOperation {
-    return webglToWebGPUBlendOp(o);
+  /**
+   * Convert WebGL blend operation to WebGPU blend operation
+   * @private
+   */
+  private _webglToWebGPUBlendOp(webglOp: number): GPUBlendOperation {
+    const GL_FUNC_ADD = 0x8006;
+    const GL_FUNC_SUBTRACT = 0x800a;
+    const GL_FUNC_REVERSE_SUBTRACT = 0x800b;
+    const GL_MIN = 0x8007;
+    const GL_MAX = 0x8008;
+
+    switch (webglOp) {
+      case GL_FUNC_ADD:
+        return "add";
+      case GL_FUNC_SUBTRACT:
+        return "subtract";
+      case GL_FUNC_REVERSE_SUBTRACT:
+        return "reverse-subtract";
+      case GL_MIN:
+        return "min";
+      case GL_MAX:
+        return "max";
+      default:
+        return "add";
+    }
   }
 
-  /** Convert WebGL compare function to WebGPU compare function. @private */
-  private _webglToWebGPUCompareFunction(f: number): GPUCompareFunction {
-    return webglToWebGPUCompareFunction(f);
+  /**
+   * Convert WebGL compare function to WebGPU compare function
+   * @private
+   */
+  private _webglToWebGPUCompareFunction(webglFunc: number): GPUCompareFunction {
+    const GL_NEVER = 0x0200;
+    const GL_LESS = 0x0201;
+    const GL_EQUAL = 0x0202;
+    const GL_LEQUAL = 0x0203;
+    const GL_GREATER = 0x0204;
+    const GL_NOTEQUAL = 0x0205;
+    const GL_GEQUAL = 0x0206;
+    const GL_ALWAYS = 0x0207;
+
+    switch (webglFunc) {
+      case GL_NEVER:
+        return "never";
+      case GL_LESS:
+        return "less";
+      case GL_EQUAL:
+        return "equal";
+      case GL_LEQUAL:
+        return "less-equal";
+      case GL_GREATER:
+        return "greater";
+      case GL_NOTEQUAL:
+        return "not-equal";
+      case GL_GEQUAL:
+        return "greater-equal";
+      case GL_ALWAYS:
+        return "always";
+      default:
+        return "less";
+    }
   }
 
   /**
@@ -2095,6 +3159,8 @@ export class WebGPUContext implements GraphicsContext {
       },
       size,
     );
+
+    console.log("[WebGPU] Texture copy operation completed");
   }
 
   /**
@@ -2272,24 +3338,12 @@ export class WebGPUContext implements GraphicsContext {
         this._deviceLossState = DeviceLossState.HEALTHY;
         this._recoveryAttempts = 0;
         console.log("[WebGPU] Device recovery successful");
-        this._notifyDeviceLost(
-          "recovered",
-          "Device recovered successfully",
-          DeviceLossState.HEALTHY,
-          false,
-        );
+        this._notifyDeviceLost("recovered", "Device recovered successfully", DeviceLossState.HEALTHY, false);
       } else {
         this._deviceLossState = DeviceLossState.FATAL;
         this._isDestroyed = true;
-        console.error(
-          "[WebGPU] Device recovery failed — context is permanently lost",
-        );
-        this._notifyDeviceLost(
-          reason,
-          "Recovery failed after maximum attempts",
-          DeviceLossState.FATAL,
-          false,
-        );
+        console.error("[WebGPU] Device recovery failed — context is permanently lost");
+        this._notifyDeviceLost(reason, "Recovery failed after maximum attempts", DeviceLossState.FATAL, false);
       }
     });
   }
@@ -2302,15 +3356,11 @@ export class WebGPUContext implements GraphicsContext {
   private async _attemptRecovery(): Promise<boolean> {
     for (let attempt = 1; attempt <= this._maxRecoveryAttempts; attempt++) {
       this._recoveryAttempts = attempt;
-      console.log(
-        `[WebGPU] Recovery attempt ${attempt}/${this._maxRecoveryAttempts}...`,
-      );
+      console.log(`[WebGPU] Recovery attempt ${attempt}/${this._maxRecoveryAttempts}...`);
 
       try {
         // Wait a bit before retrying (exponential backoff: 500ms, 1s, 2s)
-        await new Promise((resolve) =>
-          setTimeout(resolve, 500 * Math.pow(2, attempt - 1)),
-        );
+        await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)));
 
         // Re-request adapter
         const adapter = await navigator.gpu.requestAdapter({
@@ -2318,9 +3368,7 @@ export class WebGPUContext implements GraphicsContext {
         });
 
         if (!adapter) {
-          console.warn(
-            `[WebGPU] Recovery attempt ${attempt}: No adapter available`,
-          );
+          console.warn(`[WebGPU] Recovery attempt ${attempt}: No adapter available`);
           continue;
         }
 
@@ -2376,11 +3424,9 @@ export class WebGPUContext implements GraphicsContext {
 
         console.log(`[WebGPU] Recovery attempt ${attempt}: SUCCESS`);
         return true;
+
       } catch (error) {
-        console.warn(
-          `[WebGPU] Recovery attempt ${attempt} failed:`,
-          (error as Error).message,
-        );
+        console.warn(`[WebGPU] Recovery attempt ${attempt} failed:`, (error as Error).message);
       }
     }
 

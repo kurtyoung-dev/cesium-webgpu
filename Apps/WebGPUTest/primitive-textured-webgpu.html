@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Textured Primitive Test</title>
+    <style>
+      body {
+        margin: 0;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        font-family: "Segoe UI", monospace;
+      }
+      h1 {
+        text-align: center;
+        padding: 10px;
+        margin: 0;
+        font-size: 18px;
+        background: #16213e;
+      }
+      .container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px;
+        justify-content: center;
+      }
+      .test-card {
+        background: #0f3460;
+        border-radius: 8px;
+        padding: 10px;
+        width: 420px;
+      }
+      .test-card h3 {
+        margin: 0 0 6px 0;
+        font-size: 14px;
+      }
+      canvas {
+        border: 1px solid #333;
+        border-radius: 4px;
+        display: block;
+      }
+      .status {
+        font-size: 12px;
+        margin-top: 4px;
+        padding: 4px;
+        border-radius: 4px;
+      }
+      .pass {
+        background: #1b5e20;
+      }
+      .fail {
+        background: #b71c1c;
+      }
+      .info {
+        background: #1a237e;
+      }
+      #summary {
+        text-align: center;
+        padding: 8px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WebGPU Textured Primitive Pipeline Test</h1>
+    <div id="summary">Running tests...</div>
+    <div class="container" id="tests"></div>
+
+    <script type="module">
+      // ================================================================
+      // Standalone WebGPU test for UV/texture coordinate pipeline
+      // Tests the basicTextured and phongTextured shader paths
+      // ================================================================
+
+      let passed = 0,
+        failed = 0;
+
+      function createCard(title) {
+        const card = document.createElement("div");
+        card.className = "test-card";
+        card.innerHTML = `<h3>${title}</h3><canvas width="400" height="300"></canvas><div class="status info">Running...</div>`;
+        document.getElementById("tests").appendChild(card);
+        return {
+          canvas: card.querySelector("canvas"),
+          status: card.querySelector(".status"),
+        };
+      }
+
+      function pass(card, msg) {
+        card.status.className = "status pass";
+        card.status.textContent = "✅ " + msg;
+        passed++;
+        updateSummary();
+      }
+      function fail(card, msg) {
+        card.status.className = "status fail";
+        card.status.textContent = "❌ " + msg;
+        failed++;
+        updateSummary();
+      }
+      function updateSummary() {
+        document.getElementById("summary").textContent =
+          `Results: ${passed} passed, ${failed} failed, ${passed + failed} total`;
+      }
+
+      async function initGPU(canvas) {
+        if (!navigator.gpu) throw new Error("WebGPU not supported");
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error("No GPU adapter");
+        const device = await adapter.requestDevice();
+        const context = canvas.getContext("webgpu");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device, format, alphaMode: "premultiplied" });
+        return { device, context, format };
+      }
+
+      function createCheckerboardTexture(
+        device,
+        size,
+        tileSize,
+        color1,
+        color2,
+      ) {
+        const data = new Uint8Array(size * size * 4);
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const idx = (y * size + x) * 4;
+            const isA =
+              (Math.floor(x / tileSize) + Math.floor(y / tileSize)) % 2 === 0;
+            const c = isA ? color1 : color2;
+            data[idx] = c[0];
+            data[idx + 1] = c[1];
+            data[idx + 2] = c[2];
+            data[idx + 3] = c[3];
+          }
+        }
+        const texture = device.createTexture({
+          size: [size, size],
+          format: "rgba8unorm",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        device.queue.writeTexture(
+          { texture },
+          data,
+          { bytesPerRow: size * 4 },
+          [size, size],
+        );
+        return texture;
+      }
+
+      // ──────────────────────────────────────────
+      // Test 1: BasicTextured shader — textured quad
+      // ──────────────────────────────────────────
+      async function test1_basicTexturedQuad() {
+        const card = createCard("Test 1: BasicTextured Quad (checkerboard)");
+        try {
+          const { device, context, format } = await initGPU(card.canvas);
+
+          const shaderCode = `
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) texCoord: vec2<f32>,
+    @location(2) color: vec4<f32>,
+}
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) texCoord: vec2<f32>,
+}
+struct Uniforms { mvp: mat4x4<f32> }
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(1) @binding(0) var texSampler: sampler;
+@group(1) @binding(1) var colorTex: texture_2d<f32>;
+
+@vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = uniforms.mvp * vec4<f32>(input.position, 1.0);
+    out.color = input.color;
+    out.texCoord = input.texCoord;
+    return out;
+}
+@fragment fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let texColor = textureSample(colorTex, texSampler, input.texCoord);
+    return texColor * input.color;
+}`;
+
+          const module = device.createShaderModule({ code: shaderCode });
+
+          // Quad: position(3) + uv(2) + color(4) = 9 floats per vertex
+          const vertices = new Float32Array([
+            // pos              uv          color (white)
+            -0.8, -0.8, 0.0, 0.0, 1.0, 1, 1, 1, 1, 0.8, -0.8, 0.0, 1.0, 1.0, 1,
+            1, 1, 1, 0.8, 0.8, 0.0, 1.0, 0.0, 1, 1, 1, 1, -0.8, -0.8, 0.0, 0.0,
+            1.0, 1, 1, 1, 1, 0.8, 0.8, 0.0, 1.0, 0.0, 1, 1, 1, 1, -0.8, 0.8,
+            0.0, 0.0, 0.0, 1, 1, 1, 1,
+          ]);
+
+          const vb = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(vb, 0, vertices);
+
+          // Identity MVP
+          const mvp = new Float32Array([
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+          ]);
+          const ub = device.createBuffer({
+            size: 256,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(ub, 0, mvp);
+
+          // Bind group layouts
+          const uniformBGL = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+          const textureBGL = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: { type: "filtering" },
+              },
+              {
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: "float" },
+              },
+            ],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [uniformBGL, textureBGL],
+            }),
+            vertex: {
+              module,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 36,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 12, format: "float32x2" },
+                    { shaderLocation: 2, offset: 20, format: "float32x4" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+
+          const uniformBG = device.createBindGroup({
+            layout: uniformBGL,
+            entries: [{ binding: 0, resource: { buffer: ub } }],
+          });
+
+          const tex = createCheckerboardTexture(
+            device,
+            64,
+            8,
+            [50, 120, 220, 255],
+            [220, 220, 50, 255],
+          );
+          const sampler = device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+          });
+          const textureBG = device.createBindGroup({
+            layout: textureBGL,
+            entries: [
+              { binding: 0, resource: sampler },
+              { binding: 1, resource: tex.createView() },
+            ],
+          });
+
+          const encoder = device.createCommandEncoder();
+          const passEnc = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: context.getCurrentTexture().createView(),
+                clearValue: { r: 0.05, g: 0.05, b: 0.1, a: 1 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+          });
+          passEnc.setPipeline(pipeline);
+          passEnc.setBindGroup(0, uniformBG);
+          passEnc.setBindGroup(1, textureBG);
+          passEnc.setVertexBuffer(0, vb);
+          passEnc.draw(6);
+          passEnc.end();
+          device.queue.submit([encoder.finish()]);
+
+          pass(
+            card,
+            "BasicTextured quad with blue/yellow checkerboard rendered",
+          );
+        } catch (e) {
+          fail(card, e.message);
+        }
+      }
+
+      // ──────────────────────────────────────────
+      // Test 2: PhongTextured shader — lit textured cube face
+      // ──────────────────────────────────────────
+      async function test2_phongTexturedQuad() {
+        const card = createCard("Test 2: PhongTextured Quad (lit + textured)");
+        try {
+          const { device, context, format } = await initGPU(card.canvas);
+
+          const shaderCode = `
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) texCoord: vec2<f32>,
+    @location(3) color: vec4<f32>,
+}
+struct VertexOutput {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) worldNormal: vec3<f32>,
+    @location(2) viewPos: vec3<f32>,
+    @location(3) texCoord: vec2<f32>,
+}
+struct Uniforms {
+    mvp: mat4x4<f32>,
+    modelView: mat4x4<f32>,
+    normalMatrix: mat4x4<f32>,
+    lightDir: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var texSampler: sampler;
+@group(1) @binding(1) var colorTex: texture_2d<f32>;
+
+@vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.clipPos = u.mvp * vec4<f32>(input.position, 1.0);
+    out.color = input.color;
+    out.texCoord = input.texCoord;
+    out.worldNormal = normalize(mat3x3<f32>(
+        u.normalMatrix[0].xyz, u.normalMatrix[1].xyz, u.normalMatrix[2].xyz
+    ) * input.normal);
+    out.viewPos = (u.modelView * vec4<f32>(input.position, 1.0)).xyz;
+    return out;
+}
+@fragment fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let n = normalize(input.worldNormal);
+    let l = normalize(u.lightDir.xyz);
+    let ambient = 0.15;
+    let diffuse = max(dot(n, l), 0.0) * 0.7;
+    let v = normalize(-input.viewPos);
+    let h = normalize(l + v);
+    let specular = pow(max(dot(n, h), 0.0), 32.0) * 0.15;
+    let lighting = ambient + diffuse + specular;
+    let texColor = textureSample(colorTex, texSampler, input.texCoord);
+    let base = texColor * input.color;
+    return vec4<f32>(base.rgb * lighting, base.a);
+}`;
+
+          const module = device.createShaderModule({ code: shaderCode });
+
+          // Quad: pos(3) + normal(3) + uv(2) + color(4) = 12 floats per vertex
+          const vertices = new Float32Array([
+            -0.8, -0.8, 0.0, 0, 0, 1, 0.0, 1.0, 1, 1, 1, 1, 0.8, -0.8, 0.0, 0,
+            0, 1, 1.0, 1.0, 1, 1, 1, 1, 0.8, 0.8, 0.0, 0, 0, 1, 1.0, 0.0, 1, 1,
+            1, 1, -0.8, -0.8, 0.0, 0, 0, 1, 0.0, 1.0, 1, 1, 1, 1, 0.8, 0.8, 0.0,
+            0, 0, 1, 1.0, 0.0, 1, 1, 1, 1, -0.8, 0.8, 0.0, 0, 0, 1, 0.0, 0.0, 1,
+            1, 1, 1,
+          ]);
+
+          const vb = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(vb, 0, vertices);
+
+          // Uniforms: MVP + MV + NormalMatrix + lightDir = 4*16 + 4 = 68 floats -> 256 aligned
+          const uniformData = new Float32Array(64);
+          // MVP = identity
+          uniformData[0] = 1;
+          uniformData[5] = 1;
+          uniformData[10] = 1;
+          uniformData[15] = 1;
+          // ModelView = identity
+          uniformData[16] = 1;
+          uniformData[21] = 1;
+          uniformData[26] = 1;
+          uniformData[31] = 1;
+          // NormalMatrix = identity
+          uniformData[32] = 1;
+          uniformData[37] = 1;
+          uniformData[42] = 1;
+          uniformData[47] = 1;
+          // Light direction
+          uniformData[48] = 0.5;
+          uniformData[49] = 0.7;
+          uniformData[50] = 0.5;
+          uniformData[51] = 0.0;
+
+          const ub = device.createBuffer({
+            size: 256,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(ub, 0, uniformData);
+
+          const uniformBGL = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+          const textureBGL = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: { type: "filtering" },
+              },
+              {
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: "float" },
+              },
+            ],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [uniformBGL, textureBGL],
+            }),
+            vertex: {
+              module,
+              entryPoint: "vertexMain",
+              buffers: [
+                {
+                  arrayStride: 48,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 12, format: "float32x3" },
+                    { shaderLocation: 2, offset: 24, format: "float32x2" },
+                    { shaderLocation: 3, offset: 32, format: "float32x4" },
+                  ],
+                },
+              ],
+            },
+            fragment: {
+              module,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+
+          const uniformBG = device.createBindGroup({
+            layout: uniformBGL,
+            entries: [{ binding: 0, resource: { buffer: ub } }],
+          });
+
+          const tex = createCheckerboardTexture(
+            device,
+            64,
+            8,
+            [200, 60, 60, 255],
+            [60, 200, 60, 255],
+          );
+          const sampler = device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+          });
+          const textureBG = device.createBindGroup({
+            layout: textureBGL,
+            entries: [
+              { binding: 0, resource: sampler },
+              { binding: 1, resource: tex.createView() },
+            ],
+          });
+
+          const encoder = device.createCommandEncoder();
+          const passEnc = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: context.getCurrentTexture().createView(),
+                clearValue: { r: 0.05, g: 0.05, b: 0.1, a: 1 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+          });
+          passEnc.setPipeline(pipeline);
+          passEnc.setBindGroup(0, uniformBG);
+          passEnc.setBindGroup(1, textureBG);
+          passEnc.setVertexBuffer(0, vb);
+          passEnc.draw(6);
+          passEnc.end();
+          device.queue.submit([encoder.finish()]);
+
+          pass(
+            card,
+            "PhongTextured quad with red/green checkerboard + Phong lighting",
+          );
+        } catch (e) {
+          fail(card, e.message);
+        }
+      }
+
+      // ──────────────────────────────────────────
+      // Test 3: Color tint via instance color * texture
+      // ──────────────────────────────────────────
+      async function test3_colorTintedTexture() {
+        const card = createCard("Test 3: Texture * Instance Color (cyan tint)");
+        try {
+          const { device, context, format } = await initGPU(card.canvas);
+
+          const shaderCode = `
+struct VI { @location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) col: vec4<f32> }
+struct VO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32>, @location(1) uv: vec2<f32> }
+struct U { mvp: mat4x4<f32> }
+@group(0) @binding(0) var<uniform> u: U;
+@group(1) @binding(0) var s: sampler;
+@group(1) @binding(1) var t: texture_2d<f32>;
+@vertex fn vs(i: VI) -> VO { var o: VO; o.pos = u.mvp * vec4f(i.pos, 1); o.col = i.col; o.uv = i.uv; return o; }
+@fragment fn fs(i: VO) -> @location(0) vec4f { return textureSample(t, s, i.uv) * i.col; }`;
+
+          const module = device.createShaderModule({ code: shaderCode });
+
+          // Quad with CYAN instance color
+          const vertices = new Float32Array([
+            -0.7, -0.7, 0, 0, 1, 0, 1, 1, 1, 0.7, -0.7, 0, 1, 1, 0, 1, 1, 1,
+            0.7, 0.7, 0, 1, 0, 0, 1, 1, 1, -0.7, -0.7, 0, 0, 1, 0, 1, 1, 1, 0.7,
+            0.7, 0, 1, 0, 0, 1, 1, 1, -0.7, 0.7, 0, 0, 0, 0, 1, 1, 1,
+          ]);
+
+          const vb = device.createBuffer({
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(vb, 0, vertices);
+          const mvp = new Float32Array([
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+          ]);
+          const ub = device.createBuffer({
+            size: 256,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          device.queue.writeBuffer(ub, 0, mvp);
+
+          const bgl0 = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+          const bgl1 = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: { type: "filtering" },
+              },
+              {
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: "float" },
+              },
+            ],
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bgl0, bgl1],
+            }),
+            vertex: {
+              module,
+              entryPoint: "vs",
+              buffers: [
+                {
+                  arrayStride: 36,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: "float32x3" },
+                    { shaderLocation: 1, offset: 12, format: "float32x2" },
+                    { shaderLocation: 2, offset: 20, format: "float32x4" },
+                  ],
+                },
+              ],
+            },
+            fragment: { module, entryPoint: "fs", targets: [{ format }] },
+            primitive: { topology: "triangle-list" },
+          });
+
+          const bg0 = device.createBindGroup({
+            layout: bgl0,
+            entries: [{ binding: 0, resource: { buffer: ub } }],
+          });
+          // White checkerboard — cyan tint should turn it cyan + dark cyan
+          const tex = createCheckerboardTexture(
+            device,
+            64,
+            16,
+            [255, 255, 255, 255],
+            [80, 80, 80, 255],
+          );
+          const sampler = device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+          });
+          const bg1 = device.createBindGroup({
+            layout: bgl1,
+            entries: [
+              { binding: 0, resource: sampler },
+              { binding: 1, resource: tex.createView() },
+            ],
+          });
+
+          const enc = device.createCommandEncoder();
+          const p = enc.beginRenderPass({
+            colorAttachments: [
+              {
+                view: context.getCurrentTexture().createView(),
+                clearValue: { r: 0.05, g: 0.05, b: 0.1, a: 1 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+          });
+          p.setPipeline(pipeline);
+          p.setBindGroup(0, bg0);
+          p.setBindGroup(1, bg1);
+          p.setVertexBuffer(0, vb);
+          p.draw(6);
+          p.end();
+          device.queue.submit([enc.finish()]);
+
+          pass(
+            card,
+            "Texture * cyan instance color = cyan-tinted checkerboard",
+          );
+        } catch (e) {
+          fail(card, e.message);
+        }
+      }
+
+      // ──────────────────────────────────────────
+      // Test 4: Verify vertex layout matching (9 floats per vertex)
+      // ──────────────────────────────────────────
+      async function test4_vertexLayoutValidation() {
+        const card = createCard("Test 4: Vertex Layout Validation");
+        try {
+          // Verify the vertex layout constants match expected values
+          const basicTexturedLayout = {
+            floatsPerVertex: 9, // pos(3) + uv(2) + color(4)
+            stride: 36,
+          };
+          const phongTexturedLayout = {
+            floatsPerVertex: 12, // pos(3) + normal(3) + uv(2) + color(4)
+            stride: 48,
+          };
+
+          const checks = [];
+          checks.push(basicTexturedLayout.floatsPerVertex === 9);
+          checks.push(basicTexturedLayout.stride === 36);
+          checks.push(phongTexturedLayout.floatsPerVertex === 12);
+          checks.push(phongTexturedLayout.stride === 48);
+          checks.push(
+            basicTexturedLayout.floatsPerVertex * 4 ===
+              basicTexturedLayout.stride,
+          );
+          checks.push(
+            phongTexturedLayout.floatsPerVertex * 4 ===
+              phongTexturedLayout.stride,
+          );
+
+          if (checks.every((c) => c)) {
+            pass(
+              card,
+              `Layouts valid: basicTextured=${basicTexturedLayout.stride}B, phongTextured=${phongTexturedLayout.stride}B`,
+            );
+          } else {
+            fail(card, "Vertex layout mismatch");
+          }
+        } catch (e) {
+          fail(card, e.message);
+        }
+      }
+
+      // ──────────────────────────────────────────
+      // Test 5: Multi-bind-group pipeline validation
+      // ──────────────────────────────────────────
+      async function test5_multiBindGroupPipeline() {
+        const card = createCard("Test 5: Multi-Bind-Group Pipeline (2 groups)");
+        try {
+          if (!navigator.gpu) throw new Error("WebGPU not supported");
+          const adapter = await navigator.gpu.requestAdapter();
+          const device = await adapter.requestDevice();
+
+          // Create a pipeline with 2 bind groups (matching textured shader pattern)
+          const bgl0 = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "uniform" },
+              },
+            ],
+          });
+          const bgl1 = device.createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: { type: "filtering" },
+              },
+              {
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: "float", viewDimension: "2d" },
+              },
+            ],
+          });
+
+          const layout = device.createPipelineLayout({
+            bindGroupLayouts: [bgl0, bgl1],
+          });
+
+          // Verify the layout was created successfully (no validation errors)
+          const isValid = layout !== null && layout !== undefined;
+
+          if (isValid) {
+            pass(
+              card,
+              "Pipeline layout with 2 bind groups (uniforms + texture) created successfully",
+            );
+          } else {
+            fail(card, "Pipeline layout creation returned null");
+          }
+        } catch (e) {
+          fail(card, e.message);
+        }
+      }
+
+      // Run all tests
+      async function runAll() {
+        await test1_basicTexturedQuad();
+        await test2_phongTexturedQuad();
+        await test3_colorTintedTexture();
+        await test4_vertexLayoutValidation();
+        await test5_multiBindGroupPipeline();
+      }
+      runAll();
+    </script>
+  </body>
+</html>

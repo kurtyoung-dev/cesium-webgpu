@@ -261,6 +261,9 @@ const workspaceSourceFiles = {
     "!packages/engine/Source/ThirdParty/Workers/**.js",
     "!packages/engine/Source/ThirdParty/google-earth-dbroot-parser.js",
     "!packages/engine/Source/ThirdParty/_*",
+    // Exclude private WebGPU modules that use named exports (no default export)
+    "!packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js",
+    "!packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveShaders.js",
   ],
   widgets: ["packages/widgets/Source/**/*.js"],
 };

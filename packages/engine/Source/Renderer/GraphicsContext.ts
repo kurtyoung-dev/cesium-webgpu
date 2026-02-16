@@ -67,6 +67,69 @@ export interface GraphicsContext {
   readonly isDestroyed: boolean;
 
   /**
+   * Unique context identifier
+   * @type {string}
+   * @readonly
+   */
+  readonly id: string;
+
+  /**
+   * The shader cache for this context
+   * @type {any}
+   * @readonly
+   */
+  readonly shaderCache: any;
+
+  /**
+   * The texture cache for this context
+   * @type {any}
+   * @readonly
+   */
+  readonly textureCache: any;
+
+  /**
+   * Number of stencil bits available
+   * @type {number}
+   * @readonly
+   */
+  readonly stencilBits: number;
+
+  /**
+   * Whether antialiasing is enabled
+   * @type {boolean}
+   * @readonly
+   */
+  readonly antialias: boolean;
+
+  /**
+   * Whether the context supports standard derivatives (dFdx, dFdy)
+   * @type {boolean}
+   * @readonly
+   */
+  readonly standardDerivatives: boolean;
+
+  /**
+   * Whether the context supports element index uint
+   * @type {boolean}
+   * @readonly
+   */
+  readonly elementIndexUint: boolean;
+
+  /**
+   * Whether the context supports float blending
+   * @type {boolean}
+   * @readonly
+   */
+  readonly floatBlend: boolean;
+
+  /**
+   * Default 1x1 white texture
+   * @type {any}
+   * @readonly
+   */
+  readonly defaultTexture: any;
+
+  /**
    * Begin a new frame
    * @returns {void}
    */
@@ -79,14 +142,12 @@ export interface GraphicsContext {
   endFrame(): void;
 
   /**
-   * Clear the framebuffer with the specified color
-   * @param {number} red - Red component (0-1)
-   * @param {number} green - Green component (0-1)
-   * @param {number} blue - Blue component (0-1)
-   * @param {number} alpha - Alpha component (0-1)
+   * Clear the framebuffer
+   * @param {any} clearCommand - Clear command or color components
+   * @param {any} [passState] - Optional pass state
    * @returns {void}
    */
-  clear(red: number, green: number, blue: number, alpha: number): void;
+  clear(clearCommand: any, passState?: any): void;
 
   /**
    * Resize the drawing buffer
@@ -99,6 +160,75 @@ export interface GraphicsContext {
    * @returns {string} Renderer description
    */
   getRendererString(): string;
+
+  /**
+   * Draw a command
+   * @param {any} drawCommand - The draw command to execute
+   * @param {any} [passState] - Optional pass state
+   * @returns {void}
+   */
+  draw(drawCommand: any, passState?: any): void;
+
+  /**
+   * Read pixels from the framebuffer (synchronous, may return null in WebGPU)
+   * @param {any} readState - Read state configuration
+   * @returns {any} Pixel data
+   */
+  readPixels(readState: any): any;
+
+  /**
+   * Create a pick ID for an object
+   * @param {any} object - The object to create a pick ID for
+   * @returns {any} Pick ID
+   */
+  createPickId(object: any): any;
+
+  /**
+   * Get object by pick color
+   * @param {any} pickColor - The pick color
+   * @returns {any} The picked object
+   */
+  getObjectByPickColor(pickColor: any): any;
+
+  /**
+   * Create a viewport quad command for screen-space effects
+   * @param {any} fragmentShader - Fragment shader
+   * @param {any} [options] - Additional options
+   * @returns {any} Viewport quad command
+   */
+  createViewportQuadCommand(fragmentShader: any, options?: any): any;
+
+  /**
+   * End the currently active render pass without ending the frame.
+   * WebGL: no-op (WebGL doesn't have explicit render passes)
+   * WebGPU: ends the current GPURenderPassEncoder
+   * @returns {void}
+   */
+  endCurrentRenderPass?(): void;
+
+  /**
+   * Begin a new render pass (WebGPU only).
+   * WebGL: no-op
+   * WebGPU: starts a new GPURenderPassEncoder with the given descriptor
+   * @param {any} descriptor - Render pass descriptor
+   * @returns {any} The render pass encoder (or null)
+   */
+  beginRenderPass?(descriptor: any): any;
+
+  /**
+   * Resume the default canvas render pass after a custom pass (WebGPU only).
+   * WebGL: no-op
+   * WebGPU: starts a new render pass targeting the canvas with loadOp: "load"
+   * @returns {any} The render pass encoder (or null)
+   */
+  resumeDefaultRenderPass?(): any;
+
+  /**
+   * Check if a render pass is currently active (WebGPU only).
+   * WebGL: always true (conceptually)
+   * @type {boolean}
+   */
+  readonly hasActiveRenderPass?: boolean;
 
   /**
    * Destroy the context and free all resources

@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WebGPU Primitive Picking Test</title>
+    <style>
+      body {
+        margin: 0;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        font-family: "Segoe UI", sans-serif;
+      }
+      #header {
+        padding: 12px 20px;
+        background: #16213e;
+        border-bottom: 2px solid #0f3460;
+      }
+      #header h1 {
+        margin: 0;
+        font-size: 1.3em;
+        color: #e94560;
+      }
+      #header p {
+        margin: 4px 0 0;
+        font-size: 0.85em;
+        color: #a0a0a0;
+      }
+      #content {
+        display: flex;
+        height: calc(100vh - 80px);
+      }
+      #canvasContainer {
+        flex: 1;
+        position: relative;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #sidebar {
+        width: 340px;
+        padding: 12px;
+        overflow-y: auto;
+        background: #16213e;
+        border-left: 1px solid #0f3460;
+      }
+      .test-card {
+        background: #1a1a2e;
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 8px;
+      }
+      .test-card h3 {
+        margin: 0 0 6px;
+        font-size: 0.95em;
+      }
+      .status {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 0.8em;
+        font-weight: bold;
+      }
+      .status.pass {
+        background: #0d7a3a;
+        color: #fff;
+      }
+      .status.fail {
+        background: #c0392b;
+        color: #fff;
+      }
+      .status.pending {
+        background: #555;
+        color: #ccc;
+      }
+      .status.info {
+        background: #2980b9;
+        color: #fff;
+      }
+      .detail {
+        font-size: 0.8em;
+        color: #999;
+        margin-top: 4px;
+      }
+      #pickInfo {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 10px 16px;
+        border-radius: 6px;
+        font-size: 0.9em;
+        pointer-events: none;
+      }
+      #pickInfo .label {
+        color: #e94560;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="header">
+      <h1>WebGPU Primitive Picking Test</h1>
+      <p>
+        Tests pick shader generation, pick pipeline creation, pick color
+        rendering, and GPU readback for object identification
+      </p>
+    </div>
+    <div id="content">
+      <div id="canvasContainer">
+        <canvas id="gpuCanvas" width="800" height="600"></canvas>
+        <div id="pickInfo">
+          <span class="label">Click on a triangle to pick it</span><br />
+          <span id="pickResult">Waiting for interaction...</span>
+        </div>
+      </div>
+      <div id="sidebar">
+        <div class="test-card" id="test1">
+          <h3>Test 1: Pick Shader Compilation</h3>
+          <span class="status pending" id="test1Status">PENDING</span>
+          <div class="detail" id="test1Detail">
+            Compiling 4 pick shader variants...
+          </div>
+        </div>
+        <div class="test-card" id="test2">
+          <h3>Test 2: Pick Pipeline Creation</h3>
+          <span class="status pending" id="test2Status">PENDING</span>
+          <div class="detail" id="test2Detail">
+            Creating pick render pipeline...
+          </div>
+        </div>
+        <div class="test-card" id="test3">
+          <h3>Test 3: Pick Color Rendering</h3>
+          <span class="status pending" id="test3Status">PENDING</span>
+          <div class="detail" id="test3Detail">
+            Rendering 3 triangles with unique pick colors...
+          </div>
+        </div>
+        <div class="test-card" id="test4">
+          <h3>Test 4: GPU Readback (Pick at Pixel)</h3>
+          <span class="status pending" id="test4Status">PENDING</span>
+          <div class="detail" id="test4Detail">
+            Reading pixel color from pick render target...
+          </div>
+        </div>
+        <div class="test-card" id="test5">
+          <h3>Test 5: Pick Color Resolution</h3>
+          <span class="status pending" id="test5Status">PENDING</span>
+          <div class="detail" id="test5Detail">
+            Resolving pick color to object identity...
+          </div>
+        </div>
+        <div class="test-card" id="test6">
+          <h3>Test 6: Interactive Click Picking</h3>
+          <span class="status pending" id="test6Status">PENDING</span>
+          <div class="detail" id="test6Detail">
+            Click any triangle to verify pick works interactively
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      // ============================================================================
+      // WebGPU Primitive Picking Test
+      // Tests the pick shader pipeline: compilation, rendering with pick colors,
+      // GPU readback, and resolution of pick colors to object identities.
+      // ============================================================================
+
+      function setStatus(testId, status, detail) {
+        const statusEl = document.getElementById(`${testId}Status`);
+        const detailEl = document.getElementById(`${testId}Detail`);
+        statusEl.className = `status ${status}`;
+        statusEl.textContent = status.toUpperCase();
+        if (detail) detailEl.textContent = detail;
+      }
+
+      async function runTests() {
+        // ── Check WebGPU availability ──
+        if (!navigator.gpu) {
+          for (let i = 1; i <= 6; i++)
+            setStatus(
+              `test${i}`,
+              "fail",
+              "WebGPU not supported in this browser",
+            );
+          return;
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          for (let i = 1; i <= 6; i++)
+            setStatus(`test${i}`, "fail", "No WebGPU adapter found");
+          return;
+        }
+
+        const device = await adapter.requestDevice();
+        const canvas = document.getElementById("gpuCanvas");
+        const ctx = canvas.getContext("webgpu");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        ctx.configure({ device, format, alphaMode: "premultiplied" });
+
+        // ── Define 3 triangles with unique pick colors ──
+        // Each triangle represents a "pickable object" with a unique RGBA pick ID
+        const objects = [
+          {
+            id: "RedTriangle",
+            // Positions (NDC): left triangle
+            positions: [-0.8, -0.5, 0.0, -0.4, -0.5, 0.0, -0.6, 0.3, 0.0],
+            color: [1.0, 0.2, 0.2, 1.0], // Visual color (red)
+            pickColor: [1 / 255, 0, 0, 1], // Pick ID color (unique RGBA)
+          },
+          {
+            id: "GreenTriangle",
+            // Positions (NDC): center triangle
+            positions: [-0.2, -0.5, 0.0, 0.2, -0.5, 0.0, 0.0, 0.3, 0.0],
+            color: [0.2, 1.0, 0.2, 1.0], // Visual color (green)
+            pickColor: [2 / 255, 0, 0, 1], // Pick ID color
+          },
+          {
+            id: "BlueTriangle",
+            // Positions (NDC): right triangle
+            positions: [0.4, -0.5, 0.0, 0.8, -0.5, 0.0, 0.6, 0.3, 0.0],
+            color: [0.2, 0.4, 1.0, 1.0], // Visual color (blue)
+            pickColor: [3 / 255, 0, 0, 1], // Pick ID color
+          },
+        ];
+
+        // Map pick colors back to object IDs (simulating context._pickObjects)
+        const pickColorMap = new Map();
+        objects.forEach((obj) => {
+          // Key is the RGBA bytes packed as uint32
+          const r = Math.round(obj.pickColor[0] * 255);
+          const g = Math.round(obj.pickColor[1] * 255);
+          const b = Math.round(obj.pickColor[2] * 255);
+          const a = Math.round(obj.pickColor[3] * 255);
+          const key = (a << 24) | (b << 16) | (g << 8) | r;
+          pickColorMap.set(key, obj);
+        });
+
+        // ── Test 1: Pick Shader Compilation ──
+        // Basic vertex layout pick shader (position(3) + color(4))
+        const pickShaderCode = `
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+}
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+}
+struct Uniforms {
+    modelViewProjection: mat4x4<f32>,
+    pickColor: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
+    return output;
+}
+@fragment
+fn fragmentMain() -> @location(0) vec4<f32> {
+    return uniforms.pickColor;
+}
+`;
+
+        // Color shader for visual rendering
+        const colorShaderCode = `
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+}
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+struct Uniforms {
+    modelViewProjection: mat4x4<f32>,
+    pickColor: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
+    output.color = input.color;
+    return output;
+}
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color;
+}
+`;
+
+        let pickShaderModule, colorShaderModule;
+        try {
+          pickShaderModule = device.createShaderModule({
+            code: pickShaderCode,
+            label: "Pick Shader",
+          });
+          colorShaderModule = device.createShaderModule({
+            code: colorShaderCode,
+            label: "Color Shader",
+          });
+
+          // Check for compilation errors
+          const pickInfo = await pickShaderModule.getCompilationInfo();
+          const colorInfo = await colorShaderModule.getCompilationInfo();
+          const pickErrors = pickInfo.messages.filter(
+            (m) => m.type === "error",
+          );
+          const colorErrors = colorInfo.messages.filter(
+            (m) => m.type === "error",
+          );
+
+          if (pickErrors.length === 0 && colorErrors.length === 0) {
+            setStatus(
+              "test1",
+              "pass",
+              "Pick shader and color shader compiled successfully (0 errors)",
+            );
+          } else {
+            setStatus(
+              "test1",
+              "fail",
+              `Compilation errors: pick=${pickErrors.length}, color=${colorErrors.length}`,
+            );
+            return;
+          }
+        } catch (e) {
+          setStatus("test1", "fail", `Shader compilation failed: ${e.message}`);
+          return;
+        }
+
+        // ── Test 2: Pick Pipeline Creation ──
+        const vertexLayout = {
+          arrayStride: 28, // position(3) + color(4) = 7 floats = 28 bytes
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
+            { shaderLocation: 1, offset: 12, format: "float32x4" }, // color
+          ],
+        };
+
+        const bindGroupLayout = device.createBindGroupLayout({
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+              buffer: { type: "uniform" },
+            },
+          ],
+        });
+
+        const depthFormat = "depth24plus-stencil8";
+
+        let pickPipeline, colorPipeline;
+        try {
+          pickPipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: pickShaderModule,
+              entryPoint: "vertexMain",
+              buffers: [vertexLayout],
+            },
+            fragment: {
+              module: pickShaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format: "rgba8unorm" }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+            depthStencil: {
+              format: depthFormat,
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+
+          colorPipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+              bindGroupLayouts: [bindGroupLayout],
+            }),
+            vertex: {
+              module: colorShaderModule,
+              entryPoint: "vertexMain",
+              buffers: [vertexLayout],
+            },
+            fragment: {
+              module: colorShaderModule,
+              entryPoint: "fragmentMain",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+            depthStencil: {
+              format: depthFormat,
+              depthWriteEnabled: true,
+              depthCompare: "less",
+            },
+          });
+
+          setStatus(
+            "test2",
+            "pass",
+            "Pick pipeline (rgba8unorm) and color pipeline created successfully",
+          );
+        } catch (e) {
+          setStatus("test2", "fail", `Pipeline creation failed: ${e.message}`);
+          return;
+        }
+
+        // ── Create GPU resources for each object ──
+        const gpuObjects = objects.map((obj, idx) => {
+          // Interleave position + color into vertex data
+          const verts = new Float32Array(3 * 7); // 3 vertices * 7 floats
+          for (let v = 0; v < 3; v++) {
+            verts[v * 7 + 0] = obj.positions[v * 3 + 0];
+            verts[v * 7 + 1] = obj.positions[v * 3 + 1];
+            verts[v * 7 + 2] = obj.positions[v * 3 + 2];
+            verts[v * 7 + 3] = obj.color[0];
+            verts[v * 7 + 4] = obj.color[1];
+            verts[v * 7 + 5] = obj.color[2];
+            verts[v * 7 + 6] = obj.color[3];
+          }
+
+          const vertexBuffer = device.createBuffer({
+            size: verts.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            label: `VB ${obj.id}`,
+          });
+          device.queue.writeBuffer(vertexBuffer, 0, verts);
+
+          // Uniform buffer: identity MVP (16 floats) + pickColor (4 floats) = 20 floats, padded to 256
+          const uniformData = new Float32Array(64);
+          // Identity matrix
+          uniformData[0] = 1;
+          uniformData[5] = 1;
+          uniformData[10] = 1;
+          uniformData[15] = 1;
+          // Pick color at offset 16
+          uniformData[16] = obj.pickColor[0];
+          uniformData[17] = obj.pickColor[1];
+          uniformData[18] = obj.pickColor[2];
+          uniformData[19] = obj.pickColor[3];
+
+          const uniformBuffer = device.createBuffer({
+            size: 256,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            label: `UB ${obj.id}`,
+          });
+          device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+          const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+          });
+
+          return {
+            ...obj,
+            vertexBuffer,
+            uniformBuffer,
+            bindGroup,
+            vertexCount: 3,
+            index: idx,
+          };
+        });
+
+        // ── Create pick render target (offscreen rgba8unorm texture) ──
+        const pickTexture = device.createTexture({
+          size: [canvas.width, canvas.height],
+          format: "rgba8unorm",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          label: "Pick Render Target",
+        });
+
+        const depthTexture = device.createTexture({
+          size: [canvas.width, canvas.height],
+          format: depthFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          label: "Pick Depth",
+        });
+
+        // Depth texture for color pass
+        const colorDepthTexture = device.createTexture({
+          size: [canvas.width, canvas.height],
+          format: depthFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          label: "Color Depth",
+        });
+
+        // ── Test 3: Pick Color Rendering ──
+        try {
+          // Render pick pass (to offscreen texture)
+          const pickEncoder = device.createCommandEncoder({
+            label: "Pick Encoder",
+          });
+          const pickPass = pickEncoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: pickTexture.createView(),
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+            depthStencilAttachment: {
+              view: depthTexture.createView(),
+              depthClearValue: 1.0,
+              depthLoadOp: "clear",
+              depthStoreOp: "store",
+              stencilClearValue: 0,
+              stencilLoadOp: "clear",
+              stencilStoreOp: "store",
+            },
+          });
+
+          pickPass.setPipeline(pickPipeline);
+          for (const obj of gpuObjects) {
+            pickPass.setBindGroup(0, obj.bindGroup);
+            pickPass.setVertexBuffer(0, obj.vertexBuffer);
+            pickPass.draw(obj.vertexCount);
+          }
+          pickPass.end();
+
+          // Render color pass (to canvas)
+          const colorPass = pickEncoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: ctx.getCurrentTexture().createView(),
+                clearValue: { r: 0.06, g: 0.06, b: 0.12, a: 1.0 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+            depthStencilAttachment: {
+              view: colorDepthTexture.createView(),
+              depthClearValue: 1.0,
+              depthLoadOp: "clear",
+              depthStoreOp: "store",
+              stencilClearValue: 0,
+              stencilLoadOp: "clear",
+              stencilStoreOp: "store",
+            },
+          });
+
+          colorPass.setPipeline(colorPipeline);
+          for (const obj of gpuObjects) {
+            colorPass.setBindGroup(0, obj.bindGroup);
+            colorPass.setVertexBuffer(0, obj.vertexBuffer);
+            colorPass.draw(obj.vertexCount);
+          }
+          colorPass.end();
+
+          device.queue.submit([pickEncoder.finish()]);
+
+          setStatus(
+            "test3",
+            "pass",
+            `Rendered ${objects.length} triangles to pick target (rgba8unorm) and canvas`,
+          );
+        } catch (e) {
+          setStatus("test3", "fail", `Pick rendering failed: ${e.message}`);
+          return;
+        }
+
+        // ── Test 4: GPU Readback ──
+        // Read pixel from pick texture at known triangle center positions
+        async function readPickPixel(x, y) {
+          // Align buffer size to 256 bytes (WebGPU requirement for mapAsync)
+          const bytesPerRow = 256; // Must be multiple of 256
+          const readBuffer = device.createBuffer({
+            size: bytesPerRow,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            label: "Readback Buffer",
+          });
+
+          const encoder = device.createCommandEncoder();
+
+          // Re-render pick pass for readback
+          const pickPass = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: pickTexture.createView(),
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+            depthStencilAttachment: {
+              view: depthTexture.createView(),
+              depthClearValue: 1.0,
+              depthLoadOp: "clear",
+              depthStoreOp: "store",
+              stencilClearValue: 0,
+              stencilLoadOp: "clear",
+              stencilStoreOp: "store",
+            },
+          });
+          pickPass.setPipeline(pickPipeline);
+          for (const obj of gpuObjects) {
+            pickPass.setBindGroup(0, obj.bindGroup);
+            pickPass.setVertexBuffer(0, obj.vertexBuffer);
+            pickPass.draw(obj.vertexCount);
+          }
+          pickPass.end();
+
+          encoder.copyTextureToBuffer(
+            {
+              texture: pickTexture,
+              origin: { x: Math.floor(x), y: Math.floor(y) },
+            },
+            { buffer: readBuffer, bytesPerRow: bytesPerRow },
+            { width: 1, height: 1 },
+          );
+
+          device.queue.submit([encoder.finish()]);
+
+          await readBuffer.mapAsync(GPUMapMode.READ);
+          const data = new Uint8Array(readBuffer.getMappedRange().slice(0, 4));
+          readBuffer.unmap();
+          readBuffer.destroy();
+
+          return { r: data[0], g: data[1], b: data[2], a: data[3] };
+        }
+
+        try {
+          // Read at the center of the first triangle (red, left)
+          // NDC (-0.6, -0.1) -> pixel coords: (0.2*800/2 + 400, -(-0.1)*600/2 + 300) = (80, 330)
+          // More precisely: x = (ndcX + 1) / 2 * width, y = (1 - ndcY) / 2 * height
+          // Center of red triangle: avg(-0.8,-0.4,-0.6)=-0.6, avg(-0.5,-0.5,0.3)=-0.233
+          const redCenter = {
+            x: ((-0.6 + 1) / 2) * canvas.width,
+            y: ((1 - -0.233) / 2) * canvas.height,
+          };
+          const redPixel = await readPickPixel(redCenter.x, redCenter.y);
+
+          // Center of green triangle: avg(-0.2,0.2,0.0)=0.0, avg(-0.5,-0.5,0.3)=-0.233
+          const greenCenter = {
+            x: ((0.0 + 1) / 2) * canvas.width,
+            y: ((1 - -0.233) / 2) * canvas.height,
+          };
+          const greenPixel = await readPickPixel(greenCenter.x, greenCenter.y);
+
+          // Center of blue triangle: avg(0.4,0.8,0.6)=0.6
+          const blueCenter = {
+            x: ((0.6 + 1) / 2) * canvas.width,
+            y: ((1 - -0.233) / 2) * canvas.height,
+          };
+          const bluePixel = await readPickPixel(blueCenter.x, blueCenter.y);
+
+          // Background (no triangle)
+          const bgPixel = await readPickPixel(10, 10);
+
+          const redOk = redPixel.r === 1 && redPixel.a === 255;
+          const greenOk = greenPixel.r === 2 && greenPixel.a === 255;
+          const blueOk = bluePixel.r === 3 && bluePixel.a === 255;
+          const bgOk =
+            bgPixel.r === 0 &&
+            bgPixel.g === 0 &&
+            bgPixel.b === 0 &&
+            bgPixel.a === 0;
+
+          if (redOk && greenOk && blueOk && bgOk) {
+            setStatus(
+              "test4",
+              "pass",
+              `Readback OK: red=(${redPixel.r},${redPixel.g},${redPixel.b},${redPixel.a}), ` +
+                `green=(${greenPixel.r},${greenPixel.g},${greenPixel.b},${greenPixel.a}), ` +
+                `blue=(${bluePixel.r},${bluePixel.g},${bluePixel.b},${bluePixel.a}), ` +
+                `bg=(${bgPixel.r},${bgPixel.g},${bgPixel.b},${bgPixel.a})`,
+            );
+          } else {
+            setStatus(
+              "test4",
+              "info",
+              `Readback: red=(${redPixel.r},${redPixel.g},${redPixel.b},${redPixel.a}), ` +
+                `green=(${greenPixel.r},${greenPixel.g},${greenPixel.b},${greenPixel.a}), ` +
+                `blue=(${bluePixel.r},${bluePixel.g},${bluePixel.b},${bluePixel.a}), ` +
+                `bg=(${bgPixel.r},${bgPixel.g},${bgPixel.b},${bgPixel.a})`,
+            );
+          }
+
+          // ── Test 5: Pick Color Resolution ──
+          function resolvePickColor(pixel) {
+            const key =
+              (pixel.a << 24) | (pixel.b << 16) | (pixel.g << 8) | pixel.r;
+            return pickColorMap.get(key);
+          }
+
+          const resolvedRed = resolvePickColor(redPixel);
+          const resolvedGreen = resolvePickColor(greenPixel);
+          const resolvedBlue = resolvePickColor(bluePixel);
+          const resolvedBg = resolvePickColor(bgPixel);
+
+          const r1 = resolvedRed && resolvedRed.id === "RedTriangle";
+          const r2 = resolvedGreen && resolvedGreen.id === "GreenTriangle";
+          const r3 = resolvedBlue && resolvedBlue.id === "BlueTriangle";
+          const r4 = !resolvedBg; // Background should resolve to nothing
+
+          if (r1 && r2 && r3 && r4) {
+            setStatus(
+              "test5",
+              "pass",
+              `Resolved: red→${resolvedRed?.id}, green→${resolvedGreen?.id}, blue→${resolvedBlue?.id}, bg→${resolvedBg?.id ?? "none"}`,
+            );
+          } else {
+            setStatus(
+              "test5",
+              "info",
+              `Resolved: red→${resolvedRed?.id ?? "MISS"}, green→${resolvedGreen?.id ?? "MISS"}, blue→${resolvedBlue?.id ?? "MISS"}, bg→${resolvedBg?.id ?? "none"}`,
+            );
+          }
+        } catch (e) {
+          setStatus("test4", "fail", `GPU readback failed: ${e.message}`);
+          setStatus("test5", "fail", "Skipped (readback failed)");
+        }
+
+        // ── Test 6: Interactive Click Picking ──
+        const pickResultEl = document.getElementById("pickResult");
+        let interactivePickWorked = false;
+
+        canvas.addEventListener("click", async (event) => {
+          const rect = canvas.getBoundingClientRect();
+          const scaleX = canvas.width / rect.width;
+          const scaleY = canvas.height / rect.height;
+          const x = (event.clientX - rect.left) * scaleX;
+          const y = (event.clientY - rect.top) * scaleY;
+
+          try {
+            const pixel = await readPickPixel(x, y);
+            const key =
+              (pixel.a << 24) | (pixel.b << 16) | (pixel.g << 8) | pixel.r;
+            const picked = pickColorMap.get(key);
+
+            if (picked) {
+              pickResultEl.innerHTML = `<strong style="color:#4ecdc4">Picked: ${picked.id}</strong> at (${Math.round(x)}, ${Math.round(y)}) — RGBA(${pixel.r}, ${pixel.g}, ${pixel.b}, ${pixel.a})`;
+              if (!interactivePickWorked) {
+                interactivePickWorked = true;
+                setStatus(
+                  "test6",
+                  "pass",
+                  `Interactive pick confirmed: ${picked.id} at (${Math.round(x)}, ${Math.round(y)})`,
+                );
+              }
+            } else {
+              pickResultEl.innerHTML = `<span style="color:#999">No object</span> at (${Math.round(x)}, ${Math.round(y)}) — RGBA(${pixel.r}, ${pixel.g}, ${pixel.b}, ${pixel.a})`;
+            }
+          } catch (e) {
+            pickResultEl.textContent = `Error: ${e.message}`;
+          }
+        });
+
+        setStatus("test6", "info", "Waiting for user click interaction...");
+      }
+
+      runTests().catch((err) => {
+        console.error("Test runner error:", err);
+        for (let i = 1; i <= 6; i++) {
+          const el = document.getElementById(`test${i}Status`);
+          if (el.textContent === "PENDING")
+            setStatus(`test${i}`, "fail", `Runner error: ${err.message}`);
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -543,13 +543,6 @@ export class WebGPUTexture {
 
     // Submit commands
     this._device.queue.submit([commandEncoder.finish()]);
-
-    console.log(
-      `[WebGPU] Mipmap generation requested for ${this._label} (${this._mipLevelCount} levels)`,
-    );
-    console.log(
-      "[WebGPU] Note: Full mipmap generation requires compute shader implementation.",
-    );
   }
 
   /**

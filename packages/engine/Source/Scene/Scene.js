@@ -2340,19 +2340,10 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
       return;
     }
 
-    // Execute WebGPU command if it has the execute method
-    if (defined(command.execute) && typeof command.execute === "function") {
-      // Check if this is a WebGPUDrawCommand (has execute that takes renderPass)
-      // Try to execute - if it's a WebGL command, it will fail gracefully
-      try {
-        command.execute(renderPass);
-      } catch (error) {
-        // Log error but don't crash - command might be WebGL-only
-        console.warn(
-          "WebGPU command execution failed (may be WebGL-only command):",
-          error.message,
-        );
-      }
+    // Only execute proper WebGPU draw commands (identified by isWebGPUDrawCommand flag)
+    // Skip WebGL-format commands silently (expected during transition)
+    if (command.isWebGPUDrawCommand === true) {
+      command.execute(renderPass);
     }
     return;
   }
@@ -3823,17 +3814,11 @@ function updateShadowMaps(scene) {
 function updateAndRenderPrimitives(scene) {
   const frameState = scene._frameState;
 
-  console.log("[Scene] updateAndRenderPrimitives called");
-  console.log("[Scene] frameState.passes.render:", frameState.passes.render);
-  console.log("[Scene] frameState.passes.pick:", frameState.passes.pick);
-
   // Reset per-frame edge visibility request flag before primitives update
   frameState.edgeVisibilityRequested = false;
 
   scene._groundPrimitives.update(frameState);
-  console.log("[Scene] About to call scene._primitives.update()");
   scene._primitives.update(frameState);
-  console.log("[Scene] Finished scene._primitives.update()");
 
   // If any primitive requested edge visibility this frame, flip the scene flag lazily.
   if (
@@ -4548,11 +4533,6 @@ Scene.prototype.render = function (time) {
     shouldRender = shouldRender || difference > this.maximumRenderTimeChange;
   }
 
-  console.log("[Scene.render] shouldRender:", shouldRender);
-  console.log("[Scene.render] requestRenderMode:", this.requestRenderMode);
-  console.log("[Scene.render] _renderRequested:", this._renderRequested);
-  console.log("[Scene.render] cameraChanged:", cameraChanged);
-
   if (shouldRender) {
     this._lastRenderTime = JulianDate.clone(time, this._lastRenderTime);
     this._renderRequested = false;
@@ -4585,11 +4565,9 @@ Scene.prototype.render = function (time) {
   this._postUpdate.raiseEvent(this, time);
 
   if (shouldRender) {
-    console.log("[Scene.render] About to call tryAndCatchError(this, render)");
     this._preRender.raiseEvent(this, time);
     frameState.creditDisplay.beginFrame();
     tryAndCatchError(this, render);
-    console.log("[Scene.render] Finished tryAndCatchError(this, render)");
   }
 
   /**

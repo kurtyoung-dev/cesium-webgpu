@@ -31,9 +31,11 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import VertexArray from "../Renderer/VertexArray.js";
-import WebGPUDrawCommand from "../Renderer/WebGPU/WebGPUDrawCommand.js";
-import WebGPUBuffer from "../Renderer/WebGPU/WebGPUBuffer.js";
-import WebGPUShaderModule from "../Renderer/WebGPU/WebGPUShaderModule.js";
+import {
+  createWebGPUCommands,
+  updateWebGPUCommandUniforms,
+  updateWebGPUPickCommandUniforms,
+} from "../Renderer/WebGPU/WebGPUPrimitiveCommands.js";
 import BatchTable from "./BatchTable.js";
 import CullFace from "./CullFace.js";
 import DepthFunction from "./DepthFunction.js";
@@ -41,39 +43,6 @@ import PrimitivePipeline from "./PrimitivePipeline.js";
 import PrimitiveState from "./PrimitiveState.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
-
-// Basic Color Shader (WGSL) for WebGPU rendering
-// This shader is defined inline since the build system doesn't support .wgsl imports yet
-const basicColorWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
-}
-`;
 
 /**
  * A primitive represents geometry in the {@link Scene}.  The geometry can be from a single {@link GeometryInstance}
@@ -1661,6 +1630,44 @@ function createVertexArray(primitive, frameState) {
   const scene3DOnly = frameState.scene3DOnly;
   const context = frameState.context;
 
+  // For WebGPU: Deep-clone geometry data BEFORE VertexArray.fromGeometry consumes it.
+  // VertexArray.fromGeometry uploads attribute values to WebGL GPU buffers and may
+  // clear the .values typed arrays. WebGPU needs these values to build its own buffers.
+  if (context.isWebGPU) {
+    primitive._webgpuGeometryData = [];
+    for (let g = 0; g < geometries.length; g++) {
+      const geom = geometries[g];
+      const savedAttrs = {};
+      for (const attrName in geom.attributes) {
+        if (
+          geom.attributes.hasOwnProperty(attrName) &&
+          defined(geom.attributes[attrName])
+        ) {
+          const attr = geom.attributes[attrName];
+          if (defined(attr.values)) {
+            savedAttrs[attrName] = {
+              values: new attr.values.constructor(attr.values),
+              componentsPerAttribute: attr.componentsPerAttribute,
+              componentDatatype: attr.componentDatatype,
+              normalize: attr.normalize,
+            };
+          }
+        }
+      }
+      primitive._webgpuGeometryData.push({
+        attributes: savedAttrs,
+        indices: defined(geom.indices)
+          ? geom.indices instanceof Array
+            ? geom.indices.slice()
+            : new geom.indices.constructor(geom.indices)
+          : undefined,
+        boundingSphere: defined(geom.boundingSphere)
+          ? BoundingSphere.clone(geom.boundingSphere)
+          : undefined,
+      });
+    }
+  }
+
   const va = [];
   const length = geometries.length;
   for (let i = 0; i < length; ++i) {
@@ -1878,284 +1885,6 @@ function getUniforms(primitive, appearance, material, frameState) {
   }
 
   return uniforms;
-}
-
-// WebGPU command creation
-function createWebGPUCommands(
-  primitive,
-  appearance,
-  material,
-  translucent,
-  twoPasses,
-  colorCommands,
-  pickCommands,
-  frameState,
-) {
-  const context = frameState.context;
-  const device = context.device;
-
-  if (!defined(device)) {
-    console.warn("[WebGPU] No device available for command creation");
-    colorCommands.length = 0;
-    return;
-  }
-
-  if (!defined(primitive._geometries) || primitive._geometries.length === 0) {
-    console.warn("[WebGPU] No geometry data available");
-    colorCommands.length = 0;
-    return;
-  }
-
-  const geometries = primitive._geometries;
-  const validCommands = []; // Build array of only valid commands
-
-  // Check if we have batch table with colors
-  const batchTable = primitive._batchTable;
-  const colorIndex = primitive._batchTableAttributeIndices?.color;
-  const hasInstanceColors = defined(batchTable) && defined(colorIndex);
-
-  for (let i = 0; i < geometries.length; i++) {
-    const geometry = geometries[i];
-
-    // Extract position attribute - after PrimitivePipeline processing,
-    // positions are split into High/Low for GPU RTE (Relative-To-Eye)
-    const positionAttr =
-      geometry.attributes.position3DHigh || geometry.attributes.position;
-    if (!defined(positionAttr) || !defined(positionAttr.values)) {
-      console.error(
-        `[WebGPU] Geometry ${i} missing position - available:`,
-        Object.keys(geometry.attributes),
-      );
-      continue;
-    }
-
-    const positions = positionAttr.values;
-    const numVertices = positions.length / positionAttr.componentsPerAttribute;
-
-    // Create vertex data with positions and colors (BasicColor shader expects both)
-    // Format: position (vec3), color (vec4) = 7 floats per vertex
-    const vertexData = new Float32Array(numVertices * 7);
-
-    // Get per-instance color from batch table
-    let instanceColor = [1.0, 1.0, 1.0, 1.0]; // Default white
-
-    // Try multiple approaches to get color, in priority order:
-
-    // 1. Try batch table (per-instance colors)
-    if (hasInstanceColors && i < primitive._numberOfInstances) {
-      try {
-        const batchColor = batchTable.getBatchedAttribute(i, colorIndex);
-        if (defined(batchColor)) {
-          // Handle both Cesium.Color and Cartesian4 formats
-          if (defined(batchColor.red)) {
-            // Cesium.Color format
-            instanceColor = [
-              batchColor.red,
-              batchColor.green,
-              batchColor.blue,
-              batchColor.alpha,
-            ];
-          } else if (defined(batchColor.x)) {
-            // Cartesian4 format (normalized 0-1)
-            instanceColor = [
-              batchColor.x,
-              batchColor.y,
-              batchColor.z,
-              batchColor.w,
-            ];
-          }
-          console.log(
-            `[WebGPU] Geometry ${i} using batch table color:`,
-            instanceColor,
-          );
-        }
-      } catch (e) {
-        // Silently fall through to next method
-        console.warn(
-          `[WebGPU] Could not get batch table color for geometry ${i}:`,
-          e.message,
-        );
-      }
-    }
-
-    // 2. Try geometry color attribute (per-vertex colors)
-    if (
-      instanceColor[0] === 1.0 &&
-      instanceColor[1] === 1.0 &&
-      instanceColor[2] === 1.0
-    ) {
-      const colorAttr = geometry.attributes.color;
-      if (
-        defined(colorAttr) &&
-        defined(colorAttr.values) &&
-        colorAttr.values.length >= 4
-      ) {
-        instanceColor = [
-          colorAttr.values[0],
-          colorAttr.values[1],
-          colorAttr.values[2],
-          colorAttr.values[3],
-        ];
-        console.log(
-          `[WebGPU] Geometry ${i} using geometry color:`,
-          instanceColor,
-        );
-      }
-    }
-
-    for (let v = 0; v < numVertices; v++) {
-      const posOffset = v * positionAttr.componentsPerAttribute;
-      const vertexOffset = v * 7;
-
-      // Position (3 floats)
-      vertexData[vertexOffset + 0] = positions[posOffset + 0];
-      vertexData[vertexOffset + 1] = positions[posOffset + 1];
-      vertexData[vertexOffset + 2] = positions[posOffset + 2];
-
-      // Color (4 floats)
-      vertexData[vertexOffset + 3] = instanceColor[0];
-      vertexData[vertexOffset + 4] = instanceColor[1];
-      vertexData[vertexOffset + 5] = instanceColor[2];
-      vertexData[vertexOffset + 6] = instanceColor[3];
-    }
-
-    // Create WebGPU vertex buffer
-    const vertexBuffer = WebGPUBuffer.createVertexBuffer(
-      device,
-      vertexData,
-      `Primitive Vertex Buffer ${i}`,
-    );
-
-    // Handle index buffer if present
-    let indexBuffer;
-    let indexCount;
-    if (defined(geometry.indices)) {
-      const indices = geometry.indices;
-      indexCount = indices.length;
-
-      // Check if we need Uint32 or Uint16
-      const maxIndex = Math.max(...Array.from(indices));
-      const indexData =
-        maxIndex > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
-
-      indexBuffer = WebGPUBuffer.createIndexBuffer(
-        device,
-        indexData,
-        `Primitive Index Buffer ${i}`,
-      );
-    }
-
-    // Create shader module using static factory method
-    const shaderModule = WebGPUShaderModule.create({
-      device: device,
-      code: basicColorWGSL,
-      label: "BasicColor Shader",
-    });
-
-    // Compute MVP matrix
-    const uniformState = context.uniformState;
-    const modelMatrix = primitive.modelMatrix;
-    const viewMatrix = uniformState.view;
-    const projectionMatrix = uniformState.projection;
-
-    // Set depth range for WebGPU (0 to 1) if not already set
-    Matrix4.setDepthRangeType("webgpu");
-
-    const modelView = Matrix4.multiply(viewMatrix, modelMatrix, new Matrix4());
-    const mvp = Matrix4.multiply(projectionMatrix, modelView, new Matrix4());
-
-    // Create uniform buffer for MVP matrix
-    const uniformData = new Float32Array(16);
-    Matrix4.pack(mvp, uniformData, 0);
-
-    const uniformBuffer = device.createBuffer({
-      size: 64,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
-
-    // Create bind group layout
-    const bindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-
-    // Create bind group
-    const bindGroup = device.createBindGroup({
-      layout: bindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: { buffer: uniformBuffer },
-        },
-      ],
-    });
-
-    // Create render pipeline
-    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-    const pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [bindGroupLayout],
-      }),
-      vertex: {
-        module: shaderModule.module,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: 28, // 7 floats * 4 bytes
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-              { shaderLocation: 1, offset: 12, format: "float32x4" }, // color
-            ],
-          },
-        ],
-      },
-      fragment: {
-        module: shaderModule.module,
-        entryPoint: "fragmentMain",
-        targets: [{ format: canvasFormat }],
-      },
-      primitive: {
-        topology: "triangle-list",
-        cullMode: "back",
-      },
-      depthStencil: {
-        format: "depth24plus",
-        depthWriteEnabled: true,
-        depthCompare: "less",
-      },
-    });
-
-    // Determine the pass for this command
-    const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
-
-    // Create WebGPUDrawCommand with all required properties
-    const command = new WebGPUDrawCommand({
-      pipeline: pipeline,
-      bindGroup: bindGroup,
-      vertexBuffer: vertexBuffer,
-      indexBuffer: indexBuffer,
-      vertexCount: defined(indexBuffer) ? undefined : numVertices,
-      indexCount: defined(indexBuffer) ? indexCount : undefined,
-      pass: pass,
-      owner: primitive,
-    });
-
-    validCommands.push(command); // Add to valid commands only
-  }
-
-  // Copy valid commands to output array (no undefined entries)
-  colorCommands.length = validCommands.length;
-  for (let i = 0; i < validCommands.length; i++) {
-    colorCommands[i] = validCommands[i];
-  }
-
-  console.log(`[WebGPU] Created ${validCommands.length} draw commands`);
 }
 
 // WebGL command creation (existing implementation)
@@ -2408,6 +2137,11 @@ function updateAndQueueCommands(
         continue;
       }
 
+      // WebGPU: Update uniform buffers with current camera matrices every frame
+      if (colorCommand.isWebGPUDrawCommand === true) {
+        updateWebGPUCommandUniforms(colorCommand, frameState, modelMatrix);
+      }
+
       const sphereIndex = Math.floor(j / factor);
       colorCommand.modelMatrix = modelMatrix;
       colorCommand.boundingVolume = boundingSpheres[sphereIndex];
@@ -2423,6 +2157,34 @@ function updateAndQueueCommands(
       }
 
       commandList.push(colorCommand);
+    }
+
+    // WebGPU: Also update and queue pick commands (separate draw commands with pick shaders)
+    // These are used by the pick pass to render geometry with unique pick colors
+    if (allowPicking && defined(pickCommands) && pickCommands.length > 0) {
+      const pickLength = pickCommands.length;
+      for (let k = 0; k < pickLength; ++k) {
+        const pickCommand = pickCommands[k];
+        if (!defined(pickCommand)) {
+          continue;
+        }
+
+        // Update pick command uniforms (MVP + pickColor) every frame
+        if (pickCommand.isWebGPUDrawCommand === true) {
+          updateWebGPUPickCommandUniforms(pickCommand, frameState, modelMatrix);
+        }
+
+        const pickSphereIndex = Math.min(k, boundingSpheres.length - 1);
+        pickCommand.modelMatrix = modelMatrix;
+        pickCommand.boundingVolume = boundingSpheres[pickSphereIndex];
+        pickCommand.cull = cull;
+        pickCommand.castShadows = false;
+        pickCommand.receiveShadows = false;
+
+        // Pick commands are stored but not pushed to commandList during normal rendering.
+        // They are available on the primitive for the pick pass to access directly.
+        // The pick system can access them via primitive._pickCommands.
+      }
     }
   }
 }
@@ -2584,11 +2346,6 @@ Primitive.prototype.update = function (frameState) {
       this._pickCommands,
       frameState,
     );
-    if (isWebGPU) {
-      console.log(
-        `[WebGPU] Primitive created ${this._colorCommands.length} commands`,
-      );
-    }
   }
 
   const updateAndQueueCommandsFunc =

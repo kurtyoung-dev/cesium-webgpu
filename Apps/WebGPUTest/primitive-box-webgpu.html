@@ -55,21 +55,37 @@
           }
           addStatus("Scene confirmed using WebGPU renderer", "success");
 
-          // Set up camera
+          // Set up camera — use proper Earth-surface coordinates
+          // (The old camera.position = (5,5,5) was inside the Earth's center!)
           const camera = scene.camera;
-          camera.position = new Cesium.Cartesian3(5.0, 5.0, 5.0);
-          camera.lookAt(Cesium.Cartesian3.ZERO, Cesium.Cartesian3.UNIT_Z);
-          addStatus("Camera positioned", "success");
+          camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 1500000),
+            orientation: {
+              heading: 0,
+              pitch: Cesium.Math.toRadians(-45),
+              roll: 0,
+            },
+          });
+          addStatus("Camera positioned (1500km above Philadelphia)", "success");
 
-          // Create BoxGeometry instance
+          // Create BoxGeometry instance with proper Earth-scale coordinates
           addStatus("Creating BoxGeometry primitive...", "info");
+          const boxPosition = Cesium.Cartesian3.fromDegrees(
+            -75.0,
+            40.0,
+            300000,
+          );
+          const boxModelMatrix =
+            Cesium.Transforms.eastNorthUpToFixedFrame(boxPosition);
+
           const boxInstance = new Cesium.GeometryInstance({
             geometry: Cesium.BoxGeometry.createGeometry(
               Cesium.BoxGeometry.fromDimensions({
-                dimensions: new Cesium.Cartesian3(2.0, 2.0, 2.0),
+                dimensions: new Cesium.Cartesian3(400000, 400000, 400000),
                 vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
               }),
             ),
+            modelMatrix: boxModelMatrix,
             id: "webgpu-box",
             attributes: {
               color: Cesium.ColorGeometryInstanceAttribute.fromColor(

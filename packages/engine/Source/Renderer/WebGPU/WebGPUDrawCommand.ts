@@ -3,13 +3,25 @@ import DeveloperError from "../../Core/DeveloperError.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 
 /**
+ * Index buffer format type for WebGPU draw commands.
+ * Maps directly to WebGPU GPUIndexFormat.
+ */
+export type IndexFormat = "uint16" | "uint32";
+
+/**
  * Options for constructing a WebGPUDrawCommand.
  */
 interface WebGPUDrawCommandOptions {
   pipeline: GPURenderPipeline;
+  /** Single bind group (legacy) or array of bind groups */
   bindGroup?: GPUBindGroup;
-  vertexBuffer: WebGPUBuffer;
+  bindGroups?: GPUBindGroup[];
+  /** Single vertex buffer (legacy) or array of vertex buffers */
+  vertexBuffer?: WebGPUBuffer;
+  vertexBuffers?: WebGPUBuffer[];
   indexBuffer?: WebGPUBuffer;
+  /** Index format - 'uint16' or 'uint32'. Auto-detected from indexBuffer if not specified. */
+  indexFormat?: IndexFormat;
   vertexCount?: number;
   indexCount?: number;
   instanceCount?: number;
@@ -33,13 +45,21 @@ interface WebGPUDrawCommandOptions {
  * Encapsulates the state needed to execute a single draw call including
  * pipeline, bind groups, vertex/index buffers, and draw parameters.
  *
+ * Supports:
+ * - Multiple vertex buffers (for separate position, normal, UV buffers)
+ * - Multiple bind groups (for uniforms in @group(0), textures in @group(1), etc.)
+ * - Configurable index format (uint16/uint32 with auto-detection)
+ *
  * @alias WebGPUDrawCommand
  *
  * @param {WebGPUDrawCommandOptions} options Object with the following properties:
  * @param {GPURenderPipeline} options.pipeline The render pipeline to use for drawing.
- * @param {GPUBindGroup} [options.bindGroup] The bind group containing uniforms and textures.
- * @param {WebGPUBuffer} options.vertexBuffer The vertex buffer.
+ * @param {GPUBindGroup} [options.bindGroup] Single bind group (for backward compatibility).
+ * @param {GPUBindGroup[]} [options.bindGroups] Array of bind groups (preferred for multi-group shaders).
+ * @param {WebGPUBuffer} [options.vertexBuffer] Single vertex buffer (for backward compatibility).
+ * @param {WebGPUBuffer[]} [options.vertexBuffers] Array of vertex buffers (preferred for multi-buffer layouts).
  * @param {WebGPUBuffer} [options.indexBuffer] The index buffer (optional for non-indexed draws).
+ * @param {IndexFormat} [options.indexFormat] Index format - auto-detected if not provided.
  * @param {number} [options.vertexCount] Number of vertices to draw (for non-indexed draws).
  * @param {number} [options.indexCount] Number of indices to draw (for indexed draws).
  * @param {number} [options.instanceCount=1] Number of instances to draw.
@@ -51,9 +71,14 @@ interface WebGPUDrawCommandOptions {
  */
 class WebGPUDrawCommand {
   pipeline: GPURenderPipeline;
+  /** @deprecated Use bindGroups instead */
   bindGroup?: GPUBindGroup;
-  vertexBuffer: WebGPUBuffer;
+  bindGroups: GPUBindGroup[];
+  /** @deprecated Use vertexBuffers instead */
+  vertexBuffer?: WebGPUBuffer;
+  vertexBuffers: WebGPUBuffer[];
   indexBuffer?: WebGPUBuffer;
+  indexFormat: IndexFormat;
   vertexCount?: number;
   indexCount?: number;
   instanceCount: number;
@@ -74,6 +99,9 @@ class WebGPUDrawCommand {
   pickId?: string;
   executeInClosestFrustum: boolean;
 
+  // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
+  readonly isWebGPUDrawCommand: boolean = true;
+
   constructor(options: WebGPUDrawCommandOptions) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(options)) {
@@ -82,15 +110,55 @@ class WebGPUDrawCommand {
     if (!defined(options.pipeline)) {
       throw new DeveloperError("options.pipeline is required.");
     }
-    if (!defined(options.vertexBuffer)) {
-      throw new DeveloperError("options.vertexBuffer is required.");
+    if (!defined(options.vertexBuffer) && !defined(options.vertexBuffers)) {
+      throw new DeveloperError(
+        "options.vertexBuffer or options.vertexBuffers is required.",
+      );
     }
     //>>includeEnd('debug');
 
     this.pipeline = options.pipeline;
-    this.bindGroup = options.bindGroup;
-    this.vertexBuffer = options.vertexBuffer;
+
+    // Support both single bind group (backward compat) and array of bind groups
+    if (defined(options.bindGroups)) {
+      this.bindGroups = options.bindGroups!;
+      this.bindGroup = options.bindGroups![0]; // backward compat
+    } else if (defined(options.bindGroup)) {
+      this.bindGroups = [options.bindGroup!];
+      this.bindGroup = options.bindGroup;
+    } else {
+      this.bindGroups = [];
+      this.bindGroup = undefined;
+    }
+
+    // Support both single vertex buffer (backward compat) and array of vertex buffers
+    if (defined(options.vertexBuffers)) {
+      this.vertexBuffers = options.vertexBuffers!;
+      this.vertexBuffer = options.vertexBuffers![0]; // backward compat
+    } else if (defined(options.vertexBuffer)) {
+      this.vertexBuffers = [options.vertexBuffer!];
+      this.vertexBuffer = options.vertexBuffer;
+    } else {
+      this.vertexBuffers = [];
+      this.vertexBuffer = undefined;
+    }
+
     this.indexBuffer = options.indexBuffer;
+
+    // Auto-detect index format from buffer data size if not specified
+    if (defined(options.indexFormat)) {
+      this.indexFormat = options.indexFormat!;
+    } else if (defined(options.indexBuffer)) {
+      // Heuristic: if the buffer size divided by indexCount gives 4 bytes per index, it's uint32
+      // Otherwise default to uint16. This can be overridden explicitly.
+      this.indexFormat = WebGPUDrawCommand.detectIndexFormat(
+        options.indexBuffer!,
+        options.indexCount,
+      );
+    } else {
+      this.indexFormat = "uint16";
+    }
+
     this.vertexCount = options.vertexCount;
     this.indexCount = options.indexCount;
     this.instanceCount = options.instanceCount ?? 1;
@@ -110,6 +178,31 @@ class WebGPUDrawCommand {
     this.receiveShadows = options.receiveShadows ?? false;
     this.pickId = options.pickId;
     this.executeInClosestFrustum = options.executeInClosestFrustum ?? false;
+  }
+
+  /**
+   * Auto-detect index format based on buffer size and index count.
+   *
+   * @param {WebGPUBuffer} indexBuffer - The index buffer
+   * @param {number} [indexCount] - Number of indices
+   * @returns {IndexFormat} Detected index format
+   */
+  static detectIndexFormat(
+    indexBuffer: WebGPUBuffer,
+    indexCount?: number,
+  ): IndexFormat {
+    if (!defined(indexBuffer) || !defined(indexCount) || indexCount === 0) {
+      return "uint16";
+    }
+
+    // If buffer size / indexCount == 4, it's uint32; if == 2, it's uint16
+    const bytesPerIndex = indexBuffer.size / indexCount!;
+
+    if (bytesPerIndex >= 4) {
+      return "uint32";
+    }
+
+    return "uint16";
   }
 
   /**
@@ -136,20 +229,22 @@ class WebGPUDrawCommand {
     // Set the pipeline
     passEncoder.setPipeline(this.pipeline);
 
-    // Set bind group if present (uniforms, textures, samplers)
-    if (defined(this.bindGroup)) {
-      passEncoder.setBindGroup(0, this.bindGroup);
+    // Set all bind groups
+    for (let i = 0; i < this.bindGroups.length; i++) {
+      passEncoder.setBindGroup(i, this.bindGroups[i]);
     }
 
-    // Set vertex buffer
-    passEncoder.setVertexBuffer(0, this.vertexBuffer.buffer);
+    // Set all vertex buffers
+    for (let i = 0; i < this.vertexBuffers.length; i++) {
+      passEncoder.setVertexBuffer(i, this.vertexBuffers[i].buffer);
+    }
 
     // Execute draw call - indexed or non-indexed
     if (defined(this.indexBuffer) && defined(this.indexCount)) {
-      // Indexed draw
-      passEncoder.setIndexBuffer(this.indexBuffer.buffer, "uint16");
+      // Indexed draw - use detected/configured index format
+      passEncoder.setIndexBuffer(this.indexBuffer!.buffer, this.indexFormat);
       passEncoder.drawIndexed(
-        this.indexCount,
+        this.indexCount!,
         this.instanceCount,
         this.firstIndex,
         0, // baseVertex
@@ -158,7 +253,7 @@ class WebGPUDrawCommand {
     } else if (defined(this.vertexCount)) {
       // Non-indexed draw
       passEncoder.draw(
-        this.vertexCount,
+        this.vertexCount!,
         this.instanceCount,
         this.firstVertex,
         this.firstInstance,
@@ -180,15 +275,26 @@ class WebGPUDrawCommand {
   clone(): WebGPUDrawCommand {
     return new WebGPUDrawCommand({
       pipeline: this.pipeline,
-      bindGroup: this.bindGroup,
-      vertexBuffer: this.vertexBuffer,
+      bindGroups: [...this.bindGroups],
+      vertexBuffers: [...this.vertexBuffers],
       indexBuffer: this.indexBuffer,
+      indexFormat: this.indexFormat,
       vertexCount: this.vertexCount,
       indexCount: this.indexCount,
       instanceCount: this.instanceCount,
       firstVertex: this.firstVertex,
       firstIndex: this.firstIndex,
       firstInstance: this.firstInstance,
+      pass: this.pass,
+      owner: this.owner,
+      boundingVolume: this.boundingVolume,
+      modelMatrix: this.modelMatrix,
+      cull: this.cull,
+      debugShowBoundingVolume: this.debugShowBoundingVolume,
+      castShadows: this.castShadows,
+      receiveShadows: this.receiveShadows,
+      pickId: this.pickId,
+      executeInClosestFrustum: this.executeInClosestFrustum,
     });
   }
 }

@@ -6,6 +6,12 @@
 
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
+import {
+  WGSLShaderPreprocessor,
+  WGSLShaderLibrary,
+  type WGSLPreprocessOptions,
+} from "./WGSLShaderPreprocessor.js";
+import { createDefaultWGSLLibrary } from "./WGSLBuiltins.js";
 
 /**
  * Shader cache entry containing the compiled shader module and metadata
@@ -60,6 +66,8 @@ export class WebGPUShaderCache {
   private _device: GPUDevice;
   private _cache: Map<string, ShaderCacheEntry>;
   private _pendingCompilations: Map<string, Promise<GPUShaderModule>>;
+  private _preprocessor: WGSLShaderPreprocessor;
+  private _library: WGSLShaderLibrary;
 
   // Statistics
   private _stats = {
@@ -72,8 +80,9 @@ export class WebGPUShaderCache {
   /**
    * Creates a new shader cache
    * @param device - WebGPU device for shader compilation
+   * @param library - Optional custom WGSL shader library (defaults to built-in library)
    */
-  constructor(device: GPUDevice) {
+  constructor(device: GPUDevice, library?: WGSLShaderLibrary) {
     if (!defined(device)) {
       throw new DeveloperError("device is required");
     }
@@ -81,6 +90,24 @@ export class WebGPUShaderCache {
     this._device = device;
     this._cache = new Map();
     this._pendingCompilations = new Map();
+    this._library = library ?? createDefaultWGSLLibrary();
+    this._preprocessor = new WGSLShaderPreprocessor(this._library);
+  }
+
+  /**
+   * Get the WGSL shader preprocessor instance.
+   * Useful for preprocessing shaders outside the cache.
+   */
+  get preprocessor(): WGSLShaderPreprocessor {
+    return this._preprocessor;
+  }
+
+  /**
+   * Get the WGSL shader library instance.
+   * Useful for registering custom shader chunks.
+   */
+  get library(): WGSLShaderLibrary {
+    return this._library;
   }
 
   /**
@@ -208,6 +235,76 @@ export class WebGPUShaderCache {
       compilations: 0,
       errors: 0,
     };
+  }
+
+  /**
+   * Get or compile a shader module with WGSL preprocessing.
+   *
+   * This method resolves `#import` directives and `csm_*` auto-dependencies
+   * before compiling the shader. Use this when your shader code uses the
+   * CesiumJS WGSL module system.
+   *
+   * @param name - Unique name for the shader
+   * @param code - Raw WGSL shader code (may contain `#import` directives)
+   * @param preprocessOptions - Options for the preprocessor (defines, etc.)
+   * @returns The compiled shader module
+   *
+   * @example
+   * ```typescript
+   * const module = await cache.getPreprocessedShader('MyPBRShader', `
+   *   // #import "structs/CameraUniforms"
+   *   // #import "functions/csm_phong"
+   *
+   *   @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+   *
+   *   @fragment
+   *   fn fragmentMain() -> @location(0) vec4<f32> {
+   *     let color = csm_phongSimple(N, V, L, baseColor, 32.0);
+   *     return vec4<f32>(color, 1.0);
+   *   }
+   * `, { defines: ['USE_PHONG'] });
+   * ```
+   */
+  async getPreprocessedShader(
+    name: string,
+    code: string,
+    preprocessOptions?: WGSLPreprocessOptions,
+  ): Promise<GPUShaderModule> {
+    // Build a cache key that includes defines (different defines = different shader)
+    const definesKey = preprocessOptions?.defines?.sort().join(",") ?? "";
+    const cacheKey = `${name}:${definesKey}`;
+
+    // Check cache
+    const cached = this._cache.get(cacheKey);
+    if (cached) {
+      this._stats.hits++;
+      return cached.module;
+    }
+
+    // Preprocess the shader (resolve imports, conditionals, auto-resolve csm_*)
+    const result = this._preprocessor.process(code, {
+      label: name,
+      ...preprocessOptions,
+    });
+
+    // Compile the preprocessed code
+    return this.getShader({
+      name: cacheKey,
+      code: result.code,
+      label: `${name} (${result.includedChunks.length} chunks)`,
+    });
+  }
+
+  /**
+   * Preprocess a shader without compiling.
+   * Useful for debugging or when you need the resolved WGSL code.
+   *
+   * @param code - Raw WGSL shader code with optional `#import` directives
+   * @param options - Preprocessing options
+   * @returns The preprocessed WGSL code string
+   */
+  preprocessOnly(code: string, options?: WGSLPreprocessOptions): string {
+    return this._preprocessor.resolve(code, options);
   }
 
   /**
