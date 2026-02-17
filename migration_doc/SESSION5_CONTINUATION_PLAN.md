@@ -236,8 +236,8 @@ Scene.pick() is fundamental for user interaction. Previously, no pick commands w
 
 ---
 
-#### 4. 🟡 Material & Appearance System — IN PROGRESS (Session 5 continued, Feb 15, 2026)
-**Priority:** MEDIUM-HIGH | **Effort:** 5-6 hours | **Impact:** HIGH | **Status:** 🟡 PARTIALLY STARTED
+#### 4. ✅ Material & Appearance System — DONE (Session 6, Feb 16, 2026)
+**Priority:** MEDIUM-HIGH | **Effort:** 5-6 hours | **Impact:** HIGH | **Status:** ✅ COMPLETED Feb 16, 2026
 
 Currently only `PerInstanceColorAppearance` works. Need to support `MaterialAppearance`, `EllipsoidSurfaceAppearance`, and material types (Color, Image, Checkerboard, Grid, Stripe, etc.).
 
@@ -257,28 +257,25 @@ Currently only `PerInstanceColorAppearance` works. Need to support `MaterialAppe
 - [x] All uniform layouts fit in 256 bytes (matrices + material params)
 - [x] Wrote 8 WGSL shader strings + 6 helper functions (`selectMaterialShader`, `getMaterialVertexLayout`, `getMaterialUniformSize`, `isMaterialLitShader`, `isMaterialShader`, `isMaterialTexturedShader`) into `WebGPUPrimitiveShaders.js`
 
-**Partial implementation saved (needs cleanup):**
-- [x] WGSL material shaders added to `WebGPUPrimitiveShaders.js` (8 shaders + 6 helpers)
-- [ ] **⚠️ Exports not updated** — the new functions are defined but not exported yet (eslint errors for unused definitions)
-- [ ] **WebGPUPrimitiveCommands.js not yet modified** — material detection, uniform packing, texture loading not implemented
-- [ ] No test page created yet
+**Session 6 Implementation (Feb 16, 2026):**
+- [x] Extracted all 20 WGSL shaders into individual `.wgsl` files in `Source/Shaders/WebGPU/Primitive/`
+- [x] Rewrote `WebGPUPrimitiveShaders.js` as thin orchestrator (~470 lines) with `initPrimitiveShaders()` fetch-based loading
+- [x] All exports updated — `initPrimitiveShaders`, `areShadersLoaded`, `getShaderSource`, `getMaterialPickShaderForType`, `selectPBRShader`, `isPBRShader`, `isPBRTexturedShader`
+- [x] Added 2 material pick shader variants (`pickMatFlat`, `pickMatLit`)
+- [x] Added 2 PBR shader variants (`pbrSimple`, `pbrTextured`)
+- [x] Wired `initPrimitiveShaders()` into `Scene.createAsync()` — shaders load at startup
+- [x] Added `packMaterialUniforms()` — packs all material types + PBR into uniform buffers
+- [x] Added `createMaterialPipelineAndCache()` — creates/caches material GPU pipelines
+- [x] Added `buildMaterialVertexData()` — builds interleaved vertex data (flat/lit)
+- [x] Added `extractPositionData()` / `ensureIndexBuffer()` — shared helpers
+- [x] Added `createWebGPUMaterialCommands()` — main orchestrator for material command creation
+- [x] Added `updateWebGPUMaterialCommandUniforms()` — per-frame camera matrix updates
+- [x] Updated `Primitive.js` — detects MaterialAppearance, routes to material commands
+- [x] Created test page `Apps/WebGPUTest/primitive-material-webgpu.html` — 7 standalone tests (MatColorFlat, MatColorLit, MatCheckerFlat, MatGridFlat, MatStripeFlat, PBRSimple, MatImageFlat)
 
-**Remaining tasks for next session:**
-- [ ] Fix exports in `WebGPUPrimitiveShaders.js` (add 6 new functions to export block)
-- [ ] Add material pick shader variants for material vertex layouts (matFlat/matLit pick shaders)
-- [ ] Add `createWebGPUMaterialCommands()` function to `WebGPUPrimitiveCommands.js`:
-  - Detect `PerInstanceColorAppearance` vs `MaterialAppearance`/`EllipsoidSurfaceAppearance`
-  - Extract material type from `appearance.material.type`
-  - Extract material uniforms (`color`, `image`, `repeat`, `lightColor`, `darkColor`, etc.)
-  - Pack material-specific uniforms into the 256-byte uniform buffer
-  - For Image materials: load image from `material.uniforms.image` URL, create WebGPU texture
-  - Build vertex data without per-vertex color (position + [normal] + st)
-- [ ] Add `updateWebGPUMaterialCommandUniforms()` for per-frame matrix updates
-- [ ] Create test page: `Apps/WebGPUTest/primitive-material-webgpu.html`
-- [ ] Test with all supported material types (Color, Image, Checkerboard, Grid, Stripe)
-
-**Files modified so far:** `WebGPUPrimitiveShaders.js` (shaders + helpers added, exports incomplete)
-**Files still needed:** `WebGPUPrimitiveCommands.js` (material command creation), test page
+**Files modified:** `WebGPUPrimitiveShaders.js`, `WebGPUPrimitiveCommands.js`, `Primitive.js`, `Scene.js`
+**Files created:** 20 `.wgsl` shader files, `Apps/WebGPUTest/primitive-material-webgpu.html`
+**See:** `migration_doc/SESSION6_MATERIAL_PBR_PLAN.md` for full details
 
 ---
 
@@ -286,18 +283,22 @@ Currently only `PerInstanceColorAppearance` works. Need to support `MaterialAppe
 ### TIER 2: Quality & Correctness
 ### ═══════════════════════════════════════════════
 
-#### 5. 🟢 Mipmap Generation (Issue 3)
-**Priority:** MEDIUM | **Effort:** 3-4 hours | **Impact:** MEDIUM
+#### 5. ✅ Mipmap Generation (Issue 3) — DONE (Session 7, Feb 16, 2026)
+**Priority:** MEDIUM | **Effort:** 2 hours | **Impact:** MEDIUM | **Status:** ✅ COMPLETED Feb 16, 2026
 
-WebGPU requires manual mipmap generation (no `gl.generateMipmap()` equivalent). Needed for texture quality on terrain imagery and model textures.
+WebGPU requires manual mipmap generation (no `gl.generateMipmap()` equivalent).
 
-**Tasks:**
-- [ ] Implement blit-based mipmap generation shader (WGSL)
-- [ ] Add `generateMipmaps()` method to `WebGPUTexture.ts`
-- [ ] Integrate into texture loading pipeline
-- [ ] Test with different texture sizes (power-of-2 and NPOT)
+**What was implemented:**
+- [x] Created `MipmapBlit.wgsl` — fullscreen triangle blit shader
+- [x] Created `WebGPUMipmapGenerator.ts` — blit-based mipmap generator with pipeline caching per format
+- [x] Replaced stub `WebGPUTexture.generateMipmaps()` with real implementation
+- [x] Wired `mipmapGenerator` getter into `WebGPUContext.ts` (lazy init, shared instance)
+- [x] `createTextureFromImage()` now generates mipmaps when requested
+- [x] Created test page with 6 tests (shader, NPOT, readback, caching)
 
-**Files:** `WebGPUTexture.ts`, new mipmap WGSL shader
+**Files created:** `WebGPUMipmapGenerator.ts`, `MipmapBlit.wgsl`, `mipmap-generation-webgpu.html`
+**Files modified:** `WebGPUTexture.ts`, `WebGPUContext.ts`
+**See:** `migration_doc/SESSION7_MIPMAP_GENERATION.md` for full details
 
 ---
 
@@ -529,9 +530,11 @@ Terrain processing, matrix operations, culling algorithms in WASM.
 | **Feb 15, 2026** | **Session 5 cont. — Debug Logging Cleanup** | **Removed ~13 informational console.log calls from WebGPUContext.ts, WebGPUTexture.ts, WebGPUTextureUtilities.ts. Preserved all console.warn/error and device recovery logs.** |
 | **Feb 15, 2026** | **Session 5 cont. — Verified Item #7** | **Confirmed WebGL stub already swapped in — WebGPUContext.ts imports createWebGLCompatibilityStub from extracted module. All 3 architectural concerns resolved.** |
 | **Feb 15, 2026** | **Session 5 cont. — Item #4 Design & Partial Impl** | **Designed 8 material WGSL shaders (matColorFlat/Lit, matImageFlat/Lit, matCheckerFlat/Lit, matGridFlat, matStripeFlat) + 6 helper functions. Shaders written to WebGPUPrimitiveShaders.js but exports not updated due to editor issue. WebGPUPrimitiveCommands.js not yet modified. See Item #4 section for detailed remaining tasks.** |
+| **Feb 16, 2026** | **Session 6 — Material & PBR System Complete** | **Extracted 20 WGSL shaders into individual .wgsl files, rewrote WebGPUPrimitiveShaders.js as fetch-based orchestrator, added material command creation pipeline (packMaterialUniforms, createMaterialPipelineAndCache, buildMaterialVertexData, createWebGPUMaterialCommands, updateWebGPUMaterialCommandUniforms), PBR support (pbrSimple/pbrTextured), material pick shaders, Primitive.js routing, 7-test material/PBR test page. See SESSION6_MATERIAL_PBR_PLAN.md.** |
+| **Feb 16, 2026** | **Session 7 — Mipmap Generation (Issue 3)** | **Created WebGPUMipmapGenerator.ts (blit-based render pass approach, pipeline caching per format), MipmapBlit.wgsl shader, replaced stub generateMipmaps() in WebGPUTexture.ts, wired mipmapGenerator getter + createTextureFromImage into WebGPUContext.ts, 6-test mipmap page. See SESSION7_MIPMAP_GENERATION.md.** |
 
 ---
 
 **Document Status:** 🟢 ACTIVE — Will be updated as work progresses  
-**Last Updated:** February 15, 2026 11:27 PM ET  
-**Next Priority:** Item #4 (Material & Appearance System) — fix exports, implement material command creation in WebGPUPrimitiveCommands.js, create test page
+**Last Updated:** February 16, 2026 10:55 PM ET  
+**Next Priority:** Item #8 (Jasmine Unit Tests) or Tier 3 (Model/glTF, Globe/Terrain) — all Tier 1 + Tier 2 feature items complete

@@ -24,9 +24,15 @@ import {
   getVertexLayoutForShader,
   getUniformSizeForShader,
   getPickShaderForType,
+  getMaterialPickShaderForType,
   getPickUniformSize,
   isPhongShader,
   isTexturedShader,
+  selectMaterialShader,
+  getMaterialVertexLayout,
+  getMaterialUniformSize,
+  isMaterialLitShader,
+  isPBRShader,
 } from "./WebGPUPrimitiveShaders.js";
 
 // =========================================================================
@@ -888,15 +894,837 @@ function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
   device.queue.writeBuffer(command._webgpuUniformBuffer, 0, uniformData);
 }
 
+// =========================================================================
+// Material Uniform Packing
+// =========================================================================
+
+// Scratch uniform data for material shaders (64 floats = 256 bytes)
+const scratchMaterialUniformData = new Float32Array(64);
+
+/**
+ * Packs material-specific uniform parameters into a Float32Array.
+ * Camera matrices (MVP, ModelView, NormalMatrix, LightDir) are packed separately;
+ * this function fills the material parameter slots only.
+ *
+ * @param {Float32Array} uniformData - Target array (64 floats / 256 bytes)
+ * @param {string} shaderType - Material shader type (e.g., "matColorFlat", "matCheckerLit")
+ * @param {object} material - CesiumJS Material object with .uniforms property
+ * @param {number} startOffset - Float offset where material params begin (16 for flat, 52 for lit)
+ * @private
+ */
+function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
+  const u =
+    defined(material) && defined(material.uniforms) ? material.uniforms : {};
+  const o = startOffset;
+
+  if (shaderType === "matColorFlat" || shaderType === "matColorLit") {
+    const c = defined(u.color)
+      ? u.color
+      : { red: 1, green: 1, blue: 1, alpha: 1 };
+    uniformData[o] = defined(c.red) ? c.red : 1.0;
+    uniformData[o + 1] = defined(c.green) ? c.green : 1.0;
+    uniformData[o + 2] = defined(c.blue) ? c.blue : 1.0;
+    uniformData[o + 3] = defined(c.alpha) ? c.alpha : 1.0;
+  } else if (
+    shaderType === "matCheckerFlat" ||
+    shaderType === "matCheckerLit"
+  ) {
+    const lc = u.lightColor || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const dc = u.darkColor || { red: 0, green: 0, blue: 0, alpha: 1 };
+    const rep = u.repeat || { x: 5.0, y: 5.0 };
+    uniformData[o] = lc.red ?? 1;
+    uniformData[o + 1] = lc.green ?? 1;
+    uniformData[o + 2] = lc.blue ?? 1;
+    uniformData[o + 3] = lc.alpha ?? 1;
+    uniformData[o + 4] = dc.red ?? 0;
+    uniformData[o + 5] = dc.green ?? 0;
+    uniformData[o + 6] = dc.blue ?? 0;
+    uniformData[o + 7] = dc.alpha ?? 1;
+    uniformData[o + 8] = rep.x ?? 5;
+    uniformData[o + 9] = rep.y ?? 5;
+    uniformData[o + 10] = 0;
+    uniformData[o + 11] = 0;
+  } else if (shaderType === "matGridFlat") {
+    const gc = u.color || { red: 1, green: 1, blue: 0, alpha: 1 };
+    uniformData[o] = gc.red ?? 1;
+    uniformData[o + 1] = gc.green ?? 1;
+    uniformData[o + 2] = gc.blue ?? 0;
+    uniformData[o + 3] = gc.alpha ?? 1;
+    uniformData[o + 4] = u.cellAlpha ?? 0.1;
+    uniformData[o + 5] = u.lineCount?.x ?? 8;
+    uniformData[o + 6] = u.lineCount?.y ?? 8;
+    uniformData[o + 7] = 0;
+    uniformData[o + 8] = u.lineThickness?.x ?? 1;
+    uniformData[o + 9] = u.lineThickness?.y ?? 1;
+    uniformData[o + 10] = u.lineOffset?.x ?? 0;
+    uniformData[o + 11] = u.lineOffset?.y ?? 0;
+  } else if (shaderType === "matStripeFlat") {
+    const ec = u.evenColor || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const oc = u.oddColor || { red: 0, green: 0, blue: 1, alpha: 1 };
+    uniformData[o] = ec.red ?? 1;
+    uniformData[o + 1] = ec.green ?? 1;
+    uniformData[o + 2] = ec.blue ?? 1;
+    uniformData[o + 3] = ec.alpha ?? 1;
+    uniformData[o + 4] = oc.red ?? 0;
+    uniformData[o + 5] = oc.green ?? 0;
+    uniformData[o + 6] = oc.blue ?? 1;
+    uniformData[o + 7] = oc.alpha ?? 1;
+    uniformData[o + 8] = u.offset ?? 0;
+    uniformData[o + 9] = u.repeat ?? 5;
+    uniformData[o + 10] = u.horizontal === true ? 1.0 : 0.0;
+    uniformData[o + 11] = 0;
+  } else if (shaderType === "matImageFlat" || shaderType === "matImageLit") {
+    const tint = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    uniformData[o] = tint.red ?? 1;
+    uniformData[o + 1] = tint.green ?? 1;
+    uniformData[o + 2] = tint.blue ?? 1;
+    uniformData[o + 3] = tint.alpha ?? 1;
+    uniformData[o + 4] = rep.x ?? 1;
+    uniformData[o + 5] = rep.y ?? 1;
+    uniformData[o + 6] = 0;
+    uniformData[o + 7] = 0;
+  } else if (shaderType === "pbrSimple" || shaderType === "pbrTextured") {
+    // PBR: baseColorFactor(4f) + pbrParams(4f) + emissiveFactor(4f)
+    const bc = u.baseColorFactor || { red: 1, green: 1, blue: 1, alpha: 1 };
+    uniformData[o] = bc.red ?? 1;
+    uniformData[o + 1] = bc.green ?? 1;
+    uniformData[o + 2] = bc.blue ?? 1;
+    uniformData[o + 3] = bc.alpha ?? 1;
+    uniformData[o + 4] = u.metallic ?? 0.0;
+    uniformData[o + 5] = u.roughness ?? 0.5;
+    uniformData[o + 6] = u.occlusionStrength ?? 1.0;
+    uniformData[o + 7] = 0;
+    const em = u.emissiveFactor || { red: 0, green: 0, blue: 0 };
+    uniformData[o + 8] = em.red ?? 0;
+    uniformData[o + 9] = em.green ?? 0;
+    uniformData[o + 10] = em.blue ?? 0;
+    uniformData[o + 11] = 0;
+  }
+}
+
+// =========================================================================
+// Material Pipeline Creation
+// =========================================================================
+
+/**
+ * Creates (or reuses) the GPU pipeline for a material shader and caches it
+ * on `primitive._webgpuCache`. Handles shader module, bind group layout,
+ * optional texture layout (group 1), and render pipeline creation.
+ *
+ * @param {object} cache - The primitive's _webgpuCache object
+ * @param {GPUDevice} device - The WebGPU device
+ * @param {object} shaderInfo - { type, code, needsTexture } from selectMaterialShader()
+ * @param {object} vertexLayout - From getMaterialVertexLayout()
+ * @param {object} context - The rendering context (for presentationFormat)
+ * @returns {boolean} True if the pipeline was (re)created, false if reused
+ * @private
+ */
+function createMaterialPipelineAndCache(
+  cache,
+  device,
+  shaderInfo,
+  vertexLayout,
+  context,
+) {
+  if (cache.shaderType === shaderInfo.type) {
+    return false; // Pipeline already cached for this shader type
+  }
+  cache.shaderType = shaderInfo.type;
+
+  cache.shaderModule = WebGPUShaderModule.create({
+    device: device,
+    code: shaderInfo.code,
+    label: `${shaderInfo.type} Material Shader`,
+  });
+
+  // All material shaders need VERTEX | FRAGMENT visibility (fragment reads material params)
+  cache.bindGroupLayout = device.createBindGroupLayout({
+    label: "Material Uniform BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  const bindGroupLayouts = [cache.bindGroupLayout];
+
+  // Texture bind group layout for image-based material shaders (group 1)
+  if (shaderInfo.needsTexture) {
+    cache.textureBindGroupLayout = device.createBindGroupLayout({
+      label: "Material Texture BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float", viewDimension: "2d" },
+        },
+      ],
+    });
+    bindGroupLayouts.push(cache.textureBindGroupLayout);
+  } else {
+    cache.textureBindGroupLayout = null;
+  }
+
+  const canvasFormat =
+    context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
+  cache.pipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts }),
+    vertex: {
+      module: cache.shaderModule.module,
+      entryPoint: "vertexMain",
+      buffers: [vertexLayout.layout],
+    },
+    fragment: {
+      module: cache.shaderModule.module,
+      entryPoint: "fragmentMain",
+      targets: [{ format: canvasFormat }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "none",
+      frontFace: "ccw",
+    },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: true,
+      depthCompare: "less",
+    },
+  });
+
+  return true;
+}
+
+// =========================================================================
+// Material Vertex Data Builder
+// =========================================================================
+
+/**
+ * Builds interleaved vertex data for material shaders (no per-vertex color).
+ * Flat layout: position(3) + st(2) = 5 floats/vertex
+ * Lit layout:  position(3) + normal(3) + st(2) = 8 floats/vertex
+ *
+ * @param {Float32Array} positionValues - Position data (xyz)
+ * @param {Float32Array|null} normals - Normal data (xyz), null for flat shaders
+ * @param {Float32Array|null} uvs - Texture coordinate data (st)
+ * @param {number} numVertices - Number of vertices
+ * @param {boolean} isLit - Whether the shader is a lit variant (needs normals)
+ * @param {number} normalCPA - Components per attribute for normals
+ * @param {number} stCPA - Components per attribute for UVs
+ * @returns {Float32Array} Interleaved vertex data
+ * @private
+ */
+function buildMaterialVertexData(
+  positionValues,
+  normals,
+  uvs,
+  numVertices,
+  isLit,
+  normalCPA,
+  stCPA,
+) {
+  const fpv = isLit ? 8 : 5;
+  const vertexData = new Float32Array(numVertices * fpv);
+
+  for (let v = 0; v < numVertices; v++) {
+    const posOff = v * 3;
+    const vOff = v * fpv;
+
+    // Position (3 floats)
+    vertexData[vOff] = positionValues[posOff];
+    vertexData[vOff + 1] = positionValues[posOff + 1];
+    vertexData[vOff + 2] = positionValues[posOff + 2];
+
+    if (isLit) {
+      // Normal (3 floats)
+      if (normals) {
+        const nOff = v * normalCPA;
+        vertexData[vOff + 3] = normals[nOff];
+        vertexData[vOff + 4] = normals[nOff + 1];
+        vertexData[vOff + 5] = normals[nOff + 2];
+      } else {
+        vertexData[vOff + 3] = 0.0;
+        vertexData[vOff + 4] = 1.0;
+        vertexData[vOff + 5] = 0.0;
+      }
+      // ST (2 floats) at offset 6-7
+      if (uvs) {
+        const uOff = v * stCPA;
+        vertexData[vOff + 6] = uvs[uOff];
+        vertexData[vOff + 7] = uvs[uOff + 1];
+      }
+    } else if (uvs) {
+      // Flat: ST (2 floats) at offset 3-4
+      const uOff = v * stCPA;
+      vertexData[vOff + 3] = uvs[uOff];
+      vertexData[vOff + 4] = uvs[uOff + 1];
+    }
+  }
+  return vertexData;
+}
+
+// =========================================================================
+// Shared Position Extraction
+// =========================================================================
+
+/**
+ * Extracts position data from geometry attributes, handling high/low encoded
+ * positions (RTE) for float32 precision. Returns relative-to-center positions
+ * and an optional center offset for RTC rendering.
+ *
+ * @param {object} geometry - Geometry with attributes
+ * @returns {null|{positionValues: Float32Array, numVertices: number, centerOffset: Cartesian3|null}}
+ * @private
+ */
+function extractPositionData(geometry) {
+  const posHighAttr = geometry.attributes.position3DHigh;
+  const posLowAttr = geometry.attributes.position3DLow;
+  const posAttr = geometry.attributes.position;
+  const hasHL =
+    defined(posHighAttr) &&
+    defined(posHighAttr.values) &&
+    defined(posLowAttr) &&
+    defined(posLowAttr.values);
+
+  if (hasHL) {
+    const high = posHighAttr.values;
+    const low = posLowAttr.values;
+    const cpa = posHighAttr.componentsPerAttribute;
+    const nv = high.length / cpa;
+    let cx = 0,
+      cy = 0,
+      cz = 0;
+    if (
+      defined(geometry.boundingSphere) &&
+      defined(geometry.boundingSphere.center)
+    ) {
+      cx = geometry.boundingSphere.center.x;
+      cy = geometry.boundingSphere.center.y;
+      cz = geometry.boundingSphere.center.z;
+    } else {
+      for (let v = 0; v < nv; v++) {
+        const off = v * cpa;
+        cx += high[off] + low[off];
+        cy += high[off + 1] + low[off + 1];
+        cz += high[off + 2] + low[off + 2];
+      }
+      cx /= nv;
+      cy /= nv;
+      cz /= nv;
+    }
+    const pv = new Float32Array(nv * 3);
+    for (let v = 0; v < nv; v++) {
+      const off = v * cpa;
+      pv[v * 3] = high[off] + low[off] - cx;
+      pv[v * 3 + 1] = high[off + 1] + low[off + 1] - cy;
+      pv[v * 3 + 2] = high[off + 2] + low[off + 2] - cz;
+    }
+    return {
+      positionValues: pv,
+      numVertices: nv,
+      centerOffset: new Cartesian3(cx, cy, cz),
+    };
+  }
+  if (defined(posAttr) && defined(posAttr.values)) {
+    return {
+      positionValues: posAttr.values,
+      numVertices: posAttr.values.length / posAttr.componentsPerAttribute,
+      centerOffset: null,
+    };
+  }
+  return null;
+}
+
+/**
+ * Helper: creates or reuses an index buffer for a geometry.
+ * @param {GPUDevice} device
+ * @param {object} geometry
+ * @param {object} cache
+ * @param {number} i - Geometry index
+ * @private
+ */
+function ensureIndexBuffer(device, geometry, cache, i) {
+  if (!defined(geometry.indices) || defined(cache.indexBuffers[i])) {
+    return;
+  }
+  const indices = geometry.indices;
+  cache.indexCounts[i] = indices.length;
+  let u32 = false;
+  for (let idx = 0; idx < indices.length; idx++) {
+    if (indices[idx] > 65535) {
+      u32 = true;
+      break;
+    }
+  }
+  const data = u32 ? new Uint32Array(indices) : new Uint16Array(indices);
+  cache.indexFormats[i] = u32 ? "uint32" : "uint16";
+  cache.indexBuffers[i] = WebGPUBuffer.createIndexBuffer(
+    device,
+    data,
+    `Mat IB ${i}`,
+  );
+}
+
+// =========================================================================
+// Material Command Creation (main orchestrator)
+// =========================================================================
+
+/**
+ * Creates WebGPU draw commands for a Primitive that uses MaterialAppearance.
+ * Selects the appropriate material shader, builds material vertex data (no per-vertex color),
+ * packs material-specific uniforms, and creates draw + pick commands.
+ *
+ * @param {Primitive} primitive - The Primitive instance
+ * @param {Appearance} appearance - The MaterialAppearance
+ * @param {Material} material - The CesiumJS Material object
+ * @param {boolean} translucent - Whether appearance is translucent
+ * @param {boolean} twoPasses - Whether two-pass rendering is used
+ * @param {Array} colorCommands - Output array for color draw commands
+ * @param {Array} pickCommands - Output array for pick draw commands
+ * @param {FrameState} frameState - Current frame state
+ * @private
+ */
+function createWebGPUMaterialCommands(
+  primitive,
+  appearance,
+  material,
+  translucent,
+  twoPasses,
+  colorCommands,
+  pickCommands,
+  frameState,
+) {
+  const context = frameState.context;
+  const device = context.device;
+  if (!defined(device)) {
+    colorCommands.length = 0;
+    return;
+  }
+
+  const webgpuGeomData = primitive._webgpuGeometryData;
+  const rawGeometries = primitive._geometries;
+  const useW = defined(webgpuGeomData) && webgpuGeomData.length > 0;
+  const useR = defined(rawGeometries) && rawGeometries.length > 0;
+  if (!useW && !useR) {
+    colorCommands.length = 0;
+    return;
+  }
+  const geometries = useW ? webgpuGeomData : rawGeometries;
+
+  // Initialize cache
+  if (!defined(primitive._webgpuCache)) {
+    primitive._webgpuCache = {
+      shaderType: null,
+      shaderModule: null,
+      pipeline: null,
+      bindGroupLayout: null,
+      textureBindGroupLayout: null,
+      uniformBuffers: [],
+      bindGroups: [],
+      vertexBuffers: [],
+      indexBuffers: [],
+      indexFormats: [],
+      indexCounts: [],
+      vertexCounts: [],
+      pickShaderModule: null,
+      pickPipeline: null,
+      pickBindGroupLayout: null,
+      pickUniformBuffers: [],
+      pickBindGroups: [],
+    };
+  }
+  const cache = primitive._webgpuCache;
+
+  // Determine shader from material type and geometry attributes
+  const firstGeom = geometries[0];
+  const attrs = firstGeom.attributes;
+  const hasNormals = defined(attrs.normal) && defined(attrs.normal.values);
+  const hasST = defined(attrs.st) && defined(attrs.st.values);
+  const isFlat = defined(appearance.flat) ? appearance.flat : false;
+
+  const shaderInfo = selectMaterialShader(material, isFlat, hasNormals, hasST);
+  const isLit =
+    isMaterialLitShader(shaderInfo.type) || isPBRShader(shaderInfo.type);
+  const vertexLayout = getMaterialVertexLayout(shaderInfo.type);
+  const uniformSize = getMaterialUniformSize(shaderInfo.type);
+
+  // Create / cache pipeline
+  const shaderChanged = createMaterialPipelineAndCache(
+    cache,
+    device,
+    shaderInfo,
+    vertexLayout,
+    context,
+  );
+
+  // Create placeholder texture for image-based materials
+  if (shaderInfo.needsTexture && !defined(cache.defaultTexture)) {
+    const sz = 64;
+    const checker = new Uint8Array(sz * sz * 4);
+    for (let y = 0; y < sz; y++) {
+      for (let x = 0; x < sz; x++) {
+        const idx = (y * sz + x) * 4;
+        const val =
+          (Math.floor(x / 8) + Math.floor(y / 8)) % 2 === 0 ? 230 : 80;
+        checker[idx] = val;
+        checker[idx + 1] = val;
+        checker[idx + 2] = val;
+        checker[idx + 3] = 255;
+      }
+    }
+    cache.defaultTexture = WebGPUTexture.create2D(
+      device,
+      sz,
+      sz,
+      "rgba8unorm",
+      1,
+      "MatDefaultTex",
+    );
+    cache.defaultTexture.write(checker);
+    cache.defaultSampler = device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+    });
+    cache.textureBindGroup = device.createBindGroup({
+      layout: cache.textureBindGroupLayout,
+      entries: [
+        { binding: 0, resource: cache.defaultSampler },
+        { binding: 1, resource: cache.defaultTexture.view },
+      ],
+    });
+  }
+
+  // Pick support
+  const pickIds = primitive._pickIds;
+  const hasPickIds =
+    primitive._allowPicking && defined(pickIds) && pickIds.length > 0;
+  if (hasPickIds && shaderChanged) {
+    const pickCode = getMaterialPickShaderForType(shaderInfo.type);
+    cache.pickShaderModule = WebGPUShaderModule.create({
+      device,
+      code: pickCode,
+      label: `${shaderInfo.type} MatPick`,
+    });
+    cache.pickBindGroupLayout = device.createBindGroupLayout({
+      label: "MatPick BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+    const fmt =
+      context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
+    // Pick pipeline uses the material vertex layout (same pos+normal+st layout, no color)
+    cache.pickPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [cache.pickBindGroupLayout],
+      }),
+      vertex: {
+        module: cache.pickShaderModule.module,
+        entryPoint: "vertexMain",
+        buffers: [vertexLayout.layout],
+      },
+      fragment: {
+        module: cache.pickShaderModule.module,
+        entryPoint: "fragmentMain",
+        targets: [{ format: fmt }],
+      },
+      primitive: {
+        topology: "triangle-list",
+        cullMode: "none",
+        frontFace: "ccw",
+      },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: true,
+        depthCompare: "less",
+      },
+    });
+  }
+
+  Matrix4.setDepthRangeType("webgpu");
+  const uniformState = context.uniformState;
+  const mdlMatrix = primitive.modelMatrix;
+  const modelView = Matrix4.multiply(
+    uniformState.view,
+    mdlMatrix,
+    new Matrix4(),
+  );
+  const mvp = Matrix4.multiply(
+    uniformState.projection,
+    modelView,
+    new Matrix4(),
+  );
+  const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
+  const materialParamOffset = isLit ? 52 : 16;
+
+  const validCommands = [];
+  const validPickCommands = [];
+
+  for (let i = 0; i < geometries.length; i++) {
+    const geometry = geometries[i];
+    const posData = extractPositionData(geometry);
+    if (!posData) {
+      continue;
+    }
+
+    const { positionValues, numVertices, centerOffset } = posData;
+    const normalAttr = geometry.attributes.normal;
+    const stAttr = geometry.attributes.st;
+    const normals =
+      defined(normalAttr) && defined(normalAttr.values)
+        ? normalAttr.values
+        : null;
+    const uvs =
+      defined(stAttr) && defined(stAttr.values) ? stAttr.values : null;
+    const nCPA = normalAttr ? normalAttr.componentsPerAttribute || 3 : 3;
+    const sCPA = stAttr ? stAttr.componentsPerAttribute || 2 : 2;
+
+    // Build material vertex buffer
+    const vertexData = buildMaterialVertexData(
+      positionValues,
+      normals,
+      uvs,
+      numVertices,
+      isLit,
+      nCPA,
+      sCPA,
+    );
+    if (!defined(cache.vertexBuffers[i]) || shaderChanged) {
+      if (defined(cache.vertexBuffers[i])) {
+        cache.vertexBuffers[i].destroy();
+      }
+      cache.vertexBuffers[i] = WebGPUBuffer.createVertexBuffer(
+        device,
+        vertexData,
+        `Mat VB ${i}`,
+      );
+    }
+
+    ensureIndexBuffer(device, geometry, cache, i);
+    cache.vertexCounts[i] = numVertices;
+
+    // Uniform buffer
+    if (!defined(cache.uniformBuffers[i])) {
+      cache.uniformBuffers[i] = device.createBuffer({
+        size: uniformSize,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: `Mat UB ${i}`,
+      });
+    }
+
+    // Pack full uniform data: camera matrices + material params
+    const ud = new Float32Array(uniformSize / 4);
+    Matrix4.pack(mvp, ud, 0);
+    if (isLit) {
+      Matrix4.pack(modelView, ud, 16);
+      const nm = Matrix4.inverse(modelView, new Matrix4());
+      Matrix4.transpose(nm, nm);
+      Matrix4.pack(nm, ud, 32);
+      ud[48] = 0.5;
+      ud[49] = 0.7;
+      ud[50] = 0.5;
+      ud[51] = 0.0;
+    }
+    packMaterialUniforms(ud, shaderInfo.type, material, materialParamOffset);
+    device.queue.writeBuffer(cache.uniformBuffers[i], 0, ud);
+
+    // Bind group
+    cache.bindGroups[i] = device.createBindGroup({
+      layout: cache.bindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cache.uniformBuffers[i] } }],
+    });
+
+    const cmdBGs = [cache.bindGroups[i]];
+    if (shaderInfo.needsTexture && defined(cache.textureBindGroup)) {
+      cmdBGs.push(cache.textureBindGroup);
+    }
+
+    const cmd = new WebGPUDrawCommand({
+      pipeline: cache.pipeline,
+      bindGroups: cmdBGs,
+      vertexBuffer: cache.vertexBuffers[i],
+      indexBuffer: cache.indexBuffers[i],
+      indexFormat: cache.indexFormats[i],
+      vertexCount: defined(cache.indexBuffers[i]) ? undefined : numVertices,
+      indexCount: defined(cache.indexBuffers[i])
+        ? cache.indexCounts[i]
+        : undefined,
+      pass,
+      owner: primitive,
+    });
+    cmd._webgpuUniformBuffer = cache.uniformBuffers[i];
+    cmd._webgpuShaderType = shaderInfo.type;
+    cmd._webgpuCenterOffset = centerOffset;
+    validCommands.push(cmd);
+
+    // Pick command
+    if (hasPickIds && i < pickIds.length && defined(cache.pickPipeline)) {
+      const pc = pickIds[i].color;
+      const puSize = getPickUniformSize();
+      if (!defined(cache.pickUniformBuffers[i])) {
+        cache.pickUniformBuffers[i] = device.createBuffer({
+          size: puSize,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          label: `MatPick UB ${i}`,
+        });
+      }
+      const pud = new Float32Array(puSize / 4);
+      Matrix4.pack(mvp, pud, 0);
+      pud[16] = pc.red;
+      pud[17] = pc.green;
+      pud[18] = pc.blue;
+      pud[19] = pc.alpha;
+      device.queue.writeBuffer(cache.pickUniformBuffers[i], 0, pud);
+      cache.pickBindGroups[i] = device.createBindGroup({
+        layout: cache.pickBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.pickUniformBuffers[i] } },
+        ],
+      });
+      const pickCmd = new WebGPUDrawCommand({
+        pipeline: cache.pickPipeline,
+        bindGroups: [cache.pickBindGroups[i]],
+        vertexBuffer: cache.vertexBuffers[i],
+        indexBuffer: cache.indexBuffers[i],
+        indexFormat: cache.indexFormats[i],
+        vertexCount: defined(cache.indexBuffers[i]) ? undefined : numVertices,
+        indexCount: defined(cache.indexBuffers[i])
+          ? cache.indexCounts[i]
+          : undefined,
+        pass,
+        owner: primitive,
+      });
+      pickCmd._webgpuUniformBuffer = cache.pickUniformBuffers[i];
+      pickCmd._webgpuShaderType = "pick";
+      pickCmd._webgpuCenterOffset = centerOffset;
+      pickCmd._webgpuPickColor = pc;
+      pickCmd._isPickCommand = true;
+      validPickCommands.push(pickCmd);
+    }
+  }
+
+  colorCommands.length = validCommands.length;
+  for (let i = 0; i < validCommands.length; i++) {
+    colorCommands[i] = validCommands[i];
+  }
+  pickCommands.length = validPickCommands.length;
+  for (let i = 0; i < validPickCommands.length; i++) {
+    pickCommands[i] = validPickCommands[i];
+  }
+}
+
+// =========================================================================
+// Material Per-Frame Uniform Update
+// =========================================================================
+
+/**
+ * Updates the GPU uniform buffer for a material/PBR draw command with
+ * current camera matrices. Material parameters (colors, repeat, etc.)
+ * are constant and were written at creation time — only the camera
+ * matrices (MVP, ModelView, NormalMatrix, LightDir) need per-frame updates.
+ *
+ * @param {WebGPUDrawCommand} command - Material draw command to update
+ * @param {FrameState} frameState - Current frame state
+ * @param {Matrix4} modelMatrix - The primitive's model-to-world matrix
+ * @private
+ */
+function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
+  if (!command.isWebGPUDrawCommand || !command._webgpuUniformBuffer) {
+    return;
+  }
+  const context = frameState.context;
+  const device = context.device;
+  if (!device) {
+    return;
+  }
+
+  const uniformState = context.uniformState;
+  let effectiveModel = modelMatrix;
+  if (defined(command._webgpuCenterOffset)) {
+    Matrix4.fromTranslation(
+      command._webgpuCenterOffset,
+      scratchCenterTranslation,
+    );
+    effectiveModel = Matrix4.multiply(
+      modelMatrix,
+      scratchCenterTranslation,
+      scratchModelWithCenter,
+    );
+  }
+
+  const modelView = Matrix4.multiply(
+    uniformState.view,
+    effectiveModel,
+    scratchModelViewMatrix,
+  );
+  const mvp = Matrix4.multiply(
+    uniformState.projection,
+    modelView,
+    scratchMVPMatrix,
+  );
+
+  const shaderType = command._webgpuShaderType;
+  const isLit = isMaterialLitShader(shaderType) || isPBRShader(shaderType);
+
+  const ud = scratchMaterialUniformData;
+  Matrix4.pack(mvp, ud, 0);
+
+  if (isLit) {
+    Matrix4.pack(modelView, ud, 16);
+    const nm = Matrix4.inverse(modelView, scratchNormalMatrix);
+    Matrix4.transpose(nm, nm);
+    Matrix4.pack(nm, ud, 32);
+    if (defined(uniformState.sunDirectionEC)) {
+      ud[48] = uniformState.sunDirectionEC.x;
+      ud[49] = uniformState.sunDirectionEC.y;
+      ud[50] = uniformState.sunDirectionEC.z;
+    } else {
+      ud[48] = 0.5;
+      ud[49] = 0.7;
+      ud[50] = 0.5;
+    }
+    ud[51] = 0.0;
+    // Write only the camera matrix portion (first 52 floats = 208 bytes)
+    device.queue.writeBuffer(
+      command._webgpuUniformBuffer,
+      0,
+      ud.buffer,
+      0,
+      208,
+    );
+  } else {
+    // Flat: only MVP (first 16 floats = 64 bytes)
+    device.queue.writeBuffer(command._webgpuUniformBuffer, 0, ud.buffer, 0, 64);
+  }
+}
+
 const WebGPUPrimitiveCommands = {
   createWebGPUCommands,
+  createWebGPUMaterialCommands,
   updateWebGPUCommandUniforms,
+  updateWebGPUMaterialCommandUniforms,
   updateWebGPUPickCommandUniforms,
 };
 
 export default WebGPUPrimitiveCommands;
 export {
   createWebGPUCommands,
+  createWebGPUMaterialCommands,
   updateWebGPUCommandUniforms,
+  updateWebGPUMaterialCommandUniforms,
   updateWebGPUPickCommandUniforms,
 };

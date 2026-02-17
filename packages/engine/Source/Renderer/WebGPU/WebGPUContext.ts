@@ -30,6 +30,7 @@ import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
 import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
+import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
   createWebGLCompatibilityStub,
@@ -119,6 +120,7 @@ export class WebGPUContext implements GraphicsContext {
   // Resource pools for efficient reuse
   private _bufferPool: Map<string, GPUBuffer[]> = new Map();
   private _uniformBufferPool: GPUBuffer[] = [];
+  private _mipmapGenerator: WebGPUMipmapGenerator | null = null;
 
   // GPU statistics and debugging
   private _frameCount: number = 0;
@@ -1754,6 +1756,12 @@ export class WebGPUContext implements GraphicsContext {
     this._bufferPool.clear();
     this._uniformBufferPool = [];
 
+    // Destroy mipmap generator
+    if (this._mipmapGenerator) {
+      this._mipmapGenerator.destroy();
+      this._mipmapGenerator = null;
+    }
+
     // Clear references
     this._adapter = null;
     this._context = null;
@@ -2174,6 +2182,11 @@ export class WebGPUContext implements GraphicsContext {
       );
     }
 
+    // Generate mipmaps if requested and texture has multiple mip levels
+    if (generateMipmaps && mipLevelCount > 1) {
+      texture.generateMipmaps(this.mipmapGenerator);
+    }
+
     return texture;
   }
 
@@ -2192,6 +2205,20 @@ export class WebGPUContext implements GraphicsContext {
       usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
       label: "Staging Buffer",
     });
+  }
+
+  /**
+   * Gets or lazily creates the shared mipmap generator for this context.
+   * The generator caches its shader module and pipelines per texture format
+   * so repeated mipmap generation is efficient.
+   *
+   * @returns {WebGPUMipmapGenerator} The mipmap generator
+   */
+  get mipmapGenerator(): WebGPUMipmapGenerator {
+    if (!this._mipmapGenerator && this._device) {
+      this._mipmapGenerator = new WebGPUMipmapGenerator(this._device);
+    }
+    return this._mipmapGenerator!;
   }
 
   /**

@@ -82,6 +82,8 @@ import VoxelPrimitive from "./VoxelPrimitive.js";
 import getMetadataClassProperty from "./getMetadataClassProperty.js";
 import PickedMetadataInfo from "./PickedMetadataInfo.js";
 import getMetadataProperty from "./getMetadataProperty.js";
+import { initPrimitiveShaders } from "../Renderer/WebGPU/WebGPUPrimitiveShaders.js";
+import { initCollectionShaders } from "../Renderer/WebGPU/WebGPUCollectionShaders.js";
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -849,6 +851,14 @@ Scene.createAsync = async function (options, onProgress) {
     if (defined(onProgress)) {
       onProgress(50, "Configuring canvas...");
     }
+
+    // Load WGSL primitive shaders from .wgsl files via fetch()
+    // Must be done before any primitives are rendered
+    if (defined(onProgress)) {
+      onProgress(70, "Loading shaders...");
+    }
+    await initPrimitiveShaders();
+    await initCollectionShaders();
   }
 
   // Create scene with pre-initialized context (or undefined for WebGL)

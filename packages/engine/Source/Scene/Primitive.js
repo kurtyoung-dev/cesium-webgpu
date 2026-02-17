@@ -35,6 +35,8 @@ import {
   createWebGPUCommands,
   updateWebGPUCommandUniforms,
   updateWebGPUPickCommandUniforms,
+  createWebGPUMaterialCommands,
+  updateWebGPUMaterialCommandUniforms,
 } from "../Renderer/WebGPU/WebGPUPrimitiveCommands.js";
 import BatchTable from "./BatchTable.js";
 import CullFace from "./CullFace.js";
@@ -2003,16 +2005,31 @@ function createCommands(
   const isWebGPU = frameState.context.isWebGPU;
 
   if (isWebGPU) {
-    createWebGPUCommands(
-      primitive,
-      appearance,
-      material,
-      translucent,
-      twoPasses,
-      colorCommands,
-      pickCommands,
-      frameState,
-    );
+    // Route to material commands if the appearance has a material (MaterialAppearance, etc.)
+    const hasMaterial = defined(material);
+    if (hasMaterial) {
+      createWebGPUMaterialCommands(
+        primitive,
+        appearance,
+        material,
+        translucent,
+        twoPasses,
+        colorCommands,
+        pickCommands,
+        frameState,
+      );
+    } else {
+      createWebGPUCommands(
+        primitive,
+        appearance,
+        material,
+        translucent,
+        twoPasses,
+        colorCommands,
+        pickCommands,
+        frameState,
+      );
+    }
   } else {
     createWebGLCommands(
       primitive,
@@ -2139,7 +2156,16 @@ function updateAndQueueCommands(
 
       // WebGPU: Update uniform buffers with current camera matrices every frame
       if (colorCommand.isWebGPUDrawCommand === true) {
-        updateWebGPUCommandUniforms(colorCommand, frameState, modelMatrix);
+        const st = colorCommand._webgpuShaderType;
+        if (defined(st) && (st.startsWith("mat") || st.startsWith("pbr"))) {
+          updateWebGPUMaterialCommandUniforms(
+            colorCommand,
+            frameState,
+            modelMatrix,
+          );
+        } else {
+          updateWebGPUCommandUniforms(colorCommand, frameState, modelMatrix);
+        }
       }
 
       const sphereIndex = Math.floor(j / factor);

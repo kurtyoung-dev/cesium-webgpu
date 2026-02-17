@@ -24,6 +24,10 @@ import BlendingState from "./BlendingState.js";
 import BlendOption from "./BlendOption.js";
 import PointPrimitive from "./PointPrimitive.js";
 import SceneMode from "./SceneMode.js";
+import {
+  updateWebGPUPointPrimitives,
+  destroyWebGPUPointResources,
+} from "../Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js";
 
 const SHOW_INDEX = PointPrimitive.SHOW_INDEX;
 const POSITION_INDEX = PointPrimitive.POSITION_INDEX;
@@ -859,6 +863,16 @@ PointPrimitiveCollection.prototype.update = function (frameState) {
 
   updateMode(this, frameState);
 
+  const context = frameState.context;
+
+  // ---- WebGPU rendering path ----
+  if (context.isWebGPU) {
+    this._pointPrimitivesLength = this._pointPrimitives.length;
+    updateWebGPUPointPrimitives(this, frameState, frameState.commandList);
+    return;
+  }
+
+  // ---- WebGL rendering path (original, unchanged) ----
   const pointPrimitives = this._pointPrimitives;
   const pointPrimitivesLength = pointPrimitives.length;
   const pointPrimitivesToUpdate = this._pointPrimitivesToUpdate;
@@ -869,7 +883,6 @@ PointPrimitiveCollection.prototype.update = function (frameState) {
   const createVertexArray = this._createVertexArray;
 
   let vafWriters;
-  const context = frameState.context;
   const pass = frameState.passes;
   const picking = pass.pick;
 
@@ -1212,6 +1225,9 @@ PointPrimitiveCollection.prototype.isDestroyed = function () {
  * @see PointPrimitiveCollection#isDestroyed
  */
 PointPrimitiveCollection.prototype.destroy = function () {
+  // Clean up WebGPU resources if they exist
+  destroyWebGPUPointResources(this);
+
   this._sp = this._sp && this._sp.destroy();
   this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
   this._spPick = this._spPick && this._spPick.destroy();

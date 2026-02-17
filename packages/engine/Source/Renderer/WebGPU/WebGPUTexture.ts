@@ -16,6 +16,7 @@
 
 import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
+import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 
 /**
  * Texture dimension types
@@ -483,66 +484,48 @@ export class WebGPUTexture {
   }
 
   /**
-   * Generates mipmaps for the texture using a compute shader.
+   * Generates mipmaps for the texture using blit render passes.
    * WebGPU does not auto-generate mipmaps like WebGL, so this must be called explicitly.
+   * Uses WebGPUMipmapGenerator internally — a cached pipeline that renders a fullscreen
+   * triangle from each mip level to the next with linear filtering.
+   *
+   * The texture must have been created with mipLevelCount > 1 and with
+   * TEXTURE_BINDING | RENDER_ATTACHMENT usage flags (the default).
+   *
+   * @param {WebGPUMipmapGenerator} [generator] - Optional shared generator instance.
+   *   If not provided, a temporary one is created (and destroyed after use).
+   *   For best performance, pass a shared generator from WebGPUContext.
    *
    * @example
-   * const texture = WebGPUTexture.create2D(device, 512, 512, 'rgba8unorm', 9);
+   * const mipCount = WebGPUMipmapGenerator.calculateMipLevelCount(512, 512); // 10
+   * const texture = WebGPUTexture.create2D(device, 512, 512, 'rgba8unorm', mipCount);
    * texture.write(imageData); // Write to mip level 0
    * texture.generateMipmaps(); // Generate remaining mip levels
    */
-  generateMipmaps(): void {
+  generateMipmaps(generator?: WebGPUMipmapGenerator): void {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
       throw new DeveloperError("Texture has been destroyed.");
     }
-    if (this._mipLevelCount <= 1) {
-      console.warn(
-        "[WebGPU] Texture has only 1 mip level, no mipmaps to generate.",
-      );
-      return;
-    }
     //>>includeEnd('debug');
 
-    // Create command encoder
-    const commandEncoder = this._device.createCommandEncoder({
-      label: `${this._label}_MipmapGeneration`,
-    });
-
-    // Simple implementation: Use blit operations to downsample each level
-    // For production, a compute shader would be more efficient
-    for (let mipLevel = 1; mipLevel < this._mipLevelCount; mipLevel++) {
-      const srcMip = mipLevel - 1;
-      const dstMip = mipLevel;
-
-      const srcWidth = Math.max(1, this._width >> srcMip);
-      const srcHeight = Math.max(1, this._height >> srcMip);
-      const dstWidth = Math.max(1, this._width >> dstMip);
-      const dstHeight = Math.max(1, this._height >> dstMip);
-
-      // Create source and destination views
-      const srcView = this._texture.createView({
-        baseMipLevel: srcMip,
-        mipLevelCount: 1,
-      });
-
-      const dstView = this._texture.createView({
-        baseMipLevel: dstMip,
-        mipLevelCount: 1,
-      });
-
-      // Use a simple render pass to downsample
-      // This requires a pipeline - for now, log a warning
-      console.warn(
-        `[WebGPU] Mipmap generation not fully implemented. Mip level ${mipLevel} not generated.`,
-      );
-      console.warn(
-        "[WebGPU] Use manual mip writing or implement compute shader approach.",
-      );
+    if (this._mipLevelCount <= 1) {
+      return; // Nothing to generate
     }
 
-    // Submit commands
-    this._device.queue.submit([commandEncoder.finish()]);
+    const ownGenerator = !generator;
+    const gen = generator ?? new WebGPUMipmapGenerator(this._device);
+
+    gen.generateMipmapsAndSubmit(
+      this._texture,
+      this._format,
+      this._mipLevelCount,
+    );
+
+    // Clean up if we created a temporary generator
+    if (ownGenerator) {
+      gen.destroy();
+    }
   }
 
   /**

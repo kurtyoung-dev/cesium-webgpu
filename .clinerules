@@ -93,6 +93,27 @@
 - Always profile and benchmark before adding complexity
 - Ensure all tech stack choices maintain backward compatibility
 
+## Tool Use Safety Rules
+
+### replace_in_file Best Practices
+- **NEVER** call `replace_in_file` without a non-empty `diff` parameter — this causes retries and wasted context
+- Keep each REPLACE block to **≤50 new lines** — larger additions risk tool failures
+- For **large additions (>50 lines)**, use `write_to_file` to rewrite the complete file instead
+- When making **multiple changes** to one file, use **separate small SEARCH/REPLACE blocks** in a single diff, not one giant block
+- Always **double-check** that the SEARCH content matches the file exactly before submitting
+- Prefer **multiple small tool calls** over one large tool call
+
+### Large Function Additions
+- When adding a new function **>50 lines** to an existing file, prefer `write_to_file` to rewrite the entire file
+- Alternatively, **break the function into helper functions** added one at a time via small `replace_in_file` calls
+- Each `replace_in_file` call should add **at most one focused piece** (~30-50 lines)
+
+### Task Granularity
+- Break implementation tasks so each step involves **≤50 lines of new code**
+- If a task says "add ~200 lines", split it into 4-5 sub-tasks of ~40-50 lines each
+- Each sub-task should be independently testable or at least independently saveable
+- Prefer creating **helper functions** that the main function calls, rather than one monolithic function
+
 ## Notes
 - This file will be updated as the project evolves
 - Consult team before adding major architectural rules

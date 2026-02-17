@@ -312,22 +312,29 @@ function CesiumWidget(container, options) {
   try {
     const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
 
-    const scene = new Scene({
-      canvas: canvas,
-      contextOptions: options.contextOptions,
-      creditContainer: innerCreditContainer,
-      creditViewport: creditViewport,
-      ellipsoid: ellipsoid,
-      mapProjection: options.mapProjection,
-      orderIndependentTranslucency: options.orderIndependentTranslucency,
-      scene3DOnly: options.scene3DOnly ?? false,
-      shadows: options.shadows,
-      mapMode2D: options.mapMode2D,
-      requestRenderMode: options.requestRenderMode,
-      maximumRenderTimeChange: options.maximumRenderTimeChange,
-      depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
-      msaaSamples: options.msaaSamples,
-    });
+    let scene;
+    if (defined(options._preInitializedScene)) {
+      // WebGPU async path — Scene was already created via Scene.createAsync()
+      scene = options._preInitializedScene;
+    } else {
+      // WebGL synchronous path (backward compatible)
+      scene = new Scene({
+        canvas: canvas,
+        contextOptions: options.contextOptions,
+        creditContainer: innerCreditContainer,
+        creditViewport: creditViewport,
+        ellipsoid: ellipsoid,
+        mapProjection: options.mapProjection,
+        orderIndependentTranslucency: options.orderIndependentTranslucency,
+        scene3DOnly: options.scene3DOnly ?? false,
+        shadows: options.shadows,
+        mapMode2D: options.mapMode2D,
+        requestRenderMode: options.requestRenderMode,
+        maximumRenderTimeChange: options.maximumRenderTimeChange,
+        depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
+        msaaSamples: options.msaaSamples,
+      });
+    }
     this._scene = scene;
 
     scene.camera.constrainedAxis = Cartesian3.UNIT_Z;
@@ -496,6 +503,70 @@ function CesiumWidget(container, options) {
     throw error;
   }
 }
+
+/**
+ * Creates a CesiumWidget asynchronously with support for WebGPU renderer initialization.
+ * This static factory method handles the asynchronous initialization required for WebGPU,
+ * while maintaining backward compatibility with synchronous WebGL initialization.
+ *
+ * @param {Element|string} container The DOM element or ID that will contain the widget.
+ * @param {object} [options] Same options as CesiumWidget constructor.
+ * @param {Function} [onProgress] Optional callback for loading progress (0-100).
+ *   Signature: function(progress: number, status: string)
+ * @returns {Promise<CesiumWidget>} Promise that resolves to the initialized CesiumWidget.
+ *
+ * @example
+ * // Create widget with WebGPU renderer
+ * const widget = await Cesium.CesiumWidget.createAsync("cesiumContainer", {
+ *   contextOptions: { renderer: "webgpu" }
+ * });
+ *
+ * @example
+ * // Create widget with WebGL (backward compatible)
+ * const widget = await Cesium.CesiumWidget.createAsync("cesiumContainer");
+ */
+CesiumWidget.createAsync = async function (container, options, onProgress) {
+  options = options ?? {};
+  const contextOptions = options.contextOptions ?? {};
+  const needsAsync = contextOptions.renderer === "webgpu";
+
+  if (needsAsync) {
+    // Create a temporary canvas for Scene.createAsync
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.style.width = "100%";
+    tempCanvas.style.height = "100%";
+
+    const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
+
+    // Create scene asynchronously (handles WebGPU context + shader preload)
+    const scene = await Scene.createAsync(
+      {
+        canvas: tempCanvas,
+        contextOptions: contextOptions,
+        ellipsoid: ellipsoid,
+        mapProjection: options.mapProjection,
+        orderIndependentTranslucency: options.orderIndependentTranslucency,
+        scene3DOnly: options.scene3DOnly ?? false,
+        shadows: options.shadows,
+        mapMode2D: options.mapMode2D,
+        requestRenderMode: options.requestRenderMode,
+        maximumRenderTimeChange: options.maximumRenderTimeChange,
+        depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
+        msaaSamples: options.msaaSamples,
+      },
+      onProgress,
+    );
+
+    // Now create the widget synchronously with the pre-initialized scene
+    return new CesiumWidget(container, {
+      ...options,
+      _preInitializedScene: scene,
+    });
+  }
+
+  // WebGL path — just create synchronously (no async needed)
+  return new CesiumWidget(container, options);
+};
 
 Object.defineProperties(CesiumWidget.prototype, {
   /**

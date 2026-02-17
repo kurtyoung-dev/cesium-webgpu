@@ -1,266 +1,152 @@
 /**
  * @module WebGPUPrimitiveShaders
  *
- * WebGPU shader definitions and selection logic for the Primitive rendering pipeline.
- * Contains inline WGSL shaders optimized for CesiumJS Primitive geometry, and helper
- * functions for shader selection, vertex layout configuration, and uniform buffer sizing.
+ * Shader selection logic, vertex layout configuration, and uniform buffer sizing
+ * for the WebGPU Primitive rendering pipeline.
  *
- * These shaders use a compact uniform layout designed for per-primitive rendering:
- * - Group 0: Uniform buffer (MVP, ModelView, NormalMatrix, LightDirection)
- * - Group 1: Texture sampler + texture (textured variants only)
+ * All WGSL shader source code lives in `.wgsl` files under:
+ *   Source/Shaders/WebGPU/Primitive/
  *
- * Shader hierarchy (auto-selected based on geometry attributes):
- * - basic:          position + color
- * - phong:          position + normal + color
- * - basicTextured:  position + uv + color
- * - phongTextured:  position + normal + uv + color
+ * This module is a thin orchestrator that:
+ * - Loads and caches WGSL shader source from .wgsl files at init time
+ * - Provides shader selection based on geometry attributes and material type
+ * - Defines vertex buffer layouts and uniform buffer sizes
+ *
+ * Shader categories:
+ * - Per-instance color:  basic, phong, basicTextured, phongTextured
+ * - Material:            matColorFlat/Lit, matImageFlat/Lit, matCheckerFlat/Lit, matGridFlat, matStripeFlat
+ * - PBR:                 pbrSimple, pbrTextured
+ * - Pick:                pickBasic/Phong/BasicTextured/PhongTextured/MatFlat/MatLit
  *
  * @private
  */
 import defined from "../../Core/defined.js";
 
 // =========================================================================
-// WGSL Shader Strings
+// Shader Cache — populated by initPrimitiveShaders()
+// =========================================================================
+
+const _shaderCache = {};
+let _shadersLoaded = false;
+
+/**
+ * Base path for primitive WGSL shader files.
+ * Adjusted at init time based on the runtime environment.
+ * @type {string}
+ * @private
+ */
+let _shaderBasePath = "Source/Shaders/WebGPU/Primitive/";
+
+// Shader file manifest — maps shader key to filename
+const SHADER_FILES = {
+  // Per-instance color shaders
+  basic: "PrimitiveBasicColor.wgsl",
+  phong: "PrimitivePhongColor.wgsl",
+  basicTextured: "PrimitiveBasicTexturedColor.wgsl",
+  phongTextured: "PrimitivePhongTexturedColor.wgsl",
+  // Pick shaders (per-instance color layouts)
+  pickBasic: "PrimitivePickBasic.wgsl",
+  pickPhong: "PrimitivePickPhong.wgsl",
+  pickBasicTextured: "PrimitivePickBasicTextured.wgsl",
+  pickPhongTextured: "PrimitivePickPhongTextured.wgsl",
+  // Material shaders
+  matColorFlat: "PrimitiveMatColorFlat.wgsl",
+  matColorLit: "PrimitiveMatColorLit.wgsl",
+  matImageFlat: "PrimitiveMatImageFlat.wgsl",
+  matImageLit: "PrimitiveMatImageLit.wgsl",
+  matCheckerFlat: "PrimitiveMatCheckerFlat.wgsl",
+  matCheckerLit: "PrimitiveMatCheckerLit.wgsl",
+  matGridFlat: "PrimitiveMatGridFlat.wgsl",
+  matStripeFlat: "PrimitiveMatStripeFlat.wgsl",
+  // Pick shaders (material layouts)
+  pickMatFlat: "PrimitivePickMatFlat.wgsl",
+  pickMatLit: "PrimitivePickMatLit.wgsl",
+  // PBR shaders
+  pbrSimple: "PrimitivePBRSimple.wgsl",
+  pbrTextured: "PrimitivePBRTextured.wgsl",
+};
+
+// =========================================================================
+// Shader Loading
 // =========================================================================
 
 /**
- * BasicColor Shader: position + color only (no lighting)
- * Uniform: MVP matrix only (64 bytes, padded to 256)
- * @type {string}
+ * Initializes the primitive shader cache by fetching all .wgsl files.
+ * Must be called once during WebGPU context initialization (e.g., from Scene.createAsync()).
+ *
+ * @param {string} [basePath] - Optional base URL path to the Shaders directory.
+ *   Defaults to "Source/Shaders/WebGPU/Primitive/".
+ * @returns {Promise<void>} Resolves when all shaders are loaded and cached.
+ * @private
  */
-const basicColorWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
-}
+async function initPrimitiveShaders(basePath) {
+  if (_shadersLoaded) {
+    return;
+  }
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
+  if (defined(basePath)) {
+    _shaderBasePath = basePath;
+  }
 
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-}
+  const entries = Object.entries(SHADER_FILES);
+  const fetchPromises = entries.map(async ([key, filename]) => {
+    try {
+      const url = `${_shaderBasePath}${filename}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn(
+          `[WebGPUPrimitiveShaders] Failed to load ${filename}: ${response.status}`,
+        );
+        return;
+      }
+      _shaderCache[key] = await response.text();
+    } catch (e) {
+      console.warn(
+        `[WebGPUPrimitiveShaders] Error loading ${filename}:`,
+        e.message,
+      );
+    }
+  });
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    return output;
+  await Promise.all(fetchPromises);
+  _shadersLoaded = true;
 }
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
-}
-`;
 
 /**
- * Phong Shader: position + normal + color (with diffuse + specular lighting)
- * Uniform: MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) = 208 bytes, padded to 256
- * @type {string}
+ * Returns the cached WGSL source for a shader key.
+ * Throws if shaders haven't been initialized yet.
+ *
+ * @param {string} key - Shader key (e.g., 'basic', 'phong', 'matColorFlat', 'pbrSimple')
+ * @returns {string} WGSL shader source code
+ * @private
  */
-const phongColorWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clipPosition: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) worldNormal: vec3<f32>,
-    @location(2) viewPosition: vec3<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    modelView: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-    lightDirection: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clipPosition = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-
-    // Transform normal using the normal matrix (upper-left 3x3 of normalMatrix)
-    let n = vec3<f32>(
-        uniforms.normalMatrix[0].xyz
+function getShaderSource(key) {
+  const source = _shaderCache[key];
+  if (!defined(source)) {
+    // If shaders aren't loaded yet, provide a helpful error
+    if (!_shadersLoaded) {
+      throw new Error(
+        `[WebGPUPrimitiveShaders] Shaders not loaded. Call initPrimitiveShaders() first.`,
+      );
+    }
+    throw new Error(
+      `[WebGPUPrimitiveShaders] Unknown shader key: "${key}". Available: ${Object.keys(_shaderCache).join(", ")}`,
     );
-    let transformedNormal = normalize(
-        mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
-        ) * input.normal
-    );
-    output.worldNormal = transformedNormal;
-
-    // View-space position for specular
-    let viewPos = uniforms.modelView * vec4<f32>(input.position, 1.0);
-    output.viewPosition = viewPos.xyz;
-
-    return output;
+  }
+  return source;
 }
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
-
-    // Ambient
-    let ambient = 0.15;
-
-    // Diffuse (Lambertian)
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
-    // Specular (Blinn-Phong)
-    let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
-
-    let lighting = ambient + diffuse + specular;
-    let finalColor = input.color.rgb * lighting;
-
-    return vec4<f32>(finalColor, input.color.a);
-}
-`;
 
 /**
- * BasicTexturedColor Shader: position + uv + color (texture sampling modulated by color)
- * Uniform: MVP matrix only (64 bytes, padded to 256)
- * Uses @group(1) for texture sampler and texture
- * @type {string}
+ * Returns true if the shader cache has been populated.
+ * @returns {boolean}
+ * @private
  */
-const basicTexturedColorWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-    @location(2) color: vec4<f32>,
+function areShadersLoaded() {
+  return _shadersLoaded;
 }
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var colorTexture: texture_2d<f32>;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let texColor = textureSample(colorTexture, textureSampler, input.texCoord);
-    return texColor * input.color;
-}
-`;
-
-/**
- * PhongTexturedColor Shader: position + normal + uv + color (Phong + texture)
- * Uniform: MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) = 208 bytes, padded to 256
- * Uses @group(1) for texture sampler and texture
- * @type {string}
- */
-const phongTexturedColorWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-    @location(3) color: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clipPosition: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) worldNormal: vec3<f32>,
-    @location(2) viewPosition: vec3<f32>,
-    @location(3) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    modelView: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-    lightDirection: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var colorTexture: texture_2d<f32>;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clipPosition = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    output.texCoord = input.texCoord;
-
-    let transformedNormal = normalize(
-        mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
-        ) * input.normal
-    );
-    output.worldNormal = transformedNormal;
-
-    let viewPos = uniforms.modelView * vec4<f32>(input.position, 1.0);
-    output.viewPosition = viewPos.xyz;
-
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
-    let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
-
-    let lighting = ambient + diffuse + specular;
-    let texColor = textureSample(colorTexture, textureSampler, input.texCoord);
-    let baseColor = texColor * input.color;
-    let finalColor = baseColor.rgb * lighting;
-
-    return vec4<f32>(finalColor, baseColor.a);
-}
-`;
 
 // =========================================================================
-// Shader Selection & Configuration
+// Per-Instance Color Shader Selection
 // =========================================================================
 
 /**
@@ -281,22 +167,33 @@ function selectWebGPUShader(attributes) {
   const hasST = defined(attributes.st) && defined(attributes.st.values);
 
   if (hasNormals && hasST) {
-    return { type: "phongTextured", code: phongTexturedColorWGSL, hasUV: true };
+    return {
+      type: "phongTextured",
+      code: getShaderSource("phongTextured"),
+      hasUV: true,
+    };
   }
   if (hasST) {
-    return { type: "basicTextured", code: basicTexturedColorWGSL, hasUV: true };
+    return {
+      type: "basicTextured",
+      code: getShaderSource("basicTextured"),
+      hasUV: true,
+    };
   }
   if (hasNormals) {
-    return { type: "phong", code: phongColorWGSL, hasUV: false };
+    return { type: "phong", code: getShaderSource("phong"), hasUV: false };
   }
-  return { type: "basic", code: basicColorWGSL, hasUV: false };
+  return { type: "basic", code: getShaderSource("basic"), hasUV: false };
 }
+
+// =========================================================================
+// Vertex Layout Configurations
+// =========================================================================
 
 /**
  * Returns the vertex buffer layout descriptor for a given shader type.
- * Each layout defines the interleaved vertex format with stride and attribute offsets.
  *
- * @param {string} shaderType - 'basic', 'phong', 'basicTextured', or 'phongTextured'
+ * @param {string} shaderType - Shader type identifier
  * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
  * @private
  */
@@ -309,10 +206,10 @@ function getVertexLayoutForShader(shaderType) {
       layout: {
         arrayStride: 48,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-          { shaderLocation: 1, offset: 12, format: "float32x3" }, // normal
-          { shaderLocation: 2, offset: 24, format: "float32x2" }, // texCoord
-          { shaderLocation: 3, offset: 32, format: "float32x4" }, // color
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x3" },
+          { shaderLocation: 2, offset: 24, format: "float32x2" },
+          { shaderLocation: 3, offset: 32, format: "float32x4" },
         ],
       },
     };
@@ -325,9 +222,9 @@ function getVertexLayoutForShader(shaderType) {
       layout: {
         arrayStride: 36,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-          { shaderLocation: 1, offset: 12, format: "float32x2" }, // texCoord
-          { shaderLocation: 2, offset: 20, format: "float32x4" }, // color
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x2" },
+          { shaderLocation: 2, offset: 20, format: "float32x4" },
         ],
       },
     };
@@ -340,9 +237,9 @@ function getVertexLayoutForShader(shaderType) {
       layout: {
         arrayStride: 40,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-          { shaderLocation: 1, offset: 12, format: "float32x3" }, // normal
-          { shaderLocation: 2, offset: 24, format: "float32x4" }, // color
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x3" },
+          { shaderLocation: 2, offset: 24, format: "float32x4" },
         ],
       },
     };
@@ -354,32 +251,26 @@ function getVertexLayoutForShader(shaderType) {
     layout: {
       arrayStride: 28,
       attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-        { shaderLocation: 1, offset: 12, format: "float32x4" }, // color
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x4" },
       ],
     },
   };
 }
 
 /**
- * Returns the uniform buffer size needed for a given shader type.
- * All sizes are 256-byte aligned per WebGPU requirements.
- *
- * @param {string} shaderType - 'basic', 'phong', 'basicTextured', or 'phongTextured'
- * @returns {number} Size in bytes (256-byte aligned)
+ * Returns the uniform buffer size for a given shader type (256-byte aligned).
+ * @param {string} shaderType
+ * @returns {number}
  * @private
  */
 function getUniformSizeForShader(shaderType) {
-  if (shaderType === "phong" || shaderType === "phongTextured") {
-    // MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) = 208 → aligned to 256
-    return 256;
-  }
-  // basic, basicTextured: MVP(64) → aligned to 256
+  // All shader types use 256-byte uniform buffers
   return 256;
 }
 
 /**
- * Returns true if the shader type is a Phong variant (needs normal matrix uniforms).
+ * Returns true if the shader type uses Phong lighting (needs normal matrix uniforms).
  * @param {string} shaderType
  * @returns {boolean}
  * @private
@@ -389,7 +280,7 @@ function isPhongShader(shaderType) {
 }
 
 /**
- * Returns true if the shader type needs a texture bind group.
+ * Returns true if the shader type needs a texture bind group (group 1).
  * @param {string} shaderType
  * @returns {boolean}
  * @private
@@ -399,646 +290,52 @@ function isTexturedShader(shaderType) {
 }
 
 // =========================================================================
-// Pick Shader Strings
+// Pick Shader Selection
 // =========================================================================
 
 /**
- * Pick shader for "basic" vertex layout: position(3) + color(4)
- * Uniform: MVP(64) + PickColor(16) = 80 bytes, padded to 256
- * Outputs the pick color (unique per instance) for GPU-based object identification.
- * @type {string}
+ * Returns the WGSL pick shader code for a given color shader type.
+ * @param {string} shaderType - Color shader type
+ * @returns {string} WGSL pick shader source
+ * @private
  */
-const pickBasicWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
+function getPickShaderForType(shaderType) {
+  if (shaderType === "phongTextured") {
+    return getShaderSource("pickPhongTextured");
+  }
+  if (shaderType === "basicTextured") {
+    return getShaderSource("pickBasicTextured");
+  }
+  if (shaderType === "phong") {
+    return getShaderSource("pickPhong");
+  }
+  return getShaderSource("pickBasic");
 }
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    pickColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    return output;
-}
-
-@fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
-    return uniforms.pickColor;
-}
-`;
 
 /**
- * Pick shader for "phong" vertex layout: position(3) + normal(3) + color(4)
- * Uniform: MVP(64) + PickColor(16) = 80 bytes, padded to 256
- * @type {string}
+ * Returns the WGSL pick shader code for a material shader type.
+ * @param {string} shaderType - Material shader type
+ * @returns {string} WGSL pick shader source
+ * @private
  */
-const pickPhongWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
+function getMaterialPickShaderForType(shaderType) {
+  if (isMaterialLitShader(shaderType) || isPBRShader(shaderType)) {
+    return getShaderSource("pickMatLit");
+  }
+  return getShaderSource("pickMatFlat");
 }
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    pickColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    return output;
-}
-
-@fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
-    return uniforms.pickColor;
-}
-`;
 
 /**
- * Pick shader for "basicTextured" vertex layout: position(3) + uv(2) + color(4)
- * Uniform: MVP(64) + PickColor(16) = 80 bytes, padded to 256
- * @type {string}
+ * Returns the uniform buffer size for pick shaders (256-byte aligned).
+ * @returns {number}
+ * @private
  */
-const pickBasicTexturedWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-    @location(2) color: vec4<f32>,
+function getPickUniformSize() {
+  return 256;
 }
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    pickColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    return output;
-}
-
-@fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
-    return uniforms.pickColor;
-}
-`;
-
-/**
- * Pick shader for "phongTextured" vertex layout: position(3) + normal(3) + uv(2) + color(4)
- * Uniform: MVP(64) + PickColor(16) = 80 bytes, padded to 256
- * @type {string}
- */
-const pickPhongTexturedWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-    @location(3) color: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    pickColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    return output;
-}
-
-@fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
-    return uniforms.pickColor;
-}
-`;
 
 // =========================================================================
-// Material WGSL Shaders
-// =========================================================================
-
-/**
- * Material Color Flat: position + st, uniform materialColor, no lighting.
- * For EllipsoidSurfaceAppearance + Color material, or flat MaterialAppearance + Color.
- * Vertex layout: position(3) + st(2) = 5 floats = 20 bytes
- * Uniform: MVP(64) + materialColor(16) = 80 bytes, padded to 256
- * @type {string}
- */
-const matColorFlatWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    materialColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    return uniforms.materialColor;
-}
-`;
-
-/**
- * Material Color Lit: position + normal + st, uniform materialColor + Phong lighting.
- * Vertex layout: position(3) + normal(3) + st(2) = 8 floats = 32 bytes
- * Uniform: MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) + materialColor(16) = 224 bytes, padded to 256
- * @type {string}
- */
-const matColorLitWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clipPosition: vec4<f32>,
-    @location(0) worldNormal: vec3<f32>,
-    @location(1) viewPosition: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    modelView: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-    lightDirection: vec4<f32>,
-    materialColor: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clipPosition = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-
-    let transformedNormal = normalize(
-        mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
-        ) * input.normal
-    );
-    output.worldNormal = transformedNormal;
-
-    let viewPos = uniforms.modelView * vec4<f32>(input.position, 1.0);
-    output.viewPosition = viewPos.xyz;
-
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
-    let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
-
-    let lighting = ambient + diffuse + specular;
-    let finalColor = uniforms.materialColor.rgb * lighting;
-
-    return vec4<f32>(finalColor, uniforms.materialColor.a);
-}
-`;
-
-/**
- * Material Image Flat: position + st, texture sampling modulated by tint color, no lighting.
- * Vertex layout: position(3) + st(2) = 5 floats = 20 bytes
- * Uniform: MVP(64) + colorTint(16) + repeat(8 + 8pad = 16) = 96 bytes, padded to 256
- * Group 1: sampler + texture2D
- * @type {string}
- */
-const matImageFlatWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    colorTint: vec4<f32>,
-    repeat: vec2<f32>,
-    _pad0: vec2<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var colorTexture: texture_2d<f32>;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = fract(uniforms.repeat * input.texCoord);
-    let texColor = textureSample(colorTexture, textureSampler, uv);
-    return texColor * uniforms.colorTint;
-}
-`;
-
-/**
- * Material Image Lit: position + normal + st, texture + tint + Phong lighting.
- * Vertex layout: position(3) + normal(3) + st(2) = 8 floats = 32 bytes
- * Uniform: MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) + colorTint(16) + repeat(16) = 240 bytes, padded to 256
- * Group 1: sampler + texture2D
- * @type {string}
- */
-const matImageLitWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clipPosition: vec4<f32>,
-    @location(0) worldNormal: vec3<f32>,
-    @location(1) viewPosition: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    modelView: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-    lightDirection: vec4<f32>,
-    colorTint: vec4<f32>,
-    repeat: vec2<f32>,
-    _pad0: vec2<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var colorTexture: texture_2d<f32>;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clipPosition = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-
-    let transformedNormal = normalize(
-        mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
-        ) * input.normal
-    );
-    output.worldNormal = transformedNormal;
-
-    let viewPos = uniforms.modelView * vec4<f32>(input.position, 1.0);
-    output.viewPosition = viewPos.xyz;
-
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
-    let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
-
-    let lighting = ambient + diffuse + specular;
-    let uv = fract(uniforms.repeat * input.texCoord);
-    let texColor = textureSample(colorTexture, textureSampler, uv);
-    let baseColor = texColor * uniforms.colorTint;
-    let finalColor = baseColor.rgb * lighting;
-
-    return vec4<f32>(finalColor, baseColor.a);
-}
-`;
-
-/**
- * Material Checkerboard Flat: position + st, procedural checkerboard, no lighting.
- * Vertex layout: position(3) + st(2) = 5 floats = 20 bytes
- * Uniform: MVP(64) + lightColor(16) + darkColor(16) + repeat(16) = 112 bytes, padded to 256
- * @type {string}
- */
-const matCheckerFlatWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    lightColor: vec4<f32>,
-    darkColor: vec4<f32>,
-    repeat: vec2<f32>,
-    _pad0: vec2<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = input.texCoord * uniforms.repeat;
-    let cx = floor(uv.x);
-    let cy = floor(uv.y);
-    let checker = ((cx + cy) % 2.0);
-    if (checker < 0.5) {
-        return uniforms.lightColor;
-    }
-    return uniforms.darkColor;
-}
-`;
-
-/**
- * Material Checkerboard Lit: position + normal + st, procedural checkerboard + Phong.
- * Vertex layout: position(3) + normal(3) + st(2) = 8 floats = 32 bytes
- * Uniform: MVP(64) + ModelView(64) + NormalMatrix(64) + LightDir(16) + lightColor(16) + darkColor(16) + repeat(16) = 256 bytes
- * @type {string}
- */
-const matCheckerLitWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clipPosition: vec4<f32>,
-    @location(0) worldNormal: vec3<f32>,
-    @location(1) viewPosition: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    modelView: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-    lightDirection: vec4<f32>,
-    lightColor: vec4<f32>,
-    darkColor: vec4<f32>,
-    repeat: vec2<f32>,
-    _pad0: vec2<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.clipPosition = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-
-    let transformedNormal = normalize(
-        mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
-        ) * input.normal
-    );
-    output.worldNormal = transformedNormal;
-
-    let viewPos = uniforms.modelView * vec4<f32>(input.position, 1.0);
-    output.viewPosition = viewPos.xyz;
-
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
-
-    let ambient = 0.15;
-    let NdotL = max(dot(normal, lightDir), 0.0);
-    let diffuse = NdotL * 0.7;
-
-    let viewDir = normalize(-input.viewPosition);
-    let halfDir = normalize(lightDir + viewDir);
-    let NdotH = max(dot(normal, halfDir), 0.0);
-    let specular = pow(NdotH, 32.0) * 0.15;
-
-    let lighting = ambient + diffuse + specular;
-
-    let uv = input.texCoord * uniforms.repeat;
-    let cx = floor(uv.x);
-    let cy = floor(uv.y);
-    let checker = ((cx + cy) % 2.0);
-    var baseColor: vec4<f32>;
-    if (checker < 0.5) {
-        baseColor = uniforms.lightColor;
-    } else {
-        baseColor = uniforms.darkColor;
-    }
-
-    let finalColor = baseColor.rgb * lighting;
-    return vec4<f32>(finalColor, baseColor.a);
-}
-`;
-
-/**
- * Material Grid Flat: position + st, procedural grid lines, no lighting.
- * Vertex layout: position(3) + st(2) = 5 floats = 20 bytes
- * Uniform: MVP(64) + color(16) + cellAlpha_lineCount(16) + lineThickness_lineOffset(16) = 112, padded to 256
- * @type {string}
- */
-const matGridFlatWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    color: vec4<f32>,
-    cellAlpha_lineCount: vec4<f32>,
-    lineThickness_lineOffset: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let cellAlpha = uniforms.cellAlpha_lineCount.x;
-    let lineCountX = uniforms.cellAlpha_lineCount.y;
-    let lineCountY = uniforms.cellAlpha_lineCount.z;
-    let lineThicknessX = uniforms.lineThickness_lineOffset.x;
-    let lineThicknessY = uniforms.lineThickness_lineOffset.y;
-    let lineOffsetX = uniforms.lineThickness_lineOffset.z;
-    let lineOffsetY = uniforms.lineThickness_lineOffset.w;
-
-    let st = input.texCoord;
-    let scaledX = fract((st.x - lineOffsetX) * lineCountX);
-    let scaledY = fract((st.y - lineOffsetY) * lineCountY);
-
-    let threshX = lineThicknessX / (1.0 / lineCountX) * 0.01;
-    let threshY = lineThicknessY / (1.0 / lineCountY) * 0.01;
-
-    let onLineX = f32(scaledX < threshX || scaledX > (1.0 - threshX));
-    let onLineY = f32(scaledY < threshY || scaledY > (1.0 - threshY));
-    let onLine = max(onLineX, onLineY);
-
-    let alpha = mix(cellAlpha * uniforms.color.a, uniforms.color.a, onLine);
-    return vec4<f32>(uniforms.color.rgb, alpha);
-}
-`;
-
-/**
- * Material Stripe Flat: position + st, procedural horizontal/vertical stripes, no lighting.
- * Vertex layout: position(3) + st(2) = 5 floats = 20 bytes
- * Uniform: MVP(64) + evenColor(16) + oddColor(16) + params(16) = 112, padded to 256
- * params: x=offset, y=repeat, z=horizontal(0 or 1), w=unused
- * @type {string}
- */
-const matStripeFlatWGSL = `
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) texCoord: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) texCoord: vec2<f32>,
-}
-
-struct Uniforms {
-    modelViewProjection: mat4x4<f32>,
-    evenColor: vec4<f32>,
-    oddColor: vec4<f32>,
-    params: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = uniforms.modelViewProjection * vec4<f32>(input.position, 1.0);
-    output.texCoord = input.texCoord;
-    return output;
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let offset = uniforms.params.x;
-    let repeatCount = uniforms.params.y;
-    let isHorizontal = uniforms.params.z;
-
-    var coord: f32;
-    if (isHorizontal > 0.5) {
-        coord = input.texCoord.y;
-    } else {
-        coord = input.texCoord.x;
-    }
-
-    let value = fract((coord - offset) * repeatCount);
-    if (value < 0.5) {
-        return uniforms.evenColor;
-    }
-    return uniforms.oddColor;
-}
-`;
-
-// =========================================================================
-// Material Shader Selection & Configuration
+// Material Shader Selection
 // =========================================================================
 
 /**
@@ -1055,63 +352,75 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
   const materialType = defined(material) ? material.type : "Color";
   const useLighting = hasNormals && !isFlat;
 
-  // Image / DiffuseMap materials → texture sampling shaders
   if (materialType === "Image" || materialType === "DiffuseMap") {
     if (useLighting && hasST) {
-      return { type: "matImageLit", code: matImageLitWGSL, needsTexture: true };
+      return {
+        type: "matImageLit",
+        code: getShaderSource("matImageLit"),
+        needsTexture: true,
+      };
     }
-    return { type: "matImageFlat", code: matImageFlatWGSL, needsTexture: true };
+    return {
+      type: "matImageFlat",
+      code: getShaderSource("matImageFlat"),
+      needsTexture: true,
+    };
   }
 
-  // Checkerboard material → procedural checkerboard
   if (materialType === "Checkerboard") {
     if (useLighting && hasST) {
       return {
         type: "matCheckerLit",
-        code: matCheckerLitWGSL,
+        code: getShaderSource("matCheckerLit"),
         needsTexture: false,
       };
     }
     return {
       type: "matCheckerFlat",
-      code: matCheckerFlatWGSL,
+      code: getShaderSource("matCheckerFlat"),
       needsTexture: false,
     };
   }
 
-  // Grid material → procedural grid
   if (materialType === "Grid") {
-    return { type: "matGridFlat", code: matGridFlatWGSL, needsTexture: false };
+    return {
+      type: "matGridFlat",
+      code: getShaderSource("matGridFlat"),
+      needsTexture: false,
+    };
   }
 
-  // Stripe material → procedural stripes
   if (materialType === "Stripe") {
     return {
       type: "matStripeFlat",
-      code: matStripeFlatWGSL,
+      code: getShaderSource("matStripeFlat"),
       needsTexture: false,
     };
   }
 
-  // Color material (default) → uniform color
+  // Color material (default)
   if (useLighting && hasST) {
-    return { type: "matColorLit", code: matColorLitWGSL, needsTexture: false };
+    return {
+      type: "matColorLit",
+      code: getShaderSource("matColorLit"),
+      needsTexture: false,
+    };
   }
-  return { type: "matColorFlat", code: matColorFlatWGSL, needsTexture: false };
+  return {
+    type: "matColorFlat",
+    code: getShaderSource("matColorFlat"),
+    needsTexture: false,
+  };
 }
 
 /**
- * Returns the vertex buffer layout for material shaders.
- * Material shaders do NOT use per-vertex color — color comes from the material.
- *
+ * Returns the vertex buffer layout for material shaders (no per-vertex color).
  * @param {string} shaderType - Material shader type
  * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
  * @private
  */
 function getMaterialVertexLayout(shaderType) {
-  const isLit = shaderType.endsWith("Lit");
-
-  if (isLit) {
+  if (isMaterialLitShader(shaderType) || isPBRShader(shaderType)) {
     // position(3) + normal(3) + st(2) = 8 floats = 32 bytes
     return {
       floatsPerVertex: 8,
@@ -1119,9 +428,9 @@ function getMaterialVertexLayout(shaderType) {
       layout: {
         arrayStride: 32,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-          { shaderLocation: 1, offset: 12, format: "float32x3" }, // normal
-          { shaderLocation: 2, offset: 24, format: "float32x2" }, // texCoord
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x3" },
+          { shaderLocation: 2, offset: 24, format: "float32x2" },
         ],
       },
     };
@@ -1134,23 +443,20 @@ function getMaterialVertexLayout(shaderType) {
     layout: {
       arrayStride: 20,
       attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-        { shaderLocation: 1, offset: 12, format: "float32x2" }, // texCoord
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x2" },
       ],
     },
   };
 }
 
 /**
- * Returns the uniform buffer size for material shaders.
- * All sizes are 256-byte aligned.
- *
- * @param {string} shaderType - Material shader type
- * @returns {number} Size in bytes (256-byte aligned)
+ * Returns the uniform buffer size for material shaders (256-byte aligned).
+ * @param {string} shaderType
+ * @returns {number}
  * @private
  */
 function getMaterialUniformSize(shaderType) {
-  // All material shaders fit within 256 bytes
   return 256;
 }
 
@@ -1161,7 +467,7 @@ function getMaterialUniformSize(shaderType) {
  * @private
  */
 function isMaterialLitShader(shaderType) {
-  return shaderType.endsWith("Lit");
+  return defined(shaderType) && shaderType.endsWith("Lit");
 }
 
 /**
@@ -1175,7 +481,7 @@ function isMaterialShader(shaderType) {
 }
 
 /**
- * Returns true if a material shader needs a texture bind group.
+ * Returns true if a material shader needs a texture bind group (group 1).
  * @param {string} shaderType
  * @returns {boolean}
  * @private
@@ -1185,87 +491,102 @@ function isMaterialTexturedShader(shaderType) {
 }
 
 // =========================================================================
-// Pick Shader Selection
+// PBR Shader Selection
 // =========================================================================
 
 /**
- * Returns the WGSL pick shader code for a given color shader type.
- * The pick shader has the same vertex input layout as the color shader
- * but only uses position, outputting a uniform pick color.
- *
- * @param {string} shaderType - 'basic', 'phong', 'basicTextured', or 'phongTextured'
- * @returns {string} WGSL pick shader source code
+ * Returns true if a shader type is a PBR shader.
+ * @param {string} shaderType
+ * @returns {boolean}
  * @private
  */
-function getPickShaderForType(shaderType) {
-  if (shaderType === "phongTextured") {
-    return pickPhongTexturedWGSL;
-  }
-  if (shaderType === "basicTextured") {
-    return pickBasicTexturedWGSL;
-  }
-  if (shaderType === "phong") {
-    return pickPhongWGSL;
-  }
-  return pickBasicWGSL;
+function isPBRShader(shaderType) {
+  return shaderType === "pbrSimple" || shaderType === "pbrTextured";
 }
 
 /**
- * Returns the uniform buffer size for pick shaders.
- * All pick shaders use: MVP(64) + PickColor(16) = 80 bytes → padded to 256.
- *
- * @returns {number} Size in bytes (256-byte aligned)
+ * Returns true if a PBR shader needs a texture bind group (group 1).
+ * @param {string} shaderType
+ * @returns {boolean}
  * @private
  */
-function getPickUniformSize() {
-  return 256;
+function isPBRTexturedShader(shaderType) {
+  return shaderType === "pbrTextured";
 }
 
+/**
+ * Selects the appropriate PBR shader.
+ * @param {boolean} hasBaseColorTexture - Whether a base color texture is available
+ * @returns {{ type: string, code: string, needsTexture: boolean }}
+ * @private
+ */
+function selectPBRShader(hasBaseColorTexture) {
+  if (hasBaseColorTexture) {
+    return {
+      type: "pbrTextured",
+      code: getShaderSource("pbrTextured"),
+      needsTexture: true,
+    };
+  }
+  return {
+    type: "pbrSimple",
+    code: getShaderSource("pbrSimple"),
+    needsTexture: false,
+  };
+}
+
+// =========================================================================
+// Exports
+// =========================================================================
+
 const WebGPUPrimitiveShaders = {
-  basicColorWGSL,
-  phongColorWGSL,
-  basicTexturedColorWGSL,
-  phongTexturedColorWGSL,
-  pickBasicWGSL,
-  pickPhongWGSL,
-  pickBasicTexturedWGSL,
-  pickPhongTexturedWGSL,
+  // Initialization
+  initPrimitiveShaders,
+  areShadersLoaded,
+  getShaderSource,
+  // Per-instance color
   selectWebGPUShader,
   getVertexLayoutForShader,
   getUniformSizeForShader,
-  getPickShaderForType,
-  getPickUniformSize,
   isPhongShader,
   isTexturedShader,
+  // Pick
+  getPickShaderForType,
+  getMaterialPickShaderForType,
+  getPickUniformSize,
+  // Material
   selectMaterialShader,
   getMaterialVertexLayout,
   getMaterialUniformSize,
   isMaterialLitShader,
   isMaterialShader,
   isMaterialTexturedShader,
+  // PBR
+  isPBRShader,
+  isPBRTexturedShader,
+  selectPBRShader,
 };
 
 export default WebGPUPrimitiveShaders;
 export {
-  basicColorWGSL,
-  phongColorWGSL,
-  basicTexturedColorWGSL,
-  phongTexturedColorWGSL,
-  pickBasicWGSL,
-  pickPhongWGSL,
-  pickBasicTexturedWGSL,
-  pickPhongTexturedWGSL,
+  initPrimitiveShaders,
+  areShadersLoaded,
+  getShaderSource,
   selectWebGPUShader,
   getVertexLayoutForShader,
   getUniformSizeForShader,
-  getPickShaderForType,
-  getPickUniformSize,
   isPhongShader,
   isTexturedShader,
+  getPickShaderForType,
+  getMaterialPickShaderForType,
+  getPickUniformSize,
   selectMaterialShader,
   getMaterialVertexLayout,
   getMaterialUniformSize,
   isMaterialLitShader,
   isMaterialShader,
   isMaterialTexturedShader,
+  isPBRShader,
+  isPBRTexturedShader,
+  selectPBRShader,
 };

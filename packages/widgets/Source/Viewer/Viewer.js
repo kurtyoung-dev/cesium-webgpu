@@ -37,6 +37,7 @@ import SelectionIndicator from "../SelectionIndicator/SelectionIndicator.js";
 import subscribeAndEvaluate from "../subscribeAndEvaluate.js";
 import Timeline from "../Timeline/Timeline.js";
 import VRButton from "../VRButton/VRButton.js";
+import LoadingOverlay from "./LoadingOverlay.js";
 
 const boundingSphereScratch = new BoundingSphere();
 
@@ -2016,6 +2017,70 @@ Viewer.prototype.zoomTo = function (target, offset) {
  */
 Viewer.prototype.flyTo = function (target, options) {
   return this._cesiumWidget.flyTo(target, options);
+};
+
+/**
+ * Creates a Viewer asynchronously with support for WebGPU renderer initialization.
+ * Shows a loading overlay during async initialization and removes it when ready.
+ *
+ * @param {Element|string} container The DOM element or ID that will contain the viewer.
+ * @param {Viewer.ConstructorOptions} [options] Same options as Viewer constructor.
+ *   Include `contextOptions: { renderer: 'webgpu' }` to enable WebGPU.
+ * @returns {Promise<Viewer>} Promise that resolves to the initialized Viewer.
+ *
+ * @example
+ * const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+ *   contextOptions: { renderer: "webgpu" }
+ * });
+ */
+Viewer.createAsync = async function (container, options) {
+  options = options ?? {};
+  const contextOptions = options.contextOptions ?? {};
+  const needsAsync = contextOptions.renderer === "webgpu";
+
+  if (!needsAsync) {
+    // WebGL path — synchronous, no overlay needed
+    return new Viewer(container, options);
+  }
+
+  // WebGPU path — show loading overlay during async init
+  const containerEl = getElement(container);
+  const overlay = new LoadingOverlay(containerEl);
+
+  try {
+    // Use CesiumWidget.createAsync to handle Scene async creation
+    const cesiumWidgetContainer = document.createElement("div");
+    cesiumWidgetContainer.style.display = "none";
+    containerEl.appendChild(cesiumWidgetContainer);
+
+    const widget = await CesiumWidget.createAsync(
+      cesiumWidgetContainer,
+      {
+        ...options,
+        useDefaultRenderLoop: false,
+      },
+      (progress, status) => {
+        overlay.updateProgress(progress, status);
+      },
+    );
+
+    // Clean up the temporary widget container
+    containerEl.removeChild(cesiumWidgetContainer);
+
+    // Create the Viewer with the pre-initialized scene from the widget
+    const viewer = new Viewer(container, {
+      ...options,
+      _preInitializedScene: widget.scene,
+    });
+
+    // Remove loading overlay with fade-out
+    overlay.remove();
+
+    return viewer;
+  } catch (error) {
+    overlay.showError(error.message || String(error));
+    throw error;
+  }
 };
 
 /**
