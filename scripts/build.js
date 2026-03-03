@@ -492,6 +492,8 @@ const shaderFiles = [
   "packages/engine/Source/Shaders/**/*.glsl",
   "packages/engine/Source/ThirdParty/Shaders/*.glsl",
 ];
+
+const wgslShaderFiles = ["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"];
 export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
   await writeFile(minifyStateFilePath, minify.toString());
   const minifyStateFileLastModified = existsSync(minifyStateFilePath)
@@ -625,6 +627,134 @@ export default "${contents}";\n`;
     ),
     fileContents,
   );
+}
+
+/**
+ * Converts WGSL shader files to JavaScript modules, similar to glslToJavaScript.
+ * Each .wgsl file becomes a .js module exporting its source as a string.
+ * Also generates CsmBuiltins.js index for WebGPU shader chunks.
+ *
+ * @param {boolean} minify Whether to strip comments/whitespace from shader source
+ * @param {string} minifyStateFilePath Path to file tracking minify state
+ * @param {string} workspace The workspace name (e.g., "engine")
+ * @returns {Promise<void>}
+ */
+export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
+  const minifyStateFileLastModified = existsSync(minifyStateFilePath)
+    ? statSync(minifyStateFilePath).mtime.getTime()
+    : 0;
+
+  // Collect existing JS files for cleanup of stale modules
+  const leftOverJsFiles = {};
+  const existingJsFiles = await globby([
+    `packages/${workspace}/Source/Shaders/WebGPU/**/*.js`,
+  ]);
+  existingJsFiles.forEach(function (file) {
+    leftOverJsFiles[path.normalize(file)] = true;
+  });
+
+  // Track WGSL builtins for CsmBuiltins.js generation
+  const builtinFunctions = [];
+  const builtinStructs = [];
+
+  const wgslFiles = await globby(wgslShaderFiles);
+  await Promise.all(
+    wgslFiles.map(async function (wgslFile) {
+      wgslFile = path.normalize(wgslFile);
+      const baseName = path.basename(wgslFile, ".wgsl");
+      const jsFile = `${path.join(path.dirname(wgslFile), baseName)}.js`;
+
+      // Identify built-in function and struct chunks
+      const chunkBase = path.join(
+        `packages/${workspace}/`,
+        "Source",
+        "Shaders",
+        "WebGPU",
+        "chunks",
+      );
+      const funcDir = path.normalize(path.join(chunkBase, "functions"));
+      const structDir = path.normalize(path.join(chunkBase, "structs"));
+
+      if (wgslFile.indexOf(funcDir) === 0) {
+        builtinFunctions.push(baseName);
+      } else if (wgslFile.indexOf(structDir) === 0) {
+        builtinStructs.push(baseName);
+      }
+
+      delete leftOverJsFiles[jsFile];
+
+      // Skip if JS file is newer than WGSL source
+      const jsFileExists = existsSync(jsFile);
+      const jsFileModified = jsFileExists
+        ? statSync(jsFile).mtime.getTime()
+        : 0;
+      const wgslFileModified = statSync(wgslFile).mtime.getTime();
+
+      if (
+        jsFileExists &&
+        jsFileModified > wgslFileModified &&
+        jsFileModified > minifyStateFileLastModified
+      ) {
+        return;
+      }
+
+      let contents = await readFile(wgslFile, { encoding: "utf8" });
+      contents = contents.replace(/\r\n/gm, "\n");
+
+      if (minify) {
+        // Strip WGSL single-line comments (// ...) and
+        // multi-line comments (/* ... */)
+        contents = contents
+          .replace(/\/\/.*$/gm, "")
+          .replace(/\/\*[\s\S]*?\*\//gm, "");
+        contents = contents
+          .replace(/\s+$/gm, "")
+          .replace(/^\s+/gm, "")
+          .replace(/\n+/gm, "\n");
+        contents += "\n";
+      }
+
+      contents = contents.split('"').join('\\"').replace(/\n/gm, "\\n\\\n");
+      contents = `\
+//This file is automatically rebuilt by the Cesium build process.\n\
+export default "${contents}";\n`;
+
+      return writeFile(jsFile, contents);
+    }),
+  );
+
+  // Delete stale JS files from removed WGSL shaders
+  Object.keys(leftOverJsFiles).forEach(function (filepath) {
+    rimraf.sync(filepath);
+  });
+
+  // Generate CsmBuiltins.js — index of all WGSL built-in chunks
+  const builtinImports = [];
+  const builtinLookup = [];
+
+  builtinStructs.forEach((name) => {
+    builtinImports.push(`import ${name} from './structs/${name}.js'`);
+    builtinLookup.push(`${name} : ${name}`);
+  });
+  builtinFunctions.forEach((name) => {
+    builtinImports.push(`import ${name} from './functions/${name}.js'`);
+    builtinLookup.push(`${name} : ${name}`);
+  });
+
+  const builtinsContent = `\
+//This file is automatically rebuilt by the Cesium build process.\n\
+${builtinImports.join("\n")}\n\n\
+export default {\n    ${builtinLookup.join(",\n    ")}\n};\n`;
+
+  const chunksDir = path.join(
+    `packages/${workspace}/`,
+    "Source",
+    "Shaders",
+    "WebGPU",
+    "chunks",
+  );
+  await mkdirp(chunksDir);
+  return writeFile(path.join(chunksDir, "CsmBuiltins.js"), builtinsContent);
 }
 
 const externalResolvePlugin = {
@@ -1062,6 +1192,13 @@ export const buildEngine = async (options) => {
 
   // Convert GLSL files to JavaScript modules.
   await glslToJavaScript(
+    minify,
+    "packages/engine/Build/minifyShaders.state",
+    "engine",
+  );
+
+  // Convert WGSL files to JavaScript modules.
+  await wgslToJavaScript(
     minify,
     "packages/engine/Build/minifyShaders.state",
     "engine",

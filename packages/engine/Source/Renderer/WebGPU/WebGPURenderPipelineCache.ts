@@ -96,6 +96,26 @@ export interface PipelineVariant {
    * Topology
    */
   topology?: GPUPrimitiveTopology;
+
+  /**
+   * Stencil front face operations
+   */
+  stencilFront?: GPUStencilFaceState;
+
+  /**
+   * Stencil back face operations
+   */
+  stencilBack?: GPUStencilFaceState;
+
+  /**
+   * Stencil read mask (0-255)
+   */
+  stencilReadMask?: number;
+
+  /**
+   * Stencil write mask (0-255)
+   */
+  stencilWriteMask?: number;
 }
 
 /**
@@ -328,10 +348,15 @@ export class WebGPURenderPipelineCache {
           variant?.depthCompare ||
           descriptor.depthStencil?.depthCompare ||
           "less",
-        stencilFront: descriptor.depthStencil?.stencilFront,
-        stencilBack: descriptor.depthStencil?.stencilBack,
-        stencilReadMask: descriptor.depthStencil?.stencilReadMask,
-        stencilWriteMask: descriptor.depthStencil?.stencilWriteMask,
+        stencilFront:
+          variant?.stencilFront || descriptor.depthStencil?.stencilFront,
+        stencilBack:
+          variant?.stencilBack || descriptor.depthStencil?.stencilBack,
+        stencilReadMask:
+          variant?.stencilReadMask ?? descriptor.depthStencil?.stencilReadMask,
+        stencilWriteMask:
+          variant?.stencilWriteMask ??
+          descriptor.depthStencil?.stencilWriteMask,
         depthBias: descriptor.depthStencil?.depthBias,
         depthBiasSlopeScale: descriptor.depthStencil?.depthBiasSlopeScale,
         depthBiasClamp: descriptor.depthStencil?.depthBiasClamp,
@@ -369,6 +394,14 @@ export class WebGPURenderPipelineCache {
       if (variant.frontFace) parts.push(`ff:${variant.frontFace}`);
       if (variant.topology) parts.push(`tp:${variant.topology}`);
       if (variant.blend) parts.push(`bl:${JSON.stringify(variant.blend)}`);
+      if (variant.stencilFront)
+        parts.push(`sf:${JSON.stringify(variant.stencilFront)}`);
+      if (variant.stencilBack)
+        parts.push(`sb:${JSON.stringify(variant.stencilBack)}`);
+      if (variant.stencilReadMask !== undefined)
+        parts.push(`srm:${variant.stencilReadMask}`);
+      if (variant.stencilWriteMask !== undefined)
+        parts.push(`swm:${variant.stencilWriteMask}`);
     }
 
     return parts.join("|");

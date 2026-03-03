@@ -279,15 +279,63 @@ export class WebGPUTexture {
   }
 
   /**
-   * Gets or creates the texture view.
+   * Whether this texture is a cubemap (6-layer 2D texture).
+   */
+  get isCubeMap(): boolean {
+    return this._depth === 6 && this._dimension === "2d";
+  }
+
+  /**
+   * Gets or creates the default texture view.
+   * For cubemaps, creates a "cube" dimension view so textureSampleCube works in WGSL.
+   * For regular textures, creates a standard view.
    */
   get view(): GPUTextureView {
     if (!this._view) {
-      this._view = this._texture.createView({
-        label: `${this._label}_View`,
-      });
+      if (this.isCubeMap) {
+        this._view = this._texture.createView({
+          dimension: "cube",
+          label: `${this._label}_CubeView`,
+        });
+      } else {
+        this._view = this._texture.createView({
+          label: `${this._label}_View`,
+        });
+      }
     }
     return this._view;
+  }
+
+  /**
+   * Creates a 2D-array view of this texture (useful for cubemaps when
+   * you need to render to individual faces).
+   */
+  createArrayView(label?: string): GPUTextureView {
+    return this._texture.createView({
+      dimension: "2d-array",
+      label: label ?? `${this._label}_ArrayView`,
+    });
+  }
+
+  /**
+   * Creates a view of a single face/layer of the texture.
+   * Useful for rendering to individual cubemap faces or array layers.
+   *
+   * @param {number} layer - Layer index (0-5 for cubemaps)
+   * @param {number} [mipLevel] - Specific mip level (undefined = all mips)
+   */
+  createLayerView(layer: number, mipLevel?: number): GPUTextureView {
+    const descriptor: GPUTextureViewDescriptor = {
+      dimension: "2d",
+      baseArrayLayer: layer,
+      arrayLayerCount: 1,
+      label: `${this._label}_Layer${layer}`,
+    };
+    if (mipLevel !== undefined) {
+      descriptor.baseMipLevel = mipLevel;
+      descriptor.mipLevelCount = 1;
+    }
+    return this._texture.createView(descriptor);
   }
 
   /**

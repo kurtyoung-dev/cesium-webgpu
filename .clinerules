@@ -43,6 +43,30 @@
 - Use clear naming conventions (e.g., `*WebGPU.js`, `*WebGL.js`)
 - Share common utilities when possible
 
+### 64-Bit Precision & RTE (Relative-To-Eye) — CRITICAL
+CesiumJS renders at planetary scale where float32 precision is insufficient. **ALL rendering paths MUST use RTE (Relative-To-Eye) emulated 64-bit precision.** Without this, geometry will exhibit severe jittering.
+
+#### How RTE Works
+1. **JS side**: `EncodedCartesian3` splits 64-bit positions into two 32-bit floats (high + low)
+2. **Vertex buffers**: Carry 6 floats per position — `[high.x, high.y, high.z, low.x, low.y, low.z]`
+3. **Uniform buffers**: Must include `encodedCameraPositionMCHigh/Low` (camera split the same way) and `mvpRelativeToEye` (modelViewProjection with translation column zeroed)
+4. **Shaders**: Use `translateRelativeToEye(posHigh, posLow, camHigh, camLow)` which computes `(posHigh - camHigh) + (posLow - camLow)` — this gives sub-meter precision in eye space
+
+#### Mandatory RTE Rules
+- **NEVER** use a single `position: vec3<f32>` in vertex buffers for WebGPU world-space geometry — always use `positionHigh: vec3<f32>` + `positionLow: vec3<f32>`
+- **NEVER** multiply `mvp * vec4(position, 1.0)` for world-space geometry — always use `mvpRelativeToEye * translateRelativeToEye(posHigh, posLow, camHigh, camLow)`
+- **NEVER** add posHigh + posLow directly (`posHigh + posLow` defeats the purpose of the split) — always subtract camera first: `(posHigh - camHigh) + (posLow - camLow)`
+- Uniform buffers must carry `encodedCameraHigh`, `encodedCameraLow`, and `mvpRelativeToEye` (not plain MVP)
+- `UniformState.js` already computes all RTE values — reuse them, don't recompute
+- `EncodedCartesian3.js` is renderer-agnostic — use it for both WebGL and WebGPU paths
+
+#### Where RTE is Implemented (Reference)
+- **WGSL function**: `Source/Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.wgsl`
+- **Camera RTE uniforms**: `Source/Shaders/WebGPU/chunks/structs/CameraUniforms.wgsl`
+- **All 20+ Primitive shaders**: `Source/Shaders/WebGPU/Primitive/*.wgsl` (use positionHigh/Low + RTE)
+- **Point primitives**: `Source/Shaders/WebGPU/Collections/PointPrimitive*.wgsl` (RTE subtraction)
+- **JS uniform wiring**: `WebGPUPrimitiveCommands.js`, `WebGPUPointPrimitiveRenderer.js`
+
 ### Documentation
 - Document all new configuration options
 - Provide migration guide for users wanting to adopt WebGPU

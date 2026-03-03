@@ -6,20 +6,26 @@
  * because WebGPU has no gl_PointSize/gl_PointCoord support.
  *
  * Instance data layout (64 bytes per point, 4 x vec4):
- *   @location(0) posHighAndSize:   vec4<f32> — position.xyz, pixelSize
- *   @location(1) posLowAndOutline: vec4<f32> — 0,0,0, outlineWidth
+ *   @location(0) posHighAndSize:   vec4<f32> — encodedPosition.high.xyz, pixelSize
+ *   @location(1) posLowAndOutline: vec4<f32> — encodedPosition.low.xyz, outlineWidth
  *   @location(2) color:            vec4<f32> — color rgba
  *   @location(3) outColorAndShow:  vec4<f32> — outlineColor.rgb, show(0/1)
  *
  * Uniforms (256 bytes, aligned):
- *   mvpMatrix:    mat4x4<f32> (64 bytes)
- *   viewportSize: vec2<f32>   (8 bytes)
- *   splitPos:     f32         (4 bytes)
- *   pad:          f32         (4 bytes)
+ *   mvpRelativeToEye:              mat4x4<f32> (64 bytes)  — RTE model-view-projection
+ *   viewportSize:                  vec2<f32>   (8 bytes)
+ *   splitPos:                      f32         (4 bytes)
+ *   pad:                           f32         (4 bytes)
+ *   encodedCameraPositionMCHigh:   vec3<f32>   (12 bytes)  — RTE camera high bits
+ *   pad1:                          f32         (4 bytes)
+ *   encodedCameraPositionMCLow:    vec3<f32>   (12 bytes)  — RTE camera low bits
+ *   pad2:                          f32         (4 bytes)
  *
  * @private
  */
+import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -39,7 +45,13 @@ const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
 
 // Scratch variables
-const scratchMVP = new Matrix4();
+const scratchModelView = new Matrix4();
+const scratchModelViewRTE = new Matrix4();
+const scratchMVPRTE = new Matrix4();
+const scratchInverseModel = new Matrix4();
+const scratchCameraPositionMC = new Cartesian3();
+const scratchEncodedCamera = new EncodedCartesian3();
+const scratchEncodedPosition = new EncodedCartesian3();
 
 // =========================================================================
 // Instance Data Building
@@ -68,16 +80,22 @@ function buildInstanceData(collection) {
     const offset = visibleCount * FLOATS_PER_INSTANCE;
     const position = point._actualPosition || point._position;
 
-    // posHighAndSize: position.xyz, pixelSize
-    instanceData[offset + 0] = position.x;
-    instanceData[offset + 1] = position.y;
-    instanceData[offset + 2] = position.z;
+    // RTE: Encode position into high/low 32-bit float pairs
+    // This enables sub-meter precision at planetary-scale coordinates
+    EncodedCartesian3.fromCartesian(position, scratchEncodedPosition);
+    const high = scratchEncodedPosition.high;
+    const low = scratchEncodedPosition.low;
+
+    // posHighAndSize: encodedPosition.high.xyz, pixelSize
+    instanceData[offset + 0] = high.x;
+    instanceData[offset + 1] = high.y;
+    instanceData[offset + 2] = high.z;
     instanceData[offset + 3] = point._pixelSize;
 
-    // posLowAndOutline: 0, 0, 0, outlineWidth
-    instanceData[offset + 4] = 0.0;
-    instanceData[offset + 5] = 0.0;
-    instanceData[offset + 6] = 0.0;
+    // posLowAndOutline: encodedPosition.low.xyz, outlineWidth
+    instanceData[offset + 4] = low.x;
+    instanceData[offset + 5] = low.y;
+    instanceData[offset + 6] = low.z;
     instanceData[offset + 7] = point._outlineWidth;
 
     // color: rgba
@@ -210,9 +228,19 @@ function createPointPipeline(
 // =========================================================================
 
 /**
- * Packs uniform data (MVP matrix + viewport size) into a Float32Array.
+ * Packs RTE uniform data into a Float32Array.
  *
- * @param {Float32Array} uniformData - Target array (at least 20 floats)
+ * Layout (28 active floats, 256-byte buffer):
+ *   [0-15]  mvpRelativeToEye (mat4x4) — MVP with translation zeroed
+ *   [16-17] viewportSize (vec2)
+ *   [18]    splitPosition (f32)
+ *   [19]    _pad0 (f32)
+ *   [20-22] encodedCameraPositionMCHigh (vec3)
+ *   [23]    _pad1 (f32)
+ *   [24-26] encodedCameraPositionMCLow (vec3)
+ *   [27]    _pad2 (f32)
+ *
+ * @param {Float32Array} uniformData - Target array (at least 28 floats)
  * @param {object} frameState - CesiumJS frame state
  * @param {Matrix4} modelMatrix - Collection's model matrix
  * @private
@@ -221,20 +249,62 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   const camera = frameState.camera;
   const canvas = frameState.context.canvas;
 
-  // MVP = projection * view * model
-  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchMVP);
-  Matrix4.multiply(camera.frustum.projectionMatrix, scratchMVP, scratchMVP);
+  // Step 1: Compute modelView = view * model
+  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchModelView);
 
-  // Write MVP matrix (16 floats)
-  Matrix4.pack(scratchMVP, uniformData, 0);
+  // Step 2: Create modelViewRTE = modelView with translation column zeroed
+  // This removes the large translation that causes float32 precision loss
+  Matrix4.clone(scratchModelView, scratchModelViewRTE);
+  scratchModelViewRTE[12] = 0.0;
+  scratchModelViewRTE[13] = 0.0;
+  scratchModelViewRTE[14] = 0.0;
 
-  // Write viewport size (2 floats)
+  // Step 3: Compute mvpRelativeToEye = projection * modelViewRTE
+  Matrix4.multiply(
+    camera.frustum.projectionMatrix,
+    scratchModelViewRTE,
+    scratchMVPRTE,
+  );
+
+  // Write mvpRelativeToEye matrix (16 floats at offset 0)
+  Matrix4.pack(scratchMVPRTE, uniformData, 0);
+
+  // Write viewport size (2 floats at offset 16)
   uniformData[16] = canvas.width;
   uniformData[17] = canvas.height;
 
-  // splitPosition + padding
+  // splitPosition + padding (offset 18-19)
   uniformData[18] = 0.0;
   uniformData[19] = 0.0;
+
+  // Step 4: Compute encoded camera position in model coordinates
+  // cameraPositionMC = inverseModel * cameraPositionWorld
+  Matrix4.inverse(modelMatrix, scratchInverseModel);
+  Matrix4.multiplyByPoint(
+    scratchInverseModel,
+    camera.positionWC,
+    scratchCameraPositionMC,
+  );
+
+  // Step 5: Encode camera position MC as high/low float pairs
+  EncodedCartesian3.fromCartesian(
+    scratchCameraPositionMC,
+    scratchEncodedCamera,
+  );
+
+  // Write encodedCameraPositionMCHigh (3 floats at offset 20 + 1 pad)
+  const camHigh = scratchEncodedCamera.high;
+  uniformData[20] = camHigh.x;
+  uniformData[21] = camHigh.y;
+  uniformData[22] = camHigh.z;
+  uniformData[23] = 0.0; // _pad1
+
+  // Write encodedCameraPositionMCLow (3 floats at offset 24 + 1 pad)
+  const camLow = scratchEncodedCamera.low;
+  uniformData[24] = camLow.x;
+  uniformData[25] = camLow.y;
+  uniformData[26] = camLow.z;
+  uniformData[27] = 0.0; // _pad2
 }
 
 // =========================================================================

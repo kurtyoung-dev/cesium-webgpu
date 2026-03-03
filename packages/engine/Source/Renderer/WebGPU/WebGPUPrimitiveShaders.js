@@ -198,61 +198,66 @@ function selectWebGPUShader(attributes) {
  * @private
  */
 function getVertexLayoutForShader(shaderType) {
+  // RTE: All layouts include positionHigh(3) + positionLow(3) at locations 0-1
   if (shaderType === "phongTextured") {
-    // position(3) + normal(3) + uv(2) + color(4) = 12 floats = 48 bytes
+    // posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4) = 15 floats = 60 bytes
+    return {
+      floatsPerVertex: 15,
+      stride: 60,
+      layout: {
+        arrayStride: 60,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+          { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+          { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
+          { shaderLocation: 3, offset: 36, format: "float32x2" }, // texCoord
+          { shaderLocation: 4, offset: 44, format: "float32x4" }, // color
+        ],
+      },
+    };
+  }
+  if (shaderType === "basicTextured") {
+    // posHigh(3) + posLow(3) + uv(2) + color(4) = 12 floats = 48 bytes
     return {
       floatsPerVertex: 12,
       stride: 48,
       layout: {
         arrayStride: 48,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" },
-          { shaderLocation: 1, offset: 12, format: "float32x3" },
-          { shaderLocation: 2, offset: 24, format: "float32x2" },
-          { shaderLocation: 3, offset: 32, format: "float32x4" },
-        ],
-      },
-    };
-  }
-  if (shaderType === "basicTextured") {
-    // position(3) + uv(2) + color(4) = 9 floats = 36 bytes
-    return {
-      floatsPerVertex: 9,
-      stride: 36,
-      layout: {
-        arrayStride: 36,
-        attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" },
-          { shaderLocation: 1, offset: 12, format: "float32x2" },
-          { shaderLocation: 2, offset: 20, format: "float32x4" },
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+          { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+          { shaderLocation: 2, offset: 24, format: "float32x2" }, // texCoord
+          { shaderLocation: 3, offset: 32, format: "float32x4" }, // color
         ],
       },
     };
   }
   if (shaderType === "phong") {
-    // position(3) + normal(3) + color(4) = 10 floats = 40 bytes
+    // posHigh(3) + posLow(3) + normal(3) + color(4) = 13 floats = 52 bytes
     return {
-      floatsPerVertex: 10,
-      stride: 40,
+      floatsPerVertex: 13,
+      stride: 52,
       layout: {
-        arrayStride: 40,
+        arrayStride: 52,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" },
-          { shaderLocation: 1, offset: 12, format: "float32x3" },
-          { shaderLocation: 2, offset: 24, format: "float32x4" },
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+          { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+          { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
+          { shaderLocation: 3, offset: 36, format: "float32x4" }, // color
         ],
       },
     };
   }
-  // basic: position(3) + color(4) = 7 floats = 28 bytes
+  // basic: posHigh(3) + posLow(3) + color(4) = 10 floats = 40 bytes
   return {
-    floatsPerVertex: 7,
-    stride: 28,
+    floatsPerVertex: 10,
+    stride: 40,
     layout: {
-      arrayStride: 28,
+      arrayStride: 40,
       attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" },
-        { shaderLocation: 1, offset: 12, format: "float32x4" },
+        { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+        { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+        { shaderLocation: 2, offset: 24, format: "float32x4" }, // color
       ],
     },
   };
@@ -420,31 +425,34 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
  * @private
  */
 function getMaterialVertexLayout(shaderType) {
+  // RTE: All layouts include positionHigh(3) + positionLow(3) at locations 0-1
   if (isMaterialLitShader(shaderType) || isPBRShader(shaderType)) {
-    // position(3) + normal(3) + st(2) = 8 floats = 32 bytes
+    // posHigh(3) + posLow(3) + normal(3) + st(2) = 11 floats = 44 bytes
     return {
-      floatsPerVertex: 8,
-      stride: 32,
+      floatsPerVertex: 11,
+      stride: 44,
       layout: {
-        arrayStride: 32,
+        arrayStride: 44,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" },
-          { shaderLocation: 1, offset: 12, format: "float32x3" },
-          { shaderLocation: 2, offset: 24, format: "float32x2" },
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+          { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+          { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
+          { shaderLocation: 3, offset: 36, format: "float32x2" }, // texCoord
         ],
       },
     };
   }
 
-  // Flat variants: position(3) + st(2) = 5 floats = 20 bytes
+  // Flat variants: posHigh(3) + posLow(3) + st(2) = 8 floats = 32 bytes
   return {
-    floatsPerVertex: 5,
-    stride: 20,
+    floatsPerVertex: 8,
+    stride: 32,
     layout: {
-      arrayStride: 20,
+      arrayStride: 32,
       attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" },
-        { shaderLocation: 1, offset: 12, format: "float32x2" },
+        { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+        { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+        { shaderLocation: 2, offset: 24, format: "float32x2" }, // texCoord
       ],
     },
   };

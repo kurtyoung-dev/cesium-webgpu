@@ -282,6 +282,68 @@ export class WebGPURenderTarget {
   }
 
   /**
+   * Get combined depth-stencil texture view.
+   * Alias for `getDepthTextureView()` — the underlying texture already
+   * contains both depth and stencil aspects when the format includes stencil
+   * (e.g., `depth24plus-stencil8`).
+   *
+   * @returns Depth/stencil texture view or undefined
+   */
+  getDepthStencilTextureView(): GPUTextureView | undefined {
+    return this.depthStencilAttachment?.view;
+  }
+
+  /**
+   * Check if the depth/stencil attachment includes a stencil component.
+   *
+   * @returns True if the format contains stencil (e.g., `depth24plus-stencil8`)
+   */
+  hasStencil(): boolean {
+    if (!this.depthStencilAttachment) {
+      return false;
+    }
+    return this.depthStencilAttachment.format.includes("stencil");
+  }
+
+  /**
+   * Get a stencil-only texture view for shader sampling.
+   * Creates a view with `aspect: 'stencil-only'` so the stencil plane
+   * can be read as an `r8uint` texture in a shader.
+   *
+   * @returns Stencil-only texture view, or undefined if no stencil
+   */
+  getStencilTextureView(): GPUTextureView | undefined {
+    if (!this.depthStencilAttachment) {
+      return undefined;
+    }
+    if (!this.depthStencilAttachment.format.includes("stencil")) {
+      return undefined;
+    }
+    // Create a stencil-aspect-only view (useful for reading stencil in shaders)
+    return this.depthStencilAttachment.texture.createView({
+      aspect: "stencil-only",
+      label: `${this.descriptor.name}_stencil_view`,
+    });
+  }
+
+  /**
+   * Get a depth-only texture view for shader sampling.
+   * Creates a view with `aspect: 'depth-only'` so the depth plane
+   * can be read independently of the stencil component.
+   *
+   * @returns Depth-only texture view, or undefined if no depth attachment
+   */
+  getDepthOnlyTextureView(): GPUTextureView | undefined {
+    if (!this.depthStencilAttachment) {
+      return undefined;
+    }
+    return this.depthStencilAttachment.texture.createView({
+      aspect: "depth-only",
+      label: `${this.descriptor.name}_depth_only_view`,
+    });
+  }
+
+  /**
    * Get render target dimensions
    *
    * @returns Width and height

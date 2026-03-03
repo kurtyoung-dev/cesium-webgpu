@@ -27,7 +27,7 @@
  * ### Rules
  * 1. **Edit `WGSLBuiltins.ts` first** when modifying chunk code.
  * 2. Copy changes to the corresponding `.wgsl` file to keep them in sync.
- * 3. The `.wgsl` files may include doc-comment headers (`/** ... */`) that are
+ * 3. The `.wgsl` files may include doc-comment headers (`/** ... *'/`) that are
  *    stripped by the preprocessor — this is fine and expected.
  * 4. A future build step may automate this sync (see WGSL_IMPORT_SYSTEM.md).
  */

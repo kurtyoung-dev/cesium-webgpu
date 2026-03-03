@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebGPU SkyBox Test — CesiumJS</title>
+    <style>
+      @import url(../CesiumViewer/CesiumViewer.css);
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        width: 100%;
+        height: 100%;
+        background: #000;
+      }
+      #cesiumContainer {
+        width: 100%;
+        height: 100%;
+      }
+      #status {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 100;
+        background: rgba(0, 0, 0, 0.8);
+        color: #0f0;
+        font: 14px monospace;
+        padding: 12px 16px;
+        border-radius: 6px;
+        max-width: 400px;
+      }
+      #status .label {
+        color: #aaa;
+      }
+      #status .value {
+        color: #0f0;
+      }
+      #status .error {
+        color: #f44;
+      }
+      #status .pending {
+        color: #ff0;
+      }
+      #controls {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        z-index: 100;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 10px;
+        border-radius: 6px;
+      }
+      #controls button {
+        background: #333;
+        color: #fff;
+        border: 1px solid #555;
+        padding: 6px 12px;
+        margin: 2px;
+        cursor: pointer;
+        border-radius: 4px;
+        font: 12px monospace;
+      }
+      #controls button:hover {
+        background: #555;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "cesium": "../../Source/Cesium.js",
+          "@cesium/engine": "../../packages/engine/index.js",
+          "@cesium/widgets": "../../packages/widgets/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+    <div id="status">
+      <div>
+        <span class="label">Renderer: </span
+        ><span id="rendererType" class="pending">Initializing...</span>
+      </div>
+      <div>
+        <span class="label">SkyBox: </span
+        ><span id="skyboxStatus" class="pending">Loading...</span>
+      </div>
+      <div>
+        <span class="label">Frame: </span
+        ><span id="frameCount" class="value">0</span>
+      </div>
+      <div>
+        <span class="label">Camera: </span
+        ><span id="cameraInfo" class="value">—</span>
+      </div>
+      <div id="errorDisplay"></div>
+    </div>
+    <div id="controls">
+      <button onclick="toggleSkyBox()">Toggle SkyBox</button>
+      <button onclick="resetCamera()">Reset Camera</button>
+      <button onclick="lookUp()">Look Up (Sky)</button>
+    </div>
+
+    <script type="module">
+      import * as Cesium from "cesium";
+
+      const statusEl = document.getElementById("rendererType");
+      const skyboxEl = document.getElementById("skyboxStatus");
+      const frameEl = document.getElementById("frameCount");
+      const cameraEl = document.getElementById("cameraInfo");
+      const errorEl = document.getElementById("errorDisplay");
+
+      let viewer;
+      let frameCount = 0;
+
+      async function init() {
+        try {
+          // Try WebGPU first
+          statusEl.textContent = "Requesting WebGPU...";
+          statusEl.className = "pending";
+
+          viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+            contextOptions: { renderer: "webgpu" },
+            skyBox: Cesium.SkyBox.createEarthSkyBox(),
+            skyAtmosphere: false,
+            globe: false, // No globe yet in WebGPU
+            baseLayer: false,
+            animation: false,
+            timeline: false,
+            homeButton: false,
+            geocoder: false,
+            navigationHelpButton: false,
+            sceneModePicker: false,
+            fullscreenButton: false,
+            selectionIndicator: false,
+            infoBox: false,
+          });
+
+          const isWebGPU = viewer.scene.isWebGPU;
+          statusEl.textContent = isWebGPU ? "WebGPU ✅" : "WebGL (fallback)";
+          statusEl.className = isWebGPU ? "value" : "pending";
+
+          // Monitor skybox state
+          viewer.scene.postRender.addEventListener(function () {
+            frameCount++;
+            frameEl.textContent = frameCount;
+
+            // Update camera info
+            const cam = viewer.camera;
+            const pos = cam.positionCartographic;
+            if (pos) {
+              cameraEl.textContent =
+                `lon: ${Cesium.Math.toDegrees(pos.longitude).toFixed(1)}° ` +
+                `lat: ${Cesium.Math.toDegrees(pos.latitude).toFixed(1)}° ` +
+                `h: ${(pos.height / 1000).toFixed(0)}km`;
+            }
+
+            // Check skybox status
+            const skyBox = viewer.scene.skyBox;
+            if (skyBox) {
+              if (isWebGPU) {
+                if (skyBox._webgpuInitialized) {
+                  skyboxEl.textContent = "WebGPU Initialized ✅";
+                  skyboxEl.className = "value";
+                } else if (skyBox._webgpuLoadingCubeMap) {
+                  skyboxEl.textContent = "Loading cubemap...";
+                  skyboxEl.className = "pending";
+                } else {
+                  skyboxEl.textContent = "Pending...";
+                  skyboxEl.className = "pending";
+                }
+              } else {
+                skyboxEl.textContent = skyBox._cubeMap
+                  ? "WebGL Loaded ✅"
+                  : "Loading...";
+                skyboxEl.className = skyBox._cubeMap ? "value" : "pending";
+              }
+            } else {
+              skyboxEl.textContent = "No SkyBox";
+              skyboxEl.className = "error";
+            }
+          });
+
+          console.log(
+            "[SkyBox Test] Viewer created successfully. isWebGPU:",
+            isWebGPU,
+          );
+        } catch (err) {
+          console.error("[SkyBox Test] Error:", err);
+          statusEl.textContent = "Error: " + err.message;
+          statusEl.className = "error";
+          errorEl.innerHTML = `<div class="error">${err.stack || err.message}</div>`;
+
+          // Fallback to WebGL
+          try {
+            viewer = new Cesium.Viewer("cesiumContainer", {
+              skyBox: Cesium.SkyBox.createEarthSkyBox(),
+              skyAtmosphere: false,
+              globe: false,
+              baseLayer: false,
+              animation: false,
+              timeline: false,
+            });
+            statusEl.textContent = "WebGL (fallback after error)";
+            statusEl.className = "pending";
+          } catch (e2) {
+            errorEl.innerHTML += `<div class="error">Fallback failed: ${e2.message}</div>`;
+          }
+        }
+      }
+
+      // Expose controls to global scope
+      window.toggleSkyBox = function () {
+        if (viewer && viewer.scene.skyBox) {
+          viewer.scene.skyBox.show = !viewer.scene.skyBox.show;
+          console.log("[SkyBox Test] show =", viewer.scene.skyBox.show);
+        }
+      };
+
+      window.resetCamera = function () {
+        if (viewer) {
+          viewer.camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 15000000),
+          });
+        }
+      };
+
+      window.lookUp = function () {
+        if (viewer) {
+          viewer.camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 15000000),
+            orientation: {
+              heading: 0,
+              pitch: Cesium.Math.toRadians(90),
+              roll: 0,
+            },
+          });
+        }
+      };
+
+      init();
+    </script>
+  </body>
+</html>

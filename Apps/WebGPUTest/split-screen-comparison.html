@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <title>WebGL vs WebGPU — Split-Screen Comparison</title>
+    <script src="../../Build/Cesium/Cesium.js"></script>
+    <style>
+      @import url(../../Build/Cesium/Widgets/widgets.css);
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #e0e0e0;
+      }
+
+      /* ── Top toolbar ── */
+      #toolbar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 48px;
+        background: rgba(16, 16, 32, 0.95);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 16px;
+        z-index: 2000;
+        border-bottom: 1px solid rgba(100, 140, 255, 0.25);
+      }
+
+      #toolbar h2 {
+        margin: 0;
+        font-size: 15px;
+        color: #67b7ff;
+        white-space: nowrap;
+      }
+
+      .toolbar-sep {
+        width: 1px;
+        height: 28px;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .tb-btn {
+        padding: 6px 14px;
+        background: #4a90e2;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s;
+        white-space: nowrap;
+      }
+
+      .tb-btn:hover {
+        background: #357abd;
+      }
+
+      .tb-btn:disabled {
+        background: #444;
+        cursor: not-allowed;
+        color: #888;
+      }
+
+      .tb-btn.danger {
+        background: #c0392b;
+      }
+
+      .tb-btn.danger:hover {
+        background: #e74c3c;
+      }
+
+      .tb-btn.success {
+        background: #27ae60;
+      }
+
+      .tb-btn.success:hover {
+        background: #2ecc71;
+      }
+
+      .tb-label {
+        font-size: 12px;
+        color: #aaa;
+      }
+
+      #syncStatus {
+        font-size: 12px;
+        color: #5fd35f;
+        margin-left: auto;
+      }
+
+      /* ── Split panes ── */
+      #splitContainer {
+        position: absolute;
+        top: 48px;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+      }
+
+      .viewer-pane {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .viewer-pane + .viewer-pane {
+        border-left: 2px solid rgba(100, 140, 255, 0.4);
+      }
+
+      .pane-label {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1500;
+        padding: 4px 16px;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        pointer-events: none;
+      }
+
+      .pane-label.webgl {
+        background: rgba(46, 204, 113, 0.85);
+        color: #fff;
+      }
+
+      .pane-label.webgpu {
+        background: rgba(74, 144, 226, 0.85);
+        color: #fff;
+      }
+
+      .pane-label.error {
+        background: rgba(231, 76, 60, 0.85);
+        color: #fff;
+      }
+
+      .pane-status {
+        position: absolute;
+        bottom: 8px;
+        left: 8px;
+        z-index: 1500;
+        padding: 4px 10px;
+        border-radius: 3px;
+        font-size: 11px;
+        background: rgba(0, 0, 0, 0.7);
+        color: #ccc;
+        pointer-events: none;
+        max-width: 45%;
+        word-break: break-all;
+      }
+
+      .viewer-container {
+        width: 100%;
+        height: 100%;
+      }
+
+      .placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0d0d1a;
+        color: #555;
+        font-size: 16px;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .placeholder .icon {
+        font-size: 48px;
+        opacity: 0.3;
+      }
+
+      /* ── Log panel ── */
+      #logPanel {
+        position: absolute;
+        bottom: 8px;
+        right: 8px;
+        width: 380px;
+        max-height: 200px;
+        overflow-y: auto;
+        background: rgba(10, 10, 20, 0.9);
+        border: 1px solid rgba(100, 140, 255, 0.2);
+        border-radius: 6px;
+        padding: 8px;
+        z-index: 2000;
+        font-size: 11px;
+        font-family: "Consolas", "Fira Code", monospace;
+        display: none;
+      }
+
+      #logPanel.visible {
+        display: block;
+      }
+
+      .log-entry {
+        padding: 2px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .log-entry .ts {
+        color: #666;
+      }
+
+      .log-entry.info {
+        color: #67b7ff;
+      }
+
+      .log-entry.success {
+        color: #5fd35f;
+      }
+
+      .log-entry.error {
+        color: #ff6b6b;
+      }
+
+      .log-entry.warn {
+        color: #ffa500;
+      }
+
+      /* ── Cesium widget overrides for side-by-side ── */
+      .viewer-container .cesium-viewer,
+      .viewer-container .cesium-widget,
+      .viewer-container .cesium-widget canvas {
+        width: 100% !important;
+        height: 100% !important;
+      }
+
+      /* Hide some UI clutter in comparison mode */
+      .viewer-container .cesium-viewer-toolbar {
+        display: none !important;
+      }
+
+      .viewer-container .cesium-viewer-animationContainer {
+        display: none !important;
+      }
+
+      .viewer-container .cesium-viewer-timelineContainer {
+        display: none !important;
+      }
+
+      .viewer-container .cesium-viewer-fullscreenContainer {
+        display: none !important;
+      }
+
+      .viewer-container .cesium-viewer-bottom {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ── Toolbar ── -->
+    <div id="toolbar">
+      <h2>⚡ WebGL vs WebGPU</h2>
+      <div class="toolbar-sep"></div>
+      <button id="btnLaunch" class="tb-btn success">▶ Launch Both</button>
+      <button id="btnDestroy" class="tb-btn danger" disabled>✕ Destroy</button>
+      <div class="toolbar-sep"></div>
+      <span class="tb-label">Test Geometry:</span>
+      <button id="btnAddBoxes" class="tb-btn" disabled>+ Boxes</button>
+      <button id="btnAddSpheres" class="tb-btn" disabled>+ Spheres</button>
+      <button id="btnAddPolyline" class="tb-btn" disabled>+ Polyline</button>
+      <button id="btnAddPoints" class="tb-btn" disabled>+ Points</button>
+      <button id="btnClearEntities" class="tb-btn" disabled>Clear All</button>
+      <div class="toolbar-sep"></div>
+      <button id="btnToggleLog" class="tb-btn">Log</button>
+      <span id="syncStatus">⏸ Not started</span>
+    </div>
+
+    <!-- ── Split viewer panes ── -->
+    <div id="splitContainer">
+      <div class="viewer-pane" id="leftPane">
+        <div class="pane-label webgl" id="leftLabel">WebGL</div>
+        <div class="pane-status" id="leftStatus">Waiting…</div>
+        <div class="viewer-container" id="leftViewer">
+          <div class="placeholder">
+            <div class="icon">🖥️</div>
+            <div>WebGL Viewer</div>
+          </div>
+        </div>
+      </div>
+      <div class="viewer-pane" id="rightPane">
+        <div class="pane-label webgpu" id="rightLabel">WebGPU</div>
+        <div class="pane-status" id="rightStatus">Waiting…</div>
+        <div class="viewer-container" id="rightViewer">
+          <div class="placeholder">
+            <div class="icon">🚀</div>
+            <div>WebGPU Viewer</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Log panel ── -->
+    <div id="logPanel"></div>
+
+    <script>
+      // ================================================================
+      // State
+      // ================================================================
+      let webglViewer = null;
+      let webgpuViewer = null;
+      let cameraSync = true;
+      let syncingCamera = false; // guard against infinite loop
+
+      const geometryButtons = [
+        "btnAddBoxes",
+        "btnAddSpheres",
+        "btnAddPolyline",
+        "btnAddPoints",
+        "btnClearEntities",
+      ];
+
+      // ================================================================
+      // Logging
+      // ================================================================
+      function log(msg, type) {
+        type = type || "info";
+        const panel = document.getElementById("logPanel");
+        const ts = new Date().toLocaleTimeString();
+        const entry = document.createElement("div");
+        entry.className = "log-entry " + type;
+        entry.innerHTML =
+          '<span class="ts">[' + ts + "]</span> " + escapeHtml(msg);
+        panel.insertBefore(entry, panel.firstChild);
+        console.log("[" + type.toUpperCase() + "] " + msg);
+      }
+
+      function escapeHtml(s) {
+        var d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      document
+        .getElementById("btnToggleLog")
+        .addEventListener("click", function () {
+          document.getElementById("logPanel").classList.toggle("visible");
+        });
+
+      // ================================================================
+      // Enable / disable geometry buttons
+      // ================================================================
+      function setGeometryButtonsEnabled(enabled) {
+        geometryButtons.forEach(function (id) {
+          document.getElementById(id).disabled = !enabled;
+        });
+        document.getElementById("btnDestroy").disabled = !enabled;
+        document.getElementById("btnLaunch").disabled = enabled;
+      }
+
+      // ================================================================
+      // Camera sync
+      // ================================================================
+      function syncCameraFromTo(source, target) {
+        if (!cameraSync || syncingCamera) return;
+        syncingCamera = true;
+        try {
+          target.camera.setView({
+            destination: source.camera.positionWC.clone(),
+            orientation: {
+              heading: source.camera.heading,
+              pitch: source.camera.pitch,
+              roll: source.camera.roll,
+            },
+          });
+        } catch (e) {
+          // ignore — viewer may be mid-destroy
+        }
+        syncingCamera = false;
+      }
+
+      function setupCameraSync() {
+        if (!webglViewer || !webgpuViewer) return;
+
+        // Sync from WebGL → WebGPU
+        webglViewer.camera.changed.addEventListener(function () {
+          syncCameraFromTo(webglViewer, webgpuViewer);
+        });
+
+        // Sync from WebGPU → WebGL
+        webgpuViewer.camera.changed.addEventListener(function () {
+          syncCameraFromTo(webgpuViewer, webglViewer);
+        });
+
+        document.getElementById("syncStatus").textContent = "🔗 Camera synced";
+        document.getElementById("syncStatus").style.color = "#5fd35f";
+        log("Camera sync established (bidirectional)", "success");
+      }
+
+      // ================================================================
+      // Launch both viewers
+      // ================================================================
+      document
+        .getElementById("btnLaunch")
+        .addEventListener("click", async function () {
+          var btn = document.getElementById("btnLaunch");
+          btn.disabled = true;
+          btn.textContent = "⏳ Launching…";
+
+          var leftContainer = document.getElementById("leftViewer");
+          var rightContainer = document.getElementById("rightViewer");
+
+          // Clear placeholders
+          leftContainer.innerHTML = "";
+          rightContainer.innerHTML = "";
+
+          var webglOk = false;
+          var webgpuOk = false;
+
+          // ── Create WebGL viewer (synchronous) ──
+          log("Creating WebGL viewer…", "info");
+          var t0 = performance.now();
+          try {
+            webglViewer = new Cesium.Viewer(leftContainer, {
+              animation: false,
+              timeline: false,
+              baseLayerPicker: false,
+              geocoder: false,
+              homeButton: false,
+              sceneModePicker: false,
+              navigationHelpButton: false,
+              fullscreenButton: false,
+              infoBox: false,
+              selectionIndicator: false,
+              scene3DOnly: true,
+              requestRenderMode: false,
+            });
+            var dt = (performance.now() - t0).toFixed(0);
+            document.getElementById("leftStatus").textContent =
+              "WebGL — " + dt + "ms";
+            log("WebGL viewer created in " + dt + "ms", "success");
+            webglOk = true;
+          } catch (e) {
+            document.getElementById("leftLabel").className = "pane-label error";
+            document.getElementById("leftLabel").textContent = "WebGL ERROR";
+            document.getElementById("leftStatus").textContent = e.message;
+            log("WebGL viewer failed: " + e.message, "error");
+            console.error(e);
+          }
+
+          // ── Create WebGPU viewer (async) ──
+          log("Creating WebGPU viewer (async)…", "info");
+          t0 = performance.now();
+          try {
+            if (!navigator.gpu) {
+              throw new Error("WebGPU not supported in this browser");
+            }
+            webgpuViewer = await Cesium.Viewer.createAsync(rightContainer, {
+              contextOptions: { renderer: "webgpu" },
+              animation: false,
+              timeline: false,
+              baseLayerPicker: false,
+              geocoder: false,
+              homeButton: false,
+              sceneModePicker: false,
+              navigationHelpButton: false,
+              fullscreenButton: false,
+              infoBox: false,
+              selectionIndicator: false,
+              scene3DOnly: true,
+              requestRenderMode: false,
+            });
+            var dt2 = (performance.now() - t0).toFixed(0);
+            document.getElementById("rightStatus").textContent =
+              "WebGPU — " + dt2 + "ms";
+            log("WebGPU viewer created in " + dt2 + "ms", "success");
+            webgpuOk = true;
+          } catch (e) {
+            document.getElementById("rightLabel").className =
+              "pane-label error";
+            document.getElementById("rightLabel").textContent = "WebGPU ERROR";
+            document.getElementById("rightStatus").textContent = e.message;
+            log("WebGPU viewer failed: " + e.message, "error");
+            console.error(e);
+          }
+
+          // ── Camera sync ──
+          if (webglOk && webgpuOk) {
+            setupCameraSync();
+            setGeometryButtonsEnabled(true);
+
+            // Set a default view (San Francisco)
+            var sfPosition = Cesium.Cartesian3.fromDegrees(
+              -122.4194,
+              37.7749,
+              50000,
+            );
+            webglViewer.camera.setView({
+              destination: sfPosition,
+              orientation: {
+                heading: 0,
+                pitch: Cesium.Math.toRadians(-45),
+                roll: 0,
+              },
+            });
+            syncCameraFromTo(webglViewer, webgpuViewer);
+
+            log(
+              "Both viewers launched — add test geometry to compare!",
+              "success",
+            );
+          } else {
+            if (webglOk || webgpuOk) {
+              setGeometryButtonsEnabled(true);
+              document.getElementById("syncStatus").textContent =
+                "⚠ One viewer failed";
+              document.getElementById("syncStatus").style.color = "#ffa500";
+              log("Only one viewer available — sync disabled", "warn");
+            } else {
+              btn.disabled = false;
+              btn.textContent = "▶ Launch Both";
+              document.getElementById("syncStatus").textContent =
+                "❌ Both failed";
+              document.getElementById("syncStatus").style.color = "#ff6b6b";
+            }
+          }
+        });
+
+      // ================================================================
+      // Destroy
+      // ================================================================
+      document
+        .getElementById("btnDestroy")
+        .addEventListener("click", function () {
+          if (webglViewer) {
+            try {
+              webglViewer.destroy();
+            } catch (e) {}
+            webglViewer = null;
+          }
+          if (webgpuViewer) {
+            try {
+              webgpuViewer.destroy();
+            } catch (e) {}
+            webgpuViewer = null;
+          }
+
+          // Restore placeholders
+          document.getElementById("leftViewer").innerHTML =
+            '<div class="placeholder"><div class="icon">🖥️</div><div>WebGL Viewer</div></div>';
+          document.getElementById("rightViewer").innerHTML =
+            '<div class="placeholder"><div class="icon">🚀</div><div>WebGPU Viewer</div></div>';
+          document.getElementById("leftLabel").className = "pane-label webgl";
+          document.getElementById("leftLabel").textContent = "WebGL";
+          document.getElementById("rightLabel").className = "pane-label webgpu";
+          document.getElementById("rightLabel").textContent = "WebGPU";
+          document.getElementById("leftStatus").textContent = "Waiting…";
+          document.getElementById("rightStatus").textContent = "Waiting…";
+          document.getElementById("syncStatus").textContent = "⏸ Not started";
+          document.getElementById("syncStatus").style.color = "#aaa";
+
+          setGeometryButtonsEnabled(false);
+          document.getElementById("btnLaunch").disabled = false;
+          document.getElementById("btnLaunch").textContent = "▶ Launch Both";
+
+          log("Viewers destroyed", "info");
+        });
+
+      // ================================================================
+      // Helper: run fn on both viewers
+      // ================================================================
+      function onBothViewers(fn) {
+        if (webglViewer) {
+          try {
+            fn(webglViewer, "webgl");
+          } catch (e) {
+            log("WebGL error: " + e.message, "error");
+          }
+        }
+        if (webgpuViewer) {
+          try {
+            fn(webgpuViewer, "webgpu");
+          } catch (e) {
+            log("WebGPU error: " + e.message, "error");
+          }
+        }
+      }
+
+      // ================================================================
+      // Add test geometry: Boxes
+      // ================================================================
+      document
+        .getElementById("btnAddBoxes")
+        .addEventListener("click", function () {
+          log("Adding colored boxes…", "info");
+
+          var colors = [
+            { c: Cesium.Color.RED, lon: -122.42, lat: 37.78, name: "Red" },
+            { c: Cesium.Color.GREEN, lon: -122.41, lat: 37.77, name: "Green" },
+            { c: Cesium.Color.BLUE, lon: -122.4, lat: 37.76, name: "Blue" },
+            {
+              c: Cesium.Color.YELLOW,
+              lon: -122.43,
+              lat: 37.775,
+              name: "Yellow",
+            },
+            {
+              c: Cesium.Color.CYAN,
+              lon: -122.415,
+              lat: 37.785,
+              name: "Cyan",
+            },
+          ];
+
+          onBothViewers(function (viewer, type) {
+            colors.forEach(function (item) {
+              viewer.entities.add({
+                name: item.name + " Box (" + type + ")",
+                position: Cesium.Cartesian3.fromDegrees(
+                  item.lon,
+                  item.lat,
+                  500,
+                ),
+                box: {
+                  dimensions: new Cesium.Cartesian3(400, 400, 800),
+                  material: item.c,
+                  outline: true,
+                  outlineColor: Cesium.Color.BLACK,
+                },
+              });
+            });
+          });
+
+          log("5 colored boxes added to both viewers", "success");
+        });
+
+      // ================================================================
+      // Add test geometry: Spheres
+      // ================================================================
+      document
+        .getElementById("btnAddSpheres")
+        .addEventListener("click", function () {
+          log("Adding spheres…", "info");
+
+          var positions = [
+            { lon: -122.44, lat: 37.79 },
+            { lon: -122.39, lat: 37.755 },
+            { lon: -122.425, lat: 37.765 },
+          ];
+
+          onBothViewers(function (viewer, type) {
+            positions.forEach(function (pos, i) {
+              viewer.entities.add({
+                name: "Sphere " + i + " (" + type + ")",
+                position: Cesium.Cartesian3.fromDegrees(pos.lon, pos.lat, 800),
+                ellipsoid: {
+                  radii: new Cesium.Cartesian3(300, 300, 300),
+                  material: Cesium.Color.fromHsl(i / 3, 0.8, 0.5, 0.8),
+                  outline: true,
+                  outlineColor: Cesium.Color.WHITE,
+                },
+              });
+            });
+          });
+
+          log("3 spheres added to both viewers", "success");
+        });
+
+      // ================================================================
+      // Add test geometry: Polyline
+      // ================================================================
+      document
+        .getElementById("btnAddPolyline")
+        .addEventListener("click", function () {
+          log("Adding polyline…", "info");
+
+          var degreesArray = [
+            -122.45, 37.8, 1000, -122.44, 37.79, 800, -122.43, 37.78, 600,
+            -122.42, 37.77, 400, -122.41, 37.76, 600, -122.4, 37.75, 800,
+            -122.39, 37.74, 1000,
+          ];
+
+          onBothViewers(function (viewer, type) {
+            viewer.entities.add({
+              name: "Polyline (" + type + ")",
+              polyline: {
+                positions:
+                  Cesium.Cartesian3.fromDegreesArrayHeights(degreesArray),
+                width: 5,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                  glowPower: 0.2,
+                  color: Cesium.Color.CORNFLOWERBLUE,
+                }),
+              },
+            });
+          });
+
+          log("Polyline added to both viewers", "success");
+        });
+
+      // ================================================================
+      // Add test geometry: Points
+      // ================================================================
+      document
+        .getElementById("btnAddPoints")
+        .addEventListener("click", function () {
+          log("Adding point cloud…", "info");
+
+          var points = [];
+          for (var i = 0; i < 50; i++) {
+            points.push({
+              lon: -122.45 + Math.random() * 0.1,
+              lat: 37.73 + Math.random() * 0.1,
+              h: 200 + Math.random() * 2000,
+            });
+          }
+
+          onBothViewers(function (viewer, type) {
+            points.forEach(function (p, idx) {
+              viewer.entities.add({
+                name: "Point " + idx + " (" + type + ")",
+                position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.h),
+                point: {
+                  pixelSize: 6 + Math.random() * 6,
+                  color: Cesium.Color.fromHsl(idx / 50, 0.9, 0.6),
+                  outlineColor: Cesium.Color.BLACK,
+                  outlineWidth: 1,
+                },
+              });
+            });
+          });
+
+          log("50 points added to both viewers", "success");
+        });
+
+      // ================================================================
+      // Clear entities
+      // ================================================================
+      document
+        .getElementById("btnClearEntities")
+        .addEventListener("click", function () {
+          onBothViewers(function (viewer) {
+            viewer.entities.removeAll();
+          });
+          log("All entities cleared from both viewers", "info");
+        });
+
+      // ================================================================
+      // Initial state
+      // ================================================================
+      log("Split-screen comparison tool ready", "success");
+      if (navigator.gpu) {
+        log("WebGPU API detected ✓", "success");
+      } else {
+        log("WebGPU API not available — right pane will fail", "warn");
+      }
+      log('Click "Launch Both" to start side-by-side comparison', "info");
+    </script>
+  </body>
+</html>

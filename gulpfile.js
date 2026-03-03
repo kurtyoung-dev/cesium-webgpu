@@ -22,6 +22,7 @@ import {
   buildWidgets,
   bundleWorkers,
   glslToJavaScript,
+  wgslToJavaScript,
   createCombinedSpecList,
   createJsHintOptions,
 } from "./scripts/build.js";
@@ -138,6 +139,20 @@ export const buildWatch = gulp.series(build, async function buildWatch() {
 
   gulp.watch(shaderFiles, async () => {
     glslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+    await esm.rebuild();
+
+    if (iife) {
+      await iife.rebuild();
+    }
+
+    if (cjs) {
+      await cjs.rebuild();
+    }
+  });
+
+  // Watch WGSL shader files for WebGPU
+  gulp.watch(["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"], async () => {
+    wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
     await esm.rebuild();
 
     if (iife) {

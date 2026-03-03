@@ -135,11 +135,17 @@ export class WebGPUPipelineDescriptorBuilder {
     compare: GPUCompareFunction = "less",
     write: boolean = true,
   ): this {
-    this.descriptor.depthStencil = {
-      format,
-      depthWriteEnabled: write,
-      depthCompare: compare,
-    };
+    if (!this.descriptor.depthStencil) {
+      this.descriptor.depthStencil = {
+        format,
+        depthWriteEnabled: write,
+        depthCompare: compare,
+      };
+    } else {
+      this.descriptor.depthStencil.format = format;
+      this.descriptor.depthStencil.depthWriteEnabled = write;
+      this.descriptor.depthStencil.depthCompare = compare;
+    }
     return this;
   }
 
@@ -150,6 +156,91 @@ export class WebGPUPipelineDescriptorBuilder {
    */
   disableDepthTest(): this {
     this.descriptor.depthStencil = undefined;
+    return this;
+  }
+
+  /**
+   * Ensure the depthStencil descriptor block exists with a stencil-capable format.
+   * @private
+   */
+  private _ensureDepthStencil(): void {
+    if (!this.descriptor.depthStencil) {
+      this.descriptor.depthStencil = {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: true,
+        depthCompare: "less",
+      };
+    }
+    // Upgrade depth-only format to depth+stencil if needed
+    const fmt = this.descriptor.depthStencil.format;
+    if (fmt === "depth24plus" || fmt === "depth32float") {
+      this.descriptor.depthStencil.format = "depth24plus-stencil8";
+    }
+  }
+
+  /**
+   * Enable stencil testing with the given front/back face operations.
+   *
+   * If depth testing hasn't been configured yet, it will be initialised with
+   * the `depth24plus-stencil8` format automatically.
+   *
+   * @param front - Stencil face state for front-facing primitives
+   * @param back  - Stencil face state for back-facing primitives (defaults to front)
+   * @returns This builder for chaining
+   *
+   * @example
+   * builder.enableStencilTest(
+   *   { compare: 'always', passOp: 'replace', failOp: 'keep', depthFailOp: 'keep' },
+   *   { compare: 'always', passOp: 'replace', failOp: 'keep', depthFailOp: 'keep' },
+   * );
+   */
+  enableStencilTest(
+    front: GPUStencilFaceState,
+    back?: GPUStencilFaceState,
+  ): this {
+    this._ensureDepthStencil();
+    this.descriptor.depthStencil!.stencilFront = front;
+    this.descriptor.depthStencil!.stencilBack = back ?? front;
+    return this;
+  }
+
+  /**
+   * Set stencil read mask (default 0xFF).
+   *
+   * @param mask - 8-bit stencil read mask
+   * @returns This builder for chaining
+   */
+  setStencilReadMask(mask: number): this {
+    this._ensureDepthStencil();
+    this.descriptor.depthStencil!.stencilReadMask = mask;
+    return this;
+  }
+
+  /**
+   * Set stencil write mask (default 0xFF).
+   *
+   * @param mask - 8-bit stencil write mask
+   * @returns This builder for chaining
+   */
+  setStencilWriteMask(mask: number): this {
+    this._ensureDepthStencil();
+    this.descriptor.depthStencil!.stencilWriteMask = mask;
+    return this;
+  }
+
+  /**
+   * Set depth bias parameters for shadow mapping / decals.
+   *
+   * @param bias - Constant depth bias
+   * @param slopeScale - Slope-dependent depth bias
+   * @param clamp - Maximum absolute depth bias (0 = no clamp)
+   * @returns This builder for chaining
+   */
+  setDepthBias(bias: number, slopeScale: number = 0, clamp: number = 0): this {
+    this._ensureDepthStencil();
+    this.descriptor.depthStencil!.depthBias = bias;
+    this.descriptor.depthStencil!.depthBiasSlopeScale = slopeScale;
+    this.descriptor.depthStencil!.depthBiasClamp = clamp;
     return this;
   }
 

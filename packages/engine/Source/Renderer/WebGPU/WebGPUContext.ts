@@ -1350,10 +1350,16 @@ export class WebGPUContext implements GraphicsContext {
   }
 
   /**
-   * Read pixels from framebuffer to Pixel Buffer Object (async) - PRIORITY 2 IMPLEMENTED
-   * WebGPU implementation - uses copyTextureToBuffer for async readback
-   * @param {any} readState - Read state configuration with x, y, width, height
-   * @returns {any} PBO handle (buffer for async readback with mapAsync support)
+   * Read pixels from a framebuffer (or the canvas) into a Pixel Buffer Object.
+   *
+   * This is the primary GPU readback path for WebGPU picking.  The returned
+   * PBO handle exposes an async `mapAsync()` that yields a `Uint8Array` of
+   * the requested pixel rectangle, and a synchronous `getBufferData(dst)`
+   * that copies the (already mapped) data into a caller-supplied typed array
+   * — matching the API that `PickFramebuffer.endAsync` expects.
+   *
+   * @param {object} readState - `{ x, y, width, height, framebuffer }`
+   * @returns {object|null} PBO handle with `mapAsync`, `getBufferData`, `destroy`
    */
   readPixelsToPBO(readState: any): any {
     if (!this._device || !this._currentCommandEncoder) {
@@ -1368,79 +1374,169 @@ export class WebGPUContext implements GraphicsContext {
     const width = readState.width ?? this._canvas.width;
     const height = readState.height ?? this._canvas.height;
 
-    // Calculate buffer size (4 bytes per pixel for RGBA)
-    const bytesPerRow = Math.ceil((width * 4) / 256) * 256; // Align to 256 bytes
+    // 256-byte row alignment required by copyTextureToBuffer
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
     const bufferSize = bytesPerRow * height;
 
-    // Create readback buffer
     const readbackBuffer = this._device.createBuffer({
       size: bufferSize,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       label: "Pixel Readback Buffer",
     });
 
-    // Issue copy command from current texture to buffer
-    // Note: This requires the render pass to be ended first
+    // Must end the active render pass before any copy operations
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
     }
 
-    // Get the source texture (current canvas texture or specified framebuffer)
-    const sourceTexture = this._context?.getCurrentTexture();
+    // Resolve the source GPU texture -----------------------------------------------
+    let sourceTexture: GPUTexture | null = null;
+    const fb = readState.framebuffer;
 
-    if (sourceTexture) {
-      this._currentCommandEncoder.copyTextureToBuffer(
-        {
-          texture: sourceTexture,
-          origin: { x, y, z: 0 },
-        },
-        {
-          buffer: readbackBuffer,
-          bytesPerRow,
-        },
-        {
-          width,
-          height,
-          depthOrArrayLayers: 1,
-        },
-      );
+    if (fb) {
+      // WebGPU FramebufferManager / RenderTarget path
+      if (typeof fb.getColorTexture === "function") {
+        const colorTex = fb.getColorTexture(0);
+        sourceTexture = colorTex?.texture ?? colorTex ?? null;
+      }
+      // Legacy WebGL Framebuffer with _colorTextures array
+      if (!sourceTexture && fb._colorTextures && fb._colorTextures.length > 0) {
+        const ct = fb._colorTextures[0];
+        sourceTexture = ct?.texture ?? ct?._texture ?? null;
+      }
+      // Fallback: object might directly be a GPUTexture
+      if (!sourceTexture && fb instanceof GPUTexture) {
+        sourceTexture = fb;
+      }
     }
 
-    // Return PBO handle with async map capability
+    // Default: read from the current canvas texture
+    if (!sourceTexture) {
+      sourceTexture = this._context?.getCurrentTexture() ?? null;
+    }
+
+    if (!sourceTexture) {
+      console.warn("[WebGPU] readPixelsToPBO: No source texture available");
+      readbackBuffer.destroy();
+      return null;
+    }
+
+    // Issue the texture → buffer copy
+    this._currentCommandEncoder.copyTextureToBuffer(
+      { texture: sourceTexture, origin: { x, y, z: 0 } },
+      { buffer: readbackBuffer, bytesPerRow },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+
+    // The PBO handle -----------------------------------------------------------------
+    let mappedData: Uint8Array | null = null;
+
     return {
       buffer: readbackBuffer,
       width,
       height,
       bytesPerRow,
-      // Async read method
-      mapAsync: async () => {
+
+      /**
+       * Async map — call after the command buffer has been submitted.
+       * Returns the raw pixel data as a Uint8Array (with row padding).
+       */
+      mapAsync: async (): Promise<Uint8Array> => {
         await readbackBuffer.mapAsync(GPUMapMode.READ);
         const arrayBuffer = readbackBuffer.getMappedRange();
-        const data = new Uint8Array(arrayBuffer.slice(0));
+        mappedData = new Uint8Array(arrayBuffer.slice(0));
         readbackBuffer.unmap();
-        readbackBuffer.destroy();
-        return data;
+        return mappedData;
       },
-      destroy: () => {
+
+      /**
+       * Synchronous copy of the already-mapped data into a caller-supplied
+       * typed array. This is the API PickFramebuffer.endAsync uses via
+       * `pbo.getBufferData(pixels)`.  Must call `mapAsync()` first.
+       */
+      getBufferData: (dst: Uint8Array | Uint16Array | Float32Array): void => {
+        if (!mappedData) {
+          console.warn(
+            "[WebGPU] getBufferData called before mapAsync completed",
+          );
+          return;
+        }
+        // Strip row-padding: copy only `width * 4` bytes per row
+        const rowBytes = width * 4;
+        for (let row = 0; row < height; row++) {
+          const srcOff = row * bytesPerRow;
+          const dstOff = row * rowBytes;
+          dst.set(mappedData.subarray(srcOff, srcOff + rowBytes), dstOff);
+        }
+      },
+
+      destroy: (): void => {
+        mappedData = null;
         readbackBuffer.destroy();
       },
     };
   }
 
   /**
-   * Read pixels from framebuffer (sync)
-   * WebGPU note: True synchronous readback is not possible in WebGPU
-   * This is a compatibility shim that returns null
+   * Async convenience wrapper around readPixelsToPBO for one-shot readback.
+   *
+   * Reads pixels from the specified framebuffer (or canvas), submits the
+   * pending commands, maps the readback buffer, and returns the pixel data
+   * as a tightly-packed `Uint8Array` (width × height × 4, RGBA).
+   *
+   * @param {object} readState - `{ x, y, width, height, framebuffer }`
+   * @returns {Promise<Uint8Array|null>} RGBA pixel data or null on failure
+   */
+  async readPixelsAsync(readState: any): Promise<Uint8Array | null> {
+    const pbo = this.readPixelsToPBO(readState);
+    if (!pbo) {
+      return null;
+    }
+
+    // Submit the command buffer so the copy actually executes on the GPU
+    if (this._currentCommandEncoder) {
+      const commandBuffer = this._currentCommandEncoder.finish();
+      this._device!.queue.submit([commandBuffer]);
+      // Create a fresh encoder for any subsequent operations this frame
+      this._currentCommandEncoder = this._device!.createCommandEncoder({
+        label: "Post-Readback Command Encoder",
+      });
+    }
+
+    try {
+      const rawData = await pbo.mapAsync();
+      // Strip row-alignment padding into a tight RGBA array
+      const width = pbo.width;
+      const height = pbo.height;
+      const result = new Uint8Array(width * height * 4);
+      const rowBytes = width * 4;
+      for (let row = 0; row < height; row++) {
+        const srcOff = row * pbo.bytesPerRow;
+        const dstOff = row * rowBytes;
+        result.set(rawData.subarray(srcOff, srcOff + rowBytes), dstOff);
+      }
+      return result;
+    } catch (err) {
+      console.error("[WebGPU] readPixelsAsync failed:", err);
+      return null;
+    } finally {
+      pbo.destroy();
+    }
+  }
+
+  /**
+   * Read pixels from framebuffer (sync).
+   *
+   * True synchronous readback is impossible in WebGPU.  This shim returns
+   * `null` — callers should use `readPixelsToPBO()` + `mapAsync()` for the
+   * async path (which is what `PickFramebuffer.endAsync` already does).
+   *
    * @param {any} readState - Read state configuration
-   * @returns {any} Pixel data (null in WebGPU - use readPixelsToPBO for async)
+   * @returns {any} Always null in WebGPU
    */
   readPixels(readState: any): any {
-    // WebGPU doesn't support synchronous pixel readback
-    // Applications should use readPixelsToPBO for async readback
-    console.warn(
-      "[WebGPU] Synchronous readPixels not supported - use readPixelsToPBO for async readback",
-    );
+    // Suppress noisy warnings — picking code already has an async path
     return null;
   }
 
@@ -1677,11 +1773,18 @@ export class WebGPUContext implements GraphicsContext {
   }
 
   /**
-   * Clear the framebuffer using a ClearCommand
-   * This matches the WebGL Context.clear() signature for compatibility
+   * Clear the framebuffer using a ClearCommand.
    *
-   * @param {any} clearCommand - The ClearCommand object containing color, depth, and stencil
-   * @param {any} passState - The pass state (unused in basic implementation)
+   * In WebGPU, clears cannot happen inside an active render pass.
+   * To honour a mid-frame clear (e.g., depth-only clear between frustums in
+   * multi-frustum rendering) we:
+   *   1. End the current render pass.
+   *   2. Begin a new render pass where the requested channels use
+   *      loadOp:"clear" with the supplied values and all other channels
+   *      use loadOp:"load" to preserve existing content.
+   *
+   * @param {any} clearCommand - ClearCommand with optional color, depth, stencil
+   * @param {any} passState - PassState (may contain a custom framebuffer)
    */
   clear(clearCommand: any, passState?: any): void {
     //>>includeStart('debug', pragmas.debug);
@@ -1690,17 +1793,104 @@ export class WebGPUContext implements GraphicsContext {
     }
     //>>includeEnd('debug');
 
-    if (!this._device || !this._context) {
+    if (!this._device || !this._context || !this._currentCommandEncoder) {
       return;
     }
 
-    // WebGPU doesn't support inline clear commands during an active render pass
-    // Instead, the clear happens when we start the render pass in beginFrame()
-    // For Scene integration, we'll handle clears differently
+    // Nothing to clear
+    const wantColor = clearCommand.color !== undefined;
+    const wantDepth = clearCommand.depth !== undefined;
+    const wantStencil = clearCommand.stencil !== undefined;
+    if (!wantColor && !wantDepth && !wantStencil) {
+      return;
+    }
 
-    // For now, skip clear commands - they're handled by beginFrame()
-    // This prevents the error and allows render() to continue
-    return;
+    // End the active render pass so we can start a fresh one with clear ops
+    if (this._currentRenderPassEncoder) {
+      this._currentRenderPassEncoder.end();
+      this._currentRenderPassEncoder = null;
+    }
+
+    // Build a render pass descriptor that clears only the requested channels
+    // and loads (preserves) everything else.
+    const colorLoadOp: GPULoadOp = wantColor ? "clear" : "load";
+    const depthLoadOp: GPULoadOp = wantDepth ? "clear" : "load";
+    const stencilLoadOp: GPULoadOp = wantStencil ? "clear" : "load";
+
+    // Determine target texture view (custom framebuffer or default canvas)
+    let colorView = this._currentTextureView;
+    let depthStencilView = this._depthTextureView;
+
+    // If the passState or clearCommand specifies a framebuffer, use it
+    const fb = passState?.framebuffer ?? clearCommand.framebuffer;
+    if (fb) {
+      // Support WebGPURenderTarget / WebGPUFramebufferManager style objects
+      if (typeof fb.getColorTextureView === "function") {
+        colorView = fb.getColorTextureView(0) ?? colorView;
+      }
+      if (typeof fb.getDepthStencilTextureView === "function") {
+        depthStencilView = fb.getDepthStencilTextureView() ?? depthStencilView;
+      } else if (typeof fb.getDepthTextureView === "function") {
+        depthStencilView = fb.getDepthTextureView() ?? depthStencilView;
+      }
+    }
+
+    if (!colorView) {
+      return;
+    }
+
+    const clearColor = wantColor
+      ? {
+          r: clearCommand.color.red ?? 0.0,
+          g: clearCommand.color.green ?? 0.0,
+          b: clearCommand.color.blue ?? 0.0,
+          a: clearCommand.color.alpha ?? 1.0,
+        }
+      : { r: 0, g: 0, b: 0, a: 0 };
+
+    const renderPassDescriptor: GPURenderPassDescriptor = {
+      label: "ClearCommand Render Pass",
+      colorAttachments: [
+        {
+          view: colorView,
+          clearValue: clearColor,
+          loadOp: colorLoadOp,
+          storeOp: "store",
+        },
+      ],
+      depthStencilAttachment: depthStencilView
+        ? {
+            view: depthStencilView,
+            depthClearValue: wantDepth ? clearCommand.depth : 1.0,
+            depthLoadOp: depthLoadOp,
+            depthStoreOp: "store",
+            stencilClearValue: wantStencil ? clearCommand.stencil : 0,
+            stencilLoadOp: stencilLoadOp,
+            stencilStoreOp: "store",
+          }
+        : undefined,
+    };
+
+    // Begin a new pass with the clear ops, then immediately make it the
+    // active pass so subsequent draw commands render into it.
+    this._currentRenderPassEncoder =
+      this._currentCommandEncoder.beginRenderPass(renderPassDescriptor);
+
+    // Restore default viewport / scissor
+    this._currentRenderPassEncoder.setViewport(
+      0,
+      0,
+      this._canvas.width,
+      this._canvas.height,
+      0,
+      1,
+    );
+    this._currentRenderPassEncoder.setScissorRect(
+      0,
+      0,
+      this._canvas.width,
+      this._canvas.height,
+    );
   }
 
   /**
