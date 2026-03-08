@@ -138,6 +138,54 @@ CesiumJS renders at planetary scale where float32 precision is insufficient. **A
 - Each sub-task should be independently testable or at least independently saveable
 - Prefer creating **helper functions** that the main function calls, rather than one monolithic function
 
+## Upstream Sync Procedure (CesiumGS/cesium → cesium-webgpu)
+
+This fork tracks `https://github.com/CesiumGS/cesium` as `upstream`. Periodic syncs bring in new CesiumJS features while preserving our WebGPU additions.
+
+### Prerequisites
+- Remote `upstream` must point to `https://github.com/CesiumGS/cesium.git`
+- Remote `origin` must point to `https://github.com/kurtyoung-dev/cesium-webgpu.git`
+
+### Sync Steps
+1. **Create safety branch**: `git branch pre-upstream-merge main`
+2. **Fetch upstream**: `git fetch upstream main`
+3. **Check divergence**: `git rev-list --count main..upstream/main` (behind) and `git rev-list --count upstream/main..main` (ahead)
+4. **Merge**: `git merge upstream/main --no-edit`
+5. **Resolve conflicts** — Typical conflict files:
+   - `package.json` — Keep both our `@webgpu/types` and upstream new deps
+   - `PointPrimitiveCollection.js` — Keep our WebGPU import + rendering path + upstream changes
+   - `SkyBox.js` / panorama files — Accept upstream, then re-integrate WebGPU rendering path
+   - `scripts/build.js` — Keep our `wgslShaderFiles` constant + `wgslToJavaScript()` function + build call
+   - `Primitive.js`, `Scene.js`, `View.js` — Keep our WebGPU routing code + upstream changes
+6. **For conflict resolution of modified files**, prefer `git checkout --theirs` then manually re-add our WebGPU code (cleaner than editing conflict markers)
+7. **Commit with `--no-verify`** to bypass lint-staged on upstream's hundreds of files: `git commit --no-verify -m "Merge upstream/main ..."`
+8. **CRITICAL: Verify two-parent merge commit**: `git cat-file -p HEAD | findstr parent` must show TWO parents
+   - If only one parent (MERGE_HEAD lost during conflict resolution), fix with:
+     ```
+     git rev-parse "HEAD^{tree}"  → <tree-hash>
+     git commit-tree <tree-hash> -p <our-commit> -p <upstream-commit> -m "Merge message"
+     git reset --hard <new-commit-hash>
+     ```
+9. **Verify**: `git rev-list --count main..upstream/main` should be `0` (0 behind)
+10. **Push**: `git push origin main --force-with-lease`
+
+### Post-Sync Tasks
+- **Review CHANGES.md** for new upstream features that need WebGPU equivalents
+- **Check new Scene files** (`git diff --name-status <merge-base>..upstream/main -- "packages/engine/Source/Scene/"`) for new rendering features
+- **Check new Shaders** for GLSL files that need WGSL equivalents
+- **Run `npm install`** to get new upstream dependencies
+- **Update `migration_doc/WEBGPU_MIGRATION_STATUS.md`** with new features and their WebGPU status
+- **For any new rendering feature** from upstream, add WebGPU rendering path if logical (following separation of concerns)
+
+### What Gets Conflicted and Why
+Our WebGPU changes modify these upstream files:
+- **Scene files** (`Scene.js`, `Primitive.js`, `PointPrimitiveCollection.js`, `SkyBox.js`, `View.js`) — WebGPU routing `if (context.isWebGPU)` blocks
+- **Build system** (`scripts/build.js`, `gulpfile.js`) — WGSL shader compilation
+- **Package config** (`package.json`) — `@webgpu/types` dependency
+- **Widget files** (`Viewer.js`, `CesiumWidget.js`) — `createAsync()` and `LoadingOverlay`
+
+Our WebGPU-only files (in `Renderer/WebGPU/`, `Shaders/WebGPU/`, `Apps/WebGPUTest/`) never conflict because upstream doesn't touch them.
+
 ## Notes
 - This file will be updated as the project evolves
 - Consult team before adding major architectural rules
