@@ -352,7 +352,7 @@ function enableVRUI(viewer, enabled) {
  * @see Timeline
  * @see viewerDragDropMixin
  *
- * @demo {@link https://sandcastle.cesium.com/index.html?src=Hello%20World.html|Cesium Sandcastle Hello World Demo}
+ * @demo {@link https://sandcastle.cesium.com/index.html?id=hello-world|Cesium Sandcastle Hello World Demo}
  *
  * @example
  * // Initialize the viewer widget with several custom options and mixins.
@@ -1276,7 +1276,7 @@ Object.defineProperties(Viewer.prototype, {
    */
   ellipsoid: {
     get: function () {
-      return this._scene.ellipsoid;
+      return this.scene.ellipsoid;
     },
   },
 
