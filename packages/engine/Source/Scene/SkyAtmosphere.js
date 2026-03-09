@@ -21,6 +21,7 @@ import Axis from "./Axis.js";
 import BlendingState from "./BlendingState.js";
 import CullFace from "./CullFace.js";
 import SceneMode from "./SceneMode.js";
+import { updateWebGPUSkyAtmosphere } from "../Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js";
 
 /**
  * An atmosphere drawn around the limb of the provided ellipsoid. Based on
@@ -242,6 +243,12 @@ SkyAtmosphere.prototype.update = function (frameState, globe) {
 
   // The atmosphere is only rendered during the render pass; it is not pickable, it doesn't cast shadows, etc.
   if (!frameState.passes.render) {
+    return undefined;
+  }
+
+  // WebGPU rendering path — use dedicated atmosphere renderer
+  if (frameState.context.isWebGPU) {
+    updateWebGPUSkyAtmosphere(this, frameState, frameState.commandList);
     return undefined;
   }
 

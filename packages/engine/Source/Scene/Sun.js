@@ -25,6 +25,7 @@ import SunVS from "../Shaders/SunVS.js";
 import BlendingState from "./BlendingState.js";
 import SceneMode from "./SceneMode.js";
 import SceneTransforms from "./SceneTransforms.js";
+import { updateWebGPUSun } from "../Renderer/WebGPU/WebGPUEnvironmentRenderer.js";
 
 /**
  * Draws a sun billboard.
@@ -123,6 +124,12 @@ Sun.prototype.update = function (frameState, passState, useHdr) {
   }
 
   if (!frameState.passes.render) {
+    return undefined;
+  }
+
+  // WebGPU rendering path — use dedicated Sun renderer
+  if (frameState.context.isWebGPU) {
+    updateWebGPUSun(this, frameState, frameState.commandList);
     return undefined;
   }
 

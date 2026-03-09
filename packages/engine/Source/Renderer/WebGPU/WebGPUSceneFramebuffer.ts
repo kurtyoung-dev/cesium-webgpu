@@ -1,0 +1,200 @@
+/// <reference types="@webgpu/types" />
+/**
+ * WebGPU equivalent of SceneFramebuffer.js
+ *
+ * Manages the main scene color + depth render targets for WebGPU.
+ * Supports MSAA, HDR, and provides access to resolved color/depth textures.
+ *
+ * In the WebGL path, SceneFramebuffer wraps two FramebufferManagers
+ * (color + id). Here we use WebGPU render targets directly.
+ *
+ * @private
+ */
+
+import { WebGPURenderTarget } from "./WebGPURenderTarget.js";
+
+// Texture formats for HDR rendering
+const HDR_FORMAT_PREFERRED = "rgba16float" as GPUTextureFormat;
+const HDR_FORMAT_FALLBACK = "rg11b10ufloat" as GPUTextureFormat;
+const LDR_FORMAT = "rgba8unorm" as GPUTextureFormat;
+
+export class WebGPUSceneFramebuffer {
+  private _device: GPUDevice | null = null;
+  private _colorTarget: WebGPURenderTarget | null = null;
+  private _idTarget: WebGPURenderTarget | null = null;
+  private _width: number = 0;
+  private _height: number = 0;
+  private _numSamples: number = 1;
+  private _hdr: boolean = false;
+  private _colorFormat: GPUTextureFormat = LDR_FORMAT;
+  private _isDestroyed: boolean = false;
+
+  /**
+   * The main color render target (MSAA if numSamples > 1).
+   */
+  get colorTarget(): WebGPURenderTarget | null {
+    return this._colorTarget;
+  }
+
+  /**
+   * The ID render target for object picking.
+   */
+  get idTarget(): WebGPURenderTarget | null {
+    return this._idTarget;
+  }
+
+  /**
+   * The resolved color texture (after MSAA resolve).
+   */
+  get colorTexture(): GPUTexture | undefined {
+    return this._colorTarget?.getColorTexture() ?? undefined;
+  }
+
+  /**
+   * The depth-stencil texture.
+   */
+  get depthStencilTexture(): GPUTexture | undefined {
+    return this._colorTarget?.getDepthTexture() ?? undefined;
+  }
+
+  /**
+   * The GPURenderPassDescriptor for writing to this framebuffer.
+   */
+  get framebuffer(): GPURenderPassDescriptor | null {
+    return this._colorTarget?.renderPassDescriptor ?? null;
+  }
+
+  /**
+   * The GPURenderPassDescriptor for the ID framebuffer.
+   */
+  get idFramebuffer(): GPURenderPassDescriptor | null {
+    return this._idTarget?.renderPassDescriptor ?? null;
+  }
+
+  /**
+   * Update framebuffer dimensions, sample count, and HDR mode.
+   * Only recreates GPU resources when parameters change.
+   */
+  update(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    hdr: boolean,
+    numSamples: number,
+    canvasFormat: GPUTextureFormat,
+  ): void {
+    if (width <= 0 || height <= 0) return;
+
+    const colorFormat = hdr ? this._pickHDRFormat(device) : canvasFormat;
+
+    const needsRecreate =
+      this._device !== device ||
+      this._width !== width ||
+      this._height !== height ||
+      this._numSamples !== numSamples ||
+      this._hdr !== hdr ||
+      this._colorFormat !== colorFormat;
+
+    if (!needsRecreate) return;
+
+    this._device = device;
+    this._width = width;
+    this._height = height;
+    this._numSamples = numSamples;
+    this._hdr = hdr;
+    this._colorFormat = colorFormat;
+
+    // Destroy existing targets
+    this._colorTarget?.destroy();
+    this._idTarget?.destroy();
+
+    // Create main color target with MSAA + depth-stencil
+    this._colorTarget = new WebGPURenderTarget(device, {
+      name: "SceneFramebuffer-Color",
+      width,
+      height,
+      colorFormats: [colorFormat],
+      depthStencilFormat: "depth24plus-stencil8",
+      sampleCount: numSamples,
+    });
+
+    // Create ID target for picking (no MSAA, always rgba8unorm)
+    this._idTarget = new WebGPURenderTarget(device, {
+      name: "SceneFramebuffer-ID",
+      width,
+      height,
+      colorFormats: ["rgba8unorm"],
+      depthStencilFormat: "depth24plus-stencil8",
+      sampleCount: 1,
+    });
+  }
+
+  /**
+   * Clear both framebuffers.
+   */
+  clear(
+    encoder: GPUCommandEncoder,
+    clearColor: { red: number; green: number; blue: number; alpha: number },
+  ): void {
+    if (this._colorTarget) {
+      this._clearTarget(encoder, this._colorTarget, clearColor);
+    }
+    if (this._idTarget) {
+      this._clearTarget(encoder, this._idTarget, {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: 0,
+      });
+    }
+  }
+
+  /**
+   * If MSAA is enabled, resolve the multisample color texture to a single-sample texture.
+   */
+  prepareColorTextures(): void {
+    // WebGPU MSAA resolve is automatic when using resolveTarget in the render pass descriptor.
+    // The WebGPURenderTarget handles this in its renderPassDescriptor.
+    // No manual resolve step needed.
+  }
+
+  /**
+   * Pick the best HDR format supported by the device.
+   */
+  private _pickHDRFormat(device: GPUDevice): GPUTextureFormat {
+    // rg11b10ufloat is more compact (4 bytes/pixel vs 8) but needs the renderable feature
+    const features = device.features;
+    if (features.has("rg11b10ufloat-renderable")) {
+      return HDR_FORMAT_FALLBACK; // Actually preferred due to bandwidth
+    }
+    return HDR_FORMAT_PREFERRED;
+  }
+
+  /**
+   * Clear a single render target via a load-clear render pass.
+   */
+  private _clearTarget(
+    encoder: GPUCommandEncoder,
+    target: WebGPURenderTarget,
+    clearColor: { red: number; green: number; blue: number; alpha: number },
+  ): void {
+    const desc = target.getClearPassDescriptor(clearColor);
+    if (desc) {
+      const pass = encoder.beginRenderPass(desc);
+      pass.end();
+    }
+  }
+
+  destroy(): void {
+    if (this._isDestroyed) return;
+    this._colorTarget?.destroy();
+    this._idTarget?.destroy();
+    this._colorTarget = null;
+    this._idTarget = null;
+    this._isDestroyed = true;
+  }
+
+  get isDestroyed(): boolean {
+    return this._isDestroyed;
+  }
+}

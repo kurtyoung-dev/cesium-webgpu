@@ -43,6 +43,38 @@
 - Use clear naming conventions (e.g., `*WebGPU.js`, `*WebGL.js`)
 - Share common utilities when possible
 
+### Monorepo Architecture — CRITICAL File Placement Rules
+CesiumJS uses an **npm workspaces monorepo**. The root `Source/` directory is a **build output** — NOT the source of truth.
+
+#### Canonical Source Locations
+| Content Type | Canonical Location (edit HERE) | Build Output (DO NOT edit) |
+|---|---|---|
+| Engine code (Renderer, Scene, Core) | `packages/engine/Source/` | `Source/` (auto-copied by build) |
+| WGSL shaders | `packages/engine/Source/Shaders/WebGPU/` | `Source/Shaders/WebGPU/` (auto-copied) |
+| GLSL shaders | `packages/engine/Source/Shaders/` | `Source/Shaders/` (auto-copied) |
+| Widget code (Viewer, etc.) | `packages/widgets/Source/` | `Source/Widgets/` (CSS/images only) |
+| Assets | `packages/engine/Source/Assets/` | `Source/Assets/` (auto-copied) |
+| ThirdParty | `packages/engine/Source/ThirdParty/` | `Source/ThirdParty/` (auto-copied) |
+| Test pages | `Apps/WebGPUTest/` | — (not copied) |
+
+#### Rules
+- **ALWAYS** create new files in `packages/engine/Source/` (or `packages/widgets/Source/` for widgets)
+- **NEVER** create new files directly in root `Source/` — they will be overwritten or orphaned
+- **NEVER** edit files in root `Source/` — edit the canonical version in `packages/`
+- Root `Source/Cesium.js` is a barrel re-export shim — it is auto-generated
+- Root `Source/Shaders/`, `Source/Assets/`, `Source/ThirdParty/`, `Source/Widgets/` are all in `.gitignore`
+- The build system (`scripts/build.js` → `copyEngineAssets()`) copies from `packages/engine/Source/` to `Source/`
+- If you see WGSL files only in `Source/Shaders/WebGPU/` but NOT in `packages/engine/Source/Shaders/WebGPU/`, they were created in the wrong place — move them to the canonical location
+
+#### Where Our WebGPU Code Lives
+```
+packages/engine/Source/Renderer/WebGPU/    ← WebGPU renderer (59+ .ts/.js files)
+packages/engine/Source/Shaders/WebGPU/     ← WGSL shaders (48+ .wgsl files)
+packages/engine/Source/Scene/              ← Modified scene files (Scene.js, Primitive.js, etc.)
+Apps/WebGPUTest/                           ← Test HTML pages (28+ files)
+migration_doc/                             ← Migration documentation
+```
+
 ### 64-Bit Precision & RTE (Relative-To-Eye) — CRITICAL
 CesiumJS renders at planetary scale where float32 precision is insufficient. **ALL rendering paths MUST use RTE (Relative-To-Eye) emulated 64-bit precision.** Without this, geometry will exhibit severe jittering.
 

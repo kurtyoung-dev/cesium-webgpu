@@ -667,6 +667,7 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
     ? statSync(minifyStateFilePath).mtime.getTime()
     : 0;
 
+  /** @type {Record<string, boolean>} */
   const leftOverJsFiles = {};
   const existingJsFiles = await globby([
     `packages/${workspace}/Source/Shaders/WebGPU/**/*.js`,
@@ -675,7 +676,9 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
     leftOverJsFiles[path.normalize(file)] = true;
   });
 
+  /** @type {string[]} */
   const builtinFunctions = [];
+  /** @type {string[]} */
   const builtinStructs = [];
 
   const wgslFiles = await globby(wgslShaderFiles);
@@ -744,7 +747,9 @@ export default "${contents}";\n`;
     rimraf.sync(filepath);
   });
 
+  /** @type {string[]} */
   const builtinImports = [];
+  /** @type {string[]} */
   const builtinLookup = [];
 
   builtinStructs.forEach((name) => {

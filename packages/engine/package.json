@@ -77,6 +77,6 @@
     "url": "https://github.com/CesiumGS/cesium/issues"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.67"
+    "@webgpu/types": "^0.1.69"
   }
 }

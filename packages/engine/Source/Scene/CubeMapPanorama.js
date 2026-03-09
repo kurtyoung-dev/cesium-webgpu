@@ -22,6 +22,15 @@ import BlendingState from "./BlendingState.js";
 import SceneMode from "./SceneMode.js";
 import Pass from "../Renderer/Pass.js";
 import Credit from "../Core/Credit.js";
+// WebGPU imports
+import {
+  createGeometryBuffers,
+  createUniformBuffer,
+  createCubeMapSampler,
+  createBindGroups,
+  updateUniforms,
+  createDrawCommand as createWebGPUDrawCommand,
+} from "../Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js";
 
 /**
  * @typedef {object} CubeMapPanorama.ConstructorOptions
@@ -118,6 +127,20 @@ function CubeMapPanorama(options) {
     credit = new Credit(credit);
   }
   this._credit = credit;
+
+  // WebGPU state — lazily created when context.isWebGPU
+  this._webgpuVertexBuffer = undefined;
+  this._webgpuIndexBuffer = undefined;
+  this._webgpuIndexCount = 0;
+  this._webgpuUniformBuffer = undefined;
+  this._webgpuUniformData = undefined;
+  this._webgpuSampler = undefined;
+  this._webgpuBindGroup0 = undefined;
+  this._webgpuBindGroup1 = undefined;
+  this._webgpuCubeMapTexture = undefined;
+  this._webgpuCubeMapView = undefined;
+  this._webgpuCommand = undefined;
+  this._webgpuCubeMapLoading = false;
 }
 
 Object.defineProperties(CubeMapPanorama.prototype, {
@@ -183,6 +206,12 @@ CubeMapPanorama.prototype.update = function (frameState, useHdr) {
     throw error;
   }
 
+  // WebGPU rendering path — delegates to separate method
+  if (context.isWebGPU) {
+    return this._updateWebGPU(frameState, useHdr);
+  }
+
+  // WebGL rendering path (original, untouched below)
   if (this._sources !== this.sources) {
     this._sources = this.sources;
     const sources = this.sources;
@@ -310,6 +339,163 @@ CubeMapPanorama.prototype.update = function (frameState, useHdr) {
 };
 
 /**
+ * WebGPU rendering path for CubeMapPanorama.
+ * Creates GPU resources lazily and updates uniforms per frame.
+ * @private
+ */
+CubeMapPanorama.prototype._updateWebGPU = function (frameState, useHdr) {
+  const { context, panoramaCommandList } = frameState;
+  const device = context.device;
+
+  // --- Load cubemap when sources change ---
+  if (this._sources !== this.sources && !this._webgpuCubeMapLoading) {
+    this._sources = this.sources;
+    this._webgpuCubeMapLoading = true;
+    this._webgpuCommand = undefined; // Invalidate command
+
+    this._loadWebGPUCubeMap(device, this._sources);
+  }
+
+  // --- Create geometry buffers once ---
+  if (!defined(this._webgpuVertexBuffer)) {
+    const geometry = BoxGeometry.createGeometry(
+      BoxGeometry.fromDimensions({
+        dimensions: new Cartesian3(2.0, 2.0, 2.0),
+        vertexFormat: VertexFormat.POSITION_ONLY,
+      }),
+    );
+    const buffers = createGeometryBuffers(device, geometry);
+    this._webgpuVertexBuffer = buffers.vertexBuffer;
+    this._webgpuIndexBuffer = buffers.indexBuffer;
+    this._webgpuIndexCount = buffers.indexCount;
+  }
+
+  // --- Create uniform buffer + sampler once ---
+  if (!defined(this._webgpuUniformBuffer)) {
+    const ub = createUniformBuffer(device);
+    this._webgpuUniformBuffer = ub.uniformBuffer;
+    this._webgpuUniformData = ub.uniformData;
+    this._webgpuSampler = createCubeMapSampler(device);
+  }
+
+  // --- Wait for cubemap texture to be ready ---
+  if (!defined(this._webgpuCubeMapView)) {
+    return undefined;
+  }
+
+  // --- Create bind groups + command when cubemap is ready ---
+  if (!defined(this._webgpuCommand)) {
+    const bg = createBindGroups(
+      device,
+      this._webgpuUniformBuffer,
+      this._webgpuSampler,
+      this._webgpuCubeMapView,
+    );
+    this._webgpuBindGroup0 = bg.bindGroup0;
+    this._webgpuBindGroup1 = bg.bindGroup1;
+
+    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    this._webgpuCommand = createWebGPUDrawCommand(
+      device,
+      canvasFormat,
+      this._webgpuVertexBuffer,
+      this._webgpuIndexBuffer,
+      this._webgpuIndexCount,
+      this._webgpuBindGroup0,
+      this._webgpuBindGroup1,
+    );
+    this._addToPanoramaCommandList = true;
+  }
+
+  // --- Update uniforms every frame ---
+  updateUniforms(
+    device,
+    this._webgpuUniformBuffer,
+    this._webgpuUniformData,
+    context.uniformState,
+    this._transform,
+  );
+
+  // --- Credits ---
+  if (this.show && defined(this._credit) && !this._returnCommand) {
+    frameState.creditDisplay.addCreditToNextFrame(this._credit);
+  }
+
+  if (this._returnCommand) {
+    return this._webgpuCommand;
+  }
+
+  if (this._addToPanoramaCommandList) {
+    panoramaCommandList.push(this._webgpuCommand);
+    this._addToPanoramaCommandList = false;
+  }
+};
+
+/**
+ * Load cubemap images and create a WebGPU cubemap texture.
+ * @private
+ */
+CubeMapPanorama.prototype._loadWebGPUCubeMap = function (device, sources) {
+  const that = this;
+  const faceNames = [
+    "positiveX",
+    "negativeX",
+    "positiveY",
+    "negativeY",
+    "positiveZ",
+    "negativeZ",
+  ];
+
+  // Load all 6 face images
+  const loadPromises = faceNames.map((face) => {
+    const src = sources[face];
+    if (typeof src === "string") {
+      return fetch(src)
+        .then((r) => r.blob())
+        .then((b) => createImageBitmap(b));
+    }
+    // Already an Image/ImageBitmap
+    return Promise.resolve(src);
+  });
+
+  Promise.all(loadPromises)
+    .then((images) => {
+      const size = images[0].width;
+      const texture = device.createTexture({
+        label: "CubeMapPanorama-cubemap",
+        size: [size, size, 6],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+        dimension: "2d",
+      });
+
+      // Copy each face to the cubemap texture
+      for (let i = 0; i < 6; i++) {
+        device.queue.copyExternalImageToTexture(
+          { source: images[i] },
+          { texture: texture, origin: [0, 0, i] },
+          [size, size],
+        );
+      }
+
+      that._webgpuCubeMapTexture = texture;
+      that._webgpuCubeMapView = texture.createView({
+        dimension: "cube",
+        format: "rgba8unorm",
+      });
+      that._webgpuCubeMapLoading = false;
+    })
+    .catch((error) => {
+      that._hasError = true;
+      that._error = error;
+      that._webgpuCubeMapLoading = false;
+    });
+};
+
+/**
  * Returns true if this object was destroyed; otherwise, false.
  * <br /><br />
  * If this object was destroyed, it should not be used; calling any function other than
@@ -340,11 +526,33 @@ CubeMapPanorama.prototype.isDestroyed = function () {
  * @see CubeMapPanorama#isDestroyed
  */
 CubeMapPanorama.prototype.destroy = function () {
+  // WebGL cleanup
   const command = this._command;
   command.vertexArray = command.vertexArray && command.vertexArray.destroy();
   command.shaderProgram =
     command.shaderProgram && command.shaderProgram.destroy();
   this._cubeMap = this._cubeMap && this._cubeMap.destroy();
+
+  // WebGPU cleanup (GPU buffers/textures are garbage collected, but null refs)
+  if (defined(this._webgpuVertexBuffer)) {
+    this._webgpuVertexBuffer.destroy();
+    this._webgpuVertexBuffer = undefined;
+  }
+  if (defined(this._webgpuIndexBuffer)) {
+    this._webgpuIndexBuffer.destroy();
+    this._webgpuIndexBuffer = undefined;
+  }
+  if (defined(this._webgpuUniformBuffer)) {
+    this._webgpuUniformBuffer.destroy();
+    this._webgpuUniformBuffer = undefined;
+  }
+  if (defined(this._webgpuCubeMapTexture)) {
+    this._webgpuCubeMapTexture.destroy();
+    this._webgpuCubeMapTexture = undefined;
+  }
+  this._webgpuCommand = undefined;
+  this._webgpuCubeMapView = undefined;
+
   return destroyObject(this);
 };
 

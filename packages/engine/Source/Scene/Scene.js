@@ -84,6 +84,7 @@ import PickedMetadataInfo from "./PickedMetadataInfo.js";
 import getMetadataProperty from "./getMetadataProperty.js";
 import { initPrimitiveShaders } from "../Renderer/WebGPU/WebGPUPrimitiveShaders.js";
 import { initCollectionShaders } from "../Renderer/WebGPU/WebGPUCollectionShaders.js";
+import { WebGPUSceneRenderer } from "../Renderer/WebGPU/WebGPUSceneRenderer.js";
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -250,6 +251,13 @@ function Scene(options) {
   });
 
   this._depthOnlyRenderStateCache = {};
+
+  // WebGPU scene rendering orchestrator — handles multi-frustum command execution
+  // Only instantiated when using WebGPU renderer
+  this._webgpuSceneRenderer = null;
+  if (defined(context.rendererType) && context.rendererType === "webgpu") {
+    this._webgpuSceneRenderer = new WebGPUSceneRenderer();
+  }
 
   this._transitioner = new SceneTransitioner(this);
 
@@ -2782,6 +2790,28 @@ function executeCommands(scene, passState) {
     renderEnvironment(scene, passState);
   }
 
+  // WebGPU path — delegate to WebGPUSceneRenderer for clean multi-frustum rendering
+  // This replaces the WebGL-specific frustum loop below with the dedicated WebGPU orchestrator
+  if (scene.isWebGPU && scene._webgpuSceneRenderer) {
+    const envState = scene._environmentState;
+    scene._webgpuSceneRenderer.executeCommands({
+      scene,
+      context,
+      passState,
+      backgroundColor: frameState.backgroundColor,
+      picking,
+      useGlobeDepthFramebuffer: envState.useGlobeDepthFramebuffer,
+      clearGlobeDepth: envState.clearGlobeDepth,
+      useOIT: envState.useOIT,
+      useDepthPlane: envState.useDepthPlane,
+      useInvertClassification: envState.useInvertClassification,
+      usePostProcess: envState.usePostProcess,
+      useHDR: scene._hdr,
+      shadowState: frameState.shadowState,
+    });
+    return;
+  }
+
   const {
     clearGlobeDepth,
     renderTranslucentDepthForPick,
@@ -3160,10 +3190,14 @@ function renderEnvironment(scene, passState) {
   }
 
   // execute panorama commands, drop removed primitives
+  // Accept both WebGL commands (have shaderProgram) and WebGPU commands (have isWebGPUDrawCommand)
   const panoramaCommandList = scene.frameState.panoramaCommandList;
   for (let i = panoramaCommandList.length - 1; i >= 0; i--) {
     const panoramaCommand = panoramaCommandList[i];
-    if (defined(panoramaCommand.shaderProgram)) {
+    if (
+      defined(panoramaCommand.shaderProgram) ||
+      panoramaCommand.isWebGPUDrawCommand === true
+    ) {
       executeCommand(panoramaCommandList[i], scene, passState);
     } else {
       //primitive was removed
@@ -3181,6 +3215,22 @@ function renderEnvironment(scene, passState) {
  */
 function executeComputeCommands(scene) {
   scene.context.uniformState.updatePass(Pass.COMPUTE);
+
+  // WebGPU path — compute commands use WebGPUComputeEngine if available,
+  // otherwise skip gracefully (sun compute is handled procedurally in WebGPU)
+  if (scene.isWebGPU) {
+    // In WebGPU, sun texture is generated procedurally in WebGPUEnvironmentRenderer
+    // so sunComputeCommand is not needed. Execute any queued compute commands
+    // that have WebGPU support (isWebGPUComputeCommand flag).
+    const commandList = scene._computeCommandList;
+    for (let i = 0; i < commandList.length; ++i) {
+      const cmd = commandList[i];
+      if (defined(cmd.isWebGPUComputeCommand) && cmd.isWebGPUComputeCommand) {
+        cmd.execute(scene.context);
+      }
+    }
+    return;
+  }
 
   const sunComputeCommand = scene._environmentState.sunComputeCommand;
   if (defined(sunComputeCommand)) {
@@ -3279,6 +3329,13 @@ function executeShadowMapCastCommands(scene) {
   const { shadowsEnabled, shadowMaps } = shadowState;
 
   if (!shadowsEnabled) {
+    return;
+  }
+
+  // WebGPU path — shadow cast commands are handled by WebGPUSceneRenderer
+  // via the shadowState passed in executeCommands config. Skip WebGL shadow
+  // cast here since WebGPU uses its own depth-only shadow pipeline.
+  if (scene.isWebGPU) {
     return;
   }
 
@@ -3864,6 +3921,23 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   const environmentState = scene._environmentState;
   const view = scene._view;
 
+  // WebGPU path — minimal framebuffer clearing, skip WebGL FBO management
+  // WebGPU uses the default render pass from context.beginFrame(); no custom FBOs needed yet
+  if (scene.isWebGPU) {
+    environmentState.originalFramebuffer = passState.framebuffer;
+    environmentState.useGlobeDepthFramebuffer = false;
+    environmentState.useOIT = false;
+    environmentState.usePostProcess = false;
+    environmentState.usePostProcessSelected = false;
+    environmentState.useInvertClassification = false;
+
+    // Clear with background color via the existing ClearCommand
+    const clear = scene._clearColorCommand;
+    Color.clone(clearColor, clear.color);
+    clear.execute(context, passState);
+    return;
+  }
+
   const passes = frameState.passes;
   const picking = passes.pick || passes.pickVoxel;
   if (defined(view.globeDepth)) {
@@ -4018,6 +4092,12 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
  * @private
  */
 Scene.prototype.resolveFramebuffers = function (passState) {
+  // WebGPU path — no WebGL framebuffer resolution needed
+  // OIT composite and post-processing are not yet wired for WebGPU
+  if (this.isWebGPU) {
+    return;
+  }
+
   const context = this._context;
   const environmentState = this._environmentState;
   const view = this._view;
@@ -5390,6 +5470,12 @@ Scene.prototype.destroy = function () {
   this._brdfLutGenerator =
     this._brdfLutGenerator && this._brdfLutGenerator.destroy();
   this._picking = this._picking && this._picking.destroy();
+
+  // Destroy WebGPU scene renderer if it was created
+  if (this._webgpuSceneRenderer) {
+    this._webgpuSceneRenderer.destroy();
+    this._webgpuSceneRenderer = null;
+  }
 
   this._defaultView = this._defaultView && this._defaultView.destroy();
   this._view = undefined;

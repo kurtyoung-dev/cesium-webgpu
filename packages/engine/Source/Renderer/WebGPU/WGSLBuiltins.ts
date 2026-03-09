@@ -264,6 +264,65 @@ fn csm_srgbToLinearAccurate(color: vec3<f32>) -> vec3<f32> {
 }
 `;
 
+const csm_translateRelativeToEye = `
+// RTE (Relative-To-Eye) emulated 64-bit precision for planetary-scale rendering.
+// Subtracts encoded camera position from encoded vertex position in split domain.
+fn csm_translateRelativeToEye(
+    positionHigh: vec3<f32>,
+    positionLow: vec3<f32>,
+    encodedCameraPositionMCHigh: vec3<f32>,
+    encodedCameraPositionMCLow: vec3<f32>,
+) -> vec4<f32> {
+    var highDifference = positionHigh - encodedCameraPositionMCHigh;
+    if (length(highDifference) == 0.0) {
+        highDifference = vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let lowDifference = positionLow - encodedCameraPositionMCLow;
+    return vec4<f32>(highDifference + lowDifference, 1.0);
+}
+`;
+
+const csm_decodeRGB8 = `
+// Decodes RGB values packed into a single float at 8-bit precision.
+// Encoded representation is equivalent to 0xFFFFFF in JavaScript.
+fn csm_decodeRGB8(encoded: f32) -> vec4<f32> {
+    let SHIFT_RIGHT16: f32 = 1.0 / 65536.0;
+    let SHIFT_RIGHT8: f32 = 1.0 / 256.0;
+    let SHIFT_LEFT16: f32 = 65536.0;
+    let SHIFT_LEFT8: f32 = 256.0;
+
+    let r = floor(encoded * SHIFT_RIGHT16);
+    let g = floor((encoded - r * SHIFT_LEFT16) * SHIFT_RIGHT8);
+    let b = floor(encoded - r * SHIFT_LEFT16 - g * SHIFT_LEFT8);
+
+    return vec4<f32>(r, g, b, 255.0) / 255.0;
+}
+`;
+
+const csm_unpackTexture = `
+// Reinterprets texture data as higher-precision unsigned integer values.
+// Byte order: LITTLE-ENDIAN (matches GLSL czm_unpackTexture)
+// Component x = byte 0 (LSB), y = byte 1, z = byte 2, w = byte 3 (MSB)
+fn csm_unpackTexture1(channel: f32) -> u32 {
+    return u32(channel * 255.0 + 0.5);
+}
+
+fn csm_unpackTexture2(channels: vec2<f32>) -> u32 {
+    let bytes = vec2<u32>(channels * 255.0 + vec2<f32>(0.5));
+    return bytes.x | (bytes.y << 8u);
+}
+
+fn csm_unpackTexture3(channels: vec3<f32>) -> u32 {
+    let bytes = vec3<u32>(channels * 255.0 + vec3<f32>(0.5));
+    return bytes.x | (bytes.y << 8u) | (bytes.z << 16u);
+}
+
+fn csm_unpackTexture4(channels: vec4<f32>) -> u32 {
+    let bytes = vec4<u32>(channels * 255.0 + vec4<f32>(0.5));
+    return bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (bytes.w << 24u);
+}
+`;
+
 const csm_getNormalFromMap = `
 fn csm_getNormalFromMap(
     normalSample: vec3<f32>,
@@ -331,6 +390,12 @@ export function createDefaultWGSLLibrary(): WGSLShaderLibrary {
   library.registerCode("functions/csm_tonemapping", csm_tonemapping);
   library.registerCode("functions/csm_gammaCorrection", csm_gammaCorrection);
   library.registerCode("functions/csm_getNormalFromMap", csm_getNormalFromMap);
+  library.registerCode(
+    "functions/csm_translateRelativeToEye",
+    csm_translateRelativeToEye,
+  );
+  library.registerCode("functions/csm_decodeRGB8", csm_decodeRGB8);
+  library.registerCode("functions/csm_unpackTexture", csm_unpackTexture);
 
   return library;
 }
@@ -355,6 +420,9 @@ export const WGSLBuiltinChunks = {
   TONEMAPPING: "functions/csm_tonemapping",
   GAMMA_CORRECTION: "functions/csm_gammaCorrection",
   GET_NORMAL_FROM_MAP: "functions/csm_getNormalFromMap",
+  TRANSLATE_RELATIVE_TO_EYE: "functions/csm_translateRelativeToEye",
+  DECODE_RGB8: "functions/csm_decodeRGB8",
+  UNPACK_TEXTURE: "functions/csm_unpackTexture",
 } as const;
 
 export default createDefaultWGSLLibrary;

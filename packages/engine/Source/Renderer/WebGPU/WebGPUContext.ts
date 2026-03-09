@@ -49,6 +49,11 @@ import {
 } from "./WebGPUDeviceLossRecovery.js";
 import { WebGPUResourceManager } from "./WebGPUResourceManager.js";
 import { WebGPUPickManager } from "./WebGPUPickManager.js";
+import { WebGPURenderBundleManager } from "./WebGPURenderBundleManager.js";
+import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
+import { WebGPUStorageBufferPool } from "./WebGPUStorageBufferPool.js";
+import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
+import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import {
   createDefaultTextures,
   copyTexture as copyTextureUtil,
@@ -126,6 +131,9 @@ export class WebGPUContext implements GraphicsContext {
   private _frameCount: number = 0;
   private _drawCallCount: number = 0;
   private _triangleCount: number = 0;
+
+  // WebGPU optional features that were successfully enabled
+  private _enabledFeatures: Set<string> = new Set();
 
   // WebGL extension properties (WebGPU natively supports these as core features)
   public floatingPointTexture: boolean = true; // WebGPU always supports float textures
@@ -377,20 +385,36 @@ export class WebGPUContext implements GraphicsContext {
         );
       }
 
-      // Request GPU device
-      const requiredFeatures = this._options.requiredFeatures ?? [];
+      // Request GPU device with auto-detected optional features
+      const requestedFeatures = this._buildFeatureList(this._adapter);
       const requiredLimits = this._options.requiredLimits ?? {};
 
       this._device = await this._adapter.requestDevice({
-        requiredFeatures,
+        requiredFeatures: requestedFeatures,
         requiredLimits,
       });
+
+      // Record which features were actually enabled
+      this._enabledFeatures = new Set(this._device.features);
+
+      // Log enabled optional features for debugging
+      const optionalEnabled = requestedFeatures.filter((f) =>
+        this._enabledFeatures.has(f),
+      );
+      if (optionalEnabled.length > 0) {
+        console.log(
+          `[WebGPU] Enabled optional features: ${optionalEnabled.join(", ")}`,
+        );
+      }
 
       // Handle device lost event with recovery strategy
       this._setupDeviceLostHandler();
 
       // Initialize ContextLimits from WebGPU device limits
       this._initializeContextLimits();
+
+      // Update capability flags based on enabled features
+      this._updateFeatureFlags();
 
       // Configure canvas context
       this._context = this._canvas.getContext("webgpu") as GPUCanvasContext;
@@ -877,6 +901,123 @@ export class WebGPUContext implements GraphicsContext {
 
       this._depthTextureView = this._depthTexture.createView();
     }
+  }
+
+  // ====================================================================================
+  // Feature Detection & Auto-Request (C1/C3/C4)
+  // ====================================================================================
+
+  /**
+   * Optional WebGPU features that CesiumJS benefits from.
+   * Listed in priority order. Each is only requested if the adapter supports it.
+   * @private
+   */
+  private static readonly DESIRED_FEATURES: GPUFeatureName[] = [
+    // C1: Terrain heightmaps use float32 textures — enables HW bilinear filtering
+    "float32-filterable" as GPUFeatureName,
+    // C3: Native GPU clip planes for ClippingPlaneCollection (Chrome 128+)
+    "clip-distances" as GPUFeatureName,
+    // C4: Weighted-average OIT in single render pass (Chrome 128+)
+    "dual-source-blending" as GPUFeatureName,
+    // I4: HDR render targets for post-processing (Chrome 121+)
+    "rg11b10ufloat-renderable" as GPUFeatureName,
+    // I6: GPU-side performance profiling (Chrome 121+)
+    "timestamp-query" as GPUFeatureName,
+    // I5: Half-precision floats in shaders — reduce memory, faster math
+    "shader-f16" as GPUFeatureName,
+    // I1: GPU-driven rendering with indirect draw calls (Chrome 128+)
+    "indirect-first-instance" as GPUFeatureName,
+    // S4: SIMD-like subgroup operations for compute shaders (Chrome 132+)
+    "subgroups" as GPUFeatureName,
+    // BGRA8 storage textures for compute-based post-processing
+    "bgra8unorm-storage" as GPUFeatureName,
+    // Texture compression formats (requested if adapter supports them)
+    "texture-compression-bc" as GPUFeatureName,
+    "texture-compression-etc2" as GPUFeatureName,
+    "texture-compression-astc" as GPUFeatureName,
+  ];
+
+  /**
+   * Builds the list of features to request from the device.
+   * Merges user-requested features with auto-detected optional features
+   * that the adapter supports.
+   *
+   * @private
+   * @param {GPUAdapter} adapter - The GPU adapter to query
+   * @returns {GPUFeatureName[]} Features to request
+   */
+  private _buildFeatureList(adapter: GPUAdapter): GPUFeatureName[] {
+    // Start with any explicitly requested features from the user
+    const features = new Set<GPUFeatureName>(
+      this._options.requiredFeatures ?? [],
+    );
+
+    // Auto-detect and add optional features the adapter supports
+    for (const feature of WebGPUContext.DESIRED_FEATURES) {
+      if (adapter.features.has(feature)) {
+        features.add(feature);
+      }
+    }
+
+    return Array.from(features);
+  }
+
+  /**
+   * Updates internal capability flags based on which features were
+   * successfully enabled on the device. Called after device creation.
+   *
+   * @private
+   */
+  private _updateFeatureFlags(): void {
+    // C1: float32-filterable — update the textureFloatLinear flag
+    // Without this feature, float32 textures require nearest-only sampling
+    if (this._enabledFeatures.has("float32-filterable")) {
+      this.textureFloatLinear = true;
+      this._textureFloatLinear = true;
+    }
+
+    // Texture compression formats
+    if (this._enabledFeatures.has("texture-compression-bc")) {
+      this._s3tc = true;
+      this._bc7 = true;
+      this.s3tc = true;
+      this.bc7 = true;
+    }
+    if (this._enabledFeatures.has("texture-compression-etc2")) {
+      this._etc = true;
+      this.etc = true;
+    }
+    if (this._enabledFeatures.has("texture-compression-astc")) {
+      this._astc = true;
+      this.astc = true;
+    }
+  }
+
+  /**
+   * Check if a specific WebGPU feature is enabled on the device.
+   *
+   * @param {string} featureName - Feature name (e.g., 'float32-filterable',
+   *   'clip-distances', 'dual-source-blending', 'timestamp-query', 'shader-f16')
+   * @returns {boolean} True if the feature is enabled
+   *
+   * @example
+   * if (context.hasFeature('clip-distances')) {
+   *   // Use native clip planes instead of stencil-based clipping
+   * }
+   * if (context.hasFeature('dual-source-blending')) {
+   *   // Use single-pass weighted-average OIT
+   * }
+   */
+  hasFeature(featureName: string): boolean {
+    return this._enabledFeatures.has(featureName);
+  }
+
+  /**
+   * Get all enabled optional features.
+   * @returns {string[]} Array of enabled feature names
+   */
+  get enabledFeatures(): string[] {
+    return Array.from(this._enabledFeatures);
   }
 
   /**
@@ -1952,6 +2093,28 @@ export class WebGPUContext implements GraphicsContext {
       this._mipmapGenerator = null;
     }
 
+    // Destroy advanced infrastructure singletons
+    if (this._renderBundleManager) {
+      this._renderBundleManager.destroy();
+      this._renderBundleManager = null;
+    }
+    if (this._timestampProfiler) {
+      this._timestampProfiler.destroy();
+      this._timestampProfiler = null;
+    }
+    if (this._storageBufferPool) {
+      this._storageBufferPool.destroy();
+      this._storageBufferPool = null;
+    }
+    if (this._indirectDrawManager) {
+      this._indirectDrawManager.destroy();
+      this._indirectDrawManager = null;
+    }
+    if (this._bufferMapper) {
+      this._bufferMapper.destroy();
+      this._bufferMapper = null;
+    }
+
     // Clear references
     this._adapter = null;
     this._context = null;
@@ -2409,6 +2572,77 @@ export class WebGPUContext implements GraphicsContext {
       this._mipmapGenerator = new WebGPUMipmapGenerator(this._device);
     }
     return this._mipmapGenerator!;
+  }
+
+  // ====================================================================================
+  // Advanced Infrastructure — Lazy-Initialized Singletons
+  // These are exposed via getters and created on first access.
+  // ====================================================================================
+
+  private _renderBundleManager: WebGPURenderBundleManager | null = null;
+  private _timestampProfiler: WebGPUTimestampProfiler | null = null;
+  private _storageBufferPool: WebGPUStorageBufferPool | null = null;
+  private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
+  private _bufferMapper: WebGPUBufferMapper | null = null;
+
+  /**
+   * Render bundle manager for caching static geometry draw calls.
+   * Pre-encodes draw commands for terrain tiles, buildings, etc.
+   * Gives 50-80% CPU reduction for static geometry.
+   */
+  get renderBundleManager(): WebGPURenderBundleManager | null {
+    if (!this._renderBundleManager && this._device) {
+      this._renderBundleManager = new WebGPURenderBundleManager(this._device);
+    }
+    return this._renderBundleManager;
+  }
+
+  /**
+   * GPU timestamp profiler for measuring render pass durations.
+   * Requires 'timestamp-query' feature to be enabled.
+   */
+  get timestampProfiler(): WebGPUTimestampProfiler | null {
+    if (
+      !this._timestampProfiler &&
+      this._device &&
+      this.hasFeature("timestamp-query")
+    ) {
+      this._timestampProfiler = new WebGPUTimestampProfiler(this._device);
+    }
+    return this._timestampProfiler;
+  }
+
+  /**
+   * Storage buffer pool for compute shader inputs/outputs and large datasets.
+   * Pre-allocates and reuses GPU storage buffers.
+   */
+  get storageBufferPool(): WebGPUStorageBufferPool | null {
+    if (!this._storageBufferPool && this._device) {
+      this._storageBufferPool = new WebGPUStorageBufferPool(this._device);
+    }
+    return this._storageBufferPool;
+  }
+
+  /**
+   * Indirect draw manager for GPU-driven rendering.
+   * Writes draw parameters from compute shaders for drawIndirect/drawIndexedIndirect.
+   */
+  get indirectDrawManager(): WebGPUIndirectDrawManager | null {
+    if (!this._indirectDrawManager && this._device) {
+      this._indirectDrawManager = new WebGPUIndirectDrawManager(this._device);
+    }
+    return this._indirectDrawManager;
+  }
+
+  /**
+   * Buffer mapper for async CPU↔GPU buffer access.
+   * Manages mapAsync/getMappedRange for readback and upload.
+   */
+  get bufferMapper(): WebGPUBufferMapper | null {
+    if (!this._bufferMapper && this._device) {
+      this._bufferMapper = new WebGPUBufferMapper(this._device);
+    }
+    return this._bufferMapper;
   }
 
   /**

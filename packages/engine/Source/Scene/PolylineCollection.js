@@ -35,6 +35,10 @@ import BlendingState from "./BlendingState.js";
 import Material from "./Material.js";
 import Polyline from "./Polyline.js";
 import SceneMode from "./SceneMode.js";
+import {
+  updateWebGPUPolylines,
+  destroyWebGPUPolylineResources,
+} from "../Renderer/WebGPU/WebGPUPolylineRenderer.js";
 
 const SHOW_INDEX = Polyline.SHOW_INDEX;
 const WIDTH_INDEX = Polyline.WIDTH_INDEX;
@@ -424,6 +428,12 @@ PolylineCollection.prototype.update = function (frameState) {
   updateMode(this, frameState);
 
   const context = frameState.context;
+
+  // WebGPU rendering path — skip all WebGL code
+  if (context.isWebGPU) {
+    updateWebGPUPolylines(this, frameState, frameState.commandList);
+    return;
+  }
   const projection = frameState.mapProjection;
   let polyline;
   let properties = this._propertiesChanged;
@@ -808,6 +818,7 @@ PolylineCollection.prototype.destroy = function () {
   destroyVertexArrays(this);
   releaseShaders(this);
   destroyPolylines(this);
+  destroyWebGPUPolylineResources(this);
   this._batchTable = this._batchTable && this._batchTable.destroy();
   return destroyObject(this);
 };

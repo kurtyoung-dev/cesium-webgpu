@@ -47,16 +47,41 @@ export interface LoadCubeMapOptions {
 
 /**
  * Loads an image from a URL and returns RGBA pixel data via OffscreenCanvas/Canvas.
+ * Used as fallback when direct GPU upload is not possible (e.g., cross-layout extraction).
  */
 async function loadImageAsRGBA(
   url: string | Resource,
   skipColorSpaceConversion: boolean,
   flipY: boolean,
 ): Promise<{ data: Uint8Array; width: number; height: number }> {
-  // Resolve Resource to URL string
-  const urlString = typeof url === "string" ? url : url.url;
+  const bitmap = await loadImageBitmap(url, skipColorSpaceConversion, flipY);
+  const width = bitmap.width;
+  const height = bitmap.height;
 
-  // Fetch image as blob then create ImageBitmap
+  // Draw to offscreen canvas to extract RGBA data
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  return {
+    data: new Uint8Array(imageData.data.buffer),
+    width,
+    height,
+  };
+}
+
+/**
+ * Loads an image as an ImageBitmap for direct GPU upload via copyExternalImageToTexture.
+ * This avoids the OffscreenCanvas → getImageData() intermediate step.
+ */
+async function loadImageBitmap(
+  url: string | Resource,
+  skipColorSpaceConversion: boolean,
+  flipY: boolean,
+): Promise<ImageBitmap> {
+  const urlString = typeof url === "string" ? url : url.url;
   const response = await fetch(urlString);
   const blob = await response.blob();
 
@@ -68,22 +93,7 @@ async function loadImageAsRGBA(
     options.imageOrientation = "flipY";
   }
 
-  const imageBitmap = await createImageBitmap(blob, options);
-  const width = imageBitmap.width;
-  const height = imageBitmap.height;
-
-  // Draw to offscreen canvas to extract RGBA data
-  const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(imageBitmap, 0, 0);
-  imageBitmap.close();
-
-  const imageData = ctx.getImageData(0, 0, width, height);
-  return {
-    data: new Uint8Array(imageData.data.buffer),
-    width,
-    height,
-  };
+  return createImageBitmap(blob, options);
 }
 
 /**

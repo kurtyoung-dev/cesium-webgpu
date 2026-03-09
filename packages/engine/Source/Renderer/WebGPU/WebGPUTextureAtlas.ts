@@ -218,23 +218,74 @@ class WebGPUTextureAtlas {
 
   /**
    * Adds an image from an ImageBitmap or HTMLImageElement.
-   * Extracts RGBA data and adds to atlas.
+   * Uses `copyExternalImageToTexture()` for zero-copy GPU upload when possible,
+   * falling back to OffscreenCanvas extraction for non-ImageBitmap sources.
+   *
+   * @param {string} imageId - Unique identifier for this image
+   * @param {ImageBitmap | HTMLImageElement} image - The image to add
+   * @returns {Promise<AtlasRegion>} Normalized texture coordinates
    */
   async addImageElement(
     imageId: string,
     image: ImageBitmap | HTMLImageElement,
   ): Promise<AtlasRegion> {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._regions.has(imageId)) {
+      throw new DeveloperError(`Image '${imageId}' already in atlas.`);
+    }
+    //>>includeEnd('debug');
+
     const width = image.width;
     const height = image.height;
+    const border = this._borderWidth;
+    const paddedW = width + border * 2;
+    const paddedH = height + border * 2;
 
-    // Extract RGBA data via OffscreenCanvas
-    const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(image, 0, 0);
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const rgbaData = new Uint8Array(imageData.data.buffer);
+    // Try to find space in current tree
+    let node = this._insertNode(this._root, paddedW, paddedH);
+    if (!node) {
+      this._grow();
+      node = this._insertNode(this._root, paddedW, paddedH);
+      if (!node) {
+        throw new DeveloperError(
+          `Cannot fit image ${width}x${height} into atlas.`,
+        );
+      }
+    }
+    node.imageId = imageId;
 
-    return this.addImage(imageId, rgbaData, width, height);
+    const destX = node.x + border;
+    const destY = node.y + border;
+
+    // Use copyExternalImageToTexture for direct GPU upload (C2 optimization)
+    // This avoids the expensive OffscreenCanvas → getImageData() → writeTexture() path
+    if (this._texture && image instanceof ImageBitmap) {
+      this._device.queue.copyExternalImageToTexture(
+        { source: image },
+        { texture: this._texture.texture, origin: { x: destX, y: destY } },
+        { width, height },
+      );
+    } else {
+      // Fallback: extract RGBA data via OffscreenCanvas for HTMLImageElement
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(image, 0, 0);
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const rgbaData = new Uint8Array(imageData.data.buffer);
+      this._uploadRegion(rgbaData, width, height, destX, destY);
+    }
+
+    // Compute normalized coordinates
+    const region: AtlasRegion = {
+      x: destX / this._textureSize,
+      y: destY / this._textureSize,
+      width: width / this._textureSize,
+      height: height / this._textureSize,
+    };
+
+    this._regions.set(imageId, region);
+    this._imageOrder.push(imageId);
+    return region;
   }
 
   /**

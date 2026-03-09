@@ -1565,7 +1565,15 @@ ShadowMap.prototype.update = function (frameState) {
   updateCameras(this, frameState);
 
   if (this._needsUpdate) {
-    updateFramebuffer(this, frameState.context);
+    // WebGPU path — skip WebGL framebuffer creation; WebGPUShadowMapRenderer
+    // manages its own depth32float texture + comparison sampler.
+    // Camera/culling volume computation below is still needed (renderer-agnostic).
+    const context = frameState.context;
+    const isWebGPU =
+      defined(context.rendererType) && context.rendererType === "webgpu";
+    if (!isWebGPU) {
+      updateFramebuffer(this, context);
+    }
 
     if (this._isPointLight) {
       computeOmnidirectional(this, frameState);

@@ -36,6 +36,10 @@ import VerticalOrigin from "./VerticalOrigin.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
 import DeveloperError from "../Core/DeveloperError.js";
+import {
+  updateWebGPUBillboards,
+  destroyWebGPUBillboardResources,
+} from "../Renderer/WebGPU/WebGPUBillboardRenderer.js";
 
 const SHOW_INDEX = Billboard.SHOW_INDEX;
 const POSITION_INDEX = Billboard.POSITION_INDEX;
@@ -1569,6 +1573,12 @@ BillboardCollection.prototype.update = function (frameState) {
 
   const context = frameState.context;
 
+  // WebGPU rendering path — skip all WebGL code
+  if (context.isWebGPU) {
+    updateWebGPUBillboards(this, frameState, frameState.commandList);
+    return;
+  }
+
   if (
     !context.instancedArrays ||
     !(ContextLimits.maximumVertexTextureImageUnits > 0)
@@ -2144,6 +2154,7 @@ BillboardCollection.prototype.destroy = function () {
   this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
   this._vaf = this._vaf && this._vaf.destroy();
   destroyBillboards(this._billboards);
+  destroyWebGPUBillboardResources(this);
 
   return destroyObject(this);
 };

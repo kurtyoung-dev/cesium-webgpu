@@ -51,6 +51,7 @@ import TerrainFillMesh from "./TerrainFillMesh.js";
 import TerrainState from "./TerrainState.js";
 import TileBoundingRegion from "./TileBoundingRegion.js";
 import TileSelectionResult from "./TileSelectionResult.js";
+import { WebGPUGlobeSurfaceRenderer } from "../Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.js";
 
 /**
  * Provides quadtree tiles representing the surface of the globe.  This type is intended to be used
@@ -2124,8 +2125,173 @@ const surfaceShaderSetOptionsScratch = {
 const defaultUndergroundColor = Color.TRANSPARENT;
 const defaultUndergroundColorAlphaByDistance = new NearFarScalar();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// WebGPU Globe Terrain Rendering
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Singleton globe renderer, shared across all tile providers
+let _webgpuGlobeRenderer = null;
+let _webgpuGlobeShaderLoading = false;
+let _webgpuGlobeShaderCode = null;
+
+/**
+ * Lazily load the GlobeTerrain.wgsl shader code via fetch.
+ * Returns true if the shader is ready, false if still loading.
+ */
+function ensureWebGPUGlobeShader() {
+  if (_webgpuGlobeShaderCode !== null) {
+    return true;
+  }
+  if (_webgpuGlobeShaderLoading) {
+    return false;
+  }
+  _webgpuGlobeShaderLoading = true;
+  // Try multiple paths for the WGSL shader
+  const paths = [
+    "Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "../Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    "../../Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  ];
+  (function tryFetch(idx) {
+    if (idx >= paths.length) {
+      console.warn("WebGPU: Could not load GlobeTerrain.wgsl, using fallback");
+      _webgpuGlobeShaderCode = getFallbackTerrainShader();
+      _webgpuGlobeShaderLoading = false;
+      return;
+    }
+    fetch(paths[idx])
+      .then(function (r) {
+        if (r.ok) {
+          return r.text().then(function (code) {
+            _webgpuGlobeShaderCode = code;
+            _webgpuGlobeShaderLoading = false;
+          });
+        }
+        tryFetch(idx + 1);
+      })
+      .catch(function () {
+        tryFetch(idx + 1);
+      });
+  })(0);
+  return false;
+}
+
+function getFallbackTerrainShader() {
+  // Minimal terrain shader — renders dark gray with no textures
+  return `
+struct CameraUniforms {
+  mvpRelativeToEye: mat4x4<f32>,
+  modifiedModelView: mat4x4<f32>,
+  encodedCameraHigh: vec3<f32>, _pad0: f32,
+  encodedCameraLow: vec3<f32>, _pad1: f32,
+  center3D: vec3<f32>, _pad2: f32,
+  sunDirectionEC: vec3<f32>, enableLighting: f32,
+};
+struct ImageryLayer { ts: vec4<f32>, tr: vec4<f32>, a: f32, b: f32, c: f32, s: f32, };
+struct TileUniforms { layers: array<ImageryLayer, 4>, layerCount: u32, _p: vec3<f32>, };
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(0) @binding(1) var<uniform> tile: TileUniforms;
+@group(1) @binding(0) var t0: texture_2d<f32>;
+@group(1) @binding(1) var t1: texture_2d<f32>;
+@group(1) @binding(2) var t2: texture_2d<f32>;
+@group(1) @binding(3) var t3: texture_2d<f32>;
+@group(1) @binding(4) var s0: sampler;
+struct VS { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>,
+  @location(1) ec: vec3<f32>, @location(2) n: vec3<f32>, @location(3) mc: vec3<f32> };
+@vertex fn vertexMain(@location(0) ph: vec4<f32>, @location(1) tn: vec4<f32>) -> VS {
+  var o: VS;
+  let pos = ph.xyz + camera.center3D;
+  let h = (pos - camera.encodedCameraHigh) + (vec3(0.) - camera.encodedCameraLow);
+  o.p = camera.mvpRelativeToEye * vec4(h, 1.0);
+  o.ec = (camera.modifiedModelView * vec4(ph.xyz, 1.0)).xyz;
+  o.uv = tn.xy; o.n = vec3(0.,1.,0.); o.mc = pos; return o;
+}
+@fragment fn fragmentMain(i: VS) -> @location(0) vec4<f32> {
+  return vec4<f32>(0.2, 0.2, 0.25, 1.0);
+}`;
+}
+
+/**
+ * WebGPU path: Create and push WebGPU draw commands for a terrain tile.
+ * This replaces the entire WebGL addDrawCommandsForTile when context.isWebGPU.
+ */
+function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState) {
+  const surfaceTile = tile.data;
+  const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
+  if (!mesh || !mesh.vertices || !mesh.indices) {
+    return;
+  }
+
+  const context = frameState.context;
+  const device = context.device;
+  if (!device) {
+    return;
+  }
+
+  // Ensure shader is loaded (async, skips first frame)
+  if (!ensureWebGPUGlobeShader()) {
+    return;
+  }
+
+  // Lazily initialize the globe renderer
+  if (!_webgpuGlobeRenderer || _webgpuGlobeRenderer.isDestroyed()) {
+    _webgpuGlobeRenderer = new WebGPUGlobeSurfaceRenderer();
+    const fmt =
+      context.canvasFormat || navigator.gpu.getPreferredCanvasFormat();
+    _webgpuGlobeRenderer.initialize(device, _webgpuGlobeShaderCode, fmt);
+  }
+
+  const uniformState = context.uniformState;
+  const cmdDesc = _webgpuGlobeRenderer.createTileCommand(
+    tile,
+    surfaceTile,
+    tileProvider,
+    frameState,
+    uniformState,
+  );
+  if (!cmdDesc) {
+    return;
+  }
+
+  // Create a lightweight WebGPU draw command object
+  const tileBR = surfaceTile.tileBoundingRegion;
+  const command = {
+    isWebGPUDrawCommand: true,
+    pass: Pass.GLOBE,
+    owner: tile,
+    cull: true,
+    enabled: true,
+    boundingVolume: tileBR ? tileBR.boundingSphere : undefined,
+    orientedBoundingBox: tileBR ? tileBR.boundingVolume : undefined,
+    _pipeline: cmdDesc.pipeline,
+    _bindGroups: cmdDesc.bindGroups,
+    _vertexBuffer: cmdDesc.vertexBuffer,
+    _indexBuffer: cmdDesc.indexBuffer,
+    _indexCount: cmdDesc.indexCount,
+    _indexFormat: cmdDesc.indexFormat,
+    execute: function (renderPass) {
+      renderPass.setPipeline(this._pipeline);
+      for (let i = 0; i < this._bindGroups.length; i++) {
+        renderPass.setBindGroup(i, this._bindGroups[i]);
+      }
+      renderPass.setVertexBuffer(0, this._vertexBuffer);
+      renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
+      renderPass.drawIndexed(this._indexCount);
+    },
+  };
+
+  frameState.commandList.push(command);
+}
+
 function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const surfaceTile = tile.data;
+
+  // WebGPU path: create WebGPU draw command instead of WebGL DrawCommand
+  const context = frameState.context;
+  if (defined(context.isWebGPU) && context.isWebGPU) {
+    addWebGPUDrawCommandsForTile(tileProvider, tile, frameState);
+    return;
+  }
 
   if (!defined(surfaceTile.vertexArray)) {
     if (surfaceTile.fill === undefined) {
@@ -2379,8 +2545,6 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
   let renderState = firstPassRenderState;
 
   let initialColor = tileProvider._firstPassInitialColor;
-
-  const context = frameState.context;
 
   if (!defined(tileProvider._debug.boundingSphereTile)) {
     debugDestroyPrimitive();

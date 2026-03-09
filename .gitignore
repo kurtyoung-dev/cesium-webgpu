@@ -17,6 +17,8 @@ Thumbs.db
 
 /Source/Assets/
 /Source/**/*.d.ts
+/Source/Renderer/WebGPU/
+/Source/Shaders/
 /Source/ThirdParty/
 /Source/Widgets/
 /Source/Cesium.d.ts

@@ -1,3 +1,4 @@
+/// <reference types="@webgpu/types" />
 /**
  * WebGPU Render Target
  *
@@ -341,6 +342,76 @@ export class WebGPURenderTarget {
       aspect: "depth-only",
       label: `${this.descriptor.name}_depth_only_view`,
     });
+  }
+
+  /**
+   * Convenience getter: a default clear-mode render pass descriptor.
+   */
+  get renderPassDescriptor(): GPURenderPassDescriptor {
+    return {
+      label: `${this.descriptor.name}_render_pass`,
+      colorAttachments: this.getColorAttachments(),
+      depthStencilAttachment: this.getDepthStencilAttachment(),
+    };
+  }
+
+  /**
+   * Get a render pass descriptor that clears with the given color.
+   */
+  getClearPassDescriptor(clearColor: {
+    red: number;
+    green: number;
+    blue: number;
+    alpha: number;
+  }): GPURenderPassDescriptor {
+    return {
+      label: `${this.descriptor.name}_clear_pass`,
+      colorAttachments: this.getColorAttachments([
+        {
+          r: clearColor.red,
+          g: clearColor.green,
+          b: clearColor.blue,
+          a: clearColor.alpha,
+        },
+      ]),
+      depthStencilAttachment: this.getDepthStencilAttachment(),
+    };
+  }
+
+  /**
+   * Get a render pass descriptor that loads (preserves) existing content.
+   */
+  getLoadPassDescriptor(): GPURenderPassDescriptor {
+    const colorAtts = this.colorAttachments.map((attachment, index) => {
+      const desc: GPURenderPassColorAttachment = {
+        view: attachment.view,
+        loadOp: "load" as const,
+        storeOp: "store" as const,
+      };
+      if (this.resolveTargets.length > 0) {
+        desc.resolveTarget = this.resolveTargets[index].view;
+      }
+      return desc;
+    });
+
+    let dsAtt: GPURenderPassDepthStencilAttachment | undefined;
+    if (this.depthStencilAttachment) {
+      dsAtt = {
+        view: this.depthStencilAttachment.view,
+        depthLoadOp: "load" as const,
+        depthStoreOp: "store" as const,
+      };
+      if (this.depthStencilAttachment.format.includes("stencil")) {
+        dsAtt.stencilLoadOp = "load";
+        dsAtt.stencilStoreOp = "store";
+      }
+    }
+
+    return {
+      label: `${this.descriptor.name}_load_pass`,
+      colorAttachments: colorAtts,
+      depthStencilAttachment: dsAtt,
+    };
   }
 
   /**

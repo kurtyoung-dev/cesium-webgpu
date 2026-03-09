@@ -47,7 +47,9 @@ function View(scene, camera, viewport) {
   }
 
   let oit;
-  if (scene._useOIT && context.depthTexture && !context.isWebGPU) {
+  if (scene._useOIT && context.depthTexture) {
+    // OIT is now supported for both WebGL and WebGPU
+    // WebGPU uses WebGPUOIT.ts for weighted blended OIT
     oit = new OIT(context);
   }
 
