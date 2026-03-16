@@ -197,22 +197,23 @@ function createPolylinePipeline(device, shaderCode, format, depthFormat) {
 }
 
 function packUniforms(uniformData, frameState, modelMatrix) {
-  const camera = frameState.camera;
-  const canvas = frameState.context.canvas;
+  const context = frameState.context;
+  const uniformState = context.uniformState;
+  const canvas = context.canvas;
 
-  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchModelView);
+  // Use uniformState.view/projection for 2D/Columbus View support
+  Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchMVRTE,
-    scratchMVPRTE,
-  );
+  Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
 
-  EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCamera);
+  EncodedCartesian3.fromCartesian(
+    frameState.camera.positionWC,
+    scratchEncodedCamera,
+  );
   uniformData[16] = scratchEncodedCamera.high.x;
   uniformData[17] = scratchEncodedCamera.high.y;
   uniformData[18] = scratchEncodedCamera.high.z;

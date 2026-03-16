@@ -1,0 +1,139 @@
+// Gaussian Splat shader for WebGPU
+// Renders Gaussian splat primitives (3D Gaussian Splatting for real-time radiance field rendering).
+// Each splat is a 2D oriented Gaussian projected from 3D.
+// Uses RTE (Relative-To-Eye) positioning for planetary-scale precision.
+
+struct VertexInput {
+  // Per-vertex quad corner
+  @location(0) quadVertex: vec2<f32>,
+  // Per-instance splat data
+  @location(1) positionHigh: vec3<f32>,
+  @location(2) positionLow: vec3<f32>,
+  @location(3) covA: vec3<f32>,       // Upper triangle of 3D covariance (a, b, c)
+  @location(4) covB: vec3<f32>,       // Lower triangle of 3D covariance (d, e, f)
+  @location(5) colorAndAlpha: vec4<f32>, // Spherical harmonics band 0 color + opacity
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) color: vec4<f32>,
+  @location(1) conic: vec3<f32>,      // 2D conic section (inverse 2D covariance)
+  @location(2) centerOffset: vec2<f32>,
+};
+
+struct SplatUniforms {
+  mvpRelativeToEye: mat4x4<f32>,
+  modelViewRelativeToEye: mat4x4<f32>,
+  encodedCameraHigh: vec3<f32>,
+  _pad0: f32,
+  encodedCameraLow: vec3<f32>,
+  _pad1: f32,
+  viewportSize: vec2<f32>,
+  focalX: f32,
+  focalY: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: SplatUniforms;
+
+// Compute 2D covariance from 3D covariance + view transform
+fn computeCov2D(
+  mean3D: vec3<f32>,
+  cov3D_a: vec3<f32>,
+  cov3D_b: vec3<f32>,
+) -> vec3<f32> {
+  // Jacobian of the projection (perspective)
+  let t = uniforms.modelViewRelativeToEye * vec4<f32>(mean3D, 1.0);
+  let limx = 1.3 * uniforms.focalX / uniforms.viewportSize.x;
+  let limy = 1.3 * uniforms.focalY / uniforms.viewportSize.y;
+  let txtz = clamp(t.x / t.z, -limx, limx);
+  let tytz = clamp(t.y / t.z, -limy, limy);
+
+  // Jacobian
+  let J00 = uniforms.focalX / t.z;
+  let J02 = -(uniforms.focalX * txtz) / t.z;
+  let J11 = uniforms.focalY / t.z;
+  let J12 = -(uniforms.focalY * tytz) / t.z;
+
+  // 3D covariance matrix (symmetric)
+  // [a b c]
+  // [b d e]
+  // [c e f]
+  let a = cov3D_a.x; let b = cov3D_a.y; let c = cov3D_a.z;
+  let d = cov3D_b.x; let e = cov3D_b.y; let f = cov3D_b.z;
+
+  // Compute J * Sigma * J^T (only need 2x2 result)
+  // Using view-space transform: W * Sigma * W^T, then J * result * J^T
+  // Simplified: compute 2D covariance directly
+  let cov2D_00 = J00 * J00 * a + 2.0 * J00 * J02 * c + J02 * J02 * f + 0.3;
+  let cov2D_01 = J00 * J11 * b + J00 * J12 * e + J02 * J11 * c + J02 * J12 * f;
+  let cov2D_11 = J11 * J11 * d + 2.0 * J11 * J12 * e + J12 * J12 * f + 0.3;
+
+  return vec3<f32>(cov2D_00, cov2D_01, cov2D_11);
+}
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+  var output: VertexOutput;
+
+  // RTE positioning
+  let posRTE = (input.positionHigh - uniforms.encodedCameraHigh) +
+               (input.positionLow - uniforms.encodedCameraLow);
+
+  // Project center to clip space
+  let clipPos = uniforms.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+
+  // Compute 2D covariance
+  let cov2D = computeCov2D(posRTE, input.covA, input.covB);
+
+  // Invert 2D covariance for the conic
+  let det = cov2D.x * cov2D.z - cov2D.y * cov2D.y;
+  if (det <= 0.0) {
+    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0); // Behind camera
+    output.color = vec4<f32>(0.0);
+    output.conic = vec3<f32>(0.0);
+    output.centerOffset = vec2<f32>(0.0);
+    return output;
+  }
+
+  let invDet = 1.0 / det;
+  let conic = vec3<f32>(cov2D.z * invDet, -cov2D.y * invDet, cov2D.x * invDet);
+
+  // Compute splat radius (3-sigma)
+  let eigenMax = 0.5 * (cov2D.x + cov2D.z + sqrt((cov2D.x - cov2D.z) * (cov2D.x - cov2D.z) + 4.0 * cov2D.y * cov2D.y));
+  let radius = ceil(3.0 * sqrt(eigenMax));
+
+  // Offset quad corners by radius in screen space
+  let pixelOffset = input.quadVertex * radius;
+  let ndcOffset = pixelOffset / uniforms.viewportSize * 2.0 * clipPos.w;
+
+  var finalPos = clipPos;
+  finalPos.x = finalPos.x + ndcOffset.x;
+  finalPos.y = finalPos.y + ndcOffset.y;
+
+  output.position = finalPos;
+  output.color = input.colorAndAlpha;
+  output.conic = conic;
+  output.centerOffset = pixelOffset;
+
+  return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  // Evaluate Gaussian
+  let offset = input.centerOffset;
+  let power = -0.5 * (input.conic.x * offset.x * offset.x +
+                       input.conic.z * offset.y * offset.y) -
+              input.conic.y * offset.x * offset.y;
+
+  if (power > 0.0) {
+    discard;
+  }
+
+  let alpha = min(0.99, input.color.a * exp(power));
+  if (alpha < 1.0 / 255.0) {
+    discard;
+  }
+
+  return vec4<f32>(input.color.rgb * alpha, alpha);
+}

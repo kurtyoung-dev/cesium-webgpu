@@ -135,7 +135,7 @@ Moon.prototype.update = function (frameState) {
 
   // WebGPU path — use dedicated Moon renderer with WGSL shader
   const context = frameState.context;
-  if (defined(context.rendererType) && context.rendererType === "webgpu") {
+  if (context.isWebGPU) {
     const savedCommandList = frameState.commandList;
     frameState.commandList = scratchCommandList;
     scratchCommandList.length = 0;

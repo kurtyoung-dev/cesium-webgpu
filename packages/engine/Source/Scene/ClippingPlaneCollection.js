@@ -18,6 +18,10 @@ import PixelDatatype from "../Renderer/PixelDatatype.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
 import ClippingPlane from "./ClippingPlane.js";
+import {
+  updateWebGPUClippingPlanes,
+  destroyWebGPUClippingPlaneResources,
+} from "../Renderer/WebGPU/WebGPUClippingPlaneCollection.js";
 
 /**
  * Specifies a set of clipping planes. Clipping planes selectively disable rendering in a region on the
@@ -465,6 +469,11 @@ const textureResolutionScratch = new Cartesian2();
  * </p>
  */
 ClippingPlaneCollection.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU clipping plane collection
+  if (frameState.context.isWebGPU) {
+    updateWebGPUClippingPlanes(this, frameState);
+    return;
+  }
   let clippingPlanesTexture = this._clippingPlanesTexture;
   const context = frameState.context;
   const useFloatTexture = ClippingPlaneCollection.useFloatTexture(context);
@@ -759,6 +768,7 @@ ClippingPlaneCollection.prototype.isDestroyed = function () {
 ClippingPlaneCollection.prototype.destroy = function () {
   this._clippingPlanesTexture =
     this._clippingPlanesTexture && this._clippingPlanesTexture.destroy();
+  destroyWebGPUClippingPlaneResources(this);
   return destroyObject(this);
 };
 export default ClippingPlaneCollection;

@@ -15,6 +15,7 @@ import PointCloudEyeDomeLighting from "./PointCloudEyeDomeLighting.js";
 import PointCloudShading from "./PointCloudShading.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
+import { updateWebGPUPointCloud } from "../Renderer/WebGPU/WebGPUPointCloudRenderer.js";
 
 /**
  * Provides playback of time-dynamic point cloud data.
@@ -610,6 +611,12 @@ const updateState = {
  * @private
  */
 TimeDynamicPointCloud.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU point cloud renderer
+  if (frameState.context.isWebGPU) {
+    updateWebGPUPointCloud(this, frameState);
+    return;
+  }
+
   if (frameState.mode === SceneMode.MORPHING) {
     return;
   }

@@ -18,6 +18,7 @@
  */
 
 /// <reference types="@webgpu/types" />
+import { gpuData } from "./webgpuTypeHelpers.js";
 
 /**
  * Options for creating a texture array.
@@ -206,7 +207,7 @@ export class WebGPUTextureArray {
         texture: this._texture,
         origin: { x: 0, y: 0, z: layerIndex },
       },
-      data,
+      gpuData(data),
       {
         bytesPerRow: alignedBytesPerRow,
         rowsPerImage: this._height,
@@ -266,7 +267,7 @@ export class WebGPUTextureArray {
         texture: this._texture,
         origin: { x: 0, y: 0, z: layerIndex },
       },
-      data,
+      gpuData(data),
       { bytesPerRow },
       { width: this._width, height: this._height, depthOrArrayLayers: 1 },
     );

@@ -214,6 +214,80 @@ function getShadowMapResources(shadowMap) {
   };
 }
 
+/**
+ * Renders a shadow cast pass — draws all shadow-casting commands from the light's perspective.
+ * Uses the shadow cast pipeline with depth-only output to the shadow map texture.
+ *
+ * @param {GPUCommandEncoder} encoder - Active command encoder
+ * @param {ShadowMap} shadowMap - The shadow map with cached WebGPU resources
+ * @param {FrameState} frameState
+ * @param {Array} castCommands - Array of WebGPUDrawCommands that cast shadows
+ */
+function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
+  const cache = shadowMap._webgpuCache;
+  if (!defined(cache) || !defined(cache.depthTextureView)) {
+    return;
+  }
+  if (!castCommands || castCommands.length === 0) {
+    return;
+  }
+
+  // Update shadow uniforms
+  packShadowCastUniforms(cache.uniformData, shadowMap, frameState);
+  const device = frameState.context.device;
+  device.queue.writeBuffer(
+    cache.uniformBuffer.buffer,
+    0,
+    cache.uniformData.buffer,
+    0,
+    SHADOW_UNIFORM_SIZE,
+  );
+
+  // Create bind group for shadow uniforms
+  if (!defined(cache.castBindGroup)) {
+    cache.castBindGroup = device.createBindGroup({
+      layout: cache.castBGL,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      ],
+    });
+  }
+
+  // Begin shadow render pass (depth-only)
+  const passDesc = getShadowPassDescriptor(shadowMap);
+  if (!passDesc) {
+    return;
+  }
+  const pass = encoder.beginRenderPass(passDesc);
+  pass.setPipeline(cache.castPipeline);
+  pass.setBindGroup(0, cache.castBindGroup);
+
+  // Draw each shadow-casting command's geometry through shadow pipeline
+  for (let i = 0; i < castCommands.length; i++) {
+    const cmd = castCommands[i];
+    if (!defined(cmd) || !defined(cmd.vertexBuffers)) {
+      continue;
+    }
+    // Set vertex buffers from the command
+    const vbs = cmd.vertexBuffers;
+    for (let j = 0; j < vbs.length; j++) {
+      const vb = vbs[j];
+      if (defined(vb) && defined(vb.buffer)) {
+        pass.setVertexBuffer(j, vb.buffer);
+      }
+    }
+    // Draw indexed or non-indexed
+    if (defined(cmd.indexBuffer)) {
+      pass.setIndexBuffer(cmd.indexBuffer, cmd.indexFormat || "uint16");
+      pass.drawIndexed(cmd.indexCount || 0);
+    } else {
+      pass.draw(cmd.vertexCount || 0, cmd.instanceCount || 1);
+    }
+  }
+
+  pass.end();
+}
+
 function destroyWebGPUShadowMapResources(shadowMap) {
   const cache = shadowMap._webgpuCache;
   if (!defined(cache)) {
@@ -233,6 +307,7 @@ export {
   packShadowCastUniforms,
   getShadowPassDescriptor,
   getShadowMapResources,
+  renderShadowCastPass,
   destroyWebGPUShadowMapResources,
 };
 
@@ -241,5 +316,6 @@ export default {
   packShadowCastUniforms,
   getShadowPassDescriptor,
   getShadowMapResources,
+  renderShadowCastPass,
   destroyWebGPUShadowMapResources,
 };

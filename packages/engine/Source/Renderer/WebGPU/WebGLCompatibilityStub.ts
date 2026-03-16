@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * @module WebGLCompatibilityStub
  *
@@ -140,7 +139,10 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
 
     createTexture: () => {
       logUsage("createTexture", "Texture placeholder created");
-      return { _isPlaceholder: true, _webgpuTexture: null };
+      return {
+        _isPlaceholder: true,
+        _webgpuTexture: null as GPUTexture | null,
+      };
     },
 
     deleteTexture: (texture: any) => {
@@ -297,7 +299,12 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
     // ========================================================================
     createFramebuffer: () => {
       const fboId = createGuid();
-      const fbo = {
+      const fbo: {
+        _id: string;
+        _colorAttachment: any;
+        _depthAttachment: any;
+        _isWebGPU: boolean;
+      } = {
         _id: fboId,
         _colorAttachment: null,
         _depthAttachment: null,
@@ -710,7 +717,7 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
     // Parameter queries
     // ========================================================================
     getParameter: (_param: number) => 0,
-    getExtension: (_name: string) => null,
+    getExtension: (_name: string): null => null,
 
     // ========================================================================
     // Shader methods (placeholders — WebGPU uses shader modules)
@@ -729,21 +736,30 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
     getProgramParameter: () => true,
     getProgramInfoLog: () => "",
     useProgram: () => {},
-    getActiveUniform: (_program: any, index: number) => ({
+    getActiveUniform: (
+      _program: any,
+      index: number,
+    ): { name: string; size: number; type: number } => ({
       name: `uniform_${index}`,
       size: 1,
       type: 0x1406,
     }),
-    getActiveAttrib: (_program: any, index: number) => ({
+    getActiveAttrib: (
+      _program: any,
+      index: number,
+    ): { name: string; size: number; type: number } => ({
       name: `attrib_${index}`,
       size: 1,
       type: 0x1406,
     }),
-    getUniformLocation: (_program: any, name: string) => ({
+    getUniformLocation: (
+      _program: any,
+      name: string,
+    ): { _name: string; _isWebGPU: boolean } => ({
       _name: name,
       _isWebGPU: true,
     }),
-    getAttribLocation: (_program: any, name: string) => {
+    getAttribLocation: (_program: any, name: string): number => {
       const locationMap: Record<string, number> = {
         position: 0,
         normal: 1,
@@ -759,7 +775,7 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
     // Framebuffer blitting & read pixels
     // ========================================================================
     blitFramebuffer: () => {},
-    readPixels: () => null,
+    readPixels: (): null => null,
   };
 }
 

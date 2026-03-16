@@ -8,6 +8,10 @@ import RenderState from "../Renderer/RenderState.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
 import BrdfLutGeneratorFS from "../Shaders/BrdfLutGeneratorFS.js";
+import {
+  updateWebGPUBrdfLut,
+  destroyWebGPUBrdfLutResources,
+} from "../Renderer/WebGPU/WebGPUBrdfLutGenerator.js";
 
 /**
  * @private
@@ -37,6 +41,12 @@ function createCommand(generator, context, framebuffer) {
 }
 
 BrdfLutGenerator.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU BRDF LUT generator (compute shader)
+  if (frameState.context.isWebGPU) {
+    updateWebGPUBrdfLut(this, frameState);
+    return;
+  }
+
   if (!defined(this._colorTexture)) {
     const context = frameState.context;
     const colorTexture = new Texture({
@@ -70,6 +80,7 @@ BrdfLutGenerator.prototype.isDestroyed = function () {
 
 BrdfLutGenerator.prototype.destroy = function () {
   this._colorTexture = this._colorTexture && this._colorTexture.destroy();
+  destroyWebGPUBrdfLutResources(this);
   return destroyObject(this);
 };
 export default BrdfLutGenerator;

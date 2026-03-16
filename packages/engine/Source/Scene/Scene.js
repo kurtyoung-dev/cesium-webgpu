@@ -85,6 +85,7 @@ import getMetadataProperty from "./getMetadataProperty.js";
 import { initPrimitiveShaders } from "../Renderer/WebGPU/WebGPUPrimitiveShaders.js";
 import { initCollectionShaders } from "../Renderer/WebGPU/WebGPUCollectionShaders.js";
 import { WebGPUSceneRenderer } from "../Renderer/WebGPU/WebGPUSceneRenderer.js";
+import { renderShadowCastPass } from "../Renderer/WebGPU/WebGPUShadowMapRenderer.js";
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -3332,10 +3333,44 @@ function executeShadowMapCastCommands(scene) {
     return;
   }
 
-  // WebGPU path — shadow cast commands are handled by WebGPUSceneRenderer
-  // via the shadowState passed in executeCommands config. Skip WebGL shadow
-  // cast here since WebGPU uses its own depth-only shadow pipeline.
+  // WebGPU path — render shadow cast commands using WebGPU depth-only pipeline.
+  // Uses renderShadowCastPass() from WebGPUShadowMapRenderer which renders
+  // into a depth32float texture with comparison sampler.
   if (scene.isWebGPU) {
+    const { context } = scene;
+    const encoder = context._currentCommandEncoder;
+    if (!encoder) {
+      return;
+    }
+    for (let i = 0; i < shadowMaps.length; ++i) {
+      const shadowMap = shadowMaps[i];
+      if (shadowMap.outOfView) {
+        continue;
+      }
+      // Collect shadow-casting commands for this shadow map
+      const { passes } = shadowMap;
+      for (let j = 0; j < passes.length; ++j) {
+        passes[j].commandList.length = 0;
+      }
+      insertShadowCastCommands(scene, commandList, shadowMap);
+      // Render shadow casters using WebGPU depth-only pipeline
+      const castCommands = [];
+      for (let j = 0; j < passes.length; ++j) {
+        for (let k = 0; k < passes[j].commandList.length; ++k) {
+          castCommands.push(passes[j].commandList[k]);
+        }
+      }
+      if (castCommands.length > 0) {
+        context.endCurrentRenderPass?.();
+        renderShadowCastPass(
+          encoder,
+          shadowMap,
+          scene._frameState,
+          castCommands,
+        );
+        context.resumeDefaultRenderPass?.();
+      }
+    }
     return;
   }
 

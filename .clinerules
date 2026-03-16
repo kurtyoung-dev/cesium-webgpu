@@ -27,6 +27,60 @@
 - Use abstract interfaces/base classes where possible to share common logic
 - Maintain renderer abstraction layer to switch between implementations
 
+### Scene Logic Extractor Pattern — CRITICAL for Collections
+When adding WebGPU rendering paths to collection files (Billboard, Polyline, Point, etc.), 
+**shared scene-level logic MUST run BEFORE the `if (context.isWebGPU)` branch point.**
+
+#### What Goes BEFORE the Branch (Shared)
+- `removeEntities(this)` — entity cleanup
+- `if (!this.show) return` — visibility check
+- `updateMode(this, frameState)` — 2D/Columbus View mode handling
+- Billboard/entity load error handling
+- Texture atlas scheduling (`frameState.afterRender.push(...)`)
+- `_allReady` state tracking
+
+#### What Goes AFTER the Branch (Backend-Specific)
+- GPU buffer creation/update (vertex arrays, instance buffers)
+- Pipeline/shader program creation
+- Draw command emission
+- WebGL-specific capability checks (instancedArrays, etc.)
+
+```javascript
+// CORRECT Pattern:
+update(frameState) {
+  removeEntities(this);           // Shared
+  if (!this.show) return;          // Shared
+  updateMode(this, frameState);    // Shared — MUST be before branch
+  handleLoadErrors(this);          // Shared
+  scheduleAtlasUpdate(frameState); // Shared
+  
+  if (context.isWebGPU) {
+    drawWebGPU(this, frameState);  // GPU-only operations
+    return;
+  }
+  // ... WebGL-only GPU operations below ...
+}
+```
+
+### Strengthened GraphicsContext Interface
+`GraphicsContext.ts` is the **single source of truth** for shared context capabilities.
+Scene code should query capabilities through the context, never through backend-specific APIs.
+
+**Key shared properties (available on BOTH Context.js and WebGPUContext.ts):**
+- `context.isWebGPU` — boolean, false for WebGL, true for WebGPU
+- `context.uniformState` — per-frame camera/projection matrices
+- `context.cache` — general-purpose resource cache
+- `context.stencilBuffer` / `context.msaa` / `context.colorBufferFloat`
+- `context.defaultTexture` — 1x1 white placeholder
+- `context.instancedArrays` — instanced rendering support
+- `context.createPickId(object)` — factory for pick IDs
+
+### Abstract RenderCommand
+`RenderCommand.js` provides a backend-agnostic command abstraction.
+New scene features SHOULD consider using `RenderCommand` to avoid importing
+backend-specific `DrawCommand` or `WebGPUDrawCommand` directly. This reduces
+the number of scene files that import from `Renderer/WebGPU/`.
+
 ### Performance
 - Identify performance-critical code paths for WebAssembly conversion
 - Profile before and after optimizations
@@ -98,6 +152,33 @@ CesiumJS renders at planetary scale where float32 precision is insufficient. **A
 - **All 20+ Primitive shaders**: `Source/Shaders/WebGPU/Primitive/*.wgsl` (use positionHigh/Low + RTE)
 - **Point primitives**: `Source/Shaders/WebGPU/Collections/PointPrimitive*.wgsl` (RTE subtraction)
 - **JS uniform wiring**: `WebGPUPrimitiveCommands.js`, `WebGPUPointPrimitiveRenderer.js`
+
+### Slang Shader Cross-Compilation (Optional)
+New WebGPU shaders can optionally be authored in [Slang](https://github.com/shader-slang/slang)
+(`.slang` files) and compiled to WGSL via `slangc`. This is **optional** — the project works
+without Slang installed, using pre-compiled `.wgsl` files in `Shaders/WebGPU/Generated/`.
+
+**When to use Slang:**
+- New feature shaders that may also need a GLSL equivalent
+- Prototyping (C-like syntax is faster to write)
+- Features where single-source maintenance reduces long-term cost
+
+**When NOT to use Slang:**
+- Performance-critical shaders requiring WebGPU-specific optimizations
+- Utility chunks that use the `#import` preprocessor
+- Existing hand-written WGSL shaders (don't rewrite)
+
+**Directory layout:**
+```
+packages/engine/Source/Shaders/Slang/         ← .slang source files
+packages/engine/Source/Shaders/WebGPU/Generated/ ← compiled .wgsl output
+```
+
+**Commands:**
+- `node scripts/compileSlang.js` — compile all .slang → .wgsl + .glsl (dual output)
+- `node scripts/compileSlang.js --targets wgsl` — WGSL only
+- `node scripts/compileSlang.js --watch` — auto-recompile on save
+- See `scripts/SLANG_GUIDE.md` for full documentation
 
 ### Documentation
 - Document all new configuration options

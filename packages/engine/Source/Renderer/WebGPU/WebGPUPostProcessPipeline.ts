@@ -456,6 +456,39 @@ export class WebGPUPostProcessPipeline {
   }
 
   /**
+   * Resize the pipeline textures to match a new viewport size.
+   * Delegates to initialize() which already handles resize logic.
+   * Called by WebGPUSceneRenderer when the canvas size changes.
+   */
+  resize(width: number, height: number): void {
+    if (!this._device || width <= 0 || height <= 0) {
+      return;
+    }
+    if (width === this._width && height === this._height) {
+      return;
+    }
+    // Determine the canvas format from existing stages or default
+    const canvasFormat: GPUTextureFormat =
+      this._stages.length > 0 ? "bgra8unorm" : "bgra8unorm";
+    this.initialize(this._device, width, height, canvasFormat);
+
+    // Update FXAA texel size uniform if it exists
+    if (this._fxaaStage?.uniformBuffer && this._device) {
+      const texelSize = new Float32Array([
+        1.0 / width,
+        1.0 / height,
+        width,
+        height,
+      ]);
+      this._device.queue.writeBuffer(
+        this._fxaaStage.uniformBuffer,
+        0,
+        texelSize as Float32Array<ArrayBuffer>,
+      );
+    }
+  }
+
+  /**
    * Enable/disable a stage by name.
    */
   setStageEnabled(name: string, enabled: boolean): void {

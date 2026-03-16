@@ -9,6 +9,7 @@ import ShaderSource from "../Renderer/ShaderSource.js";
 import BlendingState from "./BlendingState.js";
 import CullFace from "./CullFace.js";
 import SceneMode from "./SceneMode.js";
+import { updateWebGPUGlobeTranslucencyDerivedCommands } from "../Renderer/WebGPU/WebGPUGlobeTranslucencyState.js";
 
 const DerivedCommandType = {
   OPAQUE_FRONT_FACE: 0,
@@ -757,6 +758,12 @@ GlobeTranslucencyState.prototype.updateDerivedCommands = function (
   command,
   frameState,
 ) {
+  // WebGPU: Route to dedicated WebGPU globe translucency state handler
+  if (frameState.context.isWebGPU) {
+    updateWebGPUGlobeTranslucencyDerivedCommands(this, command, frameState);
+    return;
+  }
+
   const derivedCommandTypes = this._derivedCommandTypesToUpdate;
   const derivedCommandsLength = this._derivedCommandsToUpdateLength;
 

@@ -384,6 +384,14 @@ function Context(canvas, options) {
    */
   this.cache = {};
 
+  /**
+   * Whether this is a WebGPU context. Always false for WebGL Context.
+   * Provides consistent API with WebGPUContext for scene-level routing.
+   * @type {boolean}
+   * @readonly
+   */
+  this.isWebGPU = false;
+
   RenderState.apply(gl, rs, ps);
 }
 

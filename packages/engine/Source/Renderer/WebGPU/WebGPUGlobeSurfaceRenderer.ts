@@ -1,5 +1,5 @@
-// @ts-nocheck
 /// <reference types="@webgpu/types" />
+import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -20,8 +20,6 @@
  *
  * @private
  */
-
-import { WebGPUBuffer } from "./WebGPUBuffer.js";
 
 // ─── Uniform buffer sizes (must match GlobeTerrain.wgsl) ───
 // CameraUniforms: 48 floats = 192 bytes
@@ -402,7 +400,7 @@ export class WebGPUGlobeSurfaceRenderer {
       size: vertices.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(vertexBuffer, 0, vertices);
+    device.queue.writeBuffer(vertexBuffer, 0, gpuData(vertices));
 
     // Create index buffer
     const indexBuffer = device.createBuffer({
@@ -410,7 +408,7 @@ export class WebGPUGlobeSurfaceRenderer {
       size: indices.byteLength,
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(indexBuffer, 0, indices);
+    device.queue.writeBuffer(indexBuffer, 0, gpuData(indices));
 
     const indexFormat: GPUIndexFormat =
       indices.BYTES_PER_ELEMENT === 4 ? "uint32" : "uint16";
@@ -446,12 +444,14 @@ export class WebGPUGlobeSurfaceRenderer {
     let offset = 0;
 
     // mvpRelativeToEye (mat4x4, 16 floats)
-    const mvpRTE = uniformState.modelViewProjectionRelativeToEye;
+    const mvpRTE = m4Values(uniformState.modelViewProjectionRelativeToEye);
     for (let i = 0; i < 16; i++) data[offset++] = mvpRTE[i];
 
     // modifiedModelView (mat4x4, 16 floats)
     // Computed from the tile's RTC center + view matrix
-    const mv = this._computeModifiedModelView(uniformState, surfaceTile);
+    const mv = m4Values(
+      this._computeModifiedModelView(uniformState, surfaceTile),
+    );
     for (let i = 0; i < 16; i++) data[offset++] = mv[i];
 
     // encodedCameraHigh (vec3 + pad)
@@ -487,7 +487,13 @@ export class WebGPUGlobeSurfaceRenderer {
       size: Math.max(CAMERA_UNIFORM_BYTES, 256),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(buffer, 0, data, 0, CAMERA_UNIFORM_FLOATS);
+    device.queue.writeBuffer(
+      buffer,
+      0,
+      gpuData(data),
+      0,
+      CAMERA_UNIFORM_FLOATS,
+    );
     return buffer;
   }
 
@@ -600,7 +606,7 @@ export class WebGPUGlobeSurfaceRenderer {
       size: Math.max(TILE_UNIFORM_BYTES, 256),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(buffer, 0, data, 0, TILE_UNIFORM_FLOATS);
+    device.queue.writeBuffer(buffer, 0, gpuData(data), 0, TILE_UNIFORM_FLOATS);
     return buffer;
   }
 

@@ -323,6 +323,27 @@ fn csm_unpackTexture4(channels: vec4<f32>) -> u32 {
 }
 `;
 
+const csm_writeLogDepth = `
+// Log depth for multi-frustum rendering.
+// WebGPU uses 0-1 NDC depth range. Log depth gives much better precision
+// for both near and far objects at planetary scale.
+
+struct LogDepthUniforms {
+  oneOverLog2FarPlusOne: f32,
+  farPlane: f32,
+  _pad0: f32,
+  _pad1: f32,
+};
+
+fn csm_vertexLogDepth(clipPosition: vec4<f32>) -> f32 {
+  return log2(max(1e-6, 1.0 + clipPosition.w));
+}
+
+fn csm_writeLogDepth(logZ: f32, oneOverLog2FarPlusOne: f32) -> f32 {
+  return logZ * oneOverLog2FarPlusOne;
+}
+`;
+
 const csm_getNormalFromMap = `
 fn csm_getNormalFromMap(
     normalSample: vec3<f32>,
@@ -396,6 +417,7 @@ export function createDefaultWGSLLibrary(): WGSLShaderLibrary {
   );
   library.registerCode("functions/csm_decodeRGB8", csm_decodeRGB8);
   library.registerCode("functions/csm_unpackTexture", csm_unpackTexture);
+  library.registerCode("functions/csm_writeLogDepth", csm_writeLogDepth);
 
   return library;
 }
@@ -423,6 +445,7 @@ export const WGSLBuiltinChunks = {
   TRANSLATE_RELATIVE_TO_EYE: "functions/csm_translateRelativeToEye",
   DECODE_RGB8: "functions/csm_decodeRGB8",
   UNPACK_TEXTURE: "functions/csm_unpackTexture",
+  WRITE_LOG_DEPTH: "functions/csm_writeLogDepth",
 } as const;
 
 export default createDefaultWGSLLibrary;

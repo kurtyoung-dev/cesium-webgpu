@@ -34,6 +34,10 @@ import SplitDirection from "./SplitDirection.js";
 import destroyObject from "../Core/destroyObject.js";
 import ContextLimits from "../Renderer/ContextLimits.js";
 import Transforms from "../Core/Transforms.js";
+import {
+  updateWebGPUGaussianSplatPrimitive,
+  destroyWebGPUGaussianSplatResources,
+} from "../Renderer/WebGPU/WebGPUGaussianSplatRenderer.js";
 
 const scratchMatrix4A = new Matrix4();
 const scratchMatrix4B = new Matrix4();
@@ -998,6 +1002,7 @@ GaussianSplatPrimitive.prototype.destroy = function () {
 
   this._tileset.update = this._baseTilesetUpdate.bind(this._tileset);
 
+  destroyWebGPUGaussianSplatResources(this);
   return destroyObject(this);
 };
 
@@ -1396,6 +1401,12 @@ GaussianSplatPrimitive.buildGSplatDrawCommand = function (
  * @private
  */
 GaussianSplatPrimitive.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU gaussian splat renderer
+  if (frameState.context.isWebGPU) {
+    updateWebGPUGaussianSplatPrimitive(this, frameState);
+    return;
+  }
+
   const tileset = this._tileset;
 
   releaseRetiredTextures(this, frameState.frameNumber);

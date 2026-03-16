@@ -12,6 +12,7 @@ import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 
 const UNIFORM_BUFFER_SIZE = 256;
 const scratchModelView = new Matrix4();
@@ -157,20 +158,20 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 }
 
 function packUniforms(data, frameState, modelMatrix, color) {
-  const camera = frameState.camera;
-  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchModelView);
+  const uniformState = frameState.context.uniformState;
+  // Use uniformState.view/projection for 2D/Columbus View support
+  Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchMVRTE,
-    scratchMVPRTE,
-  );
+  Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, data, 0);
 
-  EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCamera);
+  EncodedCartesian3.fromCartesian(
+    frameState.camera.positionWC,
+    scratchEncodedCamera,
+  );
   data[16] = scratchEncodedCamera.high.x;
   data[17] = scratchEncodedCamera.high.y;
   data[18] = scratchEncodedCamera.high.z;
@@ -234,10 +235,77 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     UNIFORM_BUFFER_SIZE,
   );
 
+  // Build actual draw commands if vertex data is available
+  const geomData = primitive._webgpuGeometryData;
+  if (!defined(geomData) || !defined(geomData.vertexBuffer)) {
+    return {
+      stencilPipeline: cache.stencilPipeline,
+      colorPipeline: cache.colorPipeline,
+      bindGroup: cache.bindGroup,
+      stencilCommand: null,
+      colorCommand: null,
+    };
+  }
+
+  // Create vertex buffer once
+  if (!defined(cache.vertexGPUBuffer)) {
+    const vbData = geomData.vertexBuffer;
+    cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
+      device,
+      vbData.byteLength,
+      false,
+      "GroundPrimitive VB",
+    );
+    device.queue.writeBuffer(cache.vertexGPUBuffer.buffer, 0, vbData);
+    cache.vertexCount = geomData.vertexCount || vbData.byteLength / 24;
+  }
+
+  // Create index buffer if indexed geometry
+  if (defined(geomData.indexBuffer) && !defined(cache.indexGPUBuffer)) {
+    const ibData = geomData.indexBuffer;
+    cache.indexGPUBuffer = device.createBuffer({
+      label: "GroundPrimitive IB",
+      size: ibData.byteLength,
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(cache.indexGPUBuffer, 0, ibData);
+    cache.indexCount = geomData.indexCount || ibData.byteLength / 2;
+  }
+
+  // Stencil pass draw command (mark coverage, no color output)
+  const stencilCommand = new WebGPUDrawCommand({
+    pipeline: cache.stencilPipeline,
+    bindGroups: [cache.bindGroup],
+    vertexBuffers: [cache.vertexGPUBuffer],
+    indexBuffer: cache.indexGPUBuffer || undefined,
+    indexCount: cache.indexCount || 0,
+    indexFormat: "uint16",
+    vertexCount: cache.vertexCount || 0,
+    stencilReference: 1,
+    pass: 3, // Pass.TERRAIN_CLASSIFICATION
+    owner: primitive,
+  });
+
+  // Color pass draw command (render color where stencil passes)
+  const colorCommand = new WebGPUDrawCommand({
+    pipeline: cache.colorPipeline,
+    bindGroups: [cache.bindGroup],
+    vertexBuffers: [cache.vertexGPUBuffer],
+    indexBuffer: cache.indexGPUBuffer || undefined,
+    indexCount: cache.indexCount || 0,
+    indexFormat: "uint16",
+    vertexCount: cache.vertexCount || 0,
+    stencilReference: 1,
+    pass: 3, // Pass.TERRAIN_CLASSIFICATION
+    owner: primitive,
+  });
+
   return {
     stencilPipeline: cache.stencilPipeline,
     colorPipeline: cache.colorPipeline,
     bindGroup: cache.bindGroup,
+    stencilCommand,
+    colorCommand,
   };
 }
 

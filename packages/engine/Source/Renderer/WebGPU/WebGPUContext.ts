@@ -298,8 +298,7 @@ export class WebGPUContext implements GraphicsContext {
     // Initialize uniform and pass state
     this._uniformState = new UniformState();
     this._defaultPassState = new PassState(this as any);
-    // @ts-ignore - fromCache is private but we need it for compatibility
-    this._defaultRenderState = RenderState.fromCache();
+    this._defaultRenderState = (RenderState as any).fromCache();
     this._currentRenderState = this._defaultRenderState;
     this._currentPassState = this._defaultPassState;
 
@@ -1030,57 +1029,35 @@ export class WebGPUContext implements GraphicsContext {
     }
 
     const limits = this._device.limits;
+    const cl = ContextLimits as any;
 
-    // Map WebGPU limits to ContextLimits
-    // @ts-ignore - ContextLimits uses internal properties
-    ContextLimits._maximumTextureSize = limits.maxTextureDimension2D;
-    // @ts-ignore
-    ContextLimits._maximumCubeMapSize = limits.maxTextureDimension2D;
-    // @ts-ignore
-    ContextLimits._maximumRenderbufferSize = limits.maxTextureDimension2D;
-    // @ts-ignore
-    ContextLimits._maximumTextureImageUnits =
+    // Map WebGPU limits to ContextLimits (using 'as any' to access internal properties)
+    cl._maximumTextureSize = limits.maxTextureDimension2D;
+    cl._maximumCubeMapSize = limits.maxTextureDimension2D;
+    cl._maximumRenderbufferSize = limits.maxTextureDimension2D;
+    cl._maximumTextureImageUnits = limits.maxSampledTexturesPerShaderStage;
+    cl._maximumVertexTextureImageUnits =
       limits.maxSampledTexturesPerShaderStage;
-    // @ts-ignore
-    ContextLimits._maximumVertexTextureImageUnits =
-      limits.maxSampledTexturesPerShaderStage;
-    // @ts-ignore
-    ContextLimits._maximumCombinedTextureImageUnits =
+    cl._maximumCombinedTextureImageUnits =
       limits.maxSampledTexturesPerShaderStage * 2;
-    // @ts-ignore
-    ContextLimits._maximumVertexAttributes = limits.maxVertexAttributes;
-    // @ts-ignore
-    ContextLimits._maximumViewportWidth = limits.maxTextureDimension2D;
-    // @ts-ignore
-    ContextLimits._maximumViewportHeight = limits.maxTextureDimension2D;
+    cl._maximumVertexAttributes = limits.maxVertexAttributes;
+    cl._maximumViewportWidth = limits.maxTextureDimension2D;
+    cl._maximumViewportHeight = limits.maxTextureDimension2D;
 
     // Set reasonable defaults for other limits
-    // @ts-ignore
-    ContextLimits._maximumFragmentUniformVectors = 1024; // WebGPU uses uniform buffers
-    // @ts-ignore
-    ContextLimits._maximumVaryingVectors = 31; // WebGPU spec guarantees 16 locations with 4 components
-    // @ts-ignore
-    ContextLimits._maximumVertexUniformVectors = 1024; // WebGPU uses uniform buffers
-    // @ts-ignore
-    ContextLimits._minimumAliasedLineWidth = 1.0;
-    // @ts-ignore
-    ContextLimits._maximumAliasedLineWidth = 1.0; // WebGPU doesn't support wide lines
-    // @ts-ignore
-    ContextLimits._minimumAliasedPointSize = 1.0;
-    // @ts-ignore
-    ContextLimits._maximumAliasedPointSize = 1.0;
-    // @ts-ignore
-    ContextLimits._maximumTextureFilterAnisotropy = 16.0; // Common max
-    // @ts-ignore
-    ContextLimits._maximumDrawBuffers = limits.maxColorAttachments ?? 8;
-    // @ts-ignore
-    ContextLimits._maximumColorAttachments = limits.maxColorAttachments ?? 8;
-    // @ts-ignore
-    ContextLimits._maximumSamples = 4; // WebGPU typically supports 4x MSAA
-    // @ts-ignore
-    ContextLimits._highpFloatSupported = true; // WebGPU always supports high precision
-    // @ts-ignore
-    ContextLimits._highpIntSupported = true;
+    cl._maximumFragmentUniformVectors = 1024;
+    cl._maximumVaryingVectors = 31;
+    cl._maximumVertexUniformVectors = 1024;
+    cl._minimumAliasedLineWidth = 1.0;
+    cl._maximumAliasedLineWidth = 1.0;
+    cl._minimumAliasedPointSize = 1.0;
+    cl._maximumAliasedPointSize = 1.0;
+    cl._maximumTextureFilterAnisotropy = 16.0;
+    cl._maximumDrawBuffers = limits.maxColorAttachments ?? 8;
+    cl._maximumColorAttachments = limits.maxColorAttachments ?? 8;
+    cl._maximumSamples = 4;
+    cl._highpFloatSupported = true;
+    cl._highpIntSupported = true;
   }
 
   /**

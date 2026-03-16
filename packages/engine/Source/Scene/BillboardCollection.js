@@ -1573,6 +1573,43 @@ BillboardCollection.prototype.update = function (frameState) {
 
   const context = frameState.context;
 
+  // ─── Shared scene logic (runs for BOTH WebGL and WebGPU) ───
+  // These operations are backend-agnostic and must execute before the
+  // renderer branch point. This follows the "Scene Logic Extractor" pattern
+  // to avoid duplicating scene logic in each backend renderer.
+  updateMode(this, frameState);
+
+  // Handle billboard load errors and dirty state (shared for both backends)
+  const billboardsForReadiness = this._billboards;
+  const billboardsLengthForReadiness = billboardsForReadiness.length;
+  let allBillboardsReady = true;
+  for (let i = 0; i < billboardsLengthForReadiness; ++i) {
+    const billboard = billboardsForReadiness[i];
+    if (defined(billboard.loadError)) {
+      console.error(
+        `Error loading image for billboard: ${billboard.loadError}`,
+      );
+      billboard.image = undefined;
+    }
+    if (billboard.textureDirty) {
+      this._updateBillboard(billboard, IMAGE_INDEX_INDEX);
+    }
+    if (billboard.show) {
+      allBillboardsReady = allBillboardsReady && billboard.ready;
+    }
+  }
+  this._allBillboardsReady = allBillboardsReady;
+
+  // Schedule texture atlas update (needed by both backends for image loading)
+  const textureAtlasShared = this._textureAtlas;
+  frameState.afterRender.push(() => {
+    if (this.isDestroyed()) {
+      return;
+    }
+    return textureAtlasShared.update(frameState.context);
+  });
+  // ─── End shared scene logic ───
+
   // WebGPU rendering path — skip all WebGL code
   if (context.isWebGPU) {
     updateWebGPUBillboards(this, frameState, frameState.commandList);
@@ -1590,36 +1627,9 @@ BillboardCollection.prototype.update = function (frameState) {
     );
   }
 
-  let billboards = this._billboards;
-  let billboardsLength = billboards.length;
-  let allBillboardsReady = true;
-  for (let i = 0; i < billboardsLength; ++i) {
-    const billboard = billboards[i];
-    if (defined(billboard.loadError)) {
-      console.error(
-        `Error loading image for billboard: ${billboard.loadError}`,
-      );
-      billboard.image = undefined;
-    }
-
-    if (billboard.textureDirty) {
-      this._updateBillboard(billboard, IMAGE_INDEX_INDEX);
-    }
-
-    if (billboard.show) {
-      allBillboardsReady = allBillboardsReady && billboard.ready;
-    }
-  }
-
-  // Queue any texture resource updates for after the frame is rendered
+  // Billboard readiness + texture atlas scheduling already handled in shared
+  // section above. Only the texture-ready gate remains WebGL-specific.
   const textureAtlas = this._textureAtlas;
-  frameState.afterRender.push(() => {
-    if (this.isDestroyed()) {
-      return;
-    }
-
-    return textureAtlas.update(frameState.context);
-  });
 
   if (!defined(textureAtlas.texture)) {
     // Can't write billboard vertices until the texture atlas
@@ -1629,8 +1639,8 @@ BillboardCollection.prototype.update = function (frameState) {
 
   updateMode(this, frameState);
 
-  billboards = this._billboards;
-  billboardsLength = billboards.length;
+  const billboards = this._billboards;
+  const billboardsLength = billboards.length;
   const billboardsToUpdate = this._billboardsToUpdate;
   const billboardsToUpdateLength = this._billboardsToUpdateIndex;
 
@@ -2106,8 +2116,6 @@ BillboardCollection.prototype.update = function (frameState) {
       commandList.push(this.debugCommand);
     }
   }
-
-  this._allBillboardsReady = allBillboardsReady;
 };
 
 /**

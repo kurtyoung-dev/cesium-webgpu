@@ -1632,9 +1632,15 @@ function createVertexArray(primitive, frameState) {
   const scene3DOnly = frameState.scene3DOnly;
   const context = frameState.context;
 
-  // For WebGPU: Deep-clone geometry data BEFORE VertexArray.fromGeometry consumes it.
-  // VertexArray.fromGeometry uploads attribute values to WebGL GPU buffers and may
-  // clear the .values typed arrays. WebGPU needs these values to build its own buffers.
+  // For WebGPU: Save references to geometry data BEFORE VertexArray.fromGeometry runs.
+  // VertexArray.fromGeometry reads typed arrays to create WebGL GPU buffers but does NOT
+  // mutate or clear them. We save lightweight references (not deep copies) to avoid
+  // duplicating potentially large vertex/index arrays. The referenced typed arrays remain
+  // valid because we skip `primitive._geometries = undefined` for WebGPU (see below).
+  //
+  // Previous approach: deep-cloned all typed arrays via `new constructor(arr)`, which
+  // doubled memory usage for every geometry. This reference-based approach saves ~50% of
+  // geometry memory and eliminates O(n) copy overhead per vertex.
   if (context.isWebGPU) {
     primitive._webgpuGeometryData = [];
     for (let g = 0; g < geometries.length; g++) {
@@ -1648,7 +1654,7 @@ function createVertexArray(primitive, frameState) {
           const attr = geom.attributes[attrName];
           if (defined(attr.values)) {
             savedAttrs[attrName] = {
-              values: new attr.values.constructor(attr.values),
+              values: attr.values, // Reference — not a copy. Safe because fromGeometry only reads.
               componentsPerAttribute: attr.componentsPerAttribute,
               componentDatatype: attr.componentDatatype,
               normalize: attr.normalize,
@@ -1658,11 +1664,8 @@ function createVertexArray(primitive, frameState) {
       }
       primitive._webgpuGeometryData.push({
         attributes: savedAttrs,
-        indices: defined(geom.indices)
-          ? geom.indices instanceof Array
-            ? geom.indices.slice()
-            : new geom.indices.constructor(geom.indices)
-          : undefined,
+        indices: geom.indices, // Reference — not a copy
+        primitiveType: geom.primitiveType,
         boundingSphere: defined(geom.boundingSphere)
           ? BoundingSphere.clone(geom.boundingSphere)
           : undefined,

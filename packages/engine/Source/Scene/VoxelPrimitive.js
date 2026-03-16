@@ -28,6 +28,10 @@ import VoxelContent from "./VoxelContent.js";
 import VoxelShapeType from "./VoxelShapeType.js";
 import VoxelTraversal from "./VoxelTraversal.js";
 import VoxelMetadataOrder from "./VoxelMetadataOrder.js";
+import {
+  updateWebGPUVoxelPrimitive,
+  destroyWebGPUVoxelResources,
+} from "../Renderer/WebGPU/WebGPUVoxelRenderer.js";
 
 /**
  * A primitive that renders voxel data from a {@link VoxelProvider}.
@@ -1100,6 +1104,12 @@ const scratchCameraTileCoordinates = new Cartesian4();
  * @private
  */
 VoxelPrimitive.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU voxel renderer
+  if (frameState.context.isWebGPU) {
+    updateWebGPUVoxelPrimitive(this, frameState);
+    return;
+  }
+
   const provider = this._provider;
   const uniforms = this._uniforms;
 
@@ -1864,6 +1874,7 @@ VoxelPrimitive.prototype.destroy = function () {
   this.statistics.texturesByteLength = 0;
   this._clippingPlanes = this._clippingPlanes && this._clippingPlanes.destroy();
 
+  destroyWebGPUVoxelResources(this);
   return destroyObject(this);
 };
 

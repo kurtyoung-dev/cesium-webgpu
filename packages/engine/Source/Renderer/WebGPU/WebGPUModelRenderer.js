@@ -36,21 +36,17 @@ const scratchEncodedCamera = new EncodedCartesian3();
  * @private
  */
 function packCameraUniforms(data, frameState, modelMatrix) {
-  const camera = frameState.camera;
+  const uniformState = frameState.context.uniformState;
 
-  // modelView = view * model
-  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchModelView);
+  // modelView = view * model (use uniformState for 2D/Columbus View support)
+  Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
   // modelViewRTE = modelView with translation zeroed
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
   // mvpRTE = projection * modelViewRTE
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchMVRTE,
-    scratchMVPRTE,
-  );
+  Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
 
   Matrix4.pack(scratchMVPRTE, data, 0); // [0-15]
   Matrix4.pack(scratchMVRTE, data, 16); // [16-31]
@@ -61,6 +57,7 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   Matrix4.pack(scratchNormal, data, 32); // [32-47]
 
   // Encoded camera
+  const camera = frameState.camera;
   EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCamera);
   data[48] = scratchEncodedCamera.high.x;
   data[49] = scratchEncodedCamera.high.y;
@@ -256,6 +253,150 @@ const PI = 3.14159265;
   return { pipeline, camBGL, matBGL };
 }
 
+const scratchEncodedPos = new EncodedCartesian3();
+
+/**
+ * Converts a ModelRuntimePrimitive's vertex data to WebGPU format.
+ * Splits single-precision positions into posHigh/posLow pairs for RTE.
+ *
+ * Output vertex layout: posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4 bytes) = 48 bytes
+ *
+ * @param {GPUDevice} device
+ * @param {object} runtimePrimitive - ModelRuntimePrimitive
+ * @param {Matrix4} modelMatrix - Model's world matrix (unused for local positions)
+ * @returns {{ vertexBuffer: WebGPUBuffer, vertexCount: number, indexBuffer?, indexCount?, indexFormat? }|null}
+ * @private
+ */
+function convertPrimitiveToWebGPU(device, runtimePrimitive, modelMatrix) {
+  if (!defined(runtimePrimitive)) {
+    return null;
+  }
+
+  // Access the primitive's render resources
+  const rr =
+    runtimePrimitive.renderResources || runtimePrimitive._renderResources;
+  if (!defined(rr)) {
+    return null;
+  }
+
+  // Try to find position data from the primitive's attributes
+  const attrs = rr.attributes || rr._attributes || [];
+  let positionAttr = null;
+  let normalAttr = null;
+  let texCoordAttr = null;
+
+  for (let i = 0; i < attrs.length; i++) {
+    const attr = attrs[i];
+    const semantic = attr.semantic || attr.name || "";
+    if (semantic === "POSITION") {
+      positionAttr = attr;
+    } else if (semantic === "NORMAL") {
+      normalAttr = attr;
+    } else if (semantic === "TEXCOORD_0" || semantic === "TEXCOORD") {
+      texCoordAttr = attr;
+    }
+  }
+
+  // Position data is required
+  const posData = positionAttr?.typedArray || positionAttr?.buffer;
+  if (!defined(posData) || !(posData instanceof Float32Array)) {
+    return null;
+  }
+
+  const vertCount = Math.floor(posData.length / 3);
+  if (vertCount === 0) {
+    return null;
+  }
+
+  // Get optional normal and texcoord data
+  const normData = normalAttr?.typedArray || normalAttr?.buffer;
+  const uvData = texCoordAttr?.typedArray || texCoordAttr?.buffer;
+
+  // Build interleaved buffer: 48 bytes per vertex (12 floats)
+  const floatsPerVert = 12; // posH(3)+posL(3)+normal(3)+uv(2)+color_pad(1)
+  const vbData = new Float32Array(vertCount * floatsPerVert);
+  const vbView = new DataView(vbData.buffer);
+
+  for (let v = 0; v < vertCount; v++) {
+    const srcOff = v * 3;
+    const dstOff = v * floatsPerVert;
+
+    // Split position into high/low for RTE
+    const px = posData[srcOff];
+    const py = posData[srcOff + 1];
+    const pz = posData[srcOff + 2];
+    EncodedCartesian3.fromCartesian(
+      new Cartesian3(px, py, pz),
+      scratchEncodedPos,
+    );
+    vbData[dstOff + 0] = scratchEncodedPos.high.x;
+    vbData[dstOff + 1] = scratchEncodedPos.high.y;
+    vbData[dstOff + 2] = scratchEncodedPos.high.z;
+    vbData[dstOff + 3] = scratchEncodedPos.low.x;
+    vbData[dstOff + 4] = scratchEncodedPos.low.y;
+    vbData[dstOff + 5] = scratchEncodedPos.low.z;
+
+    // Normal (default up if missing)
+    if (defined(normData) && normData instanceof Float32Array) {
+      vbData[dstOff + 6] = normData[srcOff];
+      vbData[dstOff + 7] = normData[srcOff + 1];
+      vbData[dstOff + 8] = normData[srcOff + 2];
+    } else {
+      vbData[dstOff + 6] = 0.0;
+      vbData[dstOff + 7] = 1.0;
+      vbData[dstOff + 8] = 0.0;
+    }
+
+    // TexCoord (default 0,0 if missing)
+    if (defined(uvData) && uvData instanceof Float32Array) {
+      vbData[dstOff + 9] = uvData[v * 2];
+      vbData[dstOff + 10] = uvData[v * 2 + 1];
+    } else {
+      vbData[dstOff + 9] = 0.0;
+      vbData[dstOff + 10] = 0.0;
+    }
+
+    // Vertex color (white by default, packed as unorm8x4)
+    const byteOff = (dstOff + 11) * 4;
+    vbView.setUint8(byteOff, 255);
+    vbView.setUint8(byteOff + 1, 255);
+    vbView.setUint8(byteOff + 2, 255);
+    vbView.setUint8(byteOff + 3, 255);
+  }
+
+  const vertexBuffer = WebGPUBuffer.createVertexBuffer(
+    device,
+    vbData.byteLength,
+    false,
+    "Model VB",
+  );
+  device.queue.writeBuffer(vertexBuffer.buffer, 0, vbData);
+
+  // Index buffer
+  let indexBuffer = null;
+  let indexCount = 0;
+  let indexFormat = "uint16";
+  const idxData = rr.indices?.typedArray || rr.indices?.buffer;
+  if (defined(idxData)) {
+    indexFormat = idxData instanceof Uint32Array ? "uint32" : "uint16";
+    indexCount = idxData.length;
+    indexBuffer = device.createBuffer({
+      label: "Model IB",
+      size: idxData.byteLength,
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(indexBuffer, 0, idxData);
+  }
+
+  return {
+    vertexBuffer,
+    vertexCount: vertCount,
+    indexBuffer,
+    indexCount,
+    indexFormat,
+  };
+}
+
 /**
  * Updates or creates WebGPU draw commands for a Model.
  *
@@ -364,30 +505,42 @@ function updateWebGPUModel(model, frameState, commandList) {
     LIGHT_UNIFORM_SIZE,
   );
 
-  // For each draw command in the model, create a WebGPU equivalent
-  // This hooks into ModelSceneGraph's existing _drawCommands
-  const sceneGraph = model._sceneGraph;
-  if (!defined(sceneGraph) || !defined(sceneGraph._drawCommands)) {
-    return;
+  // Convert model vertex buffers to WebGPU format (posHigh/posLow + normal + uv + color)
+  // This is done once per model when vertex data becomes available
+  if (!defined(cache.primitiveBuffers)) {
+    cache.primitiveBuffers = [];
+    const sceneGraph = model._sceneGraph;
+    if (defined(sceneGraph) && defined(sceneGraph._runtimePrimitives)) {
+      const prims = sceneGraph._runtimePrimitives;
+      for (let i = 0; i < prims.length; i++) {
+        const rp = prims[i];
+        const bufferInfo = convertPrimitiveToWebGPU(device, rp, modelMatrix);
+        if (bufferInfo) {
+          cache.primitiveBuffers.push(bufferInfo);
+        }
+      }
+    }
   }
 
-  const drawCommands = sceneGraph._drawCommands;
-  for (let i = 0; i < drawCommands.length; i++) {
-    const dc = drawCommands[i];
-    if (!defined(dc) || !dc.show) {
-      continue;
-    }
+  // For each converted primitive, create a WebGPU draw command
+  const sceneGraph = model._sceneGraph;
+  const drawCommands = sceneGraph?._drawCommands || [];
 
-    // Create WebGPU command wrapping the existing vertex data
-    // This is a simplified path — full integration needs vertex buffer conversion
+  for (let i = 0; i < cache.primitiveBuffers.length; i++) {
+    const pbuf = cache.primitiveBuffers[i];
+    const dc = i < drawCommands.length ? drawCommands[i] : null;
+
     const webgpuCmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: [cache.cameraBG, cache.matBG],
-      vertexBuffers: cache.vertexBuffers || [],
-      vertexCount: dc.count || 0,
-      pass: dc.pass || 8,
+      vertexBuffers: [pbuf.vertexBuffer],
+      indexBuffer: pbuf.indexBuffer || undefined,
+      indexCount: pbuf.indexCount || 0,
+      indexFormat: pbuf.indexFormat || "uint16",
+      vertexCount: pbuf.vertexCount || 0,
+      pass: dc?.pass || 8,
       owner: model,
-      boundingVolume: dc.boundingVolume || model.boundingSphere,
+      boundingVolume: dc?.boundingVolume || model.boundingSphere,
       modelMatrix: modelMatrix,
       cull: true,
     });

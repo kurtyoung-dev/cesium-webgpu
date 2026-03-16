@@ -44,6 +44,10 @@ import DebugCameraPrimitive from "./DebugCameraPrimitive.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
 import ShadowMapShader from "./ShadowMapShader.js";
+import {
+  initWebGPUShadowMap,
+  destroyWebGPUShadowMapResources,
+} from "../Renderer/WebGPU/WebGPUShadowMapRenderer.js";
 
 /**
  * <div class="notice">
@@ -1569,9 +1573,11 @@ ShadowMap.prototype.update = function (frameState) {
     // manages its own depth32float texture + comparison sampler.
     // Camera/culling volume computation below is still needed (renderer-agnostic).
     const context = frameState.context;
-    const isWebGPU =
-      defined(context.rendererType) && context.rendererType === "webgpu";
-    if (!isWebGPU) {
+    if (context.isWebGPU) {
+      // WebGPU path — initialize depth32float texture + comparison sampler +
+      // depth-only cast pipeline via WebGPUShadowMapRenderer.
+      initWebGPUShadowMap(this, context);
+    } else {
       updateFramebuffer(this, context);
     }
 
@@ -1943,6 +1949,7 @@ ShadowMap.prototype.isDestroyed = function () {
  * @private
  */
 ShadowMap.prototype.destroy = function () {
+  destroyWebGPUShadowMapResources(this);
   destroyFramebuffer(this);
 
   this._debugLightFrustum =

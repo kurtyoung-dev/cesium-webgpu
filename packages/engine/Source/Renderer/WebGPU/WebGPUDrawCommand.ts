@@ -9,6 +9,28 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 export type IndexFormat = "uint16" | "uint32";
 
 /**
+ * A vertex/index buffer can be either our WebGPUBuffer wrapper or a raw GPUBuffer.
+ * WebGPUBuffer has a `.buffer` accessor; raw GPUBuffer is used directly.
+ */
+export type AnyGPUBuffer = WebGPUBuffer | GPUBuffer;
+
+/** Extracts the underlying GPUBuffer from either a WebGPUBuffer or raw GPUBuffer. */
+function resolveBuffer(buf: AnyGPUBuffer): GPUBuffer {
+  return (buf as WebGPUBuffer).buffer !== undefined &&
+    typeof (buf as WebGPUBuffer).buffer === "object"
+    ? (buf as WebGPUBuffer).buffer
+    : (buf as GPUBuffer);
+}
+
+/** Gets the size of an AnyGPUBuffer. */
+function resolveBufferSize(buf: AnyGPUBuffer): number {
+  if ((buf as WebGPUBuffer).size !== undefined) {
+    return (buf as WebGPUBuffer).size;
+  }
+  return (buf as GPUBuffer).size;
+}
+
+/**
  * Options for constructing a WebGPUDrawCommand.
  */
 interface WebGPUDrawCommandOptions {
@@ -17,9 +39,9 @@ interface WebGPUDrawCommandOptions {
   bindGroup?: GPUBindGroup;
   bindGroups?: GPUBindGroup[];
   /** Single vertex buffer (legacy) or array of vertex buffers */
-  vertexBuffer?: WebGPUBuffer;
-  vertexBuffers?: WebGPUBuffer[];
-  indexBuffer?: WebGPUBuffer;
+  vertexBuffer?: AnyGPUBuffer;
+  vertexBuffers?: AnyGPUBuffer[];
+  indexBuffer?: AnyGPUBuffer;
   /** Index format - 'uint16' or 'uint32'. Auto-detected from indexBuffer if not specified. */
   indexFormat?: IndexFormat;
   vertexCount?: number;
@@ -75,9 +97,9 @@ class WebGPUDrawCommand {
   bindGroup?: GPUBindGroup;
   bindGroups: GPUBindGroup[];
   /** @deprecated Use vertexBuffers instead */
-  vertexBuffer?: WebGPUBuffer;
-  vertexBuffers: WebGPUBuffer[];
-  indexBuffer?: WebGPUBuffer;
+  vertexBuffer?: AnyGPUBuffer;
+  vertexBuffers: AnyGPUBuffer[];
+  indexBuffer?: AnyGPUBuffer;
   indexFormat: IndexFormat;
   vertexCount?: number;
   indexCount?: number;
@@ -188,7 +210,7 @@ class WebGPUDrawCommand {
    * @returns {IndexFormat} Detected index format
    */
   static detectIndexFormat(
-    indexBuffer: WebGPUBuffer,
+    indexBuffer: AnyGPUBuffer,
     indexCount?: number,
   ): IndexFormat {
     if (!defined(indexBuffer) || !defined(indexCount) || indexCount === 0) {
@@ -196,7 +218,7 @@ class WebGPUDrawCommand {
     }
 
     // If buffer size / indexCount == 4, it's uint32; if == 2, it's uint16
-    const bytesPerIndex = indexBuffer.size / indexCount!;
+    const bytesPerIndex = resolveBufferSize(indexBuffer) / indexCount!;
 
     if (bytesPerIndex >= 4) {
       return "uint32";
@@ -236,13 +258,16 @@ class WebGPUDrawCommand {
 
     // Set all vertex buffers
     for (let i = 0; i < this.vertexBuffers.length; i++) {
-      passEncoder.setVertexBuffer(i, this.vertexBuffers[i].buffer);
+      passEncoder.setVertexBuffer(i, resolveBuffer(this.vertexBuffers[i]));
     }
 
     // Execute draw call - indexed or non-indexed
     if (defined(this.indexBuffer) && defined(this.indexCount)) {
       // Indexed draw - use detected/configured index format
-      passEncoder.setIndexBuffer(this.indexBuffer!.buffer, this.indexFormat);
+      passEncoder.setIndexBuffer(
+        resolveBuffer(this.indexBuffer!),
+        this.indexFormat,
+      );
       passEncoder.drawIndexed(
         this.indexCount!,
         this.instanceCount,

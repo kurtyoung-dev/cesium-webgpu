@@ -20,6 +20,10 @@ import TextureWrap from "../Renderer/TextureWrap.js";
 import ClippingPolygon from "./ClippingPolygon.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
 import PolygonSignedDistanceFS from "../Shaders/PolygonSignedDistanceFS.js";
+import {
+  updateWebGPUClippingPolygons,
+  destroyWebGPUClippingPolygonResources,
+} from "../Renderer/WebGPU/WebGPUClippingPolygonCollection.js";
 
 /**
  * Specifies a set of clipping polygons. Clipping polygons selectively disable rendering in a region
@@ -528,6 +532,12 @@ const textureResolutionScratch = new Cartesian2();
  * @throws {RuntimeError} ClippingPolygonCollections are only supported for WebGL 2
  */
 ClippingPolygonCollection.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU clipping polygon collection
+  if (frameState.context.isWebGPU) {
+    updateWebGPUClippingPolygons(this, frameState);
+    return;
+  }
+
   const context = frameState.context;
 
   if (!ClippingPolygonCollection.isSupported(frameState)) {
@@ -959,6 +969,7 @@ ClippingPolygonCollection.prototype.destroy = function () {
   this._extentsTexture = this._extentsTexture && this._extentsTexture.destroy();
   this._signedDistanceTexture =
     this._signedDistanceTexture && this._signedDistanceTexture.destroy();
+  destroyWebGPUClippingPolygonResources(this);
   return destroyObject(this);
 };
 

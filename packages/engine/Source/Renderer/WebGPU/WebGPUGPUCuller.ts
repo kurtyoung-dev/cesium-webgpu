@@ -21,6 +21,7 @@
  */
 
 /// <reference types="@webgpu/types" />
+import { gpuData } from "./webgpuTypeHelpers.js";
 
 /**
  * Culling mode determines what the compute shader writes.
@@ -251,7 +252,7 @@ export class WebGPUGPUCuller {
    */
   uploadBoundingSpheres(spheres: Float32Array): void {
     if (!this._sphereBuffer) return;
-    this._device.queue.writeBuffer(this._sphereBuffer, 0, spheres);
+    this._device.queue.writeBuffer(this._sphereBuffer, 0, gpuData(spheres));
   }
 
   /**
@@ -261,7 +262,7 @@ export class WebGPUGPUCuller {
    */
   uploadFrustumPlanes(planes: Float32Array): void {
     if (!this._frustumBuffer) return;
-    this._device.queue.writeBuffer(this._frustumBuffer, 0, planes);
+    this._device.queue.writeBuffer(this._frustumBuffer, 0, gpuData(planes));
   }
 
   /**
@@ -287,12 +288,16 @@ export class WebGPUGPUCuller {
 
     // Upload params
     const paramsData = new Uint32Array([objectCount, mode, 0, 0]);
-    this._device.queue.writeBuffer(this._paramsBuffer!, 0, paramsData);
+    this._device.queue.writeBuffer(this._paramsBuffer!, 0, gpuData(paramsData));
 
     // Reset visible count to 0 if using COUNT mode
     if (mode === CullMode.COUNT) {
       const zero = new Uint32Array([0]);
-      this._device.queue.writeBuffer(this._visibleCountBuffer!, 0, zero);
+      this._device.queue.writeBuffer(
+        this._visibleCountBuffer!,
+        0,
+        gpuData(zero),
+      );
     }
 
     // Create bind group

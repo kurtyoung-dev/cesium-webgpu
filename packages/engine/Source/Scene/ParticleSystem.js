@@ -702,6 +702,8 @@ const rotatedVelocityScratch = new Cartesian3();
  * @private
  */
 ParticleSystem.prototype.update = function (frameState) {
+  // WebGPU: ParticleSystem delegates to BillboardCollection which has a
+  // dedicated WebGPU rendering path (WebGPUBillboardRenderer). No guard needed.
   if (!this.show) {
     return;
   }

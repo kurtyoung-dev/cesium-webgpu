@@ -1,32 +1,35 @@
-// @ts-nocheck
+/// <reference types="@webgpu/types" />
 /**
  * @module WebGPUTimestampProfiler
  *
  * GPU-side performance profiling using WebGPU timestamp queries.
  * Requires the 'timestamp-query' device feature to be enabled.
  *
+ * Uses the modern WebGPU `timestampWrites` API on render/compute passes
+ * (the deprecated `GPUCommandEncoder.writeTimestamp()` was removed from the spec).
+ *
  * Provides frame-level and pass-level GPU timing with automatic
  * query set management, readback buffering, and statistics computation.
  *
  * @example
- * const profiler = new WebGPUTimestampProfiler(device, context);
+ * const profiler = new WebGPUTimestampProfiler(device, true);
  *
  * // Each frame:
- * profiler.beginFrame(commandEncoder);
- * profiler.beginPass('terrain');
+ * profiler.beginFrame();
+ *
+ * // Get timestampWrites config for a render pass:
+ * const tsWrites = profiler.getPassTimestampWrites('terrain');
+ * const renderPass = encoder.beginRenderPass({ ...passDesc, timestampWrites: tsWrites });
  * // ... terrain rendering ...
- * profiler.endPass('terrain');
- * profiler.beginPass('models');
- * // ... model rendering ...
- * profiler.endPass('models');
+ * renderPass.end();
+ *
+ * // End frame (resolves queries, issues readback):
  * profiler.endFrame(commandEncoder);
  *
  * // Read results (async — results are from N frames ago):
- * const results = await profiler.getResults();
- * console.log(results.passes.terrain.avgMs);
+ * const results = profiler.getResults();
+ * console.log(results.passes.terrain?.avgMs);
  */
-
-/// <reference types="@webgpu/types" />
 
 /**
  * Timing result for a single named pass.
@@ -50,7 +53,7 @@ export interface PassTimingResult {
 export interface ProfilingResults {
   /** Whether profiling is active (timestamp-query feature enabled) */
   enabled: boolean;
-  /** Total frame GPU time in milliseconds */
+  /** Total frame GPU time in milliseconds (sum of all passes) */
   frameMs: number;
   /** Average frame GPU time (rolling window) */
   frameAvgMs: number;
@@ -58,8 +61,6 @@ export interface ProfilingResults {
   passes: Record<string, PassTimingResult>;
   /** Number of frames profiled */
   frameCount: number;
-  /** Timestamp resolution in nanoseconds */
-  timestampPeriod: number;
 }
 
 /**
@@ -69,12 +70,10 @@ interface FrameQueryState {
   querySet: GPUQuerySet;
   resolveBuffer: GPUBuffer;
   readbackBuffer: GPUBuffer;
+  /** Number of queries actually written this frame */
   queryCount: number;
-  passNames: string[];
-  /** Maps pass name → [startQueryIndex, endQueryIndex] */
+  /** Maps pass name → [beginQueryIndex, endQueryIndex] */
   passIndices: Map<string, [number, number]>;
-  frameStartIndex: number;
-  frameEndIndex: number;
 }
 
 /** Rolling window size for average computation */
@@ -83,36 +82,35 @@ const ROLLING_WINDOW = 60;
 /** Maximum number of passes per frame */
 const MAX_PASSES_PER_FRAME = 32;
 
-/** Queries per frame: 2 for frame start/end + 2 per pass (start/end) */
-const MAX_QUERIES = 2 + MAX_PASSES_PER_FRAME * 2;
+/** Queries per frame: 2 per pass (begin + end) */
+const MAX_QUERIES = MAX_PASSES_PER_FRAME * 2;
 
 /**
  * GPU timestamp profiler using WebGPU's timestamp-query feature.
  *
- * This profiler uses a double-buffered (or N-buffered) approach:
- * - Frame N writes timestamps
- * - Frame N+2 reads back the results from frame N
- * This avoids GPU stalls from immediate readback.
+ * This profiler uses `timestampWrites` on render/compute passes (the modern API)
+ * instead of the deprecated `GPUCommandEncoder.writeTimestamp()`.
+ *
+ * Uses triple-buffering to avoid GPU stalls:
+ * - Frame N writes timestamps via timestampWrites
+ * - Frame N+2 reads back results from frame N
  */
 export class WebGPUTimestampProfiler {
   private _device: GPUDevice;
   private _enabled: boolean = false;
-  private _timestampPeriod: number = 1; // nanoseconds per tick
 
-  // Double-buffered frame states
+  // Triple-buffered frame states
   private _frameStates: FrameQueryState[] = [];
   private _currentFrameIndex: number = 0;
-  private _bufferCount: number = 3; // triple-buffer for safety
+  private _bufferCount: number = 3;
 
   // Current frame tracking
-  private _activePassName: string | null = null;
   private _nextQueryIndex: number = 0;
-  private _currentPassNames: string[] = [];
   private _currentPassIndices: Map<string, [number, number]> = new Map();
 
   // Results storage
-  private _latestResults: Map<string, number[]> = new Map(); // pass → rolling window of ms
-  private _frameTimings: number[] = []; // rolling window of frame ms
+  private _latestResults: Map<string, number[]> = new Map();
+  private _frameTimings: number[] = [];
   private _totalFrames: number = 0;
 
   private _isDestroyed: boolean = false;
@@ -129,27 +127,17 @@ export class WebGPUTimestampProfiler {
       hasTimestampFeature && device.features.has("timestamp-query");
 
     if (!this._enabled) {
-      console.log(
-        "[WebGPU Profiler] timestamp-query not available — profiling disabled",
-      );
       return;
     }
-
-    // Get timestamp period for nanosecond→millisecond conversion
-    // Note: some implementations may report 0 or 1
-    this._timestampPeriod = 1; // Default: 1 nanosecond per tick
 
     // Create frame states (triple-buffered)
     for (let i = 0; i < this._bufferCount; i++) {
       this._frameStates.push(this._createFrameState(i));
     }
-
-    console.log("[WebGPU Profiler] GPU timestamp profiling enabled");
   }
 
   /**
    * Creates a query set and associated buffers for one frame.
-   * @private
    */
   private _createFrameState(index: number): FrameQueryState {
     const querySet = this._device.createQuerySet({
@@ -177,80 +165,84 @@ export class WebGPUTimestampProfiler {
       resolveBuffer,
       readbackBuffer,
       queryCount: 0,
-      passNames: [],
       passIndices: new Map(),
-      frameStartIndex: 0,
-      frameEndIndex: 0,
     };
   }
 
   /**
    * Begin profiling a frame. Call before any render passes.
-   *
-   * @param encoder - The command encoder for this frame
+   * Resets per-frame tracking state.
    */
-  beginFrame(encoder: GPUCommandEncoder): void {
-    if (!this._enabled) return;
-
+  beginFrame(): void {
+    if (!this._enabled) {
+      return;
+    }
     this._nextQueryIndex = 0;
-    this._currentPassNames = [];
     this._currentPassIndices = new Map();
-
-    // Write frame start timestamp
-    const state = this._frameStates[this._currentFrameIndex];
-    state.frameStartIndex = this._nextQueryIndex;
-    encoder.writeTimestamp(state.querySet, this._nextQueryIndex++);
   }
 
   /**
-   * Begin timing a named pass.
+   * Get a `GPURenderPassTimestampWrites` configuration for a named pass.
+   * The caller should include this in the render pass descriptor:
+   *
+   * ```typescript
+   * const tsWrites = profiler.getPassTimestampWrites('terrain');
+   * encoder.beginRenderPass({ ...passDesc, timestampWrites: tsWrites });
+   * ```
    *
    * @param name - Pass name (e.g., 'terrain', 'models', 'postprocess')
-   * @param encoder - The command encoder
+   * @returns The timestampWrites config, or undefined if profiling is disabled
    */
-  beginPass(name: string, encoder: GPUCommandEncoder): void {
-    if (!this._enabled) return;
-
-    if (this._activePassName !== null) {
-      console.warn(
-        `[WebGPU Profiler] beginPass('${name}') called while '${this._activePassName}' is still active`,
-      );
+  getPassTimestampWrites(
+    name: string,
+  ): GPURenderPassTimestampWrites | undefined {
+    if (!this._enabled) {
+      return undefined;
+    }
+    if (this._nextQueryIndex + 2 > MAX_QUERIES) {
+      return undefined; // Out of query slots
     }
 
-    this._activePassName = name;
-    const startIndex = this._nextQueryIndex;
     const state = this._frameStates[this._currentFrameIndex];
-    encoder.writeTimestamp(state.querySet, this._nextQueryIndex++);
+    const beginIndex = this._nextQueryIndex++;
+    const endIndex = this._nextQueryIndex++;
 
-    this._currentPassIndices.set(name, [startIndex, -1]);
-    this._currentPassNames.push(name);
+    this._currentPassIndices.set(name, [beginIndex, endIndex]);
+
+    return {
+      querySet: state.querySet,
+      beginningOfPassWriteIndex: beginIndex,
+      endOfPassWriteIndex: endIndex,
+    };
   }
 
   /**
-   * End timing the current named pass.
+   * Get a `GPUComputePassTimestampWrites` configuration for a named compute pass.
    *
-   * @param name - Pass name (must match the beginPass call)
-   * @param encoder - The command encoder
+   * @param name - Pass name
+   * @returns The timestampWrites config, or undefined if profiling is disabled
    */
-  endPass(name: string, encoder: GPUCommandEncoder): void {
-    if (!this._enabled) return;
-
-    if (this._activePassName !== name) {
-      console.warn(
-        `[WebGPU Profiler] endPass('${name}') doesn't match active pass '${this._activePassName}'`,
-      );
+  getComputePassTimestampWrites(
+    name: string,
+  ): GPUComputePassTimestampWrites | undefined {
+    if (!this._enabled) {
+      return undefined;
+    }
+    if (this._nextQueryIndex + 2 > MAX_QUERIES) {
+      return undefined;
     }
 
     const state = this._frameStates[this._currentFrameIndex];
-    const endIndex = this._nextQueryIndex;
-    encoder.writeTimestamp(state.querySet, this._nextQueryIndex++);
+    const beginIndex = this._nextQueryIndex++;
+    const endIndex = this._nextQueryIndex++;
 
-    const indices = this._currentPassIndices.get(name);
-    if (indices) {
-      indices[1] = endIndex;
-    }
+    this._currentPassIndices.set(name, [beginIndex, endIndex]);
 
-    this._activePassName = null;
+    return {
+      querySet: state.querySet,
+      beginningOfPassWriteIndex: beginIndex,
+      endOfPassWriteIndex: endIndex,
+    };
   }
 
   /**
@@ -259,18 +251,22 @@ export class WebGPUTimestampProfiler {
    * @param encoder - The command encoder for this frame
    */
   endFrame(encoder: GPUCommandEncoder): void {
-    if (!this._enabled) return;
+    if (!this._enabled) {
+      return;
+    }
 
     const state = this._frameStates[this._currentFrameIndex];
 
-    // Write frame end timestamp
-    state.frameEndIndex = this._nextQueryIndex;
-    encoder.writeTimestamp(state.querySet, this._nextQueryIndex++);
-
     // Store pass info for this frame
     state.queryCount = this._nextQueryIndex;
-    state.passNames = [...this._currentPassNames];
     state.passIndices = new Map(this._currentPassIndices);
+
+    if (state.queryCount === 0) {
+      this._currentFrameIndex =
+        (this._currentFrameIndex + 1) % this._bufferCount;
+      this._totalFrames++;
+      return;
+    }
 
     // Resolve timestamps into the resolve buffer
     encoder.resolveQuerySet(
@@ -292,7 +288,6 @@ export class WebGPUTimestampProfiler {
 
     // Advance to next frame state
     this._currentFrameIndex = (this._currentFrameIndex + 1) % this._bufferCount;
-
     this._totalFrames++;
 
     // Attempt to read results from the oldest frame (N frames ago)
@@ -301,46 +296,38 @@ export class WebGPUTimestampProfiler {
 
   /**
    * Asynchronously reads results from the oldest completed frame.
-   * @private
    */
   private async _readOldestFrame(): Promise<void> {
-    // The frame that should be done by now
     const readIndex = (this._currentFrameIndex + 1) % this._bufferCount;
     const state = this._frameStates[readIndex];
 
-    if (state.queryCount === 0) return; // No data yet
+    if (state.queryCount === 0) {
+      return;
+    }
 
     try {
       const readbackBuffer = state.readbackBuffer;
 
-      // Check if buffer is already mapped
       if (readbackBuffer.mapState === "unmapped") {
         await readbackBuffer.mapAsync(GPUMapMode.READ);
         const data = new BigUint64Array(readbackBuffer.getMappedRange());
 
-        // Extract frame timing
-        const frameStartNs = data[state.frameStartIndex];
-        const frameEndNs = data[state.frameEndIndex];
-        const frameMs =
-          (Number(frameEndNs - frameStartNs) * this._timestampPeriod) /
-          1_000_000;
-
-        this._addToRollingWindow(this._frameTimings, frameMs);
+        let frameTotalMs = 0;
 
         // Extract per-pass timings
         for (const [name, [startIdx, endIdx]] of state.passIndices) {
-          if (endIdx < 0) continue;
           const startNs = data[startIdx];
           const endNs = data[endIdx];
-          const passMs =
-            (Number(endNs - startNs) * this._timestampPeriod) / 1_000_000;
+          const passMs = Number(endNs - startNs) / 1_000_000;
 
           if (!this._latestResults.has(name)) {
             this._latestResults.set(name, []);
           }
           this._addToRollingWindow(this._latestResults.get(name)!, passMs);
+          frameTotalMs += passMs;
         }
 
+        this._addToRollingWindow(this._frameTimings, frameTotalMs);
         readbackBuffer.unmap();
       }
     } catch {
@@ -350,7 +337,6 @@ export class WebGPUTimestampProfiler {
 
   /**
    * Add a value to a rolling window array.
-   * @private
    */
   private _addToRollingWindow(arr: number[], value: number): void {
     arr.push(value);
@@ -361,7 +347,6 @@ export class WebGPUTimestampProfiler {
 
   /**
    * Compute statistics from a rolling window.
-   * @private
    */
   private _computeStats(arr: number[]): {
     last: number;
@@ -383,8 +368,6 @@ export class WebGPUTimestampProfiler {
   /**
    * Get the latest profiling results.
    * Results are from N frames ago (where N = bufferCount) to avoid GPU stalls.
-   *
-   * @returns Profiling results with frame and per-pass timings
    */
   getResults(): ProfilingResults {
     if (!this._enabled) {
@@ -394,7 +377,6 @@ export class WebGPUTimestampProfiler {
         frameAvgMs: 0,
         passes: {},
         frameCount: this._totalFrames,
-        timestampPeriod: this._timestampPeriod,
       };
     }
 
@@ -418,30 +400,24 @@ export class WebGPUTimestampProfiler {
       frameAvgMs: frameStats.avg,
       passes,
       frameCount: this._totalFrames,
-      timestampPeriod: this._timestampPeriod,
     };
   }
 
-  /**
-   * Whether profiling is enabled (timestamp-query feature available).
-   */
+  /** Whether profiling is enabled. */
   get enabled(): boolean {
     return this._enabled;
   }
 
-  /**
-   * Whether the profiler has been destroyed.
-   */
+  /** Whether the profiler has been destroyed. */
   get isDestroyed(): boolean {
     return this._isDestroyed;
   }
 
-  /**
-   * Destroy all GPU resources.
-   */
+  /** Destroy all GPU resources. */
   destroy(): void {
-    if (this._isDestroyed) return;
-
+    if (this._isDestroyed) {
+      return;
+    }
     for (const state of this._frameStates) {
       state.querySet.destroy();
       state.resolveBuffer.destroy();

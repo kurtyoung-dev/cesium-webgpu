@@ -13,6 +13,10 @@ import PassThrough from "../Shaders/PostProcessStages/PassThrough.js";
 import PostProcessStageLibrary from "./PostProcessStageLibrary.js";
 import PostProcessStageTextureCache from "./PostProcessStageTextureCache.js";
 import Tonemapper, { validateTonemapper } from "./Tonemapper.js";
+import {
+  updateWebGPUPostProcessStages,
+  destroyWebGPUPostProcessResources,
+} from "../Renderer/WebGPU/WebGPUPostProcessStageCollection.js";
 
 const stackScratch = [];
 
@@ -574,6 +578,12 @@ PostProcessStageCollection.prototype.update = function (
   useLogDepth,
   useHdr,
 ) {
+  // WebGPU: Route to dedicated WebGPU post-process pipeline
+  if (context.isWebGPU) {
+    updateWebGPUPostProcessStages(this, { context });
+    return;
+  }
+
   removeStages(this);
 
   const previousActiveStages = this._activeStages;
@@ -895,6 +905,7 @@ PostProcessStageCollection.prototype.destroy = function () {
   this._tonemapping.destroy();
   this.removeAll();
   this._textureCache = this._textureCache && this._textureCache.destroy();
+  destroyWebGPUPostProcessResources(this);
   return destroyObject(this);
 };
 export default PostProcessStageCollection;

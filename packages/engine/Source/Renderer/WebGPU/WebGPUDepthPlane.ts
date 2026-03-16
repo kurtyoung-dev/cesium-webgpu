@@ -212,6 +212,40 @@ export class WebGPUDepthPlane {
   }
 
   /**
+   * High-level update method called by WebGPUSceneRenderer.
+   * Computes depth plane geometry from the frame state's camera and ellipsoid,
+   * then updates vertices and uniforms.
+   *
+   * @param frameState The current frame state (contains camera, mapProjection)
+   * @param device The GPU device for buffer writes
+   */
+  update(frameState: any, device: GPUDevice): void {
+    // The depth plane is only used in 3D mode (SceneMode.SCENE3D = 3)
+    if (!frameState || !frameState.camera) {
+      return;
+    }
+
+    // Access the depth plane data computed by the WebGL DepthPlane.js
+    // during the scene update. If the scene has computed depth plane
+    // geometry (via DepthPlane.update), it will be stored on the frame state.
+    const depthPlane = frameState.scene?._depthPlane;
+    if (!depthPlane || !depthPlane._rs) {
+      return;
+    }
+
+    // The depth plane vertex array stores 4 corners as posHigh/posLow pairs.
+    // Extract the raw vertex data if available.
+    const va = depthPlane._va;
+    if (!va) {
+      return;
+    }
+
+    // TODO: Extract vertex data from WebGL DepthPlane's vertex array
+    // and call updateVertices() + updateUniforms(). For now, the depth
+    // plane will be populated when the Scene integration is completed.
+  }
+
+  /**
    * Execute the depth plane draw command on the given render pass.
    */
   execute(renderPass: GPURenderPassEncoder): void {

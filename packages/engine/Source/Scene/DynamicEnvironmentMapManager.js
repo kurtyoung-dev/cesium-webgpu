@@ -28,6 +28,10 @@ import ComputeIrradianceFS from "../Shaders/ComputeIrradianceFS.js";
 import ComputeRadianceMapFS from "../Shaders/ComputeRadianceMapFS.js";
 import ConvolveSpecularMapFS from "../Shaders/ConvolveSpecularMapFS.js";
 import ConvolveSpecularMapVS from "../Shaders/ConvolveSpecularMapVS.js";
+import {
+  updateWebGPUDynamicEnvironmentMap,
+  destroyWebGPUDynamicEnvironmentMapResources,
+} from "../Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.js";
 
 /**
  * @typedef {object} DynamicEnvironmentMapManager.ConstructorOptions
@@ -852,6 +856,12 @@ function updateSphericalHarmonicCoefficients(manager, frameState) {
  * @private
  */
 DynamicEnvironmentMapManager.prototype.update = function (frameState) {
+  // WebGPU: Route to dedicated WebGPU dynamic environment map manager
+  if (frameState.context.isWebGPU) {
+    updateWebGPUDynamicEnvironmentMap(this, frameState);
+    return;
+  }
+
   const mode = frameState.mode;
   const isSupported =
     // @ts-expect-error A FrameState type works here because the function only references the context parameter.
@@ -987,6 +997,7 @@ DynamicEnvironmentMapManager.prototype.destroy = function () {
     this._convolveSP.destroy();
   }
 
+  destroyWebGPUDynamicEnvironmentMapResources(this);
   return destroyObject(this);
 };
 

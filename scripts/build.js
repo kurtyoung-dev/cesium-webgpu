@@ -281,7 +281,18 @@ function generateDeclaration(workspace, file) {
   moduleId = filePathToModuleId(moduleId);
 
   if (moduleId.indexOf("Source/Shaders") > -1) {
-    assignmentName = `_shaders${assignmentName}`;
+    // For WebGPU shaders, include parent directory to avoid name collisions
+    if (moduleId.indexOf("Source/Shaders/WebGPU/") > -1) {
+      const parts = moduleId.split("/");
+      const parentDir = parts[parts.length - 2];
+      if (parentDir !== "WebGPU" && parentDir !== "chunks") {
+        assignmentName = `_shaders${parentDir}_${assignmentName}`;
+      } else {
+        assignmentName = `_shaders${assignmentName}`;
+      }
+    } else {
+      assignmentName = `_shaders${assignmentName}`;
+    }
   }
   assignmentName = assignmentName.replace(/(\.|-)/g, "_");
   return `export { ${assignmentName} } from '@${scope}/${workspace}';`;
@@ -1086,7 +1097,21 @@ export async function createIndexJs(workspace) {
 
     let assignmentName = path.basename(file, path.extname(file));
     if (moduleId.indexOf(`Source/Shaders/`) === 0) {
-      assignmentName = `_shaders${assignmentName}`;
+      // For WebGPU shaders that collide with WebGL shader names (e.g. FXAA),
+      // include the parent directory in the export name to disambiguate.
+      if (moduleId.indexOf(`Source/Shaders/WebGPU/`) === 0) {
+        const parts = moduleId.split("/");
+        const parentDir = parts[parts.length - 2]; // e.g. "PostProcess", "Advanced", etc.
+        // Only add parent prefix if it would otherwise collide (i.e., the name
+        // is not already unique). We prefix WebGPU sub-directory shaders.
+        if (parentDir !== "WebGPU" && parentDir !== "chunks") {
+          assignmentName = `_shaders${parentDir}_${assignmentName}`;
+        } else {
+          assignmentName = `_shaders${assignmentName}`;
+        }
+      } else {
+        assignmentName = `_shaders${assignmentName}`;
+      }
     }
     assignmentName = assignmentName.replace(/(\.|-)/g, "_");
     contents += `export { default as ${assignmentName} } from './${moduleId}.js';${EOL}`;

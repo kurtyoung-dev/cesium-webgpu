@@ -27,7 +27,7 @@ const scratchEncodedPos = new EncodedCartesian3();
 // ============================================================
 
 /**
- * Creates sun procedural texture via compute shader.
+ * Creates sun procedural texture via CPU fallback.
  * @private
  */
 function createSunTexture(device, size) {
@@ -41,7 +41,6 @@ function createSunTexture(device, size) {
       GPUTextureUsage.COPY_DST,
   });
 
-  // Generate procedurally on CPU as fallback (compute shader preferred)
   const pixels = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -73,7 +72,7 @@ function createSunTexture(device, size) {
 }
 
 /**
- * Creates sun quad vertices (4 corners with RTE position + direction offset).
+ * Creates sun quad vertices.
  * @private
  */
 function createSunQuadBuffer(device, sunPosition) {
@@ -81,7 +80,7 @@ function createSunQuadBuffer(device, sunPosition) {
   const h = scratchEncodedPos.high;
   const l = scratchEncodedPos.low;
 
-  // 6 vertices (2 triangles) with posHigh(3) + posLow(3) + direction(2) = 8 floats
+  // 6 vertices: posHigh(3) + posLow(3) + direction(2) = 8 floats
   const vertices = new Float32Array([
     h.x,
     h.y,
@@ -144,20 +143,19 @@ function createSunQuadBuffer(device, sunPosition) {
 }
 
 function packSunUniforms(uniformData, frameState) {
-  const camera = frameState.camera;
-  Matrix4.clone(camera.viewMatrix, scratchModelView);
+  const uniformState = frameState.context.uniformState;
+  Matrix4.clone(uniformState.view, scratchModelView);
   Matrix4.clone(scratchModelView, scratchMVRTE);
   scratchMVRTE[12] = 0.0;
   scratchMVRTE[13] = 0.0;
   scratchMVRTE[14] = 0.0;
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchMVRTE,
-    scratchMVPRTE,
-  );
+  Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
 
-  EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCamera);
+  EncodedCartesian3.fromCartesian(
+    frameState.camera.positionWC,
+    scratchEncodedCamera,
+  );
   uniformData[16] = scratchEncodedCamera.high.x;
   uniformData[17] = scratchEncodedCamera.high.y;
   uniformData[18] = scratchEncodedCamera.high.z;
@@ -167,7 +165,6 @@ function packSunUniforms(uniformData, frameState) {
   uniformData[22] = scratchEncodedCamera.low.z;
   uniformData[23] = 0.0;
 
-  // Sun screen-space size (proportional to angular size)
   uniformData[24] = 0.02; // sunSize.x
   uniformData[25] = 0.02; // sunSize.y
   uniformData[26] = 1.0; // glowFactor
@@ -176,9 +173,6 @@ function packSunUniforms(uniformData, frameState) {
 
 /**
  * Updates WebGPU Sun rendering.
- * @param {Sun} sun - The Sun object
- * @param {FrameState} frameState
- * @param {Array} commandList
  */
 function updateWebGPUSun(sun, frameState, commandList) {
   if (!sun.show) {
@@ -192,7 +186,6 @@ function updateWebGPUSun(sun, frameState, commandList) {
   }
   const cache = sun._webgpuCache;
 
-  // Create texture once
   if (!defined(cache.sunTexture)) {
     cache.sunTexture = createSunTexture(device, 256);
     cache.sunTextureView = cache.sunTexture.createView();
@@ -202,7 +195,6 @@ function updateWebGPUSun(sun, frameState, commandList) {
     });
   }
 
-  // Create pipeline once (simplified — uses basic textured billboard)
   if (!defined(cache.pipeline)) {
     const shaderModule = device.createShaderModule({
       label: "Sun shader",
@@ -285,7 +277,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
                 dstFactor: "one",
                 operation: "add",
               },
-              alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
+              alpha: {
+                srcFactor: "one",
+                dstFactor: "one",
+                operation: "add",
+              },
             },
           },
         ],
@@ -300,7 +296,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     cache.bindGroupLayout = bgl;
   }
 
-  // Update sun position quad
   const sunPos = frameState.sunPositionWC || new Cartesian3(1.5e11, 0, 0);
   if (
     !defined(cache.vertexBuffer) ||
@@ -313,7 +308,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     cache.lastSunPos = Cartesian3.clone(sunPos);
   }
 
-  // Uniforms
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -331,7 +325,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Bind group
   cache.bindGroup = device.createBindGroup({
     layout: cache.bindGroupLayout,
     entries: [
@@ -354,9 +347,260 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 
 // ============================================================
-// Moon Renderer (simplified — textured sphere)
+// Moon Renderer — Textured Sphere with Diffuse Lighting
 // ============================================================
 
+const MOON_SEGMENTS = 32;
+const MOON_RINGS = 16;
+
+/**
+ * Generates a UV sphere mesh for the Moon.
+ * Vertex layout: posHigh(3) + posLow(3) + normal(3) + uv(2) = 11 floats = 44 bytes
+ * @private
+ */
+function createMoonSphereGeometry(device, radii) {
+  const rx = radii.x;
+  const ry = radii.y;
+  const rz = radii.z;
+  const segments = MOON_SEGMENTS;
+  const rings = MOON_RINGS;
+
+  const vertCount = (segments + 1) * (rings + 1);
+  const idxCount = segments * rings * 6;
+  const floatsPerVert = 11;
+  const vertices = new Float32Array(vertCount * floatsPerVert);
+  const indices = new Uint16Array(idxCount);
+
+  let vOff = 0;
+  for (let r = 0; r <= rings; r++) {
+    const phi = (r / rings) * Math.PI;
+    const sinPhi = Math.sin(phi);
+    const cosPhi = Math.cos(phi);
+
+    for (let s = 0; s <= segments; s++) {
+      const theta = (s / segments) * 2.0 * Math.PI;
+      const sinT = Math.sin(theta);
+      const cosT = Math.cos(theta);
+
+      // Normal (unit sphere)
+      const nx = cosT * sinPhi;
+      const ny = cosPhi;
+      const nz = sinT * sinPhi;
+
+      // Position (scaled by radii)
+      const px = nx * rx;
+      const py = ny * ry;
+      const pz = nz * rz;
+
+      // RTE encode model-local position
+      // Model-local positions are small (~1737km), posHigh ≈ position, posLow ≈ 0
+      EncodedCartesian3.fromCartesian(
+        new Cartesian3(px, py, pz),
+        scratchEncodedPos,
+      );
+
+      vertices[vOff + 0] = scratchEncodedPos.high.x;
+      vertices[vOff + 1] = scratchEncodedPos.high.y;
+      vertices[vOff + 2] = scratchEncodedPos.high.z;
+      vertices[vOff + 3] = scratchEncodedPos.low.x;
+      vertices[vOff + 4] = scratchEncodedPos.low.y;
+      vertices[vOff + 5] = scratchEncodedPos.low.z;
+      vertices[vOff + 6] = nx;
+      vertices[vOff + 7] = ny;
+      vertices[vOff + 8] = nz;
+      vertices[vOff + 9] = s / segments;
+      vertices[vOff + 10] = r / rings;
+      vOff += floatsPerVert;
+    }
+  }
+
+  let iOff = 0;
+  for (let r = 0; r < rings; r++) {
+    for (let s = 0; s < segments; s++) {
+      const a = r * (segments + 1) + s;
+      const b = a + segments + 1;
+      indices[iOff++] = a;
+      indices[iOff++] = b;
+      indices[iOff++] = a + 1;
+      indices[iOff++] = a + 1;
+      indices[iOff++] = b;
+      indices[iOff++] = b + 1;
+    }
+  }
+
+  const vb = WebGPUBuffer.createVertexBuffer(
+    device,
+    vertices.byteLength,
+    false,
+    "Moon sphere VB",
+  );
+  device.queue.writeBuffer(vb.buffer, 0, vertices);
+
+  const ib = device.createBuffer({
+    label: "Moon sphere IB",
+    size: indices.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(ib, 0, indices);
+
+  return { vertexBuffer: vb, indexBuffer: ib, indexCount: idxCount };
+}
+
+/**
+ * Creates the Moon rendering pipeline (textured sphere + diffuse lighting).
+ * @private
+ */
+function createMoonPipeline(device, format, depthFormat) {
+  const code = `
+struct U {
+  mvpRTE: mat4x4<f32>,
+  camH: vec3<f32>, _p0: f32,
+  camL: vec3<f32>, _p1: f32,
+  moonH: vec3<f32>, _p2: f32,
+  moonL: vec3<f32>, _p3: f32,
+  sunDir: vec3<f32>, _p4: f32,
+  nMat0: vec3<f32>, _p5: f32,
+  nMat1: vec3<f32>, _p6: f32,
+  nMat2: vec3<f32>, _p7: f32,
+};
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+struct VI {
+  @location(0) pH: vec3<f32>,
+  @location(1) pL: vec3<f32>,
+  @location(2) n: vec3<f32>,
+  @location(3) uv: vec2<f32>,
+};
+struct VO {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+  @location(1) nEC: vec3<f32>,
+};
+
+@vertex fn vs(i: VI) -> VO {
+  var o: VO;
+  let rte = (i.pH - u.camH) + (i.pL - u.camL);
+  o.pos = u.mvpRTE * vec4f(rte, 1.0);
+  let nMat = mat3x3<f32>(u.nMat0, u.nMat1, u.nMat2);
+  o.nEC = normalize(nMat * i.n);
+  o.uv = i.uv;
+  return o;
+}
+
+@fragment fn fs(i: VO) -> @location(0) vec4<f32> {
+  let tc = textureSample(tex, samp, i.uv);
+  let N = normalize(i.nEC);
+  let NdotL = max(dot(N, normalize(u.sunDir)), 0.0);
+  let ambient = 0.05;
+  let diffuse = NdotL;
+  let color = tc.rgb * (ambient + diffuse);
+  return vec4f(color, 1.0);
+}`;
+
+  const mod = device.createShaderModule({ label: "Moon shader", code });
+
+  const bgl = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+    ],
+  });
+
+  const pipeline = device.createRenderPipeline({
+    label: "Moon pipeline",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    vertex: {
+      module: mod,
+      entryPoint: "vs",
+      buffers: [
+        {
+          arrayStride: 44, // 11 floats
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
+            { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
+            { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
+            { shaderLocation: 3, offset: 36, format: "float32x2" }, // uv
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: mod,
+      entryPoint: "fs",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "zero",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "zero",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "back" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  });
+
+  return { pipeline, bgl };
+}
+
+/**
+ * Creates a placeholder 4x4 gray texture for the Moon when the real texture hasn't loaded.
+ * @private
+ */
+function createMoonPlaceholderTexture(device) {
+  const size = 4;
+  const pixels = new Uint8Array(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    pixels[i * 4 + 0] = 180;
+    pixels[i * 4 + 1] = 180;
+    pixels[i * 4 + 2] = 180;
+    pixels[i * 4 + 3] = 255;
+  }
+  const texture = device.createTexture({
+    label: "Moon placeholder",
+    size: [size, size, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture({ texture }, pixels, { bytesPerRow: size * 4 }, [
+    size,
+    size,
+    1,
+  ]);
+  return texture;
+}
+
+/**
+ * Updates WebGPU Moon rendering with full sphere geometry + pipeline + draw command.
+ */
 function updateWebGPUMoon(moon, frameState, commandList) {
   if (!moon.show) {
     return;
@@ -372,12 +616,46 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   }
   const cache = moon._webgpuCache;
 
-  // Compute RTE uniform data for the moon
+  // Create sphere geometry once
+  if (!defined(cache.geometry)) {
+    const radii = moon._ellipsoid.radii;
+    cache.geometry = createMoonSphereGeometry(device, radii);
+  }
+
+  // Create pipeline once
+  if (!defined(cache.pipeline)) {
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const result = createMoonPipeline(device, format, depthFmt);
+    cache.pipeline = result.pipeline;
+    cache.bgl = result.bgl;
+  }
+
+  // Moon texture (placeholder until real texture loads)
+  if (!defined(cache.moonTexture)) {
+    cache.moonTexture = createMoonPlaceholderTexture(device);
+    cache.moonTextureView = cache.moonTexture.createView();
+    cache.sampler = device.createSampler({
+      minFilter: "linear",
+      magFilter: "linear",
+    });
+  }
+
+  // Uniform buffer
+  if (!defined(cache.uniformBuffer)) {
+    cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
+      device,
+      UNIFORM_BUFFER_SIZE,
+      "Moon uniforms",
+    );
+    cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+  }
+
+  // Compute RTE uniforms
   const uniformState = context.uniformState;
   const ellipsoidPrimitive = moon._ellipsoidPrimitive;
   const modelMatrix = ellipsoidPrimitive.modelMatrix;
 
-  // Model-View and MVP relative to eye
   const viewMatrix = uniformState.view;
   const projMatrix = uniformState.projection;
   const mv = Matrix4.multiply(viewMatrix, modelMatrix, scratchModelView);
@@ -387,23 +665,16 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   mvRTE[14] = 0.0;
   const mvpRTE = Matrix4.multiply(projMatrix, mvRTE, scratchMVPRTE);
 
-  // Camera RTE encoding
   EncodedCartesian3.fromCartesian(
     frameState.camera.positionWC,
     scratchEncodedCamera,
   );
 
-  // Moon position RTE encoding
   const moonPos = Matrix4.getTranslation(modelMatrix, new Cartesian3());
   EncodedCartesian3.fromCartesian(moonPos, scratchEncodedPos);
 
-  // Sun direction for diffuse lighting
   const sunDir = uniformState.sunDirectionWC;
 
-  // Pack uniform data: mvpRTE(16) + camH(4) + camL(4) + moonH(4) + moonL(4) + sunDir(4) + normalMat(12) = 48 floats
-  if (!defined(cache.uniformData)) {
-    cache.uniformData = new Float32Array(48);
-  }
   const ud = cache.uniformData;
   for (let i = 0; i < 16; i++) {
     ud[i] = mvpRTE[i];
@@ -442,14 +713,6 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   ud[46] = mvRTE[10];
   ud[47] = 0;
 
-  // Create/update uniform buffer
-  if (!defined(cache.uniformBuffer)) {
-    cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
-      device,
-      UNIFORM_BUFFER_SIZE,
-      "Moon uniforms",
-    );
-  }
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
@@ -458,13 +721,29 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     ud.byteLength,
   );
 
-  // Moon command pushed only when pipeline is ready
-  // Pipeline creation requires Moon.wgsl shader + sphere mesh generation
-  // which integrates with the WebGPU shader loading system.
-  // Uniform buffer is updated every frame for correct positioning.
-  if (defined(cache.command)) {
-    commandList.push(cache.command);
-  }
+  // Create bind group (recreated each frame for simplicity)
+  cache.bindGroup = device.createBindGroup({
+    layout: cache.bgl,
+    entries: [
+      { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      { binding: 1, resource: cache.moonTextureView },
+      { binding: 2, resource: cache.sampler },
+    ],
+  });
+
+  // Create draw command with indexed geometry
+  cache.command = new WebGPUDrawCommand({
+    pipeline: cache.pipeline,
+    bindGroups: [cache.bindGroup],
+    vertexBuffers: [cache.geometry.vertexBuffer],
+    indexBuffer: cache.geometry.indexBuffer,
+    indexCount: cache.geometry.indexCount,
+    indexFormat: "uint16",
+    pass: 0, // Pass.ENVIRONMENT
+    owner: moon,
+  });
+
+  commandList.push(cache.command);
 }
 
 // ============================================================
@@ -472,11 +751,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
 // ============================================================
 
 /**
- * Fog doesn't render anything — it computes fog density parameters
- * stored in frameState.fog. The GlobeTerrain.wgsl shader reads
- * these to apply distance-based fog.
- *
- * This function ensures fog parameters are available for WebGPU shaders.
+ * Extracts fog parameters for WebGPU shaders.
  * @param {Fog} fog
  * @param {FrameState} frameState
  * @returns {{ density: number, minimumBrightness: number }}
@@ -516,6 +791,20 @@ function destroyWebGPUMoonResources(moon) {
   const cache = moon._webgpuCache;
   if (!defined(cache)) {
     return;
+  }
+  if (defined(cache.geometry)) {
+    if (defined(cache.geometry.vertexBuffer)) {
+      cache.geometry.vertexBuffer.destroy();
+    }
+    if (defined(cache.geometry.indexBuffer)) {
+      cache.geometry.indexBuffer.destroy();
+    }
+  }
+  if (defined(cache.uniformBuffer)) {
+    cache.uniformBuffer.destroy();
+  }
+  if (defined(cache.moonTexture)) {
+    cache.moonTexture.destroy();
   }
   moon._webgpuCache = undefined;
 }

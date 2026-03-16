@@ -246,11 +246,13 @@ function createPointPipeline(
  * @private
  */
 function packUniforms(uniformData, frameState, modelMatrix) {
-  const camera = frameState.camera;
-  const canvas = frameState.context.canvas;
+  const context = frameState.context;
+  const uniformState = context.uniformState;
+  const canvas = context.canvas;
 
   // Step 1: Compute modelView = view * model
-  Matrix4.multiply(camera.viewMatrix, modelMatrix, scratchModelView);
+  // Use uniformState.view instead of camera.viewMatrix for 2D/Columbus View support
+  Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
 
   // Step 2: Create modelViewRTE = modelView with translation column zeroed
   // This removes the large translation that causes float32 precision loss
@@ -260,11 +262,8 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   scratchModelViewRTE[14] = 0.0;
 
   // Step 3: Compute mvpRelativeToEye = projection * modelViewRTE
-  Matrix4.multiply(
-    camera.frustum.projectionMatrix,
-    scratchModelViewRTE,
-    scratchMVPRTE,
-  );
+  // Use uniformState.projection for 2D/Columbus View support
+  Matrix4.multiply(uniformState.projection, scratchModelViewRTE, scratchMVPRTE);
 
   // Write mvpRelativeToEye matrix (16 floats at offset 0)
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
@@ -282,7 +281,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   Matrix4.inverse(modelMatrix, scratchInverseModel);
   Matrix4.multiplyByPoint(
     scratchInverseModel,
-    camera.positionWC,
+    frameState.camera.positionWC,
     scratchCameraPositionMC,
   );
 

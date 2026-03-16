@@ -1,4 +1,4 @@
-// @ts-nocheck
+/// <reference types="@webgpu/types" />
 /**
  * WebGPU Scene Renderer — Multi-frustum command execution orchestrator
  *
@@ -14,14 +14,16 @@
  * For each frustum (far to near):
  *   1. Update uniform state with frustum near/far
  *   2. Clear depth/stencil (per-frustum, preserving color)
- *   3. Execute GLOBE pass commands → GlobeDepth framebuffer
- *   4. Copy depth for shader access
- *   5. Execute TERRAIN_CLASSIFICATION pass
- *   6. Execute CESIUM_3D_TILE* passes
- *   7. Execute OPAQUE pass → main framebuffer
- *   8. Execute TRANSLUCENT pass → OIT framebuffer
- *   9. OIT composite over opaque
- *   10. Execute VOXELS, GAUSSIAN_SPLATS
+ *   3. Execute ENVIRONMENT pass (skybox, sun, moon, atmosphere)
+ *   4. Execute COMPUTE pass
+ *   5. Execute GLOBE pass commands → GlobeDepth framebuffer
+ *   6. Copy depth for shader access
+ *   7. Execute TERRAIN_CLASSIFICATION pass
+ *   8. Execute CESIUM_3D_TILE* passes
+ *   9. Execute OPAQUE pass → main framebuffer
+ *   10. Execute TRANSLUCENT pass → OIT framebuffer
+ *   11. OIT composite over opaque
+ *   12. Execute VOXELS, GAUSSIAN_SPLATS
  *
  * After frustum loop:
  *   - Execute OVERLAY pass (once)
@@ -116,25 +118,32 @@ export class WebGPUSceneRenderer {
    */
   private _ensureResources(config: WebGPURenderFrameConfig): void {
     const { context } = config;
-    const device = context._device;
-    if (!device) return;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
 
-    const canvas = context._canvas;
+    const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
+      context._canvas;
     const width = canvas?.width ?? 1;
     const height = canvas?.height ?? 1;
     const needsResize = width !== this._width || height !== this._height;
+    const hdr = config.hdr ?? false;
 
     // Scene framebuffer (main color + depth + ID targets)
     if (!this._sceneFramebuffer) {
       this._sceneFramebuffer = new WebGPUSceneFramebuffer();
     }
     if (!this._initialized || needsResize) {
-      const numSamples = context._msaaSamples ?? 1;
-      const canvasFormat = context.presentationFormat ?? "bgra8unorm";
+      const numSamples: number = context._msaaSamples ?? 1;
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
+      // SCENE-2 fix: pass all 6 arguments including hdr
       this._sceneFramebuffer.update(
         device,
         width,
         height,
+        hdr,
         numSamples,
         canvasFormat,
       );
@@ -145,13 +154,8 @@ export class WebGPUSceneRenderer {
       this._oit = new WebGPUOIT();
     }
     if (this._oit && (!this._initialized || needsResize)) {
-      const depthView = this._sceneFramebuffer.getDepthTexture?.()
-        ? (
-            this._sceneFramebuffer as any
-          )._colorTarget?.getDepthStencilTextureView?.()
-        : undefined;
-      const canvasFormat = context.presentationFormat ?? "bgra8unorm";
-      this._oit.initialize(device, width, height, depthView, canvasFormat);
+      // SCENE-3 fix: call update() not initialize() — matches WebGPUOIT's actual API
+      this._oit.update(device, width, height);
     }
 
     // Globe depth framebuffer
@@ -159,15 +163,15 @@ export class WebGPUSceneRenderer {
       this._globeDepth = new WebGPUGlobeDepth();
     }
     if (this._globeDepth && (!this._initialized || needsResize)) {
-      const numSamples = context._msaaSamples ?? 1;
-      const hdr = config.hdr ?? false;
-      const canvasFormat = context.presentationFormat ?? "bgra8unorm";
+      const numSamples: number = context._msaaSamples ?? 1;
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
       this._globeDepth.update(
         device,
         width,
         height,
-        numSamples,
         hdr,
+        numSamples,
         canvasFormat,
       );
     }
@@ -175,14 +179,16 @@ export class WebGPUSceneRenderer {
     // Depth plane
     if (config.useDepthPlane && !this._depthPlane) {
       this._depthPlane = new WebGPUDepthPlane();
-      const depthFormat = context.depthFormat ?? "depth24plus-stencil8";
+      const depthFormat: GPUTextureFormat =
+        context.depthFormat ?? "depth24plus-stencil8";
       this._depthPlane.initialize(device, depthFormat);
     }
 
     // Post-processing pipeline
     if (config.usePostProcessing && !this._postProcess) {
       this._postProcess = new WebGPUPostProcessPipeline();
-      const canvasFormat = context.presentationFormat ?? "bgra8unorm";
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
       this._postProcess.initialize(device, width, height, canvasFormat);
       // Add default stages
       this._postProcess.addTonemapping(device, canvasFormat);
@@ -203,10 +209,12 @@ export class WebGPUSceneRenderer {
     const { scene, context, passState, picking } = config;
     const view = scene._view;
     const { frustumCommandsList } = view;
-    const numFrustums = frustumCommandsList.length;
+    const numFrustums: number = frustumCommandsList.length;
     const { uniformState } = context;
 
-    if (numFrustums === 0) return;
+    if (numFrustums === 0) {
+      return;
+    }
 
     // Ensure rendering resources are created/sized
     this._ensureResources(config);
@@ -225,6 +233,16 @@ export class WebGPUSceneRenderer {
       if (frustumIndex > 0 || config.clearGlobeDepth) {
         this._clearDepthStencil(context);
       }
+
+      // SCENE-1 fix: Pass 0 — ENVIRONMENT (skybox, sun, moon, atmosphere)
+      // In WebGL's Scene.js, environment is rendered per-frustum for correct depth.
+      this._executePassCommands(
+        frustumCommands,
+        Pass.ENVIRONMENT,
+        scene,
+        context,
+        passState,
+      );
 
       // Pass 1: COMPUTE
       this._executePassCommands(
@@ -299,9 +317,9 @@ export class WebGPUSceneRenderer {
       camera.frustum.far = far;
       uniformState.updateFrustum(camera.frustum);
     }
-    if (scene._frameState.useLogDepth) {
-      uniformState.updateLogDepth(far);
-    }
+    // Log depth values are computed inside updateFrustum() when it sets
+    // _farDepthFromNearPlusOne and _log2FarDepthFromNearPlusOne.
+    // No separate updateLogDepth call is needed.
   }
 
   private _clearDepthStencil(context: any): void {
@@ -316,18 +334,17 @@ export class WebGPUSceneRenderer {
   ): void {
     const { scene, context, passState } = config;
     const commands = frustumCommands.commands[Pass.GLOBE];
-    const count = frustumCommands.indices[Pass.GLOBE];
-    if (count === 0) return;
+    const count: number = frustumCommands.indices[Pass.GLOBE];
+    if (count === 0) {
+      return;
+    }
 
     // When globe depth is available, globe renders to its own framebuffer
     // so depth can be sampled in subsequent passes (terrain clamping, picking)
     if (this._globeDepth && config.useGlobeDepthFramebuffer) {
       // Future: switch render target to globe depth FBO
-      // const globeTarget = this._globeDepth.getOutputTarget();
-      // context.beginRenderPass(globeTarget.getLoadPassDescriptor());
       executeBatch(commands, count, scene, context, passState);
       // Future: copy depth for shader access
-      // this._globeDepth.executeCopyDepth(context);
       return;
     }
 
@@ -349,7 +366,7 @@ export class WebGPUSceneRenderer {
     ];
     for (const passIndex of passes) {
       const cmds = frustumCommands.commands[passIndex];
-      const cnt = frustumCommands.indices[passIndex];
+      const cnt: number = frustumCommands.indices[passIndex];
       if (cnt > 0) {
         executeBatch(cmds, cnt, scene, context, passState);
       }
@@ -364,8 +381,10 @@ export class WebGPUSceneRenderer {
   ): void {
     const { scene, context, passState } = config;
     const commands = frustumCommands.commands[Pass.OPAQUE];
-    const count = frustumCommands.indices[Pass.OPAQUE];
-    if (count === 0) return;
+    const count: number = frustumCommands.indices[Pass.OPAQUE];
+    if (count === 0) {
+      return;
+    }
     executeBatch(commands, count, scene, context, passState);
   }
 
@@ -377,33 +396,47 @@ export class WebGPUSceneRenderer {
   ): void {
     const { scene, context, passState } = config;
     const commands = frustumCommands.commands[Pass.TRANSLUCENT];
-    const count = frustumCommands.indices[Pass.TRANSLUCENT];
-    if (count === 0) return;
+    const count: number = frustumCommands.indices[Pass.TRANSLUCENT];
+    if (count === 0) {
+      return;
+    }
 
     if (this._oit && config.useOIT && !config.picking) {
       // OIT accumulation pass: render translucent geometry with
       // additive blending into accumulation + revealage textures
-      const encoder = context._currentCommandEncoder;
-      if (encoder && this._oit.beginAccumulation) {
-        this._oit.beginAccumulation(encoder);
-        // Execute translucent commands into OIT render pass
-        for (let i = 0; i < count; i++) {
-          const cmd = commands[i];
-          if (cmd.isWebGPUDrawCommand) {
-            const oitPass = this._oit.getRenderPassEncoder?.();
-            if (oitPass) {
-              cmd.execute(oitPass, context);
+      const encoder: GPUCommandEncoder | undefined =
+        context._currentCommandEncoder;
+      if (encoder && this._oit.getAccumulationPassDescriptor) {
+        // Get the depth-stencil view from scene framebuffer for depth testing
+        const depthView =
+          this._sceneFramebuffer?.depthStencilTexture?.createView();
+        if (depthView) {
+          const passDesc = this._oit.getAccumulationPassDescriptor(depthView);
+          if (passDesc) {
+            // End the current render pass before starting OIT pass
+            context.endCurrentRenderPass?.();
+            const oitPass = encoder.beginRenderPass(passDesc);
+            for (let i = 0; i < count; i++) {
+              const cmd = commands[i];
+              if (cmd.isWebGPUDrawCommand) {
+                cmd.execute(oitPass);
+              }
             }
+            oitPass.end();
           }
         }
-        this._oit.endAccumulation();
 
         // Composite OIT result over the opaque scene
-        const canvasView = context.currentTextureView;
-        const canvasFormat = context.presentationFormat ?? "bgra8unorm";
+        const canvasView: GPUTextureView | undefined =
+          context.currentTextureView;
+        const canvasFormat: GPUTextureFormat =
+          context.presentationFormat ?? "bgra8unorm";
         if (canvasView && encoder) {
           this._oit.executeComposite(encoder, canvasView, canvasFormat);
         }
+
+        // Resume default render pass
+        context.resumeDefaultRenderPass?.();
         return;
       }
     }
@@ -420,47 +453,61 @@ export class WebGPUSceneRenderer {
   ): void {
     const { scene, context, passState } = config;
     const lastFrustum = frustumCommandsList[frustumCommandsList.length - 1];
-    if (!lastFrustum) return;
+    if (!lastFrustum) {
+      return;
+    }
     const commands = lastFrustum.commands[Pass.OVERLAY];
-    const count = lastFrustum.indices[Pass.OVERLAY];
-    if (count === 0) return;
+    const count: number = lastFrustum.indices[Pass.OVERLAY];
+    if (count === 0) {
+      return;
+    }
     executeBatch(commands, count, scene, context, passState);
   }
 
   // --- Depth plane ---
 
   private _renderDepthPlane(config: WebGPURenderFrameConfig): void {
-    if (!this._depthPlane || !config.useDepthPlane) return;
+    if (!this._depthPlane || !config.useDepthPlane) {
+      return;
+    }
     const { scene, context } = config;
-    const device = context._device;
-    if (!device) return;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
 
     // Update depth plane geometry based on camera
     this._depthPlane.update(scene._frameState, device);
 
     // Execute depth plane draw into the active render pass
-    const renderPass = context.currentRenderPassEncoder;
+    const renderPass: GPURenderPassEncoder | undefined =
+      context.currentRenderPassEncoder;
     if (renderPass) {
-      this._depthPlane.execute(renderPass, device);
+      this._depthPlane.execute(renderPass);
     }
   }
 
   // --- Post-processing ---
 
   private _runPostProcessing(config: WebGPURenderFrameConfig): void {
-    if (!this._postProcess || !config.usePostProcessing) return;
+    if (!this._postProcess || !config.usePostProcessing) {
+      return;
+    }
     const { context } = config;
-    const device = context._device;
-    if (!device) return;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
 
     // End the current render pass so we can read the scene texture
     context.endCurrentRenderPass?.();
 
-    const encoder = context._currentCommandEncoder;
-    const sourceView = this._sceneFramebuffer?.getColorTexture?.()
-      ? (this._sceneFramebuffer as any)._colorTarget?.getColorTextureView?.(0)
-      : undefined;
-    const targetView = context.currentTextureView;
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const sourceView: GPUTextureView | undefined =
+      colorTarget?.getColorTextureView?.(0);
+    const targetView: GPUTextureView | undefined = context.currentTextureView;
 
     if (encoder && sourceView && targetView) {
       this._postProcess.execute(encoder, sourceView, targetView);
@@ -480,8 +527,10 @@ export class WebGPUSceneRenderer {
     passState: any,
   ): void {
     const commands = frustumCommands.commands[passIndex];
-    const count = frustumCommands.indices[passIndex];
-    if (count === 0) return;
+    const count: number = frustumCommands.indices[passIndex];
+    if (count === 0) {
+      return;
+    }
     executeBatch(commands, count, scene, context, passState);
   }
 
@@ -519,10 +568,7 @@ export class WebGPUSceneRenderer {
           context,
         );
       case "logDepth":
-        return WebGPUDerivedCommand.createLogDepthDerivedCommand(
-          baseCommand,
-          context,
-        );
+        return WebGPUDerivedCommand.createLogDepthCommand(baseCommand);
       case "pick":
         return WebGPUDerivedCommand.createPickDerivedCommand(
           baseCommand,

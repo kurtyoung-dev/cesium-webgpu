@@ -15,6 +15,10 @@ import BlendingState from "./BlendingState.js";
 import StencilConstants from "./StencilConstants.js";
 import StencilFunction from "./StencilFunction.js";
 import StencilOperation from "./StencilOperation.js";
+import {
+  updateWebGPUInvertClassification,
+  destroyWebGPUInvertClassificationResources,
+} from "../Renderer/WebGPU/WebGPUInvertClassification.js";
 
 /**
  * @private
@@ -177,6 +181,17 @@ InvertClassification.prototype.update = function (
   numSamples,
   globeFramebuffer,
 ) {
+  // WebGPU: Route to dedicated WebGPU invert classification handler
+  if (context.isWebGPU) {
+    updateWebGPUInvertClassification(
+      this,
+      context,
+      numSamples,
+      globeFramebuffer,
+    );
+    return;
+  }
+
   const texture = this._fbo.getColorTexture();
   const previousFramebufferChanged =
     this.previousFramebuffer !== this._previousFramebuffer;
@@ -376,6 +391,7 @@ InvertClassification.prototype.destroy = function () {
       this._classifiedCommand.shaderProgram.destroy();
   }
 
+  destroyWebGPUInvertClassificationResources(this);
   return destroyObject(this);
 };
 export default InvertClassification;

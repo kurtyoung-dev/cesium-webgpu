@@ -1,4 +1,4 @@
-// @ts-nocheck
+/// <reference types="@webgpu/types" />
 /**
  * @module WebGPUBufferMapper
  *
@@ -21,8 +21,6 @@
  * // Read back data:
  * const result = await mapper.readbackBuffer(sourceBuffer, byteLength);
  */
-
-/// <reference types="@webgpu/types" />
 
 /**
  * Upload options for staging buffer transfers.
@@ -209,14 +207,14 @@ export class WebGPUBufferMapper {
     TypedArrayCtor: new (buffer: ArrayBuffer) => T,
   ): Promise<T> {
     const data = await this.readbackBuffer(srcBuffer, byteLength);
-    return new TypedArrayCtor(data.buffer);
+    return new TypedArrayCtor(data.buffer as ArrayBuffer);
   }
 
   /**
    * Get or create a staging buffer for uploads.
    * @private
    */
-  private _getStagingBuffer(size: number, mode: GPUMapMode): GPUBuffer {
+  private _getStagingBuffer(size: number, mode: GPUMapModeFlags): GPUBuffer {
     // Try to find a cached buffer of sufficient size
     for (let i = 0; i < this._stagingCache.length; i++) {
       const entry = this._stagingCache[i];

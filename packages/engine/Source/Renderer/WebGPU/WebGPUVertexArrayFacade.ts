@@ -20,6 +20,38 @@ import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import CesiumMath from "../../Core/Math.js";
 
 /**
+ * ComponentDatatype is exported as a frozen object from JS with both enum values
+ * AND utility methods. TypeScript only infers the enum values, so we declare the
+ * full type here to access getSizeInBytes() and createArrayBufferView().
+ */
+interface ComponentDatatypeFull {
+  readonly BYTE: number;
+  readonly UNSIGNED_BYTE: number;
+  readonly SHORT: number;
+  readonly UNSIGNED_SHORT: number;
+  readonly INT: number;
+  readonly UNSIGNED_INT: number;
+  readonly FLOAT: number;
+  readonly DOUBLE: number;
+  getSizeInBytes(componentDatatype: number): number;
+  createArrayBufferView(
+    componentDatatype: number,
+    buffer: ArrayBuffer,
+    byteOffset?: number,
+    length?: number,
+  ): ArrayBufferView;
+  fromTypedArray(array: any): number;
+  validate(componentDatatype: number): boolean;
+  createTypedArray(
+    componentDatatype: number,
+    valuesOrLength: number | number[],
+  ): ArrayBufferView;
+  fromName(name: string): number;
+}
+
+const CDT = ComponentDatatype as unknown as ComponentDatatypeFull;
+
+/**
  * WebGPU buffer usage hint (maps from WebGL BufferUsage).
  */
 const BUFFER_USAGE_STATIC = 0x88e4; // STATIC_DRAW
@@ -151,12 +183,8 @@ class WebGPUVertexArrayFacade {
 
     // Sort by component size (floats first, then shorts, then bytes)
     const compare = (a: WebGPUVertexAttribute, b: WebGPUVertexAttribute) => {
-      const aSize = ComponentDatatype.getSizeInBytes(
-        a.componentDatatype ?? ComponentDatatype.FLOAT,
-      );
-      const bSize = ComponentDatatype.getSizeInBytes(
-        b.componentDatatype ?? ComponentDatatype.FLOAT,
-      );
+      const aSize = CDT.getSizeInBytes(a.componentDatatype ?? CDT.FLOAT);
+      const bSize = CDT.getSizeInBytes(b.componentDatatype ?? CDT.FLOAT);
       return bSize - aSize;
     };
 
@@ -245,17 +273,13 @@ class WebGPUVertexArrayFacade {
     for (const attr of attributes) {
       size +=
         attr.componentsPerAttribute *
-        ComponentDatatype.getSizeInBytes(
-          attr.componentDatatype ?? ComponentDatatype.FLOAT,
-        );
+        CDT.getSizeInBytes(attr.componentDatatype ?? CDT.FLOAT);
     }
 
     // Align to the largest component's size
     const maxCompSize =
       attributes.length > 0
-        ? ComponentDatatype.getSizeInBytes(
-            attributes[0].componentDatatype ?? ComponentDatatype.FLOAT,
-          )
+        ? CDT.getSizeInBytes(attributes[0].componentDatatype ?? CDT.FLOAT)
         : 0;
 
     if (maxCompSize > 0) {
@@ -285,8 +309,8 @@ class WebGPUVertexArrayFacade {
     let offsetInBytes = 0;
 
     for (const attr of attributes) {
-      const compDatatype = attr.componentDatatype ?? ComponentDatatype.FLOAT;
-      const compSize = ComponentDatatype.getSizeInBytes(compDatatype);
+      const compDatatype = attr.componentDatatype ?? CDT.FLOAT;
+      const compSize = CDT.getSizeInBytes(compDatatype);
 
       views.push({
         index: attr.index,
@@ -336,7 +360,7 @@ class WebGPUVertexArrayFacade {
 
     // Create typed views
     for (const view of buffer.arrayViews) {
-      view.view = ComponentDatatype.createArrayBufferView(
+      view.view = CDT.createArrayBufferView(
         view.componentDatatype,
         newArrayBuffer,
         view.offsetInBytes,

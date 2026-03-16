@@ -21,6 +21,7 @@ import CesiumMath from "../../Core/Math.js";
 import BoundingRectangle from "../../Core/BoundingRectangle.js";
 import Cartesian2 from "../../Core/Cartesian2.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
+import { gpuData } from "./webgpuTypeHelpers.js";
 
 const DEFAULT_INITIAL_SIZE = 16;
 const DEFAULT_BORDER_WIDTH = 1;
@@ -408,7 +409,7 @@ class WebGPUTextureAtlas {
         texture: this._texture.texture,
         origin: { x, y, z: 0 },
       },
-      data,
+      gpuData(data),
       {
         bytesPerRow: width * 4,
         rowsPerImage: height,

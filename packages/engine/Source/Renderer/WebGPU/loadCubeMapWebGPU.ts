@@ -81,7 +81,8 @@ async function loadImageBitmap(
   skipColorSpaceConversion: boolean,
   flipY: boolean,
 ): Promise<ImageBitmap> {
-  const urlString = typeof url === "string" ? url : url.url;
+  const urlString =
+    typeof url === "string" ? url : (url as unknown as { url: string }).url;
   const response = await fetch(urlString);
   const blob = await response.blob();
 
