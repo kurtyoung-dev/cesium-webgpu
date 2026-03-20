@@ -15,16 +15,13 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import VertexArray from "../Renderer/VertexArray.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import EllipsoidFS from "../Shaders/EllipsoidFS.js";
 import EllipsoidVS from "../Shaders/EllipsoidVS.js";
 import BlendingState from "./BlendingState.js";
 import CullFace from "./CullFace.js";
 import Material from "./Material.js";
 import SceneMode from "./SceneMode.js";
-import {
-  updateWebGPUEllipsoidPrimitive,
-  destroyWebGPUEllipsoidPrimitiveResources,
-} from "../Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.js";
 
 const attributeLocations = {
   position: 0,
@@ -245,9 +242,13 @@ function getVertexArray(context) {
  * @exception {DeveloperError} this.material must be defined.
  */
 EllipsoidPrimitive.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU ellipsoid primitive renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUEllipsoidPrimitive(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.ELLIPSOID_PRIMITIVE,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
   if (
@@ -500,7 +501,9 @@ EllipsoidPrimitive.prototype.destroy = function () {
   this._sp = this._sp && this._sp.destroy();
   this._pickSP = this._pickSP && this._pickSP.destroy();
   this._pickId = this._pickId && this._pickId.destroy();
-  destroyWebGPUEllipsoidPrimitiveResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default EllipsoidPrimitive;

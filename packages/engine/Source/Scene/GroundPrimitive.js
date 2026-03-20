@@ -16,7 +16,6 @@ import ClassificationType from "./ClassificationType.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import SceneMode from "./SceneMode.js";
 import ShadowVolumeAppearance from "./ShadowVolumeAppearance.js";
-import { destroyWebGPUGroundPrimitiveResources } from "../Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js";
 
 const GroundPrimitiveUniformMap = {
   u_globeMinimumAltitude: function () {
@@ -969,8 +968,6 @@ GroundPrimitive.prototype.isDestroyed = function () {
  * @see GroundPrimitive#isDestroyed
  */
 GroundPrimitive.prototype.destroy = function () {
-  // Clean up WebGPU ground primitive resources (stencil/color pipelines, buffers)
-  destroyWebGPUGroundPrimitiveResources(this);
   this._primitive = this._primitive && this._primitive.destroy();
   return destroyObject(this);
 };

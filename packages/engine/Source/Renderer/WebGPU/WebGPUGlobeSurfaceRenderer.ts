@@ -325,7 +325,11 @@ export class WebGPUGlobeSurfaceRenderer {
       surfaceTile,
       tileProvider,
     );
-    const tileUB = this._createTileUniformBuffer(device, surfaceTile);
+    const tileUB = this._createTileUniformBuffer(
+      device,
+      surfaceTile,
+      frameState,
+    );
 
     // Create bind group 0 (uniforms)
     const bindGroup0 = device.createBindGroup({
@@ -525,11 +529,12 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   /**
-   * Create tile uniform buffer with imagery layer parameters.
+   * Create tile uniform buffer with imagery layer parameters and fog.
    */
   private _createTileUniformBuffer(
     device: GPUDevice,
     surfaceTile: any,
+    frameState?: any,
   ): GPUBuffer {
     const data = this._tileUniformData;
     const u32 = this._tileUniformU32View;
@@ -596,10 +601,20 @@ export class WebGPUGlobeSurfaceRenderer {
 
     // layerCount at float offset 48 (u32)
     u32[48] = layerCount;
-    // padding at offsets 49, 50, 51
-    data[49] = 0;
-    data[50] = 0;
-    data[51] = 0;
+
+    // Fog parameters at offsets 49, 50, 51 — matches TileUniforms in GlobeTerrain.wgsl
+    // fogDensity is computed by Fog.js and stored on frameState.fog
+    if (frameState && frameState.fog) {
+      const fog = frameState.fog;
+      data[49] = fog.density !== undefined ? fog.density : 0.0;
+      data[50] = fog.offset !== undefined ? fog.offset : 0.0;
+      data[51] =
+        fog.minimumBrightness !== undefined ? fog.minimumBrightness : 0.03;
+    } else {
+      data[49] = 0.0; // fogDensity (0 = fog disabled)
+      data[50] = 0.0; // fogOffset
+      data[51] = 0.03; // fogMinimumBrightness
+    }
 
     const buffer = device.createBuffer({
       label: "Terrain tile UB",

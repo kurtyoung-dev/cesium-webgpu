@@ -17,11 +17,8 @@ import ContextLimits from "../Renderer/ContextLimits.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import ClippingPlane from "./ClippingPlane.js";
-import {
-  updateWebGPUClippingPlanes,
-  destroyWebGPUClippingPlaneResources,
-} from "../Renderer/WebGPU/WebGPUClippingPlaneCollection.js";
 
 /**
  * Specifies a set of clipping planes. Clipping planes selectively disable rendering in a region on the
@@ -469,9 +466,13 @@ const textureResolutionScratch = new Cartesian2();
  * </p>
  */
 ClippingPlaneCollection.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU clipping plane collection
-  if (frameState.context.isWebGPU) {
-    updateWebGPUClippingPlanes(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.CLIPPING_PLANES,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
   let clippingPlanesTexture = this._clippingPlanesTexture;
@@ -768,7 +769,9 @@ ClippingPlaneCollection.prototype.isDestroyed = function () {
 ClippingPlaneCollection.prototype.destroy = function () {
   this._clippingPlanesTexture =
     this._clippingPlanesTexture && this._clippingPlanesTexture.destroy();
-  destroyWebGPUClippingPlaneResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default ClippingPlaneCollection;

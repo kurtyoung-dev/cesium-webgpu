@@ -47,8 +47,8 @@ import {
   type DeviceLostCallback,
   type DeviceLossRecoveryHost,
 } from "./WebGPUDeviceLossRecovery.js";
-import { WebGPUResourceManager } from "./WebGPUResourceManager.js";
-import { WebGPUPickManager } from "./WebGPUPickManager.js";
+// FORK-2 fix: WebGPUResourceManager and WebGPUPickManager were unused imports — removed.
+// They can be re-added when their intended usage is implemented.
 import { WebGPURenderBundleManager } from "./WebGPURenderBundleManager.js";
 import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
 import { WebGPUStorageBufferPool } from "./WebGPUStorageBufferPool.js";
@@ -62,6 +62,8 @@ import {
   createPixelReadbackPBO,
   type DefaultTextures,
 } from "./WebGPUTextureUtilities.js";
+import { registerWebGPUFeatureRenderers } from "./WebGPUFeatureRenderers.js";
+import FeatureRendererKey from "../FeatureRendererKey.js";
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
@@ -90,10 +92,7 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
  * WebGPU implementation of GraphicsContext.
  * Manages the WebGPU device, adapter, and rendering pipeline.
  */
-export class WebGPUContext implements GraphicsContext {
-  // Public flag to identify this as a WebGPU context
-  public isWebGPU: boolean = false;
-
+export class WebGPUContext extends GraphicsContext {
   private _canvas: HTMLCanvasElement;
   private _adapter: GPUAdapter | null = null;
   private _device: GPUDevice | null = null;
@@ -252,11 +251,8 @@ export class WebGPUContext implements GraphicsContext {
   private _pickObjects: Map<number, any> = new Map();
   private _nextPickColor: Uint32Array = new Uint32Array(1);
 
-  // Device loss recovery
-  private _deviceLossState: DeviceLossState = DeviceLossState.HEALTHY;
-  private _deviceLostCallbacks: DeviceLostCallback[] = [];
-  private _maxRecoveryAttempts: number = 3;
-  private _recoveryAttempts: number = 0;
+  // Device loss recovery — delegated to WebGPUDeviceLossRecovery (FORK-1 fix)
+  private _deviceLossRecovery: WebGPUDeviceLossRecovery | null = null;
 
   // GL compatibility - bound buffer/texture tracking for legacy code
   private _boundVertexBuffer: GPUBuffer | null = null;
@@ -282,11 +278,10 @@ export class WebGPUContext implements GraphicsContext {
     canvas: HTMLCanvasElement,
     options: WebGPUContextOptions,
   ) {
+    super(); // Initialize GraphicsContext base (registry, logging, feature renderers)
+
     this._canvas = canvas;
     this._options = options;
-
-    // Mark this as a WebGPU context for renderer detection
-    this.isWebGPU = true;
 
     // Generate unique ID
     this._id = createGuid();
@@ -324,6 +319,9 @@ export class WebGPUContext implements GraphicsContext {
     // Initialize WebGL compatibility stub
     // This provides WebGL constants that legacy code expects
     this._initializeWebGLStub();
+
+    // Register with the global ContextRegistry (Phase B)
+    this._registerWithRegistry();
   }
 
   /**
@@ -437,6 +435,24 @@ export class WebGPUContext implements GraphicsContext {
       this._initializeDefaultTextures();
 
       // Initialization complete — adapter and format selected
+
+      // Register all WebGPU feature renderers so scene files can access them
+      // via context.getFeatureRenderer('name') instead of importing directly
+      registerWebGPUFeatureRenderers(this);
+
+      // Load WGSL shaders during context initialization (not in Scene.createAsync).
+      // This keeps shader loading as part of the context's own async init lifecycle.
+      const sceneRendererFR = this.getFeatureRenderer(
+        FeatureRendererKey.SCENE_RENDERER,
+      ) as any;
+      if (sceneRendererFR) {
+        if (sceneRendererFR.initPrimitiveShaders) {
+          await sceneRendererFR.initPrimitiveShaders();
+        }
+        if (sceneRendererFR.initCollectionShaders) {
+          await sceneRendererFR.initCollectionShaders();
+        }
+      }
     } catch (error) {
       throw new RuntimeError(
         `Failed to initialize WebGPU context: ${(error as Error).message}`,
@@ -545,6 +561,14 @@ export class WebGPUContext implements GraphicsContext {
    * Whether the context supports fragment depth (always true for WebGPU)
    */
   get fragmentDepth(): boolean {
+    return true;
+  }
+
+  /**
+   * WebGPU uses 0-to-1 depth range (unlike WebGL's -1 to 1).
+   * Scene code uses this to set Matrix4 depth range type.
+   */
+  override get depthRangeZeroToOne(): boolean {
     return true;
   }
 
@@ -726,8 +750,9 @@ export class WebGPUContext implements GraphicsContext {
     descriptor: GPURenderPassDescriptor,
   ): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder) {
-      console.warn(
-        "[WebGPU] beginRenderPass: No command encoder — call beginFrame() first",
+      this.log(
+        "warn",
+        "beginRenderPass: No command encoder — call beginFrame() first",
       );
       return null;
     }
@@ -773,8 +798,9 @@ export class WebGPUContext implements GraphicsContext {
    */
   resumeDefaultRenderPass(): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder || !this._currentTextureView) {
-      console.warn(
-        "[WebGPU] resumeDefaultRenderPass: No command encoder or texture view",
+      this.log(
+        "warn",
+        "resumeDefaultRenderPass: No command encoder or texture view",
       );
       return null;
     }
@@ -1327,8 +1353,9 @@ export class WebGPUContext implements GraphicsContext {
         const passEncoder = renderPassEncoder || that._currentRenderPassEncoder;
 
         if (!passEncoder || !that._viewportQuadVertexBuffer) {
-          console.warn(
-            "[WebGPU] Cannot execute viewport quad - no render pass or vertex buffer",
+          that.log(
+            "warn",
+            "Cannot execute viewport quad - no render pass or vertex buffer",
           );
           return;
         }
@@ -1339,8 +1366,9 @@ export class WebGPUContext implements GraphicsContext {
         // 2. Create bind group from uniformMap
         // 3. Execute draw call
 
-        console.warn(
-          "[WebGPU] Viewport quad execution - pipeline creation not implemented",
+        that.log(
+          "warn",
+          "Viewport quad execution - pipeline creation not implemented",
         );
         // passEncoder.setPipeline(pipeline);
         // passEncoder.setBindGroup(0, bindGroup);
@@ -1396,7 +1424,7 @@ export class WebGPUContext implements GraphicsContext {
     //>>includeEnd('debug');
 
     if (!this._currentRenderPassEncoder) {
-      console.warn("[WebGPU] draw() called without active render pass encoder");
+      this.log("warn", "draw() called without active render pass encoder");
       return;
     }
 
@@ -1414,8 +1442,9 @@ export class WebGPUContext implements GraphicsContext {
       }
     } else {
       // Legacy draw command - log warning
-      console.warn(
-        "[WebGPU] Unsupported draw command format - use WebGPUDrawCommand",
+      this.log(
+        "warn",
+        "Unsupported draw command format - use WebGPUDrawCommand",
       );
     }
   }
@@ -1481,9 +1510,7 @@ export class WebGPUContext implements GraphicsContext {
    */
   readPixelsToPBO(readState: any): any {
     if (!this._device || !this._currentCommandEncoder) {
-      console.warn(
-        "[WebGPU] readPixelsToPBO: No active device or command encoder",
-      );
+      this.log("warn", "readPixelsToPBO: No active device or command encoder");
       return null;
     }
 
@@ -1535,7 +1562,7 @@ export class WebGPUContext implements GraphicsContext {
     }
 
     if (!sourceTexture) {
-      console.warn("[WebGPU] readPixelsToPBO: No source texture available");
+      this.log("warn", "readPixelsToPBO: No source texture available");
       readbackBuffer.destroy();
       return null;
     }
@@ -1575,8 +1602,9 @@ export class WebGPUContext implements GraphicsContext {
        */
       getBufferData: (dst: Uint8Array | Uint16Array | Float32Array): void => {
         if (!mappedData) {
+          // Can't use this.log() in closure — use console.warn with prefix
           console.warn(
-            "[WebGPU] getBufferData called before mapAsync completed",
+            "[CesiumJS:webgpu] getBufferData called before mapAsync completed",
           );
           return;
         }
@@ -1636,7 +1664,7 @@ export class WebGPUContext implements GraphicsContext {
       }
       return result;
     } catch (err) {
-      console.error("[WebGPU] readPixelsAsync failed:", err);
+      this.log("error", `readPixelsAsync failed: ${err}`);
       return null;
     } finally {
       pbo.destroy();
@@ -2041,6 +2069,161 @@ export class WebGPUContext implements GraphicsContext {
     return `WebGPU - ${adapterName}`;
   }
 
+  // ====================================================================================
+  // GraphicsContext Command Execution Overrides
+  // These override the default (WebGL) implementations so Scene.js
+  // can dispatch commands without any `isWebGPU` checks.
+  // ====================================================================================
+
+  /**
+   * WebGPU override: dispatch draw commands through the active render pass encoder.
+   * Silently skips non-WebGPU commands (expected during transition).
+   */
+  override executeDrawCommand(
+    command: any,
+    _scene: any,
+    _passState: any,
+    _debugFramebuffer?: any,
+  ): void {
+    const renderPass = this._currentRenderPassEncoder;
+    if (!renderPass) {
+      return;
+    }
+    if (command.isWebGPUDrawCommand === true) {
+      command.execute(renderPass);
+    }
+    // Non-WebGPU commands are silently skipped (expected during transition)
+  }
+
+  /**
+   * WebGPU override: execute compute commands that have the WebGPU compute flag.
+   * Sun compute is handled procedurally in WebGPUEnvironmentRenderer, so
+   * sunComputeCommand is skipped.
+   */
+  override executeComputeCommands(
+    computeCommandList: any[],
+    _sunComputeCommand: any,
+    _computeEngine: any,
+  ): void {
+    for (let i = 0; i < computeCommandList.length; ++i) {
+      const cmd = computeCommandList[i];
+      if (cmd.isWebGPUComputeCommand) {
+        cmd.execute(this);
+      }
+    }
+  }
+
+  /**
+   * WebGPU override: delegate shadow casting to the SHADOW_MAP feature renderer.
+   * Returns true to signal Scene.js that shadow casting was handled.
+   */
+  override executeShadowMapCastCommands(scene: any): boolean {
+    const shadowFR = this.getFeatureRenderer(
+      FeatureRendererKey.SHADOW_MAP,
+    ) as any;
+    if (!shadowFR?.renderCastPass) {
+      return true; // Handled (no-op if no shadow renderer registered)
+    }
+    const { shadowState, commandList } = scene.frameState;
+    const { shadowMaps } = shadowState;
+    const encoder = this._currentCommandEncoder;
+    if (!encoder) {
+      return true;
+    }
+    for (let i = 0; i < shadowMaps.length; ++i) {
+      const shadowMap = shadowMaps[i];
+      if (shadowMap.outOfView) {
+        continue;
+      }
+      const { passes } = shadowMap;
+      for (let j = 0; j < passes.length; ++j) {
+        passes[j].commandList.length = 0;
+      }
+      // insertShadowCastCommands is called from Scene.js before this
+      // but we need to collect commands here too
+      const castCommands: any[] = [];
+      for (let j = 0; j < passes.length; ++j) {
+        for (let k = 0; k < passes[j].commandList.length; ++k) {
+          castCommands.push(passes[j].commandList[k]);
+        }
+      }
+      if (castCommands.length > 0) {
+        this.endCurrentRenderPass();
+        shadowFR.renderCastPass(
+          encoder,
+          shadowMap,
+          scene._frameState,
+          castCommands,
+        );
+        this.resumeDefaultRenderPass();
+      }
+    }
+    return true;
+  }
+
+  /**
+   * WebGPU override: set environment state flags and clear with background color.
+   * Returns true to signal Scene.js that framebuffer setup was handled.
+   */
+  override updateAndClearFramebuffers(
+    scene: any,
+    passState: any,
+    clearColor: any,
+  ): boolean {
+    const frameState = scene._frameState;
+    const environmentState = scene._environmentState;
+    const passes = frameState.passes;
+    const picking = passes.pick || passes.pickVoxel;
+
+    environmentState.originalFramebuffer = passState.framebuffer;
+
+    const globe = scene._globe;
+    environmentState.clearGlobeDepth =
+      defined(globe) &&
+      globe.show &&
+      (!globe.depthTestAgainstTerrain ||
+        scene.mode === 1) /* SceneMode.SCENE2D */;
+    environmentState.useDepthPlane =
+      environmentState.clearGlobeDepth &&
+      scene.mode === 3 /* SceneMode.SCENE3D */ &&
+      scene._globeTranslucencyState.useDepthPlane;
+    environmentState.useGlobeDepthFramebuffer = false;
+
+    environmentState.useOIT =
+      !picking && scene._useOIT && defined(scene._alternateSceneRenderer);
+
+    const postProcess = scene.postProcessStages;
+    environmentState.usePostProcess =
+      !picking &&
+      (scene._hdr ||
+        postProcess.length > 0 ||
+        postProcess.ambientOcclusion.enabled ||
+        postProcess.fxaa.enabled ||
+        postProcess.bloom.enabled);
+    environmentState.usePostProcessSelected = false;
+
+    environmentState.useInvertClassification =
+      !picking && scene.invertClassification;
+    environmentState.renderTranslucentDepthForPick = false;
+    environmentState.useWebVR =
+      scene._useWebVR &&
+      scene.mode !== 1 /* SceneMode.SCENE2D */ &&
+      !passes.offscreen;
+
+    const clear = scene._clearColorCommand;
+    Color.clone(clearColor, clear.color);
+    clear.execute(this, passState);
+    return true;
+  }
+
+  /**
+   * WebGPU override: no-op for now (OIT composite and post-processing
+   * are not yet wired for WebGPU). Returns true to skip WebGL path.
+   */
+  override resolveFramebuffers(_scene: any, _passState: any): boolean {
+    return true;
+  }
+
   /**
    * Destroy the context and free all resources
    */
@@ -2048,6 +2231,10 @@ export class WebGPUContext implements GraphicsContext {
     if (this._isDestroyed) {
       return;
     }
+
+    // Unregister from the global ContextRegistry before destroying resources
+    this._unregisterFromRegistry();
+    this._destroyFeatureRenderers();
 
     // Destroy device
     if (this._device) {
@@ -2656,212 +2843,110 @@ export class WebGPUContext implements GraphicsContext {
   }
 
   // ====================================================================================
-  // Device Loss Recovery (S4-8)
+  // Device Loss Recovery — FORK-1 fix: delegated to WebGPUDeviceLossRecovery
+  // Previously ~150 lines of duplicated inline logic. Now uses the standalone
+  // recovery module with the DeviceLossRecoveryHost interface pattern.
   // ====================================================================================
 
   /**
-   * Set up the device lost event handler with recovery strategy.
-   * When the GPU device is lost (driver crash, tab backgrounding, etc.),
-   * this handler will attempt to re-create the device and restore the context.
-   *
-   * Recovery strategy:
-   * 1. Notify all registered callbacks immediately
-   * 2. If reason is "destroyed" (intentional), mark as FATAL — no recovery
-   * 3. Otherwise, attempt recovery up to _maxRecoveryAttempts times
-   * 4. On successful recovery, re-initialize context limits, textures, and caches
-   * 5. On failure, mark as FATAL and notify callbacks
-   *
+   * Set up device loss handler by creating and configuring a
+   * WebGPUDeviceLossRecovery instance that implements all recovery logic.
    * @private
    */
   private _setupDeviceLostHandler(): void {
     if (!this._device) return;
 
-    this._device.lost.then(async (info: GPUDeviceLostInfo) => {
-      const reason = info.reason ?? "unknown";
-      const message = info.message ?? "Device lost";
-
-      console.error(`[WebGPU] Device lost (reason: ${reason}): ${message}`);
-
-      // If the device was intentionally destroyed, don't attempt recovery
-      if (reason === "destroyed") {
-        this._deviceLossState = DeviceLossState.FATAL;
-        this._isDestroyed = true;
-        this._notifyDeviceLost(reason, message, DeviceLossState.FATAL, false);
-        return;
-      }
-
-      // Attempt recovery
-      this._deviceLossState = DeviceLossState.RECOVERING;
-      this._notifyDeviceLost(reason, message, DeviceLossState.RECOVERING, true);
-
-      const recovered = await this._attemptRecovery();
-
-      if (recovered) {
-        this._deviceLossState = DeviceLossState.HEALTHY;
-        this._recoveryAttempts = 0;
-        console.log("[WebGPU] Device recovery successful");
-        this._notifyDeviceLost(
-          "recovered",
-          "Device recovered successfully",
-          DeviceLossState.HEALTHY,
-          false,
-        );
-      } else {
-        this._deviceLossState = DeviceLossState.FATAL;
-        this._isDestroyed = true;
-        console.error(
-          "[WebGPU] Device recovery failed — context is permanently lost",
-        );
-        this._notifyDeviceLost(
-          reason,
-          "Recovery failed after maximum attempts",
-          DeviceLossState.FATAL,
-          false,
-        );
-      }
-    });
-  }
-
-  /**
-   * Attempt to recover from device loss by re-requesting the adapter and device.
-   * @private
-   * @returns {Promise<boolean>} True if recovery succeeded
-   */
-  private async _attemptRecovery(): Promise<boolean> {
-    for (let attempt = 1; attempt <= this._maxRecoveryAttempts; attempt++) {
-      this._recoveryAttempts = attempt;
-      console.log(
-        `[WebGPU] Recovery attempt ${attempt}/${this._maxRecoveryAttempts}...`,
-      );
-
-      try {
-        // Wait a bit before retrying (exponential backoff: 500ms, 1s, 2s)
-        await new Promise((resolve) =>
-          setTimeout(resolve, 500 * Math.pow(2, attempt - 1)),
-        );
-
-        // Re-request adapter
-        const adapter = await navigator.gpu.requestAdapter({
-          powerPreference: this._options.powerPreference ?? "high-performance",
-        });
-
-        if (!adapter) {
-          console.warn(
-            `[WebGPU] Recovery attempt ${attempt}: No adapter available`,
-          );
-          continue;
-        }
-
-        // Re-request device
-        const device = await adapter.requestDevice({
-          requiredFeatures: this._options.requiredFeatures ?? [],
-          requiredLimits: this._options.requiredLimits ?? {},
-        });
-
-        // Store new references
+    // Create the recovery host adapter that maps host interface to our methods
+    const host: DeviceLossRecoveryHost = {
+      get _adapter() {
+        return self._adapter;
+      },
+      get _device() {
+        return self._device;
+      },
+      get _isDestroyed() {
+        return self._isDestroyed;
+      },
+      set _isDestroyed(v: boolean) {
+        self._isDestroyed = v;
+      },
+      get _options() {
+        return self._options;
+      },
+      get _context() {
+        return self._context;
+      },
+      _setAdapter: (adapter: GPUAdapter) => {
         this._adapter = adapter;
+      },
+      _setDevice: (device: GPUDevice) => {
         this._device = device;
-        this._isDestroyed = false;
+      },
+      _initializeContextLimits: () => this._initializeContextLimits(),
+      _reconfigureCanvas: () => this._reconfigureCanvas(),
+      _initializeDefaultTextures: () => this._initializeDefaultTextures(),
+      _clearAllCaches: () => this._clearAllCaches(),
+    };
+    const self = this;
 
-        // Set up lost handler for the new device
-        this._setupDeviceLostHandler();
-
-        // Re-initialize context limits
-        this._initializeContextLimits();
-
-        // Re-configure canvas
-        if (this._context) {
-          this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-          this._context.configure({
-            device: this._device,
-            format: this._presentationFormat,
-            alphaMode: "opaque",
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-          });
-        }
-
-        // Re-initialize default textures
-        this._initializeDefaultTextures();
-
-        // Clear stale GPU resources (pipelines, bind groups, etc. are invalidated)
-        this._samplerCache.clear();
-        this._bindGroupLayoutCache.clear();
-        this._bindGroupCache.clear();
-        this._bufferPool.clear();
-        this._uniformBufferPool = [];
-        this._depthTexture = null;
-        this._depthTextureView = null;
-        this._viewportQuadVertexBuffer = null;
-        this._viewportQuadPipeline = null;
-
-        // Clear WebGPU-specific caches
-        if (this._webgpuShaderCache) {
-          this._webgpuShaderCache.clear();
-        }
-        if (this._webgpuPipelineCache) {
-          this._webgpuPipelineCache.clear();
-        }
-
-        console.log(`[WebGPU] Recovery attempt ${attempt}: SUCCESS`);
-        return true;
-      } catch (error) {
-        console.warn(
-          `[WebGPU] Recovery attempt ${attempt} failed:`,
-          (error as Error).message,
-        );
-      }
-    }
-
-    return false;
+    this._deviceLossRecovery = new WebGPUDeviceLossRecovery(host, 3);
+    this._deviceLossRecovery.setupHandler(this._device);
   }
 
   /**
-   * Notify all registered device loss callbacks.
+   * Re-configure the canvas context after device loss recovery.
+   * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @private
    */
-  private _notifyDeviceLost(
-    reason: string,
-    message: string,
-    state: DeviceLossState,
-    willRecover: boolean,
-  ): void {
-    const info = { reason, message, state, willRecover };
-    for (const callback of this._deviceLostCallbacks) {
-      try {
-        callback(info);
-      } catch (err) {
-        console.error("[WebGPU] Error in device lost callback:", err);
-      }
+  private _reconfigureCanvas(): void {
+    if (this._context && this._device) {
+      this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+      this._context.configure({
+        device: this._device,
+        format: this._presentationFormat,
+        alphaMode: "opaque",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      });
+    }
+  }
+
+  /**
+   * Clear all stale GPU caches after device loss recovery.
+   * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
+   * @private
+   */
+  private _clearAllCaches(): void {
+    this._samplerCache.clear();
+    this._bindGroupLayoutCache.clear();
+    this._bindGroupCache.clear();
+    this._bufferPool.clear();
+    this._uniformBufferPool = [];
+    this._depthTexture = null;
+    this._depthTextureView = null;
+    this._viewportQuadVertexBuffer = null;
+    this._viewportQuadPipeline = null;
+
+    if (this._webgpuShaderCache) {
+      this._webgpuShaderCache.clear();
+    }
+    if (this._webgpuPipelineCache) {
+      this._webgpuPipelineCache.clear();
     }
   }
 
   /**
    * Register a callback for device loss events.
-   * The callback receives information about the loss reason, current state,
-   * and whether automatic recovery will be attempted.
+   * Delegates to the WebGPUDeviceLossRecovery instance.
    *
    * @param {DeviceLostCallback} callback - Callback to invoke on device loss
    * @returns {() => void} A function to unregister the callback
-   *
-   * @example
-   * const unsubscribe = context.onDeviceLost((info) => {
-   *   if (info.state === DeviceLossState.FATAL) {
-   *     showError('GPU device lost permanently. Please refresh the page.');
-   *   } else if (info.state === DeviceLossState.RECOVERING) {
-   *     showMessage('GPU device lost, attempting recovery...');
-   *   } else if (info.state === DeviceLossState.HEALTHY) {
-   *     showMessage('GPU device recovered!');
-   *   }
-   * });
    */
   onDeviceLost(callback: DeviceLostCallback): () => void {
-    this._deviceLostCallbacks.push(callback);
-    return () => {
-      const index = this._deviceLostCallbacks.indexOf(callback);
-      if (index >= 0) {
-        this._deviceLostCallbacks.splice(index, 1);
-      }
-    };
+    if (this._deviceLossRecovery) {
+      return this._deviceLossRecovery.onDeviceLost(callback);
+    }
+    // Fallback: no-op unsubscribe if recovery not yet initialized
+    return () => {};
   }
 
   /**
@@ -2869,7 +2954,7 @@ export class WebGPUContext implements GraphicsContext {
    * @returns {DeviceLossState} Current device state
    */
   get deviceLossState(): DeviceLossState {
-    return this._deviceLossState;
+    return this._deviceLossRecovery?.state ?? DeviceLossState.HEALTHY;
   }
 
   /**
@@ -2877,7 +2962,7 @@ export class WebGPUContext implements GraphicsContext {
    * @returns {number} Number of recovery attempts
    */
   get recoveryAttempts(): number {
-    return this._recoveryAttempts;
+    return this._deviceLossRecovery?.attempts ?? 0;
   }
 }
 

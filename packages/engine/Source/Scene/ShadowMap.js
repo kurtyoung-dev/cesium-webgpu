@@ -38,16 +38,13 @@ import RenderbufferFormat from "../Renderer/RenderbufferFormat.js";
 import RenderState from "../Renderer/RenderState.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Camera from "./Camera.js";
 import CullFace from "./CullFace.js";
 import DebugCameraPrimitive from "./DebugCameraPrimitive.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
 import ShadowMapShader from "./ShadowMapShader.js";
-import {
-  initWebGPUShadowMap,
-  destroyWebGPUShadowMapResources,
-} from "../Renderer/WebGPU/WebGPUShadowMapRenderer.js";
 
 /**
  * <div class="notice">
@@ -1573,10 +1570,12 @@ ShadowMap.prototype.update = function (frameState) {
     // manages its own depth32float texture + comparison sampler.
     // Camera/culling volume computation below is still needed (renderer-agnostic).
     const context = frameState.context;
-    if (context.isWebGPU) {
+    const shadowFr = context.getFeatureRenderer(FeatureRendererKey.SHADOW_MAP);
+    if (shadowFr) {
       // WebGPU path — initialize depth32float texture + comparison sampler +
-      // depth-only cast pipeline via WebGPUShadowMapRenderer.
-      initWebGPUShadowMap(this, context);
+      // depth-only cast pipeline via feature renderer.
+      shadowFr.init(this, context);
+      this._featureRenderer = shadowFr;
     } else {
       updateFramebuffer(this, context);
     }
@@ -1949,7 +1948,9 @@ ShadowMap.prototype.isDestroyed = function () {
  * @private
  */
 ShadowMap.prototype.destroy = function () {
-  destroyWebGPUShadowMapResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   destroyFramebuffer(this);
 
   this._debugLightFrustum =

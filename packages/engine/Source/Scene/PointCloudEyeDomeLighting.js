@@ -12,10 +12,7 @@ import ShaderSource from "../Renderer/ShaderSource.js";
 import BlendingState from "../Scene/BlendingState.js";
 import StencilConstants from "../Scene/StencilConstants.js";
 import PointCloudEyeDomeLightingShader from "../Shaders/PostProcessStages/PointCloudEyeDomeLighting.js";
-import {
-  updateWebGPUPointCloudEDL,
-  destroyWebGPUPointCloudEDLResources,
-} from "../Renderer/WebGPU/WebGPUPointCloudEyeDomeLighting.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * Eye dome lighting. Does not support points with per-point translucency, but does allow translucent styling against the globe.
@@ -178,9 +175,13 @@ PointCloudEyeDomeLighting.prototype.update = function (
   pointCloudShading,
   boundingVolume,
 ) {
-  // WebGPU: Route to dedicated WebGPU eye-dome lighting renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUPointCloudEDL(this, frameState, []);
+  // Backend-specific rendering path — delegate to feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.POINT_CLOUD_EDL,
+  );
+  if (fr) {
+    this._featureRenderer = fr;
+    fr.update(this, frameState, []);
     return;
   }
 
@@ -289,7 +290,12 @@ PointCloudEyeDomeLighting.prototype.isDestroyed = function () {
  */
 PointCloudEyeDomeLighting.prototype.destroy = function () {
   destroyFramebuffer(this);
-  destroyWebGPUPointCloudEDLResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default PointCloudEyeDomeLighting;

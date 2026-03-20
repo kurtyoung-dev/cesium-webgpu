@@ -31,13 +31,7 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import VertexArray from "../Renderer/VertexArray.js";
-import {
-  createWebGPUCommands,
-  updateWebGPUCommandUniforms,
-  updateWebGPUPickCommandUniforms,
-  createWebGPUMaterialCommands,
-  updateWebGPUMaterialCommandUniforms,
-} from "../Renderer/WebGPU/WebGPUPrimitiveCommands.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import BatchTable from "./BatchTable.js";
 import CullFace from "./CullFace.js";
 import DepthFunction from "./DepthFunction.js";
@@ -1641,7 +1635,8 @@ function createVertexArray(primitive, frameState) {
   // Previous approach: deep-cloned all typed arrays via `new constructor(arr)`, which
   // doubled memory usage for every geometry. This reference-based approach saves ~50% of
   // geometry memory and eliminates O(n) copy overhead per vertex.
-  if (context.isWebGPU) {
+  const primitiveFR = context.getFeatureRenderer(FeatureRendererKey.PRIMITIVE);
+  if (primitiveFR) {
     primitive._webgpuGeometryData = [];
     for (let g = 0; g < geometries.length; g++) {
       const geom = geometries[g];
@@ -1721,9 +1716,9 @@ function createVertexArray(primitive, frameState) {
     primitive.geometryInstances = undefined;
   }
 
-  // For WebGPU, preserve raw geometry data to create WebGPU buffers later
+  // For alternate renderers, preserve raw geometry data to create GPU buffers later
   // WebGL doesn't need this, so set to undefined to save memory
-  if (!context.isWebGPU) {
+  if (!primitiveFR) {
     primitive._geometries = undefined;
   }
 
@@ -2005,34 +2000,26 @@ function createCommands(
   pickCommands,
   frameState,
 ) {
-  const isWebGPU = frameState.context.isWebGPU;
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.PRIMITIVE,
+  );
 
-  if (isWebGPU) {
+  if (fr) {
     // Route to material commands if the appearance has a material (MaterialAppearance, etc.)
     const hasMaterial = defined(material);
-    if (hasMaterial) {
-      createWebGPUMaterialCommands(
-        primitive,
-        appearance,
-        material,
-        translucent,
-        twoPasses,
-        colorCommands,
-        pickCommands,
-        frameState,
-      );
-    } else {
-      createWebGPUCommands(
-        primitive,
-        appearance,
-        material,
-        translucent,
-        twoPasses,
-        colorCommands,
-        pickCommands,
-        frameState,
-      );
-    }
+    const createFn = hasMaterial
+      ? fr.createMaterialCommands
+      : fr.createCommands;
+    createFn(
+      primitive,
+      appearance,
+      material,
+      translucent,
+      twoPasses,
+      colorCommands,
+      pickCommands,
+      frameState,
+    );
   } else {
     createWebGLCommands(
       primitive,
@@ -2157,17 +2144,22 @@ function updateAndQueueCommands(
         continue;
       }
 
-      // WebGPU: Update uniform buffers with current camera matrices every frame
+      // Alternate renderer: Update uniform buffers with current camera matrices every frame
       if (colorCommand.isWebGPUDrawCommand === true) {
-        const st = colorCommand._webgpuShaderType;
-        if (defined(st) && (st.startsWith("mat") || st.startsWith("pbr"))) {
-          updateWebGPUMaterialCommandUniforms(
-            colorCommand,
-            frameState,
-            modelMatrix,
-          );
-        } else {
-          updateWebGPUCommandUniforms(colorCommand, frameState, modelMatrix);
+        const pfr = frameState.context.getFeatureRenderer(
+          FeatureRendererKey.PRIMITIVE,
+        );
+        if (pfr) {
+          const st = colorCommand._webgpuShaderType;
+          if (defined(st) && (st.startsWith("mat") || st.startsWith("pbr"))) {
+            pfr.updateMaterialCommandUniforms(
+              colorCommand,
+              frameState,
+              modelMatrix,
+            );
+          } else {
+            pfr.updateCommandUniforms(colorCommand, frameState, modelMatrix);
+          }
         }
       }
 
@@ -2200,7 +2192,12 @@ function updateAndQueueCommands(
 
         // Update pick command uniforms (MVP + pickColor) every frame
         if (pickCommand.isWebGPUDrawCommand === true) {
-          updateWebGPUPickCommandUniforms(pickCommand, frameState, modelMatrix);
+          const pfr = frameState.context.getFeatureRenderer(
+            FeatureRendererKey.PRIMITIVE,
+          );
+          if (pfr) {
+            pfr.updatePickCommandUniforms(pickCommand, frameState, modelMatrix);
+          }
         }
 
         const pickSphereIndex = Math.min(k, boundingSpheres.length - 1);
@@ -2344,22 +2341,24 @@ Primitive.prototype.update = function (frameState) {
 
   const twoPasses = appearance.closed && translucent;
 
-  // For WebGPU, skip WebGL-specific render state and shader program creation
-  const isWebGPU = context.isWebGPU;
+  // For alternate renderers, skip WebGL-specific render state and shader program creation
+  const hasAlternateRenderer = !!context.getFeatureRenderer(
+    FeatureRendererKey.PRIMITIVE,
+  );
 
-  if (createRS && !isWebGPU) {
+  if (createRS && !hasAlternateRenderer) {
     const rsFunc = this._createRenderStatesFunction ?? createRenderStates;
     rsFunc(this, context, appearance, twoPasses);
   }
 
-  if (createSP && !isWebGPU) {
+  if (createSP && !hasAlternateRenderer) {
     const spFunc = this._createShaderProgramFunction ?? createShaderProgram;
     spFunc(this, frameState, appearance);
   }
 
-  // For WebGPU, always create commands when they don't exist or when appearance changes
+  // For alternate renderers, always create commands when they don't exist or when appearance changes
   // For WebGL, create commands when RS or SP changed
-  const needsCommands = isWebGPU
+  const needsCommands = hasAlternateRenderer
     ? createRS || createSP || this._colorCommands.length === 0
     : createRS || createSP;
 

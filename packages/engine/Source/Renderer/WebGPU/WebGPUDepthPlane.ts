@@ -9,8 +9,10 @@
  * scaled ellipsoid space based on the camera position and limb radius,
  * then renders with depth-write enabled and color-write disabled.
  *
- * For WebGPU, we use the same geometry computation but with a WebGPU
- * render pipeline configured for depth-only output.
+ * For WebGPU, we replicate the same geometry computation but with a
+ * WebGPU render pipeline configured for depth-only output. Positions
+ * are split into RTE (Relative-To-Eye) high/low pairs for planetary
+ * scale precision.
  *
  * The depth plane is only active in SCENE3D mode and is positioned at
  * the ellipsoid surface visible from the camera. It ensures that objects
@@ -18,6 +20,12 @@
  *
  * @private
  */
+
+import Cartesian3 from "../../Core/Cartesian3.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Ellipsoid from "../../Core/Ellipsoid.js";
+import OrthographicFrustum from "../../Core/OrthographicFrustum.js";
+import { m4Values } from "./webgpuTypeHelpers.js";
 
 // Simple depth-only WGSL shader for the depth plane
 // Uses RTE (Relative-To-Eye) precision for planetary-scale rendering
@@ -67,6 +75,149 @@ fn fragmentMain() -> @location(0) vec4<f32> {
 }
 `;
 
+// SceneMode.SCENE3D = 3
+const SCENE_MODE_3D = 3;
+
+// Scratch variables for depth quad computation (avoid per-frame allocations)
+const scratchCartesian1 = new Cartesian3();
+const scratchCartesian2 = new Cartesian3();
+const scratchCartesian3 = new Cartesian3();
+const scratchCartesian4 = new Cartesian3();
+const scratchCartesian5 = new Cartesian3();
+const scratchEncodedHigh: any = new Cartesian3();
+const scratchEncodedLow: any = new Cartesian3();
+
+// 4 corners × 6 floats (posHigh xyz + posLow xyz) = 24 floats
+const depthQuadRTE = new Float32Array(24);
+// 4×4 matrix (64 bytes) + vec3+pad (16) + vec3+pad (16) = 96 bytes = 24 floats
+const uniformScratch = new Float32Array(24);
+
+/**
+ * Compute the depth quad corners in world space from the camera and ellipsoid.
+ * This is a direct port of DepthPlane.js's computeDepthQuad().
+ *
+ * Returns a Float32Array of 12 values: 4 corners × 3 components (x,y,z)
+ */
+function computeDepthQuadCorners(
+  ellipsoid: any,
+  camera: any,
+  result: Cartesian3[],
+): void {
+  const radii = ellipsoid.radii;
+  let center: Cartesian3;
+  let eastOffset: Cartesian3;
+  let northOffset: Cartesian3;
+
+  if (camera.frustum instanceof OrthographicFrustum) {
+    center = Cartesian3.clone(Cartesian3.ZERO, scratchCartesian1)!;
+    eastOffset = camera.rightWC;
+    northOffset = camera.upWC;
+  } else {
+    const p = camera.positionWC;
+
+    // Find the corresponding position in the scaled space of the ellipsoid.
+    const q = Cartesian3.multiplyComponents(
+      ellipsoid.oneOverRadii,
+      p,
+      scratchCartesian1,
+    );
+
+    const qUnit = Cartesian3.normalize(q, scratchCartesian2);
+
+    // Determine the east and north directions at q.
+    const eUnit = Cartesian3.normalize(
+      Cartesian3.cross(Cartesian3.UNIT_Z, q, scratchCartesian3),
+      scratchCartesian3,
+    );
+    const nUnit = Cartesian3.normalize(
+      Cartesian3.cross(qUnit, eUnit, scratchCartesian4),
+      scratchCartesian4,
+    );
+
+    const qMagnitude = Cartesian3.magnitude(q);
+
+    // Determine the radius of the 'limb' of the ellipsoid.
+    const wMagnitude = Math.sqrt(qMagnitude * qMagnitude - 1.0);
+
+    // Compute the center and offsets.
+    center = Cartesian3.multiplyByScalar(
+      qUnit,
+      1.0 / qMagnitude,
+      scratchCartesian1,
+    );
+    const scalar = wMagnitude / qMagnitude;
+    eastOffset = Cartesian3.multiplyByScalar(eUnit, scalar, scratchCartesian2);
+    northOffset = Cartesian3.multiplyByScalar(nUnit, scalar, scratchCartesian3);
+  }
+
+  // Compute 4 corners in scaled ellipsoid space, then scale back to world
+  // Upper-left
+  const ul = Cartesian3.add(center, northOffset, scratchCartesian5);
+  Cartesian3.subtract(ul, eastOffset, ul);
+  Cartesian3.multiplyComponents(radii, ul, result[0]);
+
+  // Lower-left
+  const ll = Cartesian3.subtract(center, northOffset, scratchCartesian5);
+  Cartesian3.subtract(ll, eastOffset, ll);
+  Cartesian3.multiplyComponents(radii, ll, result[1]);
+
+  // Upper-right
+  const ur = Cartesian3.add(center, northOffset, scratchCartesian5);
+  Cartesian3.add(ur, eastOffset, ur);
+  Cartesian3.multiplyComponents(radii, ur, result[2]);
+
+  // Lower-right
+  const lr = Cartesian3.subtract(center, northOffset, scratchCartesian5);
+  Cartesian3.add(lr, eastOffset, lr);
+  Cartesian3.multiplyComponents(radii, lr, result[3]);
+}
+
+/**
+ * Encode 4 world-space corners into RTE vertex data.
+ * Output: interleaved [posHighX, posHighY, posHighZ, posLowX, posLowY, posLowZ] × 4
+ */
+function encodeQuadToRTE(corners: Cartesian3[], result: Float32Array): void {
+  for (let i = 0; i < 4; i++) {
+    (EncodedCartesian3 as any).fromCartesian(corners[i], scratchEncodedHigh);
+    // EncodedCartesian3.fromCartesian stores high in result, low in a second output
+    // We use the encode function that splits into high/low
+    const high: any = (EncodedCartesian3 as any).encode(
+      corners[i].x,
+      scratchEncodedHigh,
+    );
+    const offset = i * 6;
+    result[offset] = high.high;
+    result[offset + 3] = high.low;
+
+    const highY: any = (EncodedCartesian3 as any).encode(
+      corners[i].y,
+      scratchEncodedHigh,
+    );
+    result[offset + 1] = highY.high;
+    result[offset + 4] = highY.low;
+
+    const highZ: any = (EncodedCartesian3 as any).encode(
+      corners[i].z,
+      scratchEncodedHigh,
+    );
+    result[offset + 2] = highZ.high;
+    result[offset + 5] = highZ.low;
+  }
+}
+
+// Scratch corners - allocated once
+const scratchCorners = [
+  new Cartesian3(),
+  new Cartesian3(),
+  new Cartesian3(),
+  new Cartesian3(),
+];
+
+// Indexed triangle list for the quad: two triangles from 4 corners
+// Matches WebGL DepthPlane: indices [0, 1, 2, 2, 1, 3]
+// But we use triangle-strip topology: [0, 1, 2, 3] draws the same quad
+// (upperLeft, lowerLeft, upperRight, lowerRight)
+
 export class WebGPUDepthPlane {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
@@ -77,9 +228,14 @@ export class WebGPUDepthPlane {
   private _shaderModule: GPUShaderModule | null = null;
   private _vertexCount: number = 0;
   private _isDestroyed: boolean = false;
+  private _ellipsoidOffset: number;
 
   // Track whether the depth plane is enabled for the current frame
   private _enabled: boolean = false;
+
+  constructor(ellipsoidOffset: number = 0) {
+    this._ellipsoidOffset = ellipsoidOffset;
+  }
 
   get enabled(): boolean {
     return this._enabled;
@@ -169,6 +325,13 @@ export class WebGPUDepthPlane {
         cullMode: "none",
       },
     });
+
+    // Pre-allocate vertex buffer for 4 corners × 24 bytes each = 96 bytes
+    this._vertexBuffer = device.createBuffer({
+      label: "DepthPlane-Vertices",
+      size: 96, // 4 corners × 6 floats × 4 bytes
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
   }
 
   /**
@@ -221,28 +384,65 @@ export class WebGPUDepthPlane {
    */
   update(frameState: any, device: GPUDevice): void {
     // The depth plane is only used in 3D mode (SceneMode.SCENE3D = 3)
-    if (!frameState || !frameState.camera) {
+    if (
+      !frameState ||
+      !frameState.camera ||
+      frameState.mode !== SCENE_MODE_3D
+    ) {
+      this._enabled = false;
       return;
     }
 
-    // Access the depth plane data computed by the WebGL DepthPlane.js
-    // during the scene update. If the scene has computed depth plane
-    // geometry (via DepthPlane.update), it will be stored on the frame state.
-    const depthPlane = frameState.scene?._depthPlane;
-    if (!depthPlane || !depthPlane._rs) {
+    if (!this._pipeline) {
       return;
     }
 
-    // The depth plane vertex array stores 4 corners as posHigh/posLow pairs.
-    // Extract the raw vertex data if available.
-    const va = depthPlane._va;
-    if (!va) {
+    // Allow offsetting the ellipsoid radius to address rendering artifacts
+    // below ellipsoid zero elevation (matches WebGL DepthPlane behavior)
+    const baseRadii = frameState.mapProjection.ellipsoid.radii;
+    const ellipsoid = new Ellipsoid(
+      baseRadii.x + this._ellipsoidOffset,
+      baseRadii.y + this._ellipsoidOffset,
+      baseRadii.z + this._ellipsoidOffset,
+    );
+
+    // Compute the 4 quad corners in world space
+    computeDepthQuadCorners(ellipsoid, frameState.camera, scratchCorners);
+
+    // Encode corners into RTE vertex data
+    encodeQuadToRTE(scratchCorners, depthQuadRTE);
+
+    // Update vertex buffer
+    this.updateVertices(device, depthQuadRTE);
+
+    // Build uniform data: mvpRelativeToEye (mat4) + encodedCameraHigh (vec3+pad) + encodedCameraLow (vec3+pad)
+    const uniformState = frameState.context.uniformState;
+    if (!uniformState) {
+      this._enabled = false;
       return;
     }
 
-    // TODO: Extract vertex data from WebGL DepthPlane's vertex array
-    // and call updateVertices() + updateUniforms(). For now, the depth
-    // plane will be populated when the Scene integration is completed.
+    const mvpRTE = uniformState.modelViewProjectionRelativeToEye;
+    const mvp = m4Values(mvpRTE);
+    for (let i = 0; i < 16; i++) {
+      uniformScratch[i] = mvp[i];
+    }
+
+    const camHigh = uniformState.encodedCameraPositionMCHigh;
+    const camLow = uniformState.encodedCameraPositionMCLow;
+    uniformScratch[16] = camHigh.x;
+    uniformScratch[17] = camHigh.y;
+    uniformScratch[18] = camHigh.z;
+    uniformScratch[19] = 0.0; // padding
+    uniformScratch[20] = camLow.x;
+    uniformScratch[21] = camLow.y;
+    uniformScratch[22] = camLow.z;
+    uniformScratch[23] = 0.0; // padding
+
+    this.updateUniforms(device, uniformScratch);
+
+    this._enabled = true;
+    this._vertexCount = 4; // triangle strip with 4 vertices
   }
 
   /**

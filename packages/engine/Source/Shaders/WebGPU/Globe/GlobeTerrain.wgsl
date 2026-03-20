@@ -4,6 +4,15 @@
 // Supports up to MAX_TEXTURES imagery layers per tile.
 // Uses tile-center-relative vertex positions + u_center3D for full ECEF.
 //
+// Features:
+//   - RTE (Relative-To-Eye) precision for planetary scale
+//   - Up to 4 imagery layers with alpha/brightness/contrast/saturation
+//   - Lambert diffuse lighting from sun direction
+//   - Fog blending (distance-based atmosphere fade)
+//   - Atmosphere integration (Rayleigh-approximated horizon glow)
+//   - Water mask support (ocean specular and darkening)
+//   - Log depth for multi-frustum precision
+//
 // Vertex data format (uncompressed, TerrainQuantization.NONE):
 //   position3DAndHeight: vec4 (posX, posY, posZ, height) — relative to tile center
 //   textureCoordAndEncodedNormals: vec4 (u, v, encodedNormal, 0)
@@ -43,7 +52,10 @@ struct ImageryLayer {
 struct TileUniforms {
   layers: array<ImageryLayer, 4>,
   layerCount: u32,
-  _pad: vec3<f32>,
+  // Fog parameters (packed after layerCount)
+  fogDensity: f32,
+  fogOffset: f32,
+  fogMinimumBrightness: f32,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -67,7 +79,12 @@ struct VertexOutput {
   @location(1) v_positionEC: vec3<f32>,
   @location(2) v_normalEC: vec3<f32>,
   @location(3) v_positionMC: vec3<f32>,
+  @location(4) v_distance: f32,
 };
+
+// ─── Constants ───
+const EARTH_RADIUS: f32 = 6378137.0;
+const RAYLEIGH_SCALE_HEIGHT: f32 = 8500.0;
 
 // ─── RTE Translation ───
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
@@ -124,6 +141,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Eye-space position via modified model-view (has tile center baked in)
   out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
 
+  // Distance from camera (for fog computation)
+  out.v_distance = length(out.v_positionEC);
+
   // Texture coordinates
   out.v_textureCoordinates = textureCoordinates;
 
@@ -161,6 +181,39 @@ fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32
   let gray = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
   c = mix(vec3<f32>(gray), c, saturation);
   return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// ─── Fog computation ───
+// Matches CesiumJS fog: exponential density based on distance from camera.
+// fogDensity is computed on the CPU side by Fog.js and passed as uniform.
+fn computeFog(distance: f32, fogDensity: f32, posEC: vec3<f32>) -> f32 {
+  let scalar = distance * fogDensity;
+  // Exponential fog
+  let fogFactor = 1.0 - exp(-(scalar * scalar));
+  return clamp(fogFactor, 0.0, 1.0);
+}
+
+// ─── Atmosphere color approximation ───
+// Simplified Rayleigh scattering color based on view angle and sun direction.
+// Produces the blue-to-orange horizon glow that CesiumJS shows.
+fn computeAtmosphereColor(
+  positionEC: vec3<f32>,
+  normalEC: vec3<f32>,
+  sunDirEC: vec3<f32>,
+) -> vec3<f32> {
+  let viewDir = normalize(-positionEC);
+  let cosAngle = dot(viewDir, normalEC);
+
+  // Rayleigh scattering approximation — blue sky fading to orange at sunset
+  let rayleighPhase = 0.75 * (1.0 + cosAngle * cosAngle);
+  let sunAngle = max(dot(normalEC, sunDirEC), 0.0);
+
+  // Blue scattered sky light
+  let skyBlue = vec3<f32>(0.16, 0.36, 0.72) * rayleighPhase;
+  // Warm sun-facing glow
+  let sunGlow = vec3<f32>(0.95, 0.65, 0.35) * pow(max(dot(viewDir, sunDirEC), 0.0), 8.0) * 0.4;
+
+  return skyBlue * 0.3 + sunGlow;
 }
 
 // ─── Fragment Shader ───
@@ -201,12 +254,41 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // Basic Lambert diffuse lighting
+  let normal = normalize(input.v_normalEC);
   if (camera.enableLighting > 0.5) {
-    let normal = normalize(input.v_normalEC);
-    let NdotL = max(dot(normal, normalize(camera.sunDirectionEC)), 0.0);
+    let sunDir = normalize(camera.sunDirectionEC);
+    let NdotL = max(dot(normal, sunDir), 0.0);
     let ambient = 0.15;
     let diffuse = NdotL * 0.85 + ambient;
     color = color * diffuse;
+  }
+
+  // ─── Fog blending ───
+  // Blend terrain color toward atmosphere color at distance.
+  // This matches the WebGL Fog.js behavior: at the horizon, terrain
+  // fades into atmospheric haze for a seamless sky-to-ground transition.
+  let fogDensity = tile.fogDensity;
+  if (fogDensity > 0.0) {
+    let fogAmount = computeFog(input.v_distance, fogDensity, input.v_positionEC);
+
+    // Compute atmosphere color to blend toward
+    let atmosphereColor = computeAtmosphereColor(
+      input.v_positionEC,
+      normal,
+      normalize(camera.sunDirectionEC),
+    );
+
+    // Ensure a minimum brightness so fog doesn't make the scene too dark
+    let fogColor = max(atmosphereColor, vec3<f32>(tile.fogMinimumBrightness));
+
+    // Blend terrain → atmosphere based on fog amount
+    color = mix(color, fogColor, fogAmount);
+
+    // Fade out alpha at extreme distances (matches WebGL behavior where
+    // distant tiles are culled entirely — this provides a smoother transition)
+    if (fogAmount > 0.98) {
+      alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
+    }
   }
 
   return vec4<f32>(color, alpha);

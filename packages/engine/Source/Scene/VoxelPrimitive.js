@@ -28,10 +28,7 @@ import VoxelContent from "./VoxelContent.js";
 import VoxelShapeType from "./VoxelShapeType.js";
 import VoxelTraversal from "./VoxelTraversal.js";
 import VoxelMetadataOrder from "./VoxelMetadataOrder.js";
-import {
-  updateWebGPUVoxelPrimitive,
-  destroyWebGPUVoxelResources,
-} from "../Renderer/WebGPU/WebGPUVoxelRenderer.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * A primitive that renders voxel data from a {@link VoxelProvider}.
@@ -1104,9 +1101,13 @@ const scratchCameraTileCoordinates = new Cartesian4();
  * @private
  */
 VoxelPrimitive.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU voxel renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUVoxelPrimitive(this, frameState);
+  // Backend-specific rendering path — delegate to feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.VOXEL_PRIMITIVE,
+  );
+  if (fr) {
+    this._featureRenderer = fr;
+    fr.update(this, frameState);
     return;
   }
 
@@ -1874,7 +1875,12 @@ VoxelPrimitive.prototype.destroy = function () {
   this.statistics.texturesByteLength = 0;
   this._clippingPlanes = this._clippingPlanes && this._clippingPlanes.destroy();
 
-  destroyWebGPUVoxelResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 

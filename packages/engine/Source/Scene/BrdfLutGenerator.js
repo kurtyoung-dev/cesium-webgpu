@@ -7,11 +7,8 @@ import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import BrdfLutGeneratorFS from "../Shaders/BrdfLutGeneratorFS.js";
-import {
-  updateWebGPUBrdfLut,
-  destroyWebGPUBrdfLutResources,
-} from "../Renderer/WebGPU/WebGPUBrdfLutGenerator.js";
 
 /**
  * @private
@@ -41,9 +38,11 @@ function createCommand(generator, context, framebuffer) {
 }
 
 BrdfLutGenerator.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU BRDF LUT generator (compute shader)
-  if (frameState.context.isWebGPU) {
-    updateWebGPUBrdfLut(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.BRDF_LUT);
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
 
@@ -80,7 +79,9 @@ BrdfLutGenerator.prototype.isDestroyed = function () {
 
 BrdfLutGenerator.prototype.destroy = function () {
   this._colorTexture = this._colorTexture && this._colorTexture.destroy();
-  destroyWebGPUBrdfLutResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default BrdfLutGenerator;

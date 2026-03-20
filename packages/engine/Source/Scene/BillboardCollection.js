@@ -32,14 +32,11 @@ import HorizontalOrigin from "./HorizontalOrigin.js";
 import SceneMode from "./SceneMode.js";
 import SDFSettings from "./SDFSettings.js";
 import TextureAtlas from "../Renderer/TextureAtlas.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import VerticalOrigin from "./VerticalOrigin.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
 import DeveloperError from "../Core/DeveloperError.js";
-import {
-  updateWebGPUBillboards,
-  destroyWebGPUBillboardResources,
-} from "../Renderer/WebGPU/WebGPUBillboardRenderer.js";
 
 const SHOW_INDEX = Billboard.SHOW_INDEX;
 const POSITION_INDEX = Billboard.POSITION_INDEX;
@@ -1610,9 +1607,13 @@ BillboardCollection.prototype.update = function (frameState) {
   });
   // ─── End shared scene logic ───
 
-  // WebGPU rendering path — skip all WebGL code
-  if (context.isWebGPU) {
-    updateWebGPUBillboards(this, frameState, frameState.commandList);
+  // Backend-specific rendering path — delegate to feature renderer if available
+  const fr = context.getFeatureRenderer(
+    FeatureRendererKey.BILLBOARD_COLLECTION,
+  );
+  if (fr) {
+    this._featureRenderer = fr;
+    fr.update(this, frameState, frameState.commandList);
     return;
   }
 
@@ -2162,7 +2163,12 @@ BillboardCollection.prototype.destroy = function () {
   this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
   this._vaf = this._vaf && this._vaf.destroy();
   destroyBillboards(this._billboards);
-  destroyWebGPUBillboardResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
 
   return destroyObject(this);
 };

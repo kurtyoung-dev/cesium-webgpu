@@ -19,13 +19,13 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import Texture from "../Renderer/Texture.js";
 import VertexArray from "../Renderer/VertexArray.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import SunFS from "../Shaders/SunFS.js";
 import SunTextureFS from "../Shaders/SunTextureFS.js";
 import SunVS from "../Shaders/SunVS.js";
 import BlendingState from "./BlendingState.js";
 import SceneMode from "./SceneMode.js";
 import SceneTransforms from "./SceneTransforms.js";
-import { updateWebGPUSun } from "../Renderer/WebGPU/WebGPUEnvironmentRenderer.js";
 
 /**
  * Draws a sun billboard.
@@ -127,9 +127,10 @@ Sun.prototype.update = function (frameState, passState, useHdr) {
     return undefined;
   }
 
-  // WebGPU rendering path — use dedicated Sun renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUSun(this, frameState, frameState.commandList);
+  // Backend-specific rendering via Feature Renderer
+  const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.SUN);
+  if (fr) {
+    fr.update(this, frameState, frameState.commandList);
     return undefined;
   }
 

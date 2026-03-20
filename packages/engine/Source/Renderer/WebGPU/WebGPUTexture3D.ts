@@ -285,10 +285,11 @@ class WebGPUTexture3D {
       );
     } else {
       // Need to pad rows for alignment
+      const view = data as ArrayBufferView;
       const srcData = new Uint8Array(
-        (data as any).buffer,
-        (data as any).byteOffset,
-        (data as any).byteLength,
+        view.buffer,
+        view.byteOffset,
+        view.byteLength,
       );
       const paddedData = new Uint8Array(alignedBytesPerRow * height * depth);
       for (let z = 0; z < depth; z++) {

@@ -1,270 +1,373 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Pick Framebuffer
+ * WebGPU Pick Framebuffer — Renders pick-color pass and reads back pixel data
  *
- * Manages the pick framebuffer for scene.pick() and scene.drillPick().
- * Renders pick commands into an rgba8unorm texture where each pixel encodes
- * a pick ID. The picked pixel is read back to CPU via a staging buffer.
+ * Equivalent of PickFramebuffer.js for WebGPU. Creates an offscreen render
+ * target (rgba8unorm + depth24plus-stencil8), renders the scene's pick pass
+ * into it, then uses copyTextureToBuffer + mapAsync for GPU readback.
  *
- * Equivalent to PickFramebuffer.js + PickDepth.js in the WebGL renderer.
- *
- * Usage flow:
- *   1. begin() — start a pick pass (clear pick texture)
- *   2. end(screenPosition) — end the pass, read back the pixel at the given position
- *   3. The returned color is decoded to a pick ID via context._pickObjects
+ * Because WebGPU readback is inherently async, synchronous `end()` uses a
+ * pre-mapped staging buffer that was mapped in a previous frame. The first
+ * call may return empty results. `endAsync()` always works correctly.
  *
  * @private
  */
 
-export interface PickResult {
-  /** The RGBA color read from the pick buffer (0-255 per channel) */
-  color: Uint8Array;
-  /** Whether the pick hit something (non-zero color) */
-  hit: boolean;
+import BoundingRectangle from "../../Core/BoundingRectangle.js";
+import Color from "../../Core/Color.js";
+import defined from "../../Core/defined.js";
+
+/**
+ * Spiral search pattern for finding picked objects from center outward.
+ */
+function pickObjectsFromPixels(
+  context: any,
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  limit: number = 1,
+): any[] {
+  const max = Math.max(width, height);
+  const length = max * max;
+  const halfWidth = Math.floor(width * 0.5);
+  const halfHeight = Math.floor(height * 0.5);
+
+  let x = 0;
+  let y = 0;
+  let dx = 0;
+  let dy = -1;
+
+  const objects = new Set<any>();
+  for (let i = 0; i < length; ++i) {
+    if (
+      -halfWidth <= x &&
+      x <= halfWidth &&
+      -halfHeight <= y &&
+      y <= halfHeight
+    ) {
+      const index = 4 * ((halfHeight - y) * width + x + halfWidth);
+      const r = pixels[index];
+      const g = pixels[index + 1];
+      const b = pixels[index + 2];
+      const a = pixels[index + 3];
+
+      if (a > 0) {
+        // Non-zero alpha means something was rendered
+        const pickColor = Color.bytesToRgba(r, g, b, a);
+        const object = context.getObjectByPickColor(pickColor);
+        if (defined(object)) {
+          objects.add(object);
+          if (objects.size >= limit) {
+            break;
+          }
+        }
+      }
+    }
+
+    // Spiral direction changes
+    if (x === y || (x < 0 && -x === y) || (x > 0 && x === 1 - y)) {
+      const temp = dx;
+      dx = -dy;
+      dy = temp;
+    }
+
+    x += dx;
+    y += dy;
+  }
+  return [...objects];
 }
 
 export class WebGPUPickFramebuffer {
+  private _context: any;
   private _device: GPUDevice | null = null;
+  private _colorTexture: GPUTexture | null = null;
+  private _depthTexture: GPUTexture | null = null;
   private _width: number = 0;
   private _height: number = 0;
+  private _passState: any;
 
-  // Pick render target (rgba8unorm for pick ID encoding)
-  private _pickTexture: GPUTexture | null = null;
-  private _pickTextureView: GPUTextureView | null = null;
-
-  // Depth-stencil for pick pass
-  private _depthTexture: GPUTexture | null = null;
-  private _depthTextureView: GPUTextureView | null = null;
-
-  // Staging buffer for GPU→CPU readback
+  // Staging buffer for readback
   private _stagingBuffer: GPUBuffer | null = null;
-  private _readbackPending: boolean = false;
+  private _stagingBufferSize: number = 0;
+  private _lastReadPixels: Uint8Array | null = null;
 
-  private _isDestroyed: boolean = false;
+  constructor(context: any) {
+    this._context = context;
+    this._device = context._device ?? null;
 
-  /**
-   * Update the pick framebuffer to match the viewport size.
-   */
-  update(device: GPUDevice, width: number, height: number): void {
-    if (width <= 0 || height <= 0) {
-      return;
-    }
-
-    const needsRecreate =
-      this._device !== device ||
-      this._width !== width ||
-      this._height !== height;
-
-    if (!needsRecreate && this._pickTexture) {
-      return;
-    }
-
-    this._device = device;
-    this._width = width;
-    this._height = height;
-
-    this._destroyTextures();
-
-    // Pick color texture — rgba8unorm for pick ID encoding
-    this._pickTexture = device.createTexture({
-      label: "PickFramebuffer-Color",
-      size: { width, height },
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
-    this._pickTextureView = this._pickTexture.createView({
-      label: "PickFramebuffer-ColorView",
-    });
-
-    // Depth-stencil for correct depth testing during pick pass
-    this._depthTexture = device.createTexture({
-      label: "PickFramebuffer-Depth",
-      size: { width, height },
-      format: "depth24plus-stencil8",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this._depthTextureView = this._depthTexture.createView({
-      label: "PickFramebuffer-DepthView",
-    });
-
-    // Staging buffer for single-pixel readback (4 bytes = rgba8)
-    this._stagingBuffer?.destroy();
-    this._stagingBuffer = device.createBuffer({
-      label: "PickFramebuffer-Staging",
-      size: 256, // Minimum buffer mapping size; we only need 4 bytes
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-  }
-
-  /**
-   * Get a GPURenderPassDescriptor for the pick pass.
-   * Clears the pick texture to (0,0,0,0) — zero means "nothing picked".
-   */
-  getPickPassDescriptor(): GPURenderPassDescriptor | null {
-    if (!this._pickTextureView || !this._depthTextureView) {
-      return null;
-    }
-
-    return {
-      label: "PickPass",
-      colorAttachments: [
-        {
-          view: this._pickTextureView,
-          loadOp: "clear" as GPULoadOp,
-          storeOp: "store" as GPUStoreOp,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        },
-      ],
-      depthStencilAttachment: {
-        view: this._depthTextureView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear" as GPULoadOp,
-        depthStoreOp: "store" as GPUStoreOp,
-        stencilClearValue: 0,
-        stencilLoadOp: "clear" as GPULoadOp,
-        stencilStoreOp: "store" as GPUStoreOp,
+    // Create pass state with scissor/viewport
+    this._passState = {
+      framebuffer: undefined,
+      blendingEnabled: false,
+      scissorTest: {
+        enabled: true,
+        rectangle: new BoundingRectangle(),
       },
+      viewport: new BoundingRectangle(),
     };
   }
 
   /**
-   * Get the pick texture view for external use (e.g., derived commands).
+   * Begin a pick rendering pass.
+   * Creates/resizes the offscreen render targets and returns a pass state.
    */
-  get pickTextureView(): GPUTextureView | null {
-    return this._pickTextureView;
-  }
-
-  /**
-   * Get the depth texture view for external use.
-   */
-  get depthTextureView(): GPUTextureView | null {
-    return this._depthTextureView;
-  }
-
-  /**
-   * Read the pick color at a specific screen position.
-   * Copies a single pixel from the pick texture to a staging buffer,
-   * then maps and reads the result.
-   *
-   * @param encoder The command encoder (before submit)
-   * @param x Screen x coordinate
-   * @param y Screen y coordinate
-   * @returns Promise resolving to the pick result
-   */
-  async readPickPixel(
-    encoder: GPUCommandEncoder,
-    x: number,
-    y: number,
-  ): Promise<PickResult> {
-    if (!this._pickTexture || !this._stagingBuffer || !this._device) {
-      return { color: new Uint8Array(4), hit: false };
+  begin(screenSpaceRectangle: any, viewport: any): any {
+    const device = this._context._device;
+    if (!device) {
+      return this._passState;
     }
+    this._device = device;
 
-    // Clamp coordinates to texture bounds
-    const px = Math.max(0, Math.min(Math.floor(x), this._width - 1));
-    const py = Math.max(0, Math.min(Math.floor(y), this._height - 1));
+    const { width, height } = viewport;
 
-    // Copy the single pixel from pick texture to staging buffer
-    encoder.copyTextureToBuffer(
-      {
-        texture: this._pickTexture,
-        origin: { x: px, y: py },
-      },
-      {
-        buffer: this._stagingBuffer,
-        bytesPerRow: 256, // Must be multiple of 256
-      },
-      { width: 1, height: 1 },
+    BoundingRectangle.clone(
+      screenSpaceRectangle,
+      this._passState.scissorTest.rectangle,
     );
 
-    return { color: new Uint8Array(4), hit: false };
+    // Create or recreate render targets
+    if (width !== this._width || height !== this._height) {
+      this._destroyTextures();
+
+      this._colorTexture = device.createTexture({
+        label: "Pick color texture",
+        size: [width, height],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.COPY_SRC |
+          GPUTextureUsage.TEXTURE_BINDING,
+      });
+
+      this._depthTexture = device.createTexture({
+        label: "Pick depth texture",
+        size: [width, height],
+        format: "depth24plus-stencil8",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      this._width = width;
+      this._height = height;
+
+      // Create staging buffer for readback
+      // Row alignment: WebGPU requires rows to be aligned to 256 bytes
+      const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+      const bufferSize = bytesPerRow * height;
+      if (bufferSize !== this._stagingBufferSize) {
+        if (this._stagingBuffer) {
+          this._stagingBuffer.destroy();
+        }
+        this._stagingBuffer = device.createBuffer({
+          label: "Pick staging buffer",
+          size: bufferSize,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        this._stagingBufferSize = bufferSize;
+      }
+    }
+
+    // Store the pick framebuffer info so the context can use it
+    this._passState.framebuffer = {
+      _isWebGPUPickFBO: true,
+      colorTexture: this._colorTexture,
+      depthTexture: this._depthTexture,
+      colorView: this._colorTexture?.createView(),
+      depthView: this._depthTexture?.createView(),
+      width: this._width,
+      height: this._height,
+    };
+
+    this._passState.viewport.width = width;
+    this._passState.viewport.height = height;
+
+    return this._passState;
   }
 
   /**
-   * After command buffer submission, map the staging buffer and read the pixel.
-   * Call this after device.queue.submit() and device.queue.onSubmittedWorkDone().
-   */
-  async readStagingBuffer(): Promise<PickResult> {
-    if (!this._stagingBuffer || !this._device) {
-      return { color: new Uint8Array(4), hit: false };
-    }
-
-    try {
-      await this._stagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
-      const data = new Uint8Array(this._stagingBuffer.getMappedRange(0, 4));
-      const color = new Uint8Array([data[0], data[1], data[2], data[3]]);
-      this._stagingBuffer.unmap();
-
-      const hit =
-        color[0] !== 0 || color[1] !== 0 || color[2] !== 0 || color[3] !== 0;
-
-      return { color, hit };
-    } catch {
-      return { color: new Uint8Array(4), hit: false };
-    }
-  }
-
-  /**
-   * Perform a complete pick operation: copy pixel + submit + read back.
-   * This is a convenience method that handles the full async flow.
+   * End the pick pass and synchronously read back picked objects.
+   * Note: On WebGPU, synchronous readback may return empty results on the first call
+   * because GPU readback is inherently async. Use endAsync() for reliable results.
    *
-   * @param device The GPU device
-   * @param x Screen x coordinate
-   * @param y Screen y coordinate
-   * @returns Promise resolving to the pick result
+   * For practical use, this returns the result from the previous frame's readback
+   * if available, while starting a new readback for the current frame.
    */
-  async pick(device: GPUDevice, x: number, y: number): Promise<PickResult> {
-    if (!this._pickTexture || !this._stagingBuffer) {
-      return { color: new Uint8Array(4), hit: false };
+  end(screenSpaceRectangle: any, limit: number = 1): any[] {
+    const context = this._context;
+    const device = this._device;
+
+    if (!device || !this._colorTexture || !this._stagingBuffer) {
+      return [];
     }
 
-    const px = Math.max(0, Math.min(Math.floor(x), this._width - 1));
-    const py = Math.max(0, Math.min(Math.floor(y), this._height - 1));
+    const width = screenSpaceRectangle.width ?? 1;
+    const height = screenSpaceRectangle.height ?? 1;
 
-    // Create a dedicated encoder for the copy
+    // Start async readback for the current frame
+    this._startReadback(width, height);
+
+    // Return previous frame's results if available
+    if (this._lastReadPixels) {
+      return pickObjectsFromPixels(
+        context,
+        this._lastReadPixels,
+        width,
+        height,
+        limit,
+      );
+    }
+
+    return [];
+  }
+
+  /**
+   * End the pick pass and asynchronously read back picked objects.
+   * This is the recommended path for WebGPU — always returns correct results.
+   */
+  async endAsync(
+    screenSpaceRectangle: any,
+    frameState: any,
+    limit: number = 1,
+  ): Promise<any[]> {
+    const context = this._context;
+    const device = this._device;
+
+    if (!device || !this._colorTexture || !this._stagingBuffer) {
+      return [];
+    }
+
+    const width = screenSpaceRectangle.width ?? 1;
+    const height = screenSpaceRectangle.height ?? 1;
+
+    // Copy texture to staging buffer
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
     const encoder = device.createCommandEncoder({
-      label: "PickFramebuffer-ReadbackEncoder",
+      label: "Pick readback encoder",
     });
 
     encoder.copyTextureToBuffer(
+      { texture: this._colorTexture! },
       {
-        texture: this._pickTexture,
-        origin: { x: px, y: py },
+        buffer: this._stagingBuffer!,
+        bytesPerRow,
+        rowsPerImage: height,
       },
-      {
-        buffer: this._stagingBuffer,
-        bytesPerRow: 256,
-      },
-      { width: 1, height: 1 },
+      [width, height],
     );
 
     device.queue.submit([encoder.finish()]);
 
-    // Wait for GPU to complete, then read
-    await device.queue.onSubmittedWorkDone();
-    return this.readStagingBuffer();
+    // Wait for GPU to finish and map the buffer
+    await this._stagingBuffer!.mapAsync(GPUMapMode.READ);
+    const mappedData = new Uint8Array(this._stagingBuffer!.getMappedRange());
+
+    // Copy data accounting for row padding
+    const pixels = new Uint8Array(width * height * 4);
+    for (let row = 0; row < height; row++) {
+      const srcOffset = row * bytesPerRow;
+      const dstOffset = row * width * 4;
+      pixels.set(
+        mappedData.subarray(srcOffset, srcOffset + width * 4),
+        dstOffset,
+      );
+    }
+
+    this._stagingBuffer!.unmap();
+    this._lastReadPixels = pixels;
+
+    return pickObjectsFromPixels(context, pixels, width, height, limit);
+  }
+
+  /**
+   * Read the center pixel of the pick rectangle.
+   * Used for voxel coordinate picking and metadata picking.
+   */
+  readCenterPixel(screenSpaceRectangle: any): Uint8Array {
+    if (this._lastReadPixels) {
+      const width = screenSpaceRectangle.width ?? 1;
+      const height = screenSpaceRectangle.height ?? 1;
+      const halfWidth = Math.floor(width * 0.5);
+      const halfHeight = Math.floor(height * 0.5);
+      const index = 4 * (halfHeight * width + halfWidth);
+      return this._lastReadPixels.slice(index, index + 4);
+    }
+    return new Uint8Array([0, 0, 0, 0]);
+  }
+
+  /**
+   * Start an async readback without waiting for the result.
+   * The result will be available in the next frame via _lastReadPixels.
+   */
+  private _startReadback(width: number, height: number): void {
+    const device = this._device;
+    if (!device || !this._colorTexture || !this._stagingBuffer) {
+      return;
+    }
+
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+    const encoder = device.createCommandEncoder({
+      label: "Pick readback encoder (async)",
+    });
+
+    encoder.copyTextureToBuffer(
+      { texture: this._colorTexture! },
+      {
+        buffer: this._stagingBuffer!,
+        bytesPerRow,
+        rowsPerImage: height,
+      },
+      [width, height],
+    );
+
+    device.queue.submit([encoder.finish()]);
+
+    // Fire-and-forget async mapping — result will be used next frame
+    this._stagingBuffer!.mapAsync(GPUMapMode.READ)
+      .then(() => {
+        const mappedData = new Uint8Array(
+          this._stagingBuffer!.getMappedRange(),
+        );
+
+        const pixels = new Uint8Array(width * height * 4);
+        for (let row = 0; row < height; row++) {
+          const srcOffset = row * bytesPerRow;
+          const dstOffset = row * width * 4;
+          pixels.set(
+            mappedData.subarray(srcOffset, srcOffset + width * 4),
+            dstOffset,
+          );
+        }
+
+        this._stagingBuffer!.unmap();
+        this._lastReadPixels = pixels;
+      })
+      .catch(() => {
+        // Readback failed, likely buffer already mapped or destroyed
+      });
   }
 
   private _destroyTextures(): void {
-    this._pickTexture?.destroy();
-    this._depthTexture?.destroy();
-    this._pickTexture = null;
-    this._depthTexture = null;
-    this._pickTextureView = null;
-    this._depthTextureView = null;
+    if (this._colorTexture) {
+      this._colorTexture.destroy();
+      this._colorTexture = null;
+    }
+    if (this._depthTexture) {
+      this._depthTexture.destroy();
+      this._depthTexture = null;
+    }
+  }
+
+  isDestroyed(): boolean {
+    return false;
   }
 
   destroy(): void {
-    if (this._isDestroyed) {
-      return;
-    }
     this._destroyTextures();
-    this._stagingBuffer?.destroy();
-    this._stagingBuffer = null;
-    this._isDestroyed = true;
-  }
-
-  get isDestroyed(): boolean {
-    return this._isDestroyed;
+    if (this._stagingBuffer) {
+      this._stagingBuffer.destroy();
+      this._stagingBuffer = null;
+    }
+    this._lastReadPixels = null;
   }
 }
+
+export default WebGPUPickFramebuffer;

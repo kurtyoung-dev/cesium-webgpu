@@ -118,7 +118,9 @@ class WebGPUCubeMap {
         source.positiveZ ??
         source.negativeZ;
       if (firstFace) {
-        size = (firstFace as any).width ?? (firstFace as any).size ?? 1;
+        // All union members (ImageBitmap, HTMLImageElement, HTMLCanvasElement,
+        // {width,height,arrayBufferView}) have a .width property
+        size = (firstFace as { width: number }).width ?? 1;
       }
     }
     if (!size) {

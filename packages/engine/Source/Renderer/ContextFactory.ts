@@ -24,7 +24,7 @@ import RendererType, {
   getDefaultRendererType,
   isValidRendererType,
 } from "./RendererType.js";
-import { GraphicsContext, GraphicsContextOptions } from "./GraphicsContext.js";
+import GraphicsContext, { GraphicsContextOptions } from "./GraphicsContext.js";
 import Context from "./Context.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import defined from "../Core/defined.js";
@@ -137,7 +137,9 @@ export class ContextFactory {
   ): GraphicsContext {
     // For now, wrap the existing Context.js implementation
     // In a future phase, we'll refactor Context.js to be WebGLContext
-    return new Context(canvas, options) as any as GraphicsContext;
+    // Context.js is plain JS — TypeScript can't verify it satisfies GraphicsContext.
+    // Runtime verification happens in _registerWithRegistry().
+    return new Context(canvas, options) as unknown as GraphicsContext;
   }
 
   /**

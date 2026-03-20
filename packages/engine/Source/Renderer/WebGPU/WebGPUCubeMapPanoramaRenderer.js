@@ -431,6 +431,241 @@ export function resetCache() {
   _cachedDevice = null;
 }
 
+// ── Per-instance state for the feature renderer pattern ──
+// Uses a WeakMap so panorama instances can be GC'd normally.
+const _instanceState = new WeakMap();
+
+/**
+ * Get or create the per-instance WebGPU state for a CubeMapPanorama.
+ * @param {Object} panorama
+ * @returns {Object}
+ */
+function getState(panorama) {
+  let state = _instanceState.get(panorama);
+  if (!defined(state)) {
+    state = {
+      vertexBuffer: undefined,
+      indexBuffer: undefined,
+      indexCount: 0,
+      uniformBuffer: undefined,
+      uniformData: undefined,
+      sampler: undefined,
+      bindGroup0: undefined,
+      bindGroup1: undefined,
+      cubeMapTexture: undefined,
+      cubeMapView: undefined,
+      command: undefined,
+      cubeMapLoading: false,
+      sources: undefined,
+      addToPanoramaCommandList: false,
+    };
+    _instanceState.set(panorama, state);
+  }
+  return state;
+}
+
+/**
+ * Load cubemap images and create a WebGPU cubemap texture.
+ * @param {GPUDevice} device
+ * @param {Object} sources - CubeMap face sources (URLs or Image objects)
+ * @param {Object} state - Per-instance state
+ * @param {Object} panorama - CubeMapPanorama instance (for error reporting)
+ */
+function loadCubeMap(device, sources, state, panorama) {
+  const faceNames = [
+    "positiveX",
+    "negativeX",
+    "positiveY",
+    "negativeY",
+    "positiveZ",
+    "negativeZ",
+  ];
+
+  const loadPromises = faceNames.map((face) => {
+    const src = sources[face];
+    if (typeof src === "string") {
+      return fetch(src)
+        .then((r) => r.blob())
+        .then((b) => createImageBitmap(b));
+    }
+    return Promise.resolve(src);
+  });
+
+  Promise.all(loadPromises)
+    .then((images) => {
+      const size = images[0].width;
+      const texture = device.createTexture({
+        label: "CubeMapPanorama-cubemap",
+        size: [size, size, 6],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+        dimension: "2d",
+      });
+
+      for (let i = 0; i < 6; i++) {
+        device.queue.copyExternalImageToTexture(
+          { source: images[i] },
+          { texture: texture, origin: [0, 0, i] },
+          [size, size],
+        );
+      }
+
+      state.cubeMapTexture = texture;
+      state.cubeMapView = texture.createView({
+        dimension: "cube",
+        format: "rgba8unorm",
+      });
+      state.cubeMapLoading = false;
+    })
+    .catch((error) => {
+      panorama._hasError = true;
+      panorama._error = error;
+      state.cubeMapLoading = false;
+    });
+}
+
+/**
+ * Feature renderer update method for CubeMapPanorama.
+ * Manages all WebGPU state internally — the scene file only calls this.
+ *
+ * @param {Object} panorama - The CubeMapPanorama instance
+ * @param {Object} frameState - CesiumJS FrameState
+ * @param {boolean} useHdr - Whether HDR is enabled
+ * @returns {Object|undefined} The WebGPU draw command (if returnCommand mode)
+ */
+export function updateCubeMapPanorama(panorama, frameState, useHdr) {
+  const { context, panoramaCommandList } = frameState;
+  const device = context.device;
+  const state = getState(panorama);
+
+  // --- Load cubemap when sources change ---
+  if (state.sources !== panorama.sources && !state.cubeMapLoading) {
+    state.sources = panorama.sources;
+    state.cubeMapLoading = true;
+    state.command = undefined;
+    loadCubeMap(device, state.sources, state, panorama);
+  }
+
+  // --- Create geometry buffers once ---
+  if (!defined(state.vertexBuffer)) {
+    const geometry = _createBoxGeometry();
+    const buffers = createGeometryBuffers(device, geometry);
+    state.vertexBuffer = buffers.vertexBuffer;
+    state.indexBuffer = buffers.indexBuffer;
+    state.indexCount = buffers.indexCount;
+  }
+
+  // --- Create uniform buffer + sampler once ---
+  if (!defined(state.uniformBuffer)) {
+    const ub = createUniformBuffer(device);
+    state.uniformBuffer = ub.uniformBuffer;
+    state.uniformData = ub.uniformData;
+    state.sampler = createCubeMapSampler(device);
+  }
+
+  // --- Wait for cubemap texture to be ready ---
+  if (!defined(state.cubeMapView)) {
+    return undefined;
+  }
+
+  // --- Create bind groups + command when cubemap is ready ---
+  if (!defined(state.command)) {
+    const bg = createBindGroups(
+      device,
+      state.uniformBuffer,
+      state.sampler,
+      state.cubeMapView,
+    );
+    state.bindGroup0 = bg.bindGroup0;
+    state.bindGroup1 = bg.bindGroup1;
+
+    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    state.command = createDrawCommand(
+      device,
+      canvasFormat,
+      state.vertexBuffer,
+      state.indexBuffer,
+      state.indexCount,
+      state.bindGroup0,
+      state.bindGroup1,
+    );
+    state.addToPanoramaCommandList = true;
+  }
+
+  // --- Update uniforms every frame ---
+  updateUniforms(
+    device,
+    state.uniformBuffer,
+    state.uniformData,
+    context.uniformState,
+    panorama._transform,
+  );
+
+  // --- Credits ---
+  if (panorama.show && defined(panorama._credit) && !panorama._returnCommand) {
+    frameState.creditDisplay.addCreditToNextFrame(panorama._credit);
+  }
+
+  if (panorama._returnCommand) {
+    return state.command;
+  }
+
+  if (state.addToPanoramaCommandList) {
+    panoramaCommandList.push(state.command);
+    state.addToPanoramaCommandList = false;
+  }
+}
+
+// Lazily-created box geometry (shared across all instances)
+import BoxGeometry from "../../Core/BoxGeometry.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
+import VertexFormat from "../../Core/VertexFormat.js";
+
+let _cachedBoxGeometry = null;
+
+function _createBoxGeometry() {
+  if (!_cachedBoxGeometry) {
+    _cachedBoxGeometry = BoxGeometry.createGeometry(
+      BoxGeometry.fromDimensions({
+        dimensions: new Cartesian3(2.0, 2.0, 2.0),
+        vertexFormat: VertexFormat.POSITION_ONLY,
+      }),
+    );
+  }
+  return _cachedBoxGeometry;
+}
+
+/**
+ * Feature renderer destroy method for CubeMapPanorama.
+ * Cleans up all per-instance WebGPU resources.
+ *
+ * @param {Object} panorama - The CubeMapPanorama instance
+ */
+export function destroyCubeMapPanorama(panorama) {
+  const state = _instanceState.get(panorama);
+  if (!defined(state)) {
+    return;
+  }
+
+  if (defined(state.vertexBuffer)) {
+    state.vertexBuffer.destroy();
+  }
+  if (defined(state.indexBuffer)) {
+    state.indexBuffer.destroy();
+  }
+  if (defined(state.uniformBuffer)) {
+    state.uniformBuffer.destroy();
+  }
+  if (defined(state.cubeMapTexture)) {
+    state.cubeMapTexture.destroy();
+  }
+
+  _instanceState.delete(panorama);
+}
+
 export default {
   createGeometryBuffers,
   createUniformBuffer,
@@ -439,4 +674,6 @@ export default {
   updateUniforms,
   createDrawCommand,
   resetCache,
+  updateCubeMapPanorama,
+  destroyCubeMapPanorama,
 };

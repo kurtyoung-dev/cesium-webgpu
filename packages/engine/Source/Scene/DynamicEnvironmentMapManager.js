@@ -21,6 +21,7 @@ import Sampler from "../Renderer/Sampler.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Atmosphere from "./Atmosphere.js";
 import DynamicAtmosphereLightingType from "./DynamicAtmosphereLightingType.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
@@ -28,10 +29,6 @@ import ComputeIrradianceFS from "../Shaders/ComputeIrradianceFS.js";
 import ComputeRadianceMapFS from "../Shaders/ComputeRadianceMapFS.js";
 import ConvolveSpecularMapFS from "../Shaders/ConvolveSpecularMapFS.js";
 import ConvolveSpecularMapVS from "../Shaders/ConvolveSpecularMapVS.js";
-import {
-  updateWebGPUDynamicEnvironmentMap,
-  destroyWebGPUDynamicEnvironmentMapResources,
-} from "../Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.js";
 
 /**
  * @typedef {object} DynamicEnvironmentMapManager.ConstructorOptions
@@ -856,9 +853,13 @@ function updateSphericalHarmonicCoefficients(manager, frameState) {
  * @private
  */
 DynamicEnvironmentMapManager.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU dynamic environment map manager
-  if (frameState.context.isWebGPU) {
-    updateWebGPUDynamicEnvironmentMap(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.DYNAMIC_ENVIRONMENT_MAP,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
 
@@ -997,7 +998,9 @@ DynamicEnvironmentMapManager.prototype.destroy = function () {
     this._convolveSP.destroy();
   }
 
-  destroyWebGPUDynamicEnvironmentMapResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 

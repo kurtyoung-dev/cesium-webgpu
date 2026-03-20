@@ -9,12 +9,9 @@ import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
-import {
-  updateWebGPUMoon,
-  destroyWebGPUMoonResources,
-} from "../Renderer/WebGPU/WebGPUEnvironmentRenderer.js";
 
 /**
  * Draws the Moon in 3D.
@@ -133,13 +130,15 @@ Moon.prototype.update = function (frameState) {
     ellipsoidPrimitive.modelMatrix,
   );
 
-  // WebGPU path — use dedicated Moon renderer with WGSL shader
+  // Backend-specific path — delegate to feature renderer if available
   const context = frameState.context;
-  if (context.isWebGPU) {
+  const fr = context.getFeatureRenderer(FeatureRendererKey.MOON);
+  if (fr) {
+    this._featureRenderer = fr;
     const savedCommandList = frameState.commandList;
     frameState.commandList = scratchCommandList;
     scratchCommandList.length = 0;
-    updateWebGPUMoon(this, frameState, scratchCommandList);
+    fr.update(this, frameState, scratchCommandList);
     frameState.commandList = savedCommandList;
     return scratchCommandList.length === 1 ? scratchCommandList[0] : undefined;
   }
@@ -185,7 +184,12 @@ Moon.prototype.isDestroyed = function () {
 Moon.prototype.destroy = function () {
   this._ellipsoidPrimitive =
     this._ellipsoidPrimitive && this._ellipsoidPrimitive.destroy();
-  destroyWebGPUMoonResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default Moon;

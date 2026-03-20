@@ -82,10 +82,7 @@ import VoxelPrimitive from "./VoxelPrimitive.js";
 import getMetadataClassProperty from "./getMetadataClassProperty.js";
 import PickedMetadataInfo from "./PickedMetadataInfo.js";
 import getMetadataProperty from "./getMetadataProperty.js";
-import { initPrimitiveShaders } from "../Renderer/WebGPU/WebGPUPrimitiveShaders.js";
-import { initCollectionShaders } from "../Renderer/WebGPU/WebGPUCollectionShaders.js";
-import { WebGPUSceneRenderer } from "../Renderer/WebGPU/WebGPUSceneRenderer.js";
-import { renderShadowCastPass } from "../Renderer/WebGPU/WebGPUShadowMapRenderer.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -163,7 +160,8 @@ function Scene(options) {
 
   // Set Matrix4 depth range based on renderer type
   // WebGPU uses 0-1 depth range, WebGL uses -1 to 1
-  if (defined(context.rendererType) && context.rendererType === "webgpu") {
+  // Use capability getter instead of string comparison (FORK-7 fix)
+  if (context.depthRangeZeroToOne) {
     Matrix4.setDepthRangeType("webgpu");
   } else {
     Matrix4.setDepthRangeType("webgl");
@@ -253,11 +251,15 @@ function Scene(options) {
 
   this._depthOnlyRenderStateCache = {};
 
-  // WebGPU scene rendering orchestrator — handles multi-frustum command execution
-  // Only instantiated when using WebGPU renderer
-  this._webgpuSceneRenderer = null;
-  if (defined(context.rendererType) && context.rendererType === "webgpu") {
-    this._webgpuSceneRenderer = new WebGPUSceneRenderer();
+  // Backend-specific scene renderer — handles multi-frustum command execution.
+  // Created from the SCENE_RENDERER feature renderer if registered (e.g., WebGPU).
+  // This keeps Scene.js free of direct WebGPU imports.
+  this._alternateSceneRenderer = null;
+  const sceneRendererFR = context.getFeatureRenderer?.(
+    FeatureRendererKey.SCENE_RENDERER,
+  );
+  if (sceneRendererFR && sceneRendererFR.RendererClass) {
+    this._alternateSceneRenderer = new sceneRendererFR.RendererClass();
   }
 
   this._transitioner = new SceneTransitioner(this);
@@ -858,16 +860,11 @@ Scene.createAsync = async function (options, onProgress) {
     );
 
     if (defined(onProgress)) {
-      onProgress(50, "Configuring canvas...");
+      onProgress(70, "Context ready...");
     }
 
-    // Load WGSL primitive shaders from .wgsl files via fetch()
-    // Must be done before any primitives are rendered
-    if (defined(onProgress)) {
-      onProgress(70, "Loading shaders...");
-    }
-    await initPrimitiveShaders();
-    await initCollectionShaders();
+    // FORK-3 fix: Shader loading is now part of WebGPUContext._initialize().
+    // No redundant shader loading here — shaders are already loaded during context init.
   }
 
   // Create scene with pre-initialized context (or undefined for WebGL)
@@ -1456,7 +1453,53 @@ Object.defineProperties(Scene.prototype, {
   },
 
   /**
+   * The graphics context as a GraphicsContext instance.
+   * Provides access to the full backend-agnostic API including
+   * context-aware logging, feature renderer registry, and type queries.
+   *
+   * @memberof Scene.prototype
+   * @type {GraphicsContext}
+   * @readonly
+   */
+  graphicsContext: {
+    get: function () {
+      return this._context;
+    },
+  },
+
+  /**
+   * The global ContextRegistry tracking all active GraphicsContext instances.
+   * Supports multi-view and split-screen scenarios.
+   *
+   * @memberof Scene.prototype
+   * @type {ContextRegistry}
+   * @readonly
+   *
+   * @example
+   * const registry = scene.contextRegistry;
+   * console.log(`Active contexts: ${registry.count}`);
+   * for (const [id, ctx] of registry) {
+   *   console.log(`${id}: ${ctx.rendererType}`);
+   * }
+   */
+  contextRegistry: {
+    get: function () {
+      // Access the static registry via the context's constructor
+      // GraphicsContext.registry is the singleton
+      if (
+        this._context &&
+        this._context.constructor &&
+        this._context.constructor.registry
+      ) {
+        return this._context.constructor.registry;
+      }
+      return undefined;
+    },
+  },
+
+  /**
    * Returns true if this scene is using the WebGPU renderer.
+   * Now uses the computed `isWebGPU` getter from the GraphicsContext base class.
    * @memberof Scene.prototype
    * @type {boolean}
    * @readonly
@@ -1464,10 +1507,7 @@ Object.defineProperties(Scene.prototype, {
    */
   isWebGPU: {
     get: function () {
-      return (
-        defined(this._context.rendererType) &&
-        this._context.rendererType === "webgpu"
-      );
+      return this._context.isWebGPU === true;
     },
   },
 
@@ -2348,26 +2388,14 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
     return;
   }
 
-  // WebGPU rendering path
-  if (scene.isWebGPU) {
-    // Get the active render pass encoder from WebGPU context
-    const renderPass = context.currentRenderPassEncoder;
-
-    if (!renderPass) {
-      // No active render pass - skip command
-      // This can happen if beginFrame() hasn't been called yet
-      return;
-    }
-
-    // Only execute proper WebGPU draw commands (identified by isWebGPUDrawCommand flag)
-    // Skip WebGL-format commands silently (expected during transition)
-    if (command.isWebGPUDrawCommand === true) {
-      command.execute(renderPass);
-    }
+  // Backend-agnostic: if context has a custom executeDrawCommand (WebGPU),
+  // delegate to it. WebGL path stays below as the default.
+  if (scene._alternateSceneRenderer) {
+    context.executeDrawCommand(command, scene, passState, debugFramebuffer);
     return;
   }
 
-  // WebGL rendering path (existing, untouched)
+  // WebGL rendering path (default)
   if (command.debugShowBoundingVolume && defined(command.boundingVolume)) {
     debugShowBoundingVolume(command, scene, passState, debugFramebuffer);
   }
@@ -2793,9 +2821,10 @@ function executeCommands(scene, passState) {
 
   // WebGPU path — delegate to WebGPUSceneRenderer for clean multi-frustum rendering
   // This replaces the WebGL-specific frustum loop below with the dedicated WebGPU orchestrator
-  if (scene.isWebGPU && scene._webgpuSceneRenderer) {
+  // Backend-agnostic: delegate to alternate scene renderer if one exists (e.g., WebGPU)
+  if (scene._alternateSceneRenderer) {
     const envState = scene._environmentState;
-    scene._webgpuSceneRenderer.executeCommands({
+    scene._alternateSceneRenderer.executeCommands({
       scene,
       context,
       passState,
@@ -3217,31 +3246,15 @@ function renderEnvironment(scene, passState) {
 function executeComputeCommands(scene) {
   scene.context.uniformState.updatePass(Pass.COMPUTE);
 
-  // WebGPU path — compute commands use WebGPUComputeEngine if available,
-  // otherwise skip gracefully (sun compute is handled procedurally in WebGPU)
-  if (scene.isWebGPU) {
-    // In WebGPU, sun texture is generated procedurally in WebGPUEnvironmentRenderer
-    // so sunComputeCommand is not needed. Execute any queued compute commands
-    // that have WebGPU support (isWebGPUComputeCommand flag).
-    const commandList = scene._computeCommandList;
-    for (let i = 0; i < commandList.length; ++i) {
-      const cmd = commandList[i];
-      if (defined(cmd.isWebGPUComputeCommand) && cmd.isWebGPUComputeCommand) {
-        cmd.execute(scene.context);
-      }
-    }
-    return;
-  }
-
-  const sunComputeCommand = scene._environmentState.sunComputeCommand;
-  if (defined(sunComputeCommand)) {
-    sunComputeCommand.execute(scene._computeEngine);
-  }
-
-  const commandList = scene._computeCommandList;
-  for (let i = 0; i < commandList.length; ++i) {
-    commandList[i].execute(scene._computeEngine);
-  }
+  // Backend-agnostic: delegate to context.executeComputeCommands().
+  // WebGL default: executes sun compute + all commands through ComputeEngine.
+  // WebGPU override: executes only isWebGPUComputeCommand commands, skips sun.
+  const context = scene._context;
+  context.executeComputeCommands(
+    scene._computeCommandList,
+    scene._environmentState.sunComputeCommand,
+    scene._computeEngine,
+  );
 }
 
 /**
@@ -3333,48 +3346,14 @@ function executeShadowMapCastCommands(scene) {
     return;
   }
 
-  // WebGPU path — render shadow cast commands using WebGPU depth-only pipeline.
-  // Uses renderShadowCastPass() from WebGPUShadowMapRenderer which renders
-  // into a depth32float texture with comparison sampler.
-  if (scene.isWebGPU) {
-    const { context } = scene;
-    const encoder = context._currentCommandEncoder;
-    if (!encoder) {
-      return;
-    }
-    for (let i = 0; i < shadowMaps.length; ++i) {
-      const shadowMap = shadowMaps[i];
-      if (shadowMap.outOfView) {
-        continue;
-      }
-      // Collect shadow-casting commands for this shadow map
-      const { passes } = shadowMap;
-      for (let j = 0; j < passes.length; ++j) {
-        passes[j].commandList.length = 0;
-      }
-      insertShadowCastCommands(scene, commandList, shadowMap);
-      // Render shadow casters using WebGPU depth-only pipeline
-      const castCommands = [];
-      for (let j = 0; j < passes.length; ++j) {
-        for (let k = 0; k < passes[j].commandList.length; ++k) {
-          castCommands.push(passes[j].commandList[k]);
-        }
-      }
-      if (castCommands.length > 0) {
-        context.endCurrentRenderPass?.();
-        renderShadowCastPass(
-          encoder,
-          shadowMap,
-          scene._frameState,
-          castCommands,
-        );
-        context.resumeDefaultRenderPass?.();
-      }
-    }
+  // Backend-agnostic: let the context handle shadow casting if it can.
+  // WebGPU delegates to the SHADOW_MAP feature renderer's renderCastPass().
+  // WebGL default returns false, so we fall through to the WebGL path below.
+  const context = scene._context;
+  if (context.executeShadowMapCastCommands(scene)) {
     return;
   }
 
-  const { context } = scene;
   const { uniformState } = context;
 
   for (let i = 0; i < shadowMaps.length; ++i) {
@@ -3956,20 +3935,10 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   const environmentState = scene._environmentState;
   const view = scene._view;
 
-  // WebGPU path — minimal framebuffer clearing, skip WebGL FBO management
-  // WebGPU uses the default render pass from context.beginFrame(); no custom FBOs needed yet
-  if (scene.isWebGPU) {
-    environmentState.originalFramebuffer = passState.framebuffer;
-    environmentState.useGlobeDepthFramebuffer = false;
-    environmentState.useOIT = false;
-    environmentState.usePostProcess = false;
-    environmentState.usePostProcessSelected = false;
-    environmentState.useInvertClassification = false;
-
-    // Clear with background color via the existing ClearCommand
-    const clear = scene._clearColorCommand;
-    Color.clone(clearColor, clear.color);
-    clear.execute(context, passState);
+  // Backend-agnostic: let the context handle framebuffer setup if it can.
+  // WebGPU sets environment state flags and clears, returns true.
+  // WebGL default returns false, so we fall through to the WebGL path below.
+  if (context.updateAndClearFramebuffers(scene, passState, clearColor)) {
     return;
   }
 
@@ -4127,13 +4096,13 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
  * @private
  */
 Scene.prototype.resolveFramebuffers = function (passState) {
-  // WebGPU path — no WebGL framebuffer resolution needed
-  // OIT composite and post-processing are not yet wired for WebGPU
-  if (this.isWebGPU) {
+  // Backend-agnostic: let the context handle framebuffer resolution if it can.
+  // WebGPU returns true (no-op — OIT/post-process not yet wired).
+  // WebGL default returns false, so we fall through to the WebGL path below.
+  const context = this._context;
+  if (context.resolveFramebuffers(this, passState)) {
     return;
   }
-
-  const context = this._context;
   const environmentState = this._environmentState;
   const view = this._view;
   const { globeDepth, translucentTileClassification } = view;
@@ -4537,6 +4506,18 @@ function render(scene) {
   scene._view = view;
 
   scene.updateFrameState();
+
+  // ── Option B: Per-view context updating ──
+  // For multi-view support, update FrameState's context to match the
+  // current view's effective context. This matches how CesiumJS already
+  // updates frameState.camera per view. Each view can optionally target
+  // a different GraphicsContext (WebGL or WebGPU).
+  const viewContext = view.effectiveContext;
+  if (viewContext && viewContext !== frameState.context) {
+    frameState.context = viewContext;
+    frameState.graphicsContext = viewContext;
+  }
+
   frameState.passes.render = true;
   frameState.passes.postProcess = scene.postProcessStages.hasSelected;
   frameState.tilesetPassState = renderTilesetPassState;
@@ -4731,6 +4712,34 @@ Scene.prototype.render = function (time) {
  *
  * @private
  */
+/**
+ * Create an additional View with an optional per-view GraphicsContext.
+ * This enables multi-view scenarios: split-screen, multi-monitor, mixed backends.
+ *
+ * The created view shares the same scene graph but can render to a different
+ * canvas/context. For WebGPU multi-view, use WebGPUDevicePool to share a
+ * single GPUDevice across multiple canvases (~90% GPU memory savings).
+ *
+ * @param {Camera} camera The camera for the new view.
+ * @param {BoundingRectangle} viewport The viewport rectangle.
+ * @param {object} [options] Options for the view.
+ * @param {GraphicsContext} [options.graphicsContext] Per-view context override.
+ *   When provided, this view renders using its own context.
+ *   When omitted, falls back to the Scene's default context.
+ * @returns {View} The created view.
+ *
+ * @example
+ * // Create a secondary WebGPU view on a different canvas
+ * const secondaryView = scene.createView(camera, viewport, {
+ *   graphicsContext: secondaryWebGPUContext
+ * });
+ *
+ * @private
+ */
+Scene.prototype.createView = function (camera, viewport, options) {
+  return new View(this, camera, viewport, options);
+};
+
 Scene.prototype.forceRender = function (time) {
   this._renderRequested = true;
   this.render(time);
@@ -5506,10 +5515,10 @@ Scene.prototype.destroy = function () {
     this._brdfLutGenerator && this._brdfLutGenerator.destroy();
   this._picking = this._picking && this._picking.destroy();
 
-  // Destroy WebGPU scene renderer if it was created
-  if (this._webgpuSceneRenderer) {
-    this._webgpuSceneRenderer.destroy();
-    this._webgpuSceneRenderer = null;
+  // Destroy alternate scene renderer if it was created (e.g., WebGPU)
+  if (this._alternateSceneRenderer) {
+    this._alternateSceneRenderer.destroy();
+    this._alternateSceneRenderer = null;
   }
 
   this._defaultView = this._defaultView && this._defaultView.destroy();

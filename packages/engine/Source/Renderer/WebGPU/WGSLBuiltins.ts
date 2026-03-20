@@ -44,11 +44,24 @@ import { WGSLShaderLibrary } from "./WGSLShaderPreprocessor.js";
 
 const CameraUniforms = `
 struct CameraUniforms {
+    // Standard matrices
     viewMatrix: mat4x4<f32>,
     projectionMatrix: mat4x4<f32>,
     viewProjectionMatrix: mat4x4<f32>,
+
+    // Camera position (world space)
     cameraPosition: vec3<f32>,
-    _padding: f32,
+    _padding0: f32,
+
+    // RTE: Encoded camera position in model coordinates (high/low split)
+    encodedCameraPositionMCHigh: vec3<f32>,
+    _padding1: f32,
+    encodedCameraPositionMCLow: vec3<f32>,
+    _padding2: f32,
+
+    // RTE: Matrices with translation zeroed (for use with eye-relative positions)
+    modelViewRelativeToEye: mat4x4<f32>,
+    modelViewProjectionRelativeToEye: mat4x4<f32>,
 }
 `;
 

@@ -34,10 +34,7 @@ import ShadowMode from "./ShadowMode.js";
 import SplitDirection from "./SplitDirection.js";
 import Splitter from "./Splitter.js";
 import StencilConstants from "./StencilConstants.js";
-import {
-  updateWebGPUPointCloud,
-  destroyWebGPUPointCloudResources,
-} from "../Renderer/WebGPU/WebGPUPointCloudRenderer.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 const DecodingState = {
   NEEDS_DECODE: 0,
@@ -1275,9 +1272,13 @@ const scratchComputedTranslation = new Cartesian4();
 const scratchScale = new Cartesian3();
 
 PointCloud.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU point cloud renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUPointCloud(this, frameState);
+  // Backend-specific rendering path — delegate to feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.POINT_CLOUD,
+  );
+  if (fr) {
+    this._featureRenderer = fr;
+    fr.update(this, frameState);
     return;
   }
 
@@ -1417,7 +1418,12 @@ PointCloud.prototype.destroy = function () {
     command.shaderProgram =
       command.shaderProgram && command.shaderProgram.destroy();
   }
-  destroyWebGPUPointCloudResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default PointCloud;

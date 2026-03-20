@@ -14,6 +14,7 @@
 
 import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
+import { gpuData } from "./webgpuTypeHelpers.js";
 
 /**
  * Buffer usage types
@@ -156,9 +157,9 @@ export class WebGPUBuffer {
       if (dataSize !== alignedSize) {
         const paddedData = new Uint8Array(alignedSize);
         paddedData.set(data);
-        options.device.queue.writeBuffer(buffer, 0, paddedData as any);
+        options.device.queue.writeBuffer(buffer, 0, gpuData(paddedData));
       } else {
-        options.device.queue.writeBuffer(buffer, 0, data as any);
+        options.device.queue.writeBuffer(buffer, 0, gpuData(data));
       }
     }
 
@@ -352,7 +353,7 @@ export class WebGPUBuffer {
         ? new Uint8Array(data)
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 
-    this._device.queue.writeBuffer(this._buffer, offset, arrayData as any);
+    this._device.queue.writeBuffer(this._buffer, offset, gpuData(arrayData));
   }
 
   /**

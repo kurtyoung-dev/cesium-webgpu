@@ -19,11 +19,8 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
 import TextureWrap from "../Renderer/TextureWrap.js";
 import ClippingPolygon from "./ClippingPolygon.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import PolygonSignedDistanceFS from "../Shaders/PolygonSignedDistanceFS.js";
-import {
-  updateWebGPUClippingPolygons,
-  destroyWebGPUClippingPolygonResources,
-} from "../Renderer/WebGPU/WebGPUClippingPolygonCollection.js";
 
 /**
  * Specifies a set of clipping polygons. Clipping polygons selectively disable rendering in a region
@@ -532,9 +529,13 @@ const textureResolutionScratch = new Cartesian2();
  * @throws {RuntimeError} ClippingPolygonCollections are only supported for WebGL 2
  */
 ClippingPolygonCollection.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU clipping polygon collection
-  if (frameState.context.isWebGPU) {
-    updateWebGPUClippingPolygons(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.CLIPPING_POLYGONS,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
 
@@ -969,7 +970,9 @@ ClippingPolygonCollection.prototype.destroy = function () {
   this._extentsTexture = this._extentsTexture && this._extentsTexture.destroy();
   this._signedDistanceTexture =
     this._signedDistanceTexture && this._signedDistanceTexture.destroy();
-  destroyWebGPUClippingPolygonResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 

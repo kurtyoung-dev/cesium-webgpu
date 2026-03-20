@@ -33,11 +33,8 @@ import Quaternion from "../Core/Quaternion.js";
 import SplitDirection from "./SplitDirection.js";
 import destroyObject from "../Core/destroyObject.js";
 import ContextLimits from "../Renderer/ContextLimits.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Transforms from "../Core/Transforms.js";
-import {
-  updateWebGPUGaussianSplatPrimitive,
-  destroyWebGPUGaussianSplatResources,
-} from "../Renderer/WebGPU/WebGPUGaussianSplatRenderer.js";
 
 const scratchMatrix4A = new Matrix4();
 const scratchMatrix4B = new Matrix4();
@@ -1002,7 +999,9 @@ GaussianSplatPrimitive.prototype.destroy = function () {
 
   this._tileset.update = this._baseTilesetUpdate.bind(this._tileset);
 
-  destroyWebGPUGaussianSplatResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 
@@ -1401,9 +1400,13 @@ GaussianSplatPrimitive.buildGSplatDrawCommand = function (
  * @private
  */
 GaussianSplatPrimitive.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU gaussian splat renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUGaussianSplatPrimitive(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.GAUSSIAN_SPLAT,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
 

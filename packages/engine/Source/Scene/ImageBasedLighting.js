@@ -4,11 +4,8 @@ import defined from "../Core/defined.js";
 import Frozen from "../Core/Frozen.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import SpecularEnvironmentCubeMap from "./SpecularEnvironmentCubeMap.js";
-import {
-  updateWebGPUImageBasedLighting,
-  destroyWebGPUImageBasedLightingResources,
-} from "../Renderer/WebGPU/WebGPUImageBasedLighting.js";
 
 /**
  * Properties for managing image-based lighting on tilesets and models.
@@ -330,9 +327,13 @@ function createSpecularEnvironmentCubeMap(imageBasedLighting, context) {
 }
 
 ImageBasedLighting.prototype.update = function (frameState) {
-  // WebGPU: Route to dedicated WebGPU IBL manager
-  if (frameState.context.isWebGPU) {
-    updateWebGPUImageBasedLighting(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.IMAGE_BASED_LIGHTING,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
 
@@ -467,7 +468,9 @@ ImageBasedLighting.prototype.destroy = function () {
     this._specularEnvironmentCubeMap.destroy();
   this._removeErrorListener =
     this._removeErrorListener && this._removeErrorListener();
-  destroyWebGPUImageBasedLightingResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 

@@ -10,15 +10,12 @@ import RenderbufferFormat from "../Renderer/RenderbufferFormat.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import Texture from "../Renderer/Texture.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import PassThrough from "../Shaders/PostProcessStages/PassThrough.js";
 import BlendingState from "./BlendingState.js";
 import StencilConstants from "./StencilConstants.js";
 import StencilFunction from "./StencilFunction.js";
 import StencilOperation from "./StencilOperation.js";
-import {
-  updateWebGPUInvertClassification,
-  destroyWebGPUInvertClassificationResources,
-} from "../Renderer/WebGPU/WebGPUInvertClassification.js";
 
 /**
  * @private
@@ -181,14 +178,13 @@ InvertClassification.prototype.update = function (
   numSamples,
   globeFramebuffer,
 ) {
-  // WebGPU: Route to dedicated WebGPU invert classification handler
-  if (context.isWebGPU) {
-    updateWebGPUInvertClassification(
-      this,
-      context,
-      numSamples,
-      globeFramebuffer,
-    );
+  // Route to WebGPU feature renderer if available
+  const fr = context.getFeatureRenderer(
+    FeatureRendererKey.INVERT_CLASSIFICATION,
+  );
+  if (fr) {
+    fr.update(this, context, numSamples, globeFramebuffer);
+    this._featureRenderer = fr;
     return;
   }
 
@@ -391,7 +387,9 @@ InvertClassification.prototype.destroy = function () {
       this._classifiedCommand.shaderProgram.destroy();
   }
 
-  destroyWebGPUInvertClassificationResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default InvertClassification;

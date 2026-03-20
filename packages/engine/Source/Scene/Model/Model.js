@@ -16,10 +16,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import Resource from "../../Core/Resource.js";
 import RuntimeError from "../../Core/RuntimeError.js";
 import Pass from "../../Renderer/Pass.js";
-import {
-  updateWebGPUModel,
-  destroyWebGPUModelResources,
-} from "../../Renderer/WebGPU/WebGPUModelRenderer.js";
+import FeatureRendererKey from "../../Renderer/FeatureRendererKey.js";
 import ClippingPlaneCollection from "../ClippingPlaneCollection.js";
 import ClippingPolygonCollection from "../ClippingPolygonCollection.js";
 import DynamicEnvironmentMapManager from "../DynamicEnvironmentMapManager.js";
@@ -2561,10 +2558,11 @@ function submitDrawCommands(model, frameState) {
   if (showModel && !model._ignoreCommands && submitCommandsForPass) {
     addCreditsToCreditDisplay(model, frameState);
 
-    // WebGPU path: create WebGPU draw commands for the model's glTF primitives
+    // WebGPU path: route to feature renderer for model draw commands
     const context = frameState.context;
-    if (context.isWebGPU && defined(model._sceneGraph)) {
-      updateWebGPUModel(model, frameState);
+    const modelFr = context.getFeatureRenderer(FeatureRendererKey.MODEL);
+    if (modelFr && defined(model._sceneGraph)) {
+      modelFr.update(model, frameState);
     }
 
     model._sceneGraph.pushDrawCommands(frameState);
@@ -2883,7 +2881,10 @@ Model.prototype.destroy = function () {
   }
   this._environmentMapManager = undefined;
 
-  destroyWebGPUModelResources(this);
+  const modelFr = this._featureRenderer;
+  if (modelFr) {
+    modelFr.destroy(this);
+  }
   destroyObject(this);
 };
 

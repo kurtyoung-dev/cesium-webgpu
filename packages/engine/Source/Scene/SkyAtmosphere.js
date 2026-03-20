@@ -13,6 +13,7 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import VertexArray from "../Renderer/VertexArray.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import SkyAtmosphereCommon from "../Shaders/SkyAtmosphereCommon.js";
 import SkyAtmosphereFS from "../Shaders/SkyAtmosphereFS.js";
@@ -21,7 +22,6 @@ import Axis from "./Axis.js";
 import BlendingState from "./BlendingState.js";
 import CullFace from "./CullFace.js";
 import SceneMode from "./SceneMode.js";
-import { updateWebGPUSkyAtmosphere } from "../Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js";
 
 /**
  * An atmosphere drawn around the limb of the provided ellipsoid. Based on
@@ -246,9 +246,12 @@ SkyAtmosphere.prototype.update = function (frameState, globe) {
     return undefined;
   }
 
-  // WebGPU rendering path — use dedicated atmosphere renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUSkyAtmosphere(this, frameState, frameState.commandList);
+  // Backend-specific path — delegate to feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.SKY_ATMOSPHERE,
+  );
+  if (fr) {
+    fr.update(this, frameState, frameState.commandList);
     return undefined;
   }
 

@@ -35,11 +35,38 @@ function CommandExtent() {
  * @param {Scene} scene
  * @param {Camera} camera
  * @param {BoundingRectangle} viewport
- *
- * @private
+ * @param {object} [options]
+ * @param {GraphicsContext} [options.graphicsContext] Optional per-view context.
+ *   When provided, this view renders using a different context than the Scene's default.
+ *   Enables multi-view scenarios: split-screen, multi-monitor, mixed backends.
+ *   If not provided, falls back to the Scene's context.
+ * @param {boolean} [options.useOffscreenCanvas=false] When true, creates the view's
+ *   rendering context on an OffscreenCanvas in a WebWorker (background rendering).
  */
-function View(scene, camera, viewport) {
-  const context = scene.context;
+function View(scene, camera, viewport, options) {
+  options = options ?? {};
+
+  /**
+   * Reference to the owning scene (for context fallback).
+   * @type {Scene}
+   * @private
+   */
+  this._scene = scene;
+
+  /**
+   * Optional per-view GraphicsContext. When set, this view uses its own
+   * rendering context instead of the Scene's default. Enables:
+   * - Split-screen: WebGL left + WebGPU right (same scene graph)
+   * - Multi-monitor: Different canvases, same or different backends
+   * - Mixed rendering: WebGL main view + WebGPU compute
+   *
+   * @type {GraphicsContext|undefined}
+   * @private
+   */
+  this._graphicsContext = options.graphicsContext ?? undefined;
+
+  // Resolve effective context: per-view override or scene default
+  const context = this._graphicsContext ?? scene.context;
 
   let globeDepth;
   if (context.depthTexture) {
@@ -442,6 +469,60 @@ View.prototype.createPotentiallyVisibleSet = function (scene) {
     }
   }
 };
+
+/**
+ * Get the per-view GraphicsContext override, if set.
+ * Returns undefined if this view uses the Scene's default context.
+ *
+ * @type {GraphicsContext|undefined}
+ */
+Object.defineProperties(View.prototype, {
+  /**
+   * The per-view GraphicsContext override.
+   * When set, this view uses its own rendering context instead of the Scene's default.
+   * @memberof View.prototype
+   * @type {GraphicsContext|undefined}
+   */
+  graphicsContext: {
+    get: function () {
+      return this._graphicsContext;
+    },
+    set: function (value) {
+      this._graphicsContext = value;
+    },
+  },
+
+  /**
+   * The effective GraphicsContext for this view — either the per-view override
+   * or the Scene's default context. This is the context that should be used
+   * for all rendering operations on this view.
+   *
+   * Use this instead of `scene.context` when you have a View reference,
+   * to correctly support multi-context/multi-view scenarios.
+   *
+   * @memberof View.prototype
+   * @type {GraphicsContext}
+   * @readonly
+   */
+  effectiveContext: {
+    get: function () {
+      return this._graphicsContext ?? this._scene.context;
+    },
+  },
+
+  /**
+   * The owning scene.
+   * @memberof View.prototype
+   * @type {Scene}
+   * @readonly
+   * @private
+   */
+  scene: {
+    get: function () {
+      return this._scene;
+    },
+  },
+});
 
 View.prototype.destroy = function () {
   this.pickFramebuffer = this.pickFramebuffer && this.pickFramebuffer.destroy();

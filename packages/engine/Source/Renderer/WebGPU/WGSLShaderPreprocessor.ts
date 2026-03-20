@@ -643,24 +643,40 @@ export class WGSLShaderPreprocessor {
         }
       }
 
-      // Also auto-resolve csm_ references within this chunk
+      // Auto-resolve csm_ references within this chunk
       const cleanCode = WGSLShaderPreprocessor.removeComments(chunk.code);
+
+      // Collect all auto-resolvable references: csm_* identifiers AND struct names
+      const allRefs: string[] = [];
+
       const csmRefs = cleanCode.match(/\bcsm_[a-zA-Z0-9_]*/g);
       if (csmRefs) {
-        const unique = [...new Set(csmRefs)];
-        for (const ref of unique) {
-          const refChunkName = this._library.getChunkForIdentifier(ref);
-          if (
-            refChunkName &&
-            refChunkName !== chunkName &&
-            !node.dependsOn.some((d) => d.name === refChunkName)
-          ) {
-            const depNode = getOrCreateNode(refChunkName);
-            if (depNode) {
-              node.dependsOn.push(depNode);
-              depNode.requiredBy.push(node);
-              buildDeps(refChunkName);
-            }
+        allRefs.push(...csmRefs);
+      }
+
+      // FORK-15 fix: Also resolve struct references transitively within chunks.
+      // Without this, a chunk that references CameraUniforms or PBRMaterial
+      // won't pull in the struct definition chunk, causing shader compilation failures.
+      const structRefs = cleanCode.match(
+        /\b(Csm[a-zA-Z0-9_]+|[A-Z][a-zA-Z0-9_]*Uniforms|PBRMaterial|LightingUniforms)\b/g,
+      );
+      if (structRefs) {
+        allRefs.push(...structRefs);
+      }
+
+      const uniqueRefs = [...new Set(allRefs)];
+      for (const ref of uniqueRefs) {
+        const refChunkName = this._library.getChunkForIdentifier(ref);
+        if (
+          refChunkName &&
+          refChunkName !== chunkName &&
+          !node.dependsOn.some((d) => d.name === refChunkName)
+        ) {
+          const depNode = getOrCreateNode(refChunkName);
+          if (depNode) {
+            node.dependsOn.push(depNode);
+            depNode.requiredBy.push(node);
+            buildDeps(refChunkName);
           }
         }
       }

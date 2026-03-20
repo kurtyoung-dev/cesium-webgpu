@@ -14,16 +14,14 @@
  * For each frustum (far to near):
  *   1. Update uniform state with frustum near/far
  *   2. Clear depth/stencil (per-frustum, preserving color)
- *   3. Execute ENVIRONMENT pass (skybox, sun, moon, atmosphere)
- *   4. Execute COMPUTE pass
- *   5. Execute GLOBE pass commands → GlobeDepth framebuffer
- *   6. Copy depth for shader access
- *   7. Execute TERRAIN_CLASSIFICATION pass
- *   8. Execute CESIUM_3D_TILE* passes
- *   9. Execute OPAQUE pass → main framebuffer
- *   10. Execute TRANSLUCENT pass → OIT framebuffer
- *   11. OIT composite over opaque
- *   12. Execute VOXELS, GAUSSIAN_SPLATS
+ *   3. Execute GLOBE pass commands → GlobeDepth framebuffer
+ *   4. Copy depth for shader access
+ *   5. Execute TERRAIN_CLASSIFICATION pass
+ *   6. Execute CESIUM_3D_TILE* passes
+ *   7. Execute OPAQUE pass → main framebuffer
+ *   8. Execute TRANSLUCENT pass → OIT framebuffer
+ *   9. OIT composite over opaque
+ *   10. Execute VOXELS, GAUSSIAN_SPLATS
  *
  * After frustum loop:
  *   - Execute OVERLAY pass (once)
@@ -55,8 +53,9 @@ export interface WebGPURenderFrameConfig {
   useOIT: boolean;
   useDepthPlane: boolean;
   useInvertClassification: boolean;
-  usePostProcessing?: boolean;
-  hdr?: boolean;
+  usePostProcess?: boolean;
+  useHDR?: boolean;
+  shadowState?: any;
 }
 
 // --------------- Module-level helpers ---------------
@@ -128,7 +127,7 @@ export class WebGPUSceneRenderer {
     const width = canvas?.width ?? 1;
     const height = canvas?.height ?? 1;
     const needsResize = width !== this._width || height !== this._height;
-    const hdr = config.hdr ?? false;
+    const hdr = config.useHDR ?? false;
 
     // Scene framebuffer (main color + depth + ID targets)
     if (!this._sceneFramebuffer) {
@@ -138,7 +137,6 @@ export class WebGPUSceneRenderer {
       const numSamples: number = context._msaaSamples ?? 1;
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
-      // SCENE-2 fix: pass all 6 arguments including hdr
       this._sceneFramebuffer.update(
         device,
         width,
@@ -154,7 +152,6 @@ export class WebGPUSceneRenderer {
       this._oit = new WebGPUOIT();
     }
     if (this._oit && (!this._initialized || needsResize)) {
-      // SCENE-3 fix: call update() not initialize() — matches WebGPUOIT's actual API
       this._oit.update(device, width, height);
     }
 
@@ -185,7 +182,7 @@ export class WebGPUSceneRenderer {
     }
 
     // Post-processing pipeline
-    if (config.usePostProcessing && !this._postProcess) {
+    if (config.usePostProcess && !this._postProcess) {
       this._postProcess = new WebGPUPostProcessPipeline();
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
@@ -219,42 +216,36 @@ export class WebGPUSceneRenderer {
     // Ensure rendering resources are created/sized
     this._ensureResources(config);
 
-    // --- Multi-frustum loop: iterate from far to near ---
-    for (let frustumIndex = 0; frustumIndex < numFrustums; frustumIndex++) {
-      const frustumCommands = frustumCommandsList[frustumIndex];
+    // Opaque near offset to avoid tearing between adjacent frustums
+    const opaqueFrustumNearOffset: number =
+      scene.opaqueFrustumNearOffset ?? 0.9999;
 
-      this._updateFrustumUniforms(
-        uniformState,
-        frustumCommands.near,
-        frustumCommands.far,
-        scene,
-      );
+    // --- Multi-frustum loop: iterate from FAR to NEAR ---
+    // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
+    for (let i = 0; i < numFrustums; i++) {
+      const index = numFrustums - i - 1;
+      const frustumCommands = frustumCommandsList[index];
 
-      if (frustumIndex > 0 || config.clearGlobeDepth) {
-        this._clearDepthStencil(context);
-      }
+      // Apply opaque near offset to avoid tearing artifacts between adjacent frustums
+      // (except for the nearest frustum which uses the actual near value)
+      const near =
+        index !== 0
+          ? frustumCommands.near * opaqueFrustumNearOffset
+          : frustumCommands.near;
+      const far = frustumCommands.far;
 
-      // SCENE-1 fix: Pass 0 — ENVIRONMENT (skybox, sun, moon, atmosphere)
-      // In WebGL's Scene.js, environment is rendered per-frustum for correct depth.
-      this._executePassCommands(
-        frustumCommands,
-        Pass.ENVIRONMENT,
-        scene,
-        context,
-        passState,
-      );
+      this._updateFrustumUniforms(uniformState, near, far, scene);
 
-      // Pass 1: COMPUTE
-      this._executePassCommands(
-        frustumCommands,
-        Pass.COMPUTE,
-        scene,
-        context,
-        passState,
-      );
+      // Clear depth/stencil per frustum (but not color — color accumulates across frustums)
+      this._clearDepthStencil(context);
 
-      // Pass 2: GLOBE (with globe depth framebuffer if available)
+      // Pass 2: GLOBE
       this._executeGlobePass(frustumCommands, config);
+
+      // Copy globe depth for terrain clamping and picking
+      if (this._globeDepth && config.useGlobeDepthFramebuffer) {
+        // Future: this._globeDepth.executeCopyDepth(context, passState);
+      }
 
       // Pass 3: TERRAIN_CLASSIFICATION
       this._executePassCommands(
@@ -265,14 +256,19 @@ export class WebGPUSceneRenderer {
         passState,
       );
 
+      // Clear globe depth if needed for primitives-on-top rendering
+      if (config.clearGlobeDepth) {
+        this._clearDepthStencil(context);
+        if (config.useDepthPlane) {
+          this._renderDepthPlane(config);
+        }
+      }
+
       // Pass 4-7: 3D Tiles passes
       this._execute3DTilePasses(frustumCommands, config);
 
       // Pass 8: OPAQUE
       this._executeOpaquePass(frustumCommands, config);
-
-      // Pass 9: TRANSLUCENT (with OIT if enabled)
-      this._executeTranslucentPass(frustumCommands, config);
 
       // Pass 10: VOXELS
       this._executePassCommands(
@@ -291,13 +287,41 @@ export class WebGPUSceneRenderer {
         context,
         passState,
       );
+
+      // For translucent pass, use actual near to avoid blending artifacts
+      if (index !== 0 && scene.mode !== 0 /* SceneMode.SCENE2D */) {
+        this._updateFrustumUniforms(
+          uniformState,
+          frustumCommands.near,
+          far,
+          scene,
+        );
+      }
+
+      // Pass 9: TRANSLUCENT (with OIT if enabled)
+      this._executeTranslucentPass(frustumCommands, config);
+
+      // Pick depth copy per frustum (for pickPosition support)
+      if (
+        !picking &&
+        config.useGlobeDepthFramebuffer &&
+        this._globeDepth &&
+        scene._picking
+      ) {
+        const pickDepth = scene._picking.getPickDepth(scene, index);
+        if (pickDepth && (this._globeDepth as any).depthStencilTexture) {
+          // Future: pickDepth.update(context, this._globeDepth.depthStencilTexture);
+        }
+      }
     }
 
     // Pass 12: OVERLAY (runs once, not per-frustum)
     this._executeOverlayPass(frustumCommandsList, config);
 
     // Depth plane (if enabled, renders after all frustums)
-    this._renderDepthPlane(config);
+    if (!config.clearGlobeDepth) {
+      this._renderDepthPlane(config);
+    }
 
     // Post-processing (tonemapping, FXAA, etc.)
     this._runPostProcessing(config);
@@ -311,19 +335,26 @@ export class WebGPUSceneRenderer {
     far: number,
     scene: any,
   ): void {
+    // Create a working frustum from the camera and update uniform state
+    // This mirrors the WebGL path which creates a clone and sets near/far on it
     const camera = scene._frameState.camera;
-    if (camera.frustum.near !== undefined) {
-      camera.frustum.near = near;
-      camera.frustum.far = far;
-      uniformState.updateFrustum(camera.frustum);
+    const frustum = camera.frustum;
+    if (frustum && frustum.near !== undefined) {
+      // Use updateFrustum with modified near/far via the scratch approach
+      // Store originals, update, then the uniform state captures the projection matrix
+      const origNear = frustum.near;
+      const origFar = frustum.far;
+      frustum.near = near;
+      frustum.far = far;
+      uniformState.updateFrustum(frustum);
+      // Restore — the frustum on the camera should stay unchanged for other systems
+      frustum.near = origNear;
+      frustum.far = origFar;
     }
-    // Log depth values are computed inside updateFrustum() when it sets
-    // _farDepthFromNearPlusOne and _log2FarDepthFromNearPlusOne.
-    // No separate updateLogDepth call is needed.
   }
 
   private _clearDepthStencil(context: any): void {
-    context.clear({ depth: true, stencil: true, color: false });
+    context.clear?.({ depth: true, stencil: true, color: false });
   }
 
   // --- Globe pass (with GlobeDepth integration) ---
@@ -338,6 +369,8 @@ export class WebGPUSceneRenderer {
     if (count === 0) {
       return;
     }
+
+    context.uniformState?.updatePass(Pass.GLOBE);
 
     // When globe depth is available, globe renders to its own framebuffer
     // so depth can be sampled in subsequent passes (terrain clamping, picking)
@@ -368,6 +401,7 @@ export class WebGPUSceneRenderer {
       const cmds = frustumCommands.commands[passIndex];
       const cnt: number = frustumCommands.indices[passIndex];
       if (cnt > 0) {
+        context.uniformState?.updatePass(passIndex);
         executeBatch(cmds, cnt, scene, context, passState);
       }
     }
@@ -385,6 +419,7 @@ export class WebGPUSceneRenderer {
     if (count === 0) {
       return;
     }
+    context.uniformState?.updatePass(Pass.OPAQUE);
     executeBatch(commands, count, scene, context, passState);
   }
 
@@ -400,6 +435,8 @@ export class WebGPUSceneRenderer {
     if (count === 0) {
       return;
     }
+
+    context.uniformState?.updatePass(Pass.TRANSLUCENT);
 
     if (this._oit && config.useOIT && !config.picking) {
       // OIT accumulation pass: render translucent geometry with
@@ -452,15 +489,17 @@ export class WebGPUSceneRenderer {
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
-    const lastFrustum = frustumCommandsList[frustumCommandsList.length - 1];
-    if (!lastFrustum) {
+    // Overlay commands are in the nearest frustum (index 0)
+    const nearestFrustum = frustumCommandsList[0];
+    if (!nearestFrustum) {
       return;
     }
-    const commands = lastFrustum.commands[Pass.OVERLAY];
-    const count: number = lastFrustum.indices[Pass.OVERLAY];
+    const commands = nearestFrustum.commands[Pass.OVERLAY];
+    const count: number = nearestFrustum.indices[Pass.OVERLAY];
     if (count === 0) {
       return;
     }
+    context.uniformState?.updatePass(Pass.OVERLAY);
     executeBatch(commands, count, scene, context, passState);
   }
 
@@ -490,7 +529,7 @@ export class WebGPUSceneRenderer {
   // --- Post-processing ---
 
   private _runPostProcessing(config: WebGPURenderFrameConfig): void {
-    if (!this._postProcess || !config.usePostProcessing) {
+    if (!this._postProcess || !config.usePostProcess) {
       return;
     }
     const { context } = config;
@@ -531,6 +570,7 @@ export class WebGPUSceneRenderer {
     if (count === 0) {
       return;
     }
+    context.uniformState?.updatePass(passIndex);
     executeBatch(commands, count, scene, context, passState);
   }
 

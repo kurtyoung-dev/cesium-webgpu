@@ -22,6 +22,16 @@ function FrameState(context, creditDisplay, jobScheduler) {
   this.context = context;
 
   /**
+   * Alias for context as a GraphicsContext instance.
+   * Provides access to the full backend-agnostic API including
+   * context-aware logging, feature renderer registry, and type queries.
+   * Available per the hackathon branch pattern of exposing context via FrameState.
+   *
+   * @type {GraphicsContext}
+   */
+  this.graphicsContext = context;
+
+  /**
    * An array of rendering commands.
    *
    * @type {DrawCommand[]}

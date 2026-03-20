@@ -51,7 +51,7 @@ import TerrainFillMesh from "./TerrainFillMesh.js";
 import TerrainState from "./TerrainState.js";
 import TileBoundingRegion from "./TileBoundingRegion.js";
 import TileSelectionResult from "./TileSelectionResult.js";
-import { WebGPUGlobeSurfaceRenderer } from "../Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * Provides quadtree tiles representing the surface of the globe.  This type is intended to be used
@@ -2215,7 +2215,7 @@ struct VS { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>,
  * WebGPU path: Create and push WebGPU draw commands for a terrain tile.
  * This replaces the entire WebGL addDrawCommandsForTile when context.isWebGPU.
  */
-function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState) {
+function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   const surfaceTile = tile.data;
   const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
   if (!mesh || !mesh.vertices || !mesh.indices) {
@@ -2235,7 +2235,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState) {
 
   // Lazily initialize the globe renderer
   if (!_webgpuGlobeRenderer || _webgpuGlobeRenderer.isDestroyed()) {
-    _webgpuGlobeRenderer = new WebGPUGlobeSurfaceRenderer();
+    _webgpuGlobeRenderer = new fr.RendererClass();
     const fmt =
       context.canvasFormat || navigator.gpu.getPreferredCanvasFormat();
     _webgpuGlobeRenderer.initialize(device, _webgpuGlobeShaderCode, fmt);
@@ -2286,10 +2286,11 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState) {
 function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const surfaceTile = tile.data;
 
-  // WebGPU path: create WebGPU draw command instead of WebGL DrawCommand
+  // Backend-specific rendering path — delegate to feature renderer if available
   const context = frameState.context;
-  if (defined(context.isWebGPU) && context.isWebGPU) {
-    addWebGPUDrawCommandsForTile(tileProvider, tile, frameState);
+  const fr = context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
+  if (fr) {
+    addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr);
     return;
   }
 

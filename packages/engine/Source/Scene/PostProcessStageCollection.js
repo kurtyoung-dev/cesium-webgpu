@@ -13,10 +13,7 @@ import PassThrough from "../Shaders/PostProcessStages/PassThrough.js";
 import PostProcessStageLibrary from "./PostProcessStageLibrary.js";
 import PostProcessStageTextureCache from "./PostProcessStageTextureCache.js";
 import Tonemapper, { validateTonemapper } from "./Tonemapper.js";
-import {
-  updateWebGPUPostProcessStages,
-  destroyWebGPUPostProcessResources,
-} from "../Renderer/WebGPU/WebGPUPostProcessStageCollection.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 const stackScratch = [];
 
@@ -578,9 +575,13 @@ PostProcessStageCollection.prototype.update = function (
   useLogDepth,
   useHdr,
 ) {
-  // WebGPU: Route to dedicated WebGPU post-process pipeline
-  if (context.isWebGPU) {
-    updateWebGPUPostProcessStages(this, { context });
+  // Backend-specific rendering path — delegate to feature renderer if available
+  const fr = context.getFeatureRenderer(
+    FeatureRendererKey.POST_PROCESS_COLLECTION,
+  );
+  if (fr) {
+    this._featureRenderer = fr;
+    fr.update(this, { context });
     return;
   }
 
@@ -905,7 +906,12 @@ PostProcessStageCollection.prototype.destroy = function () {
   this._tonemapping.destroy();
   this.removeAll();
   this._textureCache = this._textureCache && this._textureCache.destroy();
-  destroyWebGPUPostProcessResources(this);
+  if (
+    defined(this._featureRenderer) &&
+    defined(this._featureRenderer.destroy)
+  ) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 export default PostProcessStageCollection;

@@ -32,11 +32,8 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
 import TextureWrap from "../Renderer/TextureWrap.js";
 import VertexArray from "../Renderer/VertexArray.js";
 import VertexArrayFacade from "../Renderer/VertexArrayFacade.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
-import {
-  updateWebGPUCloudCollection,
-  destroyWebGPUCloudResources,
-} from "../Renderer/WebGPU/WebGPUCloudRenderer.js";
 
 let attributeLocations;
 const scratchTextureDimensions = new Cartesian3();
@@ -945,9 +942,13 @@ function createDrawCommands(cloudCollection, frameState) {
  */
 CloudCollection.prototype.update = function (frameState) {
   removeClouds(this);
-  // WebGPU: Route to dedicated WebGPU cloud renderer
-  if (frameState.context.isWebGPU) {
-    updateWebGPUCloudCollection(this, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.CLOUD_COLLECTION,
+  );
+  if (fr) {
+    fr.update(this, frameState);
+    this._featureRenderer = fr;
     return;
   }
   if (!this.show) {
@@ -1044,7 +1045,9 @@ CloudCollection.prototype.destroy = function () {
 
   destroyClouds(this._clouds);
 
-  destroyWebGPUCloudResources(this);
+  if (this._featureRenderer) {
+    this._featureRenderer.destroy(this);
+  }
   return destroyObject(this);
 };
 

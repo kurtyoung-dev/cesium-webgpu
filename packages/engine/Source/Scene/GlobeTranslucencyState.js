@@ -6,10 +6,10 @@ import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import BlendingState from "./BlendingState.js";
 import CullFace from "./CullFace.js";
 import SceneMode from "./SceneMode.js";
-import { updateWebGPUGlobeTranslucencyDerivedCommands } from "../Renderer/WebGPU/WebGPUGlobeTranslucencyState.js";
 
 const DerivedCommandType = {
   OPAQUE_FRONT_FACE: 0,
@@ -758,9 +758,12 @@ GlobeTranslucencyState.prototype.updateDerivedCommands = function (
   command,
   frameState,
 ) {
-  // WebGPU: Route to dedicated WebGPU globe translucency state handler
-  if (frameState.context.isWebGPU) {
-    updateWebGPUGlobeTranslucencyDerivedCommands(this, command, frameState);
+  // Route to WebGPU feature renderer if available
+  const fr = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.GLOBE_TRANSLUCENCY,
+  );
+  if (fr) {
+    fr.updateDerivedCommands(this, command, frameState);
     return;
   }
 
