@@ -1,6 +1,6 @@
 # CesiumJS Upstream: Known Issues, Tech Debt & Community Problems
 
-**Last Updated:** March 19, 2026 (Updated: Resolved FORK-5/6/9/13/15/18/24/25 tech debt items — Phase D 28/28 complete, type safety improvements, DepthPlane implementation, WGSL preprocessor transitive deps fix)  
+**Last Updated:** March 21, 2026 (Updated: Comprehensive picking analysis — FORK-34/35/36 added for WebGPU pick pass gap, duplicate pick IDs, and missing convenience API. See `PICKING_ANALYSIS.md` for full report.)  
 **Upstream Repository:** [CesiumGS/cesium](https://github.com/CesiumGS/cesium) — ~1,500 open issues  
 **Our Fork:** [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)  
 **Purpose:** Comprehensive audit of upstream CesiumJS problems — issues identified from GitHub issues, community forum, and code analysis — cross-referenced with our fork's status. Also includes a dedicated section for tech debt introduced by our fork.
@@ -77,7 +77,7 @@
 |-------|-----------|----------|------------|---------|
 | **607+ GLSL shaders with no cross-compilation** — All shaders are handwritten GLSL. No path to WGSL/SPIR-V. | — (systemic) | 🟡 Medium | ⚡ **IMPROVED** | 67+ hand-written WGSL shaders covering ~11% of WebGL shader coverage. Slang cross-compilation pipeline (`scripts/compileSlang.js`) available for future dual-output shaders. |
 | **No shader preprocessing for WGSL** | — (systemic) | 🟡 Medium | ✅ **FIXED** | `WGSLShaderPreprocessor.ts` with `#import` directive, struct auto-resolution, and chunk management. `WGSLBuiltins.ts` provides 17 reusable chunks. |
-| **No compute shader support** — WebGL has no compute capability. All GPU computation done on CPU or via transform feedback hacks. | — (systemic) | 🔴 High | ✅ **FIXED** | `WebGPUComputeCommand.ts`, `WebGPUComputeEngine.ts`. Compute shaders for BRDF LUT generation, frustum culling (`FrustumCull.wgsl`), and more. |
+| **No compute shader support** — WebGL has no compute capability. All GPU computation done on CPU or via transform feedback hacks. | — (systemic) | 🔴 High | ✅ **FIXED** | `WebGPUComputeCommand.ts`, `WebGPUComputeEngine.ts`. Compute shaders for BRDF LUT generation, frustum culling (`FrustumCull.wgsl`), and more. **Abstract compute capability API** added to `GraphicsContext`: `supportsComputeShaders`, `supportsStorageBuffers`, `supportsIndirectCompute`, `maxComputeWorkgroupsPerDimension/InvocationsPerWorkgroup/StorageSize`. WebGPU overrides report real device limits. WebGL 2.0 has future-ready extension scaffolding (`WEBGL_compute`, `WEBGL_shader_storage_buffer`) — currently all return false, auto-enabling when extensions ship. Scene code queries `context.supportsComputeShaders` for backend-agnostic compute dispatch. |
 | **GLSL `#ifdef` debug stripping is fragile** — `includeStart`/`includeEnd` pragma comments are non-standard and error-prone | — (code analysis) | 🟢 Low | ⬜ **OPEN** | CesiumJS uses custom `//>>includeStart('debug')` / `//>>includeEnd('debug')` comments for tree-shaking debug checks. These are fragile (comment-based, not AST-based) and occasionally interact poorly with other tools. |
 
 ---
@@ -90,8 +90,8 @@
 |-------|-----------|----------|------------|---------|
 | **Poor billboard quality** — Blurry billboards at various zoom levels. 30 comments. Priority-high. | [#4235](https://github.com/CesiumGS/cesium/issues/4235) | 🔴 High | 🟡 **MITIGATED** | Our WebGPU billboard renderer uses instanced quads with proper texture sampling. Underlying quality depends on atlas generation (shared code). |
 | **Blinking entity on shader properties update** — Entities flash when material properties change at runtime. 8 comments. | [#12532](https://github.com/CesiumGS/cesium/issues/12532) | 🟡 Medium | ⬜ **OPEN** | Not yet addressed in either path. |
-| **Z-Ordering of entity collection** — No control over entity draw order. 47 comments. Longest-running request. | [#4108](https://github.com/CesiumGS/cesium/issues/4108) | 🔴 High | ⬜ **OPEN** | Not addressed. WebGPU path could implement this via sort-key in draw commands, but not yet planned. |
-| **Multiple light sources and light types** — Only one directional sun light. 12 comments. | [#8518](https://github.com/CesiumGS/cesium/issues/8518) | 🟡 Medium | 🔧 **PLANNED** | WebGPU `LightUniforms.wgsl` struct already supports light direction/color. Multi-light extension straightforward but not implemented. |
+| **Z-Ordering of entity collection** — No control over entity draw order. 47 comments. Longest-running request. | [#4108](https://github.com/CesiumGS/cesium/issues/4108) | 🔴 High | ⚡ **IMPROVED** | `sortKey` property added to both `DrawCommand` (WebGL) and `WebGPUDrawCommand` (WebGPU). Lower values render first within a pass. **Parity gaps:** (1) `sortKey` is not declared in `WebGPUDrawCommandOptions` interface — TypeScript strict mode would reject it. (2) `WebGPUDrawCommand.clone()` does not copy `sortKey`. (3) No sorting comparator in Scene.js/View.js actually reads `sortKey` — the property exists on both backends but is **dead code** in both. (4) No scene code or collection sets `sortKey` values. Next steps: add `sortKey` to View.js sorting comparators (shared, benefits both backends), expose `renderOrder` on collections, fix WebGPUDrawCommand clone/options. See FORK-31. |
+| **Multiple light sources and light types** — Only one directional sun light. 12 comments. | [#8518](https://github.com/CesiumGS/cesium/issues/8518) | 🟡 Medium | ⚡ **IMPROVED** | `Light.ts` class hierarchy created (renderer-agnostic ✅): `DirectionalLight`, `PointLight`, `SpotLight` + `LightCollection` with `pack()` for GPU uniform buffers. `LightUniforms.wgsl` updated with `LightData` struct array (8 lights), attenuation functions. **Parity gaps:** (1) **No GLSL multi-light shader** — WebGL GLSL still uses single-light uniforms (`czm_lightDirectionEC`, `czm_lightColorHdr` in `LightingStageFS.glsl`). A GLSL `czm_multiLight` struct + attenuation functions matching WGSL are needed. (2) **No `scene.lights` property** — No scene file imports `LightCollection`; `scene.light` (singular, from `SunLight.js`) is the only lighting API. (3) `LightCollection.pack()` format is WebGPU uniform-buffer-aligned (std140 padding) — WebGL equivalent needs `czm_` auto-uniform integration. Next steps: add `scene.lights` (shared), create GLSL multi-light builtin, wire into `UniformState.js`. See FORK-32, FORK-33. |
 | **Fit texture coordinates to rectangle/trapezoid geometry** — Textures don't map correctly to non-rectangular shapes. 16 comments. | [#4164](https://github.com/CesiumGS/cesium/issues/4164) | 🟡 Medium | ⬜ **OPEN** | Not addressed. |
 | **Material difference in 2D scene** — Materials render differently in 2D vs 3D mode | [#9853](https://github.com/CesiumGS/cesium/issues/9853) | 🟡 Medium | ⬜ **OPEN** | Not addressed. |
 | **Support for animated billboards** — No sprite-sheet animation support. 15 comments. | [#2319](https://github.com/CesiumGS/cesium/issues/2319) | 🟡 Medium | ⬜ **OPEN** | Not addressed. |
@@ -294,7 +294,7 @@
 | 🟡 **MITIGATED** | 4 | 4% |
 | ⬜ **OPEN** (same as upstream) | 42 | 45% |
 | **Total upstream tracked** | **91** | 100% |
-| 🔶 **Fork-specific tech debt** | **30** | — (see §14) |
+| 🔶 **Fork-specific tech debt** | **36** | — (see §14) |
 
 ### Key Differentiators
 
@@ -401,15 +401,28 @@ This section documents tech debt **introduced by our fork's WebGPU additions**. 
 | **FORK-29** | **Slang cross-compilation pipeline built but unused in production** — `scripts/compileSlang.js` and the full Slang toolchain integration exists, but no production shader uses it. Only one generated `.wgsl` file exists (`EllipsoidPrimitive.wgsl`). | 🟢 Low | `scripts/compileSlang.js`, `Shaders/WebGPU/Generated/` | Infrastructure investment with no current ROI. Not harmful (it's optional) but adds maintenance surface. Will become valuable when new shaders need both GLSL + WGSL output. |
 | **FORK-30** | **`@webgpu/types` pinned to `^0.1.69`** — WebGPU types package may drift from the evolving spec. The caret range allows minor updates but major breaking changes in the spec could require manual updates. | 🟢 Low | `package.json` | Low risk since WebGPU spec is stable in Chrome 113+. Should be reviewed during upstream syncs. |
 
+### 14.9 WebGL/WebGPU Feature Parity Gaps
+
+These items track features added to our fork where the implementation is incomplete across both backends. Per `.clinerules` §4, new renderer-agnostic features MUST be implemented for both WebGL and WebGPU simultaneously.
+
+| ID | Issue | Severity | Files Affected | Details |
+|----|-------|----------|---------------|---------|
+| **FORK-31** | **Sorting system: 11 phases built, critical gap FIXED** — Full sorting system across 11 phases (30+ files). **SORT-1 FIXED:** `renderPriority`/`renderLayer` now wired from collections/primitives → DrawCommands in 5 files (BillboardCollection, PointPrimitiveCollection, PolylineCollection, Primitive.js, ModelVisualizer.js). **SORT-2 FIXED:** `RenderScheduler.beginFrame()` integrated into `Scene.prototype.render()`. **SORT-11 FIXED:** Octree rootHalfExtent auto-configures from scene ellipsoid. `entity.renderPriority` now works end-to-end: Entity → Visualizer → Collection → DrawCommand → Scene.js comparators. Remaining: MaterialSortIdAllocator activation (needs opaque sort), RenderScheduler full integration (binCommand/sortAllLayers), WASM compilation, octree/occlusion View.js wiring. See `migration_doc/SORTING_REVIEW_AND_TECH_DEBT.md` for full audit. Addresses upstream [#4108](https://github.com/CesiumGS/cesium/issues/4108). | ⚡ Improved (core wiring complete) | 30+ files across Scene, DataSources, Renderer, Shaders | Remaining: (1) Full RenderScheduler integration (~2-3 days). (2) Compile WASM (`npm run build-wasm`). (3) Wire octree/occlusion into View.js. (4) Unit tests. |
+| **FORK-32** | **Multi-light `scene.lights` API not wired — `LightCollection` is orphaned** — `Light.ts` defines `DirectionalLight`, `PointLight`, `SpotLight`, and `LightCollection`, but no scene file imports or uses them. `Scene.js` only has `scene.light` (singular, `SunLight`). The `LightCollection.pack()` method and `LightUniforms.wgsl` struct are ready but disconnected from the rendering pipeline. Addresses upstream [#8518](https://github.com/CesiumGS/cesium/issues/8518). | 🟡 Medium | `Light.ts` (orphaned), `Scene.js` (missing `lights` property), `UniformState.js` (missing multi-light uniforms) | **To complete:** (a) Add `scene.lights` property (shared, renderer-agnostic `LightCollection`). (b) Wire `LightCollection.pack()` into `UniformState.js` for both backends. (c) Create GLSL multi-light builtin (see FORK-33). ~2-3 days. |
+| **FORK-33** | **No GLSL multi-light shader — WebGL has no equivalent of `LightUniforms.wgsl`** — `LightUniforms.wgsl` has `LightData` struct array (8 lights), `csm_computeAttenuation()`, and `csm_computeSpotCone()`. WebGL GLSL still uses single-light uniforms (`czm_lightDirectionEC`, `czm_lightColorHdr`) in `LightingStageFS.glsl` and `czm_pbrLighting()`. No `czm_multiLight` struct or attenuation functions exist in GLSL. This is a shader parity gap — WebGPU can render multi-light scenes but WebGL cannot. | 🟡 Medium | `LightUniforms.wgsl` (WebGPU ✅), `Shaders/Builtin/` (WebGL ❌), `LightingStageFS.glsl` (single-light only) | **To complete:** (a) Create GLSL `czm_lightData` struct matching WGSL `LightData`. (b) Add GLSL `czm_computeAttenuation()` and `czm_computeSpotCone()` builtins. (c) Update `LightingStageFS.glsl` to iterate over light array. (d) Add `czm_lightCount` and `czm_lights[8]` auto-uniforms in `AutomaticUniforms.js`. ~3-4 days. |
+| **FORK-34** | **WebGPU pick render pass — partially wired for geometry primitives** — `WebGPUSceneRenderer._executePickPass()` now renders to the pick FBO when `config.picking` is true. Executes GLOBE/3D_TILE/OPAQUE/TRANSLUCENT passes (skips ENVIRONMENT). `Primitive.js` pushes WebGPU pick commands to `commandList` during pick-only passes instead of color commands. **Works for:** All `Primitive.js`-based geometry (polygons, rectangles, ellipses, cylinders, boxes, polyhedra). **Not yet working:** Billboard, Point, Polyline collections (their feature renderers don't create pick commands), depth readback for `pickPosition`. Duplicate pick ID systems remain (WebGPUContext vs WebGPUPickManager). | ⚡ Improved | `WebGPUSceneRenderer.ts` (pick pass added), `Primitive.js` (pick command push), `WebGPUPickFramebuffer.ts`, `WebGPUPickManager.ts` | **Remaining:** (a) Add pick command creation to Billboard/Point/Polyline feature renderers. (b) Consolidate duplicate pick ID systems. (c) Add depth readback for `pickPosition`. (d) End-to-end testing. ~2-3 days remaining. |
+| **FORK-35** | **Duplicate pick ID systems in WebGPU** — `WebGPUContext.ts` has inline `_pickObjects` Map + `createPickId()`/`getObjectByPickColor()`. `WebGPUPickManager.ts` has its own independent pick object map. Both manage the same 24-bit color → object mapping. Only one should exist. | 🟡 Medium | `WebGPUContext.ts`, `WebGPUPickManager.ts` | **To complete:** Consolidate to single pick manager. `WebGPUContext` methods should delegate to `WebGPUPickManager`. ~0.5 day. |
+| **FORK-36** | **No convenience API for drill-pick-to-earth-center** — `scene.drillPickFromRay(ray, limit, excludes, width)` CAN pick from a point to the earth center with a diameter (`width` param), but requires manual `Ray` construction. No `scene.pickColumn(position, {diameter})` or `scene.pickRayAll(ray, {diameter})` convenience wrapper exists. The `width` parameter name doesn't communicate "diameter." Addresses common GIS use case of querying all features in a vertical column through the earth. | 🟢 Low | `Scene.js`, `Picking.js` | **To complete:** Add `scene.pickAll()`, `scene.pickRayAll()`, `scene.pickColumn()` convenience methods wrapping existing `drillPick`/`drillPickFromRay`. ~1-2 days. |
+
 ### Fork Tech Debt Summary
 
 | Severity | Count | Resolved | Remaining | Key Remaining Items |
 |----------|-------|----------|-----------|---------------------|
-| 🔴 High | 5 | 5 (FORK-1, FORK-5, FORK-6, FORK-14, FORK-24) | **0** | All 🔴 High items resolved! Only FORK-19 (unit tests) remains as the top quality risk. |
-| 🟡 Medium | 18 | 12 (FORK-2, FORK-3, FORK-9 partial, FORK-12, FORK-13, FORK-15, FORK-18, FORK-25, FORK-27) | 6 | WebGLCompatibilityStub (FORK-4), type helpers adoption (FORK-11), test infra (FORK-16-17, FORK-20-23), material system (FORK-28) |
-| 🟢 Low | 4 | 2 (FORK-10, FORK-8 acceptable) | 2 | Slang unused (FORK-29), `@webgpu/types` version (FORK-30) |
+| 🔴 High | 7 | 5 (FORK-1, FORK-5, FORK-6, FORK-14, FORK-24) | **2** | FORK-19 (unit tests — top quality risk), FORK-34 (WebGPU pick pass not wired — all 15+ picking methods fail) |
+| 🟡 Medium | 23 | 12 (FORK-2, FORK-3, FORK-9 partial, FORK-12, FORK-13, FORK-15, FORK-18, FORK-25, FORK-27) | 11 | WebGLCompatibilityStub (FORK-4), type helpers (FORK-11), test infra (FORK-16-17, FORK-20-23), material system (FORK-28), parity gaps (FORK-31, FORK-32, FORK-33), duplicate pick IDs (FORK-35) |
+| 🟢 Low | 5 | 2 (FORK-10, FORK-8 acceptable) | 3 | Slang unused (FORK-29), `@webgpu/types` version (FORK-30), pick convenience API (FORK-36) |
 | ⚠️ **Architectural** | 3 | 3 (FORK-24, FORK-25, FORK-26) | **0** | All architectural items resolved! |
-| **Total** | **30** | **19 resolved** | **11 remaining** | — |
+| **Total** | **36** | **19 resolved** | **17 remaining** | — |
 
 ### Resolved Fork Tech Debt Items (19 of 30)
 
@@ -445,8 +458,8 @@ FORK-1 ✅, FORK-2 ✅, FORK-3 ✅, FORK-5 ✅ (Phase D 28/28), FORK-6 ✅ (effe
 | Source | Count |
 |--------|-------|
 | **Upstream issues tracked** | 91 |
-| **Fork-specific tech debt** | 30 |
-| **Grand total** | **121** |
+| **Fork-specific tech debt** | 33 |
+| **Grand total** | **124** |
 
 ---
 

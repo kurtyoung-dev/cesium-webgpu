@@ -26,6 +26,7 @@ import CesiumMath from "../Core/Math.js";
 import Matrix4 from "../Core/Matrix4.js";
 import mergeSort from "../Core/mergeSort.js";
 import Occluder from "../Core/Occluder.js";
+import RenderScheduler from "./RenderScheduler.js";
 import OrthographicFrustum from "../Core/OrthographicFrustum.js";
 import OrthographicOffCenterFrustum from "../Core/OrthographicOffCenterFrustum.js";
 import PerspectiveFrustum from "../Core/PerspectiveFrustum.js";
@@ -72,6 +73,7 @@ import ShadowMap from "./ShadowMap.js";
 import SharedContext from "../Renderer/SharedContext.js";
 import SpecularEnvironmentCubeMap from "./SpecularEnvironmentCubeMap.js";
 import StencilConstants from "./StencilConstants.js";
+import { LightCollection } from "./Light.js";
 import SunLight from "./SunLight.js";
 import SunPostProcess from "./SunPostProcess.js";
 import TweenCollection from "./TweenCollection.js";
@@ -261,6 +263,20 @@ function Scene(options) {
   if (sceneRendererFR && sceneRendererFR.RendererClass) {
     this._alternateSceneRenderer = new sceneRendererFR.RendererClass();
   }
+
+  /**
+   * The render scheduler manages layered sorting, material batching,
+   * and predictive sort queries. Sits above CesiumJS's 5 existing
+   * sorting mechanisms and unifies them.
+   * @type {RenderScheduler}
+   * @private
+   */
+  this._renderScheduler = new RenderScheduler();
+
+  // SORT-11: Auto-configure octree root half-extent for the scene's ellipsoid
+  // This ensures non-Earth bodies (Moon, Mars) have correctly-sized octree bounds.
+  this._renderScheduler.octree.rootHalfExtent =
+    this._ellipsoid.maximumRadius * 1.1;
 
   this._transitioner = new SceneTransitioner(this);
 
@@ -790,6 +806,27 @@ function Scene(options) {
    * @type {Light}
    */
   this.light = new SunLight();
+
+  /**
+   * Collection of additional light sources for multi-light rendering.
+   * Supports up to 8 lights (DirectionalLight, PointLight, SpotLight).
+   * This is renderer-agnostic — both WebGL and WebGPU backends can consume it.
+   * The primary `scene.light` (SunLight) is always applied independently;
+   * `scene.lights` provides supplementary lights for advanced lighting scenarios.
+   *
+   * @type {LightCollection}
+   *
+   * @example
+   * // Add a red point light
+   * const pointLight = new Cesium.PointLight({
+   *   position: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 100.0),
+   *   color: Cesium.Color.RED,
+   *   intensity: 5.0,
+   *   range: 1000.0
+   * });
+   * scene.lights.add(pointLight);
+   */
+  this.lights = new LightCollection();
 
   /**
    * Whether or not to enable edge visibility rendering for 3D tiles.
@@ -1877,6 +1914,39 @@ Object.defineProperties(Scene.prototype, {
       return this._globeHeight;
     },
   },
+
+  /**
+   * The render scheduler manages layered sorting, material batching,
+   * predictive sort queries, and render layer configuration.
+   *
+   * Access this to configure render layers, set custom sort modes,
+   * enable/disable depth clear between layers, and debug render order.
+   *
+   * @memberof Scene.prototype
+   * @type {RenderScheduler}
+   * @readonly
+   *
+   * @example
+   * // Configure the Annotations layer to always render on top
+   * const annotations = scene.renderScheduler.layers.getByName('Annotations');
+   * annotations.clearDepth = true;
+   *
+   * // Add a custom layer for sensor overlays
+   * scene.renderScheduler.layers.create({
+   *   name: 'Sensors',
+   *   order: 60,
+   *   clearDepth: true,
+   *   opaqueSortMode: Cesium.SortMode.NONE,
+   * });
+   *
+   * // Debug: explain why entity A renders behind entity B
+   * console.log(scene.renderScheduler.explainRenderOrder(commandA, commandB, camera.positionWC));
+   */
+  renderScheduler: {
+    get: function () {
+      return this._renderScheduler;
+    },
+  },
 });
 
 /**
@@ -2168,6 +2238,7 @@ Scene.prototype.updateFrameState = function () {
       this.camera.frustum instanceof OrthographicOffCenterFrustum
     );
   frameState.light = this.light;
+  frameState.lights = this.lights;
   frameState.cameraUnderground = this._cameraUnderground;
   frameState.globeTranslucencyState = this._globeTranslucencyState;
 
@@ -2501,6 +2572,19 @@ function executeIdCommand(command, scene, passState) {
 }
 
 function backToFront(a, b, position) {
+  // Multi-level transparent sort: sortKey → sortPriority → distance (back-to-front)
+  // NO material batching — correct blending order > state changes
+  const sortKeyA = a.sortKey ?? 0;
+  const sortKeyB = b.sortKey ?? 0;
+  if (sortKeyA !== sortKeyB) {
+    return sortKeyA - sortKeyB;
+  }
+  const priorityA = a.sortPriority ?? 0;
+  const priorityB = b.sortPriority ?? 0;
+  if (priorityA !== priorityB) {
+    return priorityA - priorityB;
+  }
+  // Back-to-front: farther objects render first for correct alpha blending
   return (
     b.boundingVolume.distanceSquaredTo(position) -
     a.boundingVolume.distanceSquaredTo(position)
@@ -2525,7 +2609,26 @@ function backToFrontSplats(a, b, position) {
 }
 
 function frontToBack(a, b, position) {
-  // When distances are equal equal favor sorting b before a. This gives render priority to commands later in the list.
+  // Multi-level opaque sort: sortKey → sortPriority → materialSortId → distance (front-to-back)
+  // Material batching reduces shader/texture state changes.
+  // Distance sort within same material gives early-Z benefit.
+  const sortKeyA = a.sortKey ?? 0;
+  const sortKeyB = b.sortKey ?? 0;
+  if (sortKeyA !== sortKeyB) {
+    return sortKeyA - sortKeyB;
+  }
+  const priorityA = a.sortPriority ?? 0;
+  const priorityB = b.sortPriority ?? 0;
+  if (priorityA !== priorityB) {
+    return priorityA - priorityB;
+  }
+  // Material batching: group same shader/pipeline together
+  const matA = a.materialSortId ?? 0;
+  const matB = b.materialSortId ?? 0;
+  if (matA !== matB) {
+    return matA - matB;
+  }
+  // Front-to-back: nearer objects first for early-Z rejection
   return (
     a.boundingVolume.distanceSquaredTo(position) -
     b.boundingVolume.distanceSquaredTo(position) +
@@ -4622,6 +4725,9 @@ Scene.prototype.render = function (time) {
 
   const frameState = this._frameState;
   frameState.newFrame = false;
+
+  // SORT-2: Reset per-frame sorting state (render layers, material batching, stats)
+  this._renderScheduler.beginFrame();
 
   if (!defined(time)) {
     time = JulianDate.now();

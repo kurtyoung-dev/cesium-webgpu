@@ -1,0 +1,7 @@
+# Cargo configuration for cesium-wasm-culling
+# Enable WASM SIMD128 and bulk-memory for the wasm32 target.
+# This is the correct location for target-specific rustflags
+# (Cargo.toml's [target.*] section only supports dependencies, not rustflags).
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128,+bulk-memory"]

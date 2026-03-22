@@ -1,4 +1,6 @@
-# CesiumJS
+# CesiumJS - WebGPU Fork
+
+## THIS FORK IS A MASSIVE WORK IN PROGRESS — HUGE OVERHAUL TO NOT JUST ADD WEBGPU BUT FIX TECH DEBT AND ARCHITECTURE ISSUES — NOT CURRENTLY READY FOR USE
 
 [![Build Status](https://github.com/CesiumGS/cesium/actions/workflows/dev.yml/badge.svg)](https://github.com/CesiumGS/cesium/actions/workflows/dev.yml)
 [![npm](https://img.shields.io/npm/v/cesium)](https://www.npmjs.com/package/cesium)

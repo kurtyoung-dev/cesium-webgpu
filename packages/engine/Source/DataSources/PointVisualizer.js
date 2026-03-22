@@ -149,9 +149,13 @@ PointVisualizer.prototype.update = function (time) {
       item.pointPrimitive = pointPrimitive;
     }
 
+    // Apply entity's renderPriority for sort ordering
+    const entitySortPriority = entity._renderPriority ?? 0;
+
     if (defined(pointPrimitive)) {
       pointPrimitive.show = true;
       pointPrimitive.position = position;
+      pointPrimitive._sortPriority = entitySortPriority;
       pointPrimitive.scaleByDistance = Property.getValueOrUndefined(
         pointGraphics._scaleByDistance,
         time,

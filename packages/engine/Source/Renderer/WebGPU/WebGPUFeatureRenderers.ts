@@ -135,6 +135,11 @@ import { initPrimitiveShaders } from "./WebGPUPrimitiveShaders.js";
 import { initCollectionShaders } from "./WebGPUCollectionShaders.js";
 
 import type GraphicsContext from "../GraphicsContext.js";
+import type {
+  CollectionRenderer,
+  PrimitiveCommandRenderer,
+  SystemRenderer,
+} from "../GraphicsContext.js";
 
 /**
  * Registers all WebGPU feature renderers on the given context.

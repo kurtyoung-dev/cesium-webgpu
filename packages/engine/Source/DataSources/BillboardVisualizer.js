@@ -223,6 +223,9 @@ BillboardVisualizer.prototype.update = function (time) {
       defaultSplitDirection,
     );
 
+    // Apply entity's renderPriority to the billboard for sort ordering
+    billboard._sortPriority = entity._renderPriority ?? 0;
+
     // Apply .image last, so any necessary property values are available
     // in Billboard#_computeImageTextureSize before adding to the atlas.
     if (item.textureValue !== textureValue) {

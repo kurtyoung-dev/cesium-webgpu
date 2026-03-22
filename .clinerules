@@ -52,6 +52,28 @@
 - This reduces maintenance from 3 rendering paths (WebGL1 + WebGL2 + WebGPU) to 2 (WebGL2 + WebGPU)
 - When upstream officially drops WebGL1, our merge will be clean
 
+### 4. **WebGL/WebGPU Feature Parity** — CRITICAL
+When implementing new features, fixing tech debt, addressing upstream issues, or adding planned functionality for **either** backend, always check whether the same improvement should also be applied to the **other** backend.
+
+#### Parity Rules
+- **New renderer-agnostic features** (e.g., `sortKey` on commands, `Light` class hierarchies, new sorting APIs) MUST be implemented for **both** WebGL and WebGPU simultaneously. The JS/TS API layer should be shared; only shader code and GPU resource creation differ.
+- **New shader features** (e.g., multi-light support) need both a **WGSL implementation** (for WebGPU) AND a **GLSL implementation** (for WebGL) — unless the feature is architecturally impossible in WebGL (e.g., compute shaders, storage buffers).
+- **Scene-level wiring** (e.g., `scene.lights`, View.js sort steps, collection `renderOrder`) is backend-agnostic and benefits both paths — implement it once in shared code.
+- **When adding a property to `DrawCommand`**, also add it to `WebGPUDrawCommand` (and vice versa), including in the options interface, `clone()`, and any sorting/dispatch logic.
+- **When fixing an upstream issue** for WebGPU, check if the fix can also improve WebGL. Document any WebGL parity gaps in `migration_doc/UPSTREAM_ISSUES_AND_TECH_DEBT.md`.
+
+#### Parity Checklist (use before completing any feature/fix)
+1. ✅ Does the feature's **JS/TS API** work for both backends? (e.g., `Light.ts` is renderer-agnostic)
+2. ✅ Does the feature's **shader code** exist for both WGSL and GLSL? (If not, document as a parity gap)
+3. ✅ Is the feature's **scene wiring** backend-agnostic? (e.g., `scene.lights` works regardless of renderer)
+4. ✅ Are **command properties** (`sortKey`, etc.) on both `DrawCommand` and `WebGPUDrawCommand` with matching clone/options support?
+5. ✅ Is the parity status documented in `UPSTREAM_ISSUES_AND_TECH_DEBT.md`?
+
+#### What is NOT required for parity
+- WebGPU-only capabilities (compute shaders, render bundles, indirect drawing, storage buffers) — these have no WebGL equivalent
+- WebGL1-specific fallbacks — we target WebGL2 only
+- Performance infrastructure that is inherently GPU-API-specific (e.g., `WebGPURenderBundleManager`)
+
 ### 3. **Configuration-Based Approach**
 - New renderer must be selectable via initialization parameters (e.g., `renderer: 'webgpu'` or `renderer: 'webgl'`)
 - Default behavior should maintain current WebGL renderer unless explicitly specified
@@ -240,6 +262,125 @@ CesiumJS renders at planetary scale where float32 precision is insufficient. **A
 - **Point primitives**: `Source/Shaders/WebGPU/Collections/PointPrimitive*.wgsl` (RTE subtraction)
 - **JS uniform wiring**: `WebGPUPrimitiveCommands.js`, `WebGPUPointPrimitiveRenderer.js`
 
+### WebAssembly (WASM) Strategy — Dual Toolchain (Rust + Emscripten)
+Our fork uses **both Rust and Emscripten** for WASM modules, choosing whichever is best for each task:
+
+**When to use Rust (wasm-pack):**
+- New performance-critical code we author (frustum culling, sorting, octree traversal)
+- Code that benefits from memory safety (SIMD array iteration, index arithmetic)
+- Modules that need TypeScript declarations (wasm-bindgen auto-generates `.d.ts`)
+- Small, self-contained modules with no external C/C++ dependencies
+
+**When to use C/C++ (Emscripten):**
+- Wrapping existing C/C++ libraries (Draco, KTX2, physics engines)
+- Porting game engine code originally written in C++ (e.g., Recast/Detour navmesh, Bullet physics)
+- When an established C/C++ implementation exists and rewriting in Rust adds no value
+
+**Existing WASM modules in CesiumJS:**
+| Module | Language | Purpose |
+|--------|----------|---------|
+| `draco_decoder.wasm` | C++ (Emscripten) | Draco mesh decompression |
+| `basis_transcoder.wasm` | C++ (Emscripten) | KTX2 texture transcoding |
+| `wasm_splats_bg.wasm` | Rust | Gaussian splat processing |
+| `zip-module.wasm` | Unknown | ZIP extraction |
+| `cesium_wasm_culling_bg.wasm` | **Rust (NEW)** | SIMD frustum cull + radix sort |
+
+**Our WASM modules (in `packages/wasm-culling/`):**
+```
+packages/wasm-culling/
+├── Cargo.toml              ← Rust project config
+├── .cargo/config.toml      ← Target-specific rustflags (SIMD, bulk-memory)
+├── README.md               ← Build instructions + API docs
+├── src/
+│   ├── lib.rs              ← Entry point, thread-safe arena allocator
+│   ├── frustum_cull.rs     ← f32x4 SIMD batch sphere-plane tests
+│   └── radix_sort.rs       ← O(N) radix sort on packed 64-bit keys
+└── pkg/                    ← Build output (wasm-pack)
+    ├── cesium_wasm_culling_bg.wasm
+    ├── cesium_wasm_culling.js
+    └── cesium_wasm_culling.d.ts
+```
+
+**Build commands:**
+```bash
+npm run build-wasm          # Full release build → copy to engine ThirdParty/Workers/
+npm run build-wasm-debug    # Debug build (faster compile, bigger output)
+npm run build-wasm-check    # Verify Rust/wasm-pack toolchain without building
+npm run build-wasm-clean    # Remove pkg/ output and deployed files
+```
+
+**JS bridge pattern** — Every WASM module has a JS bridge with a complete fallback:
+```javascript
+// WasmCullBridge.js — loads WASM, falls back to JS if unavailable
+bridge.loadWasm().then(() => { /* WASM ready, or gracefully using JS */ });
+// Per-frame dispatch:
+if (this._wasmReady && count >= this.threshold) {
+  this._cullWasm(count);   // WASM SIMD path (~10x faster)
+} else {
+  this._cullJS(count);     // JS fallback (always works)
+}
+```
+
+**Decision criteria for WASM vs GPU compute:**
+| Task | Best approach | Why |
+|------|--------------|-----|
+| Frustum culling (<50K) | WASM SIMD | Low latency, no GPU roundtrip |
+| Frustum culling (>50K) | GPU compute | Massive parallelism |
+| Sort keys (<5K) | JS multi-level comparator | Zero overhead |
+| Sort keys (5K-50K) | WASM radix sort | O(N) vs O(N log N) |
+| Sort keys (>50K) | GPU compute | GPU-driven rendering |
+
+### WASM Feature Usage & Graceful Fallback — CRITICAL
+
+WASM is NOT a monolithic capability — it has **feature tiers** that vary by browser.
+Every WASM feature we use MUST have a graceful fallback for browsers that lack support.
+**Never assume a feature is available; always detect and degrade.**
+
+#### WASM Feature Tiers (as of 2026)
+
+| Feature | Chrome | Firefox | Safari | Our Usage | Fallback Strategy |
+|---------|--------|---------|--------|-----------|-------------------|
+| **Core WASM (MVP)** | 57+ | 52+ | 11+ | ✅ Baseline | — (universally supported) |
+| **Bulk memory** (`memory.copy`, `memory.fill`) | 75+ | 79+ | 15+ | ✅ Used in radix sort, arena | Rust compiler can polyfill via loops |
+| **SIMD128** (`v128`, `f32x4`, etc.) | 91+ | 89+ | 16.4+ | ✅ Frustum culling hot path | JS fallback in bridge (`_cullJS`) |
+| **Multi-value returns** | 85+ | 78+ | 15+ | ✅ Used by wasm-bindgen glue | wasm-bindgen handles fallback |
+| **Reference types** | 96+ | 79+ | 15+ | ⬜ Not yet used | N/A |
+| **Exception handling** | 95+ | 100+ | 15.2+ | ⬜ Not yet used | `panic = "abort"` in Cargo.toml |
+| **Threads** (atomics + SharedArrayBuffer) | 74+* | 79+ | 16.4+* | 🔧 Thread-safe Mutex in lib.rs | Single-threaded execution; JS fallback |
+| **Tail calls** | 112+ | 121+ | 17+ | ⬜ Not yet used | Normal call stack |
+| **Relaxed SIMD** | 114+ | ❌ | ❌ | ⬜ Not yet used | Standard SIMD128 fallback |
+| **GC (Garbage Collection)** | 119+ | 120+ | ❌ | ⬜ Not yet used | Manual memory management |
+| **Memory64** | Experimental | ❌ | ❌ | ⬜ Not yet used | 32-bit memory (4GB limit) |
+| **JSPI** (JS Promise Integration) | 123+† | ❌ | ❌ | ⬜ Not yet used | Callback-based async |
+
+*\* Threads require COOP/COEP HTTP headers. † JSPI is origin trial only.*
+
+#### WASM Threading Rules
+
+- **Threading IS allowed** in WASM modules — it is a real, shipping feature
+- **SharedArrayBuffer requires HTTP headers**: `Cross-Origin-Opener-Policy: same-origin` AND `Cross-Origin-Embedder-Policy: require-corp`
+- **Always provide a single-threaded fallback** — many deployments lack COOP/COEP headers
+- **Use `std::sync::Mutex`** (not `static mut`) in Rust for thread-safe shared state
+- **Detect threading support at runtime** before enabling:
+  ```javascript
+  const hasThreads = typeof SharedArrayBuffer !== "undefined"
+    && typeof Atomics !== "undefined"
+    && wasmModule.has_threads?.() === true;
+  ```
+- **Thread count should be configurable**: `navigator.hardwareConcurrency` as default, overridable
+- When threading is unavailable, the module runs single-threaded with Mutex overhead <1ns per lock
+
+#### WASM Mandatory Rules
+
+1. **Every WASM function MUST have a JS fallback** — the bridge pattern is non-negotiable
+2. **Feature detection before activation** — check `WebAssembly.validate()` with a SIMD test byte sequence before loading SIMD-enabled modules
+3. **Async loading only** — use `import()` + `init()` pattern; never block the main thread on WASM compilation
+4. **Threshold-gated activation** — WASM dispatch only when data count exceeds a configurable threshold (avoids overhead for small workloads)
+5. **Memory management** — use the arena allocator (`alloc_buffer/free_buffer`) for shared JS↔WASM memory; never let WASM allocate unbounded memory
+6. **Version checking** — bridge calls `wasm.version()` on load and logs a warning if the WASM binary version doesn't match the expected JS bridge version
+7. **Diagnostic logging** — every bridge has a `getDiagnostics()` method reporting WASM readiness, last operation stats, and whether WASM or JS fallback was used
+8. **No WASM in hot constructor paths** — WASM loading is async; never delay object construction waiting for WASM. Load opportunistically, use when ready.
+
 ### Slang Shader Cross-Compilation (Optional)
 New WebGPU shaders can optionally be authored in [Slang](https://github.com/shader-slang/slang)
 (`.slang` files) and compiled to WGSL via `slangc`. This is **optional** — the project works
@@ -385,6 +526,69 @@ Our WebGPU changes modify these upstream files:
 - **Widget files** (`Viewer.js`, `CesiumWidget.js`) — `createAsync()` and `LoadingOverlay`
 
 Our WebGPU-only files (in `Renderer/WebGPU/`, `Shaders/WebGPU/`, `Apps/WebGPUTest/`) never conflict because upstream doesn't touch them.
+
+### ES6+ / ES2022 Modernization — Incremental Upgrade Rule
+
+When working on **any file** in the codebase, check whether it uses **pre-ES6 patterns**. If it does, either:
+1. **Modernize it in-place** if the file is small or you're already making significant changes to it, OR
+2. **Add it to the modernization backlog** in `migration_doc/ES6_MODERNIZATION_BACKLOG.md`
+
+#### What Counts as "Pre-ES6" (Must Fix)
+- `var` declarations → convert to `const`/`let`
+- Prototype-based inheritance (`Foo.prototype.bar = function()`) → ES6 `class` syntax
+- `Object.defineProperties()` for getters/setters → ES6 `get`/`set` in class body
+- `require()` / `module.exports` → ES module `import`/`export` (in browser code)
+- String concatenation with `+` for multi-part strings → template literals
+- `arguments` object usage → rest parameters (`...args`)
+- `Function.prototype.apply/call` for spreading → spread syntax (`...arr`)
+- `for (var i = 0; ...)` loops over arrays → `for...of` or `.forEach()` (when perf is not critical)
+- Callback pyramids → Promises or async/await (or RxJS per tech stack preferences)
+- `typeof x !== "undefined"` checks → optional chaining (`x?.prop`) or nullish coalescing (`x ?? default`)
+
+#### What Counts as "Pre-ES2022" (Should Fix When Convenient)
+- Missing `#private` fields where `_underscore` convention is used (low priority — CesiumJS convention)
+- `Object.assign({}, defaults, options)` → structured clone or spread (`{ ...defaults, ...options }`)
+- `.indexOf(x) !== -1` → `.includes(x)`
+- `Array.prototype.flat`/`flatMap` not used where applicable
+- `Promise.allSettled` / `Promise.any` not used where they simplify logic
+- `at(-1)` not used for last-element access
+- `Object.hasOwn(obj, key)` not used instead of `obj.hasOwnProperty(key)`
+- `structuredClone()` not used where deep clone is needed
+- Missing `static` class fields where `Foo.CONSTANT = ...` is used after class definition
+
+#### Rules
+- **NEVER modernize a file you're not otherwise touching** — avoid drive-by refactors that bloat PRs
+- **ALWAYS modernize a file if you're making >10 lines of changes** to it — leave it better than you found it
+- **Prototype → class conversions** should follow upstream [#8359](https://github.com/CesiumGS/cesium/issues/8359) patterns and preserve all existing tests
+- **When adding to the backlog**, include: file path, which patterns need updating, estimated effort, and whether it blocks any WebGPU work
+- **Performance-critical math classes** (`Cartesian3`, `Matrix4`, `Quaternion`, etc.) — be cautious with class conversion; benchmark before and after. These classes use `result` parameters and scratch variables where ES6 patterns may add overhead.
+- **TypeScript files (.ts) are already ES2022+** — this rule primarily applies to `.js` files
+
+#### Comment Preservation Rules — CRITICAL
+When modernizing files (e.g., constructor → class, prototype → class methods):
+- **Preserve ALL existing JSDoc comments** — every `@type`, `@param`, `@returns`, `@see`, `@default`, `@example`, and prose description from the original must appear in the converted file
+- **Do NOT add new JSDoc comments** that didn't exist in the original — if the original `prototype.execute` had no JSDoc, the class method `execute()` should also have no JSDoc
+- **Do NOT add `@param` annotations to constructors** unless the original function-level JSDoc had `@param` tags — if the original was just `@private` + `@constructor`, the class should just have `@private`
+- **Remove only tags that are now incorrect** after the conversion:
+  - `@constructor` → remove (ES6 `class` makes this implicit)
+  - `@memberof Foo.prototype` → remove (properties/methods are visibly inside the class body)
+- **Move `@param` tags** from function-level JSDoc to the `constructor()` method's JSDoc when converting to class syntax (the class-level JSDoc gets `@alias` and `@private`, the constructor gets the `@param` tags)
+- **Keep `@alias ClassName`** on the class-level JSDoc — CesiumJS documentation tooling depends on it
+
+#### Comment Style Rules
+All comments — JSDoc and inline — must match the style of the upstream CesiumJS codebase:
+- **Write like a human engineer**, not a summarizer — be direct, specific, and concise
+- **Do NOT add boilerplate restating what the code obviously does** (e.g., "Executes the clear command" on a method called `execute` that calls `context.clear`)
+- **DO add comments that explain non-obvious WHY** — rationale, edge cases, performance notes, references to specs or issues
+- Study existing CesiumJS comments for tone: they're terse, technical, and explain the *why* not the *what*
+- Match the surrounding file's comment density — don't add comments to a file that has few, and don't strip comments from a file that has many
+
+#### Backlog File Format (`migration_doc/ES6_MODERNIZATION_BACKLOG.md`)
+```markdown
+| File | Patterns to Update | Effort | Blocks WebGPU? | Priority |
+|------|-------------------|--------|----------------|----------|
+| `Scene/Foo.js` | var→const, prototype→class, defineProperties→getters | 1-2 hrs | No | Low |
+```
 
 ## Notes
 - This file will be updated as the project evolves

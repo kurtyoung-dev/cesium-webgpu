@@ -90,7 +90,11 @@ function View(scene, camera, viewport, options) {
 
   this.viewport = viewport;
   this.passState = passState;
-  this.pickFramebuffer = new PickFramebuffer(context);
+  // Use context factory for backend-appropriate pick framebuffer.
+  // WebGPU: context.createPickFramebuffer() returns WebGPUPickFramebuffer.
+  // WebGL: returns null, falls back to PickFramebuffer.
+  this.pickFramebuffer =
+    context.createPickFramebuffer() ?? new PickFramebuffer(context);
   this.pickDepthFramebuffer = new PickDepthFramebuffer();
   this.sceneFramebuffer = new SceneFramebuffer();
   this.edgeFramebuffer = new EdgeFramebuffer();

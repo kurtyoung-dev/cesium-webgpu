@@ -204,6 +204,13 @@ export class WebGPUSceneRenderer {
 
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
+
+    // --- PICK PASS: Render to pick framebuffer ---
+    if (picking) {
+      this._executePickPass(config);
+      return;
+    }
+
     const view = scene._view;
     const { frustumCommandsList } = view;
     const numFrustums: number = frustumCommandsList.length;
@@ -325,6 +332,183 @@ export class WebGPUSceneRenderer {
 
     // Post-processing (tonemapping, FXAA, etc.)
     this._runPostProcessing(config);
+  }
+
+  // --- Pick pass: render to offscreen pick framebuffer ---
+
+  /**
+   * Execute the pick pass — renders all pickable commands to the pick
+   * framebuffer using pick color output. The pick FBO info comes from
+   * config.passState.framebuffer (set by WebGPUPickFramebuffer.begin()).
+   *
+   * During the pick pass, primitives push their pick commands (with pick
+   * shaders that output pick color) to the commandList. We render those
+   * commands to the pick FBO so readback can identify picked objects.
+   *
+   * Environment commands (sky, sun, moon, atmosphere) are skipped since
+   * they do not generate pick IDs.
+   */
+  private _executePickPass(config: WebGPURenderFrameConfig): void {
+    const { scene, context, passState } = config;
+    const view = scene._view;
+    const { frustumCommandsList } = view;
+    const numFrustums: number = frustumCommandsList.length;
+    const { uniformState } = context;
+
+    if (numFrustums === 0) {
+      return;
+    }
+
+    // Get pick framebuffer from passState (set by WebGPUPickFramebuffer.begin())
+    const pickFBO = passState?.framebuffer;
+    if (!pickFBO || !pickFBO._isWebGPUPickFBO) {
+      // No WebGPU pick framebuffer — fall back to rendering normally
+      // (this shouldn't happen, but be safe)
+      return;
+    }
+
+    const device: GPUDevice | undefined = context._device;
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    if (!device || !encoder) {
+      return;
+    }
+
+    // End the current render pass so we can start the pick render pass
+    context.endCurrentRenderPass?.();
+
+    // Create the pick render pass targeting the pick FBO textures
+    const pickPassDescriptor: GPURenderPassDescriptor = {
+      label: "Pick render pass",
+      colorAttachments: [
+        {
+          view: pickFBO.colorView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear" as GPULoadOp,
+          storeOp: "store" as GPUStoreOp,
+        },
+      ],
+      depthStencilAttachment: {
+        view: pickFBO.depthView,
+        depthClearValue: 1.0,
+        depthLoadOp: "clear" as GPULoadOp,
+        depthStoreOp: "store" as GPUStoreOp,
+        stencilClearValue: 0,
+        stencilLoadOp: "clear" as GPULoadOp,
+        stencilStoreOp: "store" as GPUStoreOp,
+      },
+    };
+
+    const pickRenderPass = encoder.beginRenderPass(pickPassDescriptor);
+
+    // Set the pick render pass as the active pass on the context so that
+    // executeWebGPUCommand() dispatches commands to it
+    const savedRenderPass = context.currentRenderPassEncoder;
+    context._currentRenderPassEncoder = pickRenderPass;
+
+    // Execute all pickable passes across all frustums
+    for (let i = 0; i < numFrustums; i++) {
+      const index = numFrustums - i - 1;
+      const frustumCommands = frustumCommandsList[index];
+
+      const near = frustumCommands.near;
+      const far = frustumCommands.far;
+      this._updateFrustumUniforms(uniformState, near, far, scene);
+
+      // Skip ENVIRONMENT pass — sky/sun/moon/atmosphere don't generate pick IDs
+
+      // GLOBE pass
+      this._executePickBatch(
+        frustumCommands,
+        Pass.GLOBE,
+        scene,
+        context,
+        passState,
+        pickRenderPass,
+      );
+
+      // 3D Tiles passes
+      const tilePasses = [
+        Pass.CESIUM_3D_TILE,
+        Pass.CESIUM_3D_TILE_CLASSIFICATION,
+      ];
+      for (const passIndex of tilePasses) {
+        this._executePickBatch(
+          frustumCommands,
+          passIndex,
+          scene,
+          context,
+          passState,
+          pickRenderPass,
+        );
+      }
+
+      // OPAQUE pass
+      this._executePickBatch(
+        frustumCommands,
+        Pass.OPAQUE,
+        scene,
+        context,
+        passState,
+        pickRenderPass,
+      );
+
+      // TRANSLUCENT pass
+      this._executePickBatch(
+        frustumCommands,
+        Pass.TRANSLUCENT,
+        scene,
+        context,
+        passState,
+        pickRenderPass,
+      );
+    }
+
+    pickRenderPass.end();
+
+    // Restore the original render pass
+    context._currentRenderPassEncoder = savedRenderPass;
+
+    // Resume the default render pass if needed
+    context.resumeDefaultRenderPass?.();
+  }
+
+  /**
+   * Execute a batch of commands for a specific pass during pick rendering.
+   * Commands are executed on the pick render pass encoder.
+   */
+  private _executePickBatch(
+    frustumCommands: any,
+    passIndex: number,
+    scene: any,
+    context: any,
+    passState: any,
+    pickRenderPass: GPURenderPassEncoder,
+  ): void {
+    const commands = frustumCommands.commands[passIndex];
+    const count: number = frustumCommands.indices[passIndex];
+    if (count === 0) {
+      return;
+    }
+    context.uniformState?.updatePass(passIndex);
+
+    for (let i = 0; i < count; i++) {
+      const command = commands[i];
+      if (!command) {
+        continue;
+      }
+
+      // Skip commands that don't participate in picking
+      if (scene.debugCommandFilter && !scene.debugCommandFilter(command)) {
+        continue;
+      }
+
+      if (command.isWebGPUDrawCommand === true) {
+        command.execute(pickRenderPass, context);
+      } else if (command.execute) {
+        command.execute(context, passState);
+      }
+    }
   }
 
   // --- Frustum state ---

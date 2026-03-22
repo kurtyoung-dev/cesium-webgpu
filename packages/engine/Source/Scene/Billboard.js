@@ -219,6 +219,7 @@ function Billboard(options, billboardCollection) {
   this._mode = SceneMode.SCENE3D;
 
   this._clusterShow = true;
+  this._sortPriority = options.sortPriority ?? 0;
   this._outlineColor = Color.clone(options.outlineColor ?? Color.BLACK);
   this._outlineWidth = options.outlineWidth ?? 0.0;
 

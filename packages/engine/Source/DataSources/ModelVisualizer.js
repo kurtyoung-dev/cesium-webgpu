@@ -277,6 +277,10 @@ ModelVisualizer.prototype.update = function (time) {
       time,
       defaultColorBlendAmount,
     );
+
+    // SORT-1: Apply entity's renderPriority to the model for sort ordering
+    model.renderPriority = entity._renderPriority ?? 0;
+
     model.clippingPlanes = Property.getValueOrUndefined(
       modelGraphics._clippingPlanes,
       time,

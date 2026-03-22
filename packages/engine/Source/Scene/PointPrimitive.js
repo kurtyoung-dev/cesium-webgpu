@@ -106,6 +106,7 @@ function PointPrimitive(options, pointPrimitiveCollection) {
   this._collection = options.collection ?? pointPrimitiveCollection;
 
   this._clusterShow = true;
+  this._sortPriority = options.sortPriority ?? 0;
 
   this._pickId = undefined;
   this._pointPrimitiveCollection = pointPrimitiveCollection;

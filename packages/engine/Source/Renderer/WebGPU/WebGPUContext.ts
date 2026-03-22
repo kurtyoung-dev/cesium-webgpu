@@ -32,6 +32,7 @@ import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
 import {
   createWebGLCompatibilityStub,
   type WebGLStubState,
@@ -247,9 +248,8 @@ export class WebGPUContext extends GraphicsContext {
   private _viewportQuadVertexBuffer: WebGPUBuffer | null = null;
   private _viewportQuadPipeline: GPURenderPipeline | null = null;
 
-  // Pick objects
-  private _pickObjects: Map<number, any> = new Map();
-  private _nextPickColor: Uint32Array = new Uint32Array(1);
+  // Pick objects — managed by GraphicsContext base class
+  // (_pickObjects Map and _nextPickColor counter are inherited)
 
   // Device loss recovery — delegated to WebGPUDeviceLossRecovery (FORK-1 fix)
   private _deviceLossRecovery: WebGPUDeviceLossRecovery | null = null;
@@ -444,7 +444,7 @@ export class WebGPUContext extends GraphicsContext {
       // This keeps shader loading as part of the context's own async init lifecycle.
       const sceneRendererFR = this.getFeatureRenderer(
         FeatureRendererKey.SCENE_RENDERER,
-      ) as any;
+      ) as import("../GraphicsContext.js").SystemRenderer | undefined;
       if (sceneRendererFR) {
         if (sceneRendererFR.initPrimitiveShaders) {
           await sceneRendererFR.initPrimitiveShaders();
@@ -570,6 +570,65 @@ export class WebGPUContext extends GraphicsContext {
    */
   override get depthRangeZeroToOne(): boolean {
     return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // COMPUTE SHADER CAPABILITY OVERRIDES
+  //
+  // WebGPU has full native compute shader support. These overrides
+  // report the actual device limits so scene code can make informed
+  // decisions about dispatch sizes, workgroup counts, and whether
+  // to use GPU compute vs CPU/WASM fallbacks.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * WebGPU natively supports real GPU compute shaders.
+   * Always true when a valid device exists.
+   */
+  override get supportsComputeShaders(): boolean {
+    return this._device !== null;
+  }
+
+  /**
+   * WebGPU supports indirect compute dispatch via `dispatchWorkgroupsIndirect()`.
+   * This enables fully GPU-driven pipelines where workgroup counts come from
+   * a GPU buffer rather than CPU-specified values.
+   */
+  override get supportsIndirectCompute(): boolean {
+    return this._device !== null;
+  }
+
+  /**
+   * WebGPU natively supports storage buffers (`storage` binding type).
+   * Storage buffers allow compute/vertex/fragment shaders to read/write
+   * large structured data (up to `maxStorageBufferBindingSize`, typically 128+ MB).
+   */
+  override get supportsStorageBuffers(): boolean {
+    return this._device !== null;
+  }
+
+  /**
+   * Maximum workgroups per dispatch dimension from the GPUDevice limits.
+   * Typically 65535 on most GPUs.
+   */
+  override get maxComputeWorkgroupsPerDimension(): number {
+    return this._device?.limits?.maxComputeWorkgroupsPerDimension ?? 0;
+  }
+
+  /**
+   * Maximum total invocations per workgroup from the GPUDevice limits.
+   * Typically 256 on most GPUs.
+   */
+  override get maxComputeInvocationsPerWorkgroup(): number {
+    return this._device?.limits?.maxComputeInvocationsPerWorkgroup ?? 0;
+  }
+
+  /**
+   * Maximum shared (workgroup) memory in bytes from the GPUDevice limits.
+   * Typically 16384 bytes on most GPUs.
+   */
+  override get maxComputeWorkgroupStorageSize(): number {
+    return this._device?.limits?.maxComputeWorkgroupStorageSize ?? 0;
   }
 
   /**
@@ -1686,62 +1745,10 @@ export class WebGPUContext extends GraphicsContext {
     return null;
   }
 
-  /**
-   * Get object by pick color (for picking)
-   * @param {any} pickColor - The pick color
-   * @returns {any} The picked object
-   */
-  getObjectByPickColor(pickColor: any): any {
-    if (!pickColor) {
-      return undefined;
-    }
-
-    // Convert pick color to key
-    // Pick color is stored as RGBA where RGB encodes the pick ID
-    const key = pickColor.red | (pickColor.green << 8) | (pickColor.blue << 16);
-
-    return this._pickObjects.get(key);
-  }
-
-  /**
-   * Create a pick ID for an object
-   * Pick IDs are used for object picking via color-based identification
-   * @param {any} object - The object to create a pick ID for
-   * @returns {any} Pick ID with unique color
-   */
-  createPickId(object: any): any {
-    // Get next pick color (increment counter)
-    const key = this._nextPickColor[0]++;
-
-    // Store object reference
-    this._pickObjects.set(key, object);
-
-    // Convert key to RGB color (24-bit)
-    const red = key & 0xff;
-    const green = (key >> 8) & 0xff;
-    const blue = (key >> 16) & 0xff;
-
-    return {
-      key: key,
-      color: {
-        red: red,
-        green: green,
-        blue: blue,
-        alpha: 255,
-      },
-      // Normalized color values for shaders (0.0 - 1.0)
-      normalizedRgba: new Float32Array([
-        red / 255.0,
-        green / 255.0,
-        blue / 255.0,
-        1.0,
-      ]),
-      destroy: () => {
-        // Remove from pick objects map when destroyed
-        this._pickObjects.delete(key);
-      },
-    };
-  }
+  // createPickId() and getObjectByPickColor() are inherited from GraphicsContext.
+  // The shared PickId class provides both `.color` (WebGL) and `.normalizedRgba`
+  // (WebGPU) encodings. getObjectByPickColor handles both uint32 and {red,green,blue}
+  // calling conventions. No override needed. (FORK-35 fix)
 
   /**
    * Default framebuffer for the context
@@ -2118,9 +2125,9 @@ export class WebGPUContext extends GraphicsContext {
    * Returns true to signal Scene.js that shadow casting was handled.
    */
   override executeShadowMapCastCommands(scene: any): boolean {
-    const shadowFR = this.getFeatureRenderer(
-      FeatureRendererKey.SHADOW_MAP,
-    ) as any;
+    const shadowFR = this.getFeatureRenderer(FeatureRendererKey.SHADOW_MAP) as
+      | import("../GraphicsContext.js").SystemRenderer
+      | undefined;
     if (!shadowFR?.renderCastPass) {
       return true; // Handled (no-op if no shadow renderer registered)
     }
@@ -2220,6 +2227,14 @@ export class WebGPUContext extends GraphicsContext {
    * WebGPU override: no-op for now (OIT composite and post-processing
    * are not yet wired for WebGPU). Returns true to skip WebGL path.
    */
+  /**
+   * WebGPU override: create a WebGPUPickFramebuffer for GPU-based picking.
+   * View.js calls this factory instead of directly importing WebGPUPickFramebuffer.
+   */
+  override createPickFramebuffer(): any {
+    return new WebGPUPickFramebuffer(this);
+  }
+
   override resolveFramebuffers(_scene: any, _passState: any): boolean {
     return true;
   }

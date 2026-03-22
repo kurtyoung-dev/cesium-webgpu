@@ -60,6 +60,17 @@ interface WebGPUDrawCommandOptions {
   receiveShadows?: boolean;
   pickId?: string;
   executeInClosestFrustum?: boolean;
+  sortKey?: number;
+  /** Render layer order value. Default 50 (RenderLayer.Order.WORLD). */
+  sortLayer?: number;
+  /** Priority within the render layer. Lower renders first. Default 0. */
+  sortPriority?: number;
+  /** Material/shader grouping ID for batching. Default 0. */
+  materialSortId?: number;
+  /** 32-bit visibility group bitmask. Default 0xFFFFFFFF. */
+  visibilityMask?: number;
+  /** Whether this is transmissive geometry (glass, water). Default false. */
+  isTransmissive?: boolean;
 }
 
 /**
@@ -111,6 +122,17 @@ class WebGPUDrawCommand {
 
   // Properties needed for Scene/View command binning and culling
   pass: number;
+  sortKey?: number;
+  /** Render layer order value. Default 50 (RenderLayer.Order.WORLD). */
+  sortLayer: number;
+  /** Priority within the render layer. Lower renders first. Default 0. */
+  sortPriority: number;
+  /** Material/shader grouping ID for batching. Default 0. */
+  materialSortId: number;
+  /** 32-bit visibility group bitmask. Default 0xFFFFFFFF. */
+  visibilityMask: number;
+  /** Whether this is transmissive geometry (glass, water). Default false. */
+  isTransmissive: boolean;
   owner?: any;
   boundingVolume?: any;
   modelMatrix?: any;
@@ -191,6 +213,7 @@ class WebGPUDrawCommand {
 
     // Initialize Scene/View command properties with defaults
     this.pass = options.pass ?? 0; // Pass.OPAQUE
+    this.sortKey = options.sortKey ?? 0;
     this.owner = options.owner;
     this.boundingVolume = options.boundingVolume;
     this.modelMatrix = options.modelMatrix;
@@ -200,6 +223,13 @@ class WebGPUDrawCommand {
     this.receiveShadows = options.receiveShadows ?? false;
     this.pickId = options.pickId;
     this.executeInClosestFrustum = options.executeInClosestFrustum ?? false;
+
+    // Structured sort properties (matching DrawCommand parity)
+    this.sortLayer = options.sortLayer ?? 50; // RenderLayer.Order.WORLD
+    this.sortPriority = options.sortPriority ?? 0;
+    this.materialSortId = options.materialSortId ?? 0;
+    this.visibilityMask = options.visibilityMask ?? 0xffffffff;
+    this.isTransmissive = options.isTransmissive ?? false;
   }
 
   /**
@@ -320,6 +350,12 @@ class WebGPUDrawCommand {
       receiveShadows: this.receiveShadows,
       pickId: this.pickId,
       executeInClosestFrustum: this.executeInClosestFrustum,
+      sortKey: this.sortKey,
+      sortLayer: this.sortLayer,
+      sortPriority: this.sortPriority,
+      materialSortId: this.materialSortId,
+      visibilityMask: this.visibilityMask,
+      isTransmissive: this.isTransmissive,
     });
   }
 }

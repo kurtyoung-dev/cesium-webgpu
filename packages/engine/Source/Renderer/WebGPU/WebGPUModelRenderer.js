@@ -1,16 +1,24 @@
 /**
  * @module WebGPUModelRenderer
  *
- * Handles WebGPU rendering of glTF Model instances.
- * Integrates with the existing Model pipeline by intercepting at the
- * ModelSceneGraph level and creating WebGPU draw commands from
- * ModelRuntimePrimitive render resources.
+ * Comprehensive WebGPU rendering of glTF Model instances with full PBR support.
  *
  * Architecture:
- * - Model.update() calls ModelSceneGraph.buildDrawCommands()
- * - We intercept after pipeline stages to create WebGPU commands
- * - Each ModelRuntimePrimitive gets a cached WebGPU pipeline + bind groups
- * - Per-frame: update camera/model uniforms, push commands
+ * - Model.update() runs the WebGL pipeline stages → populates renderResources
+ * - Model.submitDrawCommands() delegates to this renderer via feature renderer
+ * - We use shared extractors (ModelMaterialInfo, ModelPrimitiveGeometry,
+ *   ModelSkinData) for renderer-agnostic data, then create WebGPU GPU resources
+ *
+ * Supports:
+ * - Metallic-Roughness PBR (baseColor, normal, MR, emissive, occlusion textures)
+ * - Specular-Glossiness PBR (diffuse, specGloss textures)
+ * - Unlit materials
+ * - Alpha modes (OPAQUE, MASK, BLEND)
+ * - Double-sided rendering
+ * - Vertex colors
+ * - Normal mapping via tangent space
+ * - Model-space RTE (camera encoded in model space, NOT per-vertex high/low)
+ * - Skeletal animation / Skinning (joint matrices via storage buffer)
  *
  * @private
  */
@@ -18,27 +26,54 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import {
+  extractMaterialInfo,
+  AlphaModes,
+} from "../../Scene/Model/ModelMaterialInfo.js";
+import {
+  extractPrimitiveGeometry,
+  normalizeColorData,
+} from "../../Scene/Model/ModelPrimitiveGeometry.js";
+import {
+  extractSkinData,
+  updatePackedJointMatrices,
+} from "../../Scene/Model/ModelSkinData.js";
+import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 
-const CAMERA_UNIFORM_SIZE = 256; // mat4(mvpRTE) + mat4(mvRTE) + mat4(normal) + camH/L + camPosWC
-const MODEL_UNIFORM_SIZE = 128; // mat4(model) + baseColor + emissive + metallic/roughness/alpha/normal/occlusion
-const LIGHT_UNIFORM_SIZE = 64; // sunDir + sunColor + ambient
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+// Camera uniform buffer: mat4(mvpRTE) + mat4(mvRTE) + mat4(normal) +
+//   vec3+pad(camHighMC) + vec3+pad(camLowMC) + vec3+pad(camWC) = 256 bytes
+const CAMERA_UNIFORM_SIZE = 256;
+// Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
+//   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
+//   4f(diffuseRGBA) + 3f(padding) = 320 bytes (rounded to 16-byte alignment)
+const MATERIAL_UNIFORM_SIZE = 320;
+// Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient) = 48
+const LIGHT_UNIFORM_SIZE = 48;
+
+// materialFlags bit for skinning (bit 13 = 8192)
+const FLAG_HAS_SKINNING = 8192;
+
+// ─── Scratch Variables ───────────────────────────────────────────────────────
 
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchNormal = new Matrix4();
+const scratchInverseModel = new Matrix4();
+const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 
-/**
- * Packs camera uniforms for model rendering.
- * @private
- */
+// ─── Camera Uniform Packing ─────────────────────────────────────────────────
+
 function packCameraUniforms(data, frameState, modelMatrix) {
   const uniformState = frameState.context.uniformState;
 
-  // modelView = view * model (use uniformState for 2D/Columbus View support)
+  // modelView = view * model
   Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
   // modelViewRTE = modelView with translation zeroed
   Matrix4.clone(scratchModelView, scratchMVRTE);
@@ -51,14 +86,21 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   Matrix4.pack(scratchMVPRTE, data, 0); // [0-15]
   Matrix4.pack(scratchMVRTE, data, 16); // [16-31]
 
-  // Normal matrix = transpose(inverse(modelViewRTE))
-  Matrix4.inverse(scratchMVRTE, scratchNormal);
+  // Normal matrix = transpose(inverse(modelView))
+  Matrix4.inverse(scratchModelView, scratchNormal);
   Matrix4.transpose(scratchNormal, scratchNormal);
   Matrix4.pack(scratchNormal, data, 32); // [32-47]
 
-  // Encoded camera
-  const camera = frameState.camera;
-  EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCamera);
+  // Camera position in MODEL coordinates (key RTE fix!)
+  // inverse(model) * cameraPositionWC → camera in model space
+  Matrix4.inverse(modelMatrix, scratchInverseModel);
+  Matrix4.multiplyByPoint(
+    scratchInverseModel,
+    frameState.camera.positionWC,
+    scratchCameraMC,
+  );
+  EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
+
   data[48] = scratchEncodedCamera.high.x;
   data[49] = scratchEncodedCamera.high.y;
   data[50] = scratchEncodedCamera.high.z;
@@ -68,364 +110,425 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   data[54] = scratchEncodedCamera.low.z;
   data[55] = 0.0;
 
-  // Camera position WC
-  data[56] = camera.positionWC.x;
-  data[57] = camera.positionWC.y;
-  data[58] = camera.positionWC.z;
+  // Camera position WC (for specular/IBL effects)
+  const camWC = frameState.camera.positionWC;
+  data[56] = camWC.x;
+  data[57] = camWC.y;
+  data[58] = camWC.z;
   data[59] = 0.0;
 }
 
-/**
- * Packs model material uniforms.
- * @private
- */
-function packModelUniforms(data, modelMatrix, material) {
+// ─── Material Uniform Packing ────────────────────────────────────────────────
+
+function packMaterialUniforms(data, modelMatrix, matInfo, hasSkinning) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
-  // baseColorFactor
-  const bc = material?.baseColorFactor || [1, 1, 1, 1];
+  // baseColorFactor (vec4)
+  const bc = matInfo.baseColorFactor;
   data[16] = bc[0];
   data[17] = bc[1];
   data[18] = bc[2];
   data[19] = bc[3];
 
-  // emissiveFactor + metallicFactor
-  const ef = material?.emissiveFactor || [0, 0, 0];
+  // emissiveFactor (vec3) + metallicFactor (f32)
+  const ef = matInfo.emissiveFactor;
   data[20] = ef[0];
   data[21] = ef[1];
   data[22] = ef[2];
-  data[23] = material?.metallicFactor ?? 1.0;
+  data[23] = matInfo.metallicFactor;
 
   // roughness, alphaCutoff, normalScale, occlusionStrength
-  data[24] = material?.roughnessFactor ?? 1.0;
-  data[25] = material?.alphaCutoff ?? 0.5;
-  data[26] = material?.normalScale ?? 1.0;
-  data[27] = material?.occlusionStrength ?? 1.0;
+  data[24] = matInfo.roughnessFactor;
+  data[25] = matInfo.alphaCutoff;
+  data[26] = matInfo.normalScale;
+  data[27] = matInfo.occlusionStrength;
+
+  // materialFlags (u32 stored as float bits) — add skinning flag if applicable
+  let flags = matInfo.materialFlags;
+  if (hasSkinning) {
+    flags |= FLAG_HAS_SKINNING;
+  }
+  const flagsView = new DataView(data.buffer, data.byteOffset);
+  flagsView.setUint32(28 * 4, flags, true);
+
+  // specularFactor (vec3) for SpecGloss path
+  const sf = matInfo.specularFactor;
+  data[29] = sf[0];
+  data[30] = sf[1];
+  data[31] = sf[2];
+
+  // glossinessFactor
+  data[32] = matInfo.glossinessFactor;
+
+  // diffuseFactor (vec4) for SpecGloss path
+  const df = matInfo.diffuseFactor;
+  data[33] = df[0];
+  data[34] = df[1];
+  data[35] = df[2];
+  data[36] = df[3];
+
+  // Padding to 320 bytes (80 floats)
+  data[37] = 0;
+  data[38] = 0;
+  data[39] = 0;
 }
 
-/**
- * Packs light uniforms.
- * @private
- */
+// ─── Light Uniform Packing ───────────────────────────────────────────────────
+
 function packLightUniforms(data, frameState) {
-  const sunDir = frameState.sunDirectionEC || new Cartesian3(0, 0, 1);
+  const sunDir =
+    frameState.context?.uniformState?.sunDirectionEC || new Cartesian3(0, 0, 1);
   data[0] = sunDir.x;
   data[1] = sunDir.y;
   data[2] = sunDir.z;
   data[3] = 0.0;
-
-  // sunColor + intensity
   data[4] = 1.0;
   data[5] = 1.0;
   data[6] = 1.0;
   data[7] = frameState.light?.intensity ?? 2.0;
-
-  // ambient
   data[8] = 0.2;
   data[9] = 0.2;
   data[10] = 0.2;
   data[11] = 0.0;
 }
 
-/**
- * Creates a basic PBR pipeline for model rendering.
- * Uses the ModelPBR.wgsl base shader.
- * @private
- */
-function createModelPipeline(device, format, depthFormat) {
-  // Inline simplified PBR shader for initial model support
-  const code = `
-struct CU { mvpRTE: mat4x4<f32>, mvRTE: mat4x4<f32>, nMat: mat4x4<f32>,
-  camH: vec3<f32>, _p0: f32, camL: vec3<f32>, _p1: f32, camWC: vec3<f32>, _p2: f32 };
-struct MU { model: mat4x4<f32>, baseColor: vec4<f32>,
-  emissive: vec3<f32>, metallic: f32, roughness: f32, alphaCut: f32, normScale: f32, aoStr: f32 };
-struct LU { sunDir: vec3<f32>, _p0: f32, sunCol: vec3<f32>, sunInt: f32, amb: vec3<f32>, _p1: f32 };
+// ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
-@group(0) @binding(0) var<uniform> cam: CU;
-@group(1) @binding(0) var<uniform> mdl: MU;
-@group(1) @binding(1) var<uniform> lit: LU;
-
-struct VI { @location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>, @location(2) n: vec3<f32>,
-  @location(3) uv: vec2<f32>, @location(4) col: vec4<f32> };
-struct VO { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>,
-  @location(1) nEC: vec3<f32>, @location(2) pEC: vec3<f32>, @location(3) col: vec4<f32> };
-
-@vertex fn vs(i: VI) -> VO {
-  var o: VO;
-  let rte = (i.pH - cam.camH) + (i.pL - cam.camL);
-  o.pos = cam.mvpRTE * vec4f(rte, 1.0);
-  o.pEC = (cam.mvRTE * vec4f(rte, 1.0)).xyz;
-  o.nEC = normalize((cam.nMat * vec4f(i.n, 0.0)).xyz);
-  o.uv = i.uv; o.col = i.col; return o;
-}
-
-const PI = 3.14159265;
-
-@fragment fn fs(i: VO) -> @location(0) vec4<f32> {
-  var bc = mdl.baseColor * i.col;
-  if (bc.a < mdl.alphaCut) { discard; }
-  let N = normalize(i.nEC);
-  let V = normalize(-i.pEC);
-  let L = normalize(lit.sunDir);
-  let NdotL = max(dot(N, L), 0.0);
-  let H = normalize(V + L);
-  let diff = bc.rgb * NdotL;
-  let spec = pow(max(dot(N, H), 0.0), mix(8.0, 128.0, 1.0 - mdl.roughness)) * (1.0 - mdl.roughness);
-  let color = lit.amb * bc.rgb + (diff + vec3f(spec)) * lit.sunCol * lit.sunInt + mdl.emissive;
-  let tm = color / (color + vec3f(1.0));
-  return vec4f(pow(tm, vec3f(1.0/2.2)), bc.a);
-}`;
-
-  const mod = device.createShaderModule({ label: "Model PBR", code });
-
-  const camBGL = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
-  const matBGL = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
-
-  const pipeline = device.createRenderPipeline({
-    label: "Model PBR pipeline",
-    layout: device.createPipelineLayout({ bindGroupLayouts: [camBGL, matBGL] }),
-    vertex: {
-      module: mod,
-      entryPoint: "vs",
-      buffers: [
-        {
-          arrayStride: 48, // posH(3)+posL(3)+normal(3)+uv(2)+color(4) but simplified
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
-            { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
-            { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
-            { shaderLocation: 3, offset: 36, format: "float32x2" }, // texCoord
-            { shaderLocation: 4, offset: 44, format: "unorm8x4" }, // vertex color (packed)
-          ],
-        },
-      ],
-    },
-    fragment: {
-      module: mod,
-      entryPoint: "fs",
-      targets: [
-        {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
-        },
-      ],
-    },
-    primitive: { topology: "triangle-list", cullMode: "back" },
-    depthStencil: {
-      format: depthFormat,
-      depthWriteEnabled: true,
-      depthCompare: "less-equal",
-    },
-  });
-
-  return { pipeline, camBGL, matBGL };
-}
-
-const scratchEncodedPos = new EncodedCartesian3();
-
-/**
- * Converts a ModelRuntimePrimitive's vertex data to WebGPU format.
- * Splits single-precision positions into posHigh/posLow pairs for RTE.
- *
- * Output vertex layout: posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4 bytes) = 48 bytes
- *
- * @param {GPUDevice} device
- * @param {object} runtimePrimitive - ModelRuntimePrimitive
- * @param {Matrix4} modelMatrix - Model's world matrix (unused for local positions)
- * @returns {{ vertexBuffer: WebGPUBuffer, vertexCount: number, indexBuffer?, indexCount?, indexFormat? }|null}
- * @private
- */
-function convertPrimitiveToWebGPU(device, runtimePrimitive, modelMatrix) {
-  if (!defined(runtimePrimitive)) {
+function createGPUTextureFromReader(device, textureReader) {
+  if (!defined(textureReader)) {
     return null;
   }
 
-  // Access the primitive's render resources
-  const rr =
-    runtimePrimitive.renderResources || runtimePrimitive._renderResources;
-  if (!defined(rr)) {
+  // Try to get the image source from the CesiumJS Texture
+  const cesiumTexture = textureReader.texture;
+  if (!defined(cesiumTexture)) {
     return null;
   }
 
-  // Try to find position data from the primitive's attributes
-  const attrs = rr.attributes || rr._attributes || [];
-  let positionAttr = null;
-  let normalAttr = null;
-  let texCoordAttr = null;
-
-  for (let i = 0; i < attrs.length; i++) {
-    const attr = attrs[i];
-    const semantic = attr.semantic || attr.name || "";
-    if (semantic === "POSITION") {
-      positionAttr = attr;
-    } else if (semantic === "NORMAL") {
-      normalAttr = attr;
-    } else if (semantic === "TEXCOORD_0" || semantic === "TEXCOORD") {
-      texCoordAttr = attr;
-    }
-  }
-
-  // Position data is required
-  const posData = positionAttr?.typedArray || positionAttr?.buffer;
-  if (!defined(posData) || !(posData instanceof Float32Array)) {
+  // The CesiumJS Texture._source holds the original ImageBitmap/HTMLImageElement
+  const source =
+    cesiumTexture._source || cesiumTexture.source || cesiumTexture._image;
+  if (!defined(source)) {
     return null;
   }
 
-  const vertCount = Math.floor(posData.length / 3);
-  if (vertCount === 0) {
+  // Determine dimensions
+  const width = source.width || source.naturalWidth || 1;
+  const height = source.height || source.naturalHeight || 1;
+  if (width === 0 || height === 0) {
     return null;
   }
 
-  // Get optional normal and texcoord data
-  const normData = normalAttr?.typedArray || normalAttr?.buffer;
-  const uvData = texCoordAttr?.typedArray || texCoordAttr?.buffer;
+  try {
+    const gpuTexture = device.createTexture({
+      label: `Model glTF texture ${width}x${height}`,
+      size: [width, height, 1],
+      format: "rgba8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
 
-  // Build interleaved buffer: 48 bytes per vertex (12 floats)
-  const floatsPerVert = 12; // posH(3)+posL(3)+normal(3)+uv(2)+color_pad(1)
-  const vbData = new Float32Array(vertCount * floatsPerVert);
-  const vbView = new DataView(vbData.buffer);
-
-  for (let v = 0; v < vertCount; v++) {
-    const srcOff = v * 3;
-    const dstOff = v * floatsPerVert;
-
-    // Split position into high/low for RTE
-    const px = posData[srcOff];
-    const py = posData[srcOff + 1];
-    const pz = posData[srcOff + 2];
-    EncodedCartesian3.fromCartesian(
-      new Cartesian3(px, py, pz),
-      scratchEncodedPos,
+    device.queue.copyExternalImageToTexture(
+      { source, flipY: false },
+      { texture: gpuTexture },
+      { width, height },
     );
-    vbData[dstOff + 0] = scratchEncodedPos.high.x;
-    vbData[dstOff + 1] = scratchEncodedPos.high.y;
-    vbData[dstOff + 2] = scratchEncodedPos.high.z;
-    vbData[dstOff + 3] = scratchEncodedPos.low.x;
-    vbData[dstOff + 4] = scratchEncodedPos.low.y;
-    vbData[dstOff + 5] = scratchEncodedPos.low.z;
 
-    // Normal (default up if missing)
-    if (defined(normData) && normData instanceof Float32Array) {
-      vbData[dstOff + 6] = normData[srcOff];
-      vbData[dstOff + 7] = normData[srcOff + 1];
-      vbData[dstOff + 8] = normData[srcOff + 2];
-    } else {
-      vbData[dstOff + 6] = 0.0;
-      vbData[dstOff + 7] = 1.0;
-      vbData[dstOff + 8] = 0.0;
+    return gpuTexture;
+  } catch (_e) {
+    // Image source may not be usable (e.g., already transferred)
+    return null;
+  }
+}
+
+// ─── Vertex Buffer Creation ──────────────────────────────────────────────────
+
+function createVertexBuffer(device, data, label) {
+  const buffer = device.createBuffer({
+    label,
+    size: Math.max(data.byteLength, 4),
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(buffer, 0, data);
+  return buffer;
+}
+
+// ─── Joint Matrix Buffer ─────────────────────────────────────────────────────
+
+/**
+ * Creates or updates GPU storage buffer for joint matrices.
+ * @private
+ */
+function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
+  const byteLength = skinData.byteLength;
+
+  // Create storage buffer if it doesn't exist or joint count changed
+  if (
+    !defined(nodeCache.jointBuffer) ||
+    nodeCache.jointBufferSize !== byteLength
+  ) {
+    if (defined(nodeCache.jointBuffer)) {
+      nodeCache.jointBuffer.destroy();
     }
+    nodeCache.jointBuffer = device.createBuffer({
+      label: `Joint matrices (${skinData.jointCount} joints)`,
+      size: byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    nodeCache.jointBufferSize = byteLength;
 
-    // TexCoord (default 0,0 if missing)
-    if (defined(uvData) && uvData instanceof Float32Array) {
-      vbData[dstOff + 9] = uvData[v * 2];
-      vbData[dstOff + 10] = uvData[v * 2 + 1];
-    } else {
-      vbData[dstOff + 9] = 0.0;
-      vbData[dstOff + 10] = 0.0;
-    }
-
-    // Vertex color (white by default, packed as unorm8x4)
-    const byteOff = (dstOff + 11) * 4;
-    vbView.setUint8(byteOff, 255);
-    vbView.setUint8(byteOff + 1, 255);
-    vbView.setUint8(byteOff + 2, 255);
-    vbView.setUint8(byteOff + 3, 255);
+    // Recreate bind group for new buffer
+    nodeCache.skinningBG = device.createBindGroup({
+      layout: pipelineCache.skinningBGL,
+      entries: [{ binding: 0, resource: { buffer: nodeCache.jointBuffer } }],
+    });
   }
 
-  const vertexBuffer = WebGPUBuffer.createVertexBuffer(
-    device,
-    vbData.byteLength,
-    false,
-    "Model VB",
+  // Upload joint matrices
+  device.queue.writeBuffer(
+    nodeCache.jointBuffer,
+    0,
+    skinData.packedJointMatrices,
   );
-  device.queue.writeBuffer(vertexBuffer.buffer, 0, vbData);
+}
+
+// ─── Per-Primitive Cache ─────────────────────────────────────────────────────
+
+/**
+ * Creates or retrieves cached GPU resources for a single primitive.
+ * @private
+ */
+function ensurePrimitiveCache(
+  device,
+  cache,
+  pipelineCache,
+  primKey,
+  geometry,
+  matInfo,
+) {
+  if (defined(cache.primitives[primKey])) {
+    return cache.primitives[primKey];
+  }
+
+  const primCache = {
+    positionBuffer: null,
+    normalBuffer: null,
+    tangentBuffer: null,
+    uvBuffer: null,
+    colorBuffer: null,
+    jointsBuffer: null,
+    weightsBuffer: null,
+    indexBuffer: null,
+    indexCount: 0,
+    indexFormat: "uint16",
+    vertexCount: geometry.vertexCount,
+    materialBindGroup: null,
+    textureBindGroup: null,
+    pipeline: null,
+    gpuTextures: [],
+    hasSkinningAttributes: false,
+  };
+
+  // Position buffer (model-space, 3 floats per vertex — NOT high/low split)
+  primCache.positionBuffer = createVertexBuffer(
+    device,
+    geometry.positionData,
+    `Prim position`,
+  );
+
+  // Normal buffer
+  if (geometry.hasNormals) {
+    primCache.normalBuffer = createVertexBuffer(
+      device,
+      geometry.normalData,
+      `Prim normal`,
+    );
+  }
+
+  // Tangent buffer
+  if (geometry.hasTangents) {
+    primCache.tangentBuffer = createVertexBuffer(
+      device,
+      geometry.tangentData,
+      `Prim tangent`,
+    );
+  }
+
+  // TexCoord0 buffer
+  if (geometry.hasTexCoord0) {
+    primCache.uvBuffer = createVertexBuffer(
+      device,
+      geometry.texCoord0Data,
+      `Prim uv0`,
+    );
+  }
+
+  // Color0 buffer (normalize to float32)
+  if (geometry.hasColor0) {
+    const colorFloat = normalizeColorData(
+      geometry.color0Data,
+      geometry.color0ComponentType,
+      geometry.color0Normalized,
+    );
+    primCache.colorBuffer = createVertexBuffer(
+      device,
+      colorFloat,
+      `Prim color`,
+    );
+  }
+
+  // Joints0 buffer (for skinning)
+  if (geometry.hasJoints && defined(geometry.joints0Data)) {
+    // JOINTS_0 must be uint32x4 for the shader
+    let jointsData = geometry.joints0Data;
+    if (!(jointsData instanceof Uint32Array)) {
+      // Convert from Uint8Array or Uint16Array to Uint32Array
+      jointsData = new Uint32Array(jointsData);
+    }
+    primCache.jointsBuffer = createVertexBuffer(
+      device,
+      jointsData,
+      `Prim joints`,
+    );
+    primCache.hasSkinningAttributes = true;
+  }
+
+  // Weights0 buffer (for skinning)
+  if (defined(geometry.weights0Data)) {
+    primCache.weightsBuffer = createVertexBuffer(
+      device,
+      geometry.weights0Data,
+      `Prim weights`,
+    );
+  }
 
   // Index buffer
-  let indexBuffer = null;
-  let indexCount = 0;
-  let indexFormat = "uint16";
-  const idxData = rr.indices?.typedArray || rr.indices?.buffer;
-  if (defined(idxData)) {
-    indexFormat = idxData instanceof Uint32Array ? "uint32" : "uint16";
-    indexCount = idxData.length;
-    indexBuffer = device.createBuffer({
-      label: "Model IB",
-      size: idxData.byteLength,
+  if (defined(geometry.indexData)) {
+    primCache.indexFormat =
+      geometry.indexType === "UNSIGNED_INT" ? "uint32" : "uint16";
+    primCache.indexCount = geometry.indexCount;
+    primCache.indexBuffer = device.createBuffer({
+      label: `Prim index`,
+      size: geometry.indexData.byteLength,
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(indexBuffer, 0, idxData);
+    device.queue.writeBuffer(primCache.indexBuffer, 0, geometry.indexData);
+  }
+
+  // Pipeline (varies by alpha mode and double-sided)
+  primCache.pipeline = pipelineCache.getPipeline(
+    matInfo.alphaMode,
+    matInfo.isDoubleSided,
+  );
+
+  // Create GPU textures from glTF image sources
+  const textures = createMaterialTextures(device, pipelineCache, matInfo);
+  primCache.gpuTextures = textures.created;
+
+  // Texture bind group
+  const defSampler = pipelineCache.defaultSampler;
+  primCache.textureBindGroup = device.createBindGroup({
+    layout: pipelineCache.textureBGL,
+    entries: [
+      { binding: 0, resource: textures.baseColor.createView() },
+      { binding: 1, resource: defSampler },
+      { binding: 2, resource: textures.normal.createView() },
+      { binding: 3, resource: defSampler },
+      { binding: 4, resource: textures.metallicRoughness.createView() },
+      { binding: 5, resource: defSampler },
+      { binding: 6, resource: textures.emissive.createView() },
+      { binding: 7, resource: defSampler },
+      { binding: 8, resource: textures.occlusion.createView() },
+      { binding: 9, resource: defSampler },
+    ],
+  });
+
+  cache.primitives[primKey] = primCache;
+  return primCache;
+}
+
+/**
+ * Creates GPU textures for a material, falling back to defaults.
+ * @private
+ */
+function createMaterialTextures(device, pipelineCache, matInfo) {
+  const created = [];
+  const defWhite = pipelineCache.defaultWhiteTexture;
+  const defNormal = pipelineCache.defaultNormalTexture;
+  const defBlack = pipelineCache.defaultBlackTexture;
+
+  function tryCreate(reader, fallback) {
+    if (!defined(reader)) {
+      return fallback;
+    }
+    const tex = createGPUTextureFromReader(device, reader);
+    if (defined(tex)) {
+      created.push(tex);
+      return tex;
+    }
+    return fallback;
   }
 
   return {
-    vertexBuffer,
-    vertexCount: vertCount,
-    indexBuffer,
-    indexCount,
-    indexFormat,
+    baseColor: tryCreate(
+      matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
+      defWhite,
+    ),
+    normal: tryCreate(matInfo.normalTextureReader, defNormal),
+    metallicRoughness: tryCreate(
+      matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
+      defWhite,
+    ),
+    emissive: tryCreate(matInfo.emissiveTextureReader, defBlack),
+    occlusion: tryCreate(matInfo.occlusionTextureReader, defWhite),
+    created,
   };
 }
 
+// ─── Main Entry Points ───────────────────────────────────────────────────────
+
 /**
  * Updates or creates WebGPU draw commands for a Model.
+ * Called from Model.submitDrawCommands() via the feature renderer.
+ * Commands are pushed to frameState.commandList.
+ *
+ * Iterates sceneGraph._runtimeNodes → runtimeNode.runtimePrimitives
+ * to access each node's skinning data alongside its primitives.
  *
  * @param {Model} model - The Model instance
  * @param {FrameState} frameState
- * @param {Array} commandList
  */
-function updateWebGPUModel(model, frameState, commandList) {
+function updateWebGPUModel(model, frameState) {
   if (!model.show || !model.ready) {
     return;
   }
 
+  const commandList = frameState.commandList;
   const context = frameState.context;
   const device = context.device;
 
+  // Initialize model cache
   if (!defined(model._webgpuCache)) {
-    model._webgpuCache = {};
+    model._webgpuCache = {
+      pipelineCache: null,
+      cameraBuffer: null,
+      cameraData: null,
+      cameraBG: null,
+      primitives: {}, // keyed by "nodeIdx_primIdx"
+      nodes: {}, // per-node skinning data, keyed by nodeIdx
+    };
   }
   const cache = model._webgpuCache;
 
-  // Create pipeline once
-  if (!defined(cache.pipeline)) {
-    const format = context.presentationFormat || "bgra8unorm";
+  // Create pipeline cache (shared across all primitives of this model)
+  if (!defined(cache.pipelineCache)) {
+    const fmt = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createModelPipeline(device, format, depthFmt);
-    cache.pipeline = result.pipeline;
-    cache.camBGL = result.camBGL;
-    cache.matBGL = result.matBGL;
+    cache.pipelineCache = new WebGPUModelPipelineCache(device, fmt, depthFmt);
   }
+  const pipelineCache = cache.pipelineCache;
 
   // Camera uniform buffer (updated per frame)
   if (!defined(cache.cameraBuffer)) {
@@ -436,7 +539,7 @@ function updateWebGPUModel(model, frameState, commandList) {
     );
     cache.cameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
     cache.cameraBG = device.createBindGroup({
-      layout: cache.camBGL,
+      layout: pipelineCache.cameraBGL,
       entries: [
         { binding: 0, resource: { buffer: cache.cameraBuffer.buffer } },
       ],
@@ -453,116 +556,245 @@ function updateWebGPUModel(model, frameState, commandList) {
     CAMERA_UNIFORM_SIZE,
   );
 
-  // Model/Light uniform buffers (created once per model)
-  if (!defined(cache.modelBuffer)) {
-    cache.modelBuffer = WebGPUBuffer.createUniformBuffer(
-      device,
-      MODEL_UNIFORM_SIZE,
-      "Model material",
-    );
-    cache.modelData = new Float32Array(MODEL_UNIFORM_SIZE / 4);
-    cache.lightBuffer = WebGPUBuffer.createUniformBuffer(
-      device,
-      LIGHT_UNIFORM_SIZE,
-      "Model light",
-    );
-    cache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
-
-    packModelUniforms(cache.modelData, modelMatrix, null);
-    packLightUniforms(cache.lightData, frameState);
-
-    device.queue.writeBuffer(
-      cache.modelBuffer.buffer,
-      0,
-      cache.modelData.buffer,
-      0,
-      MODEL_UNIFORM_SIZE,
-    );
-    device.queue.writeBuffer(
-      cache.lightBuffer.buffer,
-      0,
-      cache.lightData.buffer,
-      0,
-      LIGHT_UNIFORM_SIZE,
-    );
-
-    cache.matBG = device.createBindGroup({
-      layout: cache.matBGL,
-      entries: [
-        { binding: 0, resource: { buffer: cache.modelBuffer.buffer } },
-        { binding: 1, resource: { buffer: cache.lightBuffer.buffer } },
-      ],
-    });
+  // Process model by iterating nodes → primitives
+  // This is the correct traversal that gives us access to each node's
+  // skinning data (computedJointMatrices) alongside its primitives.
+  const sceneGraph = model._sceneGraph;
+  if (!defined(sceneGraph) || !defined(sceneGraph._runtimeNodes)) {
+    return;
   }
 
-  // Update lights per frame
-  packLightUniforms(cache.lightData, frameState);
-  device.queue.writeBuffer(
-    cache.lightBuffer.buffer,
-    0,
-    cache.lightData.buffer,
-    0,
-    LIGHT_UNIFORM_SIZE,
-  );
+  const runtimeNodes = sceneGraph._runtimeNodes;
 
-  // Convert model vertex buffers to WebGPU format (posHigh/posLow + normal + uv + color)
-  // This is done once per model when vertex data becomes available
-  if (!defined(cache.primitiveBuffers)) {
-    cache.primitiveBuffers = [];
-    const sceneGraph = model._sceneGraph;
-    if (defined(sceneGraph) && defined(sceneGraph._runtimePrimitives)) {
-      const prims = sceneGraph._runtimePrimitives;
-      for (let i = 0; i < prims.length; i++) {
-        const rp = prims[i];
-        const bufferInfo = convertPrimitiveToWebGPU(device, rp, modelMatrix);
-        if (bufferInfo) {
-          cache.primitiveBuffers.push(bufferInfo);
-        }
+  for (let nodeIdx = 0; nodeIdx < runtimeNodes.length; nodeIdx++) {
+    const runtimeNode = runtimeNodes[nodeIdx];
+    if (!defined(runtimeNode)) {
+      continue;
+    }
+
+    const prims = runtimeNode.runtimePrimitives;
+    if (!defined(prims) || prims.length === 0) {
+      continue;
+    }
+
+    // Extract skinning data for this node (shared, renderer-agnostic)
+    const skinData = extractSkinData(runtimeNode);
+    const hasSkinning = defined(skinData);
+
+    // Per-node skinning: create/update joint matrices GPU buffer
+    if (hasSkinning) {
+      if (!defined(cache.nodes[nodeIdx])) {
+        cache.nodes[nodeIdx] = {
+          jointBuffer: null,
+          jointBufferSize: 0,
+          skinningBG: null,
+          packedJointMatrices: null,
+        };
+      }
+      const nodeCache = cache.nodes[nodeIdx];
+
+      // First frame: full extraction. Subsequent: incremental update.
+      if (!defined(nodeCache.packedJointMatrices)) {
+        nodeCache.packedJointMatrices = skinData.packedJointMatrices;
+        ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData);
+      } else {
+        // Update packed matrices in-place (avoids allocation)
+        updatePackedJointMatrices(runtimeNode, nodeCache.packedJointMatrices);
+        device.queue.writeBuffer(
+          nodeCache.jointBuffer,
+          0,
+          nodeCache.packedJointMatrices,
+        );
       }
     }
-  }
 
-  // For each converted primitive, create a WebGPU draw command
-  const sceneGraph = model._sceneGraph;
-  const drawCommands = sceneGraph?._drawCommands || [];
+    // Get skinning bind group (node-level or default)
+    const skinningBG = hasSkinning
+      ? cache.nodes[nodeIdx].skinningBG
+      : pipelineCache.defaultSkinningBindGroup;
 
-  for (let i = 0; i < cache.primitiveBuffers.length; i++) {
-    const pbuf = cache.primitiveBuffers[i];
-    const dc = i < drawCommands.length ? drawCommands[i] : null;
+    // Process each primitive on this node
+    for (let primIdx = 0; primIdx < prims.length; primIdx++) {
+      const rp = prims[primIdx];
+      const primKey = `${nodeIdx}_${primIdx}`;
 
-    const webgpuCmd = new WebGPUDrawCommand({
-      pipeline: cache.pipeline,
-      bindGroups: [cache.cameraBG, cache.matBG],
-      vertexBuffers: [pbuf.vertexBuffer],
-      indexBuffer: pbuf.indexBuffer || undefined,
-      indexCount: pbuf.indexCount || 0,
-      indexFormat: pbuf.indexFormat || "uint16",
-      vertexCount: pbuf.vertexCount || 0,
-      pass: dc?.pass || 8,
-      owner: model,
-      boundingVolume: dc?.boundingVolume || model.boundingSphere,
-      modelMatrix: modelMatrix,
-      cull: true,
-    });
+      // Use shared extractors for renderer-agnostic data
+      const geometry = extractPrimitiveGeometry(rp);
+      if (!defined(geometry)) {
+        continue;
+      }
 
-    commandList.push(webgpuCmd);
+      // Get material from the primitive's glTF data
+      const glTFPrimitive = rp.primitive || rp._primitive;
+      const material = glTFPrimitive?.material;
+      const matInfo = extractMaterialInfo(
+        material,
+        geometry.hasColor0,
+        geometry.hasNormals,
+      );
+
+      // Get or create cached GPU resources for this primitive
+      const primCache = ensurePrimitiveCache(
+        device,
+        cache,
+        pipelineCache,
+        primKey,
+        geometry,
+        matInfo,
+      );
+
+      // Create per-primitive material + light uniform buffers (once)
+      if (!defined(primCache.materialBG)) {
+        primCache.materialBuffer = WebGPUBuffer.createUniformBuffer(
+          device,
+          MATERIAL_UNIFORM_SIZE,
+          `Prim material`,
+        );
+        primCache.materialData = new Float32Array(MATERIAL_UNIFORM_SIZE / 4);
+        primCache.lightBuffer = WebGPUBuffer.createUniformBuffer(
+          device,
+          LIGHT_UNIFORM_SIZE,
+          `Prim light`,
+        );
+        primCache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
+
+        primCache.materialBG = device.createBindGroup({
+          layout: pipelineCache.materialBGL,
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: primCache.materialBuffer.buffer },
+            },
+            { binding: 1, resource: { buffer: primCache.lightBuffer.buffer } },
+          ],
+        });
+      }
+
+      // Determine if this specific primitive has skinning
+      // (node has skin AND primitive has joints/weights attributes)
+      const primHasSkinning = hasSkinning && primCache.hasSkinningAttributes;
+
+      // Update material uniforms (includes skinning flag)
+      packMaterialUniforms(
+        primCache.materialData,
+        modelMatrix,
+        matInfo,
+        primHasSkinning,
+      );
+      device.queue.writeBuffer(
+        primCache.materialBuffer.buffer,
+        0,
+        primCache.materialData.buffer,
+        0,
+        MATERIAL_UNIFORM_SIZE,
+      );
+
+      // Update light uniforms (per frame)
+      packLightUniforms(primCache.lightData, frameState);
+      device.queue.writeBuffer(
+        primCache.lightBuffer.buffer,
+        0,
+        primCache.lightData.buffer,
+        0,
+        LIGHT_UNIFORM_SIZE,
+      );
+
+      // Assemble vertex buffers: [pos, normal, tangent, uv, color, joints, weights]
+      const vertexBuffers = [
+        primCache.positionBuffer,
+        primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
+        primCache.tangentBuffer || pipelineCache.defaultTangentBuffer,
+        primCache.uvBuffer || pipelineCache.defaultUVBuffer,
+        primCache.colorBuffer || pipelineCache.defaultColorBuffer,
+        primCache.jointsBuffer || pipelineCache.defaultJointsBuffer,
+        primCache.weightsBuffer || pipelineCache.defaultWeightsBuffer,
+      ];
+
+      // Use model.opaquePass to get the correct pass:
+      //   - Pass.CESIUM_3D_TILE for 3D Tiles content (set by Model3DTileContent)
+      //   - Pass.OPAQUE for standalone models
+      // Alpha blend primitives override to TRANSLUCENT
+      const pass =
+        matInfo.alphaMode === AlphaModes.BLEND
+          ? Pass.TRANSLUCENT
+          : model.opaquePass;
+
+      const webgpuCmd = new WebGPUDrawCommand({
+        pipeline: primCache.pipeline,
+        bindGroups: [
+          cache.cameraBG,
+          primCache.materialBG,
+          primCache.textureBindGroup,
+          skinningBG,
+        ],
+        vertexBuffers: vertexBuffers,
+        indexBuffer: primCache.indexBuffer || undefined,
+        indexCount: primCache.indexCount || 0,
+        indexFormat: primCache.indexFormat || "uint16",
+        vertexCount: primCache.vertexCount || 0,
+        pass: pass,
+        owner: model,
+        boundingVolume: model.boundingSphere,
+        modelMatrix: modelMatrix,
+        cull: model._cull ?? true,
+      });
+
+      commandList.push(webgpuCmd);
+    }
   }
 }
 
+/**
+ * Destroys cached WebGPU resources for a Model.
+ */
 function destroyWebGPUModelResources(model) {
   const cache = model._webgpuCache;
   if (!defined(cache)) {
     return;
   }
+
   if (defined(cache.cameraBuffer)) {
     cache.cameraBuffer.destroy();
   }
-  if (defined(cache.modelBuffer)) {
-    cache.modelBuffer.destroy();
+
+  // Destroy per-primitive resources
+  const primKeys = Object.keys(cache.primitives);
+  for (let i = 0; i < primKeys.length; i++) {
+    const pc = cache.primitives[primKeys[i]];
+    if (!defined(pc)) {
+      continue;
+    }
+
+    pc.positionBuffer?.destroy();
+    pc.normalBuffer?.destroy();
+    pc.tangentBuffer?.destroy();
+    pc.uvBuffer?.destroy();
+    pc.colorBuffer?.destroy();
+    pc.jointsBuffer?.destroy();
+    pc.weightsBuffer?.destroy();
+    pc.indexBuffer?.destroy();
+    pc.materialBuffer?.destroy();
+    pc.lightBuffer?.destroy();
+
+    // Destroy created GPU textures (not default ones)
+    for (const tex of pc.gpuTextures) {
+      tex?.destroy();
+    }
   }
-  if (defined(cache.lightBuffer)) {
-    cache.lightBuffer.destroy();
+
+  // Destroy per-node skinning resources
+  const nodeKeys = Object.keys(cache.nodes);
+  for (let i = 0; i < nodeKeys.length; i++) {
+    const nc = cache.nodes[nodeKeys[i]];
+    if (defined(nc) && defined(nc.jointBuffer)) {
+      nc.jointBuffer.destroy();
+    }
   }
+
+  if (defined(cache.pipelineCache)) {
+    cache.pipelineCache.destroy();
+  }
+
   model._webgpuCache = undefined;
 }
 

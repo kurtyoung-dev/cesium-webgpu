@@ -369,7 +369,7 @@ Picking.prototype.pickAsync = async function (
   const drawingBufferRectangle = scratchRectangle;
   pickBegin(scene, windowPosition, drawingBufferRectangle, width, height);
   let pickedObjects;
-  if (context.webgl2) {
+  if (context.webgl2 || context.isWebGPU) {
     pickedObjects = pickFramebuffer.endAsync(
       drawingBufferRectangle,
       frameState,
@@ -380,7 +380,7 @@ Picking.prototype.pickAsync = async function (
     pickedObjects = Promise.resolve(pickedObjects); // Promise<Object[]> Wrap as Promise
     oneTimeWarning(
       "picking-async-fallback",
-      "Fallback to synchronous picking because async operation requires WebGL2 context.",
+      "Fallback to synchronous picking because async operation requires WebGL2 or WebGPU context.",
     );
   }
   pickEnd(scene);

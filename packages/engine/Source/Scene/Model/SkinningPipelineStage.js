@@ -2,9 +2,28 @@ import combine from "../../Core/combine.js";
 import ShaderDestination from "../../Renderer/ShaderDestination.js";
 import SkinningStageVS from "../../Shaders/Model/SkinningStageVS.js";
 import VertexAttributeSemantic from "../VertexAttributeSemantic.js";
+import { extractSkinData } from "./ModelSkinData.js";
 
 /**
  * The skinning pipeline stage processes the joint matrices of a skinned primitive.
+ *
+ * Uses the shared {@link ModelSkinData} extractor for renderer-agnostic
+ * skin data validation and access. Both the WebGL and WebGPU backends
+ * use ModelSkinData as the single extraction layer for joint matrices:
+ *
+ * - **WebGL (this stage):** Uses `extractSkinData()` for initial validation
+ *   and `skinData.jointMatrices` (Matrix4[] reference) for the uniform function.
+ *   The WebGL uniform system (`UniformArrayMat4`) handles per-frame packing
+ *   and dirty-checking of individual matrices.
+ *
+ * - **WebGPU (WebGPUModelRenderer.js):** Uses `extractSkinData()` for initial
+ *   packing into Float32Array and `updatePackedJointMatrices()` for per-frame
+ *   in-place updates, uploading to a GPU storage buffer.
+ *
+ * The joint matrix computation pipeline (all shared, renderer-agnostic):
+ *   1. ModelSkin.updateJointMatrices() — jointMatrix = jointWorldTransform * inverseBindMatrix
+ *   2. ModelRuntimeNode.updateJointMatrices() — computedJointMatrix = inverseNodeWorld * jointMatrix
+ *   3. ModelSkinData.extractSkinData() — validates and provides data access for both backends
  *
  * @namespace SkinningPipelineStage
  *
@@ -40,19 +59,31 @@ SkinningPipelineStage.process = function (renderResources, primitive) {
   addGetSkinningMatrixFunction(shaderBuilder, primitive);
 
   const runtimeNode = renderResources.runtimeNode;
-  const jointMatrices = runtimeNode.computedJointMatrices;
+
+  // Use the shared ModelSkinData extractor for validation and data access.
+  // This is the same extractor that WebGPU uses in WebGPUModelRenderer.js,
+  // ensuring both backends share the skin data extraction layer.
+  const skinData = extractSkinData(runtimeNode);
+
+  // skinData.jointCount provides the validated joint count
+  // skinData.jointMatrices is a live reference to runtimeNode.computedJointMatrices
+  // (updated each frame by ModelRuntimeNode.updateJointMatrices)
+  const jointCount = skinData.jointCount;
+  const jointMatricesRef = skinData.jointMatrices;
 
   shaderBuilder.addUniform(
     "mat4",
-    `u_jointMatrices[${jointMatrices.length}]`,
+    `u_jointMatrices[${jointCount}]`,
     ShaderDestination.VERTEX,
   );
 
   shaderBuilder.addVertexLines(SkinningStageVS);
 
+  // The uniform function returns the live Matrix4[] reference from ModelSkinData.
+  // CesiumJS's UniformArrayMat4 handles per-frame Matrix4.pack() and dirty-checking.
   const uniformMap = {
     u_jointMatrices: function () {
-      return runtimeNode.computedJointMatrices;
+      return jointMatricesRef;
     },
   };
 

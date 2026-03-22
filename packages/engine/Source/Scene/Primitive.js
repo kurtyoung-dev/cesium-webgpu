@@ -273,6 +273,23 @@ function Primitive(options) {
    */
   this.rtcCenter = options.rtcCenter;
 
+  /**
+   * The render priority for this primitive. Higher values render on top
+   * (later in draw order). Maps to DrawCommand.sortPriority.
+   * @type {number}
+   * @default 0
+   */
+  this.renderPriority = options.renderPriority ?? 0;
+
+  /**
+   * The render layer order for this primitive. Controls which render layer
+   * this primitive's commands are binned into. Maps to DrawCommand.sortLayer.
+   * Use RenderLayer.Order constants for predefined layers.
+   * @type {number}
+   * @default 50
+   */
+  this.renderLayer = options.renderLayer ?? 50;
+
   //>>includeStart('debug', pragmas.debug);
   if (
     defined(this.rtcCenter) &&
@@ -2177,7 +2194,26 @@ function updateAndQueueCommands(
         colorCommand.pickId = undefined;
       }
 
-      commandList.push(colorCommand);
+      // SORT-1: Wire primitive renderPriority/renderLayer to DrawCommand sort properties
+      colorCommand.sortPriority = primitive.renderPriority;
+      colorCommand.sortLayer = primitive.renderLayer;
+
+      // During pick-only passes, push WebGPU pick commands instead of color
+      // commands so the pick shader outputs pick colors to the pick framebuffer.
+      // For WebGL, color commands are pushed and Scene.js swaps to derived
+      // pick commands at execution time via command.derivedCommands.picking.
+      if (
+        passes.pick &&
+        !passes.render &&
+        colorCommand.isWebGPUDrawCommand === true &&
+        allowPicking &&
+        defined(pickCommands) &&
+        defined(pickCommands[j])
+      ) {
+        commandList.push(pickCommands[j]);
+      } else {
+        commandList.push(colorCommand);
+      }
     }
 
     // WebGPU: Also update and queue pick commands (separate draw commands with pick shaders)

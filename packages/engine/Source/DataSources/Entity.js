@@ -98,6 +98,10 @@ function createPropertyTypeDescriptor(name, Type) {
  * @property {PolylineVolumeGraphics | PolylineVolumeGraphics.ConstructorOptions} [polylineVolume] A polylineVolume to associate with this entity.
  * @property {RectangleGraphics | RectangleGraphics.ConstructorOptions} [rectangle] A rectangle to associate with this entity.
  * @property {WallGraphics | WallGraphics.ConstructorOptions} [wall] A wall to associate with this entity.
+ * @property {number} [renderPriority=0] A numeric render priority for controlling draw order.
+ *   Higher values render on top (later in draw order), like CSS z-index.
+ *   Works on all entity types: billboards, models, points, polylines, geometry.
+ *   Default is 0. Negative values render behind default entities.
  */
 
 /**
@@ -197,6 +201,7 @@ function Entity(options) {
   this._viewFromSubscription = undefined;
   this._wall = undefined;
   this._wallSubscription = undefined;
+  this._renderPriority = options.renderPriority ?? 0;
   this._children = [];
 
   /**
@@ -507,6 +512,31 @@ Object.defineProperties(Entity.prototype, {
    * @type {WallGraphics|undefined}
    */
   wall: createPropertyTypeDescriptor("wall", WallGraphics),
+  /**
+   * Gets or sets the render priority for this entity. Higher values render
+   * on top (later in draw order), like CSS z-index. Default is 0.
+   * This is a raw numeric value, not a time-varying Property.
+   * Works on all entity types: billboards, models, points, polylines, geometry.
+   * @memberof Entity.prototype
+   * @type {number}
+   */
+  renderPriority: {
+    get: function () {
+      return this._renderPriority;
+    },
+    set: function (value) {
+      const oldValue = this._renderPriority;
+      if (oldValue !== value) {
+        this._renderPriority = value;
+        this._definitionChanged.raiseEvent(
+          this,
+          "renderPriority",
+          value,
+          oldValue,
+        );
+      }
+    },
+  },
 });
 
 /**
@@ -614,10 +644,13 @@ Entity.prototype.merge = function (source) {
   }
   //>>includeEnd('debug');
 
-  //Name, show, and availability are not Property objects and are currently handled differently.
+  //Name, show, availability, and renderPriority are not Property objects and are currently handled differently.
   //source.show is intentionally ignored because this.show always has a value.
   this.name = this.name ?? source.name;
   this.availability = this.availability ?? source.availability;
+  if (defined(source._renderPriority) && source._renderPriority !== 0) {
+    this._renderPriority = this._renderPriority || source._renderPriority;
+  }
 
   const propertyNames = this._propertyNames;
   const sourcePropertyNames = defined(source._propertyNames)

@@ -27,6 +27,7 @@ function Batch(
   depthFailMaterialProperty,
   closed,
   shadows,
+  renderPriority,
 ) {
   this.translucent = translucent;
   this.appearanceType = appearanceType;
@@ -36,6 +37,7 @@ function Batch(
   this.closed = closed;
   this.shadows = shadows;
   this.primitives = primitives;
+  this.renderPriority = renderPriority ?? 0;
   this.createPrimitive = false;
   this.waitingOnCreate = false;
   this.primitive = undefined;
@@ -65,6 +67,11 @@ Batch.prototype.onMaterialChanged = function () {
 };
 
 Batch.prototype.isMaterial = function (updater) {
+  // Priority-aware matching: entities with different renderPriority go in different batches
+  const updaterPriority = updater.entity._renderPriority ?? 0;
+  if (this.renderPriority !== updaterPriority) {
+    return false;
+  }
   const material = this.depthFailMaterialProperty;
   const updaterMaterial = updater.depthFailMaterialProperty;
   if (updaterMaterial === material) {
@@ -165,6 +172,10 @@ Batch.prototype.update = function (time) {
         depthFailAppearance: depthFailAppearance,
         shadows: this.shadows,
       });
+      // Flow render priority from batch to primitive for sort system integration
+      if (this.renderPriority !== 0) {
+        primitive.renderPriority = this.renderPriority;
+      }
       primitives.add(primitive);
       isUpdated = false;
     } else {
@@ -427,6 +438,9 @@ StaticGeometryColorBatch.prototype.add = function (time, updater) {
     translucent = true;
   }
 
+  // Extract entity render priority for priority-aware batch grouping
+  const entityPriority = updater.entity._renderPriority ?? 0;
+
   const length = items.length;
   for (let i = 0; i < length; i++) {
     const item = items[i];
@@ -443,6 +457,7 @@ StaticGeometryColorBatch.prototype.add = function (time, updater) {
     updater.depthFailMaterialProperty,
     this._closed,
     this._shadows,
+    entityPriority,
   );
   batch.add(updater, instance);
   items.push(batch);

@@ -50,17 +50,31 @@
 import RendererType from "./RendererType.js";
 import { ContextRegistry } from "./ContextRegistry.js";
 import FeatureRendererKey from "./FeatureRendererKey.js";
+import Color from "../Core/Color.js";
+import PickId from "./PickId.js";
 
 // ═══════════════════════════════════════════════════════════
-// FEATURE RENDERER INTERFACE (Phase C)
+// FEATURE RENDERER INTERFACES (Phase C — Sub-typed)
+//
+// Feature renderers are split into sub-types based on their
+// actual API contract. This replaces the previous catch-all
+// interface that had optional `update?()` with variadic args
+// and `[key: string]: any` (which defeated type safety).
+//
+// Sub-types:
+//   CollectionRenderer   — 21 of 28 renderers (most common)
+//   PrimitiveCommandRenderer — 1 of 28 (PRIMITIVE)
+//   SystemRenderer       — 6 of 28 (specialized entry points)
+//
+// See: FR-UPDATE tech debt item in UPSTREAM_ISSUES_AND_TECH_DEBT.md
 // ═══════════════════════════════════════════════════════════
 
 /**
- * Interface for backend-specific feature renderers.
+ * Base interface for all backend-specific feature renderers.
  *
- * Scene code calls `context.getFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION)?.update(...)`
- * instead of importing from `Renderer/WebGPU/` directly. Each backend registers its own
- * implementation of each feature renderer.
+ * Scene code calls `context.getFeatureRenderer(FeatureRendererKey.XXX)`
+ * instead of importing from `Renderer/WebGPU/` directly. Each backend
+ * registers its own implementation of each feature renderer.
  *
  * Feature renderers handle:
  * - GPU resource creation (buffers, pipelines, textures)
@@ -70,20 +84,13 @@ import FeatureRendererKey from "./FeatureRendererKey.js";
  * They do NOT handle:
  * - Entity management, dirty tracking (shared scene logic)
  * - Visibility checks, mode updates (shared pre-branch logic)
+ *
+ * Use the specific sub-type interfaces for type-safe access:
+ * - {@link CollectionRenderer} for renderers with `update()`
+ * - {@link PrimitiveCommandRenderer} for the PRIMITIVE command factory
+ * - {@link SystemRenderer} for specialized entry points
  */
 export interface FeatureRenderer {
-  /** Allow additional properties for specialized feature renderers */
-  [key: string]: any;
-  /**
-   * Update and render this feature for the current frame.
-   * Optional because some feature renderers use different entry points
-   * (e.g., createCommands, getParameters, RendererClass).
-   * @param collection - The scene collection (BillboardCollection, etc.)
-   * @param frameState - Current frame state
-   * @param commandList - Command list to push draw commands to
-   */
-  update?(collection: any, frameState: any, ...args: any[]): any;
-
   /**
    * Destroy GPU resources owned by this renderer.
    * @param collection - The scene collection being destroyed
@@ -94,6 +101,89 @@ export interface FeatureRenderer {
    * Optional: name for debugging/diagnostics.
    */
   readonly name?: string;
+}
+
+/**
+ * Feature renderer with a per-frame `update()` entry point.
+ * This is the most common pattern (21 of 28 renderers).
+ *
+ * Used by: Collections (Billboard, Point, Polyline, Cloud),
+ * Environment (Sun, Moon, SkyAtmosphere, CubeMapPanorama),
+ * Model, Advanced features (Ellipsoid, GaussianSplat, PointCloud,
+ * Voxel, InvertClassification), IBL/Lighting (BrdfLut,
+ * ImageBasedLighting, DynamicEnvironmentMap), Clipping
+ * (Planes, Polygons), and Post-Processing.
+ *
+ * Scene code pattern:
+ * ```javascript
+ * const fr = context.getFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION);
+ * if (fr) { fr.update(this, frameState, commandList); return; }
+ * ```
+ */
+export interface CollectionRenderer extends FeatureRenderer {
+  /**
+   * Update and render this feature for the current frame.
+   * @param collection - The scene object (BillboardCollection, Sun, etc.)
+   * @param frameState - Current frame state (or options object)
+   * @param args - Additional arguments (commandList, etc.)
+   */
+  update(collection: any, frameState: any, ...args: any[]): any;
+}
+
+/**
+ * Feature renderer for the Primitive command factory.
+ * Creates and updates WebGPU draw commands for Primitive geometry.
+ *
+ * Used by: PRIMITIVE (1 of 28 renderers).
+ *
+ * Scene code pattern:
+ * ```javascript
+ * const fr = context.getFeatureRenderer(FeatureRendererKey.PRIMITIVE);
+ * if (fr) { fr.createCommands(primitive, appearance, ...); }
+ * ```
+ */
+export interface PrimitiveCommandRenderer extends FeatureRenderer {
+  /**
+   * Create draw commands for a primitive with per-instance-color appearance.
+   */
+  createCommands(...args: any[]): void;
+
+  /**
+   * Update per-frame uniforms on existing commands.
+   */
+  updateCommandUniforms(...args: any[]): void;
+
+  /**
+   * Create draw commands for a primitive with material appearance.
+   */
+  createMaterialCommands?(...args: any[]): void;
+
+  /**
+   * Update per-frame uniforms on material commands.
+   */
+  updateMaterialCommandUniforms?(...args: any[]): void;
+
+  /**
+   * Update per-frame uniforms on pick commands.
+   */
+  updatePickCommandUniforms?(...args: any[]): void;
+}
+
+/**
+ * Feature renderer with specialized entry points.
+ * Used for system-level renderers that don't follow the
+ * simple `update()` pattern.
+ *
+ * Used by: FOG (getParameters), SHADOW_MAP (init, renderCastPass),
+ * GROUND_PRIMITIVE (destroy only), GLOBE_SURFACE (RendererClass),
+ * GLOBE_TRANSLUCENCY (updateDerivedCommands), SCENE_RENDERER
+ * (RendererClass, initPrimitiveShaders, initCollectionShaders).
+ *
+ * The index signature allows type-safe access to specialized methods.
+ */
+export interface SystemRenderer extends FeatureRenderer {
+  /** Allow specialized entry points */
+  [key: string]: any;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -240,8 +330,7 @@ export abstract class GraphicsContext {
       "resize",
       "draw",
       "getRendererString",
-      "createPickId",
-      "getObjectByPickColor",
+      // createPickId and getObjectByPickColor are concrete on GraphicsContext
       "readPixels",
       "createViewportQuadCommand",
       "destroy",
@@ -367,6 +456,116 @@ export abstract class GraphicsContext {
    */
   get depthRangeZeroToOne(): boolean {
     return false;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CONCRETE: COMPUTE SHADER CAPABILITIES
+  //
+  // These properties advertise the compute capabilities of this context.
+  // Scene code should query these before dispatching compute work.
+  //
+  // Compute tiers:
+  //   Tier 0 (GPGPU):  Render-to-texture "compute" via fragment shaders (WebGL 1/2)
+  //   Tier 1 (Compute): Real GPU compute shaders (WebGPU, future WebGL 2.0 extension)
+  //   Tier 2 (Advanced): Indirect dispatch, shared memory, atomics (WebGPU)
+  //
+  // WebGL 2.0 is expected to gain compute shader support via a future extension
+  // (similar to GL_ARB_compute_shader / GL ES 3.1). These properties provide the
+  // scaffolding so that when the extension ships, only Context.js needs updating.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * Whether this context supports real GPU compute shaders (not GPGPU workarounds).
+   *
+   * - **WebGL 2.0 (current):** `false` — no compute extension available yet.
+   *   When `WEBGL_compute` or equivalent extension ships, `Context.js` will
+   *   override this to return `true` after detecting the extension.
+   * - **WebGPU:** `true` — native compute shader support.
+   *
+   * Scene code should check this before dispatching compute work:
+   * ```javascript
+   * if (context.supportsComputeShaders) {
+   *   // Use real GPU compute (WebGPU or future WebGL 2.0 compute)
+   * } else if (context.supportsGPGPU) {
+   *   // Fall back to render-to-texture GPGPU
+   * } else {
+   *   // CPU fallback
+   * }
+   * ```
+   */
+  get supportsComputeShaders(): boolean {
+    return false;
+  }
+
+  /**
+   * Whether this context supports GPGPU (render-to-texture) compute.
+   * This is the legacy compute method using fragment shaders + viewport quads.
+   *
+   * - **WebGL:** `true` — uses `ComputeEngine` + `ComputeCommand` (fragment shader GPGPU).
+   * - **WebGPU:** `true` — can do GPGPU, but prefer real compute shaders.
+   *
+   * Default: true (all contexts support render-to-texture).
+   */
+  get supportsGPGPU(): boolean {
+    return true;
+  }
+
+  /**
+   * Whether this context supports indirect compute dispatch.
+   * Indirect dispatch reads workgroup counts from a GPU buffer,
+   * enabling fully GPU-driven pipelines.
+   *
+   * - **WebGL:** `false` — no indirect dispatch support.
+   * - **WebGPU:** `true` — `dispatchWorkgroupsIndirect()` on `GPUComputePassEncoder`.
+   */
+  get supportsIndirectCompute(): boolean {
+    return false;
+  }
+
+  /**
+   * Whether this context supports shader storage buffers (SSBOs).
+   * Storage buffers allow compute/vertex/fragment shaders to read/write
+   * large structured data beyond the size limits of uniform buffers.
+   *
+   * - **WebGL 2.0 (current):** `false` — no SSBO extension yet.
+   *   Future `WEBGL_shader_storage_buffer` extension would enable this.
+   * - **WebGPU:** `true` — native storage buffer support via `storage` buffer type.
+   */
+  get supportsStorageBuffers(): boolean {
+    return false;
+  }
+
+  /**
+   * Maximum number of workgroups per dispatch dimension (X, Y, or Z).
+   * Returns 0 if compute shaders are not supported.
+   *
+   * - **WebGL:** 0 (no compute support yet)
+   * - **WebGPU:** Device limit `maxComputeWorkgroupsPerDimension` (typically 65535)
+   */
+  get maxComputeWorkgroupsPerDimension(): number {
+    return 0;
+  }
+
+  /**
+   * Maximum workgroup size (total invocations per workgroup).
+   * Returns 0 if compute shaders are not supported.
+   *
+   * - **WebGL:** 0 (no compute support yet)
+   * - **WebGPU:** Device limit `maxComputeInvocationsPerWorkgroup` (typically 256)
+   */
+  get maxComputeInvocationsPerWorkgroup(): number {
+    return 0;
+  }
+
+  /**
+   * Maximum size of shared (workgroup) memory in bytes.
+   * Returns 0 if compute shaders are not supported.
+   *
+   * - **WebGL:** 0 (no compute support yet)
+   * - **WebGPU:** Device limit `maxComputeWorkgroupStorageSize` (typically 16384)
+   */
+  get maxComputeWorkgroupStorageSize(): number {
+    return 0;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -500,17 +699,107 @@ export abstract class GraphicsContext {
    * @param passState - The current pass state
    * @returns true if the context handled resolution, false to fall back
    */
+  /**
+   * Creates a backend-appropriate pick framebuffer.
+   * WebGL: returns null (View.js falls back to PickFramebuffer).
+   * WebGPU: returns a WebGPUPickFramebuffer instance.
+   * @returns A pick framebuffer or null if the default (WebGL) should be used.
+   */
+  createPickFramebuffer(): any {
+    return null;
+  }
+
   resolveFramebuffers(scene: any, passState: any): boolean {
     // Default: not handled by context, Scene.js runs WebGL path
     return false;
   }
 
   // ═══════════════════════════════════════════════════════════
-  // ABSTRACT: PICKING
+  // CONCRETE: PICKING — Shared Pick ID Management
+  //
+  // Pick ID allocation is identical across both backends: a monotonically
+  // incrementing uint32 counter maps to RGBA colors via Color.fromRgba().
+  // The logic lives here (not in subclasses) to eliminate duplication.
+  // Previously duplicated in Context.js, WebGPUContext.ts, AND
+  // WebGPUPickManager.ts (three copies of the same code).
+  //
+  // Both backends inherit these methods. No override needed.
   // ═══════════════════════════════════════════════════════════
 
-  abstract createPickId(object: any): any;
-  abstract getObjectByPickColor(pickColor: any): any;
+  /**
+   * Map from 32-bit pick color key → associated object.
+   * Shared across both WebGL and WebGPU backends.
+   * @protected
+   */
+  protected _pickObjects: Map<number, any> = new Map();
+
+  /**
+   * Monotonically incrementing counter for pick color allocation.
+   * Uses Uint32Array for overflow-safe incrementing.
+   * @protected
+   */
+  protected _nextPickColor: Uint32Array = new Uint32Array(1);
+
+  /**
+   * Create a unique pick ID for an object.
+   *
+   * Allocates a unique 32-bit RGBA color and associates it with the given
+   * object. During pick rendering, fragments output this color. Reading
+   * back the pixel and calling {@link getObjectByPickColor} returns the object.
+   *
+   * @param object - The object to associate with this pick ID
+   * @returns A {@link PickId} with `key`, `color`, `normalizedRgba`, and `destroy()`
+   */
+  createPickId(object: any): any {
+    // Increment with overflow wrapping (Uint32Array handles this)
+    this._nextPickColor[0]++;
+    const key = this._nextPickColor[0];
+    const color = (Color as any).fromRgba(key);
+
+    this._pickObjects.set(key, object);
+    return new (PickId as any)(this._pickObjects, key, color);
+  }
+
+  /**
+   * Get the object associated with a pick color.
+   *
+   * Accepts two calling conventions:
+   * - **uint32** (WebGL path): A 32-bit RGBA value from `Color.byteToRgba(r,g,b,a)`
+   * - **object** (WebGPU path): An `{red, green, blue}` object with 0-255 byte values,
+   *   which is reconstructed to a key via little-endian RGB encoding.
+   *
+   * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
+   * @returns The object associated with the pick color, or undefined
+   */
+  getObjectByPickColor(pickColor: any): any {
+    if (typeof pickColor === "object" && pickColor !== null) {
+      // WebGPU path: reconstruct key from RGB bytes (little-endian)
+      const key =
+        (pickColor.red & 0xff) |
+        ((pickColor.green & 0xff) << 8) |
+        ((pickColor.blue & 0xff) << 16);
+      return this._pickObjects.get(key);
+    }
+    // WebGL path: pickColor is already the uint32 key
+    return this._pickObjects.get(pickColor);
+  }
+
+  /**
+   * Number of currently registered pick objects.
+   * Useful for diagnostics and debugging.
+   */
+  get pickObjectCount(): number {
+    return this._pickObjects.size;
+  }
+
+  /**
+   * Clear all pick registrations and reset the color counter.
+   * Useful during device loss recovery or context reset.
+   */
+  clearPickObjects(): void {
+    this._pickObjects.clear();
+    this._nextPickColor[0] = 0;
+  }
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: PIXEL READBACK
@@ -683,6 +972,11 @@ export abstract class GraphicsContext {
    * Register a feature renderer for this context.
    * Called by each backend during initialization.
    *
+   * Accepts any of the three feature renderer sub-types:
+   * - {@link CollectionRenderer} — renderers with `update()` (most common)
+   * - {@link PrimitiveCommandRenderer} — the PRIMITIVE command factory
+   * - {@link SystemRenderer} — renderers with specialized entry points
+   *
    * @param key - A {@link FeatureRendererKey} numeric enum value
    * @param renderer - The backend-specific feature renderer implementation
    *
@@ -691,7 +985,10 @@ export abstract class GraphicsContext {
    * // In WebGPUContext initialization:
    * this.registerFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION, renderer);
    */
-  registerFeatureRenderer(key: number, renderer: FeatureRenderer): void {
+  registerFeatureRenderer(
+    key: number,
+    renderer: CollectionRenderer | PrimitiveCommandRenderer | SystemRenderer,
+  ): void {
     this._featureRenderers[key] = renderer;
   }
 
@@ -700,13 +997,19 @@ export abstract class GraphicsContext {
    * Returns undefined if no renderer is registered for the given key.
    * Uses direct array-index access — O(1) with no hashing overhead.
    *
+   * The returned value is the base {@link FeatureRenderer} type.
+   * Callers that need sub-type methods should narrow the type:
+   * - `.js` scene files: just call methods directly (no TS checking)
+   * - `.ts` files: cast to the appropriate sub-type, e.g.:
+   *   `const fr = context.getFeatureRenderer(key) as CollectionRenderer;`
+   *
    * @param key - A {@link FeatureRendererKey} numeric enum value
    * @returns The registered feature renderer, or undefined
    *
    * @example
    * import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
    * const fr = context.getFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION);
-   * if (fr) { fr.update(collection, frameState); }
+   * if (fr) { (fr as CollectionRenderer).update(collection, frameState); }
    */
   getFeatureRenderer(key: number): FeatureRenderer | undefined {
     return this._featureRenderers[key];
@@ -760,8 +1063,67 @@ export abstract class GraphicsContext {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TYPE GUARD
+// TYPE GUARDS
 // ═══════════════════════════════════════════════════════════
+
+/**
+ * Type guard to check if a feature renderer is a {@link CollectionRenderer}.
+ * Returns true if the renderer has a callable `update` method.
+ *
+ * @param renderer - The feature renderer to check
+ * @returns True if the renderer has an `update()` method
+ *
+ * @example
+ * const fr = context.getFeatureRenderer(key);
+ * if (isCollectionRenderer(fr)) {
+ *   fr.update(collection, frameState); // TypeScript knows `update` exists
+ * }
+ */
+export function isCollectionRenderer(
+  renderer: FeatureRenderer | undefined,
+): renderer is CollectionRenderer {
+  return (
+    renderer !== undefined &&
+    typeof (renderer as CollectionRenderer).update === "function"
+  );
+}
+
+/**
+ * Type guard to check if a feature renderer is a {@link PrimitiveCommandRenderer}.
+ * Returns true if the renderer has `createCommands` and `updateCommandUniforms`.
+ *
+ * @param renderer - The feature renderer to check
+ * @returns True if the renderer has command factory methods
+ */
+export function isPrimitiveCommandRenderer(
+  renderer: FeatureRenderer | undefined,
+): renderer is PrimitiveCommandRenderer {
+  return (
+    renderer !== undefined &&
+    typeof (renderer as PrimitiveCommandRenderer).createCommands ===
+      "function" &&
+    typeof (renderer as PrimitiveCommandRenderer).updateCommandUniforms ===
+      "function"
+  );
+}
+
+/**
+ * Type guard to check if a feature renderer is a {@link SystemRenderer}.
+ * Returns true for any renderer that is NOT a CollectionRenderer or
+ * PrimitiveCommandRenderer — i.e., it has specialized entry points.
+ *
+ * @param renderer - The feature renderer to check
+ * @returns True if the renderer is a system renderer
+ */
+export function isSystemRenderer(
+  renderer: FeatureRenderer | undefined,
+): renderer is SystemRenderer {
+  return (
+    renderer !== undefined &&
+    !isCollectionRenderer(renderer) &&
+    !isPrimitiveCommandRenderer(renderer)
+  );
+}
 
 /**
  * Type guard to check if an object is a GraphicsContext.

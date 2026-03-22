@@ -140,6 +140,21 @@ function PointPrimitiveCollection(options) {
   this.show = options.show ?? true;
 
   /**
+   * The render priority for this collection. Higher values render on top
+   * (later in draw order). Maps to DrawCommand.sortPriority.
+   * @type {number}
+   * @default 0
+   */
+  this.renderPriority = options.renderPriority ?? 0;
+
+  /**
+   * The render layer order for this collection. Maps to DrawCommand.sortLayer.
+   * @type {number}
+   * @default 50
+   */
+  this.renderLayer = options.renderLayer ?? 50;
+
+  /**
    * The 4x4 transformation matrix that transforms each point in this collection from model to world coordinates.
    * When this is the identity matrix, the pointPrimitives are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
    * Local reference frames can be used by providing a different transformation matrix, like that returned
@@ -1180,6 +1195,10 @@ PointPrimitiveCollection.prototype.update = function (frameState) {
         : this._rsTranslucent;
       command.debugShowBoundingVolume = this.debugShowBoundingVolume;
       command.pickId = "v_pickColor";
+
+      // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
+      command.sortPriority = this.renderPriority;
+      command.sortLayer = this.renderLayer;
 
       commandList.push(command);
     }

@@ -1,4 +1,5 @@
 import GraphicsContext from "./GraphicsContext.js";
+import PickId from "./PickId.js";
 import RendererType from "./RendererType.js";
 import Buffer from "./Buffer.js";
 import Check from "../Core/Check.js";
@@ -379,32 +380,9 @@ const viewportQuadAttributeLocations = {
   textureCoordinates: 1,
 };
 
-/**
- * @private
- * @param {Map<number, object>} pickObjects
- * @param {number} key
- * @param {Color} color
- */
-class PickId {
-  constructor(pickObjects, key, color) {
-    this._pickObjects = pickObjects;
-    this.key = key;
-    this.color = color;
-  }
-
-  get object() {
-    return this._pickObjects.get(this.key);
-  }
-
-  set object(value) {
-    this._pickObjects.set(this.key, value);
-  }
-
-  destroy() {
-    this._pickObjects.delete(this.key);
-    return undefined;
-  }
-}
+// PickId class moved to shared Renderer/PickId.js
+// Pick ID management (createPickId, getObjectByPickColor) is now in
+// GraphicsContext base class — both WebGL and WebGPU inherit it.
 
 /**
  * @private
@@ -553,6 +531,23 @@ class Context extends GraphicsContext {
     this._floatBlend = !!getExtension(gl, ["EXT_float_blend"]);
     this._colorBufferHalfFloat = !!getExtension(gl, [
       "EXT_color_buffer_half_float",
+    ]);
+
+    // ─── Compute shader extension probing (WebGL 2.0 future-ready) ───
+    // These extensions do not exist yet in any shipping browser (as of 2026).
+    // When WebGL 2.0 gains compute shader support (analogous to GL ES 3.1
+    // GL_ARB_compute_shader), the extension names will be registered here.
+    // Until then, all three will be `undefined` and the capability getters
+    // on GraphicsContext (supportsComputeShaders, supportsStorageBuffers, etc.)
+    // will return their default `false` values. Only this file needs updating
+    // when the extensions ship — all scene code queries GraphicsContext.
+    this._webglCompute = getExtension(gl, [
+      "WEBGL_compute",
+      "WEBKIT_WEBGL_compute",
+    ]);
+    this._webglShaderStorageBuffer = getExtension(gl, [
+      "WEBGL_shader_storage_buffer",
+      "WEBKIT_WEBGL_shader_storage_buffer",
     ]);
 
     this._s3tc = !!getExtension(gl, [
@@ -1106,6 +1101,38 @@ class Context extends GraphicsContext {
    */
   get drawBuffers() {
     return this._drawBuffers || this._webgl2;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // COMPUTE SHADER CAPABILITY OVERRIDES (WebGL 2.0 future-ready)
+  //
+  // These override the GraphicsContext base class defaults (all false/0).
+  // Currently they all return false/0 because no WebGL compute extension
+  // ships yet. When WEBGL_compute or an equivalent lands in browsers,
+  // the `_webglCompute` probe in the constructor will detect it, and
+  // these getters will start returning true/non-zero — enabling compute
+  // shader codepaths for WebGL 2.0 without any scene-level changes.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * Whether this WebGL context supports real GPU compute shaders.
+   * Currently always false (no WEBGL_compute extension exists yet).
+   * When the extension ships, this will automatically return true.
+   * @memberof Context.prototype
+   * @type {boolean}
+   */
+  get supportsComputeShaders() {
+    return !!this._webglCompute;
+  }
+
+  /**
+   * Whether this WebGL context supports shader storage buffers (SSBOs).
+   * Currently always false (no WEBGL_shader_storage_buffer extension yet).
+   * @memberof Context.prototype
+   * @type {boolean}
+   */
+  get supportsStorageBuffers() {
+    return !!this._webglShaderStorageBuffer;
   }
 
   get debugShaders() {

@@ -1,0 +1,30 @@
+[package]
+name = "cesium-wasm-culling"
+version = "0.1.0"
+edition = "2021"
+description = "WASM SIMD spatial acceleration for CesiumJS: frustum culling, radix sort, octree traversal"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = 3      # Maximum optimization
+lto = true          # Link-time optimization for smallest output
+codegen-units = 1   # Single codegen unit for best optimization
+strip = true        # Strip debug symbols
+panic = "abort"     # No unwinding runtime (smaller binary)
+
+# Configure wasm-opt to accept SIMD and bulk-memory instructions.
+# The bundled wasm-opt (binaryen v117) supports these features but requires
+# explicit --enable flags. Without these, wasm-opt fails validation on
+# v128.load, memory.fill, memory.copy, etc.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O4", "--enable-simd", "--enable-bulk-memory"]
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false

@@ -1,8 +1,8 @@
 # CesiumJS WebGPU Migration — Consolidated Status
 
-**Last Updated:** March 19, 2026 (Updated: Scene.js backend agnosticism — zero isWebGPU in command dispatch)  
+**Last Updated:** March 21, 2026 (Updated: ModelSkinData.js now shared by both WebGL and WebGPU skinning paths. Compute shader capability abstraction added to GraphicsContext — WebGPU overrides report real device limits, WebGL 2.0 has future-ready extension scaffolding for WEBGL_compute)  
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) → [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)  
-**Overall Progress:** ~55% of full WebGL feature parity
+**Overall Progress:** ~60% of full WebGL feature parity
 
 ---
 
@@ -191,7 +191,8 @@ These modifications improve CesiumJS's architecture for both backends while pres
 | **EquirectangularPanorama** | ✅ Auto-supported | Delegates to Primitive |
 | **GoogleStreetView** | ✅ Auto-supported | Creates CubeMapPanorama instances |
 | **Globe/Terrain** | ⚠️ Partial | Uncompressed terrain, 4 imagery layers, RTE. No water/fog/atmosphere/clipping. |
-| **Model/glTF** | ⚠️ Partial | Basic PBR pipeline, vertex buffer conversion (posHigh/posLow). No skinning/morph/instancing. |
+| **Model/glTF** | ⚠️ Substantial | Full PBR pipeline via shared extractors (`ModelMaterialInfo.js`, `ModelPrimitiveGeometry.js`, `ModelSkinData.js`) + `WebGPUModelRenderer.js` + `WebGPUModelPipelineCache.js` + `ModelPBRComplete.wgsl`. Supports: metallic-roughness, specular-glossiness, unlit, all 5 texture types (baseColor, normal, MR, emissive, occlusion), alpha modes (OPAQUE/MASK/BLEND), double-sided, vertex colors, normal mapping, model-space RTE, **skeletal animation/skinning** (JOINTS_0/WEIGHTS_0 attributes + joint matrices via storage buffer, `FLAG_HAS_SKINNING` bit 13). Correct pass handling for 3D Tiles (`model.opaquePass`). Skinning uses shared joint matrix computation (`ModelSkin.js` + `ModelRuntimeNode.js` — CPU) with per-vertex blending on GPU (standard industry approach). **`ModelSkinData.js` now shared by BOTH backends:** WebGL's `SkinningPipelineStage.js` uses `extractSkinData()` for validation/data access (returning `Matrix4[]` for `UniformArrayMat4`); WebGPU's `WebGPUModelRenderer.js` uses the same extractor for `Float32Array` packing into storage buffers. Zero duplication in skin data extraction. **Fixed:** Node iteration bug — renderer now correctly traverses `_runtimeNodes` → `runtimePrimitives` (was using non-existent `_runtimePrimitives`). Missing: morph targets, GPU instancing, feature ID textures. 3 unused WGSL PBR shaders are dead code (only `ModelPBRComplete.wgsl` is used). |
+| **3D Tiles** | ✅ Works (via Model) | Tile traversal, LOD, caching are fully renderer-agnostic. 3D Tiles content renders via chain: `Cesium3DTileset → Model3DTileContent → Model.js → FeatureRendererKey.MODEL → WebGPUModelRenderer`. Zero 3D Tiles code changes needed. `Pass.CESIUM_3D_TILE` correctly propagated via `model.opaquePass`. Alpha-blend primitives correctly routed to `Pass.TRANSLUCENT`. |
 | **Shadow Map** | ⚠️ Partial | Depth texture, cast pipeline, scene integration. Receive-side pending. |
 | **Ground Primitive** | ⚠️ Partial | Two-pass stencil pipeline. Full scene integration pending. |
 | **OIT** | ⚠️ Infra done | MRT accumulation + composite. Scene integration pending. |
@@ -204,9 +205,8 @@ These modifications improve CesiumJS's architecture for both backends while pres
 | **Invert Classification** | ✅ Renderer done | Fullscreen composite. Scene routing pending. |
 | **Clipping Planes/Polygons** | ✅ Data layers | Texture packing done. Shader integration awaits `clip-distances`. |
 | **IBL / BRDF LUT** | ✅ Done | Compute shader BRDF, fallback cubemaps, dynamic env map. |
-| **3D Tiles** | ❌ Not started | — |
 | **Imagery Layers** | ❌ Not started | — |
-| **Pick Framebuffer** | ❌ Not started | — |
+| **Pick Framebuffer** | ⚠️ Pick pass wired | `WebGPUPickFramebuffer.ts` + `WebGPUPickManager.ts` + `GraphicsContext.createPickFramebuffer()` factory + `View.js` conditional creation + `Picking.js` async path. **Pick pass now wired:** `WebGPUSceneRenderer._executePickPass()` renders to pick FBO when `config.picking` is true, executing GLOBE/3D_TILE/OPAQUE/TRANSLUCENT passes (skipping ENVIRONMENT). `Primitive.js` pushes WebGPU pick commands to commandList during pick-only passes. **Works for:** Geometry primitives (polygons, rectangles, ellipses, cylinders, boxes — all `Primitive.js`-based). **Not yet working:** Billboard, Point, Polyline collections (their feature renderers lack pick command creation). Duplicate pick ID systems (WebGPUContext vs WebGPUPickManager) still present. Full analysis: `migration_doc/PICKING_ANALYSIS.md`. |
 
 #### Rendering Passes — 12 total
 
@@ -343,8 +343,8 @@ This is a **fork** of CesiumJS, not a PR. Our primary constraint is maintaining 
 
 | # | Feature | Why Essential | Effort | Status |
 |---|---------|--------------|--------|--------|
-| 6 | **Full Model/glTF rendering** | Current: basic PBR pipeline with vertex buffer conversion. Missing: full material system, morph targets, skinning, feature ID textures, GPU instancing, all pipeline stages. The Model pipeline is 80+ files in WebGL. | 10-15 days | ⚠️ Initial path |
-| 7 | **3D Tiles rendering** | Can't stream city/terrain/building data. Depends on Model pipeline. Tile management (traversal, caching, LOD) is renderer-agnostic, but content rendering needs WebGPU commands. | 5-7 days | ❌ Not started |
+| 6 | **Full Model/glTF rendering** | PBR pipeline working (metallic-roughness, spec-gloss, unlit, 5 textures, alpha modes, vertex colors, normal mapping, RTE). Shared extractors keep data extraction renderer-agnostic. **Skinning done** — joint matrices via storage buffer, JOINTS_0/WEIGHTS_0 attributes, `ModelSkinData.js` shared extractor, `FLAG_HAS_SKINNING` bit 13. Also fixed node iteration bug (`_runtimeNodes` → `runtimePrimitives`). Missing: morph targets, GPU instancing, feature ID textures. | 5-8 days remaining | ⚠️ PBR + Skinning done |
+| 7 | **3D Tiles rendering** | ✅ Works automatically: `Cesium3DTileset → Model3DTileContent → Model.js → FeatureRendererKey.MODEL → WebGPUModelRenderer`. Zero 3D Tiles code modified. `Pass.CESIUM_3D_TILE` correctly propagated. | 0 days (done) | ✅ Working |
 | 8 | **Scene routing for Feature Completion Sprint renderers** | 7 new renderers (Cloud, PointCloud, Voxel, GaussianSplat, Ellipsoid, InvertClassification, PointCloudEDL) have full pipelines but their scene files still do `if (isWebGPU) return;` instead of routing to the renderers. | 3-5 days | ❌ Not wired |
 | 9 | **Feature Renderer Migration (Phase D)** | 22 of 28 scene files still import from `Renderer/WebGPU/` directly. Migrating to `getFeatureRenderer()` pattern reduces upstream merge conflicts from ~15 lines to ~1 line per file. | 1-2 days each, ~22 files | 6/28 done |
 
@@ -404,7 +404,7 @@ This is a **fork** of CesiumJS, not a PR. Our primary constraint is maintaining 
 | **S4-4** | WGSL preprocessor test page uses reimplemented version (not the real preprocessor). | 🟡 Medium |
 | **ROUTING** | ~~7 new renderers built but not wired.~~ All 7+1 renderers now properly wired via `getFeatureRenderer(FeatureRendererKey.XXX)` pattern. | ✅ Resolved |
 | **PHASE-D** | ~~9 of 28 scene files still directly import from `Renderer/WebGPU/`.~~ Phase D migration **28/28 complete** ✅. Zero scene files directly import from `Renderer/WebGPU/`. | ✅ Resolved |
-| **FR-UPDATE** | `FeatureRenderer.update()` was temporarily made optional (with variadic `...args`) in `GraphicsContext.ts` to pass `tsc` pre-commit checks. Many feature renderers (PRIMITIVE, FOG, SHADOW_MAP, GROUND_PRIMITIVE, GLOBE_SURFACE, GLOBE_TRANSLUCENCY, SCENE_RENDERER) don't have an `update()` method — they use specialized entry points (`createCommands`, `getParameters`, `RendererClass`, `init`, etc.). **This should be reverted:** `update()` should be required, and each renderer registration should either provide a proper `update()` implementation or the `FeatureRenderer` interface should be split into sub-types (e.g., `CollectionRenderer`, `SystemRenderer`, `FactoryRenderer`). | 🟡 Tech Debt |
+| **FR-UPDATE** | ~~`FeatureRenderer.update()` was temporarily made optional with variadic `...args`.~~ **Fixed:** `FeatureRenderer` interface split into three sub-types: `CollectionRenderer` (21 of 28 — required `update()`), `PrimitiveCommandRenderer` (1 — `createCommands`/`updateCommandUniforms`), `SystemRenderer` (6 — specialized entry points via index signature). Removed `[key: string]: any` and optional `update?()` from base. Added `isCollectionRenderer()`/`isPrimitiveCommandRenderer()`/`isSystemRenderer()` type guards. `WebGPUContext.ts` casts updated from `as any` to `as SystemRenderer`. | ✅ Resolved |
 
 #### Resolved Issues (for reference)
 
