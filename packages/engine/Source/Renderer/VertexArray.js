@@ -283,87 +283,389 @@ function bind(gl, attributes, indexBuffer) {
  * @see Context#draw
  *
  * @private
+ * @alias VertexArray
  */
-function VertexArray(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class VertexArray {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.context", options.context);
-  Check.defined("options.attributes", options.attributes);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.context", options.context);
+    Check.defined("options.attributes", options.attributes);
+    //>>includeEnd('debug');
 
-  const context = options.context;
-  const gl = context._gl;
-  const attributes = options.attributes;
-  const indexBuffer = options.indexBuffer;
+    const context = options.context;
+    const gl = context._gl;
+    const attributes = options.attributes;
+    const indexBuffer = options.indexBuffer;
 
-  let i;
-  const vaAttributes = [];
-  let numberOfVertices = 1; // if every attribute is backed by a single value
-  let hasInstancedAttributes = false;
-  let hasConstantAttributes = false;
+    let i;
+    const vaAttributes = [];
+    let numberOfVertices = 1; // if every attribute is backed by a single value
+    let hasInstancedAttributes = false;
+    let hasConstantAttributes = false;
 
-  let length = attributes.length;
-  for (i = 0; i < length; ++i) {
-    addAttribute(vaAttributes, attributes[i], i, context);
+    let length = attributes.length;
+    for (i = 0; i < length; ++i) {
+      addAttribute(vaAttributes, attributes[i], i, context);
+    }
+
+    length = vaAttributes.length;
+    for (i = 0; i < length; ++i) {
+      const attribute = vaAttributes[i];
+
+      if (defined(attribute.vertexBuffer) && attribute.instanceDivisor === 0) {
+        // This assumes that each vertex buffer in the vertex array has the same number of vertices.
+        const bytes =
+          attribute.strideInBytes ||
+          attribute.componentsPerAttribute *
+            ComponentDatatype.getSizeInBytes(attribute.componentDatatype);
+        numberOfVertices = attribute.vertexBuffer.sizeInBytes / bytes;
+        break;
+      }
+    }
+
+    for (i = 0; i < length; ++i) {
+      if (vaAttributes[i].instanceDivisor > 0) {
+        hasInstancedAttributes = true;
+      }
+      if (defined(vaAttributes[i].value)) {
+        hasConstantAttributes = true;
+      }
+    }
+
+    //>>includeStart('debug', pragmas.debug);
+    // Verify all attribute names are unique
+    const uniqueIndices = {};
+    for (i = 0; i < length; ++i) {
+      const index = vaAttributes[i].index;
+      if (uniqueIndices[index]) {
+        throw new DeveloperError(
+          `Index ${index} is used by more than one attribute.`,
+        );
+      }
+      uniqueIndices[index] = true;
+    }
+    //>>includeEnd('debug');
+
+    let vao;
+
+    // Setup VAO if supported
+    if (context.vertexArrayObject) {
+      vao = context.glCreateVertexArray();
+      context.glBindVertexArray(vao);
+      bind(gl, vaAttributes, indexBuffer);
+      context.glBindVertexArray(null);
+    }
+
+    this._numberOfVertices = numberOfVertices;
+    this._hasInstancedAttributes = hasInstancedAttributes;
+    this._hasConstantAttributes = hasConstantAttributes;
+    this._context = context;
+    this._gl = gl;
+    this._vao = vao;
+    this._attributes = vaAttributes;
+    this._indexBuffer = indexBuffer;
   }
 
-  length = vaAttributes.length;
-  for (i = 0; i < length; ++i) {
-    const attribute = vaAttributes[i];
+  get numberOfAttributes() {
+    return this._attributes.length;
+  }
 
-    if (defined(attribute.vertexBuffer) && attribute.instanceDivisor === 0) {
-      // This assumes that each vertex buffer in the vertex array has the same number of vertices.
-      const bytes =
-        attribute.strideInBytes ||
-        attribute.componentsPerAttribute *
-          ComponentDatatype.getSizeInBytes(attribute.componentDatatype);
-      numberOfVertices = attribute.vertexBuffer.sizeInBytes / bytes;
-      break;
+  get numberOfVertices() {
+    return this._numberOfVertices;
+  }
+
+  get indexBuffer() {
+    return this._indexBuffer;
+  }
+
+  /**
+   * index is the location in the array of attributes, not the index property of an attribute.
+   */
+  getAttribute(index) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("index", index);
+    //>>includeEnd('debug');
+
+    return this._attributes[index];
+  }
+
+  _bind() {
+    if (defined(this._vao)) {
+      this._context.glBindVertexArray(this._vao);
+      if (this._context.instancedArrays) {
+        setVertexAttribDivisor(this);
+      }
+      if (this._hasConstantAttributes) {
+        setConstantAttributes(this, this._gl);
+      }
+    } else {
+      bind(this._gl, this._attributes, this._indexBuffer);
     }
   }
 
-  for (i = 0; i < length; ++i) {
-    if (vaAttributes[i].instanceDivisor > 0) {
-      hasInstancedAttributes = true;
-    }
-    if (defined(vaAttributes[i].value)) {
-      hasConstantAttributes = true;
+  _unBind() {
+    if (defined(this._vao)) {
+      this._context.glBindVertexArray(null);
+    } else {
+      const attributes = this._attributes;
+      const gl = this._gl;
+
+      for (let i = 0; i < attributes.length; ++i) {
+        const attribute = attributes[i];
+        if (attribute.enabled) {
+          attribute.disableVertexAttribArray(gl);
+        }
+      }
+      if (this._indexBuffer) {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+      }
     }
   }
 
-  //>>includeStart('debug', pragmas.debug);
-  // Verify all attribute names are unique
-  const uniqueIndices = {};
-  for (i = 0; i < length; ++i) {
-    const index = vaAttributes[i].index;
-    if (uniqueIndices[index]) {
-      throw new DeveloperError(
-        `Index ${index} is used by more than one attribute.`,
-      );
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    const attributes = this._attributes;
+    for (let i = 0; i < attributes.length; ++i) {
+      const vertexBuffer = attributes[i].vertexBuffer;
+      if (
+        defined(vertexBuffer) &&
+        !vertexBuffer.isDestroyed() &&
+        vertexBuffer.vertexArrayDestroyable
+      ) {
+        vertexBuffer.destroy();
+      }
     }
-    uniqueIndices[index] = true;
+
+    const indexBuffer = this._indexBuffer;
+    if (
+      defined(indexBuffer) &&
+      !indexBuffer.isDestroyed() &&
+      indexBuffer.vertexArrayDestroyable
+    ) {
+      indexBuffer.destroy();
+    }
+
+    if (defined(this._vao)) {
+      this._context.glDeleteVertexArray(this._vao);
+    }
+
+    return destroyObject(this);
   }
-  //>>includeEnd('debug');
 
-  let vao;
+  /**
+   * Creates a vertex array from a geometry.  A geometry contains vertex attributes and optional index data
+   * in system memory, whereas a vertex array contains vertex buffers and an optional index buffer in WebGL
+   * memory for use with rendering.
+   * <br /><br />
+   * The <code>geometry</code> argument should use the standard layout like the geometry returned by {@link BoxGeometry}.
+   * <br /><br />
+   * <code>options</code> can have four properties:
+   * <ul>
+   *   <li><code>geometry</code>:  The source geometry containing data used to create the vertex array.</li>
+   *   <li><code>attributeLocations</code>:  An object that maps geometry attribute names to vertex shader attribute locations.</li>
+   *   <li><code>bufferUsage</code>:  The expected usage pattern of the vertex array's buffers.  On some WebGL implementations, this can significantly affect performance.  See {@link BufferUsage}.  Default: <code>BufferUsage.DYNAMIC_DRAW</code>.</li>
+   *   <li><code>interleave</code>:  Determines if all attributes are interleaved in a single vertex buffer or if each attribute is stored in a separate vertex buffer.  Default: <code>false</code>.</li>
+   * </ul>
+   * <br />
+   * If <code>options</code> is not specified or the <code>geometry</code> contains no data, the returned vertex array is empty.
+   *
+   * @param {object} options An object defining the geometry, attribute indices, buffer usage, and vertex layout used to create the vertex array.
+   *
+   * @exception {RuntimeError} Each attribute list must have the same number of vertices.
+   * @exception {DeveloperError} The geometry must have zero or one index lists.
+   * @exception {DeveloperError} Index n is used by more than one attribute.
+   *
+   *
+   * @example
+   * // Example 1. Creates a vertex array for rendering a box.  The default dynamic draw
+   * // usage is used for the created vertex and index buffer.  The attributes are not
+   * // interleaved by default.
+   * const geometry = new BoxGeometry();
+   * const va = VertexArray.fromGeometry({
+   *     context            : context,
+   *     geometry           : geometry,
+   *     attributeLocations : GeometryPipeline.createAttributeLocations(geometry),
+   * });
+   *
+   * @example
+   * // Example 2. Creates a vertex array with interleaved attributes in a
+   * // single vertex buffer.  The vertex and index buffer have static draw usage.
+   * const va = VertexArray.fromGeometry({
+   *     context            : context,
+   *     geometry           : geometry,
+   *     attributeLocations : GeometryPipeline.createAttributeLocations(geometry),
+   *     bufferUsage        : BufferUsage.STATIC_DRAW,
+   *     interleave         : true
+   * });
+   *
+   * @example
+   * // Example 3.  When the caller destroys the vertex array, it also destroys the
+   * // attached vertex buffer(s) and index buffer.
+   * va = va.destroy();
+   *
+   * @see Buffer#createVertexBuffer
+   * @see Buffer#createIndexBuffer
+   * @see GeometryPipeline.createAttributeLocations
+   * @see ShaderProgram
+   */
+  static fromGeometry(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  // Setup VAO if supported
-  if (context.vertexArrayObject) {
-    vao = context.glCreateVertexArray();
-    context.glBindVertexArray(vao);
-    bind(gl, vaAttributes, indexBuffer);
-    context.glBindVertexArray(null);
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.context", options.context);
+    //>>includeEnd('debug');
+
+    const context = options.context;
+    const geometry = options.geometry ?? Frozen.EMPTY_OBJECT;
+
+    const bufferUsage = options.bufferUsage ?? BufferUsage.DYNAMIC_DRAW;
+
+    const attributeLocations =
+      options.attributeLocations ?? Frozen.EMPTY_OBJECT;
+    const interleave = options.interleave ?? false;
+    const createdVAAttributes = options.vertexArrayAttributes;
+
+    let name;
+    let attribute;
+    let vertexBuffer;
+    const vaAttributes = defined(createdVAAttributes)
+      ? createdVAAttributes
+      : [];
+    const attributes = geometry.attributes;
+
+    if (interleave) {
+      // Use a single vertex buffer with interleaved vertices.
+      const interleavedAttributes = interleaveAttributes(attributes);
+      if (defined(interleavedAttributes)) {
+        vertexBuffer = Buffer.createVertexBuffer({
+          context: context,
+          typedArray: interleavedAttributes.buffer,
+          usage: bufferUsage,
+        });
+        const offsetsInBytes = interleavedAttributes.offsetsInBytes;
+        const strideInBytes = interleavedAttributes.vertexSizeInBytes;
+
+        for (name in attributes) {
+          if (Object.hasOwn(attributes, name) && defined(attributes[name])) {
+            attribute = attributes[name];
+
+            if (defined(attribute.values)) {
+              // Common case: per-vertex attributes
+              vaAttributes.push({
+                index: attributeLocations[name],
+                vertexBuffer: vertexBuffer,
+                componentDatatype: attribute.componentDatatype,
+                componentsPerAttribute: attribute.componentsPerAttribute,
+                normalize: attribute.normalize,
+                offsetInBytes: offsetsInBytes[name],
+                strideInBytes: strideInBytes,
+              });
+            } else {
+              // Constant attribute for all vertices
+              vaAttributes.push({
+                index: attributeLocations[name],
+                value: attribute.value,
+                componentDatatype: attribute.componentDatatype,
+                normalize: attribute.normalize,
+              });
+            }
+          }
+        }
+      }
+    } else {
+      // One vertex buffer per attribute.
+      for (name in attributes) {
+        if (Object.hasOwn(attributes, name) && defined(attributes[name])) {
+          attribute = attributes[name];
+
+          let componentDatatype = attribute.componentDatatype;
+          if (componentDatatype === ComponentDatatype.DOUBLE) {
+            componentDatatype = ComponentDatatype.FLOAT;
+          }
+
+          let attrProps = {};
+          vertexBuffer = undefined;
+          if (defined(attribute.values)) {
+            vertexBuffer = Buffer.createVertexBuffer({
+              context: context,
+              typedArray: ComponentDatatype.createTypedArray(
+                componentDatatype,
+                attribute.values,
+              ),
+              usage: bufferUsage,
+            });
+
+            attrProps = {
+              index: attributeLocations[name],
+              vertexBuffer: vertexBuffer,
+              value: attribute.value,
+              componentDatatype: componentDatatype,
+              componentsPerAttribute: attribute.componentsPerAttribute,
+              normalize: attribute.normalize,
+            };
+          }
+
+          //if we already have a typedArray lets use it
+          if (defined(attribute.typedArray)) {
+            vertexBuffer = Buffer.createVertexBuffer({
+              context: context,
+              typedArray: attribute.typedArray,
+              usage: bufferUsage,
+            });
+
+            attrProps = {
+              index: attributeLocations[name],
+              vertexBuffer: vertexBuffer,
+              value: undefined,
+              componentDatatype: componentDatatype,
+              componentsPerAttribute: AttributeType.getNumberOfComponents(
+                attribute.type,
+              ),
+              normalize: attribute.normalized,
+              instanceDivisor: attribute.instanceDivisor,
+            };
+          }
+
+          vaAttributes.push(attrProps);
+        }
+      }
+    }
+
+    let indexBuffer;
+    const indices = geometry.indices;
+    if (defined(indices)) {
+      if (
+        Geometry.computeNumberOfVertices(geometry) >=
+          CesiumMath.SIXTY_FOUR_KILOBYTES &&
+        context.elementIndexUint
+      ) {
+        indexBuffer = Buffer.createIndexBuffer({
+          context: context,
+          typedArray: new Uint32Array(indices),
+          usage: bufferUsage,
+          indexDatatype: IndexDatatype.UNSIGNED_INT,
+        });
+      } else {
+        indexBuffer = Buffer.createIndexBuffer({
+          context: context,
+          typedArray: new Uint16Array(indices),
+          usage: bufferUsage,
+          indexDatatype: IndexDatatype.UNSIGNED_SHORT,
+        });
+      }
+    }
+
+    return new VertexArray({
+      context: context,
+      attributes: vaAttributes,
+      indexBuffer: indexBuffer,
+    });
   }
-
-  this._numberOfVertices = numberOfVertices;
-  this._hasInstancedAttributes = hasInstancedAttributes;
-  this._hasConstantAttributes = hasConstantAttributes;
-  this._context = context;
-  this._gl = gl;
-  this._vao = vao;
-  this._attributes = vaAttributes;
-  this._indexBuffer = indexBuffer;
 }
 
 function computeNumberOfVertices(attribute) {
@@ -387,7 +689,7 @@ function interleaveAttributes(attributes) {
   for (name in attributes) {
     // Attribute needs to have per-vertex values; not a constant value for all vertices.
     if (
-      attributes.hasOwnProperty(name) &&
+      Object.hasOwn(attributes, name) &&
       defined(attributes[name]) &&
       defined(attributes[name].values)
     ) {
@@ -417,10 +719,8 @@ function interleaveAttributes(attributes) {
 
       if (currentNumberOfVertices !== numberOfVertices) {
         throw new RuntimeError(
-          `${
-            "Each attribute list must have the same number of vertices.  " +
-            "Attribute "
-          }${names[j]} has a different number of vertices ` +
+          `Each attribute list must have the same number of vertices.  ` +
+            `Attribute ${names[j]} has a different number of vertices ` +
             `(${currentNumberOfVertices.toString()})` +
             ` than attribute ${names[0]} (${numberOfVertices.toString()}).`,
         );
@@ -512,242 +812,6 @@ function interleaveAttributes(attributes) {
   return undefined;
 }
 
-/**
- * Creates a vertex array from a geometry.  A geometry contains vertex attributes and optional index data
- * in system memory, whereas a vertex array contains vertex buffers and an optional index buffer in WebGL
- * memory for use with rendering.
- * <br /><br />
- * The <code>geometry</code> argument should use the standard layout like the geometry returned by {@link BoxGeometry}.
- * <br /><br />
- * <code>options</code> can have four properties:
- * <ul>
- *   <li><code>geometry</code>:  The source geometry containing data used to create the vertex array.</li>
- *   <li><code>attributeLocations</code>:  An object that maps geometry attribute names to vertex shader attribute locations.</li>
- *   <li><code>bufferUsage</code>:  The expected usage pattern of the vertex array's buffers.  On some WebGL implementations, this can significantly affect performance.  See {@link BufferUsage}.  Default: <code>BufferUsage.DYNAMIC_DRAW</code>.</li>
- *   <li><code>interleave</code>:  Determines if all attributes are interleaved in a single vertex buffer or if each attribute is stored in a separate vertex buffer.  Default: <code>false</code>.</li>
- * </ul>
- * <br />
- * If <code>options</code> is not specified or the <code>geometry</code> contains no data, the returned vertex array is empty.
- *
- * @param {object} options An object defining the geometry, attribute indices, buffer usage, and vertex layout used to create the vertex array.
- *
- * @exception {RuntimeError} Each attribute list must have the same number of vertices.
- * @exception {DeveloperError} The geometry must have zero or one index lists.
- * @exception {DeveloperError} Index n is used by more than one attribute.
- *
- *
- * @example
- * // Example 1. Creates a vertex array for rendering a box.  The default dynamic draw
- * // usage is used for the created vertex and index buffer.  The attributes are not
- * // interleaved by default.
- * const geometry = new BoxGeometry();
- * const va = VertexArray.fromGeometry({
- *     context            : context,
- *     geometry           : geometry,
- *     attributeLocations : GeometryPipeline.createAttributeLocations(geometry),
- * });
- *
- * @example
- * // Example 2. Creates a vertex array with interleaved attributes in a
- * // single vertex buffer.  The vertex and index buffer have static draw usage.
- * const va = VertexArray.fromGeometry({
- *     context            : context,
- *     geometry           : geometry,
- *     attributeLocations : GeometryPipeline.createAttributeLocations(geometry),
- *     bufferUsage        : BufferUsage.STATIC_DRAW,
- *     interleave         : true
- * });
- *
- * @example
- * // Example 3.  When the caller destroys the vertex array, it also destroys the
- * // attached vertex buffer(s) and index buffer.
- * va = va.destroy();
- *
- * @see Buffer#createVertexBuffer
- * @see Buffer#createIndexBuffer
- * @see GeometryPipeline.createAttributeLocations
- * @see ShaderProgram
- */
-VertexArray.fromGeometry = function (options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.context", options.context);
-  //>>includeEnd('debug');
-
-  const context = options.context;
-  const geometry = options.geometry ?? Frozen.EMPTY_OBJECT;
-
-  const bufferUsage = options.bufferUsage ?? BufferUsage.DYNAMIC_DRAW;
-
-  const attributeLocations = options.attributeLocations ?? Frozen.EMPTY_OBJECT;
-  const interleave = options.interleave ?? false;
-  const createdVAAttributes = options.vertexArrayAttributes;
-
-  let name;
-  let attribute;
-  let vertexBuffer;
-  const vaAttributes = defined(createdVAAttributes) ? createdVAAttributes : [];
-  const attributes = geometry.attributes;
-
-  if (interleave) {
-    // Use a single vertex buffer with interleaved vertices.
-    const interleavedAttributes = interleaveAttributes(attributes);
-    if (defined(interleavedAttributes)) {
-      vertexBuffer = Buffer.createVertexBuffer({
-        context: context,
-        typedArray: interleavedAttributes.buffer,
-        usage: bufferUsage,
-      });
-      const offsetsInBytes = interleavedAttributes.offsetsInBytes;
-      const strideInBytes = interleavedAttributes.vertexSizeInBytes;
-
-      for (name in attributes) {
-        if (attributes.hasOwnProperty(name) && defined(attributes[name])) {
-          attribute = attributes[name];
-
-          if (defined(attribute.values)) {
-            // Common case: per-vertex attributes
-            vaAttributes.push({
-              index: attributeLocations[name],
-              vertexBuffer: vertexBuffer,
-              componentDatatype: attribute.componentDatatype,
-              componentsPerAttribute: attribute.componentsPerAttribute,
-              normalize: attribute.normalize,
-              offsetInBytes: offsetsInBytes[name],
-              strideInBytes: strideInBytes,
-            });
-          } else {
-            // Constant attribute for all vertices
-            vaAttributes.push({
-              index: attributeLocations[name],
-              value: attribute.value,
-              componentDatatype: attribute.componentDatatype,
-              normalize: attribute.normalize,
-            });
-          }
-        }
-      }
-    }
-  } else {
-    // One vertex buffer per attribute.
-    for (name in attributes) {
-      if (attributes.hasOwnProperty(name) && defined(attributes[name])) {
-        attribute = attributes[name];
-
-        let componentDatatype = attribute.componentDatatype;
-        if (componentDatatype === ComponentDatatype.DOUBLE) {
-          componentDatatype = ComponentDatatype.FLOAT;
-        }
-
-        let attrProps = {};
-        vertexBuffer = undefined;
-        if (defined(attribute.values)) {
-          vertexBuffer = Buffer.createVertexBuffer({
-            context: context,
-            typedArray: ComponentDatatype.createTypedArray(
-              componentDatatype,
-              attribute.values,
-            ),
-            usage: bufferUsage,
-          });
-
-          attrProps = {
-            index: attributeLocations[name],
-            vertexBuffer: vertexBuffer,
-            value: attribute.value,
-            componentDatatype: componentDatatype,
-            componentsPerAttribute: attribute.componentsPerAttribute,
-            normalize: attribute.normalize,
-          };
-        }
-
-        //if we already have a typedArray lets use it
-        if (defined(attribute.typedArray)) {
-          vertexBuffer = Buffer.createVertexBuffer({
-            context: context,
-            typedArray: attribute.typedArray,
-            usage: bufferUsage,
-          });
-
-          attrProps = {
-            index: attributeLocations[name],
-            vertexBuffer: vertexBuffer,
-            value: undefined,
-            componentDatatype: componentDatatype,
-            componentsPerAttribute: AttributeType.getNumberOfComponents(
-              attribute.type,
-            ),
-            normalize: attribute.normalized,
-            instanceDivisor: attribute.instanceDivisor,
-          };
-        }
-
-        vaAttributes.push(attrProps);
-      }
-    }
-  }
-
-  let indexBuffer;
-  const indices = geometry.indices;
-  if (defined(indices)) {
-    if (
-      Geometry.computeNumberOfVertices(geometry) >=
-        CesiumMath.SIXTY_FOUR_KILOBYTES &&
-      context.elementIndexUint
-    ) {
-      indexBuffer = Buffer.createIndexBuffer({
-        context: context,
-        typedArray: new Uint32Array(indices),
-        usage: bufferUsage,
-        indexDatatype: IndexDatatype.UNSIGNED_INT,
-      });
-    } else {
-      indexBuffer = Buffer.createIndexBuffer({
-        context: context,
-        typedArray: new Uint16Array(indices),
-        usage: bufferUsage,
-        indexDatatype: IndexDatatype.UNSIGNED_SHORT,
-      });
-    }
-  }
-
-  return new VertexArray({
-    context: context,
-    attributes: vaAttributes,
-    indexBuffer: indexBuffer,
-  });
-};
-
-Object.defineProperties(VertexArray.prototype, {
-  numberOfAttributes: {
-    get: function () {
-      return this._attributes.length;
-    },
-  },
-  numberOfVertices: {
-    get: function () {
-      return this._numberOfVertices;
-    },
-  },
-  indexBuffer: {
-    get: function () {
-      return this._indexBuffer;
-    },
-  },
-});
-
-/**
- * index is the location in the array of attributes, not the index property of an attribute.
- */
-VertexArray.prototype.getAttribute = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("index", index);
-  //>>includeEnd('debug');
-
-  return this._attributes[index];
-};
-
 // Workaround for ANGLE, where the attribute divisor seems to be part of the global state instead
 // of the VAO state. This function is called when the vao is bound, and should be removed
 // once the ANGLE issue is resolved. Setting the divisor should normally happen in vertexAttrib and
@@ -801,69 +865,4 @@ function setConstantAttributes(vertexArray, gl) {
   }
 }
 
-VertexArray.prototype._bind = function () {
-  if (defined(this._vao)) {
-    this._context.glBindVertexArray(this._vao);
-    if (this._context.instancedArrays) {
-      setVertexAttribDivisor(this);
-    }
-    if (this._hasConstantAttributes) {
-      setConstantAttributes(this, this._gl);
-    }
-  } else {
-    bind(this._gl, this._attributes, this._indexBuffer);
-  }
-};
-
-VertexArray.prototype._unBind = function () {
-  if (defined(this._vao)) {
-    this._context.glBindVertexArray(null);
-  } else {
-    const attributes = this._attributes;
-    const gl = this._gl;
-
-    for (let i = 0; i < attributes.length; ++i) {
-      const attribute = attributes[i];
-      if (attribute.enabled) {
-        attribute.disableVertexAttribArray(gl);
-      }
-    }
-    if (this._indexBuffer) {
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
-    }
-  }
-};
-
-VertexArray.prototype.isDestroyed = function () {
-  return false;
-};
-
-VertexArray.prototype.destroy = function () {
-  const attributes = this._attributes;
-  for (let i = 0; i < attributes.length; ++i) {
-    const vertexBuffer = attributes[i].vertexBuffer;
-    if (
-      defined(vertexBuffer) &&
-      !vertexBuffer.isDestroyed() &&
-      vertexBuffer.vertexArrayDestroyable
-    ) {
-      vertexBuffer.destroy();
-    }
-  }
-
-  const indexBuffer = this._indexBuffer;
-  if (
-    defined(indexBuffer) &&
-    !indexBuffer.isDestroyed() &&
-    indexBuffer.vertexArrayDestroyable
-  ) {
-    indexBuffer.destroy();
-  }
-
-  if (defined(this._vao)) {
-    this._context.glDeleteVertexArray(this._vao);
-  }
-
-  return destroyObject(this);
-};
 export default VertexArray;

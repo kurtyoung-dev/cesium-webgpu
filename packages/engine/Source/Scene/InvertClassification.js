@@ -18,66 +18,274 @@ import StencilFunction from "./StencilFunction.js";
 import StencilOperation from "./StencilOperation.js";
 
 /**
+ * @alias InvertClassification
  * @private
  */
-function InvertClassification() {
-  this._numSamples = 1;
-  this.previousFramebuffer = undefined;
-  this._previousFramebuffer = undefined;
+class InvertClassification {
+  constructor() {
+    this._numSamples = 1;
+    this.previousFramebuffer = undefined;
+    this._previousFramebuffer = undefined;
 
-  this._depthStencilTexture = undefined;
-  this._depthStencilRenderbuffer = undefined;
-  this._fbo = new FramebufferManager({
-    depthStencil: true,
-    createDepthAttachments: false,
-  });
-  this._fboClassified = new FramebufferManager({
-    depthStencil: true,
-    createDepthAttachments: false,
-  });
+    this._depthStencilTexture = undefined;
+    this._depthStencilRenderbuffer = undefined;
+    this._fbo = new FramebufferManager({
+      depthStencil: true,
+      createDepthAttachments: false,
+    });
+    this._fboClassified = new FramebufferManager({
+      depthStencil: true,
+      createDepthAttachments: false,
+    });
 
-  this._rsUnclassified = undefined;
-  this._rsClassified = undefined;
+    this._rsUnclassified = undefined;
+    this._rsClassified = undefined;
 
-  this._unclassifiedCommand = undefined;
-  this._classifiedCommand = undefined;
-  this._translucentCommand = undefined;
+    this._unclassifiedCommand = undefined;
+    this._classifiedCommand = undefined;
+    this._translucentCommand = undefined;
 
-  this._clearColorCommand = new ClearCommand({
-    color: new Color(0.0, 0.0, 0.0, 0.0),
-    owner: this,
-  });
-  this._clearCommand = new ClearCommand({
-    color: new Color(0.0, 0.0, 0.0, 0.0),
-    depth: 1.0,
-    stencil: 0,
-  });
+    this._clearColorCommand = new ClearCommand({
+      color: new Color(0.0, 0.0, 0.0, 0.0),
+      owner: this,
+    });
+    this._clearCommand = new ClearCommand({
+      color: new Color(0.0, 0.0, 0.0, 0.0),
+      depth: 1.0,
+      stencil: 0,
+    });
 
-  const that = this;
-  this._uniformMap = {
-    colorTexture: function () {
-      return that._fbo.getColorTexture();
-    },
-    depthTexture: function () {
-      return that._depthStencilTexture;
-    },
-    classifiedTexture: function () {
-      return that._fboClassified.getColorTexture();
-    },
-  };
+    const that = this;
+    this._uniformMap = {
+      colorTexture: function () {
+        return that._fbo.getColorTexture();
+      },
+      depthTexture: function () {
+        return that._depthStencilTexture;
+      },
+      classifiedTexture: function () {
+        return that._fboClassified.getColorTexture();
+      },
+    };
+  }
+
+  get unclassifiedCommand() {
+    return this._unclassifiedCommand;
+  }
+
+  static isTranslucencySupported(context) {
+    return context.depthTexture && context.fragmentDepth;
+  }
+
+  update(context, numSamples, globeFramebuffer) {
+    // Route to WebGPU feature renderer if available
+    const fr = context.getFeatureRenderer(
+      FeatureRendererKey.INVERT_CLASSIFICATION,
+    );
+    if (fr) {
+      fr.update(this, context, numSamples, globeFramebuffer);
+      this._featureRenderer = fr;
+      return;
+    }
+
+    const texture = this._fbo.getColorTexture();
+    const previousFramebufferChanged =
+      this.previousFramebuffer !== this._previousFramebuffer;
+    this._previousFramebuffer = this.previousFramebuffer;
+    const samplesChanged = this._numSamples !== numSamples;
+
+    const width = context.drawingBufferWidth;
+    const height = context.drawingBufferHeight;
+    const textureChanged =
+      !defined(texture) || texture.width !== width || texture.height !== height;
+
+    if (textureChanged || previousFramebufferChanged || samplesChanged) {
+      this._numSamples = numSamples;
+      this._depthStencilTexture =
+        this._depthStencilTexture && this._depthStencilTexture.destroy();
+      this._depthStencilRenderbuffer =
+        this._depthStencilRenderbuffer &&
+        this._depthStencilRenderbuffer.destroy();
+
+      if (!defined(this._previousFramebuffer)) {
+        this._depthStencilTexture = new Texture({
+          context: context,
+          width: width,
+          height: height,
+          pixelFormat: PixelFormat.DEPTH_STENCIL,
+          pixelDatatype: PixelDatatype.UNSIGNED_INT_24_8,
+        });
+        if (numSamples > 1) {
+          this._depthStencilRenderbuffer = new Renderbuffer({
+            context: context,
+            width: width,
+            height: height,
+            format: RenderbufferFormat.DEPTH24_STENCIL8,
+            numSamples: numSamples,
+          });
+        }
+      }
+    }
+
+    if (
+      !defined(this._fbo.framebuffer) ||
+      textureChanged ||
+      previousFramebufferChanged ||
+      samplesChanged
+    ) {
+      this._fbo.destroy();
+      this._fboClassified.destroy();
+
+      let depthStencilTexture;
+      let depthStencilRenderbuffer;
+      if (defined(this._previousFramebuffer)) {
+        depthStencilTexture = globeFramebuffer.getDepthStencilTexture();
+        depthStencilRenderbuffer =
+          globeFramebuffer.getDepthStencilRenderbuffer();
+      } else {
+        depthStencilTexture = this._depthStencilTexture;
+        depthStencilRenderbuffer = this._depthStencilRenderbuffer;
+      }
+
+      this._fbo.setDepthStencilTexture(depthStencilTexture);
+      if (defined(depthStencilRenderbuffer)) {
+        this._fbo.setDepthStencilRenderbuffer(depthStencilRenderbuffer);
+      }
+      this._fbo.update(context, width, height, numSamples);
+
+      if (!defined(this._previousFramebuffer)) {
+        this._fboClassified.setDepthStencilTexture(depthStencilTexture);
+        this._fboClassified.update(context, width, height);
+      }
+    }
+
+    if (!defined(this._rsUnclassified)) {
+      this._rsUnclassified = RenderState.fromCache(rsUnclassified);
+      this._rsClassified = RenderState.fromCache(rsClassified);
+      this._rsDefault = RenderState.fromCache(rsDefault);
+    }
+
+    if (
+      !defined(this._unclassifiedCommand) ||
+      previousFramebufferChanged ||
+      samplesChanged
+    ) {
+      if (defined(this._unclassifiedCommand)) {
+        this._unclassifiedCommand.shaderProgram =
+          this._unclassifiedCommand.shaderProgram &&
+          this._unclassifiedCommand.shaderProgram.destroy();
+        this._classifiedCommand.shaderProgram =
+          this._classifiedCommand.shaderProgram &&
+          this._classifiedCommand.shaderProgram.destroy();
+      }
+
+      const fs = defined(this._previousFramebuffer) ? opaqueFS : translucentFS;
+      const unclassifiedFSSource = new ShaderSource({
+        defines: ["UNCLASSIFIED"],
+        sources: [fs],
+      });
+      const classifiedFSSource = new ShaderSource({
+        sources: [fs],
+      });
+      this._unclassifiedCommand = context.createViewportQuadCommand(
+        unclassifiedFSSource,
+        {
+          renderState: defined(this._previousFramebuffer)
+            ? this._rsUnclassified
+            : this._rsDefault,
+          uniformMap: this._uniformMap,
+          owner: this,
+        },
+      );
+      this._classifiedCommand = context.createViewportQuadCommand(
+        classifiedFSSource,
+        {
+          renderState: defined(this._previousFramebuffer)
+            ? this._rsClassified
+            : this._rsDefault,
+          uniformMap: this._uniformMap,
+          owner: this,
+        },
+      );
+
+      if (defined(this._translucentCommand)) {
+        this._translucentCommand.shaderProgram =
+          this._translucentCommand.shaderProgram &&
+          this._translucentCommand.shaderProgram.destroy();
+      }
+      if (!defined(this._previousFramebuffer)) {
+        this._translucentCommand = context.createViewportQuadCommand(
+          PassThrough,
+          {
+            renderState: this._rsUnclassified,
+            uniformMap: this._uniformMap,
+            owner: this,
+          },
+        );
+      }
+    }
+  }
+
+  prepareTextures(context, blitStencil) {
+    if (this._fbo._numSamples > 1) {
+      this._fbo.prepareTextures(context, blitStencil);
+    }
+  }
+
+  clear(context, passState) {
+    if (defined(this._previousFramebuffer)) {
+      this._fbo.clear(context, this._clearColorCommand, passState);
+    } else {
+      this._fbo.clear(context, this._clearCommand, passState);
+      this._fboClassified.clear(context, this._clearCommand, passState);
+    }
+  }
+
+  executeClassified(context, passState) {
+    if (!defined(this._previousFramebuffer)) {
+      const framebuffer = passState.framebuffer;
+
+      this.prepareTextures(context, true);
+      passState.framebuffer = this._fboClassified.framebuffer;
+      this._translucentCommand.execute(context, passState);
+
+      passState.framebuffer = framebuffer;
+    }
+    this._classifiedCommand.execute(context, passState);
+  }
+
+  executeUnclassified(context, passState) {
+    this._unclassifiedCommand.execute(context, passState);
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._fbo.destroy();
+    this._fboClassified.destroy();
+    this._depthStencilTexture =
+      this._depthStencilTexture && this._depthStencilTexture.destroy();
+    this._depthStencilRenderbuffer =
+      this._depthStencilRenderbuffer &&
+      this._depthStencilRenderbuffer.destroy();
+
+    if (defined(this._unclassifiedCommand)) {
+      this._unclassifiedCommand.shaderProgram =
+        this._unclassifiedCommand.shaderProgram &&
+        this._unclassifiedCommand.shaderProgram.destroy();
+      this._classifiedCommand.shaderProgram =
+        this._classifiedCommand.shaderProgram &&
+        this._classifiedCommand.shaderProgram.destroy();
+    }
+
+    if (this._featureRenderer) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
 }
-
-Object.defineProperties(InvertClassification.prototype, {
-  unclassifiedCommand: {
-    get: function () {
-      return this._unclassifiedCommand;
-    },
-  },
-});
-
-InvertClassification.isTranslucencySupported = function (context) {
-  return context.depthTexture && context.fragmentDepth;
-};
 
 const rsUnclassified = {
   depthMask: false,
@@ -173,223 +381,4 @@ const opaqueFS =
   "#endif\n" +
   "}\n";
 
-InvertClassification.prototype.update = function (
-  context,
-  numSamples,
-  globeFramebuffer,
-) {
-  // Route to WebGPU feature renderer if available
-  const fr = context.getFeatureRenderer(
-    FeatureRendererKey.INVERT_CLASSIFICATION,
-  );
-  if (fr) {
-    fr.update(this, context, numSamples, globeFramebuffer);
-    this._featureRenderer = fr;
-    return;
-  }
-
-  const texture = this._fbo.getColorTexture();
-  const previousFramebufferChanged =
-    this.previousFramebuffer !== this._previousFramebuffer;
-  this._previousFramebuffer = this.previousFramebuffer;
-  const samplesChanged = this._numSamples !== numSamples;
-
-  const width = context.drawingBufferWidth;
-  const height = context.drawingBufferHeight;
-  const textureChanged =
-    !defined(texture) || texture.width !== width || texture.height !== height;
-
-  if (textureChanged || previousFramebufferChanged || samplesChanged) {
-    this._numSamples = numSamples;
-    this._depthStencilTexture =
-      this._depthStencilTexture && this._depthStencilTexture.destroy();
-    this._depthStencilRenderbuffer =
-      this._depthStencilRenderbuffer &&
-      this._depthStencilRenderbuffer.destroy();
-
-    if (!defined(this._previousFramebuffer)) {
-      this._depthStencilTexture = new Texture({
-        context: context,
-        width: width,
-        height: height,
-        pixelFormat: PixelFormat.DEPTH_STENCIL,
-        pixelDatatype: PixelDatatype.UNSIGNED_INT_24_8,
-      });
-      if (numSamples > 1) {
-        this._depthStencilRenderbuffer = new Renderbuffer({
-          context: context,
-          width: width,
-          height: height,
-          format: RenderbufferFormat.DEPTH24_STENCIL8,
-          numSamples: numSamples,
-        });
-      }
-    }
-  }
-
-  if (
-    !defined(this._fbo.framebuffer) ||
-    textureChanged ||
-    previousFramebufferChanged ||
-    samplesChanged
-  ) {
-    this._fbo.destroy();
-    this._fboClassified.destroy();
-
-    let depthStencilTexture;
-    let depthStencilRenderbuffer;
-    if (defined(this._previousFramebuffer)) {
-      depthStencilTexture = globeFramebuffer.getDepthStencilTexture();
-      depthStencilRenderbuffer = globeFramebuffer.getDepthStencilRenderbuffer();
-    } else {
-      depthStencilTexture = this._depthStencilTexture;
-      depthStencilRenderbuffer = this._depthStencilRenderbuffer;
-    }
-
-    this._fbo.setDepthStencilTexture(depthStencilTexture);
-    if (defined(depthStencilRenderbuffer)) {
-      this._fbo.setDepthStencilRenderbuffer(depthStencilRenderbuffer);
-    }
-    this._fbo.update(context, width, height, numSamples);
-
-    if (!defined(this._previousFramebuffer)) {
-      this._fboClassified.setDepthStencilTexture(depthStencilTexture);
-      this._fboClassified.update(context, width, height);
-    }
-  }
-
-  if (!defined(this._rsUnclassified)) {
-    this._rsUnclassified = RenderState.fromCache(rsUnclassified);
-    this._rsClassified = RenderState.fromCache(rsClassified);
-    this._rsDefault = RenderState.fromCache(rsDefault);
-  }
-
-  if (
-    !defined(this._unclassifiedCommand) ||
-    previousFramebufferChanged ||
-    samplesChanged
-  ) {
-    if (defined(this._unclassifiedCommand)) {
-      this._unclassifiedCommand.shaderProgram =
-        this._unclassifiedCommand.shaderProgram &&
-        this._unclassifiedCommand.shaderProgram.destroy();
-      this._classifiedCommand.shaderProgram =
-        this._classifiedCommand.shaderProgram &&
-        this._classifiedCommand.shaderProgram.destroy();
-    }
-
-    const fs = defined(this._previousFramebuffer) ? opaqueFS : translucentFS;
-    const unclassifiedFSSource = new ShaderSource({
-      defines: ["UNCLASSIFIED"],
-      sources: [fs],
-    });
-    const classifiedFSSource = new ShaderSource({
-      sources: [fs],
-    });
-    this._unclassifiedCommand = context.createViewportQuadCommand(
-      unclassifiedFSSource,
-      {
-        renderState: defined(this._previousFramebuffer)
-          ? this._rsUnclassified
-          : this._rsDefault,
-        uniformMap: this._uniformMap,
-        owner: this,
-      },
-    );
-    this._classifiedCommand = context.createViewportQuadCommand(
-      classifiedFSSource,
-      {
-        renderState: defined(this._previousFramebuffer)
-          ? this._rsClassified
-          : this._rsDefault,
-        uniformMap: this._uniformMap,
-        owner: this,
-      },
-    );
-
-    if (defined(this._translucentCommand)) {
-      this._translucentCommand.shaderProgram =
-        this._translucentCommand.shaderProgram &&
-        this._translucentCommand.shaderProgram.destroy();
-    }
-    if (!defined(this._previousFramebuffer)) {
-      this._translucentCommand = context.createViewportQuadCommand(
-        PassThrough,
-        {
-          renderState: this._rsUnclassified,
-          uniformMap: this._uniformMap,
-          owner: this,
-        },
-      );
-    }
-  }
-};
-
-InvertClassification.prototype.prepareTextures = function (
-  context,
-  blitStencil,
-) {
-  if (this._fbo._numSamples > 1) {
-    this._fbo.prepareTextures(context, blitStencil);
-  }
-};
-
-InvertClassification.prototype.clear = function (context, passState) {
-  if (defined(this._previousFramebuffer)) {
-    this._fbo.clear(context, this._clearColorCommand, passState);
-  } else {
-    this._fbo.clear(context, this._clearCommand, passState);
-    this._fboClassified.clear(context, this._clearCommand, passState);
-  }
-};
-
-InvertClassification.prototype.executeClassified = function (
-  context,
-  passState,
-) {
-  if (!defined(this._previousFramebuffer)) {
-    const framebuffer = passState.framebuffer;
-
-    this.prepareTextures(context, true);
-    passState.framebuffer = this._fboClassified.framebuffer;
-    this._translucentCommand.execute(context, passState);
-
-    passState.framebuffer = framebuffer;
-  }
-  this._classifiedCommand.execute(context, passState);
-};
-
-InvertClassification.prototype.executeUnclassified = function (
-  context,
-  passState,
-) {
-  this._unclassifiedCommand.execute(context, passState);
-};
-
-InvertClassification.prototype.isDestroyed = function () {
-  return false;
-};
-
-InvertClassification.prototype.destroy = function () {
-  this._fbo.destroy();
-  this._fboClassified.destroy();
-  this._depthStencilTexture =
-    this._depthStencilTexture && this._depthStencilTexture.destroy();
-  this._depthStencilRenderbuffer =
-    this._depthStencilRenderbuffer && this._depthStencilRenderbuffer.destroy();
-
-  if (defined(this._unclassifiedCommand)) {
-    this._unclassifiedCommand.shaderProgram =
-      this._unclassifiedCommand.shaderProgram &&
-      this._unclassifiedCommand.shaderProgram.destroy();
-    this._classifiedCommand.shaderProgram =
-      this._classifiedCommand.shaderProgram &&
-      this._classifiedCommand.shaderProgram.destroy();
-  }
-
-  if (this._featureRenderer) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
 export default InvertClassification;

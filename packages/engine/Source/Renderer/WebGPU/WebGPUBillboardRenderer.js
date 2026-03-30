@@ -16,6 +16,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 
 const FLOATS_PER_INSTANCE = 24;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
@@ -113,6 +114,78 @@ function buildInstanceData(collection) {
   return { instanceData, visibleCount };
 }
 
+/**
+ * Builds pick-variant instance data. Same layout as color but @location(4)
+ * holds pick color instead of display color.
+ * @private
+ */
+function buildPickInstanceData(collection, context) {
+  const billboards = collection._billboards;
+  const length = collection.length;
+  const instanceData = new Float32Array(length * FLOATS_PER_INSTANCE);
+  let visibleCount = 0;
+
+  for (let i = 0; i < length; i++) {
+    const bb = billboards[i];
+    if (!defined(bb) || !bb.show) {
+      continue;
+    }
+
+    const offset = visibleCount * FLOATS_PER_INSTANCE;
+    const position = bb._actualPosition || bb._position || bb.position;
+    EncodedCartesian3.fromCartesian(position, scratchEncodedPos);
+
+    // Attributes 0-3 identical to color path
+    instanceData[offset + 0] = scratchEncodedPos.high.x;
+    instanceData[offset + 1] = scratchEncodedPos.high.y;
+    instanceData[offset + 2] = scratchEncodedPos.high.z;
+    instanceData[offset + 3] = bb.scale || 1.0;
+    instanceData[offset + 4] = scratchEncodedPos.low.x;
+    instanceData[offset + 5] = scratchEncodedPos.low.y;
+    instanceData[offset + 6] = scratchEncodedPos.low.z;
+    instanceData[offset + 7] = bb.rotation || 0.0;
+
+    const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
+    instanceData[offset + 8] = pixelOffset.x;
+    instanceData[offset + 9] = pixelOffset.y;
+    instanceData[offset + 10] = 0.0;
+    instanceData[offset + 11] = 0.0;
+
+    const imageRect =
+      bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
+    if (defined(imageRect) && typeof imageRect === "object") {
+      instanceData[offset + 12] = imageRect.x || 0;
+      instanceData[offset + 13] = imageRect.y || 0;
+      instanceData[offset + 14] = imageRect.width || 1;
+      instanceData[offset + 15] = imageRect.height || 1;
+    } else {
+      instanceData[offset + 12] = 0.0;
+      instanceData[offset + 13] = 0.0;
+      instanceData[offset + 14] = 1.0;
+      instanceData[offset + 15] = 1.0;
+    }
+
+    // @location(4): pick color instead of display color
+    if (!defined(bb._pickId)) {
+      bb._pickId = context.createPickId(bb);
+    }
+    const pc = bb._pickId.color;
+    instanceData[offset + 16] = pc.red;
+    instanceData[offset + 17] = pc.green;
+    instanceData[offset + 18] = pc.blue;
+    instanceData[offset + 19] = pc.alpha;
+
+    instanceData[offset + 20] = 1.0;
+    instanceData[offset + 21] = bb.sizeInMeters ? 1.0 : 0.0;
+    instanceData[offset + 22] = bb.width || 32.0;
+    instanceData[offset + 23] = bb.height || 32.0;
+
+    visibleCount++;
+  }
+
+  return { instanceData, visibleCount };
+}
+
 const INSTANCE_BUFFER_LAYOUT = {
   arrayStride: BYTES_PER_INSTANCE,
   stepMode: "instance",
@@ -195,6 +268,49 @@ function createBillboardPipeline(device, shaderCode, format, depthFormat) {
   });
 
   return { pipeline, bindGroupLayout };
+}
+
+/**
+ * Creates a pick pipeline — no blending, depth write enabled, uses atlas
+ * texture for alpha discard but outputs pick color.
+ * @private
+ */
+function createBillboardPickPipeline(
+  device,
+  shaderCode,
+  format,
+  depthFormat,
+  bindGroupLayout,
+) {
+  const shaderModule = device.createShaderModule({
+    label: "Billboard pick shader",
+    code: shaderCode,
+  });
+
+  const pipeline = device.createRenderPipeline({
+    label: "Billboard pick pipeline",
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: [INSTANCE_BUFFER_LAYOUT],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+  });
+
+  return pipeline;
 }
 
 function packUniforms(uniformData, frameState, modelMatrix) {
@@ -372,7 +488,94 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cull: true,
   });
 
-  commandList.push(cache.colorCommand);
+  // Pick pass handling
+  if (frameState.passes.pick) {
+    _pushBillboardPickCommand(
+      collection,
+      context,
+      device,
+      cache,
+      modelMatrix,
+      visibleCount,
+      commandList,
+    );
+  }
+
+  // Push color command for render passes
+  if (frameState.passes.render) {
+    commandList.push(cache.colorCommand);
+  }
+}
+
+/**
+ * Builds and pushes a billboard pick draw command. Reuses the same
+ * bind group layout as color (needs atlas for alpha discard).
+ * @private
+ */
+function _pushBillboardPickCommand(
+  collection,
+  context,
+  device,
+  cache,
+  modelMatrix,
+  visibleCount,
+  commandList,
+) {
+  if (!defined(cache.pickPipeline)) {
+    const pickShader = getCollectionShaderSource("billboardPick");
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    cache.pickPipeline = createBillboardPickPipeline(
+      device,
+      pickShader,
+      format,
+      depthFmt,
+      cache.bindGroupLayout,
+    );
+  }
+
+  const pickResult = buildPickInstanceData(collection, context);
+  if (pickResult.visibleCount === 0) {
+    return;
+  }
+
+  const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
+  if (
+    !defined(cache.pickInstanceBuffer) ||
+    cache.pickInstanceBuffer.size < pickSize
+  ) {
+    if (defined(cache.pickInstanceBuffer)) {
+      cache.pickInstanceBuffer.destroy();
+    }
+    cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
+      device,
+      pickSize,
+      true,
+      "Billboard pick instances",
+    );
+  }
+  device.queue.writeBuffer(
+    cache.pickInstanceBuffer.buffer,
+    0,
+    pickResult.instanceData.buffer,
+    0,
+    pickSize,
+  );
+
+  cache.pickCommand = new WebGPUDrawCommand({
+    pipeline: cache.pickPipeline,
+    bindGroups: [cache.bindGroup], // Reuse color bind group (same uniforms + atlas)
+    vertexBuffers: [cache.pickInstanceBuffer],
+    vertexCount: VERTICES_PER_QUAD,
+    instanceCount: pickResult.visibleCount,
+    pass: 8,
+    owner: collection,
+    boundingVolume: collection._boundingVolume,
+    modelMatrix: modelMatrix,
+    cull: true,
+  });
+
+  commandList.push(cache.pickCommand);
 }
 
 function destroyWebGPUBillboardResources(collection) {
@@ -382,6 +585,9 @@ function destroyWebGPUBillboardResources(collection) {
   }
   if (defined(cache.instanceBuffer)) {
     cache.instanceBuffer.destroy();
+  }
+  if (defined(cache.pickInstanceBuffer)) {
+    cache.pickInstanceBuffer.destroy();
   }
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();

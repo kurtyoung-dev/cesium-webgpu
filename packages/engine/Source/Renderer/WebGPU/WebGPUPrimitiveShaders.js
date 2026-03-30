@@ -57,7 +57,35 @@ const SHADER_FILES = {
   matCheckerFlat: "PrimitiveMatCheckerFlat.wgsl",
   matCheckerLit: "PrimitiveMatCheckerLit.wgsl",
   matGridFlat: "PrimitiveMatGridFlat.wgsl",
+  matGridLit: "PrimitiveMatGridLit.wgsl",
   matStripeFlat: "PrimitiveMatStripeFlat.wgsl",
+  matStripeLit: "PrimitiveMatStripeLit.wgsl",
+  matDotFlat: "PrimitiveMatDotFlat.wgsl",
+  matDotLit: "PrimitiveMatDotLit.wgsl",
+  matFadeFlat: "PrimitiveMatFadeFlat.wgsl",
+  matFadeLit: "PrimitiveMatFadeLit.wgsl",
+  matRimLightingFlat: "PrimitiveMatRimLightingFlat.wgsl",
+  matRimLightingLit: "PrimitiveMatRimLightingLit.wgsl",
+  matAlphaMapFlat: "PrimitiveMatAlphaMapFlat.wgsl",
+  matAlphaMapLit: "PrimitiveMatAlphaMapLit.wgsl",
+  matEmissionMapFlat: "PrimitiveMatEmissionMapFlat.wgsl",
+  matEmissionMapLit: "PrimitiveMatEmissionMapLit.wgsl",
+  matSpecularMapFlat: "PrimitiveMatSpecularMapFlat.wgsl",
+  matSpecularMapLit: "PrimitiveMatSpecularMapLit.wgsl",
+  matBumpMapFlat: "PrimitiveMatBumpMapFlat.wgsl",
+  matBumpMapLit: "PrimitiveMatBumpMapLit.wgsl",
+  matNormalMapFlat: "PrimitiveMatNormalMapFlat.wgsl",
+  matNormalMapLit: "PrimitiveMatNormalMapLit.wgsl",
+  matWaterFlat: "PrimitiveMatWaterFlat.wgsl",
+  matWaterLit: "PrimitiveMatWaterLit.wgsl",
+  matElevContourFlat: "PrimitiveMatElevContourFlat.wgsl",
+  matElevContourLit: "PrimitiveMatElevContourLit.wgsl",
+  matElevRampFlat: "PrimitiveMatElevRampFlat.wgsl",
+  matElevRampLit: "PrimitiveMatElevRampLit.wgsl",
+  matSlopeRampFlat: "PrimitiveMatSlopeRampFlat.wgsl",
+  matSlopeRampLit: "PrimitiveMatSlopeRampLit.wgsl",
+  matAspectRampFlat: "PrimitiveMatAspectRampFlat.wgsl",
+  matAspectRampLit: "PrimitiveMatAspectRampLit.wgsl",
   // Pick shaders (material layouts)
   pickMatFlat: "PrimitivePickMatFlat.wgsl",
   pickMatLit: "PrimitivePickMatLit.wgsl",
@@ -388,6 +416,13 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
   }
 
   if (materialType === "Grid") {
+    if (useLighting && hasST) {
+      return {
+        type: "matGridLit",
+        code: getShaderSource("matGridLit"),
+        needsTexture: false,
+      };
+    }
     return {
       type: "matGridFlat",
       code: getShaderSource("matGridFlat"),
@@ -396,10 +431,212 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
   }
 
   if (materialType === "Stripe") {
+    if (useLighting && hasST) {
+      return {
+        type: "matStripeLit",
+        code: getShaderSource("matStripeLit"),
+        needsTexture: false,
+      };
+    }
     return {
       type: "matStripeFlat",
       code: getShaderSource("matStripeFlat"),
       needsTexture: false,
+    };
+  }
+
+  if (materialType === "Dot") {
+    if (useLighting && hasST) {
+      return {
+        type: "matDotLit",
+        code: getShaderSource("matDotLit"),
+        needsTexture: false,
+      };
+    }
+    return {
+      type: "matDotFlat",
+      code: getShaderSource("matDotFlat"),
+      needsTexture: false,
+    };
+  }
+
+  if (materialType === "Fade") {
+    if (useLighting && hasST) {
+      return {
+        type: "matFadeLit",
+        code: getShaderSource("matFadeLit"),
+        needsTexture: false,
+      };
+    }
+    return {
+      type: "matFadeFlat",
+      code: getShaderSource("matFadeFlat"),
+      needsTexture: false,
+    };
+  }
+
+  if (materialType === "RimLighting") {
+    if (useLighting && hasST) {
+      return {
+        type: "matRimLightingLit",
+        code: getShaderSource("matRimLightingLit"),
+        needsTexture: false,
+      };
+    }
+    return {
+      type: "matRimLightingFlat",
+      code: getShaderSource("matRimLightingFlat"),
+      needsTexture: false,
+    };
+  }
+
+  if (materialType === "AlphaMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matAlphaMapLit",
+        code: getShaderSource("matAlphaMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matAlphaMapFlat",
+      code: getShaderSource("matAlphaMapFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "EmissionMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matEmissionMapLit",
+        code: getShaderSource("matEmissionMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matEmissionMapFlat",
+      code: getShaderSource("matEmissionMapFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "SpecularMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matSpecularMapLit",
+        code: getShaderSource("matSpecularMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matSpecularMapFlat",
+      code: getShaderSource("matSpecularMapFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "BumpMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matBumpMapLit",
+        code: getShaderSource("matBumpMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matBumpMapFlat",
+      code: getShaderSource("matBumpMapFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "NormalMap") {
+    if (useLighting && hasST) {
+      return {
+        type: "matNormalMapLit",
+        code: getShaderSource("matNormalMapLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matNormalMapFlat",
+      code: getShaderSource("matNormalMapFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "Water") {
+    if (useLighting && hasST) {
+      return {
+        type: "matWaterLit",
+        code: getShaderSource("matWaterLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matWaterFlat",
+      code: getShaderSource("matWaterFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "ElevationContour") {
+    if (useLighting && hasST) {
+      return {
+        type: "matElevContourLit",
+        code: getShaderSource("matElevContourLit"),
+        needsTexture: false,
+      };
+    }
+    return {
+      type: "matElevContourFlat",
+      code: getShaderSource("matElevContourFlat"),
+      needsTexture: false,
+    };
+  }
+
+  if (materialType === "ElevationRamp") {
+    if (useLighting && hasST) {
+      return {
+        type: "matElevRampLit",
+        code: getShaderSource("matElevRampLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matElevRampFlat",
+      code: getShaderSource("matElevRampFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "SlopeRamp") {
+    if (useLighting && hasST) {
+      return {
+        type: "matSlopeRampLit",
+        code: getShaderSource("matSlopeRampLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matSlopeRampFlat",
+      code: getShaderSource("matSlopeRampFlat"),
+      needsTexture: true,
+    };
+  }
+
+  if (materialType === "AspectRamp") {
+    if (useLighting && hasST) {
+      return {
+        type: "matAspectRampLit",
+        code: getShaderSource("matAspectRampLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matAspectRampFlat",
+      code: getShaderSource("matAspectRampFlat"),
+      needsTexture: true,
     };
   }
 
@@ -495,7 +732,28 @@ function isMaterialShader(shaderType) {
  * @private
  */
 function isMaterialTexturedShader(shaderType) {
-  return shaderType === "matImageFlat" || shaderType === "matImageLit";
+  return (
+    shaderType === "matImageFlat" ||
+    shaderType === "matImageLit" ||
+    shaderType === "matAlphaMapFlat" ||
+    shaderType === "matAlphaMapLit" ||
+    shaderType === "matEmissionMapFlat" ||
+    shaderType === "matEmissionMapLit" ||
+    shaderType === "matSpecularMapFlat" ||
+    shaderType === "matSpecularMapLit" ||
+    shaderType === "matBumpMapFlat" ||
+    shaderType === "matBumpMapLit" ||
+    shaderType === "matNormalMapFlat" ||
+    shaderType === "matNormalMapLit" ||
+    shaderType === "matWaterFlat" ||
+    shaderType === "matWaterLit" ||
+    shaderType === "matElevRampFlat" ||
+    shaderType === "matElevRampLit" ||
+    shaderType === "matSlopeRampFlat" ||
+    shaderType === "matSlopeRampLit" ||
+    shaderType === "matAspectRampFlat" ||
+    shaderType === "matAspectRampLit"
+  );
 }
 
 // =========================================================================

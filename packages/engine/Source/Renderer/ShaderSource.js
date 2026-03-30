@@ -67,7 +67,7 @@ function generateDependencies(currentNode, dependencyNodes) {
     czmMatches.forEach(function (element) {
       if (
         element !== currentNode.name &&
-        ShaderSource._czmBuiltinsAndUniforms.hasOwnProperty(element)
+        Object.hasOwn(ShaderSource._czmBuiltinsAndUniforms, element)
       ) {
         const referencedNode = getDependencyNode(
           element,
@@ -303,6 +303,42 @@ function combineShader(shaderSource, isFragmentShader, context) {
   return result;
 }
 
+function containsDefine(shaderSource, define) {
+  const defines = shaderSource.defines;
+  const definesLength = defines.length;
+  for (let i = 0; i < definesLength; ++i) {
+    if (defines[i] === define) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function containsString(shaderSource, string) {
+  const sources = shaderSource.sources;
+  const sourcesLength = sources.length;
+  for (let i = 0; i < sourcesLength; ++i) {
+    if (sources[i].includes(string)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findFirstString(shaderSource, strings) {
+  const stringsLength = strings.length;
+  for (let i = 0; i < stringsLength; ++i) {
+    const string = strings[i];
+    if (containsString(shaderSource, string)) {
+      return string;
+    }
+  }
+  return undefined;
+}
+
+const normalVaryingNames = ["v_normalEC", "v_normal"];
+const positionVaryingNames = ["v_positionEC"];
+
 /**
  * An object containing various inputs that will be combined to form a final GLSL shader string.
  *
@@ -327,85 +363,144 @@ function combineShader(shaderSource, isFragmentShader, context) {
  *   pickColorQualifier : 'uniform'
  * });
  *
+ * @alias ShaderSource
  * @private
  */
-function ShaderSource(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const pickColorQualifier = options.pickColorQualifier;
+class ShaderSource {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const pickColorQualifier = options.pickColorQualifier;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (
-    defined(pickColorQualifier) &&
-    pickColorQualifier !== "uniform" &&
-    pickColorQualifier !== "in"
-  ) {
-    throw new DeveloperError(
-      "options.pickColorQualifier must be 'uniform' or 'in'.",
-    );
+    //>>includeStart('debug', pragmas.debug);
+    if (
+      defined(pickColorQualifier) &&
+      pickColorQualifier !== "uniform" &&
+      pickColorQualifier !== "in"
+    ) {
+      throw new DeveloperError(
+        "options.pickColorQualifier must be 'uniform' or 'in'.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    this.defines = defined(options.defines) ? options.defines.slice(0) : [];
+    this.sources = defined(options.sources) ? options.sources.slice(0) : [];
+    this.pickColorQualifier = pickColorQualifier;
+    this.includeBuiltIns = options.includeBuiltIns ?? true;
   }
-  //>>includeEnd('debug');
 
-  this.defines = defined(options.defines) ? options.defines.slice(0) : [];
-  this.sources = defined(options.sources) ? options.sources.slice(0) : [];
-  this.pickColorQualifier = pickColorQualifier;
-  this.includeBuiltIns = options.includeBuiltIns ?? true;
+  clone() {
+    return new ShaderSource({
+      sources: this.sources,
+      defines: this.defines,
+      pickColorQualifier: this.pickColorQualifier,
+      includeBuiltIns: this.includeBuiltIns,
+    });
+  }
+
+  /**
+   * Since {@link ShaderSource#createCombinedVertexShader} and
+   * {@link ShaderSource#createCombinedFragmentShader} are both expensive to
+   * compute, create a simpler string key for lookups in the {@link ShaderCache}.
+   *
+   * @returns {string} A key for identifying this shader
+   *
+   * @private
+   */
+  getCacheKey() {
+    // Sort defines to make the key comparison deterministic
+    const sortedDefines = this.defines.slice().sort();
+    const definesKey = sortedDefines.join(",");
+    const pickKey = this.pickColorQualifier;
+    const builtinsKey = this.includeBuiltIns;
+    const sourcesKey = this.sources.join("\n");
+
+    return `${definesKey}:${pickKey}:${builtinsKey}:${sourcesKey}`;
+  }
+
+  /**
+   * Create a single string containing the full, combined vertex shader with all dependencies and defines.
+   *
+   * @param {Context} context The current rendering context
+   *
+   * @returns {string} The combined shader string.
+   */
+  createCombinedVertexShader(context) {
+    return combineShader(this, false, context);
+  }
+
+  /**
+   * Create a single string containing the full, combined fragment shader with all dependencies and defines.
+   *
+   * @param {Context} context The current rendering context
+   *
+   * @returns {string} The combined shader string.
+   */
+  createCombinedFragmentShader(context) {
+    return combineShader(this, true, context);
+  }
+
+  static replaceMain(source, renamedMain) {
+    renamedMain = `void ${renamedMain}()`;
+    return source.replace(/void\s+main\s*\(\s*(?:void)?\s*\)/g, renamedMain);
+  }
+
+  static createPickVertexShaderSource(vertexShaderSource) {
+    const renamedVS = ShaderSource.replaceMain(
+      vertexShaderSource,
+      "czm_old_main",
+    );
+    const pickMain =
+      "in vec4 pickColor; \n" +
+      "out vec4 czm_pickColor; \n" +
+      "void main() \n" +
+      "{ \n" +
+      "    czm_old_main(); \n" +
+      "    czm_pickColor = pickColor; \n" +
+      "}";
+
+    return `${renamedVS}\n${pickMain}`;
+  }
+
+  static createPickFragmentShaderSource(
+    fragmentShaderSource,
+    pickColorQualifier,
+  ) {
+    const renamedFS = ShaderSource.replaceMain(
+      fragmentShaderSource,
+      "czm_old_main",
+    );
+    const pickMain =
+      `${pickColorQualifier} vec4 czm_pickColor; \n` +
+      `void main() \n` +
+      `{ \n` +
+      `    czm_old_main(); \n` +
+      `    if (out_FragColor.a == 0.0) { \n` +
+      `       discard; \n` +
+      `    } \n` +
+      `    out_FragColor = czm_pickColor; \n` +
+      `}`;
+
+    return `${renamedFS}\n${pickMain}`;
+  }
+
+  static findNormalVarying(shaderSource) {
+    // Fix for Model: the shader text always has the word v_normalEC
+    // wrapped in an #ifdef so instead of looking for v_normalEC look for the define
+    if (containsString(shaderSource, "#ifdef HAS_NORMALS")) {
+      if (containsDefine(shaderSource, "HAS_NORMALS")) {
+        return "v_normalEC";
+      }
+      return undefined;
+    }
+
+    return findFirstString(shaderSource, normalVaryingNames);
+  }
+
+  static findPositionVarying(shaderSource) {
+    return findFirstString(shaderSource, positionVaryingNames);
+  }
 }
-
-ShaderSource.prototype.clone = function () {
-  return new ShaderSource({
-    sources: this.sources,
-    defines: this.defines,
-    pickColorQualifier: this.pickColorQualifier,
-    includeBuiltIns: this.includeBuiltIns,
-  });
-};
-
-ShaderSource.replaceMain = function (source, renamedMain) {
-  renamedMain = `void ${renamedMain}()`;
-  return source.replace(/void\s+main\s*\(\s*(?:void)?\s*\)/g, renamedMain);
-};
-
-/**
- * Since {@link ShaderSource#createCombinedVertexShader} and
- * {@link ShaderSource#createCombinedFragmentShader} are both expensive to
- * compute, create a simpler string key for lookups in the {@link ShaderCache}.
- *
- * @returns {string} A key for identifying this shader
- *
- * @private
- */
-ShaderSource.prototype.getCacheKey = function () {
-  // Sort defines to make the key comparison deterministic
-  const sortedDefines = this.defines.slice().sort();
-  const definesKey = sortedDefines.join(",");
-  const pickKey = this.pickColorQualifier;
-  const builtinsKey = this.includeBuiltIns;
-  const sourcesKey = this.sources.join("\n");
-
-  return `${definesKey}:${pickKey}:${builtinsKey}:${sourcesKey}`;
-};
-
-/**
- * Create a single string containing the full, combined vertex shader with all dependencies and defines.
- *
- * @param {Context} context The current rendering context
- *
- * @returns {string} The combined shader string.
- */
-ShaderSource.prototype.createCombinedVertexShader = function (context) {
-  return combineShader(this, false, context);
-};
-
-/**
- * Create a single string containing the full, combined fragment shader with all dependencies and defines.
- *
- * @param {Context} context The current rendering context
- *
- * @returns {string} The combined shader string.
- */
-ShaderSource.prototype.createCombinedFragmentShader = function (context) {
-  return combineShader(this, true, context);
-};
 
 /**
  * For ShaderProgram testing
@@ -415,13 +510,13 @@ ShaderSource._czmBuiltinsAndUniforms = {};
 
 // combine automatic uniforms and Cesium built-ins
 for (const builtinName in CzmBuiltins) {
-  if (CzmBuiltins.hasOwnProperty(builtinName)) {
+  if (Object.hasOwn(CzmBuiltins, builtinName)) {
     ShaderSource._czmBuiltinsAndUniforms[builtinName] =
       CzmBuiltins[builtinName];
   }
 }
 for (const uniformName in AutomaticUniforms) {
-  if (AutomaticUniforms.hasOwnProperty(uniformName)) {
+  if (Object.hasOwn(AutomaticUniforms, uniformName)) {
     const uniform = AutomaticUniforms[uniformName];
     if (typeof uniform.getDeclaration === "function") {
       ShaderSource._czmBuiltinsAndUniforms[uniformName] =
@@ -430,96 +525,4 @@ for (const uniformName in AutomaticUniforms) {
   }
 }
 
-ShaderSource.createPickVertexShaderSource = function (vertexShaderSource) {
-  const renamedVS = ShaderSource.replaceMain(
-    vertexShaderSource,
-    "czm_old_main",
-  );
-  const pickMain =
-    "in vec4 pickColor; \n" +
-    "out vec4 czm_pickColor; \n" +
-    "void main() \n" +
-    "{ \n" +
-    "    czm_old_main(); \n" +
-    "    czm_pickColor = pickColor; \n" +
-    "}";
-
-  return `${renamedVS}\n${pickMain}`;
-};
-
-ShaderSource.createPickFragmentShaderSource = function (
-  fragmentShaderSource,
-  pickColorQualifier,
-) {
-  const renamedFS = ShaderSource.replaceMain(
-    fragmentShaderSource,
-    "czm_old_main",
-  );
-  const pickMain =
-    `${pickColorQualifier} vec4 czm_pickColor; \n` +
-    `void main() \n` +
-    `{ \n` +
-    `    czm_old_main(); \n` +
-    `    if (out_FragColor.a == 0.0) { \n` +
-    `       discard; \n` +
-    `    } \n` +
-    `    out_FragColor = czm_pickColor; \n` +
-    `}`;
-
-  return `${renamedFS}\n${pickMain}`;
-};
-
-function containsDefine(shaderSource, define) {
-  const defines = shaderSource.defines;
-  const definesLength = defines.length;
-  for (let i = 0; i < definesLength; ++i) {
-    if (defines[i] === define) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function containsString(shaderSource, string) {
-  const sources = shaderSource.sources;
-  const sourcesLength = sources.length;
-  for (let i = 0; i < sourcesLength; ++i) {
-    if (sources[i].indexOf(string) !== -1) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function findFirstString(shaderSource, strings) {
-  const stringsLength = strings.length;
-  for (let i = 0; i < stringsLength; ++i) {
-    const string = strings[i];
-    if (containsString(shaderSource, string)) {
-      return string;
-    }
-  }
-  return undefined;
-}
-
-const normalVaryingNames = ["v_normalEC", "v_normal"];
-
-ShaderSource.findNormalVarying = function (shaderSource) {
-  // Fix for Model: the shader text always has the word v_normalEC
-  // wrapped in an #ifdef so instead of looking for v_normalEC look for the define
-  if (containsString(shaderSource, "#ifdef HAS_NORMALS")) {
-    if (containsDefine(shaderSource, "HAS_NORMALS")) {
-      return "v_normalEC";
-    }
-    return undefined;
-  }
-
-  return findFirstString(shaderSource, normalVaryingNames);
-};
-
-const positionVaryingNames = ["v_positionEC"];
-
-ShaderSource.findPositionVarying = function (shaderSource) {
-  return findFirstString(shaderSource, positionVaryingNames);
-};
 export default ShaderSource;

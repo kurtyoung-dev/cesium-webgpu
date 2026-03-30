@@ -24,12 +24,17 @@ const SHADER_FILES = {
   // Point primitive shaders
   pointColor: "PointPrimitiveColor.wgsl",
   pointPick: "PointPrimitivePick.wgsl",
-  // Billboard shaders (future)
-  // billboardColor: "BillboardColor.wgsl",
-  // billboardPick: "BillboardPick.wgsl",
-  // Polyline shaders (future)
-  // polylineColor: "PolylineColor.wgsl",
-  // polylinePick: "PolylinePick.wgsl",
+  // Billboard shaders
+  billboardColor: "BillboardCollection.wgsl",
+  billboardPick: "BillboardCollectionPick.wgsl",
+  // Polyline shaders
+  polylineColor: "PolylineCollection.wgsl",
+  polylinePick: "PolylineCollectionPick.wgsl",
+  // Polyline material shaders
+  polylineArrow: "PolylineArrow.wgsl",
+  polylineDash: "PolylineDash.wgsl",
+  polylineGlow: "PolylineGlow.wgsl",
+  polylineOutline: "PolylineOutline.wgsl",
 };
 
 // =========================================================================

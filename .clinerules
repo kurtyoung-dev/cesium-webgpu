@@ -206,6 +206,16 @@ const fr = context.getFeatureRenderer(FeatureRendererKey.INVERT_CLASSIFICATION);
 - Use clear naming conventions (e.g., `*WebGPU.js`, `*WebGL.js`)
 - Share common utilities when possible
 
+### File Size Decomposition Rule — CRITICAL
+- **Files over ~1000 lines SHOULD be decomposed** into smaller focused modules unless there is a compelling reason to keep them monolithic (e.g., a single cohesive class with no logical split points, or a performance-critical hot path where module boundaries add overhead)
+- When decomposing, extract **file-scoped helper functions** into `*Helpers.js` or domain-specific companion files (e.g., `Primitive.js` → `PrimitiveShaderHelpers.js` + `PrimitiveCommandHelpers.js` + `PrimitiveGeometryHelpers.js`)
+- The **main class stays in the original file** with the original name — companion files are imported by it
+- Each decomposed file should be **under 1000 lines** and have a **clear single responsibility**
+- **Do NOT decompose** performance-critical math classes (`Cartesian3`, `Matrix4`, etc.) where module boundary overhead matters
+- **Do NOT decompose** files that are purely data/enum definitions (e.g., `Pass.js`, `SortMode.js`)
+- When touching a file over 1000 lines for functional changes, **also decompose it** — leave it better than you found it
+- Document decompositions in `migration_doc/ES6_MODERNIZATION_BACKLOG.md` completed table
+
 ### Monorepo Architecture — CRITICAL File Placement Rules
 CesiumJS uses an **npm workspaces monorepo**. The root `Source/` directory is a **build output** — NOT the source of truth.
 

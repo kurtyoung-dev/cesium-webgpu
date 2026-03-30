@@ -75,7 +75,6 @@ const attributeLocations = {
  * and {@link PolylineCollection#remove}.
  *
  * @alias PolylineCollection
- * @constructor
  *
  * @param {object} [options] Object with the following properties:
  * @param {Matrix4} [options.modelMatrix=Matrix4.IDENTITY] The 4x4 transformation matrix that transforms each polyline from model to world coordinates.
@@ -114,266 +113,512 @@ const attributeLocations = {
  *   width : 4
  * });
  */
-function PolylineCollection(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class PolylineCollection {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  /**
-   * Determines if polylines in this collection will be shown.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
+    /**
+     * Determines if polylines in this collection will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
 
-  /**
-   * The render priority for this collection. Higher values render on top
-   * (later in draw order). Maps to DrawCommand.sortPriority.
-   * @type {number}
-   * @default 0
-   */
-  this.renderPriority = options.renderPriority ?? 0;
+    /**
+     * The render priority for this collection. Higher values render on top
+     * (later in draw order). Maps to DrawCommand.sortPriority.
+     * @type {number}
+     * @default 0
+     */
+    this.renderPriority = options.renderPriority ?? 0;
 
-  /**
-   * The render layer order for this collection. Maps to DrawCommand.sortLayer.
-   * @type {number}
-   * @default 50
-   */
-  this.renderLayer = options.renderLayer ?? 50;
+    /**
+     * The render layer order for this collection. Maps to DrawCommand.sortLayer.
+     * @type {number}
+     * @default 50
+     */
+    this.renderLayer = options.renderLayer ?? 50;
 
-  /**
-   * The 4x4 transformation matrix that transforms each polyline in this collection from model to world coordinates.
-   * When this is the identity matrix, the polylines are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
-   * Local reference frames can be used by providing a different transformation matrix, like that returned
-   * by {@link Transforms.eastNorthUpToFixedFrame}.
-   *
-   * @type {Matrix4}
-   * @default {@link Matrix4.IDENTITY}
-   */
-  this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
-  this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    /**
+     * The 4x4 transformation matrix that transforms each polyline in this collection from model to world coordinates.
+     * When this is the identity matrix, the polylines are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
+     * Local reference frames can be used by providing a different transformation matrix, like that returned
+     * by {@link Transforms.eastNorthUpToFixedFrame}.
+     *
+     * @type {Matrix4}
+     * @default {@link Matrix4.IDENTITY}
+     */
+    this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+    this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
 
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
-   * </p>
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
 
-  this._opaqueRS = undefined;
-  this._translucentRS = undefined;
+    this._opaqueRS = undefined;
+    this._translucentRS = undefined;
 
-  this._colorCommands = [];
+    this._colorCommands = [];
 
-  this._polylinesUpdated = false;
-  this._polylinesRemoved = false;
-  this._createVertexArray = false;
-  this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
-  this._polylines = [];
-  this._polylineBuckets = {};
+    this._polylinesUpdated = false;
+    this._polylinesRemoved = false;
+    this._createVertexArray = false;
+    this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
+    this._polylines = [];
+    this._polylineBuckets = {};
 
-  // The buffer usage is determined based on the usage of the attribute over time.
-  this._positionBufferUsage = {
-    bufferUsage: BufferUsage.STATIC_DRAW,
-    frameCount: 0,
-  };
+    // The buffer usage is determined based on the usage of the attribute over time.
+    this._positionBufferUsage = {
+      bufferUsage: BufferUsage.STATIC_DRAW,
+      frameCount: 0,
+    };
 
-  this._mode = undefined;
+    this._mode = undefined;
 
-  this._polylinesToUpdate = [];
-  this._vertexArrays = [];
-  this._positionBuffer = undefined;
-  this._texCoordExpandAndBatchIndexBuffer = undefined;
+    this._polylinesToUpdate = [];
+    this._vertexArrays = [];
+    this._positionBuffer = undefined;
+    this._texCoordExpandAndBatchIndexBuffer = undefined;
 
-  this._batchTable = undefined;
-  this._createBatchTable = false;
+    this._batchTable = undefined;
+    this._createBatchTable = false;
 
-  // Only used by Vector3DTilePoints
-  this._useHighlightColor = false;
-  this._highlightColor = Color.clone(Color.WHITE);
+    // Only used by Vector3DTilePoints
+    this._useHighlightColor = false;
+    this._highlightColor = Color.clone(Color.WHITE);
 
-  const that = this;
-  this._uniformMap = {
-    u_highlightColor: function () {
-      return that._highlightColor;
-    },
-  };
-}
+    const that = this;
+    this._uniformMap = {
+      u_highlightColor: function () {
+        return that._highlightColor;
+      },
+    };
+  }
 
-Object.defineProperties(PolylineCollection.prototype, {
   /**
    * Returns the number of polylines in this collection.  This is commonly used with
    * {@link PolylineCollection#get} to iterate over all the polylines
    * in the collection.
-   * @memberof PolylineCollection.prototype
    * @type {number}
    */
-  length: {
-    get: function () {
-      removePolylines(this);
-      return this._polylines.length;
-    },
-  },
-});
+  get length() {
+    removePolylines(this);
+    return this._polylines.length;
+  }
 
-/**
-     * Creates and adds a polyline with the specified initial properties to the collection.
-     * The added polyline is returned so it can be modified or removed from the collection later.
-     *
-     * @param {object}[options] A template describing the polyline's properties as shown in Example 1.
-     * @returns {Polyline} The polyline that was added to the collection.
-     *
-     * @performance After calling <code>add</code>, {@link PolylineCollection#update} is called and
-     * the collection's vertex buffer is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.
-     * For best performance, add as many polylines as possible before calling <code>update</code>.
-     *
-     * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
-     *
-     *
-     * @example
-     * // Example 1:  Add a polyline, specifying all the default values.
-     * const p = polylines.add({
-     *   show : true,
-     *   positions : ellipsoid.cartographicArrayToCartesianArray([
-           Cesium.Cartographic.fromDegrees(-75.10, 39.57),
-           Cesium.Cartographic.fromDegrees(-77.02, 38.53)]),
-     *   width : 1
-     * });
-     *
-     * @see PolylineCollection#remove
-     * @see PolylineCollection#removeAll
-     * @see PolylineCollection#update
-     */
-PolylineCollection.prototype.add = function (options) {
-  const p = new Polyline(options, this);
-  p._index = this._polylines.length;
-  this._polylines.push(p);
-  this._createVertexArray = true;
-  this._createBatchTable = true;
-  return p;
-};
-
-/**
- * Removes a polyline from the collection.
- *
- * @param {Polyline} polyline The polyline to remove.
- * @returns {boolean} <code>true</code> if the polyline was removed; <code>false</code> if the polyline was not found in the collection.
- *
- * @performance After calling <code>remove</code>, {@link PolylineCollection#update} is called and
- * the collection's vertex buffer is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.
- * For best performance, remove as many polylines as possible before calling <code>update</code>.
- * If you intend to temporarily hide a polyline, it is usually more efficient to call
- * {@link Polyline#show} instead of removing and re-adding the polyline.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * const p = polylines.add(...);
- * polylines.remove(p);  // Returns true
- *
- * @see PolylineCollection#add
- * @see PolylineCollection#removeAll
- * @see PolylineCollection#update
- * @see Polyline#show
- */
-PolylineCollection.prototype.remove = function (polyline) {
-  if (this.contains(polyline)) {
-    this._polylinesRemoved = true;
+  /**
+   * Creates and adds a polyline with the specified initial properties to the collection.
+   * The added polyline is returned so it can be modified or removed from the collection later.
+   *
+   * @param {object}[options] A template describing the polyline's properties as shown in Example 1.
+   * @returns {Polyline} The polyline that was added to the collection.
+   *
+   * @performance After calling <code>add</code>, {@link PolylineCollection#update} is called and
+   * the collection's vertex buffer is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.
+   * For best performance, add as many polylines as possible before calling <code>update</code>.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Example 1:  Add a polyline, specifying all the default values.
+   * const p = polylines.add({
+   *   show : true,
+   *   positions : ellipsoid.cartographicArrayToCartesianArray([
+         Cesium.Cartographic.fromDegrees(-75.10, 39.57),
+         Cesium.Cartographic.fromDegrees(-77.02, 38.53)]),
+   *   width : 1
+   * });
+   *
+   * @see PolylineCollection#remove
+   * @see PolylineCollection#removeAll
+   * @see PolylineCollection#update
+   */
+  add(options) {
+    const p = new Polyline(options, this);
+    p._index = this._polylines.length;
+    this._polylines.push(p);
     this._createVertexArray = true;
     this._createBatchTable = true;
-    if (defined(polyline._bucket)) {
-      const bucket = polyline._bucket;
-      bucket.shaderProgram =
-        bucket.shaderProgram && bucket.shaderProgram.destroy();
+    return p;
+  }
+
+  /**
+   * Removes a polyline from the collection.
+   *
+   * @param {Polyline} polyline The polyline to remove.
+   * @returns {boolean} <code>true</code> if the polyline was removed; <code>false</code> if the polyline was not found in the collection.
+   *
+   * @performance After calling <code>remove</code>, {@link PolylineCollection#update} is called and
+   * the collection's vertex buffer is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.
+   * For best performance, remove as many polylines as possible before calling <code>update</code>.
+   * If you intend to temporarily hide a polyline, it is usually more efficient to call
+   * {@link Polyline#show} instead of removing and re-adding the polyline.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * const p = polylines.add(...);
+   * polylines.remove(p);  // Returns true
+   *
+   * @see PolylineCollection#add
+   * @see PolylineCollection#removeAll
+   * @see PolylineCollection#update
+   * @see Polyline#show
+   */
+  remove(polyline) {
+    if (this.contains(polyline)) {
+      this._polylinesRemoved = true;
+      this._createVertexArray = true;
+      this._createBatchTable = true;
+      if (defined(polyline._bucket)) {
+        const bucket = polyline._bucket;
+        bucket.shaderProgram =
+          bucket.shaderProgram && bucket.shaderProgram.destroy();
+      }
+      polyline._destroy();
+      return true;
     }
-    polyline._destroy();
-    return true;
+
+    return false;
   }
 
-  return false;
-};
-
-/**
- * Removes all polylines from the collection.
- *
- * @performance <code>O(n)</code>.  It is more efficient to remove all the polylines
- * from a collection and then add new ones than to create a new collection entirely.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * polylines.add(...);
- * polylines.add(...);
- * polylines.removeAll();
- *
- * @see PolylineCollection#add
- * @see PolylineCollection#remove
- * @see PolylineCollection#update
- */
-PolylineCollection.prototype.removeAll = function () {
-  releaseShaders(this);
-  destroyPolylines(this);
-  this._polylineBuckets = {};
-  this._polylinesRemoved = false;
-  this._polylines.length = 0;
-  this._polylinesToUpdate.length = 0;
-  this._createVertexArray = true;
-};
-
-/**
- * Determines if this collection contains the specified polyline.
- *
- * @param {Polyline} polyline The polyline to check for.
- * @returns {boolean} true if this collection contains the polyline, false otherwise.
- *
- * @see PolylineCollection#get
- */
-PolylineCollection.prototype.contains = function (polyline) {
-  return defined(polyline) && polyline._polylineCollection === this;
-};
-
-/**
- * Returns the polyline in the collection at the specified index.  Indices are zero-based
- * and increase as polylines are added.  Removing a polyline shifts all polylines after
- * it to the left, changing their indices.  This function is commonly used with
- * {@link PolylineCollection#length} to iterate over all the polylines
- * in the collection.
- *
- * @param {number} index The zero-based index of the polyline.
- * @returns {Polyline} The polyline at the specified index.
- *
- * @performance If polylines were removed from the collection and
- * {@link PolylineCollection#update} was not called, an implicit <code>O(n)</code>
- * operation is performed.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * // Toggle the show property of every polyline in the collection
- * const len = polylines.length;
- * for (let i = 0; i < len; ++i) {
- *   const p = polylines.get(i);
- *   p.show = !p.show;
- * }
- *
- * @see PolylineCollection#length
- */
-PolylineCollection.prototype.get = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(index)) {
-    throw new DeveloperError("index is required.");
+  /**
+   * Removes all polylines from the collection.
+   *
+   * @performance <code>O(n)</code>.  It is more efficient to remove all the polylines
+   * from a collection and then add new ones than to create a new collection entirely.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * polylines.add(...);
+   * polylines.add(...);
+   * polylines.removeAll();
+   *
+   * @see PolylineCollection#add
+   * @see PolylineCollection#remove
+   * @see PolylineCollection#update
+   */
+  removeAll() {
+    releaseShaders(this);
+    destroyPolylines(this);
+    this._polylineBuckets = {};
+    this._polylinesRemoved = false;
+    this._polylines.length = 0;
+    this._polylinesToUpdate.length = 0;
+    this._createVertexArray = true;
   }
-  //>>includeEnd('debug');
 
-  removePolylines(this);
-  return this._polylines[index];
-};
+  /**
+   * Determines if this collection contains the specified polyline.
+   *
+   * @param {Polyline} polyline The polyline to check for.
+   * @returns {boolean} true if this collection contains the polyline, false otherwise.
+   *
+   * @see PolylineCollection#get
+   */
+  contains(polyline) {
+    return defined(polyline) && polyline._polylineCollection === this;
+  }
+
+  /**
+   * Returns the polyline in the collection at the specified index.  Indices are zero-based
+   * and increase as polylines are added.  Removing a polyline shifts all polylines after
+   * it to the left, changing their indices.  This function is commonly used with
+   * {@link PolylineCollection#length} to iterate over all the polylines
+   * in the collection.
+   *
+   * @param {number} index The zero-based index of the polyline.
+   * @returns {Polyline} The polyline at the specified index.
+   *
+   * @performance If polylines were removed from the collection and
+   * {@link PolylineCollection#update} was not called, an implicit <code>O(n)</code>
+   * operation is performed.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * // Toggle the show property of every polyline in the collection
+   * const len = polylines.length;
+   * for (let i = 0; i < len; ++i) {
+   *   const p = polylines.get(i);
+   *   p.show = !p.show;
+   * }
+   *
+   * @see PolylineCollection#length
+   */
+  get(index) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(index)) {
+      throw new DeveloperError("index is required.");
+    }
+    //>>includeEnd('debug');
+
+    removePolylines(this);
+    return this._polylines[index];
+  }
+
+  /**
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
+   * <p>
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
+   * </p>
+   *
+   * @exception {RuntimeError} Vertex texture fetch support is required to render primitives with per-instance attributes. The maximum number of vertex texture image units must be greater than zero.
+   */
+  update(frameState) {
+    removePolylines(this);
+
+    if (this._polylines.length === 0 || !this.show) {
+      return;
+    }
+
+    updateMode(this, frameState);
+
+    const context = frameState.context;
+
+    // Backend-specific rendering path — delegate to feature renderer if available
+    const fr = context.getFeatureRenderer(
+      FeatureRendererKey.POLYLINE_COLLECTION,
+    );
+    if (fr) {
+      this._featureRenderer = fr;
+      fr.update(this, frameState, frameState.commandList);
+      return;
+    }
+    const projection = frameState.mapProjection;
+    let polyline;
+    let properties = this._propertiesChanged;
+
+    if (this._createBatchTable) {
+      if (ContextLimits.maximumVertexTextureImageUnits === 0) {
+        throw new RuntimeError(
+          "Vertex texture fetch support is required to render polylines. The maximum number of vertex texture image units must be greater than zero.",
+        );
+      }
+      createBatchTable(this, context);
+      this._createBatchTable = false;
+    }
+
+    if (this._createVertexArray || computeNewBuffersUsage(this)) {
+      createVertexArrays(this, context, projection);
+    } else if (this._polylinesUpdated) {
+      // Polylines were modified, but no polylines were added or removed.
+      const polylinesToUpdate = this._polylinesToUpdate;
+      if (this._mode !== SceneMode.SCENE3D) {
+        const updateLength = polylinesToUpdate.length;
+        for (let i = 0; i < updateLength; ++i) {
+          polyline = polylinesToUpdate[i];
+          polyline.update();
+        }
+      }
+
+      // if a polyline's positions size changes, we need to recreate the vertex arrays and vertex buffers because the indices will be different.
+      // if a polyline's material changes, we need to recreate the VAOs and VBOs because they will be batched differently.
+      if (properties[POSITION_SIZE_INDEX] || properties[MATERIAL_INDEX]) {
+        createVertexArrays(this, context, projection);
+      } else {
+        const length = polylinesToUpdate.length;
+        const polylineBuckets = this._polylineBuckets;
+        for (let ii = 0; ii < length; ++ii) {
+          polyline = polylinesToUpdate[ii];
+          properties = polyline._propertiesChanged;
+          const bucket = polyline._bucket;
+          let index = 0;
+          for (const x in polylineBuckets) {
+            if (Object.hasOwn(polylineBuckets, x)) {
+              if (polylineBuckets[x] === bucket) {
+                if (properties[POSITION_INDEX]) {
+                  bucket.writeUpdate(
+                    index,
+                    polyline,
+                    this._positionBuffer,
+                    projection,
+                  );
+                }
+                break;
+              }
+              index += polylineBuckets[x].lengthOfPositions;
+            }
+          }
+
+          if (properties[SHOW_INDEX] || properties[WIDTH_INDEX]) {
+            this._batchTable.setBatchedAttribute(
+              polyline._index,
+              0,
+              new Cartesian2(polyline._width, polyline._show),
+            );
+          }
+
+          if (this._batchTable.attributes.length > 2) {
+            if (properties[POSITION_INDEX] || properties[POSITION_SIZE_INDEX]) {
+              const boundingSphere =
+                frameState.mode === SceneMode.SCENE2D
+                  ? polyline._boundingVolume2D
+                  : polyline._boundingVolumeWC;
+              const encodedCenter = EncodedCartesian3.fromCartesian(
+                boundingSphere.center,
+                scratchUpdatePolylineEncodedCartesian,
+              );
+              const low = Cartesian4.fromElements(
+                encodedCenter.low.x,
+                encodedCenter.low.y,
+                encodedCenter.low.z,
+                boundingSphere.radius,
+                scratchUpdatePolylineCartesian4,
+              );
+              this._batchTable.setBatchedAttribute(
+                polyline._index,
+                2,
+                encodedCenter.high,
+              );
+              this._batchTable.setBatchedAttribute(polyline._index, 3, low);
+            }
+
+            if (properties[DISTANCE_DISPLAY_CONDITION]) {
+              const nearFarCartesian = scratchNearFarCartesian2;
+              nearFarCartesian.x = 0.0;
+              nearFarCartesian.y = Number.MAX_VALUE;
+
+              const distanceDisplayCondition =
+                polyline.distanceDisplayCondition;
+              if (defined(distanceDisplayCondition)) {
+                nearFarCartesian.x = distanceDisplayCondition.near;
+                nearFarCartesian.y = distanceDisplayCondition.far;
+              }
+
+              this._batchTable.setBatchedAttribute(
+                polyline._index,
+                4,
+                nearFarCartesian,
+              );
+            }
+          }
+
+          polyline._clean();
+        }
+      }
+      polylinesToUpdate.length = 0;
+      this._polylinesUpdated = false;
+    }
+
+    properties = this._propertiesChanged;
+    for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
+      properties[k] = 0;
+    }
+
+    let modelMatrix = Matrix4.IDENTITY;
+    if (frameState.mode === SceneMode.SCENE3D) {
+      modelMatrix = this.modelMatrix;
+    }
+
+    const pass = frameState.passes;
+    const useDepthTest = frameState.morphTime !== 0.0;
+
+    if (
+      !defined(this._opaqueRS) ||
+      this._opaqueRS.depthTest.enabled !== useDepthTest
+    ) {
+      this._opaqueRS = RenderState.fromCache({
+        depthMask: useDepthTest,
+        depthTest: {
+          enabled: useDepthTest,
+        },
+      });
+    }
+
+    if (
+      !defined(this._translucentRS) ||
+      this._translucentRS.depthTest.enabled !== useDepthTest
+    ) {
+      this._translucentRS = RenderState.fromCache({
+        blending: BlendingState.ALPHA_BLEND,
+        depthMask: !useDepthTest,
+        depthTest: {
+          enabled: useDepthTest,
+        },
+      });
+    }
+
+    this._batchTable.update(frameState);
+
+    if (pass.render || pass.pick) {
+      const colorList = this._colorCommands;
+      createCommandLists(this, frameState, colorList, modelMatrix);
+    }
+  }
+
+  /**
+   * @private
+   */
+  _updatePolyline(polyline, propertyChanged) {
+    this._polylinesUpdated = true;
+    if (!polyline._dirty) {
+      this._polylinesToUpdate.push(polyline);
+    }
+    ++this._propertiesChanged[propertyChanged];
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see PolylineCollection#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * polylines = polylines && polylines.destroy();
+   *
+   * @see PolylineCollection#isDestroyed
+   */
+  destroy() {
+    destroyVertexArrays(this);
+    releaseShaders(this);
+    destroyPolylines(this);
+    if (
+      defined(this._featureRenderer) &&
+      defined(this._featureRenderer.destroy)
+    ) {
+      this._featureRenderer.destroy(this);
+    }
+    this._batchTable = this._batchTable && this._batchTable.destroy();
+    return destroyObject(this);
+  }
+}
+
+// File-scoped helper functions
 
 function createBatchTable(collection, context) {
   if (defined(collection._batchTable)) {
@@ -419,195 +664,6 @@ function createBatchTable(collection, context) {
 const scratchUpdatePolylineEncodedCartesian = new EncodedCartesian3();
 const scratchUpdatePolylineCartesian4 = new Cartesian4();
 const scratchNearFarCartesian2 = new Cartesian2();
-
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {RuntimeError} Vertex texture fetch support is required to render primitives with per-instance attributes. The maximum number of vertex texture image units must be greater than zero.
- */
-PolylineCollection.prototype.update = function (frameState) {
-  removePolylines(this);
-
-  if (this._polylines.length === 0 || !this.show) {
-    return;
-  }
-
-  updateMode(this, frameState);
-
-  const context = frameState.context;
-
-  // Backend-specific rendering path — delegate to feature renderer if available
-  const fr = context.getFeatureRenderer(FeatureRendererKey.POLYLINE_COLLECTION);
-  if (fr) {
-    this._featureRenderer = fr;
-    fr.update(this, frameState, frameState.commandList);
-    return;
-  }
-  const projection = frameState.mapProjection;
-  let polyline;
-  let properties = this._propertiesChanged;
-
-  if (this._createBatchTable) {
-    if (ContextLimits.maximumVertexTextureImageUnits === 0) {
-      throw new RuntimeError(
-        "Vertex texture fetch support is required to render polylines. The maximum number of vertex texture image units must be greater than zero.",
-      );
-    }
-    createBatchTable(this, context);
-    this._createBatchTable = false;
-  }
-
-  if (this._createVertexArray || computeNewBuffersUsage(this)) {
-    createVertexArrays(this, context, projection);
-  } else if (this._polylinesUpdated) {
-    // Polylines were modified, but no polylines were added or removed.
-    const polylinesToUpdate = this._polylinesToUpdate;
-    if (this._mode !== SceneMode.SCENE3D) {
-      const updateLength = polylinesToUpdate.length;
-      for (let i = 0; i < updateLength; ++i) {
-        polyline = polylinesToUpdate[i];
-        polyline.update();
-      }
-    }
-
-    // if a polyline's positions size changes, we need to recreate the vertex arrays and vertex buffers because the indices will be different.
-    // if a polyline's material changes, we need to recreate the VAOs and VBOs because they will be batched differently.
-    if (properties[POSITION_SIZE_INDEX] || properties[MATERIAL_INDEX]) {
-      createVertexArrays(this, context, projection);
-    } else {
-      const length = polylinesToUpdate.length;
-      const polylineBuckets = this._polylineBuckets;
-      for (let ii = 0; ii < length; ++ii) {
-        polyline = polylinesToUpdate[ii];
-        properties = polyline._propertiesChanged;
-        const bucket = polyline._bucket;
-        let index = 0;
-        for (const x in polylineBuckets) {
-          if (polylineBuckets.hasOwnProperty(x)) {
-            if (polylineBuckets[x] === bucket) {
-              if (properties[POSITION_INDEX]) {
-                bucket.writeUpdate(
-                  index,
-                  polyline,
-                  this._positionBuffer,
-                  projection,
-                );
-              }
-              break;
-            }
-            index += polylineBuckets[x].lengthOfPositions;
-          }
-        }
-
-        if (properties[SHOW_INDEX] || properties[WIDTH_INDEX]) {
-          this._batchTable.setBatchedAttribute(
-            polyline._index,
-            0,
-            new Cartesian2(polyline._width, polyline._show),
-          );
-        }
-
-        if (this._batchTable.attributes.length > 2) {
-          if (properties[POSITION_INDEX] || properties[POSITION_SIZE_INDEX]) {
-            const boundingSphere =
-              frameState.mode === SceneMode.SCENE2D
-                ? polyline._boundingVolume2D
-                : polyline._boundingVolumeWC;
-            const encodedCenter = EncodedCartesian3.fromCartesian(
-              boundingSphere.center,
-              scratchUpdatePolylineEncodedCartesian,
-            );
-            const low = Cartesian4.fromElements(
-              encodedCenter.low.x,
-              encodedCenter.low.y,
-              encodedCenter.low.z,
-              boundingSphere.radius,
-              scratchUpdatePolylineCartesian4,
-            );
-            this._batchTable.setBatchedAttribute(
-              polyline._index,
-              2,
-              encodedCenter.high,
-            );
-            this._batchTable.setBatchedAttribute(polyline._index, 3, low);
-          }
-
-          if (properties[DISTANCE_DISPLAY_CONDITION]) {
-            const nearFarCartesian = scratchNearFarCartesian2;
-            nearFarCartesian.x = 0.0;
-            nearFarCartesian.y = Number.MAX_VALUE;
-
-            const distanceDisplayCondition = polyline.distanceDisplayCondition;
-            if (defined(distanceDisplayCondition)) {
-              nearFarCartesian.x = distanceDisplayCondition.near;
-              nearFarCartesian.y = distanceDisplayCondition.far;
-            }
-
-            this._batchTable.setBatchedAttribute(
-              polyline._index,
-              4,
-              nearFarCartesian,
-            );
-          }
-        }
-
-        polyline._clean();
-      }
-    }
-    polylinesToUpdate.length = 0;
-    this._polylinesUpdated = false;
-  }
-
-  properties = this._propertiesChanged;
-  for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
-    properties[k] = 0;
-  }
-
-  let modelMatrix = Matrix4.IDENTITY;
-  if (frameState.mode === SceneMode.SCENE3D) {
-    modelMatrix = this.modelMatrix;
-  }
-
-  const pass = frameState.passes;
-  const useDepthTest = frameState.morphTime !== 0.0;
-
-  if (
-    !defined(this._opaqueRS) ||
-    this._opaqueRS.depthTest.enabled !== useDepthTest
-  ) {
-    this._opaqueRS = RenderState.fromCache({
-      depthMask: useDepthTest,
-      depthTest: {
-        enabled: useDepthTest,
-      },
-    });
-  }
-
-  if (
-    !defined(this._translucentRS) ||
-    this._translucentRS.depthTest.enabled !== useDepthTest
-  ) {
-    this._translucentRS = RenderState.fromCache({
-      blending: BlendingState.ALPHA_BLEND,
-      depthMask: !useDepthTest,
-      depthTest: {
-        enabled: useDepthTest,
-      },
-    });
-  }
-
-  this._batchTable.update(frameState);
-
-  if (pass.render || pass.pick) {
-    const colorList = this._colorCommands;
-    createCommandLists(this, frameState, colorList, modelMatrix);
-  }
-};
 
 const boundingSphereScratch = new BoundingSphere();
 const boundingSphereScratch2 = new BoundingSphere();
@@ -806,50 +862,6 @@ function createCommandLists(
   commands.length = commandIndex;
 }
 
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see PolylineCollection#destroy
- */
-PolylineCollection.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * polylines = polylines && polylines.destroy();
- *
- * @see PolylineCollection#isDestroyed
- */
-PolylineCollection.prototype.destroy = function () {
-  destroyVertexArrays(this);
-  releaseShaders(this);
-  destroyPolylines(this);
-  if (
-    defined(this._featureRenderer) &&
-    defined(this._featureRenderer.destroy)
-  ) {
-    this._featureRenderer.destroy(this);
-  }
-  this._batchTable = this._batchTable && this._batchTable.destroy();
-  return destroyObject(this);
-};
-
 function computeNewBuffersUsage(collection) {
   let usageChanged = false;
   const properties = collection._propertiesChanged;
@@ -901,7 +913,7 @@ function createVertexArrays(collection, context, projection) {
   let x;
   let bucket;
   for (x in polylineBuckets) {
-    if (polylineBuckets.hasOwnProperty(x)) {
+    if (Object.hasOwn(polylineBuckets, x)) {
       bucket = polylineBuckets[x];
       bucket.updateShader(context, batchTable, useHighlightColor);
       totalLength += bucket.lengthOfPositions;
@@ -919,7 +931,7 @@ function createVertexArrays(collection, context, projection) {
     let colorIndex = 0;
     let texCoordExpandAndBatchIndexIndex = 0;
     for (x in polylineBuckets) {
-      if (polylineBuckets.hasOwnProperty(x)) {
+      if (Object.hasOwn(polylineBuckets, x)) {
         bucket = polylineBuckets[x];
         bucket.write(
           positionArray,
@@ -1266,17 +1278,6 @@ function destroyVertexArrays(collection) {
   collection._vertexArrays.length = 0;
 }
 
-PolylineCollection.prototype._updatePolyline = function (
-  polyline,
-  propertyChanged,
-) {
-  this._polylinesUpdated = true;
-  if (!polyline._dirty) {
-    this._polylinesToUpdate.push(polyline);
-  }
-  ++this._propertiesChanged[propertyChanged];
-};
-
 function destroyPolylines(collection) {
   const polylines = collection._polylines;
   const length = polylines.length;
@@ -1286,6 +1287,8 @@ function destroyPolylines(collection) {
     }
   }
 }
+
+// Internal helper classes (file-scoped)
 
 function VertexArrayBucketLocator(count, offset, bucket) {
   this.count = count;

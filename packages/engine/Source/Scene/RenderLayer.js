@@ -1,6 +1,6 @@
-import defaultValue from "../Core/defaultValue.js";
 import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
+import Frozen from "../Core/Frozen.js";
 import SortMode from "./SortMode.js";
 
 /**
@@ -36,7 +36,7 @@ import SortMode from "./SortMode.js";
  * @see RenderScheduler
  */
 function RenderLayer(options) {
-  options = defaultValue(options, defaultValue.EMPTY_OBJECT);
+  options = options ?? Frozen.EMPTY_OBJECT;
 
   //>>includeStart('debug', pragmas.debug);
   if (!defined(options.name)) {
@@ -70,14 +70,14 @@ function RenderLayer(options) {
    * @type {boolean}
    * @default false
    */
-  this.clearDepth = defaultValue(options.clearDepth, false);
+  this.clearDepth = options.clearDepth ?? false;
 
   /**
    * Whether to clear the stencil buffer before rendering this layer.
    * @type {boolean}
    * @default false
    */
-  this.clearStencil = defaultValue(options.clearStencil, false);
+  this.clearStencil = options.clearStencil ?? false;
 
   /**
    * Sort mode for opaque draw commands in this layer.
@@ -91,20 +91,15 @@ function RenderLayer(options) {
    * @type {SortMode}
    * @default SortMode.MATERIAL_MESH
    */
-  this.opaqueSortMode = defaultValue(
-    options.opaqueSortMode,
-    SortMode.MATERIAL_MESH,
-  );
+  this.opaqueSortMode = options.opaqueSortMode ?? SortMode.MATERIAL_MESH;
 
   /**
    * Sort mode for transparent draw commands in this layer.
    * @type {SortMode}
    * @default SortMode.BACK_TO_FRONT
    */
-  this.transparentSortMode = defaultValue(
-    options.transparentSortMode,
-    SortMode.BACK_TO_FRONT,
-  );
+  this.transparentSortMode =
+    options.transparentSortMode ?? SortMode.BACK_TO_FRONT;
 
   /**
    * Sort mode for transmissive draw commands (glass, water) in this layer.
@@ -112,10 +107,8 @@ function RenderLayer(options) {
    * @type {SortMode}
    * @default SortMode.BACK_TO_FRONT
    */
-  this.transmissiveSortMode = defaultValue(
-    options.transmissiveSortMode,
-    SortMode.BACK_TO_FRONT,
-  );
+  this.transmissiveSortMode =
+    options.transmissiveSortMode ?? SortMode.BACK_TO_FRONT;
 
   /**
    * Custom comparator for opaque commands.
@@ -148,7 +141,7 @@ function RenderLayer(options) {
    * @type {number}
    * @default 0xFFFFFFFF
    */
-  this.visibilityMask = defaultValue(options.visibilityMask, 0xffffffff);
+  this.visibilityMask = options.visibilityMask ?? 0xffffffff;
 
   /**
    * Whether this layer is currently active. Disabled layers are skipped
@@ -156,7 +149,7 @@ function RenderLayer(options) {
    * @type {boolean}
    * @default true
    */
-  this.enabled = defaultValue(options.enabled, true);
+  this.enabled = options.enabled ?? true;
 
   // --- Internal per-frame command buckets (managed by RenderScheduler) ---
 

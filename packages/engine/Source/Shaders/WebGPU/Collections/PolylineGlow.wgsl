@@ -1,0 +1,144 @@
+// PolylineGlow.wgsl — Glowing polyline material for CesiumJS WebGPU
+// Renders a line with a soft glow effect that radiates outward from the center.
+// Optionally tapers the glow toward one end (s=1) of the line.
+//
+// Material uniforms (at offset 112 in uniform buffer):
+//   materialColor: vec4<f32> — glow color
+//   glowPower:     f32       — glow intensity (higher = wider glow, default 0.25)
+//   taperPower:    f32       — taper toward end (1.0 = no taper, <1 = tapers)
+
+struct Uniforms {
+  mvpRelativeToEye: mat4x4<f32>,
+  encodedCameraHigh: vec3<f32>,
+  _pad0: f32,
+  encodedCameraLow: vec3<f32>,
+  _pad1: f32,
+  viewportSize: vec2<f32>,
+  _pad2: vec2<f32>,
+  // Material uniforms (offset 112)
+  materialColor: vec4<f32>,
+  glowPower: f32,
+  taperPower: f32,
+  _matPad: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+struct VertexInput {
+  @builtin(vertex_index) vertexIndex: u32,
+  @location(0) startPosHighAndWidth: vec4<f32>,
+  @location(1) startPosLow: vec4<f32>,
+  @location(2) endPosHighAndMiter: vec4<f32>,
+  @location(3) endPosLow: vec4<f32>,
+  @location(4) color: vec4<f32>,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) v_st: vec2<f32>,
+  @location(1) v_distFromCenter: f32,
+};
+
+fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
+                          camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
+  return (posHigh - camHigh) + (posLow - camLow);
+}
+
+fn toScreenSpace(clipPos: vec4<f32>, viewportSize: vec2<f32>) -> vec2<f32> {
+  let ndc = clipPos.xy / clipPos.w;
+  return (ndc * 0.5 + 0.5) * viewportSize;
+}
+
+fn fromScreenSpace(screen: vec2<f32>, depth: f32, w: f32,
+                   viewportSize: vec2<f32>) -> vec4<f32> {
+  let ndc = (screen / viewportSize) * 2.0 - 1.0;
+  return vec4<f32>(ndc * w, depth, w);
+}
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+  var output: VertexOutput;
+
+  let lineWidth = input.startPosHighAndWidth.w;
+  // Expand the quad wider for glow — the glow extends beyond the nominal line width
+  let glowExpand = max(u.glowPower * 2.0, 1.0);
+  let halfWidth = (lineWidth * 0.5 + 0.5) * glowExpand;
+
+  let sStart = input.startPosLow.w;
+  let sEnd = input.endPosLow.w;
+
+  let startRTE = translateRelativeToEye(
+    input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
+    u.encodedCameraHigh, u.encodedCameraLow
+  );
+  let endRTE = translateRelativeToEye(
+    input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
+    u.encodedCameraHigh, u.encodedCameraLow
+  );
+
+  let clipStart = u.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let clipEnd = u.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+
+  let screenStart = toScreenSpace(clipStart, u.viewportSize);
+  let screenEnd = toScreenSpace(clipEnd, u.viewportSize);
+
+  let lineDir = normalize(screenEnd - screenStart);
+  let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
+
+  let vertexIdx = input.vertexIndex % 6u;
+  var isEnd: f32;
+  var side: f32;
+  switch vertexIdx {
+    case 0u: { isEnd = 0.0; side = -1.0; }
+    case 1u: { isEnd = 1.0; side = -1.0; }
+    case 2u: { isEnd = 1.0; side = 1.0; }
+    case 3u: { isEnd = 0.0; side = -1.0; }
+    case 4u: { isEnd = 1.0; side = 1.0; }
+    case 5u: { isEnd = 0.0; side = 1.0; }
+    default: { isEnd = 0.0; side = -1.0; }
+  }
+
+  let baseClip = mix(clipStart, clipEnd, isEnd);
+  let baseScreen = mix(screenStart, screenEnd, isEnd);
+  let offsetScreen = baseScreen + lineNormal * side * halfWidth;
+
+  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, u.viewportSize);
+
+  let s = mix(sStart, sEnd, isEnd);
+  let t = side * 0.5 + 0.5;
+  output.v_st = vec2<f32>(s, t);
+  output.v_distFromCenter = side;
+
+  return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let st = input.v_st;
+  let color = u.materialColor;
+  let glowPower = u.glowPower;
+  let taperPower = u.taperPower;
+
+  // Glow intensity based on distance from center (st.t = 0.5 at center)
+  let distFromCenter = abs(st.t - 0.5);
+  var glow = glowPower / max(distFromCenter, 0.001) - (glowPower / 0.5);
+
+  // Optional taper: reduce glow toward the end of the polyline
+  if (taperPower <= 0.99999) {
+    let taperDist = 0.5 - st.s * 0.5;
+    let taperFactor = taperPower / max(taperDist, 0.001) - (taperPower / 0.5);
+    glow *= min(1.0, taperFactor);
+  }
+
+  // Compute output color: glow adds brightness beyond the base color
+  var fragColor: vec4<f32>;
+  fragColor = vec4<f32>(
+    max(vec3<f32>(glow - 1.0) + color.rgb, color.rgb),
+    clamp(glow, 0.0, 1.0) * color.a
+  );
+
+  if (fragColor.a < 0.005) {
+    discard;
+  }
+  return fragColor;
+}

@@ -41,8 +41,8 @@ const scratchTextureDimensions = new Cartesian3();
 const attributeLocationsBatched = {
   positionHighAndScaleX: 0,
   positionLowAndScaleY: 1,
-  packedAttribute0: 2, // show, brightness, direction
-  packedAttribute1: 3, // cloudSize, slice
+  packedAttribute0: 2,
+  packedAttribute1: 3,
   color: 4,
 };
 
@@ -50,8 +50,8 @@ const attributeLocationsInstanced = {
   direction: 0,
   positionHighAndScaleX: 1,
   positionLowAndScaleY: 2,
-  packedAttribute0: 3, // show, brightness
-  packedAttribute1: 4, // cloudSize, slice
+  packedAttribute0: 3,
+  packedAttribute1: 4,
   color: 5,
 };
 
@@ -75,7 +75,6 @@ const COLOR_INDEX = CumulusCloud.COLOR_INDEX;
  * Clouds are added and removed from the collection using {@link CloudCollection#add}
  * and {@link CloudCollection#remove}.
  * @alias CloudCollection
- * @constructor
  *
  * @param {object} [options] Object with the following properties:
  * @param {boolean} [options.show=true] Whether to display the clouds.
@@ -104,132 +103,398 @@ const COLOR_INDEX = CumulusCloud.COLOR_INDEX;
  * });
  *
  */
-function CloudCollection(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class CloudCollection {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._clouds = [];
-  this._cloudsToUpdate = [];
-  this._cloudsToUpdateIndex = 0;
-  this._cloudsRemoved = false;
-  this._createVertexArray = false;
+    this._clouds = [];
+    this._cloudsToUpdate = [];
+    this._cloudsToUpdateIndex = 0;
+    this._cloudsRemoved = false;
+    this._createVertexArray = false;
 
-  this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
+    this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
 
-  this._noiseTexture = undefined;
-  this._textureSliceWidth = 128;
-  this._noiseTextureRows = 4;
+    this._noiseTexture = undefined;
+    this._textureSliceWidth = 128;
+    this._noiseTextureRows = 4;
+
+    /**
+     * <p>
+     * Controls the amount of detail captured in the precomputed noise texture
+     * used to render the cumulus clouds. In order for the texture to be tileable,
+     * this must be a power of two. For best results, set this to be a power of two
+     * between <code>8.0</code> and <code>32.0</code> (inclusive).
+     * </p>
+     *
+     * @type {number}
+     *
+     * @default 16.0
+     */
+    this.noiseDetail = options.noiseDetail ?? 16.0;
+
+    /**
+     * <p>
+     * Applies a translation to noise texture coordinates to generate different data.
+     * This can be modified if the default noise does not generate good-looking clouds.
+     * </p>
+     *
+     * @type {Cartesian3}
+     *
+     * @default Cartesian3.ZERO
+     */
+    this.noiseOffset = Cartesian3.clone(options.noiseOffset ?? Cartesian3.ZERO);
+
+    this._loading = false;
+    this._ready = false;
+
+    const that = this;
+    this._uniforms = {
+      u_noiseTexture: function () {
+        return that._noiseTexture;
+      },
+      u_noiseTextureDimensions: getNoiseTextureDimensions(that),
+      u_noiseDetail: function () {
+        return that.noiseDetail;
+      },
+    };
+
+    this._vaNoise = undefined;
+    this._spNoise = undefined;
+
+    this._spCreated = false;
+    this._sp = undefined;
+    this._rs = undefined;
+
+    /**
+     * Determines if billboards in this collection will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
+
+    this._colorCommands = [];
+
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Renders the billboards with one opaque color for the sake of debugging.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugBillboards = options.debugBillboards ?? false;
+    this._compiledDebugBillboards = false;
+
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the clouds as opaque, monochrome ellipsoids for the sake of debugging.
+     * If <code>debugBillboards</code> is also true, then the ellipsoids will draw on top of the billboards.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugEllipsoids = options.debugEllipsoids ?? false;
+    this._compiledDebugEllipsoids = false;
+  }
 
   /**
-   * <p>
-   * Controls the amount of detail captured in the precomputed noise texture
-   * used to render the cumulus clouds. In order for the texture to be tileable,
-   * this must be a power of two. For best results, set this to be a power of two
-   * between <code>8.0</code> and <code>32.0</code> (inclusive).
-   * </p>
-   *
-   * <div align='center'>
-   * <table border='0' cellpadding='5'><tr>
-   * <td align='center'>
-   *   <code>clouds.noiseDetail = 8.0;</code><br/>
-   *   <img src='Images/CloudCollection.noiseDetail8.png' width='250' height='158' />
-   * </td>
-   * <td align='center'>
-   *   <code>clouds.noiseDetail = 32.0;</code><br/>
-   *   <img src='Images/CloudCollection.noiseDetail32.png' width='250' height='158' />
-   * </td>
-   * </tr></table>
-   * </div>
-   *
+   * Returns the number of clouds in this collection.
    * @type {number}
-   *
-   * @default 16.0
    */
-  this.noiseDetail = options.noiseDetail ?? 16.0;
+  get length() {
+    removeClouds(this);
+    return this._clouds.length;
+  }
 
   /**
-   * <p>
-   * Applies a translation to noise texture coordinates to generate different data.
-   * This can be modified if the default noise does not generate good-looking clouds.
-   * </p>
+   * Creates and adds a cloud with the specified initial properties to the collection.
+   * The added cloud is returned so it can be modified or removed from the collection later.
    *
-   * <div align='center'>
-   * <table border='0' cellpadding='5'><tr>
-   * <td align='center'>
-   *   <code>default</code><br/>
-   *   <img src='Images/CloudCollection.noiseOffsetdefault.png' width='250' height='158' />
-   * </td>
-   * <td align='center'>
-   *   <code>clouds.noiseOffset = new Cesium.Cartesian3(10, 20, 10);</code><br/>
-   *   <img src='Images/CloudCollection.noiseOffsetx10y20z10.png' width='250' height='158' />
-   * </td>
-   * </tr></table>
-   * </div>
-   * @type {Cartesian3}
+   * @param {object}[options] A template describing the cloud's properties as shown in Example 1.
+   * @returns {CumulusCloud} The cloud that was added to the collection.
    *
-   * @default Cartesian3.ZERO
+   * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
+   * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
+   * best performance, add as many clouds as possible before calling <code>update</code>.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Example 1:  Add a cumulus cloud, specifying all the default values.
+   * const c = clouds.add({
+   *   show : true,
+   *   position : Cesium.Cartesian3.ZERO,
+   *   scale : new Cesium.Cartesian2(20.0, 12.0),
+   *   maximumSize: new Cesium.Cartesian3(20.0, 12.0, 12.0),
+   *   slice: -1.0,
+   *   cloudType : CloudType.CUMULUS
+   * });
+   *
+   * @example
+   * // Example 2:  Specify only the cloud's cartographic position.
+   * const c = clouds.add({
+   *   position : Cesium.Cartesian3.fromDegrees(longitude, latitude, height)
+   * });
+   *
+   * @see CloudCollection#remove
+   * @see CloudCollection#removeAll
    */
-  this.noiseOffset = Cartesian3.clone(options.noiseOffset ?? Cartesian3.ZERO);
+  add(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const cloudType = options.cloudType ?? CloudType.CUMULUS;
+    //>>includeStart('debug', pragmas.debug);
+    if (!CloudType.validate(cloudType)) {
+      throw new DeveloperError("invalid cloud type");
+    }
+    //>>includeEnd('debug');
 
-  this._loading = false;
-  this._ready = false;
+    let cloud;
+    if (cloudType === CloudType.CUMULUS) {
+      cloud = new CumulusCloud(options, this);
+      cloud._index = this._clouds.length;
+      this._clouds.push(cloud);
+      this._createVertexArray = true;
+    }
 
-  const that = this;
-  this._uniforms = {
-    u_noiseTexture: function () {
-      return that._noiseTexture;
-    },
-    u_noiseTextureDimensions: getNoiseTextureDimensions(that),
-    u_noiseDetail: function () {
-      return that.noiseDetail;
-    },
-  };
-
-  this._vaNoise = undefined;
-  this._spNoise = undefined;
-
-  this._spCreated = false;
-  this._sp = undefined;
-  this._rs = undefined;
+    return cloud;
+  }
 
   /**
-   * Determines if billboards in this collection will be shown.
+   * Removes a cloud from the collection.
    *
-   * @type {boolean}
-   * @default true
+   * @param {CumulusCloud} cloud The cloud to remove.
+   * @returns {boolean} <code>true</code> if the cloud was removed; <code>false</code> if the cloud was not found in the collection.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * const c = clouds.add(...);
+   * clouds.remove(c);  // Returns true
+   *
+   * @see CloudCollection#add
+   * @see CloudCollection#removeAll
+   * @see CumulusCloud#show
    */
-  this.show = options.show ?? true;
+  remove(cloud) {
+    if (this.contains(cloud)) {
+      this._clouds[cloud._index] = undefined;
+      this._cloudsRemoved = true;
+      this._createVertexArray = true;
+      cloud._destroy();
+      return true;
+    }
 
-  this._colorCommands = [];
+    return false;
+  }
 
   /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Renders the billboards with one opaque color for the sake of debugging.
-   * </p>
+   * Removes all clouds from the collection.
    *
-   * @type {boolean}
+   * @performance <code>O(n)</code>.  It is more efficient to remove all the clouds
+   * from a collection and then add new ones than to create a new collection entirely.
    *
-   * @default false
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * clouds.add(...);
+   * clouds.add(...);
+   * clouds.removeAll();
+   *
+   * @see CloudCollection#add
+   * @see CloudCollection#remove
    */
-  this.debugBillboards = options.debugBillboards ?? false;
-  this._compiledDebugBillboards = false;
+  removeAll() {
+    destroyClouds(this._clouds);
+    this._clouds = [];
+    this._cloudsToUpdate = [];
+    this._cloudsToUpdateIndex = 0;
+    this._cloudsRemoved = false;
+
+    this._createVertexArray = true;
+  }
+
+  _updateCloud(cloud, propertyChanged) {
+    if (!cloud._dirty) {
+      this._cloudsToUpdate[this._cloudsToUpdateIndex++] = cloud;
+    }
+
+    ++this._propertiesChanged[propertyChanged];
+  }
 
   /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the clouds as opaque, monochrome ellipsoids for the sake of debugging.
-   * If <code>debugBillboards</code> is also true, then the ellipsoids will draw on top of the billboards.
-   * </p>
+   * Check whether this collection contains a given cloud.
    *
-   * @type {boolean}
+   * @param {CumulusCloud} [cloud] The cloud to check for.
+   * @returns {boolean} true if this collection contains the cloud, false otherwise.
    *
-   * @default false
+   * @see CloudCollection#get
    */
-  this.debugEllipsoids = options.debugEllipsoids ?? false;
-  this._compiledDebugEllipsoids = false;
+  contains(cloud) {
+    return defined(cloud) && cloud._cloudCollection === this;
+  }
+
+  /**
+   * Returns the cloud in the collection at the specified index. Indices are zero-based
+   * and increase as clouds are added. Removing a cloud shifts all clouds after
+   * it to the left, changing their indices. This function is commonly used with
+   * {@link CloudCollection#length} to iterate over all the clouds in the collection.
+   *
+   * @param {number} index The zero-based index of the cloud.
+   * @returns {CumulusCloud} The cloud at the specified index.
+   *
+   * @performance Expected constant time. If clouds were removed from the collection and
+   * {@link CloudCollection#update} was not called, an implicit <code>O(n)</code>
+   * operation is performed.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Toggle the show property of every cloud in the collection
+   * const len = clouds.length;
+   * for (let i = 0; i < len; ++i) {
+   *   const c = clouds.get(i);
+   *   c.show = !c.show;
+   * }
+   *
+   * @see CloudCollection#length
+   */
+  get(index) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("index", index);
+    //>>includeEnd('debug');
+
+    removeClouds(this);
+    return this._clouds[index];
+  }
+
+  /**
+   * @private
+   */
+  update(frameState) {
+    removeClouds(this);
+    // Route to WebGPU feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.CLOUD_COLLECTION,
+    );
+    if (fr) {
+      fr.update(this, frameState);
+      this._featureRenderer = fr;
+      return;
+    }
+    if (!this.show) {
+      return;
+    }
+
+    const debugging = this.debugBillboards || this.debugEllipsoids;
+    this._ready = debugging ? true : defined(this._noiseTexture);
+
+    if (!this._ready && !this._loading && !debugging) {
+      createNoiseTexture(this, frameState, CloudNoiseVS, CloudNoiseFS);
+    }
+
+    this._instanced = frameState.context.instancedArrays;
+    attributeLocations = this._instanced
+      ? attributeLocationsInstanced
+      : attributeLocationsBatched;
+    getIndexBuffer = this._instanced
+      ? getIndexBufferInstanced
+      : getIndexBufferBatched;
+
+    const clouds = this._clouds;
+    const cloudsLength = clouds.length;
+    const cloudsToUpdate = this._cloudsToUpdate;
+    const cloudsToUpdateLength = this._cloudsToUpdateIndex;
+
+    if (this._createVertexArray) {
+      createVertexArray(this, frameState);
+    } else if (cloudsToUpdateLength > 0) {
+      updateClouds(this, frameState);
+    }
+
+    if (cloudsToUpdateLength > cloudsLength * 1.5) {
+      cloudsToUpdate.length = cloudsLength;
+    }
+
+    if (
+      !defined(this._vaf) ||
+      !defined(this._vaf.va) ||
+      !this._ready & !debugging
+    ) {
+      return;
+    }
+
+    if (
+      !this._spCreated ||
+      this.debugBillboards !== this._compiledDebugBillboards ||
+      this.debugEllipsoids !== this._compiledDebugEllipsoids
+    ) {
+      createShaderProgram(
+        this,
+        frameState,
+        CloudCollectionVS,
+        CloudCollectionFS,
+      );
+    }
+
+    createDrawCommands(this, frameState);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see CloudCollection#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * clouds = clouds && clouds.destroy();
+   *
+   * @see CloudCollection#isDestroyed
+   */
+  destroy() {
+    this._noiseTexture = this._noiseTexture && this._noiseTexture.destroy();
+    this._sp = this._sp && this._sp.destroy();
+    this._vaf = this._vaf && this._vaf.destroy();
+
+    destroyClouds(this._clouds);
+
+    if (this._featureRenderer) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
 }
 
-// Wraps useful texture metrics into a single vec3 for less overhead.
+// --- File-scoped helpers (unchanged from original) ---
+
 function getNoiseTextureDimensions(collection) {
   return function () {
     scratchTextureDimensions.x = collection._textureSliceWidth;
@@ -239,20 +504,6 @@ function getNoiseTextureDimensions(collection) {
   };
 }
 
-Object.defineProperties(CloudCollection.prototype, {
-  /**
-   * Returns the number of clouds in this collection.
-   * @memberof CloudCollection.prototype
-   * @type {number}
-   */
-  length: {
-    get: function () {
-      removeClouds(this);
-      return this._clouds.length;
-    },
-  },
-});
-
 function destroyClouds(clouds) {
   const length = clouds.length;
   for (let i = 0; i < length; ++i) {
@@ -261,115 +512,6 @@ function destroyClouds(clouds) {
     }
   }
 }
-
-/**
- * Creates and adds a cloud with the specified initial properties to the collection.
- * The added cloud is returned so it can be modified or removed from the collection later.
- *
- * @param {object}[options] A template describing the cloud's properties as shown in Example 1.
- * @returns {CumulusCloud} The cloud that was added to the collection.
- *
- * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
- * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
- * best performance, add as many clouds as possible before calling <code>update</code>.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * // Example 1:  Add a cumulus cloud, specifying all the default values.
- * const c = clouds.add({
- *   show : true,
- *   position : Cesium.Cartesian3.ZERO,
- *   scale : new Cesium.Cartesian2(20.0, 12.0),
- *   maximumSize: new Cesium.Cartesian3(20.0, 12.0, 12.0),
- *   slice: -1.0,
- *   cloudType : CloudType.CUMULUS
- * });
- *
- * @example
- * // Example 2:  Specify only the cloud's cartographic position.
- * const c = clouds.add({
- *   position : Cesium.Cartesian3.fromDegrees(longitude, latitude, height)
- * });
- *
- * @see CloudCollection#remove
- * @see CloudCollection#removeAll
- */
-CloudCollection.prototype.add = function (options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const cloudType = options.cloudType ?? CloudType.CUMULUS;
-  //>>includeStart('debug', pragmas.debug);
-  if (!CloudType.validate(cloudType)) {
-    throw new DeveloperError("invalid cloud type");
-  }
-  //>>includeEnd('debug');
-
-  let cloud;
-  if (cloudType === CloudType.CUMULUS) {
-    cloud = new CumulusCloud(options, this);
-    cloud._index = this._clouds.length;
-    this._clouds.push(cloud);
-    this._createVertexArray = true;
-  }
-
-  return cloud;
-};
-
-/**
- * Removes a cloud from the collection.
- *
- * @param {CumulusCloud} cloud The cloud to remove.
- * @returns {boolean} <code>true</code> if the cloud was removed; <code>false</code> if the cloud was not found in the collection.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * const c = clouds.add(...);
- * clouds.remove(c);  // Returns true
- *
- * @see CloudCollection#add
- * @see CloudCollection#removeAll
- * @see CumulusCloud#show
- */
-CloudCollection.prototype.remove = function (cloud) {
-  if (this.contains(cloud)) {
-    this._clouds[cloud._index] = undefined; // Removed later in removeClouds()
-    this._cloudsRemoved = true;
-    this._createVertexArray = true;
-    cloud._destroy();
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Removes all clouds from the collection.
- *
- * @performance <code>O(n)</code>.  It is more efficient to remove all the clouds
- * from a collection and then add new ones than to create a new collection entirely.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * clouds.add(...);
- * clouds.add(...);
- * clouds.removeAll();
- *
- * @see CloudCollection#add
- * @see CloudCollection#remove
- */
-CloudCollection.prototype.removeAll = function () {
-  destroyClouds(this._clouds);
-  this._clouds = [];
-  this._cloudsToUpdate = [];
-  this._cloudsToUpdateIndex = 0;
-  this._cloudsRemoved = false;
-
-  this._createVertexArray = true;
-};
 
 function removeClouds(cloudCollection) {
   if (cloudCollection._cloudsRemoved) {
@@ -389,61 +531,6 @@ function removeClouds(cloudCollection) {
     cloudCollection._clouds = newClouds;
   }
 }
-
-CloudCollection.prototype._updateCloud = function (cloud, propertyChanged) {
-  if (!cloud._dirty) {
-    this._cloudsToUpdate[this._cloudsToUpdateIndex++] = cloud;
-  }
-
-  ++this._propertiesChanged[propertyChanged];
-};
-
-/**
- * Check whether this collection contains a given cloud.
- *
- * @param {CumulusCloud} [cloud] The cloud to check for.
- * @returns {boolean} true if this collection contains the cloud, false otherwise.
- *
- * @see CloudCollection#get
- */
-CloudCollection.prototype.contains = function (cloud) {
-  return defined(cloud) && cloud._cloudCollection === this;
-};
-
-/**
- * Returns the cloud in the collection at the specified index. Indices are zero-based
- * and increase as clouds are added. Removing a cloud shifts all clouds after
- * it to the left, changing their indices. This function is commonly used with
- * {@link CloudCollection#length} to iterate over all the clouds in the collection.
- *
- * @param {number} index The zero-based index of the cloud.
- * @returns {CumulusCloud} The cloud at the specified index.
- *
- * @performance Expected constant time. If clouds were removed from the collection and
- * {@link CloudCollection#update} was not called, an implicit <code>O(n)</code>
- * operation is performed.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * // Toggle the show property of every cloud in the collection
- * const len = clouds.length;
- * for (let i = 0; i < len; ++i) {
- *   const c = clouds.get(i);
- *   c.show = !c.show;
- * }
- *
- * @see CloudCollection#length
- */
-CloudCollection.prototype.get = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("index", index);
-  //>>includeEnd('debug');
-
-  removeClouds(this);
-  return this._clouds[index];
-};
 
 const texturePositions = new Float32Array([
   -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
@@ -490,8 +577,6 @@ function getIndexBufferBatched(context) {
     return indexBuffer;
   }
 
-  // Subtract 6 because the last index is reserved for primitive restart.
-  // https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.18
   const length = sixteenK * 6 - 6;
   const indices = new Uint16Array(length);
   for (let i = 0, j = 0; i < length; i += 6, j += 4) {
@@ -687,6 +772,7 @@ function writeColor(cloudCollection, frameState, vafWriters, cloud) {
     writer(i + 3, red, green, blue, alpha);
   }
 }
+
 function writeCloud(cloudCollection, frameState, vafWriters, cloud) {
   writePositionAndScale(cloudCollection, frameState, vafWriters, cloud);
   writePackedAttribute0(cloudCollection, frameState, vafWriters, cloud);
@@ -776,13 +862,11 @@ function createVertexArray(cloudCollection, frameState) {
     const vafWriters = that._vaf.writers;
 
     let i;
-    // Rewrite entire buffer if clouds were added or removed.
     for (i = 0; i < cloudsLength; ++i) {
       const cloud = clouds[i];
       writeCloud(cloudCollection, frameState, vafWriters, cloud);
     }
 
-    // Different cloud collections share the same index buffer.
     that._vaf.commit(getIndexBuffer(context));
   }
 }
@@ -823,9 +907,6 @@ function updateClouds(cloudCollection, frameState) {
 
   let i, c, w;
   if (cloudsToUpdateLength / cloudsLength > 0.1) {
-    // Like BillboardCollection, if more than 10% of clouds change,
-    // rewrite the entire buffer.
-
     for (i = 0; i < cloudsToUpdateLength; ++i) {
       c = cloudsToUpdate[i];
       c._dirty = false;
@@ -936,119 +1017,5 @@ function createDrawCommands(cloudCollection, frameState) {
     }
   }
 }
-
-/**
- * @private
- */
-CloudCollection.prototype.update = function (frameState) {
-  removeClouds(this);
-  // Route to WebGPU feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.CLOUD_COLLECTION,
-  );
-  if (fr) {
-    fr.update(this, frameState);
-    this._featureRenderer = fr;
-    return;
-  }
-  if (!this.show) {
-    return;
-  }
-
-  const debugging = this.debugBillboards || this.debugEllipsoids;
-  this._ready = debugging ? true : defined(this._noiseTexture);
-
-  if (!this._ready && !this._loading && !debugging) {
-    createNoiseTexture(this, frameState, CloudNoiseVS, CloudNoiseFS);
-  }
-
-  this._instanced = frameState.context.instancedArrays;
-  attributeLocations = this._instanced
-    ? attributeLocationsInstanced
-    : attributeLocationsBatched;
-  getIndexBuffer = this._instanced
-    ? getIndexBufferInstanced
-    : getIndexBufferBatched;
-
-  const clouds = this._clouds;
-  const cloudsLength = clouds.length;
-  const cloudsToUpdate = this._cloudsToUpdate;
-  const cloudsToUpdateLength = this._cloudsToUpdateIndex;
-
-  if (this._createVertexArray) {
-    createVertexArray(this, frameState);
-  } else if (cloudsToUpdateLength > 0) {
-    // Clouds were modified, but none were added or removed.
-    updateClouds(this, frameState);
-  }
-
-  // If the number of total clouds ever shrinks considerably,
-  // truncate cloudsToUpdate so that we free memory that
-  // we are no longer using.
-  if (cloudsToUpdateLength > cloudsLength * 1.5) {
-    cloudsToUpdate.length = cloudsLength;
-  }
-
-  if (
-    !defined(this._vaf) ||
-    !defined(this._vaf.va) ||
-    !this._ready & !debugging
-  ) {
-    return;
-  }
-
-  if (
-    !this._spCreated ||
-    this.debugBillboards !== this._compiledDebugBillboards ||
-    this.debugEllipsoids !== this._compiledDebugEllipsoids
-  ) {
-    createShaderProgram(this, frameState, CloudCollectionVS, CloudCollectionFS);
-  }
-
-  createDrawCommands(this, frameState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see CloudCollection#destroy
- */
-CloudCollection.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * clouds = clouds && clouds.destroy();
- *
- * @see CloudCollection#isDestroyed
- */
-CloudCollection.prototype.destroy = function () {
-  this._noiseTexture = this._noiseTexture && this._noiseTexture.destroy();
-  this._sp = this._sp && this._sp.destroy();
-  this._vaf = this._vaf && this._vaf.destroy();
-
-  destroyClouds(this._clouds);
-
-  if (this._featureRenderer) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
 
 export default CloudCollection;

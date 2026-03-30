@@ -1,0 +1,65 @@
+// PrimitiveMatElevContourFlat.wgsl
+// Elevation contour material, no lighting
+// Draws contour lines based on height above the ellipsoid
+// Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
+// Vertex: posHigh(3) + posLow(3) + st(2) = 8 floats = 32 bytes
+// Matches CesiumJS Material.ElevationContourType: color, spacing, width
+
+struct VertexInput {
+    @location(0) positionHigh: vec3<f32>,
+    @location(1) positionLow: vec3<f32>,
+    @location(2) texCoord: vec2<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texCoord: vec2<f32>,
+    @location(1) height: f32,
+}
+
+struct Uniforms {
+    mvpRelativeToEye: mat4x4<f32>,
+    encodedCameraHigh: vec3<f32>,
+    _pad0: f32,
+    encodedCameraLow: vec3<f32>,
+    _pad1: f32,
+    // Material params
+    color: vec4<f32>,
+    spacing: f32,
+    width: f32,
+    _pad2: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+const EARTH_RADIUS: f32 = 6371000.0;
+
+fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
+    var highDiff = high - uniforms.encodedCameraHigh;
+    if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
+    let lowDiff = low - uniforms.encodedCameraLow;
+    return vec4<f32>(highDiff + lowDiff, 1.0);
+}
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
+    output.position = uniforms.mvpRelativeToEye * posRTE;
+    output.texCoord = input.texCoord;
+    // Approximate height above ellipsoid from world position
+    let worldPos = input.positionHigh + input.positionLow;
+    output.height = length(worldPos) - EARTH_RADIUS;
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let distToContour = input.height % uniforms.spacing;
+    // Use screen-space derivatives for width-independent contour lines
+    let dxc = abs(dpdx(input.height));
+    let dyc = abs(dpdy(input.height));
+    let dF = max(dxc, dyc) * uniforms.width;
+    let alpha = select(0.0, 1.0, distToContour < dF);
+    return vec4<f32>(uniforms.color.rgb, uniforms.color.a * alpha);
+}

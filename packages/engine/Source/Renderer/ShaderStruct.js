@@ -2,7 +2,6 @@
  * A utility for dynamically-generating a GLSL struct.
  *
  * @alias ShaderStruct
- * @constructor
  *
  * @see {@link ShaderBuilder}
  * @param {string} name The name of the struct as it will appear in the shader.
@@ -23,33 +22,38 @@
  *
  * @private
  */
-function ShaderStruct(name) {
-  this.name = name;
-  this.fields = [];
-}
-
-/**
- * Add a field to the struct
- * @param {string} type The type of the struct field
- * @param {string} identifier The identifier of the struct field
- */
-ShaderStruct.prototype.addField = function (type, identifier) {
-  const field = `    ${type} ${identifier};`;
-  this.fields.push(field);
-};
-
-/**
- * Generate a list of lines of GLSL code for use with {@link ShaderBuilder}
- * @return {string[]} The generated GLSL code.
- */
-ShaderStruct.prototype.generateGlslLines = function () {
-  let fields = this.fields;
-  if (fields.length === 0) {
-    // GLSL requires structs to have at least one field
-    fields = ["    float _empty;"];
+class ShaderStruct {
+  constructor(name) {
+    this.name = name;
+    this.fields = [];
   }
 
-  return [].concat(`struct ${this.name}`, "{", fields, "};");
-};
+  /**
+   * Add a field to the struct
+   * @param {string} type The type of the struct field
+   * @param {string} identifier The identifier of the struct field
+   */
+  addField(type, identifier) {
+    const field = `    ${type} ${identifier};`;
+    this.fields.push(field);
+  }
+
+  /**
+   * Generate a list of lines of GLSL code for use with {@link ShaderBuilder}
+   * @return {string[]} The generated GLSL code.
+   */
+  generateGlslLines() {
+    const lines = [];
+    lines.push(`struct ${this.name}`);
+    lines.push("{");
+    const fieldLength = this.fields.length;
+    for (let i = 0; i < fieldLength; i++) {
+      lines.push(this.fields[i]);
+    }
+    lines.push("};");
+    lines.push("");
+    return lines;
+  }
+}
 
 export default ShaderStruct;

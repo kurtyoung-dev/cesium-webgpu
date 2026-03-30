@@ -11,7 +11,6 @@ import destroyObject from "../Core/destroyObject.js";
  * </p>
  *
  * @alias SkyBox
- * @constructor
  *
  * @param {object} options Object with the following properties:
  * @param {object} [options.sources] The source URL or <code>Image</code> object for each of the six cube map faces.  See the example below.
@@ -33,122 +32,120 @@ import destroyObject from "../Core/destroyObject.js";
  * @see Scene#skyBox
  * @see Transforms.computeTemeToPseudoFixedMatrix
  */
-function SkyBox(options) {
-  this._sources = options.sources;
+class SkyBox {
+  constructor(options) {
+    this._sources = options.sources;
 
-  /**
-   * Determines if the sky box will be shown.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
-  this._panorama = new CubeMapPanorama({
-    sources: this._sources,
-    show: this._show,
-    returnCommand: true,
-  });
-}
+    /**
+     * Determines if the sky box will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
+    this._panorama = new CubeMapPanorama({
+      sources: this._sources,
+      show: this._show,
+      returnCommand: true,
+    });
+  }
 
-Object.defineProperties(SkyBox.prototype, {
   /**
    * Gets or sets the the primitive object.
-   * @memberof SkyBox.prototype
    * @type {object}
    */
-  sources: {
-    get: function () {
-      return this._panorama.sources;
-    },
-    set: function (value) {
-      this._panorama.sources = value;
-    },
-  },
-});
-
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {DeveloperError} this.sources is required and must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.
- * @exception {DeveloperError} this.sources properties must all be the same type.
- */
-SkyBox.prototype.update = function (frameState, useHdr) {
-  const { mode, passes } = frameState;
-
-  if (mode !== SceneMode.SCENE3D && mode !== SceneMode.MORPHING) {
-    return;
+  get sources() {
+    return this._panorama.sources;
   }
 
-  if (!passes.render) {
-    return;
+  set sources(value) {
+    this._panorama.sources = value;
   }
 
-  // Delegate completely
-  return this._panorama.update(frameState, useHdr);
-};
+  /**
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
+   * <p>
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
+   * </p>
+   *
+   * @exception {DeveloperError} this.sources is required and must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.
+   * @exception {DeveloperError} this.sources properties must all be the same type.
+   */
+  update(frameState, useHdr) {
+    const { mode, passes } = frameState;
 
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see SkyBox#destroy
- */
-SkyBox.prototype.isDestroyed = function () {
-  return false;
-};
+    if (mode !== SceneMode.SCENE3D && mode !== SceneMode.MORPHING) {
+      return;
+    }
 
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * skyBox = skyBox && skyBox.destroy();
- *
- * @see SkyBox#isDestroyed
- */
-SkyBox.prototype.destroy = function () {
-  this._panorama = this._panorama && this._panorama.destroy();
-  return destroyObject(this);
-};
+    if (!passes.render) {
+      return;
+    }
+
+    // Delegate completely
+    return this._panorama.update(frameState, useHdr);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see SkyBox#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * skyBox = skyBox && skyBox.destroy();
+   *
+   * @see SkyBox#isDestroyed
+   */
+  destroy() {
+    this._panorama = this._panorama && this._panorama.destroy();
+    return destroyObject(this);
+  }
+
+  /**
+   * Creates a skybox instance with the default starmap for the Earth.
+   * @return {SkyBox} The default skybox for the Earth
+   *
+   * @example
+   * viewer.scene.skyBox = Cesium.SkyBox.createEarthSkyBox();
+   */
+  static createEarthSkyBox() {
+    return new SkyBox({
+      sources: {
+        positiveX: getDefaultSkyBoxUrl("px"),
+        negativeX: getDefaultSkyBoxUrl("mx"),
+        positiveY: getDefaultSkyBoxUrl("py"),
+        negativeY: getDefaultSkyBoxUrl("my"),
+        positiveZ: getDefaultSkyBoxUrl("pz"),
+        negativeZ: getDefaultSkyBoxUrl("mz"),
+      },
+    });
+  }
+}
 
 function getDefaultSkyBoxUrl(suffix) {
   return buildModuleUrl(`Assets/Textures/SkyBox/tycho2t3_80_${suffix}.jpg`);
 }
-
-/**
- * Creates a skybox instance with the default starmap for the Earth.
- * @return {SkyBox} The default skybox for the Earth
- *
- * @example
- * viewer.scene.skyBox = Cesium.SkyBox.createEarthSkyBox();
- */
-SkyBox.createEarthSkyBox = function () {
-  return new SkyBox({
-    sources: {
-      positiveX: getDefaultSkyBoxUrl("px"),
-      negativeX: getDefaultSkyBoxUrl("mx"),
-      positiveY: getDefaultSkyBoxUrl("py"),
-      negativeY: getDefaultSkyBoxUrl("my"),
-      positiveZ: getDefaultSkyBoxUrl("pz"),
-      negativeZ: getDefaultSkyBoxUrl("mz"),
-    },
-  });
-};
 
 export default SkyBox;

@@ -24,7 +24,6 @@ import PostProcessStageSampleMode from "./PostProcessStageSampleMode.js";
  * Runs a post-process stage on either the texture rendered by the scene or the output of a previous post-process stage.
  *
  * @alias PostProcessStage
- * @constructor
  *
  * @param {object} options An object with the following properties:
  * @param {string} options.fragmentShader The fragment shader to use. The default <code>sampler2D</code> uniforms are <code>colorTexture</code> and <code>depthTexture</code>. The color texture is the output of rendering the scene or the previous stage. The depth texture is the output from rendering the scene. The shader should contain one or both uniforms. There is also a <code>vec2</code> varying named <code>v_textureCoordinates</code> that can be used to sample the textures.
@@ -91,315 +90,395 @@ import PostProcessStageSampleMode from "./PostProcessStageSampleMode.js";
  * }));
  * stage.selected = [cesium3DTileFeature];
  */
-function PostProcessStage(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const {
-    name = createGuid(),
-    fragmentShader,
-    uniforms,
-    textureScale = 1.0,
-    forcePowerOfTwo = false,
-    sampleMode = PostProcessStageSampleMode.NEAREST,
-    pixelFormat = PixelFormat.RGBA,
-    pixelDatatype = PixelDatatype.UNSIGNED_BYTE,
-    clearColor = Color.BLACK,
-    scissorRectangle,
-  } = options;
+class PostProcessStage {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const {
+      name = createGuid(),
+      fragmentShader,
+      uniforms,
+      textureScale = 1.0,
+      forcePowerOfTwo = false,
+      sampleMode = PostProcessStageSampleMode.NEAREST,
+      pixelFormat = PixelFormat.RGBA,
+      pixelDatatype = PixelDatatype.UNSIGNED_BYTE,
+      clearColor = Color.BLACK,
+      scissorRectangle,
+    } = options;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("options.fragmentShader", fragmentShader);
-  Check.typeOf.number.greaterThan("options.textureScale", textureScale, 0.0);
-  Check.typeOf.number.lessThanOrEquals(
-    "options.textureScale",
-    textureScale,
-    1.0,
-  );
-  if (!PixelFormat.isColorFormat(pixelFormat)) {
-    throw new DeveloperError("options.pixelFormat must be a color format.");
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("options.fragmentShader", fragmentShader);
+    Check.typeOf.number.greaterThan("options.textureScale", textureScale, 0.0);
+    Check.typeOf.number.lessThanOrEquals(
+      "options.textureScale",
+      textureScale,
+      1.0,
+    );
+    if (!PixelFormat.isColorFormat(pixelFormat)) {
+      throw new DeveloperError("options.pixelFormat must be a color format.");
+    }
+    //>>includeEnd('debug');
+
+    this._fragmentShader = fragmentShader;
+    this._uniforms = uniforms;
+    this._textureScale = textureScale;
+    this._forcePowerOfTwo = forcePowerOfTwo;
+    this._sampleMode = sampleMode;
+    this._pixelFormat = pixelFormat;
+    this._pixelDatatype = pixelDatatype;
+    this._clearColor = clearColor;
+
+    this._uniformMap = undefined;
+    this._command = undefined;
+
+    this._colorTexture = undefined;
+    this._depthTexture = undefined;
+    this._idTexture = undefined;
+
+    this._actualUniforms = {};
+    this._dirtyUniforms = [];
+    this._texturesToRelease = [];
+    this._texturesToCreate = [];
+    this._texturePromise = undefined;
+
+    const passState = new PassState();
+    passState.scissorTest = {
+      enabled: true,
+      rectangle: defined(scissorRectangle)
+        ? BoundingRectangle.clone(scissorRectangle)
+        : new BoundingRectangle(),
+    };
+    this._passState = passState;
+
+    this._ready = false;
+
+    this._name = name;
+
+    this._logDepthChanged = undefined;
+    this._useLogDepth = undefined;
+
+    this._selectedIdTexture = undefined;
+    this._selected = undefined;
+    this._selectedShadow = undefined;
+    this._parentSelected = undefined;
+    this._parentSelectedShadow = undefined;
+    this._combinedSelected = undefined;
+    this._combinedSelectedShadow = undefined;
+    this._selectedLength = 0;
+    this._parentSelectedLength = 0;
+    this._selectedDirty = true;
+
+    // set by PostProcessStageCollection
+    this._textureCache = undefined;
+    this._index = undefined;
+
+    /**
+     * Whether or not to execute this post-process stage when ready.
+     *
+     * @type {boolean}
+     */
+    this.enabled = true;
+    this._enabled = true;
   }
-  //>>includeEnd('debug');
-
-  this._fragmentShader = fragmentShader;
-  this._uniforms = uniforms;
-  this._textureScale = textureScale;
-  this._forcePowerOfTwo = forcePowerOfTwo;
-  this._sampleMode = sampleMode;
-  this._pixelFormat = pixelFormat;
-  this._pixelDatatype = pixelDatatype;
-  this._clearColor = clearColor;
-
-  this._uniformMap = undefined;
-  this._command = undefined;
-
-  this._colorTexture = undefined;
-  this._depthTexture = undefined;
-  this._idTexture = undefined;
-
-  this._actualUniforms = {};
-  this._dirtyUniforms = [];
-  this._texturesToRelease = [];
-  this._texturesToCreate = [];
-  this._texturePromise = undefined;
-
-  const passState = new PassState();
-  passState.scissorTest = {
-    enabled: true,
-    rectangle: defined(scissorRectangle)
-      ? BoundingRectangle.clone(scissorRectangle)
-      : new BoundingRectangle(),
-  };
-  this._passState = passState;
-
-  this._ready = false;
-
-  this._name = name;
-
-  this._logDepthChanged = undefined;
-  this._useLogDepth = undefined;
-
-  this._selectedIdTexture = undefined;
-  this._selected = undefined;
-  this._selectedShadow = undefined;
-  this._parentSelected = undefined;
-  this._parentSelectedShadow = undefined;
-  this._combinedSelected = undefined;
-  this._combinedSelectedShadow = undefined;
-  this._selectedLength = 0;
-  this._parentSelectedLength = 0;
-  this._selectedDirty = true;
-
-  // set by PostProcessStageCollection
-  this._textureCache = undefined;
-  this._index = undefined;
 
   /**
-   * Whether or not to execute this post-process stage when ready.
+   * Determines if this post-process stage is ready to be executed.
    *
-   * @type {boolean}
-   */
-  this.enabled = true;
-  this._enabled = true;
-}
-
-Object.defineProperties(PostProcessStage.prototype, {
-  /**
-   * Determines if this post-process stage is ready to be executed. A stage is only executed when both <code>ready</code>
-   * and {@link PostProcessStage#enabled} are <code>true</code>. A stage will not be ready while it is waiting on textures
-   * to load.
-   *
-   * @memberof PostProcessStage.prototype
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
+
   /**
    * The unique name of this post-process stage for reference by other stages in a {@link PostProcessStageComposite}.
    *
-   * @memberof PostProcessStage.prototype
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
+
   /**
    * The fragment shader to use when execute this post-process stage.
-   * <p>
-   * The shader must contain a sampler uniform declaration for <code>colorTexture</code>, <code>depthTexture</code>,
-   * or both.
-   * </p>
-   * <p>
-   * The shader must contain a <code>vec2</code> varying declaration for <code>v_textureCoordinates</code> for sampling
-   * the texture uniforms.
-   * </p>
    *
-   * @memberof PostProcessStage.prototype
    * @type {string}
    * @readonly
    */
-  fragmentShader: {
-    get: function () {
-      return this._fragmentShader;
-    },
-  },
+  get fragmentShader() {
+    return this._fragmentShader;
+  }
+
   /**
    * An object whose properties are used to set the uniforms of the fragment shader.
-   * <p>
-   * The object property values can be either a constant or a function. The function will be called
-   * each frame before the post-process stage is executed.
-   * </p>
-   * <p>
-   * A constant value can also be a URI to an image, a data URI, or an HTML element that can be used as a texture, such as HTMLImageElement or HTMLCanvasElement.
-   * </p>
-   * <p>
-   * If this post-process stage is part of a {@link PostProcessStageComposite} that does not execute in series, the constant value can also be
-   * the name of another stage in a composite. This will set the uniform to the output texture the stage with that name.
-   * </p>
    *
-   * @memberof PostProcessStage.prototype
    * @type {object}
    * @readonly
    */
-  uniforms: {
-    get: function () {
-      return this._uniforms;
-    },
-  },
+  get uniforms() {
+    return this._uniforms;
+  }
+
   /**
-   * A number in the range (0.0, 1.0] used to scale the output texture dimensions. A scale of 1.0 will render this post-process stage to a texture the size of the viewport.
+   * A number in the range (0.0, 1.0] used to scale the output texture dimensions.
    *
-   * @memberof PostProcessStage.prototype
    * @type {number}
    * @readonly
    */
-  textureScale: {
-    get: function () {
-      return this._textureScale;
-    },
-  },
+  get textureScale() {
+    return this._textureScale;
+  }
+
   /**
-   * Whether or not to force the output texture dimensions to be both equal powers of two. The power of two will be the next power of two of the minimum of the dimensions.
+   * Whether or not to force the output texture dimensions to be both equal powers of two.
    *
-   * @memberof PostProcessStage.prototype
    * @type {number}
    * @readonly
    */
-  forcePowerOfTwo: {
-    get: function () {
-      return this._forcePowerOfTwo;
-    },
-  },
+  get forcePowerOfTwo() {
+    return this._forcePowerOfTwo;
+  }
+
   /**
    * How to sample the input color texture.
    *
-   * @memberof PostProcessStage.prototype
    * @type {PostProcessStageSampleMode}
    * @readonly
    */
-  sampleMode: {
-    get: function () {
-      return this._sampleMode;
-    },
-  },
+  get sampleMode() {
+    return this._sampleMode;
+  }
+
   /**
    * The color pixel format of the output texture.
    *
-   * @memberof PostProcessStage.prototype
    * @type {PixelFormat}
    * @readonly
    */
-  pixelFormat: {
-    get: function () {
-      return this._pixelFormat;
-    },
-  },
+  get pixelFormat() {
+    return this._pixelFormat;
+  }
+
   /**
    * The pixel data type of the output texture.
    *
-   * @memberof PostProcessStage.prototype
    * @type {PixelDatatype}
    * @readonly
    */
-  pixelDatatype: {
-    get: function () {
-      return this._pixelDatatype;
-    },
-  },
+  get pixelDatatype() {
+    return this._pixelDatatype;
+  }
+
   /**
    * The color to clear the output texture to.
    *
-   * @memberof PostProcessStage.prototype
    * @type {Color}
    * @readonly
    */
-  clearColor: {
-    get: function () {
-      return this._clearColor;
-    },
-  },
+  get clearColor() {
+    return this._clearColor;
+  }
+
   /**
-   * The {@link BoundingRectangle} to use for the scissor test. A default bounding rectangle will disable the scissor test.
+   * The {@link BoundingRectangle} to use for the scissor test.
    *
-   * @memberof PostProcessStage.prototype
    * @type {BoundingRectangle}
    * @readonly
    */
-  scissorRectangle: {
-    get: function () {
-      return this._passState.scissorTest.rectangle;
-    },
-  },
+  get scissorRectangle() {
+    return this._passState.scissorTest.rectangle;
+  }
+
   /**
    * A reference to the texture written to when executing this post process stage.
    *
-   * @memberof PostProcessStage.prototype
    * @type {Texture}
    * @readonly
    * @private
    */
-  outputTexture: {
-    get: function () {
-      if (defined(this._textureCache)) {
-        const framebuffer = this._textureCache.getFramebuffer(this._name);
-        if (defined(framebuffer)) {
-          return framebuffer.getColorTexture(0);
-        }
+  get outputTexture() {
+    if (defined(this._textureCache)) {
+      const framebuffer = this._textureCache.getFramebuffer(this._name);
+      if (defined(framebuffer)) {
+        return framebuffer.getColorTexture(0);
       }
-      return undefined;
-    },
-  },
+    }
+    return undefined;
+  }
+
   /**
    * The features selected for applying the post-process.
-   * <p>
-   * In the fragment shader, use <code>czm_selected</code> to determine whether or not to apply the post-process
-   * stage to that fragment. For example:
-   * <code>
-   * if (czm_selected(v_textureCoordinates)) {
-   *     // apply post-process stage
-   * } else {
-   *     out_FragColor = texture(colorTexture, v_textureCoordinates);
-   * }
-   * </code>
-   * </p>
    *
-   * @memberof PostProcessStage.prototype
    * @type {Array}
    */
-  selected: {
-    get: function () {
-      return this._selected;
-    },
-    set: function (value) {
-      this._selected = value;
-    },
-  },
+  get selected() {
+    return this._selected;
+  }
+
+  set selected(value) {
+    this._selected = value;
+  }
+
   /**
    * @private
    */
-  parentSelected: {
-    get: function () {
-      return this._parentSelected;
-    },
-    set: function (value) {
-      this._parentSelected = value;
-    },
-  },
-});
+  get parentSelected() {
+    return this._parentSelected;
+  }
+
+  set parentSelected(value) {
+    this._parentSelected = value;
+  }
+
+  /**
+   * @private
+   */
+  _isSupported(context) {
+    return (
+      !depthTextureRegex.test(this._fragmentShader) || context.depthTexture
+    );
+  }
+
+  /**
+   * A function that will be called before execute. Used to create WebGL resources and load any textures.
+   * @param {Context} context The context.
+   * @param {boolean} useLogDepth Whether the scene uses a logarithmic depth buffer.
+   * @private
+   */
+  update(context, useLogDepth) {
+    if (this.enabled !== this._enabled && !this.enabled) {
+      releaseResources(this);
+    }
+
+    this._enabled = this.enabled;
+    if (!this._enabled) {
+      return;
+    }
+
+    this._logDepthChanged = useLogDepth !== this._useLogDepth;
+    this._useLogDepth = useLogDepth;
+
+    this._selectedDirty = isSelectedTextureDirty(this);
+
+    this._selectedShadow = this._selected;
+    this._parentSelectedShadow = this._parentSelected;
+    this._combinedSelectedShadow = this._combinedSelected;
+    this._selectedLength = defined(this._selected) ? this._selected.length : 0;
+    this._parentSelectedLength = defined(this._parentSelected)
+      ? this._parentSelected.length
+      : 0;
+
+    createSelectedTexture(this, context);
+    createUniformMap(this);
+    updateUniformTextures(this, context);
+    createDrawCommand(this, context);
+    createSampler(this);
+
+    this._selectedDirty = false;
+
+    if (!this._ready) {
+      return;
+    }
+
+    const framebuffer = this._textureCache.getFramebuffer(this._name);
+    this._command.framebuffer = framebuffer;
+
+    if (!defined(framebuffer)) {
+      return;
+    }
+
+    const colorTexture = framebuffer.getColorTexture(0);
+    let renderState;
+    if (
+      colorTexture.width !== context.drawingBufferWidth ||
+      colorTexture.height !== context.drawingBufferHeight
+    ) {
+      renderState = this._renderState;
+      if (
+        !defined(renderState) ||
+        colorTexture.width !== renderState.viewport.width ||
+        colorTexture.height !== renderState.viewport.height
+      ) {
+        this._renderState = RenderState.fromCache({
+          viewport: new BoundingRectangle(
+            0,
+            0,
+            colorTexture.width,
+            colorTexture.height,
+          ),
+        });
+      }
+    }
+
+    this._command.renderState = renderState;
+  }
+
+  /**
+   * Executes the post-process stage.
+   * @param {Context} context The context.
+   * @param {Texture} colorTexture The input color texture.
+   * @param {Texture} depthTexture The input depth texture.
+   * @param {Texture} idTexture The id texture.
+   * @private
+   */
+  execute(context, colorTexture, depthTexture, idTexture) {
+    if (
+      !defined(this._command) ||
+      !defined(this._command.framebuffer) ||
+      !this._ready ||
+      !this._enabled
+    ) {
+      return;
+    }
+
+    this._colorTexture = colorTexture;
+    this._depthTexture = depthTexture;
+    this._idTexture = idTexture;
+
+    if (!Sampler.equals(this._colorTexture.sampler, this._sampler)) {
+      this._colorTexture.sampler = this._sampler;
+    }
+
+    const passState =
+      this.scissorRectangle.width > 0 && this.scissorRectangle.height > 0
+        ? this._passState
+        : undefined;
+    if (defined(passState)) {
+      passState.context = context;
+    }
+
+    this._command.execute(context, passState);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see PostProcessStage#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see PostProcessStage#isDestroyed
+   */
+  destroy() {
+    releaseResources(this);
+    return destroyObject(this);
+  }
+}
+
+// --- File-scoped helpers ---
 
 const depthTextureRegex = /uniform\s+sampler2D\s+depthTexture/g;
-
-/**
- * @private
- */
-PostProcessStage.prototype._isSupported = function (context) {
-  return !depthTextureRegex.test(this._fragmentShader) || context.depthTexture;
-};
 
 function getUniformValueGetterAndSetter(stage, uniforms, name) {
   const currentValue = uniforms[name];
@@ -483,7 +562,7 @@ function createUniformMap(stage) {
   const uniforms = stage._uniforms;
   const actualUniforms = stage._actualUniforms;
   for (const name in uniforms) {
-    if (!uniforms.hasOwnProperty(name)) {
+    if (!Object.hasOwn(uniforms, name)) {
       continue;
     }
     if (typeof uniforms[name] !== "function") {
@@ -724,7 +803,7 @@ function releaseResources(stage) {
   const uniforms = stage._uniforms;
   const actualUniforms = stage._actualUniforms;
   for (const name in actualUniforms) {
-    if (!actualUniforms.hasOwnProperty(name)) {
+    if (!Object.hasOwn(actualUniforms, name)) {
       continue;
     }
     const actualUniform = actualUniforms[name];
@@ -849,152 +928,4 @@ function createSelectedTexture(stage, context) {
   });
 }
 
-/**
- * A function that will be called before execute. Used to create WebGL resources and load any textures.
- * @param {Context} context The context.
- * @param {boolean} useLogDepth Whether the scene uses a logarithmic depth buffer.
- * @private
- */
-PostProcessStage.prototype.update = function (context, useLogDepth) {
-  if (this.enabled !== this._enabled && !this.enabled) {
-    releaseResources(this);
-  }
-
-  this._enabled = this.enabled;
-  if (!this._enabled) {
-    return;
-  }
-
-  this._logDepthChanged = useLogDepth !== this._useLogDepth;
-  this._useLogDepth = useLogDepth;
-
-  this._selectedDirty = isSelectedTextureDirty(this);
-
-  this._selectedShadow = this._selected;
-  this._parentSelectedShadow = this._parentSelected;
-  this._combinedSelectedShadow = this._combinedSelected;
-  this._selectedLength = defined(this._selected) ? this._selected.length : 0;
-  this._parentSelectedLength = defined(this._parentSelected)
-    ? this._parentSelected.length
-    : 0;
-
-  createSelectedTexture(this, context);
-  createUniformMap(this);
-  updateUniformTextures(this, context);
-  createDrawCommand(this, context);
-  createSampler(this);
-
-  this._selectedDirty = false;
-
-  if (!this._ready) {
-    return;
-  }
-
-  const framebuffer = this._textureCache.getFramebuffer(this._name);
-  this._command.framebuffer = framebuffer;
-
-  if (!defined(framebuffer)) {
-    return;
-  }
-
-  const colorTexture = framebuffer.getColorTexture(0);
-  let renderState;
-  if (
-    colorTexture.width !== context.drawingBufferWidth ||
-    colorTexture.height !== context.drawingBufferHeight
-  ) {
-    renderState = this._renderState;
-    if (
-      !defined(renderState) ||
-      colorTexture.width !== renderState.viewport.width ||
-      colorTexture.height !== renderState.viewport.height
-    ) {
-      this._renderState = RenderState.fromCache({
-        viewport: new BoundingRectangle(
-          0,
-          0,
-          colorTexture.width,
-          colorTexture.height,
-        ),
-      });
-    }
-  }
-
-  this._command.renderState = renderState;
-};
-
-/**
- * Executes the post-process stage. The color texture is the texture rendered to by the scene or from the previous stage.
- * @param {Context} context The context.
- * @param {Texture} colorTexture The input color texture.
- * @param {Texture} depthTexture The input depth texture.
- * @param {Texture} idTexture The id texture.
- * @private
- */
-PostProcessStage.prototype.execute = function (
-  context,
-  colorTexture,
-  depthTexture,
-  idTexture,
-) {
-  if (
-    !defined(this._command) ||
-    !defined(this._command.framebuffer) ||
-    !this._ready ||
-    !this._enabled
-  ) {
-    return;
-  }
-
-  this._colorTexture = colorTexture;
-  this._depthTexture = depthTexture;
-  this._idTexture = idTexture;
-
-  if (!Sampler.equals(this._colorTexture.sampler, this._sampler)) {
-    this._colorTexture.sampler = this._sampler;
-  }
-
-  const passState =
-    this.scissorRectangle.width > 0 && this.scissorRectangle.height > 0
-      ? this._passState
-      : undefined;
-  if (defined(passState)) {
-    passState.context = context;
-  }
-
-  this._command.execute(context, passState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see PostProcessStage#destroy
- */
-PostProcessStage.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see PostProcessStage#isDestroyed
- */
-PostProcessStage.prototype.destroy = function () {
-  releaseResources(this);
-  return destroyObject(this);
-};
 export default PostProcessStage;

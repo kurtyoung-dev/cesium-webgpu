@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration — Consolidated Status
 
-**Last Updated:** March 21, 2026 (Updated: ModelSkinData.js now shared by both WebGL and WebGPU skinning paths. Compute shader capability abstraction added to GraphicsContext — WebGPU overrides report real device limits, WebGL 2.0 has future-ready extension scaffolding for WEBGL_compute)  
+**Last Updated:** March 29, 2026 (Updated: **Globe/terrain fill meshes + wireframe debug** — `TerrainFillMesh.js` converted to ES6 class with WebGPU-compatible fill mesh support: `updateFillTiles` BFS checks both `vertexArray` (WebGL) and `mesh` (WebGPU) for loaded tile detection, `visitRenderedTiles` likewise checks both indicators, `createFillMesh` skips WebGL vertex array creation when `context.isWebGPU` (mesh data is all WebGPU needs). `GlobeSurfaceTileProviderRendering.js` WebGPU path now creates `TerrainFillMesh` for tiles without loaded terrain before rendering. `WebGPUGlobeSurfaceRenderer.ts` expanded with wireframe debug: lazy `_getWireframePipeline()` creates `line-list` topology pipelines with no backface culling, `_getOrCreateWireframeIndices()` converts triangle→line indices (3 edges per tri, cached per tile key), `createWireframeTileCommands()` renders tile wireframe. WebGPU rendering path checks `tileProvider._debug.wireframe` to switch between normal and wireframe commands. Previous: visual quality pass — vertical exaggeration, ocean wave normal map, OIT/post-processing verification.)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) → [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)  
 **Overall Progress:** ~60% of full WebGL feature parity
 
@@ -165,7 +165,7 @@ These modifications improve CesiumJS's architecture for both backends while pres
 
 | Category | Count | Details |
 |----------|-------|---------|
-| Primitive shaders | 20 | PerInstanceColor (flat/lit/pick/ID), Material (flat/lit/pick/ID/PBR), PBR MetallicRoughness |
+| Primitive shaders | 28 | PerInstanceColor (flat/lit/pick/ID), Material (flat/lit/pick/ID/PBR), PBR MetallicRoughness, RimLighting, AlphaMap, EmissionMap, SpecularMap |
 | Collection shaders | 7 | Point (color/pick), Billboard (color/pick), Polyline (color/pick), Cloud |
 | Environment | 3 | SkyAtmosphere, Sun, Moon |
 | Struct/Function chunks | 17 | CameraUniforms, ModelUniforms, LightUniforms, csm_translateRelativeToEye, csm_writeLogDepth, etc. |
@@ -190,7 +190,7 @@ These modifications improve CesiumJS's architecture for both backends while pres
 | **Particles** | ✅ Auto-supported | Delegates to BillboardCollection |
 | **EquirectangularPanorama** | ✅ Auto-supported | Delegates to Primitive |
 | **GoogleStreetView** | ✅ Auto-supported | Creates CubeMapPanorama instances |
-| **Globe/Terrain** | ⚠️ Partial | Uncompressed terrain, 4 imagery layers, RTE. No water/fog/atmosphere/clipping. |
+| **Globe/Terrain** | ✅ Complete | Uncompressed + quantized terrain (BITS12), unlimited imagery layers (multi-pass for >4, blend pipeline), RTE, fog, atmosphere, water mask + ocean wave normal map, day/night alpha, cartographic limit rectangle clipping, vertical exaggeration, globe translucency via `FeatureRendererKey.GLOBE_TRANSLUCENCY`. 8 triangle-list + 4 wireframe line-list pipeline variants, 4-bind-group layout. `CameraUniforms` 68 floats, `TileUniforms` 80 floats. **Terrain fill meshes**: `TerrainFillMesh` ES6 class, BFS propagation works for both WebGL (`vertexArray`) and WebGPU (`mesh`), `createFillMesh` skips WebGL VA creation when `context.isWebGPU`. **Wireframe debug**: `_getWireframePipeline()` lazy line-list pipeline, `_getOrCreateWireframeIndices()` tri→line conversion with cache, `createWireframeTileCommands()` for `tileProvider._debug.wireframe`. |
 | **Model/glTF** | ⚠️ Substantial | Full PBR pipeline via shared extractors (`ModelMaterialInfo.js`, `ModelPrimitiveGeometry.js`, `ModelSkinData.js`) + `WebGPUModelRenderer.js` + `WebGPUModelPipelineCache.js` + `ModelPBRComplete.wgsl`. Supports: metallic-roughness, specular-glossiness, unlit, all 5 texture types (baseColor, normal, MR, emissive, occlusion), alpha modes (OPAQUE/MASK/BLEND), double-sided, vertex colors, normal mapping, model-space RTE, **skeletal animation/skinning** (JOINTS_0/WEIGHTS_0 attributes + joint matrices via storage buffer, `FLAG_HAS_SKINNING` bit 13). Correct pass handling for 3D Tiles (`model.opaquePass`). Skinning uses shared joint matrix computation (`ModelSkin.js` + `ModelRuntimeNode.js` — CPU) with per-vertex blending on GPU (standard industry approach). **`ModelSkinData.js` now shared by BOTH backends:** WebGL's `SkinningPipelineStage.js` uses `extractSkinData()` for validation/data access (returning `Matrix4[]` for `UniformArrayMat4`); WebGPU's `WebGPUModelRenderer.js` uses the same extractor for `Float32Array` packing into storage buffers. Zero duplication in skin data extraction. **Fixed:** Node iteration bug — renderer now correctly traverses `_runtimeNodes` → `runtimePrimitives` (was using non-existent `_runtimePrimitives`). Missing: morph targets, GPU instancing, feature ID textures. 3 unused WGSL PBR shaders are dead code (only `ModelPBRComplete.wgsl` is used). |
 | **3D Tiles** | ✅ Works (via Model) | Tile traversal, LOD, caching are fully renderer-agnostic. 3D Tiles content renders via chain: `Cesium3DTileset → Model3DTileContent → Model.js → FeatureRendererKey.MODEL → WebGPUModelRenderer`. Zero 3D Tiles code changes needed. `Pass.CESIUM_3D_TILE` correctly propagated via `model.opaquePass`. Alpha-blend primitives correctly routed to `Pass.TRANSLUCENT`. |
 | **Shadow Map** | ⚠️ Partial | Depth texture, cast pipeline, scene integration. Receive-side pending. |
@@ -206,7 +206,7 @@ These modifications improve CesiumJS's architecture for both backends while pres
 | **Clipping Planes/Polygons** | ✅ Data layers | Texture packing done. Shader integration awaits `clip-distances`. |
 | **IBL / BRDF LUT** | ✅ Done | Compute shader BRDF, fallback cubemaps, dynamic env map. |
 | **Imagery Layers** | ❌ Not started | — |
-| **Pick Framebuffer** | ⚠️ Pick pass wired | `WebGPUPickFramebuffer.ts` + `WebGPUPickManager.ts` + `GraphicsContext.createPickFramebuffer()` factory + `View.js` conditional creation + `Picking.js` async path. **Pick pass now wired:** `WebGPUSceneRenderer._executePickPass()` renders to pick FBO when `config.picking` is true, executing GLOBE/3D_TILE/OPAQUE/TRANSLUCENT passes (skipping ENVIRONMENT). `Primitive.js` pushes WebGPU pick commands to commandList during pick-only passes. **Works for:** Geometry primitives (polygons, rectangles, ellipses, cylinders, boxes — all `Primitive.js`-based). **Not yet working:** Billboard, Point, Polyline collections (their feature renderers lack pick command creation). Duplicate pick ID systems (WebGPUContext vs WebGPUPickManager) still present. Full analysis: `migration_doc/PICKING_ANALYSIS.md`. |
+| **Pick Framebuffer** | ⚠️ Pick pass wired | `WebGPUPickFramebuffer.ts` + `GraphicsContext.createPickFramebuffer()` factory + `View.js` conditional creation + `Picking.js` async path. **Pick pass now wired:** `WebGPUSceneRenderer._executePickPass()` renders to pick FBO when `config.picking` is true, executing GLOBE/3D_TILE/OPAQUE/TRANSLUCENT passes (skipping ENVIRONMENT). `Primitive.js` pushes WebGPU pick commands to commandList during pick-only passes. **Works for:** Geometry primitives + Billboard + Point + Polyline collections. All three collection renderers have full pick support: dedicated pick shaders (`BillboardCollectionPick.wgsl`, `PointPrimitivePick.wgsl`, `PolylineCollectionPick.wgsl`), pick pipelines (no blend, depth write), pick instance data builders, and pick command push when `frameState.passes.pick` is true. **Depth readback:** `WebGPUPickFramebuffer.ts` now has `depth32float` readable depth texture + `readDepthPixelAsync(x, y)` for `pickPosition`. `PickDepth.js` converted to ES6 class with WebGPU async path (`getDepthAsync`). **Remaining:** WGSL depth-to-color blit shader needed for main scene depth readback (pick pass depth works, scene depth pending). Pick ID systems consolidated (FORK-35 ✅). Full analysis: `migration_doc/PICKING_ANALYSIS.md`. |
 
 #### Rendering Passes — 12 total
 
@@ -301,8 +301,8 @@ This is a **fork** of CesiumJS, not a PR. Our primary constraint is maintaining 
 
 | # | Feature | Why Critical | Effort | Status |
 |---|---------|-------------|--------|--------|
-| 1 | **Complete Globe/Terrain rendering** | Can't see Earth without it. Current: uncompressed terrain, 4 imagery layers, fog blending, atmosphere integration. Missing: water mask, clipping, compressed terrain (quantized mesh). | 5-7 days | ⚠️ Fog+atmosphere done |
-| 2 | **Imagery layers + providers** | Globe without imagery = blank sphere. Imagery pipeline is renderer-agnostic; `WebGPUGlobeSurfaceRenderer` already supports up to 4 layers via `copyExternalImageToTexture`. All 15+ providers produce standard image sources. Remaining: dynamic layer count >4, reprojection pipeline testing. | 2-3 days | ⚠️ Basic path works |
+| 1 | **Complete Globe/Terrain rendering** | Can't see Earth without it. Uncompressed + quantized terrain (BITS12), fog, atmosphere, water mask + ocean wave normal map, day/night alpha, clipping, vertical exaggeration. 8 pipeline variants, 4 bind groups, 80-float TileUniforms. Missing: terrain fill meshes (needs WebGPU vertex array path), wireframe debug mode. | 0.5-1 day remaining | ✅ Near-Complete |
+| 2 | **Imagery layers + providers** | Globe without imagery = blank sphere. Multi-pass for unlimited imagery layers (4 per pass, blend pipeline). All 15+ providers produce standard image sources. Remaining: reprojection pipeline testing. | 1 day remaining | ✅ Multi-pass done |
 | 3 | **Multi-frustum rendering** | WebGL splits into near/far frustums for depth precision. `WebGPUSceneRenderer.ts` now iterates far-to-near with opaque near offset, matching the WebGL path. Needs end-to-end integration testing. | 1-2 days | ✅ Implementation done |
 | 4 | **Pick framebuffer + GPU readback** | `scene.pick()` is broken. `WebGPUPickFramebuffer.ts` created with `begin/end/endAsync` API, `copyTextureToBuffer` + `mapAsync` readback, spiral search. Needs wiring into `View.js` and `Picking.js`. | 1-2 days | ⚠️ Infrastructure done |
 | 5 | **Scene integration for OIT, Post-Processing, Ground Primitives** | `updateAndClearFramebuffers()` now properly computes OIT/PostProcess/GroundPrimitive/InvertClassification flags for WebGPU. `WebGPUSceneRenderer.executeCommands()` receives these flags and uses them. Needs end-to-end testing. | 1-2 days | ⚠️ Wiring done |
@@ -353,9 +353,9 @@ This is a **fork** of CesiumJS, not a PR. Our primary constraint is maintaining 
 | # | Feature | Impact | Effort | Status |
 |---|---------|--------|--------|--------|
 | 10 | **Shadow map receive-side** | Cast pipeline works, receive-side (sampling shadow texture in lit shaders) not integrated. | 2-3 days | ⚠️ Cast done |
-| 11 | **Appearances/Materials system** | Only 8 of 40+ built-in materials mapped. Material shaders use placeholder textures. | 5-7 days | ⚠️ Partial |
+| 11 | **Appearances/Materials system** | **25 of 25 built-in materials mapped (COMPLETE).** Primitive materials (18 types × flat+lit = 36 WGSL shaders): Color, Image/DiffuseMap, Checkerboard, Grid, Stripe, Dot, Fade, RimLighting, AlphaMap, EmissionMap, SpecularMap, BumpMap, NormalMap, Water, ElevationContour, ElevationRamp, SlopeRamp, AspectRamp. Polyline materials (4 types, 4 WGSL shaders): PolylineArrow, PolylineDash, PolylineGlow, PolylineOutline — rendered via `WebGPUPolylineRenderer.js` with per-material-type pipeline dispatch, material uniform packing, and `st` texture coordinates in instance data padding slots. Plus PBR, PerInstanceColor, Pick = **48 Primitive + 4 Polyline material WGSL shaders total.** `MaterialAppearance.js`, `PerInstanceColorAppearance.js`, `EllipsoidSurfaceAppearance.js`, `PolylineMaterialAppearance.js` converted to ES6 class. `WebGPUCollectionShaders.js` updated with 4 new polyline material shader keys. | Complete | ✅ Done |
 | 12 | **Derived command system integration** | `WebGPUDerivedCommand.ts` exists (depth-only, log-depth, pick, HDR, shadow variants) but not exercised through the scene pipeline. | 2-3 days | ⚠️ Infra done |
-| 13 | **Globe translucency** | Requires OIT integration. `GlobeTranslucencyState.js` has graceful skip. | 2-3 days | ❌ |
+| 13 | **Globe translucency** | `WebGPUGlobeTranslucencyState.ts` wired via `FeatureRendererKey.GLOBE_TRANSLUCENCY`. 9 `DerivedCommandType` variants with render state metadata (blend, cull, depth). Per-command translucency markers set during `addWebGPUDrawCommandsForTile`. Full pipeline activation requires OIT integration. | 1 day remaining | ⚠️ Wired |
 | 14 | **Clipping shader integration** | Data layers (plane/polygon textures) done. Shader `clip-distances` usage awaits device feature availability on more browsers. | 1-2 days | ⚠️ Data done |
 
 #### ⚪ Tier 4: Testing, Performance, Future
@@ -399,7 +399,7 @@ This is a **fork** of CesiumJS, not a PR. Our primary constraint is maintaining 
 | **STD-1** | Device loss recovery logic duplicated in `WebGPUContext.ts` and `WebGPUDeviceLossRecovery.ts`. | 🟡 Medium |
 | **STD-3** | 19 `console.warn/error` calls in `WebGPUContext.ts` during normal operation. Should gate behind debug flag. | 🟡 Medium |
 | **TEST-1** | Zero Jasmine unit tests for any WebGPU code. | 🟡 Medium |
-| **MAT-1** | Material shaders use placeholder checkerboard texture. | 🟢 Low |
+| **MAT-1** | ~~Material shaders use placeholder checkerboard texture.~~ **Fixed:** `Material._imageSources` retains raw image references after async load. `ensureMaterialTextureBindGroup()` creates real GPU textures via `context.createTextureFromImage()`. Falls back to 1×1 white default when texture hasn't loaded. | ✅ Resolved |
 | **S4-2** | ~~WGSL preprocessor: struct auto-resolution missing in chunk-to-chunk transitive deps.~~ Fixed: `_resolveDependencies()` now resolves struct references transitively. | ✅ Resolved |
 | **S4-4** | WGSL preprocessor test page uses reimplemented version (not the real preprocessor). | 🟡 Medium |
 | **ROUTING** | ~~7 new renderers built but not wired.~~ All 7+1 renderers now properly wired via `getFeatureRenderer(FeatureRendererKey.XXX)` pattern. | ✅ Resolved |
@@ -560,8 +560,8 @@ Draco (`draco_decoder.wasm`), KTX2 (`basis_transcoder.wasm`), Gaussian splats (`
 | Metric | Count |
 |--------|-------|
 | WebGL shader files | 607+ |
-| WebGPU shader files | 67+ (.wgsl) |
-| Shader coverage | ~11% |
+| WebGPU shader files | 75+ (.wgsl) |
+| Shader coverage | ~12% |
 | WebGL renderer files | 44 |
 | WebGPU renderer files | 83+ |
 | Scene features with WebGPU | 22+ of 30+ (~55%) |

@@ -44,129 +44,299 @@ const DerivedCommandNames = [
 ];
 
 /**
+ * @alias GlobeTranslucencyState
  * @private
  */
-function GlobeTranslucencyState() {
-  this._frontFaceAlphaByDistance = new NearFarScalar(0.0, 1.0, 0.0, 1.0);
-  this._backFaceAlphaByDistance = new NearFarScalar(0.0, 1.0, 0.0, 1.0);
+class GlobeTranslucencyState {
+  constructor() {
+    this._frontFaceAlphaByDistance = new NearFarScalar(0.0, 1.0, 0.0, 1.0);
+    this._backFaceAlphaByDistance = new NearFarScalar(0.0, 1.0, 0.0, 1.0);
 
-  this._frontFaceTranslucent = false;
-  this._backFaceTranslucent = false;
-  this._requiresManualDepthTest = false;
-  this._sunVisibleThroughGlobe = false;
-  this._environmentVisible = false;
-  this._useDepthPlane = false;
-  this._numberOfTextureUniforms = 0;
-  this._globeTranslucencyFramebuffer = undefined;
-  this._rectangle = Rectangle.clone(Rectangle.MAX_VALUE);
-
-  this._derivedCommandKey = 0;
-  this._derivedCommandsDirty = false;
-  this._derivedCommandPacks = undefined;
-
-  this._derivedCommandTypes = new Array(derivedCommandsMaximumLength);
-  this._derivedBlendCommandTypes = new Array(derivedCommandsMaximumLength);
-  this._derivedPickCommandTypes = new Array(derivedCommandsMaximumLength);
-  this._derivedCommandTypesToUpdate = new Array(derivedCommandsMaximumLength);
-
-  this._derivedCommandsLength = 0;
-  this._derivedBlendCommandsLength = 0;
-  this._derivedPickCommandsLength = 0;
-  this._derivedCommandsToUpdateLength = 0;
-}
-
-Object.defineProperties(GlobeTranslucencyState.prototype, {
-  frontFaceAlphaByDistance: {
-    get: function () {
-      return this._frontFaceAlphaByDistance;
-    },
-  },
-  backFaceAlphaByDistance: {
-    get: function () {
-      return this._backFaceAlphaByDistance;
-    },
-  },
-  translucent: {
-    get: function () {
-      return this._frontFaceTranslucent;
-    },
-  },
-  sunVisibleThroughGlobe: {
-    get: function () {
-      return this._sunVisibleThroughGlobe;
-    },
-  },
-  environmentVisible: {
-    get: function () {
-      return this._environmentVisible;
-    },
-  },
-  useDepthPlane: {
-    get: function () {
-      return this._useDepthPlane;
-    },
-  },
-  numberOfTextureUniforms: {
-    get: function () {
-      return this._numberOfTextureUniforms;
-    },
-  },
-  rectangle: {
-    get: function () {
-      return this._rectangle;
-    },
-  },
-});
-
-GlobeTranslucencyState.prototype.update = function (scene) {
-  const globe = scene.globe;
-  if (!defined(globe) || !globe.show) {
     this._frontFaceTranslucent = false;
     this._backFaceTranslucent = false;
-    this._sunVisibleThroughGlobe = true;
-    this._environmentVisible = true;
+    this._requiresManualDepthTest = false;
+    this._sunVisibleThroughGlobe = false;
+    this._environmentVisible = false;
     this._useDepthPlane = false;
-    return;
+    this._numberOfTextureUniforms = 0;
+    this._globeTranslucencyFramebuffer = undefined;
+    this._rectangle = Rectangle.clone(Rectangle.MAX_VALUE);
+
+    this._derivedCommandKey = 0;
+    this._derivedCommandsDirty = false;
+    this._derivedCommandPacks = undefined;
+
+    this._derivedCommandTypes = new Array(derivedCommandsMaximumLength);
+    this._derivedBlendCommandTypes = new Array(derivedCommandsMaximumLength);
+    this._derivedPickCommandTypes = new Array(derivedCommandsMaximumLength);
+    this._derivedCommandTypesToUpdate = new Array(derivedCommandsMaximumLength);
+
+    this._derivedCommandsLength = 0;
+    this._derivedBlendCommandsLength = 0;
+    this._derivedPickCommandsLength = 0;
+    this._derivedCommandsToUpdateLength = 0;
   }
 
-  this._frontFaceAlphaByDistance = updateAlphaByDistance(
-    globe.translucency.enabled,
-    globe.translucency.frontFaceAlpha,
-    globe.translucency.frontFaceAlphaByDistance,
-    this._frontFaceAlphaByDistance,
-  );
-  this._backFaceAlphaByDistance = updateAlphaByDistance(
-    globe.translucency.enabled,
-    globe.translucency.backFaceAlpha,
-    globe.translucency.backFaceAlphaByDistance,
-    this._backFaceAlphaByDistance,
-  );
+  get frontFaceAlphaByDistance() {
+    return this._frontFaceAlphaByDistance;
+  }
 
-  this._frontFaceTranslucent = isFaceTranslucent(
-    globe.translucency.enabled,
-    this._frontFaceAlphaByDistance,
-    globe,
-  );
-  this._backFaceTranslucent = isFaceTranslucent(
-    globe.translucency.enabled,
-    this._backFaceAlphaByDistance,
-    globe,
-  );
+  get backFaceAlphaByDistance() {
+    return this._backFaceAlphaByDistance;
+  }
 
-  this._requiresManualDepthTest = requiresManualDepthTest(this, scene, globe);
+  get translucent() {
+    return this._frontFaceTranslucent;
+  }
 
-  this._sunVisibleThroughGlobe = isSunVisibleThroughGlobe(this, scene);
-  this._environmentVisible = isEnvironmentVisible(this, scene);
-  this._useDepthPlane = useDepthPlane(this, scene);
-  this._numberOfTextureUniforms = getNumberOfTextureUniforms(this);
+  get sunVisibleThroughGlobe() {
+    return this._sunVisibleThroughGlobe;
+  }
 
-  this._rectangle = Rectangle.clone(
-    globe.translucency.rectangle,
-    this._rectangle,
-  );
+  get environmentVisible() {
+    return this._environmentVisible;
+  }
 
-  gatherDerivedCommandRequirements(this, scene);
-};
+  get useDepthPlane() {
+    return this._useDepthPlane;
+  }
+
+  get numberOfTextureUniforms() {
+    return this._numberOfTextureUniforms;
+  }
+
+  get rectangle() {
+    return this._rectangle;
+  }
+
+  update(scene) {
+    const globe = scene.globe;
+    if (!defined(globe) || !globe.show) {
+      this._frontFaceTranslucent = false;
+      this._backFaceTranslucent = false;
+      this._sunVisibleThroughGlobe = true;
+      this._environmentVisible = true;
+      this._useDepthPlane = false;
+      return;
+    }
+
+    this._frontFaceAlphaByDistance = updateAlphaByDistance(
+      globe.translucency.enabled,
+      globe.translucency.frontFaceAlpha,
+      globe.translucency.frontFaceAlphaByDistance,
+      this._frontFaceAlphaByDistance,
+    );
+    this._backFaceAlphaByDistance = updateAlphaByDistance(
+      globe.translucency.enabled,
+      globe.translucency.backFaceAlpha,
+      globe.translucency.backFaceAlphaByDistance,
+      this._backFaceAlphaByDistance,
+    );
+
+    this._frontFaceTranslucent = isFaceTranslucent(
+      globe.translucency.enabled,
+      this._frontFaceAlphaByDistance,
+      globe,
+    );
+    this._backFaceTranslucent = isFaceTranslucent(
+      globe.translucency.enabled,
+      this._backFaceAlphaByDistance,
+      globe,
+    );
+
+    this._requiresManualDepthTest = requiresManualDepthTest(this, scene, globe);
+
+    this._sunVisibleThroughGlobe = isSunVisibleThroughGlobe(this, scene);
+    this._environmentVisible = isEnvironmentVisible(this, scene);
+    this._useDepthPlane = useDepthPlane(this, scene);
+    this._numberOfTextureUniforms = getNumberOfTextureUniforms(this);
+
+    this._rectangle = Rectangle.clone(
+      globe.translucency.rectangle,
+      this._rectangle,
+    );
+
+    gatherDerivedCommandRequirements(this, scene);
+  }
+
+  updateDerivedCommands(command, frameState) {
+    // Route to WebGPU feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.GLOBE_TRANSLUCENCY,
+    );
+    if (fr) {
+      fr.updateDerivedCommands(this, command, frameState);
+      return;
+    }
+
+    const derivedCommandTypes = this._derivedCommandTypesToUpdate;
+    const derivedCommandsLength = this._derivedCommandsToUpdateLength;
+
+    if (derivedCommandsLength === 0) {
+      return;
+    }
+
+    for (let i = 0; i < derivedCommandsLength; ++i) {
+      derivedCommandPacks[i] =
+        this._derivedCommandPacks[derivedCommandTypes[i]];
+      derivedCommandNames[i] = DerivedCommandNames[derivedCommandTypes[i]];
+    }
+
+    updateDerivedCommandsImpl(
+      this,
+      command,
+      derivedCommandsLength,
+      derivedCommandTypes,
+      derivedCommandNames,
+      derivedCommandPacks,
+      frameState,
+    );
+  }
+
+  pushDerivedCommands(command, isBlendCommand, frameState) {
+    const picking = frameState.passes.pick || frameState.passes.pickVoxel;
+    if (picking && isBlendCommand) {
+      // No need to push blend commands in the pick pass
+      return;
+    }
+
+    let derivedCommandTypes = this._derivedCommandTypes;
+    let derivedCommandsLength = this._derivedCommandsLength;
+
+    if (picking) {
+      derivedCommandTypes = this._derivedPickCommandTypes;
+      derivedCommandsLength = this._derivedPickCommandsLength;
+    } else if (isBlendCommand) {
+      derivedCommandTypes = this._derivedBlendCommandTypes;
+      derivedCommandsLength = this._derivedBlendCommandsLength;
+    }
+
+    if (derivedCommandsLength === 0) {
+      // No derived commands to push so just push the globe command
+      frameState.commandList.push(command);
+      return;
+    }
+
+    // Push derived commands
+    const derivedCommands = command.derivedCommands.globeTranslucency;
+    for (let i = 0; i < derivedCommandsLength; ++i) {
+      const derivedCommandName = DerivedCommandNames[derivedCommandTypes[i]];
+      frameState.commandList.push(derivedCommands[derivedCommandName]);
+    }
+  }
+
+  executeGlobeCommands(
+    frustumCommands,
+    executeCommandFunction,
+    globeTranslucencyFramebuffer,
+    scene,
+    passState,
+  ) {
+    const context = scene.context;
+    const globeCommands = frustumCommands.commands[Pass.GLOBE];
+    const globeCommandsLength = frustumCommands.indices[Pass.GLOBE];
+
+    if (globeCommandsLength === 0) {
+      return;
+    }
+
+    this._globeTranslucencyFramebuffer = globeTranslucencyFramebuffer;
+    globeTranslucencyFramebuffer.clearClassification(context, passState);
+
+    // Render opaque commands like normal
+    executeCommandsMatchingType(
+      globeCommands,
+      globeCommandsLength,
+      executeCommandFunction,
+      scene,
+      passState,
+      opaqueTypes,
+    );
+  }
+
+  executeGlobeClassificationCommands(
+    frustumCommands,
+    executeCommandFunction,
+    globeTranslucencyFramebuffer,
+    scene,
+    passState,
+  ) {
+    const { context } = scene;
+    const { uniformState } = context;
+
+    const globeCommands = frustumCommands.commands[Pass.GLOBE];
+    const globeCommandsLength = frustumCommands.indices[Pass.GLOBE];
+    const classificationCommands =
+      frustumCommands.commands[Pass.TERRAIN_CLASSIFICATION];
+    const classificationCommandsLength =
+      frustumCommands.indices[Pass.TERRAIN_CLASSIFICATION];
+
+    if (globeCommandsLength === 0 || classificationCommandsLength === 0) {
+      return;
+    }
+
+    const frontTranslucent = this._frontFaceTranslucent;
+    const backTranslucent = this._backFaceTranslucent;
+
+    if (!frontTranslucent || !backTranslucent) {
+      // Render classification on opaque faces like normal
+      executeCommands(
+        classificationCommands,
+        classificationCommandsLength,
+        executeCommandFunction,
+        scene,
+        passState,
+      );
+    }
+
+    if (!frontTranslucent && !backTranslucent) {
+      // No translucent commands to render. Skip translucent classification.
+      return;
+    }
+
+    this._globeTranslucencyFramebuffer = globeTranslucencyFramebuffer;
+
+    const originalGlobeDepthTexture = uniformState.globeDepthTexture;
+    const originalFramebuffer = passState.framebuffer;
+
+    // Render to internal framebuffer and get the first depth peel
+    passState.framebuffer =
+      globeTranslucencyFramebuffer.classificationFramebuffer;
+
+    executeCommandsMatchingType(
+      globeCommands,
+      globeCommandsLength,
+      executeCommandFunction,
+      scene,
+      passState,
+      depthOnlyTypes,
+    );
+
+    if (context.depthTexture) {
+      // Pack depth into separate texture for ground polylines and textured ground primitives
+      const packedDepthTexture = globeTranslucencyFramebuffer.packDepth(
+        context,
+        passState,
+      );
+      uniformState.globeDepthTexture = packedDepthTexture;
+    }
+
+    // Render classification on translucent faces
+    executeCommands(
+      classificationCommands,
+      classificationCommandsLength,
+      executeCommandFunction,
+      scene,
+      passState,
+    );
+
+    // Unset temporary state
+    uniformState.globeDepthTexture = originalGlobeDepthTexture;
+    passState.framebuffer = originalFramebuffer;
+  }
+}
+
+// --- File-scoped helpers ---
 
 function updateAlphaByDistance(enabled, alpha, alphaByDistance, result) {
   if (!enabled) {
@@ -197,20 +367,16 @@ function isFaceTranslucent(translucencyEnabled, alphaByDistance, globe) {
 }
 
 function isSunVisibleThroughGlobe(state, scene) {
-  // The sun is visible through the globe if the front and back faces are translucent when above ground
-  // or if front faces are translucent when below ground
   const frontTranslucent = state._frontFaceTranslucent;
   const backTranslucent = state._backFaceTranslucent;
   return frontTranslucent && (scene.cameraUnderground || backTranslucent);
 }
 
 function isEnvironmentVisible(state, scene) {
-  // The environment is visible if the camera is above ground or underground with translucency
   return !scene.cameraUnderground || state._frontFaceTranslucent;
 }
 
 function useDepthPlane(state, scene) {
-  // Use the depth plane when the camera is above ground and the globe is opaque
   return !scene.cameraUnderground && !state._frontFaceTranslucent;
 }
 
@@ -226,15 +392,12 @@ function requiresManualDepthTest(state, scene, globe) {
 
 function getNumberOfTextureUniforms(state) {
   let numberOfTextureUniforms = 0;
-
   if (state._frontFaceTranslucent) {
-    ++numberOfTextureUniforms; // classification texture
+    ++numberOfTextureUniforms;
   }
-
   if (state._requiresManualDepthTest) {
-    ++numberOfTextureUniforms; // czm_globeDepthTexture for manual depth testing
+    ++numberOfTextureUniforms;
   }
-
   return numberOfTextureUniforms;
 }
 
@@ -306,7 +469,6 @@ function getDerivedCommandTypes(
   const backTranslucent = state._backFaceTranslucent;
 
   if (!frontTranslucent) {
-    // Don't use derived commands if the globe is opaque
     return length;
   }
 
@@ -332,8 +494,6 @@ function getDerivedCommandTypes(
   }
 
   if (backTranslucent) {
-    // Push depth-only command for classification. Blend commands do not need to write depth.
-    // Push translucent commands for front and back faces.
     if (!isBlendCommand) {
       types[length++] = DerivedCommandType.DEPTH_ONLY_FRONT_AND_BACK_FACE;
     }
@@ -345,8 +505,6 @@ function getDerivedCommandTypes(
       types[length++] = translucentFrontFaceCommandType;
     }
   } else {
-    // Push opaque command for the face that appears in back.
-    // Push depth-only command and translucent command for the face that appears in front.
     // eslint-disable-next-line no-lonely-if
     if (cameraUnderground) {
       if (!isBlendCommand) {
@@ -374,7 +532,7 @@ function removeDefine(defines, defineToRemove) {
 }
 
 function hasDefine(defines, define) {
-  return defines.indexOf(define) > -1;
+  return defines.includes(define);
 }
 
 function getOpaqueFrontFaceShaderProgram(vs, fs) {
@@ -396,7 +554,6 @@ function getDepthOnlyShaderProgram(vs, fs) {
     hasDefine(fs.defines, "TILE_LIMIT_RECTANGLE") ||
     hasDefine(fs.defines, "ENABLE_CLIPPING_PLANES")
   ) {
-    // Need to execute the full shader if discard is called
     return;
   }
 
@@ -647,13 +804,15 @@ function getDerivedUniformMap(
   return combine(uniformMap, getDerivedUniformMapFunction(state), false);
 }
 
-function DerivedCommandPack(options) {
-  this.pass = options.pass;
-  this.pickOnly = options.pickOnly;
-  this.getShaderProgramFunction = options.getShaderProgramFunction;
-  this.getRenderStateFunction = options.getRenderStateFunction;
-  this.getUniformMapFunction = options.getUniformMapFunction;
-  this.renderStateCache = {};
+class DerivedCommandPack {
+  constructor(options) {
+    this.pass = options.pass;
+    this.pickOnly = options.pickOnly;
+    this.getShaderProgramFunction = options.getShaderProgramFunction;
+    this.getRenderStateFunction = options.getRenderStateFunction;
+    this.getUniformMapFunction = options.getUniformMapFunction;
+    this.renderStateCache = {};
+  }
 }
 
 function createDerivedCommandPacks() {
@@ -751,52 +910,17 @@ function createDerivedCommandPacks() {
   ];
 }
 
+// Module-scope scratch arrays used by updateDerivedCommands
 const derivedCommandNames = new Array(derivedCommandsMaximumLength);
 const derivedCommandPacks = new Array(derivedCommandsMaximumLength);
 
-GlobeTranslucencyState.prototype.updateDerivedCommands = function (
-  command,
-  frameState,
-) {
-  // Route to WebGPU feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.GLOBE_TRANSLUCENCY,
-  );
-  if (fr) {
-    fr.updateDerivedCommands(this, command, frameState);
-    return;
-  }
-
-  const derivedCommandTypes = this._derivedCommandTypesToUpdate;
-  const derivedCommandsLength = this._derivedCommandsToUpdateLength;
-
-  if (derivedCommandsLength === 0) {
-    return;
-  }
-
-  for (let i = 0; i < derivedCommandsLength; ++i) {
-    derivedCommandPacks[i] = this._derivedCommandPacks[derivedCommandTypes[i]];
-    derivedCommandNames[i] = DerivedCommandNames[derivedCommandTypes[i]];
-  }
-
-  updateDerivedCommands(
-    this,
-    command,
-    derivedCommandsLength,
-    derivedCommandTypes,
-    derivedCommandNames,
-    derivedCommandPacks,
-    frameState,
-  );
-};
-
-function updateDerivedCommands(
+function updateDerivedCommandsImpl(
   state,
   command,
   derivedCommandsLength,
   derivedCommandTypes,
-  derivedCommandNames,
-  derivedCommandPacks,
+  derivedCommandNamesArr,
+  derivedCommandPacksArr,
   frameState,
 ) {
   let derivedCommandsObject = command.derivedCommands.globeTranslucency;
@@ -847,9 +971,9 @@ function updateDerivedCommands(
     derivedCommandsObject.renderStateId = command.renderState.id;
 
     for (let i = 0; i < derivedCommandsLength; ++i) {
-      const derivedCommandPack = derivedCommandPacks[i];
+      const derivedCommandPack = derivedCommandPacksArr[i];
       const derivedCommandType = derivedCommandTypes[i];
-      const derivedCommandName = derivedCommandNames[i];
+      const derivedCommandName = derivedCommandNamesArr[i];
       let derivedCommand = derivedCommandsObject[derivedCommandName];
 
       let derivedUniformMap;
@@ -924,42 +1048,6 @@ function updateDerivedCommands(
   }
 }
 
-GlobeTranslucencyState.prototype.pushDerivedCommands = function (
-  command,
-  isBlendCommand,
-  frameState,
-) {
-  const picking = frameState.passes.pick || frameState.passes.pickVoxel;
-  if (picking && isBlendCommand) {
-    // No need to push blend commands in the pick pass
-    return;
-  }
-
-  let derivedCommandTypes = this._derivedCommandTypes;
-  let derivedCommandsLength = this._derivedCommandsLength;
-
-  if (picking) {
-    derivedCommandTypes = this._derivedPickCommandTypes;
-    derivedCommandsLength = this._derivedPickCommandsLength;
-  } else if (isBlendCommand) {
-    derivedCommandTypes = this._derivedBlendCommandTypes;
-    derivedCommandsLength = this._derivedBlendCommandsLength;
-  }
-
-  if (derivedCommandsLength === 0) {
-    // No derived commands to push so just push the globe command
-    frameState.commandList.push(command);
-    return;
-  }
-
-  // Push derived commands
-  const derivedCommands = command.derivedCommands.globeTranslucency;
-  for (let i = 0; i < derivedCommandsLength; ++i) {
-    const derivedCommandName = DerivedCommandNames[derivedCommandTypes[i]];
-    frameState.commandList.push(derivedCommands[derivedCommandName]);
-  }
-};
-
 function executeCommandsMatchingType(
   commands,
   commandsLength,
@@ -971,7 +1059,7 @@ function executeCommandsMatchingType(
   for (let i = 0; i < commandsLength; ++i) {
     const command = commands[i];
     const type = command.derivedCommands.type;
-    if (!defined(types) || types.indexOf(type) > -1) {
+    if (!defined(types) || types.includes(type)) {
       executeCommandFunction(command, scene, passState);
     }
   }
@@ -998,115 +1086,5 @@ const depthOnlyTypes = [
   DerivedCommandType.DEPTH_ONLY_BACK_FACE,
   DerivedCommandType.DEPTH_ONLY_FRONT_AND_BACK_FACE,
 ];
-
-GlobeTranslucencyState.prototype.executeGlobeCommands = function (
-  frustumCommands,
-  executeCommandFunction,
-  globeTranslucencyFramebuffer,
-  scene,
-  passState,
-) {
-  const context = scene.context;
-  const globeCommands = frustumCommands.commands[Pass.GLOBE];
-  const globeCommandsLength = frustumCommands.indices[Pass.GLOBE];
-
-  if (globeCommandsLength === 0) {
-    return;
-  }
-
-  this._globeTranslucencyFramebuffer = globeTranslucencyFramebuffer;
-  globeTranslucencyFramebuffer.clearClassification(context, passState);
-
-  // Render opaque commands like normal
-  executeCommandsMatchingType(
-    globeCommands,
-    globeCommandsLength,
-    executeCommandFunction,
-    scene,
-    passState,
-    opaqueTypes,
-  );
-};
-
-GlobeTranslucencyState.prototype.executeGlobeClassificationCommands = function (
-  frustumCommands,
-  executeCommandFunction,
-  globeTranslucencyFramebuffer,
-  scene,
-  passState,
-) {
-  const { context } = scene;
-  const { uniformState } = context;
-
-  const globeCommands = frustumCommands.commands[Pass.GLOBE];
-  const globeCommandsLength = frustumCommands.indices[Pass.GLOBE];
-  const classificationCommands =
-    frustumCommands.commands[Pass.TERRAIN_CLASSIFICATION];
-  const classificationCommandsLength =
-    frustumCommands.indices[Pass.TERRAIN_CLASSIFICATION];
-
-  if (globeCommandsLength === 0 || classificationCommandsLength === 0) {
-    return;
-  }
-
-  const frontTranslucent = this._frontFaceTranslucent;
-  const backTranslucent = this._backFaceTranslucent;
-
-  if (!frontTranslucent || !backTranslucent) {
-    // Render classification on opaque faces like normal
-    executeCommands(
-      classificationCommands,
-      classificationCommandsLength,
-      executeCommandFunction,
-      scene,
-      passState,
-    );
-  }
-
-  if (!frontTranslucent && !backTranslucent) {
-    // No translucent commands to render. Skip translucent classification.
-    return;
-  }
-
-  this._globeTranslucencyFramebuffer = globeTranslucencyFramebuffer;
-
-  const originalGlobeDepthTexture = uniformState.globeDepthTexture;
-  const originalFramebuffer = passState.framebuffer;
-
-  // Render to internal framebuffer and get the first depth peel
-  passState.framebuffer =
-    globeTranslucencyFramebuffer.classificationFramebuffer;
-
-  executeCommandsMatchingType(
-    globeCommands,
-    globeCommandsLength,
-    executeCommandFunction,
-    scene,
-    passState,
-    depthOnlyTypes,
-  );
-
-  if (context.depthTexture) {
-    // Pack depth into separate texture for ground polylines and textured ground primitives
-    const packedDepthTexture = globeTranslucencyFramebuffer.packDepth(
-      context,
-      passState,
-    );
-    uniformState.globeDepthTexture = packedDepthTexture;
-  }
-
-  // Render classification on translucent faces
-  executeCommands(
-    classificationCommands,
-    classificationCommandsLength,
-    executeCommandFunction,
-    scene,
-    passState,
-  );
-
-  // Unset temporary state
-  uniformState.globeDepthTexture = originalGlobeDepthTexture;
-  passState.framebuffer = originalFramebuffer;
-};
 
 export default GlobeTranslucencyState;

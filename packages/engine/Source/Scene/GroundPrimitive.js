@@ -48,7 +48,6 @@ const GroundPrimitiveUniformMap = {
  * </p>
  *
  * @alias GroundPrimitive
- * @constructor
  *
  * @param {object} [options] Object with the following properties:
  * @param {Array|GeometryInstance} [options.geometryInstances] The geometry instances to render.
@@ -111,253 +110,565 @@ const GroundPrimitiveUniformMap = {
  * @see GeometryInstance
  * @see Appearance
  */
-function GroundPrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class GroundPrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  let appearance = options.appearance;
-  const geometryInstances = options.geometryInstances;
-  if (!defined(appearance) && defined(geometryInstances)) {
-    const geometryInstancesArray = Array.isArray(geometryInstances)
-      ? geometryInstances
-      : [geometryInstances];
-    const geometryInstanceCount = geometryInstancesArray.length;
-    for (let i = 0; i < geometryInstanceCount; i++) {
-      const attributes = geometryInstancesArray[i].attributes;
-      if (defined(attributes) && defined(attributes.color)) {
-        appearance = new PerInstanceColorAppearance({
-          flat: true,
-        });
-        break;
+    let appearance = options.appearance;
+    const geometryInstances = options.geometryInstances;
+    if (!defined(appearance) && defined(geometryInstances)) {
+      const geometryInstancesArray = Array.isArray(geometryInstances)
+        ? geometryInstances
+        : [geometryInstances];
+      const geometryInstanceCount = geometryInstancesArray.length;
+      for (let i = 0; i < geometryInstanceCount; i++) {
+        const attributes = geometryInstancesArray[i].attributes;
+        if (defined(attributes) && defined(attributes.color)) {
+          appearance = new PerInstanceColorAppearance({
+            flat: true,
+          });
+          break;
+        }
       }
     }
+    /**
+     * The {@link Appearance} used to shade this primitive. Each geometry
+     * instance is shaded with the same appearance.  Some appearances, like
+     * {@link PerInstanceColorAppearance} allow giving each instance unique
+     * properties.
+     *
+     * @type Appearance
+     *
+     * @default undefined
+     */
+    this.appearance = appearance;
+
+    /**
+     * The geometry instances rendered with this primitive.  This may
+     * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
+     * is <code>true</code> when the primitive is constructed.
+     * <p>
+     * Changing this property after the primitive is rendered has no effect.
+     * </p>
+     *
+     * @readonly
+     * @type {Array|GeometryInstance}
+     *
+     * @default undefined
+     */
+    this.geometryInstances = options.geometryInstances;
+    /**
+     * Determines if the primitive will be shown.  This affects all geometry
+     * instances in the primitive.
+     *
+     * @type {boolean}
+     *
+     * @default true
+     */
+    this.show = options.show ?? true;
+    /**
+     * Determines whether terrain, 3D Tiles or both will be classified.
+     *
+     * @type {ClassificationType}
+     *
+     * @default ClassificationType.BOTH
+     */
+    this.classificationType =
+      options.classificationType ?? ClassificationType.BOTH;
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the shadow volume for each geometry in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowShadowVolume = options.debugShowShadowVolume ?? false;
+
+    this._boundingVolumes = [];
+    this._boundingVolumes2D = [];
+
+    this._ready = false;
+    this._primitive = undefined;
+
+    this._maxHeight = undefined;
+    this._minHeight = undefined;
+
+    this._maxTerrainHeight = ApproximateTerrainHeights._defaultMaxTerrainHeight;
+    this._minTerrainHeight = ApproximateTerrainHeights._defaultMinTerrainHeight;
+
+    this._boundingSpheresKeys = [];
+    this._boundingSpheres = [];
+
+    this._useFragmentCulling = false;
+    // Used when inserting in an OrderedPrimitiveCollection
+    this._zIndex = undefined;
+
+    const that = this;
+    this._classificationPrimitiveOptions = {
+      geometryInstances: undefined,
+      appearance: undefined,
+      vertexCacheOptimize: options.vertexCacheOptimize ?? false,
+      interleave: options.interleave ?? false,
+      releaseGeometryInstances: options.releaseGeometryInstances ?? true,
+      allowPicking: options.allowPicking ?? true,
+      asynchronous: options.asynchronous ?? true,
+      compressVertices: options.compressVertices ?? true,
+      _createBoundingVolumeFunction: undefined,
+      _updateAndQueueCommandsFunction: undefined,
+      _pickPrimitive: that,
+      _extruded: true,
+      _uniformMap: GroundPrimitiveUniformMap,
+    };
   }
-  /**
-   * The {@link Appearance} used to shade this primitive. Each geometry
-   * instance is shaded with the same appearance.  Some appearances, like
-   * {@link PerInstanceColorAppearance} allow giving each instance unique
-   * properties.
-   *
-   * @type Appearance
-   *
-   * @default undefined
-   */
-  this.appearance = appearance;
 
-  /**
-   * The geometry instances rendered with this primitive.  This may
-   * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
-   * is <code>true</code> when the primitive is constructed.
-   * <p>
-   * Changing this property after the primitive is rendered has no effect.
-   * </p>
-   *
-   * @readonly
-   * @type {Array|GeometryInstance}
-   *
-   * @default undefined
-   */
-  this.geometryInstances = options.geometryInstances;
-  /**
-   * Determines if the primitive will be shown.  This affects all geometry
-   * instances in the primitive.
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  this.show = options.show ?? true;
-  /**
-   * Determines whether terrain, 3D Tiles or both will be classified.
-   *
-   * @type {ClassificationType}
-   *
-   * @default ClassificationType.BOTH
-   */
-  this.classificationType =
-    options.classificationType ?? ClassificationType.BOTH;
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
-   * </p>
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
-
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the shadow volume for each geometry in the primitive.
-   * </p>
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.debugShowShadowVolume = options.debugShowShadowVolume ?? false;
-
-  this._boundingVolumes = [];
-  this._boundingVolumes2D = [];
-
-  this._ready = false;
-  this._primitive = undefined;
-
-  this._maxHeight = undefined;
-  this._minHeight = undefined;
-
-  this._maxTerrainHeight = ApproximateTerrainHeights._defaultMaxTerrainHeight;
-  this._minTerrainHeight = ApproximateTerrainHeights._defaultMinTerrainHeight;
-
-  this._boundingSpheresKeys = [];
-  this._boundingSpheres = [];
-
-  this._useFragmentCulling = false;
-  // Used when inserting in an OrderedPrimitiveCollection
-  this._zIndex = undefined;
-
-  const that = this;
-  this._classificationPrimitiveOptions = {
-    geometryInstances: undefined,
-    appearance: undefined,
-    vertexCacheOptimize: options.vertexCacheOptimize ?? false,
-    interleave: options.interleave ?? false,
-    releaseGeometryInstances: options.releaseGeometryInstances ?? true,
-    allowPicking: options.allowPicking ?? true,
-    asynchronous: options.asynchronous ?? true,
-    compressVertices: options.compressVertices ?? true,
-    _createBoundingVolumeFunction: undefined,
-    _updateAndQueueCommandsFunction: undefined,
-    _pickPrimitive: that,
-    _extruded: true,
-    _uniformMap: GroundPrimitiveUniformMap,
-  };
-}
-
-Object.defineProperties(GroundPrimitive.prototype, {
   /**
    * When <code>true</code>, geometry vertices are optimized for the pre and post-vertex-shader caches.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default true
    */
-  vertexCacheOptimize: {
-    get: function () {
-      return this._classificationPrimitiveOptions.vertexCacheOptimize;
-    },
-  },
+  get vertexCacheOptimize() {
+    return this._classificationPrimitiveOptions.vertexCacheOptimize;
+  }
 
   /**
    * Determines if geometry vertex attributes are interleaved, which can slightly improve rendering performance.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default false
    */
-  interleave: {
-    get: function () {
-      return this._classificationPrimitiveOptions.interleave;
-    },
-  },
+  get interleave() {
+    return this._classificationPrimitiveOptions.interleave;
+  }
 
   /**
    * When <code>true</code>, the primitive does not keep a reference to the input <code>geometryInstances</code> to save memory.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default true
    */
-  releaseGeometryInstances: {
-    get: function () {
-      return this._classificationPrimitiveOptions.releaseGeometryInstances;
-    },
-  },
+  get releaseGeometryInstances() {
+    return this._classificationPrimitiveOptions.releaseGeometryInstances;
+  }
 
   /**
    * When <code>true</code>, each geometry instance will only be pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default true
    */
-  allowPicking: {
-    get: function () {
-      return this._classificationPrimitiveOptions.allowPicking;
-    },
-  },
+  get allowPicking() {
+    return this._classificationPrimitiveOptions.allowPicking;
+  }
 
   /**
    * Determines if the geometry instances will be created and batched on a web worker.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default true
    */
-  asynchronous: {
-    get: function () {
-      return this._classificationPrimitiveOptions.asynchronous;
-    },
-  },
+  get asynchronous() {
+    return this._classificationPrimitiveOptions.asynchronous;
+  }
 
   /**
    * When <code>true</code>, geometry vertices are compressed, which will save memory.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    *
    * @default true
    */
-  compressVertices: {
-    get: function () {
-      return this._classificationPrimitiveOptions.compressVertices;
-    },
-  },
+  get compressVertices() {
+    return this._classificationPrimitiveOptions.compressVertices;
+  }
 
   /**
    * Determines if the primitive is complete and ready to render.  If this property is
    * true, the primitive will be rendered the next time that {@link GroundPrimitive#update}
    * is called.
    *
-   * @memberof GroundPrimitive.prototype
-   *
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
-});
+  get ready() {
+    return this._ready;
+  }
 
-/**
- * Determines if GroundPrimitive rendering is supported.
- *
- * @function
- * @param {Scene} scene The scene.
- * @returns {boolean} <code>true</code> if GroundPrimitives are supported; otherwise, returns <code>false</code>
- */
-GroundPrimitive.isSupported = ClassificationPrimitive.isSupported;
+  /**
+   * Determines if GroundPrimitive rendering is supported.
+   *
+   * @param {Scene} scene The scene.
+   * @returns {boolean} <code>true</code> if GroundPrimitives are supported; otherwise, returns <code>false</code>
+   */
+  static isSupported(scene) {
+    return ClassificationPrimitive.isSupported(scene);
+  }
+
+  /**
+   * Initializes the minimum and maximum terrain heights. This only needs to be called if you are creating the
+   * GroundPrimitive synchronously.
+   *
+   * @returns {Promise<void>} A promise that will resolve once the terrain heights have been loaded.
+   *
+   */
+  static initializeTerrainHeights() {
+    return ApproximateTerrainHeights.initialize();
+  }
+
+  /**
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
+   * <p>
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
+   * </p>
+   *
+   * @exception {DeveloperError} For synchronous GroundPrimitive, you must call GroundPrimitive.initializeTerrainHeights() and wait for the returned promise to resolve.
+   * @exception {DeveloperError} All instance geometries must have the same primitiveType.
+   * @exception {DeveloperError} Appearance and material have a uniform with the same name.
+   */
+  update(frameState) {
+    if (!defined(this._primitive) && !defined(this.geometryInstances)) {
+      return;
+    }
+
+    if (!ApproximateTerrainHeights.initialized) {
+      //>>includeStart('debug', pragmas.debug);
+      if (!this.asynchronous) {
+        throw new DeveloperError(
+          "For synchronous GroundPrimitives, you must call GroundPrimitive.initializeTerrainHeights() and wait for the returned promise to resolve.",
+        );
+      }
+      //>>includeEnd('debug');
+
+      GroundPrimitive.initializeTerrainHeights();
+      return;
+    }
+
+    const that = this;
+    const primitiveOptions = this._classificationPrimitiveOptions;
+
+    if (!defined(this._primitive)) {
+      const ellipsoid = frameState.mapProjection.ellipsoid;
+
+      let instance;
+      let geometry;
+      let instanceType;
+
+      const instances = Array.isArray(this.geometryInstances)
+        ? this.geometryInstances
+        : [this.geometryInstances];
+      const length = instances.length;
+      const groundInstances = new Array(length);
+
+      let i;
+      let rectangle;
+      for (i = 0; i < length; ++i) {
+        instance = instances[i];
+        geometry = instance.geometry;
+        const instanceRectangle = getRectangle(frameState, geometry);
+        if (!defined(rectangle)) {
+          rectangle = Rectangle.clone(instanceRectangle);
+        } else if (defined(instanceRectangle)) {
+          Rectangle.union(rectangle, instanceRectangle, rectangle);
+        }
+
+        const id = instance.id;
+        if (defined(id) && defined(instanceRectangle)) {
+          const boundingSphere = ApproximateTerrainHeights.getBoundingSphere(
+            instanceRectangle,
+            ellipsoid,
+          );
+          this._boundingSpheresKeys.push(id);
+          this._boundingSpheres.push(boundingSphere);
+        }
+
+        instanceType = geometry.constructor;
+        if (
+          !defined(instanceType) ||
+          !defined(instanceType.createShadowVolume)
+        ) {
+          //>>includeStart('debug', pragmas.debug);
+          throw new DeveloperError(
+            "Not all of the geometry instances have GroundPrimitive support.",
+          );
+          //>>includeEnd('debug');
+        }
+      }
+
+      // Now compute the min/max heights for the primitive
+      setMinMaxTerrainHeights(this, rectangle, ellipsoid);
+      const exaggeration = frameState.verticalExaggeration;
+      const exaggerationRelativeHeight =
+        frameState.verticalExaggerationRelativeHeight;
+      this._minHeight = VerticalExaggeration.getHeight(
+        this._minTerrainHeight,
+        exaggeration,
+        exaggerationRelativeHeight,
+      );
+      this._maxHeight = VerticalExaggeration.getHeight(
+        this._maxTerrainHeight,
+        exaggeration,
+        exaggerationRelativeHeight,
+      );
+
+      const useFragmentCulling = GroundPrimitive._supportsMaterials(
+        frameState.context,
+      );
+      this._useFragmentCulling = useFragmentCulling;
+
+      if (useFragmentCulling) {
+        // Determine whether to add spherical or planar extent attributes for computing texture coordinates.
+        let attributes;
+        let usePlanarExtents = true;
+        for (i = 0; i < length; ++i) {
+          instance = instances[i];
+          geometry = instance.geometry;
+          rectangle = getRectangle(frameState, geometry);
+          if (ShadowVolumeAppearance.shouldUseSphericalCoordinates(rectangle)) {
+            usePlanarExtents = false;
+            break;
+          }
+        }
+
+        for (i = 0; i < length; ++i) {
+          instance = instances[i];
+          geometry = instance.geometry;
+          instanceType = geometry.constructor;
+
+          const boundingRectangle = getRectangle(frameState, geometry);
+          const textureCoordinateRotationPoints =
+            geometry.textureCoordinateRotationPoints;
+
+          if (usePlanarExtents) {
+            attributes =
+              ShadowVolumeAppearance.getPlanarTextureCoordinateAttributes(
+                boundingRectangle,
+                textureCoordinateRotationPoints,
+                ellipsoid,
+                frameState.mapProjection,
+                this._maxHeight,
+              );
+          } else {
+            attributes =
+              ShadowVolumeAppearance.getSphericalExtentGeometryInstanceAttributes(
+                boundingRectangle,
+                textureCoordinateRotationPoints,
+                ellipsoid,
+                frameState.mapProjection,
+              );
+          }
+
+          const instanceAttributes = instance.attributes;
+          for (const attributeKey in instanceAttributes) {
+            if (Object.hasOwn(instanceAttributes, attributeKey)) {
+              attributes[attributeKey] = instanceAttributes[attributeKey];
+            }
+          }
+
+          groundInstances[i] = new GeometryInstance({
+            geometry: instanceType.createShadowVolume(
+              geometry,
+              getComputeMinimumHeightFunction(this),
+              getComputeMaximumHeightFunction(this),
+            ),
+            attributes: attributes,
+            id: instance.id,
+          });
+        }
+      } else {
+        // ClassificationPrimitive will check if the colors are all the same if it detects lack of fragment culling attributes
+        for (i = 0; i < length; ++i) {
+          instance = instances[i];
+          geometry = instance.geometry;
+          instanceType = geometry.constructor;
+          groundInstances[i] = new GeometryInstance({
+            geometry: instanceType.createShadowVolume(
+              geometry,
+              getComputeMinimumHeightFunction(this),
+              getComputeMaximumHeightFunction(this),
+            ),
+            attributes: instance.attributes,
+            id: instance.id,
+          });
+        }
+      }
+
+      primitiveOptions.geometryInstances = groundInstances;
+      primitiveOptions.appearance = this.appearance;
+
+      primitiveOptions._createBoundingVolumeFunction = function (
+        frameState,
+        geometry,
+      ) {
+        createBoundingVolume(that, frameState, geometry);
+      };
+      primitiveOptions._updateAndQueueCommandsFunction = function (
+        primitive,
+        frameState,
+        colorCommands,
+        pickCommands,
+        modelMatrix,
+        cull,
+        debugShowBoundingVolume,
+        twoPasses,
+      ) {
+        updateAndQueueCommands(
+          that,
+          frameState,
+          colorCommands,
+          pickCommands,
+          modelMatrix,
+          cull,
+          debugShowBoundingVolume,
+          twoPasses,
+        );
+      };
+
+      this._primitive = new ClassificationPrimitive(primitiveOptions);
+    }
+
+    this._primitive.appearance = this.appearance;
+    this._primitive.show = this.show;
+    this._primitive.debugShowShadowVolume = this.debugShowShadowVolume;
+    this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
+    this._primitive.update(frameState);
+
+    frameState.afterRender.push(() => {
+      if (!this._ready && defined(this._primitive) && this._primitive.ready) {
+        this._ready = true;
+
+        if (this.releaseGeometryInstances) {
+          this.geometryInstances = undefined;
+        }
+      }
+    });
+  }
+
+  /**
+   * @private
+   */
+  getBoundingSphere(id) {
+    const index = this._boundingSpheresKeys.indexOf(id);
+    if (index !== -1) {
+      return this._boundingSpheres[index];
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
+   *
+   * @param {*} id The id of the {@link GeometryInstance}.
+   * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
+   *
+   * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
+   *
+   * @example
+   * const attributes = primitive.getGeometryInstanceAttributes('an id');
+   * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
+   * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
+   */
+  getGeometryInstanceAttributes(id) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(this._primitive)) {
+      throw new DeveloperError(
+        "must call update before calling getGeometryInstanceAttributes",
+      );
+    }
+    //>>includeEnd('debug');
+    return this._primitive.getGeometryInstanceAttributes(id);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see GroundPrimitive#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * e = e && e.destroy();
+   *
+   * @see GroundPrimitive#isDestroyed
+   */
+  destroy() {
+    this._primitive = this._primitive && this._primitive.destroy();
+    return destroyObject(this);
+  }
+
+  /**
+   * Exposed for testing.
+   *
+   * @param {Context} context Rendering context
+   * @returns {boolean} Whether or not the current context supports materials on GroundPrimitives.
+   * @private
+   */
+  static _supportsMaterials(context) {
+    return context.depthTexture;
+  }
+
+  /**
+   * Checks if the given Scene supports materials on GroundPrimitives.
+   * Materials on GroundPrimitives require support for the WEBGL_depth_texture extension.
+   *
+   * @param {Scene} scene The current scene.
+   * @returns {boolean} Whether or not the current scene supports materials on GroundPrimitives.
+   */
+  static supportsMaterials(scene) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("scene", scene);
+    //>>includeEnd('debug');
+
+    return GroundPrimitive._supportsMaterials(scene.frameState.context);
+  }
+}
 
 function getComputeMaximumHeightFunction(primitive) {
   return function (granularity, ellipsoid) {
@@ -661,340 +972,4 @@ function updateAndQueueCommands(
   }
 }
 
-/**
- * Initializes the minimum and maximum terrain heights. This only needs to be called if you are creating the
- * GroundPrimitive synchronously.
- *
- * @returns {Promise<void>} A promise that will resolve once the terrain heights have been loaded.
- *
- */
-GroundPrimitive.initializeTerrainHeights = function () {
-  return ApproximateTerrainHeights.initialize();
-};
-
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {DeveloperError} For synchronous GroundPrimitive, you must call GroundPrimitive.initializeTerrainHeights() and wait for the returned promise to resolve.
- * @exception {DeveloperError} All instance geometries must have the same primitiveType.
- * @exception {DeveloperError} Appearance and material have a uniform with the same name.
- */
-GroundPrimitive.prototype.update = function (frameState) {
-  if (!defined(this._primitive) && !defined(this.geometryInstances)) {
-    return;
-  }
-
-  if (!ApproximateTerrainHeights.initialized) {
-    //>>includeStart('debug', pragmas.debug);
-    if (!this.asynchronous) {
-      throw new DeveloperError(
-        "For synchronous GroundPrimitives, you must call GroundPrimitive.initializeTerrainHeights() and wait for the returned promise to resolve.",
-      );
-    }
-    //>>includeEnd('debug');
-
-    GroundPrimitive.initializeTerrainHeights();
-    return;
-  }
-
-  const that = this;
-  const primitiveOptions = this._classificationPrimitiveOptions;
-
-  if (!defined(this._primitive)) {
-    const ellipsoid = frameState.mapProjection.ellipsoid;
-
-    let instance;
-    let geometry;
-    let instanceType;
-
-    const instances = Array.isArray(this.geometryInstances)
-      ? this.geometryInstances
-      : [this.geometryInstances];
-    const length = instances.length;
-    const groundInstances = new Array(length);
-
-    let i;
-    let rectangle;
-    for (i = 0; i < length; ++i) {
-      instance = instances[i];
-      geometry = instance.geometry;
-      const instanceRectangle = getRectangle(frameState, geometry);
-      if (!defined(rectangle)) {
-        rectangle = Rectangle.clone(instanceRectangle);
-      } else if (defined(instanceRectangle)) {
-        Rectangle.union(rectangle, instanceRectangle, rectangle);
-      }
-
-      const id = instance.id;
-      if (defined(id) && defined(instanceRectangle)) {
-        const boundingSphere = ApproximateTerrainHeights.getBoundingSphere(
-          instanceRectangle,
-          ellipsoid,
-        );
-        this._boundingSpheresKeys.push(id);
-        this._boundingSpheres.push(boundingSphere);
-      }
-
-      instanceType = geometry.constructor;
-      if (!defined(instanceType) || !defined(instanceType.createShadowVolume)) {
-        //>>includeStart('debug', pragmas.debug);
-        throw new DeveloperError(
-          "Not all of the geometry instances have GroundPrimitive support.",
-        );
-        //>>includeEnd('debug');
-      }
-    }
-
-    // Now compute the min/max heights for the primitive
-    setMinMaxTerrainHeights(this, rectangle, ellipsoid);
-    const exaggeration = frameState.verticalExaggeration;
-    const exaggerationRelativeHeight =
-      frameState.verticalExaggerationRelativeHeight;
-    this._minHeight = VerticalExaggeration.getHeight(
-      this._minTerrainHeight,
-      exaggeration,
-      exaggerationRelativeHeight,
-    );
-    this._maxHeight = VerticalExaggeration.getHeight(
-      this._maxTerrainHeight,
-      exaggeration,
-      exaggerationRelativeHeight,
-    );
-
-    const useFragmentCulling = GroundPrimitive._supportsMaterials(
-      frameState.context,
-    );
-    this._useFragmentCulling = useFragmentCulling;
-
-    if (useFragmentCulling) {
-      // Determine whether to add spherical or planar extent attributes for computing texture coordinates.
-      // This depends on the size of the GeometryInstances.
-      let attributes;
-      let usePlanarExtents = true;
-      for (i = 0; i < length; ++i) {
-        instance = instances[i];
-        geometry = instance.geometry;
-        rectangle = getRectangle(frameState, geometry);
-        if (ShadowVolumeAppearance.shouldUseSphericalCoordinates(rectangle)) {
-          usePlanarExtents = false;
-          break;
-        }
-      }
-
-      for (i = 0; i < length; ++i) {
-        instance = instances[i];
-        geometry = instance.geometry;
-        instanceType = geometry.constructor;
-
-        const boundingRectangle = getRectangle(frameState, geometry);
-        const textureCoordinateRotationPoints =
-          geometry.textureCoordinateRotationPoints;
-
-        if (usePlanarExtents) {
-          attributes =
-            ShadowVolumeAppearance.getPlanarTextureCoordinateAttributes(
-              boundingRectangle,
-              textureCoordinateRotationPoints,
-              ellipsoid,
-              frameState.mapProjection,
-              this._maxHeight,
-            );
-        } else {
-          attributes =
-            ShadowVolumeAppearance.getSphericalExtentGeometryInstanceAttributes(
-              boundingRectangle,
-              textureCoordinateRotationPoints,
-              ellipsoid,
-              frameState.mapProjection,
-            );
-        }
-
-        const instanceAttributes = instance.attributes;
-        for (const attributeKey in instanceAttributes) {
-          if (instanceAttributes.hasOwnProperty(attributeKey)) {
-            attributes[attributeKey] = instanceAttributes[attributeKey];
-          }
-        }
-
-        groundInstances[i] = new GeometryInstance({
-          geometry: instanceType.createShadowVolume(
-            geometry,
-            getComputeMinimumHeightFunction(this),
-            getComputeMaximumHeightFunction(this),
-          ),
-          attributes: attributes,
-          id: instance.id,
-        });
-      }
-    } else {
-      // ClassificationPrimitive will check if the colors are all the same if it detects lack of fragment culling attributes
-      for (i = 0; i < length; ++i) {
-        instance = instances[i];
-        geometry = instance.geometry;
-        instanceType = geometry.constructor;
-        groundInstances[i] = new GeometryInstance({
-          geometry: instanceType.createShadowVolume(
-            geometry,
-            getComputeMinimumHeightFunction(this),
-            getComputeMaximumHeightFunction(this),
-          ),
-          attributes: instance.attributes,
-          id: instance.id,
-        });
-      }
-    }
-
-    primitiveOptions.geometryInstances = groundInstances;
-    primitiveOptions.appearance = this.appearance;
-
-    primitiveOptions._createBoundingVolumeFunction = function (
-      frameState,
-      geometry,
-    ) {
-      createBoundingVolume(that, frameState, geometry);
-    };
-    primitiveOptions._updateAndQueueCommandsFunction = function (
-      primitive,
-      frameState,
-      colorCommands,
-      pickCommands,
-      modelMatrix,
-      cull,
-      debugShowBoundingVolume,
-      twoPasses,
-    ) {
-      updateAndQueueCommands(
-        that,
-        frameState,
-        colorCommands,
-        pickCommands,
-        modelMatrix,
-        cull,
-        debugShowBoundingVolume,
-        twoPasses,
-      );
-    };
-
-    this._primitive = new ClassificationPrimitive(primitiveOptions);
-  }
-
-  this._primitive.appearance = this.appearance;
-  this._primitive.show = this.show;
-  this._primitive.debugShowShadowVolume = this.debugShowShadowVolume;
-  this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
-  this._primitive.update(frameState);
-
-  frameState.afterRender.push(() => {
-    if (!this._ready && defined(this._primitive) && this._primitive.ready) {
-      this._ready = true;
-
-      if (this.releaseGeometryInstances) {
-        this.geometryInstances = undefined;
-      }
-    }
-  });
-};
-
-/**
- * @private
- */
-GroundPrimitive.prototype.getBoundingSphere = function (id) {
-  const index = this._boundingSpheresKeys.indexOf(id);
-  if (index !== -1) {
-    return this._boundingSpheres[index];
-  }
-
-  return undefined;
-};
-
-/**
- * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
- *
- * @param {*} id The id of the {@link GeometryInstance}.
- * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
- *
- * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
- *
- * @example
- * const attributes = primitive.getGeometryInstanceAttributes('an id');
- * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
- * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
- */
-GroundPrimitive.prototype.getGeometryInstanceAttributes = function (id) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(this._primitive)) {
-    throw new DeveloperError(
-      "must call update before calling getGeometryInstanceAttributes",
-    );
-  }
-  //>>includeEnd('debug');
-  return this._primitive.getGeometryInstanceAttributes(id);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see GroundPrimitive#destroy
- */
-GroundPrimitive.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * e = e && e.destroy();
- *
- * @see GroundPrimitive#isDestroyed
- */
-GroundPrimitive.prototype.destroy = function () {
-  this._primitive = this._primitive && this._primitive.destroy();
-  return destroyObject(this);
-};
-
-/**
- * Exposed for testing.
- *
- * @param {Context} context Rendering context
- * @returns {boolean} Whether or not the current context supports materials on GroundPrimitives.
- * @private
- */
-GroundPrimitive._supportsMaterials = function (context) {
-  return context.depthTexture;
-};
-
-/**
- * Checks if the given Scene supports materials on GroundPrimitives.
- * Materials on GroundPrimitives require support for the WEBGL_depth_texture extension.
- *
- * @param {Scene} scene The current scene.
- * @returns {boolean} Whether or not the current scene supports materials on GroundPrimitives.
- */
-GroundPrimitive.supportsMaterials = function (scene) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("scene", scene);
-  //>>includeEnd('debug');
-
-  return GroundPrimitive._supportsMaterials(scene.frameState.context);
-};
 export default GroundPrimitive;

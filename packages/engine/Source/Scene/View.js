@@ -22,15 +22,9 @@ import SceneMode from "./SceneMode.js";
 import ShadowMap from "./ShadowMap.js";
 import TranslucentTileClassification from "./TranslucentTileClassification.js";
 
-function CommandExtent() {
-  this.command = undefined;
-  this.near = undefined;
-  this.far = undefined;
-}
-
 /**
  * @alias View
- * @constructor
+ * @private
  *
  * @param {Scene} scene
  * @param {Camera} camera
@@ -43,89 +37,347 @@ function CommandExtent() {
  * @param {boolean} [options.useOffscreenCanvas=false] When true, creates the view's
  *   rendering context on an OffscreenCanvas in a WebWorker (background rendering).
  */
-function View(scene, camera, viewport, options) {
-  options = options ?? {};
+class View {
+  constructor(scene, camera, viewport, options) {
+    options = options ?? {};
+
+    /**
+     * Reference to the owning scene (for context fallback).
+     * @type {Scene}
+     * @private
+     */
+    this._scene = scene;
+
+    /**
+     * Optional per-view GraphicsContext. When set, this view uses its own
+     * rendering context instead of the Scene's default. Enables:
+     * - Split-screen: WebGL left + WebGPU right (same scene graph)
+     * - Multi-monitor: Different canvases, same or different backends
+     * - Mixed rendering: WebGL main view + WebGPU compute
+     *
+     * @type {GraphicsContext|undefined}
+     * @private
+     */
+    this._graphicsContext = options.graphicsContext ?? undefined;
+
+    // Resolve effective context: per-view override or scene default
+    const context = this._graphicsContext ?? scene.context;
+
+    let globeDepth;
+    if (context.depthTexture) {
+      globeDepth = new GlobeDepth();
+    }
+
+    let oit;
+    if (scene._useOIT && context.depthTexture) {
+      // OIT is now supported for both WebGL and WebGPU
+      // WebGPU uses WebGPUOIT.ts for weighted blended OIT
+      oit = new OIT(context);
+    }
+
+    const passState = new PassState(context);
+    passState.viewport = BoundingRectangle.clone(viewport);
+
+    this.camera = camera;
+    this._cameraClone = Camera.clone(camera);
+    this._cameraStartFired = false;
+    this._cameraMovedTime = undefined;
+
+    this.viewport = viewport;
+    this.passState = passState;
+    // Use context factory for backend-appropriate pick framebuffer.
+    // WebGPU: context.createPickFramebuffer() returns WebGPUPickFramebuffer.
+    // WebGL: returns null, falls back to PickFramebuffer.
+    this.pickFramebuffer =
+      context.createPickFramebuffer() ?? new PickFramebuffer(context);
+    this.pickDepthFramebuffer = new PickDepthFramebuffer();
+    this.sceneFramebuffer = new SceneFramebuffer();
+    this.edgeFramebuffer = new EdgeFramebuffer();
+    this.globeDepth = globeDepth;
+    this.globeTranslucencyFramebuffer = new GlobeTranslucencyFramebuffer();
+    this.oit = oit;
+    this.translucentTileClassification = new TranslucentTileClassification(
+      context,
+    );
+    /**
+     * @type {PickDepth[]}
+     */
+    this.pickDepths = [];
+    this.frustumCommandsList = [];
+    this.debugFrustumStatistics = undefined;
+
+    // Array of all commands that get rendered into frustums along with their near / far values.
+    // Acts similar to a ManagedArray.
+    this._commandExtents = [];
+  }
 
   /**
-   * Reference to the owning scene (for context fallback).
-   * @type {Scene}
-   * @private
-   */
-  this._scene = scene;
-
-  /**
-   * Optional per-view GraphicsContext. When set, this view uses its own
-   * rendering context instead of the Scene's default. Enables:
-   * - Split-screen: WebGL left + WebGPU right (same scene graph)
-   * - Multi-monitor: Different canvases, same or different backends
-   * - Mixed rendering: WebGL main view + WebGPU compute
-   *
+   * The per-view GraphicsContext override.
+   * When set, this view uses its own rendering context instead of the Scene's default.
    * @type {GraphicsContext|undefined}
+   */
+  get graphicsContext() {
+    return this._graphicsContext;
+  }
+
+  set graphicsContext(value) {
+    this._graphicsContext = value;
+  }
+
+  /**
+   * The effective GraphicsContext for this view — either the per-view override
+   * or the Scene's default context. This is the context that should be used
+   * for all rendering operations on this view.
+   *
+   * Use this instead of `scene.context` when you have a View reference,
+   * to correctly support multi-context/multi-view scenarios.
+   *
+   * @type {GraphicsContext}
+   * @readonly
+   */
+  get effectiveContext() {
+    return this._graphicsContext ?? this._scene.context;
+  }
+
+  /**
+   * The owning scene.
+   * @type {Scene}
+   * @readonly
    * @private
    */
-  this._graphicsContext = options.graphicsContext ?? undefined;
-
-  // Resolve effective context: per-view override or scene default
-  const context = this._graphicsContext ?? scene.context;
-
-  let globeDepth;
-  if (context.depthTexture) {
-    globeDepth = new GlobeDepth();
+  get scene() {
+    return this._scene;
   }
 
-  let oit;
-  if (scene._useOIT && context.depthTexture) {
-    // OIT is now supported for both WebGL and WebGPU
-    // WebGPU uses WebGPUOIT.ts for weighted blended OIT
-    oit = new OIT(context);
-  }
-
-  const passState = new PassState(context);
-  passState.viewport = BoundingRectangle.clone(viewport);
-
-  this.camera = camera;
-  this._cameraClone = Camera.clone(camera);
-  this._cameraStartFired = false;
-  this._cameraMovedTime = undefined;
-
-  this.viewport = viewport;
-  this.passState = passState;
-  // Use context factory for backend-appropriate pick framebuffer.
-  // WebGPU: context.createPickFramebuffer() returns WebGPUPickFramebuffer.
-  // WebGL: returns null, falls back to PickFramebuffer.
-  this.pickFramebuffer =
-    context.createPickFramebuffer() ?? new PickFramebuffer(context);
-  this.pickDepthFramebuffer = new PickDepthFramebuffer();
-  this.sceneFramebuffer = new SceneFramebuffer();
-  this.edgeFramebuffer = new EdgeFramebuffer();
-  this.globeDepth = globeDepth;
-  this.globeTranslucencyFramebuffer = new GlobeTranslucencyFramebuffer();
-  this.oit = oit;
-  this.translucentTileClassification = new TranslucentTileClassification(
-    context,
-  );
   /**
-   * @type {PickDepth[]}
+   * Check if the camera position or direction has changed.
+   *
+   * @param {Scene} scene
+   * @returns {boolean} <code>true</code> if the camera has been updated
+   *
+   * @private
    */
-  this.pickDepths = [];
-  this.frustumCommandsList = [];
-  this.debugFrustumStatistics = undefined;
+  checkForCameraUpdates(scene) {
+    const camera = this.camera;
+    const cameraClone = this._cameraClone;
+    if (!cameraEqual(camera, cameraClone, CesiumMath.EPSILON15)) {
+      if (!this._cameraStartFired) {
+        camera.moveStart.raiseEvent();
+        this._cameraStartFired = true;
+      }
+      this._cameraMovedTime = getTimestamp();
+      Camera.clone(camera, cameraClone);
 
-  // Array of all commands that get rendered into frustums along with their near / far values.
-  // Acts similar to a ManagedArray.
-  this._commandExtents = [];
+      return true;
+    }
+
+    if (
+      this._cameraStartFired &&
+      getTimestamp() - this._cameraMovedTime > scene.cameraEventWaitTime
+    ) {
+      camera.moveEnd.raiseEvent();
+      this._cameraStartFired = false;
+    }
+
+    return false;
+  }
+
+  createPotentiallyVisibleSet(scene) {
+    const { frameState } = scene;
+    const { camera, commandList, shadowState } = frameState;
+    const { positionWC, directionWC, frustum } = camera;
+
+    const computeList = scene._computeCommandList;
+    const overlayList = scene._overlayCommandList;
+
+    if (scene.debugShowFrustums) {
+      this.debugFrustumStatistics = {
+        totalCommands: 0,
+        commandsInFrustums: {},
+      };
+    }
+
+    const frustumCommandsList = this.frustumCommandsList;
+    for (let n = 0; n < frustumCommandsList.length; ++n) {
+      for (let p = 0; p < Pass.NUMBER_OF_PASSES; ++p) {
+        frustumCommandsList[n].indices[p] = 0;
+      }
+    }
+
+    computeList.length = 0;
+    overlayList.length = 0;
+
+    const commandExtents = this._commandExtents;
+    const commandExtentCapacity = commandExtents.length;
+    let commandExtentCount = 0;
+
+    let near = +Number.MAX_VALUE;
+    let far = -Number.MAX_VALUE;
+
+    const { shadowsEnabled } = shadowState;
+    let shadowNear = +Number.MAX_VALUE;
+    let shadowFar = -Number.MAX_VALUE;
+    let shadowClosestObjectSize = Number.MAX_VALUE;
+
+    const occluder =
+      frameState.mode === SceneMode.SCENE3D ? frameState.occluder : undefined;
+
+    // get user culling volume minus the far plane.
+    let { cullingVolume } = frameState;
+    const planes = scratchCullingVolume.planes;
+    for (let k = 0; k < 5; ++k) {
+      planes[k] = cullingVolume.planes[k];
+    }
+    cullingVolume = scratchCullingVolume;
+
+    for (let i = 0; i < commandList.length; ++i) {
+      const command = commandList[i];
+      const { pass, boundingVolume } = command;
+
+      if (pass === Pass.COMPUTE) {
+        computeList.push(command);
+      } else if (pass === Pass.OVERLAY) {
+        overlayList.push(command);
+      } else {
+        let commandNear;
+        let commandFar;
+
+        if (defined(boundingVolume)) {
+          if (!scene.isVisible(cullingVolume, command, occluder)) {
+            continue;
+          }
+
+          const nearFarInterval = boundingVolume.computePlaneDistances(
+            positionWC,
+            directionWC,
+            scratchNearFarInterval,
+          );
+          commandNear = nearFarInterval.start;
+          commandFar = nearFarInterval.stop;
+          near = Math.min(near, commandNear);
+          far = Math.max(far, commandFar);
+
+          // Compute a tight near and far plane for commands that receive shadows. This helps compute
+          // good splits for cascaded shadow maps. Ignore commands that exceed the maximum distance.
+          // When moving the camera low LOD globe tiles begin to load, whose bounding volumes
+          // throw off the near/far fitting for the shadow map. Only update for globe tiles that the
+          // camera isn't inside.
+          if (
+            shadowsEnabled &&
+            command.receiveShadows &&
+            commandNear < ShadowMap.MAXIMUM_DISTANCE &&
+            !(pass === Pass.GLOBE && commandNear < -100.0 && commandFar > 100.0)
+          ) {
+            // Get the smallest bounding volume the camera is near. This is used to place more shadow detail near the object.
+            const size = commandFar - commandNear;
+            if (pass !== Pass.GLOBE && commandNear < 100.0) {
+              shadowClosestObjectSize = Math.min(shadowClosestObjectSize, size);
+            }
+            shadowNear = Math.min(shadowNear, commandNear);
+            shadowFar = Math.max(shadowFar, commandFar);
+          }
+        } else if (command instanceof ClearCommand) {
+          // Clear commands don't need a bounding volume - just add the clear to all frustums.
+          commandNear = frustum.near;
+          commandFar = frustum.far;
+        } else {
+          // If command has no bounding volume we need to use the camera's
+          // worst-case near and far planes to avoid clipping something important.
+          commandNear = frustum.near;
+          commandFar = frustum.far;
+          near = Math.min(near, commandNear);
+          far = Math.max(far, commandFar);
+        }
+
+        let extent = commandExtents[commandExtentCount];
+        if (!defined(extent)) {
+          extent = commandExtents[commandExtentCount] = new CommandExtent();
+        }
+        extent.command = command;
+        extent.near = commandNear;
+        extent.far = commandFar;
+        commandExtentCount++;
+      }
+    }
+
+    if (shadowsEnabled) {
+      shadowNear = Math.min(Math.max(shadowNear, frustum.near), frustum.far);
+      shadowFar = Math.max(Math.min(shadowFar, frustum.far), shadowNear);
+      // Use the computed near and far for shadows
+      shadowState.nearPlane = shadowNear;
+      shadowState.farPlane = shadowFar;
+      shadowState.closestObjectSize = shadowClosestObjectSize;
+    }
+
+    updateFrustums(this, scene, near, far);
+
+    for (let c = 0; c < commandExtentCount; c++) {
+      insertIntoBin(this, scene, commandExtents[c]);
+    }
+
+    // Dereference old commands
+    if (commandExtentCount < commandExtentCapacity) {
+      for (let c = commandExtentCount; c < commandExtentCapacity; c++) {
+        const commandExtent = commandExtents[c];
+        if (!defined(commandExtent.command)) {
+          // If the command is undefined, it's assumed that all
+          // subsequent commmands were set to undefined as well,
+          // so no need to loop over them all
+          break;
+        }
+        commandExtent.command = undefined;
+      }
+    }
+
+    const numFrustums = frustumCommandsList.length;
+    const { frustumSplits } = frameState;
+    frustumSplits.length = numFrustums + 1;
+    for (let j = 0; j < numFrustums; ++j) {
+      frustumSplits[j] = frustumCommandsList[j].near;
+      if (j === numFrustums - 1) {
+        frustumSplits[j + 1] = frustumCommandsList[j].far;
+      }
+    }
+  }
+
+  destroy() {
+    this.pickFramebuffer =
+      this.pickFramebuffer && this.pickFramebuffer.destroy();
+    this.pickDepthFramebuffer =
+      this.pickDepthFramebuffer && this.pickDepthFramebuffer.destroy();
+    this.sceneFramebuffer =
+      this.sceneFramebuffer && this.sceneFramebuffer.destroy();
+    this.edgeFramebuffer =
+      this.edgeFramebuffer && this.edgeFramebuffer.destroy();
+    this.globeDepth = this.globeDepth && this.globeDepth.destroy();
+    this.oit = this.oit && this.oit.destroy();
+    this.translucentTileClassification =
+      this.translucentTileClassification &&
+      this.translucentTileClassification.destroy();
+    this.globeTranslucencyFramebuffer =
+      this.globeTranslucencyFramebuffer &&
+      this.globeTranslucencyFramebuffer.destroy();
+
+    const pickDepths = this.pickDepths;
+    for (let i = 0; i < pickDepths.length; ++i) {
+      pickDepths[i].destroy();
+    }
+  }
+}
+
+// File-scoped helpers below — class at top per CesiumJS coding guide
+
+function CommandExtent() {
+  this.command = undefined;
+  this.near = undefined;
+  this.far = undefined;
 }
 
 const scratchPosition0 = new Cartesian3();
 const scratchPosition1 = new Cartesian3();
+
 /**
  * Check if two cameras have the same view.
- *
- * @param {Camera} camera0 The first camera for comparison.
- * @param {Camera} camera1 The second camera for comparison.
- * @param {number} epsilon The epsilon tolerance to use for equality testing.
- * @returns {boolean} <code>true</code> if the cameras are equal.
- *
  * @private
  */
 function cameraEqual(camera0, camera1, epsilon) {
@@ -151,48 +403,7 @@ function cameraEqual(camera0, camera1, epsilon) {
 }
 
 /**
- * Check if the camera position or direction has changed.
- *
- * @param {Scene} scene
- * @returns {boolean} <code>true</code> if the camera has been updated
- *
- * @private
- */
-View.prototype.checkForCameraUpdates = function (scene) {
-  const camera = this.camera;
-  const cameraClone = this._cameraClone;
-  if (!cameraEqual(camera, cameraClone, CesiumMath.EPSILON15)) {
-    if (!this._cameraStartFired) {
-      camera.moveStart.raiseEvent();
-      this._cameraStartFired = true;
-    }
-    this._cameraMovedTime = getTimestamp();
-    Camera.clone(camera, cameraClone);
-
-    return true;
-  }
-
-  if (
-    this._cameraStartFired &&
-    getTimestamp() - this._cameraMovedTime > scene.cameraEventWaitTime
-  ) {
-    camera.moveEnd.raiseEvent();
-    this._cameraStartFired = false;
-  }
-
-  return false;
-};
-
-/**
- * Split the depth range of the scene into multiple frustums, and initialize
- * a list of {@link FrustumCommands} with the distances to the near and far
- * planes for each frustum.
- *
- * @param {View} view The view to which the frustum commands list is attached.
- * @param {Scene} scene The scene to be rendered.
- * @param {number} near The distance to the nearest object in the scene.
- * @param {number} far The distance to the farthest object in the scene.
- *
+ * Split the depth range of the scene into multiple frustums.
  * @private
  */
 function updateFrustums(view, scene, near, far) {
@@ -258,13 +469,7 @@ function updateFrustums(view, scene, near, far) {
 }
 
 /**
- * Insert a command into the appropriate {@link FrustumCommands} based on the
- * range of depths covered by its bounding volume.
- *
- * @param {View} view
- * @param {Scene} scene
- * @param {CommandExtent} commandExtent
- *
+ * Insert a command into the appropriate FrustumCommands.
  * @private
  */
 function insertIntoBin(view, scene, commandExtent) {
@@ -316,237 +521,4 @@ function insertIntoBin(view, scene, commandExtent) {
 const scratchCullingVolume = new CullingVolume();
 const scratchNearFarInterval = new Interval();
 
-View.prototype.createPotentiallyVisibleSet = function (scene) {
-  const { frameState } = scene;
-  const { camera, commandList, shadowState } = frameState;
-  const { positionWC, directionWC, frustum } = camera;
-
-  const computeList = scene._computeCommandList;
-  const overlayList = scene._overlayCommandList;
-
-  if (scene.debugShowFrustums) {
-    this.debugFrustumStatistics = {
-      totalCommands: 0,
-      commandsInFrustums: {},
-    };
-  }
-
-  const frustumCommandsList = this.frustumCommandsList;
-  for (let n = 0; n < frustumCommandsList.length; ++n) {
-    for (let p = 0; p < Pass.NUMBER_OF_PASSES; ++p) {
-      frustumCommandsList[n].indices[p] = 0;
-    }
-  }
-
-  computeList.length = 0;
-  overlayList.length = 0;
-
-  const commandExtents = this._commandExtents;
-  const commandExtentCapacity = commandExtents.length;
-  let commandExtentCount = 0;
-
-  let near = +Number.MAX_VALUE;
-  let far = -Number.MAX_VALUE;
-
-  const { shadowsEnabled } = shadowState;
-  let shadowNear = +Number.MAX_VALUE;
-  let shadowFar = -Number.MAX_VALUE;
-  let shadowClosestObjectSize = Number.MAX_VALUE;
-
-  const occluder =
-    frameState.mode === SceneMode.SCENE3D ? frameState.occluder : undefined;
-
-  // get user culling volume minus the far plane.
-  let { cullingVolume } = frameState;
-  const planes = scratchCullingVolume.planes;
-  for (let k = 0; k < 5; ++k) {
-    planes[k] = cullingVolume.planes[k];
-  }
-  cullingVolume = scratchCullingVolume;
-
-  for (let i = 0; i < commandList.length; ++i) {
-    const command = commandList[i];
-    const { pass, boundingVolume } = command;
-
-    if (pass === Pass.COMPUTE) {
-      computeList.push(command);
-    } else if (pass === Pass.OVERLAY) {
-      overlayList.push(command);
-    } else {
-      let commandNear;
-      let commandFar;
-
-      if (defined(boundingVolume)) {
-        if (!scene.isVisible(cullingVolume, command, occluder)) {
-          continue;
-        }
-
-        const nearFarInterval = boundingVolume.computePlaneDistances(
-          positionWC,
-          directionWC,
-          scratchNearFarInterval,
-        );
-        commandNear = nearFarInterval.start;
-        commandFar = nearFarInterval.stop;
-        near = Math.min(near, commandNear);
-        far = Math.max(far, commandFar);
-
-        // Compute a tight near and far plane for commands that receive shadows. This helps compute
-        // good splits for cascaded shadow maps. Ignore commands that exceed the maximum distance.
-        // When moving the camera low LOD globe tiles begin to load, whose bounding volumes
-        // throw off the near/far fitting for the shadow map. Only update for globe tiles that the
-        // camera isn't inside.
-        if (
-          shadowsEnabled &&
-          command.receiveShadows &&
-          commandNear < ShadowMap.MAXIMUM_DISTANCE &&
-          !(pass === Pass.GLOBE && commandNear < -100.0 && commandFar > 100.0)
-        ) {
-          // Get the smallest bounding volume the camera is near. This is used to place more shadow detail near the object.
-          const size = commandFar - commandNear;
-          if (pass !== Pass.GLOBE && commandNear < 100.0) {
-            shadowClosestObjectSize = Math.min(shadowClosestObjectSize, size);
-          }
-          shadowNear = Math.min(shadowNear, commandNear);
-          shadowFar = Math.max(shadowFar, commandFar);
-        }
-      } else if (command instanceof ClearCommand) {
-        // Clear commands don't need a bounding volume - just add the clear to all frustums.
-        commandNear = frustum.near;
-        commandFar = frustum.far;
-      } else {
-        // If command has no bounding volume we need to use the camera's
-        // worst-case near and far planes to avoid clipping something important.
-        commandNear = frustum.near;
-        commandFar = frustum.far;
-        near = Math.min(near, commandNear);
-        far = Math.max(far, commandFar);
-      }
-
-      let extent = commandExtents[commandExtentCount];
-      if (!defined(extent)) {
-        extent = commandExtents[commandExtentCount] = new CommandExtent();
-      }
-      extent.command = command;
-      extent.near = commandNear;
-      extent.far = commandFar;
-      commandExtentCount++;
-    }
-  }
-
-  if (shadowsEnabled) {
-    shadowNear = Math.min(Math.max(shadowNear, frustum.near), frustum.far);
-    shadowFar = Math.max(Math.min(shadowFar, frustum.far), shadowNear);
-    // Use the computed near and far for shadows
-    shadowState.nearPlane = shadowNear;
-    shadowState.farPlane = shadowFar;
-    shadowState.closestObjectSize = shadowClosestObjectSize;
-  }
-
-  updateFrustums(this, scene, near, far);
-
-  for (let c = 0; c < commandExtentCount; c++) {
-    insertIntoBin(this, scene, commandExtents[c]);
-  }
-
-  // Dereference old commands
-  if (commandExtentCount < commandExtentCapacity) {
-    for (let c = commandExtentCount; c < commandExtentCapacity; c++) {
-      const commandExtent = commandExtents[c];
-      if (!defined(commandExtent.command)) {
-        // If the command is undefined, it's assumed that all
-        // subsequent commmands were set to undefined as well,
-        // so no need to loop over them all
-        break;
-      }
-      commandExtent.command = undefined;
-    }
-  }
-
-  const numFrustums = frustumCommandsList.length;
-  const { frustumSplits } = frameState;
-  frustumSplits.length = numFrustums + 1;
-  for (let j = 0; j < numFrustums; ++j) {
-    frustumSplits[j] = frustumCommandsList[j].near;
-    if (j === numFrustums - 1) {
-      frustumSplits[j + 1] = frustumCommandsList[j].far;
-    }
-  }
-};
-
-/**
- * Get the per-view GraphicsContext override, if set.
- * Returns undefined if this view uses the Scene's default context.
- *
- * @type {GraphicsContext|undefined}
- */
-Object.defineProperties(View.prototype, {
-  /**
-   * The per-view GraphicsContext override.
-   * When set, this view uses its own rendering context instead of the Scene's default.
-   * @memberof View.prototype
-   * @type {GraphicsContext|undefined}
-   */
-  graphicsContext: {
-    get: function () {
-      return this._graphicsContext;
-    },
-    set: function (value) {
-      this._graphicsContext = value;
-    },
-  },
-
-  /**
-   * The effective GraphicsContext for this view — either the per-view override
-   * or the Scene's default context. This is the context that should be used
-   * for all rendering operations on this view.
-   *
-   * Use this instead of `scene.context` when you have a View reference,
-   * to correctly support multi-context/multi-view scenarios.
-   *
-   * @memberof View.prototype
-   * @type {GraphicsContext}
-   * @readonly
-   */
-  effectiveContext: {
-    get: function () {
-      return this._graphicsContext ?? this._scene.context;
-    },
-  },
-
-  /**
-   * The owning scene.
-   * @memberof View.prototype
-   * @type {Scene}
-   * @readonly
-   * @private
-   */
-  scene: {
-    get: function () {
-      return this._scene;
-    },
-  },
-});
-
-View.prototype.destroy = function () {
-  this.pickFramebuffer = this.pickFramebuffer && this.pickFramebuffer.destroy();
-  this.pickDepthFramebuffer =
-    this.pickDepthFramebuffer && this.pickDepthFramebuffer.destroy();
-  this.sceneFramebuffer =
-    this.sceneFramebuffer && this.sceneFramebuffer.destroy();
-  this.edgeFramebuffer = this.edgeFramebuffer && this.edgeFramebuffer.destroy();
-  this.globeDepth = this.globeDepth && this.globeDepth.destroy();
-  this.oit = this.oit && this.oit.destroy();
-  this.translucentTileClassification =
-    this.translucentTileClassification &&
-    this.translucentTileClassification.destroy();
-  this.globeTranslucencyFramebuffer =
-    this.globeTranslucencyFramebuffer &&
-    this.globeTranslucencyFramebuffer.destroy();
-
-  const pickDepths = this.pickDepths;
-  for (let i = 0; i < pickDepths.length; ++i) {
-    pickDepths[i].destroy();
-  }
-};
 export default View;

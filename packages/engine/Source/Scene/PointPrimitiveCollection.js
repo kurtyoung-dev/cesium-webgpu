@@ -59,7 +59,6 @@ const attributeLocations = {
  * and {@link PointPrimitiveCollection#remove}.
  *
  * @alias PointPrimitiveCollection
- * @constructor
  *
  * @param {object} [options] Object with the following properties:
  * @param {Matrix4} [options.modelMatrix=Matrix4.IDENTITY] The 4x4 transformation matrix that transforms each point from model to world coordinates.
@@ -92,165 +91,755 @@ const attributeLocations = {
  * @see PointPrimitiveCollection#remove
  * @see PointPrimitive
  */
-function PointPrimitiveCollection(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class PointPrimitiveCollection {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._sp = undefined;
-  this._spTranslucent = undefined;
-  this._rsOpaque = undefined;
-  this._rsTranslucent = undefined;
-  this._vaf = undefined;
+    this._sp = undefined;
+    this._spTranslucent = undefined;
+    this._rsOpaque = undefined;
+    this._rsTranslucent = undefined;
+    this._vaf = undefined;
 
-  this._pointPrimitives = [];
-  this._pointPrimitivesToUpdate = [];
-  this._pointPrimitivesToUpdateIndex = 0;
-  this._pointPrimitivesRemoved = false;
-  this._createVertexArray = false;
+    this._pointPrimitives = [];
+    this._pointPrimitivesToUpdate = [];
+    this._pointPrimitivesToUpdateIndex = 0;
+    this._pointPrimitivesRemoved = false;
+    this._createVertexArray = false;
 
-  this._shaderScaleByDistance = false;
-  this._compiledShaderScaleByDistance = false;
+    this._shaderScaleByDistance = false;
+    this._compiledShaderScaleByDistance = false;
 
-  this._shaderTranslucencyByDistance = false;
-  this._compiledShaderTranslucencyByDistance = false;
+    this._shaderTranslucencyByDistance = false;
+    this._compiledShaderTranslucencyByDistance = false;
 
-  this._shaderDistanceDisplayCondition = false;
-  this._compiledShaderDistanceDisplayCondition = false;
+    this._shaderDistanceDisplayCondition = false;
+    this._compiledShaderDistanceDisplayCondition = false;
 
-  this._shaderDisableDepthDistance = false;
-  this._compiledShaderDisableDepthDistance = false;
+    this._shaderDisableDepthDistance = false;
+    this._compiledShaderDisableDepthDistance = false;
 
-  this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
+    this._propertiesChanged = new Uint32Array(NUMBER_OF_PROPERTIES);
 
-  this._maxPixelSize = 1.0;
+    this._maxPixelSize = 1.0;
 
-  this._baseVolume = new BoundingSphere();
-  this._baseVolumeWC = new BoundingSphere();
-  this._baseVolume2D = new BoundingSphere();
-  this._boundingVolume = new BoundingSphere();
-  this._boundingVolumeDirty = false;
+    this._baseVolume = new BoundingSphere();
+    this._baseVolumeWC = new BoundingSphere();
+    this._baseVolume2D = new BoundingSphere();
+    this._boundingVolume = new BoundingSphere();
+    this._boundingVolumeDirty = false;
 
-  this._colorCommands = [];
+    this._colorCommands = [];
 
-  /**
-   * Determines if primitives in this collection will be shown.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
+    /**
+     * Determines if primitives in this collection will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
 
-  /**
-   * The render priority for this collection. Higher values render on top
-   * (later in draw order). Maps to DrawCommand.sortPriority.
-   * @type {number}
-   * @default 0
-   */
-  this.renderPriority = options.renderPriority ?? 0;
+    /**
+     * The render priority for this collection. Higher values render on top
+     * (later in draw order). Maps to DrawCommand.sortPriority.
+     * @type {number}
+     * @default 0
+     */
+    this.renderPriority = options.renderPriority ?? 0;
 
-  /**
-   * The render layer order for this collection. Maps to DrawCommand.sortLayer.
-   * @type {number}
-   * @default 50
-   */
-  this.renderLayer = options.renderLayer ?? 50;
+    /**
+     * The render layer order for this collection. Maps to DrawCommand.sortLayer.
+     * @type {number}
+     * @default 50
+     */
+    this.renderLayer = options.renderLayer ?? 50;
 
-  /**
-   * The 4x4 transformation matrix that transforms each point in this collection from model to world coordinates.
-   * When this is the identity matrix, the pointPrimitives are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
-   * Local reference frames can be used by providing a different transformation matrix, like that returned
-   * by {@link Transforms.eastNorthUpToFixedFrame}.
-   *
-   * @type {Matrix4}
-   * @default {@link Matrix4.IDENTITY}
-   *
-   *
-   * @example
-   * const center = Cesium.Cartesian3.fromDegrees(-75.59777, 40.03883);
-   * pointPrimitives.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-   * pointPrimitives.add({
-   *   color : Cesium.Color.ORANGE,
-   *   position : new Cesium.Cartesian3(0.0, 0.0, 0.0) // center
-   * });
-   * pointPrimitives.add({
-   *   color : Cesium.Color.YELLOW,
-   *   position : new Cesium.Cartesian3(1000000.0, 0.0, 0.0) // east
-   * });
-   * pointPrimitives.add({
-   *   color : Cesium.Color.GREEN,
-   *   position : new Cesium.Cartesian3(0.0, 1000000.0, 0.0) // north
-   * });
-   * pointPrimitives.add({
-   *   color : Cesium.Color.CYAN,
-   *   position : new Cesium.Cartesian3(0.0, 0.0, 1000000.0) // up
-   * });
-   *
-   * @see Transforms.eastNorthUpToFixedFrame
-   */
-  this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
-  this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    /**
+     * The 4x4 transformation matrix that transforms each point in this collection from model to world coordinates.
+     * When this is the identity matrix, the pointPrimitives are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
+     * Local reference frames can be used by providing a different transformation matrix, like that returned
+     * by {@link Transforms.eastNorthUpToFixedFrame}.
+     *
+     * @type {Matrix4}
+     * @default {@link Matrix4.IDENTITY}
+     *
+     *
+     * @example
+     * const center = Cesium.Cartesian3.fromDegrees(-75.59777, 40.03883);
+     * pointPrimitives.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+     * pointPrimitives.add({
+     *   color : Cesium.Color.ORANGE,
+     *   position : new Cesium.Cartesian3(0.0, 0.0, 0.0) // center
+     * });
+     * pointPrimitives.add({
+     *   color : Cesium.Color.YELLOW,
+     *   position : new Cesium.Cartesian3(1000000.0, 0.0, 0.0) // east
+     * });
+     * pointPrimitives.add({
+     *   color : Cesium.Color.GREEN,
+     *   position : new Cesium.Cartesian3(0.0, 1000000.0, 0.0) // north
+     * });
+     * pointPrimitives.add({
+     *   color : Cesium.Color.CYAN,
+     *   position : new Cesium.Cartesian3(0.0, 0.0, 1000000.0) // up
+     * });
+     *
+     * @see Transforms.eastNorthUpToFixedFrame
+     */
+    this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+    this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
 
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
-   * </p>
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
 
-  /**
-   * The point blending option. The default is used for rendering both opaque and translucent points.
-   * However, if either all of the points are completely opaque or all are completely translucent,
-   * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve
-   * performance by up to 2x.
-   * @type {BlendOption}
-   * @default BlendOption.OPAQUE_AND_TRANSLUCENT
-   */
-  this.blendOption = options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
-  this._blendOption = undefined;
+    /**
+     * The point blending option. The default is used for rendering both opaque and translucent points.
+     * However, if either all of the points are completely opaque or all are completely translucent,
+     * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve
+     * performance by up to 2x.
+     * @type {BlendOption}
+     * @default BlendOption.OPAQUE_AND_TRANSLUCENT
+     */
+    this.blendOption =
+      options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
+    this._blendOption = undefined;
 
-  this._mode = SceneMode.SCENE3D;
-  this._maxTotalPointSize = 1;
+    this._mode = SceneMode.SCENE3D;
+    this._maxTotalPointSize = 1;
 
-  // The buffer usage for each attribute is determined based on the usage of the attribute over time.
-  this._buffersUsage = [
-    BufferUsage.STATIC_DRAW, // SHOW_INDEX
-    BufferUsage.STATIC_DRAW, // POSITION_INDEX
-    BufferUsage.STATIC_DRAW, // COLOR_INDEX
-    BufferUsage.STATIC_DRAW, // OUTLINE_COLOR_INDEX
-    BufferUsage.STATIC_DRAW, // OUTLINE_WIDTH_INDEX
-    BufferUsage.STATIC_DRAW, // PIXEL_SIZE_INDEX
-    BufferUsage.STATIC_DRAW, // SCALE_BY_DISTANCE_INDEX
-    BufferUsage.STATIC_DRAW, // TRANSLUCENCY_BY_DISTANCE_INDEX
-    BufferUsage.STATIC_DRAW, // DISTANCE_DISPLAY_CONDITION_INDEX
-  ];
+    // The buffer usage for each attribute is determined based on the usage of the attribute over time.
+    this._buffersUsage = [
+      BufferUsage.STATIC_DRAW, // SHOW_INDEX
+      BufferUsage.STATIC_DRAW, // POSITION_INDEX
+      BufferUsage.STATIC_DRAW, // COLOR_INDEX
+      BufferUsage.STATIC_DRAW, // OUTLINE_COLOR_INDEX
+      BufferUsage.STATIC_DRAW, // OUTLINE_WIDTH_INDEX
+      BufferUsage.STATIC_DRAW, // PIXEL_SIZE_INDEX
+      BufferUsage.STATIC_DRAW, // SCALE_BY_DISTANCE_INDEX
+      BufferUsage.STATIC_DRAW, // TRANSLUCENCY_BY_DISTANCE_INDEX
+      BufferUsage.STATIC_DRAW, // DISTANCE_DISPLAY_CONDITION_INDEX
+    ];
 
-  const that = this;
-  this._uniforms = {
-    u_maxTotalPointSize: function () {
-      return that._maxTotalPointSize;
-    },
-  };
-}
+    const that = this;
+    this._uniforms = {
+      u_maxTotalPointSize: function () {
+        return that._maxTotalPointSize;
+      },
+    };
+  }
 
-Object.defineProperties(PointPrimitiveCollection.prototype, {
   /**
    * Returns the number of points in this collection.  This is commonly used with
    * {@link PointPrimitiveCollection#get} to iterate over all the points
    * in the collection.
-   * @memberof PointPrimitiveCollection.prototype
    * @type {number}
    */
-  length: {
-    get: function () {
-      removePointPrimitives(this);
-      return this._pointPrimitives.length;
-    },
-  },
-});
+  get length() {
+    removePointPrimitives(this);
+    return this._pointPrimitives.length;
+  }
+
+  /**
+   * Creates and adds a point with the specified initial properties to the collection.
+   * The added point is returned so it can be modified or removed from the collection later.
+   *
+   * @param {object}[options] A template describing the point's properties as shown in Example 1.
+   * @returns {PointPrimitive} The point that was added to the collection.
+   *
+   * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
+   * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
+   * best performance, add as many pointPrimitives as possible before calling <code>update</code>.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Example 1:  Add a point, specifying all the default values.
+   * const p = pointPrimitives.add({
+   *   show : true,
+   *   position : Cesium.Cartesian3.ZERO,
+   *   pixelSize : 10.0,
+   *   color : Cesium.Color.WHITE,
+   *   outlineColor : Cesium.Color.TRANSPARENT,
+   *   outlineWidth : 0.0,
+   *   id : undefined
+   * });
+   *
+   * @example
+   * // Example 2:  Specify only the point's cartographic position.
+   * const p = pointPrimitives.add({
+   *   position : Cesium.Cartesian3.fromDegrees(longitude, latitude, height)
+   * });
+   *
+   * @see PointPrimitiveCollection#remove
+   * @see PointPrimitiveCollection#removeAll
+   */
+  add(options) {
+    const p = new PointPrimitive(options, this);
+    p._index = this._pointPrimitives.length;
+
+    this._pointPrimitives.push(p);
+    this._createVertexArray = true;
+
+    return p;
+  }
+
+  /**
+   * Removes a point from the collection.
+   *
+   * @param {PointPrimitive} pointPrimitive The point to remove.
+   * @returns {boolean} <code>true</code> if the point was removed; <code>false</code> if the point was not found in the collection.
+   *
+   * @performance Calling <code>remove</code> is expected constant time.  However, the collection's vertex buffer
+   * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
+   * best performance, remove as many points as possible before calling <code>update</code>.
+   * If you intend to temporarily hide a point, it is usually more efficient to call
+   * {@link PointPrimitive#show} instead of removing and re-adding the point.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * const p = pointPrimitives.add(...);
+   * pointPrimitives.remove(p);  // Returns true
+   *
+   * @see PointPrimitiveCollection#add
+   * @see PointPrimitiveCollection#removeAll
+   * @see PointPrimitive#show
+   */
+  remove(pointPrimitive) {
+    if (this.contains(pointPrimitive)) {
+      this._pointPrimitives[pointPrimitive._index] = null; // Removed later
+      this._pointPrimitivesRemoved = true;
+      this._createVertexArray = true;
+      pointPrimitive._destroy();
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Removes all points from the collection.
+   *
+   * @performance <code>O(n)</code>.  It is more efficient to remove all the points
+   * from a collection and then add new ones than to create a new collection entirely.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * pointPrimitives.add(...);
+   * pointPrimitives.add(...);
+   * pointPrimitives.removeAll();
+   *
+   * @see PointPrimitiveCollection#add
+   * @see PointPrimitiveCollection#remove
+   */
+  removeAll() {
+    destroyPointPrimitives(this._pointPrimitives);
+    this._pointPrimitives = [];
+    this._pointPrimitivesToUpdate = [];
+    this._pointPrimitivesToUpdateIndex = 0;
+    this._pointPrimitivesRemoved = false;
+
+    this._createVertexArray = true;
+  }
+
+  /**
+   * @private
+   */
+  _updatePointPrimitive(pointPrimitive, propertyChanged) {
+    if (!pointPrimitive._dirty) {
+      this._pointPrimitivesToUpdate[this._pointPrimitivesToUpdateIndex++] =
+        pointPrimitive;
+    }
+
+    ++this._propertiesChanged[propertyChanged];
+  }
+
+  /**
+   * Check whether this collection contains a given point.
+   *
+   * @param {PointPrimitive} [pointPrimitive] The point to check for.
+   * @returns {boolean} true if this collection contains the point, false otherwise.
+   *
+   * @see PointPrimitiveCollection#get
+   */
+  contains(pointPrimitive) {
+    return (
+      defined(pointPrimitive) &&
+      pointPrimitive._pointPrimitiveCollection === this
+    );
+  }
+
+  /**
+   * Returns the point in the collection at the specified index.  Indices are zero-based
+   * and increase as points are added.  Removing a point shifts all points after
+   * it to the left, changing their indices.  This function is commonly used with
+   * {@link PointPrimitiveCollection#length} to iterate over all the points
+   * in the collection.
+   *
+   * @param {number} index The zero-based index of the point.
+   * @returns {PointPrimitive} The point at the specified index.
+   *
+   * @performance Expected constant time.  If points were removed from the collection and
+   * {@link PointPrimitiveCollection#update} was not called, an implicit <code>O(n)</code>
+   * operation is performed.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Toggle the show property of every point in the collection
+   * const len = pointPrimitives.length;
+   * for (let i = 0; i < len; ++i) {
+   *   const p = pointPrimitives.get(i);
+   *   p.show = !p.show;
+   * }
+   *
+   * @see PointPrimitiveCollection#length
+   */
+  get(index) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(index)) {
+      throw new DeveloperError("index is required.");
+    }
+    //>>includeEnd('debug');
+
+    removePointPrimitives(this);
+    return this._pointPrimitives[index];
+  }
+
+  computeNewBuffersUsage() {
+    const buffersUsage = this._buffersUsage;
+    let usageChanged = false;
+
+    const properties = this._propertiesChanged;
+    for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
+      const newUsage =
+        properties[k] === 0 ? BufferUsage.STATIC_DRAW : BufferUsage.STREAM_DRAW;
+      usageChanged = usageChanged || buffersUsage[k] !== newUsage;
+      buffersUsage[k] = newUsage;
+    }
+
+    return usageChanged;
+  }
+
+  /**
+   * @private
+   */
+  update(frameState) {
+    removePointPrimitives(this);
+
+    if (!this.show) {
+      return;
+    }
+
+    this._maxTotalPointSize = ContextLimits.maximumAliasedPointSize;
+
+    updateMode(this, frameState);
+
+    const context = frameState.context;
+
+    // ---- Backend-specific rendering via Feature Renderer ----
+    const fr = context.getFeatureRenderer(
+      FeatureRendererKey.POINT_PRIMITIVE_COLLECTION,
+    );
+    if (fr) {
+      this._pointPrimitivesLength = this._pointPrimitives.length;
+      fr.update(this, frameState, frameState.commandList);
+      return;
+    }
+
+    // ---- WebGL rendering path (original, unchanged) ----
+    const pointPrimitives = this._pointPrimitives;
+    const pointPrimitivesLength = pointPrimitives.length;
+    const pointPrimitivesToUpdate = this._pointPrimitivesToUpdate;
+    const pointPrimitivesToUpdateLength = this._pointPrimitivesToUpdateIndex;
+
+    const properties = this._propertiesChanged;
+
+    const createVertexArray = this._createVertexArray;
+
+    let vafWriters;
+    const pass = frameState.passes;
+    const picking = pass.pick;
+
+    // PERFORMANCE_IDEA: Round robin multiple buffers.
+    if (createVertexArray || (!picking && this.computeNewBuffersUsage())) {
+      this._createVertexArray = false;
+
+      for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
+        properties[k] = 0;
+      }
+
+      this._vaf = this._vaf && this._vaf.destroy();
+
+      if (pointPrimitivesLength > 0) {
+        // PERFORMANCE_IDEA:  Instead of creating a new one, resize like std::vector.
+        this._vaf = createVAF(
+          context,
+          pointPrimitivesLength,
+          this._buffersUsage,
+        );
+        vafWriters = this._vaf.writers;
+
+        // Rewrite entire buffer if pointPrimitives were added or removed.
+        for (let i = 0; i < pointPrimitivesLength; ++i) {
+          const pointPrimitive = this._pointPrimitives[i];
+          pointPrimitive._dirty = false; // In case it needed an update.
+          writePointPrimitive(this, context, vafWriters, pointPrimitive);
+        }
+
+        this._vaf.commit();
+      }
+
+      this._pointPrimitivesToUpdateIndex = 0;
+    } else if (pointPrimitivesToUpdateLength > 0) {
+      // PointPrimitives were modified, but none were added or removed.
+      const writers = scratchWriterArray;
+      writers.length = 0;
+
+      if (
+        properties[POSITION_INDEX] ||
+        properties[OUTLINE_WIDTH_INDEX] ||
+        properties[PIXEL_SIZE_INDEX]
+      ) {
+        writers.push(writePositionSizeAndOutline);
+      }
+
+      if (properties[COLOR_INDEX] || properties[OUTLINE_COLOR_INDEX]) {
+        writers.push(writeCompressedAttrib0);
+      }
+
+      if (
+        properties[SHOW_INDEX] ||
+        properties[TRANSLUCENCY_BY_DISTANCE_INDEX]
+      ) {
+        writers.push(writeCompressedAttrib1);
+      }
+
+      if (properties[SCALE_BY_DISTANCE_INDEX]) {
+        writers.push(writeScaleByDistance);
+      }
+
+      if (
+        properties[DISTANCE_DISPLAY_CONDITION_INDEX] ||
+        properties[DISABLE_DEPTH_DISTANCE_INDEX] ||
+        properties[SPLIT_DIRECTION_INDEX]
+      ) {
+        writers.push(
+          writeDistanceDisplayConditionAndDepthDisableAndSplitDirection,
+        );
+      }
+
+      const numWriters = writers.length;
+
+      vafWriters = this._vaf.writers;
+
+      if (pointPrimitivesToUpdateLength / pointPrimitivesLength > 0.1) {
+        // If more than 10% of pointPrimitive change, rewrite the entire buffer.
+
+        // PERFORMANCE_IDEA:  I totally made up 10% :).
+
+        for (let m = 0; m < pointPrimitivesToUpdateLength; ++m) {
+          const b = pointPrimitivesToUpdate[m];
+          b._dirty = false;
+
+          for (let n = 0; n < numWriters; ++n) {
+            writers[n](this, context, vafWriters, b);
+          }
+        }
+        this._vaf.commit();
+      } else {
+        for (let h = 0; h < pointPrimitivesToUpdateLength; ++h) {
+          const bb = pointPrimitivesToUpdate[h];
+          bb._dirty = false;
+
+          for (let o = 0; o < numWriters; ++o) {
+            writers[o](this, context, vafWriters, bb);
+          }
+          this._vaf.subCommit(bb._index, 1);
+        }
+        this._vaf.endSubCommits();
+      }
+
+      this._pointPrimitivesToUpdateIndex = 0;
+    }
+
+    // If the number of total pointPrimitives ever shrinks considerably
+    // Truncate pointPrimitivesToUpdate so that we free memory that we're
+    // not going to be using.
+    if (pointPrimitivesToUpdateLength > pointPrimitivesLength * 1.5) {
+      pointPrimitivesToUpdate.length = pointPrimitivesLength;
+    }
+
+    if (!defined(this._vaf) || !defined(this._vaf.va)) {
+      return;
+    }
+
+    if (this._boundingVolumeDirty) {
+      this._boundingVolumeDirty = false;
+      BoundingSphere.transform(
+        this._baseVolume,
+        this.modelMatrix,
+        this._baseVolumeWC,
+      );
+    }
+
+    let boundingVolume;
+    let modelMatrix = Matrix4.IDENTITY;
+    if (frameState.mode === SceneMode.SCENE3D) {
+      modelMatrix = this.modelMatrix;
+      boundingVolume = BoundingSphere.clone(
+        this._baseVolumeWC,
+        this._boundingVolume,
+      );
+    } else {
+      boundingVolume = BoundingSphere.clone(
+        this._baseVolume2D,
+        this._boundingVolume,
+      );
+    }
+    updateBoundingVolume(this, frameState, boundingVolume);
+
+    const blendOptionChanged = this._blendOption !== this.blendOption;
+    this._blendOption = this.blendOption;
+
+    if (blendOptionChanged) {
+      if (
+        this._blendOption === BlendOption.OPAQUE ||
+        this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT
+      ) {
+        this._rsOpaque = RenderState.fromCache({
+          depthTest: {
+            enabled: true,
+            func: WebGLConstants.LEQUAL,
+          },
+          depthMask: true,
+        });
+      } else {
+        this._rsOpaque = undefined;
+      }
+
+      if (
+        this._blendOption === BlendOption.TRANSLUCENT ||
+        this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT
+      ) {
+        this._rsTranslucent = RenderState.fromCache({
+          depthTest: {
+            enabled: true,
+            func: WebGLConstants.LEQUAL,
+          },
+          depthMask: false,
+          blending: BlendingState.ALPHA_BLEND,
+        });
+      } else {
+        this._rsTranslucent = undefined;
+      }
+    }
+
+    this._shaderDisableDepthDistance =
+      this._shaderDisableDepthDistance ||
+      frameState.minimumDisableDepthTestDistance !== 0.0;
+    let vs;
+    let fs;
+
+    if (
+      blendOptionChanged ||
+      (this._shaderScaleByDistance && !this._compiledShaderScaleByDistance) ||
+      (this._shaderTranslucencyByDistance &&
+        !this._compiledShaderTranslucencyByDistance) ||
+      (this._shaderDistanceDisplayCondition &&
+        !this._compiledShaderDistanceDisplayCondition) ||
+      this._shaderDisableDepthDistance !==
+        this._compiledShaderDisableDepthDistance
+    ) {
+      vs = new ShaderSource({
+        sources: [PointPrimitiveCollectionVS],
+      });
+      if (this._shaderScaleByDistance) {
+        vs.defines.push("EYE_DISTANCE_SCALING");
+      }
+      if (this._shaderTranslucencyByDistance) {
+        vs.defines.push("EYE_DISTANCE_TRANSLUCENCY");
+      }
+      if (this._shaderDistanceDisplayCondition) {
+        vs.defines.push("DISTANCE_DISPLAY_CONDITION");
+      }
+      if (this._shaderDisableDepthDistance) {
+        vs.defines.push("DISABLE_DEPTH_DISTANCE");
+      }
+
+      if (this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT) {
+        fs = new ShaderSource({
+          defines: ["OPAQUE"],
+          sources: [PointPrimitiveCollectionFS],
+        });
+        this._sp = ShaderProgram.replaceCache({
+          context: context,
+          shaderProgram: this._sp,
+          vertexShaderSource: vs,
+          fragmentShaderSource: fs,
+          attributeLocations: attributeLocations,
+        });
+
+        fs = new ShaderSource({
+          defines: ["TRANSLUCENT"],
+          sources: [PointPrimitiveCollectionFS],
+        });
+        this._spTranslucent = ShaderProgram.replaceCache({
+          context: context,
+          shaderProgram: this._spTranslucent,
+          vertexShaderSource: vs,
+          fragmentShaderSource: fs,
+          attributeLocations: attributeLocations,
+        });
+      }
+
+      if (this._blendOption === BlendOption.OPAQUE) {
+        fs = new ShaderSource({
+          sources: [PointPrimitiveCollectionFS],
+        });
+        this._sp = ShaderProgram.replaceCache({
+          context: context,
+          shaderProgram: this._sp,
+          vertexShaderSource: vs,
+          fragmentShaderSource: fs,
+          attributeLocations: attributeLocations,
+        });
+      }
+
+      if (this._blendOption === BlendOption.TRANSLUCENT) {
+        fs = new ShaderSource({
+          sources: [PointPrimitiveCollectionFS],
+        });
+        this._spTranslucent = ShaderProgram.replaceCache({
+          context: context,
+          shaderProgram: this._spTranslucent,
+          vertexShaderSource: vs,
+          fragmentShaderSource: fs,
+          attributeLocations: attributeLocations,
+        });
+      }
+
+      this._compiledShaderScaleByDistance = this._shaderScaleByDistance;
+      this._compiledShaderTranslucencyByDistance =
+        this._shaderTranslucencyByDistance;
+      this._compiledShaderDistanceDisplayCondition =
+        this._shaderDistanceDisplayCondition;
+      this._compiledShaderDisableDepthDistance =
+        this._shaderDisableDepthDistance;
+    }
+
+    let va;
+    let vaLength;
+    let command;
+    let j;
+
+    const commandList = frameState.commandList;
+
+    if (pass.render || picking) {
+      const colorList = this._colorCommands;
+
+      const opaque = this._blendOption === BlendOption.OPAQUE;
+      const opaqueAndTranslucent =
+        this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT;
+
+      va = this._vaf.va;
+      vaLength = va.length;
+
+      colorList.length = vaLength;
+      const totalLength = opaqueAndTranslucent ? vaLength * 2 : vaLength;
+      for (j = 0; j < totalLength; ++j) {
+        const opaqueCommand = opaque || (opaqueAndTranslucent && j % 2 === 0);
+
+        command = colorList[j];
+        if (!defined(command)) {
+          command = colorList[j] = new DrawCommand();
+        }
+
+        command.primitiveType = PrimitiveType.POINTS;
+        command.pass =
+          opaqueCommand || !opaqueAndTranslucent
+            ? Pass.OPAQUE
+            : Pass.TRANSLUCENT;
+        command.owner = this;
+
+        const index = opaqueAndTranslucent ? Math.floor(j / 2.0) : j;
+        command.boundingVolume = boundingVolume;
+        command.modelMatrix = modelMatrix;
+        command.shaderProgram = opaqueCommand ? this._sp : this._spTranslucent;
+        command.uniformMap = this._uniforms;
+        command.vertexArray = va[index].va;
+        command.renderState = opaqueCommand
+          ? this._rsOpaque
+          : this._rsTranslucent;
+        command.debugShowBoundingVolume = this.debugShowBoundingVolume;
+        command.pickId = "v_pickColor";
+
+        // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
+        command.sortPriority = this.renderPriority;
+        command.sortLayer = this.renderLayer;
+
+        commandList.push(command);
+      }
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see PointPrimitiveCollection#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * pointPrimitives = pointPrimitives && pointPrimitives.destroy();
+   *
+   * @see PointPrimitiveCollection#isDestroyed
+   */
+  destroy() {
+    // Feature renderers are cleaned up by the context's _destroyFeatureRenderers()
+    this._sp = this._sp && this._sp.destroy();
+    this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
+    this._spPick = this._spPick && this._spPick.destroy();
+    this._vaf = this._vaf && this._vaf.destroy();
+    destroyPointPrimitives(this._pointPrimitives);
+
+    return destroyObject(this);
+  }
+}
+
+// File-scoped helper functions
 
 function destroyPointPrimitives(pointPrimitives) {
   const length = pointPrimitives.length;
@@ -260,113 +849,6 @@ function destroyPointPrimitives(pointPrimitives) {
     }
   }
 }
-
-/**
- * Creates and adds a point with the specified initial properties to the collection.
- * The added point is returned so it can be modified or removed from the collection later.
- *
- * @param {object}[options] A template describing the point's properties as shown in Example 1.
- * @returns {PointPrimitive} The point that was added to the collection.
- *
- * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
- * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
- * best performance, add as many pointPrimitives as possible before calling <code>update</code>.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * // Example 1:  Add a point, specifying all the default values.
- * const p = pointPrimitives.add({
- *   show : true,
- *   position : Cesium.Cartesian3.ZERO,
- *   pixelSize : 10.0,
- *   color : Cesium.Color.WHITE,
- *   outlineColor : Cesium.Color.TRANSPARENT,
- *   outlineWidth : 0.0,
- *   id : undefined
- * });
- *
- * @example
- * // Example 2:  Specify only the point's cartographic position.
- * const p = pointPrimitives.add({
- *   position : Cesium.Cartesian3.fromDegrees(longitude, latitude, height)
- * });
- *
- * @see PointPrimitiveCollection#remove
- * @see PointPrimitiveCollection#removeAll
- */
-PointPrimitiveCollection.prototype.add = function (options) {
-  const p = new PointPrimitive(options, this);
-  p._index = this._pointPrimitives.length;
-
-  this._pointPrimitives.push(p);
-  this._createVertexArray = true;
-
-  return p;
-};
-
-/**
- * Removes a point from the collection.
- *
- * @param {PointPrimitive} pointPrimitive The point to remove.
- * @returns {boolean} <code>true</code> if the point was removed; <code>false</code> if the point was not found in the collection.
- *
- * @performance Calling <code>remove</code> is expected constant time.  However, the collection's vertex buffer
- * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
- * best performance, remove as many points as possible before calling <code>update</code>.
- * If you intend to temporarily hide a point, it is usually more efficient to call
- * {@link PointPrimitive#show} instead of removing and re-adding the point.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * const p = pointPrimitives.add(...);
- * pointPrimitives.remove(p);  // Returns true
- *
- * @see PointPrimitiveCollection#add
- * @see PointPrimitiveCollection#removeAll
- * @see PointPrimitive#show
- */
-PointPrimitiveCollection.prototype.remove = function (pointPrimitive) {
-  if (this.contains(pointPrimitive)) {
-    this._pointPrimitives[pointPrimitive._index] = null; // Removed later
-    this._pointPrimitivesRemoved = true;
-    this._createVertexArray = true;
-    pointPrimitive._destroy();
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Removes all points from the collection.
- *
- * @performance <code>O(n)</code>.  It is more efficient to remove all the points
- * from a collection and then add new ones than to create a new collection entirely.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * pointPrimitives.add(...);
- * pointPrimitives.add(...);
- * pointPrimitives.removeAll();
- *
- * @see PointPrimitiveCollection#add
- * @see PointPrimitiveCollection#remove
- */
-PointPrimitiveCollection.prototype.removeAll = function () {
-  destroyPointPrimitives(this._pointPrimitives);
-  this._pointPrimitives = [];
-  this._pointPrimitivesToUpdate = [];
-  this._pointPrimitivesToUpdateIndex = 0;
-  this._pointPrimitivesRemoved = false;
-
-  this._createVertexArray = true;
-};
 
 function removePointPrimitives(pointPrimitiveCollection) {
   if (pointPrimitiveCollection._pointPrimitivesRemoved) {
@@ -386,85 +868,6 @@ function removePointPrimitives(pointPrimitiveCollection) {
     pointPrimitiveCollection._pointPrimitives = newPointPrimitives;
   }
 }
-
-PointPrimitiveCollection.prototype._updatePointPrimitive = function (
-  pointPrimitive,
-  propertyChanged,
-) {
-  if (!pointPrimitive._dirty) {
-    this._pointPrimitivesToUpdate[this._pointPrimitivesToUpdateIndex++] =
-      pointPrimitive;
-  }
-
-  ++this._propertiesChanged[propertyChanged];
-};
-
-/**
- * Check whether this collection contains a given point.
- *
- * @param {PointPrimitive} [pointPrimitive] The point to check for.
- * @returns {boolean} true if this collection contains the point, false otherwise.
- *
- * @see PointPrimitiveCollection#get
- */
-PointPrimitiveCollection.prototype.contains = function (pointPrimitive) {
-  return (
-    defined(pointPrimitive) && pointPrimitive._pointPrimitiveCollection === this
-  );
-};
-
-/**
- * Returns the point in the collection at the specified index.  Indices are zero-based
- * and increase as points are added.  Removing a point shifts all points after
- * it to the left, changing their indices.  This function is commonly used with
- * {@link PointPrimitiveCollection#length} to iterate over all the points
- * in the collection.
- *
- * @param {number} index The zero-based index of the point.
- * @returns {PointPrimitive} The point at the specified index.
- *
- * @performance Expected constant time.  If points were removed from the collection and
- * {@link PointPrimitiveCollection#update} was not called, an implicit <code>O(n)</code>
- * operation is performed.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * // Toggle the show property of every point in the collection
- * const len = pointPrimitives.length;
- * for (let i = 0; i < len; ++i) {
- *   const p = pointPrimitives.get(i);
- *   p.show = !p.show;
- * }
- *
- * @see PointPrimitiveCollection#length
- */
-PointPrimitiveCollection.prototype.get = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(index)) {
-    throw new DeveloperError("index is required.");
-  }
-  //>>includeEnd('debug');
-
-  removePointPrimitives(this);
-  return this._pointPrimitives[index];
-};
-
-PointPrimitiveCollection.prototype.computeNewBuffersUsage = function () {
-  const buffersUsage = this._buffersUsage;
-  let usageChanged = false;
-
-  const properties = this._propertiesChanged;
-  for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
-    const newUsage =
-      properties[k] === 0 ? BufferUsage.STATIC_DRAW : BufferUsage.STREAM_DRAW;
-    usageChanged = usageChanged || buffersUsage[k] !== newUsage;
-    buffersUsage[k] = newUsage;
-  }
-
-  return usageChanged;
-};
 
 function createVAF(context, numberOfPointPrimitives, buffersUsage) {
   return new VertexArrayFacade(
@@ -853,396 +1256,4 @@ function updateBoundingVolume(collection, frameState, boundingVolume) {
 
 const scratchWriterArray = [];
 
-/**
- * @private
- */
-PointPrimitiveCollection.prototype.update = function (frameState) {
-  removePointPrimitives(this);
-
-  if (!this.show) {
-    return;
-  }
-
-  this._maxTotalPointSize = ContextLimits.maximumAliasedPointSize;
-
-  updateMode(this, frameState);
-
-  const context = frameState.context;
-
-  // ---- Backend-specific rendering via Feature Renderer ----
-  const fr = context.getFeatureRenderer(
-    FeatureRendererKey.POINT_PRIMITIVE_COLLECTION,
-  );
-  if (fr) {
-    this._pointPrimitivesLength = this._pointPrimitives.length;
-    fr.update(this, frameState, frameState.commandList);
-    return;
-  }
-
-  // ---- WebGL rendering path (original, unchanged) ----
-  const pointPrimitives = this._pointPrimitives;
-  const pointPrimitivesLength = pointPrimitives.length;
-  const pointPrimitivesToUpdate = this._pointPrimitivesToUpdate;
-  const pointPrimitivesToUpdateLength = this._pointPrimitivesToUpdateIndex;
-
-  const properties = this._propertiesChanged;
-
-  const createVertexArray = this._createVertexArray;
-
-  let vafWriters;
-  const pass = frameState.passes;
-  const picking = pass.pick;
-
-  // PERFORMANCE_IDEA: Round robin multiple buffers.
-  if (createVertexArray || (!picking && this.computeNewBuffersUsage())) {
-    this._createVertexArray = false;
-
-    for (let k = 0; k < NUMBER_OF_PROPERTIES; ++k) {
-      properties[k] = 0;
-    }
-
-    this._vaf = this._vaf && this._vaf.destroy();
-
-    if (pointPrimitivesLength > 0) {
-      // PERFORMANCE_IDEA:  Instead of creating a new one, resize like std::vector.
-      this._vaf = createVAF(context, pointPrimitivesLength, this._buffersUsage);
-      vafWriters = this._vaf.writers;
-
-      // Rewrite entire buffer if pointPrimitives were added or removed.
-      for (let i = 0; i < pointPrimitivesLength; ++i) {
-        const pointPrimitive = this._pointPrimitives[i];
-        pointPrimitive._dirty = false; // In case it needed an update.
-        writePointPrimitive(this, context, vafWriters, pointPrimitive);
-      }
-
-      this._vaf.commit();
-    }
-
-    this._pointPrimitivesToUpdateIndex = 0;
-  } else if (pointPrimitivesToUpdateLength > 0) {
-    // PointPrimitives were modified, but none were added or removed.
-    const writers = scratchWriterArray;
-    writers.length = 0;
-
-    if (
-      properties[POSITION_INDEX] ||
-      properties[OUTLINE_WIDTH_INDEX] ||
-      properties[PIXEL_SIZE_INDEX]
-    ) {
-      writers.push(writePositionSizeAndOutline);
-    }
-
-    if (properties[COLOR_INDEX] || properties[OUTLINE_COLOR_INDEX]) {
-      writers.push(writeCompressedAttrib0);
-    }
-
-    if (properties[SHOW_INDEX] || properties[TRANSLUCENCY_BY_DISTANCE_INDEX]) {
-      writers.push(writeCompressedAttrib1);
-    }
-
-    if (properties[SCALE_BY_DISTANCE_INDEX]) {
-      writers.push(writeScaleByDistance);
-    }
-
-    if (
-      properties[DISTANCE_DISPLAY_CONDITION_INDEX] ||
-      properties[DISABLE_DEPTH_DISTANCE_INDEX] ||
-      properties[SPLIT_DIRECTION_INDEX]
-    ) {
-      writers.push(
-        writeDistanceDisplayConditionAndDepthDisableAndSplitDirection,
-      );
-    }
-
-    const numWriters = writers.length;
-
-    vafWriters = this._vaf.writers;
-
-    if (pointPrimitivesToUpdateLength / pointPrimitivesLength > 0.1) {
-      // If more than 10% of pointPrimitive change, rewrite the entire buffer.
-
-      // PERFORMANCE_IDEA:  I totally made up 10% :).
-
-      for (let m = 0; m < pointPrimitivesToUpdateLength; ++m) {
-        const b = pointPrimitivesToUpdate[m];
-        b._dirty = false;
-
-        for (let n = 0; n < numWriters; ++n) {
-          writers[n](this, context, vafWriters, b);
-        }
-      }
-      this._vaf.commit();
-    } else {
-      for (let h = 0; h < pointPrimitivesToUpdateLength; ++h) {
-        const bb = pointPrimitivesToUpdate[h];
-        bb._dirty = false;
-
-        for (let o = 0; o < numWriters; ++o) {
-          writers[o](this, context, vafWriters, bb);
-        }
-        this._vaf.subCommit(bb._index, 1);
-      }
-      this._vaf.endSubCommits();
-    }
-
-    this._pointPrimitivesToUpdateIndex = 0;
-  }
-
-  // If the number of total pointPrimitives ever shrinks considerably
-  // Truncate pointPrimitivesToUpdate so that we free memory that we're
-  // not going to be using.
-  if (pointPrimitivesToUpdateLength > pointPrimitivesLength * 1.5) {
-    pointPrimitivesToUpdate.length = pointPrimitivesLength;
-  }
-
-  if (!defined(this._vaf) || !defined(this._vaf.va)) {
-    return;
-  }
-
-  if (this._boundingVolumeDirty) {
-    this._boundingVolumeDirty = false;
-    BoundingSphere.transform(
-      this._baseVolume,
-      this.modelMatrix,
-      this._baseVolumeWC,
-    );
-  }
-
-  let boundingVolume;
-  let modelMatrix = Matrix4.IDENTITY;
-  if (frameState.mode === SceneMode.SCENE3D) {
-    modelMatrix = this.modelMatrix;
-    boundingVolume = BoundingSphere.clone(
-      this._baseVolumeWC,
-      this._boundingVolume,
-    );
-  } else {
-    boundingVolume = BoundingSphere.clone(
-      this._baseVolume2D,
-      this._boundingVolume,
-    );
-  }
-  updateBoundingVolume(this, frameState, boundingVolume);
-
-  const blendOptionChanged = this._blendOption !== this.blendOption;
-  this._blendOption = this.blendOption;
-
-  if (blendOptionChanged) {
-    if (
-      this._blendOption === BlendOption.OPAQUE ||
-      this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT
-    ) {
-      this._rsOpaque = RenderState.fromCache({
-        depthTest: {
-          enabled: true,
-          func: WebGLConstants.LEQUAL,
-        },
-        depthMask: true,
-      });
-    } else {
-      this._rsOpaque = undefined;
-    }
-
-    if (
-      this._blendOption === BlendOption.TRANSLUCENT ||
-      this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT
-    ) {
-      this._rsTranslucent = RenderState.fromCache({
-        depthTest: {
-          enabled: true,
-          func: WebGLConstants.LEQUAL,
-        },
-        depthMask: false,
-        blending: BlendingState.ALPHA_BLEND,
-      });
-    } else {
-      this._rsTranslucent = undefined;
-    }
-  }
-
-  this._shaderDisableDepthDistance =
-    this._shaderDisableDepthDistance ||
-    frameState.minimumDisableDepthTestDistance !== 0.0;
-  let vs;
-  let fs;
-
-  if (
-    blendOptionChanged ||
-    (this._shaderScaleByDistance && !this._compiledShaderScaleByDistance) ||
-    (this._shaderTranslucencyByDistance &&
-      !this._compiledShaderTranslucencyByDistance) ||
-    (this._shaderDistanceDisplayCondition &&
-      !this._compiledShaderDistanceDisplayCondition) ||
-    this._shaderDisableDepthDistance !==
-      this._compiledShaderDisableDepthDistance
-  ) {
-    vs = new ShaderSource({
-      sources: [PointPrimitiveCollectionVS],
-    });
-    if (this._shaderScaleByDistance) {
-      vs.defines.push("EYE_DISTANCE_SCALING");
-    }
-    if (this._shaderTranslucencyByDistance) {
-      vs.defines.push("EYE_DISTANCE_TRANSLUCENCY");
-    }
-    if (this._shaderDistanceDisplayCondition) {
-      vs.defines.push("DISTANCE_DISPLAY_CONDITION");
-    }
-    if (this._shaderDisableDepthDistance) {
-      vs.defines.push("DISABLE_DEPTH_DISTANCE");
-    }
-
-    if (this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT) {
-      fs = new ShaderSource({
-        defines: ["OPAQUE"],
-        sources: [PointPrimitiveCollectionFS],
-      });
-      this._sp = ShaderProgram.replaceCache({
-        context: context,
-        shaderProgram: this._sp,
-        vertexShaderSource: vs,
-        fragmentShaderSource: fs,
-        attributeLocations: attributeLocations,
-      });
-
-      fs = new ShaderSource({
-        defines: ["TRANSLUCENT"],
-        sources: [PointPrimitiveCollectionFS],
-      });
-      this._spTranslucent = ShaderProgram.replaceCache({
-        context: context,
-        shaderProgram: this._spTranslucent,
-        vertexShaderSource: vs,
-        fragmentShaderSource: fs,
-        attributeLocations: attributeLocations,
-      });
-    }
-
-    if (this._blendOption === BlendOption.OPAQUE) {
-      fs = new ShaderSource({
-        sources: [PointPrimitiveCollectionFS],
-      });
-      this._sp = ShaderProgram.replaceCache({
-        context: context,
-        shaderProgram: this._sp,
-        vertexShaderSource: vs,
-        fragmentShaderSource: fs,
-        attributeLocations: attributeLocations,
-      });
-    }
-
-    if (this._blendOption === BlendOption.TRANSLUCENT) {
-      fs = new ShaderSource({
-        sources: [PointPrimitiveCollectionFS],
-      });
-      this._spTranslucent = ShaderProgram.replaceCache({
-        context: context,
-        shaderProgram: this._spTranslucent,
-        vertexShaderSource: vs,
-        fragmentShaderSource: fs,
-        attributeLocations: attributeLocations,
-      });
-    }
-
-    this._compiledShaderScaleByDistance = this._shaderScaleByDistance;
-    this._compiledShaderTranslucencyByDistance =
-      this._shaderTranslucencyByDistance;
-    this._compiledShaderDistanceDisplayCondition =
-      this._shaderDistanceDisplayCondition;
-    this._compiledShaderDisableDepthDistance = this._shaderDisableDepthDistance;
-  }
-
-  let va;
-  let vaLength;
-  let command;
-  let j;
-
-  const commandList = frameState.commandList;
-
-  if (pass.render || picking) {
-    const colorList = this._colorCommands;
-
-    const opaque = this._blendOption === BlendOption.OPAQUE;
-    const opaqueAndTranslucent =
-      this._blendOption === BlendOption.OPAQUE_AND_TRANSLUCENT;
-
-    va = this._vaf.va;
-    vaLength = va.length;
-
-    colorList.length = vaLength;
-    const totalLength = opaqueAndTranslucent ? vaLength * 2 : vaLength;
-    for (j = 0; j < totalLength; ++j) {
-      const opaqueCommand = opaque || (opaqueAndTranslucent && j % 2 === 0);
-
-      command = colorList[j];
-      if (!defined(command)) {
-        command = colorList[j] = new DrawCommand();
-      }
-
-      command.primitiveType = PrimitiveType.POINTS;
-      command.pass =
-        opaqueCommand || !opaqueAndTranslucent ? Pass.OPAQUE : Pass.TRANSLUCENT;
-      command.owner = this;
-
-      const index = opaqueAndTranslucent ? Math.floor(j / 2.0) : j;
-      command.boundingVolume = boundingVolume;
-      command.modelMatrix = modelMatrix;
-      command.shaderProgram = opaqueCommand ? this._sp : this._spTranslucent;
-      command.uniformMap = this._uniforms;
-      command.vertexArray = va[index].va;
-      command.renderState = opaqueCommand
-        ? this._rsOpaque
-        : this._rsTranslucent;
-      command.debugShowBoundingVolume = this.debugShowBoundingVolume;
-      command.pickId = "v_pickColor";
-
-      // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
-      command.sortPriority = this.renderPriority;
-      command.sortLayer = this.renderLayer;
-
-      commandList.push(command);
-    }
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see PointPrimitiveCollection#destroy
- */
-PointPrimitiveCollection.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * pointPrimitives = pointPrimitives && pointPrimitives.destroy();
- *
- * @see PointPrimitiveCollection#isDestroyed
- */
-PointPrimitiveCollection.prototype.destroy = function () {
-  // Feature renderers are cleaned up by the context's _destroyFeatureRenderers()
-  this._sp = this._sp && this._sp.destroy();
-  this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
-  this._spPick = this._spPick && this._spPick.destroy();
-  this._vaf = this._vaf && this._vaf.destroy();
-  destroyPointPrimitives(this._pointPrimitives);
-
-  return destroyObject(this);
-};
 export default PointPrimitiveCollection;

@@ -1337,6 +1337,55 @@ const AutomaticUniforms = {
   }),
 
   /**
+   * The number of enabled additional lights from the scene's LightCollection.
+   * When zero, only the primary scene light (czm_lightDirectionEC/czm_lightColorHdr) is active.
+   * When > 0, multi-light rendering can be enabled in lit shaders.
+   *
+   * @example
+   * // GLSL declaration
+   * uniform float czm_lightCount;
+   *
+   * // Example
+   * if (czm_lightCount > 0.0) {
+   *   // iterate over additional lights
+   * }
+   *
+   * @see UniformState#lightCount
+   */
+  czm_lightCount: new AutomaticUniform({
+    size: 1,
+    datatype: WebGLConstants.FLOAT,
+    getValue: function (uniformState) {
+      return uniformState.lightCount;
+    },
+  }),
+
+  /**
+   * Packed multi-light data from the scene's LightCollection as a vec4 array.
+   * Layout: 1 vec4 header (lightCount + pad) + up to 8 lights × 4 vec4s each = 33 vec4s.
+   * Each light occupies 4 vec4s:
+   *   vec4[0]: (type, pad, pad, pad)
+   *   vec4[1]: (direction/position.xyz, pad)
+   *   vec4[2]: (color.rgb, pad)
+   *   vec4[3]: (intensity, range, innerConeAngle, outerConeAngle)
+   * Use with czm_lightData struct and czm_computeAttenuation/czm_computeSpotCone builtins.
+   *
+   * @example
+   * // GLSL declaration
+   * uniform vec4 czm_lightsData[33];
+   *
+   * @see UniformState#lightsData
+   * @see czm_lightCount
+   */
+  czm_lightsData: new AutomaticUniform({
+    size: 33,
+    datatype: WebGLConstants.FLOAT_VEC4,
+    getValue: function (uniformState) {
+      return uniformState.lightsData;
+    },
+  }),
+
+  /**
    * An automatic GLSL uniform representing the high bits of the camera position in model
    * coordinates.  This is used for GPU RTE to eliminate jittering artifacts when rendering
    * as described in {@link http://help.agi.com/AGIComponents/html/BlogPrecisionsPrecisions.htm|Precisions, Precisions}.

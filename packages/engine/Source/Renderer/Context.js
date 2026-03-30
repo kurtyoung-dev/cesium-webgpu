@@ -1,5 +1,4 @@
 import GraphicsContext from "./GraphicsContext.js";
-import PickId from "./PickId.js";
 import RendererType from "./RendererType.js";
 import Buffer from "./Buffer.js";
 import Check from "../Core/Check.js";
@@ -738,8 +737,8 @@ class Context extends GraphicsContext {
       this._vertexAttribDivisors.push(0);
     }
 
-    this._pickObjects = new Map();
-    this._nextPickColor = new Uint32Array(1);
+    // Pick ID management (createPickId, getObjectByPickColor, _pickObjects,
+    // _nextPickColor) inherited from GraphicsContext base class.
 
     /**
      * The options used to construct this context
@@ -1543,61 +1542,8 @@ class Context extends GraphicsContext {
     });
   }
 
-  /**
-   * Gets the object associated with a pick color.
-   *
-   * @param {number} pickColor The unsigned 32-bit RGBA pick color
-   * @returns {object} The object associated with the pick color, or undefined if no object is associated with that color.
-   *
-   * @example
-   * const object = context.getObjectByPickColor(pickColor);
-   *
-   * @see Context#createPickId
-   */
-  getObjectByPickColor(pickColor) {
-    //>>includeStart('debug', pragmas.debug);
-    Check.defined("pickColor", pickColor);
-    //>>includeEnd('debug');
-
-    return this._pickObjects.get(pickColor);
-  }
-
-  /**
-   * Creates a unique ID associated with the input object for use with color-buffer picking.
-   * The ID has an RGBA color value unique to this context.  You must call destroy()
-   * on the pick ID when destroying the input object.
-   *
-   * @param {object} object The object to associate with the pick ID.
-   * @returns {object} A PickId object with a <code>color</code> property.
-   *
-   * @exception {RuntimeError} Out of unique Pick IDs.
-   *
-   *
-   * @example
-   * this._pickId = context.createPickId({
-   *   primitive : this,
-   *   id : this.id
-   * });
-   *
-   * @see Context#getObjectByPickColor
-   */
-  createPickId(object) {
-    //>>includeStart('debug', pragmas.debug);
-    Check.defined("object", object);
-    //>>includeEnd('debug');
-
-    // the increment and assignment have to be separate statements to
-    // actually detect overflow in the Uint32 value
-    ++this._nextPickColor[0];
-    const key = this._nextPickColor[0];
-    if (key === 0) {
-      // In case of overflow
-      throw new RuntimeError("Out of unique Pick IDs.");
-    }
-
-    this._pickObjects.set(key, object);
-    return new PickId(this._pickObjects, key, Color.fromRgba(key));
-  }
+  // getObjectByPickColor() and createPickId() are inherited from
+  // GraphicsContext base class — no override needed. (FORK-35 consolidation)
 
   isDestroyed() {
     return false;

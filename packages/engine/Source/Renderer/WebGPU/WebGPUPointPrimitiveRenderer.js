@@ -118,6 +118,62 @@ function buildInstanceData(collection) {
   return { instanceData, visibleCount };
 }
 
+/**
+ * Builds pick-variant instance data with pick colors instead of display colors.
+ * Layout matches PointPrimitivePick.wgsl:
+ *   @location(0) posHighAndSize, @location(1) posLowAndOutline,
+ *   @location(2) pickColorIn, @location(3) showVec
+ * @private
+ */
+function buildPickInstanceData(collection, context) {
+  const points = collection._pointPrimitives;
+  const length = collection._pointPrimitivesLength;
+  const instanceData = new Float32Array(length * FLOATS_PER_INSTANCE);
+  let visibleCount = 0;
+
+  for (let i = 0; i < length; i++) {
+    const point = points[i];
+    if (!defined(point)) {
+      continue;
+    }
+
+    const offset = visibleCount * FLOATS_PER_INSTANCE;
+    const position = point._actualPosition || point._position;
+    EncodedCartesian3.fromCartesian(position, scratchEncodedPosition);
+    const high = scratchEncodedPosition.high;
+    const low = scratchEncodedPosition.low;
+
+    instanceData[offset + 0] = high.x;
+    instanceData[offset + 1] = high.y;
+    instanceData[offset + 2] = high.z;
+    instanceData[offset + 3] = point._pixelSize;
+    instanceData[offset + 4] = low.x;
+    instanceData[offset + 5] = low.y;
+    instanceData[offset + 6] = low.z;
+    instanceData[offset + 7] = point._outlineWidth;
+
+    // Pick color from context pick ID
+    if (!defined(point._pickId)) {
+      point._pickId = context.createPickId(point);
+    }
+    const pc = point._pickId.color;
+    instanceData[offset + 8] = pc.red;
+    instanceData[offset + 9] = pc.green;
+    instanceData[offset + 10] = pc.blue;
+    instanceData[offset + 11] = pc.alpha;
+
+    // show flag
+    instanceData[offset + 12] = point._show ? 1.0 : 0.0;
+    instanceData[offset + 13] = 0.0;
+    instanceData[offset + 14] = 0.0;
+    instanceData[offset + 15] = 0.0;
+
+    visibleCount++;
+  }
+
+  return { instanceData, visibleCount };
+}
+
 // =========================================================================
 // Pipeline Creation
 // =========================================================================
@@ -216,6 +272,53 @@ function createPointPipeline(
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: !translucent,
+      depthCompare: "less-equal",
+    },
+  });
+
+  return { pipeline, bindGroupLayout };
+}
+
+/**
+ * Creates a pick-specific pipeline — no blending, depth write enabled.
+ * @private
+ */
+function createPickPipeline(device, shaderCode, format, depthFormat) {
+  const shaderModule = device.createShaderModule({
+    label: "PointPrimitive pick shader",
+    code: shaderCode,
+  });
+
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: "PointPrimitive pick bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  const pipeline = device.createRenderPipeline({
+    label: "PointPrimitive pick pipeline",
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: [INSTANCE_BUFFER_LAYOUT],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
   });
@@ -453,10 +556,94 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     cache.colorCommand.instanceCount = cache.visibleCount;
   }
 
-  // Push draw command to command list
-  if (defined(cache.colorCommand)) {
+  // --- Pick pass handling ---
+  if (frameState.passes.pick) {
+    _pushPickCommand(
+      collection,
+      context,
+      device,
+      cache,
+      modelMatrix,
+      commandList,
+    );
+  }
+
+  // Push color draw command for render passes
+  if (frameState.passes.render && defined(cache.colorCommand)) {
     commandList.push(cache.colorCommand);
   }
+}
+
+/**
+ * Builds and pushes a pick draw command. Pick pipeline and instance buffer
+ * are cached on _webgpuCache alongside the color pipeline.
+ * @private
+ */
+function _pushPickCommand(
+  collection,
+  context,
+  device,
+  cache,
+  modelMatrix,
+  commandList,
+) {
+  if (!defined(cache.pickPipeline)) {
+    const pickShader = getCollectionShaderSource("pointPick");
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const result = createPickPipeline(device, pickShader, format, depthFmt);
+    cache.pickPipeline = result.pipeline;
+    cache.pickBindGroupLayout = result.bindGroupLayout;
+    cache.pickBindGroup = device.createBindGroup({
+      layout: result.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      ],
+    });
+  }
+
+  const pickResult = buildPickInstanceData(collection, context);
+  if (pickResult.visibleCount === 0) {
+    return;
+  }
+
+  const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
+  if (
+    !defined(cache.pickInstanceBuffer) ||
+    cache.pickInstanceBuffer.size < pickSize
+  ) {
+    if (defined(cache.pickInstanceBuffer)) {
+      cache.pickInstanceBuffer.destroy();
+    }
+    cache.pickInstanceBuffer = WebGPUBuffer.createVertexBuffer(
+      device,
+      pickSize,
+      true,
+      "PointPrimitive pick instances",
+    );
+  }
+  device.queue.writeBuffer(
+    cache.pickInstanceBuffer.buffer,
+    0,
+    pickResult.instanceData.buffer,
+    0,
+    pickSize,
+  );
+
+  cache.pickCommand = new WebGPUDrawCommand({
+    pipeline: cache.pickPipeline,
+    bindGroups: [cache.pickBindGroup],
+    vertexBuffers: [cache.pickInstanceBuffer],
+    vertexCount: VERTICES_PER_QUAD,
+    instanceCount: pickResult.visibleCount,
+    pass: 8,
+    owner: collection,
+    boundingVolume: collection._boundingVolume,
+    modelMatrix: modelMatrix,
+    cull: true,
+  });
+
+  commandList.push(cache.pickCommand);
 }
 
 /**
@@ -474,6 +661,9 @@ function destroyWebGPUPointResources(collection) {
 
   if (defined(cache.instanceBuffer)) {
     cache.instanceBuffer.destroy();
+  }
+  if (defined(cache.pickInstanceBuffer)) {
+    cache.pickInstanceBuffer.destroy();
   }
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();

@@ -22,14 +22,136 @@ import Ellipsoid from "../Core/Ellipsoid.js";
 /**
  * @private
  */
-function DepthPlane(depthPlaneEllipsoidOffset) {
-  this._rs = undefined;
-  this._sp = undefined;
-  this._va = undefined;
-  this._command = undefined;
-  this._mode = undefined;
-  this._useLogDepth = false;
-  this._ellipsoidOffset = depthPlaneEllipsoidOffset ?? 0;
+class DepthPlane {
+  constructor(depthPlaneEllipsoidOffset) {
+    this._rs = undefined;
+    this._sp = undefined;
+    this._va = undefined;
+    this._command = undefined;
+    this._mode = undefined;
+    this._useLogDepth = false;
+    this._ellipsoidOffset = depthPlaneEllipsoidOffset ?? 0;
+  }
+
+  update(frameState) {
+    this._mode = frameState.mode;
+    if (frameState.mode !== SceneMode.SCENE3D) {
+      return;
+    }
+
+    const context = frameState.context;
+
+    // Allow offsetting the ellipsoid radius to address rendering artifacts below ellipsoid zero elevation.
+    const radii = frameState.mapProjection.ellipsoid.radii;
+    const ellipsoid = new Ellipsoid(
+      radii.x + this._ellipsoidOffset,
+      radii.y + this._ellipsoidOffset,
+      radii.z + this._ellipsoidOffset,
+    );
+
+    const useLogDepth = frameState.useLogDepth;
+
+    if (!defined(this._command)) {
+      this._rs = RenderState.fromCache({
+        // Write depth, not color
+        cull: {
+          enabled: true,
+        },
+        depthTest: {
+          enabled: true,
+        },
+        colorMask: {
+          red: false,
+          green: false,
+          blue: false,
+          alpha: false,
+        },
+      });
+
+      this._command = new DrawCommand({
+        renderState: this._rs,
+        boundingVolume: new BoundingSphere(
+          Cartesian3.ZERO,
+          ellipsoid.maximumRadius,
+        ),
+        pass: Pass.OPAQUE,
+        owner: this,
+      });
+    }
+
+    if (!defined(this._sp) || this._useLogDepth !== useLogDepth) {
+      this._useLogDepth = useLogDepth;
+
+      const vs = new ShaderSource({
+        sources: [DepthPlaneVS],
+      });
+      const fs = new ShaderSource({
+        sources: [DepthPlaneFS],
+      });
+      if (useLogDepth) {
+        fs.defines.push("LOG_DEPTH");
+        vs.defines.push("LOG_DEPTH");
+      }
+
+      this._sp = ShaderProgram.replaceCache({
+        shaderProgram: this._sp,
+        context: context,
+        vertexShaderSource: vs,
+        fragmentShaderSource: fs,
+        attributeLocations: {
+          position: 0,
+        },
+      });
+
+      this._command.shaderProgram = this._sp;
+    }
+
+    // update depth plane
+    const depthQuad = computeDepthQuad(ellipsoid, frameState);
+
+    // depth plane
+    if (!defined(this._va)) {
+      const geometry = new Geometry({
+        attributes: {
+          position: new GeometryAttribute({
+            componentDatatype: ComponentDatatype.FLOAT,
+            componentsPerAttribute: 3,
+            values: depthQuad,
+          }),
+        },
+        indices: [0, 1, 2, 2, 1, 3],
+        primitiveType: PrimitiveType.TRIANGLES,
+      });
+
+      this._va = VertexArray.fromGeometry({
+        context: context,
+        geometry: geometry,
+        attributeLocations: {
+          position: 0,
+        },
+        bufferUsage: BufferUsage.DYNAMIC_DRAW,
+      });
+
+      this._command.vertexArray = this._va;
+    } else {
+      this._va.getAttribute(0).vertexBuffer.copyFromArrayView(depthQuad);
+    }
+  }
+
+  execute(context, passState) {
+    if (this._mode === SceneMode.SCENE3D) {
+      this._command.execute(context, passState);
+    }
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._sp = this._sp && this._sp.destroy();
+    this._va = this._va && this._va.destroy();
+  }
 }
 
 const depthQuadScratch = FeatureDetection.supportsTypedArrays()
@@ -116,123 +238,4 @@ function computeDepthQuad(ellipsoid, frameState) {
   return depthQuadScratch;
 }
 
-DepthPlane.prototype.update = function (frameState) {
-  this._mode = frameState.mode;
-  if (frameState.mode !== SceneMode.SCENE3D) {
-    return;
-  }
-
-  const context = frameState.context;
-
-  // Allow offsetting the ellipsoid radius to address rendering artifacts below ellipsoid zero elevation.
-  const radii = frameState.mapProjection.ellipsoid.radii;
-  const ellipsoid = new Ellipsoid(
-    radii.x + this._ellipsoidOffset,
-    radii.y + this._ellipsoidOffset,
-    radii.z + this._ellipsoidOffset,
-  );
-
-  const useLogDepth = frameState.useLogDepth;
-
-  if (!defined(this._command)) {
-    this._rs = RenderState.fromCache({
-      // Write depth, not color
-      cull: {
-        enabled: true,
-      },
-      depthTest: {
-        enabled: true,
-      },
-      colorMask: {
-        red: false,
-        green: false,
-        blue: false,
-        alpha: false,
-      },
-    });
-
-    this._command = new DrawCommand({
-      renderState: this._rs,
-      boundingVolume: new BoundingSphere(
-        Cartesian3.ZERO,
-        ellipsoid.maximumRadius,
-      ),
-      pass: Pass.OPAQUE,
-      owner: this,
-    });
-  }
-
-  if (!defined(this._sp) || this._useLogDepth !== useLogDepth) {
-    this._useLogDepth = useLogDepth;
-
-    const vs = new ShaderSource({
-      sources: [DepthPlaneVS],
-    });
-    const fs = new ShaderSource({
-      sources: [DepthPlaneFS],
-    });
-    if (useLogDepth) {
-      fs.defines.push("LOG_DEPTH");
-      vs.defines.push("LOG_DEPTH");
-    }
-
-    this._sp = ShaderProgram.replaceCache({
-      shaderProgram: this._sp,
-      context: context,
-      vertexShaderSource: vs,
-      fragmentShaderSource: fs,
-      attributeLocations: {
-        position: 0,
-      },
-    });
-
-    this._command.shaderProgram = this._sp;
-  }
-
-  // update depth plane
-  const depthQuad = computeDepthQuad(ellipsoid, frameState);
-
-  // depth plane
-  if (!defined(this._va)) {
-    const geometry = new Geometry({
-      attributes: {
-        position: new GeometryAttribute({
-          componentDatatype: ComponentDatatype.FLOAT,
-          componentsPerAttribute: 3,
-          values: depthQuad,
-        }),
-      },
-      indices: [0, 1, 2, 2, 1, 3],
-      primitiveType: PrimitiveType.TRIANGLES,
-    });
-
-    this._va = VertexArray.fromGeometry({
-      context: context,
-      geometry: geometry,
-      attributeLocations: {
-        position: 0,
-      },
-      bufferUsage: BufferUsage.DYNAMIC_DRAW,
-    });
-
-    this._command.vertexArray = this._va;
-  } else {
-    this._va.getAttribute(0).vertexBuffer.copyFromArrayView(depthQuad);
-  }
-};
-
-DepthPlane.prototype.execute = function (context, passState) {
-  if (this._mode === SceneMode.SCENE3D) {
-    this._command.execute(context, passState);
-  }
-};
-
-DepthPlane.prototype.isDestroyed = function () {
-  return false;
-};
-
-DepthPlane.prototype.destroy = function () {
-  this._sp = this._sp && this._sp.destroy();
-  this._va = this._va && this._va.destroy();
-};
 export default DepthPlane;

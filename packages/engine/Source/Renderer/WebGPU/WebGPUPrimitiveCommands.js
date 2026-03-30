@@ -877,6 +877,122 @@ function createWebGPUCommands(
 }
 
 // =========================================================================
+// Material Texture Binding — Real textures from Material._imageSources
+// =========================================================================
+
+/**
+ * Returns the texture uniform name for a given material shader type.
+ * Most materials use 'image'; Water uses 'specularMap'.
+ * @private
+ */
+function getTextureUniformName(shaderType) {
+  if (shaderType.includes("Water")) {
+    return "specularMap";
+  }
+  return "image";
+}
+
+/**
+ * Creates or reuses a WebGPU texture bind group from a Material's loaded image.
+ * Falls back to the context's 1×1 white default texture if the image hasn't
+ * loaded yet. Replaces the old checkerboard placeholder approach (MAT-1 fix).
+ *
+ * @param {object} context - WebGPU context with createTextureFromImage()
+ * @param {GPUDevice} device - The GPU device
+ * @param {object} material - CesiumJS Material with _imageSources map
+ * @param {string} shaderType - Material shader type (e.g., 'matImageFlat')
+ * @param {object} cache - Primitive's _webgpuCache
+ * @returns {boolean} true if a valid texture bind group exists
+ * @private
+ */
+function ensureMaterialTextureBindGroup(
+  context,
+  device,
+  material,
+  shaderType,
+  cache,
+) {
+  const uniformName = getTextureUniformName(shaderType);
+  const imageSources = defined(material) ? material._imageSources : undefined;
+  const imageSource = defined(imageSources)
+    ? imageSources[uniformName]
+    : undefined;
+
+  // Check if cached texture is still current (same image source)
+  if (
+    defined(cache._matTextureSource) &&
+    cache._matTextureSource === imageSource &&
+    defined(cache.textureBindGroup)
+  ) {
+    return true;
+  }
+
+  // Ensure sampler exists (reused across texture changes)
+  if (!defined(cache._matSampler)) {
+    cache._matSampler = device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+    });
+  }
+
+  let gpuTexView;
+
+  if (defined(imageSource) && defined(context.createTextureFromImage)) {
+    // Create WebGPU texture from raw image (Image, ImageBitmap, Canvas)
+    const gpuTex = context.createTextureFromImage(
+      imageSource,
+      "rgba8unorm",
+      true,
+    );
+    if (defined(gpuTex)) {
+      // Destroy previous material-created GPU texture
+      if (defined(cache._matGpuTexture)) {
+        cache._matGpuTexture.destroy();
+      }
+      cache._matGpuTexture = gpuTex;
+      cache._matTextureSource = imageSource;
+      gpuTexView = gpuTex.view;
+    }
+  }
+
+  // Fall back to 1×1 white default texture
+  if (!defined(gpuTexView)) {
+    const defaultTex = context.defaultTexture;
+    if (defined(defaultTex) && defined(defaultTex.view)) {
+      gpuTexView = defaultTex.view;
+    } else {
+      // No default texture available yet — create minimal fallback
+      if (!defined(cache.defaultTexture)) {
+        cache.defaultTexture = WebGPUTexture.create2D(
+          device,
+          1,
+          1,
+          "rgba8unorm",
+          1,
+          "FallbackWhite",
+        );
+        cache.defaultTexture.write(new Uint8Array([255, 255, 255, 255]));
+      }
+      gpuTexView = cache.defaultTexture.view;
+    }
+    cache._matTextureSource = undefined;
+  }
+
+  cache.textureBindGroup = device.createBindGroup({
+    layout: cache.textureBindGroupLayout,
+    entries: [
+      { binding: 0, resource: cache._matSampler },
+      { binding: 1, resource: gpuTexView },
+    ],
+  });
+
+  return true;
+}
+
+// =========================================================================
 // Material Uniform Packing
 // =========================================================================
 
@@ -926,7 +1042,7 @@ function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
     uniformData[o + 9] = rep.y ?? 5;
     uniformData[o + 10] = 0;
     uniformData[o + 11] = 0;
-  } else if (shaderType === "matGridFlat") {
+  } else if (shaderType === "matGridFlat" || shaderType === "matGridLit") {
     const gc = u.color || { red: 1, green: 1, blue: 0, alpha: 1 };
     uniformData[o] = gc.red ?? 1;
     uniformData[o + 1] = gc.green ?? 1;
@@ -940,7 +1056,7 @@ function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
     uniformData[o + 9] = u.lineThickness?.y ?? 1;
     uniformData[o + 10] = u.lineOffset?.x ?? 0;
     uniformData[o + 11] = u.lineOffset?.y ?? 0;
-  } else if (shaderType === "matStripeFlat") {
+  } else if (shaderType === "matStripeFlat" || shaderType === "matStripeLit") {
     const ec = u.evenColor || { red: 1, green: 1, blue: 1, alpha: 1 };
     const oc = u.oddColor || { red: 0, green: 0, blue: 1, alpha: 1 };
     uniformData[o] = ec.red ?? 1;
@@ -955,6 +1071,37 @@ function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
     uniformData[o + 9] = u.repeat ?? 5;
     uniformData[o + 10] = u.horizontal === true ? 1.0 : 0.0;
     uniformData[o + 11] = 0;
+  } else if (shaderType === "matDotFlat" || shaderType === "matDotLit") {
+    const lc = u.lightColor || { red: 1, green: 1, blue: 0, alpha: 1 };
+    const dc = u.darkColor || { red: 0, green: 0, blue: 0, alpha: 1 };
+    const rep = u.repeat || { x: 5.0, y: 5.0 };
+    uniformData[o] = lc.red ?? 1;
+    uniformData[o + 1] = lc.green ?? 1;
+    uniformData[o + 2] = lc.blue ?? 0;
+    uniformData[o + 3] = lc.alpha ?? 1;
+    uniformData[o + 4] = dc.red ?? 0;
+    uniformData[o + 5] = dc.green ?? 0;
+    uniformData[o + 6] = dc.blue ?? 0;
+    uniformData[o + 7] = dc.alpha ?? 1;
+    uniformData[o + 8] = rep.x ?? 5;
+    uniformData[o + 9] = rep.y ?? 5;
+    uniformData[o + 10] = 0;
+    uniformData[o + 11] = 0;
+  } else if (shaderType === "matFadeFlat" || shaderType === "matFadeLit") {
+    const fi = u.fadeInColor || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const fo = u.fadeOutColor || { red: 0, green: 0, blue: 0, alpha: 0 };
+    uniformData[o] = fi.red ?? 1;
+    uniformData[o + 1] = fi.green ?? 1;
+    uniformData[o + 2] = fi.blue ?? 1;
+    uniformData[o + 3] = fi.alpha ?? 1;
+    uniformData[o + 4] = fo.red ?? 0;
+    uniformData[o + 5] = fo.green ?? 0;
+    uniformData[o + 6] = fo.blue ?? 0;
+    uniformData[o + 7] = fo.alpha ?? 0;
+    uniformData[o + 8] = u.maximumDistance ?? 0.5;
+    uniformData[o + 9] = u.repeat === true ? 1.0 : 0.0;
+    uniformData[o + 10] = u.offset ?? 0;
+    uniformData[o + 11] = 0;
   } else if (shaderType === "matImageFlat" || shaderType === "matImageLit") {
     const tint = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
     const rep = u.repeat || { x: 1.0, y: 1.0 };
@@ -966,6 +1113,161 @@ function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
     uniformData[o + 5] = rep.y ?? 1;
     uniformData[o + 6] = 0;
     uniformData[o + 7] = 0;
+  } else if (
+    shaderType === "matRimLightingFlat" ||
+    shaderType === "matRimLightingLit"
+  ) {
+    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const rc = u.rimColor || { red: 1, green: 1, blue: 1, alpha: 1 };
+    uniformData[o] = c.red ?? 1;
+    uniformData[o + 1] = c.green ?? 1;
+    uniformData[o + 2] = c.blue ?? 1;
+    uniformData[o + 3] = c.alpha ?? 1;
+    uniformData[o + 4] = rc.red ?? 1;
+    uniformData[o + 5] = rc.green ?? 1;
+    uniformData[o + 6] = rc.blue ?? 1;
+    uniformData[o + 7] = rc.alpha ?? 1;
+    uniformData[o + 8] = u.width ?? 0.3;
+    uniformData[o + 9] = 0;
+    uniformData[o + 10] = 0;
+    uniformData[o + 11] = 0;
+  } else if (
+    shaderType === "matAlphaMapFlat" ||
+    shaderType === "matAlphaMapLit"
+  ) {
+    // AlphaMap: base color + repeat + channel index (0=r,1=g,2=b,3=a)
+    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    const ch =
+      u.channel === "r" ? 0 : u.channel === "g" ? 1 : u.channel === "b" ? 2 : 3;
+    uniformData[o] = c.red ?? 1;
+    uniformData[o + 1] = c.green ?? 1;
+    uniformData[o + 2] = c.blue ?? 1;
+    uniformData[o + 3] = c.alpha ?? 1;
+    uniformData[o + 4] = rep.x ?? 1;
+    uniformData[o + 5] = rep.y ?? 1;
+    uniformData[o + 6] = ch;
+    uniformData[o + 7] = 0;
+  } else if (
+    shaderType === "matEmissionMapFlat" ||
+    shaderType === "matEmissionMapLit"
+  ) {
+    // EmissionMap: tint color + repeat
+    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    uniformData[o] = c.red ?? 1;
+    uniformData[o + 1] = c.green ?? 1;
+    uniformData[o + 2] = c.blue ?? 1;
+    uniformData[o + 3] = c.alpha ?? 1;
+    uniformData[o + 4] = rep.x ?? 1;
+    uniformData[o + 5] = rep.y ?? 1;
+    uniformData[o + 6] = 0;
+    uniformData[o + 7] = 0;
+  } else if (
+    shaderType === "matSpecularMapFlat" ||
+    shaderType === "matSpecularMapLit"
+  ) {
+    // SpecularMap: base color + repeat + channel index (0=r,1=g,2=b)
+    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    const ch = u.channel === "g" ? 1 : u.channel === "b" ? 2 : 0;
+    uniformData[o] = c.red ?? 1;
+    uniformData[o + 1] = c.green ?? 1;
+    uniformData[o + 2] = c.blue ?? 1;
+    uniformData[o + 3] = c.alpha ?? 1;
+    uniformData[o + 4] = rep.x ?? 1;
+    uniformData[o + 5] = rep.y ?? 1;
+    uniformData[o + 6] = ch;
+    uniformData[o + 7] = 0;
+  } else if (
+    shaderType === "matBumpMapFlat" ||
+    shaderType === "matBumpMapLit"
+  ) {
+    // BumpMap: repeat + channel + strength
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    const ch =
+      u.channel === "g" ? 1 : u.channel === "b" ? 2 : u.channel === "a" ? 3 : 0;
+    uniformData[o] = rep.x ?? 1;
+    uniformData[o + 1] = rep.y ?? 1;
+    uniformData[o + 2] = ch;
+    uniformData[o + 3] = u.strength ?? 0.8;
+  } else if (
+    shaderType === "matNormalMapFlat" ||
+    shaderType === "matNormalMapLit"
+  ) {
+    // NormalMap: repeat + strength + channels swizzle indices
+    const rep = u.repeat || { x: 1.0, y: 1.0 };
+    const channelStr = u.channels || "rgb";
+    const channelMap = { r: 0, g: 1, b: 2, a: 3 };
+    uniformData[o] = rep.x ?? 1;
+    uniformData[o + 1] = rep.y ?? 1;
+    uniformData[o + 2] = u.strength ?? 0.8;
+    uniformData[o + 3] = 0;
+    uniformData[o + 4] = channelMap[channelStr[0]] ?? 0;
+    uniformData[o + 5] = channelMap[channelStr[1]] ?? 1;
+    uniformData[o + 6] = channelMap[channelStr[2]] ?? 2;
+    uniformData[o + 7] = 0;
+  } else if (shaderType === "matWaterFlat" || shaderType === "matWaterLit") {
+    // Water: baseWaterColor + blendColor + scalar params + time
+    const bwc = u.baseWaterColor || {
+      red: 0.2,
+      green: 0.3,
+      blue: 0.6,
+      alpha: 1.0,
+    };
+    const blc = u.blendColor || {
+      red: 0.0,
+      green: 1.0,
+      blue: 0.699,
+      alpha: 1.0,
+    };
+    uniformData[o] = bwc.red ?? 0.2;
+    uniformData[o + 1] = bwc.green ?? 0.3;
+    uniformData[o + 2] = bwc.blue ?? 0.6;
+    uniformData[o + 3] = bwc.alpha ?? 1.0;
+    uniformData[o + 4] = blc.red ?? 0.0;
+    uniformData[o + 5] = blc.green ?? 1.0;
+    uniformData[o + 6] = blc.blue ?? 0.699;
+    uniformData[o + 7] = blc.alpha ?? 1.0;
+    uniformData[o + 8] = u.frequency ?? 10.0;
+    uniformData[o + 9] = u.animationSpeed ?? 0.01;
+    uniformData[o + 10] = u.amplitude ?? 1.0;
+    uniformData[o + 11] = u.specularIntensity ?? 0.5;
+    uniformData[o + 12] = u.fadeFactor ?? 1.0;
+    uniformData[o + 13] = performance.now() * 0.001; // time in seconds
+    uniformData[o + 14] = 0;
+    uniformData[o + 15] = 0;
+  } else if (
+    shaderType === "matElevContourFlat" ||
+    shaderType === "matElevContourLit"
+  ) {
+    // ElevationContour: color + spacing + width
+    const c = u.color || { red: 1, green: 1, blue: 0, alpha: 1 };
+    uniformData[o] = c.red ?? 1;
+    uniformData[o + 1] = c.green ?? 1;
+    uniformData[o + 2] = c.blue ?? 0;
+    uniformData[o + 3] = c.alpha ?? 1;
+    uniformData[o + 4] = u.spacing ?? 100.0;
+    uniformData[o + 5] = u.width ?? 1.0;
+    uniformData[o + 6] = 0;
+    uniformData[o + 7] = 0;
+  } else if (
+    shaderType === "matElevRampFlat" ||
+    shaderType === "matElevRampLit"
+  ) {
+    // ElevationRamp: minimumHeight + maximumHeight
+    uniformData[o] = u.minimumHeight ?? 0.0;
+    uniformData[o + 1] = u.maximumHeight ?? 8848.0;
+    uniformData[o + 2] = 0;
+    uniformData[o + 3] = 0;
+  } else if (
+    shaderType === "matSlopeRampFlat" ||
+    shaderType === "matSlopeRampLit" ||
+    shaderType === "matAspectRampFlat" ||
+    shaderType === "matAspectRampLit"
+  ) {
+    // SlopeRamp / AspectRamp: no additional material uniforms beyond texture
+    // (slope/aspect are computed from geometry, ramp is a texture lookup)
   } else if (shaderType === "pbrSimple" || shaderType === "pbrTextured") {
     const bc = u.baseColorFactor || { red: 1, green: 1, blue: 1, alpha: 1 };
     uniformData[o] = bc.red ?? 1;
@@ -1216,43 +1518,18 @@ function createWebGPUMaterialCommands(
     context,
   );
 
-  // Placeholder texture for image-based materials
-  if (shaderInfo.needsTexture && !defined(cache.defaultTexture)) {
-    const sz = 64;
-    const checker = new Uint8Array(sz * sz * 4);
-    for (let y = 0; y < sz; y++) {
-      for (let x = 0; x < sz; x++) {
-        const idx = (y * sz + x) * 4;
-        const val =
-          (Math.floor(x / 8) + Math.floor(y / 8)) % 2 === 0 ? 230 : 80;
-        checker[idx] = val;
-        checker[idx + 1] = val;
-        checker[idx + 2] = val;
-        checker[idx + 3] = 255;
-      }
-    }
-    cache.defaultTexture = WebGPUTexture.create2D(
+  // Bind real material texture (from Material._imageSources) or fall back to
+  // context.defaultTexture (1×1 white). This replaces the old checkerboard
+  // placeholder (MAT-1 fix). Called every command creation so async-loaded
+  // textures are picked up as soon as they arrive.
+  if (shaderInfo.needsTexture && defined(cache.textureBindGroupLayout)) {
+    ensureMaterialTextureBindGroup(
+      context,
       device,
-      sz,
-      sz,
-      "rgba8unorm",
-      1,
-      "MatDefaultTex",
+      material,
+      shaderInfo.type,
+      cache,
     );
-    cache.defaultTexture.write(checker);
-    cache.defaultSampler = device.createSampler({
-      magFilter: "linear",
-      minFilter: "linear",
-      addressModeU: "repeat",
-      addressModeV: "repeat",
-    });
-    cache.textureBindGroup = device.createBindGroup({
-      layout: cache.textureBindGroupLayout,
-      entries: [
-        { binding: 0, resource: cache.defaultSampler },
-        { binding: 1, resource: cache.defaultTexture.view },
-      ],
-    });
   }
 
   // Pick support

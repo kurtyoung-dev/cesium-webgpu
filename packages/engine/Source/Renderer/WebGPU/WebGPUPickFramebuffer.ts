@@ -86,10 +86,14 @@ export class WebGPUPickFramebuffer {
   private _height: number = 0;
   private _passState: any;
 
-  // Staging buffer for readback
+  // Staging buffer for color readback
   private _stagingBuffer: GPUBuffer | null = null;
   private _stagingBufferSize: number = 0;
   private _lastReadPixels: Uint8Array | null = null;
+
+  // Depth readback resources (separate depth32float target for copyable depth)
+  private _readableDepthTexture: GPUTexture | null = null;
+  private _depthStagingBuffer: GPUBuffer | null = null;
 
   constructor(context: any) {
     this._context = context;
@@ -144,6 +148,15 @@ export class WebGPUPickFramebuffer {
         size: [width, height],
         format: "depth24plus-stencil8",
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      // Separate depth32float texture for readable depth (pickPosition).
+      // depth24plus-stencil8 cannot be copied — depth32float can.
+      this._readableDepthTexture = device.createTexture({
+        label: "Pick readable depth texture (depth32float)",
+        size: [width, height],
+        format: "depth32float",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
 
       this._width = width;
@@ -345,6 +358,78 @@ export class WebGPUPickFramebuffer {
       });
   }
 
+  /**
+   * Asynchronously read a single depth value from the pick framebuffer.
+   * Uses the depth32float readable depth texture (not depth24plus-stencil8).
+   *
+   * @param x The x pixel coordinate.
+   * @param y The y pixel coordinate.
+   * @returns The depth value (0.0–1.0), or undefined if readback fails.
+   */
+  async readDepthPixelAsync(x: number, y: number): Promise<number | undefined> {
+    const device = this._device;
+    if (!device || !this._readableDepthTexture) {
+      return undefined;
+    }
+
+    if (x < 0 || x >= this._width || y < 0 || y >= this._height) {
+      return undefined;
+    }
+
+    // depth32float is 4 bytes per pixel; row must be 256-byte aligned
+    const bytesPerPixel = 4;
+    const bytesPerRow = 256; // minimum for a single-pixel copy
+    const bufferSize = bytesPerRow;
+
+    // Create or reuse depth staging buffer
+    if (!this._depthStagingBuffer) {
+      this._depthStagingBuffer = device.createBuffer({
+        label: "Pick depth staging buffer",
+        size: bufferSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
+
+    const encoder = device.createCommandEncoder({
+      label: "Pick depth readback encoder",
+    });
+
+    encoder.copyTextureToBuffer(
+      {
+        texture: this._readableDepthTexture,
+        origin: [x, y, 0],
+      },
+      {
+        buffer: this._depthStagingBuffer,
+        bytesPerRow,
+      },
+      [1, 1],
+    );
+
+    device.queue.submit([encoder.finish()]);
+
+    try {
+      await this._depthStagingBuffer.mapAsync(GPUMapMode.READ);
+      const mapped = new Float32Array(
+        this._depthStagingBuffer.getMappedRange(0, bytesPerPixel),
+      );
+      const depth = mapped[0];
+      this._depthStagingBuffer.unmap();
+      return depth;
+    } catch {
+      // Buffer may already be mapped or destroyed
+      return undefined;
+    }
+  }
+
+  /**
+   * Get the readable depth texture view for use as a second depth attachment.
+   * Scene renderers can attach this alongside the primary stencil depth.
+   */
+  get readableDepthView(): GPUTextureView | null {
+    return this._readableDepthTexture?.createView() ?? null;
+  }
+
   private _destroyTextures(): void {
     if (this._colorTexture) {
       this._colorTexture.destroy();
@@ -353,6 +438,10 @@ export class WebGPUPickFramebuffer {
     if (this._depthTexture) {
       this._depthTexture.destroy();
       this._depthTexture = null;
+    }
+    if (this._readableDepthTexture) {
+      this._readableDepthTexture.destroy();
+      this._readableDepthTexture = null;
     }
   }
 
@@ -365,6 +454,10 @@ export class WebGPUPickFramebuffer {
     if (this._stagingBuffer) {
       this._stagingBuffer.destroy();
       this._stagingBuffer = null;
+    }
+    if (this._depthStagingBuffer) {
+      this._depthStagingBuffer.destroy();
+      this._depthStagingBuffer = null;
     }
     this._lastReadPixels = null;
   }

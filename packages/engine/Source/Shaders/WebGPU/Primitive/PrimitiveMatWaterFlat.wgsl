@@ -1,0 +1,78 @@
+// PrimitiveMatWaterFlat.wgsl
+// Water material, no lighting
+// Simplified animated water effect using procedural wave patterns
+// Blends baseWaterColor with blendColor based on distance-based fade
+// Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
+// Vertex: posHigh(3) + posLow(3) + st(2) = 8 floats = 32 bytes
+// Matches CesiumJS Material.WaterType (simplified — no specular/normal map textures)
+
+struct VertexInput {
+    @location(0) positionHigh: vec3<f32>,
+    @location(1) positionLow: vec3<f32>,
+    @location(2) texCoord: vec2<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texCoord: vec2<f32>,
+    @location(1) viewDist: f32,
+}
+
+struct Uniforms {
+    mvpRelativeToEye: mat4x4<f32>,
+    encodedCameraHigh: vec3<f32>,
+    _pad0: f32,
+    encodedCameraLow: vec3<f32>,
+    _pad1: f32,
+    // Material params
+    baseWaterColor: vec4<f32>,
+    blendColor: vec4<f32>,
+    frequency: f32,
+    animationSpeed: f32,
+    amplitude: f32,
+    specularIntensity: f32,
+    fadeFactor: f32,
+    time: f32,
+    _pad2: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(1) @binding(0) var textureSampler: sampler;
+@group(1) @binding(1) var normalMapTexture: texture_2d<f32>;
+
+fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
+    var highDiff = high - uniforms.encodedCameraHigh;
+    if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
+    let lowDiff = low - uniforms.encodedCameraLow;
+    return vec4<f32>(highDiff + lowDiff, 1.0);
+}
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
+    output.position = uniforms.mvpRelativeToEye * posRTE;
+    output.texCoord = input.texCoord;
+    output.viewDist = length(posRTE.xyz);
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let t = uniforms.time * uniforms.animationSpeed;
+    let freq = uniforms.frequency;
+
+    // Animated UV for wave sampling
+    let waveUV = input.texCoord * freq + vec2<f32>(t * 0.3, t * 0.1);
+    let noise = textureSample(normalMapTexture, textureSampler, fract(waveUV));
+
+    // Distance-based fade
+    let fade = max(1.0, (input.viewDist / 10000000000.0) * freq * uniforms.fadeFactor);
+    let waveIntensity = (noise.r * 2.0 - 1.0) / (fade * max(uniforms.amplitude, 0.001));
+
+    // Blend base water color with blend color based on wave
+    let blendFactor = clamp(0.5 + waveIntensity * 0.5, 0.0, 1.0);
+    let waterColor = mix(uniforms.baseWaterColor.rgb, uniforms.blendColor.rgb, blendFactor);
+
+    return vec4<f32>(waterColor, uniforms.baseWaterColor.a);
+}

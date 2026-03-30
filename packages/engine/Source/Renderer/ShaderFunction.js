@@ -4,7 +4,6 @@ import DeveloperError from "../Core/DeveloperError.js";
  * A utility for dynamically-generating a GLSL function
  *
  * @alias ShaderFunction
- * @constructor
  *
  * @see {@link ShaderBuilder}
  * @param {string} signature The full signature of the function as it will appear in the shader. Do not include the curly braces.
@@ -24,43 +23,52 @@ import DeveloperError from "../Core/DeveloperError.js";
  *
  * @private
  */
-function ShaderFunction(signature) {
-  this.signature = signature;
-  this.body = [];
-}
-
-/**
- * Adds one or more lines to the body of the function
- * @param {string|string[]} lines One or more lines of GLSL code to add to the function body. Do not include any preceding or ending whitespace, but do include the semicolon for each line.
- */
-ShaderFunction.prototype.addLines = function (lines) {
-  //>>includeStart('debug', pragmas.debug);
-  if (typeof lines !== "string" && !Array.isArray(lines)) {
-    throw new DeveloperError(
-      `Expected lines to be a string or an array of strings, actual value was ${lines}`,
-    );
+class ShaderFunction {
+  constructor(signature) {
+    this.signature = signature;
+    this.body = [];
   }
-  //>>includeEnd('debug');
-  const body = this.body;
 
-  // Indent the body of the function by 4 spaces
-  if (Array.isArray(lines)) {
-    const length = lines.length;
-    for (let i = 0; i < length; i++) {
-      body.push(`    ${lines[i]}`);
+  /**
+   * Adds one or more lines to the body of the function
+   * @param {string|string[]} lines One or more lines of GLSL code to add to the function body. Do not include any preceding or trailing whitespace, but do include the semicolon for each line.
+   */
+  addLines(lines) {
+    const body = this.body;
+    if (Array.isArray(lines)) {
+      const length = lines.length;
+      for (let i = 0; i < length; i++) {
+        body.push(`    ${lines[i]}`);
+      }
+    } else {
+      body.push(`    ${lines}`);
     }
-  } else {
-    // Single string case
-    body.push(`    ${lines}`);
   }
-};
 
-/**
- * Generate lines of GLSL code for use with {@link ShaderBuilder}
- * @return {string[]}
- */
-ShaderFunction.prototype.generateGlslLines = function () {
-  return [].concat(this.signature, "{", this.body, "}");
-};
+  /**
+   * Generate lines of GLSL code for use with {@link ShaderBuilder}
+   * @return {string[]} The generated GLSL lines
+   */
+  generateGlslLines() {
+    //>>includeStart('debug', pragmas.debug);
+    if (this.body.length === 0) {
+      throw new DeveloperError(
+        "The shader function must have at least one line.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const lines = [];
+    lines.push(this.signature);
+    lines.push("{");
+    const bodyLength = this.body.length;
+    for (let i = 0; i < bodyLength; i++) {
+      lines.push(this.body[i]);
+    }
+    lines.push("}");
+    lines.push("");
+    return lines;
+  }
+}
 
 export default ShaderFunction;

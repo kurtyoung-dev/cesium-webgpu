@@ -7,30 +7,49 @@ import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
  * draw commands. Manages pipeline creation, vertex/index buffer upload,
  * imagery texture creation, and per-tile uniform buffer management.
  *
- * The terrain pipeline:
- *   1. GlobeSurfaceTileProvider.endUpdate() iterates visible tiles
- *   2. For each tile, addDrawCommandsForTile() is called
- *   3. When isWebGPU, this renderer creates WebGPUDrawCommand instead of DrawCommand
- *   4. Commands are pushed to frameState.commandList with pass=GLOBE
- *
- * Vertex data: Interleaved Float32Array from TerrainEncoding
- *   - Uncompressed (stride 6-10): [posX, posY, posZ, height, u, v, ...]
- *   - Quantized BITS12 (stride 3-6): [compressed0, compressed1, compressed2, ...]
- *   Currently supports uncompressed format only (BITS12 support planned).
+ * Supports:
+ *   - Uncompressed terrain (TerrainQuantization.NONE)
+ *   - Quantized terrain (TerrainQuantization.BITS12)
+ *   - Up to 4 imagery layers per draw call (multi-pass for >4)
+ *   - Water mask textures for ocean rendering
+ *   - Day/night alpha blending per imagery layer
+ *   - Cartographic limit rectangle clipping
+ *   - Fog, atmosphere, and Lambert diffuse lighting
+ *   - Multi-pass rendering for tiles with >4 imagery layers
+ *   - Globe translucency blend pipeline variants
  *
  * @private
  */
 
-// ─── Uniform buffer sizes (must match GlobeTerrain.wgsl) ───
-// CameraUniforms: 48 floats = 192 bytes
-const CAMERA_UNIFORM_FLOATS = 48;
+// ─── Uniform buffer sizes (must match GlobeTerrain.wgsl CameraUniforms) ───
+// CameraUniforms: mvpRTE(16) + modifiedMV(16) + camHigh(3+1) + camLow(3+1) +
+//   center3D(3+1) + sunDirEC(3)+enableLighting(1) + scaleAndBias(16) +
+//   minMaxHeight(2) + pad(2) = 68 floats
+const CAMERA_UNIFORM_FLOATS = 68;
 const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
-// TileUniforms: 4 layers × 12 floats + 4 floats = 52 floats = 208 bytes
-const TILE_UNIFORM_FLOATS = 52;
+
+// TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
+//   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
+//   dayNightAlpha0-3(4×2=8) + flags(4) = 74 floats
+// Aligned to 16 bytes: 80 floats (flags at offset 72, exaggeration at 76, time at 78)
+const TILE_UNIFORM_FLOATS = 80;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
 const MAX_IMAGERY_LAYERS = 4;
+
+/** Pipeline variant key: encodes quantization + normals state */
+const enum PipelineKey {
+  UNCOMPRESSED_NORMALS = 0,
+  UNCOMPRESSED_NO_NORMALS = 1,
+  QUANTIZED_NORMALS = 2,
+  QUANTIZED_NO_NORMALS = 3,
+  // Blend variants for multi-pass (subsequent imagery passes)
+  UNCOMPRESSED_NORMALS_BLEND = 4,
+  UNCOMPRESSED_NO_NORMALS_BLEND = 5,
+  QUANTIZED_NORMALS_BLEND = 6,
+  QUANTIZED_NO_NORMALS_BLEND = 7,
+}
 
 /** Cached per-tile WebGPU resources */
 interface TileGPUResources {
@@ -38,9 +57,9 @@ interface TileGPUResources {
   indexBuffer: GPUBuffer;
   indexCount: number;
   indexFormat: GPUIndexFormat;
-  stride: number; // vertex stride in floats
+  stride: number;
   hasNormals: boolean;
-  /** Generation counter to detect stale buffers */
+  isQuantized: boolean;
   meshGeneration: number;
 }
 
@@ -48,27 +67,52 @@ interface TileGPUResources {
 interface ImageryGPUTexture {
   texture: GPUTexture;
   view: GPUTextureView;
-  /** Source image width for cache invalidation */
   sourceWidth: number;
   sourceHeight: number;
 }
 
+/** Descriptor for a single tile draw pass */
+export interface TileDrawDescriptor {
+  pipeline: GPURenderPipeline;
+  bindGroups: GPUBindGroup[];
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+  indexFormat: GPUIndexFormat;
+  boundingVolume: any;
+  isSubsequentPass: boolean;
+}
+
 export class WebGPUGlobeSurfaceRenderer {
   private _device: GPUDevice | null = null;
-  private _pipeline: GPURenderPipeline | null = null;
-  private _pipelineNoNormals: GPURenderPipeline | null = null;
+  private _pipelines: (GPURenderPipeline | null)[] = new Array(8).fill(null);
   private _shaderModule: GPUShaderModule | null = null;
   private _sampler: GPUSampler | null = null;
+  private _waterMaskSampler: GPUSampler | null = null;
   private _bindGroupLayout0: GPUBindGroupLayout | null = null;
   private _bindGroupLayout1: GPUBindGroupLayout | null = null;
+  private _bindGroupLayout2: GPUBindGroupLayout | null = null;
+  private _bindGroupLayout3: GPUBindGroupLayout | null = null;
+  private _oceanNormalSampler: GPUSampler | null = null;
+  private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
   private _pipelineLayout: GPUPipelineLayout | null = null;
   private _placeholderTexture: GPUTexture | null = null;
   private _placeholderView: GPUTextureView | null = null;
   private _canvasFormat: GPUTextureFormat = "bgra8unorm";
 
-  // Per-tile GPU resource caches (keyed by tile key string)
+  // Wireframe pipelines (lazily created on first wireframe request)
+  private _wireframePipelines: (GPURenderPipeline | null)[] = new Array(4).fill(
+    null,
+  );
+  private _wireframeIndexCache: Map<
+    string,
+    { buffer: GPUBuffer; count: number; format: GPUIndexFormat }
+  > = new Map();
+
+  // Per-tile GPU resource caches
   private _tileBufferCache: Map<string, TileGPUResources> = new Map();
   private _imageryTextureCache: Map<string, ImageryGPUTexture> = new Map();
+  private _waterMaskTextureCache: Map<string, ImageryGPUTexture> = new Map();
 
   // Reusable typed arrays for uniform data
   private _cameraUniformData: Float32Array = new Float32Array(
@@ -77,21 +121,17 @@ export class WebGPUGlobeSurfaceRenderer {
   private _tileUniformData: Float32Array = new Float32Array(
     TILE_UNIFORM_FLOATS,
   );
-  // For the layerCount u32 at end of tile uniforms
   private _tileUniformU32View: Uint32Array;
 
   private _isDestroyed: boolean = false;
   private _isInitialized: boolean = false;
 
   constructor() {
-    // Create a Uint32Array view into the same buffer as tile uniforms
-    // The layerCount is at float offset 48 (byte offset 192)
     this._tileUniformU32View = new Uint32Array(this._tileUniformData.buffer);
   }
 
   /**
    * Initialize the renderer with the GPU device and shader code.
-   * Must be called once before creating tile commands.
    */
   initialize(
     device: GPUDevice,
@@ -105,14 +145,13 @@ export class WebGPUGlobeSurfaceRenderer {
     this._createShaderModule(shaderCode);
     this._createBindGroupLayouts();
     this._createPipelineLayout();
-    this._createSampler();
+    this._createSamplers();
     this._createPlaceholderTexture();
-    this._createPipelines();
+    this._createAllPipelines();
 
     this._isInitialized = true;
   }
 
-  /** Check if initialized */
   get isInitialized(): boolean {
     return this._isInitialized;
   }
@@ -129,7 +168,7 @@ export class WebGPUGlobeSurfaceRenderer {
   private _createBindGroupLayouts(): void {
     const device = this._device!;
 
-    // Group 0: Uniform buffers (camera + tile)
+    // Group 0: Camera + Tile uniform buffers
     this._bindGroupLayout0 = device.createBindGroupLayout({
       label: "Globe terrain uniforms layout",
       entries: [
@@ -146,7 +185,7 @@ export class WebGPUGlobeSurfaceRenderer {
       ],
     });
 
-    // Group 1: Textures + sampler (4 day textures + 1 sampler)
+    // Group 1: Day imagery textures (4) + sampler
     this._bindGroupLayout1 = device.createBindGroupLayout({
       label: "Globe terrain textures layout",
       entries: [
@@ -177,18 +216,57 @@ export class WebGPUGlobeSurfaceRenderer {
         },
       ],
     });
+
+    // Group 2: Water mask texture + sampler
+    this._bindGroupLayout2 = device.createBindGroupLayout({
+      label: "Globe water mask layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+      ],
+    });
+
+    // Group 3: Ocean wave normal map texture + sampler
+    this._bindGroupLayout3 = device.createBindGroupLayout({
+      label: "Globe ocean normal map layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+      ],
+    });
   }
 
   // ─── Pipeline Layout ───
   private _createPipelineLayout(): void {
     this._pipelineLayout = this._device!.createPipelineLayout({
       label: "Globe terrain pipeline layout",
-      bindGroupLayouts: [this._bindGroupLayout0!, this._bindGroupLayout1!],
+      bindGroupLayouts: [
+        this._bindGroupLayout0!,
+        this._bindGroupLayout1!,
+        this._bindGroupLayout2!,
+        this._bindGroupLayout3!,
+      ],
     });
   }
 
-  // ─── Sampler ───
-  private _createSampler(): void {
+  // ─── Samplers ───
+  private _createSamplers(): void {
     this._sampler = this._device!.createSampler({
       label: "Globe terrain sampler",
       magFilter: "linear",
@@ -197,9 +275,26 @@ export class WebGPUGlobeSurfaceRenderer {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
+    // Water mask uses nearest filtering (binary mask, no interpolation)
+    this._waterMaskSampler = this._device!.createSampler({
+      label: "Globe water mask sampler",
+      magFilter: "nearest",
+      minFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    // Ocean normal map uses repeating linear filtering for tiled wave patterns
+    this._oceanNormalSampler = this._device!.createSampler({
+      label: "Globe ocean normal sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
+    });
   }
 
-  // ─── Placeholder 1x1 white texture for tiles without imagery ───
+  // ─── Placeholder 1×1 white texture ───
   private _createPlaceholderTexture(): void {
     const device = this._device!;
     this._placeholderTexture = device.createTexture({
@@ -218,46 +313,98 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   // ─── Render Pipelines ───
-  private _createPipelines(): void {
-    // Pipeline with normals (stride 7+ floats = 28+ bytes)
-    this._pipeline = this._createPipelineVariant(true);
-    // Pipeline without normals (stride 6 floats = 24 bytes)
-    this._pipelineNoNormals = this._createPipelineVariant(false);
+  private _createAllPipelines(): void {
+    // Opaque pipelines (first pass, depth write)
+    this._pipelines[PipelineKey.UNCOMPRESSED_NORMALS] =
+      this._createPipelineVariant(false, true, false);
+    this._pipelines[PipelineKey.UNCOMPRESSED_NO_NORMALS] =
+      this._createPipelineVariant(false, false, false);
+    this._pipelines[PipelineKey.QUANTIZED_NORMALS] =
+      this._createPipelineVariant(true, true, false);
+    this._pipelines[PipelineKey.QUANTIZED_NO_NORMALS] =
+      this._createPipelineVariant(true, false, false);
+
+    // Blend pipelines (subsequent passes, alpha blend, no depth write)
+    this._pipelines[PipelineKey.UNCOMPRESSED_NORMALS_BLEND] =
+      this._createPipelineVariant(false, true, true);
+    this._pipelines[PipelineKey.UNCOMPRESSED_NO_NORMALS_BLEND] =
+      this._createPipelineVariant(false, false, true);
+    this._pipelines[PipelineKey.QUANTIZED_NORMALS_BLEND] =
+      this._createPipelineVariant(true, true, true);
+    this._pipelines[PipelineKey.QUANTIZED_NO_NORMALS_BLEND] =
+      this._createPipelineVariant(true, false, true);
   }
 
-  private _createPipelineVariant(hasNormals: boolean): GPURenderPipeline {
+  private _createPipelineVariant(
+    isQuantized: boolean,
+    hasNormals: boolean,
+    isBlend: boolean,
+  ): GPURenderPipeline {
     const device = this._device!;
-    const stride = hasNormals ? 28 : 24; // 7 or 6 floats
-    const texCoordFormat: GPUVertexFormat = hasNormals
-      ? "float32x3"
-      : "float32x2";
+
+    let vertexBuffers: GPUVertexBufferLayout[];
+    let entryPoint: string;
+
+    if (isQuantized) {
+      // BITS12 quantized: compressed0 is 3 or 4 floats
+      // With normals (most common): 4 floats = 16 bytes
+      // Without normals: 3 floats = 12 bytes
+      const stride = hasNormals ? 16 : 12;
+      const format: GPUVertexFormat = hasNormals ? "float32x4" : "float32x3";
+      entryPoint = "vertexMainQuantized";
+      vertexBuffers = [
+        {
+          arrayStride: stride,
+          stepMode: "vertex",
+          attributes: [{ shaderLocation: 0, offset: 0, format }],
+        },
+      ];
+    } else {
+      // Uncompressed: position3DAndHeight(vec4=16) + texCoord+normal(vec2/3/4)
+      const stride = hasNormals ? 28 : 24;
+      const texCoordFormat: GPUVertexFormat = hasNormals
+        ? "float32x3"
+        : "float32x2";
+      entryPoint = "vertexMain";
+      vertexBuffers = [
+        {
+          arrayStride: stride,
+          stepMode: "vertex",
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x4" },
+            { shaderLocation: 1, offset: 16, format: texCoordFormat },
+          ],
+        },
+      ];
+    }
+
+    const quantLabel = isQuantized ? "quantized" : "uncompressed";
+    const normLabel = hasNormals ? "normals" : "noNormals";
+    const blendLabel = isBlend ? "blend" : "opaque";
+
+    // Blend state for subsequent imagery passes (additive alpha blending)
+    const blendState: GPUBlendState | undefined = isBlend
+      ? {
+          color: {
+            srcFactor: "src-alpha",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+        }
+      : undefined;
 
     return device.createRenderPipeline({
-      label: `Globe terrain pipeline (normals=${hasNormals})`,
+      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel})`,
       layout: this._pipelineLayout!,
       vertex: {
         module: this._shaderModule!,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: stride,
-            stepMode: "vertex",
-            attributes: [
-              {
-                // position3DAndHeight: vec4<f32>
-                shaderLocation: 0,
-                offset: 0,
-                format: "float32x4",
-              },
-              {
-                // textureCoordAndEncodedNormals: vec2 or vec3
-                shaderLocation: 1,
-                offset: 16,
-                format: texCoordFormat,
-              },
-            ],
-          },
-        ],
+        entryPoint,
+        buffers: vertexBuffers,
       },
       fragment: {
         module: this._shaderModule!,
@@ -265,6 +412,7 @@ export class WebGPUGlobeSurfaceRenderer {
         targets: [
           {
             format: this._canvasFormat,
+            blend: blendState,
           },
         ],
       },
@@ -275,10 +423,40 @@ export class WebGPUGlobeSurfaceRenderer {
       },
       depthStencil: {
         format: "depth24plus-stencil8",
-        depthWriteEnabled: true,
-        depthCompare: "less",
+        depthWriteEnabled: !isBlend,
+        depthCompare: isBlend ? "less-equal" : "less",
       },
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Pipeline Selection
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private _selectPipeline(
+    isQuantized: boolean,
+    hasNormals: boolean,
+    isBlend: boolean,
+  ): GPURenderPipeline {
+    let key: number;
+    if (isQuantized) {
+      key = hasNormals
+        ? isBlend
+          ? PipelineKey.QUANTIZED_NORMALS_BLEND
+          : PipelineKey.QUANTIZED_NORMALS
+        : isBlend
+          ? PipelineKey.QUANTIZED_NO_NORMALS_BLEND
+          : PipelineKey.QUANTIZED_NO_NORMALS;
+    } else {
+      key = hasNormals
+        ? isBlend
+          ? PipelineKey.UNCOMPRESSED_NORMALS_BLEND
+          : PipelineKey.UNCOMPRESSED_NORMALS
+        : isBlend
+          ? PipelineKey.UNCOMPRESSED_NO_NORMALS_BLEND
+          : PipelineKey.UNCOMPRESSED_NO_NORMALS;
+    }
+    return this._pipelines[key]!;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -286,14 +464,111 @@ export class WebGPUGlobeSurfaceRenderer {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
-   * Create a WebGPU draw command for a terrain tile.
-   *
-   * @param tile - The QuadtreeTile
-   * @param surfaceTile - The GlobeSurfaceTile (tile.data)
-   * @param tileProvider - The GlobeSurfaceTileProvider
-   * @param frameState - Current frame state
-   * @param uniformState - UniformState with RTE matrices
-   * @returns Object with command properties to push to commandList, or null
+   * Create WebGPU draw command(s) for a terrain tile.
+   * Returns an array of descriptors — one per pass.
+   * Tiles with >4 imagery layers produce multiple passes.
+   */
+  createTileCommands(
+    tile: any,
+    surfaceTile: any,
+    tileProvider: any,
+    frameState: any,
+    uniformState: any,
+  ): TileDrawDescriptor[] | null {
+    if (!this._isInitialized || !this._device) return null;
+
+    const device = this._device;
+    const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
+    if (!mesh) return null;
+
+    const tileKey = this._getTileKey(tile);
+    const gpuResources = this._getOrCreateTileBuffers(tileKey, mesh);
+    if (!gpuResources) return null;
+
+    // Count total ready imagery layers
+    const imageryCollection = surfaceTile.imagery;
+    const readyLayers: any[] = [];
+    if (imageryCollection) {
+      for (let i = 0; i < imageryCollection.length; i++) {
+        const tileImagery = imageryCollection[i];
+        if (
+          tileImagery &&
+          tileImagery.readyImagery &&
+          tileImagery.readyImagery.imageryLayer
+        ) {
+          readyLayers.push(tileImagery);
+        }
+      }
+    }
+
+    // Determine number of passes needed (4 imagery layers per pass)
+    const totalLayers = readyLayers.length;
+    const passCount = Math.max(1, Math.ceil(totalLayers / MAX_IMAGERY_LAYERS));
+    const commands: TileDrawDescriptor[] = [];
+
+    for (let pass = 0; pass < passCount; pass++) {
+      const isSubsequentPass = pass > 0;
+      const layerStart = pass * MAX_IMAGERY_LAYERS;
+      const layerEnd = Math.min(layerStart + MAX_IMAGERY_LAYERS, totalLayers);
+      const passLayers = readyLayers.slice(layerStart, layerEnd);
+
+      const pipeline = this._selectPipeline(
+        gpuResources.isQuantized,
+        gpuResources.hasNormals,
+        isSubsequentPass,
+      );
+
+      const cameraUB = this._createCameraUniformBuffer(
+        device,
+        uniformState,
+        surfaceTile,
+        tileProvider,
+        mesh,
+      );
+      const tileUB = this._createTileUniformBuffer(
+        device,
+        surfaceTile,
+        tileProvider,
+        frameState,
+        tile,
+        passLayers,
+        isSubsequentPass,
+      );
+
+      const bindGroup0 = device.createBindGroup({
+        layout: this._bindGroupLayout0!,
+        entries: [
+          { binding: 0, resource: { buffer: cameraUB } },
+          { binding: 1, resource: { buffer: tileUB } },
+        ],
+      });
+
+      const bindGroup1 = this._createTextureBindGroup(device, passLayers);
+      const bindGroup2 = isSubsequentPass
+        ? this._createWaterMaskBindGroup(device, null)
+        : this._createWaterMaskBindGroup(device, surfaceTile);
+
+      // Group 3: Ocean normal map (uses placeholder when unavailable)
+      const bindGroup3 = this._createOceanNormalBindGroup(device, tileProvider);
+
+      commands.push({
+        pipeline,
+        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+        vertexBuffer: gpuResources.vertexBuffer,
+        indexBuffer: gpuResources.indexBuffer,
+        indexCount: gpuResources.indexCount,
+        indexFormat: gpuResources.indexFormat,
+        boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
+        isSubsequentPass,
+      });
+    }
+
+    return commands.length > 0 ? commands : null;
+  }
+
+  /**
+   * Legacy single-command interface for backward compatibility.
+   * @deprecated Use createTileCommands for multi-pass support.
    */
   createTileCommand(
     tile: any,
@@ -302,60 +577,28 @@ export class WebGPUGlobeSurfaceRenderer {
     frameState: any,
     uniformState: any,
   ): any | null {
-    if (!this._isInitialized || !this._device) return null;
-
-    const device = this._device;
-    const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
-    if (!mesh) return null;
-
-    // Get or create vertex/index buffers for this tile
-    const tileKey = this._getTileKey(tile);
-    const gpuResources = this._getOrCreateTileBuffers(tileKey, mesh);
-    if (!gpuResources) return null;
-
-    // Select pipeline based on normals
-    const pipeline = gpuResources.hasNormals
-      ? this._pipeline!
-      : this._pipelineNoNormals!;
-
-    // Create uniform buffers for this frame
-    const cameraUB = this._createCameraUniformBuffer(
-      device,
-      uniformState,
+    const commands = this.createTileCommands(
+      tile,
       surfaceTile,
       tileProvider,
-    );
-    const tileUB = this._createTileUniformBuffer(
-      device,
-      surfaceTile,
       frameState,
+      uniformState,
     );
+    if (!commands || commands.length === 0) return null;
 
-    // Create bind group 0 (uniforms)
-    const bindGroup0 = device.createBindGroup({
-      layout: this._bindGroupLayout0!,
-      entries: [
-        { binding: 0, resource: { buffer: cameraUB } },
-        { binding: 1, resource: { buffer: tileUB } },
-      ],
-    });
-
-    // Create bind group 1 (textures)
-    const bindGroup1 = this._createTextureBindGroup(device, surfaceTile);
-
-    // Return a command descriptor (to be wrapped in WebGPUDrawCommand by the caller)
+    // Return the first pass descriptor in the old format
+    const cmd = commands[0];
     return {
-      pipeline,
-      bindGroups: [bindGroup0, bindGroup1],
-      vertexBuffer: gpuResources.vertexBuffer,
-      indexBuffer: gpuResources.indexBuffer,
-      indexCount: gpuResources.indexCount,
-      indexFormat: gpuResources.indexFormat,
-      boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
+      pipeline: cmd.pipeline,
+      bindGroups: cmd.bindGroups,
+      vertexBuffer: cmd.vertexBuffer,
+      indexBuffer: cmd.indexBuffer,
+      indexCount: cmd.indexCount,
+      indexFormat: cmd.indexFormat,
+      boundingVolume: cmd.boundingVolume,
     };
   }
 
-  // ─── Tile Key ───
   private _getTileKey(tile: any): string {
     return `${tile.level}_${tile.x}_${tile.y}`;
   }
@@ -371,13 +614,11 @@ export class WebGPUGlobeSurfaceRenderer {
     const device = this._device!;
     const generation = mesh._webgpuGeneration || 0;
 
-    // Check cache
     const cached = this._tileBufferCache.get(tileKey);
     if (cached && cached.meshGeneration === generation) {
       return cached;
     }
 
-    // Destroy old buffers if stale
     if (cached) {
       cached.vertexBuffer.destroy();
       cached.indexBuffer.destroy();
@@ -395,10 +636,12 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     const encoding = mesh.encoding;
-    const stride = encoding.stride; // floats per vertex
+    const stride = encoding.stride;
     const hasNormals = encoding.hasVertexNormals === true;
+    // TerrainQuantization.BITS12 = 1; NONE = 0
+    const isQuantized =
+      encoding.quantization !== undefined && encoding.quantization === 1;
 
-    // Create vertex buffer
     const vertexBuffer = device.createBuffer({
       label: `Terrain VB ${tileKey}`,
       size: vertices.byteLength,
@@ -406,7 +649,6 @@ export class WebGPUGlobeSurfaceRenderer {
     });
     device.queue.writeBuffer(vertexBuffer, 0, gpuData(vertices));
 
-    // Create index buffer
     const indexBuffer = device.createBuffer({
       label: `Terrain IB ${tileKey}`,
       size: indices.byteLength,
@@ -424,6 +666,7 @@ export class WebGPUGlobeSurfaceRenderer {
       indexFormat,
       stride,
       hasNormals,
+      isQuantized,
       meshGeneration: generation,
     };
 
@@ -435,14 +678,12 @@ export class WebGPUGlobeSurfaceRenderer {
   // Uniform Buffer Creation
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Create camera uniform buffer with RTE matrices and tile center.
-   */
   private _createCameraUniformBuffer(
     device: GPUDevice,
     uniformState: any,
     surfaceTile: any,
     tileProvider: any,
+    mesh: any,
   ): GPUBuffer {
     const data = this._cameraUniformData;
     let offset = 0;
@@ -452,7 +693,6 @@ export class WebGPUGlobeSurfaceRenderer {
     for (let i = 0; i < 16; i++) data[offset++] = mvpRTE[i];
 
     // modifiedModelView (mat4x4, 16 floats)
-    // Computed from the tile's RTC center + view matrix
     const mv = m4Values(
       this._computeModifiedModelView(uniformState, surfaceTile),
     );
@@ -463,21 +703,21 @@ export class WebGPUGlobeSurfaceRenderer {
     data[offset++] = camHigh.x;
     data[offset++] = camHigh.y;
     data[offset++] = camHigh.z;
-    data[offset++] = 0; // pad
+    data[offset++] = 0;
 
     // encodedCameraLow (vec3 + pad)
     const camLow = uniformState.encodedCameraPositionMCLow;
     data[offset++] = camLow.x;
     data[offset++] = camLow.y;
     data[offset++] = camLow.z;
-    data[offset++] = 0; // pad
+    data[offset++] = 0;
 
     // center3D (vec3 + pad)
     const center = surfaceTile.center || { x: 0, y: 0, z: 0 };
     data[offset++] = center.x;
     data[offset++] = center.y;
     data[offset++] = center.z;
-    data[offset++] = 0; // pad
+    data[offset++] = 0;
 
     // sunDirectionEC (vec3) + enableLighting (f32)
     const sunDir = uniformState.sunDirectionEC;
@@ -485,6 +725,22 @@ export class WebGPUGlobeSurfaceRenderer {
     data[offset++] = sunDir.y;
     data[offset++] = sunDir.z;
     data[offset++] = tileProvider.enableLighting ? 1.0 : 0.0;
+
+    // scaleAndBias (mat4x4, 16 floats) — for quantized mesh decompression
+    const encoding = mesh.encoding;
+    if (encoding && encoding.matrix) {
+      const sbm = m4Values(encoding.matrix);
+      for (let i = 0; i < 16; i++) data[offset++] = sbm[i];
+    } else {
+      // Identity fallback (uncompressed terrain doesn't use this)
+      for (let i = 0; i < 16; i++) data[offset++] = i % 5 === 0 ? 1.0 : 0.0;
+    }
+
+    // minMaxHeight (vec2 + pad2)
+    data[offset++] = encoding?.minimumHeight ?? 0.0;
+    data[offset++] = encoding?.maximumHeight ?? 0.0;
+    data[offset++] = 0; // pad
+    data[offset++] = 0; // pad
 
     const buffer = device.createBuffer({
       label: "Terrain camera UB",
@@ -501,10 +757,6 @@ export class WebGPUGlobeSurfaceRenderer {
     return buffer;
   }
 
-  /**
-   * Compute the modified model-view matrix for a terrain tile.
-   * This is view matrix with the tile's RTC center baked into translation.
-   */
   private _computeModifiedModelView(
     uniformState: any,
     surfaceTile: any,
@@ -513,14 +765,9 @@ export class WebGPUGlobeSurfaceRenderer {
     const center = surfaceTile.center;
     if (!center) return new Float64Array(view);
 
-    // modifiedModelView = view * translate(center)
-    // Since terrain vertex positions are relative to center,
-    // we need: eye_pos = view * (vertex + center) = view*vertex + view*center
-    // The modified matrix bakes view*center into the translation column
     const result = new Float64Array(16);
     for (let i = 0; i < 16; i++) result[i] = view[i];
 
-    // Add view * center to translation column (column 3)
     result[12] += view[0] * center.x + view[4] * center.y + view[8] * center.z;
     result[13] += view[1] * center.x + view[5] * center.y + view[9] * center.z;
     result[14] += view[2] * center.x + view[6] * center.y + view[10] * center.z;
@@ -529,92 +776,158 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   /**
-   * Create tile uniform buffer with imagery layer parameters and fog.
+   * Create tile uniform buffer with imagery, fog, water mask, clipping,
+   * and day/night params. Supports per-pass imagery layer subsets.
    */
   private _createTileUniformBuffer(
     device: GPUDevice,
     surfaceTile: any,
-    frameState?: any,
+    tileProvider: any,
+    frameState: any,
+    tile: any,
+    passLayers: any[],
+    isSubsequentPass: boolean,
   ): GPUBuffer {
     const data = this._tileUniformData;
     const u32 = this._tileUniformU32View;
     data.fill(0);
 
-    const imageryCollection = surfaceTile.imagery;
+    // ─── Imagery layers (offsets 0-47) ───
     let layerCount = 0;
 
-    if (imageryCollection) {
-      for (
-        let i = 0;
-        i < imageryCollection.length && layerCount < MAX_IMAGERY_LAYERS;
-        i++
-      ) {
-        const tileImagery = imageryCollection[i];
-        if (!tileImagery || !tileImagery.readyImagery) continue;
+    for (
+      let i = 0;
+      i < passLayers.length && layerCount < MAX_IMAGERY_LAYERS;
+      i++
+    ) {
+      const tileImagery = passLayers[i];
+      if (!tileImagery || !tileImagery.readyImagery) continue;
 
-        const imagery = tileImagery.readyImagery;
-        if (!imagery.imageryLayer) continue;
+      const imagery = tileImagery.readyImagery;
+      if (!imagery.imageryLayer) continue;
 
-        const baseOffset = layerCount * 12; // 12 floats per layer
+      const baseOffset = layerCount * 12;
 
-        // translationAndScale (vec4)
-        const ts = tileImagery.textureTranslationAndScale;
-        if (ts) {
-          data[baseOffset + 0] = ts.x;
-          data[baseOffset + 1] = ts.y;
-          data[baseOffset + 2] = ts.z;
-          data[baseOffset + 3] = ts.w;
-        } else {
-          data[baseOffset + 0] = 0;
-          data[baseOffset + 1] = 0;
-          data[baseOffset + 2] = 1;
-          data[baseOffset + 3] = 1;
-        }
+      // translationAndScale (vec4)
+      const ts = tileImagery.textureTranslationAndScale;
+      if (ts) {
+        data[baseOffset + 0] = ts.x;
+        data[baseOffset + 1] = ts.y;
+        data[baseOffset + 2] = ts.z;
+        data[baseOffset + 3] = ts.w;
+      } else {
+        data[baseOffset + 2] = 1;
+        data[baseOffset + 3] = 1;
+      }
 
-        // texCoordsRectangle (vec4)
-        const rect = tileImagery.textureCoordinateRectangle;
-        if (rect) {
-          data[baseOffset + 4] = rect.x;
-          data[baseOffset + 5] = rect.y;
-          data[baseOffset + 6] = rect.z;
-          data[baseOffset + 7] = rect.w;
-        } else {
-          data[baseOffset + 4] = 0;
-          data[baseOffset + 5] = 0;
-          data[baseOffset + 6] = 1;
-          data[baseOffset + 7] = 1;
-        }
+      // texCoordsRectangle (vec4)
+      const rect = tileImagery.textureCoordinateRectangle;
+      if (rect) {
+        data[baseOffset + 4] = rect.x;
+        data[baseOffset + 5] = rect.y;
+        data[baseOffset + 6] = rect.z;
+        data[baseOffset + 7] = rect.w;
+      } else {
+        data[baseOffset + 6] = 1;
+        data[baseOffset + 7] = 1;
+      }
 
-        // alpha, brightness, contrast, saturation
-        const layer = imagery.imageryLayer;
-        data[baseOffset + 8] = layer.alpha !== undefined ? layer.alpha : 1.0;
-        data[baseOffset + 9] =
-          layer.brightness !== undefined ? layer.brightness : 1.0;
-        data[baseOffset + 10] =
-          layer.contrast !== undefined ? layer.contrast : 1.0;
-        data[baseOffset + 11] =
-          layer.saturation !== undefined ? layer.saturation : 1.0;
+      const layer = imagery.imageryLayer;
+      data[baseOffset + 8] = layer.alpha ?? 1.0;
+      data[baseOffset + 9] = layer.brightness ?? 1.0;
+      data[baseOffset + 10] = layer.contrast ?? 1.0;
+      data[baseOffset + 11] = layer.saturation ?? 1.0;
 
-        layerCount++;
+      // Day/night alpha at offsets 62+ (packed per layer)
+      const dnOffset = 62 + layerCount * 2;
+      data[dnOffset] = layer.dayAlpha ?? 1.0;
+      data[dnOffset + 1] = layer.nightAlpha ?? 1.0;
+
+      layerCount++;
+    }
+
+    // ─── layerCount (u32 at float offset 48) ───
+    u32[48] = layerCount;
+
+    // ─── Fog parameters (offsets 49-51) ───
+    if (frameState && frameState.fog) {
+      data[49] = frameState.fog.density ?? 0.0;
+      data[50] = frameState.fog.offset ?? 0.0;
+      data[51] = frameState.fog.minimumBrightness ?? 0.03;
+    } else {
+      data[51] = 0.03;
+    }
+
+    // ─── Water mask translation and scale (offsets 52-55, vec4) ───
+    if (!isSubsequentPass) {
+      const wmTS = surfaceTile.waterMaskTranslationAndScale;
+      if (wmTS) {
+        data[52] = wmTS.x;
+        data[53] = wmTS.y;
+        data[54] = wmTS.z;
+        data[55] = wmTS.w;
       }
     }
 
-    // layerCount at float offset 48 (u32)
-    u32[48] = layerCount;
-
-    // Fog parameters at offsets 49, 50, 51 — matches TileUniforms in GlobeTerrain.wgsl
-    // fogDensity is computed by Fog.js and stored on frameState.fog
-    if (frameState && frameState.fog) {
-      const fog = frameState.fog;
-      data[49] = fog.density !== undefined ? fog.density : 0.0;
-      data[50] = fog.offset !== undefined ? fog.offset : 0.0;
-      data[51] =
-        fog.minimumBrightness !== undefined ? fog.minimumBrightness : 0.03;
+    // ─── Cartographic limit rectangle (offsets 56-59, vec4) ───
+    if (tileProvider && tileProvider.cartographicLimitRectangle) {
+      const limitRect = tileProvider.cartographicLimitRectangle;
+      const tileRect = tile.rectangle;
+      if (tileRect) {
+        const invW = 1.0 / tileRect.width;
+        const invH = 1.0 / tileRect.height;
+        data[56] = (limitRect.west - tileRect.west) * invW;
+        data[57] = (limitRect.south - tileRect.south) * invH;
+        data[58] = (limitRect.east - tileRect.west) * invW;
+        data[59] = (limitRect.north - tileRect.south) * invH;
+      }
     } else {
-      data[49] = 0.0; // fogDensity (0 = fog disabled)
-      data[50] = 0.0; // fogOffset
-      data[51] = 0.03; // fogMinimumBrightness
+      // No clipping — full tile visible
+      data[58] = 1.0;
+      data[59] = 1.0;
     }
+
+    // ─── Night fade distance (offsets 60-61, vec2) ───
+    if (tileProvider) {
+      data[60] = tileProvider.nightFadeOutDistance ?? 10000000.0;
+      data[61] = tileProvider.nightFadeInDistance ?? 50000000.0;
+    } else {
+      data[60] = 10000000.0;
+      data[61] = 50000000.0;
+    }
+
+    // dayNightAlpha0-3 already set above during layer iteration (offsets 62-69)
+
+    // ─── Padding (offsets 70-71) ───
+    // Required for vec4 alignment of flags
+
+    // ─── Flags (offsets 72-75, vec4) ───
+    const hasWaterMask =
+      !isSubsequentPass &&
+      tileProvider &&
+      tileProvider.hasWaterMask &&
+      surfaceTile.waterMaskTexture !== undefined;
+    const enableClipping =
+      tileProvider &&
+      tileProvider.cartographicLimitRectangle &&
+      tileProvider.cartographicLimitRectangle.width < Math.PI * 2 - 0.001;
+    const showOceanWaves =
+      hasWaterMask &&
+      tileProvider.showWaterEffect &&
+      tileProvider.oceanNormalMap !== undefined;
+
+    data[72] = hasWaterMask ? 1.0 : 0.0;
+    data[73] = enableClipping ? 1.0 : 0.0;
+    data[74] = showOceanWaves ? 1.0 : 0.0;
+    data[75] = isSubsequentPass ? 1.0 : 0.0;
+
+    // ─── Vertical exaggeration (offsets 76-77, vec2) ───
+    data[76] = frameState?.verticalExaggeration ?? 1.0;
+    data[77] = frameState?.verticalExaggerationRelativeHeight ?? 0.0;
+
+    // ─── Time for ocean wave animation (offset 78) ───
+    data[78] = frameState?.time ? performance.now() / 1000.0 : 0.0;
+    // offset 79 is padding (_pad4)
 
     const buffer = device.createBuffer({
       label: "Terrain tile UB",
@@ -629,35 +942,27 @@ export class WebGPUGlobeSurfaceRenderer {
   // Texture Management
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Create the texture bind group for a tile's imagery layers.
-   */
   private _createTextureBindGroup(
     device: GPUDevice,
-    surfaceTile: any,
+    passLayers: any[],
   ): GPUBindGroup {
     const textureViews: GPUTextureView[] = [];
-    const imageryCollection = surfaceTile.imagery;
 
-    if (imageryCollection) {
-      for (
-        let i = 0;
-        i < imageryCollection.length &&
-        textureViews.length < MAX_IMAGERY_LAYERS;
-        i++
-      ) {
-        const tileImagery = imageryCollection[i];
-        if (!tileImagery || !tileImagery.readyImagery) continue;
+    for (
+      let i = 0;
+      i < passLayers.length && textureViews.length < MAX_IMAGERY_LAYERS;
+      i++
+    ) {
+      const tileImagery = passLayers[i];
+      if (!tileImagery || !tileImagery.readyImagery) continue;
 
-        const imagery = tileImagery.readyImagery;
-        const view = this._getOrCreateImageryTexture(imagery);
-        if (view) {
-          textureViews.push(view);
-        }
+      const imagery = tileImagery.readyImagery;
+      const view = this._getOrCreateImageryTexture(imagery);
+      if (view) {
+        textureViews.push(view);
       }
     }
 
-    // Pad with placeholder textures to fill all 4 slots
     while (textureViews.length < MAX_IMAGERY_LAYERS) {
       textureViews.push(this._placeholderView!);
     }
@@ -675,22 +980,115 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   /**
-   * Get or create a WebGPU texture for an imagery tile.
-   * Tries to use the original image source for zero-copy upload.
+   * Create water mask bind group (Group 2).
+   * Uses placeholder texture when no water mask is available or for subsequent passes.
    */
+  private _createWaterMaskBindGroup(
+    device: GPUDevice,
+    surfaceTile: any | null,
+  ): GPUBindGroup {
+    let waterMaskView = this._placeholderView!;
+
+    if (surfaceTile) {
+      const waterMaskTex = surfaceTile.waterMaskTexture;
+      if (waterMaskTex) {
+        const wmView = this._getOrCreateWaterMaskTexture(waterMaskTex);
+        if (wmView) {
+          waterMaskView = wmView;
+        }
+      }
+    }
+
+    return device.createBindGroup({
+      layout: this._bindGroupLayout2!,
+      entries: [
+        { binding: 0, resource: waterMaskView },
+        { binding: 1, resource: this._waterMaskSampler! },
+      ],
+    });
+  }
+
+  /**
+   * Create ocean normal map bind group (Group 3).
+   * Loads and caches the ocean normal map from tileProvider.oceanNormalMap.
+   * Uses placeholder when no ocean normal map is configured.
+   */
+  private _createOceanNormalBindGroup(
+    device: GPUDevice,
+    tileProvider: any,
+  ): GPUBindGroup {
+    let normalMapView = this._placeholderView!;
+
+    const oceanNormalMap = tileProvider?.oceanNormalMap;
+    if (oceanNormalMap) {
+      const source =
+        oceanNormalMap._source ?? oceanNormalMap.image ?? oceanNormalMap;
+      if (
+        source instanceof HTMLImageElement ||
+        source instanceof ImageBitmap ||
+        source instanceof HTMLCanvasElement
+      ) {
+        const view = this._uploadImageSource(
+          source,
+          "oceanNormal",
+          this._oceanNormalMapCache,
+        );
+        if (view) {
+          normalMapView = view;
+        }
+      }
+    }
+
+    return device.createBindGroup({
+      layout: this._bindGroupLayout3!,
+      entries: [
+        { binding: 0, resource: normalMapView },
+        { binding: 1, resource: this._oceanNormalSampler! },
+      ],
+    });
+  }
+
   private _getOrCreateImageryTexture(imagery: any): GPUTextureView | null {
     if (!imagery) return null;
 
-    // Check for cached WebGPU texture
     const cacheKey =
       imagery.key || `${imagery.x}_${imagery.y}_${imagery.level}`;
     const cached = this._imageryTextureCache.get(cacheKey);
     if (cached) return cached.view;
 
-    // Try to get the source image for GPU upload
     const source = imagery.image || imagery.texture?._source;
     if (!source) return null;
 
+    return this._uploadImageSource(source, cacheKey, this._imageryTextureCache);
+  }
+
+  private _getOrCreateWaterMaskTexture(
+    waterMaskTex: any,
+  ): GPUTextureView | null {
+    // Water mask textures are WebGL Texture objects; extract the source image
+    const source = waterMaskTex._source || waterMaskTex.image;
+    if (!source) return null;
+
+    const cacheKey = `wm_${waterMaskTex._id || "default"}`;
+    const cached = this._waterMaskTextureCache.get(cacheKey);
+    if (cached) return cached.view;
+
+    return this._uploadImageSource(
+      source,
+      cacheKey,
+      this._waterMaskTextureCache,
+    );
+  }
+
+  /**
+   * Upload an image source (ImageBitmap, HTMLImageElement, HTMLCanvasElement)
+   * to a GPU texture.
+   */
+  private _uploadImageSource(
+    source: any,
+    cacheKey: string,
+    cache: Map<string, ImageryGPUTexture>,
+  ): GPUTextureView | null {
     const device = this._device!;
 
     try {
@@ -711,7 +1109,7 @@ export class WebGPUGlobeSurfaceRenderer {
       if (width === 0 || height === 0) return null;
 
       const texture = device.createTexture({
-        label: `Imagery ${cacheKey}`,
+        label: `Globe ${cacheKey}`,
         size: [width, height],
         format: "rgba8unorm",
         usage:
@@ -720,7 +1118,6 @@ export class WebGPUGlobeSurfaceRenderer {
           GPUTextureUsage.RENDER_ATTACHMENT,
       });
 
-      // Upload image data
       device.queue.copyExternalImageToTexture(
         { source: source as any },
         { texture },
@@ -728,7 +1125,7 @@ export class WebGPUGlobeSurfaceRenderer {
       );
 
       const view = texture.createView();
-      this._imageryTextureCache.set(cacheKey, {
+      cache.set(cacheKey, {
         texture,
         view,
         sourceWidth: width,
@@ -737,19 +1134,226 @@ export class WebGPUGlobeSurfaceRenderer {
 
       return view;
     } catch (e) {
-      // Failed to create texture (e.g., cross-origin, corrupt image)
       return null;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Wireframe Debug Mode
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get or lazily create a wireframe (line-list) pipeline for the given
+   * quantization/normals combination. Wireframe pipelines reuse the same
+   * shaders but use line-list topology with no back-face culling.
+   */
+  private _getWireframePipeline(
+    isQuantized: boolean,
+    hasNormals: boolean,
+  ): GPURenderPipeline {
+    const key = (isQuantized ? 2 : 0) + (hasNormals ? 0 : 1);
+    if (this._wireframePipelines[key]) {
+      return this._wireframePipelines[key]!;
+    }
+
+    const device = this._device!;
+    let vertexBuffers: GPUVertexBufferLayout[];
+    let entryPoint: string;
+
+    if (isQuantized) {
+      const stride = hasNormals ? 16 : 12;
+      const format: GPUVertexFormat = hasNormals ? "float32x4" : "float32x3";
+      entryPoint = "vertexMainQuantized";
+      vertexBuffers = [
+        {
+          arrayStride: stride,
+          stepMode: "vertex",
+          attributes: [{ shaderLocation: 0, offset: 0, format }],
+        },
+      ];
+    } else {
+      const stride = hasNormals ? 28 : 24;
+      const texCoordFormat: GPUVertexFormat = hasNormals
+        ? "float32x3"
+        : "float32x2";
+      entryPoint = "vertexMain";
+      vertexBuffers = [
+        {
+          arrayStride: stride,
+          stepMode: "vertex",
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x4" },
+            { shaderLocation: 1, offset: 16, format: texCoordFormat },
+          ],
+        },
+      ];
+    }
+
+    const quantLabel = isQuantized ? "quantized" : "uncompressed";
+    const normLabel = hasNormals ? "normals" : "noNormals";
+
+    const pipeline = device.createRenderPipeline({
+      label: `Globe wireframe (${quantLabel}, ${normLabel})`,
+      layout: this._pipelineLayout!,
+      vertex: {
+        module: this._shaderModule!,
+        entryPoint,
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: this._shaderModule!,
+        entryPoint: "fragmentMain",
+        targets: [{ format: this._canvasFormat }],
+      },
+      primitive: {
+        topology: "line-list",
+        cullMode: "none",
+      },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: true,
+        depthCompare: "less",
+      },
+    });
+
+    this._wireframePipelines[key] = pipeline;
+    return pipeline;
+  }
+
+  /**
+   * Convert triangle indices to line indices. Each triangle (i0, i1, i2)
+   * produces 3 line segments: (i0,i1), (i1,i2), (i2,i0). Creates and
+   * caches a GPU index buffer for the wireframe.
+   */
+  private _getOrCreateWireframeIndices(
+    tileKey: string,
+    mesh: any,
+  ): { buffer: GPUBuffer; count: number; format: GPUIndexFormat } | null {
+    const cached = this._wireframeIndexCache.get(tileKey);
+    if (cached) return cached;
+
+    const device = this._device!;
+    const triIndices = mesh.indices;
+    if (!triIndices || triIndices.length < 3) return null;
+
+    const triCount = Math.floor(triIndices.length / 3);
+    const lineCount = triCount * 3; // 3 edges per triangle
+    const lineIndexCount = lineCount * 2; // 2 indices per line
+
+    // Use same index type as the source
+    const use32 = triIndices.BYTES_PER_ELEMENT === 4;
+    const wireIndices = use32
+      ? new Uint32Array(lineIndexCount)
+      : new Uint16Array(lineIndexCount);
+
+    let out = 0;
+    for (let t = 0; t < triCount; t++) {
+      const base = t * 3;
+      const i0 = triIndices[base];
+      const i1 = triIndices[base + 1];
+      const i2 = triIndices[base + 2];
+      wireIndices[out++] = i0;
+      wireIndices[out++] = i1;
+      wireIndices[out++] = i1;
+      wireIndices[out++] = i2;
+      wireIndices[out++] = i2;
+      wireIndices[out++] = i0;
+    }
+
+    const buffer = device.createBuffer({
+      label: `Terrain wireframe IB ${tileKey}`,
+      size: wireIndices.byteLength,
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(buffer, 0, gpuData(wireIndices));
+
+    const result = {
+      buffer,
+      count: lineIndexCount,
+      format: (use32 ? "uint32" : "uint16") as GPUIndexFormat,
+    };
+    this._wireframeIndexCache.set(tileKey, result);
+    return result;
+  }
+
+  /**
+   * Create wireframe draw commands for a tile. Uses line-list topology
+   * pipeline and triangle-to-line converted index buffer.
+   */
+  createWireframeTileCommands(
+    tile: any,
+    surfaceTile: any,
+    tileProvider: any,
+    frameState: any,
+    uniformState: any,
+  ): TileDrawDescriptor[] | null {
+    if (!this._isInitialized || !this._device) return null;
+
+    const device = this._device;
+    const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
+    if (!mesh) return null;
+
+    const tileKey = this._getTileKey(tile);
+    const gpuResources = this._getOrCreateTileBuffers(tileKey, mesh);
+    if (!gpuResources) return null;
+
+    const wireIB = this._getOrCreateWireframeIndices(tileKey, mesh);
+    if (!wireIB) return null;
+
+    const pipeline = this._getWireframePipeline(
+      gpuResources.isQuantized,
+      gpuResources.hasNormals,
+    );
+
+    // Single pass for wireframe — no multi-pass imagery needed
+    const cameraUB = this._createCameraUniformBuffer(
+      device,
+      uniformState,
+      surfaceTile,
+      tileProvider,
+      mesh,
+    );
+    const tileUB = this._createTileUniformBuffer(
+      device,
+      surfaceTile,
+      tileProvider,
+      frameState,
+      tile,
+      [],
+      false,
+    );
+
+    const bindGroup0 = device.createBindGroup({
+      layout: this._bindGroupLayout0!,
+      entries: [
+        { binding: 0, resource: { buffer: cameraUB } },
+        { binding: 1, resource: { buffer: tileUB } },
+      ],
+    });
+
+    // Use placeholder textures for wireframe — imagery not needed
+    const bindGroup1 = this._createTextureBindGroup(device, []);
+    const bindGroup2 = this._createWaterMaskBindGroup(device, null);
+    const bindGroup3 = this._createOceanNormalBindGroup(device, tileProvider);
+
+    return [
+      {
+        pipeline,
+        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+        vertexBuffer: gpuResources.vertexBuffer,
+        indexBuffer: wireIB.buffer,
+        indexCount: wireIB.count,
+        indexFormat: wireIB.format,
+        boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
+        isSubsequentPass: false,
+      },
+    ];
   }
 
   // ═══════════════════════════════════════════════════════════════════════
   // Cache Eviction
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Remove GPU resources for tiles that are no longer visible.
-   * Call periodically (e.g., every N frames) with the set of active tile keys.
-   */
   evictStaleResources(activeTileKeys: Set<string>): void {
     for (const [key, resources] of this._tileBufferCache) {
       if (!activeTileKeys.has(key)) {
@@ -760,9 +1364,6 @@ export class WebGPUGlobeSurfaceRenderer {
     }
   }
 
-  /**
-   * Remove a specific imagery texture from cache.
-   */
   removeImageryTexture(cacheKey: string): void {
     const cached = this._imageryTextureCache.get(cacheKey);
     if (cached) {
@@ -772,15 +1373,23 @@ export class WebGPUGlobeSurfaceRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // Pipeline Access (for external command creation)
+  // Pipeline Access
   // ═══════════════════════════════════════════════════════════════════════
 
   get pipeline(): GPURenderPipeline | null {
-    return this._pipeline;
+    return this._pipelines[PipelineKey.UNCOMPRESSED_NORMALS];
   }
 
   get pipelineNoNormals(): GPURenderPipeline | null {
-    return this._pipelineNoNormals;
+    return this._pipelines[PipelineKey.UNCOMPRESSED_NO_NORMALS];
+  }
+
+  get pipelineQuantized(): GPURenderPipeline | null {
+    return this._pipelines[PipelineKey.QUANTIZED_NORMALS];
+  }
+
+  get pipelineQuantizedNoNormals(): GPURenderPipeline | null {
+    return this._pipelines[PipelineKey.QUANTIZED_NO_NORMALS];
   }
 
   get bindGroupLayout0(): GPUBindGroupLayout | null {
@@ -789,6 +1398,10 @@ export class WebGPUGlobeSurfaceRenderer {
 
   get bindGroupLayout1(): GPUBindGroupLayout | null {
     return this._bindGroupLayout1;
+  }
+
+  get bindGroupLayout2(): GPUBindGroupLayout | null {
+    return this._bindGroupLayout2;
   }
 
   get sampler(): GPUSampler | null {
@@ -806,30 +1419,46 @@ export class WebGPUGlobeSurfaceRenderer {
   destroy(): void {
     if (this._isDestroyed) return;
 
-    // Destroy tile buffers
     for (const [, resources] of this._tileBufferCache) {
       resources.vertexBuffer.destroy();
       resources.indexBuffer.destroy();
     }
     this._tileBufferCache.clear();
 
-    // Destroy imagery textures
     for (const [, cached] of this._imageryTextureCache) {
       cached.texture.destroy();
     }
     this._imageryTextureCache.clear();
 
-    // Destroy placeholder
+    for (const [, cached] of this._waterMaskTextureCache) {
+      cached.texture.destroy();
+    }
+    this._waterMaskTextureCache.clear();
+
+    for (const [, cached] of this._oceanNormalMapCache) {
+      cached.texture.destroy();
+    }
+    this._oceanNormalMapCache.clear();
+
+    for (const [, wf] of this._wireframeIndexCache) {
+      wf.buffer.destroy();
+    }
+    this._wireframeIndexCache.clear();
+
     if (this._placeholderTexture) {
       this._placeholderTexture.destroy();
     }
 
-    this._pipeline = null;
-    this._pipelineNoNormals = null;
+    this._pipelines.fill(null);
+    this._wireframePipelines.fill(null);
     this._shaderModule = null;
     this._sampler = null;
+    this._waterMaskSampler = null;
+    this._oceanNormalSampler = null;
     this._bindGroupLayout0 = null;
     this._bindGroupLayout1 = null;
+    this._bindGroupLayout2 = null;
+    this._bindGroupLayout3 = null;
     this._pipelineLayout = null;
     this._device = null;
     this._isInitialized = false;

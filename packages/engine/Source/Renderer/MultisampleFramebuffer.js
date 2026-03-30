@@ -26,111 +26,110 @@ import Framebuffer from "./Framebuffer.js";
  * @exception {DeveloperError} Both depth-stencil renderbuffer and texture attachments must be provided.
  *
  * @private
- * @constructor
+ * @alias MultisampleFramebuffer
  */
-function MultisampleFramebuffer(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class MultisampleFramebuffer {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const {
-    context,
-    width,
-    height,
-    colorRenderbuffers,
-    colorTextures,
-    depthStencilRenderbuffer,
-    depthStencilTexture,
-    destroyAttachments,
-  } = options;
+    const {
+      context,
+      width,
+      height,
+      colorRenderbuffers,
+      colorTextures,
+      depthStencilRenderbuffer,
+      depthStencilTexture,
+      destroyAttachments,
+    } = options;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.context", context);
-  Check.defined("options.width", width);
-  Check.defined("options.height", height);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.context", context);
+    Check.defined("options.width", width);
+    Check.defined("options.height", height);
+    //>>includeEnd('debug');
 
-  this._width = width;
-  this._height = height;
+    this._width = width;
+    this._height = height;
 
-  if (defined(colorRenderbuffers) !== defined(colorTextures)) {
-    throw new DeveloperError(
-      "Both color renderbuffer and texture attachments must be provided.",
-    );
+    if (defined(colorRenderbuffers) !== defined(colorTextures)) {
+      throw new DeveloperError(
+        "Both color renderbuffer and texture attachments must be provided.",
+      );
+    }
+
+    if (defined(depthStencilRenderbuffer) !== defined(depthStencilTexture)) {
+      throw new DeveloperError(
+        "Both depth-stencil renderbuffer and texture attachments must be provided.",
+      );
+    }
+
+    this._renderFramebuffer = new Framebuffer({
+      context: context,
+      colorRenderbuffers: colorRenderbuffers,
+      depthStencilRenderbuffer: depthStencilRenderbuffer,
+      destroyAttachments: destroyAttachments,
+    });
+    this._colorFramebuffer = new Framebuffer({
+      context: context,
+      colorTextures: colorTextures,
+      depthStencilTexture: depthStencilTexture,
+      destroyAttachments: destroyAttachments,
+    });
   }
 
-  if (defined(depthStencilRenderbuffer) !== defined(depthStencilTexture)) {
-    throw new DeveloperError(
-      "Both depth-stencil renderbuffer and texture attachments must be provided.",
-    );
+  getRenderFramebuffer() {
+    return this._renderFramebuffer;
   }
 
-  this._renderFramebuffer = new Framebuffer({
-    context: context,
-    colorRenderbuffers: colorRenderbuffers,
-    depthStencilRenderbuffer: depthStencilRenderbuffer,
-    destroyAttachments: destroyAttachments,
-  });
-  this._colorFramebuffer = new Framebuffer({
-    context: context,
-    colorTextures: colorTextures,
-    depthStencilTexture: depthStencilTexture,
-    destroyAttachments: destroyAttachments,
-  });
+  getColorFramebuffer() {
+    return this._colorFramebuffer;
+  }
+
+  /**
+   * Copy from the render framebuffer to the color framebuffer, resolving the stencil.
+   *
+   * @param {Context} context
+   * @param {boolean} blitStencil <code>true</code> if the stencil mask should be applied.
+   *
+   * @private
+   */
+  blitFramebuffers(context, blitStencil) {
+    this._renderFramebuffer.bindRead();
+    this._colorFramebuffer.bindDraw();
+    const gl = context._gl;
+    let mask = 0;
+    if (this._colorFramebuffer._colorTextures.length > 0) {
+      mask |= gl.COLOR_BUFFER_BIT;
+    }
+    if (defined(this._colorFramebuffer.depthStencilTexture)) {
+      mask |= gl.DEPTH_BUFFER_BIT | (blitStencil ? gl.STENCIL_BUFFER_BIT : 0);
+    }
+    gl.blitFramebuffer(
+      0,
+      0,
+      this._width,
+      this._height,
+      0,
+      0,
+      this._width,
+      this._height,
+      mask,
+      gl.NEAREST,
+    );
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._renderFramebuffer.destroy();
+    this._colorFramebuffer.destroy();
+    return destroyObject(this);
+  }
 }
-
-MultisampleFramebuffer.prototype.getRenderFramebuffer = function () {
-  return this._renderFramebuffer;
-};
-
-MultisampleFramebuffer.prototype.getColorFramebuffer = function () {
-  return this._colorFramebuffer;
-};
-
-/**
- * Copy from the render framebuffer to the color framebuffer, resolving the stencil.
- *
- * @param {Context} context
- * @param {boolean} blitStencil <code>true</code> if the stencil mask should be applied.
- *
- * @private
- */
-MultisampleFramebuffer.prototype.blitFramebuffers = function (
-  context,
-  blitStencil,
-) {
-  this._renderFramebuffer.bindRead();
-  this._colorFramebuffer.bindDraw();
-  const gl = context._gl;
-  let mask = 0;
-  if (this._colorFramebuffer._colorTextures.length > 0) {
-    mask |= gl.COLOR_BUFFER_BIT;
-  }
-  if (defined(this._colorFramebuffer.depthStencilTexture)) {
-    mask |= gl.DEPTH_BUFFER_BIT | (blitStencil ? gl.STENCIL_BUFFER_BIT : 0);
-  }
-  gl.blitFramebuffer(
-    0,
-    0,
-    this._width,
-    this._height,
-    0,
-    0,
-    this._width,
-    this._height,
-    mask,
-    gl.NEAREST,
-  );
-  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-};
-
-MultisampleFramebuffer.prototype.isDestroyed = function () {
-  return false;
-};
-
-MultisampleFramebuffer.prototype.destroy = function () {
-  this._renderFramebuffer.destroy();
-  this._colorFramebuffer.destroy();
-  return destroyObject(this);
-};
 
 export default MultisampleFramebuffer;

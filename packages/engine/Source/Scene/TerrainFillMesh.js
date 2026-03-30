@@ -19,211 +19,222 @@ import WebMercatorProjection from "../Core/WebMercatorProjection.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import TileSelectionResult from "./TileSelectionResult.js";
 
-function TerrainFillMesh(tile) {
-  this.tile = tile;
-  this.frameLastUpdated = undefined;
-  this.westMeshes = []; // north to south (CCW)
-  this.westTiles = [];
-  this.southMeshes = []; // west to east (CCW)
-  this.southTiles = [];
-  this.eastMeshes = []; // south to north (CCW)
-  this.eastTiles = [];
-  this.northMeshes = []; // east to west (CCW)
-  this.northTiles = [];
-  this.southwestMesh = undefined;
-  this.southwestTile = undefined;
-  this.southeastMesh = undefined;
-  this.southeastTile = undefined;
-  this.northwestMesh = undefined;
-  this.northwestTile = undefined;
-  this.northeastMesh = undefined;
-  this.northeastTile = undefined;
-  this.changedThisFrame = true;
-  this.visitedFrame = undefined;
-  this.enqueuedFrame = undefined;
-  this.mesh = undefined;
-  this.vertexArray = undefined;
-  this.waterMaskTexture = undefined;
-  this.waterMaskTranslationAndScale = new Cartesian4();
-}
-
-TerrainFillMesh.prototype.update = function (
-  tileProvider,
-  frameState,
-  vertexArraysToDestroy,
-) {
-  if (this.changedThisFrame) {
-    createFillMesh(tileProvider, frameState, this.tile, vertexArraysToDestroy);
-    this.changedThisFrame = false;
-  }
-};
-
-TerrainFillMesh.prototype.destroy = function (vertexArraysToDestroy) {
-  this._destroyVertexArray(vertexArraysToDestroy);
-
-  if (defined(this.waterMaskTexture)) {
-    --this.waterMaskTexture.referenceCount;
-    if (this.waterMaskTexture.referenceCount === 0) {
-      this.waterMaskTexture.destroy();
-    }
-    this.waterMaskTexture = undefined;
-  }
-
-  return undefined;
-};
-
-TerrainFillMesh.prototype._destroyVertexArray = function (
-  vertexArraysToDestroy,
-) {
-  if (defined(this.vertexArray)) {
-    if (defined(vertexArraysToDestroy)) {
-      vertexArraysToDestroy.push(this.vertexArray);
-    } else {
-      GlobeSurfaceTile._freeVertexArray(this.vertexArray);
-    }
-    this.vertexArray = undefined;
-  }
-};
-
 const traversalQueueScratch = new Queue();
 
-TerrainFillMesh.updateFillTiles = function (
-  tileProvider,
-  renderedTiles,
-  frameState,
-  vertexArraysToDestroy,
-) {
-  // We want our fill tiles to look natural, which means they should align perfectly with
-  // adjacent loaded tiles, and their edges that are not adjacent to loaded tiles should have
-  // sensible heights (e.g. the average of the heights of loaded edges). Some fill tiles may
-  // be adjacent only to other fill tiles, and in that case heights should be assigned fanning
-  // outward from the loaded tiles so that there are no sudden changes in height.
+/**
+ * Procedural fill mesh for terrain tiles whose real data hasn't loaded yet.
+ * Propagates edge vertices from neighboring loaded tiles via BFS to create
+ * meshes that align seamlessly with adjacent terrain.
+ *
+ * @alias TerrainFillMesh
+ * @private
+ */
+class TerrainFillMesh {
+  constructor(tile) {
+    this.tile = tile;
+    this.frameLastUpdated = undefined;
+    this.westMeshes = []; // north to south (CCW)
+    this.westTiles = [];
+    this.southMeshes = []; // west to east (CCW)
+    this.southTiles = [];
+    this.eastMeshes = []; // south to north (CCW)
+    this.eastTiles = [];
+    this.northMeshes = []; // east to west (CCW)
+    this.northTiles = [];
+    this.southwestMesh = undefined;
+    this.southwestTile = undefined;
+    this.southeastMesh = undefined;
+    this.southeastTile = undefined;
+    this.northwestMesh = undefined;
+    this.northwestTile = undefined;
+    this.northeastMesh = undefined;
+    this.northeastTile = undefined;
+    this.changedThisFrame = true;
+    this.visitedFrame = undefined;
+    this.enqueuedFrame = undefined;
+    this.mesh = undefined;
+    this.vertexArray = undefined;
+    this.waterMaskTexture = undefined;
+    this.waterMaskTranslationAndScale = new Cartesian4();
+  }
 
-  // We do this with a breadth-first traversal of the rendered tiles, starting with the loaded
-  // ones. Graph nodes are tiles and graph edges connect to other rendered tiles that are spatially adjacent
-  // to those tiles. As we visit each node, we propagate tile edges to adjacent tiles. If there's no data
-  // for a tile edge,  we create an edge with an average height and then propagate it. If an edge is partially defined
-  // (e.g. an edge is adjacent to multiple more-detailed tiles and only some of them are loaded), we
-  // fill in the rest of the edge with the same height.
-  const quadtree = tileProvider._quadtree;
-  const levelZeroTiles = quadtree._levelZeroTiles;
-  const lastSelectionFrameNumber = quadtree._lastSelectionFrameNumber;
-
-  const traversalQueue = traversalQueueScratch;
-  traversalQueue.clear();
-
-  // Add the tiles with real geometry to the traversal queue.
-  for (let i = 0; i < renderedTiles.length; ++i) {
-    const renderedTile = renderedTiles[i];
-    if (defined(renderedTile.data.vertexArray)) {
-      traversalQueue.enqueue(renderedTiles[i]);
+  update(tileProvider, frameState, vertexArraysToDestroy) {
+    if (this.changedThisFrame) {
+      createFillMesh(
+        tileProvider,
+        frameState,
+        this.tile,
+        vertexArraysToDestroy,
+      );
+      this.changedThisFrame = false;
     }
   }
 
-  let tile = traversalQueue.dequeue();
+  destroy(vertexArraysToDestroy) {
+    this._destroyVertexArray(vertexArraysToDestroy);
 
-  while (tile !== undefined) {
-    const tileToWest = tile.findTileToWest(levelZeroTiles);
-    const tileToSouth = tile.findTileToSouth(levelZeroTiles);
-    const tileToEast = tile.findTileToEast(levelZeroTiles);
-    const tileToNorth = tile.findTileToNorth(levelZeroTiles);
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToWest,
-      lastSelectionFrameNumber,
-      TileEdge.EAST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToSouth,
-      lastSelectionFrameNumber,
-      TileEdge.NORTH,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToEast,
-      lastSelectionFrameNumber,
-      TileEdge.WEST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToNorth,
-      lastSelectionFrameNumber,
-      TileEdge.SOUTH,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
+    if (defined(this.waterMaskTexture)) {
+      --this.waterMaskTexture.referenceCount;
+      if (this.waterMaskTexture.referenceCount === 0) {
+        this.waterMaskTexture.destroy();
+      }
+      this.waterMaskTexture = undefined;
+    }
 
-    const tileToNorthwest = tileToWest.findTileToNorth(levelZeroTiles);
-    const tileToSouthwest = tileToWest.findTileToSouth(levelZeroTiles);
-    const tileToNortheast = tileToEast.findTileToNorth(levelZeroTiles);
-    const tileToSoutheast = tileToEast.findTileToSouth(levelZeroTiles);
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToNorthwest,
-      lastSelectionFrameNumber,
-      TileEdge.SOUTHEAST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToNortheast,
-      lastSelectionFrameNumber,
-      TileEdge.SOUTHWEST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToSouthwest,
-      lastSelectionFrameNumber,
-      TileEdge.NORTHEAST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-    visitRenderedTiles(
-      tileProvider,
-      frameState,
-      tile,
-      tileToSoutheast,
-      lastSelectionFrameNumber,
-      TileEdge.NORTHWEST,
-      false,
-      traversalQueue,
-      vertexArraysToDestroy,
-    );
-
-    tile = traversalQueue.dequeue();
+    return undefined;
   }
-};
+
+  _destroyVertexArray(vertexArraysToDestroy) {
+    if (defined(this.vertexArray)) {
+      if (defined(vertexArraysToDestroy)) {
+        vertexArraysToDestroy.push(this.vertexArray);
+      } else {
+        GlobeSurfaceTile._freeVertexArray(this.vertexArray);
+      }
+      this.vertexArray = undefined;
+    }
+  }
+
+  static updateFillTiles(
+    tileProvider,
+    renderedTiles,
+    frameState,
+    vertexArraysToDestroy,
+  ) {
+    // We want our fill tiles to look natural, which means they should align perfectly with
+    // adjacent loaded tiles, and their edges that are not adjacent to loaded tiles should have
+    // sensible heights (e.g. the average of the heights of loaded edges). Some fill tiles may
+    // be adjacent only to other fill tiles, and in that case heights should be assigned fanning
+    // outward from the loaded tiles so that there are no sudden changes in height.
+
+    // We do this with a breadth-first traversal of the rendered tiles, starting with the loaded
+    // ones. Graph nodes are tiles and graph edges connect to other rendered tiles that are spatially adjacent
+    // to those tiles. As we visit each node, we propagate tile edges to adjacent tiles. If there's no data
+    // for a tile edge,  we create an edge with an average height and then propagate it. If an edge is partially defined
+    // (e.g. an edge is adjacent to multiple more-detailed tiles and only some of them are loaded), we
+    // fill in the rest of the edge with the same height.
+    const quadtree = tileProvider._quadtree;
+    const levelZeroTiles = quadtree._levelZeroTiles;
+    const lastSelectionFrameNumber = quadtree._lastSelectionFrameNumber;
+
+    const traversalQueue = traversalQueueScratch;
+    traversalQueue.clear();
+
+    // Add the tiles with real geometry to the traversal queue.
+    // Check both vertexArray (WebGL) and mesh (WebGPU — no WebGL VA created)
+    for (let i = 0; i < renderedTiles.length; ++i) {
+      const renderedTile = renderedTiles[i];
+      const sd = renderedTile.data;
+      if (defined(sd.vertexArray) || defined(sd.mesh)) {
+        traversalQueue.enqueue(renderedTiles[i]);
+      }
+    }
+
+    let tile = traversalQueue.dequeue();
+
+    while (tile !== undefined) {
+      const tileToWest = tile.findTileToWest(levelZeroTiles);
+      const tileToSouth = tile.findTileToSouth(levelZeroTiles);
+      const tileToEast = tile.findTileToEast(levelZeroTiles);
+      const tileToNorth = tile.findTileToNorth(levelZeroTiles);
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToWest,
+        lastSelectionFrameNumber,
+        TileEdge.EAST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToSouth,
+        lastSelectionFrameNumber,
+        TileEdge.NORTH,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToEast,
+        lastSelectionFrameNumber,
+        TileEdge.WEST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToNorth,
+        lastSelectionFrameNumber,
+        TileEdge.SOUTH,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+
+      const tileToNorthwest = tileToWest.findTileToNorth(levelZeroTiles);
+      const tileToSouthwest = tileToWest.findTileToSouth(levelZeroTiles);
+      const tileToNortheast = tileToEast.findTileToNorth(levelZeroTiles);
+      const tileToSoutheast = tileToEast.findTileToSouth(levelZeroTiles);
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToNorthwest,
+        lastSelectionFrameNumber,
+        TileEdge.SOUTHEAST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToNortheast,
+        lastSelectionFrameNumber,
+        TileEdge.SOUTHWEST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToSouthwest,
+        lastSelectionFrameNumber,
+        TileEdge.NORTHEAST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+      visitRenderedTiles(
+        tileProvider,
+        frameState,
+        tile,
+        tileToSoutheast,
+        lastSelectionFrameNumber,
+        TileEdge.NORTHWEST,
+        false,
+        traversalQueue,
+        vertexArraysToDestroy,
+      );
+
+      tile = traversalQueue.dequeue();
+    }
+  }
+}
 
 function visitRenderedTiles(
   tileProvider,
@@ -283,8 +294,8 @@ function visitRenderedTiles(
   }
 
   if (tile._lastSelectionResult === TileSelectionResult.RENDERED) {
-    if (defined(tile.data.vertexArray)) {
-      // No further processing necessary for renderable tiles.
+    // Tile has real geometry: check vertexArray (WebGL) or mesh (WebGPU)
+    if (defined(tile.data.vertexArray) || defined(tile.data.mesh)) {
       return;
     }
     visitTile(
@@ -1295,12 +1306,15 @@ function createFillMesh(tileProvider, frameState, tile, vertexArraysToDestroy) {
 
   const context = frameState.context;
 
-  fill._destroyVertexArray(vertexArraysToDestroy);
+  // WebGPU reads mesh.vertices/indices directly — skip WebGL vertex array creation
+  if (!context.isWebGPU) {
+    fill._destroyVertexArray(vertexArraysToDestroy);
+    fill.vertexArray = GlobeSurfaceTile._createVertexArrayForMesh(
+      context,
+      fill.mesh,
+    );
+  }
 
-  fill.vertexArray = GlobeSurfaceTile._createVertexArrayForMesh(
-    context,
-    fill.mesh,
-  );
   surfaceTile.processImagery(
     tile,
     tileProvider.terrainProvider,
