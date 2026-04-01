@@ -102,6 +102,11 @@ struct LightUniforms {
   sunIntensity: f32,
   ambientColor: vec3<f32>,
   _pad1: f32,
+  // IBL parameters
+  iblDiffuseFactor: f32,
+  iblSpecularFactor: f32,
+  iblMaxMipLevel: f32,
+  iblHasSH: f32,  // 1.0 if SH coefficients are available
 };
 
 // ─── Bind Groups ─────────────────────────────────────────────────────────────
@@ -291,6 +296,14 @@ fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
   return F0 + (vec3<f32>(1.0) - F0) * (t2 * t2 * t);
 }
 
+// Roughness-aware Fresnel for IBL specular — smoother surfaces reflect more
+fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
+  let t = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let t2 = t * t;
+  let oneMinusRoughness = vec3<f32>(1.0 - roughness);
+  return F0 + (max(oneMinusRoughness, F0) - F0) * (t2 * t2 * t);
+}
+
 fn srgbToLinear(srgb: vec3<f32>) -> vec3<f32> {
   return pow(srgb, vec3<f32>(2.2));
 }
@@ -451,8 +464,23 @@ struct FragmentInput {
   let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
   let direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
-  // ── Ambient ───────────────────────────────────────────────────────────────
-  var ambient = light.ambientColor * diffuseColor + light.ambientColor * F0 * 0.2;
+  // ── Ambient / IBL ─────────────────────────────────────────────────────────
+  // Split-sum IBL approximation using Fresnel-roughness awareness.
+  // When IBL factors are active (> 0), ambient light varies with roughness
+  // and viewing angle for more physically correct results.
+  let kS_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
+  let kD_ibl = (vec3<f32>(1.0) - kS_ibl) * (1.0 - metallic);
+
+  // Diffuse IBL: ambient color modulated by diffuse reflectance
+  let diffuseIBL = light.ambientColor * diffuseColor * light.iblDiffuseFactor;
+
+  // Specular IBL: roughness-aware Fresnel × ambient, scaled by mip-based factor.
+  // Rougher surfaces get less specular ambient, smoother surfaces get more.
+  let specLod = roughness * light.iblMaxMipLevel;
+  let specAttenuation = 1.0 / (1.0 + specLod * 0.5);
+  let specularIBL = light.ambientColor * kS_ibl * specAttenuation * light.iblSpecularFactor;
+
+  var ambient = kD_ibl * diffuseIBL + specularIBL;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {

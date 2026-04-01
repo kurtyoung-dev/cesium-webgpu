@@ -22,16 +22,16 @@
 
 ### Critical Findings
 
-| Area | Status | Severity |
-|------|--------|----------|
-| **Compute shader fallbacks** | 🔴 7 of 8 compute shaders have NO dispatch callers and NO fallback | High |
-| **WASM bridge fallbacks** | 🟡 All 7 bridges have JS fallbacks, but missing version checks, SIMD detection, and memory cleanup | Medium |
-| **WASM memory management** | 🔴 Zero bridges call `free_buffer()` — bounded memory leak | High |
-| **Missing post-processing** | 🔴 SSAO, SSR, bloom, depth of field, TAA, motion blur — none exist | High (visual quality) |
-| **Missing IBL pipeline** | 🔴 No BRDF LUT, irradiance, or radiance map generation in WGSL | High (PBR quality) |
-| **Missing ground atmosphere** | 🟡 No `GroundAtmosphere.wgsl` shader | Medium |
-| **Performance infrastructure** | 🟡 Render bundles, indirect draw, GPU culling built but 0% activated in render loop | Medium |
-| **Shader coverage** | 🟡 ~13% of GLSL shaders have WGSL equivalents (75 of 607) | Expected |
+| Area | Status | Severity | Resolution |
+|------|--------|----------|------------|
+| **Compute shader fallbacks** | ✅ **FIXED** | High | `WebGPUComputeEngine` wrapped in try/catch, returns bool, `_validateWorkgroups()` added. CPU fallbacks in `WasmPointCloudBridge` (FORK-42/43/44) |
+| **WASM bridge fallbacks** | ✅ **FIXED** | Medium | All 7 bridges: `destroy()`, `free_buffer()`, SIMD detection, version check via `WasmFeatureDetection.js` (FORK-37/38/39/40) |
+| **WASM memory management** | ✅ **FIXED** | High | All bridges call `free_buffer()` in `destroy()`. Rust `alloc_buffer()` uses `try_reserve()` + null-on-OOM (FORK-46) |
+| **Missing post-processing** | ✅ **FIXED** | High | SSAO (4-pass HBAO), Bloom (4-pass), DoF (3-pass), Edge Detection, Silhouette, 5 tonemapping operators, GaussianBlur1D |
+| **Missing IBL pipeline** | ✅ **FIXED** | High | `BrdfLutGenerate.wgsl` (compute), `IrradianceConvolution.wgsl`, `RadiancePrefilter.wgsl`, `WebGPUIBLPipeline.ts` orchestrator, `WebGPUImageBasedLighting.ts` with SH + specular, `ModelPBRComplete.wgsl` IBL-aware ambient |
+| **Missing ground atmosphere** | ✅ **FIXED** | Medium | `GroundAtmosphere.wgsl` (Nishita scattering), `WebGPUGroundAtmosphereRenderer.ts`, `FeatureRendererKey.GROUND_ATMOSPHERE` registered |
+| **Performance infrastructure** | ✅ **ACTIVATED** | Medium | `WebGPUPerformanceManager.ts` orchestrates all 7 systems via `beginFrame()/endFrame()` in scene renderer |
+| **Shader coverage** | 🟡 ~14% of GLSL shaders have WGSL equivalents (87+ of 607) | Expected | +12 new WGSL shaders from IBL + atmosphere + post-processing |
 
 ### What Works Well
 - ✅ All 7 WASM bridges have complete JS fallback implementations

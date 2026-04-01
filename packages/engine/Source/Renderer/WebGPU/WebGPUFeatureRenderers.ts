@@ -140,6 +140,12 @@ import {
   reprojectImageSourceWebGPU,
 } from "./WebGPUImageryReprojection.js";
 
+// ── Atmosphere ──
+import {
+  updateWebGPUGroundAtmosphere,
+  destroyWebGPUGroundAtmosphereResources,
+} from "./WebGPUGroundAtmosphereRenderer.js";
+
 // ── Scene orchestration ──
 import { WebGPUSceneRenderer } from "./WebGPUSceneRenderer.js";
 import { initPrimitiveShaders } from "./WebGPUPrimitiveShaders.js";
@@ -315,6 +321,12 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     destroy: destroyWebGPUImageryReprojectionResources,
     reproject: reprojectWebMercatorWebGPU,
     reprojectFromImage: reprojectImageSourceWebGPU,
+  });
+
+  // ── Atmosphere ──
+  context.registerFeatureRenderer(FeatureRendererKey.GROUND_ATMOSPHERE, {
+    update: updateWebGPUGroundAtmosphere,
+    destroy: destroyWebGPUGroundAtmosphereResources,
   });
 
   // ── Scene orchestration ──

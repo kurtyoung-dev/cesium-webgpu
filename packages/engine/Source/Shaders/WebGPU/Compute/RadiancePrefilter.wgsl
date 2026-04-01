@@ -1,0 +1,114 @@
+// RadiancePrefilter.wgsl — Specular Radiance Mipchain Compute Shader
+//
+// Pre-filters an environment cubemap for specular IBL using GGX importance
+// sampling. Each mip level corresponds to a different roughness value:
+//   mip 0 = roughness 0 (mirror reflection)
+//   mip N = roughness 1 (fully rough)
+//
+// Combined with the BRDF LUT, this implements the split-sum approximation:
+//   specularIBL = prefilteredRadiance(R, roughness) * (F0 * brdf.x + brdf.y)
+//
+// Dispatch per mip level: ceil(mipSize/8) × ceil(mipSize/8) × 1
+//   Run once per face × mip combination (6 faces × N mip levels).
+
+struct Params {
+  faceIndex: u32,      // 0-5: +X, -X, +Y, -Y, +Z, -Z
+  mipLevel: u32,       // Current mip level being generated
+  totalMipLevels: u32, // Total number of mip levels
+  outputSize: u32,     // Size of this mip level (width=height)
+};
+
+@group(0) @binding(0) var envCubemap: texture_cube<f32>;
+@group(0) @binding(1) var envSampler: sampler;
+@group(0) @binding(2) var outputTex: texture_storage_2d_array<rgba16float, write>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+const PI: f32 = 3.14159265358979323846;
+const NUM_SAMPLES: u32 = 512u;
+
+fn radicalInverseVdC(bits_in: u32) -> f32 {
+  var bits = bits_in;
+  bits = (bits << 16u) | (bits >> 16u);
+  bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+  bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+  bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+  bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+  return f32(bits) * 2.3283064365386963e-10;
+}
+
+fn hammersley(i: u32, N: u32) -> vec2<f32> {
+  return vec2<f32>(f32(i) / f32(N), radicalInverseVdC(i));
+}
+
+fn importanceSampleGGX(Xi: vec2<f32>, N: vec3<f32>, roughness: f32) -> vec3<f32> {
+  let a = roughness * roughness;
+  let phi = 2.0 * PI * Xi.x;
+  let cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+  let sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+  let H = vec3<f32>(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+
+  let up = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), abs(N.z) < 0.999);
+  let tangent = normalize(cross(up, N));
+  let bitangent = cross(N, tangent);
+
+  return normalize(tangent * H.x + bitangent * H.y + N * H.z);
+}
+
+// Maps a cubemap face index + UV to a world-space direction
+fn faceUvToDirection(face: u32, uv: vec2<f32>) -> vec3<f32> {
+  let u = uv.x * 2.0 - 1.0;
+  let v = uv.y * 2.0 - 1.0;
+
+  switch (face) {
+    case 0u: { return normalize(vec3<f32>( 1.0,   -v,   -u)); } // +X
+    case 1u: { return normalize(vec3<f32>(-1.0,   -v,    u)); } // -X
+    case 2u: { return normalize(vec3<f32>(   u,  1.0,    v)); } // +Y
+    case 3u: { return normalize(vec3<f32>(   u, -1.0,   -v)); } // -Y
+    case 4u: { return normalize(vec3<f32>(   u,   -v,  1.0)); } // +Z
+    default: { return normalize(vec3<f32>(  -u,   -v, -1.0)); } // -Z
+  }
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let size = params.outputSize;
+  if (gid.x >= size || gid.y >= size) {
+    return;
+  }
+
+  // Roughness maps linearly across mip levels
+  let roughness = f32(params.mipLevel) / f32(max(params.totalMipLevels - 1u, 1u));
+
+  let uv = vec2<f32>(
+    (f32(gid.x) + 0.5) / f32(size),
+    (f32(gid.y) + 0.5) / f32(size),
+  );
+
+  let N = faceUvToDirection(params.faceIndex, uv);
+  let R = N; // Assume view direction equals normal (common approximation)
+  let V = R;
+
+  var prefilteredColor = vec3<f32>(0.0);
+  var totalWeight: f32 = 0.0;
+
+  for (var i: u32 = 0u; i < NUM_SAMPLES; i = i + 1u) {
+    let Xi = hammersley(i, NUM_SAMPLES);
+    let H = importanceSampleGGX(Xi, N, roughness);
+    let L = normalize(2.0 * dot(V, H) * H - V);
+
+    let NdotL = dot(N, L);
+    if (NdotL > 0.0) {
+      // Sample environment map. Use mip 0 for mirror reflections,
+      // higher mips for rougher surfaces (if available on source).
+      let envColor = textureSampleLevel(envCubemap, envSampler, L, 0.0).rgb;
+      prefilteredColor = prefilteredColor + envColor * NdotL;
+      totalWeight = totalWeight + NdotL;
+    }
+  }
+
+  prefilteredColor = prefilteredColor / max(totalWeight, 0.001);
+
+  textureStore(outputTex, vec2<i32>(gid.xy), i32(params.faceIndex),
+               vec4<f32>(prefilteredColor, 1.0));
+}

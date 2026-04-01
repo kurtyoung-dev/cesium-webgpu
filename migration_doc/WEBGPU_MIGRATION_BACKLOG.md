@@ -173,7 +173,7 @@ Items introduced by our WebGPU additions that don't exist in upstream. 21 of 46 
 
 | ID | Issue | Severity | Effort | Details |
 |----|-------|----------|--------|---------|
-| **FORK-41** | **7 of 8 compute shaders have no dispatch callers** | 🟡 Medium | 1 day | FrustumCull, HiZPyramid, OcclusionTest, AtmosphereLUT, PointCloudSort, PointCloudLOD, GPUSortKeys — all have infrastructure but zero actual callers in the render pipeline. Only PolygonSignedDistance is dispatched. Document activation plan or wire into pipeline. |
+| **FORK-41** | **7 of 10 compute shaders awaiting activation** | 🟡 Medium | Documented | **Activation plan documented below.** 3 compute shaders now active: PolygonSignedDistance (clipping), BrdfLutGenerate (IBL one-time), IrradianceConvolution + RadiancePrefilter (IBL on env map change). 7 remaining shaders have infrastructure + fallbacks — activation deferred to when their consumer systems are wired. |
 | **FORK-45** | **Single global WASM arena shared across bridges** | 🟡 Medium | 1 day | All 7 bridges share one `Mutex<Vec<u8>>`. If two bridges run in the same frame, the second `alloc_buffer()` overwrites the first. Add per-bridge buffer slots or named arena partitions. |
 | **FORK-19** | **Zero Jasmine unit tests** for any WebGPU code | 🔴 High | 4-6 days | 83+ renderer files, 67+ shaders, 0 tests. Single largest quality risk. Start with smoke tests for core classes. |
 | **FORK-11** | `webgpuTypeHelpers.ts` has limited adoption | 🟡 Medium | 0.5 day | Most files still use raw `as any` casts. Helpers should be used consistently. |
@@ -515,9 +515,9 @@ During implementation, no additional bottlenecks were discovered beyond those al
 
 ### 🟡 Next: Visual Quality — Biggest Impact (3-4 weeks)
 9. ✅ **SSAO** — `AmbientOcclusionGenerate.wgsl` + `AmbientOcclusionModulate.wgsl` + `AmbientOcclusionEffect` (4-pass: Generate→BlurH→BlurV→Modulate). Lazily initialized via `scene.postProcessStages.ambientOcclusion.enabled = true`.
-10. **IBL Pipeline** — BRDF LUT + irradiance + radiance in WGSL compute (3-4 days)
+10. ✅ **IBL Pipeline** — Full compute-based IBL: `BrdfLutGenerate.wgsl` (external compute shader, 16×16 workgroups), `IrradianceConvolution.wgsl` (diffuse cubemap, 8×8 workgroups, 6-face dispatch), `RadiancePrefilter.wgsl` (specular mipchain, 6 mip levels × 6 faces), `WebGPUIBLPipeline.ts` orchestrator, `WebGPUImageBasedLighting.ts` with SH coefficient packing + specular environment map pipeline + dirty tracking. `ModelPBRComplete.wgsl` updated with `fresnelSchlickRoughness()` and split-sum IBL-aware ambient (diffuse + specular factors, roughness-attenuated specular, energy conservation via kD_ibl/kS_ibl). `LightUniforms` extended with `iblDiffuseFactor`, `iblSpecularFactor`, `iblMaxMipLevel`, `iblHasSH`.
 11. ✅ **Bloom** — `BrightPass.wgsl` + `GaussianBlur1D.wgsl` + `BloomComposite.wgsl` + `BloomEffect` (4-pass: BrightPass→BlurH→BlurV→Composite). Lazily initialized via `scene.postProcessStages.bloom.enabled = true`.
-12. **Ground Atmosphere** — Port `GroundAtmosphere*.glsl` → WGSL (1-2 days)
+12. ✅ **Ground Atmosphere** — `GroundAtmosphere.wgsl` (full Nishita single-scattering: ray-sphere intersection, Rayleigh+Mie optical depth, 16 primary + 4 light ray march steps, phase functions, fade-distance application). `WebGPUGroundAtmosphereRenderer.ts` packs `AtmosphereParams` struct (64 bytes) from Globe properties (inner/outer radius, scale heights, coefficients, anisotropy, light intensity, dynamic lighting mode) with dirty-check upload. `FeatureRendererKey.GROUND_ATMOSPHERE` (29) registered in `WebGPUFeatureRenderers.ts`.
 13. ✅ **Advanced Tone Mapping** — `Tonemapping.wgsl` now supports 5 operators: Reinhard (mode 0), ACES Filmic (1), Uncharted 2 Filmic (2), Modified Reinhard (3), PBR Neutral (4). Mode switchable at runtime via `pipeline.setTonemappingMode()`. Syncs with CesiumJS `Tonemapper` enum.
 14. **Shadow Casting** — Complete shadow map render pipeline (3-4 days)
 15. **Pick depth blit** (6.1 / FORK-34) — Complete picking (1-2 days)
