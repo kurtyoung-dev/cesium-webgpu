@@ -1099,6 +1099,18 @@ class Globe {
       tileProvider.oceanFoamThreshold = this.enableEnhancedOcean ? this.oceanFoamThreshold : 0.0;
       tileProvider.oceanDarkening = this.enableEnhancedOcean ? this.oceanDarkening : 0.0;
 
+      // ── Procedural cloud properties (WebGPU only) ──
+      tileProvider.showProceduralClouds = this.showProceduralClouds;
+      if (this.showProceduralClouds) {
+        tileProvider.cloudCoverage = this.cloudCoverage;
+        tileProvider.cloudLayerBottom = this.cloudLayerBottom;
+        tileProvider.cloudLayerTop = this.cloudLayerTop;
+        tileProvider.cloudWindSpeed = this.cloudWindSpeed;
+        tileProvider.cloudWindDirection = this.cloudWindDirection;
+        tileProvider.cloudDensity = this.cloudDensity;
+        tileProvider.cloudQuality = this.cloudQuality;
+      }
+
       surface.beginFrame(frameState);
     }
   }

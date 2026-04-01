@@ -677,6 +677,24 @@ class Scene {
      */
     this.postProcessStages = new PostProcessStageCollection();
 
+    /**
+     * When true and using the WebGPU renderer, screen-space reflections
+     * are applied after geometry rendering. Adds a full-screen ray-march pass.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._enableSSR = false;
+
+    /**
+     * When true and using the WebGPU renderer, GPU-computed weather particles
+     * (rain, snow, fog, hail) are rendered as an overlay.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._enableWeather = false;
+
     this._brdfLutGenerator = new BrdfLutGenerator();
 
     this._performanceDisplay = undefined;

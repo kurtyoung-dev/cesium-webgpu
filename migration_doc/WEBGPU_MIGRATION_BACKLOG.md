@@ -201,6 +201,57 @@ FORK-1 ✅ (device loss consolidation), FORK-2 ✅ (unused imports), FORK-3 ✅ 
 
 Per `.clinerules` §4, new renderer-agnostic features MUST be implemented for both backends.
 
+### GLSL Backport Analysis (April 2026)
+
+Our new WGSL shaders fall into three categories for GLSL parity:
+
+#### ✅ Already Have GLSL Equivalents — No Backport Needed
+These WGSL shaders were created as WebGPU ports of existing GLSL upstream features. The GLSL versions already exist and work in the WebGL path:
+
+| WGSL Shader | GLSL Equivalent(s) | Notes |
+|---|---|---|
+| `Tonemapping.wgsl` (5 modes) | `AcesTonemappingStage.glsl`, `ReinhardTonemapping.glsl`, `ModifiedReinhardTonemapping.glsl`, `FilmicTonemapping.glsl`, `PbrNeutralTonemapping.glsl` | GLSL has separate files per operator; WGSL consolidates into one |
+| `GroundAtmosphere.wgsl` | `GroundAtmosphere.glsl` + `AtmosphereCommon.glsl` + builtin functions | Same Nishita scattering algorithm |
+| `AmbientOcclusionGenerate.wgsl` | `AmbientOcclusionGenerate.glsl` | SSAO generation |
+| `AmbientOcclusionModulate.wgsl` | `AmbientOcclusionModulate.glsl` | SSAO application |
+| `BrightPass.wgsl` + `BloomComposite.wgsl` | `Bloom.glsl` + `BloomComposite.glsl` | Bloom post-process |
+| `GaussianBlur1D.wgsl` | `GaussianBlur1D.glsl` | Shared blur utility |
+| `DepthOfField.wgsl` | `DepthOfField.glsl` | DoF post-process |
+| `EdgeDetection.wgsl` + `Silhouette.wgsl` | `EdgeDetection.glsl` + `Silhouette*.glsl` | Entity highlighting |
+| `BrdfLutGenerate.wgsl` | `BrdfLutGeneratorFS.glsl` | IBL BRDF LUT |
+| `IrradianceConvolution.wgsl` | `ComputeIrradianceFS.glsl` | IBL diffuse |
+| `RadiancePrefilter.wgsl` | `ConvolveSpecularMapFS.glsl` | IBL specular |
+| `FXAA.wgsl` | `FXAA3_11.glsl` | Anti-aliasing |
+
+#### 🆕 New Features — WebGPU-Only, No GLSL Backport Required
+These are new capabilities that either: (a) require compute shaders (impossible in WebGL), (b) are WebGPU-specific rendering techniques, or (c) are enhancements beyond upstream's scope:
+
+| WGSL Feature | Why No GLSL Backport | Category |
+|---|---|---|
+| `ScreenSpaceReflections.wgsl` | New feature — no upstream GLSL exists. Could theoretically be GLSL but SSR is heavy; primarily benefits WebGPU users | WebGPU-first feature |
+| `ProceduralClouds.wgsl` | New volumetric ray-march — no upstream GLSL. Extremely GPU-intensive | WebGPU-first feature |
+| `WeatherParticles.wgsl` | GPU compute shader — impossible in WebGL (no compute) | Compute-only |
+| `DeferredGBuffer.wgsl` + `DeferredLighting.wgsl` | Deferred rendering — requires MRT + storage buffers not practical in WebGL | WebGPU architecture |
+| `AtmosphereLUT.wgsl` | Compute-based LUT — WebGL has per-pixel fallback in `SkyAtmosphere.wgsl` | Compute optimization |
+| `PointCloudSort.wgsl` + `PointCloudLOD.wgsl` | GPU compute — WASM/JS fallbacks exist | Compute-only |
+| `GPUSortKeys.wgsl` | GPU compute — JS comparators serve as fallback | Compute-only |
+
+#### 🔵 Enhanced Features — Go Beyond Upstream GLSL
+These WGSL enhancements in `GlobeTerrain.wgsl` add visual quality beyond what upstream `GlobeFS.glsl` provides. They're opt-in WebGPU improvements, not parity gaps:
+
+| Enhancement | Upstream GLSL Behavior | Our WGSL Enhancement | Backport? |
+|---|---|---|---|
+| **Terminator glow** | No effect at day-night boundary | Warm Gaussian glow at terminator | ❌ Would require modifying upstream `GlobeFS.glsl` |
+| **City lights emission** | Simple night alpha blending | Luminance-weighted emissive boost | ❌ Enhancement beyond upstream scope |
+| **GGX ocean specular** | Phong specular (pow 64) | GGX/Trowbridge-Reitz PBR specular | ❌ Enhancement beyond upstream scope |
+| **Fresnel ocean reflection** | No fresnel | Schlick approximation | ❌ Enhancement beyond upstream scope |
+| **Ocean foam/whitecaps** | No foam | Steepness-based foam generation | ❌ Enhancement beyond upstream scope |
+| **Subsurface scattering** | No SSS | Turquoise rim scatter on waves | ❌ Enhancement beyond upstream scope |
+| **Deep water color** | 0.7× darkening | Blend to physical deep-ocean color | ❌ Enhancement beyond upstream scope |
+
+**Conclusion:** No GLSL backports are needed. Our WGSL shaders either (a) already have upstream GLSL equivalents that work in WebGL, (b) require GPU compute (impossible in WebGL), or (c) are deliberate WebGPU-only visual enhancements.
+
+
 | ID | Gap | Severity | Effort | Details |
 |----|-----|----------|--------|---------|
 | **FORK-32** | **Multi-light `scene.lights` API** | ✅ **Resolved** | — | `scene.lights = new LightCollection()` in constructor. `frameState.lights` propagated in `updateFrameState()`. `UniformState.update()` calls `lights.pack()` → `_lightsData` + `_lightCount`. Auto-uniforms `czm_lightCount` / `czm_lightsData` in `AutomaticUniforms.js`. Full end-to-end wiring from scene → frame state → uniform state → shader. |
@@ -542,8 +593,8 @@ During implementation, no additional bottlenecks were discovered beyond those al
 21. **TAA** — Temporal anti-aliasing post-process (3-4 days)
 22. ✅ **Enhanced Night Rendering** — Lambert terminator, emissive city lights, moonlit night side, terminator glow in `GlobeTerrain.wgsl`
 23. ✅ **Enhanced Ocean Rendering** — Fresnel, GGX specular, multi-octave waves, foam/whitecaps, SSS, deep water color, sky reflection in `GlobeTerrain.wgsl`
-24. 🟡 **SSR** — `ScreenSpaceReflections.wgsl` created (ray march + binary refinement). Needs `WebGPUSSREffect.ts` pipeline wiring (2-3 days)
-25. 🟡 **GPU Weather Particles** — `WeatherParticles.wgsl` created (rain/snow/fog/hail compute). Needs `WebGPUWeatherRenderer.ts` (2-3 days)
+24. ✅ **SSR** — `ScreenSpaceReflections.wgsl` + `WebGPUSSREffect.ts` wired into `_executeEnvironmentalEffects()` in `WebGPUSceneRenderer.ts`. Activated via `scene._enableSSR = true`
+25. ✅ **GPU Weather Particles** — `WeatherParticles.wgsl` + `WebGPUWeatherRenderer.ts` wired into `_executeEnvironmentalEffects()`. Activated via `scene._enableWeather = true`
 26. **Volumetric fog/lighting** — God rays, scattering (4-5 days)
 27. **Volumetric Clouds** — Noise-based ray march on sky hemisphere (5-7 days)
 28. **Cascaded Shadow Maps** (4-5 days)

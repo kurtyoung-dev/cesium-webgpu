@@ -320,7 +320,7 @@ See `.clinerules` for full merge procedure. Key: `git checkout --theirs` then re
 | Metric | Count |
 |--------|-------|
 | WebGL shader files | 607+ |
-| WebGPU shader files (WGSL) | 75+ |
+| WebGPU shader files (WGSL) | 91+ |
 | Compute shaders | 8 |
 | Shader coverage | ~13% |
 | WebGL renderer files | 44 |

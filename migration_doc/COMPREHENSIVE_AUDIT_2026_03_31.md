@@ -34,8 +34,8 @@
 | **Shader coverage** | 🟡 ~15% of GLSL shaders have WGSL equivalents (91+ of 607) | Expected | +16 new WGSL shaders from IBL + atmosphere + post-processing + SSR + weather |
 | **Night rendering** | ✅ **ENHANCED** | High | Lambert terminator, emissive city lights, moonlit night side, terminator glow |
 | **Ocean/Water rendering** | ✅ **ENHANCED** | High | Fresnel, GGX specular, multi-octave waves, foam/whitecaps, subsurface scattering, deep water color, sky reflection |
-| **Screen-Space Reflections** | 🟡 Shader created | Medium | `ScreenSpaceReflections.wgsl` — ray march + binary refinement. Needs pipeline wiring |
-| **Weather Particle System** | 🟡 Compute shader created | Medium | `WeatherParticles.wgsl` — rain/snow/fog/hail via GPU compute. Needs renderer wiring |
+| **Screen-Space Reflections** | ✅ **Wired** | Medium | `ScreenSpaceReflections.wgsl` — ray march + binary refinement. Pipeline wired via `_executeEnvironmentalEffects()` in `WebGPUSceneRenderer.ts`. Activated by `scene._enableSSR = true` |
+| **Weather Particle System** | ✅ **Wired** | Medium | `WeatherParticles.wgsl` — rain/snow/fog/hail via GPU compute. Pipeline wired via `_executeEnvironmentalEffects()`. Activated by `scene._enableWeather = true` |
 
 ### What Works Well
 - ✅ All 7 WASM bridges have complete JS fallback implementations

@@ -32,6 +32,7 @@
  */
 
 import Pass from "../../Renderer/Pass.js";
+import FeatureRendererKey from "../FeatureRendererKey.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
@@ -422,6 +423,11 @@ export class WebGPUSceneRenderer {
     if (!config.clearGlobeDepth) {
       this._renderDepthPlane(config);
     }
+
+    // Environmental effects: procedural clouds, SSR, weather particles
+    // These are full-screen composite passes that run after all geometry
+    // but before post-processing (tonemapping, bloom, FXAA, etc.)
+    this._executeEnvironmentalEffects(config);
 
     // Post-processing (tonemapping, FXAA, etc.)
     this._runPostProcessing(config);
@@ -849,6 +855,101 @@ export class WebGPUSceneRenderer {
       context.currentRenderPassEncoder;
     if (renderPass) {
       this._depthPlane.execute(renderPass);
+    }
+  }
+
+  // --- Environmental effects (clouds, SSR, weather) ---
+
+  /**
+   * Execute environmental effects that composite onto the rendered scene.
+   * These run after all geometry passes but before post-processing.
+   * Each effect reads from the scene color/depth and composites its result.
+   *
+   * Order: Procedural Clouds → SSR → Weather Particles
+   * - Clouds are behind geometry (atmosphere-level)
+   * - SSR modifies surface reflections
+   * - Weather is in front (camera-relative particles)
+   */
+  private _executeEnvironmentalEffects(
+    config: WebGPURenderFrameConfig,
+  ): void {
+    const { scene, context } = config;
+    const globe = scene.globe;
+
+    // Get texture views needed by all environmental effects
+    const colorView: GPUTextureView | undefined = context._sceneColorView
+      ?? context.currentTextureView;
+    const depthView: GPUTextureView | undefined = context._depthStencilView;
+    const outputView: GPUTextureView | undefined = context.currentTextureView;
+
+    if (!colorView || !depthView || !outputView) {
+      return;
+    }
+
+    const frameState = scene._frameState;
+
+    // 1. Procedural Clouds — volumetric ray-marched clouds
+    if (globe?.showProceduralClouds) {
+      const cloudFR = context.getFeatureRenderer(
+        FeatureRendererKey.PROCEDURAL_CLOUDS,
+      );
+      if (cloudFR?.execute) {
+        try {
+          // End render pass so shaders can sample the depth texture
+          context.endCurrentRenderPass?.();
+          cloudFR.execute(
+            context,
+            frameState,
+            colorView,
+            depthView,
+            outputView,
+            globe,
+          );
+          context.resumeDefaultRenderPass?.();
+        } catch (e: any) {
+          context.log?.("warn", `Procedural clouds failed: ${e.message}`);
+          context.resumeDefaultRenderPass?.();
+        }
+      }
+    }
+
+    // 2. Screen-Space Reflections — ray-marched reflections
+    if (scene._enableSSR) {
+      const ssrFR = context.getFeatureRenderer(
+        FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
+      );
+      if (ssrFR?.execute) {
+        try {
+          context.endCurrentRenderPass?.();
+          ssrFR.execute(
+            context,
+            frameState,
+            colorView,
+            depthView,
+            undefined, // normalTextureView — uses placeholder
+            outputView,
+            scene,
+          );
+          context.resumeDefaultRenderPass?.();
+        } catch (e: any) {
+          context.log?.("warn", `SSR failed: ${e.message}`);
+          context.resumeDefaultRenderPass?.();
+        }
+      }
+    }
+
+    // 3. Weather Particles — GPU compute rain/snow/fog/hail
+    if (scene._enableWeather) {
+      const weatherFR = context.getFeatureRenderer(
+        FeatureRendererKey.WEATHER_PARTICLES,
+      );
+      if (weatherFR?.update) {
+        try {
+          weatherFR.update(context, frameState, scene);
+        } catch (e: any) {
+          context.log?.("warn", `Weather update failed: ${e.message}`);
+        }
+      }
     }
   }
 
