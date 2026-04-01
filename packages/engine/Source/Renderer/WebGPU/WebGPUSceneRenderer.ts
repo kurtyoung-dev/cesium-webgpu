@@ -37,6 +37,7 @@ import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
+import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 
 /**
@@ -254,6 +255,20 @@ export class WebGPUSceneRenderer {
     }
     if (this._postProcess && needsResize) {
       this._postProcess.resize(width, height);
+    }
+
+    // Sync post-processing stage state from CesiumJS PostProcessStageCollection
+    // to the WebGPU pipeline. This lazily initializes bloom/AO/DoF on first enable
+    // and syncs enable/disable + tonemapping mode each frame.
+    if (this._postProcess && config.scene?.postProcessStages) {
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
+      configureWebGPUPostProcessPipeline(
+        this._postProcess,
+        config.scene.postProcessStages,
+        device,
+        canvasFormat,
+      );
     }
 
     this._width = width;
@@ -859,8 +874,11 @@ export class WebGPUSceneRenderer {
       colorTarget?.getColorTextureView?.(0);
     const targetView: GPUTextureView | undefined = context.currentTextureView;
 
+    // Get depth texture view for depth-dependent effects (AO, DoF)
+    const depthView: GPUTextureView | undefined = context._depthStencilView;
+
     if (encoder && sourceView && targetView) {
-      this._postProcess.execute(encoder, sourceView, targetView);
+      this._postProcess.execute(encoder, sourceView, targetView, depthView);
     }
 
     // Resume the default render pass for any subsequent operations

@@ -34,7 +34,7 @@
 | 1.2 | **Multi-frustum integration testing** | `WebGPUSceneRenderer` iterates far-to-near with opaque near offset matching WebGL. Needs end-to-end testing. | 1-2 days | ⚠️ Implementation done |
 | 1.3 | **Pick depth blit** | Globe depth copy activated in `WebGPUSceneRenderer`. `PickDepth.js` async readback via `copyTextureToBuffer` + `mapAsync` of packed RGBA texture. | — | ✅ Complete |
 | 1.4 | **OIT scene integration** | Non-OIT fallback active (standard alpha blending). True OIT with MRT derived pipelines moved to Tier 3.2. | — | ✅ Safeguarded (non-OIT fallback) |
-| 1.5 | **Post-processing scene integration** | Infrastructure exists (`WebGPUPostProcessPipeline`). Requires scene FBO redirect when user adds post-process stages. Moved to Tier 3 since default has no stages. | — | ✅ Safeguarded (no-op when unused) |
+| 1.5 | **Post-processing scene integration** | **Complete.** Full pipeline with 5 tonemapping operators (Reinhard, ACES, Filmic, Modified Reinhard, PBR Neutral), FXAA, Bloom (4-pass: BrightPass→BlurH→BlurV→Composite), SSAO (4-pass: Generate→BlurH→BlurV→Modulate), Depth of Field (3-pass: BlurH→BlurV→Composite), Edge Detection, Silhouette. All effects lazily initialized on first enable via standard CesiumJS API (`scene.postProcessStages.bloom.enabled = true`). Depth texture passed for AO/DoF. `configureWebGPUPostProcessPipeline()` syncs state each frame. | — | ✅ **Complete** |
 | 1.6 | **Ground primitive scene integration** | Feature renderer registered with `createCommands`. Routing added in `GroundPrimitive.js` `updateAndQueueCommands()`. | — | ✅ Complete |
 
 **Estimated total:** ✅ Tier 1 substantially complete — remaining items are testing/validation only.
@@ -514,13 +514,22 @@ During implementation, no additional bottlenecks were discovered beyond those al
 **Also completed:** ✅ **FORK-46** — Rust `alloc_buffer()` uses `try_reserve()`, returns null on OOM. ✅ `WasmFeatureDetection.js` shared utility created in `Core/`. ✅ `WasmCullBridge.js` + `WasmSortBridge.js` modernized to ES6 class. ✅ All 7 WASM bridges have try/catch in WASM methods with JS fallback on failure.
 
 ### 🟡 Next: Visual Quality — Biggest Impact (3-4 weeks)
-9. **SSAO** — Port `AmbientOcclusion*.glsl` → WGSL (3-4 days)
+9. ✅ **SSAO** — `AmbientOcclusionGenerate.wgsl` + `AmbientOcclusionModulate.wgsl` + `AmbientOcclusionEffect` (4-pass: Generate→BlurH→BlurV→Modulate). Lazily initialized via `scene.postProcessStages.ambientOcclusion.enabled = true`.
 10. **IBL Pipeline** — BRDF LUT + irradiance + radiance in WGSL compute (3-4 days)
-11. **Bloom** — Port `Bloom*.glsl` + `GaussianBlur1D.glsl` → WGSL (2-3 days)
+11. ✅ **Bloom** — `BrightPass.wgsl` + `GaussianBlur1D.wgsl` + `BloomComposite.wgsl` + `BloomEffect` (4-pass: BrightPass→BlurH→BlurV→Composite). Lazily initialized via `scene.postProcessStages.bloom.enabled = true`.
 12. **Ground Atmosphere** — Port `GroundAtmosphere*.glsl` → WGSL (1-2 days)
-13. **Advanced Tone Mapping** — ACES, PBR Neutral, AgX → WGSL (1-2 days)
+13. ✅ **Advanced Tone Mapping** — `Tonemapping.wgsl` now supports 5 operators: Reinhard (mode 0), ACES Filmic (1), Uncharted 2 Filmic (2), Modified Reinhard (3), PBR Neutral (4). Mode switchable at runtime via `pipeline.setTonemappingMode()`. Syncs with CesiumJS `Tonemapper` enum.
 14. **Shadow Casting** — Complete shadow map render pipeline (3-4 days)
 15. **Pick depth blit** (6.1 / FORK-34) — Complete picking (1-2 days)
+
+**Also completed (March 31, 2026):**
+- ✅ **Depth of Field** — `DepthOfField.wgsl` + `DepthOfFieldEffect` (3-pass: BlurH→BlurV→Composite with depth-based circle-of-confusion)
+- ✅ **Edge Detection / Silhouette** — `EdgeDetection.wgsl` (Sobel) + `Silhouette.wgsl` (compositing)
+- ✅ **GaussianBlur1D** — Foundation shader used by Bloom, SSAO, DoF (incremental Gaussian, GPU Gems 3 Ch.40)
+- ✅ **WebGPUPostProcessEffects.ts** — `BloomEffect`, `AmbientOcclusionEffect`, `DepthOfFieldEffect` classes with own intermediate textures
+- ✅ **WebGPUPostProcessPipeline.ts** — Rewritten to orchestrate complex effects + single-pass stages. Execution order: AO → Bloom → DoF → Tonemapping → Custom → FXAA. External WGSL shaders (no more inline strings). Depth texture passed for depth-dependent effects.
+- ✅ **WebGPUPostProcessStageCollection.ts** — Split into `updateWebGPUPostProcessStages` (feature renderer sync) + `configureWebGPUPostProcessPipeline` (pipeline configuration). Lazy effect initialization on first enable. Runtime parameter updates with dirty checking.
+- ✅ **WebGPUSceneRenderer.ts** — Passes depth view to post-processing. Calls `configureWebGPUPostProcessPipeline` each frame to sync CesiumJS collection state.
 
 ### 🟡 Then: Activate Performance Infrastructure (2-3 weeks)
 16. **Render bundles** — Wire into globe pass for 50-80% CPU reduction (2-3 days)
