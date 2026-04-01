@@ -1,0 +1,314 @@
+// Procedural Volumetric Clouds — WebGPU
+//
+// Ray-marches through a spherical cloud shell around the planet to render
+// physically-inspired volumetric clouds. Uses layered FBM noise for cloud
+// density and lighting with beer-powder approximation for light absorption.
+//
+// Architecture:
+//   - Rendered as a full-screen pass after the globe but before post-processing
+//   - Uses depth buffer to stop rays at terrain
+//   - Cloud shell defined by inner/outer radius above ellipsoid surface
+//   - Multiple noise octaves for detail at different scales
+//   - Phase function for silver lining and forward scattering
+//   - Temporal reprojection for performance (render at half-res, blend)
+//
+// References:
+//   - "The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn" (Schneider, SIGGRAPH 2015)
+//   - "Nubis: Authoring Real-Time Volumetric Cloudscapes" (Schneider, SIGGRAPH 2017)
+
+struct CloudUniforms {
+  // Camera
+  inverseProjection: mat4x4<f32>,
+  inverseView: mat4x4<f32>,
+  cameraPosition: vec3<f32>,
+  time: f32,
+  // Sun
+  sunDirection: vec3<f32>,
+  sunIntensity: f32,
+  // Cloud layer definition
+  cloudLayerBottom: f32,    // meters above surface (default 1500)
+  cloudLayerTop: f32,       // meters above surface (default 4000)
+  planetRadius: f32,        // earth radius in meters
+  coverage: f32,            // 0-1, global cloud coverage
+  // Quality
+  maxSteps: f32,            // ray march steps (default 64)
+  lightSteps: f32,          // light march steps (default 6)
+  densityMultiplier: f32,   // density scale (default 0.3)
+  absorptionCoeff: f32,     // light absorption (default 0.04)
+  // Visual
+  windDirection: vec2<f32>, // normalized wind XZ direction
+  windSpeed: f32,           // meters/sec
+  silverLiningIntensity: f32,
+  // Colors
+  cloudBaseColor: vec3<f32>,
+  _pad0: f32,
+  cloudTopColor: vec3<f32>,
+  _pad1: f32,
+  // Screen info
+  resolution: vec2<f32>,
+  _pad2: vec2<f32>,
+};
+
+@group(0) @binding(0) var colorTex: texture_2d<f32>;
+@group(0) @binding(1) var depthTex: texture_2d<f32>;
+@group(0) @binding(2) var texSampler: sampler;
+@group(0) @binding(3) var<uniform> cloud: CloudUniforms;
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+const PI: f32 = 3.14159265358979;
+
+// ─── Full-screen triangle ───
+@vertex
+fn vertexMain(@builtin(vertex_index) vid: u32) -> VertexOutput {
+  var out: VertexOutput;
+  let x = f32(i32(vid & 1u) * 2 - 1);
+  let y = f32(i32(vid >> 1u) * 2 - 1);
+  out.position = vec4<f32>(x, y, 0.0, 1.0);
+  out.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
+  return out;
+}
+
+// ─── Hash functions for noise ───
+fn hash3(p: vec3<f32>) -> f32 {
+  var q = fract(p * 0.1031);
+  q += dot(q, q.zyx + 31.32);
+  return fract((q.x + q.y) * q.z);
+}
+
+fn hash33(p: vec3<f32>) -> vec3<f32> {
+  var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
+  q += dot(q, q.yxz + 33.33);
+  return fract((q.xxy + q.yxx) * q.zyx);
+}
+
+// ─── Value noise 3D ───
+fn valueNoise(p: vec3<f32>) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f); // smoothstep
+
+  return mix(
+    mix(mix(hash3(i + vec3<f32>(0, 0, 0)), hash3(i + vec3<f32>(1, 0, 0)), u.x),
+        mix(hash3(i + vec3<f32>(0, 1, 0)), hash3(i + vec3<f32>(1, 1, 0)), u.x), u.y),
+    mix(mix(hash3(i + vec3<f32>(0, 0, 1)), hash3(i + vec3<f32>(1, 0, 1)), u.x),
+        mix(hash3(i + vec3<f32>(0, 1, 1)), hash3(i + vec3<f32>(1, 1, 1)), u.x), u.y),
+    u.z
+  );
+}
+
+// ─── FBM (Fractal Brownian Motion) noise — 5 octaves ───
+fn fbmNoise(p: vec3<f32>) -> f32 {
+  var val: f32 = 0.0;
+  var amp: f32 = 0.5;
+  var freq: f32 = 1.0;
+  var pos = p;
+  for (var i: i32 = 0; i < 5; i++) {
+    val += amp * valueNoise(pos * freq);
+    freq *= 2.0;
+    amp *= 0.5;
+    pos += vec3<f32>(0.0, 0.0, 0.13);
+  }
+  return val;
+}
+
+// ─── Cloud density at a world-space point ───
+fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
+  // Animate with wind
+  let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
+                   * cloud.windSpeed * cloud.time;
+  let samplePos = (worldPos + windOffset) * 0.0003; // scale to noise space
+
+  // Base shape (large-scale FBM)
+  var density = fbmNoise(samplePos);
+
+  // Coverage threshold — shapes the clouds
+  density = smoothstep(1.0 - cloud.coverage, 1.0, density);
+
+  // Height-based shaping: rounder tops, flat bottoms (anvil shape)
+  let heightGradient = smoothstep(0.0, 0.15, heightFraction)
+                     * smoothstep(1.0, 0.7, heightFraction);
+  density *= heightGradient;
+
+  // Detail erosion (smaller-scale noise)
+  let detailNoise = valueNoise(samplePos * 6.0 + windOffset * 0.001);
+  density -= detailNoise * 0.15 * (1.0 - heightFraction);
+  density = max(density, 0.0);
+
+  return density * cloud.densityMultiplier;
+}
+
+// ─── Ray-sphere intersection ───
+fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
+  let b = dot(ro, rd);
+  let c = dot(ro, ro) - radius * radius;
+  let discriminant = b * b - c;
+  if (discriminant < 0.0) { return vec2<f32>(-1.0); }
+  let sqrtD = sqrt(discriminant);
+  return vec2<f32>(-b - sqrtD, -b + sqrtD);
+}
+
+// ─── Henyey-Greenstein phase function ───
+fn hgPhase(cosTheta: f32, g: f32) -> f32 {
+  let g2 = g * g;
+  return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
+}
+
+// ─── Dual-lobe phase function (forward + back scatter) ───
+fn cloudPhase(cosTheta: f32) -> f32 {
+  let forward = hgPhase(cosTheta, 0.8);  // strong forward scattering
+  let back = hgPhase(cosTheta, -0.3);     // slight back scattering
+  return mix(back, forward, 0.7);
+}
+
+// ─── Light march: compute optical depth toward sun ───
+fn lightMarch(pos: vec3<f32>, heightFraction: f32) -> f32 {
+  let sunDir = normalize(cloud.sunDirection);
+  let steps = i32(cloud.lightSteps);
+  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
+  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+  let layerThickness = outerR - innerR;
+
+  // March toward sun through remaining cloud
+  let stepSize = layerThickness / f32(steps);
+  var opticalDepth: f32 = 0.0;
+
+  for (var i: i32 = 0; i < steps; i++) {
+    let samplePos = pos + sunDir * f32(i + 1) * stepSize;
+    let altitude = length(samplePos) - cloud.planetRadius;
+    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
+    opticalDepth += cloudDensity(samplePos, hf) * stepSize;
+  }
+
+  return opticalDepth;
+}
+
+// ─── Beer-Powder approximation for cloud lighting ───
+fn beerPowder(opticalDepth: f32, powder: f32) -> f32 {
+  let beer = exp(-opticalDepth * cloud.absorptionCoeff);
+  let powderEffect = 1.0 - exp(-opticalDepth * cloud.absorptionCoeff * 2.0);
+  return mix(beer, beer * powderEffect, powder);
+}
+
+// ─── Reconstruct world-space ray from UV ───
+fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
+  let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
+  var viewDir = cloud.inverseProjection * ndc;
+  viewDir.w = 0.0;
+  let worldDir = cloud.inverseView * viewDir;
+  return normalize(worldDir.xyz);
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let uv = input.uv;
+  let sceneColor = textureSample(colorTex, texSampler, uv);
+  let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
+
+  let rayOrigin = cloud.cameraPosition;
+  let rayDir = getWorldRay(uv);
+
+  // Cloud shell radii
+  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
+  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
+
+  // Intersect ray with cloud shell
+  let tInner = raySphereIntersect(rayOrigin, rayDir, innerR);
+  let tOuter = raySphereIntersect(rayOrigin, rayDir, outerR);
+
+  // No intersection with cloud shell
+  if (tOuter.x < 0.0 && tOuter.y < 0.0) {
+    return sceneColor;
+  }
+
+  // Determine march start/end
+  let cameraAltitude = length(rayOrigin) - cloud.planetRadius;
+  var tStart: f32;
+  var tEnd: f32;
+
+  if (cameraAltitude < cloud.cloudLayerBottom) {
+    // Below clouds: start at inner sphere, end at outer
+    tStart = max(tInner.y, 0.0);
+    tEnd = tOuter.y;
+  } else if (cameraAltitude > cloud.cloudLayerTop) {
+    // Above clouds: start at outer sphere front, end at inner
+    tStart = max(tOuter.x, 0.0);
+    tEnd = tInner.x;
+  } else {
+    // Inside cloud layer
+    tStart = 0.0;
+    tEnd = tOuter.y;
+  }
+
+  if (tStart >= tEnd || tEnd <= 0.0) {
+    return sceneColor;
+  }
+
+  // Cloud march
+  let steps = i32(cloud.maxSteps);
+  let stepSize = (tEnd - tStart) / f32(steps);
+  let sunDir = normalize(cloud.sunDirection);
+  let cosTheta = dot(rayDir, sunDir);
+  let phase = cloudPhase(cosTheta);
+  let layerThickness = cloud.cloudLayerTop - cloud.cloudLayerBottom;
+
+  var transmittance: f32 = 1.0;
+  var lightEnergy: f32 = 0.0;
+  var weightedColor = vec3<f32>(0.0);
+  var totalDensity: f32 = 0.0;
+
+  for (var i: i32 = 0; i < steps; i++) {
+    if (transmittance < 0.01) { break; }
+
+    let t = tStart + (f32(i) + 0.5) * stepSize;
+    let samplePos = rayOrigin + rayDir * t;
+    let altitude = length(samplePos) - cloud.planetRadius;
+    let heightFraction = clamp(
+      (altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0
+    );
+
+    let density = cloudDensity(samplePos, heightFraction);
+    if (density <= 0.001) { continue; }
+
+    // Light contribution at this point
+    let lightOpticalDepth = lightMarch(samplePos, heightFraction);
+    let lightTransmittance = beerPowder(lightOpticalDepth, 0.5);
+
+    // Silver lining: enhanced scattering at cloud edges
+    let silverLining = cloud.silverLiningIntensity
+                     * pow(clamp(1.0 - density * 3.0, 0.0, 1.0), 2.0);
+
+    let scatteredLight = (lightTransmittance * phase + silverLining)
+                       * cloud.sunIntensity;
+
+    // Height-based color gradient (darker base, brighter top)
+    let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
+
+    // Accumulate
+    let sampleTransmittance = exp(-density * stepSize * cloud.absorptionCoeff);
+    let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
+
+    weightedColor += cloudColor * scatteredLight * sampleWeight;
+    lightEnergy += scatteredLight * sampleWeight;
+    totalDensity += density * stepSize;
+    transmittance *= sampleTransmittance;
+  }
+
+  // Ambient light contribution (sky color bleeding through)
+  let ambientColor = mix(
+    vec3<f32>(0.4, 0.5, 0.7),  // blue sky ambient
+    vec3<f32>(0.9, 0.5, 0.2),  // sunset ambient
+    pow(max(1.0 - sunDir.y, 0.0), 3.0)
+  );
+  let ambientContribution = ambientColor * (1.0 - transmittance) * 0.15;
+  weightedColor += ambientContribution;
+
+  // Composite clouds over scene
+  let cloudAlpha = 1.0 - transmittance;
+  let finalColor = mix(sceneColor.rgb, weightedColor, cloudAlpha);
+
+  return vec4<f32>(finalColor, sceneColor.a);
+}

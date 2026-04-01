@@ -300,6 +300,136 @@ class Globe {
      */
     this.showWaterEffect = true;
 
+    // ═══════════════════════════════════════════════════════════════
+    // Enhanced rendering configuration (WebGPU)
+    // These properties are opt-in and only take effect in the WebGPU
+    // renderer. They have no effect on the WebGL path.
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * When true, night-side imagery layers with nightAlpha > dayAlpha
+     * are treated as emissive city lights, boosted proportional to
+     * their luminance. Only active with enableLighting.
+     * @type {boolean}
+     * @default true
+     */
+    this.enableNightLights = true;
+
+    /**
+     * Multiplier for night-side city light emission brightness.
+     * Higher values = brighter city lights. 0 = no emission.
+     * @type {number}
+     * @default 2.5
+     */
+    this.nightIntensity = 2.5;
+
+    /**
+     * When true, enhanced ocean rendering is active: Fresnel reflection,
+     * GGX specular, multi-octave wave normals, foam/whitecaps, subsurface
+     * scattering, and deep water color.
+     * @type {boolean}
+     * @default true
+     */
+    this.enableEnhancedOcean = true;
+
+    /**
+     * Deep ocean water color (RGB). Blended with imagery on water surfaces.
+     * @type {object}
+     * @default { x: 0.008, y: 0.045, z: 0.12 }
+     */
+    this.oceanDeepColor = { x: 0.008, y: 0.045, z: 0.12 };
+
+    /**
+     * Fresnel exponent controlling how reflective water is at grazing angles.
+     * Higher values = more reflective at shallow viewing angles.
+     * @type {number}
+     * @default 5.0
+     */
+    this.oceanFresnelPower = 5.0;
+
+    /**
+     * Base reflectivity of water at normal incidence (F0).
+     * Physical water is 0.02-0.04. Higher for stylized water.
+     * @type {number}
+     * @default 0.04
+     */
+    this.oceanReflectivity = 0.04;
+
+    /**
+     * Wave steepness threshold for generating foam/whitecaps.
+     * Lower values = more foam. Range 0-1.
+     * @type {number}
+     * @default 0.35
+     */
+    this.oceanFoamThreshold = 0.35;
+
+    /**
+     * How much the water surface darkens imagery beneath it.
+     * 1.0 = no darkening, 0.0 = fully dark. Default 0.6.
+     * @type {number}
+     * @default 0.6
+     */
+    this.oceanDarkening = 0.6;
+
+    /**
+     * When true, renders volumetric procedural clouds using ray marching.
+     * WebGPU only. Significant GPU cost — use cloudQuality to control.
+     * @type {boolean}
+     * @default false
+     */
+    this.showProceduralClouds = false;
+
+    /**
+     * Global cloud coverage factor (0 = clear sky, 1 = fully overcast).
+     * @type {number}
+     * @default 0.5
+     */
+    this.cloudCoverage = 0.5;
+
+    /**
+     * Bottom altitude of the cloud layer in meters above sea level.
+     * @type {number}
+     * @default 1500.0
+     */
+    this.cloudLayerBottom = 1500.0;
+
+    /**
+     * Top altitude of the cloud layer in meters above sea level.
+     * @type {number}
+     * @default 4000.0
+     */
+    this.cloudLayerTop = 4000.0;
+
+    /**
+     * Cloud wind speed in meters per second for animation.
+     * @type {number}
+     * @default 15.0
+     */
+    this.cloudWindSpeed = 15.0;
+
+    /**
+     * Cloud wind direction as a 2D vector (x=east, y=north).
+     * Will be normalized internally.
+     * @type {object}
+     * @default { x: 0.7, y: 0.3 }
+     */
+    this.cloudWindDirection = { x: 0.7, y: 0.3 };
+
+    /**
+     * Cloud density multiplier. Higher = thicker/more opaque clouds.
+     * @type {number}
+     * @default 0.3
+     */
+    this.cloudDensity = 0.3;
+
+    /**
+     * Number of ray march steps for cloud rendering (32-128).
+     * Higher = better quality but slower. 64 is good for most cases.
+     * @type {number}
+     * @default 64
+     */
+    this.cloudQuality = 64;
+
     /**
      * True if primitives such as billboards, polylines, labels, etc. should be depth-tested
      * against the terrain surface, or false if such primitives should always be drawn on top
@@ -958,6 +1088,16 @@ class Globe {
       tileProvider.undergroundColorAlphaByDistance =
         this._undergroundColorAlphaByDistance;
       tileProvider.lambertDiffuseMultiplier = this.lambertDiffuseMultiplier;
+
+      // ── Enhanced WebGPU rendering properties ──
+      tileProvider.enableNightLights = this.enableNightLights;
+      tileProvider.nightIntensity = this.enableNightLights ? this.nightIntensity : 0.0;
+      tileProvider.enableEnhancedOcean = this.enableEnhancedOcean;
+      tileProvider.oceanDeepColor = this.enableEnhancedOcean ? this.oceanDeepColor : undefined;
+      tileProvider.oceanFresnelPower = this.enableEnhancedOcean ? this.oceanFresnelPower : 0.0;
+      tileProvider.oceanReflectivity = this.enableEnhancedOcean ? this.oceanReflectivity : 0.0;
+      tileProvider.oceanFoamThreshold = this.enableEnhancedOcean ? this.oceanFoamThreshold : 0.0;
+      tileProvider.oceanDarkening = this.enableEnhancedOcean ? this.oceanDarkening : 0.0;
 
       surface.beginFrame(frameState);
     }

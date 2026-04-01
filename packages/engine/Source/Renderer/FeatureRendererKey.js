@@ -72,13 +72,25 @@ const FeatureRendererKey = {
   // ── Atmosphere ──
   GROUND_ATMOSPHERE: 29,
 
+  // ── Screen-space effects ──
+  SCREEN_SPACE_REFLECTIONS: 30,
+
+  // ── Weather ──
+  WEATHER_PARTICLES: 31,
+
+  // ── Procedural environment ──
+  PROCEDURAL_CLOUDS: 32,
+
+  // ── Deferred rendering ──
+  DEFERRED_GBUFFER: 33,
+
   /**
    * Total number of feature renderer keys (excluding COUNT itself).
    * Must equal the highest enum value + 1. Update when adding new keys.
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 30,
+  COUNT: 34,
 };
 
 export default Object.freeze(FeatureRendererKey);

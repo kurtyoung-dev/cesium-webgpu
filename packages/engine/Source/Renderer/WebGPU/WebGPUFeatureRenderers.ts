@@ -146,6 +146,26 @@ import {
   destroyWebGPUGroundAtmosphereResources,
 } from "./WebGPUGroundAtmosphereRenderer.js";
 
+// ── Screen-space effects ──
+import {
+  executeSSR,
+  destroySSRResources,
+} from "./WebGPUSSREffect.js";
+
+// ── Weather ──
+import {
+  updateWeatherParticles,
+  getWeatherParticleBuffer,
+  getWeatherMaxParticles,
+  destroyWeatherResources,
+} from "./WebGPUWeatherRenderer.js";
+
+// ── Procedural clouds ──
+import {
+  executeProceduralClouds,
+  destroyProceduralCloudResources,
+} from "./WebGPUProceduralCloudRenderer.js";
+
 // ── Scene orchestration ──
 import { WebGPUSceneRenderer } from "./WebGPUSceneRenderer.js";
 import { initPrimitiveShaders } from "./WebGPUPrimitiveShaders.js";
@@ -327,6 +347,26 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_ATMOSPHERE, {
     update: updateWebGPUGroundAtmosphere,
     destroy: destroyWebGPUGroundAtmosphereResources,
+  });
+
+  // ── Screen-space effects ──
+  context.registerFeatureRenderer(FeatureRendererKey.SCREEN_SPACE_REFLECTIONS, {
+    execute: executeSSR,
+    destroy: destroySSRResources,
+  });
+
+  // ── Weather ──
+  context.registerFeatureRenderer(FeatureRendererKey.WEATHER_PARTICLES, {
+    update: updateWeatherParticles,
+    getParticleBuffer: getWeatherParticleBuffer,
+    getMaxParticles: getWeatherMaxParticles,
+    destroy: destroyWeatherResources,
+  });
+
+  // ── Procedural clouds ──
+  context.registerFeatureRenderer(FeatureRendererKey.PROCEDURAL_CLOUDS, {
+    execute: executeProceduralClouds,
+    destroy: destroyProceduralCloudResources,
   });
 
   // ── Scene orchestration ──
