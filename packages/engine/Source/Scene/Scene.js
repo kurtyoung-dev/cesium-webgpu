@@ -677,23 +677,13 @@ class Scene {
      */
     this.postProcessStages = new PostProcessStageCollection();
 
-    /**
-     * When true and using the WebGPU renderer, screen-space reflections
-     * are applied after geometry rendering. Adds a full-screen ray-march pass.
-     * @type {boolean}
-     * @default false
-     * @private
-     */
+    // ── WebGPU environmental effects (opt-in) ──
     this._enableSSR = false;
-
-    /**
-     * When true and using the WebGPU renderer, GPU-computed weather particles
-     * (rain, snow, fog, hail) are rendered as an overlay.
-     * @type {boolean}
-     * @default false
-     * @private
-     */
     this._enableWeather = false;
+    this._weatherType = 0;
+    this._weatherIntensity = 0.5;
+    this._weatherWindSpeed = 10.0;
+    this._weatherWindDirection = { x: 0.7, y: 0.3 };
 
     this._brdfLutGenerator = new BrdfLutGenerator();
 
@@ -1725,6 +1715,114 @@ class Scene {
    */
   get msaaSupported() {
     return this._context.msaa;
+  }
+
+  /**
+   * When true and using the WebGPU renderer, screen-space reflections (SSR)
+   * are composited after geometry rendering. Adds a full-screen ray-march pass.
+   * Has no effect on the WebGL path.
+   *
+   * @type {boolean}
+   * @default false
+   *
+   * @example
+   * // Enable screen-space reflections (WebGPU only)
+   * scene.enableSSR = true;
+   */
+  get enableSSR() {
+    return this._enableSSR;
+  }
+
+  set enableSSR(value) {
+    this._enableSSR = value;
+  }
+
+  /**
+   * When true and using the WebGPU renderer, GPU-computed weather particles
+   * (rain, snow, fog, hail) are rendered as a camera-relative overlay.
+   * Has no effect on the WebGL path. Configure weather type and intensity
+   * with {@link Scene#weatherType} and {@link Scene#weatherIntensity}.
+   *
+   * @type {boolean}
+   * @default false
+   *
+   * @example
+   * // Enable rain
+   * scene.enableWeather = true;
+   * scene.weatherType = 0; // 0=rain, 1=snow, 2=fog, 3=hail
+   * scene.weatherIntensity = 0.7;
+   */
+  get enableWeather() {
+    return this._enableWeather;
+  }
+
+  set enableWeather(value) {
+    this._enableWeather = value;
+  }
+
+  /**
+   * The type of weather particles to render when {@link Scene#enableWeather}
+   * is true. Only active with the WebGPU renderer.
+   * <ul>
+   *   <li>0 — Rain</li>
+   *   <li>1 — Snow</li>
+   *   <li>2 — Fog particles</li>
+   *   <li>3 — Hail</li>
+   * </ul>
+   *
+   * @type {number}
+   * @default 0
+   */
+  get weatherType() {
+    return this._weatherType;
+  }
+
+  set weatherType(value) {
+    this._weatherType = value;
+  }
+
+  /**
+   * Weather particle density/intensity (0.0 = none, 1.0 = maximum).
+   * Controls how many particles are emitted per frame.
+   *
+   * @type {number}
+   * @default 0.5
+   */
+  get weatherIntensity() {
+    return this._weatherIntensity;
+  }
+
+  set weatherIntensity(value) {
+    this._weatherIntensity = Math.max(0.0, Math.min(1.0, value));
+  }
+
+  /**
+   * Wind speed in meters/second applied to weather particles.
+   *
+   * @type {number}
+   * @default 10.0
+   */
+  get weatherWindSpeed() {
+    return this._weatherWindSpeed;
+  }
+
+  set weatherWindSpeed(value) {
+    this._weatherWindSpeed = value;
+  }
+
+  /**
+   * Wind direction as a 2D vector {x, y} where x=east, y=north.
+   * Normalized internally by the weather renderer.
+   *
+   * @type {object}
+   * @default { x: 0.7, y: 0.3 }
+   */
+  get weatherWindDirection() {
+    return this._weatherWindDirection;
+  }
+
+  set weatherWindDirection(value) {
+    this._weatherWindDirection = value;
   }
 
   /**
