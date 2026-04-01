@@ -540,11 +540,13 @@ During implementation, no additional bottlenecks were discovered beyond those al
 
 ### 🟢 Medium Term: Advanced Features (4-6 weeks)
 21. **TAA** — Temporal anti-aliasing post-process (3-4 days)
-22. **Depth of Field** — Post-process shader (2-3 days)
-23. **SSR** — Screen-space reflections (3-4 days)
-24. **Volumetric fog/lighting** — God rays, scattering (4-5 days)
-25. **GPU Particle System** — Compute-based particles (3-5 days)
-26. **Cascaded Shadow Maps** (4-5 days)
+22. ✅ **Enhanced Night Rendering** — Lambert terminator, emissive city lights, moonlit night side, terminator glow in `GlobeTerrain.wgsl`
+23. ✅ **Enhanced Ocean Rendering** — Fresnel, GGX specular, multi-octave waves, foam/whitecaps, SSS, deep water color, sky reflection in `GlobeTerrain.wgsl`
+24. 🟡 **SSR** — `ScreenSpaceReflections.wgsl` created (ray march + binary refinement). Needs `WebGPUSSREffect.ts` pipeline wiring (2-3 days)
+25. 🟡 **GPU Weather Particles** — `WeatherParticles.wgsl` created (rain/snow/fog/hail compute). Needs `WebGPUWeatherRenderer.ts` (2-3 days)
+26. **Volumetric fog/lighting** — God rays, scattering (4-5 days)
+27. **Volumetric Clouds** — Noise-based ray march on sky hemisphere (5-7 days)
+28. **Cascaded Shadow Maps** (4-5 days)
 
 ### 📋 Ongoing
 27. **ES6 modernization** — Incremental as files are touched

@@ -31,7 +31,11 @@
 | **Missing IBL pipeline** | ✅ **FIXED** | High | `BrdfLutGenerate.wgsl` (compute), `IrradianceConvolution.wgsl`, `RadiancePrefilter.wgsl`, `WebGPUIBLPipeline.ts` orchestrator, `WebGPUImageBasedLighting.ts` with SH + specular, `ModelPBRComplete.wgsl` IBL-aware ambient |
 | **Missing ground atmosphere** | ✅ **FIXED** | Medium | `GroundAtmosphere.wgsl` (Nishita scattering), `WebGPUGroundAtmosphereRenderer.ts`, `FeatureRendererKey.GROUND_ATMOSPHERE` registered |
 | **Performance infrastructure** | ✅ **ACTIVATED** | Medium | `WebGPUPerformanceManager.ts` orchestrates all 7 systems via `beginFrame()/endFrame()` in scene renderer |
-| **Shader coverage** | 🟡 ~14% of GLSL shaders have WGSL equivalents (87+ of 607) | Expected | +12 new WGSL shaders from IBL + atmosphere + post-processing |
+| **Shader coverage** | 🟡 ~15% of GLSL shaders have WGSL equivalents (91+ of 607) | Expected | +16 new WGSL shaders from IBL + atmosphere + post-processing + SSR + weather |
+| **Night rendering** | ✅ **ENHANCED** | High | Lambert terminator, emissive city lights, moonlit night side, terminator glow |
+| **Ocean/Water rendering** | ✅ **ENHANCED** | High | Fresnel, GGX specular, multi-octave waves, foam/whitecaps, subsurface scattering, deep water color, sky reflection |
+| **Screen-Space Reflections** | 🟡 Shader created | Medium | `ScreenSpaceReflections.wgsl` — ray march + binary refinement. Needs pipeline wiring |
+| **Weather Particle System** | 🟡 Compute shader created | Medium | `WeatherParticles.wgsl` — rain/snow/fog/hail via GPU compute. Needs renderer wiring |
 
 ### What Works Well
 - ✅ All 7 WASM bridges have complete JS fallback implementations
@@ -558,4 +562,106 @@ OctahedralProjection*.glsl → MISSING (IBL support)
 
 ---
 
-*This audit should be used to prioritize the next development phases. The most impactful work is (1) fixing WASM/compute fallback gaps, (2) adding IBL + SSAO + bloom for visual quality, and (3) activating the already-built performance infrastructure.*
+---
+
+## Appendix C: Weather & Environmental Effects — Industry Comparison
+
+### Weather Effects Available in Major Engines
+
+| Effect | Babylon.js | Three.js | Unreal 5 | Unity URP | Our Status | CesiumJS Relevance |
+|--------|-----------|----------|----------|-----------|------------|-------------------|
+| **Rain (particle)** | ✅ GPU particles | ✅ via GPUComputationRenderer | ✅ Niagara | ✅ VFX Graph | 🟡 `WeatherParticles.wgsl` created | 🔴 High — Flight sim, city visualization, disaster simulation |
+| **Snow (particle)** | ✅ GPU particles | ✅ via GPUComputationRenderer | ✅ Niagara | ✅ VFX Graph | 🟡 `WeatherParticles.wgsl` (type=1) | 🔴 High — Polar/mountain visualization, seasonal modeling |
+| **Fog (volumetric)** | ✅ VolumetricScattering | ✅ FogExp2 + VolumetricFog | ✅ ExponentialHeightFog | ✅ Volume fog | ⚠️ Basic distance fog only | 🔴 High — Terrain realism, airport visibility |
+| **Volumetric Clouds** | ✅ CloudProcedural | ✅ Community addons | ✅ Volumetric Clouds | ✅ URP Clouds | ❌ Missing | 🟡 Medium — Weather visualization, atmosphere |
+| **God Rays / Light Shafts** | ✅ VolumetricLightScattering | ✅ GodRaysPass | ✅ Light Shafts | ✅ | ❌ Missing | 🟡 Medium — Dramatic lighting through clouds |
+| **Lightning** | ⚠️ Custom | ⚠️ Custom | ✅ | ⚠️ Custom | ❌ Missing | 🟢 Low — Weather event visualization |
+| **Wind (vegetation sway)** | ✅ TreeShaking | ✅ WindShader | ✅ World Position Offset | ✅ | ❌ Missing | 🟢 Low — Vegetation rendering not a CesiumJS focus |
+| **Wet surfaces (rain)** | ✅ PBR wetness | ✅ Wetness shader | ✅ Weather layer | ✅ | ❌ Missing | 🟡 Medium — Realistic surface appearance after rain |
+| **Puddle accumulation** | ⚠️ Custom | ⚠️ Custom | ✅ | ⚠️ Custom | ❌ Missing | 🟢 Low — Close-up terrain realism |
+| **Aurora Borealis** | ⚠️ Custom | ⚠️ Custom | ⚠️ Custom | ⚠️ Custom | ❌ Missing | 🟡 Medium — Polar region atmosphere |
+| **Sandstorm / Dust** | ⚠️ Custom | ⚠️ Custom | ✅ Niagara | ⚠️ Custom | ❌ Missing | 🟡 Medium — Desert/Mars visualization |
+| **Hail** | ❌ | ❌ | ⚠️ Custom | ❌ | 🟡 `WeatherParticles.wgsl` (type=3) | 🟢 Low — Severe weather simulation |
+
+### Weather Implementation Approaches
+
+| Approach | GPU Cost | Quality | Complexity | Best For |
+|----------|---------|---------|------------|----------|
+| **CPU Billboard Particles** (current CesiumJS) | Low | Low | Simple | Existing particle system — limited by CPU→GPU transfer |
+| **GPU Compute Particles** (our `WeatherParticles.wgsl`) | Medium | High | Medium | Rain, snow, hail — millions of particles at 60fps |
+| **Screen-Space Effects** | Low | Medium | Medium | Rain streaks, snow flurries — post-process overlay |
+| **Volumetric Ray March** | High | Very High | Complex | Fog, clouds, god rays — physically accurate but expensive |
+| **Mesh-Based Clouds** | Low | Low-Medium | Simple | Cloud layers as billboard/mesh — fast but limited |
+| **Noise-Based Procedural** | Medium | High | Medium | Cloud generation, aurora — procedural textures on sky dome |
+
+### Our Weather Implementation Status
+
+#### ✅ Created: `WeatherParticles.wgsl` (GPU Compute Shader)
+- **4 weather types**: Rain (type 0), Snow (type 1), Fog particles (type 2), Hail (type 3)
+- **3 compute passes**: `resetCounters` → `updateParticles` → `emitParticles`
+- **Features**: PCG random generation, turbulence noise, gravity/wind simulation, ground collision, camera-relative spawn volume, distance fade, type-specific particle behavior
+- **Capacity**: Configurable max particles (default 100K), 256-thread workgroups
+- **Status**: Shader complete, needs `WebGPUWeatherRenderer.ts` to wire into pipeline
+
+#### ❌ Not Yet Implemented (Prioritized)
+
+| Effect | Approach | Effort | Priority | Prerequisite |
+|--------|----------|--------|----------|-------------|
+| **Volumetric Fog** | Ray-march compute shader | 4-5 days | 🟡 P1 | Depth buffer access in compute |
+| **Volumetric Clouds** | Noise-based ray march on sky hemisphere | 5-7 days | 🟡 P1 | Sky dome geometry, 3D noise texture |
+| **God Rays** | Radial blur post-process from sun position | 2-3 days | 🟡 P1 | Sun screen-space position, depth buffer |
+| **Wet Surfaces** | PBR roughness reduction + darkening when raining | 1-2 days | 🟢 P2 | Weather state flag in uniforms |
+| **Aurora Borealis** | Procedural shader on sky dome (noise + curtain function) | 2-3 days | 🟢 P2 | Sky dome integration |
+| **Sandstorm/Dust** | GPU particles + distance fog tinting | 2-3 days | 🟢 P2 | `WeatherParticles.wgsl` renderer |
+
+### CesiumJS-Specific Weather Considerations
+
+1. **Planetary Scale**: Weather effects must work at global scale — rain in New York shouldn't render over London. Need geographic weather zones.
+2. **Altitude Awareness**: Snow should appear above freezing altitude, rain below. Cloud layers at correct altitudes (cumulus ~2000m, cirrus ~8000m).
+3. **Time-of-Day Integration**: Weather interacts with day/night cycle — rain on the night side should be visible against city lights.
+4. **Terrain Interaction**: Rain particles should collide with actual terrain elevation, not a flat plane.
+5. **Performance at Globe Scale**: Weather must fade out at orbital zoom levels — waste of GPU at 100km+ altitude.
+6. **Data-Driven Weather**: Future integration with weather APIs (OpenWeatherMap, NOAA) for real-time weather visualization.
+
+---
+
+## Appendix D: Night & Ocean Rendering Enhancement Details
+
+### Night Rendering Improvements (April 2026)
+
+**Previous state**: Simple `smoothstep(-0.1, 0.1, sunAngle)` for day/night fade. Night side was just "darker imagery" — no city lights emission, no terminator effects.
+
+**New implementation in `GlobeTerrain.wgsl`**:
+
+| Feature | Before | After | Visual Impact |
+|---------|--------|-------|---------------|
+| **Terminator shape** | `smoothstep(-0.1, 0.1)` — soft | `NdotL * 5.0 + 0.5` — sharp, matches GLSL | Accurate day-night boundary |
+| **Night-side darkness** | 0.15 base + imagery blend | 0.025 moonlight ambient, 0.04 base color | Dramatically darker night side |
+| **City lights emission** | None — night imagery just alpha-blended | Emissive additive boost when `nightAlpha > dayAlpha`, luminance-weighted | City cores glow bright, suburbs dim |
+| **Night intensity** | N/A | Configurable `nightIntensity` uniform (default 2.5x) | Tunable city light brightness |
+| **Terminator glow** | None | Warm orange Gaussian at NdotL≈0 | Sunset/sunrise atmosphere effect |
+| **Night-side fog** | Same as day fog | Dimmed to 5% on night side | Dark fog on dark side |
+
+### Ocean/Water Rendering Improvements (April 2026)
+
+**Previous state**: Water mask detection → 0.7× darkening → 2 scrolling UV normal maps → Phong specular. Functional but visually flat.
+
+**New implementation in `GlobeTerrain.wgsl`**:
+
+| Feature | Before | After | Visual Impact |
+|---------|--------|-------|---------------|
+| **Wave normals** | 2 octaves (500× and 250× UV) | 3 octaves (400×, 200×, 800× UV) with weighted blend | More natural wave patterns |
+| **Wave distance scaling** | 0.15 constant strength | `mix(0.25, 0.05, smoothstep(10K, 500K, dist))` | Calmer ocean at distance |
+| **Specular model** | Phong (pow 64) | GGX/Trowbridge-Reitz (roughness 0.08) | Physically-based sun glints |
+| **Fresnel reflection** | None | Schlick approximation (F0=0.04, power=5.0) | Reflective at grazing angles |
+| **Deep water color** | 0.7× base color | Blend to `(0.008, 0.045, 0.12)` at 60% | Rich blue-green ocean |
+| **Subsurface scattering** | None | Forward-scatter turquoise rim at grazing angles | Light through wave crests |
+| **Foam/whitecaps** | None | Steepness-based foam (threshold 0.35), distance-faded | Breaking waves on crests |
+| **Sky reflection** | None | Atmosphere color mixed via Fresnel at 50% | Sky reflected in water surface |
+| **Coastline transition** | Binary (>0.5 = water) | `smoothstep(0.3, 0.7, waterMask)` | Smooth land-water boundary |
+| **Night ocean** | Same as day × 0.7 | `mix(0.08, 1.0, dayFade)` — very dark at night | Moonlit ocean effect |
+| **Configurable params** | Hardcoded | 8 new uniform floats: deep color, Fresnel, reflectivity, foam threshold, darkening, night intensity | Runtime tunable |
+
+---
+
+*This audit should be used to prioritize the next development phases. The most impactful work is (1) fixing WASM/compute fallback gaps, (2) adding IBL + SSAO + bloom for visual quality, (3) activating the already-built performance infrastructure, and (4) wiring the new weather particle and SSR systems.*

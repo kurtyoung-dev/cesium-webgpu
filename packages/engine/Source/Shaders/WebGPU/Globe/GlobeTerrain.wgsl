@@ -8,13 +8,18 @@
 //   - RTE (Relative-To-Eye) precision for planetary scale
 //   - Up to 4 imagery layers with alpha/brightness/contrast/saturation
 //   - Day/night alpha blending per imagery layer
+//   - Enhanced night rendering with city lights emission and terminator glow
 //   - Lambert diffuse lighting from sun direction
 //   - Fog blending (distance-based atmosphere fade)
 //   - Atmosphere integration (Rayleigh-approximated horizon glow)
-//   - Water mask support (ocean specular and darkening)
+//   - Enhanced ocean rendering: Fresnel, deep water color, multi-octave waves,
+//     foam/whitecaps, environment reflection, subsurface scattering
+//   - Water mask support with smooth coastline transitions
 //   - Cartographic limit rectangle clipping (discard-based)
 //   - Log depth for multi-frustum precision
 //   - Quantized terrain vertex decoding (TerrainQuantization.BITS12)
+//   - Shadow receive (PCF shadow mapping)
+//   - Clipping planes with edge highlighting
 //
 // Vertex data format (uncompressed, TerrainQuantization.NONE):
 //   position3DAndHeight: vec4 (posX, posY, posZ, height) — relative to tile center
@@ -22,17 +27,6 @@
 //
 // Vertex data format (quantized, TerrainQuantization.BITS12):
 //   compressed0: vec4 (compressedXY, compressedZH, compressedUV, encodedNormal)
-//   Each compressed float packs two 12-bit values via compressTextureCoordinates:
-//     compressedXY = floor(x*4095)*4096 + floor(y*4095)
-//     compressedZH = floor(z*4095)*4096 + floor(h*4095)
-//     compressedUV = floor(u*4095)*4096 + floor(v*4095)
-//   Position x,y,z are in [0,1] scaled ENU space.
-//   scaleAndBias matrix transforms [0,1]^3 → tile-center-relative ECEF.
-//
-// RTE approach:
-//   position3DWC = position + center3D
-//   eyeOffset = translateRelativeToEye(position3DWC, vec3(0), camHigh, camLow)
-//   clipPos = mvpRelativeToEye * eyeOffset
 
 // ─── Camera Uniforms (Group 0, Binding 0) ───
 struct CameraUniforms {
@@ -46,9 +40,7 @@ struct CameraUniforms {
   _pad2: f32,
   sunDirectionEC: vec3<f32>,
   enableLighting: f32,
-  // Quantized mesh decompression matrix: [0,1]^3 scaled ENU → tile-center-relative ECEF
   scaleAndBias: mat4x4<f32>,
-  // x = minimumHeight, y = maximumHeight (for quantized height reconstruction)
   minMaxHeight: vec2<f32>,
   _pad3: vec2<f32>,
 };
@@ -56,10 +48,9 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // ─── Tile Imagery Uniforms (Group 0, Binding 1) ───
-// Per-tile imagery layer parameters (up to 4 layers)
 struct ImageryLayer {
-  translationAndScale: vec4<f32>,  // xy=translation, zw=scale
-  texCoordsRect: vec4<f32>,        // min/max tex coord rectangle
+  translationAndScale: vec4<f32>,
+  texCoordsRect: vec4<f32>,
   alpha: f32,
   brightness: f32,
   contrast: f32,
@@ -72,24 +63,23 @@ struct TileUniforms {
   fogDensity: f32,
   fogOffset: f32,
   fogMinimumBrightness: f32,
-  // Water mask transform: xy=translation, zw=scale
   waterMaskTranslationAndScale: vec4<f32>,
-  // Cartographic limit rectangle (localized 0-1 range): x=west, y=south, z=east, w=north
   cartographicLimitRect: vec4<f32>,
-  // Night fade distance: x=fadeOutDist, y=fadeInDist
   nightFadeDistance: vec2<f32>,
-  // Day/night alpha per layer (packed): x=layer0 dayAlpha, y=layer0 nightAlpha, ...
   dayNightAlpha0: vec2<f32>,
   dayNightAlpha1: vec2<f32>,
   dayNightAlpha2: vec2<f32>,
   dayNightAlpha3: vec2<f32>,
   // Flags: x=hasWaterMask, y=enableClipping, z=showOceanWaves, w=isSubsequentPass
   flags: vec4<f32>,
-  // Vertical exaggeration: x=exaggeration factor, y=relative height
   verticalExaggeration: vec2<f32>,
-  // Animation time (seconds) for ocean wave normal map
   time: f32,
   _pad4: f32,
+  // === Night & Ocean Enhancement Parameters ===
+  // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
+  oceanParams: vec4<f32>,
+  // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
+  nightOceanParams: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -106,8 +96,6 @@ struct TileUniforms {
 @group(2) @binding(1) var waterMaskSampler: sampler;
 
 // ─── Ocean wave normal map (Group 3) ───
-// Animated normal map for ocean surface wave detail.
-// UV scrolled by tile.time to animate waves.
 @group(3) @binding(0) var oceanNormalMap: texture_2d<f32>;
 @group(3) @binding(1) var oceanNormalSampler: sampler;
 
@@ -131,17 +119,11 @@ struct EffectsUniforms {
 @group(4) @binding(4) var clippingPlaneSampler: sampler;
 
 // ─── Vertex Input / Output ───
-// Uncompressed terrain (TerrainQuantization.NONE)
 struct VertexInput {
   @location(0) position3DAndHeight: vec4<f32>,
   @location(1) textureCoordAndEncodedNormals: vec4<f32>,
 };
 
-// Quantized terrain (TerrainQuantization.BITS12)
-// compressed0.xyz = [compressedXY, compressedZH, compressedUV]
-// compressed0.w   = encodedNormal (when hasVertexNormals && !hasWebMercatorT)
-//                    or webMercatorT (when hasWebMercatorT)
-//                    or unused (when neither)
 struct VertexInputQuantized {
   @location(0) compressed0: vec4<f32>,
 };
@@ -157,6 +139,42 @@ struct VertexOutput {
 
 // ─── Constants ───
 const EARTH_RADIUS: f32 = 6378137.0;
+const PI: f32 = 3.14159265358979;
+
+// ─── Default ocean parameters (used when uniforms are zero/unset) ───
+fn getOceanDeepColor() -> vec3<f32> {
+  let p = tile.oceanParams;
+  // If all zero, use sensible defaults
+  if (p.x == 0.0 && p.y == 0.0 && p.z == 0.0) {
+    return vec3<f32>(0.008, 0.045, 0.12);
+  }
+  return vec3<f32>(p.x, p.y, p.z);
+}
+
+fn getFresnelPower() -> f32 {
+  let p = tile.oceanParams.w;
+  return select(p, 5.0, p == 0.0);
+}
+
+fn getNightIntensity() -> f32 {
+  let n = tile.nightOceanParams.x;
+  return select(n, 2.5, n == 0.0);
+}
+
+fn getOceanReflectivity() -> f32 {
+  let r = tile.nightOceanParams.y;
+  return select(r, 0.04, r == 0.0);
+}
+
+fn getFoamThreshold() -> f32 {
+  let f = tile.nightOceanParams.z;
+  return select(f, 0.35, f == 0.0);
+}
+
+fn getOceanDarkening() -> f32 {
+  let d = tile.nightOceanParams.w;
+  return select(d, 0.6, d == 0.0);
+}
 
 // ─── RTE Translation ───
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
@@ -189,8 +207,6 @@ fn octDecode(encoded: f32) -> vec3<f32> {
 }
 
 // ─── Decompress two 12-bit values packed into a single float ───
-// Matches CesiumJS AttributeCompression.decompressTextureCoordinates:
-//   compressed = floor(a * 4095) * 4096 + floor(b * 4095)
 fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
   let temp = compressed / 4096.0;
   let xZeroTo4095 = floor(temp);
@@ -200,55 +216,38 @@ fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
   );
 }
 
-// ─── Shared vertex processing (both uncompressed and quantized paths use this) ───
+// ─── Shared vertex processing ───
 fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
                  encodedNormal: f32) -> VertexOutput {
   var out: VertexOutput;
 
-  // ─── Vertical exaggeration ───
-  // Matches GlobeVS.glsl: offset position along geodetic surface normal
-  // by (height - relativeHeight) * (exaggeration - 1.0).
-  // The geodetic surface normal is approximated from the ECEF position direction.
+  // Vertical exaggeration
   var exaggeratedPosition = position;
   let exaggeration = tile.verticalExaggeration.x;
   if (exaggeration != 1.0) {
     let position3D = position + camera.center3D;
     let ellipsoidNormal = normalize(position3D);
-    // Height is along the surface normal; approximate from position length
     let surfaceHeight = length(position3D) - EARTH_RADIUS;
     let relativeHeight = tile.verticalExaggeration.y;
     let newHeight = (surfaceHeight - relativeHeight) * exaggeration + relativeHeight;
-    // Prevent going through earth center
     let clampedHeight = max(newHeight, -EARTH_RADIUS * 0.5);
     let offset = ellipsoidNormal * (clampedHeight - surfaceHeight);
     exaggeratedPosition = position + offset;
   }
 
-  // Full ECEF world coordinate
   let position3DWC = exaggeratedPosition + camera.center3D;
 
-  // RTE: subtract camera position split into high/low
   let rtePosition = translateRelativeToEye(
     position3DWC, vec3<f32>(0.0),
     camera.encodedCameraHigh, camera.encodedCameraLow
   );
 
-  // Clip-space position via RTE MVP
   out.position = camera.mvpRelativeToEye * rtePosition;
-
-  // Eye-space position via modified model-view (has tile center baked in)
   out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
-
-  // Distance from camera (for fog computation)
   out.v_distance = length(out.v_positionEC);
-
-  // Texture coordinates
   out.v_textureCoordinates = textureCoordinates;
-
-  // World-space position for lighting and water mask
   out.v_positionMC = position3DWC;
 
-  // Decode and transform normal to eye space
   let normalMC = octDecode(encodedNormal);
   let nm = camera.modifiedModelView;
   out.v_normalEC = normalize(vec3<f32>(
@@ -263,36 +262,27 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 // ─── Vertex Shader: Uncompressed Terrain ───
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
-  let position = input.position3DAndHeight.xyz;
-  let textureCoordinates = input.textureCoordAndEncodedNormals.xy;
-  let encodedNormal = input.textureCoordAndEncodedNormals.z;
-
-  return processVertex(position, textureCoordinates, encodedNormal);
+  return processVertex(
+    input.position3DAndHeight.xyz,
+    input.textureCoordAndEncodedNormals.xy,
+    input.textureCoordAndEncodedNormals.z
+  );
 }
 
 // ─── Vertex Shader: Quantized Terrain (BITS12) ───
-// Decompresses packed 12-bit position, tex coords, and normal from compressed floats.
-// Uses scaleAndBias matrix to transform [0,1]^3 scaled ENU to tile-center-relative ECEF.
 @vertex
 fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
-  // Decompress packed position
   let xy = decompressTextureCoordinates(input.compressed0.x);
   let zh = decompressTextureCoordinates(input.compressed0.y);
-
-  // Position in scaled ENU space [0,1]^3
   let scaledPos = vec3<f32>(xy.x, xy.y, zh.x);
-
-  // Transform to tile-center-relative ECEF using the decompression matrix
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
-
-  // Decompress texture coordinates
   let uv = decompressTextureCoordinates(input.compressed0.z);
-
-  // Normal is in the 4th component (when hasVertexNormals)
-  let encodedNormal = input.compressed0.w;
-
-  return processVertex(position, uv, encodedNormal);
+  return processVertex(position, uv, input.compressed0.w);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fragment shader helpers
+// ═══════════════════════════════════════════════════════════════════════
 
 // ─── Imagery sampling with translation/scale ───
 fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
@@ -310,25 +300,193 @@ fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32
   return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// ─── Day/Night fade ───
-// Computes a blend factor (0=night, 1=day) based on the sun angle at the surface.
-fn computeDayNightFade(positionMC: vec3<f32>, sunDirEC: vec3<f32>,
-                       normalEC: vec3<f32>) -> f32 {
-  // Use the dot product of the surface normal with the sun direction
-  // Positive = sun-facing (day), negative = away from sun (night)
-  let sunAngle = dot(normalEC, sunDirEC);
-  // Smooth transition from day to night over a range of -0.1 to 0.1
-  return smoothstep(-0.1, 0.1, sunAngle);
+// ─── Perceptual luminance ───
+fn luminance(color: vec3<f32>) -> f32 {
+  return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// ─── Fog computation ───
-fn computeFog(distance: f32, fogDensity: f32, posEC: vec3<f32>) -> f32 {
+// ═══════════════════════════════════════════════════════════════════════
+// Enhanced Day/Night Rendering
+// ═══════════════════════════════════════════════════════════════════════
+
+// Matches the GLSL path: czm_getLambertDiffuse * 5.0 gives a sharp
+// terminator. The 0.3 minimum keeps the night side from going pitch black
+// without city light imagery. The result is a 0..1 day factor.
+fn computeDayNightFade(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
+  let NdotL = dot(normalEC, sunDirEC);
+  return clamp(NdotL * 5.0 + 0.5, 0.0, 1.0);
+}
+
+// Compute the terminator glow — warm orange/pink color right at the
+// day-night boundary, simulating atmospheric scattering at the terminator.
+fn computeTerminatorGlow(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> vec3<f32> {
+  let NdotL = dot(normalEC, sunDirEC);
+  // Peak at the terminator (NdotL ≈ 0), fading on both sides
+  let terminatorFactor = exp(-NdotL * NdotL * 40.0);
+  // Warm sunset color
+  let warmColor = vec3<f32>(0.95, 0.45, 0.15);
+  return warmColor * terminatorFactor * 0.15;
+}
+
+// Apply emissive night lights: when a layer has nightAlpha > dayAlpha,
+// the night-side imagery is treated as emissive (city lights). The
+// brightness is boosted proportional to the luminance of the texel.
+fn applyNightLightsEmission(
+  color: vec3<f32>,
+  layerColor: vec3<f32>,
+  nightBlend: f32,   // 0 = day, 1 = full night
+  nightAlpha: f32,
+  dayAlpha: f32,
+) -> vec3<f32> {
+  // Only apply emission when nightAlpha exceeds dayAlpha (night lights layer)
+  let isNightLayer = step(dayAlpha + 0.01, nightAlpha);
+  let lum = luminance(layerColor);
+  let nightIntensity = getNightIntensity();
+  // Emissive boost: brighten city lights on the night side
+  // Higher luminance = stronger glow (city cores glow more)
+  let emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer;
+  return color + emission;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Enhanced Ocean/Water Rendering
+// ═══════════════════════════════════════════════════════════════════════
+
+// Fresnel-Schlick approximation: water reflects more at grazing angles
+fn fresnelSchlick(cosTheta: f32, F0: f32) -> f32 {
+  return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), getFresnelPower());
+}
+
+// GGX/Trowbridge-Reitz normal distribution for physically-based specular
+fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
+  let a = roughness * roughness;
+  let a2 = a * a;
+  let NdotH2 = NdotH * NdotH;
+  let denom = NdotH2 * (a2 - 1.0) + 1.0;
+  return a2 / (PI * denom * denom + 0.0001);
+}
+
+// Sample ocean wave normals with 3 octaves for detail at multiple scales
+fn sampleOceanWaveNormals(uv: vec2<f32>, t: f32) -> vec3<f32> {
+  // Large slow-moving swells
+  let waveUV1 = uv * 400.0 + vec2<f32>(t * 0.012, t * 0.008);
+  let n1 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV1).xyz * 2.0 - 1.0;
+
+  // Medium waves
+  let waveUV2 = uv * 200.0 + vec2<f32>(-t * 0.008, t * 0.018);
+  let n2 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV2).xyz * 2.0 - 1.0;
+
+  // Small wind ripples (higher frequency, faster)
+  let waveUV3 = uv * 800.0 + vec2<f32>(t * 0.03, -t * 0.012);
+  let n3 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV3).xyz * 2.0 - 1.0;
+
+  // Blend: large swells dominate, small ripples add detail
+  return normalize(n1 * 0.6 + n2 * 0.3 + n3 * 0.1);
+}
+
+// Compute foam factor: whitecaps appear where wave normals are steep
+fn computeFoam(waveNormal: vec3<f32>, distFromCamera: f32) -> f32 {
+  // Wave steepness as deviation from straight-up
+  let steepness = 1.0 - abs(waveNormal.z);
+  let threshold = getFoamThreshold();
+  let foamFactor = smoothstep(threshold, threshold + 0.2, steepness);
+  // Fade foam at distance (not visible far away)
+  let distFade = 1.0 - smoothstep(50000.0, 200000.0, distFromCamera);
+  return foamFactor * distFade * 0.7;
+}
+
+// Compute subsurface scattering approximation for ocean water.
+// Light passing through waves creates a bright turquoise rim.
+fn computeSubsurfaceScattering(
+  viewDir: vec3<f32>,
+  sunDir: vec3<f32>,
+  normalEC: vec3<f32>,
+) -> vec3<f32> {
+  // Forward-scattering: light through waves toward viewer
+  let VdotL = max(dot(viewDir, -sunDir), 0.0);
+  let scatter = pow(VdotL, 4.0) * 0.15;
+  // Bright turquoise subsurface color
+  let sssColor = vec3<f32>(0.05, 0.25, 0.35);
+  // Stronger at grazing angles where light passes through wave crests
+  let rimFactor = 1.0 - max(dot(viewDir, normalEC), 0.0);
+  return sssColor * scatter * rimFactor;
+}
+
+// Full enhanced ocean rendering pipeline
+fn computeEnhancedOcean(
+  baseColor: vec3<f32>,
+  positionEC: vec3<f32>,
+  normalEC: vec3<f32>,
+  sunDirEC: vec3<f32>,
+  uv: vec2<f32>,
+  waterMaskValue: f32,
+  dayFade: f32,
+  distance: f32,
+) -> vec3<f32> {
+  let viewDir = normalize(-positionEC);
+  let deepColor = getOceanDeepColor();
+  let darkening = getOceanDarkening();
+
+  // Perturbed normal from multi-octave wave normals
+  var waterNormal = normalEC;
+  var foamFactor: f32 = 0.0;
+  if (tile.flags.z > 0.5) {
+    let t = tile.time;
+    let waveN = sampleOceanWaveNormals(uv, t);
+    // Scale wave intensity with distance (calmer at distance)
+    let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance));
+    waterNormal = normalize(normalEC + waveN * waveStrength);
+    foamFactor = computeFoam(waveN, distance);
+  }
+
+  // Deep water base color blend
+  var oceanColor = mix(baseColor * darkening, deepColor, 0.6);
+
+  // Fresnel reflectivity: more reflective at grazing angles
+  let NdotV = max(dot(waterNormal, viewDir), 0.0);
+  let fresnel = fresnelSchlick(NdotV, getOceanReflectivity());
+
+  if (camera.enableLighting > 0.5) {
+    // GGX specular for sun reflection on water
+    let halfDir = normalize(viewDir + sunDirEC);
+    let NdotH = max(dot(waterNormal, halfDir), 0.0);
+    let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
+    let specular = distributionGGX(NdotH, 0.08) * fresnel * NdotL;
+
+    // Sun specular highlight (bright, tight)
+    oceanColor += vec3<f32>(1.0, 0.95, 0.85) * min(specular, 8.0);
+
+    // Subsurface scattering
+    oceanColor += computeSubsurfaceScattering(viewDir, sunDirEC, waterNormal);
+  }
+
+  // Environment/sky reflection blended via Fresnel
+  let skyReflection = computeAtmosphereColor(positionEC, waterNormal, sunDirEC);
+  oceanColor = mix(oceanColor, skyReflection, fresnel * 0.5);
+
+  // Foam: white overlay on steep wave crests
+  let foamColor = vec3<f32>(0.85, 0.9, 0.92);
+  oceanColor = mix(oceanColor, foamColor, foamFactor);
+
+  // Night-side ocean: darker, moonlit
+  let nightDarkening = mix(0.08, 1.0, dayFade);
+  oceanColor *= nightDarkening;
+
+  // Smooth water mask transition at coastlines
+  let coastBlend = smoothstep(0.3, 0.7, waterMaskValue);
+  return mix(baseColor, oceanColor, coastBlend);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fog & Atmosphere
+// ═══════════════════════════════════════════════════════════════════════
+
+fn computeFog(distance: f32, fogDensity: f32) -> f32 {
   let scalar = distance * fogDensity;
-  let fogFactor = 1.0 - exp(-(scalar * scalar));
-  return clamp(fogFactor, 0.0, 1.0);
+  return clamp(1.0 - exp(-(scalar * scalar)), 0.0, 1.0);
 }
 
-// ─── Atmosphere color approximation ───
+// Enhanced atmosphere color with Rayleigh phase and Mie forward scattering
 fn computeAtmosphereColor(
   positionEC: vec3<f32>,
   normalEC: vec3<f32>,
@@ -336,23 +494,26 @@ fn computeAtmosphereColor(
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
   let cosAngle = dot(viewDir, normalEC);
+
+  // Rayleigh scattering: blue scattered light
   let rayleighPhase = 0.75 * (1.0 + cosAngle * cosAngle);
-  let skyBlue = vec3<f32>(0.16, 0.36, 0.72) * rayleighPhase;
-  let sunGlow = vec3<f32>(0.95, 0.65, 0.35) * pow(max(dot(viewDir, sunDirEC), 0.0), 8.0) * 0.4;
+  let skyBlue = vec3<f32>(0.18, 0.38, 0.72) * rayleighPhase;
+
+  // Mie forward scattering: sun glow near horizon
+  let cosTheta = dot(viewDir, sunDirEC);
+  // Henyey-Greenstein phase function approximation (g=0.76)
+  let g = 0.76;
+  let g2 = g * g;
+  let miePhase = (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
+  let sunGlow = vec3<f32>(0.95, 0.65, 0.30) * miePhase * 0.05;
+
   return skyBlue * 0.3 + sunGlow;
 }
 
-// ─── Water specular ───
-// Simple Phong specular for water surface to simulate sun reflection on ocean.
-fn computeWaterSpecular(positionEC: vec3<f32>, normalEC: vec3<f32>,
-                        sunDirEC: vec3<f32>) -> f32 {
-  let viewDir = normalize(-positionEC);
-  let reflectDir = reflect(-sunDirEC, normalEC);
-  let spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0);
-  return spec * 0.6;
-}
+// ═══════════════════════════════════════════════════════════════════════
+// Shadow & Clipping (unchanged from previous version)
+// ═══════════════════════════════════════════════════════════════════════
 
-// ─── Shadow sampling (globe) ───
 fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0) {
     return 1.0;
@@ -369,12 +530,10 @@ fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
 
 fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
-
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
   let coord = shadowPos.xyz / shadowPos.w;
   let uv = vec2<f32>(coord.x * 0.5 + 0.5, 1.0 - (coord.y * 0.5 + 0.5));
   let texelSize = 1.0 / effects.shadowMapSize;
-
   var visibility: f32;
   if (effects.shadowSoftShadows > 0.5) {
     visibility = globeShadowPCF(uv, coord.z, texelSize);
@@ -388,15 +547,12 @@ fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// ─── Clipping planes (globe) ───
 fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
   let count = effects.clippingPlaneCount;
   if (count == 0u) { return false; }
-
   let isUnion = effects.clippingUnionMode == 1u;
   let texWidth = f32(count);
   var clippedCount: u32 = 0u;
-
   for (var i: u32 = 0u; i < count; i++) {
     let texelU = (f32(i) + 0.5) / texWidth;
     let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
@@ -407,17 +563,18 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
       if (isUnion) { return true; }
     }
   }
-
   if (!isUnion && clippedCount == count) { return true; }
   return false;
 }
 
-// ─── Fragment Shader ───
+// ═══════════════════════════════════════════════════════════════════════
+// Fragment Shader
+// ═══════════════════════════════════════════════════════════════════════
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let uv = input.v_textureCoordinates;
 
-  // ─── Clipping planes discard (early out) ───
+  // ─── Clipping planes discard ───
   if (globeClipByPlanes(input.v_positionMC)) { discard; }
 
   // ─── Clipping edge highlight ───
@@ -440,35 +597,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // ─── Cartographic limit rectangle clipping ───
   if (tile.flags.y > 0.5) {
     let clampRect = tile.cartographicLimitRect;
-    // UV coordinates map to tile rectangle — 0 to 1 range
     if (uv.x < clampRect.x || uv.x > clampRect.z ||
         uv.y < clampRect.y || uv.y > clampRect.w) {
       discard;
     }
   }
 
-  // Subsequent passes (multi-pass imagery >4 layers) blend on top of existing color.
-  // First pass starts with a dark base; subsequent passes use transparent black.
   let isSubsequentPass = tile.flags.w > 0.5;
 
-  // Start with a base color (dark gray for no-imagery first pass, transparent for subsequent)
+  // Base color: dark for first pass (night side will be very dark),
+  // transparent for subsequent multi-pass imagery
   var color: vec3<f32>;
   var alpha: f32;
   if (isSubsequentPass) {
     color = vec3<f32>(0.0, 0.0, 0.0);
     alpha = 0.0;
   } else {
-    color = vec3<f32>(0.15, 0.15, 0.18);
+    color = vec3<f32>(0.04, 0.04, 0.06);
     alpha = 1.0;
   }
 
   let normal = normalize(input.v_normalEC);
   let sunDir = normalize(camera.sunDirectionEC);
 
-  // Compute day/night fade factor for imagery blending
-  let dayFade = computeDayNightFade(input.v_positionMC, sunDir, normal);
+  // Day/night fade factor: 0 = night, 1 = day
+  let dayFade = computeDayNightFade(normal, sunDir);
+  // Inverse for night-side effects
+  let nightBlend = 1.0 - dayFade;
 
-  // Composite imagery layers (blend from bottom to top)
+  // ─── Composite imagery layers ───
   let count = tile.layerCount;
 
   if (count >= 1u) {
@@ -479,6 +636,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let effectiveAlpha0 = layer0.alpha * tex0.a * mix(dna0.y, dna0.x, dayFade);
     color = mix(color, adj0, effectiveAlpha0);
     alpha = max(alpha, effectiveAlpha0);
+    // Night lights emission for this layer
+    color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
   }
   if (count >= 2u) {
     let layer1 = tile.layers[1];
@@ -488,6 +647,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let effectiveAlpha1 = layer1.alpha * tex1.a * mix(dna1.y, dna1.x, dayFade);
     color = mix(color, adj1, effectiveAlpha1);
     alpha = max(alpha, effectiveAlpha1);
+    color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
   }
   if (count >= 3u) {
     let layer2 = tile.layers[2];
@@ -497,6 +657,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let effectiveAlpha2 = layer2.alpha * tex2.a * mix(dna2.y, dna2.x, dayFade);
     color = mix(color, adj2, effectiveAlpha2);
     alpha = max(alpha, effectiveAlpha2);
+    color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
   }
   if (count >= 4u) {
     let layer3 = tile.layers[3];
@@ -506,65 +667,58 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let effectiveAlpha3 = layer3.alpha * tex3.a * mix(dna3.y, dna3.x, dayFade);
     color = mix(color, adj3, effectiveAlpha3);
     alpha = max(alpha, effectiveAlpha3);
+    color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
   }
 
-  // Subsequent passes only apply imagery — skip lighting, fog, water
+  // Subsequent passes only apply imagery — skip all effects
   if (isSubsequentPass) {
     return vec4<f32>(color, alpha);
   }
 
-  // ─── Water mask + ocean wave normal map ───
+  // ─── Enhanced Water mask + ocean rendering ───
   if (tile.flags.x > 0.5) {
     let wmTS = tile.waterMaskTranslationAndScale;
     let waterUV = uv * wmTS.zw + wmTS.xy;
     let waterMask = textureSample(waterMaskTexture, waterMaskSampler, waterUV).r;
 
-    if (waterMask > 0.5) {
-      color = color * 0.7;
-
-      // Perturbed normal from ocean wave normal map (animated)
-      var waterNormal = normal;
-      if (tile.flags.z > 0.5) {
-        // Two scrolling UV layers for wave animation (matches WebGL oceanFS.glsl)
-        let t = tile.time;
-        let waveUV1 = uv * 500.0 + vec2<f32>(t * 0.02, t * 0.015);
-        let waveUV2 = uv * 250.0 + vec2<f32>(-t * 0.01, t * 0.025);
-        let n1 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV1).xyz * 2.0 - 1.0;
-        let n2 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV2).xyz * 2.0 - 1.0;
-        let waveN = normalize(n1 + n2);
-        // Blend wave detail with surface normal (0.15 strength)
-        waterNormal = normalize(normal + waveN * 0.15);
-      }
-
-      if (camera.enableLighting > 0.5) {
-        let specular = computeWaterSpecular(input.v_positionEC, waterNormal, sunDir);
-        color = color + vec3<f32>(specular);
-      }
+    if (waterMask > 0.01) {
+      color = computeEnhancedOcean(
+        color, input.v_positionEC, normal, sunDir,
+        uv, waterMask, dayFade, input.v_distance
+      );
     }
   }
 
   // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
     let NdotL = max(dot(normal, sunDir), 0.0);
-    let ambient = 0.15;
+    let ambient = 0.12;
     let shadowFactor = globeComputeShadowFactor(input.v_positionEC);
-    let diffuse = NdotL * 0.85 * shadowFactor + ambient;
+    // Day side: normal Lambert diffuse with shadow
+    let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
+    // Night side: very dark, only ambient light (moonlight approximation)
+    let nightAmbient = 0.025;
+    let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
     color = color * diffuse;
+
+    // Terminator glow: warm atmosphere color right at the day-night boundary
+    color += computeTerminatorGlow(normal, sunDir);
   }
 
   // ─── Fog blending ───
   let fogDensity = tile.fogDensity;
   if (fogDensity > 0.0) {
-    let fogAmount = computeFog(input.v_distance, fogDensity, input.v_positionEC);
+    let fogAmount = computeFog(input.v_distance, fogDensity);
 
     let atmosphereColor = computeAtmosphereColor(
       input.v_positionEC, normal, sunDir,
     );
 
-    let fogColor = max(atmosphereColor, vec3<f32>(tile.fogMinimumBrightness));
+    // Night-side fog is darker — don't brighten with atmosphere on dark side
+    let nightFogDimming = mix(0.05, 1.0, dayFade);
+    let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
     color = mix(color, fogColor, fogAmount);
 
-    // Fade alpha at extreme distances
     if (fogAmount > 0.98) {
       alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
     }

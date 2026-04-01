@@ -34,9 +34,9 @@ const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
 //   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
-//   dayNightAlpha0-3(4×2=8) + flags(4) = 74 floats
-// Aligned to 16 bytes: 80 floats (flags at offset 72, exaggeration at 76, time at 78)
-const TILE_UNIFORM_FLOATS = 80;
+//   dayNightAlpha0-3(4×2=8) + flags(4) + exaggeration(2) + time(1) + pad(1)
+//   + oceanParams(4) + nightOceanParams(4) = 88 floats
+const TILE_UNIFORM_FLOATS = 88;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
@@ -944,6 +944,24 @@ export class WebGPUGlobeSurfaceRenderer {
     // ─── Time for ocean wave animation (offset 78) ───
     data[78] = frameState?.time ? performance.now() / 1000.0 : 0.0;
     // offset 79 is padding (_pad4)
+
+    // ─── Ocean enhancement params (offsets 80-83, vec4) ───
+    // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
+    // Defaults applied in shader when all zero (no tileProvider config needed)
+    if (tileProvider?.oceanDeepColor) {
+      const c = tileProvider.oceanDeepColor;
+      data[80] = c.red ?? c.x ?? 0.008;
+      data[81] = c.green ?? c.y ?? 0.045;
+      data[82] = c.blue ?? c.z ?? 0.12;
+    }
+    data[83] = tileProvider?.oceanFresnelPower ?? 0.0; // 0 = use shader default
+
+    // ─── Night & ocean secondary params (offsets 84-87, vec4) ───
+    // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
+    data[84] = tileProvider?.nightIntensity ?? 0.0;       // 0 = use shader default (2.5)
+    data[85] = tileProvider?.oceanReflectivity ?? 0.0;    // 0 = use shader default (0.04)
+    data[86] = tileProvider?.oceanFoamThreshold ?? 0.0;   // 0 = use shader default (0.35)
+    data[87] = tileProvider?.oceanDarkening ?? 0.0;       // 0 = use shader default (0.6)
 
     const buffer = device.createBuffer({
       label: "Terrain tile UB",
