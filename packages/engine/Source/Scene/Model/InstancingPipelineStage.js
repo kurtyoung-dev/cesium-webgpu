@@ -74,7 +74,7 @@ InstancingPipelineStage.process = function (renderResources, node, frameState) {
     frameState.mode !== SceneMode.SCENE3D &&
     !frameState.scene3DOnly &&
     model._projectTo2D;
-  const keepTypedArray = model._enablePick && !frameState.context.webgl2;
+  const keepTypedArray = (model._enablePick && !frameState.context.webgl2) || frameState.context.isWebGPU;
 
   const instancingVertexAttributes = [];
 

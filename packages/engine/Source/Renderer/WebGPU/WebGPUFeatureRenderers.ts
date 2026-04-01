@@ -61,7 +61,10 @@ import {
   destroyWebGPUShadowMapResources,
   renderShadowCastPass,
 } from "./WebGPUShadowMapRenderer.js";
-import { destroyWebGPUGroundPrimitiveResources } from "./WebGPUGroundPrimitiveRenderer.js";
+import {
+  createWebGPUGroundPrimitiveCommands,
+  destroyWebGPUGroundPrimitiveResources,
+} from "./WebGPUGroundPrimitiveRenderer.js";
 
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
@@ -128,6 +131,14 @@ import {
   updateWebGPUPostProcessStages,
   destroyWebGPUPostProcessResources,
 } from "./WebGPUPostProcessStageCollection.js";
+
+// ── Imagery ──
+import {
+  initWebGPUImageryReprojection,
+  destroyWebGPUImageryReprojectionResources,
+  reprojectWebMercatorWebGPU,
+  reprojectImageSourceWebGPU,
+} from "./WebGPUImageryReprojection.js";
 
 // ── Scene orchestration ──
 import { WebGPUSceneRenderer } from "./WebGPUSceneRenderer.js";
@@ -215,6 +226,7 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   });
 
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE, {
+    createCommands: createWebGPUGroundPrimitiveCommands,
     destroy: destroyWebGPUGroundPrimitiveResources,
   });
 
@@ -295,6 +307,14 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.POST_PROCESS_COLLECTION, {
     update: updateWebGPUPostProcessStages,
     destroy: destroyWebGPUPostProcessResources,
+  });
+
+  // ── Imagery ──
+  context.registerFeatureRenderer(FeatureRendererKey.IMAGERY_REPROJECTION, {
+    init: initWebGPUImageryReprojection,
+    destroy: destroyWebGPUImageryReprojectionResources,
+    reproject: reprojectWebMercatorWebGPU,
+    reprojectFromImage: reprojectImageSourceWebGPU,
   });
 
   // ── Scene orchestration ──

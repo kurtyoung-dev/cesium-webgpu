@@ -12,6 +12,9 @@ const packedDepthScale = new Cartesian4(
   1.0 / 16581375.0,
 );
 
+// Staging buffer size: 256 bytes (minimum alignment for WebGPU buffer mapping)
+const STAGING_BUFFER_SIZE = 256;
+
 function updateFramebuffers(pickDepth, context, depthTexture) {
   const { width, height } = depthTexture;
   pickDepth._framebuffer.update(context, width, height);
@@ -50,14 +53,29 @@ void main()
 }
 
 /**
+ * Unpack a depth value from RGBA bytes (matching the WebGPUGlobeDepth
+ * packing: r = floor(d*255)/255, g = frac*255 portion, b = deeper frac).
+ * Uses the same dot-product unpacking as the WebGL path.
+ * @private
+ */
+function unpackDepthFromRGBA(r, g, b, a) {
+  scratchPackedDepth.x = r;
+  scratchPackedDepth.y = g;
+  scratchPackedDepth.z = b;
+  scratchPackedDepth.w = a;
+  Cartesian4.divideByScalar(scratchPackedDepth, 255.0, scratchPackedDepth);
+  return Cartesian4.dot(scratchPackedDepth, packedDepthScale);
+}
+
+/**
  * Manages depth buffer readback for position picking.
  *
  * For WebGL: copies the scene depth texture to a color FBO via a shader that
  * packs depth into RGBA, then reads the color pixel and unpacks to a float.
  *
- * For WebGPU: depth readback uses async GPU buffer mapping. The sync
- * {@link PickDepth#getDepth} returns `undefined` for WebGPU contexts;
- * use {@link PickDepth#getDepthAsync} instead.
+ * For WebGPU: receives packed-depth-as-color texture (RGBA8) from
+ * WebGPUGlobeDepth, copies a single pixel to a staging buffer via
+ * copyTextureToBuffer + mapAsync, and unpacks RGBA → float.
  *
  * @alias PickDepth
  * @private
@@ -70,7 +88,9 @@ class PickDepth {
 
     // WebGPU async depth state
     this._lastDepthValue = undefined;
+    this._webgpuDepthTexture = undefined;
     this._depthStagingBuffer = null;
+    this._pendingReadback = false;
   }
 
   get framebuffer() {
@@ -78,7 +98,7 @@ class PickDepth {
   }
 
   update(context, depthTexture) {
-    // WebGPU path — store reference to depth texture for async readback
+    // WebGPU path — store reference to the packed-depth RGBA texture
     if (context.isWebGPU) {
       this._webgpuDepthTexture = depthTexture;
       return;
@@ -121,8 +141,9 @@ class PickDepth {
   }
 
   /**
-   * Asynchronously read depth from a WebGPU depth texture at the given coordinate.
-   * Uses `depth32float` staging texture + buffer mapping.
+   * Asynchronously read depth from a WebGPU packed-depth-as-color texture
+   * at the given coordinate. Copies a 1×1 pixel to a staging buffer via
+   * copyTextureToBuffer + mapAsync, then unpacks RGBA → float depth.
    *
    * @param {object} context The graphics context (WebGPU).
    * @param {number} x The x-coordinate at which to read the depth.
@@ -135,22 +156,73 @@ class PickDepth {
       return this.getDepth(context, x, y);
     }
 
-    const depthTexture = this._webgpuDepthTexture;
-    if (!defined(depthTexture)) {
-      return undefined;
+    const packedTexture = this._webgpuDepthTexture;
+    if (!defined(packedTexture)) {
+      return this._lastDepthValue;
     }
 
     const device = context._device;
     if (!device) {
-      return undefined;
+      return this._lastDepthValue;
     }
 
-    // depth24plus-stencil8 cannot be copied directly. Need a depth-to-color
-    // blit shader, or the scene must use depth32float. For now, return the
-    // cached value from a previous async readback if available.
-    // Full depth readback via WGSL depth-to-color shader is tracked as
-    // future work in PICKING_ANALYSIS.md.
-    return this._lastDepthValue;
+    // Avoid overlapping readbacks
+    if (this._pendingReadback) {
+      return this._lastDepthValue;
+    }
+
+    // Clamp coordinates to texture bounds
+    const texWidth = packedTexture.width;
+    const texHeight = packedTexture.height;
+    const px = Math.max(0, Math.min(Math.floor(x), texWidth - 1));
+    const py = Math.max(0, Math.min(Math.floor(y), texHeight - 1));
+
+    // Ensure staging buffer exists (reuse across frames)
+    if (!this._depthStagingBuffer) {
+      this._depthStagingBuffer = device.createBuffer({
+        label: "PickDepth staging",
+        size: STAGING_BUFFER_SIZE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
+
+    this._pendingReadback = true;
+
+    try {
+      // Copy 1 pixel from the packed-depth-as-color texture to staging buffer
+      const encoder = device.createCommandEncoder({
+        label: "PickDepth readback",
+      });
+      encoder.copyTextureToBuffer(
+        {
+          texture: packedTexture,
+          origin: { x: px, y: py, z: 0 },
+        },
+        {
+          buffer: this._depthStagingBuffer,
+          bytesPerRow: STAGING_BUFFER_SIZE, // must be ≥256 for WebGPU alignment
+          rowsPerImage: 1,
+        },
+        { width: 1, height: 1, depthOrArrayLayers: 1 },
+      );
+      device.queue.submit([encoder.finish()]);
+
+      // Map and read the pixel
+      await this._depthStagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
+      const data = new Uint8Array(
+        this._depthStagingBuffer.getMappedRange(0, 4),
+      );
+      const depth = unpackDepthFromRGBA(data[0], data[1], data[2], data[3]);
+      this._depthStagingBuffer.unmap();
+
+      this._lastDepthValue = depth;
+      this._pendingReadback = false;
+      return depth;
+    } catch (e) {
+      // Buffer may have been destroyed or device lost
+      this._pendingReadback = false;
+      return this._lastDepthValue;
+    }
   }
 
   executeCopyDepth(context, passState) {

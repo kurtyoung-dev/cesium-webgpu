@@ -31,6 +31,12 @@ const MaterialFlags = Object.freeze({
   USE_SPECULAR_GLOSSINESS: 1024,
   HAS_SPECGLOSS_TEXTURE: 2048,
   HAS_DIFFUSE_TEXTURE: 4096,
+  // Bit 13 (8192) is HAS_SKINNING — set by WebGPUModelRenderer, not here
+  HAS_MORPH_TARGETS: 16384, // Bit 14 — morph target blending in vertex shader
+  // Bit 15 (32768) is HAS_INSTANCING — set by WebGPUModelRenderer, not here
+  HAS_FEATURE_ID_TEXTURE: 65536, // Bit 16 — feature IDs from texture (EXT_mesh_features)
+  HAS_FEATURE_ID_ATTRIBUTE: 131072, // Bit 17 — feature IDs from vertex attribute
+  HAS_BATCH_TABLE: 262144, // Bit 18 — batch texture for per-feature styling
 });
 
 /**

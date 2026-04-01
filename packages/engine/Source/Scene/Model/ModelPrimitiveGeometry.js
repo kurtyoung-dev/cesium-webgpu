@@ -141,6 +141,39 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     return null;
   }
 
+  // Extract morph target data from the glTF primitive
+  result.morphTargets = [];
+  result.morphTargetCount = 0;
+  const prim = runtimePrimitive.primitive || runtimePrimitive._primitive;
+  if (defined(prim) && defined(prim.morphTargets)) {
+    const targets = prim.morphTargets;
+    for (let t = 0; t < targets.length; t++) {
+      const target = targets[t];
+      const targetAttrs = target.attributes || [];
+      const morphTarget = {
+        positionData: null,
+        normalData: null,
+      };
+      for (let a = 0; a < targetAttrs.length; a++) {
+        const tAttr = targetAttrs[a];
+        const tSemantic = tAttr.semantic || tAttr.name || "";
+        const tData = tAttr.typedArray || tAttr.buffer;
+        if (!defined(tData)) {
+          continue;
+        }
+        if (tSemantic === "POSITION") {
+          morphTarget.positionData = ensureFloat32(tData);
+        } else if (tSemantic === "NORMAL") {
+          morphTarget.normalData = ensureFloat32(tData);
+        }
+      }
+      if (defined(morphTarget.positionData)) {
+        result.morphTargets.push(morphTarget);
+      }
+    }
+    result.morphTargetCount = result.morphTargets.length;
+  }
+
   // Extract index data
   const indices = rr.indices;
   if (defined(indices)) {

@@ -90,6 +90,9 @@ export class WebGPUOIT {
   private _compositeBindGroup: GPUBindGroup | null = null;
   private _compositeSampler: GPUSampler | null = null;
 
+  // Scene color format for format-compatible single-target mode
+  private _sceneColorFormat: GPUTextureFormat = "bgra8unorm";
+
   // Whether OIT is supported and enabled
   private _supported: boolean = false;
   private _isDestroyed: boolean = false;

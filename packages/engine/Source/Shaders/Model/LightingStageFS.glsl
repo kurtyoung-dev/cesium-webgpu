@@ -51,6 +51,81 @@ vec3 addClearcoatReflection(vec3 baseLayerColor, vec3 position, vec3 lightDirect
 #endif
 
 #if defined(LIGHTING_PBR) && defined(HAS_NORMALS)
+
+/**
+ * Unpack a single light from the czm_lightsData vec4 array.
+ * Layout: 1 vec4 header + 4 vec4s per light (matching LightCollection.pack()).
+ */
+czm_lightData czm_unpackLight(int index)
+{
+    czm_lightData light;
+    int base = 1 + index * 4; // skip 1-vec4 header
+    vec4 v0 = czm_lightsData[base];
+    vec4 v1 = czm_lightsData[base + 1];
+    vec4 v2 = czm_lightsData[base + 2];
+    vec4 v3 = czm_lightsData[base + 3];
+    light.directionOrPosition = v0.xyz;
+    light.lightType = v0.w;
+    light.color = v1.xyz;
+    light.intensity = v1.w;
+    light.range = v2.x;
+    light.constantAttenuation = v2.y;
+    light.linearAttenuation = v2.z;
+    light.quadraticAttenuation = v2.w;
+    light.innerConeAngle = v3.x;
+    light.outerConeAngle = v3.y;
+    return light;
+}
+
+/**
+ * Compute the lighting contribution from a single additional light source.
+ * Handles directional, point, and spot lights with attenuation.
+ */
+vec3 computeAdditionalLightPBR(
+    in czm_lightData light,
+    in vec3 viewDirection,
+    in vec3 normal,
+    in vec3 positionEC,
+    in czm_modelMaterial material
+)
+{
+    vec3 lightDir;
+    float attenuation = 1.0;
+
+    if (light.lightType < 0.5) {
+        // Directional light — direction is in eye coordinates
+        lightDir = normalize(light.directionOrPosition);
+    } else {
+        // Point or spot light — position is in eye coordinates
+        vec3 toLight = light.directionOrPosition - positionEC;
+        float dist = length(toLight);
+        lightDir = toLight / max(dist, 0.001);
+        attenuation = czm_computeAttenuation(
+            dist, light.range,
+            light.constantAttenuation,
+            light.linearAttenuation,
+            light.quadraticAttenuation
+        );
+        if (light.lightType > 1.5) {
+            // Spot light — apply cone factor
+            // For spot lights, directionOrPosition is the position;
+            // the spot direction must come from a second field or be
+            // precomputed. Use negative lightDir as approximation when
+            // spot direction is embedded in the data layout.
+            attenuation *= czm_computeSpotCone(
+                normalize(-light.directionOrPosition),
+                -lightDir,
+                light.innerConeAngle,
+                light.outerConeAngle
+            );
+        }
+    }
+
+    vec3 lightColor = light.color * light.intensity;
+    vec3 directLighting = czm_pbrLighting(viewDirection, normal, lightDir, material);
+    return lightColor * directLighting * attenuation;
+}
+
 vec3 computePbrLighting(in czm_modelMaterial material, in vec3 position)
 {
     #ifdef USE_CUSTOM_LIGHT_COLOR
@@ -63,11 +138,23 @@ vec3 computePbrLighting(in czm_modelMaterial material, in vec3 position)
     vec3 normal = material.normalEC;
     vec3 lightDirection = normalize(czm_lightDirectionEC);
 
+    // Primary light (sun or user-specified directional light)
     vec3 directLighting = czm_pbrLighting(viewDirection, normal, lightDirection, material);
     vec3 directColor = lightColorHdr * directLighting;
 
     // Accumulate colors from base layer
     vec3 color = directColor + material.emissive;
+
+    // Additional lights from scene.lights (LightCollection)
+    int additionalLightCount = int(czm_lightCount);
+    for (int i = 0; i < 8; i++) {
+        if (i >= additionalLightCount) {
+            break;
+        }
+        czm_lightData light = czm_unpackLight(i);
+        color += computeAdditionalLightPBR(light, viewDirection, normal, position, material);
+    }
+
     #ifdef USE_IBL_LIGHTING
         color += computeIBL(position, normal, lightDirection, lightColorHdr, material);
     #endif

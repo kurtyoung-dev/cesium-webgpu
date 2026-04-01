@@ -11,6 +11,7 @@ import GeometryInstance from "../Core/GeometryInstance.js";
 import OrientedBoundingBox from "../Core/OrientedBoundingBox.js";
 import Rectangle from "../Core/Rectangle.js";
 import VerticalExaggeration from "../Core/VerticalExaggeration.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import ClassificationPrimitive from "./ClassificationPrimitive.js";
 import ClassificationType from "./ClassificationType.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
@@ -862,6 +863,21 @@ function updateAndQueueCommands(
   debugShowBoundingVolume,
   twoPasses,
 ) {
+  // WebGPU path: delegate to the ground primitive feature renderer
+  // which uses two-pass stencil rendering with WGSL shaders
+  const context = frameState.context;
+  const fr = context.getFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE);
+  if (fr && fr.createCommands) {
+    const result = fr.createCommands(groundPrimitive, frameState);
+    if (result && result.stencilCommand && result.colorCommand) {
+      frameState.commandList.push(result.stencilCommand);
+      frameState.commandList.push(result.colorCommand);
+      return;
+    }
+    // If WebGPU commands couldn't be created (no geometry data yet),
+    // fall through to WebGL path which pushes the existing commands
+  }
+
   let boundingVolumes;
   if (frameState.mode === SceneMode.SCENE3D) {
     boundingVolumes = groundPrimitive._boundingVolumes;

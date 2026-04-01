@@ -1,5 +1,9 @@
 /// <reference types="@webgpu/types" />
 import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
+import {
+  getEffectsBindGroupLayout,
+  getPlaceholderEffects,
+} from "./WebGPUEffectsBindGroup.js";
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -93,6 +97,8 @@ export class WebGPUGlobeSurfaceRenderer {
   private _bindGroupLayout1: GPUBindGroupLayout | null = null;
   private _bindGroupLayout2: GPUBindGroupLayout | null = null;
   private _bindGroupLayout3: GPUBindGroupLayout | null = null;
+  private _effectsBGL: GPUBindGroupLayout | null = null;
+  private _placeholderEffectsBG: GPUBindGroup | null = null;
   private _oceanNormalSampler: GPUSampler | null = null;
   private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
   private _pipelineLayout: GPUPipelineLayout | null = null;
@@ -250,6 +256,11 @@ export class WebGPUGlobeSurfaceRenderer {
         },
       ],
     });
+
+    // Group 4: Effects (shadow receive + clipping planes) — shared layout
+    this._effectsBGL = getEffectsBindGroupLayout(device);
+    const placeholder = getPlaceholderEffects(device);
+    this._placeholderEffectsBG = placeholder.bindGroup;
   }
 
   // ─── Pipeline Layout ───
@@ -261,6 +272,7 @@ export class WebGPUGlobeSurfaceRenderer {
         this._bindGroupLayout1!,
         this._bindGroupLayout2!,
         this._bindGroupLayout3!,
+        this._effectsBGL!,
       ],
     });
   }
@@ -551,9 +563,13 @@ export class WebGPUGlobeSurfaceRenderer {
       // Group 3: Ocean normal map (uses placeholder when unavailable)
       const bindGroup3 = this._createOceanNormalBindGroup(device, tileProvider);
 
+      // Group 4: Effects (shadow receive + clipping planes) — placeholder
+      // until real shadow/clipping resources are provided per-frame
+      const bindGroup4 = this._placeholderEffectsBG!;
+
       commands.push({
         pipeline,
-        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3, bindGroup4],
         vertexBuffer: gpuResources.vertexBuffer,
         indexBuffer: gpuResources.indexBuffer,
         indexCount: gpuResources.indexCount,
@@ -1056,6 +1072,15 @@ export class WebGPUGlobeSurfaceRenderer {
     const cached = this._imageryTextureCache.get(cacheKey);
     if (cached) return cached.view;
 
+    // If imagery was reprojected by WebGPUImageryReprojection, use
+    // the pre-reprojected GPUTexture directly instead of re-uploading.
+    if (imagery._webgpuReprojectedTexture) {
+      const gpuTex = imagery._webgpuReprojectedTexture as GPUTexture;
+      const view = gpuTex.createView({ label: `imagery_reproj_${cacheKey}` });
+      this._imageryTextureCache.set(cacheKey, { texture: gpuTex, view });
+      return view;
+    }
+
     const source = imagery.image || imagery.texture?._source;
     if (!source) return null;
 
@@ -1339,7 +1364,7 @@ export class WebGPUGlobeSurfaceRenderer {
     return [
       {
         pipeline,
-        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
+        bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3, this._placeholderEffectsBG!],
         vertexBuffer: gpuResources.vertexBuffer,
         indexBuffer: wireIB.buffer,
         indexCount: wireIB.count,
@@ -1459,6 +1484,8 @@ export class WebGPUGlobeSurfaceRenderer {
     this._bindGroupLayout1 = null;
     this._bindGroupLayout2 = null;
     this._bindGroupLayout3 = null;
+    this._effectsBGL = null;
+    this._placeholderEffectsBG = null;
     this._pipelineLayout = null;
     this._device = null;
     this._isInitialized = false;

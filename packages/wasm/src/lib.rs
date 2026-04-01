@@ -1,7 +1,8 @@
 //! # cesium-wasm-culling
 //!
 //! WASM SIMD spatial acceleration for CesiumJS rendering pipeline.
-//! Provides high-performance frustum culling and radix sort for draw commands.
+//! Provides high-performance frustum culling, radix sort, terrain processing,
+//! RTE encoding, matrix operations, and point cloud acceleration.
 //!
 //! ## Architecture
 //!
@@ -18,14 +19,23 @@
 //! (browsers without SharedArrayBuffer support), Mutex locking has near-zero
 //! overhead (atomic bool check only).
 //!
-//! ## Functions
+//! ## Modules
 //!
-//! - `frustum_cull_batch`: SIMD batch frustum culling (6-plane sphere test)
-//! - `radix_sort_keys`: O(N) radix sort on packed 64-bit sort keys
-//! - `alloc_buffer` / `free_buffer`: Thread-safe allocator for shared memory
+//! - `frustum_cull`: SIMD batch frustum culling (6-plane sphere test)
+//! - `radix_sort`: O(N) radix sort on packed 64-bit sort keys
+//! - `heightmap_tessellator`: SIMD heightmap decode + ECEF conversion
+//! - `quantized_mesh`: SIMD zigzag decode + quantized mesh vertex reconstruction
+//! - `rte_encode`: Batch RTE (Relative-To-Eye) f64→f32 high/low splitting
+//! - `matrix_batch`: SIMD batch Matrix4 × Vector operations
+//! - `point_cloud`: SIMD point cloud LOD, distance, octree acceleration
 
 mod frustum_cull;
 mod radix_sort;
+mod heightmap_tessellator;
+mod quantized_mesh;
+mod rte_encode;
+mod matrix_batch;
+mod point_cloud;
 
 use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
@@ -33,6 +43,11 @@ use wasm_bindgen::prelude::*;
 // Re-export public API
 pub use frustum_cull::frustum_cull_batch;
 pub use radix_sort::radix_sort_keys;
+pub use heightmap_tessellator::{heightmap_to_ecef, decode_heightmap};
+pub use quantized_mesh::{decode_quantized_mesh, decode_indices};
+pub use rte_encode::{batch_rte_encode, batch_rte_encode_soa, batch_rte_to_eye};
+pub use matrix_batch::{batch_transform_points, batch_transform_per_entity, batch_mat4_multiply};
+pub use point_cloud::{batch_distance_squared, lod_filter, compact_visible, batch_aabb_frustum_test};
 
 /// Thread-safe arena allocator for shared memory between JS and WASM.
 /// Uses Mutex for safe concurrent access when WASM threading is enabled.
@@ -45,6 +60,8 @@ static ARENA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Allocates a contiguous buffer in WASM linear memory.
 /// Returns a raw pointer that JS can use with Float32Array views.
+/// Returns 0 (null) on allocation failure (OOM) — callers must check
+/// the return value and fall back to JS if zero.
 ///
 /// The returned pointer is valid until `free_buffer()` or the next
 /// `alloc_buffer()` call that triggers reallocation.
@@ -54,6 +71,16 @@ static ARENA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 #[wasm_bindgen]
 pub fn alloc_buffer(size_bytes: usize) -> *mut u8 {
     let mut arena = ARENA.lock().unwrap_or_else(|e| e.into_inner());
+
+    // If we need more capacity, try to reserve it — returns Err on OOM
+    if size_bytes > arena.capacity() {
+        if arena.try_reserve(size_bytes - arena.len()).is_err() {
+            // OOM: return null pointer so JS bridge can fall back
+            return std::ptr::null_mut();
+        }
+    }
+
+    // Safe to resize now — capacity is sufficient, no panic possible
     arena.resize(size_bytes, 0);
     arena.as_mut_ptr()
 }
@@ -68,9 +95,10 @@ pub fn free_buffer() {
 
 /// Returns the WASM module version for compatibility checking.
 /// JS bridge uses this to verify WASM/JS API compatibility.
+/// Bumped to 2 for the terrain/RTE/matrix/point-cloud additions.
 #[wasm_bindgen]
 pub fn version() -> u32 {
-    1
+    2
 }
 
 /// Returns whether SIMD is supported in this build.

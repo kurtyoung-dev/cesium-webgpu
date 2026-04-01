@@ -23,6 +23,7 @@ import Imagery from "./Imagery.js";
 import ImageryState from "./ImageryState.js";
 import SplitDirection from "./SplitDirection.js";
 import TileImagery from "./TileImagery.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import {
   createTileImagerySkeletons,
   requestImagery,
@@ -479,7 +480,13 @@ class ImageryLayer {
     } else {
       imagery.texture = texture;
     }
-    imagery.image = undefined;
+
+    // Preserve image source for WebGPU — needed by the imagery reprojection
+    // render pass and the globe surface renderer's texture upload.
+    // WebGL uploads the image to GPU immediately, so clearing is safe.
+    if (!context.isWebGPU) {
+      imagery.image = undefined;
+    }
     imagery.state = ImageryState.TEXTURE_LOADED;
   }
 
@@ -560,14 +567,39 @@ class ImageryLayer {
 
     needGeographicProjection = needGeographicProjection ?? true;
 
-    if (
+    const needsReprojection =
       needGeographicProjection &&
       !(
         this._imageryProvider.tilingScheme.projection instanceof
         GeographicProjection
       ) &&
-      rectangle.width / texture.width > 1e-5
-    ) {
+      rectangle.width / texture.width > 1e-5;
+
+    if (needsReprojection) {
+      // WebGPU path: use GPU render-to-texture reprojection via feature renderer.
+      // Runs synchronously (single render pass), no ComputeCommand needed.
+      const fr = context.getFeatureRenderer(
+        FeatureRendererKey.IMAGERY_REPROJECTION,
+      );
+      if (fr && defined(imagery.image)) {
+        const device = context._device;
+        const image = imagery.image;
+        imagery._webgpuReprojectedTexture = fr.reprojectFromImage(
+          device,
+          image,
+          image.width,
+          image.height,
+          rectangle.south,
+          rectangle.north,
+        );
+        // Set texture property for compatibility with existing code paths
+        imagery.texture = texture;
+        imagery.image = undefined;
+        imagery.state = ImageryState.READY;
+        return;
+      }
+
+      // WebGL path: queue a ComputeCommand for async GPGPU reprojection
       const that = this;
       imagery.addReference();
       const computeCommand = new ComputeCommand({
@@ -592,7 +624,11 @@ class ImageryLayer {
       if (needGeographicProjection) {
         imagery.texture = texture;
       }
-      this._finalizeReprojectTexture(context, texture);
+      // Skip _finalizeReprojectTexture for WebGPU — sampler/mipmap are
+      // handled by the globe surface renderer's own GPUTexture/GPUSampler.
+      if (!context.isWebGPU) {
+        this._finalizeReprojectTexture(context, texture);
+      }
       imagery.state = ImageryState.READY;
     }
   }

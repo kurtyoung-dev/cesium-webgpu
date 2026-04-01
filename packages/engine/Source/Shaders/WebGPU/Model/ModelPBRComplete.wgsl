@@ -21,6 +21,13 @@
 //   bit 11: HAS_SPECULAR_GLOSSINESS_TEXTURE
 //   bit 12: HAS_DIFFUSE_TEXTURE
 //   bit 13: HAS_SKINNING
+//   bit 14: HAS_MORPH_TARGETS
+//
+// Morph target pipeline:
+//   Morph deltas extracted on CPU (ModelPrimitiveGeometry.js — shared)
+//   Packed into storage buffer (WebGPUModelMorphTargets.js — GPU-specific)
+//   Weights packed into uniform buffer (max 8 targets)
+//   Applied per-vertex BEFORE skinning (glTF spec: morph → skin → RTE)
 //
 // Skinning pipeline:
 //   Joint matrices computed on CPU (ModelSkin.js + ModelRuntimeNode.js — shared)
@@ -45,6 +52,11 @@ const FLAG_USE_SPECULAR_GLOSSINESS: u32        = 1024u;
 const FLAG_HAS_SPECGLOSS_TEXTURE: u32          = 2048u;
 const FLAG_HAS_DIFFUSE_TEXTURE: u32            = 4096u;
 const FLAG_HAS_SKINNING: u32                   = 8192u;
+const FLAG_HAS_MORPH_TARGETS: u32              = 16384u;
+const FLAG_HAS_INSTANCING: u32                 = 32768u;
+const FLAG_HAS_FEATURE_ID_TEXTURE: u32         = 65536u;  // bit 16
+const FLAG_HAS_FEATURE_ID_ATTRIBUTE: u32       = 131072u; // bit 17
+const FLAG_HAS_BATCH_TABLE: u32                = 262144u; // bit 18
 
 // ─── Uniform Structures ──────────────────────────────────────────────────────
 
@@ -113,9 +125,49 @@ struct LightUniforms {
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(3) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
 
+// Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
+// Storage buffer: per-target blocks of (vertexCount × vec4) position deltas
+// Uniform buffer: weights (2 × vec4 = 8 weights max) + targetCount + vertexCount
+struct MorphWeightsUniforms {
+  weights0: vec4<f32>,    // morph weights 0-3
+  weights1: vec4<f32>,    // morph weights 4-7
+  targetCount: f32,
+  vertexCount: f32,
+  _pad0: f32,
+  _pad1: f32,
+};
+@group(4) @binding(0) var<storage, read> morphDeltas: array<vec4<f32>>;
+@group(4) @binding(1) var<uniform> morphWeights: MorphWeightsUniforms;
+
+// Instance transforms (bind group 5, only used when FLAG_HAS_INSTANCING is set)
+// Storage buffer: array of mat4x4 — one per instance, column-major.
+// Instance transform is applied to position/normal/tangent BEFORE morph/skin/RTE.
+@group(5) @binding(0) var<storage, read> instanceTransforms: array<mat4x4<f32>>;
+
+// Feature ID + batch texture (bind group 6, for per-feature styling in 3D Tiles)
+// Feature ID texture: encodes integer feature IDs in RGBA channels (EXT_mesh_features)
+// Batch texture: maps feature ID → RGBA color for per-feature styling
+struct FeatureIdUniforms {
+  featuresLength: i32,
+  channelCount: i32,
+  texCoordIndex: i32,
+  hasMultilineBatchTex: i32,
+  textureStep: vec4<f32>,
+  textureDimensions: vec2<f32>,
+  _pad0: f32,
+  _pad1: f32,
+};
+@group(6) @binding(0) var featureIdTexture: texture_2d<f32>;
+@group(6) @binding(1) var featureIdSampler: sampler;
+@group(6) @binding(2) var batchTexture: texture_2d<f32>;
+@group(6) @binding(3) var batchSampler: sampler;
+@group(6) @binding(4) var<uniform> featureId: FeatureIdUniforms;
+
 // ─── Vertex Shader ───────────────────────────────────────────────────────────
 
 struct VertexInput {
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instanceIndex: u32,
   @location(0) positionMC: vec3<f32>,
   @location(1) normalMC: vec3<f32>,
   @location(2) tangentMC: vec4<f32>,
@@ -142,6 +194,25 @@ struct VertexOutput {
   var normalMC = input.normalMC;
   var tangentMC = input.tangentMC;
 
+  // ── Morph Targets ─────────────────────────────────────────────────────────
+  // Must happen BEFORE skinning per glTF spec: morph → skin → RTE.
+  // Reads weighted position deltas from storage buffer, indexed by vertex_index.
+  if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
+    let targetCount = u32(morphWeights.targetCount);
+    let vertexCount = u32(morphWeights.vertexCount);
+    let vid = input.vertexIndex;
+
+    for (var t = 0u; t < targetCount; t = t + 1u) {
+      // Weight for this target from the packed vec4 arrays
+      let w = select(morphWeights.weights0[t], morphWeights.weights1[t - 4u], t >= 4u);
+      if (abs(w) > 0.0001) {
+        let idx = t * vertexCount + vid;
+        let delta = morphDeltas[idx].xyz;
+        positionMC = positionMC + delta * w;
+      }
+    }
+  }
+
   // ── Skinning ──────────────────────────────────────────────────────────────
   // When FLAG_HAS_SKINNING is set, apply joint matrix weighted blend to
   // position, normal, and tangent. Matches the GLSL SkinningStageVS.glsl logic:
@@ -157,6 +228,18 @@ struct VertexOutput {
     positionMC = (skinMatrix * vec4<f32>(positionMC, 1.0)).xyz;
     normalMC = skinMatrix3 * normalMC;
     tangentMC = vec4<f32>(skinMatrix3 * tangentMC.xyz, tangentMC.w);
+  }
+
+  // ── GPU Instancing ────────────────────────────────────────────────────────
+  // When FLAG_HAS_INSTANCING is set, apply per-instance transform from the
+  // storage buffer. This positions each instance in model space.
+  // Applied AFTER morph/skinning, BEFORE RTE (matches glTF EXT_mesh_gpu_instancing spec).
+  if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
+    let instMat = instanceTransforms[input.instanceIndex];
+    let instMat3 = mat3x3<f32>(instMat[0].xyz, instMat[1].xyz, instMat[2].xyz);
+    positionMC = (instMat * vec4<f32>(positionMC, 1.0)).xyz;
+    normalMC = instMat3 * normalMC;
+    tangentMC = vec4<f32>(instMat3 * tangentMC.xyz, tangentMC.w);
   }
 
   // RTE in model space: camera is encoded in model coords via inverse(modelMatrix)
@@ -226,6 +309,39 @@ fn perturbNormal(nEC: vec3<f32>, tEC: vec3<f32>, bEC: vec3<f32>,
   let B = normalize(bEC);
   let N = normalize(nEC);
   return normalize(T * tn.x + B * tn.y + N * tn.z);
+}
+
+// ─── Feature ID / Batch Texture Helpers ──────────────────────────────────────
+
+// Unpacks a feature ID integer from 1-4 RGBA channel bytes (0-255 range).
+// Mirrors czm_unpackUint in GLSL: r + g*256 + b*65536 + a*16777216
+fn unpackFeatureId(channels: vec4<f32>, channelCount: i32) -> i32 {
+  let r = i32(channels.r * 255.0 + 0.5);
+  if (channelCount <= 1) { return r; }
+  let g = i32(channels.g * 255.0 + 0.5);
+  if (channelCount == 2) { return r + g * 256; }
+  let b = i32(channels.b * 255.0 + 0.5);
+  if (channelCount == 3) { return r + g * 256 + b * 65536; }
+  let a = i32(channels.a * 255.0 + 0.5);
+  return r + g * 256 + b * 65536 + a * 16777216;
+}
+
+// Looks up the batch texture color for a given feature ID.
+// Handles single-line and multi-line batch texture layouts.
+fn lookupBatchColor(fid: i32) -> vec4<f32> {
+  let step = featureId.textureStep;
+  if (featureId.hasMultilineBatchTex != 0) {
+    let dim = featureId.textureDimensions;
+    let fidF = f32(fid);
+    let st = vec2<f32>(
+      (floor(fidF / dim.x) + 0.5) / dim.y,
+      (fidF - floor(fidF / dim.x) * dim.x + 0.5) / dim.x
+    );
+    return textureSample(batchTexture, batchSampler, st);
+  }
+  // Single-line layout: feature ID maps to x coordinate
+  let st = vec2<f32>(step.x * f32(fid) + step.y, 0.5);
+  return textureSample(batchTexture, batchSampler, st);
 }
 
 // ─── Fragment Shader ─────────────────────────────────────────────────────────
@@ -351,9 +467,27 @@ struct FragmentInput {
     emissive = emissive * srgbToLinear(et);
   }
 
+  // ── Per-feature styling (3D Tiles batch table) ────────────────────────────
+  // Sample the feature ID texture to get a feature ID, then look up the batch
+  // texture to get the per-feature color. Multiply into the final color.
+  // Features with batchColor.a == 0 are hidden — discard them.
+  var featureColor = vec4<f32>(1.0);
+  if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+    let fid = unpackFeatureId(fidSample, featureId.channelCount);
+    let batchColor = lookupBatchColor(fid);
+    if (batchColor.a < 0.004) { discard; } // Feature is hidden
+    featureColor = batchColor;
+  } else if (hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    // Batch table without feature ID texture — use vertex color as proxy
+    // (for feature ID attributes passed via batch texture directly)
+    // Fall through with featureColor = white (no tinting)
+  }
+
   // ── Final composition ─────────────────────────────────────────────────────
   var color = direct + ambient + emissive;
+  color = color * featureColor.rgb;
   color = tonemapAndGamma(color);
   let alpha = select(1.0, baseColor.a, hasFlag(flags, FLAG_ALPHA_MODE_BLEND));
-  return vec4<f32>(color, alpha);
+  return vec4<f32>(color, alpha * featureColor.a);
 }

@@ -66,13 +66,16 @@ const FeatureRendererKey = {
   // ── Scene orchestration ──
   SCENE_RENDERER: 27,
 
+  // ── Imagery ──
+  IMAGERY_REPROJECTION: 28,
+
   /**
    * Total number of feature renderer keys (excluding COUNT itself).
    * Must equal the highest enum value + 1. Update when adding new keys.
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 28,
+  COUNT: 29,
 };
 
 export default Object.freeze(FeatureRendererKey);

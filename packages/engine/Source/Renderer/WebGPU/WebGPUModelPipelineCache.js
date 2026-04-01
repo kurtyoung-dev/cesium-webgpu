@@ -141,7 +141,72 @@ function createBindGroupLayouts(device) {
     ],
   });
 
-  return { cameraBGL, materialBGL, textureBGL, skinningBGL };
+  // Group 4: Morph targets (storage buffer for deltas + uniform for weights)
+  const morphTargetBGL = device.createBindGroupLayout({
+    label: "Model MorphTarget BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  // Group 5: Instance transforms storage buffer (for GPU instancing)
+  const instancingBGL = device.createBindGroupLayout({
+    label: "Model Instancing BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+    ],
+  });
+
+  // Group 6: Feature ID texture + batch texture for per-feature styling
+  // Used by EXT_mesh_features (feature ID textures) and 3D Tiles batch tables
+  const featureIdBGL = device.createBindGroupLayout({
+    label: "Model FeatureId BGL",
+    entries: [
+      // Feature ID texture (sampled in fragment shader)
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      // Batch texture (maps feature ID → RGBA color)
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      // Feature uniforms (featuresLength, channelCount, texStep, etc.)
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  return { cameraBGL, materialBGL, textureBGL, skinningBGL, morphTargetBGL, instancingBGL, featureIdBGL };
 }
 
 /**
@@ -291,8 +356,11 @@ class WebGPUModelPipelineCache {
     this._materialBGL = bgls.materialBGL;
     this._textureBGL = bgls.textureBGL;
     this._skinningBGL = bgls.skinningBGL;
+    this._morphTargetBGL = bgls.morphTargetBGL;
+    this._instancingBGL = bgls.instancingBGL;
+    this._featureIdBGL = bgls.featureIdBGL;
 
-    // Create pipeline layout (shared by all variants, 4 bind groups)
+    // Create pipeline layout (shared by all variants, 7 bind groups)
     this._pipelineLayout = device.createPipelineLayout({
       label: "Model PBR PipelineLayout",
       bindGroupLayouts: [
@@ -300,6 +368,9 @@ class WebGPUModelPipelineCache {
         this._materialBGL,
         this._textureBGL,
         this._skinningBGL,
+        this._morphTargetBGL,
+        this._instancingBGL,
+        this._featureIdBGL,
       ],
     });
 
@@ -383,6 +454,75 @@ class WebGPUModelPipelineCache {
     this._defaultSkinningBG = device.createBindGroup({
       layout: this._skinningBGL,
       entries: [{ binding: 0, resource: { buffer: this._defaultJointBuffer } }],
+    });
+
+    // Default morph target bind group: 1-element storage + zero-weight uniform
+    // Used when a primitive has no morph targets (FLAG_HAS_MORPH_TARGETS will be false)
+    this._defaultMorphDeltaBuffer = device.createBuffer({
+      label: "default-morph-deltas",
+      size: 16, // 1 vec4 minimum
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    // 12 floats: weights0(4) + weights1(4) + targetCount + vertexCount + pad(2)
+    const zeroWeights = new Float32Array(12);
+    this._defaultMorphWeightBuffer = device.createBuffer({
+      label: "default-morph-weights",
+      size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this._defaultMorphWeightBuffer, 0, zeroWeights);
+    this._defaultMorphTargetBG = device.createBindGroup({
+      layout: this._morphTargetBGL,
+      entries: [
+        { binding: 0, resource: { buffer: this._defaultMorphDeltaBuffer } },
+        { binding: 1, resource: { buffer: this._defaultMorphWeightBuffer } },
+      ],
+    });
+
+    // Default instancing bind group: 1-element identity matrix storage buffer
+    // Used when a primitive has no instancing (FLAG_HAS_INSTANCING will be false)
+    this._defaultInstancingBuffer = device.createBuffer({
+      label: "default-instance-transforms",
+      size: 64, // 1 mat4 = 64 bytes
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this._defaultInstancingBuffer, 0, identityData);
+    this._defaultInstancingBG = device.createBindGroup({
+      layout: this._instancingBGL,
+      entries: [{ binding: 0, resource: { buffer: this._defaultInstancingBuffer } }],
+    });
+
+    // Default feature ID bind group: dummy textures + zero-length uniform
+    // Used when a primitive has no feature IDs (FLAG_HAS_FEATURE_ID_TEXTURE will be false)
+    const zeroFeatureUniforms = new Float32Array(12); // 48 bytes
+    this._defaultFeatureUniformBuffer = device.createBuffer({
+      label: "default-feature-uniforms",
+      size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(
+      this._defaultFeatureUniformBuffer,
+      0,
+      zeroFeatureUniforms,
+    );
+    this._defaultFeatureIdBG = device.createBindGroup({
+      layout: this._featureIdBGL,
+      entries: [
+        {
+          binding: 0,
+          resource: this._defaultWhiteTexture.createView(),
+        },
+        { binding: 1, resource: this._defaultSampler },
+        {
+          binding: 2,
+          resource: this._defaultWhiteTexture.createView(),
+        },
+        { binding: 3, resource: this._defaultSampler },
+        {
+          binding: 4,
+          resource: { buffer: this._defaultFeatureUniformBuffer },
+        },
+      ],
     });
   }
 
@@ -487,6 +627,36 @@ class WebGPUModelPipelineCache {
     return this._defaultSkinningBG;
   }
 
+  /** @returns {GPUBindGroupLayout} Bind group layout for morph target resources */
+  get morphTargetBGL() {
+    return this._morphTargetBGL;
+  }
+
+  /** @returns {GPUBindGroup} Default morph target bind group with empty deltas */
+  get defaultMorphTargetBindGroup() {
+    return this._defaultMorphTargetBG;
+  }
+
+  /** @returns {GPUBindGroupLayout} Bind group layout for instancing storage buffer */
+  get instancingBGL() {
+    return this._instancingBGL;
+  }
+
+  /** @returns {GPUBindGroup} Default instancing bind group with identity matrix */
+  get defaultInstancingBindGroup() {
+    return this._defaultInstancingBG;
+  }
+
+  /** @returns {GPUBindGroupLayout} Bind group layout for feature ID + batch textures */
+  get featureIdBGL() {
+    return this._featureIdBGL;
+  }
+
+  /** @returns {GPUBindGroup} Default feature ID bind group with dummy textures */
+  get defaultFeatureIdBindGroup() {
+    return this._defaultFeatureIdBG;
+  }
+
   /**
    * Creates a 1×1 RGBA texture with the given color.
    * @private
@@ -537,6 +707,10 @@ class WebGPUModelPipelineCache {
     this._defaultJointsBuffer?.destroy();
     this._defaultWeightsBuffer?.destroy();
     this._defaultJointBuffer?.destroy();
+    this._defaultMorphDeltaBuffer?.destroy();
+    this._defaultMorphWeightBuffer?.destroy();
+    this._defaultInstancingBuffer?.destroy();
+    this._defaultFeatureUniformBuffer?.destroy();
   }
 }
 

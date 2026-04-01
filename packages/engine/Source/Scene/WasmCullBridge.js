@@ -1,8 +1,10 @@
 import SOABoundingSphereLayout from "./SOABoundingSphereLayout.js";
+import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 
 // Shared WASM module state — loaded once, reused across all bridge instances.
-// The generated JS glue caches internally, so multiple init() calls are no-ops.
+let _wasmModule = null;
 let _wasmLoading = null;
+let _simdActive = false;
 
 /**
  * JavaScript bridge for WASM-accelerated frustum culling using SIMD.
@@ -11,310 +13,294 @@ let _wasmLoading = null;
  * and frustum planes. When a WASM module is loaded, culling is dispatched
  * to WASM SIMD for ~10x speedup over JS. Falls back to JS implementation.
  *
- * WASM SIMD frustum culling algorithm:
- * 1. Load 4 sphere centers into f32x4 registers
- * 2. For each frustum plane: dot(normal, center) + d > -radius → inside
- * 3. Bitwise AND of all 6 plane results → visible if all pass
- * 4. Write visibility to result buffer
- *
- * Performance expectations:
- * - JS: ~0.3μs/sphere (300μs for 1000 spheres)
- * - WASM SIMD: ~0.03μs/sphere (30μs for 1000 spheres, ~10x speedup)
- *
- * @param {object} [options] Configuration options.
- * @param {number} [options.capacity=65536] Maximum bounding spheres.
- * @param {boolean} [options.useSharedMemory=false] Use SharedArrayBuffer.
- * @param {number} [options.threshold=500] Min spheres for WASM activation.
- *
  * @alias WasmCullBridge
- * @constructor
  * @private
  */
-function WasmCullBridge(options) {
-  options = options ?? {};
-
+class WasmCullBridge {
   /**
-   * SOA bounding sphere layout for SIMD batch processing.
-   * @type {SOABoundingSphereLayout}
+   * @param {object} [options] Configuration options.
+   * @param {number} [options.capacity=65536] Maximum bounding spheres.
+   * @param {boolean} [options.useSharedMemory=false] Use SharedArrayBuffer.
+   * @param {number} [options.threshold=500] Min spheres for WASM activation.
    */
-  this.soaLayout = new SOABoundingSphereLayout(
-    options.capacity ?? 65536,
-    options.useSharedMemory ?? false,
-  );
+  constructor(options) {
+    options = options ?? {};
 
-  /**
-   * Frustum planes buffer (6 planes × 4 floats = 24 floats).
-   * Layout: [nx, ny, nz, d] per plane.
-   * @type {Float32Array}
-   * @private
-   */
-  this._frustumPlanes = new Float32Array(24);
+    /**
+     * SOA bounding sphere layout for SIMD batch processing.
+     * @type {SOABoundingSphereLayout}
+     */
+    this.soaLayout = new SOABoundingSphereLayout(
+      options.capacity ?? 65536,
+      options.useSharedMemory ?? false,
+    );
 
-  /**
-   * Whether the WASM module is loaded and ready.
-   * @type {boolean}
-   * @private
-   */
-  this._wasmReady = false;
+    /**
+     * Frustum planes buffer (6 planes × 4 floats = 24 floats).
+     * @type {Float32Array}
+     * @private
+     */
+    this._frustumPlanes = new Float32Array(24);
 
-  /**
-   * WASM module instance.
-   * @private
-   */
-  this._wasmInstance = undefined;
+    /**
+     * Minimum sphere count for WASM activation.
+     * @type {number}
+     */
+    this.threshold = options.threshold ?? 500;
 
-  /**
-   * Minimum sphere count for WASM activation.
-   * @type {number}
-   */
-  this.threshold = options.threshold ?? 500;
+    /**
+     * Per-frame statistics.
+     * @type {object}
+     * @private
+     */
+    this._stats = {
+      spheresTested: 0,
+      spheresVisible: 0,
+      cullTimeMs: 0,
+      usedWasm: false,
+    };
 
-  /**
-   * Per-frame statistics.
-   * @type {object}
-   */
-  this._stats = {
-    spheresTested: 0,
-    spheresVisible: 0,
-    cullTimeMs: 0,
-    usedWasm: false,
-  };
-}
+    this._isDestroyed = false;
+  }
 
-Object.defineProperties(WasmCullBridge.prototype, {
   /**
    * Whether WASM culling is available.
-   * @memberof WasmCullBridge.prototype
    * @type {boolean}
    * @readonly
    */
-  isAvailable: {
-    get: function () {
-      return this._wasmReady;
-    },
-  },
+  get isAvailable() {
+    return _wasmModule !== null;
+  }
 
   /**
    * Per-frame statistics.
-   * @memberof WasmCullBridge.prototype
    * @type {object}
    * @readonly
    */
-  stats: {
-    get: function () {
-      return this._stats;
-    },
-  },
-});
-
-/**
- * Packs frustum planes from a CullingVolume into the flat float32 buffer.
- *
- * @param {CullingVolume} cullingVolume The camera frustum.
- */
-WasmCullBridge.prototype.packFrustumPlanes = function (cullingVolume) {
-  const planes = cullingVolume.planes;
-  for (let i = 0; i < 6 && i < planes.length; i++) {
-    const plane = planes[i];
-    const offset = i * 4;
-    this._frustumPlanes[offset] = plane.normal.x;
-    this._frustumPlanes[offset + 1] = plane.normal.y;
-    this._frustumPlanes[offset + 2] = plane.normal.z;
-    this._frustumPlanes[offset + 3] = plane.distance;
-  }
-};
-
-/**
- * Performs batch frustum culling on all populated bounding spheres.
- * Uses WASM SIMD when available, falls back to JS.
- *
- * @param {CullingVolume} cullingVolume The camera frustum.
- * @param {Array} commands The command list (for SOA population).
- * @returns {Array} Array of visible command indices.
- */
-WasmCullBridge.prototype.cullCommands = function (cullingVolume, commands) {
-  const startTime = performance.now();
-
-  // Resize if needed
-  if (commands.length > this.soaLayout.capacity) {
-    this.soaLayout.resize(commands.length * 2);
+  get stats() {
+    return this._stats;
   }
 
-  // Populate SOA from commands
-  this.soaLayout.populate(commands);
-  this.packFrustumPlanes(cullingVolume);
-
-  const count = this.soaLayout.count;
-  this._stats.spheresTested = count;
-
-  // Use WASM or JS fallback
-  if (this._wasmReady && count >= this.threshold) {
-    this._cullWasm(count);
-    this._stats.usedWasm = true;
-  } else {
-    this._cullJS(count);
-    this._stats.usedWasm = false;
-  }
-
-  // Collect visible indices
-  const visibleIndices = [];
-  const visibility = this.soaLayout.visibility;
-  const commandIndices = this.soaLayout.commandIndices;
-  for (let i = 0; i < count; i++) {
-    if (visibility[i] === 1) {
-      visibleIndices.push(commandIndices[i]);
+  /**
+   * Packs frustum planes from a CullingVolume into the flat float32 buffer.
+   * @param {CullingVolume} cullingVolume The camera frustum.
+   */
+  packFrustumPlanes(cullingVolume) {
+    const planes = cullingVolume.planes;
+    for (let i = 0; i < 6 && i < planes.length; i++) {
+      const plane = planes[i];
+      const offset = i * 4;
+      this._frustumPlanes[offset] = plane.normal.x;
+      this._frustumPlanes[offset + 1] = plane.normal.y;
+      this._frustumPlanes[offset + 2] = plane.normal.z;
+      this._frustumPlanes[offset + 3] = plane.distance;
     }
   }
 
-  this._stats.spheresVisible = visibleIndices.length;
-  this._stats.cullTimeMs = performance.now() - startTime;
+  /**
+   * Performs batch frustum culling on all populated bounding spheres.
+   * Uses WASM SIMD when available, falls back to JS.
+   *
+   * @param {CullingVolume} cullingVolume The camera frustum.
+   * @param {Array} commands The command list (for SOA population).
+   * @returns {Array} Array of visible command indices.
+   */
+  cullCommands(cullingVolume, commands) {
+    const startTime = performance.now();
 
-  return visibleIndices;
-};
+    if (commands.length > this.soaLayout.capacity) {
+      this.soaLayout.resize(commands.length * 2);
+    }
 
-/**
- * JS fallback frustum culling — tests each sphere against 6 planes.
- * @param {number} count Number of spheres to test.
- * @private
- */
-WasmCullBridge.prototype._cullJS = function (count) {
-  const cx = this.soaLayout.centerX;
-  const cy = this.soaLayout.centerY;
-  const cz = this.soaLayout.centerZ;
-  const r = this.soaLayout.radius;
-  const vis = this.soaLayout.visibility;
-  const planes = this._frustumPlanes;
+    this.soaLayout.populate(commands);
+    this.packFrustumPlanes(cullingVolume);
 
-  for (let i = 0; i < count; i++) {
-    const x = cx[i];
-    const y = cy[i];
-    const z = cz[i];
-    const radius = r[i];
-    let visible = 1;
+    const count = this.soaLayout.count;
+    this._stats.spheresTested = count;
 
-    // Test against 6 frustum planes
-    for (let p = 0; p < 6; p++) {
-      const offset = p * 4;
-      const dot =
-        planes[offset] * x +
-        planes[offset + 1] * y +
-        planes[offset + 2] * z +
-        planes[offset + 3];
+    if (_wasmModule && count >= this.threshold) {
+      this._cullWasm(count);
+      this._stats.usedWasm = true;
+    } else {
+      this._cullJS(count);
+      this._stats.usedWasm = false;
+    }
 
-      if (dot < -radius) {
-        visible = 0;
-        break; // Outside this plane — definitively culled
+    const visibleIndices = [];
+    const visibility = this.soaLayout.visibility;
+    const commandIndices = this.soaLayout.commandIndices;
+    for (let i = 0; i < count; i++) {
+      if (visibility[i] === 1) {
+        visibleIndices.push(commandIndices[i]);
       }
     }
 
-    vis[i] = visible;
-  }
-};
+    this._stats.spheresVisible = visibleIndices.length;
+    this._stats.cullTimeMs = performance.now() - startTime;
 
-/**
- * Asynchronously loads the WASM culling module.
- * Gracefully falls back to JS if WASM fails to load (missing binary,
- * browser doesn't support WASM SIMD, etc.).
- *
- * @returns {Promise<boolean>} True if WASM loaded successfully.
- */
-WasmCullBridge.prototype.loadWasm = function () {
-  if (this._wasmReady) {
-    return Promise.resolve(true);
+    return visibleIndices;
   }
 
-  // Deduplicate loading — all instances share the same module
-  if (_wasmLoading !== null) {
-    return _wasmLoading.then((mod) => {
-      if (mod) {
-        this._wasmInstance = mod;
-        this._wasmReady = true;
+  /**
+   * JS fallback frustum culling — tests each sphere against 6 planes.
+   * @param {number} count Number of spheres to test.
+   * @private
+   */
+  _cullJS(count) {
+    const cx = this.soaLayout.centerX;
+    const cy = this.soaLayout.centerY;
+    const cz = this.soaLayout.centerZ;
+    const r = this.soaLayout.radius;
+    const vis = this.soaLayout.visibility;
+    const planes = this._frustumPlanes;
+
+    for (let i = 0; i < count; i++) {
+      const x = cx[i];
+      const y = cy[i];
+      const z = cz[i];
+      const radius = r[i];
+      let visible = 1;
+
+      for (let p = 0; p < 6; p++) {
+        const offset = p * 4;
+        const dot =
+          planes[offset] * x +
+          planes[offset + 1] * y +
+          planes[offset + 2] * z +
+          planes[offset + 3];
+
+        if (dot < -radius) {
+          visible = 0;
+          break;
+        }
       }
-      return this._wasmReady;
-    });
+
+      vis[i] = visible;
+    }
   }
 
-  _wasmLoading = import("../ThirdParty/Workers/cesium_wasm_culling.js")
-    .then((glue) => glue.default())
-    .then((wasm) => {
-      this._wasmInstance = wasm;
-      this._wasmReady = true;
-      return wasm;
-    })
-    .catch((err) => {
+  /**
+   * Asynchronously loads the WASM culling module.
+   * Performs SIMD feature detection and version checking per .clinerules mandates.
+   *
+   * @returns {Promise<boolean>} True if WASM loaded successfully.
+   */
+  loadWasm() {
+    if (_wasmModule) {
+      return Promise.resolve(true);
+    }
+
+    if (_wasmLoading !== null) {
+      return _wasmLoading.then(() => _wasmModule !== null);
+    }
+
+    // Check browser SIMD support before attempting to load SIMD-enabled module
+    if (!WasmFeatureDetection.checkSIMDSupport()) {
       console.warn(
-        "[CesiumJS:WasmCullBridge] WASM load failed, using JS fallback:",
-        err.message ?? err,
+        "[CesiumJS:WASM:cull] Browser does not support WASM SIMD. Using JS fallback.",
       );
-      _wasmLoading = null;
-      return null;
-    });
+    }
 
-  return _wasmLoading.then(() => this._wasmReady);
-};
+    _wasmLoading = import("../ThirdParty/Workers/cesium_wasm.js")
+      .then((glue) => glue.default())
+      .then((wasm) => {
+        // Version check (mandated by .clinerules)
+        WasmFeatureDetection.checkVersionMatch(wasm, "cull");
+        // SIMD check
+        _simdActive = WasmFeatureDetection.checkModuleSIMD(wasm, "cull");
+        _wasmModule = wasm;
+        return true;
+      })
+      .catch((err) => {
+        console.warn(
+          "[CesiumJS:WasmCullBridge] WASM load failed, using JS fallback:",
+          err.message ?? err,
+        );
+        _wasmLoading = null;
+        return false;
+      });
 
-/**
- * WASM SIMD frustum culling — copies SOA data into WASM linear memory,
- * calls the SIMD batch function, reads visibility results back.
- *
- * Memory layout in WASM linear memory (one contiguous allocation):
- *   [centerX: N×f32][centerY: N×f32][centerZ: N×f32]
- *   [radii: N×f32][planes: 24×f32][visibility: N×u8]
- *
- * @param {number} count Number of spheres to test.
- * @private
- */
-WasmCullBridge.prototype._cullWasm = function (count) {
-  const wasm = this._wasmInstance;
-  if (!wasm) {
-    this._cullJS(count);
-    return;
+    return _wasmLoading;
   }
 
-  const floatBytes = count * 4;
-  const planesBytes = 24 * 4; // 6 planes × 4 floats × 4 bytes
-  const visBytes = count;
-  const totalBytes = floatBytes * 4 + planesBytes + visBytes;
+  /**
+   * WASM SIMD frustum culling — copies SOA data into WASM linear memory,
+   * calls the SIMD batch function, reads visibility results back.
+   * Uses try/finally to ensure free_buffer() is called after each operation.
+   *
+   * @param {number} count Number of spheres to test.
+   * @private
+   */
+  _cullWasm(count) {
+    const wasm = _wasmModule;
+    if (!wasm) {
+      this._cullJS(count);
+      return;
+    }
 
-  // Allocate contiguous WASM memory
-  const basePtr = wasm.alloc_buffer(totalBytes);
+    const floatBytes = count * 4;
+    const planesBytes = 24 * 4;
+    const visBytes = count;
+    const totalBytes = floatBytes * 4 + planesBytes + visBytes;
 
-  // Compute sub-offsets
-  const cxPtr = basePtr;
-  const cyPtr = basePtr + floatBytes;
-  const czPtr = basePtr + floatBytes * 2;
-  const rPtr = basePtr + floatBytes * 3;
-  const plPtr = basePtr + floatBytes * 4;
-  const visPtr = plPtr + planesBytes;
+    try {
+      const basePtr = wasm.alloc_buffer(totalBytes);
+      if (basePtr === 0) {
+        // OOM in WASM arena — fall back to JS
+        this._cullJS(count);
+        return;
+      }
 
-  // Copy SOA data into WASM memory
-  const wasmF32 = new Float32Array(wasm.memory.buffer);
-  wasmF32.set(this.soaLayout.centerX.subarray(0, count), cxPtr / 4);
-  wasmF32.set(this.soaLayout.centerY.subarray(0, count), cyPtr / 4);
-  wasmF32.set(this.soaLayout.centerZ.subarray(0, count), czPtr / 4);
-  wasmF32.set(this.soaLayout.radius.subarray(0, count), rPtr / 4);
-  wasmF32.set(this._frustumPlanes, plPtr / 4);
+      const cxPtr = basePtr;
+      const cyPtr = basePtr + floatBytes;
+      const czPtr = basePtr + floatBytes * 2;
+      const rPtr = basePtr + floatBytes * 3;
+      const plPtr = basePtr + floatBytes * 4;
+      const visPtr = plPtr + planesBytes;
 
-  // Call WASM SIMD frustum culling
-  wasm.frustum_cull_batch(cxPtr, cyPtr, czPtr, rPtr, plPtr, visPtr, count);
+      const wasmF32 = new Float32Array(wasm.memory.buffer);
+      wasmF32.set(this.soaLayout.centerX.subarray(0, count), cxPtr / 4);
+      wasmF32.set(this.soaLayout.centerY.subarray(0, count), cyPtr / 4);
+      wasmF32.set(this.soaLayout.centerZ.subarray(0, count), czPtr / 4);
+      wasmF32.set(this.soaLayout.radius.subarray(0, count), rPtr / 4);
+      wasmF32.set(this._frustumPlanes, plPtr / 4);
 
-  // Read visibility results back into JS SOA layout
-  const wasmVis = new Uint8Array(wasm.memory.buffer, visPtr, count);
-  this.soaLayout.visibility.set(wasmVis);
-};
+      wasm.frustum_cull_batch(cxPtr, cyPtr, czPtr, rPtr, plPtr, visPtr, count);
 
-/**
- * Returns diagnostic info.
- * @returns {string} Diagnostic string.
- */
-WasmCullBridge.prototype.getDiagnostics = function () {
-  return [
-    `=== WasmCullBridge (WASM: ${this._wasmReady ? "READY" : "NOT LOADED"}) ===`,
-    `Threshold: ${this.threshold} spheres`,
-    `Last cull: ${this._stats.spheresTested} tested, ${this._stats.spheresVisible} visible`,
-    `Time: ${this._stats.cullTimeMs.toFixed(2)}ms`,
-    `Used WASM: ${this._stats.usedWasm}`,
-  ].join("\n");
-};
+      const wasmVis = new Uint8Array(wasm.memory.buffer, visPtr, count);
+      this.soaLayout.visibility.set(wasmVis);
+    } catch (e) {
+      // WASM operation failed — fall back to JS
+      console.warn("[CesiumJS:WasmCullBridge] WASM cull failed, using JS fallback:", e.message);
+      this._cullJS(count);
+    }
+  }
+
+  /**
+   * Returns diagnostic info.
+   * @returns {string} Diagnostic string.
+   */
+  getDiagnostics() {
+    return [
+      `=== WasmCullBridge (WASM: ${_wasmModule ? "READY" : "NOT LOADED"}, SIMD: ${_simdActive}) ===`,
+      `Threshold: ${this.threshold} spheres`,
+      `Last cull: ${this._stats.spheresTested} tested, ${this._stats.spheresVisible} visible`,
+      `Time: ${this._stats.cullTimeMs.toFixed(2)}ms`,
+      `Used WASM: ${this._stats.usedWasm}`,
+    ].join("\n");
+  }
+
+  /**
+   * Releases WASM resources. Call from Viewer.destroy().
+   * Frees the shared arena buffer and drops module references.
+   */
+  destroy() {
+    if (this._isDestroyed) {
+      return;
+    }
+    WasmFeatureDetection.freeBuffer(_wasmModule);
+    this._isDestroyed = true;
+  }
+}
 
 export default WasmCullBridge;

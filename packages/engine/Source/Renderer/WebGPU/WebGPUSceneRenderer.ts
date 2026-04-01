@@ -94,6 +94,67 @@ function executeBatch(
   }
 }
 
+/**
+ * Execute commands as depth-only derived variants.
+ * Used for globe depth pass — renders only to depth buffer (no color writes).
+ */
+function executeBatchDepthOnly(
+  commands: any[],
+  count: number,
+  scene: any,
+  context: any,
+  passState: any,
+): void {
+  for (let i = 0; i < count; i++) {
+    const cmd = commands[i];
+    if (!cmd) continue;
+    // Mark command for depth-only pipeline variant selection
+    const savedDepthOnly = cmd._depthOnly;
+    const savedColorWrite = cmd._colorWriteMask;
+    cmd._depthOnly = true;
+    cmd._colorWriteMask = 0;
+    executeWebGPUCommand(cmd, scene, context, passState);
+    cmd._depthOnly = savedDepthOnly;
+    cmd._colorWriteMask = savedColorWrite;
+  }
+}
+
+/**
+ * Execute commands with translucency-derived blend state.
+ * Used for globe translucency — selects blend/cull/depth based on
+ * the _webgpuTranslucencyDerived type marker.
+ */
+function executeBatchTranslucent(
+  commands: any[],
+  count: number,
+  scene: any,
+  context: any,
+  passState: any,
+): void {
+  for (let i = 0; i < count; i++) {
+    const cmd = commands[i];
+    if (!cmd) continue;
+    // If the command has a translucency marker, apply the blend state
+    if (cmd._webgpuTranslucencyDerived) {
+      const saved = {
+        blend: cmd._blendEnabled,
+        depthWrite: cmd._depthWriteEnabled,
+        cullMode: cmd._cullMode,
+      };
+      const derived = cmd._webgpuTranslucencyDerived;
+      cmd._blendEnabled = derived.blendEnabled ?? saved.blend;
+      cmd._depthWriteEnabled = derived.depthWriteEnabled ?? saved.depthWrite;
+      cmd._cullMode = derived.cullMode ?? saved.cullMode;
+      executeWebGPUCommand(cmd, scene, context, passState);
+      cmd._blendEnabled = saved.blend;
+      cmd._depthWriteEnabled = saved.depthWrite;
+      cmd._cullMode = saved.cullMode;
+    } else {
+      executeWebGPUCommand(cmd, scene, context, passState);
+    }
+  }
+}
+
 // --------------- Main class ---------------
 
 export class WebGPUSceneRenderer {
@@ -223,6 +284,12 @@ export class WebGPUSceneRenderer {
     // Ensure rendering resources are created/sized
     this._ensureResources(config);
 
+    // Performance infrastructure: begin frame for render bundles, indirect draws, profiling
+    const perfManager = context.performanceManager;
+    if (perfManager) {
+      perfManager.beginFrame();
+    }
+
     // Opaque near offset to avoid tearing between adjacent frustums
     const opaqueFrustumNearOffset: number =
       scene.opaqueFrustumNearOffset ?? 0.9999;
@@ -251,7 +318,15 @@ export class WebGPUSceneRenderer {
 
       // Copy globe depth for terrain clamping and picking
       if (this._globeDepth && config.useGlobeDepthFramebuffer) {
-        // Future: this._globeDepth.executeCopyDepth(context, passState);
+        const encoder: GPUCommandEncoder | undefined =
+          context._currentCommandEncoder;
+        if (encoder) {
+          // End current render pass so the depth texture is available for reading
+          context.endCurrentRenderPass?.();
+          this._globeDepth.executeCopyDepth(encoder);
+          // Resume default render pass for subsequent commands
+          context.resumeDefaultRenderPass?.();
+        }
       }
 
       // Pass 3: TERRAIN_CLASSIFICATION
@@ -316,8 +391,11 @@ export class WebGPUSceneRenderer {
         scene._picking
       ) {
         const pickDepth = scene._picking.getPickDepth(scene, index);
-        if (pickDepth && (this._globeDepth as any).depthStencilTexture) {
-          // Future: pickDepth.update(context, this._globeDepth.depthStencilTexture);
+        // Pass the packed-depth-as-color texture (RGBA8, from executeCopyDepth)
+        // so PickDepth can read it via buffer copy + mapAsync
+        const packedDepthTex = this._globeDepth.globeDepthTexture;
+        if (pickDepth && packedDepthTex) {
+          pickDepth.update(context, packedDepthTex);
         }
       }
     }
@@ -332,6 +410,11 @@ export class WebGPUSceneRenderer {
 
     // Post-processing (tonemapping, FXAA, etc.)
     this._runPostProcessing(config);
+
+    // Performance infrastructure: end frame — flush indirect draws, collect profiling
+    if (perfManager) {
+      perfManager.endFrame();
+    }
   }
 
   // --- Pick pass: render to offscreen pick framebuffer ---
@@ -556,12 +639,26 @@ export class WebGPUSceneRenderer {
 
     context.uniformState?.updatePass(Pass.GLOBE);
 
-    // When globe depth is available, globe renders to its own framebuffer
-    // so depth can be sampled in subsequent passes (terrain clamping, picking)
+    // Check if globe is translucent
+    const globe = scene.globe;
+    const isTranslucent =
+      globe &&
+      globe._surface &&
+      globe._surface._tileProvider &&
+      globe._surface._tileProvider.translucencyEnabled;
+
+    if (isTranslucent) {
+      // Globe translucency: execute with per-command blend/cull/depth state
+      // from the _webgpuTranslucencyDerived marker set by
+      // WebGPUGlobeTranslucencyState.updateDerivedCommands()
+      executeBatchTranslucent(commands, count, scene, context, passState);
+      return;
+    }
+
+    // When globe depth is available, also produce a depth-only copy
+    // for terrain clamping and picking
     if (this._globeDepth && config.useGlobeDepthFramebuffer) {
-      // Future: switch render target to globe depth FBO
       executeBatch(commands, count, scene, context, passState);
-      // Future: copy depth for shader access
       return;
     }
 
@@ -622,47 +719,77 @@ export class WebGPUSceneRenderer {
 
     context.uniformState?.updatePass(Pass.TRANSLUCENT);
 
-    if (this._oit && config.useOIT && !config.picking) {
-      // OIT accumulation pass: render translucent geometry with
-      // additive blending into accumulation + revealage textures
-      const encoder: GPUCommandEncoder | undefined =
-        context._currentCommandEncoder;
-      if (encoder && this._oit.getAccumulationPassDescriptor) {
-        // Get the depth-stencil view from scene framebuffer for depth testing
-        const depthView =
-          this._sceneFramebuffer?.depthStencilTexture?.createView();
-        if (depthView) {
-          const passDesc = this._oit.getAccumulationPassDescriptor(depthView);
-          if (passDesc) {
-            // End the current render pass before starting OIT pass
-            context.endCurrentRenderPass?.();
-            const oitPass = encoder.beginRenderPass(passDesc);
-            for (let i = 0; i < count; i++) {
-              const cmd = commands[i];
-              if (cmd.isWebGPUDrawCommand) {
-                cmd.execute(oitPass);
+    // OIT accumulation + composite path.
+    // Full MRT OIT (McGuire & Bavoil 2013) requires 2-target pipeline variants
+    // for each renderer (accumulation rgba16float + revealage r8unorm).
+    // Pipeline variant support is implemented per-renderer by checking
+    // command._oitPipeline. When available, we use the MRT accumulation pass;
+    // otherwise fall back to standard alpha blending.
+    if (this._oit && this._oit.isSupported && config.useOIT && !config.picking) {
+      // Check if any commands have OIT-compatible pipeline variants.
+      // If at least one does, use the OIT path for all (non-OIT commands
+      // get alpha blended in the composite instead).
+      let hasOITPipelines = false;
+      for (let ci = 0; ci < count; ci++) {
+        if (commands[ci]?._oitPipeline) {
+          hasOITPipelines = true;
+          break;
+        }
+      }
+
+      if (hasOITPipelines) {
+        // Full OIT path: end opaque render pass → accumulation → composite
+        const encoder: any = context._currentCommandEncoder;
+        const depthView = context._depthStencilView;
+        if (encoder && depthView) {
+          context.endCurrentRenderPass?.();
+
+          // Begin OIT accumulation render pass (2 MRT targets, depth read-only)
+          const accPassDesc = this._oit.getAccumulationPassDescriptor(depthView);
+          if (accPassDesc) {
+            const accPass = encoder.beginRenderPass(accPassDesc);
+            // Execute commands that have OIT pipeline variants
+            for (let ci = 0; ci < count; ci++) {
+              const cmd = commands[ci];
+              if (cmd?.isWebGPUDrawCommand && cmd._oitPipeline) {
+                accPass.setPipeline(cmd._oitPipeline);
+                for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
+                  accPass.setBindGroup(bi, cmd.bindGroups[bi]);
+                }
+                for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
+                  accPass.setVertexBuffer(vi, cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi]);
+                }
+                if (cmd.indexBuffer && cmd.indexCount) {
+                  accPass.setIndexBuffer(cmd.indexBuffer._buffer ?? cmd.indexBuffer, cmd.indexFormat);
+                  accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
+                } else if (cmd.vertexCount) {
+                  accPass.draw(cmd.vertexCount, cmd.instanceCount ?? 1);
+                }
               }
             }
-            oitPass.end();
+            accPass.end();
+
+            // Composite OIT result over opaque scene
+            const sceneColorView = context._sceneColorView;
+            const sceneColorFormat = context._sceneColorFormat ?? "bgra8unorm";
+            if (sceneColorView) {
+              this._oit.executeComposite(encoder, sceneColorView, sceneColorFormat);
+            }
           }
-        }
 
-        // Composite OIT result over the opaque scene
-        const canvasView: GPUTextureView | undefined =
-          context.currentTextureView;
-        const canvasFormat: GPUTextureFormat =
-          context.presentationFormat ?? "bgra8unorm";
-        if (canvasView && encoder) {
-          this._oit.executeComposite(encoder, canvasView, canvasFormat);
+          // Resume default render pass for subsequent passes
+          context.resumeDefaultRenderPass?.();
+          return;
         }
-
-        // Resume default render pass
-        context.resumeDefaultRenderPass?.();
-        return;
       }
     }
 
-    // Fallback: render translucent commands directly (no OIT)
+    // Fallback: render translucent commands with standard alpha blending.
+    // This is correct for non-overlapping translucent geometry and has
+    // minor ordering artifacts for overlapping geometry. To enable full OIT,
+    // each feature renderer must create _oitPipeline variants with:
+    //   1. Fragment targets: [{format:"rgba16float", blend:additive}, {format:"r8unorm", blend:product}]
+    //   2. Fragment output: @location(0) weighted accumulation, @location(1) revealage
     executeBatch(commands, count, scene, context, passState);
   }
 

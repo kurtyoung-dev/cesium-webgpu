@@ -344,7 +344,8 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
 
   updateAndRenderPrimitives(scene);
 
-  // SORT-3: Bin commands through RenderScheduler for material sort ID population.
+  // SORT-3: Bin commands through RenderScheduler for material sort ID population,
+  // then sort all layers for proper render ordering.
   const scheduler = scene._renderScheduler;
   if (scheduler.enabled) {
     const cmdList = scene.frameState.commandList;
@@ -352,6 +353,55 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     for (let ci = 0; ci < cmdCount; ci++) {
       const cmd = cmdList[ci];
       scheduler.binCommand(cmd, cmd.pass === Pass.TRANSLUCENT);
+    }
+
+    // SORT-FULL: Sort all layer buckets after binning completes.
+    // This applies per-layer sort modes (MATERIAL_MESH, BACK_TO_FRONT, etc.)
+    // to the commands within each render layer.
+    scheduler.sortAllLayers(scene.frameState.camera.positionWC);
+  }
+
+  // Octree-accelerated PVS when enabled and command count exceeds threshold
+  const octree = scheduler.octree;
+  if (octree.enabled) {
+    const buildResult = octree.build(
+      scene.frameState.commandList,
+      scene.frameState.frameNumber,
+    );
+    if (buildResult.useOctree) {
+      // Replace commandList with octree-visible + bypass commands
+      const cullingVolume = scene.frameState.cullingVolume;
+      const occluder =
+        scene.frameState.mode === SceneMode.SCENE3D
+          ? scene.frameState.occluder
+          : undefined;
+      const visible = octree.collectVisible(cullingVolume, occluder);
+      // Merge visible octree commands with bypass commands (terrain, 3D Tiles, etc.)
+      scene.frameState.commandList.length = 0;
+      const bypassList = buildResult.bypassCommands;
+      for (let bi = 0; bi < bypassList.length; bi++) {
+        scene.frameState.commandList.push(bypassList[bi]);
+      }
+      for (let vi = 0; vi < visible.length; vi++) {
+        scene.frameState.commandList.push(visible[vi]);
+      }
+    }
+  }
+
+  // Occlusion culling (WebGPU only, opt-in)
+  const occlusionCulling = scheduler.occlusionCulling;
+  if (occlusionCulling.enabled && scene.context.isWebGPU) {
+    occlusionCulling.beginFrame(null);
+    const occResult = occlusionCulling.testCommands(
+      scene.frameState.commandList,
+    );
+    // When results are ready, only pass visible commands forward.
+    // When not ready (async), all commands pass through (conservative).
+    if (occResult.occluded.length > 0) {
+      scene.frameState.commandList.length = 0;
+      for (let oi = 0; oi < occResult.visible.length; oi++) {
+        scene.frameState.commandList.push(occResult.visible[oi]);
+      }
     }
   }
 

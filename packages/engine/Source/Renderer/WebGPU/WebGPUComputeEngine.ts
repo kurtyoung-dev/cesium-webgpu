@@ -10,6 +10,7 @@
 
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
+import RuntimeError from "../../Core/RuntimeError.js";
 import WebGPUComputeCommand from "./WebGPUComputeCommand.js";
 
 /**
@@ -61,9 +62,14 @@ class WebGPUComputeEngine {
    * Creates a separate command encoder for the compute pass,
    * dispatches the work, and submits the command buffer.
    *
+   * Wraps all GPU operations in try/catch — if pipeline creation or
+   * dispatch fails, returns false instead of propagating the error.
+   * Callers should check the return value and fall back to CPU.
+   *
    * @param {WebGPUComputeCommand} command - The compute command to execute
+   * @returns {boolean} True if execution succeeded, false on failure
    */
-  execute(command: WebGPUComputeCommand): void {
+  execute(command: WebGPUComputeCommand): boolean {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
       throw new DeveloperError("ComputeEngine has been destroyed.");
@@ -73,36 +79,50 @@ class WebGPUComputeEngine {
     }
     //>>includeEnd('debug');
 
-    // Ensure the command has a compiled pipeline
-    if (!command.computePipeline) {
-      this._ensurePipeline(command);
-    }
+    try {
+      // Ensure the command has a compiled pipeline
+      if (!command.computePipeline) {
+        this._ensurePipeline(command);
+      }
 
-    // Pre-execute callback
-    if (command.preExecute) {
-      command.preExecute();
-    }
+      // Validate workgroup dimensions against device limits
+      this._validateWorkgroups(command);
 
-    // Create command encoder and compute pass
-    const encoder = this._device.createCommandEncoder({
-      label: `ComputeEncoder_${command.label}`,
-    });
+      // Pre-execute callback
+      if (command.preExecute) {
+        command.preExecute();
+      }
 
-    const computePass = encoder.beginComputePass({
-      label: `ComputePass_${command.label}`,
-    });
+      // Create command encoder and compute pass
+      const encoder = this._device.createCommandEncoder({
+        label: `ComputeEncoder_${command.label}`,
+      });
 
-    // Execute the command
-    command.execute(computePass);
+      const computePass = encoder.beginComputePass({
+        label: `ComputePass_${command.label}`,
+      });
 
-    computePass.end();
+      // Execute the command
+      command.execute(computePass);
 
-    // Submit
-    this._device.queue.submit([encoder.finish()]);
+      computePass.end();
 
-    // Post-execute callback
-    if (command.postExecute) {
-      command.postExecute();
+      // Submit
+      this._device.queue.submit([encoder.finish()]);
+
+      // Post-execute callback
+      if (command.postExecute) {
+        command.postExecute();
+      }
+
+      return true;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[CesiumJS:WebGPUComputeEngine] Compute dispatch failed for '${command.label}': ${msg}. ` +
+          `Falling back to CPU path.`,
+      );
+      return false;
     }
   }
 
@@ -111,46 +131,59 @@ class WebGPUComputeEngine {
    * More efficient than calling execute() for each command individually.
    *
    * @param {WebGPUComputeCommand[]} commands - Array of compute commands
+   * @returns {boolean} True if all commands executed successfully
    */
-  executeMultiple(commands: WebGPUComputeCommand[]): void {
+  executeMultiple(commands: WebGPUComputeCommand[]): boolean {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
       throw new DeveloperError("ComputeEngine has been destroyed.");
     }
     //>>includeEnd('debug');
 
-    if (commands.length === 0) return;
+    if (commands.length === 0) return true;
 
-    // Ensure all commands have pipelines
-    for (const cmd of commands) {
-      if (!cmd.computePipeline) {
-        this._ensurePipeline(cmd);
+    try {
+      // Ensure all commands have pipelines
+      for (const cmd of commands) {
+        if (!cmd.computePipeline) {
+          this._ensurePipeline(cmd);
+        }
+        this._validateWorkgroups(cmd);
       }
-    }
 
-    const encoder = this._device.createCommandEncoder({
-      label: "ComputeEncoder_Batch",
-    });
+      const encoder = this._device.createCommandEncoder({
+        label: "ComputeEncoder_Batch",
+      });
 
-    const computePass = encoder.beginComputePass({
-      label: "ComputePass_Batch",
-    });
+      const computePass = encoder.beginComputePass({
+        label: "ComputePass_Batch",
+      });
 
-    for (const cmd of commands) {
-      if (cmd.preExecute) {
-        cmd.preExecute();
+      for (const cmd of commands) {
+        if (cmd.preExecute) {
+          cmd.preExecute();
+        }
+        cmd.execute(computePass);
       }
-      cmd.execute(computePass);
-    }
 
-    computePass.end();
-    this._device.queue.submit([encoder.finish()]);
+      computePass.end();
+      this._device.queue.submit([encoder.finish()]);
 
-    // Post-execute callbacks
-    for (const cmd of commands) {
-      if (cmd.postExecute) {
-        cmd.postExecute();
+      // Post-execute callbacks
+      for (const cmd of commands) {
+        if (cmd.postExecute) {
+          cmd.postExecute();
+        }
       }
+
+      return true;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[CesiumJS:WebGPUComputeEngine] Batch compute dispatch failed: ${msg}. ` +
+          `Falling back to CPU path.`,
+      );
+      return false;
     }
   }
 
@@ -162,28 +195,41 @@ class WebGPUComputeEngine {
    *
    * @param {GPUCommandEncoder} encoder - Existing command encoder
    * @param {WebGPUComputeCommand} command - The compute command
+   * @returns {boolean} True if execution succeeded, false on failure
    */
   executeOnEncoder(
     encoder: GPUCommandEncoder,
     command: WebGPUComputeCommand,
-  ): void {
-    if (!command.computePipeline) {
-      this._ensurePipeline(command);
-    }
+  ): boolean {
+    try {
+      if (!command.computePipeline) {
+        this._ensurePipeline(command);
+      }
 
-    if (command.preExecute) {
-      command.preExecute();
-    }
+      this._validateWorkgroups(command);
 
-    const computePass = encoder.beginComputePass({
-      label: `ComputePass_${command.label}`,
-    });
+      if (command.preExecute) {
+        command.preExecute();
+      }
 
-    command.execute(computePass);
-    computePass.end();
+      const computePass = encoder.beginComputePass({
+        label: `ComputePass_${command.label}`,
+      });
 
-    if (command.postExecute) {
-      command.postExecute();
+      command.execute(computePass);
+      computePass.end();
+
+      if (command.postExecute) {
+        command.postExecute();
+      }
+
+      return true;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[CesiumJS:WebGPUComputeEngine] Compute on encoder failed for '${command.label}': ${msg}`,
+      );
+      return false;
     }
   }
 
@@ -350,6 +396,29 @@ class WebGPUComputeEngine {
       throw new DeveloperError(
         "WebGPUComputeCommand must have shaderSource, shaderModule, " +
           "or computePipeline.",
+      );
+    }
+  }
+
+  /**
+   * Validates that the command's workgroup counts don't exceed device limits.
+   * Throws if dimensions exceed maxComputeWorkgroupsPerDimension.
+   * @private
+   */
+  private _validateWorkgroups(command: WebGPUComputeCommand): void {
+    if (!command.workgroupCountX) return;
+
+    const maxPerDim =
+      this._device.limits.maxComputeWorkgroupsPerDimension ?? 65535;
+
+    const x = command.workgroupCountX ?? 1;
+    const y = command.workgroupCountY ?? 1;
+    const z = command.workgroupCountZ ?? 1;
+
+    if (x > maxPerDim || y > maxPerDim || z > maxPerDim) {
+      throw new RuntimeError(
+        `Compute workgroup count (${x}, ${y}, ${z}) exceeds device limit ` +
+          `maxComputeWorkgroupsPerDimension=${maxPerDim} for '${command.label}'.`,
       );
     }
   }

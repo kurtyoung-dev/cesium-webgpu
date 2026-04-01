@@ -65,6 +65,7 @@ import {
 } from "./WebGPUTextureUtilities.js";
 import { registerWebGPUFeatureRenderers } from "./WebGPUFeatureRenderers.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
+import { WebGPUPerformanceManager, type PerformanceConfig } from "./WebGPUPerformanceManager.js";
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
@@ -2763,6 +2764,19 @@ export class WebGPUContext extends GraphicsContext {
   private _storageBufferPool: WebGPUStorageBufferPool | null = null;
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
   private _bufferMapper: WebGPUBufferMapper | null = null;
+  private _performanceManager: WebGPUPerformanceManager | null = null;
+
+  /**
+   * Performance manager that orchestrates all WebGPU performance infrastructure:
+   * render bundles, indirect drawing, GPU culling, timestamp profiling, buffer mapping.
+   * Lazy-initialized on first access. Configure via `performanceManager.config`.
+   */
+  get performanceManager(): WebGPUPerformanceManager {
+    if (!this._performanceManager) {
+      this._performanceManager = new WebGPUPerformanceManager(this);
+    }
+    return this._performanceManager;
+  }
 
   /**
    * Render bundle manager for caching static geometry draw calls.

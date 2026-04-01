@@ -293,22 +293,27 @@ Our fork uses **both Rust and Emscripten** for WASM modules, choosing whichever 
 | `basis_transcoder.wasm` | C++ (Emscripten) | KTX2 texture transcoding |
 | `wasm_splats_bg.wasm` | Rust | Gaussian splat processing |
 | `zip-module.wasm` | Unknown | ZIP extraction |
-| `cesium_wasm_culling_bg.wasm` | **Rust (NEW)** | SIMD frustum cull + radix sort |
+| `cesium_wasm_bg.wasm` | **Rust (NEW)** | SIMD frustum cull + radix sort + terrain + RTE + matrix + point cloud |
 
-**Our WASM modules (in `packages/wasm-culling/`):**
+**Our WASM modules (in `packages/wasm/`):**
 ```
-packages/wasm-culling/
+packages/wasm/
 ├── Cargo.toml              ← Rust project config
 ├── .cargo/config.toml      ← Target-specific rustflags (SIMD, bulk-memory)
 ├── README.md               ← Build instructions + API docs
 ├── src/
 │   ├── lib.rs              ← Entry point, thread-safe arena allocator
 │   ├── frustum_cull.rs     ← f32x4 SIMD batch sphere-plane tests
-│   └── radix_sort.rs       ← O(N) radix sort on packed 64-bit keys
+│   ├── radix_sort.rs       ← O(N) radix sort on packed 64-bit keys
+│   ├── heightmap_tessellator.rs  ← SIMD heightmap decode + ECEF
+│   ├── quantized_mesh.rs   ← Zigzag+delta decode + SIMD normalize
+│   ├── rte_encode.rs       ← Batch RTE f64→f32 high/low split
+│   ├── matrix_batch.rs     ← SIMD batch Matrix4 operations
+│   └── point_cloud.rs      ← SIMD distance, LOD, AABB-frustum
 └── pkg/                    ← Build output (wasm-pack)
-    ├── cesium_wasm_culling_bg.wasm
-    ├── cesium_wasm_culling.js
-    └── cesium_wasm_culling.d.ts
+    ├── cesium_wasm_bg.wasm
+    ├── cesium_wasm.js
+    └── cesium_wasm.d.ts
 ```
 
 **Build commands:**

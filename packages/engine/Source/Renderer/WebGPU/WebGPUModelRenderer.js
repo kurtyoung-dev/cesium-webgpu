@@ -29,6 +29,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import {
   extractMaterialInfo,
   AlphaModes,
+  MaterialFlags,
 } from "../../Scene/Model/ModelMaterialInfo.js";
 import {
   extractPrimitiveGeometry,
@@ -38,6 +39,18 @@ import {
   extractSkinData,
   updatePackedJointMatrices,
 } from "../../Scene/Model/ModelSkinData.js";
+import {
+  ensureMorphTargetResources,
+  destroyMorphTargetResources,
+} from "./WebGPUModelMorphTargets.js";
+import {
+  ensureInstancingResources,
+  destroyInstancingResources,
+} from "./WebGPUModelInstancing.js";
+import {
+  ensureFeatureIdResources,
+  destroyFeatureIdResources,
+} from "./WebGPUModelFeatureId.js";
 import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -57,6 +70,8 @@ const LIGHT_UNIFORM_SIZE = 48;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
+// materialFlags bit for instancing (bit 15 = 32768)
+const FLAG_HAS_INSTANCING = 32768;
 
 // ─── Scratch Variables ───────────────────────────────────────────────────────
 
@@ -120,7 +135,7 @@ function packCameraUniforms(data, frameState, modelMatrix) {
 
 // ─── Material Uniform Packing ────────────────────────────────────────────────
 
-function packMaterialUniforms(data, modelMatrix, matInfo, hasSkinning) {
+function packMaterialUniforms(data, modelMatrix, matInfo, hasSkinning, hasMorphTargets) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
   // baseColorFactor (vec4)
@@ -143,10 +158,13 @@ function packMaterialUniforms(data, modelMatrix, matInfo, hasSkinning) {
   data[26] = matInfo.normalScale;
   data[27] = matInfo.occlusionStrength;
 
-  // materialFlags (u32 stored as float bits) — add skinning flag if applicable
+  // materialFlags (u32 stored as float bits) — add skinning/morph flags
   let flags = matInfo.materialFlags;
   if (hasSkinning) {
     flags |= FLAG_HAS_SKINNING;
+  }
+  if (hasMorphTargets) {
+    flags |= MaterialFlags.HAS_MORPH_TARGETS;
   }
   const flagsView = new DataView(data.buffer, data.byteOffset);
   flagsView.setUint32(28 * 4, flags, true);
@@ -613,6 +631,35 @@ function updateWebGPUModel(model, frameState) {
       ? cache.nodes[nodeIdx].skinningBG
       : pipelineCache.defaultSkinningBindGroup;
 
+    // GPU Instancing: detect from node.instances and create resources
+    const nodeForInst = runtimeNode.node || runtimeNode._node;
+    const hasInstancing = defined(nodeForInst) && defined(nodeForInst.instances);
+    let instancingBG = pipelineCache.defaultInstancingBindGroup;
+    let instanceCount = 1;
+
+    if (hasInstancing) {
+      if (!defined(cache.nodes[nodeIdx])) {
+        cache.nodes[nodeIdx] = {
+          jointBuffer: null,
+          jointBufferSize: 0,
+          skinningBG: null,
+          packedJointMatrices: null,
+        };
+      }
+      const nodeCache = cache.nodes[nodeIdx];
+      const instRes = ensureInstancingResources(device, nodeCache, runtimeNode);
+      if (defined(instRes)) {
+        instanceCount = instRes.instanceCount;
+        if (!defined(nodeCache.instancingBG)) {
+          nodeCache.instancingBG = device.createBindGroup({
+            layout: pipelineCache.instancingBGL,
+            entries: [{ binding: 0, resource: { buffer: instRes.storageBuffer } }],
+          });
+        }
+        instancingBG = nodeCache.instancingBG;
+      }
+    }
+
     // Process each primitive on this node
     for (let primIdx = 0; primIdx < prims.length; primIdx++) {
       const rp = prims[primIdx];
@@ -674,13 +721,62 @@ function updateWebGPUModel(model, frameState) {
       // (node has skin AND primitive has joints/weights attributes)
       const primHasSkinning = hasSkinning && primCache.hasSkinningAttributes;
 
-      // Update material uniforms (includes skinning flag)
+      // Morph targets: create/update GPU resources per-primitive
+      const morphWeights = runtimeNode.morphWeights ?? runtimeNode._morphWeights;
+      const primHasMorphTargets = geometry.morphTargetCount > 0 && defined(morphWeights) && morphWeights.length > 0;
+      let morphTargetBG = pipelineCache.defaultMorphTargetBindGroup;
+
+      if (primHasMorphTargets) {
+        const morphRes = ensureMorphTargetResources(device, primCache, geometry, morphWeights);
+        if (defined(morphRes)) {
+          // Create or update the morph target bind group
+          if (!defined(primCache._morphTargetBG)) {
+            primCache._morphTargetBG = device.createBindGroup({
+              layout: pipelineCache.morphTargetBGL,
+              entries: [
+                { binding: 0, resource: { buffer: morphRes.storageBuffer } },
+                { binding: 1, resource: { buffer: morphRes.weightBuffer } },
+              ],
+            });
+          }
+          morphTargetBG = primCache._morphTargetBG;
+        }
+      }
+
+      // Update material uniforms (includes skinning + morph flags)
       packMaterialUniforms(
         primCache.materialData,
         modelMatrix,
         matInfo,
         primHasSkinning,
+        primHasMorphTargets,
       );
+
+      // Feature ID textures + batch texture (for per-feature styling)
+      let featureIdBG = pipelineCache.defaultFeatureIdBindGroup;
+      const featureIdRes = ensureFeatureIdResources(
+        device,
+        primCache,
+        model,
+        glTFPrimitive,
+        runtimeNode,
+        pipelineCache,
+      );
+
+      // Set instancing + feature ID flags AFTER packMaterialUniforms
+      {
+        const flagsView = new DataView(primCache.materialData.buffer, primCache.materialData.byteOffset);
+        let currentFlags = flagsView.getUint32(28 * 4, true);
+        if (hasInstancing && instanceCount > 1) {
+          currentFlags |= FLAG_HAS_INSTANCING;
+        }
+        if (defined(featureIdRes)) {
+          currentFlags |= featureIdRes.flags;
+          featureIdBG = featureIdRes.featureIdBG;
+        }
+        flagsView.setUint32(28 * 4, currentFlags, true);
+      }
+
       device.queue.writeBuffer(
         primCache.materialBuffer.buffer,
         0,
@@ -726,12 +822,16 @@ function updateWebGPUModel(model, frameState) {
           primCache.materialBG,
           primCache.textureBindGroup,
           skinningBG,
+          morphTargetBG,
+          instancingBG,
+          featureIdBG,
         ],
         vertexBuffers: vertexBuffers,
         indexBuffer: primCache.indexBuffer || undefined,
         indexCount: primCache.indexCount || 0,
         indexFormat: primCache.indexFormat || "uint16",
         vertexCount: primCache.vertexCount || 0,
+        instanceCount: instanceCount,
         pass: pass,
         owner: model,
         boundingVolume: model.boundingSphere,
@@ -780,15 +880,25 @@ function destroyWebGPUModelResources(model) {
     for (const tex of pc.gpuTextures) {
       tex?.destroy();
     }
+
+    // Destroy morph target resources
+    destroyMorphTargetResources(pc);
+
+    // Destroy feature ID resources
+    destroyFeatureIdResources(pc);
   }
 
-  // Destroy per-node skinning resources
+  // Destroy per-node skinning + instancing resources
   const nodeKeys = Object.keys(cache.nodes);
   for (let i = 0; i < nodeKeys.length; i++) {
     const nc = cache.nodes[nodeKeys[i]];
-    if (defined(nc) && defined(nc.jointBuffer)) {
+    if (!defined(nc)) {
+      continue;
+    }
+    if (defined(nc.jointBuffer)) {
       nc.jointBuffer.destroy();
     }
+    destroyInstancingResources(nc);
   }
 
   if (defined(cache.pipelineCache)) {

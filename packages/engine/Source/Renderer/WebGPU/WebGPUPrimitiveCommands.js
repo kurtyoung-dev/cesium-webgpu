@@ -40,6 +40,10 @@ import {
   isMaterialLitShader,
   isPBRShader,
 } from "./WebGPUPrimitiveShaders.js";
+import {
+  getEffectsBindGroupLayout,
+  getPlaceholderEffects,
+} from "./WebGPUEffectsBindGroup.js";
 
 // =========================================================================
 // Scratch variables for per-frame uniform updates (avoid per-frame allocations)
@@ -472,6 +476,11 @@ function createWebGPUCommands(
       cache.textureBindGroupLayout = null;
     }
 
+    // Effects BGL (shadow receive + clipping) — always present via placeholder
+    const effectsBGL = getEffectsBindGroupLayout(device);
+    bindGroupLayouts.push(effectsBGL);
+    cache.effectsBGL = effectsBGL;
+
     const canvasFormat =
       context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
     cache.pipeline = device.createRenderPipeline({
@@ -797,6 +806,9 @@ function createWebGPUCommands(
     if (needsTexture && defined(cache.textureBindGroup)) {
       commandBindGroups.push(cache.textureBindGroup);
     }
+    // Effects bind group (shadow + clipping) — placeholder when inactive
+    const effectsPlaceholder = getPlaceholderEffects(device);
+    commandBindGroups.push(effectsPlaceholder.bindGroup);
 
     const command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,

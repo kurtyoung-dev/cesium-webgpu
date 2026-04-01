@@ -111,6 +111,25 @@ struct TileUniforms {
 @group(3) @binding(0) var oceanNormalMap: texture_2d<f32>;
 @group(3) @binding(1) var oceanNormalSampler: sampler;
 
+// ─── Effects bind group: shadow receive + clipping planes (Group 4) ───
+struct EffectsUniforms {
+    shadowMatrix: mat4x4<f32>,
+    shadowMapSize: vec2<f32>,
+    shadowDarkness: f32,
+    shadowSoftShadows: f32,
+    clippingPlaneCount: u32,
+    clippingUnionMode: u32,
+    clippingEdgeWidth: f32,
+    _pad5: f32,
+    clippingEdgeColor: vec4<f32>,
+}
+
+@group(4) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(4) @binding(1) var shadowDepthTex: texture_depth_2d;
+@group(4) @binding(2) var shadowCompSampler: sampler_comparison;
+@group(4) @binding(3) var clippingPlaneTex: texture_2d<f32>;
+@group(4) @binding(4) var clippingPlaneSampler: sampler;
+
 // ─── Vertex Input / Output ───
 // Uncompressed terrain (TerrainQuantization.NONE)
 struct VertexInput {
@@ -333,10 +352,90 @@ fn computeWaterSpecular(positionEC: vec3<f32>, normalEC: vec3<f32>,
   return spec * 0.6;
 }
 
+// ─── Shadow sampling (globe) ───
+fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0) {
+    return 1.0;
+  }
+  var shadow: f32 = 0.0;
+  for (var x: i32 = -1; x <= 1; x++) {
+    for (var y: i32 = -1; y <= 1; y++) {
+      let offset = vec2<f32>(f32(x), f32(y)) * texelSize;
+      shadow += textureSampleCompare(shadowDepthTex, shadowCompSampler, uv + offset, depth);
+    }
+  }
+  return shadow / 9.0;
+}
+
+fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
+  if (effects.shadowDarkness >= 1.0) { return 1.0; }
+
+  let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
+  let coord = shadowPos.xyz / shadowPos.w;
+  let uv = vec2<f32>(coord.x * 0.5 + 0.5, 1.0 - (coord.y * 0.5 + 0.5));
+  let texelSize = 1.0 / effects.shadowMapSize;
+
+  var visibility: f32;
+  if (effects.shadowSoftShadows > 0.5) {
+    visibility = globeShadowPCF(uv, coord.z, texelSize);
+  } else {
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || coord.z > 1.0) {
+      visibility = 1.0;
+    } else {
+      visibility = textureSampleCompare(shadowDepthTex, shadowCompSampler, uv, coord.z);
+    }
+  }
+  return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
+// ─── Clipping planes (globe) ───
+fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
+  let count = effects.clippingPlaneCount;
+  if (count == 0u) { return false; }
+
+  let isUnion = effects.clippingUnionMode == 1u;
+  let texWidth = f32(count);
+  var clippedCount: u32 = 0u;
+
+  for (var i: u32 = 0u; i < count; i++) {
+    let texelU = (f32(i) + 0.5) / texWidth;
+    let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
+                                       vec2<f32>(texelU, 0.5), 0.0);
+    let dist = dot(positionMC, planeData.xyz) + planeData.w;
+    if (dist < 0.0) {
+      clippedCount++;
+      if (isUnion) { return true; }
+    }
+  }
+
+  if (!isUnion && clippedCount == count) { return true; }
+  return false;
+}
+
 // ─── Fragment Shader ───
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let uv = input.v_textureCoordinates;
+
+  // ─── Clipping planes discard (early out) ───
+  if (globeClipByPlanes(input.v_positionMC)) { discard; }
+
+  // ─── Clipping edge highlight ───
+  if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
+    let clipCount = effects.clippingPlaneCount;
+    let texW = f32(clipCount);
+    var minClipDist: f32 = 1e10;
+    for (var ci: u32 = 0u; ci < clipCount; ci++) {
+      let texelU = (f32(ci) + 0.5) / texW;
+      let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
+                                         vec2<f32>(texelU, 0.5), 0.0);
+      let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
+      minClipDist = min(minClipDist, dist);
+    }
+    if (minClipDist < effects.clippingEdgeWidth) {
+      return effects.clippingEdgeColor;
+    }
+  }
 
   // ─── Cartographic limit rectangle clipping ───
   if (tile.flags.y > 0.5) {
@@ -444,11 +543,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
-  // ─── Lambert diffuse lighting ───
+  // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
     let NdotL = max(dot(normal, sunDir), 0.0);
     let ambient = 0.15;
-    let diffuse = NdotL * 0.85 + ambient;
+    let shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+    let diffuse = NdotL * 0.85 * shadowFactor + ambient;
     color = color * diffuse;
   }
 

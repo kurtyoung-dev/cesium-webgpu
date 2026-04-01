@@ -1,5 +1,5 @@
 /**
- * Build script for the cesium-wasm-culling Rust → WASM module.
+ * Build script for the cesium-wasm Rust → WASM module.
  *
  * Usage:
  *   node scripts/buildWasm.js              — build release + copy to engine
@@ -13,13 +13,13 @@
  *   - wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown
  *
  * Output:
- *   packages/wasm-culling/pkg/
- *     cesium_wasm_culling_bg.wasm   — WASM binary (~10-30 KB release)
- *     cesium_wasm_culling.js        — JS glue (wasm-bindgen)
- *     cesium_wasm_culling.d.ts      — TypeScript declarations
+ *   packages/wasm/pkg/
+ *     cesium_wasm_bg.wasm   — WASM binary (~10-30 KB release)
+ *     cesium_wasm.js        — JS glue (wasm-bindgen)
+ *     cesium_wasm.d.ts      — TypeScript declarations
  *
  *   Copied to:
- *     packages/engine/Source/ThirdParty/Workers/cesium_wasm_culling_bg.wasm
+ *     packages/engine/Source/ThirdParty/Workers/cesium_wasm_bg.wasm
  */
 
 import { execSync } from "child_process";
@@ -28,11 +28,11 @@ import { resolve, join } from "path";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 const ROOT = resolve(import.meta.dirname, "..");
-const CRATE_DIR = join(ROOT, "packages", "wasm-culling");
+const CRATE_DIR = join(ROOT, "packages", "wasm");
 const PKG_DIR = join(CRATE_DIR, "pkg");
-const WASM_FILE = join(PKG_DIR, "cesium_wasm_culling_bg.wasm");
-const JS_GLUE = join(PKG_DIR, "cesium_wasm_culling.js");
-const DTS_FILE = join(PKG_DIR, "cesium_wasm_culling.d.ts");
+const WASM_FILE = join(PKG_DIR, "cesium_wasm_bg.wasm");
+const JS_GLUE = join(PKG_DIR, "cesium_wasm.js");
+const DTS_FILE = join(PKG_DIR, "cesium_wasm.d.ts");
 const DEST_DIR = join(
   ROOT,
   "packages",
@@ -41,9 +41,9 @@ const DEST_DIR = join(
   "ThirdParty",
   "Workers",
 );
-const DEST_WASM = join(DEST_DIR, "cesium_wasm_culling_bg.wasm");
-const DEST_JS = join(DEST_DIR, "cesium_wasm_culling.js");
-const DEST_DTS = join(DEST_DIR, "cesium_wasm_culling.d.ts");
+const DEST_WASM = join(DEST_DIR, "cesium_wasm_bg.wasm");
+const DEST_JS = join(DEST_DIR, "cesium_wasm.js");
+const DEST_DTS = join(DEST_DIR, "cesium_wasm.d.ts");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -200,7 +200,7 @@ if (isCheck) {
 const mode = isDebug ? "dev" : "release";
 const modeFlag = isDebug ? "--dev" : "--release";
 
-log(`Building cesium-wasm-culling (${mode} mode)...`);
+log(`Building cesium-wasm (${mode} mode)...`);
 log(`  Crate: ${CRATE_DIR}`);
 log(`  Target: wasm32-unknown-unknown (SIMD128 enabled)`);
 
@@ -249,6 +249,6 @@ if (existsSync(DTS_FILE)) {
 success("WASM module built and deployed to engine.");
 log("");
 log("To use in the application:");
-log('  import init from "../ThirdParty/Workers/cesium_wasm_culling.js";');
+log('  import init from "../ThirdParty/Workers/cesium_wasm.js";');
 log("  const wasm = await init();");
 log('  console.log("WASM version:", wasm.version());');

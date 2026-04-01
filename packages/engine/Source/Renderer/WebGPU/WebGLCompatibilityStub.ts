@@ -1,18 +1,115 @@
 /**
  * @module WebGLCompatibilityStub
  *
- * **Nexus module** — WebGL compatibility shim for the WebGPU rendering context.
+ * **Proton-Style WebGL→WebGPU Translation Layer**
  *
- * Provides WebGL constants and stub methods that legacy CesiumJS code expects
- * (e.g., `Texture.js`, `Framebuffer.js`) so they can function without crashing
- * when the WebGPU renderer is active. This is important for third-party
- * consumers of CesiumJS (e.g., TerriaJS) that may depend on WebGL-shaped APIs.
+ * Similar to how Valve's Proton translates Windows DirectX calls to Linux
+ * Vulkan, this module translates WebGL API calls into equivalent WebGPU
+ * operations. This enables third-party code, engine extensions, and legacy
+ * CesiumJS subsystems to issue WebGL-shaped calls that execute on the WebGPU
+ * backend transparently.
  *
- * The stub is split across domain-specific modules in the `Stubs/` directory
- * for maintainability. This file acts as the single entry point (nexus) that
- * composes all domain stubs into a unified WebGL-shaped object.
+ * ## Architecture
  *
- * **Domain modules:**
+ * ```
+ * ┌─────────────────────────────────────────────────────┐
+ * │  User / Extension Code (writes WebGL-style calls)   │
+ * └────────────────────────┬────────────────────────────┘
+ *                          │  gl.bindTexture(), gl.bufferData(), etc.
+ *                          ▼
+ * ┌─────────────────────────────────────────────────────┐
+ * │  WebGLCompatibilityStub (Translation Layer)         │
+ * │  ┌───────────┐ ┌──────────────┐ ┌───────────────┐  │
+ * │  │  Textures  │ │  Buffers     │ │  Pipeline     │  │
+ * │  │  Stub      │ │  Stub        │ │  State Stub   │  │
+ * │  └─────┬─────┘ └──────┬───────┘ └───────┬───────┘  │
+ * │  ┌─────┴─────┐ ┌──────┴───────┐ ┌───────┴───────┐  │
+ * │  │  Framebuf  │ │  Shader      │ │  WebGLState   │  │
+ * │  │  Stub      │ │  Stub        │ │  Converters   │  │
+ * │  └─────┬─────┘ └──────┬───────┘ └───────┬───────┘  │
+ * └────────┴──────────────┴─────────────────┴──────────┘
+ *                          │  Mapped to WebGPU operations
+ *                          ▼
+ * ┌─────────────────────────────────────────────────────┐
+ * │  WebGPUContext / GPUDevice / GPUQueue               │
+ * │  (Real WebGPU rendering backend)                    │
+ * └─────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Translation Strategy
+ *
+ * The translation layer works with CesiumJS's `GraphicsContext` abstraction
+ * and the WebGPU command list system:
+ *
+ * 1. **State tracking** — WebGL is a state machine; WebGPU is not. The stub
+ *    tracks WebGL state (bound textures, active buffers, blend/depth modes)
+ *    and batches them into WebGPU pipeline descriptors at draw time.
+ *
+ * 2. **Command routing** — WebGL draw calls (`drawArrays`, `drawElements`)
+ *    are translated into `WebGPUDrawCommand` objects pushed to the command
+ *    list. The `WebGPUSceneRenderer` executes them alongside native commands.
+ *
+ * 3. **Resource mapping** — WebGL resource handles (textures, buffers,
+ *    framebuffers) wrap their WebGPU equivalents. `gl.createTexture()`
+ *    returns an object with a `_webgpuTexture` property pointing to the
+ *    real `GPUTexture`. Extension code can access either API surface.
+ *
+ * 4. **Format conversion** — `WebGLStateConverters.ts` maps WebGL enums
+ *    to WebGPU equivalents (e.g., `gl.FLOAT` → `'float32'`,
+ *    `gl.ONE_MINUS_SRC_ALPHA` → `'one-minus-src-alpha'`).
+ *
+ * ## How Extension Authors Use This
+ *
+ * Extension code that uses WebGL-style APIs works automatically when
+ * the WebGPU renderer is active:
+ *
+ * ```javascript
+ * // This works on BOTH WebGL and WebGPU backends:
+ * const gl = context._gl; // On WebGPU, returns this translation stub
+ * const tex = gl.createTexture();
+ * gl.bindTexture(gl.TEXTURE_2D, tex);
+ * gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA,
+ *               gl.UNSIGNED_BYTE, pixels);
+ *
+ * // For new extensions, prefer the backend-agnostic API:
+ * const tex = context.createTexture({ width, height, pixelFormat, ... });
+ * ```
+ *
+ * ## WebGL → WebGPU Call Mapping Reference
+ *
+ * | WebGL Call | WebGPU Equivalent | Stub Domain |
+ * |---|---|---|
+ * | `gl.createTexture()` | `device.createTexture()` | Texture |
+ * | `gl.texImage2D()` | `device.queue.writeTexture()` | Texture |
+ * | `gl.generateMipmap()` | Compute mipmap generation | Texture |
+ * | `gl.createBuffer()` | `device.createBuffer()` | Buffer |
+ * | `gl.bufferData()` | `device.queue.writeBuffer()` | Buffer |
+ * | `gl.createFramebuffer()` | Render target + attachments | Framebuffer |
+ * | `gl.bindFramebuffer()` | Set active render target | Framebuffer |
+ * | `gl.enable/disable()` | Pipeline descriptor state | PipelineState |
+ * | `gl.blendFunc()` | `GPUBlendState` on pipeline | PipelineState |
+ * | `gl.depthFunc()` | `GPUDepthStencilState` | PipelineState |
+ * | `gl.viewport()` | `renderPass.setViewport()` | PipelineState |
+ * | `gl.clear()` | Render pass load ops | PipelineState |
+ * | `gl.createShader()` | `device.createShaderModule()` | Shader |
+ * | `gl.drawArrays()` | `renderPass.draw()` | (command list) |
+ * | `gl.drawElements()` | `renderPass.drawIndexed()` | (command list) |
+ *
+ * ## Limitations vs Full Translation (Proton-level)
+ *
+ * Unlike Valve's Proton which provides near-complete DirectX→Vulkan
+ * translation, this stub is scoped to the CesiumJS API surface:
+ *
+ * - **No GLSL compilation** — Extension shaders must provide WGSL via
+ *   the `RenderCommand` API or use the Slang cross-compiler. The stub
+ *   does NOT transpile GLSL to WGSL at runtime.
+ * - **No transform feedback** — Use compute shaders instead.
+ * - **No WebGL1 extensions** — Only WebGL2 core functionality is mapped.
+ * - **State is tracked, not replayed** — The stub records state for
+ *   pipeline creation rather than replaying a GL command stream.
+ *
+ * ## Domain Modules
+ *
  * - `WebGLStubTexture` — Texture creation, binding, upload, copy, mipmaps
  * - `WebGLStubFramebuffer` — Framebuffer and renderbuffer lifecycle
  * - `WebGLStubBuffer` — Buffer creation, binding, data upload, vertex attribs
@@ -20,13 +117,23 @@
  *   blend, depth, stencil, culling, color mask
  * - `WebGLStubShader` — Shader program placeholders, parameter queries, misc
  *
- * Once all CesiumJS rendering code is fully migrated to the WebGPU
- * abstraction (`GraphicsContext` factory methods), this stub can be
- * progressively reduced. Individual domain modules can be removed as their
- * corresponding CesiumJS subsystems are migrated.
+ * ## Progressive Reduction
+ *
+ * As CesiumJS subsystems migrate to `GraphicsContext` factory methods,
+ * individual domain modules can be removed:
+ *
+ * | Migration Step | Removes |
+ * |---|---|
+ * | All textures via `context.createTexture()` | `WebGLStubTexture` |
+ * | All buffers via `context.createBuffer()` | `WebGLStubBuffer` |
+ * | All FBOs via `context.createFramebuffer()` | `WebGLStubFramebuffer` |
+ * | All shaders via WGSL + `RenderCommand` | `WebGLStubShader` |
+ * | Zero legacy `gl.*` state calls | `WebGLStubPipelineState` |
  *
  * @see WebGPUContext
  * @see GraphicsContext
+ * @see WebGLStateConverters
+ * @see RenderCommand
  */
 
 // Re-export the shared types so consumers can import from this nexus
