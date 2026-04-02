@@ -512,6 +512,7 @@ Either specify options.terrainProvider instead or set options.baseLayerPicker to
     maximumRenderTimeChange: options.maximumRenderTimeChange,
     depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
     msaaSamples: options.msaaSamples,
+    _preInitializedScene: options._preInitializedScene,
   });
 
   const scene = cesiumWidget.scene;

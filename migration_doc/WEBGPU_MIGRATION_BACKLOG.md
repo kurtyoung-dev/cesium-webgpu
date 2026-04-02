@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration — Remaining Work Backlog
 
-**Last Updated:** March 31, 2026
+**Last Updated:** April 2, 2026
 **Purpose:** Single source of truth for ALL remaining work — WebGPU features, tech debt, parity gaps, sorting integration, picking, ES6 modernization, and upstream issues.
 
 > **For architecture, completed work, and current state, see `WEBGPU_MIGRATION_STATUS.md`.**
@@ -550,7 +550,7 @@ During implementation, no additional bottlenecks were discovered beyond those al
 
 ## Priority Remediation Order
 
-> **Updated March 31, 2026** — See `COMPREHENSIVE_AUDIT_2026_03_31.md` for full analysis.
+> **Updated April 2, 2026** — See `WIRING_AUDIT_2026_04_02.md` for latest findings. Previous audit: `COMPREHENSIVE_AUDIT_2026_03_31.md`.
 
 ### 🔴 Immediate: Fallback & Safety Gaps — ✅ 7 of 8 COMPLETE (March 31, 2026)
 1. ✅ **FORK-37** — `destroy()` + `WasmFeatureDetection.freeBuffer()` on all 7 bridges
