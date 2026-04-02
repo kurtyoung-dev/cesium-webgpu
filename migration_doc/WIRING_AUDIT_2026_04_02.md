@@ -1,7 +1,7 @@
 # CesiumJS WebGPU — Wiring & Fallback Audit
 
-**Date:** April 2, 2026  
-**Scope:** WASM bridge compliance, compute shader fallbacks, render pass wiring, GLSL backport analysis, upstream status  
+**Date:** April 2, 2026 (updated: post v1.140 feature audit)  
+**Scope:** WASM bridge compliance, compute shader fallbacks, render pass wiring, GLSL backport analysis, upstream status, v1.140 feature audit  
 
 ---
 
@@ -15,13 +15,13 @@ After a thorough codebase audit, the project is in **much better shape than the 
 | **Compute Engine** | ✅ **COMPLETE** | try/catch, workgroup validation, bool return for fallback |
 | **Compute Shaders (11)** | ⚠️ **4 active, 7 dormant** | Dormant shaders are performance optimizations with working fallbacks — not blocking |
 | **Render Passes (13)** | ✅ **ALL HANDLED** | ENVIRONMENT runs before WebGPU branch; all other passes in WebGPUSceneRenderer |
-| **Feature Renderers (33)** | ✅ **ALL WIRED** | getFeatureRenderer() pattern in 30 scene files, 33 of 34 renderers registered |
+| **Feature Renderers (36)** | ✅ **ALL WIRED** | getFeatureRenderer() pattern in 33 scene files, 36 of 37 renderers registered (3 new BufferPrimitive stubs added) |
 | **Post-Processing** | ✅ **COMPLETE** | 5 tonemapping, FXAA, Bloom(4-pass), SSAO(4-pass), DoF(3-pass), Edge, Silhouette |
 | **IBL Pipeline** | ✅ **COMPLETE** | BRDF LUT, irradiance, radiance prefilter — all compute-based |
-| **Shader Coverage** | ✅ **~95% functional** | 234 WGSL vs 319 GLSL, 90/89 builtin functions |
+| **Shader Coverage** | ✅ **~95% functional** | 238 WGSL vs 319 GLSL, 91/90 builtin functions |
 | **GLSL Backport** | ✅ **NONE NEEDED** | All WGSL either ports existing GLSL, compute-only, or WebGPU enhancements |
 | **Viewer Init Bug** | 🔴→✅ **FIXED** | `_preInitializedScene` was not forwarded to CesiumWidget — now fixed |
-| **Upstream** | ✅ **SYNCED** | 0 behind, 25 ahead — v1.140 + PR #13121 (constant LOD) merged |
+| **Upstream** | ✅ **SYNCED** | 0 behind, 26 ahead — v1.140 + PR #13121 (constant LOD) merged, v1.140 feature audit complete |
 
 ### What's Needed to Run the App
 

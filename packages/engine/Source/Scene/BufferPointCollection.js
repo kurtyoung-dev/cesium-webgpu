@@ -6,6 +6,7 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Frozen from "../Core/Frozen.js";
 import renderPoints from "./renderBufferPointCollection.js";
 import BufferPointMaterial from "./BufferPointMaterial.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /** @import Matrix4 from "../Core/Matrix4.js"; */
 /** @import FrameState from "./FrameState.js"; */
@@ -127,6 +128,13 @@ class BufferPointCollection extends BufferPrimitiveCollection {
 
     const passes = frameState.passes;
     if (this.show && (passes.render || passes.pick)) {
+      const fr = frameState.context.getFeatureRenderer(
+        FeatureRendererKey.BUFFER_POINT_COLLECTION,
+      );
+      if (fr) {
+        fr.update(this, frameState);
+        return;
+      }
       this._renderContext = renderPoints(this, frameState, this._renderContext);
     }
   }

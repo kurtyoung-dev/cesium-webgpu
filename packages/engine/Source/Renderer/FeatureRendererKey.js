@@ -84,13 +84,18 @@ const FeatureRendererKey = {
   // ── Deferred rendering ──
   DEFERRED_GBUFFER: 33,
 
+  // ── Buffer Primitive collections (v1.140 vector tiles) ──
+  BUFFER_POINT_COLLECTION: 34,
+  BUFFER_POLYLINE_COLLECTION: 35,
+  BUFFER_POLYGON_COLLECTION: 36,
+
   /**
    * Total number of feature renderer keys (excluding COUNT itself).
    * Must equal the highest enum value + 1. Update when adding new keys.
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 34,
+  COUNT: 37,
 };
 
 export default Object.freeze(FeatureRendererKey);

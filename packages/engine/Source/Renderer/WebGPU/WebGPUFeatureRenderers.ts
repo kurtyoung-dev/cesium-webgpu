@@ -212,6 +212,30 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     destroy: destroyWebGPUCloudResources,
   });
 
+  // ── Buffer Primitive collections (v1.140 vector tiles — stub renderers) ──
+  // These experimental APIs currently render a no-op under WebGPU.
+  // WGSL shaders exist at Shaders/WebGPU/Collections/Buffer{Point,Polyline,Polygon}Material.wgsl
+  // Full renderer implementation deferred until vector tile rendering is prioritized.
+  const bufferPrimitiveStub = {
+    update(_collection: unknown, _frameState: unknown) {
+      // No-op: WebGPU BufferPrimitive rendering not yet implemented.
+      // WebGL path is the active fallback — collections that reach here
+      // simply don't render under WebGPU until a full renderer is built.
+    },
+  };
+  context.registerFeatureRenderer(
+    FeatureRendererKey.BUFFER_POINT_COLLECTION,
+    bufferPrimitiveStub,
+  );
+  context.registerFeatureRenderer(
+    FeatureRendererKey.BUFFER_POLYLINE_COLLECTION,
+    bufferPrimitiveStub,
+  );
+  context.registerFeatureRenderer(
+    FeatureRendererKey.BUFFER_POLYGON_COLLECTION,
+    bufferPrimitiveStub,
+  );
+
   // ── Primitive system ──
   context.registerFeatureRenderer(FeatureRendererKey.PRIMITIVE, {
     createCommands: createWebGPUCommands,

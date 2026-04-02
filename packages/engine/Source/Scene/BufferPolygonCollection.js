@@ -8,6 +8,7 @@ import assert from "../Core/assert.js";
 import IndexDatatype from "../Core/IndexDatatype.js";
 import renderPolygons from "./renderBufferPolygonCollection.js";
 import BufferPolygonMaterial from "./BufferPolygonMaterial.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /** @import { TypedArray } from "../Core/globalTypes.js"; */
 /** @import Matrix4 from "../Core/Matrix4.js"; */
@@ -295,6 +296,13 @@ class BufferPolygonCollection extends BufferPrimitiveCollection {
 
     const passes = frameState.passes;
     if (this.show && (passes.render || passes.pick)) {
+      const fr = frameState.context.getFeatureRenderer(
+        FeatureRendererKey.BUFFER_POLYGON_COLLECTION,
+      );
+      if (fr) {
+        fr.update(this, frameState);
+        return;
+      }
       this._renderContext = renderPolygons(
         this,
         frameState,

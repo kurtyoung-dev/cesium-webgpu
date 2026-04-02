@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration — Remaining Work Backlog
 
-**Last Updated:** April 2, 2026
+**Last Updated:** April 2, 2026 (post v1.140 feature audit)
 **Purpose:** Single source of truth for ALL remaining work — WebGPU features, tech debt, parity gaps, sorting integration, picking, ES6 modernization, and upstream issues.
 
 > **For architecture, completed work, and current state, see `WEBGPU_MIGRATION_STATUS.md`.**
@@ -254,12 +254,12 @@ These are NEW upstream features added since v1.135 that will eventually need WGS
 
 | GLSL Shader | Upstream PR | Feature | WGSL Priority | Notes |
 |---|---|---|---|---|
-| `computeTextureTransform.glsl` | #13121 (v1.140+) | `KHR_texture_transform` helper | 🟢 Low | Simple inline helper: `(transform * vec3(texCoord, 1.0)).xy`. Add when texture transforms in `ModelPBRComplete.wgsl` |
+| `computeTextureTransform.glsl` | #13121 (v1.140+) | `KHR_texture_transform` helper | ✅ **Done** | `csm_computeTextureTransform.wgsl` created + registered in CsmBuiltins.js (97 entries). JS wrapper generated. |
 | `ConstantLodStageFS.glsl` | #13121 (v1.140+) | Distance-based constant LOD texture lookup | 🟢 Low | Model pipeline feature. Add when constant LOD extension support in WebGPU model path |
 | `ConstantLodStageVS.glsl` | #13121 (v1.140+) | World-position UV computation for constant LOD | 🟢 Low | Paired with FS above |
-| `BufferPointMaterialFS/VS.glsl` | v1.140 | Vector tile points | 🟢 Low | When vector tiles WebGPU path added |
-| `BufferPolygonMaterialFS/VS.glsl` | v1.140 | Vector tile polygons | 🟢 Low | When vector tiles WebGPU path added |
-| `BufferPolylineMaterialFS/VS.glsl` | v1.140 | Vector tile polylines | 🟢 Low | When vector tiles WebGPU path added |
+| `BufferPointMaterialFS/VS.glsl` | v1.140 | Vector tile points | ✅ **Stub** | `BufferPointMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POINT_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
+| `BufferPolygonMaterialFS/VS.glsl` | v1.140 | Vector tile polygons | ✅ **Stub** | `BufferPolygonMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POLYGON_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
+| `BufferPolylineMaterialFS/VS.glsl` | v1.140 | Vector tile polylines | ✅ **Stub** | `BufferPolylineMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POLYLINE_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
 | `EdgeVisibilityStageVS.glsl` | v1.137 | Edge visibility (glTF ext) | 🟢 Low | When edge visibility WebGPU path added |
 
 **None of these are blocking.** They're new upstream features (not existing features missing WebGPU ports). Our WebGPU model pipeline (`ModelPBRComplete.wgsl`) handles models via a separate unified architecture — these staged GLSL shaders are specific to the WebGL model pipeline's modular stage system.

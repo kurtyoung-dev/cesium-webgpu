@@ -5,6 +5,7 @@ import BufferPrimitiveCollection from "./BufferPrimitiveCollection.js";
 import BufferPolyline from "./BufferPolyline.js";
 import renderPolylines from "./renderBufferPolylineCollection.js";
 import BufferPolylineMaterial from "./BufferPolylineMaterial.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /** @import { TypedArray } from "../Core/globalTypes.js"; */
 /** @import Matrix4 from "../Core/Matrix4.js"; */
@@ -124,6 +125,13 @@ class BufferPolylineCollection extends BufferPrimitiveCollection {
 
     const passes = frameState.passes;
     if (this.show && (passes.render || passes.pick)) {
+      const fr = frameState.context.getFeatureRenderer(
+        FeatureRendererKey.BUFFER_POLYLINE_COLLECTION,
+      );
+      if (fr) {
+        fr.update(this, frameState);
+        return;
+      }
       this._renderContext = renderPolylines(
         this,
         frameState,
