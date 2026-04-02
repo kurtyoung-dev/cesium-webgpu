@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration — Consolidated Status
 
-**Last Updated:** April 2, 2026
+**Last Updated:** April 2, 2026 (post upstream sync #2)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) → [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)  
 **Overall Progress:** ~60% of full WebGL feature parity
 
@@ -319,15 +319,15 @@ See `.clinerules` for full merge procedure. Key: `git checkout --theirs` then re
 
 | Metric | Count |
 |--------|-------|
-| WebGL shader files (GLSL) | 316 |
-| WebGPU shader files (WGSL) | 234 |
+| WebGL shader files (GLSL) | 319 |
+| WebGPU shader files (WGSL) | 235 |
 | Compute shaders | 12 |
-| Shader coverage (file count) | ~74% (234 WGSL files vs 316 GLSL files — 7 new upstream BufferPrimitive + EdgeVisibility GLSL) |
+| Shader coverage (file count) | ~74% (235 WGSL files vs 319 GLSL files — 10 new upstream GLSL: 7 BufferPrimitive/EdgeVisibility + 3 ConstantLod/TextureTransform) |
 | Shader coverage (functional) | ~95% (remaining GLSL either consolidated or architecturally handled differently) |
-| Builtin function chunks | 90 WGSL (of 89 GLSL — 100%+ coverage) |
-| CsmBuiltins.js entries | 96 (90 functions + 6 structs) |
+| Builtin function chunks | 91 WGSL (of 90 GLSL — 101% coverage) |
+| CsmBuiltins.js entries | 97 (91 functions + 6 structs) |
 | WebGL renderer files | 44 |
-| WebGPU renderer files | 83+ |
+| WebGPU renderer files | 103 |
 | Scene features with WebGPU | 22+ of 30+ (~55%) |
 | Rendering passes functional | 9 of 12 (~75%) |
 | Test pages | 29 |

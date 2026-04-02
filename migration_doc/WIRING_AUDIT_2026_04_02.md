@@ -15,13 +15,13 @@ After a thorough codebase audit, the project is in **much better shape than the 
 | **Compute Engine** | ✅ **COMPLETE** | try/catch, workgroup validation, bool return for fallback |
 | **Compute Shaders (11)** | ⚠️ **4 active, 7 dormant** | Dormant shaders are performance optimizations with working fallbacks — not blocking |
 | **Render Passes (13)** | ✅ **ALL HANDLED** | ENVIRONMENT runs before WebGPU branch; all other passes in WebGPUSceneRenderer |
-| **Feature Renderers (28)** | ✅ **ALL WIRED** | getFeatureRenderer() pattern in all 28 scene files |
+| **Feature Renderers (33)** | ✅ **ALL WIRED** | getFeatureRenderer() pattern in 30 scene files, 33 of 34 renderers registered |
 | **Post-Processing** | ✅ **COMPLETE** | 5 tonemapping, FXAA, Bloom(4-pass), SSAO(4-pass), DoF(3-pass), Edge, Silhouette |
 | **IBL Pipeline** | ✅ **COMPLETE** | BRDF LUT, irradiance, radiance prefilter — all compute-based |
-| **Shader Coverage** | ✅ **~95% functional** | 234 WGSL vs 309 GLSL, 90/89 builtin functions |
+| **Shader Coverage** | ✅ **~95% functional** | 234 WGSL vs 319 GLSL, 90/89 builtin functions |
 | **GLSL Backport** | ✅ **NONE NEEDED** | All WGSL either ports existing GLSL, compute-only, or WebGPU enhancements |
 | **Viewer Init Bug** | 🔴→✅ **FIXED** | `_preInitializedScene` was not forwarded to CesiumWidget — now fixed |
-| **Upstream** | ⚠️ **481 behind** | Separate sync task |
+| **Upstream** | ✅ **SYNCED** | 0 behind, 25 ahead — v1.140 + PR #13121 (constant LOD) merged |
 
 ### What's Needed to Run the App
 
@@ -32,7 +32,7 @@ After a thorough codebase audit, the project is in **much better shape than the 
 | 🟡 **Important** | Jasmine unit tests (0 currently for 83+ files) | ❌ Not started |
 | 🟢 **Performance** | Activate 7 dormant compute shaders | ⏳ Deferred (all have fallbacks) |
 | 🟢 **Robustness** | Per-bridge WASM arena slots (FORK-45) | ⏳ Deferred |
-| 🟢 **Maintenance** | Upstream sync (481 commits behind) | ⏳ Separate task |
+| 🟢 **Maintenance** | Upstream sync | ✅ **COMPLETE** — 0 behind, 25 ahead |
 
 ---
 
@@ -225,10 +225,31 @@ All scene files have been migrated to the `getFeatureRenderer()` pattern:
 
 ## 7. Upstream Status — ✅ SYNCED (April 2, 2026)
 
-Upstream merge completed: **507 commits merged** from `upstream/main` (CesiumJS v1.140).
-- **0 commits behind** upstream (was 507)
-- **23 commits ahead** (our WebGPU additions)
-- **Two-parent merge commit** verified
+### Second Sync: PR #13121 (Constant LOD) — 45 commits, ZERO conflicts
+Merged `upstream/main` (45 new commits since first sync — all from PR #13121 `daniel/constant_lod`).
+- **0 commits behind** upstream
+- **25 commits ahead** (24 WebGPU additions + 1 merge commit)
+- **Two-parent merge commit** verified: `cd3f206c39` + `0becdbfc17`
+- **ZERO conflicts** — clean auto-merge by `ort` strategy
+- Build passes (exit code 0)
+
+**New upstream feature (Constant LOD):**
+- `computeTextureTransform.glsl` — new `czm_computeTextureTransform()` builtin function for `KHR_texture_transform`
+- `ConstantLodStageFS.glsl` + `ConstantLodStageVS.glsl` — distance-based constant LOD texture lookup for models
+- `MaterialPipelineStage.js` — new `processConstantLod()` function, `u_constantLodDistance` uniform
+- `MaterialStageFS.glsl` — constant LOD texture lookup integration
+- 12 test glTF models + sandcastle demo + unit tests
+
+**Our modifications preserved through merge:**
+- ✅ `InstancingPipelineStage.js` line 77: `|| frameState.context.isWebGPU` (keepTypedArray for WebGPU)
+- ✅ `SkinningPipelineStage.js` line 5: `extractSkinData` from `ModelSkinData.js` (shared extraction layer)
+- ✅ `LightingStageFS.glsl`: Full multi-light system (`czm_unpackLight`, `computeAdditionalLightPBR`, `czm_lightsData`)
+
+**WGSL equivalents needed (low priority — model pipeline handles these differently):**
+- `computeTextureTransform.glsl` → inline helper when texture transform support added to `ModelPBRComplete.wgsl`
+- `ConstantLodStageFS/VS.glsl` → when constant LOD extension support added to WebGPU model path
+
+### First Sync: v1.135–v1.140 — 507 commits, 12 conflicts
 - **12 conflicts resolved** (17 potential, 5 auto-merged)
 
 ### Key Upstream Changes Incorporated

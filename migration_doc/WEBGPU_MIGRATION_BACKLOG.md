@@ -249,6 +249,21 @@ These WGSL enhancements in `GlobeTerrain.wgsl` add visual quality beyond what up
 | **Subsurface scattering** | No SSS | Turquoise rim scatter on waves | ❌ Enhancement beyond upstream scope |
 | **Deep water color** | 0.7× darkening | Blend to physical deep-ocean color | ❌ Enhancement beyond upstream scope |
 
+#### 📋 New Upstream GLSL — WGSL Forward-Ports Needed (Low Priority)
+These are NEW upstream features added since v1.135 that will eventually need WGSL equivalents when we add WebGPU rendering paths for them:
+
+| GLSL Shader | Upstream PR | Feature | WGSL Priority | Notes |
+|---|---|---|---|---|
+| `computeTextureTransform.glsl` | #13121 (v1.140+) | `KHR_texture_transform` helper | 🟢 Low | Simple inline helper: `(transform * vec3(texCoord, 1.0)).xy`. Add when texture transforms in `ModelPBRComplete.wgsl` |
+| `ConstantLodStageFS.glsl` | #13121 (v1.140+) | Distance-based constant LOD texture lookup | 🟢 Low | Model pipeline feature. Add when constant LOD extension support in WebGPU model path |
+| `ConstantLodStageVS.glsl` | #13121 (v1.140+) | World-position UV computation for constant LOD | 🟢 Low | Paired with FS above |
+| `BufferPointMaterialFS/VS.glsl` | v1.140 | Vector tile points | 🟢 Low | When vector tiles WebGPU path added |
+| `BufferPolygonMaterialFS/VS.glsl` | v1.140 | Vector tile polygons | 🟢 Low | When vector tiles WebGPU path added |
+| `BufferPolylineMaterialFS/VS.glsl` | v1.140 | Vector tile polylines | 🟢 Low | When vector tiles WebGPU path added |
+| `EdgeVisibilityStageVS.glsl` | v1.137 | Edge visibility (glTF ext) | 🟢 Low | When edge visibility WebGPU path added |
+
+**None of these are blocking.** They're new upstream features (not existing features missing WebGPU ports). Our WebGPU model pipeline (`ModelPBRComplete.wgsl`) handles models via a separate unified architecture — these staged GLSL shaders are specific to the WebGL model pipeline's modular stage system.
+
 **Conclusion:** No GLSL backports are needed. Our WGSL shaders either (a) already have upstream GLSL equivalents that work in WebGL, (b) require GPU compute (impossible in WebGL), or (c) are deliberate WebGPU-only visual enhancements.
 
 

@@ -7,6 +7,11 @@
  *
  * Used by ClippingPolygonCollection for polygon-based clipping in
  * primitive and globe shaders.
+ *
+ * Upstream sync (April 2026): Ported performance optimizations from
+ * PolygonSignedDistanceFS.glsl — early-out for empty regions, per-polygon
+ * bounding box reject with 5% padding, sorted-polygon early break,
+ * vertex caching to halve texture reads per edge iteration.
  */
 
 struct PolygonParams {
@@ -53,6 +58,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let regionY = u32(floor(uv.y * dimension));
   let regionIndex = regionY * u32(dimension) + regionX;
 
+  // Early-out: no polygons mapped to this region
+  if (regionIndex >= params.extentsLength) {
+    textureStore(outputSDF, vec2<u32>(gid.x, gid.y), vec4<f32>(1.0, 0.0, 0.0, 0.0));
+    return;
+  }
+
   var result = 1.0; // Default: outside all polygons
   var lastPolygonIndex = 0u;
 
@@ -63,51 +74,75 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let polygonExtentsIndex = u32(header.y);
     lastPolygonIndex += 1u;
 
-    // Only compute SDF for the relevant atlas region
-    if (polygonExtentsIndex == regionIndex) {
-      let extents = getExtents(polygonExtentsIndex);
+    // Read per-polygon bounding box extents (2 pixels: south/west, latRange/lonRange)
+    let extentsSW = getPolygonPosition(lastPolygonIndex);
+    let extentsRange = getPolygonPosition(lastPolygonIndex + 1u);
+    let polygonExtent = vec4<f32>(extentsSW, extentsRange);
+    lastPolygonIndex += 2u;
 
-      // Compute geographic coordinates from atlas UV
-      let textureOffset = vec2<f32>(
-        f32(polygonExtentsIndex % u32(dimension)),
-        floor(f32(polygonExtentsIndex) / dimension),
-      ) / dimension;
-      let localUV = (uv - textureOffset) * dimension;
-      let latitude = mix(extents.x, extents.x + 1.0 / extents.z, localUV.y);
-      let longitude = mix(extents.y, extents.y + 1.0 / extents.w, localUV.x);
-      let p = vec2<f32>(latitude, longitude);
-
-      var clipAmount = 1e10;
-      var s = 1.0;
-
-      // Check each edge for absolute distance + winding number sign
-      for (var i = 0u; i < positionsLength; i++) {
-        let j = select(i - 1u, positionsLength - 1u, i == 0u);
-        let a = getPolygonPosition(lastPolygonIndex + i);
-        let b = getPolygonPosition(lastPolygonIndex + j);
-
-        let ab = b - a;
-        let pa = p - a;
-        let t = clamp(dot(pa, ab) / dot(ab, ab), 0.0, 1.0);
-        let pq = pa - t * ab;
-        let d = length(pq);
-
-        // Inside/outside via winding parity
-        let c1 = p.y >= a.y;
-        let c2 = p.y < b.y;
-        let c3 = ab.x * pa.y > ab.y * pa.x;
-        if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) {
-          s = -s;
-        }
-        if (abs(d) < abs(clipAmount)) {
-          clipAmount = d;
-        }
-      }
-
-      // Normalize to [0,1]: 0.5 = edge, <0.5 = inside, >0.5 = outside
-      let normalized = (s * clipAmount * length(extents.zw)) / 2.0 + 0.5;
-      result = min(result, normalized);
+    // Sorted-polygon early break: polygons are sorted by regionIndex
+    if (polygonExtentsIndex < regionIndex) {
+      lastPolygonIndex += positionsLength;
+      continue;
+    } else if (polygonExtentsIndex > regionIndex) {
+      break;
     }
+
+    // Compute geographic coordinates from atlas UV
+    let extents = getExtents(polygonExtentsIndex);
+    let textureOffset = vec2<f32>(
+      f32(polygonExtentsIndex % u32(dimension)),
+      floor(f32(polygonExtentsIndex) / dimension),
+    ) / dimension;
+    let localUV = (uv - textureOffset) * dimension;
+    let latitude = mix(extents.x, extents.x + 1.0 / extents.z, localUV.y);
+    let longitude = mix(extents.y, extents.y + 1.0 / extents.w, localUV.x);
+    let p = vec2<f32>(latitude, longitude);
+
+    // Per-polygon bounding box reject with 5% padding
+    let padding = 0.05;
+    let polygonNorth = polygonExtent.x + polygonExtent.z;
+    let polygonEast = polygonExtent.y + polygonExtent.w;
+    let latPadding = padding * polygonExtent.z;
+    let lonPadding = padding * polygonExtent.w;
+    if (p.x < polygonExtent.x - latPadding || p.x > polygonNorth + latPadding ||
+        p.y < polygonExtent.y - lonPadding || p.y > polygonEast + lonPadding) {
+      lastPolygonIndex += positionsLength;
+      continue;
+    }
+
+    var clipAmount = 1e10;
+    var s = 1.0;
+
+    // Check each edge for absolute distance + winding number sign.
+    // Cache previous vertex to halve texture reads per iteration.
+    var prev = getPolygonPosition(lastPolygonIndex + positionsLength - 1u);
+    for (var i = 0u; i < positionsLength; i++) {
+      let a = getPolygonPosition(lastPolygonIndex + i);
+      let b = prev;
+      prev = a;
+
+      let ab = b - a;
+      let pa = p - a;
+      let t = clamp(dot(pa, ab) / dot(ab, ab), 0.0, 1.0);
+      let pq = pa - t * ab;
+      let d = length(pq);
+
+      // Inside/outside via winding parity
+      let c1 = p.y >= a.y;
+      let c2 = p.y < b.y;
+      let c3 = ab.x * pa.y > ab.y * pa.x;
+      if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) {
+        s = -s;
+      }
+      if (abs(d) < abs(clipAmount)) {
+        clipAmount = d;
+      }
+    }
+
+    // Normalize to [0,1]: 0.5 = edge, <0.5 = inside, >0.5 = outside
+    let normalized = (s * clipAmount * length(extents.zw)) / 2.0 + 0.5;
+    result = min(result, normalized);
 
     lastPolygonIndex += positionsLength;
   }
