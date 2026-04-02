@@ -12,6 +12,9 @@ import Buffer from "./Buffer.js";
 import BufferUsage from "./BufferUsage.js";
 import ContextLimits from "./ContextLimits.js";
 import AttributeType from "../Scene/AttributeType.js";
+import assert from "../Core/assert.js";
+
+/** @import {TypedArray, TypedArrayConstructor} from "../Core/globalTypes.js"; */
 
 function addAttribute(attributes, attribute, index, context) {
   const hasVertexBuffer = defined(attribute.vertexBuffer);
@@ -389,6 +392,68 @@ class VertexArray {
     //>>includeEnd('debug');
 
     return this._attributes[index];
+  }
+
+  /**
+   * Copies into a vertex attribute buffer from the given array, at a given
+   * range specified as offset and count, in number of (VECN) vertices.
+   * @param {number} attributeIndex
+   * @param {TypedArray} array
+   * @param {number} vertexOffset
+   * @param {number} vertexCount
+   */
+  copyAttributeFromRange(attributeIndex, array, vertexOffset, vertexCount) {
+    const attribute = this.getAttribute(attributeIndex);
+    const buffer = /** @type {Buffer} */ (attribute.vertexBuffer);
+    const elementsPerVertex = attribute.componentsPerAttribute;
+
+    //>>includeStart('debug', pragmas.debug);
+    assert(buffer.sizeInBytes === array.byteLength, "Invalid buffer length");
+    //>>includeEnd('debug');
+
+    const ArrayConstructor = /** @type {TypedArrayConstructor} */ (
+      array.constructor
+    );
+
+    const byteOffset =
+      vertexOffset * elementsPerVertex * ArrayConstructor.BYTES_PER_ELEMENT;
+
+    const rangeArrayView = new ArrayConstructor(
+      /** @type {ArrayBuffer} */ (array.buffer),
+      array.byteOffset + byteOffset,
+      vertexCount * elementsPerVertex,
+    );
+
+    buffer.copyFromArrayView(rangeArrayView, byteOffset);
+  }
+
+  /**
+   * Copies into the index buffer from the given array, at a given range
+   * specified as offset and count, in number of (uint) indices.
+   * @param {TypedArray} array
+   * @param {number} indexOffset
+   * @param {number} indexCount
+   */
+  copyIndexFromRange(array, indexOffset, indexCount) {
+    const buffer = /** @type {Buffer} */ (this._indexBuffer);
+
+    //>>includeStart('debug', pragmas.debug);
+    assert(buffer.sizeInBytes === array.byteLength, "Invalid buffer length");
+    //>>includeEnd('debug');
+
+    const ArrayConstructor = /** @type {TypedArrayConstructor} */ (
+      array.constructor
+    );
+
+    const byteOffset = indexOffset * ArrayConstructor.BYTES_PER_ELEMENT;
+
+    const rangeArrayView = new ArrayConstructor(
+      /** @type {ArrayBuffer} */ (array.buffer),
+      array.byteOffset + byteOffset,
+      indexCount,
+    );
+
+    buffer.copyFromArrayView(rangeArrayView, byteOffset);
   }
 
   _bind() {
