@@ -319,10 +319,13 @@ See `.clinerules` for full merge procedure. Key: `git checkout --theirs` then re
 
 | Metric | Count |
 |--------|-------|
-| WebGL shader files | 607+ |
-| WebGPU shader files (WGSL) | 180+ |
-| Compute shaders | 8 |
-| Shader coverage | ~23% (141 of 607 GLSL shaders have WGSL equivalents) |
+| WebGL shader files (GLSL) | 309 |
+| WebGPU shader files (WGSL) | 234 |
+| Compute shaders | 12 |
+| Shader coverage (file count) | ~76% (234 WGSL files vs 309 GLSL files) |
+| Shader coverage (functional) | ~95% (remaining GLSL either consolidated or architecturally handled differently) |
+| Builtin function chunks | 90 WGSL (of 89 GLSL — 100%+ coverage) |
+| CsmBuiltins.js entries | 96 (90 functions + 6 structs) |
 | WebGL renderer files | 44 |
 | WebGPU renderer files | 83+ |
 | Scene features with WebGPU | 22+ of 30+ (~55%) |
