@@ -31,7 +31,7 @@
 | **Missing IBL pipeline** | ✅ **FIXED** | High | `BrdfLutGenerate.wgsl` (compute), `IrradianceConvolution.wgsl`, `RadiancePrefilter.wgsl`, `WebGPUIBLPipeline.ts` orchestrator, `WebGPUImageBasedLighting.ts` with SH + specular, `ModelPBRComplete.wgsl` IBL-aware ambient |
 | **Missing ground atmosphere** | ✅ **FIXED** | Medium | `GroundAtmosphere.wgsl` (Nishita scattering), `WebGPUGroundAtmosphereRenderer.ts`, `FeatureRendererKey.GROUND_ATMOSPHERE` registered |
 | **Performance infrastructure** | ✅ **ACTIVATED** | Medium | `WebGPUPerformanceManager.ts` orchestrates all 7 systems via `beginFrame()/endFrame()` in scene renderer |
-| **Shader coverage** | 🟡 ~15% of GLSL shaders have WGSL equivalents (91+ of 607) | Expected | +16 new WGSL shaders from IBL + atmosphere + post-processing + SSR + weather |
+| **Shader coverage** | 🟡 ~23% of GLSL shaders have WGSL equivalents (141 of 607) | Expected | +50 new WGSL shaders (April 2026): 35 builtin functions, 12 post-processing, 3 model stages. +16 prior from IBL + atmosphere + post-processing + SSR + weather |
 | **Night rendering** | ✅ **ENHANCED** | High | Lambert terminator, emissive city lights, moonlit night side, terminator glow |
 | **Ocean/Water rendering** | ✅ **ENHANCED** | High | Fresnel, GGX specular, multi-octave waves, foam/whitecaps, subsurface scattering, deep water color, sky reflection |
 | **Screen-Space Reflections** | ✅ **Wired** | Medium | `ScreenSpaceReflections.wgsl` — ray march + binary refinement. Pipeline wired via `_executeEnvironmentalEffects()` in `WebGPUSceneRenderer.ts`. Activated by `scene._enableSSR = true` |
