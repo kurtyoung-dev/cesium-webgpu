@@ -223,16 +223,48 @@ All scene files have been migrated to the `getFeatureRenderer()` pattern:
 
 ---
 
-## 7. Upstream Status — 481 Commits Behind
+## 7. Upstream Status — ✅ SYNCED (April 2, 2026)
 
-Our fork is 481 commits behind `upstream/main`. Notable upstream changes include:
-- Gaussian Splat fixes (`DanielZ/Splat_FIX7`)
-- Point cloud style metadata fixes
-- Clipping polygon GPU work (`alark/clippingpolygon_gpu`)
-- BufferPrimitiveMaterial shader renames
-- VoxelFS.glsl updates
+Upstream merge completed: **507 commits merged** from `upstream/main` (CesiumJS v1.140).
+- **0 commits behind** upstream (was 507)
+- **23 commits ahead** (our WebGPU additions)
+- **Two-parent merge commit** verified
+- **12 conflicts resolved** (17 potential, 5 auto-merged)
 
-**Recommendation:** Schedule an upstream sync as a separate focused task following the `.clinerules` merge procedure. Our 28 scene file modifications create merge conflict points, but each is minimal (~1-5 lines of WebGPU routing).
+### Key Upstream Changes Incorporated
+
+| Version | Notable Changes |
+|---------|----------------|
+| **v1.140** | BufferPrimitive collections (vector tile APIs), Billboards WebGL2 requirement, Gaussian splat perf, ClippingPolygon GPU perf |
+| **v1.139** | **Cartesian2/3/4 ES6 classes** (aligned with our modernization), CubeMapPanorama, metadata in custom shaders |
+| **v1.138** | Intel Arc GPU jitter fix, Megatexture→Texture3D for voxels, 2D/CV pick fixes |
+| **v1.137** | BENTLEY point/line style extensions, edge visibility quad rendering, pickAsync |
+| **v1.136** | pickAsync, terrain picking quadtrees |
+| **v1.135** | 3D Tiles terrain provider, EXT_mesh_primitive_edge_visibility |
+
+### Conflict Resolution Summary
+
+| File | Strategy | Details |
+|------|----------|---------|
+| `package.json` (4) | Accept upstream versions, keep our additions | `@webgpu/types`, `lint-staged`, `build-wasm` scripts |
+| `Context.js` | Keep ours (ES6 class) | Upstream only had JSDoc change |
+| `VertexArray.js` | Keep ours + add new methods | Added `copyAttributeFromRange()`, `copyIndexFromRange()` |
+| `SkyBox.js` | Keep ours + apply fix | Applied upstream's `show` delegation to `_panorama.show` |
+| `SSCCModeHandlers.js` | Apply upstream zoom fix | Camera zoom guard for tracking/lookAt mode |
+| `Material.js`, `RenderState.js` | Keep ours | Upstream only JSDoc changes |
+| `CubeMapPanorama.js` | Keep ours | Upstream Matrix4→Matrix3 JSDoc, compatible |
+| `StaticGeometry*Batch.js` | Keep ours | Upstream constructor-call refactor, not needed for class |
+
+### New Upstream GLSL Shaders (7 new files)
+
+| GLSL Shader | Feature | WGSL Equivalent? | Priority |
+|---|---|---|---|
+| `BufferPointMaterialFS/VS.glsl` | Vector tile points | ❌ Not yet needed | 🟢 When vector tiles WebGPU path added |
+| `BufferPolygonMaterialFS/VS.glsl` | Vector tile polygons | ❌ Not yet needed | 🟢 When vector tiles WebGPU path added |
+| `BufferPolylineMaterialFS/VS.glsl` | Vector tile polylines | ❌ Not yet needed | 🟢 When vector tiles WebGPU path added |
+| `EdgeVisibilityStageVS.glsl` | Edge visibility (glTF ext) | ❌ Not yet needed | 🟢 When edge visibility WebGPU path added |
+
+These are NEW upstream features — not backport gaps. They'll need WGSL equivalents when we add WebGPU rendering paths for vector tiles and edge visibility.
 
 ---
 
