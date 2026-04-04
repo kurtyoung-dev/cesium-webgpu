@@ -16,7 +16,8 @@
 7. [Session 6: Diagnostic Page — Pipeline Compilation Failures](#session-6-diagnostic-page--pipeline-compilation-failures)
 8. [Session 7: Build System Fixes](#session-7-build-system-fixes)
 9. [Active Issues: Stars & Terrain Not Rendering](#active-issues-stars--terrain-not-rendering)
-10. [Files Modified Summary](#files-modified-summary)
+10. [Session 14: WebMercatorT Shader Support & UV Stretching Fix](#session-14-webmercatort-shader-support--uv-stretching-fix)
+11. [Files Modified Summary](#files-modified-summary)
 
 ---
 
@@ -296,6 +297,64 @@ The "blue globe" seen by the user likely means:
 - Terrain pipeline compilation failure (check for `[CesiumJS:webgpu:*]` warnings)
 - Imagery tile fetch errors (check network tab for 401/403 errors on tile requests)
 - Vertex buffer type mismatch in `WebGPUGlobeSurfaceRenderer.ts` `_getOrCreateTileBuffers()`
+
+---
+
+## Session 14: WebMercatorT Shader Support & UV Stretching Fix
+
+**Date:** April 4, 2026
+
+### Bug 14.1: UV Stretching — WebMercatorT Not Passed Through Shader
+- **Files:** `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceRenderer.ts`
+- **Root cause:** The WebGL shader passes `webMercatorT` as a varying and uses a per-layer `u_dayTextureUseWebMercatorT` boolean to select between geographic V and Mercator T coordinates. The WGSL shader had NO webMercatorT support — it always used geographic V with Mercator-space `translationAndScale`, causing severe UV distortion for all Web Mercator imagery (Bing Maps).
+- **Fix:** Added full webMercatorT support matching WebGL:
+  - `v_textureCoordinates` changed from `vec2` to `vec3` (u, v_geo, webMercatorT)
+  - `processVertex()` accepts webMercatorT parameter
+  - 3 uncompressed entry points: `vertexMain`, `vertexMainWebMerc`, `vertexMainWebMercNormals`
+  - Per-layer `useWebMercatorTLayer: vec4<f32>` in TileUniforms (offsets 88-91)
+  - Fragment shader uses `select()` to pick geographic V or webMercatorT per layer
+  - `TILE_UNIFORM_FLOATS` increased from 88 to 92
+
+### Bug 14.2: Quantized Terrain WebMercatorT Decompression
+- **Files:** `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceRenderer.ts`
+- **Root cause:** For BITS12 quantized terrain with `hasWebMercatorT=true`, `compressed0.w` stores the COMPRESSED webMercatorT (not the encodedNormal). The shader was treating `.w` as encodedNormal for all quantized tiles, producing wrong normals and wrong webMercatorT=uv.y fallback.
+- **Fix:** Added `vertexMainQuantizedWebMerc` entry point that decompresses webMercatorT from `compressed0.w` via `decompressTextureCoordinates()`. Pipeline selects this entry point when `hasWebMercatorT=true`.
+
+### Bug 14.3: Back-Face Culling Regression from octDecode(0.0)
+- **Files:** `GlobeTerrain.wgsl`
+- **Root cause:** `vertexMainQuantizedWebMerc` passed `0.0` as the encoded normal (since the real normal isn't available without a second attribute). `octDecode(0.0)` produces normal `(0, 0, -1)` — pointing AWAY from the camera. With `cullMode: "back"`, tiles were entirely culled, causing a blank blue globe at orbit view.
+- **Fix:** Changed sentinel normal from `0.0` to `32896.0` (oct-encoded approximately-up vector `(0,0,1)`), preventing back-face culling.
+
+### Bug 14.4: Vertex Attribute Format Mismatch for WebMercatorT+Normals
+- **Files:** `WebGPUGlobeSurfaceRenderer.ts`
+- **Root cause:** When `hasWebMercatorT=true AND hasNormals=true`, the uncompressed vertex data layout is `[u, v, webMercatorT, encodedNormal]` (4 floats at location 1). The pipeline was using `float32x3` which only read 3 floats, treating webMercatorT as the normal and missing the actual normal entirely.
+- **Fix:** Pipeline now uses `float32x4` for this case with `vertexMainWebMercNormals` entry point that reads normal from `.w` and webMercatorT from `.z`.
+
+### Bug 14.5: 2D Mode SceneMode Check
+- **File:** `WebGPUSceneRenderer.ts` line 446
+- **Root cause:** Code checked `scene.mode !== 0` intending to detect SCENE2D, but `SceneMode.SCENE2D = 2` (not 0; 0 is MORPHING).
+- **Fix:** Changed to `scene.mode !== 2`.
+
+### Bug 14.6: Spammy Per-Tile Diagnostic Logs
+- **File:** `GlobeSurfaceTileProviderRendering.js`
+- **Root cause:** Per-tile `_diagLogged` flag was set on each new command object (created every frame), causing continuous log spam.
+- **Fix:** Removed the per-tile exec diagnostic logging entirely.
+
+### Files Modified
+| File | Changes |
+|---|---|
+| `GlobeTerrain.wgsl` | v_textureCoordinates vec2→vec3, processVertex webMercatorT param, 5 vertex entry points, useWebMercatorTLayer uniform, fragment per-layer UV selection, quantized webMerc entry point |
+| `WebGPUGlobeSurfaceRenderer.ts` | hasWebMercatorT in TileGPUResources, TILE_UNIFORM_FLOATS 88→92, pipeline variant for all encoding combos, useWebMercatorT per-layer uniform writes |
+| `WebGPUSceneRenderer.ts` | SceneMode.SCENE2D check fix (0→2) |
+| `GlobeSurfaceTileProviderRendering.js` | Removed spammy per-tile exec diagnostics |
+| `WebGPUImageryReprojection.ts` | Minor: image dimension fallback (naturalWidth/Height) |
+
+### Remaining Issues
+- Southern hemisphere tiles render white (imagery not loading or texture upload failing)
+- 2D mode still renders as sphere (deeper projection changes needed)
+- Stars/skybox not rendering
+- Camera jittering at close zoom
+- Some UV stretching persists at certain LODs
 
 ---
 

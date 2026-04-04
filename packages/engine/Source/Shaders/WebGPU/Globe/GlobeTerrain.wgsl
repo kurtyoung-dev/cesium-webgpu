@@ -80,6 +80,10 @@ struct TileUniforms {
   oceanParams: vec4<f32>,
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
   nightOceanParams: vec4<f32>,
+  // Per-layer flag: >0.5 means use webMercatorT (.z of v_textureCoordinates)
+  // instead of geographic V (.y) for imagery sampling. Matches WebGL's
+  // u_dayTextureUseWebMercatorT. x=layer0, y=layer1, z=layer2, w=layer3.
+  useWebMercatorTLayer: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -128,7 +132,7 @@ struct VertexInputQuantized {
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) v_textureCoordinates: vec2<f32>,
+  @location(0) v_textureCoordinates: vec3<f32>,  // (u, v_geographic, webMercatorT)
   @location(1) v_positionEC: vec3<f32>,
   @location(2) v_normalEC: vec3<f32>,
   @location(3) v_positionMC: vec3<f32>,
@@ -215,8 +219,12 @@ fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
 }
 
 // ─── Shared vertex processing ───
+// webMercatorT: Web Mercator vertical texture coordinate. When no Mercator
+// data is present in the vertex buffer, callers pass textureCoordinates.y
+// (geographic V) as a fallback — the fragment shader's per-layer
+// useWebMercatorT flag selects which one to use for sampling.
 fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
-                 encodedNormal: f32) -> VertexOutput {
+                 encodedNormal: f32, webMercatorT: f32) -> VertexOutput {
   var out: VertexOutput;
 
   // Vertical exaggeration
@@ -243,7 +251,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.position = camera.mvpRelativeToEye * rtePosition;
   out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
   out.v_distance = length(out.v_positionEC);
-  out.v_textureCoordinates = textureCoordinates;
+  out.v_textureCoordinates = vec3<f32>(textureCoordinates, webMercatorT);
   out.v_positionMC = position3DWC;
 
   let normalMC = octDecode(encodedNormal);
@@ -258,16 +266,34 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 }
 
 // ─── Vertex Shader: Uncompressed Terrain ───
+// Used when hasWebMercatorT=false. Normal (if present) is in .z component.
+// When no normals, .z = 0 (default fill from float32x2 format).
+// webMercatorT defaults to geographic V (textureCoordinates.y).
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
-  return processVertex(
-    input.position3DAndHeight.xyz,
-    input.textureCoordAndEncodedNormals.xy,
-    input.textureCoordAndEncodedNormals.z
-  );
+  let tc = input.textureCoordAndEncodedNormals;
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.z, tc.y);
+}
+
+// ─── Vertex Shader: Uncompressed Terrain with WebMercatorT (no normals) ───
+// Vertex data: [u, v, webMercatorT] — webMercatorT is in .z, no normal.
+@vertex
+fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
+  let tc = input.textureCoordAndEncodedNormals;
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, tc.z);
+}
+
+// ─── Vertex Shader: Uncompressed Terrain with WebMercatorT + Normals ───
+// Vertex data: [u, v, webMercatorT, encodedNormal] — normal in .w, webMercT in .z.
+@vertex
+fn vertexMainWebMercNormals(input: VertexInput) -> VertexOutput {
+  let tc = input.textureCoordAndEncodedNormals;
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, tc.z);
 }
 
 // ─── Vertex Shader: Quantized Terrain (BITS12) ───
+// No webMercatorT: compressed0.w = encodedNormal (or default 1.0 if no normals).
+// webMercatorT defaults to geographic V.
 @vertex
 fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
   let xy = decompressTextureCoordinates(input.compressed0.x);
@@ -275,7 +301,25 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
   let scaledPos = vec3<f32>(xy.x, xy.y, zh.x);
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
-  return processVertex(position, uv, input.compressed0.w);
+  return processVertex(position, uv, input.compressed0.w, uv.y);
+}
+
+// ─── Vertex Shader: Quantized Terrain with WebMercatorT ───
+// When hasWebMercatorT=true, compressed0.w stores the COMPRESSED webMercatorT
+// (not the encodedNormal). Decompress it the same way as texture coordinates.
+// encodedNormal is not available in this layout (would need separate compressed1
+// attribute). We use a sentinel value (32768.0 = oct-encoded up vector) to
+// produce a reasonable default normal for lighting and face culling.
+@vertex
+fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
+  let xy = decompressTextureCoordinates(input.compressed0.x);
+  let zh = decompressTextureCoordinates(input.compressed0.y);
+  let scaledPos = vec3<f32>(xy.x, xy.y, zh.x);
+  let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
+  let uv = decompressTextureCoordinates(input.compressed0.z);
+  let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
+  // 32896.0 = oct-encoded (0,0,1) up vector — prevents back-face culling
+  return processVertex(position, uv, 32896.0, webMercT);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -283,6 +327,7 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
 // ═══════════════════════════════════════════════════════════════════════
 
 // ─── Imagery sampling with translation/scale ───
+// baseUV: the per-layer UV (geographic or webMercator, selected by caller)
 fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
                  baseUV: vec2<f32>, layer: ImageryLayer) -> vec4<f32> {
   let uv = baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy;
@@ -291,6 +336,12 @@ fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
   // because this function is called after non-uniform discard/return
   // (clipping planes), and textureSample requires uniform control flow.
   return textureSampleLevel(tex, samp, clampedUV, 0.0);
+}
+
+// Select the correct V coordinate per layer based on useWebMercatorT flag
+fn selectLayerUV(geoUV: vec2<f32>, webMercT: f32, useWebMerc: f32) -> vec2<f32> {
+  let v = select(geoUV.y, webMercT, useWebMerc > 0.5);
+  return vec2<f32>(geoUV.x, v);
 }
 
 fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32) -> vec3<f32> {
@@ -573,7 +624,12 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // ═══════════════════════════════════════════════════════════════════════
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let uv = input.v_textureCoordinates;
+  let geoUV = input.v_textureCoordinates.xy;
+  let webMercT = input.v_textureCoordinates.z;
+
+  // Helper: select geographic V or webMercatorT per layer
+  // Matches WebGL's u_dayTextureUseWebMercatorT behavior
+  let useWebMerc = tile.useWebMercatorTLayer;
 
   // ═══════════════════════════════════════════════════════════════════════
   // DEBUG MODE: Simplified imagery-only compositing
@@ -587,14 +643,18 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   var color = vec3<f32>(0.04, 0.04, 0.06);
   if (count >= 1) {
     let layer0 = tile.layers[0];
-    let sUV0 = uv * layer0.translationAndScale.zw + layer0.translationAndScale.xy;
+    let v0 = select(geoUV.y, webMercT, useWebMerc.x > 0.5);
+    let uv0 = vec2<f32>(geoUV.x, v0);
+    let sUV0 = uv0 * layer0.translationAndScale.zw + layer0.translationAndScale.xy;
     let cUV0 = clamp(sUV0, layer0.texCoordsRect.xy, layer0.texCoordsRect.zw);
     let tex0 = textureSampleLevel(dayTexture0, texSampler, cUV0, 0.0);
     color = mix(color, tex0.rgb, layer0.alpha * tex0.a);
   }
   if (count >= 2) {
     let layer1 = tile.layers[1];
-    let sUV1 = uv * layer1.translationAndScale.zw + layer1.translationAndScale.xy;
+    let v1 = select(geoUV.y, webMercT, useWebMerc.y > 0.5);
+    let uv1 = vec2<f32>(geoUV.x, v1);
+    let sUV1 = uv1 * layer1.translationAndScale.zw + layer1.translationAndScale.xy;
     let cUV1 = clamp(sUV1, layer1.texCoordsRect.xy, layer1.texCoordsRect.zw);
     let tex1 = textureSampleLevel(dayTexture1, texSampler, cUV1, 0.0);
     color = mix(color, tex1.rgb, layer1.alpha * tex1.a);

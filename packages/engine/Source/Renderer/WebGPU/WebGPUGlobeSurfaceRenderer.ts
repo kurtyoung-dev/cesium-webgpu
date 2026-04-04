@@ -35,8 +35,8 @@ const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 // TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
 //   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
 //   dayNightAlpha0-3(4×2=8) + flags(4) + exaggeration(2) + time(1) + pad(1)
-//   + oceanParams(4) + nightOceanParams(4) = 88 floats
-const TILE_UNIFORM_FLOATS = 88;
+//   + oceanParams(4) + nightOceanParams(4) + useWebMercatorTLayer(4) = 92 floats
+const TILE_UNIFORM_FLOATS = 92;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
@@ -64,6 +64,7 @@ interface TileGPUResources {
   strideFloats: number;
   strideBytes: number;
   hasNormals: boolean;
+  hasWebMercatorT: boolean;
   isQuantized: boolean;
   meshGeneration: number;
 }
@@ -321,6 +322,7 @@ export class WebGPUGlobeSurfaceRenderer {
   private _createPipelineVariant(
     isQuantized: boolean,
     hasNormals: boolean,
+    hasWebMercatorT: boolean,
     isBlend: boolean,
     strideBytes: number,
   ): GPURenderPipeline {
@@ -330,13 +332,26 @@ export class WebGPUGlobeSurfaceRenderer {
     let entryPoint: string;
 
     if (isQuantized) {
-      // BITS12 quantized: compressed0 is 3 or 4 floats
-      // Minimum stride: hasNormals ? 16 : 12. Actual stride may be larger
-      // (e.g., with webMercator) — extra data is simply skipped by the shader.
-      const minStride = hasNormals ? 16 : 12;
+      // BITS12 quantized: compressed0 layout depends on encoding flags.
+      // When hasWebMercatorT=true: compressed0.w = compressed webMercatorT
+      //   (not encodedNormal), so we need float32x4 to read it.
+      // When hasWebMercatorT=false: compressed0.w = encodedNormal (if normals)
+      //   or not present (float32x3 with .w defaulting to 1.0).
+      let format: GPUVertexFormat;
+      if (hasWebMercatorT) {
+        // webMercatorT is in compressed0.w — always need vec4
+        format = "float32x4";
+        entryPoint = "vertexMainQuantizedWebMerc";
+      } else if (hasNormals) {
+        // encodedNormal in compressed0.w
+        format = "float32x4";
+        entryPoint = "vertexMainQuantized";
+      } else {
+        format = "float32x3";
+        entryPoint = "vertexMainQuantized";
+      }
+      const minStride = hasWebMercatorT || hasNormals ? 16 : 12;
       const actualStride = Math.max(strideBytes, minStride);
-      const format: GPUVertexFormat = hasNormals ? "float32x4" : "float32x3";
-      entryPoint = "vertexMainQuantized";
       vertexBuffers = [
         {
           arrayStride: actualStride,
@@ -345,15 +360,32 @@ export class WebGPUGlobeSurfaceRenderer {
         },
       ];
     } else {
-      // Uncompressed: position3DAndHeight(vec4=16) + texCoord+normal(vec2/3)
-      // Minimum stride: hasNormals ? 28 : 24. Actual stride may be larger
-      // (e.g., stride=8 for webMercator+normals = 32 bytes).
-      const minStride = hasNormals ? 28 : 24;
-      const actualStride = Math.max(strideBytes, minStride);
-      const texCoordFormat: GPUVertexFormat = hasNormals
-        ? "float32x3"
-        : "float32x2";
-      entryPoint = "vertexMain";
+      // Uncompressed vertex data layout (per TerrainEncoding):
+      //   [0-3]: posX, posY, posZ, height  (float32x4 @ location 0)
+      //   [4-5]: u, v                      (always present)
+      //   [6]:   webMercatorT              (if hasWebMercatorT)
+      //   [6/7]: encodedNormal             (if hasVertexNormals, after webMercatorT if both)
+      //
+      // We read all data after position as a single attribute at location 1:
+      //   - No extras:           float32x2 (u, v)         → vertexMain
+      //   - webMercT only:       float32x3 (u, v, mercT)  → vertexMainWebMerc
+      //   - normals only:        float32x3 (u, v, normal)  → vertexMain
+      //   - webMercT + normals:  float32x4 (u, v, mercT, normal) → vertexMainWebMercNormals
+      let texCoordFormat: GPUVertexFormat;
+      if (hasWebMercatorT && hasNormals) {
+        texCoordFormat = "float32x4";
+        entryPoint = "vertexMainWebMercNormals";
+      } else if (hasWebMercatorT) {
+        texCoordFormat = "float32x3";
+        entryPoint = "vertexMainWebMerc";
+      } else if (hasNormals) {
+        texCoordFormat = "float32x3";
+        entryPoint = "vertexMain";
+      } else {
+        texCoordFormat = "float32x2";
+        entryPoint = "vertexMain";
+      }
+      const actualStride = Math.max(strideBytes, 24);
       vertexBuffers = [
         {
           arrayStride: actualStride,
@@ -424,15 +456,17 @@ export class WebGPUGlobeSurfaceRenderer {
   private _selectPipeline(
     isQuantized: boolean,
     hasNormals: boolean,
+    hasWebMercatorT: boolean,
     isBlend: boolean,
     strideBytes: number,
   ): GPURenderPipeline {
-    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${isBlend ? "B" : "O"}_${strideBytes}`;
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}`;
     let pipeline = this._pipelineCache.get(cacheKey);
     if (!pipeline) {
       pipeline = this._createPipelineVariant(
         isQuantized,
         hasNormals,
+        hasWebMercatorT,
         isBlend,
         strideBytes,
       );
@@ -488,18 +522,29 @@ export class WebGPUGlobeSurfaceRenderer {
     const passCount = Math.max(1, Math.ceil(totalLayers / MAX_IMAGERY_LAYERS));
     const commands: TileDrawDescriptor[] = [];
 
-    // Diagnostic: log imagery status for first few tiles
-    if (this._diagTileCount < 10) {
+    // Diagnostic: log encoding + imagery status (DEBUG — remove after fixing)
+    if (this._diagTileCount < 30) {
       this._diagTileCount++;
       const imgLen = imageryCollection ? imageryCollection.length : 0;
+      const rect = tile.rectangle;
+      const latInfo = rect
+        ? `lat=[${((rect.south * 180) / Math.PI).toFixed(1)},${((rect.north * 180) / Math.PI).toFixed(1)}]`
+        : "lat=?";
       console.log(
-        `[WebGPU:GlobeTile] tile=${tileKey} imagery=${imgLen} ready=${totalLayers}`,
+        `[WebGPU:GlobeTile] tile=${tileKey} lvl=${tile.level} ${latInfo} imagery=${imgLen} ready=${totalLayers} ` +
+          `stride=${gpuResources.strideFloats} webMercT=${gpuResources.hasWebMercatorT} ` +
+          `quant=${gpuResources.isQuantized} idxCount=${gpuResources.indexCount}`,
       );
       if (totalLayers > 0) {
         const sample = readyLayers[0];
         const ri = sample?.readyImagery;
         console.log(
-          `[WebGPU:GlobeTile]   sample: hasImage=${!!ri?.image} hasTexture=${!!ri?.texture} hasWebGPUTex=${!!ri?._webgpuReprojectedTexture} state=${ri?.state}`,
+          `[WebGPU:GlobeTile]   sample: hasImage=${!!ri?.image} hasWebGPUTex=${!!ri?._webgpuReprojectedTexture} ` +
+            `useWebMercT=${sample?.useWebMercatorT} state=${ri?.state}`,
+        );
+      } else {
+        console.warn(
+          `[WebGPU:GlobeTile]   NO READY IMAGERY for tile ${tileKey} ${latInfo}`,
         );
       }
     }
@@ -513,6 +558,7 @@ export class WebGPUGlobeSurfaceRenderer {
       const pipeline = this._selectPipeline(
         gpuResources.isQuantized,
         gpuResources.hasNormals,
+        gpuResources.hasWebMercatorT,
         isSubsequentPass,
         gpuResources.strideBytes,
       );
@@ -641,6 +687,7 @@ export class WebGPUGlobeSurfaceRenderer {
     const encoding = mesh.encoding;
     const stride = encoding.stride;
     const hasNormals = encoding.hasVertexNormals === true;
+    const hasWebMercatorT = encoding.hasWebMercatorT === true;
     // TerrainQuantization.BITS12 = 1; NONE = 0
     const isQuantized =
       encoding.quantization !== undefined && encoding.quantization === 1;
@@ -724,6 +771,7 @@ export class WebGPUGlobeSurfaceRenderer {
       strideFloats: stride,
       strideBytes,
       hasNormals,
+      hasWebMercatorT,
       isQuantized,
       meshGeneration: generation,
     };
@@ -770,8 +818,17 @@ export class WebGPUGlobeSurfaceRenderer {
     data[offset++] = camLow.z;
     data[offset++] = 0;
 
-    // center3D (vec3 + pad)
-    const center = surfaceTile.center || { x: 0, y: 0, z: 0 };
+    // center3D (vec3 + pad) — must match the encoding center that vertex
+    // positions are relative to (mesh.encoding.center or mesh.center)
+    const center = mesh.center || mesh.encoding?.center || { x: 0, y: 0, z: 0 };
+    if (this._diagTileCount <= 5) {
+      const hasMC = !!mesh.center;
+      const hasEC = !!mesh.encoding?.center;
+      console.log(
+        `[WebGPU:GlobeTile] center3D: mesh.center=${hasMC} encoding.center=${hasEC} ` +
+          `value=(${center.x?.toFixed(1)}, ${center.y?.toFixed(1)}, ${center.z?.toFixed(1)})`,
+      );
+    }
     data[offset++] = center.x;
     data[offset++] = center.y;
     data[offset++] = center.z;
@@ -867,7 +924,9 @@ export class WebGPUGlobeSurfaceRenderer {
 
       const baseOffset = layerCount * 12;
 
-      // translationAndScale (vec4)
+      // translationAndScale (vec4) — uses the cached value directly.
+      // When useWebMercatorT=true, the cached values are in Mercator-native
+      // space and the shader samples with webMercatorT (matching WebGL behavior).
       const ts = tileImagery.textureTranslationAndScale;
       if (ts) {
         data[baseOffset + 0] = ts.x;
@@ -878,6 +937,9 @@ export class WebGPUGlobeSurfaceRenderer {
         data[baseOffset + 2] = 1;
         data[baseOffset + 3] = 1;
       }
+
+      // useWebMercatorT per layer (offsets 88-91)
+      data[88 + layerCount] = tileImagery.useWebMercatorT ? 1.0 : 0.0;
 
       // texCoordsRectangle (vec4)
       const rect = tileImagery.textureCoordinateRectangle;
@@ -1055,7 +1117,7 @@ export class WebGPUGlobeSurfaceRenderer {
       const view = this._getOrCreateImageryTexture(imagery);
       if (view) {
         textureViews.push(view);
-      } else if (this._diagTileCount <= 10) {
+      } else if (this._diagTileCount <= 30) {
         console.warn(
           `[WebGPU:GlobeTile] _getOrCreateImageryTexture returned null for imagery`,
           {
@@ -1238,7 +1300,7 @@ export class WebGPUGlobeSurfaceRenderer {
       });
 
       device.queue.copyExternalImageToTexture(
-        { source: source as any, flipY: true },
+        { source: source as any },
         { texture },
         [width, height],
       );

@@ -282,7 +282,7 @@ export function reprojectImageSourceWebGPU(
   });
 
   device.queue.copyExternalImageToTexture(
-    { source: imageSource as ImageBitmap, flipY: true },
+    { source: imageSource as ImageBitmap },
     { texture: srcTexture },
     { width, height },
   );

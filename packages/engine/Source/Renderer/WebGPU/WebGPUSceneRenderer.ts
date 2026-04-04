@@ -443,7 +443,7 @@ export class WebGPUSceneRenderer {
       );
 
       // For translucent pass, use actual near to avoid blending artifacts
-      if (index !== 0 && scene.mode !== 0 /* SceneMode.SCENE2D */) {
+      if (index !== 0 && scene.mode !== 2 /* SceneMode.SCENE2D */) {
         this._updateFrustumUniforms(
           uniformState,
           frustumCommands.near,

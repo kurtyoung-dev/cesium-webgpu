@@ -877,26 +877,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       _indexBuffer: cmdDesc.indexBuffer,
       _indexCount: cmdDesc.indexCount,
       _indexFormat: cmdDesc.indexFormat,
-      _diagLogged: false,
       execute: function (renderPass) {
-        // One-time diagnostic: log bind group details for first tile
-        if (!this._diagLogged) {
-          this._diagLogged = true;
-          console.log(
-            `[WebGPU:GlobeTile:exec] pipeline=${!!this._pipeline} ` +
-              `bindGroups=${this._bindGroups.length} ` +
-              `vtxBuf=${!!this._vertexBuffer} ` +
-              `idxBuf=${!!this._indexBuffer} ` +
-              `idxCount=${this._indexCount} ` +
-              `idxFmt=${this._indexFormat}`,
-          );
-          for (let g = 0; g < this._bindGroups.length; g++) {
-            console.log(
-              `[WebGPU:GlobeTile:exec]   group[${g}]=${!!this._bindGroups[g]} ` +
-                `type=${this._bindGroups[g]?.constructor?.name}`,
-            );
-          }
-        }
         renderPass.setPipeline(this._pipeline);
         for (let i = 0; i < this._bindGroups.length; i++) {
           renderPass.setBindGroup(i, this._bindGroups[i]);
