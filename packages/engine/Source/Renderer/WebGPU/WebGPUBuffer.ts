@@ -111,13 +111,12 @@ export class WebGPUBuffer {
     if (!defined(options.device)) {
       throw new DeveloperError("options.device is required.");
     }
-    if (!defined(options.size) || options.size <= 0) {
-      throw new DeveloperError("options.size must be greater than 0.");
-    }
     //>>includeEnd('debug');
 
-    // If data is provided, calculate aligned size to ensure buffer is large enough
-    let bufferSize = options.size;
+    // WebGPU requires buffer size > 0 and a valid unsigned integer.
+    // Clamp to minimum 4 bytes for callers that pass size 0 or NaN
+    // (common during initial frames before data is ready).
+    let bufferSize = Math.max(Number(options.size) || 4, 4);
     if (defined(options.data)) {
       const dataSize =
         options.data instanceof ArrayBuffer
@@ -246,9 +245,16 @@ export class WebGPUBuffer {
   static createUniformBuffer(
     device: GPUDevice,
     size: number,
-    data?: ArrayBuffer | ArrayBufferView,
+    data?: ArrayBuffer | ArrayBufferView | string,
     label?: string,
   ): WebGPUBuffer {
+    // Handle common (device, size, label) call pattern where label
+    // is passed as the data parameter.
+    if (typeof data === "string") {
+      label = data;
+      data = undefined;
+    }
+
     // Align size to 256 bytes (uniform buffer alignment requirement)
     const alignedSize = Math.ceil(size / 256) * 256;
 
@@ -256,7 +262,7 @@ export class WebGPUBuffer {
       device,
       size: alignedSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      data,
+      data: data as ArrayBuffer | ArrayBufferView | undefined,
       label: label ?? "UniformBuffer",
     });
   }

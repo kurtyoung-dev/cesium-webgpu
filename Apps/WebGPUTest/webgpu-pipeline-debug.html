@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebGPU Pipeline Debug — Stage-by-Stage Verification</title>
+    <style>
+      @import url(../../Build/CesiumUnminified/Widgets/widgets.css);
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Consolas", "Courier New", monospace;
+        background: #111;
+        color: #eee;
+        overflow: hidden;
+      }
+
+      #cesiumContainer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      #debugPanel {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 420px;
+        max-height: calc(100vh - 20px);
+        background: rgba(0, 0, 0, 0.88);
+        border: 1px solid #444;
+        border-radius: 6px;
+        overflow-y: auto;
+        z-index: 100;
+        font-size: 11px;
+        padding: 8px;
+      }
+      #debugPanel h2 {
+        font-size: 13px;
+        color: #0af;
+        margin-bottom: 6px;
+        border-bottom: 1px solid #333;
+        padding-bottom: 4px;
+      }
+      #debugPanel h3 {
+        font-size: 11px;
+        color: #fa0;
+        margin: 6px 0 3px 0;
+      }
+
+      .section {
+        margin-bottom: 8px;
+        padding: 4px;
+        border: 1px solid #333;
+        border-radius: 3px;
+      }
+      .section.ok {
+        border-color: #0a4;
+      }
+      .section.warn {
+        border-color: #a80;
+      }
+      .section.fail {
+        border-color: #a00;
+      }
+
+      .row {
+        display: flex;
+        justify-content: space-between;
+        padding: 1px 2px;
+      }
+      .row .label {
+        color: #aaa;
+      }
+      .row .value {
+        color: #fff;
+        font-weight: bold;
+      }
+      .row .value.zero {
+        color: #f55;
+      }
+      .row .value.good {
+        color: #5f5;
+      }
+      .row .value.warn {
+        color: #fa0;
+      }
+
+      #controls {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        z-index: 100;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        max-width: 50%;
+      }
+      #controls button {
+        background: #333;
+        color: #fff;
+        border: 1px solid #666;
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+        font-size: 11px;
+        font-family: inherit;
+      }
+      #controls button:hover {
+        background: #555;
+      }
+      #controls button.active {
+        background: #0a5;
+        border-color: #0f8;
+      }
+
+      #logPanel {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        width: 420px;
+        max-height: 200px;
+        background: rgba(0, 0, 0, 0.88);
+        border: 1px solid #444;
+        border-radius: 6px;
+        overflow-y: auto;
+        z-index: 100;
+        font-size: 10px;
+        padding: 6px;
+      }
+      #logPanel .log-entry {
+        padding: 1px 0;
+        border-bottom: 1px solid #222;
+        word-break: break-all;
+      }
+      .log-entry.error {
+        color: #f55;
+      }
+      .log-entry.warn {
+        color: #fa0;
+      }
+      .log-entry.info {
+        color: #5af;
+      }
+      .log-entry.ok {
+        color: #5f5;
+      }
+
+      #loadingOverlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.9);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 200;
+        font-size: 18px;
+        color: #0af;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loadingOverlay">Initializing WebGPU Pipeline Debug...</div>
+    <div id="cesiumContainer"></div>
+
+    <div id="debugPanel">
+      <h2>🔍 WebGPU Pipeline Debug</h2>
+      <div id="debugContent">Waiting for first frame...</div>
+    </div>
+
+    <div id="controls">
+      <button id="btnAddPrimitive" title="Add a colored box primitive">
+        + Box
+      </button>
+      <button id="btnAddPoints" title="Add point primitives">+ Points</button>
+      <button id="btnAddPolyline" title="Add a polyline">+ Polyline</button>
+      <button id="btnAddBillboard" title="Add billboards">+ Billboard</button>
+      <button id="btnAddEntity" title="Add a box entity">+ Entity</button>
+      <button id="btnToggleTerrain" title="Toggle terrain on/off">
+        Terrain
+      </button>
+      <button id="btnToggleImagery" title="Toggle imagery visibility">
+        Imagery
+      </button>
+      <button id="btnForceRender" title="Force re-render">Render</button>
+      <button id="btnDumpState" title="Dump full state to console">Dump</button>
+      <button id="btnSnapshot" title="Take diagnostic snapshot">
+        Snapshot
+      </button>
+    </div>
+
+    <div id="logPanel">
+      <div style="color: #666; font-style: italic">Pipeline event log...</div>
+    </div>
+
+    <script type="module">
+      window.CESIUM_BASE_URL =
+        window.CESIUM_BASE_URL || "../../Build/CesiumUnminified/";
+
+      import {
+        Cartesian3,
+        Color,
+        ColorGeometryInstanceAttribute,
+        GeometryInstance,
+        BoxGeometry,
+        Primitive,
+        PerInstanceColorAppearance,
+        PointPrimitiveCollection,
+        PolylineCollection,
+        BillboardCollection,
+        Material,
+        Pass,
+        defined,
+        Ion,
+        Terrain,
+        Transforms,
+        Math as CesiumMath,
+        Viewer,
+      } from "../../Build/CesiumUnminified/index.js";
+
+      // ────────────────────────────────────────────────────────
+      // Diagnostic state
+      // ────────────────────────────────────────────────────────
+      const diag = {
+        frameCount: 0,
+        lastFrameTime: 0,
+        fps: 0,
+        passCounts: {},
+        passNames: [
+          "ENVIRONMENT",
+          "COMPUTE",
+          "GLOBE",
+          "TERRAIN_CLASSIFICATION",
+          "CESIUM_3D_TILE_EDGES",
+          "CESIUM_3D_TILE",
+          "CESIUM_3D_TILE_CLASSIFICATION",
+          "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+          "OPAQUE",
+          "TRANSLUCENT",
+          "VOXELS",
+          "GAUSSIAN_SPLATS",
+          "OVERLAY",
+        ],
+        globeTiles: { total: 0, rendered: 0, withImagery: 0, withMesh: 0 },
+        imagery: { layerCount: 0, layers: [] },
+        context: {
+          hasDevice: false,
+          hasRenderPass: false,
+          canvasFormat: "",
+          isWebGPU: false,
+        },
+        commandList: { total: 0, webgpu: 0, legacy: 0, noExecute: 0 },
+        frustums: { count: 0 },
+        testObjects: {
+          boxes: 0,
+          points: 0,
+          polylines: 0,
+          billboards: 0,
+          entities: 0,
+        },
+      };
+
+      const logEntries = [];
+      const MAX_LOG = 100;
+
+      function addLog(level, msg) {
+        const entry = { time: new Date().toLocaleTimeString(), level, msg };
+        logEntries.unshift(entry);
+        if (logEntries.length > MAX_LOG) logEntries.pop();
+        updateLogPanel();
+        if (level === "error") console.error(`[DIAG] ${msg}`);
+        else if (level === "warn") console.warn(`[DIAG] ${msg}`);
+        else console.log(`[DIAG] ${msg}`);
+      }
+
+      function updateLogPanel() {
+        const el = document.getElementById("logPanel");
+        el.innerHTML = logEntries
+          .slice(0, 30)
+          .map(
+            (e) =>
+              `<div class="log-entry ${e.level}">[${e.time}] ${e.msg}</div>`,
+          )
+          .join("");
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Pipeline instrumentation
+      // ────────────────────────────────────────────────────────
+      function instrumentPipeline(viewer) {
+        const scene = viewer.scene;
+        const context = scene.context;
+
+        addLog(
+          "info",
+          `Context type: ${context.isWebGPU ? "WebGPU" : "WebGL"}`,
+        );
+        addLog("info", `Device: ${context.device ? "present" : "MISSING"}`);
+        diag.context.isWebGPU = !!context.isWebGPU;
+
+        if (context.device) {
+          const info = context._adapter?.info;
+          addLog(
+            "ok",
+            `GPU: ${info?.device || info?.description || info?.vendor || "unknown"}`,
+          );
+        }
+
+        // Post-render hook — capture state after each frame
+        scene.postRender.addEventListener(() => {
+          try {
+            captureFrameDiagnostics(scene);
+          } catch (e) {
+            // Don't let diagnostics crash the render loop
+            if (diag.frameCount % 60 === 0)
+              console.error("[DIAG] capture error:", e);
+          }
+        });
+      }
+
+      function captureFrameDiagnostics(scene) {
+        const now = performance.now();
+        diag.fps =
+          diag.lastFrameTime > 0
+            ? Math.round(1000 / (now - diag.lastFrameTime))
+            : 0;
+        diag.lastFrameTime = now;
+        diag.frameCount++;
+
+        const context = scene.context;
+        const frameState = scene._frameState;
+
+        // Context state
+        diag.context.hasDevice = !!context.device;
+        diag.context.hasRenderPass = !!context.currentRenderPassEncoder;
+        diag.context.canvasFormat =
+          context.canvasFormat || context._canvasFormat || "unknown";
+
+        // Command list analysis
+        const cmdList = frameState.commandList;
+        diag.commandList.total = cmdList.length;
+        diag.commandList.webgpu = 0;
+        diag.commandList.legacy = 0;
+        diag.commandList.noExecute = 0;
+
+        // Reset pass counts
+        for (const name of diag.passNames) {
+          diag.passCounts[name] = 0;
+        }
+
+        for (let i = 0; i < cmdList.length; i++) {
+          const cmd = cmdList[i];
+          if (cmd.isWebGPUDrawCommand) {
+            diag.commandList.webgpu++;
+          } else if (cmd.execute) {
+            diag.commandList.legacy++;
+          } else {
+            diag.commandList.noExecute++;
+          }
+          const passId = cmd.pass !== undefined ? cmd.pass : -1;
+          const passName = diag.passNames[passId] || `UNKNOWN(${passId})`;
+          diag.passCounts[passName] = (diag.passCounts[passName] || 0) + 1;
+        }
+
+        // Frustum info
+        const view = scene._view;
+        if (view && view.frustumCommandsList) {
+          diag.frustums.count = view.frustumCommandsList.length;
+        }
+
+        captureGlobeDiagnostics(scene);
+        captureImageryDiagnostics(scene);
+        updateDebugPanel();
+      }
+
+      function captureGlobeDiagnostics(scene) {
+        const globe = scene.globe;
+        diag.globeTiles = {
+          total: 0,
+          rendered: 0,
+          withImagery: 0,
+          withMesh: 0,
+        };
+        if (!globe?._surface) return;
+
+        const surface = globe._surface;
+        const tileProvider = surface._tileProvider;
+
+        if (tileProvider?._tilesToRenderByTextureCount) {
+          for (
+            let i = 0;
+            i < tileProvider._tilesToRenderByTextureCount.length;
+            i++
+          ) {
+            const arr = tileProvider._tilesToRenderByTextureCount[i];
+            if (arr) {
+              diag.globeTiles.rendered += arr.length;
+              if (i > 0) diag.globeTiles.withImagery += arr.length;
+            }
+          }
+        }
+
+        if (surface._tilesToRender) {
+          diag.globeTiles.total = surface._tilesToRender.length;
+          for (const tile of surface._tilesToRender) {
+            if (tile.data) {
+              const mesh = tile.data.renderedMesh || tile.data.mesh;
+              if (mesh?.vertices) diag.globeTiles.withMesh++;
+            }
+          }
+        }
+      }
+
+      function captureImageryDiagnostics(scene) {
+        const globe = scene.globe;
+        diag.imagery = { layerCount: 0, layers: [] };
+        if (!globe?.imageryLayers) return;
+
+        const layers = globe.imageryLayers;
+        diag.imagery.layerCount = layers.length;
+
+        for (let i = 0; i < layers.length; i++) {
+          const layer = layers.get(i);
+          const info = {
+            index: i,
+            show: layer.show,
+            alpha: layer.alpha,
+            ready:
+              layer.ready !== undefined
+                ? layer.ready
+                : layer.imageryProvider?.ready !== false,
+            provider: layer.imageryProvider?.constructor?.name || "unknown",
+            tilesWithTextures: 0,
+            hasTextures: false,
+          };
+
+          // Check rendered tiles for imagery from this layer
+          const surface = globe._surface;
+          if (surface?._tilesToRender) {
+            for (const tile of surface._tilesToRender) {
+              if (tile.data?.imagery) {
+                for (const tileImagery of tile.data.imagery) {
+                  if (tileImagery.readyImagery?.imageryLayer === layer) {
+                    if (
+                      tileImagery.readyImagery.texture ||
+                      tileImagery.readyImagery._webgpuReprojectedTexture
+                    ) {
+                      info.tilesWithTextures++;
+                      info.hasTextures = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          diag.imagery.layers.push(info);
+        }
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Debug panel rendering
+      // ────────────────────────────────────────────────────────
+      function updateDebugPanel() {
+        // Throttle to ~4 updates/sec
+        if (diag.frameCount % 15 !== 0 && diag.frameCount > 1) return;
+
+        const el = document.getElementById("debugContent");
+
+        const passHTML = Object.entries(diag.passCounts)
+          .filter(
+            ([name, count]) =>
+              count > 0 ||
+              [
+                "GLOBE",
+                "OPAQUE",
+                "ENVIRONMENT",
+                "TRANSLUCENT",
+                "OVERLAY",
+              ].includes(name),
+          )
+          .map(([name, count]) => {
+            const cls = count > 0 ? "good" : "zero";
+            return `<div class="row"><span class="label">${name}</span><span class="value ${cls}">${count}</span></div>`;
+          })
+          .join("");
+
+        const imageryHTML =
+          diag.imagery.layers
+            .map((l) => {
+              const status = !l.show
+                ? "🔇 hidden"
+                : !l.ready
+                  ? "⏳ loading"
+                  : l.hasTextures
+                    ? "✅ textured"
+                    : "⚠️ no textures";
+              const cls = l.hasTextures ? "ok" : l.show ? "warn" : "";
+              return `<div class="section ${cls}">
+          <div class="row"><span class="label">Layer ${l.index}: ${l.provider}</span></div>
+          <div class="row"><span class="label">Status</span><span class="value">${status}</span></div>
+          <div class="row"><span class="label">Tiles w/ textures</span><span class="value">${l.tilesWithTextures}</span></div>
+          <div class="row"><span class="label">Alpha</span><span class="value">${l.alpha?.toFixed(2) ?? "?"}</span></div>
+        </div>`;
+            })
+            .join("") || '<div style="color:#666">No imagery layers</div>';
+
+        const testHTML =
+          Object.entries(diag.testObjects)
+            .filter(([, v]) => v > 0)
+            .map(
+              ([k, v]) =>
+                `<div class="row"><span class="label">${k}</span><span class="value good">${v}</span></div>`,
+            )
+            .join("") ||
+          '<div style="color:#666">None — use buttons below</div>';
+
+        el.innerHTML = `
+        <div class="section ${diag.context.hasDevice ? "ok" : "fail"}">
+          <h3>🖥️ Context</h3>
+          <div class="row"><span class="label">Backend</span><span class="value ${diag.context.isWebGPU ? "good" : "warn"}">${diag.context.isWebGPU ? "WebGPU" : "WebGL"}</span></div>
+          <div class="row"><span class="label">Frame</span><span class="value">${diag.frameCount}</span></div>
+          <div class="row"><span class="label">FPS</span><span class="value">${diag.fps}</span></div>
+          <div class="row"><span class="label">GPU Device</span><span class="value ${diag.context.hasDevice ? "good" : "zero"}">${diag.context.hasDevice ? "OK" : "MISSING"}</span></div>
+          <div class="row"><span class="label">Canvas Format</span><span class="value">${diag.context.canvasFormat}</span></div>
+          <div class="row"><span class="label">Frustums</span><span class="value">${diag.frustums.count}</span></div>
+        </div>
+
+        <div class="section ${diag.commandList.total > 0 ? "ok" : "fail"}">
+          <h3>📋 Command List</h3>
+          <div class="row"><span class="label">Total commands</span><span class="value ${diag.commandList.total > 0 ? "good" : "zero"}">${diag.commandList.total}</span></div>
+          <div class="row"><span class="label">WebGPU draw cmds</span><span class="value ${diag.commandList.webgpu > 0 ? "good" : "zero"}">${diag.commandList.webgpu}</span></div>
+          <div class="row"><span class="label">Legacy cmds</span><span class="value ${diag.commandList.legacy > 0 ? "warn" : ""}">${diag.commandList.legacy}</span></div>
+          <div class="row"><span class="label">No execute()</span><span class="value ${diag.commandList.noExecute > 0 ? "zero" : ""}">${diag.commandList.noExecute}</span></div>
+        </div>
+
+        <div class="section">
+          <h3>🎬 Commands by Pass</h3>
+          ${passHTML || '<div style="color:#f55">No commands in any pass!</div>'}
+        </div>
+
+        <div class="section ${diag.globeTiles.withMesh > 0 ? "ok" : "warn"}">
+          <h3>🌍 Globe Tiles</h3>
+          <div class="row"><span class="label">Tiles to render</span><span class="value ${diag.globeTiles.total > 0 ? "good" : "zero"}">${diag.globeTiles.total}</span></div>
+          <div class="row"><span class="label">With mesh data</span><span class="value ${diag.globeTiles.withMesh > 0 ? "good" : "zero"}">${diag.globeTiles.withMesh}</span></div>
+          <div class="row"><span class="label">With imagery (by tex count)</span><span class="value ${diag.globeTiles.withImagery > 0 ? "good" : "zero"}">${diag.globeTiles.withImagery}</span></div>
+        </div>
+
+        <div class="section">
+          <h3>🖼️ Imagery Layers</h3>
+          ${imageryHTML}
+        </div>
+
+        <div class="section">
+          <h3>🧪 Test Objects</h3>
+          ${testHTML}
+        </div>
+      `;
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Test object factories
+      // ────────────────────────────────────────────────────────
+      let viewer;
+
+      function addTestBox() {
+        try {
+          const center = Cartesian3.fromDegrees(-75.59777, 40.03883, 500);
+          const primitive = new Primitive({
+            geometryInstances: new GeometryInstance({
+              geometry: BoxGeometry.fromDimensions({
+                dimensions: new Cartesian3(400, 300, 500),
+              }),
+              modelMatrix: Transforms.eastNorthUpToFixedFrame(center),
+              attributes: {
+                color: ColorGeometryInstanceAttribute.fromColor(Color.RED),
+              },
+            }),
+            appearance: new PerInstanceColorAppearance({
+              closed: true,
+              flat: false,
+            }),
+            asynchronous: false,
+          });
+          viewer.scene.primitives.add(primitive);
+          diag.testObjects.boxes++;
+          addLog("ok", `Added RED box primitive (${diag.testObjects.boxes})`);
+        } catch (e) {
+          addLog("error", `Box failed: ${e.message}`);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function addTestPoints() {
+        try {
+          const pts = viewer.scene.primitives.add(
+            new PointPrimitiveCollection(),
+          );
+          const locs = [
+            [-75.59, 40.04, 1000],
+            [-73.98, 40.75, 1000],
+            [-122.42, 37.77, 1000],
+            [-87.63, 41.88, 1000],
+            [-104.99, 39.74, 1000],
+          ];
+          for (const [lon, lat, h] of locs) {
+            pts.add({
+              position: Cartesian3.fromDegrees(lon, lat, h),
+              color: Color.YELLOW,
+              pixelSize: 15,
+            });
+          }
+          diag.testObjects.points += locs.length;
+          addLog(
+            "ok",
+            `Added ${locs.length} YELLOW points (${diag.testObjects.points})`,
+          );
+        } catch (e) {
+          addLog("error", `Points failed: ${e.message}`);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function addTestPolyline() {
+        try {
+          const pls = viewer.scene.primitives.add(new PolylineCollection());
+          pls.add({
+            positions: Cartesian3.fromDegreesArrayHeights([
+              -75.59, 40.04, 500, -73.98, 40.75, 500, -71.06, 42.36, 500,
+            ]),
+            width: 5,
+            material: Material.fromType("Color", { color: Color.CYAN }),
+          });
+          diag.testObjects.polylines++;
+          addLog("ok", `Added CYAN polyline (${diag.testObjects.polylines})`);
+        } catch (e) {
+          addLog("error", `Polyline failed: ${e.message}`);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function addTestBillboard() {
+        try {
+          const bbs = viewer.scene.primitives.add(new BillboardCollection());
+          const c = document.createElement("canvas");
+          c.width = 64;
+          c.height = 64;
+          const cx = c.getContext("2d");
+          cx.fillStyle = "#ff00ff";
+          cx.beginPath();
+          cx.arc(32, 32, 28, 0, Math.PI * 2);
+          cx.fill();
+          cx.fillStyle = "#fff";
+          cx.font = "bold 24px sans-serif";
+          cx.textAlign = "center";
+          cx.textBaseline = "middle";
+          cx.fillText("!", 32, 32);
+          bbs.add({
+            position: Cartesian3.fromDegrees(-75.59, 40.04, 2000),
+            image: c,
+            scale: 1.0,
+          });
+          diag.testObjects.billboards++;
+          addLog("ok", `Added PINK billboard (${diag.testObjects.billboards})`);
+        } catch (e) {
+          addLog("error", `Billboard failed: ${e.message}`);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function addTestEntity() {
+        try {
+          viewer.entities.add({
+            name: "Debug Entity",
+            position: Cartesian3.fromDegrees(-75.59777, 40.03883, 300),
+            box: {
+              dimensions: new Cartesian3(200, 200, 200),
+              material: Color.LIME.withAlpha(0.8),
+            },
+          });
+          diag.testObjects.entities++;
+          addLog("ok", `Added LIME entity box (${diag.testObjects.entities})`);
+        } catch (e) {
+          addLog("error", `Entity failed: ${e.message}`);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function toggleTerrain() {
+        viewer.scene.globe.show = !viewer.scene.globe.show;
+        addLog(
+          "info",
+          `Globe: ${viewer.scene.globe.show ? "visible" : "hidden"}`,
+        );
+        viewer.scene.requestRender();
+      }
+
+      function toggleImagery() {
+        const layers = viewer.scene.globe.imageryLayers;
+        for (let i = 0; i < layers.length; i++)
+          layers.get(i).show = !layers.get(i).show;
+        addLog("info", `Imagery toggled (${layers.length} layers)`);
+        viewer.scene.requestRender();
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Full state dump (to console)
+      // ────────────────────────────────────────────────────────
+      function dumpFullState() {
+        const scene = viewer.scene;
+        const context = scene.context;
+        const fs = scene._frameState;
+
+        console.group(
+          "%c=== WebGPU Pipeline Full Dump ===",
+          "color:#0af;font-weight:bold",
+        );
+
+        // Context
+        console.group("Context");
+        console.log("isWebGPU:", context.isWebGPU);
+        console.log("device:", context.device);
+        console.log(
+          "canvasFormat:",
+          context.canvasFormat || context._canvasFormat,
+        );
+        console.log(
+          "currentRenderPassEncoder:",
+          context.currentRenderPassEncoder,
+        );
+        if (context._adapter?.info)
+          console.log("adapter info:", context._adapter.info);
+        if (context.device?.limits)
+          console.log("device limits:", context.device.limits);
+        if (context.device?.features)
+          console.log("device features:", [...context.device.features]);
+        console.groupEnd();
+
+        // Feature Renderers
+        console.group("Feature Renderers");
+        const frs = context._featureRenderers;
+        if (frs) {
+          let count = 0;
+          for (let i = 0; i < frs.length; i++) {
+            if (frs[i]) {
+              console.log(`  [${i}]:`, frs[i]);
+              count++;
+            }
+          }
+          console.log(`Total: ${count} registered`);
+        } else {
+          console.log("NONE — _featureRenderers is falsy");
+        }
+        console.groupEnd();
+
+        // Alt scene renderer
+        console.group("Alternate Scene Renderer");
+        const asr = scene._alternateSceneRenderer;
+        console.log("exists:", !!asr);
+        if (asr) {
+          console.log("type:", asr.constructor?.name);
+          console.log(
+            "keys:",
+            Object.keys(asr).filter((k) => !k.startsWith("_")),
+          );
+        }
+        console.groupEnd();
+
+        // Globe
+        console.group("Globe Tiles (first 5)");
+        const tiles = scene.globe?._surface?._tilesToRender || [];
+        console.log("total tiles to render:", tiles.length);
+        for (let i = 0; i < Math.min(5, tiles.length); i++) {
+          const t = tiles[i];
+          const d = t.data;
+          const mesh = d?.renderedMesh || d?.mesh;
+          const imgCount = d?.imagery?.length || 0;
+          const imgWithTex =
+            d?.imagery?.filter(
+              (im) =>
+                im.readyImagery?.texture ||
+                im.readyImagery?._webgpuReprojectedTexture,
+            ).length || 0;
+          console.log(
+            `  Tile ${i}: L${t.level}(${t.x},${t.y}) mesh=${!!mesh} verts=${mesh?.vertices?.length || 0} imagery=${imgCount} textured=${imgWithTex}`,
+          );
+          // Deep inspect first tile imagery
+          if (i === 0 && d?.imagery) {
+            for (let j = 0; j < Math.min(3, d.imagery.length); j++) {
+              const im = d.imagery[j];
+              console.log(`    img[${j}]:`, {
+                readyImagery: !!im.readyImagery,
+                textureType: im.readyImagery?.texture?.constructor?.name,
+                webgpuTex: im.readyImagery?._webgpuReprojectedTexture,
+                layer:
+                  im.readyImagery?.imageryLayer?.imageryProvider?.constructor
+                    ?.name,
+              });
+            }
+          }
+        }
+        console.groupEnd();
+
+        // Commands
+        console.group("Command List (first 15)");
+        const cmds = fs.commandList;
+        console.log("total:", cmds.length);
+        const byPass = {};
+        for (const c of cmds) {
+          const n = diag.passNames[c.pass] || `?${c.pass}`;
+          byPass[n] = (byPass[n] || 0) + 1;
+        }
+        console.table(byPass);
+        for (let i = 0; i < Math.min(15, cmds.length); i++) {
+          const c = cmds[i];
+          console.log(
+            `  [${i}] pass=${diag.passNames[c.pass] || c.pass} webgpu=${!!c.isWebGPUDrawCommand} pipeline=${!!c._pipeline} bg=${c._bindGroups?.length || 0} idx=${c._indexCount || "?"} owner=${c.owner?.constructor?.name || "?"}`,
+          );
+        }
+        console.groupEnd();
+
+        // Primitives
+        console.group("Scene Primitives");
+        const prims = scene.primitives;
+        console.log("count:", prims.length);
+        for (let i = 0; i < prims.length; i++) {
+          console.log(`  [${i}]:`, prims.get(i).constructor?.name);
+        }
+        console.groupEnd();
+
+        console.groupEnd();
+        addLog("info", "Full dump written to console — open DevTools (F12)");
+      }
+
+      function takeSnapshot() {
+        const snap = JSON.parse(JSON.stringify(diag));
+        snap.timestamp = new Date().toISOString();
+        snap.recentLog = logEntries
+          .slice(0, 15)
+          .map((e) => `[${e.level}] ${e.msg}`);
+        console.log("%c=== DIAGNOSTIC SNAPSHOT ===", "color:#0af");
+        console.log(JSON.stringify(snap, null, 2));
+        addLog("info", "Snapshot in console (Ctrl+Shift+J)");
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Automated checks
+      // ────────────────────────────────────────────────────────
+      function runChecks() {
+        const scene = viewer.scene;
+        const ctx = scene.context;
+
+        addLog("info", "── Running diagnostic checks ──");
+
+        // 1. Context
+        if (!ctx.isWebGPU) addLog("error", "❌ Context is NOT WebGPU!");
+        else addLog("ok", "✅ WebGPU context active");
+
+        if (!ctx.device) addLog("error", "❌ No GPU device!");
+        else addLog("ok", "✅ GPU device present");
+
+        // 2. Alternate scene renderer
+        if (!scene._alternateSceneRenderer)
+          addLog(
+            "error",
+            "❌ No _alternateSceneRenderer — WebGPU rendering NOT active",
+          );
+        else
+          addLog(
+            "ok",
+            `✅ Alt renderer: ${scene._alternateSceneRenderer.constructor?.name}`,
+          );
+
+        // 3. Feature renderers
+        const frs = ctx._featureRenderers;
+        if (!frs || frs.every((x) => !x))
+          addLog("error", "❌ No feature renderers registered!");
+        else {
+          const cnt = frs.filter((x) => !!x).length;
+          addLog("ok", `✅ ${cnt} feature renderers registered`);
+        }
+
+        // 4. Globe
+        addLog(
+          "info",
+          `Globe show=${scene.globe?.show}, layers=${scene.globe?.imageryLayers?.length}`,
+        );
+
+        // 5. Canvas
+        addLog(
+          "info",
+          `Canvas: ${scene.canvas?.width}x${scene.canvas?.height}`,
+        );
+      }
+
+      function runDeepAnalysis() {
+        const scene = viewer.scene;
+        const globe = scene.globe;
+
+        addLog("info", "── Deep analysis ──");
+
+        // Tile mesh + imagery
+        const tiles = globe?._surface?._tilesToRender || [];
+        let noMesh = 0,
+          noImg = 0,
+          withImg = 0;
+        for (const t of tiles) {
+          const m = t.data?.renderedMesh || t.data?.mesh;
+          if (!m?.vertices) {
+            noMesh++;
+            continue;
+          }
+          const imgs =
+            t.data.imagery?.filter(
+              (i) =>
+                i.readyImagery?.texture ||
+                i.readyImagery?._webgpuReprojectedTexture,
+            ) || [];
+          if (imgs.length > 0) withImg++;
+          else noImg++;
+        }
+        addLog(
+          "info",
+          `Tiles: ${tiles.length} total, ${tiles.length - noMesh} with mesh, ${withImg} with imagery tex, ${noImg} without`,
+        );
+        if (noImg > 0 && withImg === 0)
+          addLog(
+            "warn",
+            "⚠️ ALL tiles lack imagery — texture binding likely broken",
+          );
+
+        // Command analysis
+        const cmds = scene._frameState.commandList;
+        const gc = cmds.filter((c) => c.pass === Pass.GLOBE);
+        addLog("info", `Globe cmds: ${gc.length}`);
+        if (gc.length > 0) {
+          const f = gc[0];
+          addLog(
+            "info",
+            `  1st: isWebGPU=${f.isWebGPUDrawCommand} pipeline=${!!f._pipeline} bg=${f._bindGroups?.length} idx=${f._indexCount}`,
+          );
+          if (f._bindGroups) {
+            addLog(
+              "info",
+              `  Bind groups: ${f._bindGroups.map((b, i) => `[${i}]=${b ? "✓" : "✗"}`).join(" ")}`,
+            );
+          }
+        }
+
+        const oc = cmds.filter((c) => c.pass === Pass.OPAQUE);
+        addLog("info", `Opaque cmds: ${oc.length}`);
+        const ec = cmds.filter((c) => c.pass === Pass.ENVIRONMENT);
+        addLog("info", `Environment cmds: ${ec.length}`);
+
+        addLog("info", '── Done. Use "Dump" for full console output ──');
+      }
+
+      // ────────────────────────────────────────────────────────
+      // Main
+      // ────────────────────────────────────────────────────────
+      async function main() {
+        const overlay = document.getElementById("loadingOverlay");
+        try {
+          if (!navigator.gpu) {
+            overlay.innerHTML = "❌ WebGPU not supported";
+            overlay.style.color = "#f55";
+            return;
+          }
+          overlay.textContent = "Requesting GPU adapter...";
+          const adapter = await navigator.gpu.requestAdapter();
+          if (!adapter) {
+            overlay.innerHTML = "❌ No adapter";
+            overlay.style.color = "#f55";
+            return;
+          }
+          addLog(
+            "ok",
+            `Adapter found: ${adapter.info?.device || adapter.info?.description || "ok"}`,
+          );
+
+          overlay.textContent = "Creating WebGPU Viewer (async)...";
+
+          // Use CesiumJS built-in default Ion token (Ion.js line 6-7)
+
+          viewer = await Viewer.createAsync("cesiumContainer", {
+            contextOptions: { renderer: "webgpu" },
+            terrain: Terrain.fromWorldTerrain(),
+            scene3DOnly: true,
+            requestRenderMode: false,
+            maximumRenderTimeChange: Infinity,
+            animation: false,
+            timeline: false,
+            baseLayerPicker: false,
+            geocoder: false,
+            homeButton: false,
+            sceneModePicker: false,
+            navigationHelpButton: false,
+            fullscreenButton: false,
+            selectionIndicator: false,
+            infoBox: false,
+          });
+
+          overlay.style.display = "none";
+          addLog("ok", "Viewer created!");
+
+          instrumentPipeline(viewer);
+
+          // Controls
+          document.getElementById("btnAddPrimitive").onclick = addTestBox;
+          document.getElementById("btnAddPoints").onclick = addTestPoints;
+          document.getElementById("btnAddPolyline").onclick = addTestPolyline;
+          document.getElementById("btnAddBillboard").onclick = addTestBillboard;
+          document.getElementById("btnAddEntity").onclick = addTestEntity;
+          document.getElementById("btnToggleTerrain").onclick = toggleTerrain;
+          document.getElementById("btnToggleImagery").onclick = toggleImagery;
+          document.getElementById("btnForceRender").onclick = () => {
+            viewer.scene.requestRender();
+            addLog("info", "Render requested");
+          };
+          document.getElementById("btnDumpState").onclick = dumpFullState;
+          document.getElementById("btnSnapshot").onclick = takeSnapshot;
+
+          // Initial view
+          viewer.camera.flyTo({
+            destination: Cartesian3.fromDegrees(-75.59777, 40.03883, 50000),
+            duration: 0,
+          });
+
+          // Delayed checks
+          setTimeout(runChecks, 2000);
+          setTimeout(runDeepAnalysis, 5000);
+        } catch (err) {
+          overlay.innerHTML = `❌ ${err.message}`;
+          overlay.style.color = "#f55";
+          addLog("error", `Init: ${err.message}`);
+          console.error(err);
+        }
+      }
+
+      // Expose for console debugging
+      window.diag = diag;
+      window.addLog = addLog;
+      window.getViewer = () => viewer;
+
+      main();
+    </script>
+  </body>
+</html>

@@ -28,3 +28,42 @@
     color: #eee;
   }
 }
+
+/* Split-screen mode: two panes side by side */
+.bucket-split {
+  display: flex;
+  flex-direction: row;
+}
+
+.bucket-split-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.bucket-split-label {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.bucket-split-divider {
+  width: 2px;
+  flex-shrink: 0;
+  background: var(--stratakit-color-border-accent-base, #4fc3f7);
+}

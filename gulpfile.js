@@ -93,6 +93,14 @@ export async function build() {
   const sourcemap = argv.sourcemap ?? true;
   const node = argv.node ?? true;
 
+  // Convert WGSL shaders to JS modules before bundling
+  console.log("Converting WGSL shaders to JavaScript modules...");
+  wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+
+  // Compile TypeScript before bundling
+  console.log("Compiling TypeScript...");
+  await tsc();
+
   const buildOptions = {
     development: !noDevelopmentGallery,
     iife: true,
@@ -310,6 +318,11 @@ const filesToClean = [
   "Cesium-*.zip",
   "cesium-*.tgz",
   "packages/**/*.tgz",
+  // Generated WGSL→JS wrappers (source is .wgsl, .js is build output)
+  "packages/engine/Source/Shaders/WebGPU/**/*.js",
+  // Package-level build outputs (bundled JS, workers, specs)
+  "packages/engine/Build/**",
+  "packages/widgets/Build/**",
 ];
 
 export async function clean() {

@@ -3047,7 +3047,7 @@ class Scene {
    * @param {number} [options.diameter=0.1] Pick cylinder diameter in meters.
    * @param {number} [options.limit=Number.MAX_VALUE] Maximum objects to return.
    * @param {object[]} [options.exclude] Objects to skip.
-   * @returns {{object: object, position: Cartesian3, normal: Cartesian3}[]} All intersected objects with position and normal.
+   * @returns {Array<object>} All intersected objects with position and normal.
    *
    * @exception {DeveloperError} Ray intersections are only supported in 3D mode.
    *
@@ -3072,7 +3072,7 @@ class Scene {
    * @param {number} [options.diameter=1.0] Column diameter in meters.
    * @param {number} [options.limit=Number.MAX_VALUE] Maximum objects to return.
    * @param {object[]} [options.exclude] Objects to skip.
-   * @returns {{object: object, position: Cartesian3, normal: Cartesian3}[]} All intersected objects.
+   * @returns {Array<object>} All intersected objects.
    *
    * @exception {DeveloperError} pickColumn is only supported in 3D mode.
    *

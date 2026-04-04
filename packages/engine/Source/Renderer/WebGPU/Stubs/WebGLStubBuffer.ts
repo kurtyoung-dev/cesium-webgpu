@@ -96,25 +96,41 @@ export function createBufferStubs(
           ? data.byteLength
           : (data as ArrayBufferView).byteLength;
       if (!state.device) return;
+      if (byteLength === 0) return;
       const alignedLength = Math.ceil(byteLength / 4) * 4;
+
+      // Regrow buffer if incoming data exceeds current capacity
+      // (applies to both padded and non-padded branches)
+      let targetBuffer = boundBuffer;
+      if (alignedLength > boundBuffer.size) {
+        const newSize = Math.max(alignedLength, 4);
+        const newBuffer = state.device.createBuffer({
+          size: newSize,
+          usage: boundBuffer.usage,
+          label: boundBuffer.label || "GL Compatibility Buffer (regrown)",
+        });
+        boundBuffer.destroy();
+        if (target === GL_ARRAY_BUFFER) {
+          state.boundVertexBuffer = newBuffer;
+        } else {
+          state.boundIndexBuffer = newBuffer;
+        }
+        targetBuffer = newBuffer;
+      }
+
       if (alignedLength !== byteLength) {
         const paddedArray = new Uint8Array(alignedLength);
         paddedArray.set(new Uint8Array(arrayBuffer, byteOffset, byteLength));
         state.device.queue.writeBuffer(
-          boundBuffer,
+          targetBuffer,
           0,
           paddedArray.buffer,
           0,
           alignedLength,
         );
       } else {
-        if (byteLength > boundBuffer.size) {
-          console.warn(
-            `[WebGPU] Buffer too small (${boundBuffer.size}), need ${byteLength}. Recreate buffer with larger size.`,
-          );
-        }
         state.device.queue.writeBuffer(
-          boundBuffer,
+          targetBuffer,
           0,
           arrayBuffer,
           byteOffset,

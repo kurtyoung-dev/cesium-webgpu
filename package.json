@@ -106,7 +106,7 @@
     "rimraf": "^6.0.1",
     "tsd-jsdoc": "^2.5.0",
     "typescript": "^6.0.2",
-    "typescript-eslint": "^8.30.1",
+    "typescript-eslint": "^8.58.0",
     "yargs": "^18.0.0"
   },
   "scripts": {
@@ -122,10 +122,12 @@
     "build-wasm-debug": "node scripts/buildWasm.js --debug",
     "build-wasm-check": "node scripts/buildWasm.js --check",
     "build-wasm-clean": "node scripts/buildWasm.js --clean",
+    "build-all": "gulp clean && gulp build && gulp buildTs && gulp tsc && gulp -f gulpfile.apps.js buildApps",
     "build-apps": "gulp -f gulpfile.apps.js buildApps",
     "build-cesium-viewer": "gulp -f gulpfile.apps.js buildCesiumViewer",
     "build-sandcastle": "gulp -f gulpfile.apps.js buildSandcastle",
     "clean": "gulp clean",
+    "restart": "gulp clean && gulp build && node server.js",
     "cloc": "gulp cloc",
     "create-demo": "npm run create-demo --workspace=packages/sandcastle",
     "coverage": "gulp coverage",

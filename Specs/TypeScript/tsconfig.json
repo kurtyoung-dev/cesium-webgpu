@@ -7,6 +7,7 @@
     "lib": ["ES2020", "DOM"]
   },
   "include": [
+    "../../Tools/jsdoc/webgpu-stubs.d.ts",
     "index.ts",
     "../../Source/Cesium.d.ts"
   ]

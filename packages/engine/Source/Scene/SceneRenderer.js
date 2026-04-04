@@ -295,12 +295,77 @@ function executeCommands(scene, passState) {
   const passes = frameState.passes;
   const picking = passes.pick || passes.pickVoxel;
 
-  if (!picking) {
+  // renderEnvironment uses direct .execute(context, passState) calls that
+  // require an active WebGL context. When the WebGPU alternate scene renderer
+  // is active, environment commands are injected into the farthest frustum's
+  // ENVIRONMENT pass slot so they execute within the WebGPU render pass.
+  if (!picking && !scene._alternateSceneRenderer) {
     renderEnvironment(scene, passState, executeCommand);
   }
 
   if (scene._alternateSceneRenderer) {
     const envState = scene._environmentState;
+
+    // Inject environment commands into the farthest frustum so the WebGPU
+    // scene renderer finds them via _executePassCommands(Pass.ENVIRONMENT).
+    // These commands were created by feature renderers during updateEnvironment()
+    // but stored on environmentState instead of frameState.commandList.
+    // Only inject commands that are actual WebGPU draw commands — WebGL
+    // fallback commands would crash when executed in a WebGPU render pass.
+    if (!picking) {
+      const frustumCommandsList = scene._view.frustumCommandsList;
+      if (frustumCommandsList.length > 0) {
+        const farthest = frustumCommandsList[frustumCommandsList.length - 1];
+        const envCmds = farthest.commands[Pass.ENVIRONMENT];
+        let envIdx = farthest.indices[Pass.ENVIRONMENT];
+
+        const maybeInject = (cmd, label) => {
+          if (defined(cmd) && cmd.isWebGPUDrawCommand === true) {
+            envCmds[envIdx++] = cmd;
+          } else if (defined(cmd) && !scene._envDiagLogged) {
+            console.warn(
+              `[WebGPU:EnvInject] ${label} skipped: isWebGPUDrawCommand=${cmd.isWebGPUDrawCommand}`,
+            );
+          }
+        };
+
+        maybeInject(envState.skyBoxCommand, "skyBox");
+        if (envState.isSkyAtmosphereVisible) {
+          maybeInject(envState.skyAtmosphereCommand, "skyAtmosphere");
+        }
+        if (envState.isSunVisible) {
+          maybeInject(envState.sunDrawCommand, "sun");
+        }
+        if (envState.isMoonVisible) {
+          maybeInject(envState.moonCommand, "moon");
+        }
+
+        // Panorama commands (CubeMapPanorama instances not using returnCommand)
+        const panoramaCommandList = frameState.panoramaCommandList;
+        for (let p = 0; p < panoramaCommandList.length; p++) {
+          maybeInject(panoramaCommandList[p], `panorama[${p}]`);
+        }
+
+        // Log once: how many environment commands were injected
+        if (!scene._envDiagLogged) {
+          scene._envDiagLogged = true;
+          const envCount = envIdx - farthest.indices[Pass.ENVIRONMENT];
+          const envFromCommandList = farthest.indices[Pass.ENVIRONMENT];
+          console.log(
+            `[WebGPU:EnvInject] Injected ${envCount} env commands ` +
+              `(${envFromCommandList} already in frustum from commandList). ` +
+              `skyBox=${defined(envState.skyBoxCommand)} ` +
+              `skyAtmo=${envState.isSkyAtmosphereVisible} ` +
+              `sun=${envState.isSunVisible} ` +
+              `moon=${envState.isMoonVisible} ` +
+              `panoramas=${panoramaCommandList.length}`,
+          );
+        }
+
+        farthest.indices[Pass.ENVIRONMENT] = envIdx;
+      }
+    }
+
     scene._alternateSceneRenderer.executeCommands({
       scene,
       context,

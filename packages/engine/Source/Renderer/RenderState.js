@@ -424,6 +424,21 @@ class RenderState {
   }
 
   /**
+   * Safely release a cached render state, decrementing its reference count.
+   * This is the public API for cleaning up render states obtained via
+   * {@link RenderState.fromCache}. No-op if the render state is undefined
+   * or not currently in the cache.
+   *
+   * @param {object} renderState The render state to release.
+   */
+  static releaseCache(renderState) {
+    if (!defined(renderState)) {
+      return;
+    }
+    RenderState.removeFromCache(renderState);
+  }
+
+  /**
    * @private
    */
   static removeFromCache(renderState) {

@@ -134,11 +134,9 @@ function createSunQuadBuffer(device, sunPosition) {
 
   const buffer = WebGPUBuffer.createVertexBuffer(
     device,
-    vertices.byteLength,
-    false,
+    vertices,
     "Sun vertices",
   );
-  device.queue.writeBuffer(buffer.buffer, 0, vertices);
   return buffer;
 }
 
@@ -312,6 +310,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
       UNIFORM_BUFFER_SIZE,
+      undefined,
       "Sun uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
@@ -430,11 +429,9 @@ function createMoonSphereGeometry(device, radii) {
 
   const vb = WebGPUBuffer.createVertexBuffer(
     device,
-    vertices.byteLength,
-    false,
+    vertices,
     "Moon sphere VB",
   );
-  device.queue.writeBuffer(vb.buffer, 0, vertices);
 
   const ib = device.createBuffer({
     label: "Moon sphere IB",
@@ -646,6 +643,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
       UNIFORM_BUFFER_SIZE,
+      undefined,
       "Moon uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);

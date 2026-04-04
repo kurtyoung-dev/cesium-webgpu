@@ -5,6 +5,7 @@
     "lib": ["ES2020", "DOM"]
   },
   "files": [
+    "webgpu-stubs.d.ts",
     "../../Source/Cesium.d.ts"
   ]
 }

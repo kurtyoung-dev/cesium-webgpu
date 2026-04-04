@@ -6,10 +6,10 @@
  * because WebGPU has no gl_PointSize/gl_PointCoord support.
  *
  * Instance data layout (64 bytes per point, 4 x vec4):
- *   @location(0) posHighAndSize:   vec4<f32> — encodedPosition.high.xyz, pixelSize
- *   @location(1) posLowAndOutline: vec4<f32> — encodedPosition.low.xyz, outlineWidth
- *   @location(2) color:            vec4<f32> — color rgba
- *   @location(3) outColorAndShow:  vec4<f32> — outlineColor.rgb, show(0/1)
+ *   `location(0)` posHighAndSize:   vec4f — encodedPosition.high.xyz, pixelSize
+ *   `location(1)` posLowAndOutline: vec4f — encodedPosition.low.xyz, outlineWidth
+ *   `location(2)` color:            vec4f — color rgba
+ *   `location(3)` outColorAndShow:  vec4f — outlineColor.rgb, show(0/1)
  *
  * Uniforms (256 bytes, aligned):
  *   mvpRelativeToEye:              mat4x4<f32> (64 bytes)  — RTE model-view-projection
@@ -121,8 +121,8 @@ function buildInstanceData(collection) {
 /**
  * Builds pick-variant instance data with pick colors instead of display colors.
  * Layout matches PointPrimitivePick.wgsl:
- *   @location(0) posHighAndSize, @location(1) posLowAndOutline,
- *   @location(2) pickColorIn, @location(3) showVec
+ *   `location(0)` posHighAndSize, `location(1)` posLowAndOutline,
+ *   `location(2)` pickColorIn, `location(3)` showVec
  * @private
  */
 function buildPickInstanceData(collection, context) {

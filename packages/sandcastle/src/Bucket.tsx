@@ -7,33 +7,36 @@ import {
   IframeBridge,
   MessageToApp,
 } from "./util/IframeBridge";
+import { RendererMode } from "./SettingsContext";
 
 const INNER_ORIGIN = __INNER_ORIGIN__;
 // This constructs urls like `[__INNER_ORIGIN__]/[pathname]/templates/bucket.html`
 // using location.pathname lets this adapt to deployed locations like CI
 const bucketUrl = `${new URL(`${location.pathname.replace(/[^\/]+.html/, "")}templates/bucket.html`, __INNER_ORIGIN__)}`;
 
-export function Bucket({
+/**
+ * A single bucket iframe that runs sandcastle code with a specific renderer.
+ */
+function BucketFrame({
   code,
   html,
   runNumber,
+  renderer,
+  showFps,
   highlightLine,
   appendConsole,
   resetConsole,
+  label,
 }: {
-  /** The JS code for the Sandcastle */
   code: string;
-  /** The HTML code for the sandcastle */
   html: string;
-  /** If this value changes the bucket will reload which allows us to force a re-run even if the JS/HTML hasn't changed */
   runNumber: number;
-  /**
-   * Function called when the bucket page requests to highlight a specific line of the code
-   * @param lineNumber Line to highlight
-   */
+  renderer: "webgl" | "webgpu";
+  showFps: boolean;
   highlightLine: (lineNumber: number) => void;
   appendConsole: (type: ConsoleMessageType, message: string) => void;
   resetConsole: (options?: { showMessage?: boolean | undefined }) => void;
+  label?: string;
 }) {
   const iframeBridge = useRef<BridgeToBucket>(null);
   const lastRunNumber = useRef<number>(Number.NEGATIVE_INFINITY);
@@ -45,9 +48,6 @@ export function Bucket({
       runNumber !== lastRunNumber.current &&
       iframeBridge.current
     ) {
-      // When we want to run sandcastle code we just need to reload the bucket
-      // it sends a message when loaded which triggers the message handler below
-      // to load the actual code
       iframeBridge.current.sendMessage({
         type: "reload",
       });
@@ -62,41 +62,38 @@ export function Bucket({
       }
 
       if (message.type === "bucketReady") {
-        // The iframe (bucket.html) sends this message on load.
-        // We send the code in response to make sure the page is ready to receive it
         setBucketReady(true);
-        // Firefox line numbers are zero-based, not one-based.
         const isFirefox = navigator.userAgent.indexOf("Firefox/") >= 0;
 
         resetConsole();
         iframeBridge.current.sendMessage({
           type: "runCode",
-          code: embedInSandcastleTemplate(code, isFirefox),
+          code: embedInSandcastleTemplate(code, isFirefox, renderer, showFps),
           html,
+          renderer,
+          showFps,
         });
       } else if (message.type === "consoleClear") {
         resetConsole({ showMessage: true });
       } else if (message.type === "consoleLog") {
-        // Console log messages from the iframe display in Sandcastle.
-        appendConsole("log", message.log);
+        appendConsole("log", label ? `[${label}] ${message.log}` : message.log);
       } else if (message.type === "consoleError") {
-        // Console error messages from the iframe display in Sandcastle
         let errorMsg = message.error;
         const lineNumber = message.lineNumber;
         if (lineNumber) {
           errorMsg += ` (on line ${lineNumber}`;
-
           if (message.url) {
             errorMsg += ` of ${message.url}`;
           }
           errorMsg += ")";
         }
-        appendConsole("error", errorMsg);
+        appendConsole("error", label ? `[${label}] ${errorMsg}` : errorMsg);
       } else if (message.type === "consoleWarn") {
-        // Console warning messages from the iframe display in Sandcastle.
-        appendConsole("warn", message.warn);
+        appendConsole(
+          "warn",
+          label ? `[${label}] ${message.warn}` : message.warn,
+        );
       } else if (message.type === "highlight") {
-        // Hovering objects in the embedded Cesium window.
         highlightLine(message.highlight);
       }
     };
@@ -106,29 +103,109 @@ export function Bucket({
     }
     iframeBridge.current.addEventListener(messageHandler);
     return () => iframeBridge.current?.removeEventListener();
-  }, [code, html, highlightLine, resetConsole, appendConsole]);
+  }, [
+    code,
+    html,
+    renderer,
+    showFps,
+    label,
+    highlightLine,
+    resetConsole,
+    appendConsole,
+  ]);
+
+  return (
+    <iframe
+      ref={(iframe) => {
+        if (
+          iframe?.contentWindow &&
+          (!iframeBridge.current ||
+            iframeBridge.current.targetWindow !== iframe.contentWindow)
+        ) {
+          iframeBridge.current = new IframeBridge(
+            INNER_ORIGIN,
+            iframe.contentWindow,
+          );
+        }
+      }}
+      src={bucketUrl}
+      className="fullFrame"
+      sandbox="allow-scripts allow-same-origin"
+      allowFullScreen
+    ></iframe>
+  );
+}
+
+export function Bucket({
+  code,
+  html,
+  runNumber,
+  rendererMode,
+  showFps,
+  highlightLine,
+  appendConsole,
+  resetConsole,
+}: {
+  code: string;
+  html: string;
+  runNumber: number;
+  rendererMode: RendererMode;
+  showFps: boolean;
+  highlightLine: (lineNumber: number) => void;
+  appendConsole: (type: ConsoleMessageType, message: string) => void;
+  resetConsole: (options?: { showMessage?: boolean | undefined }) => void;
+}) {
+  if (rendererMode === "split") {
+    return (
+      <div className="bucket-container bucket-split">
+        <div className="bucket-split-pane">
+          <div className="bucket-split-label">WebGL</div>
+          <BucketFrame
+            key={`webgl-${showFps}`}
+            code={code}
+            html={html}
+            runNumber={runNumber}
+            renderer="webgl"
+            showFps={showFps}
+            highlightLine={highlightLine}
+            appendConsole={appendConsole}
+            resetConsole={resetConsole}
+            label="WebGL"
+          />
+        </div>
+        <div className="bucket-split-divider" />
+        <div className="bucket-split-pane">
+          <div className="bucket-split-label">WebGPU</div>
+          <BucketFrame
+            key={`webgpu-${showFps}`}
+            code={code}
+            html={html}
+            runNumber={runNumber}
+            renderer="webgpu"
+            showFps={showFps}
+            highlightLine={highlightLine}
+            appendConsole={appendConsole}
+            resetConsole={resetConsole}
+            label="WebGPU"
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bucket-container">
-      <iframe
-        ref={(iframe) => {
-          if (
-            iframe?.contentWindow &&
-            (!iframeBridge.current ||
-              iframeBridge.current.targetWindow !== iframe.contentWindow)
-          ) {
-            iframeBridge.current = new IframeBridge(
-              INNER_ORIGIN,
-              iframe.contentWindow,
-            );
-          }
-        }}
-        id="bucketFrame"
-        src={bucketUrl}
-        className="fullFrame"
-        sandbox="allow-scripts allow-same-origin"
-        allowFullScreen
-      ></iframe>
+      <BucketFrame
+        key={`${rendererMode}-${showFps}`}
+        code={code}
+        html={html}
+        runNumber={runNumber}
+        renderer={rendererMode}
+        showFps={showFps}
+        highlightLine={highlightLine}
+        appendConsole={appendConsole}
+        resetConsole={resetConsole}
+      />
     </div>
   );
 }

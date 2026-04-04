@@ -1,34 +1,6 @@
 /**
  * @module RenderCommand
  *
- * Abstract render command that can be interpreted by either WebGL or WebGPU
- * backends. Scene code creates RenderCommands with abstract data (vertex data,
- * shader intent, render state). The backend converts to its native command type.
- *
- * This reduces the need for scene files to import backend-specific modules
- * (DrawCommand.js for WebGL, WebGPUDrawCommand.ts for WebGPU).
- *
- * ## Usage Pattern
- *
- * ```javascript
- * // Scene code creates abstract commands (no WebGPU import needed):
- * const command = new RenderCommand({
- *   pass: Pass.OPAQUE,
- *   owner: this,
- *   modelMatrix: modelMatrix,
- *   boundingVolume: boundingVolume,
- *   shaderHint: 'perInstanceColor_lit',
- *   renderState: { depthTest: true, cullFace: 'back' },
- * });
- * commandList.push(command);
- *
- * // Context.executeCommand() detects and converts:
- * if (command.isRenderCommand) {
- *   nativeCmd = context.buildNativeCommand(command);
- *   nativeCmd.execute(...);
- * }
- * ```
- *
  * ## Execution Model
  *
  * RenderCommand supports two execution modes:

@@ -65,7 +65,10 @@ import {
 } from "./WebGPUTextureUtilities.js";
 import { registerWebGPUFeatureRenderers } from "./WebGPUFeatureRenderers.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
-import { WebGPUPerformanceManager, type PerformanceConfig } from "./WebGPUPerformanceManager.js";
+import {
+  WebGPUPerformanceManager,
+  type PerformanceConfig,
+} from "./WebGPUPerformanceManager.js";
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
@@ -1581,7 +1584,7 @@ export class WebGPUContext extends GraphicsContext {
 
     // 256-byte row alignment required by copyTextureToBuffer
     const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-    const bufferSize = bytesPerRow * height;
+    const bufferSize = Math.max(bytesPerRow * height, 4);
 
     const readbackBuffer = this._device.createBuffer({
       size: bufferSize,
@@ -1952,9 +1955,13 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     // Nothing to clear
-    const wantColor = clearCommand.color !== undefined;
-    const wantDepth = clearCommand.depth !== undefined;
-    const wantStencil = clearCommand.stencil !== undefined;
+    // Guard against boolean `false` — callers pass { color: false } to mean "don't clear color"
+    const wantColor =
+      clearCommand.color !== undefined && clearCommand.color !== false;
+    const wantDepth =
+      clearCommand.depth !== undefined && clearCommand.depth !== false;
+    const wantStencil =
+      clearCommand.stencil !== undefined && clearCommand.stencil !== false;
     if (!wantColor && !wantDepth && !wantStencil) {
       return;
     }
@@ -2427,6 +2434,8 @@ export class WebGPUContext extends GraphicsContext {
       return null;
     }
 
+    // Guard against zero or negative sizes
+    size = Math.max(size, 4);
     // Align size to 256 bytes (uniform buffer alignment requirement)
     const alignedSize = Math.ceil(size / 256) * 256;
 
@@ -2491,11 +2500,12 @@ export class WebGPUContext extends GraphicsContext {
       return availableBuffer;
     }
 
-    // Create new buffer
+    // Create new buffer — guard against zero size
+    const safeSize = Math.max(size, 4);
     return this._device.createBuffer({
-      size,
+      size: safeSize,
       usage,
-      label: `${type} Buffer (Pooled, ${size} bytes)`,
+      label: `${type} Buffer (Pooled, ${safeSize} bytes)`,
     });
   }
 
@@ -2733,8 +2743,10 @@ export class WebGPUContext extends GraphicsContext {
       return null;
     }
 
+    // Guard against zero size
+    const safeSize = Math.max(size, 4);
     return this._device.createBuffer({
-      size,
+      size: safeSize,
       usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
       label: "Staging Buffer",
     });

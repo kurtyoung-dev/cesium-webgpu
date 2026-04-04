@@ -7,6 +7,8 @@ import {
 } from "./SettingsContext";
 import { useLocalStorage } from "react-use";
 
+const validRendererModes = ["webgl", "webgpu", "split"];
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, updateSettings] = useLocalStorage<Settings>(
     "sandcastle/settings",
@@ -23,6 +25,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           defaultPanel: value.defaultPanel ?? initialSettings.defaultPanel,
           embeddingSearch:
             value.embeddingSearch ?? initialSettings.embeddingSearch,
+          rendererMode: value.rendererMode ?? initialSettings.rendererMode,
+          showFps: value.showFps ?? initialSettings.showFps,
         });
       },
       deserializer: (value) => {
@@ -40,6 +44,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           fontSize = initialSettings.fontSize;
         }
 
+        let rendererMode =
+          parsedValue.rendererMode ?? initialSettings.rendererMode;
+        if (!validRendererModes.includes(rendererMode)) {
+          rendererMode = initialSettings.rendererMode;
+        }
+
         return {
           theme: parsedValue.theme ?? initialSettings.theme,
           fontFamily: fontFamily,
@@ -50,6 +60,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             parsedValue.defaultPanel ?? initialSettings.defaultPanel,
           embeddingSearch:
             parsedValue.embeddingSearch ?? initialSettings.embeddingSearch,
+          rendererMode: rendererMode,
+          showFps: parsedValue.showFps ?? initialSettings.showFps,
         };
       },
     },

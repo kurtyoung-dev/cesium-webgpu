@@ -34,6 +34,7 @@ export const availableFonts: Record<AvailableFontId, FontDefinition> = {
 };
 
 export type LeftPanel = "editor" | "gallery";
+export type RendererMode = "webgl" | "webgpu" | "split";
 
 export type Settings = {
   theme: "dark" | "light";
@@ -42,6 +43,8 @@ export type Settings = {
   fontLigatures: boolean;
   defaultPanel: LeftPanel;
   embeddingSearch: boolean;
+  rendererMode: RendererMode;
+  showFps: boolean;
 };
 
 export const initialSettings: Settings = {
@@ -51,6 +54,8 @@ export const initialSettings: Settings = {
   fontLigatures: false,
   defaultPanel: "gallery",
   embeddingSearch: true,
+  rendererMode: "webgl",
+  showFps: false,
 };
 
 export const SettingsContext = createContext<{

@@ -13,7 +13,13 @@ export type MessageToApp =
   | { type: "highlight"; highlight: number };
 export type MessageToBucket =
   | { type: "reload" }
-  | { type: "runCode"; code: string; html: string };
+  | {
+      type: "runCode";
+      code: string;
+      html: string;
+      renderer: "webgl" | "webgpu";
+      showFps: boolean;
+    };
 export type BridgeToApp = IframeBridge<MessageToApp, MessageToBucket>;
 export type BridgeToBucket = IframeBridge<MessageToBucket, MessageToApp>;
 

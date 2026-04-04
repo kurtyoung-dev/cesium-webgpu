@@ -13,6 +13,7 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
 
 // Uniform buffer: 256 bytes (aligned)
 const UNIFORM_BUFFER_SIZE = 256;
@@ -32,20 +33,13 @@ const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 
 /**
- * Loads the SkyAtmosphere WGSL shader.
- * @returns {Promise<string>}
+ * Returns the SkyAtmosphere WGSL shader source.
+ * Imported from the build-generated JS wrapper (no fetch needed).
+ * @returns {string}
  * @private
  */
-let _cachedShaderSource = null;
-async function getShaderSource() {
-  if (_cachedShaderSource) {
-    return _cachedShaderSource;
-  }
-  const response = await fetch(
-    "../../Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl",
-  );
-  _cachedShaderSource = await response.text();
-  return _cachedShaderSource;
+function getShaderSource() {
+  return SkyAtmosphereWGSL;
 }
 
 /**
@@ -267,11 +261,7 @@ function packUniforms(uniformData, frameState, skyAtmosphere) {
  * @param {FrameState} frameState
  * @param {Array} commandList
  */
-async function updateWebGPUSkyAtmosphere(
-  skyAtmosphere,
-  frameState,
-  commandList,
-) {
+function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   if (!skyAtmosphere.show) {
     return;
   }
@@ -284,9 +274,9 @@ async function updateWebGPUSkyAtmosphere(
   }
   const cache = skyAtmosphere._webgpuCache;
 
-  // Create pipeline once
+  // Create pipeline once (getShaderSource is synchronous — no await needed)
   if (!defined(cache.pipeline)) {
-    const shaderCode = await getShaderSource();
+    const shaderCode = getShaderSource();
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const result = createPipeline(device, shaderCode, format, depthFmt);
@@ -300,18 +290,15 @@ async function updateWebGPUSkyAtmosphere(
     const geo = generateAtmosphereGeometry(ellipsoid, ATMOSPHERE_SCALE, 64, 64);
     cache.vertexBuffer = WebGPUBuffer.createVertexBuffer(
       device,
-      geo.positions.byteLength,
-      false,
+      geo.positions,
       "SkyAtmosphere vertices",
     );
-    device.queue.writeBuffer(cache.vertexBuffer.buffer, 0, geo.positions);
 
     cache.indexBuffer = WebGPUBuffer.createIndexBuffer(
       device,
-      geo.indices.byteLength,
+      geo.indices,
       "SkyAtmosphere indices",
     );
-    device.queue.writeBuffer(cache.indexBuffer.buffer, 0, geo.indices);
     cache.indexCount = geo.indexCount;
   }
 
@@ -320,6 +307,7 @@ async function updateWebGPUSkyAtmosphere(
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
       UNIFORM_BUFFER_SIZE,
+      undefined,
       "SkyAtmosphere uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
@@ -379,9 +367,25 @@ function destroyWebGPUSkyAtmosphereResources(skyAtmosphere) {
   skyAtmosphere._webgpuCache = undefined;
 }
 
-export { updateWebGPUSkyAtmosphere, destroyWebGPUSkyAtmosphereResources };
+/**
+ * Feature renderer class for SkyAtmosphere.
+ * Wraps the module-level functions to match the feature renderer interface.
+ * @private
+ */
+class WebGPUSkyAtmosphereRenderer {
+  update(skyAtmosphere, frameState, globe) {
+    return updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, globe);
+  }
 
-export default {
+  destroy(skyAtmosphere) {
+    destroyWebGPUSkyAtmosphereResources(skyAtmosphere);
+  }
+}
+
+export {
+  WebGPUSkyAtmosphereRenderer,
   updateWebGPUSkyAtmosphere,
   destroyWebGPUSkyAtmosphereResources,
 };
+
+export default WebGPUSkyAtmosphereRenderer;

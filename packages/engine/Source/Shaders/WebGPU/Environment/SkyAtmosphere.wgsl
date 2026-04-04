@@ -88,8 +88,8 @@ fn raySphereIntersect(origin: vec3<f32>, dir: vec3<f32>, radius: f32) -> vec2<f3
   return vec2<f32>((-b - sqrtD) / (2.0 * a), (-b + sqrtD) / (2.0 * a));
 }
 
-fn opticalDepth(origin: vec3<f32>, dir: vec3<f32>, length: f32, scaleHeight: f32, innerRadius: f32) -> f32 {
-  let stepSize = length / f32(NUM_OPTICAL_DEPTH_STEPS);
+fn opticalDepth(origin: vec3<f32>, dir: vec3<f32>, pathLength: f32, scaleHeight: f32, innerRadius: f32) -> f32 {
+  let stepSize = pathLength / f32(NUM_OPTICAL_DEPTH_STEPS);
   var totalDensity: f32 = 0.0;
   var point = origin + dir * (stepSize * 0.5);
   for (var i: i32 = 0; i < NUM_OPTICAL_DEPTH_STEPS; i++) {

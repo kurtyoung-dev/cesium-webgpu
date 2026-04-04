@@ -97,7 +97,13 @@ Imagery.prototype.processStateMachine = function (
 
   if (this.state === ImageryState.RECEIVED) {
     this.state = ImageryState.TRANSITIONING;
-    this.imageryLayer._createTexture(frameState.context, this);
+    try {
+      this.imageryLayer._createTexture(frameState.context, this);
+    } catch (e) {
+      console.error("[WebGPU:Imagery] _createTexture failed:", e);
+      this.state = ImageryState.FAILED;
+      return;
+    }
   }
 
   // If the imagery is already ready, but we need a geographic version and don't have it yet,
@@ -110,11 +116,19 @@ Imagery.prototype.processStateMachine = function (
 
   if (this.state === ImageryState.TEXTURE_LOADED || needsReprojection) {
     this.state = ImageryState.TRANSITIONING;
-    this.imageryLayer._reprojectTexture(
-      frameState,
-      this,
-      needGeographicProjection,
-    );
+    try {
+      this.imageryLayer._reprojectTexture(
+        frameState,
+        this,
+        needGeographicProjection,
+      );
+    } catch (e) {
+      console.error("[WebGPU:Imagery] _reprojectTexture failed:", e);
+      // Reset to TEXTURE_LOADED so reprojection is retried on the next frame.
+      // Previous code left state as TRANSITIONING which was a dead-end —
+      // neither TEXTURE_LOADED nor READY conditions would re-enter this block.
+      this.state = ImageryState.TEXTURE_LOADED;
+    }
   }
 };
 export default Imagery;

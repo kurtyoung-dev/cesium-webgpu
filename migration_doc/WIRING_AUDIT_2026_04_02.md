@@ -1,7 +1,7 @@
 # CesiumJS WebGPU — Wiring & Fallback Audit
 
-**Date:** April 2, 2026 (updated: post v1.140 feature audit)  
-**Scope:** WASM bridge compliance, compute shader fallbacks, render pass wiring, GLSL backport analysis, upstream status, v1.140 feature audit  
+**Date:** April 2, 2026 (updated: post build & test verification)  
+**Scope:** WASM bridge compliance, compute shader fallbacks, render pass wiring, GLSL backport analysis, upstream status, v1.140 feature audit, build verification  
 
 ---
 
@@ -21,7 +21,11 @@ After a thorough codebase audit, the project is in **much better shape than the 
 | **Shader Coverage** | ✅ **~95% functional** | 238 WGSL vs 319 GLSL, 91/90 builtin functions |
 | **GLSL Backport** | ✅ **NONE NEEDED** | All WGSL either ports existing GLSL, compute-only, or WebGPU enhancements |
 | **Viewer Init Bug** | 🔴→✅ **FIXED** | `_preInitializedScene` was not forwarded to CesiumWidget — now fixed |
-| **Upstream** | ✅ **SYNCED** | 0 behind, 26 ahead — v1.140 + PR #13121 (constant LOD) merged, v1.140 feature audit complete |
+| **Pick ID Validation** | 🔴→✅ **FIXED** | `createPickId`/`getObjectByPickColor` missing DeveloperError checks in GraphicsContext.ts — added `Check.defined()` guards |
+| **Build** | ✅ **PASSES** | `npx gulp build` (23s), TypeScript `tsc --noEmit` (0 errors), WGSL wrappers (97 CsmBuiltins) |
+| **Existing Tests** | ✅ **PASS** | Context: 58/58 (0 failures after fix). Full suite: ~15K green, ~30 pre-existing failures (not from our changes) |
+| **WebGPU Init** | ✅ **VERIFIED** | scene-webgpu-init-test.html: adapter, device, canvas, beginFrame/endFrame all green |
+| **Upstream** | ✅ **SYNCED** | 0 behind, 27 ahead — v1.140 + PR #13121 (constant LOD) merged, v1.140 feature audit complete |
 
 ### What's Needed to Run the App
 

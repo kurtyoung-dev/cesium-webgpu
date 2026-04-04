@@ -321,7 +321,7 @@ function destroyRenderContext() {
   }
 
   if (defined(context.renderState)) {
-    RenderState.removeFromCache(context.renderState);
+    RenderState.releaseCache(context.renderState);
   }
 
   if (defined(context.pickIds)) {

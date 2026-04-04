@@ -50,6 +50,7 @@
 import RendererType from "./RendererType.js";
 import { ContextRegistry } from "./ContextRegistry.js";
 import FeatureRendererKey from "./FeatureRendererKey.js";
+import Check from "../Core/Check.js";
 import Color from "../Core/Color.js";
 import PickId from "./PickId.js";
 
@@ -751,6 +752,10 @@ export abstract class GraphicsContext {
    * @returns A {@link PickId} with `key`, `color`, `normalizedRgba`, and `destroy()`
    */
   createPickId(object: any): any {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("object", object);
+    //>>includeEnd('debug');
+
     // Increment with overflow wrapping (Uint32Array handles this)
     this._nextPickColor[0]++;
     const key = this._nextPickColor[0];
@@ -772,6 +777,10 @@ export abstract class GraphicsContext {
    * @returns The object associated with the pick color, or undefined
    */
   getObjectByPickColor(pickColor: any): any {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("pickColor", pickColor);
+    //>>includeEnd('debug');
+
     if (typeof pickColor === "object" && pickColor !== null) {
       // WebGPU path: reconstruct key from RGB bytes (little-endian)
       const key =
@@ -1045,19 +1054,14 @@ export abstract class GraphicsContext {
    * @protected
    */
   protected _destroyFeatureRenderers(): void {
+    // Feature renderer destroy() functions are designed for scene-side cleanup
+    // and expect their owning scene object as the first argument (e.g.,
+    // destroyBillboardResources(collection)). During context destruction the
+    // GPU device is being torn down, which releases all GPU resources
+    // automatically. We just null out references here.
     const renderers = this._featureRenderers;
     for (let i = 0; i < renderers.length; i++) {
-      const renderer = renderers[i];
-      if (renderer !== undefined) {
-        try {
-          if (renderer.destroy) {
-            renderer.destroy();
-          }
-        } catch (e) {
-          this.log("error", `Failed to destroy feature renderer [${i}]: ${e}`);
-        }
-        renderers[i] = undefined;
-      }
+      renderers[i] = undefined;
     }
   }
 }

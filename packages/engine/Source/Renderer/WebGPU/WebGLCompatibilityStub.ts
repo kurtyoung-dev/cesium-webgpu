@@ -170,9 +170,16 @@ import type { WebGLStubState } from "./Stubs/WebGLStubTypes.js";
  * @returns A WebGL-shaped stub object
  */
 export function createWebGLCompatibilityStub(state: WebGLStubState): any {
-  const logUsage = (_method: string, _reason: string) => {
-    // Disabled for less noise — uncomment for debugging WebGL compatibility layer
-    // console.log(`[WebGPU Compatibility] gl.${_method}() called - ${_reason}`);
+  // Track which stub methods have been called (log once per method for noise reduction)
+  const _loggedMethods = new Set<string>();
+  const logUsage = (method: string, reason: string) => {
+    if (!_loggedMethods.has(method)) {
+      _loggedMethods.add(method);
+      console.warn(
+        `[WebGPU:StubFallback] gl.${method}() called — ${reason}. ` +
+          `This indicates missing WebGPU functionality that should be added.`,
+      );
+    }
   };
 
   return {

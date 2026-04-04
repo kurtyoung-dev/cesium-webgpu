@@ -786,78 +786,12 @@ let debugDestroyPrimitive;
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _webgpuGlobeRenderer = null;
-let _webgpuGlobeShaderLoading = false;
-let _webgpuGlobeShaderCode = null;
+// Shader code is imported as a bundled ES module — no fetch needed
+import GlobeTerrainShaderCode from "../Shaders/WebGPU/Globe/GlobeTerrain.js";
+const _webgpuGlobeShaderCode = GlobeTerrainShaderCode;
 
 function ensureWebGPUGlobeShader() {
-  if (_webgpuGlobeShaderCode !== null) {
-    return true;
-  }
-  if (_webgpuGlobeShaderLoading) {
-    return false;
-  }
-  _webgpuGlobeShaderLoading = true;
-  const paths = [
-    "Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-    "../Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-    "../../Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  ];
-  (function tryFetch(idx) {
-    if (idx >= paths.length) {
-      console.warn("WebGPU: Could not load GlobeTerrain.wgsl, using fallback");
-      _webgpuGlobeShaderCode = getFallbackTerrainShader();
-      _webgpuGlobeShaderLoading = false;
-      return;
-    }
-    fetch(paths[idx])
-      .then(function (r) {
-        if (r.ok) {
-          return r.text().then(function (code) {
-            _webgpuGlobeShaderCode = code;
-            _webgpuGlobeShaderLoading = false;
-          });
-        }
-        tryFetch(idx + 1);
-      })
-      .catch(function () {
-        tryFetch(idx + 1);
-      });
-  })(0);
-  return false;
-}
-
-function getFallbackTerrainShader() {
-  return `
-struct CameraUniforms {
-  mvpRelativeToEye: mat4x4<f32>,
-  modifiedModelView: mat4x4<f32>,
-  encodedCameraHigh: vec3<f32>, _pad0: f32,
-  encodedCameraLow: vec3<f32>, _pad1: f32,
-  center3D: vec3<f32>, _pad2: f32,
-  sunDirectionEC: vec3<f32>, enableLighting: f32,
-};
-struct ImageryLayer { ts: vec4<f32>, tr: vec4<f32>, a: f32, b: f32, c: f32, s: f32, };
-struct TileUniforms { layers: array<ImageryLayer, 4>, layerCount: u32, _p: vec3<f32>, };
-@group(0) @binding(0) var<uniform> camera: CameraUniforms;
-@group(0) @binding(1) var<uniform> tile: TileUniforms;
-@group(1) @binding(0) var t0: texture_2d<f32>;
-@group(1) @binding(1) var t1: texture_2d<f32>;
-@group(1) @binding(2) var t2: texture_2d<f32>;
-@group(1) @binding(3) var t3: texture_2d<f32>;
-@group(1) @binding(4) var s0: sampler;
-struct VS { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>,
-  @location(1) ec: vec3<f32>, @location(2) n: vec3<f32>, @location(3) mc: vec3<f32> };
-@vertex fn vertexMain(@location(0) ph: vec4<f32>, @location(1) tn: vec4<f32>) -> VS {
-  var o: VS;
-  let pos = ph.xyz + camera.center3D;
-  let h = (pos - camera.encodedCameraHigh) + (vec3(0.) - camera.encodedCameraLow);
-  o.p = camera.mvpRelativeToEye * vec4(h, 1.0);
-  o.ec = (camera.modifiedModelView * vec4(ph.xyz, 1.0)).xyz;
-  o.uv = tn.xy; o.n = vec3(0.,1.,0.); o.mc = pos; return o;
-}
-@fragment fn fragmentMain(i: VS) -> @location(0) vec4<f32> {
-  return vec4<f32>(0.2, 0.2, 0.25, 1.0);
-}`;
+  return _webgpuGlobeShaderCode !== null && _webgpuGlobeShaderCode.length > 0;
 }
 
 function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
@@ -943,7 +877,26 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       _indexBuffer: cmdDesc.indexBuffer,
       _indexCount: cmdDesc.indexCount,
       _indexFormat: cmdDesc.indexFormat,
+      _diagLogged: false,
       execute: function (renderPass) {
+        // One-time diagnostic: log bind group details for first tile
+        if (!this._diagLogged) {
+          this._diagLogged = true;
+          console.log(
+            `[WebGPU:GlobeTile:exec] pipeline=${!!this._pipeline} ` +
+              `bindGroups=${this._bindGroups.length} ` +
+              `vtxBuf=${!!this._vertexBuffer} ` +
+              `idxBuf=${!!this._indexBuffer} ` +
+              `idxCount=${this._indexCount} ` +
+              `idxFmt=${this._indexFormat}`,
+          );
+          for (let g = 0; g < this._bindGroups.length; g++) {
+            console.log(
+              `[WebGPU:GlobeTile:exec]   group[${g}]=${!!this._bindGroups[g]} ` +
+                `type=${this._bindGroups[g]?.constructor?.name}`,
+            );
+          }
+        }
         renderPass.setPipeline(this._pipeline);
         for (let i = 0; i < this._bindGroups.length; i++) {
           renderPass.setBindGroup(i, this._bindGroups[i]);

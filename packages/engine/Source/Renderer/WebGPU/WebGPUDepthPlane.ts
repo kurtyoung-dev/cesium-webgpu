@@ -84,8 +84,6 @@ const scratchCartesian2 = new Cartesian3();
 const scratchCartesian3 = new Cartesian3();
 const scratchCartesian4 = new Cartesian3();
 const scratchCartesian5 = new Cartesian3();
-const scratchEncodedHigh: any = new Cartesian3();
-const scratchEncodedLow: any = new Cartesian3();
 
 // 4 corners × 6 floats (posHigh xyz + posLow xyz) = 24 floats
 const depthQuadRTE = new Float32Array(24);
@@ -172,36 +170,34 @@ function computeDepthQuadCorners(
   Cartesian3.multiplyComponents(radii, lr, result[3]);
 }
 
+// Scratch object for EncodedCartesian3.encode output (plain {high, low} pair)
+const scratchHL = { high: 0.0, low: 0.0 };
+
 /**
  * Encode 4 world-space corners into RTE vertex data.
  * Output: interleaved [posHighX, posHighY, posHighZ, posLowX, posLowY, posLowZ] × 4
+ *
+ * Uses EncodedCartesian3.encode per-component (returns plain {high, low})
+ * to avoid the writeElements/fromCartesian path whose module-level
+ * encodedP variable can hit initialization-order issues in bundled builds.
  */
 function encodeQuadToRTE(corners: Cartesian3[], result: Float32Array): void {
+  const encode = (EncodedCartesian3 as any).encode;
   for (let i = 0; i < 4; i++) {
-    (EncodedCartesian3 as any).fromCartesian(corners[i], scratchEncodedHigh);
-    // EncodedCartesian3.fromCartesian stores high in result, low in a second output
-    // We use the encode function that splits into high/low
-    const high: any = (EncodedCartesian3 as any).encode(
-      corners[i].x,
-      scratchEncodedHigh,
-    );
-    const offset = i * 6;
-    result[offset] = high.high;
-    result[offset + 3] = high.low;
+    const c = corners[i];
+    const off = i * 6;
 
-    const highY: any = (EncodedCartesian3 as any).encode(
-      corners[i].y,
-      scratchEncodedHigh,
-    );
-    result[offset + 1] = highY.high;
-    result[offset + 4] = highY.low;
+    encode(c.x, scratchHL);
+    result[off] = scratchHL.high;
+    result[off + 3] = scratchHL.low;
 
-    const highZ: any = (EncodedCartesian3 as any).encode(
-      corners[i].z,
-      scratchEncodedHigh,
-    );
-    result[offset + 2] = highZ.high;
-    result[offset + 5] = highZ.low;
+    encode(c.y, scratchHL);
+    result[off + 1] = scratchHL.high;
+    result[off + 4] = scratchHL.low;
+
+    encode(c.z, scratchHL);
+    result[off + 2] = scratchHL.high;
+    result[off + 5] = scratchHL.low;
   }
 }
 
@@ -248,7 +244,11 @@ export class WebGPUDepthPlane {
   /**
    * Initialize the depth plane pipeline (once per device).
    */
-  initialize(device: GPUDevice, depthFormat: GPUTextureFormat): void {
+  initialize(
+    device: GPUDevice,
+    depthFormat: GPUTextureFormat,
+    colorFormat: GPUTextureFormat = "bgra8unorm",
+  ): void {
     if (this._pipeline) return;
 
     this._device = device;
@@ -309,7 +309,7 @@ export class WebGPUDepthPlane {
         entryPoint: "fragmentMain",
         targets: [
           {
-            format: "rgba8unorm",
+            format: colorFormat, // Must match canvas format (typically bgra8unorm)
             writeMask: 0, // No color writes — depth only
           },
         ],

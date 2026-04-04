@@ -219,14 +219,14 @@ export async function buildCesiumViewer() {
     .pipe(
       gulp.src(
         [
-          "Build/Cesium/Assets/**",
-          "Build/Cesium/Workers/**",
-          "Build/Cesium/ThirdParty/**",
-          "Build/Cesium/Widgets/**",
-          "!Build/Cesium/Widgets/**/*.css",
+          `Build/${isProduction ? "Cesium" : "CesiumUnminified"}/Assets/**`,
+          `Build/${isProduction ? "Cesium" : "CesiumUnminified"}/Workers/**`,
+          `Build/${isProduction ? "Cesium" : "CesiumUnminified"}/ThirdParty/**`,
+          `Build/${isProduction ? "Cesium" : "CesiumUnminified"}/Widgets/**`,
+          `!Build/${isProduction ? "Cesium" : "CesiumUnminified"}/Widgets/**/*.css`,
         ],
         {
-          base: "Build/Cesium",
+          base: `Build/${isProduction ? "Cesium" : "CesiumUnminified"}`,
           nodir: true,
           encoding: false,
         },

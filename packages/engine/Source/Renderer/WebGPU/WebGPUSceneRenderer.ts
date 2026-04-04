@@ -92,7 +92,26 @@ function executeBatch(
   passState: any,
 ): void {
   for (let i = 0; i < count; i++) {
-    executeWebGPUCommand(commands[i], scene, context, passState);
+    try {
+      executeWebGPUCommand(commands[i], scene, context, passState);
+    } catch (e: any) {
+      // Log once per command type rather than flooding — the command might
+      // fail every frame, but we don't want to stop all rendering.
+      const cmd = commands[i];
+      const label =
+        cmd?.owner?.constructor?.name ?? cmd?.constructor?.name ?? "unknown";
+      if (!(context as any)._warnedCommands) {
+        (context as any)._warnedCommands = new Set();
+      }
+      const key = `${label}:${e.message?.substring(0, 60)}`;
+      if (!(context as any)._warnedCommands.has(key)) {
+        (context as any)._warnedCommands.add(key);
+        context.log?.(
+          "warn",
+          `Command execution failed (${label}): ${e.message}`,
+        );
+      }
+    }
   }
 }
 
@@ -171,6 +190,7 @@ export class WebGPUSceneRenderer {
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
+  private _depthPlaneWarned: boolean = false;
 
   // --- Lazy initialization ---
 
@@ -241,7 +261,9 @@ export class WebGPUSceneRenderer {
       this._depthPlane = new WebGPUDepthPlane();
       const depthFormat: GPUTextureFormat =
         context.depthFormat ?? "depth24plus-stencil8";
-      this._depthPlane.initialize(device, depthFormat);
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
+      this._depthPlane.initialize(device, depthFormat, canvasFormat);
     }
 
     // Post-processing pipeline
@@ -297,6 +319,29 @@ export class WebGPUSceneRenderer {
       return;
     }
 
+    // Temporary debug: log command counts once on first frame
+    if (!(this as any)._debugLogged) {
+      (this as any)._debugLogged = true;
+      const passNames: Record<number, string> = {
+        0: "ENVIRONMENT",
+        2: "GLOBE",
+        3: "TERRAIN_CLASS",
+        8: "OPAQUE",
+        9: "TRANSLUCENT",
+      };
+      for (let f = 0; f < numFrustums; f++) {
+        const fc = frustumCommandsList[f];
+        const counts: string[] = [];
+        for (const [idx, name] of Object.entries(passNames)) {
+          const cnt = fc.indices[Number(idx)] ?? 0;
+          if (cnt > 0) counts.push(`${name}=${cnt}`);
+        }
+        if (counts.length > 0) {
+          console.log(`[WebGPU] Frustum ${f}: ${counts.join(", ")}`);
+        }
+      }
+    }
+
     // Ensure rendering resources are created/sized
     this._ensureResources(config);
 
@@ -328,6 +373,17 @@ export class WebGPUSceneRenderer {
 
       // Clear depth/stencil per frustum (but not color — color accumulates across frustums)
       this._clearDepthStencil(context);
+
+      // Pass 0: ENVIRONMENT (sky, sun, moon, atmosphere) — once in farthest frustum
+      if (i === 0) {
+        this._executePassCommands(
+          frustumCommands,
+          Pass.ENVIRONMENT,
+          scene,
+          context,
+          passState,
+        );
+      }
 
       // Pass 2: GLOBE
       this._executeGlobePass(frustumCommands, config);
@@ -642,7 +698,8 @@ export class WebGPUSceneRenderer {
   }
 
   private _clearDepthStencil(context: any): void {
-    context.clear?.({ depth: true, stencil: true, color: false });
+    // Pass numeric values: depth=1.0 (far plane), stencil=0, color=false (don't clear)
+    context.clear?.({ depth: 1.0, stencil: 0, color: false });
   }
 
   // --- Globe pass (with GlobeDepth integration) ---
@@ -656,6 +713,25 @@ export class WebGPUSceneRenderer {
     const count: number = frustumCommands.indices[Pass.GLOBE];
     if (count === 0) {
       return;
+    }
+
+    // One-time GPU validation error scope on first globe pass
+    const device: GPUDevice | undefined = context._device;
+    if (device && !(this as any)._globeValidationDone) {
+      (this as any)._globeValidationDone = true;
+      device.pushErrorScope("validation");
+      // Pop after frame to check for silent errors
+      Promise.resolve().then(() => {
+        device.popErrorScope().then((error: GPUError | null) => {
+          if (error) {
+            console.error(
+              `[WebGPU:GlobePass] GPU VALIDATION ERROR: ${error.message}`,
+            );
+          } else {
+            console.log("[WebGPU:GlobePass] No GPU validation errors");
+          }
+        });
+      });
     }
 
     context.uniformState?.updatePass(Pass.GLOBE);
@@ -746,7 +822,12 @@ export class WebGPUSceneRenderer {
     // Pipeline variant support is implemented per-renderer by checking
     // command._oitPipeline. When available, we use the MRT accumulation pass;
     // otherwise fall back to standard alpha blending.
-    if (this._oit && this._oit.isSupported && config.useOIT && !config.picking) {
+    if (
+      this._oit &&
+      this._oit.isSupported &&
+      config.useOIT &&
+      !config.picking
+    ) {
       // Check if any commands have OIT-compatible pipeline variants.
       // If at least one does, use the OIT path for all (non-OIT commands
       // get alpha blended in the composite instead).
@@ -766,7 +847,8 @@ export class WebGPUSceneRenderer {
           context.endCurrentRenderPass?.();
 
           // Begin OIT accumulation render pass (2 MRT targets, depth read-only)
-          const accPassDesc = this._oit.getAccumulationPassDescriptor(depthView);
+          const accPassDesc =
+            this._oit.getAccumulationPassDescriptor(depthView);
           if (accPassDesc) {
             const accPass = encoder.beginRenderPass(accPassDesc);
             // Execute commands that have OIT pipeline variants
@@ -778,10 +860,16 @@ export class WebGPUSceneRenderer {
                   accPass.setBindGroup(bi, cmd.bindGroups[bi]);
                 }
                 for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
-                  accPass.setVertexBuffer(vi, cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi]);
+                  accPass.setVertexBuffer(
+                    vi,
+                    cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi],
+                  );
                 }
                 if (cmd.indexBuffer && cmd.indexCount) {
-                  accPass.setIndexBuffer(cmd.indexBuffer._buffer ?? cmd.indexBuffer, cmd.indexFormat);
+                  accPass.setIndexBuffer(
+                    cmd.indexBuffer._buffer ?? cmd.indexBuffer,
+                    cmd.indexFormat,
+                  );
                   accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
                 } else if (cmd.vertexCount) {
                   accPass.draw(cmd.vertexCount, cmd.instanceCount ?? 1);
@@ -794,7 +882,11 @@ export class WebGPUSceneRenderer {
             const sceneColorView = context._sceneColorView;
             const sceneColorFormat = context._sceneColorFormat ?? "bgra8unorm";
             if (sceneColorView) {
-              this._oit.executeComposite(encoder, sceneColorView, sceneColorFormat);
+              this._oit.executeComposite(
+                encoder,
+                sceneColorView,
+                sceneColorFormat,
+              );
             }
           }
 
@@ -847,14 +939,22 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // Update depth plane geometry based on camera
-    this._depthPlane.update(scene._frameState, device);
+    try {
+      // Update depth plane geometry based on camera
+      this._depthPlane.update(scene._frameState, device);
 
-    // Execute depth plane draw into the active render pass
-    const renderPass: GPURenderPassEncoder | undefined =
-      context.currentRenderPassEncoder;
-    if (renderPass) {
-      this._depthPlane.execute(renderPass);
+      // Execute depth plane draw into the active render pass
+      const renderPass: GPURenderPassEncoder | undefined =
+        context.currentRenderPassEncoder;
+      if (renderPass) {
+        this._depthPlane.execute(renderPass);
+      }
+    } catch (e: any) {
+      // Depth plane is non-essential — log warning but don't crash rendering
+      if (!this._depthPlaneWarned) {
+        context.log("warn", `DepthPlane error (suppressed): ${e.message}`);
+        this._depthPlaneWarned = true;
+      }
     }
   }
 
@@ -870,15 +970,13 @@ export class WebGPUSceneRenderer {
    * - SSR modifies surface reflections
    * - Weather is in front (camera-relative particles)
    */
-  private _executeEnvironmentalEffects(
-    config: WebGPURenderFrameConfig,
-  ): void {
+  private _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void {
     const { scene, context } = config;
     const globe = scene.globe;
 
     // Get texture views needed by all environmental effects
-    const colorView: GPUTextureView | undefined = context._sceneColorView
-      ?? context.currentTextureView;
+    const colorView: GPUTextureView | undefined =
+      context._sceneColorView ?? context.currentTextureView;
     const depthView: GPUTextureView | undefined = context._depthStencilView;
     const outputView: GPUTextureView | undefined = context.currentTextureView;
 

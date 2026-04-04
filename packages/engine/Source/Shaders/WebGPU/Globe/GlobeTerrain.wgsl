@@ -59,7 +59,7 @@ struct ImageryLayer {
 
 struct TileUniforms {
   layers: array<ImageryLayer, 4>,
-  layerCount: u32,
+  layerCount: f32,
   fogDensity: f32,
   fogOffset: f32,
   fogMinimumBrightness: f32,
@@ -91,15 +91,13 @@ struct TileUniforms {
 @group(1) @binding(3) var dayTexture3: texture_2d<f32>;
 @group(1) @binding(4) var texSampler: sampler;
 
-// ─── Water mask texture (Group 2) ───
+// ─── Water mask + Ocean normal map (Group 2, merged) ───
 @group(2) @binding(0) var waterMaskTexture: texture_2d<f32>;
 @group(2) @binding(1) var waterMaskSampler: sampler;
+@group(2) @binding(2) var oceanNormalMap: texture_2d<f32>;
+@group(2) @binding(3) var oceanNormalSampler: sampler;
 
-// ─── Ocean wave normal map (Group 3) ───
-@group(3) @binding(0) var oceanNormalMap: texture_2d<f32>;
-@group(3) @binding(1) var oceanNormalSampler: sampler;
-
-// ─── Effects bind group: shadow receive + clipping planes (Group 4) ───
+// ─── Effects bind group: shadow receive + clipping planes (Group 3) ───
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -112,11 +110,11 @@ struct EffectsUniforms {
     clippingEdgeColor: vec4<f32>,
 }
 
-@group(4) @binding(0) var<uniform> effects: EffectsUniforms;
-@group(4) @binding(1) var shadowDepthTex: texture_depth_2d;
-@group(4) @binding(2) var shadowCompSampler: sampler_comparison;
-@group(4) @binding(3) var clippingPlaneTex: texture_2d<f32>;
-@group(4) @binding(4) var clippingPlaneSampler: sampler;
+@group(3) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
+@group(3) @binding(2) var shadowCompSampler: sampler_comparison;
+@group(3) @binding(3) var clippingPlaneTex: texture_2d<f32>;
+@group(3) @binding(4) var clippingPlaneSampler: sampler;
 
 // ─── Vertex Input / Output ───
 struct VertexInput {
@@ -289,7 +287,10 @@ fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
                  baseUV: vec2<f32>, layer: ImageryLayer) -> vec4<f32> {
   let uv = baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy;
   let clampedUV = clamp(uv, layer.texCoordsRect.xy, layer.texCoordsRect.zw);
-  return textureSample(tex, samp, clampedUV);
+  // Use textureSampleLevel (explicit LOD=0) instead of textureSample
+  // because this function is called after non-uniform discard/return
+  // (clipping planes), and textureSample requires uniform control flow.
+  return textureSampleLevel(tex, samp, clampedUV, 0.0);
 }
 
 fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32) -> vec3<f32> {
@@ -370,15 +371,15 @@ fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
 fn sampleOceanWaveNormals(uv: vec2<f32>, t: f32) -> vec3<f32> {
   // Large slow-moving swells
   let waveUV1 = uv * 400.0 + vec2<f32>(t * 0.012, t * 0.008);
-  let n1 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV1).xyz * 2.0 - 1.0;
+  let n1 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV1, 0.0).xyz * 2.0 - 1.0;
 
   // Medium waves
   let waveUV2 = uv * 200.0 + vec2<f32>(-t * 0.008, t * 0.018);
-  let n2 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV2).xyz * 2.0 - 1.0;
+  let n2 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV2, 0.0).xyz * 2.0 - 1.0;
 
   // Small wind ripples (higher frequency, faster)
   let waveUV3 = uv * 800.0 + vec2<f32>(t * 0.03, -t * 0.012);
-  let n3 = textureSample(oceanNormalMap, oceanNormalSampler, waveUV3).xyz * 2.0 - 1.0;
+  let n3 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV3, 0.0).xyz * 2.0 - 1.0;
 
   // Blend: large swells dominate, small ripples add detail
   return normalize(n1 * 0.6 + n2 * 0.3 + n3 * 0.1);
@@ -572,7 +573,29 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // ═══════════════════════════════════════════════════════════════════════
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  // DIAG: Test which bindings have data
+  // RED = camera MVP has data (binding 0 works)
+  // GREEN = tile layerCount has data (binding 1 works)
+  // BLUE = tile layers[0].alpha has data
+  let camTest = camera.mvpRelativeToEye[0][0];
+  let tileLC = tile.layerCount;
+  let tileAlpha = tile.layers[0].alpha;
+  return vec4<f32>(
+    select(0.0, 1.0, camTest != 0.0),
+    select(0.0, 1.0, tileLC > 0.0),
+    select(0.0, 1.0, tileAlpha > 0.0),
+    1.0
+  );
+
   let uv = input.v_textureCoordinates;
+
+  // Compute shadow factor early — textureSampleCompare must be called
+  // from uniform control flow (before any non-uniform discard/return).
+  // camera.enableLighting is a uniform value so this branch is uniform.
+  var shadowFactor: f32 = 1.0;
+  if (camera.enableLighting > 0.5) {
+    shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+  }
 
   // ─── Clipping planes discard ───
   if (globeClipByPlanes(input.v_positionMC)) { discard; }
@@ -626,9 +649,20 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let nightBlend = 1.0 - dayFade;
 
   // ─── Composite imagery layers ───
-  let count = tile.layerCount;
+  let countF = tile.layerCount;
+  let count = u32(countF);
 
-  if (count >= 1u) {
+  // DEBUG: output magenta if count >= 1, yellow if count >= 2, cyan if countF > 0.0
+  // Remove this block once imagery is rendering
+  if (countF > 0.5) {
+    return vec4<f32>(1.0, 1.0, 0.0, 1.0); // yellow = countF > 0.5
+  }
+  if (countF > 0.0) {
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = tiny float value
+  }
+  // If we reach here, countF = 0.0 → blue base color will show
+
+  if (count >= 1) {
     let layer0 = tile.layers[0];
     let tex0 = sampleImagery(dayTexture0, texSampler, uv, layer0);
     let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
@@ -639,7 +673,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Night lights emission for this layer
     color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
   }
-  if (count >= 2u) {
+  if (count >= 2) {
     let layer1 = tile.layers[1];
     let tex1 = sampleImagery(dayTexture1, texSampler, uv, layer1);
     let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
@@ -649,7 +683,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     alpha = max(alpha, effectiveAlpha1);
     color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
   }
-  if (count >= 3u) {
+  if (count >= 3) {
     let layer2 = tile.layers[2];
     let tex2 = sampleImagery(dayTexture2, texSampler, uv, layer2);
     let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
@@ -659,7 +693,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     alpha = max(alpha, effectiveAlpha2);
     color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
   }
-  if (count >= 4u) {
+  if (count >= 4) {
     let layer3 = tile.layers[3];
     let tex3 = sampleImagery(dayTexture3, texSampler, uv, layer3);
     let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
@@ -679,7 +713,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (tile.flags.x > 0.5) {
     let wmTS = tile.waterMaskTranslationAndScale;
     let waterUV = uv * wmTS.zw + wmTS.xy;
-    let waterMask = textureSample(waterMaskTexture, waterMaskSampler, waterUV).r;
+    let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
 
     if (waterMask > 0.01) {
       color = computeEnhancedOcean(
@@ -693,7 +727,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   if (camera.enableLighting > 0.5) {
     let NdotL = max(dot(normal, sunDir), 0.0);
     let ambient = 0.12;
-    let shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+    // shadowFactor was pre-computed at the top of fragmentMain
+    // (textureSampleCompare requires uniform control flow)
     // Day side: normal Lambert diffuse with shadow
     let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
     // Night side: very dark, only ambient light (moonlight approximation)

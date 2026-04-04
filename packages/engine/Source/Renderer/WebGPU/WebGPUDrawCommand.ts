@@ -16,10 +16,18 @@ export type AnyGPUBuffer = WebGPUBuffer | GPUBuffer;
 
 /** Extracts the underlying GPUBuffer from either a WebGPUBuffer or raw GPUBuffer. */
 function resolveBuffer(buf: AnyGPUBuffer): GPUBuffer {
-  return (buf as WebGPUBuffer).buffer !== undefined &&
-    typeof (buf as WebGPUBuffer).buffer === "object"
-    ? (buf as WebGPUBuffer).buffer
-    : (buf as GPUBuffer);
+  // Try public getter first (WebGPUBuffer.buffer)
+  const pub = (buf as any).buffer;
+  if (pub !== undefined && typeof pub === "object") {
+    return pub as GPUBuffer;
+  }
+  // Fallback: private field (esbuild may not preserve getter in some modes)
+  const priv = (buf as any)._buffer;
+  if (priv !== undefined && typeof priv === "object") {
+    return priv as GPUBuffer;
+  }
+  // Raw GPUBuffer — return as-is
+  return buf as GPUBuffer;
 }
 
 /** Gets the size of an AnyGPUBuffer. */

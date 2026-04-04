@@ -414,10 +414,13 @@ function opaqueMaterialMeshSort(a, b, position) {
     return matA - matB;
   }
 
-  return (
-    a.boundingVolume.distanceSquaredTo(position) -
-    b.boundingVolume.distanceSquaredTo(position)
-  );
+  // Guard against commands without a boundingVolume (e.g., ClearCommand, overlay commands)
+  const bvA = a.boundingVolume;
+  const bvB = b.boundingVolume;
+  if (!bvA || !bvB) {
+    return 0;
+  }
+  return bvA.distanceSquaredTo(position) - bvB.distanceSquaredTo(position);
 }
 
 function opaqueFrontToBackSort(a, b, position) {
@@ -433,10 +436,12 @@ function opaqueFrontToBackSort(a, b, position) {
     return priorityA - priorityB;
   }
 
-  return (
-    a.boundingVolume.distanceSquaredTo(position) -
-    b.boundingVolume.distanceSquaredTo(position)
-  );
+  const bvA = a.boundingVolume;
+  const bvB = b.boundingVolume;
+  if (!bvA || !bvB) {
+    return 0;
+  }
+  return bvA.distanceSquaredTo(position) - bvB.distanceSquaredTo(position);
 }
 
 function transparentBackToFrontSort(a, b, position) {
@@ -452,10 +457,12 @@ function transparentBackToFrontSort(a, b, position) {
     return priorityA - priorityB;
   }
 
-  return (
-    b.boundingVolume.distanceSquaredTo(position) -
-    a.boundingVolume.distanceSquaredTo(position)
-  );
+  const bvA = a.boundingVolume;
+  const bvB = b.boundingVolume;
+  if (!bvA || !bvB) {
+    return 0;
+  }
+  return bvB.distanceSquaredTo(position) - bvA.distanceSquaredTo(position);
 }
 
 function manualSort(a, b) {

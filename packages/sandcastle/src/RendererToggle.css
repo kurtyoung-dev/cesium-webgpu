@@ -1,0 +1,28 @@
+.renderer-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--stratakit-space-x3, 12px);
+}
+
+.renderer-toggle {
+  display: flex;
+  gap: 1px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--stratakit-color-border-neutral-muted, #555);
+
+  button {
+    border-radius: 0;
+    border: none;
+    padding: 4px 10px;
+    font-size: 12px;
+    min-height: unset;
+    line-height: 1.4;
+  }
+}
+
+.fps-label {
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}

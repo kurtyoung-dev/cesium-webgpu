@@ -214,12 +214,27 @@ function CesiumWidget(container, options) {
 
   options = options ?? Frozen.EMPTY_OBJECT;
 
+  // When a pre-initialized scene (WebGPU async path) is provided, reuse its
+  // canvas because the WebGPU context is bound to a specific canvas element.
+  const preScene = options._preInitializedScene;
+  const reuseCanvas = defined(preScene) && defined(preScene._canvas);
+
   //Configure the widget DOM elements
   const element = document.createElement("div");
   element.className = "cesium-widget";
   container.appendChild(element);
 
-  const canvas = document.createElement("canvas");
+  let canvas;
+  if (reuseCanvas) {
+    // Adopt the canvas from the pre-initialized scene
+    canvas = preScene._canvas;
+    // Remove from old parent if still attached
+    if (canvas.parentNode) {
+      canvas.parentNode.removeChild(canvas);
+    }
+  } else {
+    canvas = document.createElement("canvas");
+  }
   const supportsImageRenderingPixelated =
     FeatureDetection.supportsImageRenderingPixelated();
   this._supportsImageRenderingPixelated = supportsImageRenderingPixelated;
@@ -531,18 +546,46 @@ CesiumWidget.createAsync = async function (container, options, onProgress) {
   const needsAsync = contextOptions.renderer === "webgpu";
 
   if (needsAsync) {
-    // Create a temporary canvas for Scene.createAsync
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.style.width = "100%";
-    tempCanvas.style.height = "100%";
+    // Set up the real DOM structure first so Scene gets a properly-sized canvas.
+    // We create the same element/canvas hierarchy that the CesiumWidget constructor
+    // normally creates, then pass the pre-initialized scene to the constructor.
+    const resolvedContainer = getElement(container);
+    const element = document.createElement("div");
+    element.className = "cesium-widget";
+    resolvedContainer.appendChild(element);
+
+    const realCanvas = document.createElement("canvas");
+    const supportsPixelated =
+      FeatureDetection.supportsImageRenderingPixelated();
+    if (supportsPixelated) {
+      realCanvas.style.imageRendering = FeatureDetection.imageRenderingValue();
+    }
+    element.appendChild(realCanvas);
+
+    // Force initial canvas dimensions so WebGPU can create framebuffers
+    realCanvas.width = Math.max(element.clientWidth, 1);
+    realCanvas.height = Math.max(element.clientHeight, 1);
+
+    // Create credit container in the element so Scene doesn't crash on parentNode
+    const innerCreditContainer = document.createElement("div");
+    innerCreditContainer.className = "cesium-widget-credits";
+    const creditContainer = defined(options.creditContainer)
+      ? getElement(options.creditContainer)
+      : element;
+    creditContainer.appendChild(innerCreditContainer);
+    const creditViewport = defined(options.creditViewport)
+      ? getElement(options.creditViewport)
+      : element;
 
     const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
 
     // Create scene asynchronously (handles WebGPU context + shader preload)
     const scene = await Scene.createAsync(
       {
-        canvas: tempCanvas,
+        canvas: realCanvas,
         contextOptions: contextOptions,
+        creditContainer: innerCreditContainer,
+        creditViewport: creditViewport,
         ellipsoid: ellipsoid,
         mapProjection: options.mapProjection,
         orderIndependentTranslucency: options.orderIndependentTranslucency,
@@ -556,6 +599,11 @@ CesiumWidget.createAsync = async function (container, options, onProgress) {
       },
       onProgress,
     );
+
+    // Remove the element we created — the CesiumWidget constructor will
+    // create its own and adopt the scene. We need to clean up to avoid
+    // duplicate DOM elements.
+    resolvedContainer.removeChild(element);
 
     // Now create the widget synchronously with the pre-initialized scene
     return new CesiumWidget(container, {

@@ -46,6 +46,7 @@ import { SettingsModal } from "./SettingsModal.tsx";
 import { LeftPanel, SettingsContext } from "./SettingsContext.ts";
 import { MetadataPopover } from "./MetadataPopover.tsx";
 import { SharePopover } from "./SharePopover.tsx";
+import { RendererToggle } from "./RendererToggle.tsx";
 import { SandcastlePopover } from "./SandcastlePopover.tsx";
 import { urlSpecifiesSandcastle } from "./Gallery/loadFromUrl.ts";
 import {
@@ -353,6 +354,8 @@ function App() {
         <Button onClick={() => openStandalone()}>
           Standalone <Icon href={windowPopout} />
         </Button>
+        <Divider aria-orientation="vertical" />
+        <RendererToggle />
         <div className="flex-spacer"></div>
         <SandcastlePopover
           disclosure={
@@ -481,6 +484,8 @@ function App() {
                   code={codeState.committedCode}
                   html={codeState.committedHtml}
                   runNumber={codeState.runNumber}
+                  rendererMode={settings.rendererMode}
+                  showFps={settings.showFps}
                   highlightLine={(lineNumber) => highlightLine(lineNumber)}
                   appendConsole={appendConsole}
                   resetConsole={resetConsole}

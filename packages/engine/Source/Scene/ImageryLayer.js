@@ -438,7 +438,8 @@ class ImageryLayer {
   }
 
   /**
-   * Create a WebGL texture for a given {@link Imagery} instance.
+   * Create a texture for a given {@link Imagery} instance.
+   * Uses native WebGPU path when available, falls back to WebGL.
    * @private
    */
   _createTexture(context, imagery) {
@@ -471,6 +472,37 @@ class ImageryLayer {
     }
     //>>includeEnd('debug');
 
+    if (context.isWebGPU) {
+      // WebGPU path: skip WebGL Texture creation entirely. The image source
+      // is preserved and will be uploaded directly to a GPUTexture during
+      // reprojection (reprojectImageSourceWebGPU) or by the globe surface
+      // renderer (_getOrCreateImageryTexture → _uploadImageSource).
+      // We create a lightweight placeholder so texture.width/height work.
+      const width = image.width || image.naturalWidth || 256;
+      const height = image.height || image.naturalHeight || 256;
+      const placeholder = {
+        width: width,
+        height: height,
+        _isWebGPUPlaceholder: true,
+        destroy: function () {
+          // No-op — placeholder has no GPU resources to release.
+          // The real GPUTexture (imagery._webgpuReprojectedTexture) is
+          // managed by the globe surface renderer's texture cache.
+        },
+      };
+
+      if (
+        imageryProvider.tilingScheme.projection instanceof WebMercatorProjection
+      ) {
+        imagery.textureWebMercator = placeholder;
+      } else {
+        imagery.texture = placeholder;
+      }
+      // Image source is preserved for GPU upload later
+      imagery.state = ImageryState.TEXTURE_LOADED;
+      return;
+    }
+
     const texture = this._createTextureWebGL(context, imagery);
 
     if (
@@ -481,12 +513,7 @@ class ImageryLayer {
       imagery.texture = texture;
     }
 
-    // Preserve image source for WebGPU — needed by the imagery reprojection
-    // render pass and the globe surface renderer's texture upload.
-    // WebGL uploads the image to GPU immediately, so clearing is safe.
-    if (!context.isWebGPU) {
-      imagery.image = undefined;
-    }
+    imagery.image = undefined;
     imagery.state = ImageryState.TEXTURE_LOADED;
   }
 
@@ -594,12 +621,20 @@ class ImageryLayer {
         );
         // Set texture property for compatibility with existing code paths
         imagery.texture = texture;
-        imagery.image = undefined;
         imagery.state = ImageryState.READY;
         return;
       }
 
-      // WebGL path: queue a ComputeCommand for async GPGPU reprojection
+      // Feature renderer exists but image source not available — use texture as-is.
+      // This handles contexts where reprojection is managed by the feature renderer
+      // but the image was released before reprojection could run.
+      if (fr) {
+        imagery.texture = texture;
+        imagery.state = ImageryState.READY;
+        return;
+      }
+
+      // No feature renderer — use ComputeCommand for GPGPU reprojection
       const that = this;
       imagery.addReference();
       const computeCommand = new ComputeCommand({

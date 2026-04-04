@@ -195,7 +195,11 @@ function getPipeline(device, format) {
       topology: "triangle-list",
       cullMode: "none",
     },
-    depthStencil: undefined, // No depth test for environment pass
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: false,
+      depthCompare: "always",
+    },
   });
 
   return _cachedPipeline;
@@ -259,19 +263,17 @@ export function createGeometryBuffers(device, geometry) {
   const positions = geometry.attributes.position.values;
   const indices = geometry.indices;
 
-  const vertexBuffer = new WebGPUBuffer({
-    device: device,
-    typedArray: new Float32Array(positions),
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    label: "CubeMapPanorama-vertices",
-  });
+  const vertexBuffer = WebGPUBuffer.createVertexBuffer(
+    device,
+    new Float32Array(positions),
+    "CubeMapPanorama-vertices",
+  );
 
-  const indexBuffer = new WebGPUBuffer({
-    device: device,
-    typedArray: new Uint16Array(indices),
-    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    label: "CubeMapPanorama-indices",
-  });
+  const indexBuffer = WebGPUBuffer.createIndexBuffer(
+    device,
+    new Uint16Array(indices),
+    "CubeMapPanorama-indices",
+  );
 
   return { vertexBuffer, indexBuffer, indexCount: indices.length };
 }
