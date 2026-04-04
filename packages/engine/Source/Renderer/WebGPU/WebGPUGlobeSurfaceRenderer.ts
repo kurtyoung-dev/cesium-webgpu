@@ -1238,7 +1238,7 @@ export class WebGPUGlobeSurfaceRenderer {
       });
 
       device.queue.copyExternalImageToTexture(
-        { source: source as any },
+        { source: source as any, flipY: true },
         { texture },
         [width, height],
       );

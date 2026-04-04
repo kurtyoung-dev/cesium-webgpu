@@ -573,191 +573,195 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // ═══════════════════════════════════════════════════════════════════════
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // DIAG: Test which bindings have data
-  // RED = camera MVP has data (binding 0 works)
-  // GREEN = tile layerCount has data (binding 1 works)
-  // BLUE = tile layers[0].alpha has data
-  let camTest = camera.mvpRelativeToEye[0][0];
-  let tileLC = tile.layerCount;
-  let tileAlpha = tile.layers[0].alpha;
-  return vec4<f32>(
-    select(0.0, 1.0, camTest != 0.0),
-    select(0.0, 1.0, tileLC > 0.0),
-    select(0.0, 1.0, tileAlpha > 0.0),
-    1.0
-  );
-
   let uv = input.v_textureCoordinates;
 
-  // Compute shadow factor early — textureSampleCompare must be called
-  // from uniform control flow (before any non-uniform discard/return).
-  // camera.enableLighting is a uniform value so this branch is uniform.
-  var shadowFactor: f32 = 1.0;
-  if (camera.enableLighting > 0.5) {
-    shadowFactor = globeComputeShadowFactor(input.v_positionEC);
-  }
-
-  // ─── Clipping planes discard ───
-  if (globeClipByPlanes(input.v_positionMC)) { discard; }
-
-  // ─── Clipping edge highlight ───
-  if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
-    let clipCount = effects.clippingPlaneCount;
-    let texW = f32(clipCount);
-    var minClipDist: f32 = 1e10;
-    for (var ci: u32 = 0u; ci < clipCount; ci++) {
-      let texelU = (f32(ci) + 0.5) / texW;
-      let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
-                                         vec2<f32>(texelU, 0.5), 0.0);
-      let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
-      minClipDist = min(minClipDist, dist);
-    }
-    if (minClipDist < effects.clippingEdgeWidth) {
-      return effects.clippingEdgeColor;
-    }
-  }
-
-  // ─── Cartographic limit rectangle clipping ───
-  if (tile.flags.y > 0.5) {
-    let clampRect = tile.cartographicLimitRect;
-    if (uv.x < clampRect.x || uv.x > clampRect.z ||
-        uv.y < clampRect.y || uv.y > clampRect.w) {
-      discard;
-    }
-  }
-
-  let isSubsequentPass = tile.flags.w > 0.5;
-
-  // Base color: dark for first pass (night side will be very dark),
-  // transparent for subsequent multi-pass imagery
-  var color: vec3<f32>;
-  var alpha: f32;
-  if (isSubsequentPass) {
-    color = vec3<f32>(0.0, 0.0, 0.0);
-    alpha = 0.0;
-  } else {
-    color = vec3<f32>(0.04, 0.04, 0.06);
-    alpha = 1.0;
-  }
-
-  let normal = normalize(input.v_normalEC);
-  let sunDir = normalize(camera.sunDirectionEC);
-
-  // Day/night fade factor: 0 = night, 1 = day
-  let dayFade = computeDayNightFade(normal, sunDir);
-  // Inverse for night-side effects
-  let nightBlend = 1.0 - dayFade;
-
-  // ─── Composite imagery layers ───
-  let countF = tile.layerCount;
-  let count = u32(countF);
-
-  // DEBUG: output magenta if count >= 1, yellow if count >= 2, cyan if countF > 0.0
-  // Remove this block once imagery is rendering
-  if (countF > 0.5) {
-    return vec4<f32>(1.0, 1.0, 0.0, 1.0); // yellow = countF > 0.5
-  }
-  if (countF > 0.0) {
-    return vec4<f32>(0.0, 1.0, 1.0, 1.0); // cyan = tiny float value
-  }
-  // If we reach here, countF = 0.0 → blue base color will show
-
+  // ═══════════════════════════════════════════════════════════════════════
+  // DEBUG MODE: Simplified imagery-only compositing
+  // Reason: Isolating terrain imagery rendering from effects (shadows,
+  // clipping, fog, ocean) to debug tile geometry distortion at higher LODs.
+  // The full shader code is preserved below (commented out) and should be
+  // restored once the vertex stride/UV mapping issues are resolved.
+  // See: migration_doc/WEBGPU_DEBUGGING_LOG.md Session 13
+  // ═══════════════════════════════════════════════════════════════════════
+  let count = u32(tile.layerCount);
+  var color = vec3<f32>(0.04, 0.04, 0.06);
   if (count >= 1) {
     let layer0 = tile.layers[0];
-    let tex0 = sampleImagery(dayTexture0, texSampler, uv, layer0);
-    let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
-    let dna0 = tile.dayNightAlpha0;
-    let effectiveAlpha0 = layer0.alpha * tex0.a * mix(dna0.y, dna0.x, dayFade);
-    color = mix(color, adj0, effectiveAlpha0);
-    alpha = max(alpha, effectiveAlpha0);
-    // Night lights emission for this layer
-    color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
+    let sUV0 = uv * layer0.translationAndScale.zw + layer0.translationAndScale.xy;
+    let cUV0 = clamp(sUV0, layer0.texCoordsRect.xy, layer0.texCoordsRect.zw);
+    let tex0 = textureSampleLevel(dayTexture0, texSampler, cUV0, 0.0);
+    color = mix(color, tex0.rgb, layer0.alpha * tex0.a);
   }
   if (count >= 2) {
     let layer1 = tile.layers[1];
-    let tex1 = sampleImagery(dayTexture1, texSampler, uv, layer1);
-    let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
-    let dna1 = tile.dayNightAlpha1;
-    let effectiveAlpha1 = layer1.alpha * tex1.a * mix(dna1.y, dna1.x, dayFade);
-    color = mix(color, adj1, effectiveAlpha1);
-    alpha = max(alpha, effectiveAlpha1);
-    color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
+    let sUV1 = uv * layer1.translationAndScale.zw + layer1.translationAndScale.xy;
+    let cUV1 = clamp(sUV1, layer1.texCoordsRect.xy, layer1.texCoordsRect.zw);
+    let tex1 = textureSampleLevel(dayTexture1, texSampler, cUV1, 0.0);
+    color = mix(color, tex1.rgb, layer1.alpha * tex1.a);
   }
-  if (count >= 3) {
-    let layer2 = tile.layers[2];
-    let tex2 = sampleImagery(dayTexture2, texSampler, uv, layer2);
-    let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
-    let dna2 = tile.dayNightAlpha2;
-    let effectiveAlpha2 = layer2.alpha * tex2.a * mix(dna2.y, dna2.x, dayFade);
-    color = mix(color, adj2, effectiveAlpha2);
-    alpha = max(alpha, effectiveAlpha2);
-    color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
-  }
-  if (count >= 4) {
-    let layer3 = tile.layers[3];
-    let tex3 = sampleImagery(dayTexture3, texSampler, uv, layer3);
-    let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
-    let dna3 = tile.dayNightAlpha3;
-    let effectiveAlpha3 = layer3.alpha * tex3.a * mix(dna3.y, dna3.x, dayFade);
-    color = mix(color, adj3, effectiveAlpha3);
-    alpha = max(alpha, effectiveAlpha3);
-    color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
-  }
+  return vec4<f32>(color, 1.0);
 
-  // Subsequent passes only apply imagery — skip all effects
-  if (isSubsequentPass) {
-    return vec4<f32>(color, alpha);
-  }
+  // ═══════════════════════════════════════════════════════════════════════
+  // FULL SHADER CODE (temporarily disabled — restore when geometry is fixed)
+  // ═══════════════════════════════════════════════════════════════════════
 
-  // ─── Enhanced Water mask + ocean rendering ───
-  if (tile.flags.x > 0.5) {
-    let wmTS = tile.waterMaskTranslationAndScale;
-    let waterUV = uv * wmTS.zw + wmTS.xy;
-    let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
-
-    if (waterMask > 0.01) {
-      color = computeEnhancedOcean(
-        color, input.v_positionEC, normal, sunDir,
-        uv, waterMask, dayFade, input.v_distance
-      );
-    }
-  }
-
-  // ─── Lambert diffuse lighting + shadow receive ───
-  if (camera.enableLighting > 0.5) {
-    let NdotL = max(dot(normal, sunDir), 0.0);
-    let ambient = 0.12;
-    // shadowFactor was pre-computed at the top of fragmentMain
-    // (textureSampleCompare requires uniform control flow)
-    // Day side: normal Lambert diffuse with shadow
-    let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
-    // Night side: very dark, only ambient light (moonlight approximation)
-    let nightAmbient = 0.025;
-    let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
-    color = color * diffuse;
-
-    // Terminator glow: warm atmosphere color right at the day-night boundary
-    color += computeTerminatorGlow(normal, sunDir);
-  }
-
-  // ─── Fog blending ───
-  let fogDensity = tile.fogDensity;
-  if (fogDensity > 0.0) {
-    let fogAmount = computeFog(input.v_distance, fogDensity);
-
-    let atmosphereColor = computeAtmosphereColor(
-      input.v_positionEC, normal, sunDir,
-    );
-
-    // Night-side fog is darker — don't brighten with atmosphere on dark side
-    let nightFogDimming = mix(0.05, 1.0, dayFade);
-    let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
-    color = mix(color, fogColor, fogAmount);
-
-    if (fogAmount > 0.98) {
-      alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
-    }
-  }
-
-  return vec4<f32>(color, alpha);
+  // // Compute shadow factor early — textureSampleCompare must be called
+  // // from uniform control flow (before any non-uniform discard/return).
+  // // camera.enableLighting is a uniform value so this branch is uniform.
+  // var shadowFactor: f32 = 1.0;
+  // if (camera.enableLighting > 0.5) {
+  //   shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+  // }
+  //
+  // // ─── Clipping planes discard ───
+  // if (globeClipByPlanes(input.v_positionMC)) { discard; }
+  //
+  // // ─── Clipping edge highlight ───
+  // if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
+  //   let clipCount = effects.clippingPlaneCount;
+  //   let texW = f32(clipCount);
+  //   var minClipDist: f32 = 1e10;
+  //   for (var ci: u32 = 0u; ci < clipCount; ci++) {
+  //     let texelU = (f32(ci) + 0.5) / texW;
+  //     let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
+  //                                        vec2<f32>(texelU, 0.5), 0.0);
+  //     let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
+  //     minClipDist = min(minClipDist, dist);
+  //   }
+  //   if (minClipDist < effects.clippingEdgeWidth) {
+  //     return effects.clippingEdgeColor;
+  //   }
+  // }
+  //
+  // // ─── Cartographic limit rectangle clipping ───
+  // if (tile.flags.y > 0.5) {
+  //   let clampRect = tile.cartographicLimitRect;
+  //   if (uv.x < clampRect.x || uv.x > clampRect.z ||
+  //       uv.y < clampRect.y || uv.y > clampRect.w) {
+  //     discard;
+  //   }
+  // }
+  //
+  // let isSubsequentPass = tile.flags.w > 0.5;
+  //
+  // // Base color: dark for first pass (night side will be very dark),
+  // // transparent for subsequent multi-pass imagery
+  // var color: vec3<f32>;
+  // var alpha: f32;
+  // if (isSubsequentPass) {
+  //   color = vec3<f32>(0.0, 0.0, 0.0);
+  //   alpha = 0.0;
+  // } else {
+  //   color = vec3<f32>(0.04, 0.04, 0.06);
+  //   alpha = 1.0;
+  // }
+  //
+  // let normal = normalize(input.v_normalEC);
+  // let sunDir = normalize(camera.sunDirectionEC);
+  //
+  // // Day/night fade factor: 0 = night, 1 = day
+  // let dayFade = computeDayNightFade(normal, sunDir);
+  // // Inverse for night-side effects
+  // let nightBlend = 1.0 - dayFade;
+  //
+  // // ─── Composite imagery layers ───
+  // let count = u32(tile.layerCount);
+  //
+  // if (count >= 1) {
+  //   let layer0 = tile.layers[0];
+  //   let tex0 = sampleImagery(dayTexture0, texSampler, uv, layer0);
+  //   let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
+  //   let dna0 = tile.dayNightAlpha0;
+  //   let effectiveAlpha0 = layer0.alpha * tex0.a * mix(dna0.y, dna0.x, dayFade);
+  //   color = mix(color, adj0, effectiveAlpha0);
+  //   alpha = max(alpha, effectiveAlpha0);
+  //   // Night lights emission for this layer
+  //   color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
+  // }
+  // if (count >= 2) {
+  //   let layer1 = tile.layers[1];
+  //   let tex1 = sampleImagery(dayTexture1, texSampler, uv, layer1);
+  //   let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
+  //   let dna1 = tile.dayNightAlpha1;
+  //   let effectiveAlpha1 = layer1.alpha * tex1.a * mix(dna1.y, dna1.x, dayFade);
+  //   color = mix(color, adj1, effectiveAlpha1);
+  //   alpha = max(alpha, effectiveAlpha1);
+  //   color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
+  // }
+  // if (count >= 3) {
+  //   let layer2 = tile.layers[2];
+  //   let tex2 = sampleImagery(dayTexture2, texSampler, uv, layer2);
+  //   let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
+  //   let dna2 = tile.dayNightAlpha2;
+  //   let effectiveAlpha2 = layer2.alpha * tex2.a * mix(dna2.y, dna2.x, dayFade);
+  //   color = mix(color, adj2, effectiveAlpha2);
+  //   alpha = max(alpha, effectiveAlpha2);
+  //   color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
+  // }
+  // if (count >= 4) {
+  //   let layer3 = tile.layers[3];
+  //   let tex3 = sampleImagery(dayTexture3, texSampler, uv, layer3);
+  //   let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
+  //   let dna3 = tile.dayNightAlpha3;
+  //   let effectiveAlpha3 = layer3.alpha * tex3.a * mix(dna3.y, dna3.x, dayFade);
+  //   color = mix(color, adj3, effectiveAlpha3);
+  //   alpha = max(alpha, effectiveAlpha3);
+  //   color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
+  // }
+  //
+  // // Subsequent passes only apply imagery — skip all effects
+  // if (isSubsequentPass) {
+  //   return vec4<f32>(color, alpha);
+  // }
+  //
+  // // ─── Enhanced Water mask + ocean rendering ───
+  // if (tile.flags.x > 0.5) {
+  //   let wmTS = tile.waterMaskTranslationAndScale;
+  //   let waterUV = uv * wmTS.zw + wmTS.xy;
+  //   let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
+  //
+  //   if (waterMask > 0.01) {
+  //     color = computeEnhancedOcean(
+  //       color, input.v_positionEC, normal, sunDir,
+  //       uv, waterMask, dayFade, input.v_distance
+  //     );
+  //   }
+  // }
+  //
+  // // ─── Lambert diffuse lighting + shadow receive ───
+  // if (camera.enableLighting > 0.5) {
+  //   let NdotL = max(dot(normal, sunDir), 0.0);
+  //   let ambient = 0.12;
+  //   // shadowFactor was pre-computed at the top of fragmentMain
+  //   // Day side: normal Lambert diffuse with shadow
+  //   let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
+  //   // Night side: very dark, only ambient light (moonlight approximation)
+  //   let nightAmbient = 0.025;
+  //   let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
+  //   color = color * diffuse;
+  //
+  //   // Terminator glow: warm atmosphere color right at the day-night boundary
+  //   color += computeTerminatorGlow(normal, sunDir);
+  // }
+  //
+  // // ─── Fog blending ───
+  // let fogDensity = tile.fogDensity;
+  // if (fogDensity > 0.0) {
+  //   let fogAmount = computeFog(input.v_distance, fogDensity);
+  //
+  //   let atmosphereColor = computeAtmosphereColor(
+  //     input.v_positionEC, normal, sunDir,
+  //   );
+  //
+  //   // Night-side fog is darker — don't brighten with atmosphere on dark side
+  //   let nightFogDimming = mix(0.05, 1.0, dayFade);
+  //   let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
+  //   color = mix(color, fogColor, fogAmount);
+  //
+  //   if (fogAmount > 0.98) {
+  //     alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
+  //   }
+  // }
+  //
+  // return vec4<f32>(color, alpha);
 }

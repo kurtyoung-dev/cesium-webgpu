@@ -172,11 +172,9 @@ export function reprojectWebMercatorWebGPU(
 
   // Compute Mercator Y bounds
   const sinSouth = Math.sin(southLatitude);
-  const southMercatorY =
-    0.5 * Math.log((1.0 + sinSouth) / (1.0 - sinSouth));
+  const southMercatorY = 0.5 * Math.log((1.0 + sinSouth) / (1.0 - sinSouth));
   const sinNorth = Math.sin(northLatitude);
-  const northMercatorY =
-    0.5 * Math.log((1.0 + sinNorth) / (1.0 - sinNorth));
+  const northMercatorY = 0.5 * Math.log((1.0 + sinNorth) / (1.0 - sinNorth));
   const oneOverMercHeight = 1.0 / (northMercatorY - southMercatorY);
 
   // Write uniforms
@@ -262,7 +260,11 @@ export function reprojectWebMercatorWebGPU(
  */
 export function reprojectImageSourceWebGPU(
   device: GPUDevice,
-  imageSource: ImageBitmap | HTMLCanvasElement | HTMLImageElement | OffscreenCanvas,
+  imageSource:
+    | ImageBitmap
+    | HTMLCanvasElement
+    | HTMLImageElement
+    | OffscreenCanvas,
   width: number,
   height: number,
   southLatitude: number,
@@ -280,7 +282,7 @@ export function reprojectImageSourceWebGPU(
   });
 
   device.queue.copyExternalImageToTexture(
-    { source: imageSource as ImageBitmap },
+    { source: imageSource as ImageBitmap, flipY: true },
     { texture: srcTexture },
     { width, height },
   );
@@ -305,9 +307,7 @@ export function reprojectImageSourceWebGPU(
  * Initialize the reprojection feature renderer.
  * Called from WebGPUFeatureRenderers registration.
  */
-export function initWebGPUImageryReprojection(
-  _context: any,
-): void {
+export function initWebGPUImageryReprojection(_context: any): void {
   // Cache is lazily initialized on first use — nothing to do here
 }
 

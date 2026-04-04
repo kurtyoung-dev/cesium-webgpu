@@ -574,6 +574,86 @@ Open `http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu` in Chr
    - Sky atmosphere should render from frame 1 (async bug fixed)
    - Terrain imagery should start appearing (TRANSITIONING stuck bug fixed + WebGL stub bypassed)
 
+### Bug 13.4: Placeholder Texture Missing destroy() — CRASH
+- **File:** `packages/engine/Source/Scene/ImageryLayer.js`
+- **Error:** `TypeError: this.texture.destroy is not a function` in `Imagery.releaseReference()`
+- **Root cause:** The WebGPU placeholder texture object (created in Bug 13.3 fix) didn't have a `destroy()` method. When CesiumJS trims terrain tiles and frees imagery resources, it calls `imagery.texture.destroy()` which crashed.
+- **Fix:** Added a no-op `destroy()` method to the placeholder. The real GPUTexture is managed by the globe surface renderer's texture cache.
+
+### Bug 13.5: `layerCount: u32` Not Readable in WGSL — DATA TYPE ISSUE
+- **Root cause:** `tile.layerCount` declared as `u32` in WGSL TileUniforms struct always read as 0 in the shader, despite JavaScript correctly writing the value to byte offset 192 (confirmed via hex diagnostic `0x3F800000` = float 1.0). All other tile uniform data (fog, flags, layers) also read as 0 from the shader when `layerCount` was `u32`.
+- **Investigation:** Extensive testing proved:
+  1. JS writes correct data to GPU buffer (verified via diagnostic logging)
+  2. Bind groups are valid `GPUBindGroup` objects (verified)
+  3. No GPU validation errors (verified via `device.pushErrorScope`)
+  4. Camera uniforms (binding 0, same bind group) work correctly
+  5. Changing `layerCount` from `u32` to `f32` and writing as float FIXED the issue
+- **Diagnosis:** The `u32` type in a uniform struct after an `array<ImageryLayer, 4>` was being read incorrectly. Changing to `f32` resolved it. This may be a Firefox/wgpu WGSL struct layout issue with mixed `u32`/`f32` types after arrays.
+- **Fix:** Changed `layerCount` from `u32` to `f32` in both the WGSL struct and the JS writer (`data[48] = layerCount` instead of `u32[48] = layerCount`). All comparisons updated to use `u32(tile.layerCount)` cast.
+
+### Bug 13.6: `wgslToJavaScript` Not Awaited — CLEAN BUILD FAILURE
+- **File:** `gulpfile.js`
+- **Root cause:** `wgslToJavaScript(minify, ...)` was called without `await`. This async function converts `.wgsl` files to `.js` wrapper modules. Without await, TypeScript compilation started before the wrappers were generated. Worked before because cached `.js` files existed; failed after `gulp clean` deleted them all.
+- **Fix:** Added `await` before `wgslToJavaScript(...)` call.
+
+### Enhancement 13.7: Texture Y-Flip for WebGPU
+- **Files:** `WebGPUGlobeSurfaceRenderer.ts`, `WebGPUImageryReprojection.ts`
+- **Root cause:** WebGL `texImage2D` has (0,0) at bottom-left; WebGPU `copyExternalImageToTexture` has (0,0) at top-left. Without correction, imagery textures are vertically flipped.
+- **Fix:** Added `flipY: true` to both `copyExternalImageToTexture` calls.
+
+### Enhancement 13.8: Build System Improvements
+- **`gulpfile.js`:** Enhanced `clean` task to also remove generated WGSL→JS wrappers (`packages/engine/Source/Shaders/WebGPU/**/*.js`) and package-level build outputs (`packages/engine/Build/**`, `packages/widgets/Build/**`)
+- **`package.json`:** Added `npm run restart` script (clean → build → start)
+
+### Current Status After Session 13
+**What now works:**
+- Imagery compositing pipeline: layerCount reaches shader as f32, textures upload and sample correctly
+- Satellite imagery, labels, and land masses ARE visible on terrain tiles
+- No GPU validation errors
+- WebGL stub logging identifies fallback usage
+
+**What still needs fixing:**
+- Terrain tile geometry distorted at higher LODs (tiles appear as small patches instead of draping on globe)
+- Root cause hypothesis: vertex stride mismatch when `hasWebMercatorT` flag adds an extra float per vertex, shifting attribute offsets
+- Stars/skybox not rendering (environment command injection needs testing)
+- Sky atmosphere positioning (rendered as separate sphere)
+- GlobeTerrain.wgsl fragment shader simplified to debug-only mode (full effects commented out, preserved for restoration)
+
+### Terrain Encoding Analysis (for next session)
+CesiumJS terrain vertex data layout varies by encoding:
+
+**Uncompressed (TerrainQuantization.NONE):**
+| Stride variant | Floats | Bytes | Layout |
+|---|---|---|---|
+| Base | 6 | 24 | pos(3) + height(1) + uv(2) |
+| +webMercatorT | 7 | 28 | pos(3) + height(1) + uv(2) + wmT(1) |
+| +normals | 7 | 28 | pos(3) + height(1) + uv(2) + normal(1) |
+| +webMercatorT +normals | 8 | 32 | pos(3) + height(1) + uv(2) + wmT(1) + normal(1) |
+
+**Key issue:** When `hasWebMercatorT=true`, the encoded normal shifts from float index 6 to 7. Our pipeline reads `textureCoordAndEncodedNormals` as `float32x3` at offset 16 (bytes), expecting `[u, v, normal]`. But with webMercatorT, the data at offset 16 is `[u, v, wmT]` and the normal is at offset 28 — **off by one float**.
+
+### Files Modified (Session 13)
+1. `packages/engine/Source/Scene/Imagery.js` — TRANSITIONING → TEXTURE_LOADED retry
+2. `packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` — Remove async/await
+3. `packages/engine/Source/Scene/ImageryLayer.js` — WebGPU-native texture path + placeholder destroy()
+4. `packages/engine/Source/Renderer/WebGPU/WebGLCompatibilityStub.ts` — Enabled stub logging
+5. `packages/engine/Source/Scene/SceneRenderer.js` — Environment injection diagnostics
+6. `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` — GPU validation error scope
+7. `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js` — Tile execute diagnostics, remove dead code
+8. `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — layerCount u32→f32, simplified fragment (full code preserved commented)
+9. `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — layerCount as f32, flipY texture upload
+10. `packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts` — flipY texture upload
+11. `gulpfile.js` — await wgslToJavaScript, enhanced clean task
+12. `package.json` — npm run restart
+13. `Apps/CesiumViewer/CesiumViewer.js` — eslint curly brace fixes
+14. `.gitignore` — exclude .mcp.json, CLAUDE.md
+15. `migration_doc/WEBGPU_DEBUGGING_LOG.md` — Session 13 documentation
+
+### Build Status
+- `npx gulp build` — Passes (42s)
+- `npx tsc --noEmit` — Zero errors
+- `npm run restart` — Works (clean → build → start)
+
 ---
 
 *This document will be updated as additional bugs are found and fixed.*

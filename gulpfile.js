@@ -95,7 +95,7 @@ export async function build() {
 
   // Convert WGSL shaders to JS modules before bundling
   console.log("Converting WGSL shaders to JavaScript modules...");
-  wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+  await wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
 
   // Compile TypeScript before bundling
   console.log("Compiling TypeScript...");
