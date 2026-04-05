@@ -328,20 +328,33 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
 
 // ─── Imagery sampling with translation/scale ───
 // baseUV: the per-layer UV (geographic or webMercator, selected by caller)
+// Note: WebGL does NOT clamp to texCoordsRect — the sampler's clamp-to-edge
+// mode handles out-of-range values. texCoordsRect is for alpha edge blending
+// (not UV clamping). Previous code incorrectly clamped here, causing vertical
+// stripes when texCoordsRect didn't cover the full [0,1] range.
 fn sampleImagery(tex: texture_2d<f32>, samp: sampler,
                  baseUV: vec2<f32>, layer: ImageryLayer) -> vec4<f32> {
   let uv = baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy;
-  let clampedUV = clamp(uv, layer.texCoordsRect.xy, layer.texCoordsRect.zw);
   // Use textureSampleLevel (explicit LOD=0) instead of textureSample
   // because this function is called after non-uniform discard/return
   // (clipping planes), and textureSample requires uniform control flow.
-  return textureSampleLevel(tex, samp, clampedUV, 0.0);
+  return textureSampleLevel(tex, samp, uv, 0.0);
 }
 
 // Select the correct V coordinate per layer based on useWebMercatorT flag
 fn selectLayerUV(geoUV: vec2<f32>, webMercT: f32, useWebMerc: f32) -> vec2<f32> {
   let v = select(geoUV.y, webMercT, useWebMerc > 0.5);
   return vec2<f32>(geoUV.x, v);
+}
+
+// Compute texCoordsRect alpha mask — matches WebGL sampleAndBlend behavior.
+// Returns 0.0 if tileUV is outside the texCoordsRect, 1.0 if inside.
+// tileUV: the per-layer UV (geographic or webMercator) BEFORE translationAndScale.
+// rect: texCoordsRect (x=west, y=south, z=east, w=north)
+fn texCoordsAlpha(tileUV: vec2<f32>, rect: vec4<f32>) -> f32 {
+  let inMin = step(rect.xy, tileUV);
+  let inMax = step(vec2<f32>(0.0), rect.zw - tileUV);
+  return inMin.x * inMin.y * inMax.x * inMax.y;
 }
 
 fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32) -> vec3<f32> {
@@ -633,12 +646,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // ═══════════════════════════════════════════════════════════════════════
   // DEBUG MODE: Simplified imagery-only compositing
-  // Reason: Isolating terrain imagery rendering from effects (shadows,
-  // clipping, fog, ocean) to debug tile geometry distortion at higher LODs.
-  // The full shader code is preserved below (commented out) and should be
-  // restored once the vertex stride/UV mapping issues are resolved.
-  // See: migration_doc/WEBGPU_DEBUGGING_LOG.md Session 13
+  // UV debug: when tile._pad4 (offset 79) > 0.5, output raw UV as color
+  // to visualize whether texture coordinates interpolate correctly.
+  //   R = geoUV.x (u), G = geoUV.y (v), B = webMercT
+  // See: migration_doc/WEBGPU_DEBUGGING_LOG.md Session 13, 15
   // ═══════════════════════════════════════════════════════════════════════
+
+  // UV debug visualization: Red=U, Green=V, Blue=webMercT
+  if (tile.time > 99990.0) {
+    return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
+  }
+
   let count = u32(tile.layerCount);
   var color = vec3<f32>(0.04, 0.04, 0.06);
   if (count >= 1) {
@@ -646,18 +664,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let v0 = select(geoUV.y, webMercT, useWebMerc.x > 0.5);
     let uv0 = vec2<f32>(geoUV.x, v0);
     let sUV0 = uv0 * layer0.translationAndScale.zw + layer0.translationAndScale.xy;
-    let cUV0 = clamp(sUV0, layer0.texCoordsRect.xy, layer0.texCoordsRect.zw);
-    let tex0 = textureSampleLevel(dayTexture0, texSampler, cUV0, 0.0);
-    color = mix(color, tex0.rgb, layer0.alpha * tex0.a);
+    let tex0 = textureSampleLevel(dayTexture0, texSampler, sUV0, 0.0);
+    // Alpha mask: zero out when tileUV is outside texCoordsRect (WebGL parity)
+    let alpha0 = layer0.alpha * tex0.a * texCoordsAlpha(uv0, layer0.texCoordsRect);
+    color = mix(color, tex0.rgb, alpha0);
   }
   if (count >= 2) {
     let layer1 = tile.layers[1];
     let v1 = select(geoUV.y, webMercT, useWebMerc.y > 0.5);
     let uv1 = vec2<f32>(geoUV.x, v1);
     let sUV1 = uv1 * layer1.translationAndScale.zw + layer1.translationAndScale.xy;
-    let cUV1 = clamp(sUV1, layer1.texCoordsRect.xy, layer1.texCoordsRect.zw);
-    let tex1 = textureSampleLevel(dayTexture1, texSampler, cUV1, 0.0);
-    color = mix(color, tex1.rgb, layer1.alpha * tex1.a);
+    let tex1 = textureSampleLevel(dayTexture1, texSampler, sUV1, 0.0);
+    let alpha1 = layer1.alpha * tex1.a * texCoordsAlpha(uv1, layer1.texCoordsRect);
+    color = mix(color, tex1.rgb, alpha1);
   }
   return vec4<f32>(color, 1.0);
 

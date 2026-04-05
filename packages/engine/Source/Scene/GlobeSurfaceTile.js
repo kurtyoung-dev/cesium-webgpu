@@ -365,7 +365,14 @@ class GlobeSurfaceTile {
     const wasAlreadyRenderable = tile.renderable;
 
     // The terrain is renderable as soon as we have a valid vertex array.
-    tile.renderable = defined(surfaceTile.vertexArray);
+    // For WebGPU: vertex arrays are a WebGL concept and are never created.
+    // Instead, check if the mesh has vertex/index data that the WebGPU
+    // renderer can consume directly.
+    tile.renderable =
+      defined(surfaceTile.vertexArray) ||
+      (defined(surfaceTile.mesh) &&
+        defined(surfaceTile.mesh.vertices) &&
+        defined(surfaceTile.mesh.indices));
 
     // But it's not done loading until it's in the READY state.
     const isTerrainDoneLoading =

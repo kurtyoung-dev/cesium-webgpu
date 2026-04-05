@@ -523,8 +523,8 @@ export class WebGPUGlobeSurfaceRenderer {
     const commands: TileDrawDescriptor[] = [];
 
     // Diagnostic: log encoding + imagery status (DEBUG — remove after fixing)
-    if (this._diagTileCount < 30) {
-      this._diagTileCount++;
+    this._diagTileCount++;
+    if (this._diagTileCount <= 10) {
       const imgLen = imageryCollection ? imageryCollection.length : 0;
       const rect = tile.rectangle;
       const latInfo = rect
@@ -533,15 +533,45 @@ export class WebGPUGlobeSurfaceRenderer {
       console.log(
         `[WebGPU:GlobeTile] tile=${tileKey} lvl=${tile.level} ${latInfo} imagery=${imgLen} ready=${totalLayers} ` +
           `stride=${gpuResources.strideFloats} webMercT=${gpuResources.hasWebMercatorT} ` +
-          `quant=${gpuResources.isQuantized} idxCount=${gpuResources.indexCount}`,
+          `hasNormals=${gpuResources.hasNormals} quant=${gpuResources.isQuantized} idxCount=${gpuResources.indexCount}`,
       );
       if (totalLayers > 0) {
         const sample = readyLayers[0];
         const ri = sample?.readyImagery;
+        const ts = sample?.textureTranslationAndScale;
+        const tcr = sample?.textureCoordinateRectangle;
         console.log(
-          `[WebGPU:GlobeTile]   sample: hasImage=${!!ri?.image} hasWebGPUTex=${!!ri?._webgpuReprojectedTexture} ` +
+          `[WebGPU:GlobeTile]   imagery: hasImage=${!!ri?.image} hasWebGPUTex=${!!ri?._webgpuReprojectedTexture} ` +
             `useWebMercT=${sample?.useWebMercatorT} state=${ri?.state}`,
         );
+        console.log(
+          `[WebGPU:GlobeTile]   transScale: (${ts?.x?.toFixed(4)}, ${ts?.y?.toFixed(4)}, ${ts?.z?.toFixed(4)}, ${ts?.w?.toFixed(4)})` +
+            ` texCoordsRect: (${tcr?.x?.toFixed(4)}, ${tcr?.y?.toFixed(4)}, ${tcr?.z?.toFixed(4)}, ${tcr?.w?.toFixed(4)})`,
+        );
+        // Log texture dimensions
+        const gpuTex = ri?._webgpuReprojectedTexture;
+        if (gpuTex) {
+          console.log(
+            `[WebGPU:GlobeTile]   texture: ${gpuTex.width}x${gpuTex.height} fmt=${gpuTex.format}`,
+          );
+        }
+        // Log a few vertex UV values from the mesh for cross-check
+        const verts = mesh.vertices;
+        const stride = gpuResources.strideFloats;
+        if (verts && stride >= 6 && !gpuResources.isQuantized) {
+          const v0u = verts[4],
+            v0v = verts[5];
+          const midIdx = Math.floor(verts.length / stride / 2) * stride;
+          const vMu = verts[midIdx + 4],
+            vMv = verts[midIdx + 5];
+          const lastIdx = (Math.floor(verts.length / stride) - 1) * stride;
+          const vLu = verts[lastIdx + 4],
+            vLv = verts[lastIdx + 5];
+          console.log(
+            `[WebGPU:GlobeTile]   vertUV: first=(${v0u?.toFixed(4)}, ${v0v?.toFixed(4)}) ` +
+              `mid=(${vMu?.toFixed(4)}, ${vMv?.toFixed(4)}) last=(${vLu?.toFixed(4)}, ${vLv?.toFixed(4)})`,
+          );
+        }
       } else {
         console.warn(
           `[WebGPU:GlobeTile]   NO READY IMAGERY for tile ${tileKey} ${latInfo}`,
@@ -737,12 +767,51 @@ export class WebGPUGlobeSurfaceRenderer {
         if (indices[k] > maxIdx) maxIdx = indices[k];
       }
       if (maxIdx >= vertexCount) {
-        // Indices reference vertices beyond the buffer — clamp to only
-        // the indices that are within bounds. This happens with fill tiles
-        // or tiles whose encoding stride doesn't match the actual data layout.
+        // Stride mismatch — encoding stride doesn't match actual vertex data.
+        // Try to infer the correct stride from data length and max index.
+        const actualVertCount = maxIdx + 1;
+        const inferredStride = Math.floor(vertices.length / actualVertCount);
+        console.warn(
+          `[WebGPU:GlobeTile] STRIDE MISMATCH for ${tileKey}: encoding.stride=${stride} ` +
+            `vertFloats=${vertices.length} maxIdx=${maxIdx} computedVerts=${vertexCount} ` +
+            `inferredStride=${inferredStride} quant=${isQuantized} webMercT=${hasWebMercatorT} ` +
+            `normals=${hasNormals}`,
+        );
+
+        // If we can infer a valid stride, use it instead of the encoding's stride
+        if (
+          inferredStride >= 3 &&
+          inferredStride <= 8 &&
+          vertices.length >= actualVertCount * inferredStride
+        ) {
+          const correctedStrideBytes = inferredStride * 4;
+          const correctedVertCount = Math.floor(vbSize / correctedStrideBytes);
+          if (maxIdx < correctedVertCount) {
+            console.log(
+              `[WebGPU:GlobeTile]   Using inferred stride=${inferredStride} (${correctedVertCount} verts)`,
+            );
+            // Update the resources with the corrected stride
+            const resources: TileGPUResources = {
+              vertexBuffer,
+              indexBuffer,
+              indexCount: indices.length,
+              indexFormat,
+              strideFloats: inferredStride,
+              strideBytes: correctedStrideBytes,
+              hasNormals:
+                inferredStride >= 7 || (isQuantized && inferredStride >= 4),
+              hasWebMercatorT,
+              isQuantized,
+              meshGeneration: generation,
+            };
+            this._tileBufferCache.set(tileKey, resources);
+            return resources;
+          }
+        }
+
+        // Fallback: clamp to safe indices
         let safeCount = 0;
         for (let k = 0; k < indices.length; k += 3) {
-          // Check entire triangle (3 consecutive indices)
           if (
             k + 2 < indices.length &&
             indices[k] < vertexCount &&

@@ -17,17 +17,20 @@
 8. [Session 7: Build System Fixes](#session-7-build-system-fixes)
 9. [Active Issues: Stars & Terrain Not Rendering](#active-issues-stars--terrain-not-rendering)
 10. [Session 14: WebMercatorT Shader Support & UV Stretching Fix](#session-14-webmercatort-shader-support--uv-stretching-fix)
-11. [Files Modified Summary](#files-modified-summary)
+11. [Session 15: LOD Unlock & TexCoordsRect Alpha Masking](#session-15-lod-unlock--texcoordsrect-alpha-masking)
+12. [Files Modified Summary](#files-modified-summary)
 
 ---
 
 ## Current Status
 
-**What works:** A blue globe renders in the WebGPU viewer. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system now compiles WGSL shaders + TypeScript.  
+**What works:** Globe renders with satellite imagery at multiple LODs in the WebGPU viewer. WebMercatorT texture coordinate support matches WebGL. Higher LOD tiles load and render as camera zooms in. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system now compiles WGSL shaders + TypeScript.  
 **What's being investigated:**
-- 🔴 Terrain imagery NOT displaying — `tile.layerCount` reads as 0 in shader despite JS writing 2 at byte 192 (Session 12 deep-dive)
+
+- ⚠️ Black tears/seams between some tiles (fill tile index buffer stride mismatches)
 - ⚠️ Star map / space imagery (CubeMapPanorama depth-stencil fixed — needs visual verification)
-- ⚠️ `setVertexBuffer` type error (caught by try-catch, non-blocking)
+- ⚠️ 2D mode still renders as sphere
+- ⚠️ Camera jittering at close zoom
 
 ---
 
@@ -350,11 +353,54 @@ The "blue globe" seen by the user likely means:
 | `WebGPUImageryReprojection.ts` | Minor: image dimension fallback (naturalWidth/Height) |
 
 ### Remaining Issues
+
 - Southern hemisphere tiles render white (imagery not loading or texture upload failing)
 - 2D mode still renders as sphere (deeper projection changes needed)
 - Stars/skybox not rendering
 - Camera jittering at close zoom
 - Some UV stretching persists at certain LODs
+
+---
+
+## Session 15: LOD Unlock & TexCoordsRect Alpha Masking
+
+**Date:** April 4, 2026
+
+### Bug 15.1: Vertical Stripes from Incorrect texCoordsRect UV Clamping
+- **Files:** `GlobeTerrain.wgsl`
+- **Root cause:** The WGSL shader clamped texture UV coordinates to `texCoordsRect` (e.g., `clamp(sUV, rect.xy, rect.zw)`). But in the WebGL shader, `texCoordsRect` is used for **alpha masking** (zeroing alpha outside the rect), NOT for UV clamping. When texCoordsRect was `(0, 0.5, 1, 1)` (northern half of level-0 tile), the clamp forced all southern-half fragments to sample from V=0.5 — the same texture row — creating vertical stripes.
+- **Fix:** Removed UV clamping. Added `texCoordsAlpha()` function matching WebGL's `sampleAndBlend` behavior: uses `step()` to zero alpha when tile UV is outside texCoordsRect. The sampler's `clamp-to-edge` handles out-of-range UVs naturally.
+
+### Bug 15.2: Only LOD 0 Tiles Rendered — tile.renderable Gated on vertexArray
+- **File:** `GlobeSurfaceTile.js` line 368
+- **Root cause:** `tile.renderable = defined(surfaceTile.vertexArray)`. In WebGPU mode, WebGL vertex arrays are never created, so `surfaceTile.vertexArray` is always `undefined`. This made ALL tiles non-renderable, preventing the quadtree from subdividing beyond LOD 0. Result: entire globe rendered with just 2 low-resolution level-0 tiles.
+- **Fix:** Added OR condition: `tile.renderable = defined(surfaceTile.vertexArray) || (defined(surfaceTile.mesh) && defined(surfaceTile.mesh.vertices) && defined(surfaceTile.mesh.indices))`. For WebGPU, tiles become renderable when mesh data is available (which the WebGPU renderer reads directly).
+
+### Bug 15.3: Fill Tile Index Buffer Stride Mismatch
+- **File:** `WebGPUGlobeSurfaceRenderer.ts`
+- **Root cause:** Fill tiles (TerrainFillMesh) sometimes have vertex data with a different effective stride than `encoding.stride` reports. The computed vertex count (`vbSize / strideBytes`) is lower than the actual vertex count, causing index buffer out-of-bounds errors ("Index N extends beyond limit M").
+- **Fix:** Added stride inference: when `maxIdx >= vertexCount`, infer the actual stride from `vertices.length / (maxIdx + 1)`. If the inferred stride produces a valid vertex count, use it instead. Also added diagnostic logging for stride mismatches.
+
+### Bug 15.4: Diagnostic Log Counter Never Stopping
+- **File:** `WebGPUGlobeSurfaceRenderer.ts`
+- **Root cause:** `_diagTileCount` was only incremented inside the `if (_diagTileCount < 10)` block. Other code checked `_diagTileCount <= 10` (which was always true since it never exceeded 10), causing perpetual log spam.
+- **Fix:** Moved `_diagTileCount++` outside the conditional block so it increments on every call to `createTileCommands`.
+
+### Files Modified
+
+| File | Changes |
+|---|---|
+| `GlobeTerrain.wgsl` | Removed texCoordsRect UV clamping, added `texCoordsAlpha()` for alpha masking, UV debug mode |
+| `GlobeSurfaceTile.js` | `tile.renderable` check includes mesh data availability (WebGPU LOD unlock) |
+| `WebGPUGlobeSurfaceRenderer.ts` | Stride inference for fill tiles, enhanced diagnostic logging (transScale, texture dims, vertex UVs), fixed counter |
+
+### Remaining Issues
+
+- Black tears/seams between some tiles (fill tile stride mismatches still partially unresolved)
+- WebGL/WebGPU texture Y-flip for some imagery (investigation pending)
+- Stars/skybox not rendering
+- 2D mode still renders as sphere
+- Camera jittering at close zoom
 
 ---
 
@@ -368,10 +414,11 @@ The "blue globe" seen by the user likely means:
 | `SceneRenderer.js` | 1 | Skip renderEnvironment for WebGPU |
 | `WebGPUSceneRenderer.ts` | 1, 3, 4, 6 | ENVIRONMENT pass, stride cache, depth values, depth plane format |
 | `CesiumViewer.js` | 1, 5 | Camera sync for split mode |
-| `GlobeTerrain.wgsl` | 2, 6 | Bind group merge, uniform control flow |
+| `GlobeTerrain.wgsl` | 2, 6, 14, 15 | Bind group merge, uniform control flow, webMercatorT, texCoordsAlpha |
 | `GlobeTerrain.js` | 2 | Generated shader wrapper update |
-| `WebGPUGlobeSurfaceRenderer.ts` | 2, 3, 5, 7 | Alignment, stride cache, index validation, imagery fields |
-| `GlobeSurfaceTileProviderRendering.js` | 2 | ES module import for shader |
+| `WebGPUGlobeSurfaceRenderer.ts` | 2, 3, 5, 7, 14, 15 | Alignment, stride cache, index validation, imagery fields, webMercatorT, stride inference |
+| `GlobeSurfaceTileProviderRendering.js` | 2, 14 | ES module import for shader, removed spammy diagnostics |
+| `GlobeSurfaceTile.js` | 15 | tile.renderable WebGPU mesh data check |
 | `WebGLStubBuffer.ts` | 2, 5 | Buffer regrow, zero guard |
 | `WebGPUContext.ts` | 4, 6 | Clear guards, buffer size guards, readback guard |
 | `GraphicsContext.ts` | 5 | Simplified feature renderer destroy |
