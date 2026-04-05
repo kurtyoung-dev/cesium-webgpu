@@ -724,23 +724,32 @@ export class WebGPUGlobeSurfaceRenderer {
 
     // Validate stride against actual vertex data. Fill tiles (TerrainFillMesh)
     // may have vertex data with a different stride than their encoding reports,
-    // because the encoding is inherited from the parent tile. Compute the actual
-    // stride from the data and max index to prevent GPU out-of-bounds errors.
+    // because the encoding is inherited from the parent tile. The encoding may
+    // say stride=8 (pos+h+uv+webMercT+normal) but the fill mesh only wrote
+    // stride=6 (pos+h+uv). Detect this by finding the smallest valid stride
+    // that accommodates all indices.
     if (indices.length > 0 && vertices.length > 0) {
       let maxIdx = 0;
       for (let k = 0; k < indices.length; k++) {
         if (indices[k] > maxIdx) maxIdx = indices[k];
       }
-      const actualVertCount = maxIdx + 1;
-      const actualStride = Math.floor(vertices.length / actualVertCount);
-      if (actualStride !== stride && actualStride >= 3 && actualStride <= 8) {
-        // Stride mismatch — use the actual stride from the data
-        stride = actualStride;
-        // Recompute flags based on actual stride
-        if (!isQuantized) {
-          // Uncompressed: 6=pos+h+uv, 7=+webMercT or +normal, 8=+both
-          hasWebMercatorT = stride >= 7 && encoding.hasWebMercatorT === true;
-          hasNormals = stride >= 8 || (stride >= 7 && !hasWebMercatorT);
+      const neededVerts = maxIdx + 1;
+      const vertCountAtStride = Math.floor(vertices.length / stride);
+      if (neededVerts > vertCountAtStride) {
+        // Current stride doesn't fit — find smallest stride that works.
+        // Try strides from minimum (3 for quantized, 6 for uncompressed) up.
+        const minStride = isQuantized ? 3 : 6;
+        for (let s = minStride; s <= stride; s++) {
+          if (Math.floor(vertices.length / s) >= neededVerts) {
+            stride = s;
+            // Recompute flags based on corrected stride
+            if (!isQuantized) {
+              hasWebMercatorT =
+                stride >= 7 && encoding.hasWebMercatorT === true;
+              hasNormals = stride >= 8 || (stride >= 7 && !hasWebMercatorT);
+            }
+            break;
+          }
         }
       }
     }

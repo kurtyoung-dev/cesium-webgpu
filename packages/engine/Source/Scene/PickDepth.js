@@ -138,12 +138,14 @@ class PickDepth {
 
     // Async path: kick off GPU readback. Returns a Promise when async
     // depth texture is available, or undefined if no async texture exists.
-    // Callers should use .then() to handle the result without blocking.
+    // Only start a new readback if no previous one is in-flight — never
+    // overlap mapAsync calls (causes "buffer is still mapped" errors).
     if (defined(this._asyncDepthTexture) && !this._pendingReadback) {
       return this._readDepthAsync(context, x, y);
     }
-    // Readback in-flight or no async texture — return cached value
-    return this._lastDepthValue;
+    // Readback in-flight or no async texture — return undefined so callers
+    // fall back to ray pick rather than using a stale cached value
+    return undefined;
   }
 
   /**
@@ -179,18 +181,18 @@ class PickDepth {
     const px = Math.max(0, Math.min(Math.floor(x), texWidth - 1));
     const py = Math.max(0, Math.min(Math.floor(y), texHeight - 1));
 
-    // Ensure staging buffer exists (reuse across frames)
-    if (!this._depthStagingBuffer) {
-      this._depthStagingBuffer = device.createBuffer({
-        label: "PickDepth staging",
-        size: STAGING_BUFFER_SIZE,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      });
-    }
-
     this._pendingReadback = true;
 
     try {
+      // Create a fresh staging buffer each readback to avoid "still mapped"
+      // errors from overlapping mapAsync calls. The old buffer is destroyed
+      // after unmap to prevent GPU memory leaks.
+      const stagingBuffer = device.createBuffer({
+        label: "Pick staging buffer",
+        size: STAGING_BUFFER_SIZE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+
       const encoder = device.createCommandEncoder({
         label: "PickDepth readback",
       });
@@ -200,7 +202,7 @@ class PickDepth {
           origin: { x: px, y: py, z: 0 },
         },
         {
-          buffer: this._depthStagingBuffer,
+          buffer: stagingBuffer,
           bytesPerRow: STAGING_BUFFER_SIZE,
           rowsPerImage: 1,
         },
@@ -208,20 +210,19 @@ class PickDepth {
       );
       device.queue.submit([encoder.finish()]);
 
-      await this._depthStagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
-      const data = new Uint8Array(
-        this._depthStagingBuffer.getMappedRange(0, 4),
-      );
+      await stagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
+      const data = new Uint8Array(stagingBuffer.getMappedRange(0, 4));
       const depth = unpackDepthFromRGBA(data[0], data[1], data[2], data[3]);
-      this._depthStagingBuffer.unmap();
+      stagingBuffer.unmap();
+      stagingBuffer.destroy();
 
       this._lastDepthValue = depth;
       this._pendingReadback = false;
       return depth;
     } catch (e) {
-      // Buffer may have been destroyed or device lost — keep last cached value
+      // Buffer may have been destroyed or device lost
       this._pendingReadback = false;
-      return this._lastDepthValue;
+      return undefined;
     }
   }
 
