@@ -57,6 +57,24 @@ export function pickPosition(controller, mousePosition, result) {
     ? Cartesian3.distance(rayIntersection, camera.positionWC)
     : Number.POSITIVE_INFINITY;
 
+  // When both methods return valid positions, check consistency.
+  // The ray-globe intersection is always current-frame accurate.
+  // The depth pick may be stale (async, 1-frame-old) and can disagree
+  // significantly after camera movement, causing jitter. If the two
+  // disagree by more than 25%, prefer the ray intersection.
+  if (
+    defined(depthIntersection) &&
+    defined(rayIntersection) &&
+    pickDistance < rayDistance
+  ) {
+    const disagreement = Math.abs(pickDistance - rayDistance);
+    const threshold = rayDistance * 0.25;
+    if (disagreement > threshold) {
+      return Cartesian3.clone(rayIntersection, result);
+    }
+    return Cartesian3.clone(depthIntersection, result);
+  }
+
   if (pickDistance < rayDistance) {
     return Cartesian3.clone(depthIntersection, result);
   }

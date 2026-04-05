@@ -142,7 +142,15 @@ class PickDepth {
     if (!this._pendingReadback && defined(this._asyncDepthTexture)) {
       this._readDepthAsync(context, x, y);
     }
-    return this._lastDepthValue;
+
+    // Guard: reject extreme cached depth values that would produce
+    // invalid world positions (near plane = 0.0, far plane = 1.0,
+    // or values very close to either bound).
+    const cached = this._lastDepthValue;
+    if (!defined(cached) || cached <= 1e-6 || cached >= 1.0 - 1e-6) {
+      return undefined;
+    }
+    return cached;
   }
 
   /**
