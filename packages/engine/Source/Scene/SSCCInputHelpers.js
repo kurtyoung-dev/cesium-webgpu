@@ -24,21 +24,124 @@ const pickGlobeScratchRay = new Ray();
 const scratchDepthIntersection = new Cartesian3();
 const scratchRayIntersection = new Cartesian3();
 
+// Resolve the best pick position from depth and ray results.
+// Rejects undefined, NaN, or zero-distance results.
+function _resolvePickResult(
+  depthIntersection,
+  rayIntersection,
+  cameraPosition,
+  result,
+) {
+  // Validate depth intersection
+  if (
+    defined(depthIntersection) &&
+    (isNaN(depthIntersection.x) ||
+      isNaN(depthIntersection.y) ||
+      isNaN(depthIntersection.z))
+  ) {
+    depthIntersection = undefined;
+  }
+
+  // Validate ray intersection
+  if (
+    defined(rayIntersection) &&
+    (isNaN(rayIntersection.x) ||
+      isNaN(rayIntersection.y) ||
+      isNaN(rayIntersection.z))
+  ) {
+    rayIntersection = undefined;
+  }
+
+  const pickDistance = defined(depthIntersection)
+    ? Cartesian3.distance(depthIntersection, cameraPosition)
+    : Number.POSITIVE_INFINITY;
+  const rayDistance = defined(rayIntersection)
+    ? Cartesian3.distance(rayIntersection, cameraPosition)
+    : Number.POSITIVE_INFINITY;
+
+  // Reject zero or near-zero distances (camera inside terrain)
+  if (pickDistance < 1.0 && rayDistance < 1.0) {
+    return undefined;
+  }
+
+  if (pickDistance < rayDistance) {
+    return Cartesian3.clone(depthIntersection, result);
+  }
+
+  return defined(rayIntersection)
+    ? Cartesian3.clone(rayIntersection, result)
+    : undefined;
+}
+
+// Pending async pick result — used when depth readback is async.
+// The camera controller checks this via _pendingPickPosition.
+let _pendingPickResult;
+let _pendingPickReady = false;
+
 export function pickPosition(controller, mousePosition, result) {
   const scene = controller._scene;
   const globe = controller._globe;
   const camera = scene.camera;
 
   let depthIntersection;
+  let depthResultOrPromise;
   if (scene.pickPositionSupported) {
-    depthIntersection = scene.pickPositionWorldCoordinates(
+    depthResultOrPromise = scene.pickPositionWorldCoordinates(
       mousePosition,
       scratchDepthIntersection,
     );
   }
 
+  // If the depth result is a Promise (async readback), chain the ray pick
+  // onto the .then() so both operate at the same temporal point.
+  if (
+    defined(depthResultOrPromise) &&
+    typeof depthResultOrPromise.then === "function"
+  ) {
+    // Fire-and-forget: when depth resolves, compute final pick position
+    depthResultOrPromise.then((depthResult) => {
+      if (!defined(globe)) {
+        _pendingPickResult = depthResult;
+        _pendingPickReady = true;
+        return;
+      }
+      const cullBackFaces = !controller._cameraUnderground;
+      const ray = camera.getPickRay(mousePosition, pickGlobeScratchRay);
+      const rayIntersection = globe.pickWorldCoordinates(
+        ray,
+        scene,
+        cullBackFaces,
+        scratchRayIntersection,
+      );
+      _pendingPickResult = _resolvePickResult(
+        depthResult,
+        rayIntersection,
+        camera.positionWC,
+        result,
+      );
+      _pendingPickReady = true;
+    });
+
+    // Return the last resolved async result if available, otherwise
+    // fall through to synchronous ray-only pick as immediate fallback.
+    if (_pendingPickReady) {
+      _pendingPickReady = false;
+      const pending = _pendingPickResult;
+      _pendingPickResult = undefined;
+      if (defined(pending)) {
+        return Cartesian3.clone(pending, result);
+      }
+    }
+    // Fall through to ray-only pick below
+    depthIntersection = undefined;
+  } else {
+    depthIntersection = depthResultOrPromise;
+  }
+
   if (!defined(globe)) {
-    return Cartesian3.clone(depthIntersection, result);
+    return defined(depthIntersection)
+      ? Cartesian3.clone(depthIntersection, result)
+      : undefined;
   }
 
   const cullBackFaces = !controller._cameraUnderground;
@@ -50,41 +153,12 @@ export function pickPosition(controller, mousePosition, result) {
     scratchRayIntersection,
   );
 
-  const pickDistance = defined(depthIntersection)
-    ? Cartesian3.distance(depthIntersection, camera.positionWC)
-    : Number.POSITIVE_INFINITY;
-  const rayDistance = defined(rayIntersection)
-    ? Cartesian3.distance(rayIntersection, camera.positionWC)
-    : Number.POSITIVE_INFINITY;
-
-  // When both methods return valid positions, check consistency.
-  // The ray-globe intersection is always current-frame accurate.
-  // The depth pick may be stale (async, 1-frame-old) and can disagree
-  // significantly after camera movement, causing jitter. If the two
-  // disagree by more than 25%, prefer the ray intersection.
-  if (
-    defined(depthIntersection) &&
-    defined(rayIntersection) &&
-    pickDistance < rayDistance
-  ) {
-    const disagreement = Math.abs(pickDistance - rayDistance);
-    const threshold = rayDistance * 0.25;
-    if (disagreement > threshold) {
-      // DEBUG — remove after camera issues are resolved
-      console.warn(
-        `[PickPosition] depth/ray disagreement: depth=${pickDistance.toFixed(0)}m ` +
-          `ray=${rayDistance.toFixed(0)}m diff=${((disagreement / rayDistance) * 100).toFixed(1)}% → using ray`,
-      );
-      return Cartesian3.clone(rayIntersection, result);
-    }
-    return Cartesian3.clone(depthIntersection, result);
-  }
-
-  if (pickDistance < rayDistance) {
-    return Cartesian3.clone(depthIntersection, result);
-  }
-
-  return Cartesian3.clone(rayIntersection, result);
+  return _resolvePickResult(
+    depthIntersection,
+    rayIntersection,
+    camera.positionWC,
+    result,
+  );
 }
 
 // ---- Distance helpers ----

@@ -136,21 +136,14 @@ class PickDepth {
       return Cartesian4.dot(packedDepth, packedDepthScale);
     }
 
-    // Async path: fire-and-forget readback for the NEXT sync call.
-    // This fills _lastDepthValue asynchronously so subsequent getDepth()
-    // calls return a valid (1-frame-old) cached depth value.
-    if (!this._pendingReadback && defined(this._asyncDepthTexture)) {
-      this._readDepthAsync(context, x, y);
+    // Async path: kick off GPU readback. Returns a Promise when async
+    // depth texture is available, or undefined if no async texture exists.
+    // Callers should use .then() to handle the result without blocking.
+    if (defined(this._asyncDepthTexture) && !this._pendingReadback) {
+      return this._readDepthAsync(context, x, y);
     }
-
-    // Guard: reject extreme cached depth values that would produce
-    // invalid world positions (near plane = 0.0, far plane = 1.0,
-    // or values very close to either bound).
-    const cached = this._lastDepthValue;
-    if (!defined(cached) || cached <= 1e-6 || cached >= 1.0 - 1e-6) {
-      return undefined;
-    }
-    return cached;
+    // Readback in-flight or no async texture — return cached value
+    return this._lastDepthValue;
   }
 
   /**
@@ -167,17 +160,17 @@ class PickDepth {
   async _readDepthAsync(context, x, y) {
     const packedTexture = this._asyncDepthTexture;
     if (!defined(packedTexture)) {
-      return;
+      return undefined;
     }
 
     const device = context._device;
     if (!device) {
-      return;
+      return undefined;
     }
 
-    // Avoid overlapping readbacks
+    // Avoid overlapping readbacks — return last known value
     if (this._pendingReadback) {
-      return;
+      return this._lastDepthValue;
     }
 
     // Clamp coordinates to texture bounds
@@ -223,10 +216,13 @@ class PickDepth {
       this._depthStagingBuffer.unmap();
 
       this._lastDepthValue = depth;
+      this._pendingReadback = false;
+      return depth;
     } catch (e) {
       // Buffer may have been destroyed or device lost — keep last cached value
+      this._pendingReadback = false;
+      return this._lastDepthValue;
     }
-    this._pendingReadback = false;
   }
 
   executeCopyDepth(context, passState) {

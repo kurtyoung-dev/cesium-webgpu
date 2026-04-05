@@ -313,51 +313,76 @@ class Picking {
 
     const { frustumCommandsList } = defaultView;
     const numFrustums = frustumCommandsList.length;
+
+    // Unproject a depth value into world coordinates using the given frustum
+    const unprojectDepth = (depthValue, frustumIndex) => {
+      if (!defined(depthValue) || depthValue <= 0.0 || depthValue >= 1.0) {
+        return undefined;
+      }
+      const renderedFrustum = frustumCommandsList[frustumIndex];
+      let height2D;
+      if (scene.mode === SceneMode.SCENE2D) {
+        height2D = camera.position.z;
+        camera.position.z = height2D - renderedFrustum.near + 1.0;
+        frustum.far = Math.max(1.0, renderedFrustum.far - renderedFrustum.near);
+        frustum.near = 1.0;
+        uniformState.update(frameState);
+        uniformState.updateFrustum(frustum);
+      } else {
+        frustum.near =
+          renderedFrustum.near *
+          (frustumIndex !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
+        frustum.far = renderedFrustum.far;
+        uniformState.updateFrustum(frustum);
+      }
+
+      const worldPos = SceneTransforms.drawingBufferToWorldCoordinates(
+        scene,
+        drawingBufferPosition,
+        depthValue,
+        result,
+      );
+
+      if (scene.mode === SceneMode.SCENE2D) {
+        camera.position.z = height2D;
+        uniformState.update(frameState);
+      }
+
+      // Guard against NaN results
+      if (
+        defined(worldPos) &&
+        !isNaN(worldPos.x) &&
+        !isNaN(worldPos.y) &&
+        !isNaN(worldPos.z)
+      ) {
+        this._pickPositionCache[cacheKey] = Cartesian3.clone(worldPos);
+        return worldPos;
+      }
+      return undefined;
+    };
+
     for (let i = 0; i < numFrustums; ++i) {
       const pickDepth = this.getPickDepth(scene, i);
-      const depth = pickDepth.getDepth(
+      const depthOrPromise = pickDepth.getDepth(
         context,
         drawingBufferPosition.x,
         drawingBufferPosition.y,
       );
-      if (!defined(depth)) {
-        continue;
-      }
-      if (depth > 0.0 && depth < 1.0) {
-        const renderedFrustum = frustumCommandsList[i];
-        let height2D;
-        if (scene.mode === SceneMode.SCENE2D) {
-          height2D = camera.position.z;
-          camera.position.z = height2D - renderedFrustum.near + 1.0;
-          frustum.far = Math.max(
-            1.0,
-            renderedFrustum.far - renderedFrustum.near,
-          );
-          frustum.near = 1.0;
-          uniformState.update(frameState);
-          uniformState.updateFrustum(frustum);
-        } else {
-          frustum.near =
-            renderedFrustum.near *
-            (i !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
-          frustum.far = renderedFrustum.far;
-          uniformState.updateFrustum(frustum);
-        }
 
-        result = SceneTransforms.drawingBufferToWorldCoordinates(
-          scene,
-          drawingBufferPosition,
-          depth,
-          result,
+      // If getDepth returned a Promise, propagate it so callers can .then()
+      if (
+        defined(depthOrPromise) &&
+        typeof depthOrPromise.then === "function"
+      ) {
+        return depthOrPromise.then((depthValue) =>
+          unprojectDepth(depthValue, i),
         );
+      }
 
-        if (scene.mode === SceneMode.SCENE2D) {
-          camera.position.z = height2D;
-          uniformState.update(frameState);
-        }
-
-        this._pickPositionCache[cacheKey] = Cartesian3.clone(result);
-        return result;
+      // Sync path (WebGL): process immediately
+      const syncResult = unprojectDepth(depthOrPromise, i);
+      if (defined(syncResult)) {
+        return syncResult;
       }
     }
 
