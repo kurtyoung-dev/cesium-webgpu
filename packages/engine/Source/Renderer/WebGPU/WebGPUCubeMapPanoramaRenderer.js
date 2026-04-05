@@ -521,8 +521,10 @@ function loadCubeMap(device, sources, state, panorama) {
         format: "rgba8unorm",
       });
       state.cubeMapLoading = false;
+      console.log(`[WebGPU:SkyBox] Cubemap loaded: ${size}x${size}, 6 faces`);
     })
     .catch((error) => {
+      console.error("[WebGPU:SkyBox] Cubemap load FAILED:", error);
       panorama._hasError = true;
       panorama._error = error;
       state.cubeMapLoading = false;
@@ -548,6 +550,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.sources = panorama.sources;
     state.cubeMapLoading = true;
     state.command = undefined;
+    console.log("[WebGPU:SkyBox] Loading cubemap textures...");
     loadCubeMap(device, state.sources, state, panorama);
   }
 
@@ -570,6 +573,13 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
 
   // --- Wait for cubemap texture to be ready ---
   if (!defined(state.cubeMapView)) {
+    if (!state._waitLogged) {
+      console.log(
+        `[WebGPU:SkyBox] Waiting for cubemap: loading=${state.cubeMapLoading} ` +
+          `hasError=${panorama._hasError} sources=${!!state.sources}`,
+      );
+      state._waitLogged = true;
+    }
     return undefined;
   }
 
@@ -616,6 +626,12 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
 
   // Push to panoramaCommandList every frame — the list is cleared each frame
   panoramaCommandList.push(state.command);
+  if (!state._pushLogged) {
+    console.log(
+      `[WebGPU:SkyBox] Command pushed to panoramaCommandList (len=${panoramaCommandList.length})`,
+    );
+    state._pushLogged = true;
+  }
 }
 
 // Lazily-created box geometry (shared across all instances)

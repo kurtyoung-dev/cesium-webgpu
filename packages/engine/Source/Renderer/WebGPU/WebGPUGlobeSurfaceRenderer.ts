@@ -524,7 +524,7 @@ export class WebGPUGlobeSurfaceRenderer {
 
     // Diagnostic: log encoding + imagery status (DEBUG — remove after fixing)
     this._diagTileCount++;
-    if (this._diagTileCount <= 10) {
+    if (this._diagTileCount <= 4) {
       const imgLen = imageryCollection ? imageryCollection.length : 0;
       const rect = tile.rectangle;
       const latInfo = rect
@@ -715,12 +715,35 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     const encoding = mesh.encoding;
-    const stride = encoding.stride;
-    const hasNormals = encoding.hasVertexNormals === true;
-    const hasWebMercatorT = encoding.hasWebMercatorT === true;
+    let stride = encoding.stride;
+    let hasNormals = encoding.hasVertexNormals === true;
+    let hasWebMercatorT = encoding.hasWebMercatorT === true;
     // TerrainQuantization.BITS12 = 1; NONE = 0
     const isQuantized =
       encoding.quantization !== undefined && encoding.quantization === 1;
+
+    // Validate stride against actual vertex data. Fill tiles (TerrainFillMesh)
+    // may have vertex data with a different stride than their encoding reports,
+    // because the encoding is inherited from the parent tile. Compute the actual
+    // stride from the data and max index to prevent GPU out-of-bounds errors.
+    if (indices.length > 0 && vertices.length > 0) {
+      let maxIdx = 0;
+      for (let k = 0; k < indices.length; k++) {
+        if (indices[k] > maxIdx) maxIdx = indices[k];
+      }
+      const actualVertCount = maxIdx + 1;
+      const actualStride = Math.floor(vertices.length / actualVertCount);
+      if (actualStride !== stride && actualStride >= 3 && actualStride <= 8) {
+        // Stride mismatch — use the actual stride from the data
+        stride = actualStride;
+        // Recompute flags based on actual stride
+        if (!isQuantized) {
+          // Uncompressed: 6=pos+h+uv, 7=+webMercT or +normal, 8=+both
+          hasWebMercatorT = stride >= 7 && encoding.hasWebMercatorT === true;
+          hasNormals = stride >= 8 || (stride >= 7 && !hasWebMercatorT);
+        }
+      }
+    }
 
     // WebGPU requires buffer sizes to be multiples of 4
     const vbSize = Math.ceil(vertices.byteLength / 4) * 4;
@@ -756,12 +779,12 @@ export class WebGPUGlobeSurfaceRenderer {
 
     const strideBytes = stride * 4;
 
-    // Validate: the vertex count (as computed by WebGPU from bufferSize / stride)
-    // must exceed the maximum index value in the index buffer.
+    // Final validation: vertex count must accommodate all indices.
+    // This is a safety net — the upfront stride correction above should
+    // handle most fill tile mismatches, but edge cases can still occur.
     const vertexCount = Math.floor(vbSize / strideBytes);
     let validIndexCount = indices.length;
     if (vertexCount > 0 && indices.length > 0) {
-      // Find the maximum index referenced
       let maxIdx = 0;
       for (let k = 0; k < indices.length; k++) {
         if (indices[k] > maxIdx) maxIdx = indices[k];
@@ -771,14 +794,8 @@ export class WebGPUGlobeSurfaceRenderer {
         // Try to infer the correct stride from data length and max index.
         const actualVertCount = maxIdx + 1;
         const inferredStride = Math.floor(vertices.length / actualVertCount);
-        console.warn(
-          `[WebGPU:GlobeTile] STRIDE MISMATCH for ${tileKey}: encoding.stride=${stride} ` +
-            `vertFloats=${vertices.length} maxIdx=${maxIdx} computedVerts=${vertexCount} ` +
-            `inferredStride=${inferredStride} quant=${isQuantized} webMercT=${hasWebMercatorT} ` +
-            `normals=${hasNormals}`,
-        );
 
-        // If we can infer a valid stride, use it instead of the encoding's stride
+        // If we can infer a valid stride, use it instead
         if (
           inferredStride >= 3 &&
           inferredStride <= 8 &&
@@ -787,10 +804,6 @@ export class WebGPUGlobeSurfaceRenderer {
           const correctedStrideBytes = inferredStride * 4;
           const correctedVertCount = Math.floor(vbSize / correctedStrideBytes);
           if (maxIdx < correctedVertCount) {
-            console.log(
-              `[WebGPU:GlobeTile]   Using inferred stride=${inferredStride} (${correctedVertCount} verts)`,
-            );
-            // Update the resources with the corrected stride
             const resources: TileGPUResources = {
               vertexBuffer,
               indexBuffer,

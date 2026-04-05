@@ -153,12 +153,31 @@ export function pickPosition(controller, mousePosition, result) {
     scratchRayIntersection,
   );
 
-  return _resolvePickResult(
+  const resolved = _resolvePickResult(
     depthIntersection,
     rayIntersection,
     camera.positionWC,
     result,
   );
+
+  // DEBUG — log when pick fails or methods disagree
+  if (!defined(resolved)) {
+    if (!pickPosition._failCount) {
+      pickPosition._failCount = 0;
+    }
+    pickPosition._failCount++;
+    // Log first 5 failures then every 100th
+    if (pickPosition._failCount <= 5 || pickPosition._failCount % 100 === 0) {
+      const camDist = Cartesian3.magnitude(camera.positionWC);
+      console.warn(
+        `[PickPosition] FAIL #${pickPosition._failCount}: depth=${defined(depthIntersection) ? "valid" : "none"} ` +
+          `ray=${defined(rayIntersection) ? "valid" : "none"} ` +
+          `camDist=${camDist.toFixed(0)}m tilesRendered=${globe._surface?._tilesRenderedThisFrame?.size ?? "?"}`,
+      );
+    }
+  }
+
+  return resolved;
 }
 
 // ---- Distance helpers ----
