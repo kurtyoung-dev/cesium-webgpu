@@ -785,7 +785,8 @@ let debugDestroyPrimitive;
 // WebGPU Globe Terrain Rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
-let _webgpuGlobeRenderer = null;
+// Per-device globe renderer cache (supports multi-context / split-screen)
+const _webgpuGlobeRenderers = new WeakMap();
 // Shader code is imported as a bundled ES module — no fetch needed
 import GlobeTerrainShaderCode from "../Shaders/WebGPU/Globe/GlobeTerrain.js";
 const _webgpuGlobeShaderCode = GlobeTerrainShaderCode;
@@ -821,11 +822,14 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     return;
   }
 
+  // Per-device renderer: avoids device mismatch in multi-context (split-screen)
+  let _webgpuGlobeRenderer = _webgpuGlobeRenderers.get(device);
   if (!_webgpuGlobeRenderer || _webgpuGlobeRenderer.isDestroyed()) {
     _webgpuGlobeRenderer = new fr.RendererClass();
     const fmt =
       context.canvasFormat || navigator.gpu.getPreferredCanvasFormat();
     _webgpuGlobeRenderer.initialize(device, _webgpuGlobeShaderCode, fmt);
+    _webgpuGlobeRenderers.set(device, _webgpuGlobeRenderer);
   }
 
   const uniformState = context.uniformState;

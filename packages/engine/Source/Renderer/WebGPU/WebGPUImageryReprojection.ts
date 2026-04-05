@@ -65,6 +65,7 @@ interface ReprojectCache {
 }
 
 let _cache: ReprojectCache | null = null;
+let _cacheDevice: GPUDevice | null = null;
 
 /**
  * Returns the format string for the output texture. WebGPU imagery textures
@@ -75,8 +76,13 @@ function getOutputFormat(): GPUTextureFormat {
 }
 
 function ensureCache(device: GPUDevice): ReprojectCache {
-  if (_cache !== null) {
+  // Invalidate cache if device changed (e.g., split-screen with separate contexts)
+  if (_cache !== null && _cacheDevice === device) {
     return _cache;
+  }
+  if (_cache !== null) {
+    _cache.uniformBuffer.destroy();
+    _cache = null;
   }
 
   const shaderModule = device.createShaderModule({
@@ -146,6 +152,7 @@ function ensureCache(device: GPUDevice): ReprojectCache {
   });
 
   _cache = { pipeline, bindGroupLayout, sampler, uniformBuffer };
+  _cacheDevice = device;
   return _cache;
 }
 
@@ -318,5 +325,6 @@ export function destroyWebGPUImageryReprojectionResources(): void {
   if (_cache !== null) {
     _cache.uniformBuffer.destroy();
     _cache = null;
+    _cacheDevice = null;
   }
 }
