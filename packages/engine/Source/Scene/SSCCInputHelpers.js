@@ -70,6 +70,11 @@ export function pickPosition(controller, mousePosition, result) {
     const disagreement = Math.abs(pickDistance - rayDistance);
     const threshold = rayDistance * 0.25;
     if (disagreement > threshold) {
+      // DEBUG — remove after camera issues are resolved
+      console.warn(
+        `[PickPosition] depth/ray disagreement: depth=${pickDistance.toFixed(0)}m ` +
+          `ray=${rayDistance.toFixed(0)}m diff=${((disagreement / rayDistance) * 100).toFixed(1)}% → using ray`,
+      );
       return Cartesian3.clone(rayIntersection, result);
     }
     return Cartesian3.clone(depthIntersection, result);

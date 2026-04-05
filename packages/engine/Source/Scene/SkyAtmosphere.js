@@ -243,12 +243,20 @@ class SkyAtmosphere {
       return undefined;
     }
 
-    // Backend-specific path — delegate to feature renderer if available
+    // Backend-specific path — delegate to feature renderer if available.
+    // The FR creates/updates the draw command and pushes it to the
+    // commandList. We also return it so the environment state tracks it
+    // for proper injection into the ENVIRONMENT pass.
     const fr = frameState.context.getFeatureRenderer(
       FeatureRendererKey.SKY_ATMOSPHERE,
     );
     if (fr) {
+      const cmdListBefore = frameState.commandList.length;
       fr.update(this, frameState, frameState.commandList);
+      // Return the command the FR just pushed (if any)
+      if (frameState.commandList.length > cmdListBefore) {
+        return frameState.commandList[frameState.commandList.length - 1];
+      }
       return undefined;
     }
 

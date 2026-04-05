@@ -594,7 +594,6 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
       state.bindGroup0,
       state.bindGroup1,
     );
-    state.addToPanoramaCommandList = true;
   }
 
   // --- Update uniforms every frame ---
@@ -615,10 +614,8 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     return state.command;
   }
 
-  if (state.addToPanoramaCommandList) {
-    panoramaCommandList.push(state.command);
-    state.addToPanoramaCommandList = false;
-  }
+  // Push to panoramaCommandList every frame — the list is cleared each frame
+  panoramaCommandList.push(state.command);
 }
 
 // Lazily-created box geometry (shared across all instances)
