@@ -86,9 +86,9 @@ class PickDepth {
     this._textureToCopy = undefined;
     this._copyDepthCommand = undefined;
 
-    // WebGPU async depth state
+    // Async depth readback state (used when sync readPixels is unavailable)
     this._lastDepthValue = undefined;
-    this._webgpuDepthTexture = undefined;
+    this._asyncDepthTexture = undefined;
     this._depthStagingBuffer = null;
     this._pendingReadback = false;
   }
@@ -98,18 +98,21 @@ class PickDepth {
   }
 
   update(context, depthTexture) {
-    // WebGPU path — store reference to the packed-depth RGBA texture
-    if (context.isWebGPU) {
-      this._webgpuDepthTexture = depthTexture;
-      return;
+    // If context provides sync readPixels (WebGL), use framebuffer path.
+    // Otherwise store reference for async readback.
+    if (defined(context.readPixels)) {
+      updateFramebuffers(this, context, depthTexture);
+      updateCopyCommands(this, context, depthTexture);
+    } else {
+      // Async path: store packed-depth RGBA texture for buffer readback
+      this._asyncDepthTexture = depthTexture;
     }
-    updateFramebuffers(this, context, depthTexture);
-    updateCopyCommands(this, context, depthTexture);
   }
 
   /**
-   * Read the depth from the framebuffer at the given coordinate (sync).
-   * Returns `undefined` for WebGPU contexts — use {@link getDepthAsync}.
+   * Read the depth at the given coordinate. Uses sync readPixels when
+   * available (WebGL), otherwise returns a cached async value and kicks
+   * off a background readback for the next frame.
    *
    * @param {Context} context
    * @param {number} x The x-coordinate at which to read the depth.
@@ -118,57 +121,55 @@ class PickDepth {
    * @private
    */
   getDepth(context, x, y) {
-    // WebGPU: sync readback not possible — return cached value or undefined
-    if (context.isWebGPU) {
-      return this._lastDepthValue;
+    // Sync path: framebuffer + readPixels (WebGL)
+    if (defined(this.framebuffer) && defined(context.readPixels)) {
+      const pixels = context.readPixels({
+        x: x,
+        y: y,
+        width: 1,
+        height: 1,
+        framebuffer: this.framebuffer,
+      });
+
+      const packedDepth = Cartesian4.unpack(pixels, 0, scratchPackedDepth);
+      Cartesian4.divideByScalar(packedDepth, 255.0, packedDepth);
+      return Cartesian4.dot(packedDepth, packedDepthScale);
     }
 
-    if (!defined(this.framebuffer)) {
-      return undefined;
+    // Async path: fire-and-forget readback for the NEXT sync call.
+    // This fills _lastDepthValue asynchronously so subsequent getDepth()
+    // calls return a valid (1-frame-old) cached depth value.
+    if (!this._pendingReadback && defined(this._asyncDepthTexture)) {
+      this._readDepthAsync(context, x, y);
     }
-
-    const pixels = context.readPixels({
-      x: x,
-      y: y,
-      width: 1,
-      height: 1,
-      framebuffer: this.framebuffer,
-    });
-
-    const packedDepth = Cartesian4.unpack(pixels, 0, scratchPackedDepth);
-    Cartesian4.divideByScalar(packedDepth, 255.0, packedDepth);
-    return Cartesian4.dot(packedDepth, packedDepthScale);
+    return this._lastDepthValue;
   }
 
   /**
-   * Asynchronously read depth from a WebGPU packed-depth-as-color texture
-   * at the given coordinate. Copies a 1×1 pixel to a staging buffer via
-   * copyTextureToBuffer + mapAsync, then unpacks RGBA → float depth.
+   * Asynchronously read depth from a packed-depth-as-color texture at the
+   * given coordinate. Copies a 1x1 pixel to a staging buffer via
+   * copyTextureToBuffer + mapAsync, then unpacks RGBA -> float depth.
+   * Updates _lastDepthValue for the next sync getDepth() call.
    *
-   * @param {object} context The graphics context (WebGPU).
+   * @param {object} context The graphics context.
    * @param {number} x The x-coordinate at which to read the depth.
    * @param {number} y The y-coordinate at which to read the depth.
-   * @returns {Promise<number|undefined>} The depth value, or undefined if unavailable.
    * @private
    */
-  async getDepthAsync(context, x, y) {
-    if (!context.isWebGPU) {
-      return this.getDepth(context, x, y);
-    }
-
-    const packedTexture = this._webgpuDepthTexture;
+  async _readDepthAsync(context, x, y) {
+    const packedTexture = this._asyncDepthTexture;
     if (!defined(packedTexture)) {
-      return this._lastDepthValue;
+      return;
     }
 
     const device = context._device;
     if (!device) {
-      return this._lastDepthValue;
+      return;
     }
 
     // Avoid overlapping readbacks
     if (this._pendingReadback) {
-      return this._lastDepthValue;
+      return;
     }
 
     // Clamp coordinates to texture bounds
@@ -189,7 +190,6 @@ class PickDepth {
     this._pendingReadback = true;
 
     try {
-      // Copy 1 pixel from the packed-depth-as-color texture to staging buffer
       const encoder = device.createCommandEncoder({
         label: "PickDepth readback",
       });
@@ -200,14 +200,13 @@ class PickDepth {
         },
         {
           buffer: this._depthStagingBuffer,
-          bytesPerRow: STAGING_BUFFER_SIZE, // must be ≥256 for WebGPU alignment
+          bytesPerRow: STAGING_BUFFER_SIZE,
           rowsPerImage: 1,
         },
         { width: 1, height: 1, depthOrArrayLayers: 1 },
       );
       device.queue.submit([encoder.finish()]);
 
-      // Map and read the pixel
       await this._depthStagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
       const data = new Uint8Array(
         this._depthStagingBuffer.getMappedRange(0, 4),
@@ -216,18 +215,14 @@ class PickDepth {
       this._depthStagingBuffer.unmap();
 
       this._lastDepthValue = depth;
-      this._pendingReadback = false;
-      return depth;
     } catch (e) {
-      // Buffer may have been destroyed or device lost
-      this._pendingReadback = false;
-      return this._lastDepthValue;
+      // Buffer may have been destroyed or device lost — keep last cached value
     }
+    this._pendingReadback = false;
   }
 
   executeCopyDepth(context, passState) {
-    // WebGPU doesn't use the GLSL copy command
-    if (context.isWebGPU) {
+    if (!defined(this._copyDepthCommand)) {
       return;
     }
     this._copyDepthCommand.execute(context, passState);

@@ -108,7 +108,18 @@ class GlobeSurfaceTile {
   get renderedMesh() {
     if (defined(this.vertexArray)) {
       return this.mesh;
-    } else if (defined(this.fill)) {
+    }
+    // WebGPU: vertex arrays are a WebGL concept and are never created.
+    // Check if the mesh has vertex/index data directly (same condition as
+    // the tile.renderable fix in processStateMachine).
+    if (
+      defined(this.mesh) &&
+      defined(this.mesh.vertices) &&
+      defined(this.mesh.indices)
+    ) {
+      return this.mesh;
+    }
+    if (defined(this.fill)) {
       return this.fill.mesh;
     }
     return undefined;

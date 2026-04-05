@@ -74,7 +74,11 @@ InstancingPipelineStage.process = function (renderResources, node, frameState) {
     frameState.mode !== SceneMode.SCENE3D &&
     !frameState.scene3DOnly &&
     model._projectTo2D;
-  const keepTypedArray = (model._enablePick && !frameState.context.webgl2) || frameState.context.isWebGPU;
+  // Keep CPU-side typed array when picking requires it (WebGL1 lacks transform
+  // feedback) or when the context doesn't support sync buffer readback.
+  const keepTypedArray =
+    (model._enablePick && !frameState.context.webgl2) ||
+    !defined(frameState.context.readPixels);
 
   const instancingVertexAttributes = [];
 

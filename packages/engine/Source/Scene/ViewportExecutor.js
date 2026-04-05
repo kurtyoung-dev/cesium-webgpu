@@ -388,9 +388,9 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     }
   }
 
-  // Occlusion culling (WebGPU only, opt-in)
+  // Occlusion culling (opt-in, requires compute shader support)
   const occlusionCulling = scheduler.occlusionCulling;
-  if (occlusionCulling.enabled && scene.context.isWebGPU) {
+  if (occlusionCulling.enabled) {
     occlusionCulling.beginFrame(null);
     const occResult = occlusionCulling.testCommands(
       scene.frameState.commandList,

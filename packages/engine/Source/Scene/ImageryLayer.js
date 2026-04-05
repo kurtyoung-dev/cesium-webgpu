@@ -472,22 +472,24 @@ class ImageryLayer {
     }
     //>>includeEnd('debug');
 
-    if (context.isWebGPU) {
-      // WebGPU path: skip WebGL Texture creation entirely. The image source
-      // is preserved and will be uploaded directly to a GPUTexture during
-      // reprojection (reprojectImageSourceWebGPU) or by the globe surface
-      // renderer (_getOrCreateImageryTexture → _uploadImageSource).
-      // We create a lightweight placeholder so texture.width/height work.
+    // When the globe surface renderer handles texture upload directly
+    // (e.g., via feature renderer), skip WebGL Texture creation and
+    // use a lightweight placeholder so texture.width/height work.
+    // The image source is preserved for GPU upload later.
+    const globeSurfaceFR = context.getFeatureRenderer(
+      FeatureRendererKey.GLOBE_SURFACE,
+    );
+    if (globeSurfaceFR) {
       const width = image.width || image.naturalWidth || 256;
       const height = image.height || image.naturalHeight || 256;
       const placeholder = {
         width: width,
         height: height,
-        _isWebGPUPlaceholder: true,
+        _isPlaceholder: true,
         destroy: function () {
           // No-op — placeholder has no GPU resources to release.
-          // The real GPUTexture (imagery._webgpuReprojectedTexture) is
-          // managed by the globe surface renderer's texture cache.
+          // The real texture is managed by the globe surface renderer's
+          // texture cache.
         },
       };
 
@@ -498,7 +500,6 @@ class ImageryLayer {
       } else {
         imagery.texture = placeholder;
       }
-      // Image source is preserved for GPU upload later
       imagery.state = ImageryState.TEXTURE_LOADED;
       return;
     }
@@ -659,9 +660,10 @@ class ImageryLayer {
       if (needGeographicProjection) {
         imagery.texture = texture;
       }
-      // Skip _finalizeReprojectTexture for WebGPU — sampler/mipmap are
-      // handled by the globe surface renderer's own GPUTexture/GPUSampler.
-      if (!context.isWebGPU) {
+      // When the globe surface renderer handles its own texture management,
+      // skip _finalizeReprojectTexture (sampler/mipmap setup) since that is
+      // backend-specific and handled by the renderer's own texture pipeline.
+      if (!context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE)) {
         this._finalizeReprojectTexture(context, texture);
       }
       imagery.state = ImageryState.READY;

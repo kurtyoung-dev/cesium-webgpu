@@ -200,7 +200,9 @@ Object.defineProperties(OcclusionCulling.prototype, {
  * @param {number} height Depth buffer height.
  */
 OcclusionCulling.prototype.initialize = function (context, width, height) {
-  if (!context.isWebGPU) {
+  // Occlusion culling requires GPU compute shaders (Hi-Z pyramid + occlusion test).
+  // Disable if the context doesn't support compute.
+  if (!context.supportsComputeShaders) {
     this.enabled = false;
     return;
   }

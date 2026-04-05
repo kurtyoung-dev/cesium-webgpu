@@ -13,6 +13,7 @@ import OrientedBoundingBox from "../Core/OrientedBoundingBox.js";
 import Queue from "../Core/Queue.js";
 import Rectangle from "../Core/Rectangle.js";
 import TerrainEncoding from "../Core/TerrainEncoding.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import TerrainMesh from "../Core/TerrainMesh.js";
 import TileEdge from "../Core/TileEdge.js";
 import WebMercatorProjection from "../Core/WebMercatorProjection.js";
@@ -1306,8 +1307,9 @@ function createFillMesh(tileProvider, frameState, tile, vertexArraysToDestroy) {
 
   const context = frameState.context;
 
-  // WebGPU reads mesh.vertices/indices directly — skip WebGL vertex array creation
-  if (!context.isWebGPU) {
+  // When the globe surface renderer reads mesh.vertices/indices directly
+  // (via feature renderer), skip WebGL vertex array creation.
+  if (!context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE)) {
     fill._destroyVertexArray(vertexArraysToDestroy);
     fill.vertexArray = GlobeSurfaceTile._createVertexArrayForMesh(
       context,
