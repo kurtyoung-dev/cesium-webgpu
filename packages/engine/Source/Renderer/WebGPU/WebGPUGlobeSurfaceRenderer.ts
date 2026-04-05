@@ -736,20 +736,27 @@ export class WebGPUGlobeSurfaceRenderer {
       const neededVerts = maxIdx + 1;
       const vertCountAtStride = Math.floor(vertices.length / stride);
       if (neededVerts > vertCountAtStride) {
-        // Current stride doesn't fit — find smallest stride that works.
-        // Try strides from minimum (3 for quantized, 6 for uncompressed) up.
-        const minStride = isQuantized ? 3 : 6;
+        // Current stride doesn't fit — find smallest valid stride.
+        // Fill tiles may use stride as low as 4 (pos+height only).
+        let correctedStride = 0;
+        const minStride = isQuantized ? 3 : 4;
         for (let s = minStride; s <= stride; s++) {
           if (Math.floor(vertices.length / s) >= neededVerts) {
-            stride = s;
-            // Recompute flags based on corrected stride
-            if (!isQuantized) {
-              hasWebMercatorT =
-                stride >= 7 && encoding.hasWebMercatorT === true;
-              hasNormals = stride >= 8 || (stride >= 7 && !hasWebMercatorT);
-            }
+            correctedStride = s;
             break;
           }
+        }
+        // If corrected stride < 6 (uncompressed) or no stride found,
+        // the vertex data lacks UV coordinates — skip this fill tile
+        // rather than rendering with garbage UVs that produce black lines.
+        if (correctedStride === 0 || (!isQuantized && correctedStride < 6)) {
+          return null;
+        }
+        stride = correctedStride;
+        // Recompute flags based on corrected stride
+        if (!isQuantized) {
+          hasWebMercatorT = stride >= 7 && encoding.hasWebMercatorT === true;
+          hasNormals = stride >= 8 || (stride >= 7 && !hasWebMercatorT);
         }
       }
     }
