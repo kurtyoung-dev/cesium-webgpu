@@ -42,12 +42,9 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
+// WGF-5: collapse the per-channel branch into a dynamic vector subscript.
 fn swizzleChannel(texColor: vec4<f32>, idx: f32) -> f32 {
-    let c = i32(idx);
-    if (c == 0) { return texColor.r; }
-    if (c == 1) { return texColor.g; }
-    if (c == 2) { return texColor.b; }
-    return texColor.a;
+    return texColor[clamp(i32(idx), 0, 3)];
 }
 
 @vertex

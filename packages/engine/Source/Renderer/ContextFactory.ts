@@ -72,6 +72,12 @@ export class ContextFactory {
       case RendererType.WEBGPU:
         return await this._createWebGPUContext(canvas, options);
 
+      case RendererType.WEBGPU_COMPAT:
+        return await this._createWebGPUContext(canvas, {
+          ...options,
+          featureLevel: "compatibility",
+        });
+
       case RendererType.WEBGL:
       default:
         return this._createWebGLContext(canvas, options);
@@ -111,10 +117,14 @@ export class ContextFactory {
     }
 
     // Validate WebGPU is actually available
-    if (rendererType === RendererType.WEBGPU && !isWebGPUSupported()) {
+    if (
+      (rendererType === RendererType.WEBGPU ||
+        rendererType === RendererType.WEBGPU_COMPAT) &&
+      !isWebGPUSupported()
+    ) {
       //>>includeStart('debug', pragmas.debug);
       console.warn(
-        "WebGPU is not supported in this browser. Falling back to WebGL.",
+        `${rendererType} is not supported in this browser. Falling back to WebGL.`,
       );
       //>>includeEnd('debug');
       return RendererType.WEBGL;
@@ -187,6 +197,7 @@ export class ContextFactory {
 
     switch (rendererType) {
       case RendererType.WEBGPU:
+      case RendererType.WEBGPU_COMPAT:
         return isWebGPUSupported();
 
       case RendererType.WEBGL:
@@ -212,11 +223,13 @@ export class ContextFactory {
   static getRendererInfo(): {
     webgl: boolean;
     webgpu: boolean;
+    webgpuCompat: boolean;
     recommended: RendererType;
   } {
     return {
       webgl: this.isRendererSupported(RendererType.WEBGL),
       webgpu: this.isRendererSupported(RendererType.WEBGPU),
+      webgpuCompat: this.isRendererSupported(RendererType.WEBGPU_COMPAT),
       recommended: getDefaultRendererType(true),
     };
   }

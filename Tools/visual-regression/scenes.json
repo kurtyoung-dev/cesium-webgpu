@@ -1,0 +1,29 @@
+{
+  "$schema": "./scenes.schema.json",
+  "description": "Visual regression scene definitions for the WebGL ↔ WebGPU split-screen comparison page. Each entry sets up a camera + flags via window.viewerSetupHelpers (defined in split-screen-comparison.html), waits a settle frame count, then captures both canvases for pixel-diff.",
+  "baseUrl": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
+  "settleFrames": 30,
+  "scenes": [
+    {
+      "name": "globe-default",
+      "description": "Default load: full globe centered, Bing imagery, no overlays",
+      "camera": null
+    },
+    {
+      "name": "globe-zoomed-mountain",
+      "description": "Close zoom on a mountainous region — exercises terrain LOD + lighting",
+      "camera": {
+        "destination": [-119.5383, 37.8651, 12000],
+        "orientation": { "heading": 0, "pitch": -0.6, "roll": 0 }
+      }
+    },
+    {
+      "name": "globe-horizon",
+      "description": "Low-angle horizon shot — exercises atmosphere, fog, sky",
+      "camera": {
+        "destination": [-122.4, 37.7, 80000],
+        "orientation": { "heading": 0, "pitch": -0.15, "roll": 0 }
+      }
+    }
+  ]
+}

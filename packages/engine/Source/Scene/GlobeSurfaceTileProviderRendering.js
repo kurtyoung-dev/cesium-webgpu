@@ -787,13 +787,6 @@ let debugDestroyPrimitive;
 
 // Per-device globe renderer cache (supports multi-context / split-screen)
 const _webgpuGlobeRenderers = new WeakMap();
-// Shader code is imported as a bundled ES module — no fetch needed
-import GlobeTerrainShaderCode from "../Shaders/WebGPU/Globe/GlobeTerrain.js";
-const _webgpuGlobeShaderCode = GlobeTerrainShaderCode;
-
-function ensureWebGPUGlobeShader() {
-  return _webgpuGlobeShaderCode !== null && _webgpuGlobeShaderCode.length > 0;
-}
 
 function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   const surfaceTile = tile.data;
@@ -818,7 +811,9 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     return;
   }
 
-  if (!ensureWebGPUGlobeShader()) {
+  // Get shader code from the feature renderer (avoids direct WebGPU imports)
+  const shaderCode = fr.getShaderCode ? fr.getShaderCode() : undefined;
+  if (!shaderCode || shaderCode.length === 0) {
     return;
   }
 
@@ -828,7 +823,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     _webgpuGlobeRenderer = new fr.RendererClass();
     const fmt =
       context.canvasFormat || navigator.gpu.getPreferredCanvasFormat();
-    _webgpuGlobeRenderer.initialize(device, _webgpuGlobeShaderCode, fmt);
+    _webgpuGlobeRenderer.initialize(device, shaderCode, fmt);
     _webgpuGlobeRenderers.set(device, _webgpuGlobeRenderer);
   }
 
@@ -868,7 +863,6 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   for (let p = 0; p < cmdDescs.length; p++) {
     const cmdDesc = cmdDescs[p];
     const command = {
-      isWebGPUDrawCommand: true,
       pass: Pass.GLOBE,
       owner: tile,
       cull: true,

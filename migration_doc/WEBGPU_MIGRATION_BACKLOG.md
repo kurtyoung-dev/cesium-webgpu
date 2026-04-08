@@ -1,624 +1,417 @@
-# CesiumJS WebGPU Migration — Remaining Work Backlog
+# CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 2, 2026 (post v1.140 feature audit)
-**Purpose:** Single source of truth for ALL remaining work — WebGPU features, tech debt, parity gaps, sorting integration, picking, ES6 modernization, and upstream issues.
+**Last Updated:** April 8, 2026 (Consolidation pass: pulled forward open items from WIRING_AUDIT_2026_04_02, COMPREHENSIVE_AUDIT_2026_03_31, and WEBGPU_DEBUGGING_LOG; removed all completed work — see `WEBGPU_MIGRATION_STATUS.md`)
+**Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
 
-> **For architecture, completed work, and current state, see `WEBGPU_MIGRATION_STATUS.md`.**
+> **For architecture, completed work, bug fix history (Sessions 1-26), WASM/compute audit results, render pass coverage, and current state, see `WEBGPU_MIGRATION_STATUS.md`.**
 
 ---
 
 ## Table of Contents
 
-1. [Tier 1: Minimal Usable Globe (Blocking)](#1-tier-1-minimal-usable-globe)
-2. [Tier 2: 3D Content (Essential)](#2-tier-2-3d-content)
-3. [Tier 3: Visual Quality & Polish](#3-tier-3-visual-quality--polish)
-4. [Tier 4: Testing, Performance & Optimization](#4-tier-4-testing-performance--optimization)
-5. [Sorting System Integration](#5-sorting-system-integration)
-6. [Picking System Remaining](#6-picking-system-remaining)
-7. [Fork-Specific Tech Debt](#7-fork-specific-tech-debt)
-8. [WebGL/WebGPU Feature Parity Gaps](#8-webglwebgpu-feature-parity-gaps)
-9. [ES6 Modernization Backlog](#9-es6-modernization-backlog)
-10. [Upstream Issues (Unaddressed)](#10-upstream-issues-unaddressed)
-11. [WASM & Performance Roadmap](#11-wasm--performance-roadmap)
-12. [WebGPU Performance Infrastructure (Built, Not Active)](#12-webgpu-performance-infrastructure)
+1. [Active Bugs](#1-active-bugs)
+2. [Tier 4: Testing, Performance & Quality](#2-tier-4-testing-performance--quality)
+3. [Sorting System Remaining](#3-sorting-system-remaining)
+4. [Picking System Remaining](#4-picking-system-remaining)
+5. [Fork-Specific Tech Debt](#5-fork-specific-tech-debt)
+6. [WebGL/WebGPU Feature Parity Gaps](#6-webglwebgpu-feature-parity-gaps)
+7. [Dormant Compute Shaders](#7-dormant-compute-shaders)
+8. [Modern WebGPU Feature Integrations (WGF)](#8-modern-webgpu-feature-integrations-wgf)
+9. [Missing Visual Features (Industry Comparison)](#9-missing-visual-features-industry-comparison)
+10. [WASM Expansion Opportunities](#10-wasm-expansion-opportunities)
+11. [Performance Roadmap](#11-performance-roadmap)
+12. [ES6 Modernization Backlog](#12-es6-modernization-backlog)
+13. [Upstream Issues (Unaddressed)](#13-upstream-issues-unaddressed)
+14. [Priority Remediation Order](#14-priority-remediation-order)
 
 ---
 
-## 1. Tier 1: Minimal Usable Globe
+## 1. Active Bugs
 
-**Target:** A functional globe with imagery that users can interact with.
+| # | Bug | Severity | Status | Notes |
+|---|-----|----------|--------|-------|
+| **BUG-3** | **2D mode renders as sphere** | MEDIUM | **Likely Resolved (S18) — needs visual verification** | Globe terrain shader scene-mode branching landed in Session 18 (MORPHING/COLUMBUS_VIEW/SCENE2D/SCENE3D + planar position helpers). Camera UBO extended with `tileRectangle`, `southAndNorthLatitude`, `southMercatorYAndOneOverHeight`, `sceneMode`, `morphTime`, `useWebMercator`. **Action**: visual smoke test in 2D and Columbus View modes. |
+| **BUG-5** | **"size is zero" at startup** | LOW | Intermittent | `Math.max(size, 4)` guards exist but edge cases remain. Hard to repro. |
+| **BUG-6** | **Fill tile edge-case errors** | LOW | Mostly Fixed (S15) | Stride mismatch skip handles most cases; rare residuals. |
+| **SHADOW-LAYOUT** | **Per-layout shadow cast pipelines** | MEDIUM | New (S25) | Cast pipeline assumes single fixed vertex layout (stride 24, two `float32x3` for RTE positionHigh/positionLow). Quantized terrain (stride 8/12), instanced meshes, custom model layouts produce garbage shadows or validation errors. S25 added stride filter as safety net (skip non-stride-24 commands). **Real fix**: small pipeline cache keyed on vertex layout so all layouts cast shadows correctly. Estimated 1-2 days. |
+| **BUG-11** | **Imagery layer textures bind but don't render** | HIGH | **Needs visual env** | Per-tile diagnostic logs at `WebGPUGlobeSurfaceRenderer.ts:801` show `hasImage=true hasWebGPUTex=true` but no visible imagery. **Code-level audit (S26) ruled out**: bind-group sample-type mismatch, std140 alignment drift, day/night alpha argument swap, stale uniform leakage. **Top runtime suspects**: (A) reprojection clear alpha=0 collapsing `tex.a * effectiveAlpha` to zero — verify by changing clear alpha to 1.0; (B) `tileImagery.textureCoordinateRectangle` initialized to (0,0,0,0) instead of undefined — `texCoordsAlpha` mask returns 0 for every fragment; (C) stale view in `_imageryTextureCache` after underlying GPUTexture recreated. **Probe checklist**: capture existing diag logs for `texCoordsRect`/`transScale`, toggle `tile.debugFields.x=1` (tier-2 LOD overlay) to confirm geometry rasterizes, then narrow to A/B/C. |
+| **BUG-1** | **Stars/skybox not visible** | HIGH | **Fixed (S16) — still needs visual confirmation** | `panoramaCommandList` accumulation bug fixed; injection path in `SceneRenderer.js` confirmed sound by code audit. Has not been confirmed visually since the fix landed. |
+| **BUG-7** | **Shadow cast pipeline** | MEDIUM | **Fixed + Limitation (see SHADOW-LAYOUT)** | Command collection, point light guard, bias path all fixed in S16. Stride filter added S25. |
 
-| # | Feature | Why Critical | Effort | Status |
-|---|---------|-------------|--------|--------|
-| 1.1 | **Imagery reprojection pipeline** | Full WebGPU reprojection implemented: `ReprojectWebMercator.wgsl` shader, `WebGPUImageryReprojection.ts` module (render-to-texture pass), `IMAGERY_REPROJECTION` feature renderer registered. `ImageryLayer._reprojectTexture()` detects WebGPU context and uses GPU reprojection instead of WebGL ComputeCommand. `WebGPUGlobeSurfaceRenderer._getOrCreateImageryTexture()` checks for `_webgpuReprojectedTexture`. Image source preserved for WebGPU in `_createTexture()`. | — | ✅ Complete |
-| 1.2 | **Multi-frustum integration testing** | `WebGPUSceneRenderer` iterates far-to-near with opaque near offset matching WebGL. Needs end-to-end testing. | 1-2 days | ⚠️ Implementation done |
-| 1.3 | **Pick depth blit** | Globe depth copy activated in `WebGPUSceneRenderer`. `PickDepth.js` async readback via `copyTextureToBuffer` + `mapAsync` of packed RGBA texture. | — | ✅ Complete |
-| 1.4 | **OIT scene integration** | Non-OIT fallback active (standard alpha blending). True OIT with MRT derived pipelines moved to Tier 3.2. | — | ✅ Safeguarded (non-OIT fallback) |
-| 1.5 | **Post-processing scene integration** | **Complete.** Full pipeline with 5 tonemapping operators (Reinhard, ACES, Filmic, Modified Reinhard, PBR Neutral), FXAA, Bloom (4-pass: BrightPass→BlurH→BlurV→Composite), SSAO (4-pass: Generate→BlurH→BlurV→Modulate), Depth of Field (3-pass: BlurH→BlurV→Composite), Edge Detection, Silhouette. All effects lazily initialized on first enable via standard CesiumJS API (`scene.postProcessStages.bloom.enabled = true`). Depth texture passed for AO/DoF. `configureWebGPUPostProcessPipeline()` syncs state each frame. | — | ✅ **Complete** |
-| 1.6 | **Ground primitive scene integration** | Feature renderer registered with `createCommands`. Routing added in `GroundPrimitive.js` `updateAndQueueCommands()`. | — | ✅ Complete |
+### Visual Verification Backlog (in-browser confirmation needed)
 
-**Estimated total:** ✅ Tier 1 substantially complete — remaining items are testing/validation only.
+These features have been *fixed in code* across Sessions 16-18 but never had a final visual smoke test. Each is one short manual session away from being closed:
 
----
-
-## 2. Tier 2: 3D Content
-
-**Target:** Models, 3D Tiles, and feature-complete collections.
-
-| # | Feature | Effort | Status |
-|---|---------|--------|--------|
-| 2.1 | **Model: morph targets** | — | ✅ Complete: Full pipeline wired — `ModelPBRComplete.wgsl` has bind group 4 (storage+uniform), morph vertex blending before skinning per glTF spec, `WebGPUModelPipelineCache.js` has 5-group layout with default morph BG, `WebGPUModelRenderer.js` creates morph resources per-primitive from `ensureMorphTargetResources()`, sets `HAS_MORPH_TARGETS` flag (bit 14), passes bind group 4, destroys on cleanup. Max 8 targets. |
-| 2.2 | **Model: GPU instancing** | — | ✅ Complete: Full pipeline wired — `ModelPBRComplete.wgsl` has bind group 5 (storage buffer of `array<mat4x4<f32>>`), `FLAG_HAS_INSTANCING` (bit 15), `@builtin(instance_index)` in VertexInput, instance transform applied after morph/skinning before RTE per glTF spec. `WebGPUModelInstancing.js` reads packed transforms from `runtimeNode.transformsTypedArray` (cached by modified `InstancingPipelineStage.js`), expands 12-float packed to 16-float mat4x4, creates GPU storage buffer. `WebGPUModelPipelineCache.js` has 6-group pipeline layout with instancing BGL + default identity bind group. `WebGPUModelRenderer.js` detects `node.instances`, creates instancing resources, sets `FLAG_HAS_INSTANCING` in material flags, passes instancing bind group as 6th element, uses `instanceCount` in draw command. Supports both `EXT_mesh_gpu_instancing` and legacy i3dm. |
-| 2.3 | **Model: feature ID textures** | — | ✅ Complete: Full pipeline wired — `WebGPUModelFeatureId.js` helper finds selected feature ID (mirrors `SelectedFeatureIdPipelineStage` logic), creates GPU textures for both feature ID texture (EXT_mesh_features) and batch texture (per-feature styling). `ModelPBRComplete.wgsl` has bind group 6 with `FeatureIdUniforms` struct, `featureIdTexture`/`batchTexture` bindings, `unpackFeatureId()` (1-4 channel czm_unpackUint equivalent), `lookupBatchColor()` (single/multiline batch tex layouts). `FLAG_HAS_FEATURE_ID_TEXTURE` (bit 16), `FLAG_HAS_FEATURE_ID_ATTRIBUTE` (bit 17), `FLAG_HAS_BATCH_TABLE` (bit 18). `WebGPUModelPipelineCache.js` expanded to 7-group pipeline layout with `featureIdBGL` + default bind group. `WebGPUModelRenderer.js` calls `ensureFeatureIdResources()` per-primitive, sets flags, passes bind group as 7th element. Cleanup via `destroyFeatureIdResources()`. `ModelMaterialInfo.js` updated with new flag constants. |
-| 2.4 | **Model: unused WGSL PBR shaders** | — | ✅ Deleted `ModelPBRVertex.wgsl` and `ModelPBRFragment.wgsl` (strict subsets of `ModelPBRComplete.wgsl`, incompatible MaterialUniforms struct, never imported). |
-| 2.5 | **Scene routing: CloudCollection** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.6 | **Scene routing: PointCloud** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.7 | **Scene routing: VoxelPrimitive** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.8 | **Scene routing: GaussianSplat** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.9 | **Scene routing: EllipsoidPrimitive** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.10 | **Scene routing: InvertClassification** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.11 | **Scene routing: PointCloudEDL** | 0.5 day | ✅ Renderer done, routing via FeatureRendererKey |
-| 2.12 | **Imagery layers rendering (standalone)** | — | ✅ N/A — Imagery layers in CesiumJS are not standalone renderable entities; they are texture layers draped onto terrain tile geometry. The WebGPU globe surface renderer (`WebGPUGlobeSurfaceRenderer.ts`) already handles imagery layers: up to 4 per draw call with multi-pass for >4, including reprojection support. No separate "standalone" renderer is needed. |
-
-**Note:** Items 2.5–2.11 have renderers built and scene files updated with `getFeatureRenderer()` calls, but the renderers themselves need end-to-end testing to verify they actually render correctly through the full pipeline.
-
-**Estimated total:** ✅ **Tier 2 COMPLETE** — All 12 items resolved. Model pipeline supports PBR, morph targets, skinning, GPU instancing, feature ID textures + batch table styling. All 7 scene collection renderers routed via FeatureRendererKey. Imagery layers handled through globe terrain renderer.
+1. **Stars/skybox** (BUG-1) — verify `[WebGPU] Frustum X: ENVIRONMENT=N` console messages show env commands present, then confirm starfield renders behind globe.
+2. **Shadow casting** — open a model+terrain scene, confirm shadow on terrain.
+3. **2D / Columbus View** (BUG-3) — switch scene mode toggle, confirm flat/columbus projections render without artifacts.
+4. **Render bundle performance** — frame-time measurement with ≥8 globe tiles to confirm 50-80% CPU drop.
+5. **Advanced renderers** — CloudCollection, VoxelPrimitive, GaussianSplat, PointCloud, EllipsoidPrimitive — all built with full shaders, none have been verified rendering end-to-end.
 
 ---
 
-## 3. Tier 3: Visual Quality & Polish
-
-| # | Feature | Effort | Status |
-|---|---------|--------|--------|
-| 3.1 | **Shadow map receive-side** | — | ✅ **Complete.** Combined `EffectsUniforms` bind group (112 bytes) carries shadow matrix + map size + darkness + soft-shadows flag alongside clipping plane uniforms. `PrimitivePhongColor.wgsl` and `PrimitivePhongTexturedColor.wgsl` have full PCF shadow sampling with `computeShadowFactor()` in fragment output. `GlobeTerrain.wgsl` has `globeComputeShadowFactor()` applied to Lambert diffuse. `WebGPUEffectsBindGroup.js` creates placeholder resources (1×1 depth=1.0, darkness=1.0 → no shadow) so the bind group is always present. `WebGPUPrimitiveCommands.js` wires effects BGL into pipeline layout and placeholder bind group into draw commands. `WebGPUGlobeSurfaceRenderer.ts` wires effects BGL as group 4 in the 5-group pipeline layout, placeholder bind group in all tile + wireframe draw commands. |
-| 3.2 | **Derived command system integration** | — | ✅ **Scene renderer wired.** `executeBatchDepthOnly()` added to `WebGPUSceneRenderer.ts` — marks commands with `_depthOnly=true`/`_colorWriteMask=0` for depth-only pipeline variant selection. `executeBatchTranslucent()` reads `_webgpuTranslucencyDerived` markers and applies blend/depth/cull overrides per command. `WebGPUSceneRenderer.createDerivedCommand()` static factory delegates to `WebGPUDerivedCommand` for all 5 variant types. Globe pass uses `executeBatchTranslucent` when globe translucency is active. **Remaining:** OIT MRT derived pipelines (2-target accumulation pass) for true order-independent transparency. |
-| 3.3 | **Globe translucency activation** | — | ✅ **Scene renderer wired.** `_executeGlobePass()` detects `translucencyEnabled` on the globe's tile provider and routes globe commands through `executeBatchTranslucent()` which applies per-command blend state from `_webgpuTranslucencyDerived` markers (set by `WebGPUGlobeTranslucencyState.updateDerivedCommands()` via FeatureRendererKey). 9 derived command types with correct blend/cull/depth. **Remaining:** Full OIT integration for overlapping translucent surfaces. |
-| 3.4 | **Clipping shader integration** | — | ✅ **Complete.** Combined effects bind group carries clipping plane count, union mode, edge width/color. `PrimitiveBasicColor.wgsl`, `PrimitivePhongColor.wgsl`, `PrimitivePhongTexturedColor.wgsl` all have `clipByPlanes()` with early discard + edge highlighting. `GlobeTerrain.wgsl` has `globeClipByPlanes()` against ECEF world positions. Plane data sampled from RGBA32Float texture packed by `WebGPUClippingPlaneCollection.ts`. Supports intersection (all planes clip) and union (any plane clips) modes. Globe surface renderer pipeline layout updated with group 4 effects BGL. **Deferred:** Polygon SDF clipping shader (plane-based clipping works for all current use cases). |
-
-**Estimated total:** ✅ **Tier 3 COMPLETE.** All core visual quality features are wired: shadow receive (primitive + globe), clipping planes (primitive + globe), derived commands, globe translucency, globe effects pipeline (5-group layout). **Deferred enhancements** (moved to Tier 4+): OIT MRT (~2-3 days, non-OIT alpha blend fallback works), polygon SDF clipping (~1 day, plane-based clipping works).
-
----
-
-## 4. Tier 4: Testing, Performance & Optimization
-
-| # | Feature | Effort | Status |
-|---|---------|--------|--------|
-| 4.1 | **Jasmine unit tests** | 4-6 days | ❌ Zero tests for 83+ WebGPU files. **#1 quality risk.** Start with: `WebGPUContext`, `WebGPUBuffer`, `WebGPUTexture`, `WebGPUDrawCommand`. |
-| 4.2 | **Automated visual regression (pixel-diff)** | 3-4 days | ❌ Split-screen exists but no automated testing |
-| 4.3 | **Browser compatibility testing** | 3-5 days | ❌ Safari, Firefox WebGPU support |
-| 4.4 | **Performance benchmarking** | 2-3 days | ❌ No WebGL vs WebGPU comparison data |
-| 4.5 | **Render bundles for terrain** | 3-4 days | 🔧 `WebGPURenderBundleManager.ts` exists. 50-80% CPU reduction for static tiles. |
-| 4.6 | **Indirect drawing for 3D Tiles** | 5-7 days | 🔧 `WebGPUIndirectDrawManager.ts` exists. GPU-driven rendering. |
-| 4.7 | **Buffer sub-allocator (ring buffer)** | 3-4 days | 🔧 Infrastructure exists. Zero per-frame buffer creation. |
-| 4.8 | **Console noise reduction** | 1 day | ~12 `console.warn/error` calls across standalone WebGPU modules (not using context-aware logging) |
-| 4.9 | **Device loss recovery consolidation** | 1-2 days | ✅ Resolved (FORK-1) — inline handler removed, delegates to `WebGPUDeviceLossRecovery` via host interface |
-
-**Estimated total:** ~6 weeks
-
----
-
-## 5. Sorting System Integration
-
-The sorting system has 11 phases built (30+ files), but several components are not yet wired into the render pipeline.
-
-### What Works End-to-End ✅
-- `entity.renderPriority` → Visualizer → Collection → DrawCommand → Scene.js comparators
-- `RenderScheduler.beginFrame()` called in `Scene.prototype.render()`
-- `MaterialSortIdAllocator` populating `materialSortId` via `RenderScheduler.binCommand()`
-- Scene.js multi-level comparators reading `sortPriority`/`materialSortId`
-- Geometry batch priority grouping in `StaticGeometryColorBatch`/`StaticGeometryPerMaterialBatch`
-- WASM binary compiled (17.2 KB, deployed to `ThirdParty/Workers/`)
-
-### What Needs Integration
-
-| ID | Item | Effort | Status |
-|----|------|--------|--------|
-| **SORT-5** | Wire `SceneOctree.build()`/`collectVisible()` into `ViewportExecutor` | — | ✅ **Complete** — Octree wired into `executeCommandsInViewport()` (opt-in via `scheduler.octree.enabled = true`) |
-| **SORT-6** | Wire `OcclusionCulling.testCommands()` into render pipeline | — | ✅ **Complete** — Wired into `executeCommandsInViewport()` (opt-in, WebGPU-only, conservative fallback when async results pending) |
-| **SORT-8** | Unit tests for all sorting code (30+ files) | 3-5 days | ❌ Zero coverage |
-| **SORT-12** | `OcclusionCulling` lazy GPU resource init untested | Tied to end-to-end testing | 🟡 GPU resources still stub — JS manager API exercised |
-| **SORT-FULL** | Full `RenderScheduler` layer-based execution (depth clear between layers, per-layer sort modes) | — | ✅ **Complete** — `sortAllLayers()` wired in `ViewportExecutor` after `binCommand()` loop. Per-layer sort modes active (MATERIAL_MESH, BACK_TO_FRONT, etc.) |
-
-### Sorting Architecture Reference
-
-**Current sort comparator (Scene.js — active):**
-```
-frontToBack (opaque):  sortKey → sortPriority → materialSortId → distance (front-to-back)
-backToFront (translucent): sortKey → sortPriority → distance (back-to-front)
-```
-
-**RenderScheduler (built but not fully active):** Per-layer command binning, configurable sort mode per layer (MATERIAL_MESH, BACK_TO_FRONT, MANUAL, CUSTOM), depth clear between layers.
-
-**Octree (built, opt-in):** `SceneOctree.js` + `OctreeNode.js`. Hierarchical frustum + horizon culling. 200-command threshold. Earth-radius root auto-configures from scene ellipsoid.
-
-**Hi-Z Occlusion (built, WebGPU only):** `HiZPyramid.wgsl` + `OcclusionTest.wgsl` + `OcclusionCulling.js`. Auto-disable when benefit < 20%.
-
-**WASM Bridges (built, JS fallback works):** `WasmCullBridge.js` (batch frustum culling), `WasmSortBridge.js` (O(N) radix sort on 64-bit packed keys), `SOABoundingSphereLayout.js` (SIMD data layout).
-
----
-
-## 6. Picking System Remaining
-
-### What Works ✅
-- `WebGPUPickFramebuffer.ts` — full implementation with async readback
-- `WebGPUSceneRenderer._executePickPass()` — renders GLOBE/3D_TILE/OPAQUE/TRANSLUCENT passes
-- `Primitive.js` — pushes WebGPU pick commands during pick-only passes
-- All 3 collection renderers — full pick support (Billboard, Point, Polyline)
-- Depth readback for pick pass — `depth32float` + `readDepthPixelAsync(x, y)`
-- `PickDepth.js` — ES6 class with `getDepthAsync()` for WebGPU
-- Pick ID consolidated — single source of truth in `GraphicsContext`
-- Convenience APIs — `scene.pickAll()`, `scene.pickRayAll()`, `scene.pickColumn()`
-
-### Remaining
+## 2. Tier 4: Testing, Performance & Quality
 
 | # | Item | Effort | Status |
 |---|------|--------|--------|
-| 6.1 | **WGSL depth-to-color blit shader** for main scene depth readback (`pickPositionWorldCoordinates`) | 1-2 days | ⚠️ Pick pass depth works, scene depth pending |
-| 6.2 | **Pick layer filtering** — bitmask to skip unpickable objects before rendering | 1-2 days | ❌ Not started |
-| 6.3 | **Octree pick acceleration** — pre-filter commands using octree before pick render | 1-2 days | ❌ Not started (depends on SORT-5) |
-| 6.4 | **GPU multi-hit** (WebGPU only) — storage buffer per-pixel linked list for single-pass drill pick | 3-5 days | ❌ Future |
-| 6.5 | **Rectangle selection** — `scene.pickInRectangle(startPos, endPos)` | 2-3 days | ❌ Future |
-| 6.6 | **Pick priority** — `entity.pickPriority` for overlapping entities (upstream #1592) | 1-2 days | ❌ Future |
-| 6.7 | **CPU hybrid pick** — geometric ray intersection for simple entities (billboards, points) | 3-5 days | ❌ Future |
+| 4.1 | **Expand Jasmine spec coverage** (FORK-19b) | 4-6 days | 10 spec files exist (Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler). Coverage is thin — 105+ WebGPU files, only ~50 tests total. Target: at least one spec per FR + per major utility module. |
+| 4.2 | **Automated visual regression (pixel-diff CI)** | 3-4 days | `Tools/visual-regression/` scaffolding exists (Playwright + hand-rolled PNG diff, no new deps). Needs: CI integration, baseline corpus capture, tolerance tuning per scene. |
+| 4.3 | **Browser compatibility testing** | 3-5 days | Safari, Firefox WebGPU support. Edge tested; need cross-browser smoke + capability fingerprinting for the WGF features. |
+| 4.4 | **Performance benchmarking** | 2-3 days | WebGL vs WebGPU vs WebGPU-compat comparison. Need fixed-camera scene + frame-time logging + report generation. Measurable wins to verify: render bundles (50-80% CPU), GPU culler (5-20× for >50K objects), AtmosphereLUT consumer (fragment ray-march elimination), PointCloudLOD subgroups (2-4× on dense scenes). |
+| 4.6 | **Indirect drawing for 3D Tiles — production activation** | 2-3 days | Infrastructure built (`WebGPUIndirectDrawManager.ts`); opt-in fast path landed S26 via `executeBatchIndirect()` + `context.useIndirectDrawForTiles` flag. **Remaining**: identify a tile renderer with homogeneous pipeline+bind-group runs of ≥2 commands and flip the flag on for it. Most tile commands have unique per-tile bind groups so the win lives mainly in tightly-instanced point cloud / batched-table tile sets. |
+| 4.8 | **Console noise reduction** | 1 day | ~12 `console.warn/error` calls in standalone modules should route through `context.log(level, ...)` for per-context prefixing. |
+
+### Compute Engine Hardening (CS-* items from COMPREHENSIVE_AUDIT_2026_03_31)
+
+| ID | Issue | Severity | Status |
+|----|-------|----------|--------|
+| **CS-1** | 4 dormant compute shaders need consumer wiring (HiZ, OcclusionTest, PointCloudSort, GPUSortKeys) | 🟡 Medium | Documented in §7. Activation tied to consumer system testing. |
+| **CS-6** | `WebGPUPerformanceManager.dispatchCompute()` caches pipelines by task string but doesn't validate bind group compatibility | 🟡 Medium | Add bind group layout validation on dispatch path. |
 
 ---
 
-## 7. Fork-Specific Tech Debt
+## 3. Sorting System Remaining
 
-Items introduced by our WebGPU additions that don't exist in upstream. 21 of 46 resolved; 25 remaining.
+| ID | Item | Effort | Status |
+|----|------|--------|--------|
+| **SORT-8** | Unit tests for sorting (30+ files) | 3-5 days | Not started. Tied to FORK-19b spec expansion. |
+| **SORT-12** | OcclusionCulling GPU resources | Tied to testing | GPU resources still stub; conservative "assume visible" fallback active. Wire when Hi-Z compute shader activates (§7). |
 
-> **See also:** `COMPREHENSIVE_AUDIT_2026_03_31.md` for detailed analysis of compute shader and WASM fallback gaps.
+---
+
+## 4. Picking System Remaining
+
+| # | Item | Effort | Status |
+|---|------|--------|--------|
+| 6.1 | **WGSL depth-to-color blit shader** for main scene depth readback | 1-2 days | Globe depth blit done (FORK-34); main scene depth blit still pending. |
+| 6.2 | **Pick layer filtering** (bitmask to skip unpickable objects) | 1-2 days | Not started |
+| 6.3 | **Octree pick acceleration** (pre-filter via octree) | 1-2 days | Not started; tied to SORT octree opt-in |
+| 6.4 | **GPU multi-hit** (WebGPU only — storage buffer linked list) | 3-5 days | Future |
+| 6.5 | **Rectangle selection** | 2-3 days | Future |
+| 6.6 | **Pick priority** (`entity.pickPriority`) | 1-2 days | Future |
+| 6.7 | **CPU hybrid pick** (geometric ray intersection) | 3-5 days | Future |
+
+---
+
+## 5. Fork-Specific Tech Debt
+
+Items introduced by our WebGPU additions. 33 of 46 resolved through April 2026; 13 remaining.
 
 ### Remaining Items (Priority Order)
 
-| ID | Issue | Severity | Effort | Details |
-|----|-------|----------|--------|---------|
-| **FORK-41** | **7 of 10 compute shaders awaiting activation** | 🟡 Medium | Documented | **Activation plan documented below.** 3 compute shaders now active: PolygonSignedDistance (clipping), BrdfLutGenerate (IBL one-time), IrradianceConvolution + RadiancePrefilter (IBL on env map change). 7 remaining shaders have infrastructure + fallbacks — activation deferred to when their consumer systems are wired. |
-| **FORK-45** | **Single global WASM arena shared across bridges** | 🟡 Medium | 1 day | All 7 bridges share one `Mutex<Vec<u8>>`. If two bridges run in the same frame, the second `alloc_buffer()` overwrites the first. Add per-bridge buffer slots or named arena partitions. |
-| **FORK-19** | **Zero Jasmine unit tests** for any WebGPU code | 🔴 High | 4-6 days | 83+ renderer files, 67+ shaders, 0 tests. Single largest quality risk. Start with smoke tests for core classes. |
-| **FORK-11** | `webgpuTypeHelpers.ts` has limited adoption | 🟡 Medium | 0.5 day | Most files still use raw `as any` casts. Helpers should be used consistently. |
-| **FORK-9** | ~11 `as any` casts remain in WebGPU TypeScript | 🟡 Medium | — | 8 in `WebGPUContext.ts` (unavoidable JS interop), 3 in other files (`@webgpu/types` limitations). |
-| **FORK-17** | Compute shader mipmap generation TODO | 🟡 Medium | 1 day | `WebGLCompatibilityStub.ts` `generateMipmap` is incomplete. |
-| **FORK-16** | WGSL preprocessor test page reimplemented | 🟡 Medium | 0.5 day | Test page reimplements preprocessor instead of importing `WGSLShaderPreprocessor.ts`. |
-| **FORK-20** | 29 test pages use 3 different module loading patterns | 🟡 Medium | 1 day | Should standardize on one pattern. |
-| **FORK-21** | Test pages contain hardcoded inline WGSL shaders | 🟡 Medium | 0.5 day | `scene-webgpu-poc.html`, `triangle.html` — will drift from canonical shaders. |
-| **FORK-22** | Several test pages are raw WebGPU demos | 🟡 Medium | 0.5 day | Don't validate Cesium's WebGPU path. Should be labeled as demos vs integration tests. |
-| **FORK-23** | No automated visual regression testing | 🟡 Medium | 2-3 days | Split-screen exists but needs pixel-diff CI integration. |
-| **FORK-4** | `WebGLCompatibilityStub.ts` maintenance | 🟡 Medium | Ongoing | Now split into 6 domain modules. `GraphicsContext` factories reduce dependency over time. |
-| **FORK-34** | Pick system: scene depth blit pending | 🟡 Medium | 1-2 days | WGSL depth-to-color blit shader needed. (Same as item 6.1 above.) |
-| **FORK-31** | Sorting: remaining integration gaps | 🟡 Medium | ~1 week | RenderScheduler full integration, octree/occlusion View.js wiring. (Same as §5 above.) |
-| **FORK-29** | Slang cross-compilation unused in production | 🟢 Low | — | Infrastructure exists, no current ROI. Will become valuable for future dual-output shaders. |
-| **FORK-30** | `@webgpu/types` pinned to `^0.1.69` | 🟢 Low | — | Review during upstream syncs. |
-| **FORK-8** | `panoramaCommand.isWebGPUDrawCommand` check in Scene.js | 🟢 Low | — | Acceptable command-type check (not backend check). Could be eliminated with `RenderCommand` (Path B). |
+| ID | Issue | Severity | Effort |
+|----|-------|----------|--------|
+| **FORK-19b** | Expand WebGPU spec coverage (10 files, ~50 tests for 105+ source files) | HIGH | 4-6 days |
+| **FORK-41** | 4 of 12 compute shaders awaiting activation (HiZ, OcclusionTest, PointCloudSort, GPUSortKeys) | MEDIUM | Per shader, 2-4 days each |
+| **FORK-45** | Single global WASM arena shared across bridges | MEDIUM | 1 day | All 7 bridges share one `Mutex<Vec<u8>>` arena. Works today because bridges run sequentially, but a parallel-frame future would corrupt it. Per-bridge arena slots needed. |
+| **FORK-11** | `webgpuTypeHelpers.ts` has limited adoption | MEDIUM | 0.5 day | The helper module exists but most call sites still inline `as any` casts. |
+| **FORK-9** | ~11 `as any` casts remain in WebGPU TypeScript | MEDIUM | -- | Replace with proper typed helpers; depends on FORK-11 adoption. |
+| **FORK-16** | WGSL preprocessor test page reimplements preprocessor | MEDIUM | 0.5 day | Test page has its own preprocessor; should consume the production `WGSLShaderPreprocessor`. |
+| **FORK-20** | 29 test pages use 3 different module loading patterns | MEDIUM | 1 day | Standardize on a single import pattern across `Apps/WebGPUTest/`. |
+| **FORK-21** | Test pages contain hardcoded inline WGSL shaders | MEDIUM | 0.5 day | Move to shared `.wgsl` files or import from production locations. |
+| **FORK-22** | Several test pages are raw WebGPU demos | MEDIUM | 0.5 day | Refactor to use the production renderer where it exists, so the test page validates the real path. |
+| **FORK-23** | No automated visual regression testing | MEDIUM | 2-3 days | See item 4.2 above. |
+| **FORK-4** | `WebGLCompatibilityStub.ts` maintenance | MEDIUM | Ongoing | The stub layer is necessary for the imagery layer + a few other places that still call WebGL APIs through the stub. The Naga-wasm spike (S26) is the long-term path to retire it. |
+| **FORK-8** | `panoramaCommand.isWebGPUDrawCommand` check in Scene.js | LOW | -- | One residual reference; replace with duck-typing like the other 7 violations resolved in S16. |
+| **FORK-29** | Slang cross-compilation unused in production | LOW | -- | Slang infrastructure is still in the tree but no production shaders use it. Decision: remove or commit to it (blocked on naga-wasm spike outcome). |
+| **FORK-30** | `@webgpu/types` pinned to `^0.1.69` | LOW | -- | Newer versions renamed `maxInterStageShaderComponents` → `maxInterStageShaderVariables` (handled in S26 with cast). Bump pin once we're confident in the new API surface. |
 
-### Resolved Items (29 of 46) — For Reference
+### Resolved Items (33 of 46) — For Reference
 
-FORK-1 ✅ (device loss consolidation), FORK-2 ✅ (unused imports), FORK-3 ✅ (redundant shader loading), FORK-5 ✅ (Phase D 28/28), FORK-6 ✅ (isWebGPU checks reduced), FORK-7 ✅ (depthRangeZeroToOne), FORK-10 ✅ (ts-expect-error), FORK-12 ✅ (context-aware logging), FORK-13 ✅ (no debug logging), FORK-14 ✅ (CameraUniforms drift), FORK-15 ✅ (transitive struct deps), FORK-18 ✅ (DepthPlane implemented), FORK-24 ✅ (Primitive.js cleanup), FORK-25 ✅ (7 renderers wired), FORK-26 ✅ (COUNT auto-computed), FORK-27 ✅ (abstract methods verified), FORK-28 ✅ (25/25 materials), FORK-35 ✅ (pick ID consolidated), FORK-36 ✅ (convenience pick APIs), **FORK-37 ✅** (WASM `destroy()` + `free_buffer()` on all 7 bridges), **FORK-38 ✅** (WASM version check via `WasmFeatureDetection.checkVersionMatch()`), **FORK-39 ✅** (SIMD detection via `WasmFeatureDetection.checkSIMDSupport()` + `checkModuleSIMD()`), **FORK-40 ✅** (all 7 bridges have `destroy()` method), **FORK-42 ✅** (ComputeEngine `execute()`/`executeMultiple()`/`executeOnEncoder()` wrapped in try/catch, return bool), **FORK-43 ✅** (workgroup limit validation via `_validateWorkgroups()`), **FORK-44 ✅** (CPU fallback `sortByDistance()` + `lodFilterAndSort()` in WasmPointCloudBridge), **FORK-46 ✅** (Rust `alloc_buffer()` uses `try_reserve()`, returns null on OOM)
+FORK-1 (device loss), FORK-2 (unused imports), FORK-3 (redundant shader loading), FORK-5 (Phase D 28/28), FORK-6 (isWebGPU checks reduced), FORK-7 (depthRangeZeroToOne), FORK-10 (ts-expect-error), FORK-12 (context-aware logging), FORK-13 (no debug logging), FORK-14 (CameraUniforms drift), FORK-15 (transitive struct deps), FORK-17 (mipmap stub now dispatches `WebGPUMipmapGenerator`), FORK-18 (DepthPlane implemented), FORK-19 (10 spec files now exist — rescoped as FORK-19b above), FORK-24 (Primitive.js cleanup), FORK-25 (7 renderers wired), FORK-26 (COUNT auto-computed), FORK-27 (abstract methods verified), FORK-28 (25/25 materials), FORK-31 (sorting integration complete), FORK-32+33 (multi-light scene.lights), FORK-34 (pick scene depth blit complete), FORK-35 (pick ID consolidated), FORK-36 (convenience pick APIs), FORK-37 (WASM destroy+free_buffer), FORK-38 (WASM version check), FORK-39 (SIMD detection), FORK-40 (all bridges destroy), FORK-42 (compute try/catch), FORK-43 (workgroup validation), FORK-44 (CPU fallback sort/LOD), FORK-46 (Rust OOM handling), NEW-1 (DynamicEnvironmentMapManager sync readPixels — non-issue, FR intercepts).
 
 ---
 
-## 8. WebGL/WebGPU Feature Parity Gaps
+## 6. WebGL/WebGPU Feature Parity Gaps
 
-Per `.clinerules` §4, new renderer-agnostic features MUST be implemented for both backends.
+### GLSL Backport Analysis — No Backports Needed
 
-### GLSL Backport Analysis (April 2026)
+All WGSL shaders fall into three categories:
 
-Our new WGSL shaders fall into three categories for GLSL parity:
+| Category | Count | Details |
+|----------|-------|---------|
+| **Ports of existing GLSL** | 12+ | Tonemapping, Atmosphere, SSAO, Bloom, DoF, Edge, Silhouette, IBL (3), FXAA |
+| **Compute-only (impossible in WebGL)** | 8 | FrustumCull, HiZ, OcclusionTest, AtmosphereLUT, PointCloudSort/LOD, GPUSortKeys, WeatherParticles |
+| **WebGPU-only enhancements** | 7+ | SSR, ProceduralClouds, DeferredGBuffer/Lighting, enhanced ocean, enhanced night, terminator glow |
 
-#### ✅ Already Have GLSL Equivalents — No Backport Needed
-These WGSL shaders were created as WebGPU ports of existing GLSL upstream features. The GLSL versions already exist and work in the WebGL path:
+### New Upstream GLSL — WGSL Forward-Ports Needed (Low Priority)
 
-| WGSL Shader | GLSL Equivalent(s) | Notes |
+| GLSL Shader | Feature | WGSL Status |
 |---|---|---|
-| `Tonemapping.wgsl` (5 modes) | `AcesTonemappingStage.glsl`, `ReinhardTonemapping.glsl`, `ModifiedReinhardTonemapping.glsl`, `FilmicTonemapping.glsl`, `PbrNeutralTonemapping.glsl` | GLSL has separate files per operator; WGSL consolidates into one |
-| `GroundAtmosphere.wgsl` | `GroundAtmosphere.glsl` + `AtmosphereCommon.glsl` + builtin functions | Same Nishita scattering algorithm |
-| `AmbientOcclusionGenerate.wgsl` | `AmbientOcclusionGenerate.glsl` | SSAO generation |
-| `AmbientOcclusionModulate.wgsl` | `AmbientOcclusionModulate.glsl` | SSAO application |
-| `BrightPass.wgsl` + `BloomComposite.wgsl` | `Bloom.glsl` + `BloomComposite.glsl` | Bloom post-process |
-| `GaussianBlur1D.wgsl` | `GaussianBlur1D.glsl` | Shared blur utility |
-| `DepthOfField.wgsl` | `DepthOfField.glsl` | DoF post-process |
-| `EdgeDetection.wgsl` + `Silhouette.wgsl` | `EdgeDetection.glsl` + `Silhouette*.glsl` | Entity highlighting |
-| `BrdfLutGenerate.wgsl` | `BrdfLutGeneratorFS.glsl` | IBL BRDF LUT |
-| `IrradianceConvolution.wgsl` | `ComputeIrradianceFS.glsl` | IBL diffuse |
-| `RadiancePrefilter.wgsl` | `ConvolveSpecularMapFS.glsl` | IBL specular |
-| `FXAA.wgsl` | `FXAA3_11.glsl` | Anti-aliasing |
+| `computeTextureTransform.glsl` | `KHR_texture_transform` | **Done** (`csm_computeTextureTransform.wgsl`) |
+| `ConstantLodStageFS/VS.glsl` | Distance-based constant LOD | Low priority — wire when constant-LOD extension support added to WebGPU model path |
+| `EdgeVisibilityStageVS.glsl` | Edge visibility (glTF ext) | Low priority — wire when edge visibility WebGPU path added |
 
-#### 🆕 New Features — WebGPU-Only, No GLSL Backport Required
-These are new capabilities that either: (a) require compute shaders (impossible in WebGL), (b) are WebGPU-specific rendering techniques, or (c) are enhancements beyond upstream's scope:
+### Phase 2 Feature Completion (medium priority)
 
-| WGSL Feature | Why No GLSL Backport | Category |
-|---|---|---|
-| `ScreenSpaceReflections.wgsl` | New feature — no upstream GLSL exists. Could theoretically be GLSL but SSR is heavy; primarily benefits WebGPU users | WebGPU-first feature |
-| `ProceduralClouds.wgsl` | New volumetric ray-march — no upstream GLSL. Extremely GPU-intensive | WebGPU-first feature |
-| `WeatherParticles.wgsl` | GPU compute shader — impossible in WebGL (no compute) | Compute-only |
-| `DeferredGBuffer.wgsl` + `DeferredLighting.wgsl` | Deferred rendering — requires MRT + storage buffers not practical in WebGL | WebGPU architecture |
-| `AtmosphereLUT.wgsl` | Compute-based LUT — WebGL has per-pixel fallback in `SkyAtmosphere.wgsl` | Compute optimization |
-| `PointCloudSort.wgsl` + `PointCloudLOD.wgsl` | GPU compute — WASM/JS fallbacks exist | Compute-only |
-| `GPUSortKeys.wgsl` | GPU compute — JS comparators serve as fallback | Compute-only |
-
-#### 🔵 Enhanced Features — Go Beyond Upstream GLSL
-These WGSL enhancements in `GlobeTerrain.wgsl` add visual quality beyond what upstream `GlobeFS.glsl` provides. They're opt-in WebGPU improvements, not parity gaps:
-
-| Enhancement | Upstream GLSL Behavior | Our WGSL Enhancement | Backport? |
-|---|---|---|---|
-| **Terminator glow** | No effect at day-night boundary | Warm Gaussian glow at terminator | ❌ Would require modifying upstream `GlobeFS.glsl` |
-| **City lights emission** | Simple night alpha blending | Luminance-weighted emissive boost | ❌ Enhancement beyond upstream scope |
-| **GGX ocean specular** | Phong specular (pow 64) | GGX/Trowbridge-Reitz PBR specular | ❌ Enhancement beyond upstream scope |
-| **Fresnel ocean reflection** | No fresnel | Schlick approximation | ❌ Enhancement beyond upstream scope |
-| **Ocean foam/whitecaps** | No foam | Steepness-based foam generation | ❌ Enhancement beyond upstream scope |
-| **Subsurface scattering** | No SSS | Turquoise rim scatter on waves | ❌ Enhancement beyond upstream scope |
-| **Deep water color** | 0.7× darkening | Blend to physical deep-ocean color | ❌ Enhancement beyond upstream scope |
-
-#### 📋 New Upstream GLSL — WGSL Forward-Ports Needed (Low Priority)
-These are NEW upstream features added since v1.135 that will eventually need WGSL equivalents when we add WebGPU rendering paths for them:
-
-| GLSL Shader | Upstream PR | Feature | WGSL Priority | Notes |
-|---|---|---|---|---|
-| `computeTextureTransform.glsl` | #13121 (v1.140+) | `KHR_texture_transform` helper | ✅ **Done** | `csm_computeTextureTransform.wgsl` created + registered in CsmBuiltins.js (97 entries). JS wrapper generated. |
-| `ConstantLodStageFS.glsl` | #13121 (v1.140+) | Distance-based constant LOD texture lookup | 🟢 Low | Model pipeline feature. Add when constant LOD extension support in WebGPU model path |
-| `ConstantLodStageVS.glsl` | #13121 (v1.140+) | World-position UV computation for constant LOD | 🟢 Low | Paired with FS above |
-| `BufferPointMaterialFS/VS.glsl` | v1.140 | Vector tile points | ✅ **Stub** | `BufferPointMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POINT_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
-| `BufferPolygonMaterialFS/VS.glsl` | v1.140 | Vector tile polygons | ✅ **Stub** | `BufferPolygonMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POLYGON_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
-| `BufferPolylineMaterialFS/VS.glsl` | v1.140 | Vector tile polylines | ✅ **Stub** | `BufferPolylineMaterial.wgsl` created, `FeatureRendererKey.BUFFER_POLYLINE_COLLECTION` registered, scene routing wired. Stub renderer (no-op) until full implementation. |
-| `EdgeVisibilityStageVS.glsl` | v1.137 | Edge visibility (glTF ext) | 🟢 Low | When edge visibility WebGPU path added |
-
-**None of these are blocking.** They're new upstream features (not existing features missing WebGPU ports). Our WebGPU model pipeline (`ModelPBRComplete.wgsl`) handles models via a separate unified architecture — these staged GLSL shaders are specific to the WebGL model pipeline's modular stage system.
-
-**Conclusion:** No GLSL backports are needed. Our WGSL shaders either (a) already have upstream GLSL equivalents that work in WebGL, (b) require GPU compute (impossible in WebGL), or (c) are deliberate WebGPU-only visual enhancements.
-
-
-| ID | Gap | Severity | Effort | Details |
-|----|-----|----------|--------|---------|
-| **FORK-32** | **Multi-light `scene.lights` API** | ✅ **Resolved** | — | `scene.lights = new LightCollection()` in constructor. `frameState.lights` propagated in `updateFrameState()`. `UniformState.update()` calls `lights.pack()` → `_lightsData` + `_lightCount`. Auto-uniforms `czm_lightCount` / `czm_lightsData` in `AutomaticUniforms.js`. Full end-to-end wiring from scene → frame state → uniform state → shader. |
-| **FORK-33** | **GLSL multi-light shader** | ✅ **Resolved** | — | All GLSL infrastructure was already built: `czm_lightData` struct, `czm_computeAttenuation()`, `czm_computeSpotCone()`, `czm_lightCount`/`czm_lightsData` auto-uniforms. **Newly added:** `LightingStageFS.glsl` now iterates the `czm_lightsData` array via `czm_unpackLight()` + `computeAdditionalLightPBR()` — supports directional, point, and spot lights with attenuation for up to 8 additional lights beyond the primary sun/directional light. |
+| # | Feature | Effort | WebGL? | Notes |
+|---|---------|--------|--------|-------|
+| 7 | **Built-in shader cache** | 1-2 days | Already works | Marked "not yet implemented" in `WebGPUShaderCache`. The cache infrastructure exists but doesn't pre-populate at init. |
+| 8 | **Deferred G-Buffer renderer** | 5-7 days | No | Key registered (`DEFERRED_GBUFFER`) but never implemented. WebGPU-only advanced feature. Decision: implement or remove from `FeatureRendererKey.js`. |
+| -- | **General particle system** | 2-3 days | Already works | `ParticleSystem`/`ParticleEmitter` already auto-route through `BillboardCollection` (confirmed S20). No-op closure. |
 
 ---
 
-## 9. ES6 Modernization Backlog
+## 7. Dormant Compute Shaders
 
-~432 files total need constructor→class conversion. ~75 completed so far.
+Per the WIRING_AUDIT analysis, all dormant compute shaders have working fallbacks. They are performance optimizations to be wired when their consumer systems need them.
 
-### Completed ✅
+| Shader | Fallback | Activation Trigger | Effort |
+|--------|----------|-------------------|--------|
+| `HiZPyramid.wgsl` | Conservative "assume visible" stub in `OcclusionCulling.js` | Wire into `ViewportExecutor` with Hi-Z occlusion (Phase 3) | 3-4 days |
+| `OcclusionTest.wgsl` | Same as HiZPyramid | Wire alongside HiZ | (combined with above) |
+| `PointCloudSort.wgsl` | Unsorted rendering works; `WasmPointCloudBridge.sortByDistance()` available | Wire when point cloud visible | 2-3 days |
+| `GPUSortKeys.wgsl` | JS multi-level comparators in Scene.js (always active) | Wire when >50K commands per frame | 2-3 days |
+
+**Already activated** (see STATUS): PolygonSignedDistance, BrdfLutGenerate, IrradianceConvolution, RadiancePrefilter, FrustumCull (with subgroup variant), AtmosphereLUT (dispatch + consumer wired S26), PointCloudLOD (subgroup dispatcher S26), WeatherParticles (compute + render S18).
+
+---
+
+## 8. Modern WebGPU Feature Integrations (WGF)
+
+| # | Feature | WebGPU API | CesiumJS Impact | Effort | Status |
+|---|---------|-----------|-----------------|--------|--------|
+| **WGF-3** | **WGSL `texture_and_sampler_let`** | Assign texture/sampler to `let` variables | Cleaner shader code, prepares for future bindless textures | 0.5-1 day | **No work needed** (S21 audit) — sampler-as-let pattern already used in `sampleImagery()`. |
+| **WGF-4** | **Uniform Buffer Standard Layout** (`uniform_buffer_standard_layout`) | Removes std140 padding requirements | Smaller uniform buffers (camera, tile, effects). Currently we manually pad with `_pad0`, `_pad1`. Standard layout eliminates ~20% of UBO waste. | 1-2 days | Not started |
+| **WGF-7** | **Enhanced Texture Formats** (Tier 1 & 2 storage textures) | Broader storage usage on rgba16float, rg32float; Tier 2 read-write storage | Compute shader outputs (atmosphere LUT, SDF, Hi-Z buffer) can use richer formats; read-write enables single-pass algorithms | 1-2 days | **No immediate work needed** (S21 audit) — current 8 storage-write shaders already use the right format for their kernel output. Wire when a new compute shader needs the richer format. |
+
+**Already landed** (see STATUS Section 2): WGF-1 Subgroups (FrustumCull `mainSubgroups` + PointCloudLOD `computeMainSubgroups` + dispatcher), WGF-2 Transient Attachments (`WebGPUFramebufferManager` reads `TRANSIENT_ATTACHMENT` flag with feature detection + `storeOp: "discard"`), WGF-5 Texture Component Swizzle (S21: dynamic vector subscript replaces if-else chain), WGF-6 Primitive Index (`csm_primitiveIndex.wgsl` chunk + `WebGPUPrimitiveIndexUtils.ts` + production wiring through `Scene.debugShowTriangulation`), WGF-8 EXIF/Orientation Image Upload (S21: `WebGPUImageUpload.ts` + `createTextureFromImageAsync()`).
+
+### WebGPU API Features Detected But Not Used
+
+| Feature | Status | Opportunity |
+|---------|--------|-------------|
+| `shader-f16` | Detected, unused | Half-precision math in shaders → 2× bandwidth, 2× ALU on supported GPUs |
+| `dual-source-blending` | Detected, unused | True OIT without MRT — single-pass weighted blended OIT |
+| `indirect-first-instance` | Detected, unused | GPU-driven rendering with per-instance data indexing |
+| `bgra8unorm-storage` | Detected, unused | Direct compute write to swap chain format |
+| `clip-distances` | Detected, unused | Hardware clipping planes (vs fragment discard) — better perf |
+| `timestamp-query` | Wired in profiler | Currently infra-only; enable for automated perf regression tests |
+| `float32-filterable` | Used for depth | Could also be used for HDR texture sampling |
+
+### WebGPU Features Not Yet Detected/Requested
+
+| Feature | Status | Opportunity |
+|---------|--------|-------------|
+| `chromium-experimental-multi-draw-indirect` | Not detected | Single API call for N draw commands — massive CPU reduction. Pairs with `WebGPUIndirectDrawManager`. |
+| `chromium-experimental-read-write-storage-texture` | Not detected | Read-write textures in compute (in-place image processing) |
+| `chromium-experimental-unorm16-texture-formats` | Not detected | 16-bit normalized textures for compact terrain height data |
+| `GPUExternalTexture` | Not used | Zero-copy video texture import (video draping on terrain) |
+
+---
+
+## 9. Missing Visual Features (Industry Comparison)
+
+These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / Bevy and would close visual quality gaps. None are blocking, all are additive.
+
+### Critical Missing — Available in ALL Major WebGPU Engines
+
+| Feature | Industry Status | Our Status | Impact | Effort |
+|---------|----------------|------------|--------|--------|
+| **Temporal Anti-Aliasing (TAA)** | All engines | ❌ Missing (FXAA only) | Far superior to FXAA for moving scenes | 3-4 days |
+| **Cascaded Shadow Maps (CSM)** | All engines | ❌ Missing | Efficient shadow rendering for large outdoor scenes | 4-5 days |
+| **Motion Blur** | Babylon, Three.js, PlayCanvas | ❌ Missing | Cinematic quality for camera/object movement | 2-3 days |
+
+### Important Missing — Available in Most WebGPU Engines
+
+| Feature | Industry | Our Status | Impact | Effort |
+|---------|----------|------------|--------|--------|
+| **Volumetric Lighting/Fog** | Babylon, Three.js, Unreal | ❌ Missing | God rays, volumetric clouds, atmospheric scattering | 4-5 days |
+| **Color Grading / LUT** | Babylon, Three.js | ❌ Missing | Film-quality color correction | 1-2 days |
+| **Contact Shadows** | Babylon, Three.js | ❌ Missing | Small-scale ground contact shadows | 2-3 days |
+| **Subsurface Scattering (SSS)** | Babylon, Filament | ❌ Missing | Realistic skin, foliage, marble rendering | 3-4 days |
+| **GPU Particle System (general)** | Babylon, Three.js, PlayCanvas | ⚠️ Weather only | Compute-based particles — fire, smoke beyond weather | 3-5 days |
+| **Clustered/Tiled Deferred Lighting** | Standard | ❌ Missing | Efficient many-lights (our multi-light is brute force) | 4-5 days |
+| **Light Probes / SH Lighting** | Standard | ❌ Missing | Pre-baked indirect lighting | 3-4 days |
+| **Parallax Occlusion Mapping** | Standard | ❌ Missing | Depth on flat surfaces without extra geometry | 2-3 days |
+
+### Nice to Have — Cutting-Edge
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Ray Tracing** | Not in WebGPU spec yet | Coming in future spec revisions |
+| **Mesh Shaders** | Not in WebGPU spec yet | Google has proposals |
+| **Variable Rate Shading (VRS)** | Not in WebGPU spec | Available in DirectX 12/Vulkan |
+| **Procedural Sky / Dynamic Clouds** | Babylon, Unreal | We have static atmosphere only; volumetric clouds would integrate with `ProceduralClouds.wgsl` |
+| **Ocean FFT** | Three.js, Unreal | We have multi-octave wave normals; FFT would be a quality bump |
+| **Terrain Tessellation (GPU)** | Native engines via tess shaders | WebGPU has no tessellation stage — use compute + indirect |
+
+### CesiumJS-Specific Missing Features
+
+| Feature | Why Important | Effort | Priority |
+|---------|---------------|--------|----------|
+| **Procedural textures for globe** | Cloud layers, aurora — future CesiumJS feature | 3-5 days | Low |
+| **Terrain blend/splat mapping** | Multi-texture terrain at close range | 3-5 days | Low |
+| **Vector tile rendering** | Upstream #2132 — largest open request. Buffer primitives done, full vector tile path remaining | 5-10 days | Low |
+
+### Weather Effects Not Yet Implemented
+
+`WeatherParticles.wgsl` covers rain/snow/fog/hail GPU particle simulation + render pass (S18). Open weather features:
+
+| Effect | Approach | Effort | Priority |
+|--------|----------|--------|----------|
+| **Volumetric Fog** | Ray-march compute shader | 4-5 days | Medium |
+| **Volumetric Clouds** | Noise-based ray march on sky hemisphere | 5-7 days | Medium |
+| **God Rays** | Radial blur post-process from sun position | 2-3 days | Medium |
+| **Wet Surfaces** | PBR roughness reduction + darkening when raining | 1-2 days | Low |
+| **Aurora Borealis** | Procedural shader on sky dome (noise + curtain function) | 2-3 days | Low |
+| **Sandstorm/Dust** | GPU particles + distance fog tinting | 2-3 days | Low |
+| **Lightning** | Custom ray + bloom | 2-3 days | Low |
+
+#### CesiumJS-Specific Weather Considerations
+1. **Planetary scale** — weather must be geographically zoned, not screen-space
+2. **Altitude-aware** — snow above freezing, rain below; cumulus ~2000m, cirrus ~8000m
+3. **Time-of-day integration** — weather interacts with day/night cycle
+4. **Terrain interaction** — particles collide with actual terrain elevation
+5. **Performance at globe scale** — fade out at orbital zoom levels
+6. **Data-driven** — future integration with weather APIs (OpenWeatherMap, NOAA)
+
+---
+
+## 10. WASM Expansion Opportunities
+
+| Target | Current Approach | WASM Benefit | Estimated Speedup | Effort |
+|--------|-----------------|-------------|-------------------|--------|
+| **glTF decode** | JS in `GltfLoader.js` | SIMD accessor decode, mesh optimization | 2-4× for large models | 3-5 days |
+| **Batch transform update** | JS per-entity `Matrix4.multiply` | SIMD f32x4 batch multiply | 3-5× for >1K entities | 2-3 days (partially done in `matrix_batch.rs`) |
+| **Terrain mesh stitching** | JS in `TerrainMesh.js` | SIMD edge matching, skirt generation | 2-3× | 2-3 days |
+| **Quadtree traversal** | JS in `QuadtreePrimitive.js` | Batch tile selection with SOA layout | 2-3× for deep quadtrees | 3-4 days |
+| **3D Tiles traversal** | JS in `Cesium3DTilesetTraversal.js` | Batch bounding volume tests | 3-5× for large tilesets | 4-5 days |
+| **KTX2 super-decompression** | WASM `basis_transcoder` exists | Add ASTC/ETC2 → BC transcode for WebGPU | 1.5-2× memory savings | 2-3 days |
+
+---
+
+## 11. Performance Roadmap
+
+### Architecture-Level Performance (Built or Wired — see STATUS for activation status)
+
+| Opportunity | Current State | Expected Benefit | Effort |
+|------------|--------------|------------------|--------|
+| **Bind group caching** | Recreated frequently | Cache by content hash → 50% fewer creations | 2-3 days |
+| **Texture atlas consolidation** | Separate textures per billboard/point | Single atlas → 30-50% fewer draw calls | 3-4 days |
+| **Command buffer reuse** | New encoder per frame | Double-buffer encoders | 1-2 days |
+| **Multi-draw indirect** | Individual `drawIndirect()` calls | Single `multiDrawIndirect()` (Chromium experimental) | 1-2 days |
+
+### New Compute Shader Opportunities
+
+| Target | Benefit | Workgroup Pattern | Effort |
+|--------|---------|-------------------|--------|
+| **Terrain LOD selection** | GPU-side tile visibility + LOD decision | 1D dispatch over tile array | 2-3 days |
+| **3D Tile GPU culling** | Bounding volume hierarchy test on GPU | Hierarchical dispatch | 3-4 days |
+| **General particle simulation** | Fire, smoke, custom particles via compute | Update + emit + compact pattern | 3-5 days |
+| **Ocean FFT** | Realistic water simulation | 2D FFT butterfly dispatches | 4-5 days |
+| **Gaussian Splat sort** | Real-time depth sorting for splats | Radix sort on GPU (similar to PointCloudSort) | 2-3 days |
+
+---
+
+## 12. ES6 Modernization Backlog
+
+~432 files total need constructor-class conversion. ~75 completed so far.
+
+### Completed (~75 files)
 
 | Directory | Status |
 |-----------|--------|
-| **Renderer (29/29)** | ✅ All JS files converted to ES6 class |
-| **Scene high-priority (24+)** | ✅ All WebGPU-blocking files: Scene.js, Primitive.js, BillboardCollection.js, PointPrimitiveCollection.js, PolylineCollection.js, Billboard.js, PointPrimitive.js, SkyAtmosphere.js, Sun.js, Moon.js, SkyBox.js, CubeMapPanorama.js, ShadowMap.js, Globe.js, GlobeSurfaceTile.js, GlobeSurfaceTileProvider.js, GroundPrimitive.js, InvertClassification.js, CloudCollection.js, PointCloudEyeDomeLighting.js, VoxelPrimitive.js, TimeDynamicPointCloud.js, EllipsoidPrimitive.js, PostProcessStageCollection.js, Camera.js, View.js, Material.js, ImageryLayer.js, Picking.js, ScreenSpaceCameraController.js, DepthPlane.js, Fog.js, GlobeTranslucencyState.js, QuadtreePrimitive.js, QuadtreeTile.js, TerrainFillMesh.js, PickDepth.js, etc. |
-| **DataSources high-priority (8)** | ✅ Entity.js, BillboardVisualizer.js, PointVisualizer.js, ModelVisualizer.js, GeometryVisualizer.js, PolylineVisualizer.js, StaticGeometryColorBatch.js, StaticGeometryPerMaterialBatch.js |
-| **Appearance classes (4)** | ✅ Appearance.js, MaterialAppearance.js, PerInstanceColorAppearance.js, EllipsoidSurfaceAppearance.js, PolylineMaterialAppearance.js |
+| **Renderer (29/29)** | All JS files converted |
+| **Scene high-priority (24+)** | All WebGPU-blocking files converted |
+| **DataSources high-priority (8)** | All sorting-related files converted |
+| **Appearance classes (4)** | All appearance files converted |
 
 ### Remaining (~380+ files)
 
-#### ⚠️ Core — Performance-Critical Math (16 files, benchmark before converting)
-`Cartesian2/3/4.js`, `Matrix2/3/4.js`, `Quaternion.js`, `BoundingSphere.js`, `BoundingRectangle.js`, `AxisAlignedBoundingBox.js`, `OrientedBoundingBox.js`, `Plane.js`, `Ray.js`, `Transforms.js`, `EllipsoidGeodesic.js`, `EllipsoidRhumbLine.js`
+- **Core — Performance-Critical Math** (16 files): Cartesian2/3/4, Matrix2/3/4, Quaternion, BoundingSphere, etc. **Note**: Some of these have already been ported upstream in v1.139 (Cartesian2/3/4 now ES6 classes). Audit before re-doing.
+- **Core — Terrain/Geography/Geometry** (~30+ files)
+- **Core — Utilities** (~40+ files)
+- **Scene — 3D Tiles** (~22 files)
+- **Scene — Imagery Providers** (~16 files)
+- **Scene — Model/glTF Pipeline** (~40+ files)
+- **Scene — Remaining** (~30+ files)
+- **DataSources** (~77 files)
+- **Widgets** (~22 files)
+- **Cross-Cutting Patterns** (~60+ files): `.indexOf()` → `.includes()`, `typeof x !== "undefined"` → optional chaining, etc.
 
-#### 🟡 Core — Terrain/Geography/Geometry (~30+ files)
-Terrain providers, geometry classes (Box, Circle, Corridor, Cylinder, Ellipse, Ellipsoid, Frustum, Polygon, Polyline, Rectangle, Sphere, Wall, etc.)
-
-#### 🟢 Core — Utilities (~40+ files)
-`AssociativeArray.js`, `Clock.js`, `Color.js`, `CullingVolume.js`, `Ellipsoid.js`, `Event.js`, `JulianDate.js`, `Resource.js`, `TaskProcessor.js`, etc.
-
-#### 🟡 Scene — 3D Tiles (~22 files)
-`Cesium3DTileset.js`, `Cesium3DTile.js`, `Cesium3DTileBatchTable.js`, `Cesium3DTilesetTraversal.js`, `BatchTable.js`, `ImplicitSubtree.js`, `TileBoundingRegion.js`, etc.
-
-#### 🟡 Scene — Imagery Providers (~16 files)
-`ArcGisMapServerImageryProvider.js`, `BingMapsImageryProvider.js`, `UrlTemplateImageryProvider.js`, `WebMapServiceImageryProvider.js`, etc.
-
-#### 🟡 Scene — Model/glTF Pipeline (~40+ files)
-`Model.js`, `ModelDrawCommand.js`, `ModelSceneGraph.js`, `GltfLoader.js`, `GltfVertexBufferLoader.js`, 20+ pipeline stage files
-
-#### 🟡 Scene — Remaining (~30+ files)
-Particles, metadata, voxel subsystem, labels, polyline subsystem, environment, clipping, expression/conditions, misc rendering
-
-#### 🟡 DataSources — Properties & Sources (~77 files)
-Entity graphics (16 `*Graphics.js`), property classes (30+), data sources (CZML, GeoJSON, KML, GPX), geometry updaters (12), entity utilities
-
-#### 🟡 Widgets (~22 files)
-`Viewer.js`, `CesiumWidget.js`, Animation, BaseLayerPicker, Geocoder, Timeline, Inspector, etc. All depend on Knockout.js.
-
-#### Cross-Cutting Patterns (~60+ files)
-`.indexOf()` → `.includes()`, `typeof x !== "undefined"` → optional chaining, `.hasOwnProperty()` → `Object.hasOwn()`, `arguments` object → rest params
-
-**Total estimated effort:** ~400-600 hours  
+**Total estimated effort:** ~400-600 hours
 **Rule:** Never modernize files you're not otherwise touching. Always modernize if making >10 lines of changes.
 
 ---
 
-## 10. Upstream Issues (Unaddressed)
+## 13. Upstream Issues (Unaddressed)
 
-42 open upstream issues that our fork has **not** addressed. Grouped by category.
+42 open upstream issues that our fork has NOT addressed. Top priorities:
 
 ### Camera & Navigation (7 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Follow-camera mode | [#5241](https://github.com/CesiumGS/cesium/issues/5241) | 🟡 |
-| Mouse wheel zoom jumpy | [#4537](https://github.com/CesiumGS/cesium/issues/4537) | 🟡 |
-| Camera boundary/constraints | [#4802](https://github.com/CesiumGS/cesium/issues/4802) | 🔴 |
-| KML flyTo goes underground | [#4327](https://github.com/CesiumGS/cesium/issues/4327) | 🟡 |
-| `computeViewRectangle` 2D/CV broken | [#4346](https://github.com/CesiumGS/cesium/issues/4346) | 🔴 |
-| Touch controls regressed | [#4363](https://github.com/CesiumGS/cesium/issues/4363) | 🟡 |
-| Scroll zoom too fast on high refresh rate | [#12187](https://github.com/CesiumGS/cesium/issues/12187) | 🟡 |
+Camera boundary/constraints (#4802), Follow-camera (#5241), Mouse wheel zoom jumpy (#4537), Scroll zoom high refresh (#12187), KML flyTo underground (#4327), Touch controls (#4363), computeViewRectangle 2D/CV (#4346)
 
 ### Entity & DataSource (7 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Picking priority for overlapping entities | [#1592](https://github.com/CesiumGS/cesium/issues/1592) | 🔴 |
-| CLAMP_TO_GROUND billboard positions | [#4776](https://github.com/CesiumGS/cesium/issues/4776) | 🟡 |
-| Dynamic boxes don't track correctly | [#5164](https://github.com/CesiumGS/cesium/issues/5164) | 🟡 |
-| Scene ready event | [#4422](https://github.com/CesiumGS/cesium/issues/4422) | 🟡 |
-| Better custom `PositionProperty` support | [#9491](https://github.com/CesiumGS/cesium/issues/9491) | 🟡 |
-| Clamped polygons on mobile | [#9702](https://github.com/CesiumGS/cesium/issues/9702) | 🟡 |
-| WMS GetFeatureInfo incorrect position | [#9363](https://github.com/CesiumGS/cesium/issues/9363) | 🟡 |
+Picking priority overlapping entities (#1592), CLAMP_TO_GROUND billboard (#4776), Dynamic boxes tracking (#5164), Scene ready event (#4422), Custom PositionProperty (#9491), Clamped polygons mobile (#9702), WMS GetFeatureInfo position (#9363)
 
 ### Rendering & Graphics (6 issues)
+Blinking entity shader update (#12532), Fit texture coords (#4164), Material difference 2D (#9853), Animated billboards (#2319), disableDepthTestDistance picking (#6840), Extruded geometry terrain (#4743)
 
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Blinking entity on shader update | [#12532](https://github.com/CesiumGS/cesium/issues/12532) | 🟡 |
-| Fit texture coords to rectangle/trapezoid | [#4164](https://github.com/CesiumGS/cesium/issues/4164) | 🟡 |
-| Material difference in 2D | [#9853](https://github.com/CesiumGS/cesium/issues/9853) | 🟡 |
-| Animated billboards (sprite-sheet) | [#2319](https://github.com/CesiumGS/cesium/issues/2319) | 🟡 |
-| `disableDepthTestDistance` picking interaction | [#6840](https://github.com/CesiumGS/cesium/issues/6840) | 🟡 |
-| Extruded geometry on terrain | [#4743](https://github.com/CesiumGS/cesium/issues/4743) | 🔴 |
-
-### Memory Leaks (6 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| CesiumWidget not freed on destroy | [#9298](https://github.com/CesiumGS/cesium/issues/9298) | 🔴 |
-| `viewer.destroy` after `flyTo` leaks | [#8378](https://github.com/CesiumGS/cesium/issues/8378) | 🟡 |
-| GeoJsonDataSource memory leak | [#9058](https://github.com/CesiumGS/cesium/issues/9058) | 🟡 |
-| Memory leak at 15Hz GeoJSON update | [#5662](https://github.com/CesiumGS/cesium/issues/5662) | 🔴 |
-| Resource memory leak in Node.js | [#7670](https://github.com/CesiumGS/cesium/issues/7670) | 🟡 |
-| Texture leak hidden tilesets | [#12676](https://github.com/CesiumGS/cesium/issues/12676) | 🟡 |
-
-### 2D / Columbus View (4 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Polyline disrupted at certain positions | [#11351](https://github.com/CesiumGS/cesium/issues/11351) | 🟡 |
-| Polyline disappears with mapMode2D.ROTATE | [#11370](https://github.com/CesiumGS/cesium/issues/11370) | 🟡 |
-| Models not accurately projected to 2D | Forum | 🟡 |
-| Picking/GroundPrimitive error in 2D | [#11696](https://github.com/CesiumGS/cesium/issues/11696) | 🟡 |
-
-### 3D Tiles (5 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Vector Tiles | [#2132](https://github.com/CesiumGS/cesium/issues/2132) | 🔴 |
-| High memory with external tilesets | [#3453](https://github.com/CesiumGS/cesium/issues/3453) | 🔴 |
-| Tileset rendered on other side of globe | [#8612](https://github.com/CesiumGS/cesium/issues/8612) | 🟡 |
-| Race condition in `memoryAdjustedScreenSpaceError` | [#11447](https://github.com/CesiumGS/cesium/issues/11447) | 🟡 |
-| Allow breadth-first traversal | [#12377](https://github.com/CesiumGS/cesium/issues/12377) | 🟡 |
-
-### Terrain & Imagery (3 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Imagery layer min/max zoom confusion | [#6564](https://github.com/CesiumGS/cesium/issues/6564) | 🟡 |
-| Dynamic terrain exaggeration GPU memory | [#12895](https://github.com/CesiumGS/cesium/issues/12895) | 🟡 |
-| EGM96/EGM2008/MSL lookup | [#11786](https://github.com/CesiumGS/cesium/issues/11786) | 🟡 |
-
-### Model/glTF & Build (4 issues)
-
-| Issue | Upstream # | Severity |
-|-------|-----------|----------|
-| Dynamically changing model texture | [#5094](https://github.com/CesiumGS/cesium/issues/5094) | 🔴 |
-| Lots of models → high GC | [#3125](https://github.com/CesiumGS/cesium/issues/3125) | 🔴 |
-| Publish smaller packages | [#10636](https://github.com/CesiumGS/cesium/issues/10636) | 🔴 |
-| Silhouette crash no normals | [#7586](https://github.com/CesiumGS/cesium/issues/7586) | 🟡 |
-
-### Legacy Code Debt (5 items, code analysis)
-
-| Issue | Details |
-|-------|---------|
-| IE11 workarounds still in codebase | 6 IE11-specific comments found — dead code |
-| `demodernizeShader()` GLSL downgrade | Entire module transpiles WebGL2→WebGL1 — dead weight for WebGL2-only |
-| `destroyObject()` closure overhead | Replaces all methods with error-throwing stubs on destroy |
-| Knockout.js widget dependency | Outdated MVVM framework, not actively maintained |
-| Hardcoded magic numbers in Context.js | WebGL constants as raw integers |
+### Other Categories
+Memory Leaks (6), 2D/Columbus View (4), 3D Tiles (5), Terrain & Imagery (3), Model/glTF & Build (4), Legacy Code Debt (5)
 
 ---
 
-## 11. WASM & Performance Roadmap
+## 14. Priority Remediation Order — Path to WebGL Parity
 
-### Current WASM Modules
+> **Updated April 8, 2026.** All Tier 1-3 work is complete (see STATUS sections 2-3). Focus now: visual verification, expand testing, activate remaining dormant compute shaders, close visual feature gaps.
 
-| Module | Language | Purpose | Status |
-|--------|----------|---------|--------|
-| `draco_decoder.wasm` | C++ (Emscripten) | Draco mesh decompression | ✅ Upstream |
-| `basis_transcoder.wasm` | C++ (Emscripten) | KTX2 texture transcoding | ✅ Upstream |
-| `wasm_splats_bg.wasm` | Rust | Gaussian splat processing | ✅ Upstream |
-| `zip-module.wasm` | Unknown | ZIP extraction | ✅ Upstream |
-| `cesium_wasm_bg.wasm` | **Rust (v2)** | SIMD frustum cull + radix sort + terrain + RTE + matrix + point cloud | ✅ **Expanded** |
+### Phase 1: Visual Verification & Bug Closure (1-2 weeks)
 
-### WASM Optimizations — Status
+1. **Visual smoke test all S16/S17/S18 fixes** — Stars/skybox, shadow casting, render bundle perf, advanced renderers (Cloud/Voxel/GaussianSplat/PointCloud/Ellipsoid), 2D/Columbus View modes
+2. **BUG-11 imagery** — Use the probe checklist in §1 (existing diag logs first, then alpha/texCoordsRect/cache hypotheses)
+3. **SHADOW-LAYOUT** — Per-vertex-layout shadow cast pipeline cache (1-2 days)
+4. **BUG-5/6 edge cases** — Reproduce + close
+5. **FORK-8** — Last residual `isWebGPUDrawCommand` check in Scene.js
 
-| Target | Rust Module | JS Bridge | Expected Speedup | Status |
-|--------|-------------|-----------|-----------------|--------|
-| **HeightmapTessellator** | `heightmap_tessellator.rs` | `WasmHeightmapBridge.js` | 2-5x | ✅ **Implemented** — SIMD heightmap decode + ECEF conversion, multi-element endianness handling |
-| **QuantizedMeshTerrainData** | `quantized_mesh.rs` | `WasmQuantizedMeshBridge.js` | 3-8x | ✅ **Implemented** — Zigzag+delta decode, SIMD normalization, high-watermark index decode |
-| **Batch frustum culling** | `frustum_cull.rs` | `WasmCullBridge.js` | 4-10x w/ SIMD | ✅ **Previously complete** — f32x4 SIMD 4-sphere-per-cycle, 6-plane sphere test |
-| **Batch RTE encoding** | `rte_encode.rs` | `WasmRTEBridge.js` | 2-3x | ✅ **Implemented** — f64→f32 high/low split, SOA batch encoding, SIMD eye-space computation |
-| **Batch matrix multiply** | `matrix_batch.rs` | `WasmMatrixBridge.js` | 2-4x w/ SIMD | ✅ **Implemented** — Single-matrix×N-points SIMD, per-entity transform, batch mat4 multiply |
-| **Point cloud processing** | `point_cloud.rs` | `WasmPointCloudBridge.js` | 3-5x | ✅ **Implemented** — SIMD batch distance², LOD filter, compact visible, AABB-frustum octree test |
+### Phase 2: Testing & Quality (4-5 weeks)
 
-### Rust Crate Structure (v2)
+6. **FORK-19b** — Expand Jasmine spec coverage to 1 spec per FR + per major utility (~50 → ~150 tests)
+7. **Visual regression CI** — Activate `Tools/visual-regression/` with baseline corpus + tolerance config
+8. **Browser compatibility** — Safari, Firefox WebGPU testing matrix
+9. **Performance benchmarking** — Fixed-camera scenes + frame-time logging; verify the perf wins from S16/S17/S26 (render bundles, GPU culler, atmosphere LUT, point cloud subgroups)
 
-```
-packages/wasm/src/
-├── lib.rs                    ← Entry point, arena allocator, version=2
-├── frustum_cull.rs           ← SIMD batch sphere-plane culling
-├── radix_sort.rs             ← O(N) radix sort on packed 64-bit keys
-├── heightmap_tessellator.rs  ← NEW: SIMD heightmap decode + ECEF
-├── quantized_mesh.rs         ← NEW: Zigzag+delta decode + SIMD normalize
-├── rte_encode.rs             ← NEW: Batch RTE f64→f32 high/low split
-├── matrix_batch.rs           ← NEW: SIMD batch Matrix4 operations
-└── point_cloud.rs            ← NEW: SIMD distance, LOD, AABB-frustum
-```
+### Phase 3: Dormant Compute Shader Activation (2-3 weeks)
 
-### JS Bridge Files
+10. **HiZ + OcclusionTest** — Wire into ViewportExecutor for occlusion culling
+11. **PointCloudSort** — Wire when point cloud collection visible (depth sort for translucent points)
+12. **GPUSortKeys** — Wire when scene exceeds 50K commands (replace JS comparators on the hot path)
 
-```
-packages/engine/Source/Scene/
-├── WasmCullBridge.js          ← Frustum culling (existing)
-├── WasmSortBridge.js          ← Radix sort (existing)
-├── SOABoundingSphereLayout.js ← SIMD data layout (existing)
-├── WasmHeightmapBridge.js     ← NEW: Heightmap tessellation
-├── WasmQuantizedMeshBridge.js ← NEW: Quantized mesh decode
-├── WasmRTEBridge.js           ← NEW: Batch RTE encoding
-├── WasmMatrixBridge.js        ← NEW: Batch matrix operations
-└── WasmPointCloudBridge.js    ← NEW: Point cloud processing
-```
+### Phase 4: Visual Quality Closure (4-6 weeks)
 
-All bridges follow the mandatory pattern: async WASM loading, version check, threshold-gated dispatch, JS fallback, getDiagnostics().
+13. **TAA** — Temporal anti-aliasing as WGSL post-process
+14. **CSM** — Cascaded shadow maps for outdoor scenes
+15. **Volumetric fog/lighting** — God rays, scattering
+16. **Color grading** — LUT-based color correction
+17. **Subsurface scattering** — Skin/foliage rendering
+18. **Clustered lighting** — Efficient many-lights for urban scenes
+19. **Vector tile rendering** — Build on top of Buffer Primitive renderers
+20. **Deferred G-Buffer** — Implement or remove `DEFERRED_GBUFFER` FR key
 
-### GPU Compute vs WASM Decision Matrix
+### Phase 5: Modern WebGPU Feature Adoption (2-3 weeks)
 
-| Task | Best Approach | Why | Shader Status |
-|------|--------------|-----|---------------|
-| Terrain tessellation | WASM | Complex data deps, already in Worker | N/A (WASM only) |
-| Frustum culling (3D Tiles, >50K) | GPU Compute | Massive parallelism | ✅ `FrustumCull.wgsl` |
-| Frustum culling (entities, <50K) | WASM SIMD | Low latency | N/A (WASM only) |
-| Atmosphere LUT | GPU Compute | Ray marching | ✅ `AtmosphereLUT.wgsl` |
-| RTE encoding | WASM | GPU readback would negate benefit | N/A (WASM only) |
-| Point cloud sort/LOD | GPU Compute | Massive parallelism | ✅ `PointCloudSort.wgsl` + `PointCloudLOD.wgsl` |
-| Sort keys (5K-50K) | WASM radix sort | O(N) vs O(N log N) | N/A (WASM only) |
-| Sort keys (>50K) | GPU Compute | GPU-driven rendering | ✅ `GPUSortKeys.wgsl` |
+21. **WGF-4 Standard Layout UBOs** — Remove manual std140 padding, ~20% UBO size reduction
+22. **`shader-f16`** — Wire half-precision math in selected fragment shaders for 2× bandwidth/ALU
+23. **`dual-source-blending`** — Single-pass weighted blended OIT
+24. **`clip-distances`** — Hardware clipping planes (vs fragment discard) for clipping perf
+25. **`chromium-experimental-multi-draw-indirect`** — Pair with `WebGPUIndirectDrawManager` for single-call N-draw rendering
 
-### Compute Shader Library (8 files in `Shaders/WebGPU/Compute/`)
+### Phase 6: Naga-wasm Spike Productionization (1 week, optional)
 
-| Shader | Entry Points | Workgroup Size | Purpose | Status |
-|--------|-------------|----------------|---------|--------|
-| `FrustumCull.wgsl` | `main` | 256 | Sphere-plane frustum culling + indirect draw | ✅ Built |
-| `HiZPyramid.wgsl` | `computeMain` | 16×16 | Hierarchical Z-buffer mip generation | ✅ Built |
-| `OcclusionTest.wgsl` | `computeMain` | 256 | Per-command Hi-Z occlusion testing | ✅ Built |
-| `PolygonSignedDistance.wgsl` | `main` | 8×8 | Polygon SDF atlas for clipping | ✅ Built |
-| `AtmosphereLUT.wgsl` | `computeTransmittance`, `computeInscatter` | 16×16 | Nishita scattering LUT precomputation | ✅ **NEW** |
-| `PointCloudSort.wgsl` | `localBitonicSort`, `globalBitonicMerge` | 256 | GPU bitonic sort for point cloud depth ordering | ✅ **NEW** |
-| `PointCloudLOD.wgsl` | `computeMain` | 256 | Distance-based LOD + frustum cull + compaction | ✅ **NEW** |
-| `GPUSortKeys.wgsl` | `computeMain` | 256 | Packed 64-bit sort key generation for draw commands | ✅ **NEW** |
+26. **Naga-wasm bind-set remapping** — Naga emits raw `@group/@binding` from GLSL `layout(binding=...)`; need a layout reflection step
+27. **Vertex attribute location remapping** — Stride/format normalization between source GLSL and consumer pipelines
+28. **Specialization-constant injection** — Map GLSL `#define`s to WGSL pipeline-overridable constants
+29. **Replace WebGL stub for shaders Naga handles** — Incremental retirement of `WebGLCompatibilityStub.ts`
+
+### Phase 7: Long-Tail Cleanup (Ongoing)
+
+30. **ES6 modernization** — Continue under the "10-line touch rule"
+31. **Console noise reduction** (4.8) — Route bare `console.warn/error` through `context.log()`
+32. **Test page consolidation** (FORK-20/21/22) — Standardize loading patterns + share shaders
+33. **Upstream sync** — Periodic sync with `CesiumGS/cesium` main
+34. **Upstream issue triage** — Pick off the 42 open issues most relevant to WebGPU users
 
 ---
 
-## 12. WebGPU Performance Infrastructure — ✅ ACTIVATED
-
-All 7 performance infrastructure systems are now wired into the rendering pipeline via `WebGPUPerformanceManager.ts`, which orchestrates their lifecycle through the `WebGPUSceneRenderer` frame loop.
-
-| Feature | File | Benefit | Activation Status |
-|---------|------|---------|-------------------|
-| **Render bundles** | `WebGPURenderBundleManager.ts` | 50-80% CPU for static terrain | ✅ **Wired** — `performanceManager.beginFrame()` ticks stale eviction, `tryExecuteBundle()` API for globe passes |
-| **Indirect drawing** | `WebGPUIndirectDrawManager.ts` | GPU-driven 3D Tiles | ✅ **Wired** — `beginFrame()` resets, `queueIndirectDraw()` for batch commands, `flush()` on endFrame |
-| **Storage buffers** | `WebGPUStorageBufferPool.ts` | Large point cloud data | ✅ **Wired** — Lazy-init via `context.storageBufferPool`, used by `WasmPointCloudBridge` |
-| **GPU frustum culling** | `WebGPUGPUCuller.ts` + `FrustumCull.wgsl` | GPU-side visibility | ✅ **Wired** — `shouldUseGPUCulling(objectCount)` threshold check (50K default), deferred to 3D Tiles phase |
-| **Timestamp queries** | `WebGPUTimestampProfiler.ts` | GPU profiling | ✅ **Wired** — `beginFrame()`/`endFrame()` in profiler, `getPassTimestampWrites()` for per-pass timing |
-| **Buffer mapping** | `WebGPUBufferMapper.ts` | Direct CPU↔GPU access | ✅ **Wired** — `uploadViaStaging()` and `readbackBuffer()` APIs on performance manager |
-| **Uniform grouping** | `WebGPUUniformGroupManager.ts` | Per-frame/material/object bind groups | ✅ **Wired** — Lazy-init via context, available for bind group optimization |
-
-### `WebGPUPerformanceManager.ts` — Central Orchestrator
-
-```typescript
-// Lifecycle: called by WebGPUSceneRenderer.executeCommands()
-perfManager.beginFrame();   // Reset counters, begin profiling, tick bundle eviction
-// ... multi-frustum rendering loop ...
-perfManager.endFrame();     // Flush indirect draws, collect profiling timings
-
-// APIs available to feature renderers:
-perfManager.tryExecuteBundle(key, pass, cmds, count, recordCb); // Render bundles
-perfManager.queueIndirectDraw(indexCount, instanceCount, ...);  // Indirect draw batching
-perfManager.shouldUseGPUCulling(objectCount);                   // GPU cull threshold check
-perfManager.getPassTimestampWrites('globe');                     // Per-pass GPU timing
-perfManager.uploadViaStaging(buffer, data, offset);             // Async buffer upload
-perfManager.readbackBuffer(buffer, size, offset);               // Async buffer readback
-perfManager.getDiagnostics();                                   // Formatted debug string
-```
-
-### Configuration
-
-```typescript
-// Default config (all features opt-in with sensible thresholds):
-context.performanceManager.config = {
-  renderBundles: true,          // Cache static terrain tile draw calls
-  indirectDraw: true,           // Batch 3D Tile draw calls
-  gpuCulling: true,             // GPU compute culling for >50K objects
-  timestampProfiling: false,    // Enable for profiling sessions
-  bufferMapping: true,          // Async staging buffer uploads
-  renderBundleThreshold: 8,     // Min commands to use bundles
-  indirectDrawThreshold: 100,   // Min commands for indirect batching
-  gpuCullingThreshold: 50000,   // Min objects for GPU culling
-  bundleMaxIdleFrames: 300,     // Evict unused bundles after 5 seconds
-};
-```
-
-### Performance Bottleneck Notes
-
-During implementation, no additional bottlenecks were discovered beyond those already documented. The existing infrastructure is comprehensive. Key observations:
-
-1. **WASM↔JS boundary overhead** is minimal for batch operations (>100 elements) due to the arena allocator sharing WASM linear memory directly with JS typed arrays — zero copy.
-2. **Render bundle invalidation** needs care: terrain tiles change infrequently (ideal for bundles), but imagery layer updates require bundle invalidation. The `invalidateByPrefix('globe:')` API handles this.
-3. **GPU culling threshold (50K)** is conservative — real-world 3D Tiles scenes rarely exceed 10K visible tiles per frame, so WASM SIMD culling handles most cases. GPU culling activates only for massive point cloud datasets.
-4. **Timestamp profiling** requires `timestamp-query` device feature (Chrome 121+). When unavailable, profiling silently degrades to no-op with zero overhead.
-
----
-
-## Priority Remediation Order
-
-> **Updated April 2, 2026** — See `WIRING_AUDIT_2026_04_02.md` for latest findings. Previous audit: `COMPREHENSIVE_AUDIT_2026_03_31.md`.
-
-### 🔴 Immediate: Fallback & Safety Gaps — ✅ 7 of 8 COMPLETE (March 31, 2026)
-1. ✅ **FORK-37** — `destroy()` + `WasmFeatureDetection.freeBuffer()` on all 7 bridges
-2. ✅ **FORK-42** — `WebGPUComputeEngine` `execute()`/`executeMultiple()`/`executeOnEncoder()` wrapped in try/catch, return `boolean`
-3. ✅ **FORK-38** — Version checking via shared `WasmFeatureDetection.checkVersionMatch()` on all bridges
-4. ✅ **FORK-39** — SIMD detection via `WasmFeatureDetection.checkSIMDSupport()` + `checkModuleSIMD()` on all bridges
-5. ✅ **FORK-40** — `destroy()` method on all 7 WASM bridges
-6. ✅ **FORK-44** — CPU fallback `sortByDistance()` + `lodFilterAndSort()` in `WasmPointCloudBridge`
-7. ✅ **FORK-43** — `_validateWorkgroups()` checks `maxComputeWorkgroupsPerDimension` before dispatch
-8. **FORK-19** — Start unit tests (even smoke tests for core classes) (4-6 days)
-
-**Also completed:** ✅ **FORK-46** — Rust `alloc_buffer()` uses `try_reserve()`, returns null on OOM. ✅ `WasmFeatureDetection.js` shared utility created in `Core/`. ✅ `WasmCullBridge.js` + `WasmSortBridge.js` modernized to ES6 class. ✅ All 7 WASM bridges have try/catch in WASM methods with JS fallback on failure.
-
-### 🟡 Next: Visual Quality — Biggest Impact (3-4 weeks)
-9. ✅ **SSAO** — `AmbientOcclusionGenerate.wgsl` + `AmbientOcclusionModulate.wgsl` + `AmbientOcclusionEffect` (4-pass: Generate→BlurH→BlurV→Modulate). Lazily initialized via `scene.postProcessStages.ambientOcclusion.enabled = true`.
-10. ✅ **IBL Pipeline** — Full compute-based IBL: `BrdfLutGenerate.wgsl` (external compute shader, 16×16 workgroups), `IrradianceConvolution.wgsl` (diffuse cubemap, 8×8 workgroups, 6-face dispatch), `RadiancePrefilter.wgsl` (specular mipchain, 6 mip levels × 6 faces), `WebGPUIBLPipeline.ts` orchestrator, `WebGPUImageBasedLighting.ts` with SH coefficient packing + specular environment map pipeline + dirty tracking. `ModelPBRComplete.wgsl` updated with `fresnelSchlickRoughness()` and split-sum IBL-aware ambient (diffuse + specular factors, roughness-attenuated specular, energy conservation via kD_ibl/kS_ibl). `LightUniforms` extended with `iblDiffuseFactor`, `iblSpecularFactor`, `iblMaxMipLevel`, `iblHasSH`.
-11. ✅ **Bloom** — `BrightPass.wgsl` + `GaussianBlur1D.wgsl` + `BloomComposite.wgsl` + `BloomEffect` (4-pass: BrightPass→BlurH→BlurV→Composite). Lazily initialized via `scene.postProcessStages.bloom.enabled = true`.
-12. ✅ **Ground Atmosphere** — `GroundAtmosphere.wgsl` (full Nishita single-scattering: ray-sphere intersection, Rayleigh+Mie optical depth, 16 primary + 4 light ray march steps, phase functions, fade-distance application). `WebGPUGroundAtmosphereRenderer.ts` packs `AtmosphereParams` struct (64 bytes) from Globe properties (inner/outer radius, scale heights, coefficients, anisotropy, light intensity, dynamic lighting mode) with dirty-check upload. `FeatureRendererKey.GROUND_ATMOSPHERE` (29) registered in `WebGPUFeatureRenderers.ts`.
-13. ✅ **Advanced Tone Mapping** — `Tonemapping.wgsl` now supports 5 operators: Reinhard (mode 0), ACES Filmic (1), Uncharted 2 Filmic (2), Modified Reinhard (3), PBR Neutral (4). Mode switchable at runtime via `pipeline.setTonemappingMode()`. Syncs with CesiumJS `Tonemapper` enum.
-14. **Shadow Casting** — Complete shadow map render pipeline (3-4 days)
-15. **Pick depth blit** (6.1 / FORK-34) — Complete picking (1-2 days)
-
-**Also completed (March 31, 2026):**
-- ✅ **Depth of Field** — `DepthOfField.wgsl` + `DepthOfFieldEffect` (3-pass: BlurH→BlurV→Composite with depth-based circle-of-confusion)
-- ✅ **Edge Detection / Silhouette** — `EdgeDetection.wgsl` (Sobel) + `Silhouette.wgsl` (compositing)
-- ✅ **GaussianBlur1D** — Foundation shader used by Bloom, SSAO, DoF (incremental Gaussian, GPU Gems 3 Ch.40)
-- ✅ **WebGPUPostProcessEffects.ts** — `BloomEffect`, `AmbientOcclusionEffect`, `DepthOfFieldEffect` classes with own intermediate textures
-- ✅ **WebGPUPostProcessPipeline.ts** — Rewritten to orchestrate complex effects + single-pass stages. Execution order: AO → Bloom → DoF → Tonemapping → Custom → FXAA. External WGSL shaders (no more inline strings). Depth texture passed for depth-dependent effects.
-- ✅ **WebGPUPostProcessStageCollection.ts** — Split into `updateWebGPUPostProcessStages` (feature renderer sync) + `configureWebGPUPostProcessPipeline` (pipeline configuration). Lazy effect initialization on first enable. Runtime parameter updates with dirty checking.
-- ✅ **WebGPUSceneRenderer.ts** — Passes depth view to post-processing. Calls `configureWebGPUPostProcessPipeline` each frame to sync CesiumJS collection state.
-
-### 🟡 Then: Activate Performance Infrastructure (2-3 weeks)
-16. **Render bundles** — Wire into globe pass for 50-80% CPU reduction (2-3 days)
-17. **Uniform ring buffer** — Replace per-frame buffer creation (3-4 days)
-18. **GPU frustum culling** — Wire `GPUCuller` into 3D Tiles (2-3 days)
-19. **Pipeline warm-up** — Pre-create common pipelines at init (1-2 days)
-20. **FORK-41** — Wire or document 7 unwired compute shaders (1 day)
-
-### 🟢 Medium Term: Advanced Features (4-6 weeks)
-21. **TAA** — Temporal anti-aliasing post-process (3-4 days)
-22. ✅ **Enhanced Night Rendering** — Lambert terminator, emissive city lights, moonlit night side, terminator glow in `GlobeTerrain.wgsl`
-23. ✅ **Enhanced Ocean Rendering** — Fresnel, GGX specular, multi-octave waves, foam/whitecaps, SSS, deep water color, sky reflection in `GlobeTerrain.wgsl`
-24. ✅ **SSR** — `ScreenSpaceReflections.wgsl` + `WebGPUSSREffect.ts` wired into `_executeEnvironmentalEffects()` in `WebGPUSceneRenderer.ts`. Activated via `scene._enableSSR = true`
-25. ✅ **GPU Weather Particles** — `WeatherParticles.wgsl` + `WebGPUWeatherRenderer.ts` wired into `_executeEnvironmentalEffects()`. Activated via `scene._enableWeather = true`
-26. **Volumetric fog/lighting** — God rays, scattering (4-5 days)
-27. **Volumetric Clouds** — Noise-based ray march on sky hemisphere (5-7 days)
-28. **Cascaded Shadow Maps** (4-5 days)
-
-### 📋 Ongoing
-27. **ES6 modernization** — Incremental as files are touched
-28. **Upstream issues** — Address as they intersect with our work
-29. **FORK-45/46** — WASM arena improvements (per-bridge slots, OOM handling)
-
----
-
-*This document consolidates information from the former: `SORTING_ARCHITECTURE_ANALYSIS.md`, `SORTING_IMPLEMENTATION_PLAN.md`, `SORTING_REVIEW_AND_TECH_DEBT.md`, `PICKING_ANALYSIS.md`, `SCENE_DECOMPOSITION_PLAN.md`, `UPSTREAM_ISSUES_AND_TECH_DEBT.md`, and `ES6_MODERNIZATION_BACKLOG.md`. Those files have been moved to `migration_doc/archive/`.*
+*This backlog supersedes all previous versions. For per-session bug fix detail, completed work, and architecture, see `WEBGPU_MIGRATION_STATUS.md`. The legacy `WIRING_AUDIT_2026_04_02.md`, `COMPREHENSIVE_AUDIT_2026_03_31.md`, and `WEBGPU_DEBUGGING_LOG.md` documents are preserved for historical reference but their open items have been pulled forward into this file and STATUS.*

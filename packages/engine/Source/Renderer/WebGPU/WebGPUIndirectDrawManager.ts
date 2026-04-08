@@ -304,6 +304,84 @@ export class WebGPUIndirectDrawManager {
   }
 
   /**
+   * Submit a homogeneous batch of WebGPUDrawCommands as a single indirect
+   * draw sequence. All commands in the batch MUST share the same
+   * pipeline, bind groups, vertex buffer layout, and (for indexed mode)
+   * index buffer — only the per-call draw parameters may vary.
+   *
+   * This is the high-level entry point for tile collections (3D Tiles,
+   * point clouds, batched primitives) to opt into GPU-driven rendering.
+   * Steps the caller still owns:
+   *   1. Pre-sort/group commands so each call here gets a homogeneous batch
+   *   2. Bind the shared pipeline + bind groups + vertex/index buffers on
+   *      the render pass *before* invoking executeDrawIndexedIndirect /
+   *      executeDrawIndirect
+   *   3. (Optional) Run a compute culler against the batch's bounding
+   *      spheres to set instanceCount=0 on culled draws (see
+   *      WebGPUGPUCuller.dispatch with mode=INDIRECT)
+   *
+   * Returns the index of the first draw call in the batch (subsequent
+   * calls follow contiguously). Returns -1 on overflow.
+   *
+   * @param commands Array of compatible WebGPUDrawCommand-like objects
+   * @returns First draw index, or -1 if the batch did not fit
+   */
+  submitBatch(commands: ReadonlyArray<any>): number {
+    if (commands.length === 0) return this._drawCount;
+    if (this._drawCount + commands.length > this._maxDrawCalls) {
+      console.warn(
+        `[${this._label}] submitBatch overflow: have=${this._drawCount} ` +
+          `incoming=${commands.length} max=${this._maxDrawCalls}`,
+      );
+      return -1;
+    }
+    const firstIndex = this._drawCount;
+    if (this._indexed) {
+      for (const c of commands) {
+        this.addIndexedDrawCall({
+          indexCount: c.indexCount ?? c._indexCount ?? 0,
+          instanceCount: c.instanceCount ?? c._instanceCount ?? 1,
+          firstIndex: c.firstIndex ?? 0,
+          baseVertex: c.baseVertex ?? 0,
+          firstInstance: c.firstInstance ?? 0,
+        });
+      }
+    } else {
+      for (const c of commands) {
+        this.addDrawCall({
+          vertexCount: c.vertexCount ?? c._vertexCount ?? 0,
+          instanceCount: c.instanceCount ?? c._instanceCount ?? 1,
+          firstVertex: c.firstVertex ?? 0,
+          firstInstance: c.firstInstance ?? 0,
+        });
+      }
+    }
+    return firstIndex;
+  }
+
+  /**
+   * Execute a contiguous range of draw calls (the slice returned by
+   * `submitBatch`) on the active render pass. Caller must have bound
+   * the matching pipeline / vertex / index buffers first.
+   *
+   * @param renderPass Active render pass encoder
+   * @param firstIndex Index returned by submitBatch
+   * @param count Number of draws in the batch
+   */
+  executeBatchIndexed(
+    renderPass: GPURenderPassEncoder,
+    firstIndex: number,
+    count: number,
+  ): void {
+    if (count <= 0) return;
+    const stride = this._strideInBytes;
+    const end = firstIndex + count;
+    for (let i = firstIndex; i < end; i++) {
+      renderPass.drawIndexedIndirect(this._indirectBuffer, i * stride);
+    }
+  }
+
+  /**
    * Get statistics about the current frame's draw calls.
    */
   getStats(): IndirectDrawStats {

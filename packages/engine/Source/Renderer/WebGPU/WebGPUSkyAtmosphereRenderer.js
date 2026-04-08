@@ -118,9 +118,34 @@ function createPipeline(device, shaderCode, format, depthFormat) {
     ],
   });
 
+  // Group 1 holds the precomputed atmosphere LUTs. Bound unconditionally so
+  // the pipeline layout never changes — when the LUT compute path is
+  // unavailable we still bind 1×1 placeholder views and clear the
+  // `useLut` uniform flag so the fragment shader takes the ray-march path.
+  const lutBindGroupLayout = device.createBindGroupLayout({
+    label: "SkyAtmosphere LUT bind group layout",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+    ],
+  });
+
   const pipelineLayout = device.createPipelineLayout({
     label: "SkyAtmosphere pipeline layout",
-    bindGroupLayouts: [bindGroupLayout],
+    bindGroupLayouts: [bindGroupLayout, lutBindGroupLayout],
   });
 
   const pipeline = device.createRenderPipeline({
@@ -171,14 +196,168 @@ function createPipeline(device, shaderCode, format, depthFormat) {
     },
   });
 
-  return { pipeline, bindGroupLayout };
+  return { pipeline, bindGroupLayout, lutBindGroupLayout };
+}
+
+/**
+ * Lazily ensures the atmosphere LUT compute pass has been dispatched at
+ * least once and that a sampler + bind group exist for sampling it from
+ * the sky fragment shader. Returns a `{ bindGroup, useLut }` pair so the
+ * caller can bind the LUTs even on devices that lack compute (in which
+ * case `useLut` is false and a 1×1 placeholder is bound).
+ *
+ * The dispatch happens on a transient command encoder, submitted in
+ * isolation. This avoids coupling the renderer to the scene's per-frame
+ * encoder lifecycle — the LUT only needs regeneration when the sun
+ * direction changes, so the cost is amortized across hundreds of frames.
+ *
+ * @private
+ */
+function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
+  // Build the placeholder once. Used as the steady-state binding when
+  // compute is unavailable, and as the temporary binding before the first
+  // dispatch on devices that do support compute.
+  if (!defined(cache.placeholderLutTexture)) {
+    cache.placeholderLutTexture = device.createTexture({
+      label: "SkyAtmosphere LUT placeholder",
+      size: { width: 1, height: 1 },
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    cache.placeholderLutView = cache.placeholderLutTexture.createView();
+    cache.lutSampler = device.createSampler({
+      label: "SkyAtmosphere LUT sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+
+  const perfMgr =
+    typeof context.performanceManager !== "undefined"
+      ? context.performanceManager
+      : null;
+  const computeOk = !!perfMgr && context.supportsComputeShaders === true;
+
+  if (!computeOk) {
+    if (!defined(cache.lutBindGroup)) {
+      cache.lutBindGroup = device.createBindGroup({
+        label: "SkyAtmosphere LUT bind group (placeholder)",
+        layout: cache.lutBindGroupLayout,
+        entries: [
+          { binding: 0, resource: cache.lutSampler },
+          { binding: 1, resource: cache.placeholderLutView },
+          { binding: 2, resource: cache.placeholderLutView },
+        ],
+      });
+    }
+    return { bindGroup: cache.lutBindGroup, useLut: false };
+  }
+
+  // Detect sun-direction change beyond a small threshold so we don't
+  // re-dispatch the compute pass on every micro-update. The renderer
+  // owns this rather than the scene to keep the LUT decoupled from any
+  // particular tick source.
+  const sunDir = defined(frameState.sunDirectionWC)
+    ? frameState.sunDirectionWC
+    : new Cartesian3(0, 0, 1);
+  const last = cache.lastSunDirection;
+  if (!last) {
+    cache.lastSunDirection = Cartesian3.clone(sunDir, new Cartesian3());
+    perfMgr.invalidateAtmosphereLUT();
+  } else {
+    const dot = last.x * sunDir.x + last.y * sunDir.y + last.z * sunDir.z;
+    if (dot < 0.9999) {
+      Cartesian3.clone(sunDir, last);
+      perfMgr.invalidateAtmosphereLUT();
+    }
+  }
+
+  // Resolve the LUT views so we can build the bind group. If perf manager
+  // returns null we degrade to the placeholder path.
+  const res = perfMgr.ensureAtmosphereLUTResources(device);
+  if (!res) {
+    if (!defined(cache.lutBindGroup)) {
+      cache.lutBindGroup = device.createBindGroup({
+        label: "SkyAtmosphere LUT bind group (placeholder)",
+        layout: cache.lutBindGroupLayout,
+        entries: [
+          { binding: 0, resource: cache.lutSampler },
+          { binding: 1, resource: cache.placeholderLutView },
+          { binding: 2, resource: cache.placeholderLutView },
+        ],
+      });
+    }
+    return { bindGroup: cache.lutBindGroup, useLut: false };
+  }
+
+  // (Re)build the real bind group when the LUT views change. The views
+  // come from the perf manager's cached textures and are stable for the
+  // lifetime of the device, so this happens at most once.
+  if (
+    !defined(cache.lutBindGroup) ||
+    cache.lutTransmittanceView !== res.transmittanceView ||
+    cache.lutInscatterView !== res.inscatterView
+  ) {
+    cache.lutBindGroup = device.createBindGroup({
+      label: "SkyAtmosphere LUT bind group",
+      layout: cache.lutBindGroupLayout,
+      entries: [
+        { binding: 0, resource: cache.lutSampler },
+        { binding: 1, resource: res.transmittanceView },
+        { binding: 2, resource: res.inscatterView },
+      ],
+    });
+    cache.lutTransmittanceView = res.transmittanceView;
+    cache.lutInscatterView = res.inscatterView;
+  }
+
+  // If the LUT is dirty (first frame, or sun direction moved), dispatch
+  // the compute pass on a one-shot encoder. We feed it the same scattering
+  // constants we'd otherwise use in the ray march so the LUT and the
+  // fallback path agree. Once `useLut` flips on, the fragment shader
+  // shortcuts to a single texture sample.
+  if (perfMgr.shouldRecomputeAtmosphereLUT()) {
+    const ellipsoid = skyAtmosphere._ellipsoid || Ellipsoid.WGS84;
+    const innerRadius = Cartesian3.maximumComponent(ellipsoid.radii);
+    const outerRadius = innerRadius * ATMOSPHERE_SCALE;
+    const encoder = device.createCommandEncoder({
+      label: "SkyAtmosphere LUT dispatch",
+    });
+    const ok = perfMgr.dispatchAtmosphereLUT(encoder, device, {
+      innerRadius,
+      outerRadius,
+      rayleighScaleHeight: DEFAULT_RAYLEIGH_SCALE_HEIGHT,
+      mieScaleHeight: DEFAULT_MIE_SCALE_HEIGHT,
+      mieAnisotropy: DEFAULT_MIE_ANISOTROPY,
+      intensity: skyAtmosphere.atmosphereLightIntensity || 50.0,
+      rayleighCoefficient: [
+        DEFAULT_RAYLEIGH_COEFFICIENT.x,
+        DEFAULT_RAYLEIGH_COEFFICIENT.y,
+        DEFAULT_RAYLEIGH_COEFFICIENT.z,
+      ],
+      mieCoefficient: [
+        DEFAULT_MIE_COEFFICIENT.x,
+        DEFAULT_MIE_COEFFICIENT.y,
+        DEFAULT_MIE_COEFFICIENT.z,
+      ],
+      sunDirection: [sunDir.x, sunDir.y, sunDir.z],
+    });
+    device.queue.submit([encoder.finish()]);
+    if (ok) {
+      cache.lutReady = true;
+    }
+  }
+
+  return { bindGroup: cache.lutBindGroup, useLut: cache.lutReady === true };
 }
 
 /**
  * Packs atmosphere uniform data.
  * @private
  */
-function packUniforms(uniformData, frameState, skyAtmosphere) {
+function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   const camera = frameState.camera;
 
   Matrix4.multiply(camera.viewMatrix, Matrix4.IDENTITY, scratchModelView);
@@ -236,11 +415,11 @@ function packUniforms(uniformData, frameState, skyAtmosphere) {
   uniformData[38] = DEFAULT_MIE_ANISOTROPY;
   uniformData[39] = skyAtmosphere.atmosphereLightIntensity || 50.0;
 
-  // hsbShift
+  // hsbShift + useLut flag (replaces _pad4 — see SkyAtmosphere.wgsl Uniforms)
   uniformData[40] = skyAtmosphere.hueShift || 0.0;
   uniformData[41] = skyAtmosphere.saturationShift || 0.0;
   uniformData[42] = skyAtmosphere.brightnessShift || 0.0;
-  uniformData[43] = 0.0;
+  uniformData[43] = useLut ? 1.0 : 0.0;
 
   // rayleighCoefficient
   uniformData[44] = DEFAULT_RAYLEIGH_COEFFICIENT.x;
@@ -253,6 +432,16 @@ function packUniforms(uniformData, frameState, skyAtmosphere) {
   uniformData[49] = DEFAULT_MIE_COEFFICIENT.y;
   uniformData[50] = DEFAULT_MIE_COEFFICIENT.z;
   uniformData[51] = 0.0;
+
+  // Tier 1 debug controls. Read from frameState (set by Scene each frame)
+  // so a single property toggle on Scene flips the diagnostic on. Layout
+  // matches the WGSL `debug: vec4<f32>` field — see SkyAtmosphere.wgsl.
+  //   x: disableScattering — bypass Rayleigh+Mie, emit flat magenta
+  //   y/z/w: reserved for Tier 3 (LUT inspector, sun-dir override)
+  uniformData[52] = frameState.debugDisableAtmosphereScattering ? 1.0 : 0.0;
+  uniformData[53] = 0.0;
+  uniformData[54] = 0.0;
+  uniformData[55] = 0.0;
 }
 
 /**
@@ -282,6 +471,7 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     const result = createPipeline(device, shaderCode, format, depthFmt);
     cache.pipeline = result.pipeline;
     cache.bindGroupLayout = result.bindGroupLayout;
+    cache.lutBindGroupLayout = result.lutBindGroupLayout;
   }
 
   // Create geometry once
@@ -319,8 +509,19 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     });
   }
 
+  // Resolve / dispatch the LUT and obtain the group-1 binding. Returns a
+  // placeholder bind group + useLut=false on devices without compute, so
+  // the pipeline layout stays stable across backend capability tiers.
+  const lutInfo = ensureLutBindGroup(
+    cache,
+    context,
+    device,
+    frameState,
+    skyAtmosphere,
+  );
+
   // Update uniforms every frame
-  packUniforms(cache.uniformData, frameState, skyAtmosphere);
+  packUniforms(cache.uniformData, frameState, skyAtmosphere, lutInfo.useLut);
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
@@ -329,11 +530,12 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Create or reuse command
+  // Create or reuse command. Group 1 (LUTs) may swap from placeholder to
+  // real after the first dispatch — keep the command in sync.
   if (!defined(cache.command)) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
-      bindGroups: [cache.bindGroup],
+      bindGroups: [cache.bindGroup, lutInfo.bindGroup],
       vertexBuffers: [cache.vertexBuffer],
       indexBuffer: cache.indexBuffer,
       indexCount: cache.indexCount,
@@ -341,6 +543,8 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
       pass: 0, // Pass.ENVIRONMENT
       owner: skyAtmosphere,
     });
+  } else if (cache.command.bindGroups[1] !== lutInfo.bindGroup) {
+    cache.command.bindGroups[1] = lutInfo.bindGroup;
   }
 
   commandList.push(cache.command);
@@ -363,6 +567,9 @@ function destroyWebGPUSkyAtmosphereResources(skyAtmosphere) {
   }
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
+  }
+  if (defined(cache.placeholderLutTexture)) {
+    cache.placeholderLutTexture.destroy();
   }
   skyAtmosphere._webgpuCache = undefined;
 }

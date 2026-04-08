@@ -38,6 +38,7 @@ import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
+import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 
@@ -71,15 +72,25 @@ function executeWebGPUCommand(
   if (scene.debugCommandFilter && !scene.debugCommandFilter(command)) {
     return;
   }
-  if (command.execute && !command.isWebGPUDrawCommand) {
-    command.execute(context, passState);
-    return;
-  }
-  if (command.isWebGPUDrawCommand === true) {
+
+  // Detect command type via duck-typing:
+  // - WebGPU commands have `pipeline` or `_pipeline` -> execute(renderPass, context)
+  // - WebGL commands have `shaderProgram` -> execute(context, passState)
+  // - isWebGPUDrawCommand also supported for backwards compat
+  const isGPU =
+    command.isWebGPUDrawCommand === true ||
+    command.pipeline !== undefined ||
+    command._pipeline !== undefined;
+
+  if (isGPU) {
     const renderPass = context.currentRenderPassEncoder;
     if (renderPass) {
       command.execute(renderPass, context);
     }
+    return;
+  }
+  if (command.execute) {
+    command.execute(context, passState);
     return;
   }
 }
@@ -113,6 +124,175 @@ function executeBatch(
       }
     }
   }
+}
+
+/**
+ * Indirect-draw fast path for tile passes.
+ *
+ * Walks the command list and groups consecutive commands that share the
+ * same pipeline + bind group identity AND that already have an attached
+ * indexed vertex/index buffer pair. Each homogeneous run is submitted to
+ * `WebGPUIndirectDrawManager.submitBatch()` and executed via a single
+ * `executeBatchIndexed()` call on the active render pass — collapsing N
+ * setPipeline/setBindGroup/draw calls into 1 setPipeline + 1 setBindGroup
+ * + N drawIndexedIndirect.
+ *
+ * Anything that doesn't fit (heterogeneous neighbour, missing index
+ * buffer, command without `instanceCount`/`indexCount` fields, or a
+ * one-element "run") falls back to the per-command executeBatch path.
+ *
+ * Activation is gated on `context.useIndirectDrawForTiles === true` so
+ * the existing per-command path remains the default. The integration
+ * point is here so a single feature flag flips it on for the whole 3D
+ * Tile pass once a consumer (3D Tiles batched-table renderer, point
+ * cloud collection) opts in.
+ */
+function executeBatchIndirect(
+  commands: any[],
+  count: number,
+  scene: any,
+  context: any,
+  passState: any,
+): void {
+  const renderPass = context.currentRenderPassEncoder;
+  const manager = context.indirectDrawManager;
+  if (!renderPass || !manager) {
+    executeBatch(commands, count, scene, context, passState);
+    return;
+  }
+
+  // Reset the manager once per pass invocation. The manager owns its
+  // staging buffer + GPU indirect buffer, so the cost is a counter reset.
+  manager.beginFrame();
+
+  let runStart = 0;
+  while (runStart < count) {
+    const head = commands[runStart];
+    if (
+      !head ||
+      !head.isWebGPUDrawCommand ||
+      !head.indexBuffer ||
+      head.indexCount === undefined ||
+      !(head.pipeline || head._pipeline)
+    ) {
+      try {
+        executeWebGPUCommand(head, scene, context, passState);
+      } catch (e: any) {
+        // matching the per-command logging in executeBatch
+        if (!(context as any)._warnedCommands) {
+          (context as any)._warnedCommands = new Set();
+        }
+        const label =
+          head?.owner?.constructor?.name ??
+          head?.constructor?.name ??
+          "unknown";
+        const key = `${label}:${e.message?.substring(0, 60)}`;
+        if (!(context as any)._warnedCommands.has(key)) {
+          (context as any)._warnedCommands.add(key);
+          context.log?.(
+            "warn",
+            `Indirect path command failed (${label}): ${e.message}`,
+          );
+        }
+      }
+      runStart++;
+      continue;
+    }
+
+    // Greedily extend the run while neighbours share pipeline + bind
+    // groups + index buffer (the three things that drawIndexedIndirect
+    // pulls from the bound state rather than the per-call params).
+    const headPipeline = head.pipeline ?? head._pipeline;
+    const headBindGroups = head.bindGroups;
+    const headVertexBuffers = head.vertexBuffers;
+    const headIndexBuffer = head.indexBuffer;
+    const headIndexFormat = head.indexFormat ?? "uint16";
+
+    let runEnd = runStart + 1;
+    while (runEnd < count) {
+      const next = commands[runEnd];
+      if (!next || !next.isWebGPUDrawCommand) break;
+      const nextPipeline = next.pipeline ?? next._pipeline;
+      if (nextPipeline !== headPipeline) break;
+      if (next.indexBuffer !== headIndexBuffer) break;
+      // Cheap structural check on bind groups: same length, same refs.
+      if (!sameBindGroupArray(next.bindGroups, headBindGroups)) break;
+      if (!sameVertexBufferArray(next.vertexBuffers, headVertexBuffers)) break;
+      if ((next.indexFormat ?? "uint16") !== headIndexFormat) break;
+      runEnd++;
+    }
+
+    const runLen = runEnd - runStart;
+    if (runLen < 2) {
+      // No batching benefit — execute as a normal draw and continue.
+      try {
+        executeWebGPUCommand(head, scene, context, passState);
+      } catch (e: any) {
+        // ignored — head will simply be missing from the frame
+        void e;
+      }
+      runStart = runEnd;
+      continue;
+    }
+
+    // Submit the homogeneous slice to the indirect manager and execute it.
+    const slice = commands.slice(runStart, runEnd);
+    const firstIndex = manager.submitBatch(slice);
+    if (firstIndex < 0) {
+      // Overflow — fall back to per-command for this run only.
+      for (let i = runStart; i < runEnd; i++) {
+        executeWebGPUCommand(commands[i], scene, context, passState);
+      }
+      runStart = runEnd;
+      continue;
+    }
+    manager.flush();
+
+    // Bind the shared state once and emit the indirect draws.
+    renderPass.setPipeline(headPipeline);
+    if (headBindGroups) {
+      for (let g = 0; g < headBindGroups.length; g++) {
+        renderPass.setBindGroup(g, headBindGroups[g]);
+      }
+    }
+    if (headVertexBuffers) {
+      for (let v = 0; v < headVertexBuffers.length; v++) {
+        const vb = headVertexBuffers[v];
+        renderPass.setVertexBuffer(v, vb.buffer ?? vb);
+      }
+    }
+    renderPass.setIndexBuffer(
+      headIndexBuffer.buffer ?? headIndexBuffer,
+      headIndexFormat,
+    );
+    manager.executeBatchIndexed(renderPass, firstIndex, runLen);
+
+    runStart = runEnd;
+  }
+}
+
+function sameBindGroupArray(
+  a: ReadonlyArray<unknown> | undefined,
+  b: ReadonlyArray<unknown> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameVertexBufferArray(
+  a: ReadonlyArray<unknown> | undefined,
+  b: ReadonlyArray<unknown> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 /**
@@ -187,6 +367,10 @@ export class WebGPUSceneRenderer {
   private _globeDepth: WebGPUGlobeDepth | null = null;
   private _depthPlane: WebGPUDepthPlane | null = null;
   private _postProcess: WebGPUPostProcessPipeline | null = null;
+  // Tier 2 debug — fullscreen depth visualization. Lazily constructed
+  // on first request so production frames pay nothing.
+  private _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
+  private _depthOverlayWarningLogged: boolean = false;
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
@@ -351,6 +535,12 @@ export class WebGPUSceneRenderer {
       perfManager.beginFrame();
     }
 
+    // --- Shadow cast pass (once per frame, before multi-frustum rendering) ---
+    // Renders scene from light's perspective into the shadow map depth texture.
+    if (!config.picking) {
+      context.executeShadowMapCastCommands(scene);
+    }
+
     // Opaque near offset to avoid tearing between adjacent frustums
     const opaqueFrustumNearOffset: number =
       scene.opaqueFrustumNearOffset ?? 0.9999;
@@ -370,6 +560,7 @@ export class WebGPUSceneRenderer {
       const far = frustumCommands.far;
 
       this._updateFrustumUniforms(uniformState, near, far, scene);
+      (this as any)._currentFrustumIndex = i;
 
       // Clear depth/stencil per frustum (but not color — color accumulates across frustums)
       this._clearDepthStencil(context);
@@ -434,13 +625,38 @@ export class WebGPUSceneRenderer {
       );
 
       // Pass 11: GAUSSIAN_SPLATS
-      this._executePassCommands(
-        frustumCommands,
-        Pass.GAUSSIAN_SPLATS,
-        scene,
-        context,
-        passState,
-      );
+      // GS-WSR: If OIT is available and splat commands have OIT variants,
+      // defer them to the translucent OIT pass for proper weighted-sum rendering.
+      // Otherwise render inline with standard alpha blending.
+      {
+        const splatCommands = frustumCommands.commands[Pass.GAUSSIAN_SPLATS];
+        const splatCount: number =
+          frustumCommands.indices[Pass.GAUSSIAN_SPLATS];
+        const hasOITSplats =
+          this._oit?.isSupported &&
+          config.useOIT &&
+          !config.picking &&
+          splatCount > 0 &&
+          splatCommands[0]?._oitPipeline;
+
+        if (hasOITSplats) {
+          // Splats will be rendered in the OIT accumulation pass below
+          // by injecting them into the translucent command list.
+          // Store them for later use.
+          (this as any)._deferredOITSplats = {
+            commands: splatCommands,
+            count: splatCount,
+          };
+        } else {
+          this._executePassCommands(
+            frustumCommands,
+            Pass.GAUSSIAN_SPLATS,
+            scene,
+            context,
+            passState,
+          );
+        }
+      }
 
       // For translucent pass, use actual near to avoid blending artifacts
       if (index !== 0 && scene.mode !== 2 /* SceneMode.SCENE2D */) {
@@ -736,6 +952,26 @@ export class WebGPUSceneRenderer {
 
     context.uniformState?.updatePass(Pass.GLOBE);
 
+    // Diagnostic: log globe command count periodically
+    if (
+      !(this as any)._globeCountLogged ||
+      (this as any)._globeCountLogFrame !== context._frameCount
+    ) {
+      if (
+        !(this as any)._globeCountLogged ||
+        count !== (this as any)._lastGlobeCount
+      ) {
+        (this as any)._lastGlobeCount = count;
+        (this as any)._globeCountLogged = true;
+        (this as any)._globeCountLogFrame = context._frameCount;
+        const hasPass = !!context.currentRenderPassEncoder;
+        console.log(
+          `[WebGPU:GlobePass] ${count} globe commands, ` +
+            `renderPass=${hasPass}, frustumIdx=${(this as any)._currentFrustumIndex ?? "?"}`,
+        );
+      }
+    }
+
     // Check if globe is translucent
     const globe = scene.globe;
     const isTranslucent =
@@ -752,11 +988,40 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // When globe depth is available, also produce a depth-only copy
-    // for terrain clamping and picking
-    if (this._globeDepth && config.useGlobeDepthFramebuffer) {
-      executeBatch(commands, count, scene, context, passState);
-      return;
+    // Try render bundles for opaque terrain (reduces driver overhead)
+    const perfMgr = context.performanceManager;
+    const renderPass = context.currentRenderPassEncoder;
+    if (
+      perfMgr &&
+      renderPass &&
+      count >= (perfMgr.config?.renderBundleThreshold ?? 8)
+    ) {
+      try {
+        const bundleEncoder = context._device.createRenderBundleEncoder({
+          label: "Globe terrain bundle",
+          colorFormats: [context.presentationFormat],
+          depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
+        });
+
+        let drawCalls = 0;
+        for (let i = 0; i < count; i++) {
+          const cmd = commands[i];
+          if (cmd && cmd.execute) {
+            // Ad-hoc globe commands and WebGPUDrawCommands both accept
+            // a GPURenderBundleEncoder (same API as GPURenderPassEncoder)
+            cmd.execute(bundleEncoder, context);
+            drawCalls++;
+          }
+        }
+
+        if (drawCalls > 0) {
+          const bundle = bundleEncoder.finish();
+          renderPass.executeBundles([bundle]);
+          return;
+        }
+      } catch (_e) {
+        // Fall through to unbundled execution if bundle recording fails
+      }
     }
 
     executeBatch(commands, count, scene, context, passState);
@@ -775,12 +1040,26 @@ export class WebGPUSceneRenderer {
       Pass.CESIUM_3D_TILE_CLASSIFICATION,
       Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW,
     ];
+    // Indirect-draw fast path. Stays off until a tile renderer opts in
+    // by setting `context.useIndirectDrawForTiles = true` after verifying
+    // its commands hit the homogeneous-batch criteria in
+    // `executeBatchIndirect` (shared pipeline + bind groups + index
+    // buffer across runs of ≥2 commands). When the flag is off the loop
+    // below is byte-for-byte identical to the previous behavior.
+    const useIndirect =
+      context.useIndirectDrawForTiles === true &&
+      context.indirectDrawManager &&
+      context.currentRenderPassEncoder;
     for (const passIndex of passes) {
       const cmds = frustumCommands.commands[passIndex];
       const cnt: number = frustumCommands.indices[passIndex];
       if (cnt > 0) {
         context.uniformState?.updatePass(passIndex);
-        executeBatch(cmds, cnt, scene, context, passState);
+        if (useIndirect) {
+          executeBatchIndirect(cmds, cnt, scene, context, passState);
+        } else {
+          executeBatch(cmds, cnt, scene, context, passState);
+        }
       }
     }
   }
@@ -828,14 +1107,36 @@ export class WebGPUSceneRenderer {
       config.useOIT &&
       !config.picking
     ) {
-      // Check if any commands have OIT-compatible pipeline variants.
-      // If at least one does, use the OIT path for all (non-OIT commands
-      // get alpha blended in the composite instead).
+      // Auto-create OIT pipeline variants for commands that have shader code
+      // but no OIT pipeline yet. This enables OIT for any command that opts in
+      // by storing its WGSL source in _shaderCode.
       let hasOITPipelines = false;
       for (let ci = 0; ci < count; ci++) {
-        if (commands[ci]?._oitPipeline) {
+        const cmd = commands[ci];
+        if (!cmd) continue;
+        if (cmd._oitPipeline) {
           hasOITPipelines = true;
-          break;
+        } else if (cmd._shaderCode && cmd.isWebGPUDrawCommand && this._oit) {
+          const oitPipeline = this._oit.createOITPipeline(
+            context.device,
+            cmd._shaderCode,
+            cmd._pipelineConfig ?? {
+              label: cmd.owner?.constructor?.name ?? "auto",
+              layout: "auto",
+              primitive: { topology: "triangle-list" },
+              depthStencil: context.depthFormat
+                ? {
+                    format: context.depthFormat,
+                    depthWriteEnabled: false,
+                    depthCompare: "less-equal" as GPUCompareFunction,
+                  }
+                : undefined,
+            },
+          );
+          if (oitPipeline) {
+            cmd._oitPipeline = oitPipeline;
+            hasOITPipelines = true;
+          }
         }
       }
 
@@ -851,31 +1152,47 @@ export class WebGPUSceneRenderer {
             this._oit.getAccumulationPassDescriptor(depthView);
           if (accPassDesc) {
             const accPass = encoder.beginRenderPass(accPassDesc);
-            // Execute commands that have OIT pipeline variants
+            // Helper to execute a single OIT command in the accumulation pass
+            const executeOITCommand = (cmd: any) => {
+              if (!cmd?._oitPipeline) return;
+              accPass.setPipeline(cmd._oitPipeline);
+              for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
+                accPass.setBindGroup(bi, cmd.bindGroups[bi]);
+              }
+              for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
+                accPass.setVertexBuffer(
+                  vi,
+                  cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi],
+                );
+              }
+              if (cmd.indexBuffer && cmd.indexCount) {
+                accPass.setIndexBuffer(
+                  cmd.indexBuffer._buffer ?? cmd.indexBuffer,
+                  cmd.indexFormat,
+                );
+                accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
+              } else if (cmd.vertexCount) {
+                accPass.draw(cmd.vertexCount, cmd.instanceCount ?? 1);
+              }
+            };
+
+            // Execute translucent commands with OIT pipeline variants
             for (let ci = 0; ci < count; ci++) {
               const cmd = commands[ci];
               if (cmd?.isWebGPUDrawCommand && cmd._oitPipeline) {
-                accPass.setPipeline(cmd._oitPipeline);
-                for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
-                  accPass.setBindGroup(bi, cmd.bindGroups[bi]);
-                }
-                for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
-                  accPass.setVertexBuffer(
-                    vi,
-                    cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi],
-                  );
-                }
-                if (cmd.indexBuffer && cmd.indexCount) {
-                  accPass.setIndexBuffer(
-                    cmd.indexBuffer._buffer ?? cmd.indexBuffer,
-                    cmd.indexFormat,
-                  );
-                  accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
-                } else if (cmd.vertexCount) {
-                  accPass.draw(cmd.vertexCount, cmd.instanceCount ?? 1);
-                }
+                executeOITCommand(cmd);
               }
             }
+
+            // GS-WSR: Include deferred Gaussian splat commands in OIT accumulation
+            const deferredSplats = (this as any)._deferredOITSplats;
+            if (deferredSplats) {
+              for (let si = 0; si < deferredSplats.count; si++) {
+                executeOITCommand(deferredSplats.commands[si]);
+              }
+              (this as any)._deferredOITSplats = null;
+            }
+
             accPass.end();
 
             // Composite OIT result over opaque scene
@@ -1036,14 +1353,23 @@ export class WebGPUSceneRenderer {
       }
     }
 
-    // 3. Weather Particles — GPU compute rain/snow/fog/hail
+    // 3. Weather Particles — GPU compute rain/snow/fog/hail + render
     if (scene._enableWeather) {
       const weatherFR = context.getFeatureRenderer(
         FeatureRendererKey.WEATHER_PARTICLES,
       );
       if (weatherFR?.update) {
         try {
+          // Compute simulation (needs own command encoder)
           weatherFR.update(context, frameState, scene);
+
+          // Render particles into the current scene render pass
+          if (weatherFR.render) {
+            const passEncoder = context.currentRenderPassEncoder;
+            if (passEncoder) {
+              weatherFR.render(context, frameState, scene, passEncoder);
+            }
+          }
         } catch (e: any) {
           context.log?.("warn", `Weather update failed: ${e.message}`);
         }
@@ -1054,12 +1380,24 @@ export class WebGPUSceneRenderer {
   // --- Post-processing ---
 
   private _runPostProcessing(config: WebGPURenderFrameConfig): void {
-    if (!this._postProcess || !config.usePostProcess) {
-      return;
-    }
-    const { context } = config;
+    const { context, scene } = config;
+    const frameState = scene?._frameState;
     const device: GPUDevice | undefined = context._device;
     if (!device) {
+      return;
+    }
+
+    // Tier 2 debug — depth-as-color override. When the flag is on we
+    // skip the entire production post-process chain and replace it with
+    // a single fullscreen depth visualization pass. The check happens
+    // *before* the early-out so the debug pass works even when
+    // post-process is otherwise disabled.
+    if (frameState?.debugShowDepthAsColor === true) {
+      this._executeDebugDepthOverlay(config);
+      return;
+    }
+
+    if (!this._postProcess || !config.usePostProcess) {
       return;
     }
 
@@ -1081,6 +1419,70 @@ export class WebGPUSceneRenderer {
     }
 
     // Resume the default render pass for any subsequent operations
+    context.resumeDefaultRenderPass?.();
+  }
+
+  /**
+   * Tier 2 debug — runs the standalone {@link WebGPUDebugDepthOverlay}
+   * pass instead of the production post-process chain. Lazily constructs
+   * the overlay on first invocation so production frames pay zero cost.
+   * Reads camera near/far from the scene's uniform state for depth
+   * linearization.
+   */
+  private _executeDebugDepthOverlay(config: WebGPURenderFrameConfig): void {
+    const { context, scene } = config;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
+
+    context.endCurrentRenderPass?.();
+
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const targetView: GPUTextureView | undefined = context.currentTextureView;
+    // Sampleable depth view is only available when the scene framebuffer
+    // is single-sample (no MSAA) — see WebGPURenderTarget.depthSamplable
+    // contract. When MSAA is on, the depth-as-color overlay can't run;
+    // log once and skip.
+    const depthView: GPUTextureView | undefined =
+      this._sceneFramebuffer?.depthSampleableView;
+
+    if (!encoder || !targetView || !depthView) {
+      if (!this._depthOverlayWarningLogged) {
+        context.log?.(
+          "warn",
+          "[WebGPU:DepthOverlay] depth-as-color requires a single-sample (non-MSAA) scene framebuffer; overlay skipped",
+        );
+        this._depthOverlayWarningLogged = true;
+      }
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+
+    if (!this._debugDepthOverlay) {
+      this._debugDepthOverlay = new WebGPUDebugDepthOverlay();
+    }
+    this._debugDepthOverlay.initialize(
+      device,
+      context._presentationFormat ?? "bgra8unorm",
+    );
+
+    const camera = scene?.camera;
+    const frustum = camera?.frustum;
+    const near = frustum?.near ?? 1;
+    const far = frustum?.far ?? 1e9;
+    const mode = scene?._frameState?.debugDepthAsColorMode | 0 || 0;
+
+    this._debugDepthOverlay.execute(
+      encoder,
+      depthView,
+      targetView,
+      near,
+      far,
+      mode,
+    );
+
     context.resumeDefaultRenderPass?.();
   }
 
@@ -1186,5 +1588,98 @@ export class WebGPUSceneRenderer {
 
   get isDestroyed(): boolean {
     return this._isDestroyed;
+  }
+
+  // ─── GPU Frustum Culling ───
+
+  /** Minimum command count before GPU culling is worth the overhead */
+  private static readonly GPU_CULL_THRESHOLD = 256;
+
+  /**
+   * GPU-cull an array of commands using compute shader frustum testing.
+   * Returns a filtered array with only visible commands. Falls back to
+   * returning the original array if the culler isn't ready or count is
+   * below threshold.
+   *
+   * @param commands - Array of draw commands with boundingVolume
+   * @param context - WebGPU context with gpuCuller
+   * @param cullingVolume - Camera culling volume with planes[]
+   * @returns Filtered command array (may be same reference if no culling done)
+   */
+  gpuCullCommands(commands: any[], context: any, cullingVolume: any): any[] {
+    if (!commands || commands.length < WebGPUSceneRenderer.GPU_CULL_THRESHOLD) {
+      return commands;
+    }
+
+    const culler = context.gpuCuller;
+    if (!culler || !culler.initialized) {
+      return commands;
+    }
+
+    // Extract bounding spheres
+    const count = commands.length;
+    const sphereData = new Float32Array(count * 4);
+    let hasSpheres = false;
+    for (let i = 0; i < count; i++) {
+      const bv = commands[i].boundingVolume;
+      if (bv && bv.center) {
+        const off = i * 4;
+        sphereData[off] = bv.center.x;
+        sphereData[off + 1] = bv.center.y;
+        sphereData[off + 2] = bv.center.z;
+        sphereData[off + 3] = bv.radius ?? bv.boundingSphere?.radius ?? 0;
+        hasSpheres = true;
+      }
+    }
+
+    if (!hasSpheres || !cullingVolume?.planes) {
+      return commands;
+    }
+
+    // Pack frustum planes (6 × vec4)
+    const planes = cullingVolume.planes;
+    const planeData = new Float32Array(24);
+    for (let i = 0; i < Math.min(planes.length, 6); i++) {
+      const p = planes[i];
+      planeData[i * 4] = p.x;
+      planeData[i * 4 + 1] = p.y;
+      planeData[i * 4 + 2] = p.z;
+      planeData[i * 4 + 3] = p.w;
+    }
+
+    // Upload and dispatch
+    culler.uploadBoundingSpheres(sphereData);
+    culler.uploadFrustumPlanes(planeData);
+
+    const encoder = context._currentCommandEncoder;
+    if (!encoder) {
+      return commands;
+    }
+
+    culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
+
+    // Async readback — results available next frame
+    culler.prepareReadback(encoder, count);
+    culler
+      .readResults(count)
+      .then((results: any) => {
+        // Cache results for next frame's filtering
+        (this as any)._lastCullResults = results;
+      })
+      .catch(() => {});
+
+    // Use previous frame's results if available
+    const prev = (this as any)._lastCullResults;
+    if (prev && prev.visibilityFlags && prev.objectCount === count) {
+      const filtered: any[] = [];
+      for (let i = 0; i < count; i++) {
+        if (prev.visibilityFlags[i] === 1) {
+          filtered.push(commands[i]);
+        }
+      }
+      return filtered;
+    }
+
+    return commands;
   }
 }

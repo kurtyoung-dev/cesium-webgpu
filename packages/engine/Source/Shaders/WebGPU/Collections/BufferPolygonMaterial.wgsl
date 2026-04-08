@@ -43,7 +43,7 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
     camera.encodedCameraPositionMCHigh, camera.encodedCameraPositionMCLow
   );
   let positionEC = camera.modelViewRelativeToEye * p;
-  let clipPos = camera.projection * positionEC;
+  let clipPos = camera.projectionMatrix * positionEC;
 
   output.position = clipPos;
 

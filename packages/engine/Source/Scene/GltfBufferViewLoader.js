@@ -2,9 +2,24 @@ import Check from "../Core/Check.js";
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import hasExtension from "./hasExtension.js";
-import { MeshoptDecoder } from "meshoptimizer";
 import ResourceLoader from "./ResourceLoader.js";
 import ResourceLoaderState from "./ResourceLoaderState.js";
+
+// Lazy-loaded `MeshoptDecoder` from `meshoptimizer`. The package is
+// ~110 KB minified across three files (decoder + simplifier + clusterizer)
+// and is only needed when a glTF buffer view uses the EXT_meshopt_compression
+// extension. Static-importing it shipped the cost to every consumer; the
+// dynamic import below splits it into its own chunk that's only fetched
+// when a meshopt-compressed buffer view is actually decoded.
+let _meshoptDecoderPromise = null;
+function getMeshoptDecoder() {
+  if (!_meshoptDecoderPromise) {
+    _meshoptDecoderPromise = import("meshoptimizer").then(
+      (mod) => mod.MeshoptDecoder,
+    );
+  }
+  return _meshoptDecoderPromise;
+}
 
 /**
  * Loads a glTF buffer view.
@@ -175,6 +190,10 @@ async function loadResources(loader) {
       const count = loader._meshoptCount;
       const byteStride = loader._meshoptByteStride;
       const result = new Uint8Array(count * byteStride);
+      // Resolve the lazy MeshoptDecoder. First call downloads the chunk
+      // (~110 KB) and initialises the WASM-free JS decoder; subsequent
+      // decodes reuse the cached singleton.
+      const MeshoptDecoder = await getMeshoptDecoder();
       MeshoptDecoder.decodeGltfBuffer(
         result,
         count,

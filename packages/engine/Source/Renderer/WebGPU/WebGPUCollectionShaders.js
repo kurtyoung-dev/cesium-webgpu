@@ -25,6 +25,7 @@ import PolylineArrow from "../../Shaders/WebGPU/Collections/PolylineArrow.js";
 import PolylineDash from "../../Shaders/WebGPU/Collections/PolylineDash.js";
 import PolylineGlow from "../../Shaders/WebGPU/Collections/PolylineGlow.js";
 import PolylineOutline from "../../Shaders/WebGPU/Collections/PolylineOutline.js";
+import BillboardCollectionSDF from "../../Shaders/WebGPU/Collections/BillboardCollectionSDF.js";
 
 // =========================================================================
 // Shader Cache — populated synchronously from static imports
@@ -37,6 +38,7 @@ const _shaderCache = {
   // Billboard shaders
   billboardColor: BillboardCollection,
   billboardPick: BillboardCollectionPick,
+  billboardSDF: BillboardCollectionSDF,
   // Polyline shaders
   polylineColor: PolylineCollection,
   polylinePick: PolylineCollectionPick,

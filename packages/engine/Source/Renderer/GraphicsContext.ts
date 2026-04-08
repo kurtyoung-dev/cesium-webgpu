@@ -232,6 +232,13 @@ export interface GraphicsContextOptions {
    * @default false
    */
   useOffscreenCanvas?: boolean;
+
+  /**
+   * WebGPU feature level: "core" (default) or "compatibility".
+   * "compatibility" runs WebGPU on WebGL2 hardware via restricted feature set.
+   * Only relevant when renderer is "webgpu" or "webgpu-compat".
+   */
+  featureLevel?: "core" | "compatibility";
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -278,6 +285,25 @@ export abstract class GraphicsContext {
    * Each backend populates this with its own implementations.
    * @private
    */
+  /**
+   * Per-key lazy loader: an async function that imports and registers
+   * the corresponding feature renderer the first time it's needed.
+   * Used for advanced renderers (Voxel, GaussianSplat, PointCloud, etc.)
+   * that aren't part of the basic globe view — keeping them out of the
+   * eager-imported `WebGPUFeatureRenderers` chunk lets esbuild split
+   * them into separate dynamic chunks that only download on demand.
+   *
+   * Loaders are stored alongside the eager registry. The first call to
+   * `getFeatureRenderer(key)` for a key with a pending loader fires the
+   * loader and replaces the slot with the resolved renderer once the
+   * dynamic import settles. The first call returns undefined (the
+   * caller's WebGL fallback runs); the next call after the import
+   * settles returns the registered FR.
+   */
+  private _featureRendererLoaders: ((() => Promise<void>) | undefined)[] =
+    new Array(0);
+  private _featureRendererLoadingFlags: (boolean | undefined)[] = new Array(0);
+
   private _featureRenderers: (FeatureRenderer | undefined)[] = new Array(
     FeatureRendererKey.COUNT,
   );
@@ -999,6 +1025,34 @@ export abstract class GraphicsContext {
     renderer: CollectionRenderer | PrimitiveCommandRenderer | SystemRenderer,
   ): void {
     this._featureRenderers[key] = renderer;
+    // Clear any pending lazy loader for this key — the renderer is
+    // now available, no need to lazy-import.
+    this._featureRendererLoaders[key] = undefined;
+    this._featureRendererLoadingFlags[key] = undefined;
+  }
+
+  /**
+   * Register an async loader that resolves the renderer for `key` on
+   * first access. Used for advanced renderers that should not pull their
+   * implementation modules into the main bundle. The loader is invoked
+   * exactly once (subsequent calls during the in-flight import are
+   * coalesced) and is expected to call `registerFeatureRenderer(key, …)`
+   * itself once the dynamic import settles.
+   *
+   * Until the loader resolves, `getFeatureRenderer(key)` returns
+   * `undefined` so callers fall back to their WebGL path. Once the
+   * loader registers the renderer, all subsequent calls return it.
+   *
+   * @param key A FeatureRendererKey numeric enum value
+   * @param loader A function returning a Promise that registers the FR
+   */
+  registerFeatureRendererLoader(
+    key: number,
+    loader: () => Promise<void>,
+  ): void {
+    // Don't overwrite an already-resolved entry — the renderer wins.
+    if (this._featureRenderers[key] !== undefined) return;
+    this._featureRendererLoaders[key] = loader;
   }
 
   /**
@@ -1021,7 +1075,33 @@ export abstract class GraphicsContext {
    * if (fr) { (fr as CollectionRenderer).update(collection, frameState); }
    */
   getFeatureRenderer(key: number): FeatureRenderer | undefined {
-    return this._featureRenderers[key];
+    const existing = this._featureRenderers[key];
+    if (existing !== undefined) return existing;
+
+    // No registered FR — check for a pending lazy loader. The first call
+    // for a lazy key fires the import (fire-and-forget); the call returns
+    // undefined so the caller falls back to its WebGL path. After the
+    // import settles and `registerFeatureRenderer` is called from the
+    // loader, subsequent `getFeatureRenderer` calls return the FR.
+    //
+    // The loading-flag guard coalesces concurrent calls so the same
+    // dynamic import isn't kicked off twice if multiple primitives ask
+    // on the same frame.
+    const loader = this._featureRendererLoaders[key];
+    if (loader && !this._featureRendererLoadingFlags[key]) {
+      this._featureRendererLoadingFlags[key] = true;
+      // Fire-and-forget — errors are swallowed but logged so the WebGL
+      // fallback can continue rendering. The loader is responsible for
+      // calling registerFeatureRenderer when done.
+      loader().catch((err) => {
+        this._featureRendererLoadingFlags[key] = false;
+        this.log(
+          "warn",
+          `Lazy feature renderer load failed for key ${key}: ${err?.message ?? err}`,
+        );
+      });
+    }
+    return undefined;
   }
 
   /**

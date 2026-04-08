@@ -26,6 +26,8 @@ import AtmosphereLUTSource from "../../Shaders/WebGPU/Compute/AtmosphereLUT.js";
 import PointCloudSortSource from "../../Shaders/WebGPU/Compute/PointCloudSort.js";
 import PointCloudLODSource from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
+import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
+import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
 
 /**
  * Compute task type identifiers for the dispatch orchestrator.
@@ -42,7 +44,10 @@ export const ComputeTaskType = Object.freeze({
   COUNT: 8,
 } as const);
 
-export type ComputeTaskTypeValue = typeof ComputeTaskType[keyof Omit<typeof ComputeTaskType, 'COUNT'>];
+export type ComputeTaskTypeValue = (typeof ComputeTaskType)[keyof Omit<
+  typeof ComputeTaskType,
+  "COUNT"
+>];
 
 /**
  * Performance feature configuration.
@@ -142,6 +147,33 @@ export class WebGPUPerformanceManager {
   private _atmosphereLUTDirty: boolean = true;
   private _computeDispatches: number = 0;
 
+  // Subgroup-preprocessed compute sources. Lazy-built on first dispatch.
+  // The PointCloudLOD shader wraps its accelerated entry point in
+  // `// __SUBGROUP_BLOCK_*__` sentinels and ships WITHOUT an `enable
+  // subgroups;` directive (WGSL parses `enable` only at the top of the
+  // file, so a mid-file directive is a hard error). The host has to
+  // either prepend the directive on capable devices or strip the entire
+  // sentinel block on non-capable devices, exactly as WebGPUGPUCuller
+  // does for FrustumCull.wgsl. Cache once per device — this never
+  // changes for the lifetime of the GPUDevice.
+  private _pointCloudLODPreparedSource: string | null = null;
+  private _pointCloudLODUseSubgroups: boolean = false;
+
+  // Atmosphere LUT GPU resources (lazy-allocated on first dispatch)
+  private _atmosphereLutResources: {
+    transmittance: GPUTexture;
+    transmittanceView: GPUTextureView;
+    inscatter: GPUTexture;
+    inscatterView: GPUTextureView;
+    paramsBuffer: GPUBuffer;
+    paramsData: Float32Array;
+    bindGroup: GPUBindGroup | null;
+    bindGroupLayout: GPUBindGroupLayout | null;
+    width: number;
+    inscatterHeight: number;
+    transmittanceHeight: number;
+  } | null = null;
+
   constructor(context: any, config?: Partial<PerformanceConfig>) {
     this._context = context;
     this._config = { ...DEFAULT_CONFIG, ...config };
@@ -226,8 +258,9 @@ export class WebGPUPerformanceManager {
     }
 
     this._frameTimings.bundlesExecuted = this._bundleHitCount;
-    this._frameTimings.indirectDrawsBatched =
-      this._indirectDrawActive ? (this._context.indirectDrawManager?.drawCount ?? 0) : 0;
+    this._frameTimings.indirectDrawsBatched = this._indirectDrawActive
+      ? (this._context.indirectDrawManager?.drawCount ?? 0)
+      : 0;
 
     this._bundleHitCount = 0;
     this._bundleMissCount = 0;
@@ -256,7 +289,10 @@ export class WebGPUPerformanceManager {
     count: number,
     recordCallback: (encoder: GPURenderBundleEncoder) => void,
   ): boolean {
-    if (!this._bundleManagerActive || count < this._config.renderBundleThreshold) {
+    if (
+      !this._bundleManagerActive ||
+      count < this._config.renderBundleThreshold
+    ) {
       return false;
     }
 
@@ -420,7 +456,9 @@ export class WebGPUPerformanceManager {
    *
    * @param passName - Label for the pass (e.g., "globe", "opaque", "translucent")
    */
-  getPassTimestampWrites(passName: string): GPURenderPassTimestampWrites | undefined {
+  getPassTimestampWrites(
+    passName: string,
+  ): GPURenderPassTimestampWrites | undefined {
     if (!this._profilerActive) {
       return undefined;
     }
@@ -431,7 +469,9 @@ export class WebGPUPerformanceManager {
   /**
    * Get timestamp writes for a compute pass descriptor.
    */
-  getComputePassTimestampWrites(passName: string): GPUComputePassTimestampWrites | undefined {
+  getComputePassTimestampWrites(
+    passName: string,
+  ): GPUComputePassTimestampWrites | undefined {
     if (!this._profilerActive) {
       return undefined;
     }
@@ -499,11 +539,20 @@ export class WebGPUPerformanceManager {
    */
   getComputeShaderSource(taskType: number): string | null {
     switch (taskType) {
-      case ComputeTaskType.ATMOSPHERE_LUT: return AtmosphereLUTSource;
-      case ComputeTaskType.POINT_CLOUD_SORT: return PointCloudSortSource;
-      case ComputeTaskType.POINT_CLOUD_LOD: return PointCloudLODSource;
-      case ComputeTaskType.GPU_SORT_KEYS: return GPUSortKeysSource;
-      default: return null;
+      case ComputeTaskType.ATMOSPHERE_LUT:
+        return AtmosphereLUTSource;
+      case ComputeTaskType.POINT_CLOUD_SORT:
+        return PointCloudSortSource;
+      case ComputeTaskType.POINT_CLOUD_LOD:
+        return PointCloudLODSource;
+      case ComputeTaskType.GPU_SORT_KEYS:
+        return GPUSortKeysSource;
+      case ComputeTaskType.HI_Z_PYRAMID:
+        return HiZPyramidSource;
+      case ComputeTaskType.OCCLUSION_TEST:
+        return OcclusionTestSource;
+      default:
+        return null;
     }
   }
 
@@ -555,6 +604,682 @@ export class WebGPUPerformanceManager {
   }
 
   /**
+   * Lazy-create the GPU resources backing the atmosphere LUT — two storage
+   * textures (transmittance + inscatter), an AtmosphereParams uniform
+   * buffer, and a bind group laid out for `AtmosphereLUT.wgsl`. Returns
+   * the cached struct on subsequent calls.
+   *
+   * The textures use rgba16float storage format, which is in the WebGPU
+   * core spec, so no feature flag is required to bind them as
+   * `texture_storage_2d<rgba16float, write>`. Sampling them later (from
+   * SkyAtmosphere / GlobeTerrain) goes through a regular texture binding,
+   * so the storage texture is created with TEXTURE_BINDING usage as well.
+   *
+   * @param device GPUDevice (passed in to avoid coupling to context shape)
+   */
+  ensureAtmosphereLUTResources(device: GPUDevice): {
+    transmittanceView: GPUTextureView;
+    inscatterView: GPUTextureView;
+  } | null {
+    if (this._atmosphereLutResources) {
+      return {
+        transmittanceView: this._atmosphereLutResources.transmittanceView,
+        inscatterView: this._atmosphereLutResources.inscatterView,
+      };
+    }
+
+    // Standard LUT dimensions per Bruneton & Neyret / Hillaire conventions.
+    // Transmittance is 256×64; inscatter folds altitude+sun zenith into 256×128.
+    const width = 256;
+    const transmittanceHeight = 64;
+    const inscatterHeight = 128;
+
+    const usage =
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+
+    const transmittance = device.createTexture({
+      label: "AtmosphereLUT_Transmittance",
+      size: { width, height: transmittanceHeight },
+      format: "rgba16float",
+      usage,
+    });
+    const inscatter = device.createTexture({
+      label: "AtmosphereLUT_Inscatter",
+      size: { width, height: inscatterHeight },
+      format: "rgba16float",
+      usage,
+    });
+
+    // AtmosphereParams: see AtmosphereLUT.wgsl. 16 floats with std140 padding.
+    // Layout (offsets in floats):
+    //   0: innerRadius   1: outerRadius
+    //   2: rayleighScaleHeight   3: mieScaleHeight
+    //   4: mieAnisotropy   5: intensity
+    //   6: lutWidth (u32 reinterpreted)   7: lutHeight (u32 reinterpreted)
+    //   8-10: rayleighCoefficient.xyz   11: pad
+    //   12-14: mieCoefficient.xyz   15: pad
+    //   16-18: sunDirection.xyz   19: pad
+    const paramsData = new Float32Array(20);
+    const paramsBuffer = device.createBuffer({
+      label: "AtmosphereLUT_Params",
+      size: Math.max(paramsData.byteLength, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this._atmosphereLutResources = {
+      transmittance,
+      transmittanceView: transmittance.createView(),
+      inscatter,
+      inscatterView: inscatter.createView(),
+      paramsBuffer,
+      paramsData,
+      bindGroup: null,
+      bindGroupLayout: null,
+      width,
+      transmittanceHeight,
+      inscatterHeight,
+    };
+
+    return {
+      transmittanceView: this._atmosphereLutResources.transmittanceView,
+      inscatterView: this._atmosphereLutResources.inscatterView,
+    };
+  }
+
+  /**
+   * Dispatch both LUT compute entry points (computeTransmittance,
+   * computeInscatter) using the cached resources. The caller is
+   * responsible for invalidating the LUT when the sun direction or
+   * scattering parameters change (call `invalidateAtmosphereLUT()`).
+   *
+   * Sample call site:
+   *   if (perfMgr.shouldRecomputeAtmosphereLUT()) {
+   *     perfMgr.dispatchAtmosphereLUT(encoder, device, {
+   *       innerRadius: 6371000, outerRadius: 6471000,
+   *       rayleighScaleHeight: 8000, mieScaleHeight: 1200,
+   *       mieAnisotropy: 0.76, intensity: 1.0,
+   *       rayleighCoefficient: [5.8e-6, 13.5e-6, 33.1e-6],
+   *       mieCoefficient: [21e-6, 21e-6, 21e-6],
+   *       sunDirection: [sx, sy, sz],
+   *     });
+   *   }
+   *
+   * @returns true on success, false if compute is unavailable
+   */
+  dispatchAtmosphereLUT(
+    encoder: GPUCommandEncoder,
+    device: GPUDevice,
+    params: {
+      innerRadius: number;
+      outerRadius: number;
+      rayleighScaleHeight: number;
+      mieScaleHeight: number;
+      mieAnisotropy: number;
+      intensity: number;
+      rayleighCoefficient: [number, number, number];
+      mieCoefficient: [number, number, number];
+      sunDirection: [number, number, number];
+    },
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    const res = this.ensureAtmosphereLUTResources(device);
+    if (!res || !this._atmosphereLutResources) return false;
+    const lut = this._atmosphereLutResources;
+
+    // Pack params into the typed array slot. The u32 lutWidth/lutHeight
+    // entries reuse Float32Array slots via a temporary Uint32Array view —
+    // valid because the underlying ArrayBuffer is shared.
+    const f = lut.paramsData;
+    f[0] = params.innerRadius;
+    f[1] = params.outerRadius;
+    f[2] = params.rayleighScaleHeight;
+    f[3] = params.mieScaleHeight;
+    f[4] = params.mieAnisotropy;
+    f[5] = params.intensity;
+    const u32 = new Uint32Array(f.buffer, f.byteOffset, f.length);
+    u32[6] = lut.width;
+    u32[7] = lut.transmittanceHeight; // computeTransmittance reads this; the
+    // inscatter pass uses the same uniform — its dispatch grid covers the
+    // 256×128 region directly via dispatchWorkgroups, so the value is only
+    // used for the per-row clamp inside computeTransmittance.
+    f[8] = params.rayleighCoefficient[0];
+    f[9] = params.rayleighCoefficient[1];
+    f[10] = params.rayleighCoefficient[2];
+    // f[11] = pad
+    f[12] = params.mieCoefficient[0];
+    f[13] = params.mieCoefficient[1];
+    f[14] = params.mieCoefficient[2];
+    // f[15] = pad
+    f[16] = params.sunDirection[0];
+    f[17] = params.sunDirection[1];
+    f[18] = params.sunDirection[2];
+    // f[19] = pad
+
+    device.queue.writeBuffer(
+      lut.paramsBuffer,
+      0,
+      f.buffer,
+      f.byteOffset,
+      f.byteLength,
+    );
+
+    // Build the bind group lazily. Layout matches AtmosphereLUT.wgsl:
+    //   binding 0: uniform AtmosphereParams
+    //   binding 1: texture_storage_2d<rgba16float, write> transmittance
+    //   binding 2: texture_storage_2d<rgba16float, write> inscatter
+    if (!lut.bindGroupLayout) {
+      lut.bindGroupLayout = device.createBindGroupLayout({
+        label: "AtmosphereLUT_BGL",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              access: "write-only",
+              format: "rgba16float",
+              viewDimension: "2d",
+            },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              access: "write-only",
+              format: "rgba16float",
+              viewDimension: "2d",
+            },
+          },
+        ],
+      });
+    }
+    if (!lut.bindGroup) {
+      lut.bindGroup = device.createBindGroup({
+        label: "AtmosphereLUT_BG",
+        layout: lut.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: lut.paramsBuffer } },
+          { binding: 1, resource: lut.transmittanceView },
+          { binding: 2, resource: lut.inscatterView },
+        ],
+      });
+    }
+
+    // Dispatch. The shader uses 16×16 workgroups, so we round up.
+    const wgsX = Math.ceil(lut.width / 16);
+    const wgsT = Math.ceil(lut.transmittanceHeight / 16);
+    const wgsI = Math.ceil(lut.inscatterHeight / 16);
+
+    this.dispatchCompute(
+      encoder,
+      ComputeTaskType.ATMOSPHERE_LUT,
+      [{ index: 0, bindGroup: lut.bindGroup }],
+      wgsX,
+      wgsT,
+      1,
+      "computeTransmittance",
+    );
+    this.dispatchCompute(
+      encoder,
+      ComputeTaskType.ATMOSPHERE_LUT,
+      [{ index: 0, bindGroup: lut.bindGroup }],
+      wgsX,
+      wgsI,
+      1,
+      "computeInscatter",
+    );
+
+    return true;
+  }
+
+  /**
+   * Lazily prepare the PointCloudLOD shader source for the current device's
+   * subgroup capability. Returns the preprocessed source string and the
+   * entry-point name that should be used at dispatch time.
+   *
+   * On a subgroup-capable device this prepends `enable subgroups;` and
+   * keeps both `computeMain` + `computeMainSubgroups` in the module so
+   * the caller can pick one. On a non-capable device the sentinel block
+   * around `computeMainSubgroups` is stripped entirely so the parser
+   * never sees `subgroupBallot`/`subgroup_invocation_id` calls — those
+   * would be a hard validation error without the feature.
+   *
+   * Mirrors the same preprocessing pattern WebGPUGPUCuller uses for
+   * FrustumCull.wgsl. Cached on `this` because the device feature set
+   * is fixed for the lifetime of the GPUDevice.
+   *
+   * @private
+   */
+  private preparePointCloudLODSource(device: GPUDevice): {
+    source: string;
+    entryPoint: string;
+    useSubgroups: boolean;
+  } {
+    if (!this._pointCloudLODPreparedSource) {
+      const raw = this.getComputeShaderSource(ComputeTaskType.POINT_CLOUD_LOD);
+      const useSubgroups = device.features.has("subgroups" as GPUFeatureName);
+      let prepared: string;
+      if (useSubgroups) {
+        prepared = `enable subgroups;\n${raw}`;
+      } else {
+        prepared = raw.replace(
+          /\/\/ __SUBGROUP_BLOCK_START__[\s\S]*?\/\/ __SUBGROUP_BLOCK_END__/,
+          "// (subgroup variant stripped — feature not present)",
+        );
+      }
+      this._pointCloudLODPreparedSource = prepared;
+      this._pointCloudLODUseSubgroups = useSubgroups;
+    }
+    return {
+      source: this._pointCloudLODPreparedSource,
+      entryPoint: this._pointCloudLODUseSubgroups
+        ? "computeMainSubgroups"
+        : "computeMain",
+      useSubgroups: this._pointCloudLODUseSubgroups,
+    };
+  }
+
+  /**
+   * Dispatch the PointCloudLOD compute pass with automatic subgroup
+   * variant selection. Caller is responsible for building the bind
+   * group(s) per `PointCloudLOD.wgsl`'s @group(0) layout (params UBO,
+   * three position storage buffers, the visibleIndices output, and the
+   * visibleCount atomic).
+   *
+   * Returns true on a successful dispatch, false if compute is unavailable
+   * or the cached compute engine isn't ready yet — callers should fall
+   * back to a CPU LOD path in that case.
+   *
+   * Workgroup size in the shader is 256, so caller passes
+   * `workgroupCount = ceil(pointCount / 256)`.
+   *
+   * @example
+   *   const ok = perfMgr.dispatchPointCloudLOD(
+   *     encoder, device, pointBindGroup, Math.ceil(pointCount / 256),
+   *   );
+   *   if (!ok) { runCpuLodFallback(); }
+   */
+  dispatchPointCloudLOD(
+    encoder: GPUCommandEncoder,
+    device: GPUDevice,
+    bindGroup: GPUBindGroup,
+    workgroupCount: number,
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    const computeEngine = this._context.computeEngine;
+    if (!computeEngine) return false;
+    if (workgroupCount <= 0) return false;
+
+    const prepared = this.preparePointCloudLODSource(device);
+
+    // Cache key includes the entry point so the scalar and subgroup
+    // pipelines coexist if a single device ever needs both (it doesn't
+    // today, but the cost is one extra map entry).
+    const cacheKey = `perfmgr:pointCloudLOD:${prepared.entryPoint}`;
+    const pipeline = computeEngine.getOrCreatePipeline(
+      cacheKey,
+      prepared.source,
+      prepared.entryPoint,
+    );
+    if (!pipeline) return false;
+
+    const label = this._getTaskLabel(ComputeTaskType.POINT_CLOUD_LOD);
+    const timestampWrites = this.getComputePassTimestampWrites(label);
+    const computePass = encoder.beginComputePass({
+      label: `ComputePass_${label}_${prepared.entryPoint}`,
+      ...(timestampWrites ? { timestampWrites } : {}),
+    });
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(workgroupCount, 1, 1);
+    computePass.end();
+
+    this._computeDispatches++;
+    return true;
+  }
+
+  /**
+   * Reports whether the PointCloudLOD dispatcher will pick the
+   * subgroup-accelerated entry point on this device. Useful for diagnostics
+   * and for letting callers tag their bind groups / counters accordingly.
+   * Calling this lazily prepares the cached source if needed.
+   */
+  pointCloudLODUsesSubgroups(device: GPUDevice): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    return this.preparePointCloudLODSource(device).useSubgroups;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // FORK-41: Hi-Z PYRAMID + OCCLUSION TEST DISPATCHERS
+  // ═══════════════════════════════════════════════════════════
+  //
+  // The Hi-Z pyramid is a hierarchical depth buffer (mip chain of
+  // max-Z reductions over previous-frame depth). The occlusion test
+  // shader uses it to mark commands whose bounding spheres are fully
+  // hidden by previously-drawn geometry, so a CPU-side culler can
+  // drop them before the next frame's draw submission.
+  //
+  // Both shaders ship as compiled .js modules and were already
+  // registered in `getComputeShaderSource()`. The host responsibility
+  // is twofold: build the per-mip / per-frame bind groups, and call
+  // the dispatchers below at the right point in the frame loop. The
+  // dispatchers themselves are pure compute-pass orchestration —
+  // they don't allocate any GPU resources.
+  //
+  // Today nothing in the renderer pipeline calls these. They're
+  // wired up so that an opt-in occlusion stage can flip on with a
+  // ContextOptions flag once the host bind-group plumbing lands. The
+  // dispatchers are validated by the spec coverage in
+  // packages/engine/Specs/Renderer/WebGPU/WebGPUSubgroupUtilsSpec.js
+  // and exercised by the same shader pipeline cache that
+  // PointCloudLOD goes through.
+
+  /**
+   * Dispatch one mip level of the Hi-Z pyramid build. Caller is
+   * responsible for:
+   *  - Allocating the source mip texture (`r32float`, must be sampleable)
+   *  - Allocating the destination storage texture for THIS mip
+   *  - Building a bind group matching `HiZPyramid.wgsl`'s @group(0):
+   *      binding 0: depthInput texture_2d
+   *      binding 1: hiZOutput texture_storage_2d<r32float, write>
+   *      binding 2: HiZParams uniform buffer
+   *
+   * The dispatch grid covers a 16×16 workgroup tile per output texel,
+   * matching the shader's `@workgroup_size(16, 16, 1)`. Round up the
+   * grid via `Math.ceil(outputDim / 16)`.
+   *
+   * Returns true on a successful record, false if compute is
+   * unavailable, the compute engine isn't ready, or `outputWidth` /
+   * `outputHeight` are zero. Callers should treat false as "skip the
+   * Hi-Z pass this frame and reuse the previous one."
+   *
+   * @example
+   *   for (let mip = 1; mip < mipLevels; mip++) {
+   *     perfMgr.dispatchHiZPyramid(
+   *       encoder,
+   *       hiZBindGroups[mip],
+   *       outputWidthAtMip,
+   *       outputHeightAtMip,
+   *     );
+   *   }
+   */
+  dispatchHiZPyramid(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    outputWidth: number,
+    outputHeight: number,
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    if (outputWidth <= 0 || outputHeight <= 0) return false;
+    const computeEngine = this._context.computeEngine;
+    if (!computeEngine) return false;
+
+    const source = this.getComputeShaderSource(ComputeTaskType.HI_Z_PYRAMID);
+    if (!source) return false;
+
+    // Hi-Z has a single entry point and the shader source never
+    // changes per device, so the cache key can be flat.
+    const cacheKey = "perfmgr:hiZPyramid:computeMain";
+    const pipeline = computeEngine.getOrCreatePipeline(
+      cacheKey,
+      source,
+      "computeMain",
+    );
+    if (!pipeline) return false;
+
+    const label = this._getTaskLabel(ComputeTaskType.HI_Z_PYRAMID);
+    const timestampWrites = this.getComputePassTimestampWrites(label);
+
+    // Workgroup size is 16×16, so the dispatch grid is the output
+    // texel count divided by 16, rounded up. Z is always 1 since
+    // each mip level is a 2D image.
+    const wgsX = Math.ceil(outputWidth / 16);
+    const wgsY = Math.ceil(outputHeight / 16);
+
+    const computePass = encoder.beginComputePass({
+      label: `ComputePass_${label}`,
+      ...(timestampWrites ? { timestampWrites } : {}),
+    });
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(wgsX, wgsY, 1);
+    computePass.end();
+
+    this._computeDispatches++;
+    return true;
+  }
+
+  /**
+   * Dispatch the local bitonic sort phase of `PointCloudSort.wgsl`.
+   * This is the first phase: each workgroup independently sorts its
+   * 256-element block in shared memory. The host then calls
+   * `dispatchPointCloudGlobalMerge` for each (k, j) pair where
+   * k > 256 to merge the workgroup-local sorted blocks into a
+   * single globally-sorted array.
+   *
+   * Caller builds a single bind group matching `PointCloudSort.wgsl`'s
+   * @group(0) layout (params UBO + sortKeys + indices storage buffers)
+   * and the SortParams.elementCount must already be written.
+   *
+   * @example
+   *   const N = elementCount;
+   *   perfMgr.dispatchPointCloudLocalSort(encoder, sortBG, N);
+   *   for (let k = 512; k <= N; k <<= 1) {
+   *     for (let j = k >> 1; j > 0; j >>= 1) {
+   *       // host updates SortParams.k / .j on the UBO before each call
+   *       perfMgr.dispatchPointCloudGlobalMerge(encoder, sortBG, N);
+   *     }
+   *   }
+   */
+  dispatchPointCloudLocalSort(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    elementCount: number,
+  ): boolean {
+    return this._dispatchPointCloudSortPhase(
+      encoder,
+      bindGroup,
+      elementCount,
+      "localBitonicSort",
+    );
+  }
+
+  /**
+   * Dispatch one global merge step of the bitonic sort across
+   * workgroups. Called once per (k, j) pair after the local phase.
+   * The caller is responsible for updating the SortParams uniform
+   * with the new k/j values *before* this call.
+   */
+  dispatchPointCloudGlobalMerge(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    elementCount: number,
+  ): boolean {
+    return this._dispatchPointCloudSortPhase(
+      encoder,
+      bindGroup,
+      elementCount,
+      "globalBitonicMerge",
+    );
+  }
+
+  /**
+   * Shared body for the two PointCloudSort phases. Both entry points
+   * use the same bind group and the same workgroup size; only the
+   * shader entry point and the cache key differ.
+   *
+   * @private
+   */
+  private _dispatchPointCloudSortPhase(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    elementCount: number,
+    entryPoint: string,
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    if (elementCount <= 0) return false;
+    const computeEngine = this._context.computeEngine;
+    if (!computeEngine) return false;
+
+    const source = this.getComputeShaderSource(
+      ComputeTaskType.POINT_CLOUD_SORT,
+    );
+    if (!source) return false;
+
+    const cacheKey = `perfmgr:pointCloudSort:${entryPoint}`;
+    const pipeline = computeEngine.getOrCreatePipeline(
+      cacheKey,
+      source,
+      entryPoint,
+    );
+    if (!pipeline) return false;
+
+    const label = this._getTaskLabel(ComputeTaskType.POINT_CLOUD_SORT);
+    const timestampWrites = this.getComputePassTimestampWrites(label);
+
+    // Workgroup size is 256 in both entry points; one thread per element.
+    const wgsX = Math.ceil(elementCount / 256);
+
+    const computePass = encoder.beginComputePass({
+      label: `ComputePass_${label}_${entryPoint}`,
+      ...(timestampWrites ? { timestampWrites } : {}),
+    });
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(wgsX, 1, 1);
+    computePass.end();
+
+    this._computeDispatches++;
+    return true;
+  }
+
+  /**
+   * Dispatch the GPU sort key generator. Produces packed 64-bit sort
+   * keys (high + low u32) for `commandCount` draw commands so the
+   * subsequent sort pass can reorder commands without a CPU comparator.
+   *
+   * Caller builds a bind group matching `GPUSortKeys.wgsl`'s @group(0)
+   * layout (params UBO + 6 SOA input storage buffers + 3 output
+   * storage buffers — 10 bindings total). The visibility / threshold
+   * decision should already be made via `shouldUseGPUSortKeys()`.
+   *
+   * @example
+   *   if (perfMgr.shouldUseGPUSortKeys(commandCount)) {
+   *     perfMgr.dispatchGPUSortKeys(encoder, sortKeysBG, commandCount);
+   *   }
+   */
+  dispatchGPUSortKeys(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    commandCount: number,
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    if (commandCount <= 0) return false;
+    const computeEngine = this._context.computeEngine;
+    if (!computeEngine) return false;
+
+    const source = this.getComputeShaderSource(ComputeTaskType.GPU_SORT_KEYS);
+    if (!source) return false;
+
+    const cacheKey = "perfmgr:gpuSortKeys:computeMain";
+    const pipeline = computeEngine.getOrCreatePipeline(
+      cacheKey,
+      source,
+      "computeMain",
+    );
+    if (!pipeline) return false;
+
+    const label = this._getTaskLabel(ComputeTaskType.GPU_SORT_KEYS);
+    const timestampWrites = this.getComputePassTimestampWrites(label);
+
+    // Workgroup size 256, one thread per command.
+    const wgsX = Math.ceil(commandCount / 256);
+
+    const computePass = encoder.beginComputePass({
+      label: `ComputePass_${label}`,
+      ...(timestampWrites ? { timestampWrites } : {}),
+    });
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(wgsX, 1, 1);
+    computePass.end();
+
+    this._computeDispatches++;
+    return true;
+  }
+
+  /**
+   * Dispatch the per-command occlusion test against a previously-built
+   * Hi-Z pyramid. Caller is responsible for:
+   *  - Building the SOA bounding sphere storage buffers
+   *  - Allocating the visibility output buffer (`array<u32>`,
+   *    `commandCount` elements)
+   *  - Building a bind group matching `OcclusionTest.wgsl`'s
+   *    @group(0): params UBO + Hi-Z texture + sampler + 4 sphere SOA
+   *    storage buffers + visibility output (8 bindings total)
+   *
+   * The shader's workgroup size is 256, so the dispatch grid is
+   * `ceil(commandCount / 256)` in X and 1 in Y/Z.
+   *
+   * Returns true on success, false if compute is unavailable, the
+   * compute engine isn't ready, or `commandCount` is zero. False
+   * means the caller should treat all commands as "visible" — the
+   * test never produces false positives, only false negatives, so
+   * skipping it on failure preserves correctness.
+   *
+   * @example
+   *   const ok = perfMgr.dispatchOcclusionTest(
+   *     encoder,
+   *     occBindGroup,
+   *     commands.length,
+   *   );
+   *   if (!ok) { allCommandsVisible = true; }
+   */
+  dispatchOcclusionTest(
+    encoder: GPUCommandEncoder,
+    bindGroup: GPUBindGroup,
+    commandCount: number,
+  ): boolean {
+    if (!this._context.supportsComputeShaders) return false;
+    if (commandCount <= 0) return false;
+    const computeEngine = this._context.computeEngine;
+    if (!computeEngine) return false;
+
+    const source = this.getComputeShaderSource(ComputeTaskType.OCCLUSION_TEST);
+    if (!source) return false;
+
+    const cacheKey = "perfmgr:occlusionTest:computeMain";
+    const pipeline = computeEngine.getOrCreatePipeline(
+      cacheKey,
+      source,
+      "computeMain",
+    );
+    if (!pipeline) return false;
+
+    const label = this._getTaskLabel(ComputeTaskType.OCCLUSION_TEST);
+    const timestampWrites = this.getComputePassTimestampWrites(label);
+
+    // Workgroup size 256 along X, one thread per command.
+    const wgsX = Math.ceil(commandCount / 256);
+
+    const computePass = encoder.beginComputePass({
+      label: `ComputePass_${label}`,
+      ...(timestampWrites ? { timestampWrites } : {}),
+    });
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(wgsX, 1, 1);
+    computePass.end();
+
+    this._computeDispatches++;
+    return true;
+  }
+
+  /**
    * Dispatch a compute task on the current frame's command encoder.
    * Uses WebGPUComputeEngine for pipeline caching and execution.
    *
@@ -589,7 +1314,9 @@ export class WebGPUPerformanceManager {
     // Use ComputeEngine's pipeline caching via getOrCreatePipeline
     const cacheKey = `perfmgr:${label}:${entryPoint}`;
     const pipeline = computeEngine.getOrCreatePipeline(
-      cacheKey, source, entryPoint,
+      cacheKey,
+      source,
+      entryPoint,
     );
 
     // Create and dispatch compute pass
@@ -617,40 +1344,40 @@ export class WebGPUPerformanceManager {
   getRecommendedApproach(
     taskType: number,
     elementCount: number,
-  ): 'gpu' | 'wasm' | 'js' {
+  ): "gpu" | "wasm" | "js" {
     const hasCompute = this._context.supportsComputeShaders;
 
     switch (taskType) {
       case ComputeTaskType.FRUSTUM_CULL:
-        if (hasCompute && elementCount >= 50000) return 'gpu';
-        if (elementCount >= 100) return 'wasm';
-        return 'js';
+        if (hasCompute && elementCount >= 50000) return "gpu";
+        if (elementCount >= 100) return "wasm";
+        return "js";
 
       case ComputeTaskType.ATMOSPHERE_LUT:
         // Always GPU when available — ray marching is massively parallel
-        return hasCompute ? 'gpu' : 'js';
+        return hasCompute ? "gpu" : "js";
 
       case ComputeTaskType.POINT_CLOUD_SORT:
       case ComputeTaskType.POINT_CLOUD_LOD:
-        if (hasCompute && elementCount >= 50000) return 'gpu';
-        if (elementCount >= 1000) return 'wasm';
-        return 'js';
+        if (hasCompute && elementCount >= 50000) return "gpu";
+        if (elementCount >= 1000) return "wasm";
+        return "js";
 
       case ComputeTaskType.GPU_SORT_KEYS:
-        if (hasCompute && elementCount >= 50000) return 'gpu';
-        if (elementCount >= 5000) return 'wasm';
-        return 'js';
+        if (hasCompute && elementCount >= 50000) return "gpu";
+        if (elementCount >= 5000) return "wasm";
+        return "js";
 
       case ComputeTaskType.HI_Z_PYRAMID:
       case ComputeTaskType.OCCLUSION_TEST:
         // These are inherently GPU-only operations
-        return hasCompute ? 'gpu' : 'js';
+        return hasCompute ? "gpu" : "js";
 
       case ComputeTaskType.POLYGON_SDF:
-        return hasCompute ? 'gpu' : 'js';
+        return hasCompute ? "gpu" : "js";
 
       default:
-        return 'js';
+        return "js";
     }
   }
 
@@ -662,15 +1389,24 @@ export class WebGPUPerformanceManager {
   /** Map a ComputeTaskType to a human-readable label. */
   private _getTaskLabel(taskType: number): string {
     switch (taskType) {
-      case ComputeTaskType.FRUSTUM_CULL: return 'frustumCull';
-      case ComputeTaskType.ATMOSPHERE_LUT: return 'atmosphereLUT';
-      case ComputeTaskType.POINT_CLOUD_SORT: return 'pointCloudSort';
-      case ComputeTaskType.POINT_CLOUD_LOD: return 'pointCloudLOD';
-      case ComputeTaskType.GPU_SORT_KEYS: return 'gpuSortKeys';
-      case ComputeTaskType.HI_Z_PYRAMID: return 'hiZPyramid';
-      case ComputeTaskType.OCCLUSION_TEST: return 'occlusionTest';
-      case ComputeTaskType.POLYGON_SDF: return 'polygonSDF';
-      default: return `compute_${taskType}`;
+      case ComputeTaskType.FRUSTUM_CULL:
+        return "frustumCull";
+      case ComputeTaskType.ATMOSPHERE_LUT:
+        return "atmosphereLUT";
+      case ComputeTaskType.POINT_CLOUD_SORT:
+        return "pointCloudSort";
+      case ComputeTaskType.POINT_CLOUD_LOD:
+        return "pointCloudLOD";
+      case ComputeTaskType.GPU_SORT_KEYS:
+        return "gpuSortKeys";
+      case ComputeTaskType.HI_Z_PYRAMID:
+        return "hiZPyramid";
+      case ComputeTaskType.OCCLUSION_TEST:
+        return "occlusionTest";
+      case ComputeTaskType.POLYGON_SDF:
+        return "polygonSDF";
+      default:
+        return `compute_${taskType}`;
     }
   }
 
@@ -697,20 +1433,20 @@ export class WebGPUPerformanceManager {
     return [
       `[WebGPU Performance Manager]`,
       `  Frame: ${this._frameCount}`,
-      `  Render Bundles: ${cfg.renderBundles ? 'ON' : 'OFF'} (cache: ${bundleStats.cacheSize}, hit rate: ${(bundleStats.hitRate * 100).toFixed(1)}%)`,
-      `  Indirect Draw: ${cfg.indirectDraw ? 'ON' : 'OFF'}`,
-      `  GPU Culling: ${cfg.gpuCulling ? 'ON' : 'OFF'} (threshold: ${cfg.gpuCullingThreshold})`,
-      `  GPU Sort Keys: ${cfg.gpuSortKeys ? 'ON' : 'OFF'} (threshold: ${cfg.gpuSortKeysThreshold})`,
-      `  GPU Point Cloud: ${cfg.gpuPointCloud ? 'ON' : 'OFF'} (threshold: ${cfg.gpuPointCloudThreshold})`,
-      `  Atmosphere LUT: ${cfg.atmosphereLUT ? 'ON' : 'OFF'} (dirty: ${this._atmosphereLUTDirty})`,
-      `  Timestamp Profiling: ${cfg.timestampProfiling ? 'ON' : 'OFF'} (supported: ${!!profiler})`,
-      `  Buffer Mapping: ${cfg.bufferMapping ? 'ON' : 'OFF'}`,
+      `  Render Bundles: ${cfg.renderBundles ? "ON" : "OFF"} (cache: ${bundleStats.cacheSize}, hit rate: ${(bundleStats.hitRate * 100).toFixed(1)}%)`,
+      `  Indirect Draw: ${cfg.indirectDraw ? "ON" : "OFF"}`,
+      `  GPU Culling: ${cfg.gpuCulling ? "ON" : "OFF"} (threshold: ${cfg.gpuCullingThreshold})`,
+      `  GPU Sort Keys: ${cfg.gpuSortKeys ? "ON" : "OFF"} (threshold: ${cfg.gpuSortKeysThreshold})`,
+      `  GPU Point Cloud: ${cfg.gpuPointCloud ? "ON" : "OFF"} (threshold: ${cfg.gpuPointCloudThreshold})`,
+      `  Atmosphere LUT: ${cfg.atmosphereLUT ? "ON" : "OFF"} (dirty: ${this._atmosphereLUTDirty})`,
+      `  Timestamp Profiling: ${cfg.timestampProfiling ? "ON" : "OFF"} (supported: ${!!profiler})`,
+      `  Buffer Mapping: ${cfg.bufferMapping ? "ON" : "OFF"}`,
       `  Compute Pipelines Cached: ${this._computePipelines.size}`,
       `  Last Frame GPU: ${this._frameTimings.totalGpuMs.toFixed(2)}ms`,
       `  Bundles Executed: ${this._frameTimings.bundlesExecuted}`,
       `  Indirect Draws: ${this._frameTimings.indirectDrawsBatched}`,
       `  Compute Dispatches: ${this._computeDispatches}`,
-    ].join('\n');
+    ].join("\n");
   }
 
   /** @private */

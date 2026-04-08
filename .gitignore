@@ -27,6 +27,8 @@ Thumbs.db
 /Source/Widgets/
 /Source/Cesium.d.ts
 /Source/Cesium.js
+/Source/CesiumWebGLOnly.js
+/Source/CesiumWebGPUOnly.js
 
 /Specs/SpecList.js
 /Specs/jasmine/**
@@ -52,3 +54,17 @@ yarn.lock
 # Used in the CLA checking GitHub workflow
 GoogleConfig.json
 .claude/settings.local.json
+
+# Playwright MCP runtime artifacts (console logs, page snapshots, screenshots
+# captured by automation runs — not source).
+/.playwright-mcp/
+
+# Loose debug screenshots dropped at the repo root by ad-hoc bug-hunt
+# sessions. The Tools/visual-regression scaffold is the proper place
+# for any image we want to check in.
+/bug*-test.*
+/split-screen-*.png
+/test-bug*.png
+/verified-*.png
+/*.jpeg
+

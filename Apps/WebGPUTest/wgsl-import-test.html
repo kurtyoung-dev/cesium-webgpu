@@ -46,6 +46,23 @@
     <div id="log"><h1>WGSL Import System Test Suite</h1></div>
     <canvas id="canvas" width="400" height="300"></canvas>
     <script type="module">
+      // ============================================================
+      // FORK-16: This page used to ship its own ~280-line copy of
+      // WGSLShaderPreprocessor + WGSLShaderLibrary for "standalone
+      // testing." That made the page useless as a regression test —
+      // it could only ever validate its own copy of the preprocessor,
+      // not the one the WebGPU pipeline actually uses. We now import
+      // the production module + the production library, so a divergence
+      // between this test and the runtime causes an immediate failure
+      // here, and any chunk added to WGSLBuiltins.ts is automatically
+      // available in this test page.
+      // ============================================================
+      import {
+        WGSLShaderPreprocessor,
+        WGSLShaderLibrary,
+        createDefaultWGSLLibrary,
+      } from "../../Build/CesiumUnminified/index.js";
+
       const logEl = document.getElementById("log");
       function log(msg, cls = "") {
         logEl.innerHTML += `<span class="${cls}">${msg}</span>\n`;
@@ -63,405 +80,35 @@
         log(msg, "warn");
       }
 
-      // ============================================================
-      // Inline the preprocessor classes for standalone testing
-      // (In production, these are imported from TypeScript modules)
-      // ============================================================
-
-      class WGSLShaderLibrary {
-        constructor() {
-          this._chunks = new Map();
-          this._autoIndex = new Map();
-        }
-        registerCode(name, code) {
-          const imports = WGSLShaderPreprocessor.parseImports(code);
-          const chunk = { name, code, imports };
-          this._chunks.set(name, chunk);
-          this._indexIdentifiers(chunk);
-        }
-        get(name) {
-          return this._chunks.get(name);
-        }
-        has(name) {
-          return this._chunks.has(name);
-        }
-        getChunkForIdentifier(id) {
-          return this._autoIndex.get(id);
-        }
-        get size() {
-          return this._chunks.size;
-        }
-        getRegisteredNames() {
-          return Array.from(this._chunks.keys());
-        }
-        getIndexedIdentifiers() {
-          return Array.from(this._autoIndex.keys());
-        }
-        _indexIdentifiers(chunk) {
-          const code = WGSLShaderPreprocessor.removeComments(chunk.code);
-          const csmPattern = /\b(csm_[a-zA-Z0-9_]+)\b/g;
-          let m;
-          while ((m = csmPattern.exec(code)) !== null) {
-            const id = m[1];
-            const defP = new RegExp(
-              "\\b(?:fn|const|var|let|struct)\\s+" + id + "\\b",
-            );
-            if (defP.test(code)) this._autoIndex.set(id, chunk.name);
-          }
-          const structP =
-            /\bstruct\s+(Csm[a-zA-Z0-9_]+|[A-Z][a-zA-Z0-9_]*Uniforms|PBRMaterial|LightingUniforms)\b/g;
-          while ((m = structP.exec(code)) !== null) {
-            this._autoIndex.set(m[1], chunk.name);
-          }
-        }
-      }
-
-      class WGSLShaderPreprocessor {
-        constructor(library) {
-          this._library = library;
-        }
-        get library() {
-          return this._library;
-        }
-
-        process(source, options) {
-          const opts = {
-            defines: [],
-            autoResolve: true,
-            stripComments: false,
-            label: "shader",
-            ...options,
-          };
-          let src = this._processConditionals(source, opts.defines);
-          const explicitImports = WGSLShaderPreprocessor.parseImports(src);
-          src = WGSLShaderPreprocessor.stripImportLines(src);
-          let autoImports = [];
-          if (opts.autoResolve)
-            autoImports = this._findAutoImports(src, explicitImports);
-          const allImports = [...new Set([...explicitImports, ...autoImports])];
-          const depOrder = this._resolveDeps(allImports, opts.label);
-          let resolved = "";
-          const included = [];
-          if (opts.defines.length > 0) {
-            for (const d of opts.defines) {
-              const parts = d.split(/\s+/, 2);
-              if (parts.length === 2)
-                resolved += `const ${parts[0]}: u32 = ${parts[1]}u;\n`;
-            }
-          }
-          if (depOrder.length > 0) {
-            resolved += "// === Imported Chunks ===\n";
-            for (const cn of depOrder) {
-              const chunk = this._library.get(cn);
-              if (chunk) {
-                let cc = this._processConditionals(chunk.code, opts.defines);
-                cc = WGSLShaderPreprocessor.stripImportLines(cc);
-                cc = WGSLShaderPreprocessor.stripDocComments(cc);
-                resolved +=
-                  "// --- chunk: " + cn + " ---\n" + cc.trim() + "\n\n";
-                included.push(cn);
-              }
-            }
-            resolved += "// === End Imported Chunks ===\n\n";
-          }
-          resolved += src;
-          if (opts.stripComments)
-            resolved = WGSLShaderPreprocessor.removeComments(resolved);
-          return {
-            code: resolved,
-            includedChunks: included,
-            dependencyOrder: depOrder,
-          };
-        }
-
-        resolve(source, options) {
-          return this.process(source, options).code;
-        }
-
-        static parseImports(source) {
-          const imports = [];
-          const re = /(?:\/\/\s*)?#import\s+["']([^"']+)["']/g;
-          let m;
-          while ((m = re.exec(source)) !== null) {
-            if (!imports.includes(m[1])) imports.push(m[1]);
-          }
-          return imports;
-        }
-        static stripImportLines(s) {
-          return s.replace(
-            /(?:\/\/\s*)?#import\s+["'][^"']+["']\s*;?\s*\n?/g,
-            "",
-          );
-        }
-        static removeComments(s) {
-          s = s.replace(/\/\/.*/g, "");
-          s = s.replace(/\/\*[\s\S]*?\*\//g, (m) =>
-            "\n".repeat((m.match(/\n/g) || []).length),
-          );
-          return s;
-        }
-        static stripDocComments(s) {
-          return s.replace(/\/\*\*[\s\S]*?\*\//g, (m) =>
-            "\n".repeat((m.match(/\n/g) || []).length),
-          );
-        }
-
-        _findAutoImports(source, already) {
-          const auto = [];
-          const clean = WGSLShaderPreprocessor.removeComments(source);
-          const matches = clean.match(/\bcsm_[a-zA-Z0-9_]*/g);
-          if (matches) {
-            for (const id of [...new Set(matches)]) {
-              const cn = this._library.getChunkForIdentifier(id);
-              if (cn && !already.includes(cn)) auto.push(cn);
-            }
-          }
-          return auto;
-        }
-
-        _resolveDeps(imports, label) {
-          if (!imports.length) return [];
-          const nodes = new Map();
-          const visited = new Set();
-          const getNode = (name) => {
-            if (nodes.has(name)) return nodes.get(name);
-            const chunk = this._library.get(name);
-            if (!chunk) {
-              console.warn("Chunk not found: " + name);
-              return null;
-            }
-            const node = { name, dependsOn: [], requiredBy: [] };
-            nodes.set(name, node);
-            return node;
-          };
-          const build = (cn) => {
-            if (visited.has(cn)) return;
-            visited.add(cn);
-            const chunk = this._library.get(cn);
-            if (!chunk) return;
-            const node = getNode(cn);
-            if (!node) return;
-            for (const imp of chunk.imports) {
-              const dn = getNode(imp);
-              if (dn) {
-                node.dependsOn.push(dn);
-                dn.requiredBy.push(node);
-                build(imp);
-              }
-            }
-            const clean = WGSLShaderPreprocessor.removeComments(chunk.code);
-            const refs = clean.match(/\bcsm_[a-zA-Z0-9_]*/g);
-            if (refs) {
-              for (const ref of [...new Set(refs)]) {
-                const rcn = this._library.getChunkForIdentifier(ref);
-                if (
-                  rcn &&
-                  rcn !== cn &&
-                  !node.dependsOn.some((d) => d.name === rcn)
-                ) {
-                  const dn = getNode(rcn);
-                  if (dn) {
-                    node.dependsOn.push(dn);
-                    dn.requiredBy.push(node);
-                    build(rcn);
-                  }
-                }
-              }
-            }
-          };
-          for (const i of imports) build(i);
-          // Topological sort
-          const depCount = new Map();
-          for (const [n, nd] of nodes) depCount.set(n, nd.dependsOn.length);
-          const queue = [];
-          for (const [n, c] of depCount) {
-            if (c === 0) queue.push(n);
-          }
-          const sorted = [],
-            processed = new Set();
-          while (queue.length) {
-            const cur = queue.shift();
-            if (processed.has(cur)) continue;
-            processed.add(cur);
-            sorted.push(cur);
-            for (const dep of nodes.get(cur).requiredBy) {
-              const nc = (depCount.get(dep.name) || 1) - 1;
-              depCount.set(dep.name, nc);
-              if (nc === 0 && !processed.has(dep.name)) queue.push(dep.name);
-            }
-          }
-          if (sorted.length < nodes.size) {
-            const unresolved = [...nodes.keys()].filter(
-              (n) => !processed.has(n),
-            );
-            throw new Error("Circular dependency: " + unresolved.join(", "));
-          }
-          return sorted;
-        }
-
-        _processConditionals(source, defines) {
-          const syms = new Set(defines.map((d) => d.split(/\s+/)[0]));
-          const lines = source.split("\n");
-          const out = [];
-          const stack = [];
-          let active = true;
-          for (const line of lines) {
-            const t = line.trim();
-            const dm = t.match(
-              /^(?:\/\/\s*)?#(ifdef|ifndef|else|endif|define)\s*(.*)?$/,
-            );
-            if (dm) {
-              const [, dir, arg_] = dm;
-              const arg = (arg_ || "").trim();
-              if (dir === "define") {
-                syms.add(arg.split(/\s+/)[0]);
-              } else if (dir === "ifdef") {
-                stack.push({ active, ea: true });
-                active = active && syms.has(arg);
-              } else if (dir === "ifndef") {
-                stack.push({ active, ea: true });
-                active = active && !syms.has(arg);
-              } else if (dir === "else") {
-                const top = stack[stack.length - 1];
-                active = top.active && !active;
-              } else if (dir === "endif") {
-                active = stack.pop().active;
-              }
-              continue;
-            }
-            if (active) out.push(line);
-          }
-          return out.join("\n");
-        }
+      // Sanity check: prove the imports actually resolved.
+      if (
+        !WGSLShaderPreprocessor ||
+        !WGSLShaderLibrary ||
+        !createDefaultWGSLLibrary
+      ) {
+        fail(
+          "WGSLShaderPreprocessor / WGSLShaderLibrary / createDefaultWGSLLibrary " +
+            "not exported from Cesium namespace — rebuild engine after FORK-16",
+        );
       }
 
       // ============================================================
-      // Register built-in chunks (same as WGSLBuiltins.ts)
-      // ============================================================
-      function createLibrary() {
-        const lib = new WGSLShaderLibrary();
-
-        lib.registerCode(
-          "structs/CameraUniforms",
-          `
-struct CameraUniforms {
-    viewMatrix: mat4x4<f32>,
-    projectionMatrix: mat4x4<f32>,
-    viewProjectionMatrix: mat4x4<f32>,
-    cameraPosition: vec3<f32>,
-    _padding: f32,
-}`,
-        );
-
-        lib.registerCode(
-          "structs/ModelUniforms",
-          `
-struct ModelUniforms {
-    modelMatrix: mat4x4<f32>,
-    normalMatrix: mat4x4<f32>,
-}`,
-        );
-
-        lib.registerCode(
-          "structs/LightUniforms",
-          `
-struct LightUniforms {
-    lightDirection: vec3<f32>, _padding1: f32,
-    lightColor: vec3<f32>, lightIntensity: f32,
-    ambientColor: vec3<f32>, _padding2: f32,
-    diffuseColor: vec3<f32>, _padding3: f32,
-    specularColor: vec3<f32>, shininess: f32,
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_constants",
-          `
-const CSM_PI: f32 = 3.14159265359;
-const CSM_TWO_PI: f32 = 6.28318530718;
-const CSM_EPSILON7: f32 = 0.0000001;
-`,
-        );
-
-        lib.registerCode(
-          "functions/csm_distributionGGX",
-          `
-// #import "functions/csm_constants"
-fn csm_distributionGGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
-    let a = roughness * roughness; let a2 = a * a;
-    let NdotH = max(dot(N, H), 0.0); let NdotH2 = NdotH * NdotH;
-    var denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = CSM_PI * denom * denom;
-    return a2 / denom;
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_fresnelSchlick",
-          `
-fn csm_fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
-    return F0 + (vec3<f32>(1.0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_geometrySmith",
-          `
-fn csm_geometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
-    let r = roughness + 1.0; let k = (r * r) / 8.0;
-    return NdotV / (NdotV * (1.0 - k) + k);
-}
-fn csm_geometrySmith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
-    return csm_geometrySchlickGGX(max(dot(N, V), 0.0), roughness) *
-           csm_geometrySchlickGGX(max(dot(N, L), 0.0), roughness);
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_phong",
-          `
-struct CsmPhongResult { ambient: vec3<f32>, diffuse: vec3<f32>, specular: vec3<f32>, combined: vec3<f32>, }
-fn csm_phongSimple(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, baseColor: vec3<f32>, shininess: f32) -> vec3<f32> {
-    let ambient = 0.15 * baseColor;
-    let NdotL = max(dot(N, L), 0.0);
-    let diffuse = 0.7 * baseColor * NdotL;
-    let H = normalize(L + V);
-    let NdotH = max(dot(N, H), 0.0);
-    let specular = 0.15 * pow(NdotH, shininess);
-    return ambient + diffuse + vec3<f32>(specular);
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_tonemapping",
-          `
-fn csm_reinhardTonemap(color: vec3<f32>) -> vec3<f32> { return color / (color + vec3<f32>(1.0)); }
-fn csm_acesTonemap(color: vec3<f32>) -> vec3<f32> {
-    let a=2.51; let b=0.03; let c=2.43; let d=0.59; let e=0.14;
-    return clamp((color*(a*color+b))/(color*(c*color+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
-}`,
-        );
-
-        lib.registerCode(
-          "functions/csm_gammaCorrection",
-          `
-fn csm_linearToSrgb(color: vec3<f32>) -> vec3<f32> { return pow(color, vec3<f32>(1.0 / 2.2)); }
-fn csm_srgbToLinear(color: vec3<f32>) -> vec3<f32> { return pow(color, vec3<f32>(2.2)); }
-`,
-        );
-
-        return lib;
-      }
-
-      // ============================================================
-      // TESTS
+      // TESTS — exercise the SAME preprocessor + library that the
+      // WebGPU pipeline uses at runtime. The production library
+      // (createDefaultWGSLLibrary) carries more chunks than the old
+      // hand-rolled one, so the size assertion bumps to >= 13.
       // ============================================================
       async function runTests() {
         info("=== Test 1: Library Registration ===");
-        const lib = createLibrary();
-        if (lib.size >= 8)
+        const lib = createDefaultWGSLLibrary();
+        if (lib.size >= 13)
           pass("Library has " + lib.size + " chunks registered");
-        else fail("Library only has " + lib.size + " chunks");
+        else
+          fail(
+            "Library only has " +
+              lib.size +
+              " chunks (expected >= 13 from production WGSLBuiltins.ts)",
+          );
 
         info("\n=== Test 2: Identifier Indexing ===");
         const ids = lib.getIndexedIdentifiers();

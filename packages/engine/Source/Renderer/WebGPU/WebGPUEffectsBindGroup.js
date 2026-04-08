@@ -22,7 +22,6 @@
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import { getShadowMapResources } from "./WebGPUShadowMapRenderer.js";
-import FeatureRendererKey from "../FeatureRendererKey.js";
 
 // 112 bytes = 28 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
 // + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + pad(1) + edgeColor(4)
@@ -124,15 +123,17 @@ function getPlaceholderEffects(device) {
 
   // Clear placeholder depth to 1.0 via a render pass
   const clearEncoder = device.createCommandEncoder();
-  clearEncoder.beginRenderPass({
-    colorAttachments: [],
-    depthStencilAttachment: {
-      view: depthTex.createView(),
-      depthClearValue: 1.0,
-      depthLoadOp: "clear",
-      depthStoreOp: "store",
-    },
-  }).end();
+  clearEncoder
+    .beginRenderPass({
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: depthTex.createView(),
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+      },
+    })
+    .end();
   device.queue.submit([clearEncoder.finish()]);
 
   // Comparison sampler
@@ -235,11 +236,13 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  * @param {object} [options]
  * @param {object} [options.shadowMap] - CesiumJS ShadowMap object
  * @param {object} [options.clippingPlanes] - ClippingPlaneCollection with _webgpuCache
+ * @param {object} [options.clippingPolygons] - ClippingPolygonCollection with _webgpuCache
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
   const shadowMap = options?.shadowMap;
   const clippingPlanes = options?.clippingPlanes;
+  const clippingPolygons = options?.clippingPolygons;
 
   const placeholder = getPlaceholderEffects(device);
   const bgl = getEffectsBindGroupLayout(device);
@@ -273,8 +276,23 @@ function createEffectsBindGroup(device, frameState, options) {
     }
   }
 
-  // If neither feature is active, return the shared placeholder
-  if (!hasShadow && !hasClipping) {
+  // Polygon SDF resources
+  let sdfTexView;
+  let sdfSampler;
+  let hasPolygonClipping = false;
+
+  if (defined(clippingPolygons) && clippingPolygons.length > 0) {
+    const polyCache = clippingPolygons._webgpuCache;
+    if (defined(polyCache) && defined(polyCache._signedDistanceTexture)) {
+      const sdfTex = polyCache._signedDistanceTexture;
+      sdfTexView = sdfTex.textureView ?? sdfTex.createView?.();
+      sdfSampler = polyCache._sdfSampler;
+      hasPolygonClipping = true;
+    }
+  }
+
+  // If no features are active, return the shared placeholder
+  if (!hasShadow && !hasClipping && !hasPolygonClipping) {
     return placeholder;
   }
 
@@ -299,11 +317,17 @@ function createEffectsBindGroup(device, frameState, options) {
 
   // Clipping uniforms (u32 fields stored as float bits via DataView)
   const dv = new DataView(ud.buffer);
+  // Polygon SDF clipping count (at offset 23, was _pad5)
+  // (clippingPolygons is hoisted to the top of the function alongside
+  // shadowMap / clippingPlanes — see ESLint no-use-before-define fix)
+  if (defined(clippingPolygons) && clippingPolygons.length > 0) {
+    dv.setUint32(23 * 4, clippingPolygons.length, true);
+  }
+
   if (hasClipping) {
     dv.setUint32(20 * 4, clippingPlanes.length, true);
     dv.setUint32(21 * 4, clippingPlanes.unionClippingRegions ? 1 : 0, true);
     ud[22] = clippingPlanes.edgeWidth ?? 0.0;
-    ud[23] = 0.0; // pad
     const ec = clippingPlanes.edgeColor;
     if (defined(ec)) {
       ud[24] = ec.red ?? 1.0;
@@ -350,9 +374,9 @@ function createEffectsBindGroup(device, frameState, options) {
       { binding: 4, resource: clipSampler ?? pCache.placeholderClipSampler },
       {
         binding: 5,
-        resource: pCache.placeholderSDFTex.createView(),
+        resource: sdfTexView ?? pCache.placeholderSDFTex.createView(),
       },
-      { binding: 6, resource: pCache.placeholderSDFSampler },
+      { binding: 6, resource: sdfSampler ?? pCache.placeholderSDFSampler },
     ],
   });
 
@@ -368,7 +392,12 @@ function createEffectsBindGroup(device, frameState, options) {
  * @param {object} [shadowMap]
  * @param {object} [clippingPlanes]
  */
-function updateEffectsUniforms(device, uniformBuffer, shadowMap, clippingPlanes) {
+function updateEffectsUniforms(
+  device,
+  uniformBuffer,
+  shadowMap,
+  clippingPlanes,
+) {
   const ud = _scratchEffectsData;
   ud.fill(0);
 

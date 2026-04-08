@@ -4,7 +4,20 @@ import defined from "../Core/defined.js";
 import RuntimeError from "../Core/RuntimeError.js";
 import ResourceLoader from "./ResourceLoader.js";
 import ResourceLoaderState from "./ResourceLoaderState.js";
-import { loadSpz } from "@spz-loader/core";
+
+// Lazy-loaded `loadSpz` from `@spz-loader/core`. The SPZ loader package
+// is ~270 KB minified and only used by Gaussian Splat point cloud data.
+// Static-importing it forced every Cesium consumer to ship the loader
+// even when they never touch a splat tile. We import it dynamically the
+// first time `GltfSpzLoader` actually decodes a buffer; the resulting
+// chunk is split off by esbuild and downloaded on demand.
+let _loadSpzPromise = null;
+function getLoadSpz() {
+  if (!_loadSpzPromise) {
+    _loadSpzPromise = import("@spz-loader/core").then((mod) => mod.loadSpz);
+  }
+  return _loadSpzPromise;
+}
 
 // Cumulative number of SH coefficient floats per splat per channel for each
 // degree. Degree 0 has no extra SH data (base color is stored separately in
@@ -236,9 +249,14 @@ class GltfSpzLoader extends ResourceLoader {
       }
     }
 
-    const decodePromise = loadSpz(this._bufferViewTypedArray, {
-      unpackOptions: { coordinateSystem: "UNSPECIFIED" },
-    });
+    // Resolve the lazy SPZ loader, then kick off the decode. The first
+    // call pays the ~270 KB chunk download + WASM init cost; subsequent
+    // calls reuse the cached promise.
+    const decodePromise = getLoadSpz().then((loadSpz) =>
+      loadSpz(this._bufferViewTypedArray, {
+        unpackOptions: { coordinateSystem: "UNSPECIFIED" },
+      }),
+    );
 
     if (!defined(decodePromise)) {
       return false;

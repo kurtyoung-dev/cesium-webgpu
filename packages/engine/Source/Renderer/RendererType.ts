@@ -42,6 +42,16 @@ export enum RendererType {
   WEBGPU = "webgpu",
 
   /**
+   * Use WebGPU API in compatibility mode (featureLevel: "compatibility").
+   * Runs on WebGL2 hardware via the browser's WebGPU backend.
+   * Provides WebGPU API benefits (modern pipeline caching, compute shaders)
+   * on hardware that doesn't support full WebGPU core features.
+   * Falls back to WebGL if WebGPU is not available at all.
+   * @type {string}
+   */
+  WEBGPU_COMPAT = "webgpu-compat",
+
+  /**
    * Automatically detect and use the best available renderer.
    * Prefers WebGPU if available, falls back to WebGL.
    * @type {string}
@@ -69,15 +79,58 @@ export function isWebGPUSupported(): boolean {
 }
 
 /**
- * Gets the default renderer type based on browser capabilities.
+ * Module-level default for which renderer to pick when none is explicitly
+ * requested. Set by entry-point files at module init time so each build
+ * variant can ship a different default without forking the runtime code.
  *
- * @param {boolean} [preferWebGPU=false] - Whether to prefer WebGPU when both are available
+ *   - "webgl-only" build → ships an entry that calls
+ *      `setGlobalDefaultRenderer(RendererType.WEBGL)`
+ *   - "webgpu-only" build → ships an entry that calls
+ *      `setGlobalDefaultRenderer(RendererType.WEBGPU)`
+ *   - dual build, webgpu-first entry → sets WEBGPU
+ *   - dual build, webgl-first entry → sets WEBGL
+ *
+ * Defaults to WEBGPU so that fresh installs (and CDN consumers who don't
+ * customise) get the modern backend by default. Code that wants the
+ * historical WebGL-default behaviour calls `setGlobalDefaultRenderer` from
+ * its bootstrap.
+ */
+let _globalDefaultRenderer: RendererType = RendererType.WEBGPU;
+
+/**
+ * Set the module-level default renderer. Called from build-variant entry
+ * points. Has no effect on contexts that explicitly pass a `renderer`
+ * option to `ContextFactory.createContext()`.
+ */
+export function setGlobalDefaultRenderer(rendererType: RendererType): void {
+  _globalDefaultRenderer = rendererType;
+}
+
+/**
+ * Read the module-level default renderer. Used by `ContextFactory` when
+ * the caller picked `RendererType.AUTO` (the default) and didn't pass
+ * `preferWebGPU` explicitly.
+ */
+export function getGlobalDefaultRenderer(): RendererType {
+  return _globalDefaultRenderer;
+}
+
+/**
+ * Gets the default renderer type based on browser capabilities and the
+ * current global default. Honors the explicit `preferWebGPU` argument
+ * when provided; otherwise falls back to the value set via
+ * `setGlobalDefaultRenderer()` (default WEBGPU).
+ *
+ * @param {boolean} [preferWebGPU] - Whether to prefer WebGPU when both
+ *   are available. When omitted, the module-level default is used.
  * @returns {RendererType} The recommended renderer type
  */
-export function getDefaultRendererType(
-  preferWebGPU: boolean = false,
-): RendererType {
-  if (preferWebGPU && isWebGPUSupported()) {
+export function getDefaultRendererType(preferWebGPU?: boolean): RendererType {
+  // Determine the *preference* — explicit arg wins over module default.
+  const wantsWebGPU =
+    preferWebGPU ?? _globalDefaultRenderer === RendererType.WEBGPU;
+
+  if (wantsWebGPU && isWebGPUSupported()) {
     return RendererType.WEBGPU;
   }
   return RendererType.WEBGL;

@@ -453,14 +453,15 @@ function updateAndQueueCommands(
         continue;
       }
 
-      // Alternate renderer: Update uniform buffers with current camera matrices every frame
-      if (colorCommand.isWebGPUDrawCommand === true) {
+      // Alternate renderer: Update uniform buffers with current camera matrices every frame.
+      // Uses duck-typing (check for _webgpuShaderType) instead of backend type check.
+      if (defined(colorCommand._webgpuShaderType)) {
         const pfr = frameState.context.getFeatureRenderer(
           FeatureRendererKey.PRIMITIVE,
         );
         if (pfr) {
           const st = colorCommand._webgpuShaderType;
-          if (defined(st) && (st.startsWith("mat") || st.startsWith("pbr"))) {
+          if (st.startsWith("mat") || st.startsWith("pbr")) {
             pfr.updateMaterialCommandUniforms(
               colorCommand,
               frameState,
@@ -490,11 +491,12 @@ function updateAndQueueCommands(
       colorCommand.sortPriority = primitive.renderPriority;
       colorCommand.sortLayer = primitive.renderLayer;
 
-      // During pick-only passes, push WebGPU pick commands instead of color commands
+      // During pick-only passes, push pick commands instead of color commands
+      // when the command was created by a feature renderer (duck-type check)
       if (
         passes.pick &&
         !passes.render &&
-        colorCommand.isWebGPUDrawCommand === true &&
+        defined(colorCommand._webgpuShaderType) &&
         allowPicking &&
         defined(pickCommands) &&
         defined(pickCommands[j])
@@ -514,7 +516,8 @@ function updateAndQueueCommands(
           continue;
         }
 
-        if (pickCommand.isWebGPUDrawCommand === true) {
+        // Update pick command uniforms when created by a feature renderer
+        if (defined(pickCommand._webgpuShaderType)) {
           const pfr = frameState.context.getFeatureRenderer(
             FeatureRendererKey.PRIMITIVE,
           );

@@ -25,6 +25,7 @@ import {
   wgslToJavaScript,
   createCombinedSpecList,
   createJsHintOptions,
+  copyVariantSharedAssets,
 } from "./scripts/build.js";
 
 // Determines the scope of the workspace packages. If the scope is set to cesium, the workspaces should be @cesium/engine.
@@ -478,16 +479,17 @@ export const websiteRelease = gulp.series(
 export const buildRelease = gulp.series(
   buildEngine,
   buildWidgets,
-  // Generate Build/CesiumUnminified
+  // Generate Build/CesiumUnminified — DUAL variant (default: WebGPU first)
   function buildCesiumForNode() {
     return buildCesium({
       minify: false,
       removePragmas: false,
       node: true,
       sourcemap: false,
+      variant: "dual",
     });
   },
-  // Generate Build/Cesium
+  // Generate Build/Cesium — DUAL variant minified
   function buildMinifiedCesiumForNode() {
     return buildCesium({
       development: false,
@@ -495,8 +497,122 @@ export const buildRelease = gulp.series(
       removePragmas: true,
       node: true,
       sourcemap: false,
+      variant: "dual",
     });
   },
+);
+
+// ─── Build-variant tasks ────────────────────────────────────────────────
+//
+// Each of the variants is opt-in via its own gulp task. Run
+// `npx gulp buildAllVariants` to produce all three side-by-side. The
+// dual variant goes to Build/Cesium{Unminified} (the historical paths)
+// so existing tooling and downstream consumers don't break.
+//
+//   buildCesiumWebGLOnly      → Build/CesiumWebGL{Unminified}
+//   buildCesiumWebGPUOnly     → Build/CesiumWebGPU{Unminified}
+//   buildCesiumDual           → Build/Cesium{Unminified}            (DEFAULT)
+//
+// The dual build's runtime renderer can still be flipped per-Viewer
+// via `contextOptions.renderer`. The variant choice here selects what
+// CODE is in the bundle, not what runs at boot.
+//
+// Performance note: `buildEngine` and `buildWidgets` produce
+// variant-independent output (`packages/{engine,widgets}/Build/...`),
+// so the standalone variant tasks rebuild them once each. The combined
+// `buildAllVariants` task hoists them so they run exactly ONCE before
+// all three consolidated bundles, cutting ~10s of redundant work per
+// extra variant.
+
+const buildCesiumVariant = (variant) =>
+  gulp.series(
+    function buildCesiumVariantUnminified() {
+      return buildCesium({
+        minify: false,
+        removePragmas: false,
+        node: true,
+        sourcemap: false,
+        variant,
+      });
+    },
+    function buildCesiumVariantMinified() {
+      return buildCesium({
+        development: false,
+        minify: true,
+        removePragmas: true,
+        node: true,
+        sourcemap: false,
+        variant,
+      });
+    },
+  );
+
+// Standalone variant tasks — rebuild engine + widgets each time, suitable
+// for "I just want one variant" workflows.
+export const buildCesiumWebGLOnly = gulp.series(
+  buildEngine,
+  buildWidgets,
+  buildCesiumVariant("webgl-only"),
+);
+export const buildCesiumWebGPUOnly = gulp.series(
+  buildEngine,
+  buildWidgets,
+  buildCesiumVariant("webgpu-only"),
+);
+export const buildCesiumDual = gulp.series(
+  buildEngine,
+  buildWidgets,
+  buildCesiumVariant("dual"),
+);
+
+// Fast variant builder used by `buildAllVariants` after the dual variant
+// has populated the shared assets (workers, CSS, ThirdParty, Widgets,
+// Assets) into Build/Cesium{Unminified}/. The variant runs only the
+// JS-bundling steps that depend on the variant flag, then a copy step
+// mirrors the dual variant's shared output dirs into the variant's
+// output dir. Saves ~5–8 seconds per variant build vs the standalone
+// path that rebuilds workers/CSS/specs from source.
+const buildCesiumVariantFast = (variant) =>
+  gulp.series(
+    function buildCesiumVariantUnminifiedFast() {
+      return buildCesium({
+        minify: false,
+        removePragmas: false,
+        node: true,
+        sourcemap: false,
+        variant,
+        skipSharedAssets: true,
+      });
+    },
+    function buildCesiumVariantMinifiedFast() {
+      return buildCesium({
+        development: false,
+        minify: true,
+        removePragmas: true,
+        node: true,
+        sourcemap: false,
+        variant,
+        skipSharedAssets: true,
+      });
+    },
+    function copyVariantAssets() {
+      // Mirror the dual variant's shared outputs (workers, CSS, assets)
+      // into this variant's output dir for both unminified + minified.
+      return copyVariantSharedAssets("dual", variant);
+    },
+  );
+
+// Combined task — runs engine + widgets exactly ONCE, then bundles all
+// three variants in sequence. The dual variant runs the slow path
+// (it's responsible for producing the shared assets that the variant
+// builds will copy from), then webgl-only and webgpu-only run the
+// fast path with shared-asset copy from the dual output.
+export const buildAllVariants = gulp.series(
+  buildEngine,
+  buildWidgets,
+  buildCesiumVariant("dual"),
+  buildCesiumVariantFast("webgl-only"),
+  buildCesiumVariantFast("webgpu-only"),
 );
 
 export const release = gulp.series(

@@ -69,6 +69,7 @@ import csm_packDepth from './functions/csm_packDepth.js'
 import csm_phong from './functions/csm_phong.js'
 import csm_planeDistance from './functions/csm_planeDistance.js'
 import csm_pointAlongRay from './functions/csm_pointAlongRay.js'
+import csm_primitiveIndex from './functions/csm_primitiveIndex.js'
 import csm_readDepth from './functions/csm_readDepth.js'
 import csm_readNonPerspective from './functions/csm_readNonPerspective.js'
 import csm_reverseLogDepth from './functions/csm_reverseLogDepth.js'
@@ -168,6 +169,7 @@ export default {
     csm_phong : csm_phong,
     csm_planeDistance : csm_planeDistance,
     csm_pointAlongRay : csm_pointAlongRay,
+    csm_primitiveIndex : csm_primitiveIndex,
     csm_readDepth : csm_readDepth,
     csm_readNonPerspective : csm_readNonPerspective,
     csm_reverseLogDepth : csm_reverseLogDepth,

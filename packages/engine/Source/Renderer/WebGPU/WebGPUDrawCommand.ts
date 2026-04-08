@@ -151,6 +151,13 @@ class WebGPUDrawCommand {
   pickId?: string;
   executeInClosestFrustum: boolean;
 
+  // OIT pipeline variant for weighted blended transparency (MRT)
+  _oitPipeline?: GPURenderPipeline;
+  // Original WGSL shader code for creating OIT variants at runtime
+  _shaderCode?: string;
+  // Pipeline config needed to recreate OIT variants
+  _pipelineConfig?: any;
+
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
 

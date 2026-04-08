@@ -559,6 +559,181 @@ class Scene {
     this._debugFrustumPlanes = undefined;
 
     /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the globe surface renderer overlays a wireframe
+     * (line-list) version of each terrain tile instead of the shaded surface.
+     * Useful for diagnosing tile boundaries, LOD transitions, mesh density,
+     * and culling/refinement bugs without leaving the running scene.
+     * </p>
+     * <p>
+     * WebGPU only — the WebGL terrain pipeline does not currently expose a
+     * wireframe variant. The wireframe pipeline mirrors the production
+     * pipeline's vertex layout exactly so it works on every quantization
+     * + normal + WebMercator + stride combination.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowGlobeWireframe = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the WebGPU sky atmosphere renderer skips the
+     * Rayleigh + Mie scattering integral and emits a flat magenta color
+     * over the atmosphere shell. Useful for isolating whether a sky-color
+     * bug lives in the scattering math, the LUT inputs, or the
+     * post-process composite — magenta confirms only that the draw call,
+     * ray-sphere intersection, and shell coverage are reaching the
+     * fragment stage.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugDisableAtmosphereScattering = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When set to a value 1-6, the WebGPU skybox / cubemap panorama renderer
+     * isolates a single cubemap face and discards fragments belonging to
+     * the other five. Useful for verifying cubemap face data, orientation,
+     * and resource bindings without leaving the running scene or pulling
+     * the texture into an external tool.
+     * </p>
+     * <p>
+     * Encoding: 0 = all faces (production), 1 = +X, 2 = -X, 3 = +Y,
+     * 4 = -Y, 5 = +Z, 6 = -Z. Any other value behaves like 0.
+     * </p>
+     *
+     * @type {number}
+     *
+     * @default 0
+     */
+    this.debugShowCubeMapFace = 0;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the WebGPU globe surface renderer tints each
+     * terrain tile by its LOD depth level using a 12-color palette. Levels
+     * 0..11 cycle through hues; levels above 11 wrap. Useful for visually
+     * confirming tile refinement, culling boundaries, and screen-space
+     * error decisions.
+     * </p>
+     * <p>
+     * Mutually exclusive with {@link Scene#debugShowTriangulation} and
+     * {@link Scene#debugShowTerrainNormals}; the renderer picks one
+     * fragment variant per frame.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowTerrainLOD = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the WebGPU globe surface renderer outputs
+     * the eye-space surface normal as RGB color (remapped from [-1,1]
+     * to [0,1]). Useful for verifying that vertex normals are interpolating
+     * correctly and that the WGF-5 normal-map shader chain produces
+     * sensible results.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowTerrainNormals = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When set to a non-negative integer 0..3, the WebGPU globe surface
+     * renderer renders only that imagery layer slot in the multi-layer
+     * composite, hiding the other layers. -1 (default) restores
+     * production behavior with all layers blended.
+     * </p>
+     * <p>
+     * Note: the index refers to the *per-pass* layer slot, not the
+     * absolute imagery layer index in `Globe.imageryLayers`. Tiles with
+     * more than 4 imagery layers split into multiple passes; layer 0 of
+     * the second pass is layer 4 of the imagery collection.
+     * </p>
+     *
+     * @type {number}
+     *
+     * @default -1
+     */
+    this.debugShowImageryLayer = -1;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code>, the WebGPU scene renderer replaces the
+     * production post-process chain with a fullscreen depth visualization
+     * pass. Linearized depth is rendered as grayscale, useful for
+     * z-fighting diagnostics, depth-precision analysis at the horizon,
+     * and verifying terrain vs 3D Tiles depth values.
+     * </p>
+     * <p>
+     * Requires a single-sample (non-MSAA) scene framebuffer — multisampled
+     * depth textures cannot be sampled in WGSL. The overlay logs a warning
+     * once and skips the pass when MSAA is enabled.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowDepthAsColor = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * Selects the visualization mode used by {@link Scene#debugShowDepthAsColor}.
+     * 0 = linearized grayscale (default, best for distance precision).
+     * 1 = raw NDC grayscale (best for buffer-precision tier diagnosis).
+     * 2 = combined R=linear G=raw (compare both at once).
+     * </p>
+     *
+     * @type {number}
+     *
+     * @default 0
+     */
+    this.debugDepthAsColorMode = 0;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
+     * When <code>true</code> and the active rendering context is WebGPU with
+     * `@builtin(primitive_index)` support, feature renderers that opt in
+     * (terrain, polygon collections, batched models) will switch their
+     * fragment shader to a per-triangle "rainbow" debug variant. This makes
+     * tile triangulation, polygon earcut output, and mesh structure visible
+     * without an extra debug pass.
+     * </p>
+     * <p>
+     * Has no effect on WebGL — `gl_PrimitiveID` requires a geometry shader,
+     * which WebGL2 doesn't expose. Has no effect on WebGPU implementations
+     * that fail the {@link WebGPUPrimitiveIndexUtils.isSupported} probe.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowTriangulation = false;
+
+    /**
      * When <code>true</code>, enables picking using the depth buffer.
      *
      * @type {boolean}
@@ -1064,6 +1239,35 @@ class Scene {
   }
 
   /**
+   * Whether the active rendering context can use the WGSL
+   * `@builtin(primitive_index)` fragment input. True only on WebGPU contexts
+   * whose driver successfully compiles a probe shader using the builtin —
+   * always false on WebGL because `gl_PrimitiveID` requires a geometry shader.
+   * Drives whether {@link Scene#debugShowTriangulation} has any effect.
+   *
+   * @memberof Scene.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get triangulationDebugSupported() {
+    const context = this._context;
+    if (!context || !context.isWebGPU) {
+      return false;
+    }
+    const device = context.device;
+    if (!device) {
+      return false;
+    }
+    // Lazy import keeps Scene.js backend-agnostic at module load time —
+    // we only resolve the WebGPU helper if the active context is WebGPU.
+    const utilsModule = context._primitiveIndexUtilsCache;
+    if (utilsModule) {
+      return utilsModule.isSupported(device);
+    }
+    return false;
+  }
+
+  /**
    * The ellipsoid.  If not specified, the default ellipsoid is used.
    *
    * @type {Ellipsoid}
@@ -1427,6 +1631,7 @@ class Scene {
   /**
    * Returns true if this scene is using the WebGPU renderer.
    * Now uses the computed `isWebGPU` getter from the GraphicsContext base class.
+   * The Scene should not need know the specific renderer - if you are using this consider why and if there are alternatives.
    * @type {boolean}
    * @readonly
    * @private
@@ -2010,6 +2215,7 @@ class Scene {
     const frameState = this._frameState;
     frameState.commandList.length = 0;
     frameState.shadowMaps.length = 0;
+    frameState.panoramaCommandList.length = 0;
     frameState.brdfLutGenerator = this._brdfLutGenerator;
     frameState.environmentMap = this.skyBox && this.skyBox._cubeMap;
     frameState.mode = this._mode;
@@ -2036,6 +2242,36 @@ class Scene {
     frameState.lights = this.lights;
     frameState.cameraUnderground = this._cameraUnderground;
     frameState.globeTranslucencyState = this._globeTranslucencyState;
+    // WGF-6: Per-frame debug flag for triangulation visualization. Feature
+    // renderers that opt in (Globe surface today, future BufferPrimitive +
+    // Model variants) read this and swap to a face-color fragment variant.
+    // Capability gating happens in the renderer — Scene only forwards intent.
+    frameState.debugShowTriangulation = this.debugShowTriangulation === true;
+    // Globe wireframe overlay (Tier 1 debug). Forwarded to the WebGPU globe
+    // surface renderer's wireframe pipeline path. WebGL renderers ignore.
+    frameState.debugShowGlobeWireframe = this.debugShowGlobeWireframe === true;
+    // Atmosphere scattering bypass (Tier 1 debug). Forwarded to the WebGPU
+    // sky atmosphere renderer; emits flat magenta over the shell when on.
+    frameState.debugDisableAtmosphereScattering =
+      this.debugDisableAtmosphereScattering === true;
+    // Cubemap face isolation (Tier 1 debug). Integer 0..6 forwarded to the
+    // WebGPU cubemap panorama renderer's params.z. 0 = production all-faces.
+    frameState.debugShowCubeMapFace = this.debugShowCubeMapFace | 0;
+    // Tier 2 debug — terrain LOD color overlay (mutually exclusive with
+    // triangulation/normal modes; renderer picks one fragment variant).
+    frameState.debugShowTerrainLOD = this.debugShowTerrainLOD === true;
+    // Tier 2 debug — eye-space normal as RGB.
+    frameState.debugShowTerrainNormals = this.debugShowTerrainNormals === true;
+    // Tier 2 debug — imagery layer isolation. -1 = production (all layers).
+    // The terrain fragment shader applies this as a per-layer alpha mask.
+    frameState.debugShowImageryLayer =
+      typeof this.debugShowImageryLayer === "number"
+        ? this.debugShowImageryLayer
+        : -1;
+    // Tier 2 debug — depth-as-color overlay (replaces post-process chain).
+    // Mode integer selects linearized vs raw vs combined visualization.
+    frameState.debugShowDepthAsColor = this.debugShowDepthAsColor === true;
+    frameState.debugDepthAsColorMode = this.debugDepthAsColorMode | 0;
 
     const { globe } = this;
     if (defined(globe) && globe._terrainExaggerationChanged) {

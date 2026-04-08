@@ -319,12 +319,16 @@ function executeCommands(scene, passState) {
         const envCmds = farthest.commands[Pass.ENVIRONMENT];
         let envIdx = farthest.indices[Pass.ENVIRONMENT];
 
+        // Inject any command that has an execute method. The WebGPU
+        // scene renderer's executeBatch handles both WebGPU commands
+        // (via command.execute(renderPass)) and WebGL-style commands
+        // (via command.execute(context, passState)) transparently.
         const maybeInject = (cmd, label) => {
-          if (defined(cmd) && cmd.isWebGPUDrawCommand === true) {
+          if (defined(cmd) && typeof cmd.execute === "function") {
             envCmds[envIdx++] = cmd;
           } else if (defined(cmd) && !scene._envDiagLogged) {
             console.warn(
-              `[WebGPU:EnvInject] ${label} skipped: isWebGPUDrawCommand=${cmd.isWebGPUDrawCommand}`,
+              `[WebGPU:EnvInject] ${label} skipped: no execute method`,
             );
           }
         };
@@ -346,15 +350,20 @@ function executeCommands(scene, passState) {
           maybeInject(panoramaCommandList[p], `panorama[${p}]`);
         }
 
-        // Log once: how many environment commands were injected
-        if (!scene._envDiagLogged) {
+        const envCount = envIdx - farthest.indices[Pass.ENVIRONMENT];
+
+        // Log on first inject, and again when skyBox command appears (async cubemap load)
+        const hasSkyBox = defined(envState.skyBoxCommand);
+        if (!scene._envDiagLogged || (hasSkyBox && !scene._envSkyBoxSeen)) {
+          if (hasSkyBox) {
+            scene._envSkyBoxSeen = true;
+          }
           scene._envDiagLogged = true;
-          const envCount = envIdx - farthest.indices[Pass.ENVIRONMENT];
           const envFromCommandList = farthest.indices[Pass.ENVIRONMENT];
           console.log(
             `[WebGPU:EnvInject] Injected ${envCount} env commands ` +
               `(${envFromCommandList} already in frustum from commandList). ` +
-              `skyBox=${defined(envState.skyBoxCommand)} ` +
+              `skyBox=${hasSkyBox} ` +
               `skyAtmo=${envState.isSkyAtmosphereVisible} ` +
               `sun=${envState.isSunVisible} ` +
               `moon=${envState.isMoonVisible} ` +

@@ -328,9 +328,216 @@ export class WebGPUOIT {
     this._compositeBindGroup = null;
   }
 
+  // ─── OIT Pipeline Variant Factory ───
+
+  // Cache of OIT shader modules: hash(baseCode) → GPUShaderModule
+  private _oitShaderCache = new Map<string, GPUShaderModule>();
+  // Cache of OIT pipelines: hash(basePipeline+layout) → GPURenderPipeline
+  private _oitPipelineCache = new Map<string, GPURenderPipeline>();
+
+  /**
+   * The MRT blend states for OIT accumulation targets.
+   * Target 0 (accumulation rgba16float): additive blend
+   * Target 1 (revealage r8unorm): zero-src multiplicative
+   */
+  static readonly OIT_TARGETS: GPUColorTargetState[] = [
+    {
+      format: "rgba16float" as GPUTextureFormat,
+      blend: {
+        color: { srcFactor: "one", dstFactor: "one", operation: "add" },
+        alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
+      },
+    },
+    {
+      format: "r8unorm" as GPUTextureFormat,
+      blend: {
+        color: {
+          srcFactor: "zero",
+          dstFactor: "one-minus-src" as GPUBlendFactor,
+          operation: "add",
+        },
+        alpha: {
+          srcFactor: "zero",
+          dstFactor: "one-minus-src" as GPUBlendFactor,
+          operation: "add",
+        },
+      },
+    },
+  ];
+
+  /**
+   * Inject OIT output into a WGSL fragment shader.
+   * Transforms single-target fragment output into dual MRT output
+   * with weighted blended OIT accumulation.
+   *
+   * The injection:
+   * 1. Adds OITFragOutput struct with @location(0) and @location(1)
+   * 2. Adds csm_alphaWeight function
+   * 3. Replaces the fragment return type and wraps the output
+   *
+   * @param baseWGSL The original WGSL shader code
+   * @param fragmentEntryPoint The fragment entry point name (default: "fragmentMain")
+   * @returns Modified WGSL with OIT output
+   */
+  static injectOITOutput(
+    baseWGSL: string,
+    fragmentEntryPoint: string = "fragmentMain",
+  ): string {
+    // OIT helper code to prepend
+    const oitHelpers = `
+// ─── OIT Weighted Blended Output ───
+struct OITFragOutput {
+  @location(0) accumulation: vec4<f32>,
+  @location(1) revealage: vec4<f32>,
+}
+
+fn csm_oitWeight(a: f32, z: f32) -> f32 {
+  return clamp(a * max(1e-2, min(3e3, 10.0 / (1e-5 + pow(z / 5.0, 2.0) + pow(z / 200.0, 6.0)))), 1e-2, 3e2);
+}
+
+fn csm_oitOutput(color: vec4<f32>, clipZ: f32) -> OITFragOutput {
+  let alpha = color.a;
+  let weight = csm_oitWeight(alpha, clipZ);
+  var out: OITFragOutput;
+  out.accumulation = vec4<f32>(color.rgb * alpha * weight, alpha * weight);
+  out.revealage = vec4<f32>(alpha, 0.0, 0.0, 0.0);
+  return out;
+}
+`;
+
+    // Strategy: rename the original fragment entry point, then create a wrapper
+    // that calls it and transforms the output.
+    const entryRegex = new RegExp(
+      `(@fragment\\s*\\n\\s*fn\\s+)(${fragmentEntryPoint})(\\s*\\()`,
+    );
+
+    if (!entryRegex.test(baseWGSL)) {
+      // Try a more lenient match
+      const lenientRegex = new RegExp(
+        `(@fragment[\\s\\S]*?fn\\s+)(${fragmentEntryPoint})(\\s*\\()`,
+      );
+      if (!lenientRegex.test(baseWGSL)) {
+        console.warn(
+          `[OIT] Could not find fragment entry '${fragmentEntryPoint}' for OIT injection`,
+        );
+        return baseWGSL;
+      }
+    }
+
+    // Rename original entry point and change return type annotation
+    let modified = baseWGSL.replace(
+      new RegExp(`@fragment([\\s\\S]*?)fn\\s+${fragmentEntryPoint}`),
+      `fn _oit_base_${fragmentEntryPoint}`,
+    );
+
+    // Remove @location(0) from the renamed function's return type
+    modified = modified.replace(
+      /fn _oit_base_\w+\([^)]*\)\s*->\s*@location\(0\)\s*/,
+      (match) => match.replace(/@location\(0\)\s*/, ""),
+    );
+
+    // Find the input parameter type from the original function signature
+    const paramMatch = modified.match(
+      new RegExp(`fn _oit_base_${fragmentEntryPoint}\\(([^)]+)\\)`),
+    );
+    const paramDecl = paramMatch ? paramMatch[1].trim() : "input: VertexOutput";
+    const paramName = paramDecl.split(":")[0].trim();
+    const paramType = paramDecl.split(":").slice(1).join(":").trim();
+
+    // Create OIT wrapper function
+    const oitWrapper = `
+@fragment
+fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
+  let _oitBaseColor = _oit_base_${fragmentEntryPoint}(${paramName});
+  return csm_oitOutput(_oitBaseColor, ${paramName}.position.z);
+}
+`;
+
+    return oitHelpers + modified + oitWrapper;
+  }
+
+  /**
+   * Create an OIT pipeline variant from a command's pipeline configuration.
+   * The resulting pipeline renders to 2 MRT targets (accumulation + revealage).
+   *
+   * @param device GPU device
+   * @param shaderCode Original WGSL shader code
+   * @param config Pipeline configuration from the base command
+   * @returns The OIT pipeline, or null if creation fails
+   */
+  createOITPipeline(
+    device: GPUDevice,
+    shaderCode: string,
+    config: {
+      label?: string;
+      layout: GPUPipelineLayout | "auto";
+      vertexBuffers?: GPUVertexBufferLayout[];
+      vertexEntryPoint?: string;
+      fragmentEntryPoint?: string;
+      primitive?: GPUPrimitiveState;
+      depthStencil?: GPUDepthStencilState;
+      multisample?: GPUMultisampleState;
+    },
+  ): GPURenderPipeline | null {
+    const fragEntry = config.fragmentEntryPoint ?? "fragmentMain";
+    const vertEntry = config.vertexEntryPoint ?? "vertexMain";
+
+    // Check cache
+    const cacheKey = `${shaderCode.length}_${fragEntry}_${config.label ?? ""}`;
+    const cached = this._oitPipelineCache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const oitCode = WebGPUOIT.injectOITOutput(shaderCode, fragEntry);
+
+      // Check shader module cache
+      let shaderModule = this._oitShaderCache.get(cacheKey);
+      if (!shaderModule) {
+        shaderModule = device.createShaderModule({
+          label: `OIT-${config.label ?? "unknown"}`,
+          code: oitCode,
+        });
+        this._oitShaderCache.set(cacheKey, shaderModule);
+      }
+
+      const depthStencil = config.depthStencil
+        ? {
+            ...config.depthStencil,
+            depthWriteEnabled: false, // OIT never writes depth
+          }
+        : undefined;
+
+      const pipeline = device.createRenderPipeline({
+        label: `OIT-Pipeline-${config.label ?? "unknown"}`,
+        layout: config.layout,
+        vertex: {
+          module: shaderModule,
+          entryPoint: vertEntry,
+          buffers: config.vertexBuffers ?? [],
+        },
+        fragment: {
+          module: shaderModule,
+          entryPoint: fragEntry,
+          targets: WebGPUOIT.OIT_TARGETS,
+        },
+        primitive: config.primitive ?? { topology: "triangle-list" },
+        depthStencil,
+        multisample: config.multisample,
+      });
+
+      this._oitPipelineCache.set(cacheKey, pipeline);
+      return pipeline;
+    } catch (e) {
+      console.warn(`[OIT] Failed to create OIT pipeline variant:`, e);
+      return null;
+    }
+  }
+
   destroy(): void {
     if (this._isDestroyed) return;
     this._destroyTargets();
+    this._oitShaderCache.clear();
+    this._oitPipelineCache.clear();
     this._compositePipeline = null;
     this._compositeBindGroupLayout = null;
     this._compositeSampler = null;

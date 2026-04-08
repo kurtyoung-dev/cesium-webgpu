@@ -25,7 +25,12 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Ellipsoid from "../../Core/Ellipsoid.js";
 import OrthographicFrustum from "../../Core/OrthographicFrustum.js";
-import { m4Values } from "./webgpuTypeHelpers.js";
+import { jsModule, m4Values } from "./webgpuTypeHelpers.js";
+
+/** Type-shape for the JS-only EncodedCartesian3.encode static. */
+interface EncodedCartesian3Statics {
+  encode: (value: number, result: { high: number; low: number }) => void;
+}
 
 // Simple depth-only WGSL shader for the depth plane
 // Uses RTE (Relative-To-Eye) precision for planetary-scale rendering
@@ -182,7 +187,7 @@ const scratchHL = { high: 0.0, low: 0.0 };
  * encodedP variable can hit initialization-order issues in bundled builds.
  */
 function encodeQuadToRTE(corners: Cartesian3[], result: Float32Array): void {
-  const encode = (EncodedCartesian3 as any).encode;
+  const encode = jsModule<EncodedCartesian3Statics>(EncodedCartesian3).encode;
   for (let i = 0; i < 4; i++) {
     const c = corners[i];
     const off = i * 6;

@@ -32,6 +32,18 @@ import {
   updateWebGPUCloudCollection,
   destroyWebGPUCloudResources,
 } from "./WebGPUCloudRenderer.js";
+import {
+  updateWebGPULabels,
+  destroyWebGPULabelResources,
+} from "./WebGPULabelRenderer.js";
+import {
+  updateWebGPUBufferPolygonCollection,
+  destroyWebGPUBufferPolygonCollection,
+  updateWebGPUBufferPolylineCollection,
+  destroyWebGPUBufferPolylineCollection,
+  updateWebGPUBufferPointCollection,
+  destroyWebGPUBufferPointCollection,
+} from "./WebGPUBufferPrimitiveRenderer.js";
 
 // ── Primitive system ──
 import {
@@ -69,6 +81,8 @@ import {
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
 import { updateWebGPUGlobeTranslucencyDerivedCommands } from "./WebGPUGlobeTranslucencyState.js";
+// Globe terrain shader code — imported here so Scene files don't need WebGPU imports
+import GlobeTerrainShaderCode from "../../Shaders/WebGPU/Globe/GlobeTerrain.js";
 
 // ── Model ──
 import {
@@ -77,26 +91,18 @@ import {
 } from "./WebGPUModelRenderer.js";
 
 // ── Advanced features ──
+//
+// The advanced renderers below are registered LAZILY via dynamic import.
+// Each one is wrapped in a `registerFeatureRendererLoader` call further
+// down so that the renderer's source code (and the WGSL shader strings
+// it depends on) only enter the bundle as separate chunks that download
+// on first use. The static imports for them have been removed; only
+// `EllipsoidPrimitive` and `InvertClassification` stay eager because
+// they're tiny and used by core picking flows.
 import {
   updateWebGPUEllipsoidPrimitive,
   destroyWebGPUEllipsoidPrimitiveResources,
 } from "./WebGPUEllipsoidPrimitiveRenderer.js";
-import {
-  updateWebGPUGaussianSplatPrimitive,
-  destroyWebGPUGaussianSplatResources,
-} from "./WebGPUGaussianSplatRenderer.js";
-import {
-  updateWebGPUPointCloud,
-  destroyWebGPUPointCloudResources,
-} from "./WebGPUPointCloudRenderer.js";
-import {
-  updateWebGPUPointCloudEDL,
-  destroyWebGPUPointCloudEDLResources,
-} from "./WebGPUPointCloudEyeDomeLighting.js";
-import {
-  updateWebGPUVoxelPrimitive,
-  destroyWebGPUVoxelResources,
-} from "./WebGPUVoxelRenderer.js";
 import {
   updateWebGPUInvertClassification,
   destroyWebGPUInvertClassificationResources,
@@ -146,25 +152,8 @@ import {
   destroyWebGPUGroundAtmosphereResources,
 } from "./WebGPUGroundAtmosphereRenderer.js";
 
-// ── Screen-space effects ──
-import {
-  executeSSR,
-  destroySSRResources,
-} from "./WebGPUSSREffect.js";
-
-// ── Weather ──
-import {
-  updateWeatherParticles,
-  getWeatherParticleBuffer,
-  getWeatherMaxParticles,
-  destroyWeatherResources,
-} from "./WebGPUWeatherRenderer.js";
-
-// ── Procedural clouds ──
-import {
-  executeProceduralClouds,
-  destroyProceduralCloudResources,
-} from "./WebGPUProceduralCloudRenderer.js";
+// SSR, Weather, and Procedural Clouds are also lazy — see the
+// registerFeatureRendererLoader calls below.
 
 // ── Scene orchestration ──
 import { WebGPUSceneRenderer } from "./WebGPUSceneRenderer.js";
@@ -212,28 +201,33 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     destroy: destroyWebGPUCloudResources,
   });
 
-  // ── Buffer Primitive collections (v1.140 vector tiles — stub renderers) ──
-  // These experimental APIs currently render a no-op under WebGPU.
-  // WGSL shaders exist at Shaders/WebGPU/Collections/Buffer{Point,Polyline,Polygon}Material.wgsl
-  // Full renderer implementation deferred until vector tile rendering is prioritized.
-  const bufferPrimitiveStub = {
-    update(_collection: unknown, _frameState: unknown) {
-      // No-op: WebGPU BufferPrimitive rendering not yet implemented.
-      // WebGL path is the active fallback — collections that reach here
-      // simply don't render under WebGPU until a full renderer is built.
-    },
-  };
-  context.registerFeatureRenderer(
-    FeatureRendererKey.BUFFER_POINT_COLLECTION,
-    bufferPrimitiveStub,
-  );
+  context.registerFeatureRenderer(FeatureRendererKey.LABEL_COLLECTION, {
+    update: updateWebGPULabels,
+    destroy: destroyWebGPULabelResources,
+  });
+
+  // ── Buffer Primitive collections (v1.140 vector tiles) ──
+  // Full WebGPU implementation in WebGPUBufferPrimitiveRenderer.ts using the
+  // WGSL shaders at Shaders/WebGPU/Collections/Buffer{Point,Polyline,Polygon}Material.wgsl.
+  // Picking is not yet wired through the WebGPU pick framebuffer for these
+  // experimental collections.
+  context.registerFeatureRenderer(FeatureRendererKey.BUFFER_POINT_COLLECTION, {
+    update: updateWebGPUBufferPointCollection,
+    destroy: destroyWebGPUBufferPointCollection,
+  });
   context.registerFeatureRenderer(
     FeatureRendererKey.BUFFER_POLYLINE_COLLECTION,
-    bufferPrimitiveStub,
+    {
+      update: updateWebGPUBufferPolylineCollection,
+      destroy: destroyWebGPUBufferPolylineCollection,
+    },
   );
   context.registerFeatureRenderer(
     FeatureRendererKey.BUFFER_POLYGON_COLLECTION,
-    bufferPrimitiveStub,
+    {
+      update: updateWebGPUBufferPolygonCollection,
+      destroy: destroyWebGPUBufferPolygonCollection,
+    },
   );
 
   // ── Primitive system ──
@@ -283,6 +277,7 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   // ── Globe / Terrain ──
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE, {
     RendererClass: WebGPUGlobeSurfaceRenderer,
+    getShaderCode: () => GlobeTerrainShaderCode,
   });
 
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_TRANSLUCENCY, {
@@ -301,25 +296,56 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     destroy: destroyWebGPUEllipsoidPrimitiveResources,
   });
 
-  context.registerFeatureRenderer(FeatureRendererKey.GAUSSIAN_SPLAT, {
-    update: updateWebGPUGaussianSplatPrimitive,
-    destroy: destroyWebGPUGaussianSplatResources,
-  });
+  // Lazy: GaussianSplatRenderer pulls in WGSL splat shaders + the
+  // Gaussian sort compute pipelines. Only Gaussian splat consumers need it.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.GAUSSIAN_SPLAT,
+    async () => {
+      const mod = await import("./WebGPUGaussianSplatRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.GAUSSIAN_SPLAT, {
+        update: mod.updateWebGPUGaussianSplatPrimitive,
+        destroy: mod.destroyWebGPUGaussianSplatResources,
+      });
+    },
+  );
 
-  context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD, {
-    update: updateWebGPUPointCloud,
-    destroy: destroyWebGPUPointCloudResources,
-  });
+  // Lazy: PointCloudRenderer pulls in PCSS shaders + per-point styling.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.POINT_CLOUD,
+    async () => {
+      const mod = await import("./WebGPUPointCloudRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD, {
+        update: mod.updateWebGPUPointCloud,
+        destroy: mod.destroyWebGPUPointCloudResources,
+      });
+    },
+  );
 
-  context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD_EDL, {
-    update: updateWebGPUPointCloudEDL,
-    destroy: destroyWebGPUPointCloudEDLResources,
-  });
+  // Lazy: Eye-Dome Lighting post-process for point clouds — only
+  // dispatched when the user enables `pointCloudShading.attenuation`.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.POINT_CLOUD_EDL,
+    async () => {
+      const mod = await import("./WebGPUPointCloudEyeDomeLighting.js");
+      context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD_EDL, {
+        update: mod.updateWebGPUPointCloudEDL,
+        destroy: mod.destroyWebGPUPointCloudEDLResources,
+      });
+    },
+  );
 
-  context.registerFeatureRenderer(FeatureRendererKey.VOXEL_PRIMITIVE, {
-    update: updateWebGPUVoxelPrimitive,
-    destroy: destroyWebGPUVoxelResources,
-  });
+  // Lazy: VoxelRenderer pulls in volumetric raycast shaders, octree
+  // traversal, and ~6 voxel-specific WGSL files. Substantial chunk.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.VOXEL_PRIMITIVE,
+    async () => {
+      const mod = await import("./WebGPUVoxelRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.VOXEL_PRIMITIVE, {
+        update: mod.updateWebGPUVoxelPrimitive,
+        destroy: mod.destroyWebGPUVoxelResources,
+      });
+    },
+  );
 
   context.registerFeatureRenderer(FeatureRendererKey.INVERT_CLASSIFICATION, {
     update: updateWebGPUInvertClassification,
@@ -373,25 +399,51 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     destroy: destroyWebGPUGroundAtmosphereResources,
   });
 
-  // ── Screen-space effects ──
-  context.registerFeatureRenderer(FeatureRendererKey.SCREEN_SPACE_REFLECTIONS, {
-    execute: executeSSR,
-    destroy: destroySSRResources,
-  });
+  // ── Screen-space effects (LAZY) ──
+  // SSR is opt-in via scene flag; only loaded when actually enabled.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
+    async () => {
+      const mod = await import("./WebGPUSSREffect.js");
+      context.registerFeatureRenderer(
+        FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
+        {
+          execute: mod.executeSSR,
+          destroy: mod.destroySSRResources,
+        },
+      );
+    },
+  );
 
-  // ── Weather ──
-  context.registerFeatureRenderer(FeatureRendererKey.WEATHER_PARTICLES, {
-    update: updateWeatherParticles,
-    getParticleBuffer: getWeatherParticleBuffer,
-    getMaxParticles: getWeatherMaxParticles,
-    destroy: destroyWeatherResources,
-  });
+  // ── Weather (LAZY) ──
+  // WeatherParticles uses compute shaders + GPU particle simulation.
+  // Only loaded when scene._enableWeather flips on.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.WEATHER_PARTICLES,
+    async () => {
+      const mod = await import("./WebGPUWeatherRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.WEATHER_PARTICLES, {
+        update: mod.updateWeatherParticles,
+        render: mod.renderWeatherParticles,
+        getParticleBuffer: mod.getWeatherParticleBuffer,
+        getMaxParticles: mod.getWeatherMaxParticles,
+        destroy: mod.destroyWeatherResources,
+      });
+    },
+  );
 
-  // ── Procedural clouds ──
-  context.registerFeatureRenderer(FeatureRendererKey.PROCEDURAL_CLOUDS, {
-    execute: executeProceduralClouds,
-    destroy: destroyProceduralCloudResources,
-  });
+  // ── Procedural clouds (LAZY) ──
+  // ProceduralClouds is a volumetric raymarcher with several KB of WGSL.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.PROCEDURAL_CLOUDS,
+    async () => {
+      const mod = await import("./WebGPUProceduralCloudRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.PROCEDURAL_CLOUDS, {
+        execute: mod.executeProceduralClouds,
+        destroy: mod.destroyProceduralCloudResources,
+      });
+    },
+  );
 
   // ── Scene orchestration ──
   context.registerFeatureRenderer(FeatureRendererKey.SCENE_RENDERER, {

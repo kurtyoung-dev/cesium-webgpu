@@ -7,6 +7,7 @@ import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import ViewportQuadFS from "../Shaders/ViewportQuadFS.js";
+import ViewportQuadWGSL from "../Shaders/WebGPU/ViewportQuad.js";
 import BlendingState from "./BlendingState.js";
 import Material from "./Material.js";
 
@@ -119,17 +120,51 @@ ViewportQuad.prototype.update = function (frameState) {
       this._material = this.material;
 
       if (defined(this._overlayCommand)) {
-        this._overlayCommand.shaderProgram.destroy();
+        if (this._overlayCommand.shaderProgram?.destroy) {
+          this._overlayCommand.shaderProgram.destroy();
+        }
+        if (this._overlayCommand.destroy) {
+          this._overlayCommand.destroy();
+        }
       }
 
-      const fs = new ShaderSource({
-        sources: [this._material.shaderSource, ViewportQuadFS],
-      });
-      this._overlayCommand = context.createViewportQuadCommand(fs, {
-        renderState: this._rs,
-        uniformMap: this._material._uniforms,
-        owner: this,
-      });
+      if (context.isWebGPU) {
+        // WebGPU path: use WGSL viewport quad shader
+        // Material uniforms are resolved per frame via the uniform map
+        const mat = this._material;
+        const uniformMap = {
+          materialUniforms: () => {
+            const u = mat.uniforms;
+            if (u?.color) {
+              return new Float32Array([
+                u.color.red,
+                u.color.green,
+                u.color.blue,
+                u.color.alpha ?? 1.0,
+              ]);
+            }
+            return new Float32Array([1.0, 1.0, 1.0, 1.0]);
+          },
+        };
+        this._overlayCommand = context.createViewportQuadCommand(
+          ViewportQuadWGSL,
+          {
+            renderState: this._rs,
+            uniformMap: uniformMap,
+            owner: this,
+          },
+        );
+      } else {
+        // WebGL path
+        const fs = new ShaderSource({
+          sources: [this._material.shaderSource, ViewportQuadFS],
+        });
+        this._overlayCommand = context.createViewportQuadCommand(fs, {
+          renderState: this._rs,
+          uniformMap: this._material._uniforms,
+          owner: this,
+        });
+      }
       this._overlayCommand.pass = Pass.OVERLAY;
     }
 
@@ -173,9 +208,13 @@ ViewportQuad.prototype.isDestroyed = function () {
  */
 ViewportQuad.prototype.destroy = function () {
   if (defined(this._overlayCommand)) {
-    this._overlayCommand.shaderProgram =
-      this._overlayCommand.shaderProgram &&
+    if (this._overlayCommand.shaderProgram?.destroy) {
       this._overlayCommand.shaderProgram.destroy();
+      this._overlayCommand.shaderProgram = undefined;
+    }
+    if (this._overlayCommand.destroy) {
+      this._overlayCommand.destroy();
+    }
   }
   return destroyObject(this);
 };

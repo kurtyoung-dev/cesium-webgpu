@@ -16,6 +16,8 @@ import glslStripComments from "glsl-strip-comments";
 import gulp from "gulp";
 import { rimraf } from "rimraf";
 
+import { bundleVariantPlugin } from "./bundleVariantPlugin.js";
+
 import { mkdirp } from "mkdirp";
 import assert from "node:assert";
 
@@ -155,14 +157,41 @@ const inlineWorkerPath = "Build/InlineWorkers.js";
  * @param {boolean} [options.node=false] true if a CJS style node module should be built
  * @param {boolean} [options.incremental=false] true if build output should be cached for repeated builds
  * @param {boolean} [options.write=true] true if build output should be written to disk. If false, the files that would have been written as in-memory buffers
+ * @param {BundleVariant} [options.variant="dual"] Build variant — see entryFileForVariant
+ * @param {string} [options.entryPoint] Override entry file (defaults to variant's entry)
+ * @param {boolean} [options.metafile=false] When true, write `metafile.json` next to the bundle for analyzeBuild.js
  * @returns {Promise<CesiumBundles>}
  */
 export async function bundleCesiumJs(options) {
+  /** @type {BundleVariant} */
+  const variant = options.variant ?? "dual";
+  const entryPoint = options.entryPoint ?? entryFileForVariant(variant);
+
   const buildConfig = defaultESBuildOptions();
-  buildConfig.entryPoints = ["Source/Cesium.js"];
+  buildConfig.entryPoints = [entryPoint];
   buildConfig.minify = options.minify;
   buildConfig.sourcemap = options.sourcemap;
-  buildConfig.plugins = options.removePragmas ? [stripPragmaPlugin] : undefined;
+  // Emit a metafile so `scripts/analyzeBuild.js` can identify top
+  // contributors to the bundle without re-running the build. The file
+  // is small (~few MB JSON) and only written when the caller explicitly
+  // asks via `metafile: true` — buildAllVariants leaves it off by
+  // default to avoid the disk-write overhead on the hot path.
+  if (options.metafile) {
+    buildConfig.metafile = true;
+  }
+  // Compose plugins: stripPragma (debug pragma removal in release) + the
+  // variant alias plugin that redirects backend-specific imports to empty
+  // stubs. The variant plugin returns null for "dual" so we filter falsy.
+  /** @type {esbuild.Plugin[]} */
+  const plugins = [];
+  if (options.removePragmas) {
+    plugins.push(stripPragmaPlugin);
+  }
+  const variantPlugin = bundleVariantPlugin(variant);
+  if (variantPlugin) {
+    plugins.push(variantPlugin);
+  }
+  buildConfig.plugins = plugins;
   buildConfig.write = options.write;
   buildConfig.banner = {
     js: await getCopyrightHeader(),
@@ -175,17 +204,45 @@ export async function bundleCesiumJs(options) {
   const incremental = options.incremental;
   const build = incremental ? esbuild.context : esbuild.build;
 
-  // Build ESM
+  // Build ESM. We enable code splitting so the dynamic
+  // `await import("./WebGPU/WebGPUContext.js")` in ContextFactory creates
+  // a separate chunk that can be loaded on demand. The dual variant
+  // benefits the most: WebGPU code lives in its own chunk and only
+  // downloads when the user actually picks WebGPU.
+  //
+  // Output shape: index.js (entry) + chunk-XXXX.js (split chunks) all
+  // in `options.path`. Modern bundlers/Vite/browsers handle the
+  // implicit relative imports between them. The IIFE/CJS bundles below
+  // still produce single-file outputs because those formats don't
+  // support code splitting.
   const esm = await build({
     ...buildConfig,
     format: "esm",
-    outfile: path.join(options.path, "index.js"),
+    splitting: true,
+    outdir: options.path,
+    entryNames: "index",
+    chunkNames: "chunks/[name]-[hash]",
   });
 
   if (incremental) {
     contexts.esm = esm;
   } else {
     handleBuildWarnings(/** @type {esbuild.BuildResult} */ (esm));
+  }
+
+  // Persist the metafile alongside the bundle so analyzeBuild.js can
+  // open it without re-bundling. Only the ESM build's metafile is kept
+  // — the IIFE/CJS variants share the same module graph and would
+  // overwrite each other anyway.
+  if (options.metafile && !incremental) {
+    const metafileResult = /** @type {esbuild.BuildResult} */ (esm);
+    if (metafileResult.metafile) {
+      await writeFile(
+        path.join(options.path, "metafile.json"),
+        JSON.stringify(metafileResult.metafile, null, 2),
+        "utf8",
+      );
+    }
   }
 
   // Build IIFE
@@ -299,10 +356,68 @@ function generateDeclaration(workspace, file) {
 }
 
 /**
- * Creates a single entry point file, Cesium.js, which imports all individual modules exported from the Cesium API.
+ * Returns true if a generated barrel file path should be excluded for the
+ * given build variant. The variant filter only changes which entries are
+ * exposed on the synthesized barrel — the actual size shrinkage comes
+ * from `bundleVariantPlugin` aliasing imports to empty stubs at bundle
+ * time. Filtering the barrel here is still useful because it removes the
+ * `Cesium.<name>` global namespace entries that would otherwise point at
+ * empty stubs (which would be confusing for users introspecting the API).
+ *
+ * @param {string} file Source file path
+ * @param {BundleVariant} variant
+ */
+function shouldExcludeFromVariantBarrel(file, variant) {
+  const p = file.replace(/\\/g, "/");
+  if (variant === "webgpu-only") {
+    // GLSL string modules under Source/Shaders/ (not under WebGPU/)
+    return (
+      p.includes("/Source/Shaders/") && !p.includes("/Source/Shaders/WebGPU/")
+    );
+  }
+  if (variant === "webgl-only") {
+    return (
+      p.includes("/Source/Renderer/WebGPU/") ||
+      p.includes("/Source/Shaders/WebGPU/")
+    );
+  }
+  return false;
+}
+
+/** @typedef {"dual" | "webgl-only" | "webgpu-only"} BundleVariant */
+
+/**
+ * Maps a build variant to the source-side entry-point filename it
+ * generates under `Source/`. The IIFE/ESM bundlers consume the file
+ * at this path. The "dual" variant keeps the historical `Source/Cesium.js`
+ * filename so existing build paths and downstream tooling don't break.
+ *
+ * @param {BundleVariant} variant
+ */
+function entryFileForVariant(variant) {
+  switch (variant) {
+    case "webgl-only":
+      return "Source/CesiumWebGLOnly.js";
+    case "webgpu-only":
+      return "Source/CesiumWebGPUOnly.js";
+    case "dual":
+    default:
+      return "Source/Cesium.js";
+  }
+}
+
+/**
+ * Creates a single entry point file (Source/Cesium.js or a variant-named
+ * sibling), which imports all individual modules exported from the
+ * Cesium API. The dual webgpu-first entry is the historical default;
+ * webgl-only / webgpu-only variants exclude the irrelevant backend's
+ * modules from the export list, and a `setGlobalDefaultRenderer` call
+ * is appended so the runtime auto-selection picks the matching backend.
+ *
+ * @param {BundleVariant} [variant="dual"] Build variant
  * @returns {Promise<string>} contents
  */
-export async function createCesiumJs() {
+export async function createCesiumJs(variant = "dual") {
   const version = await getVersion();
   let contents = `export const VERSION = '${version}';\n`;
 
@@ -311,13 +426,36 @@ export async function createCesiumJs() {
     const files = await globby(
       workspaceSourceFiles[/** @type {Workspace} */ (workspace)],
     );
-    const declarations = files.map((file) =>
-      generateDeclaration(workspace, file),
-    );
+    const declarations = files
+      .filter((file) => !shouldExcludeFromVariantBarrel(file, variant))
+      .map((file) => generateDeclaration(workspace, file));
     contents += declarations.join(`${EOL}`);
     contents += "\n";
   }
-  await writeFile("Source/Cesium.js", contents, { encoding: "utf-8" });
+
+  // FORK-16: Re-export TypeScript-only WGSL preprocessor + library
+  // surface that the .js glob in workspaceSourceFiles can't pick up.
+  // The webgpu-only and dual variants both need it; webgl-only does
+  // not because the WGSL preprocessor is dead code in that build.
+  if (variant !== "webgl-only") {
+    contents +=
+      `\n// TypeScript-only WGSL preprocessor exports — needed by wgsl-import-test.html\n` +
+      `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from '@${scope}/engine';\n` +
+      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from '@${scope}/engine';\n`;
+  }
+
+  // Append the runtime default-renderer hint so this entry's bundle picks
+  // the right backend on first `Viewer({ contextOptions: { renderer: 'auto' } })`.
+  // The dual entry leaves the default at WEBGPU (set by RendererType.ts);
+  // we still emit the call explicitly so the intent is visible in source.
+  const defaultRenderer = variant === "webgl-only" ? "WEBGL" : "WEBGPU";
+  contents +=
+    `\n// Build variant: ${variant} — set the runtime default renderer.\n` +
+    `import { setGlobalDefaultRenderer, RendererType } from '@${scope}/engine';\n` +
+    `setGlobalDefaultRenderer(RendererType.${defaultRenderer});\n`;
+
+  const outFile = entryFileForVariant(variant);
+  await writeFile(outFile, contents, { encoding: "utf-8" });
 
   return contents;
 }
@@ -978,6 +1116,75 @@ export async function copyEngineAssets(destination) {
 }
 
 /**
+ * Map a build variant name to the directory suffix used by `buildCesium`
+ * (`Build/Cesium${suffix}` and `Build/Cesium${suffix}Unminified`).
+ *
+ * @param {BundleVariant} variant
+ */
+function variantDirSuffix(variant) {
+  if (variant === "webgl-only") {
+    return "WebGL";
+  }
+  if (variant === "webgpu-only") {
+    return "WebGPU";
+  }
+  return "";
+}
+
+/**
+ * Copy variant-independent build artifacts (Workers, ThirdParty, Widgets,
+ * Assets, CSS) from one variant's output directory into another's. Used
+ * by the `buildAllVariants` task to avoid rebuilding the same workers /
+ * CSS / static assets for every variant — the dual variant builds them
+ * once into `Build/Cesium{Unminified}/`, and the other variants pick up
+ * the result instead of rerunning bundleWorkers, bundleCSS, etc.
+ *
+ * The bundle entry files themselves (`index.js`, `Cesium.js`, `index.cjs`,
+ * and the `chunks/` directory) are deliberately NOT copied — those are
+ * variant-specific and the variant build will have already produced them.
+ *
+ * Both the unminified and minified output dirs are mirrored.
+ *
+ * @param {BundleVariant} fromVariant The source variant (typically "dual")
+ * @param {BundleVariant} toVariant   The destination variant
+ */
+export async function copyVariantSharedAssets(fromVariant, toVariant) {
+  const fromSuffix = variantDirSuffix(fromVariant);
+  const toSuffix = variantDirSuffix(toVariant);
+
+  // Mirror both flavours of the build dir.
+  for (const buildSuffix of ["", "Unminified"]) {
+    const fromDir = path.join("Build", `Cesium${fromSuffix}${buildSuffix}`);
+    const toDir = path.join("Build", `Cesium${toSuffix}${buildSuffix}`);
+
+    if (!existsSync(fromDir)) {
+      continue;
+    }
+    if (!existsSync(toDir)) {
+      mkdirp.sync(toDir);
+    }
+
+    // Glob everything under fromDir EXCEPT the variant-specific bundle
+    // entries. The exclusions cover ESM (index.js + sourcemap), IIFE
+    // (Cesium.js + sourcemap), CJS (index.cjs + sourcemap), the split
+    // chunks subdir, and the package.json shim that buildCesium writes
+    // for CJS interop.
+    const globs = [
+      `${fromDir.replace(/\\/g, "/")}/**/*`,
+      `!${fromDir.replace(/\\/g, "/")}/index.js`,
+      `!${fromDir.replace(/\\/g, "/")}/index.js.map`,
+      `!${fromDir.replace(/\\/g, "/")}/index.cjs`,
+      `!${fromDir.replace(/\\/g, "/")}/index.cjs.map`,
+      `!${fromDir.replace(/\\/g, "/")}/Cesium.js`,
+      `!${fromDir.replace(/\\/g, "/")}/Cesium.js.map`,
+      `!${fromDir.replace(/\\/g, "/")}/chunks/**`,
+    ];
+
+    await copyFiles(globs, toDir, fromDir);
+  }
+}
+
+/**
  * Copy assets from widgets.
  *
  * @param {string} destination The path to copy files to.
@@ -1116,6 +1323,23 @@ export async function createIndexJs(workspace) {
     assignmentName = assignmentName.replace(/(\.|-)/g, "_");
     contents += `export { default as ${assignmentName} } from './${moduleId}.js';${EOL}`;
   });
+
+  // Append re-exports for TypeScript-only public API that the file glob
+  // above can't pick up (it only matches `.js`). Without this the build
+  // variants can't call `setGlobalDefaultRenderer` from the entry barrel.
+  if (workspace === "engine") {
+    contents +=
+      `${EOL}// TypeScript-only re-exports — needed by build-variant entry points${EOL}` +
+      `export { default as RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, isWebGPUSupported, isValidRendererType } from './Source/Renderer/RendererType.js';${EOL}` +
+      `export { default as ContextFactory } from './Source/Renderer/ContextFactory.js';${EOL}` +
+      `export { default as GraphicsContext } from './Source/Renderer/GraphicsContext.js';${EOL}` +
+      `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}` +
+      // FORK-16: WGSL preprocessor + library are needed by the
+      // wgsl-import-test.html page so it can validate the same
+      // module the runtime uses, instead of shipping its own copy.
+      `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from './Source/Renderer/WebGPU/WGSLShaderPreprocessor.js';${EOL}` +
+      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from './Source/Renderer/WebGPU/WGSLBuiltins.js';${EOL}`;
+  }
 
   await writeFile(`packages/${workspace}/index.js`, contents, {
     encoding: "utf-8",
@@ -1353,22 +1577,54 @@ export const buildWidgets = async (options) => {
  * @param {boolean} [options.removePragmas=false] True if debug pragmas should be removed.
  * @param {boolean} [options.sourcemap=true] True if sourcemap should be included in the generated bundles.
  * @param {boolean} [options.write=true] True if bundles generated are written to files instead of in-memory buffers.
+ * @param {BundleVariant} [options.variant="dual"] Which backend variant to bundle.
+ * @param {boolean} [options.skipSharedAssets=false] When true, skips workers/CSS/specs/static-asset rebuilds — used by `buildAllVariants` after the dual variant has populated the shared output dirs.
+ * @param {boolean} [options.metafile=false] When true, esbuild emits `metafile.json` next to the ESM bundle for use with `scripts/analyzeBuild.js`.
  */
 export async function buildCesium(options) {
   const development = options.development ?? true;
-  const iife = options.iife ?? true;
+  /** @type {BundleVariant} */
+  const variant = options.variant ?? "dual";
+  // The non-dual variants exist to feed tree-shaking-aware bundlers
+  // (Vite/Webpack/Rollup). Skip the IIFE/global-namespace bundle for
+  // them by default — that bundle is only useful for direct
+  // `<script src="Cesium.js">` includes, which is a dual-build use case.
+  // Caller can still force iife=true on a variant explicitly.
+  const iife = options.iife ?? variant === "dual";
   const incremental = options.incremental ?? false;
   const minify = options.minify ?? false;
   const node = options.node ?? true;
   const removePragmas = options.removePragmas ?? false;
   const sourcemap = options.sourcemap ?? true;
   const write = options.write ?? true;
+  // When `buildAllVariants` runs the dual variant first, the variant-
+  // independent steps (CSS bundle, workers, specs, static assets) are
+  // already on disk under `Build/Cesium{Unminified}/`. Subsequent
+  // variant builds set this flag so they only do the work that DEPENDS
+  // on the variant — namely the consolidated JS bundle — and the
+  // gulp task copies the shared output dirs after.
+  const skipSharedAssets = options.skipSharedAssets ?? false;
 
   // Generate Build folder to place build artifacts.
   mkdirp.sync("Build");
+
+  // Each variant gets its own output directory under Build/, so the
+  // four bundles can coexist and be compared side-by-side. The historical
+  // `Build/Cesium` / `Build/CesiumUnminified` paths are reserved for the
+  // dual (default) variant so existing tooling and downstream consumers
+  // don't break.
+  const variantDirSuffix =
+    variant === "webgl-only"
+      ? "WebGL"
+      : variant === "webgpu-only"
+        ? "WebGPU"
+        : "";
   const outputDirectory =
     options.outputDirectory ??
-    path.join("Build", `Cesium${!minify ? "Unminified" : ""}`);
+    path.join(
+      "Build",
+      `Cesium${variantDirSuffix}${!minify ? "Unminified" : ""}`,
+    );
   rimraf.sync(outputDirectory);
 
   await writeFile(
@@ -1379,46 +1635,61 @@ export async function buildCesium(options) {
     "utf8",
   );
 
-  // Create Cesium.js
-  await createCesiumJs();
+  // Create the variant-specific entry barrel under Source/. The dual
+  // variant continues to write `Source/Cesium.js`; the others write
+  // sibling files (CesiumWebGLOnly.js / CesiumWebGPUOnly.js).
+  await createCesiumJs(variant);
 
-  // Create SpecList.js
-  await createCombinedSpecList();
+  // Create SpecList.js — variant-independent.
+  if (!skipSharedAssets) {
+    await createCombinedSpecList();
 
-  // Bundle ThirdParty files.
-  await bundleCSS({
-    filePaths: [
-      "packages/engine/Source/ThirdParty/google-earth-dbroot-parser.js",
-    ],
-    minify: minify,
-    sourcemap: sourcemap,
-    outdir: outputDirectory,
-    outbase: "packages/engine/Source",
-  });
+    // Bundle ThirdParty files.
+    await bundleCSS({
+      filePaths: [
+        "packages/engine/Source/ThirdParty/google-earth-dbroot-parser.js",
+      ],
+      minify: minify,
+      sourcemap: sourcemap,
+      outdir: outputDirectory,
+      outbase: "packages/engine/Source",
+    });
 
-  // Bundle CSS files.
-  await bundleCSS({
-    filePaths: workspaceCssFiles[`engine`],
-    outdir: path.join(outputDirectory, "Widgets/CesiumWidget"),
-    outbase: "packages/engine/Source/Widget",
-  });
-  await bundleCSS({
-    filePaths: workspaceCssFiles[`widgets`],
-    outdir: path.join(outputDirectory, "Widgets"),
-    outbase: "packages/widgets/Source",
-  });
+    // Bundle CSS files.
+    await bundleCSS({
+      filePaths: workspaceCssFiles[`engine`],
+      outdir: path.join(outputDirectory, "Widgets/CesiumWidget"),
+      outbase: "packages/engine/Source/Widget",
+    });
+    await bundleCSS({
+      filePaths: workspaceCssFiles[`widgets`],
+      outdir: path.join(outputDirectory, "Widgets"),
+      outbase: "packages/widgets/Source",
+    });
+  }
 
-  const workersContext = await bundleWorkers({
-    iife: false,
-    minify: minify,
-    sourcemap: sourcemap,
-    path: outputDirectory,
-    removePragmas: removePragmas,
-    incremental: incremental,
-    write: write,
-  });
+  // Workers are also variant-independent — the WGSL/GLSL split has no
+  // bearing on terrain workers, polygon tessellation, etc.
+  // `bundleWorkers` returns either a build context, a build result, or
+  // void (the void path is the IIFE branch which writes the inline
+  // worker file directly), so we use `any` rather than re-deriving the
+  // union here.
+  /** @type {any} */
+  let workersContext = null;
+  if (!skipSharedAssets) {
+    workersContext = await bundleWorkers({
+      iife: false,
+      minify: minify,
+      sourcemap: sourcemap,
+      path: outputDirectory,
+      removePragmas: removePragmas,
+      incremental: incremental,
+      write: write,
+    });
+  }
 
-  // Generate bundles.
+  // Generate bundles. The variant flows through bundleCesiumJs so the
+  // alias plugin can rewrite backend-specific imports to empty stubs.
   const contexts = await bundleCesiumJs({
     minify: minify,
     iife: iife,
@@ -1428,57 +1699,69 @@ export async function buildCesium(options) {
     path: outputDirectory,
     node: node,
     write: write,
+    variant: variant,
+    entryPoint: entryFileForVariant(variant),
+    metafile: options.metafile,
   });
 
-  await Promise.all([createJsHintOptions(), createGalleryList(!development)]);
+  /** @type {esbuild.BuildResult | esbuild.BuildContext | null} */
+  let specsContext = null;
+  /** @type {esbuild.BuildResult | esbuild.BuildContext | null} */
+  let testWorkersContext = null;
 
-  // Generate Specs bundle.
-  const specsContext = await bundleCombinedSpecs({
-    incremental: incremental,
-    write: write,
-  });
+  if (!skipSharedAssets) {
+    await Promise.all([createJsHintOptions(), createGalleryList(!development)]);
 
-  const testWorkersContext = await bundleTestWorkers({
-    incremental: incremental,
-    write: write,
-  });
+    // Generate Specs bundle.
+    specsContext = await bundleCombinedSpecs({
+      incremental: incremental,
+      write: write,
+    });
 
-  // Copy static assets to the Build folder.
+    testWorkersContext = await bundleTestWorkers({
+      incremental: incremental,
+      write: write,
+    });
 
-  await copyEngineAssets(outputDirectory);
-  await copyWidgetsAssets(path.join(outputDirectory, "Widgets"));
+    // Copy static assets to the Build folder.
 
-  // Copy static assets to Source folder.
+    await copyEngineAssets(outputDirectory);
+    await copyWidgetsAssets(path.join(outputDirectory, "Widgets"));
 
-  await copyEngineAssets("Source");
-  await copyFiles(
-    ["packages/engine/Source/ThirdParty/**/*.js"],
-    "Source/ThirdParty",
-    "packages/engine/Source/ThirdParty",
-  );
+    // Copy static assets to Source folder. These targets are
+    // truly variant-independent (`Source/`, not `Build/`) so they only
+    // need to run once across the whole multi-variant pipeline.
 
-  await copyWidgetsAssets("Source/Widgets");
-  await copyFiles(
-    ["packages/widgets/Source/**/*.css"],
-    "Source/Widgets",
-    "packages/widgets/Source",
-  );
+    await copyEngineAssets("Source");
+    await copyFiles(
+      ["packages/engine/Source/ThirdParty/**/*.js"],
+      "Source/ThirdParty",
+      "packages/engine/Source/ThirdParty",
+    );
 
-  // WORKAROUND:
-  // Since CesiumWidget was originally part of the Widgets folder, we need to fix up any
-  // references to it when we put it back in the Widgets folder, as expected by the
-  // combined CesiumJS structure.
-  const widgetsCssBuffer = await readFile("Source/Widgets/widgets.css");
-  const widgetsCssContents = widgetsCssBuffer
-    .toString()
-    .replace("../../engine/Source/Widget", "./CesiumWidget");
-  await writeFile("Source/Widgets/widgets.css", widgetsCssContents);
+    await copyWidgetsAssets("Source/Widgets");
+    await copyFiles(
+      ["packages/widgets/Source/**/*.css"],
+      "Source/Widgets",
+      "packages/widgets/Source",
+    );
 
-  const lighterCssBuffer = await readFile("Source/Widgets/lighter.css");
-  const lighterCssContents = lighterCssBuffer
-    .toString()
-    .replace("../../engine/Source/Widget", "./CesiumWidget");
-  await writeFile("Source/Widgets/lighter.css", lighterCssContents);
+    // WORKAROUND:
+    // Since CesiumWidget was originally part of the Widgets folder, we need
+    // to fix up any references to it when we put it back in the Widgets
+    // folder, as expected by the combined CesiumJS structure.
+    const widgetsCssBuffer = await readFile("Source/Widgets/widgets.css");
+    const widgetsCssContents = widgetsCssBuffer
+      .toString()
+      .replace("../../engine/Source/Widget", "./CesiumWidget");
+    await writeFile("Source/Widgets/widgets.css", widgetsCssContents);
+
+    const lighterCssBuffer = await readFile("Source/Widgets/lighter.css");
+    const lighterCssContents = lighterCssBuffer
+      .toString()
+      .replace("../../engine/Source/Widget", "./CesiumWidget");
+    await writeFile("Source/Widgets/lighter.css", lighterCssContents);
+  }
 
   return {
     esm: contexts.esm,

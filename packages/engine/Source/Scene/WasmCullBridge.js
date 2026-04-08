@@ -1,5 +1,6 @@
 import SOABoundingSphereLayout from "./SOABoundingSphereLayout.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot, freeSlot } from "./WasmArenaSlots.js";
 
 // Shared WASM module state — loaded once, reused across all bridge instances.
 let _wasmModule = null;
@@ -244,7 +245,12 @@ class WasmCullBridge {
     const totalBytes = floatBytes * 4 + planesBytes + visBytes;
 
     try {
-      const basePtr = wasm.alloc_buffer(totalBytes);
+      // FORK-45: Allocate from this bridge's dedicated slot if the
+      // WASM build is recent enough; otherwise fall through to the
+      // legacy single arena. The shared-slot fallback is correct
+      // because every bridge runs sequentially today; per-slot is
+      // the future-proofing for parallel-frame execution.
+      const basePtr = allocFromSlot(wasm, WasmArenaSlot.CULL, totalBytes);
       if (basePtr === 0) {
         // OOM in WASM arena — fall back to JS
         this._cullJS(count);
@@ -271,7 +277,10 @@ class WasmCullBridge {
       this.soaLayout.visibility.set(wasmVis);
     } catch (e) {
       // WASM operation failed — fall back to JS
-      console.warn("[CesiumJS:WasmCullBridge] WASM cull failed, using JS fallback:", e.message);
+      console.warn(
+        "[CesiumJS:WasmCullBridge] WASM cull failed, using JS fallback:",
+        e.message,
+      );
       this._cullJS(count);
     }
   }
@@ -297,6 +306,13 @@ class WasmCullBridge {
   destroy() {
     if (this._isDestroyed) {
       return;
+    }
+    // FORK-45: free the dedicated slot first; the legacy free is a
+    // no-op when the per-slot API is present, so calling both is
+    // safe and keeps the bridge backwards-compatible with older WASM
+    // builds where only `freeBuffer` exists.
+    if (_wasmModule) {
+      freeSlot(_wasmModule, WasmArenaSlot.CULL);
     }
     WasmFeatureDetection.freeBuffer(_wasmModule);
     this._isDestroyed = true;

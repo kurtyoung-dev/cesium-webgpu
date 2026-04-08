@@ -17,6 +17,7 @@ import Label from "./Label.js";
 import LabelStyle from "./LabelStyle.js";
 import SDFSettings from "./SDFSettings.js";
 import TextureAtlas from "../Renderer/TextureAtlas.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import VerticalOrigin from "./VerticalOrigin.js";
 import GraphemeSplitter from "grapheme-splitter";
 import { Check } from "@cesium/engine";
@@ -1046,6 +1047,18 @@ LabelCollection.prototype.update = function (frameState) {
   backgroundBillboardCollection._highlightColor = this._highlightColor;
 
   this._labelsToUpdate.length = 0;
+
+  // WebGPU path: use dedicated label renderer with SDF support
+  const context = frameState.context;
+  const labelFR = context.getFeatureRenderer(
+    FeatureRendererKey.LABEL_COLLECTION,
+  );
+  if (labelFR) {
+    labelFR.update(this, frameState, frameState.commandList);
+    return;
+  }
+
+  // WebGL fallback: delegate to billboard collections
   backgroundBillboardCollection.update(frameState);
   glyphBillboardCollection.update(frameState);
 };

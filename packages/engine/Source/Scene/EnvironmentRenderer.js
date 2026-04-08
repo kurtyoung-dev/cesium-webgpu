@@ -50,13 +50,13 @@ function renderEnvironment(scene, passState, executeCommand) {
     environmentState.moonCommand.execute(context, passState);
   }
 
-  // Accept both WebGL commands (have shaderProgram) and WebGPU commands (have isWebGPUDrawCommand)
+  // Execute panorama commands — accept any command that has an execute method
   const panoramaCommandList = scene.frameState.panoramaCommandList;
   for (let i = panoramaCommandList.length - 1; i >= 0; i--) {
     const panoramaCommand = panoramaCommandList[i];
     if (
       defined(panoramaCommand.shaderProgram) ||
-      panoramaCommand.isWebGPUDrawCommand === true
+      defined(panoramaCommand.pipeline)
     ) {
       executeCommand(panoramaCommandList[i], scene, passState);
     } else {

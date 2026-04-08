@@ -19,6 +19,7 @@ struct BufferPointUniforms {
   padding0   : f32,
   padding1   : f32,
   padding2   : f32,
+  viewport   : vec4<f32>, // x,y,width,height in pixels
 };
 
 @group(0) @binding(0) var<uniform> camera : CameraUniforms;
@@ -70,8 +71,8 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   let positionEC = camera.modelViewRelativeToEye * p;
 
   // Expand quad in screen space
-  let clipPos = camera.projection * positionEC;
-  let ndcSize = outerRadius * 2.0 / camera.viewport.zw;
+  let clipPos = camera.projectionMatrix * positionEC;
+  let ndcSize = outerRadius * 2.0 / params.viewport.zw;
   let offset = input.quadOffset * ndcSize * clipPos.w;
 
   output.position = vec4<f32>(clipPos.xy + offset, clipPos.z, clipPos.w);

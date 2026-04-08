@@ -14,10 +14,12 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
+import { WebGPUOIT } from "./WebGPUOIT.js";
 
 interface GaussianSplatCache {
   uniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
+  oitPipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   quadVertexBuffer: GPUBuffer | null;
@@ -26,6 +28,7 @@ interface GaussianSplatCache {
   command: any | null;
   initialized: boolean;
   lastRevision: number;
+  pipelineLayout: GPUPipelineLayout | null;
 }
 
 const SPLAT_WGSL = `
@@ -124,7 +127,9 @@ function buildPipeline(
   format: GPUTextureFormat,
 ): {
   pipeline: GPURenderPipeline;
+  oitPipeline: GPURenderPipeline | null;
   bgl: GPUBindGroupLayout;
+  layout: GPUPipelineLayout;
 } {
   const sm = device.createShaderModule({ code: SPLAT_WGSL });
   const bgl = device.createBindGroupLayout({
@@ -137,8 +142,9 @@ function buildPipeline(
     ],
   });
   // Instance stride: posHigh(12) + posLow(12) + covA(12) + covB(12) + color(16) = 64 bytes
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
   const pipeline = device.createRenderPipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    layout,
     vertex: {
       module: sm,
       entryPoint: "vertexMain",
@@ -207,7 +213,83 @@ function buildPipeline(
       depthCompare: "less",
     },
   });
-  return { pipeline, bgl };
+
+  // GS-WSR: Create OIT pipeline variant for weighted-sum rendering
+  let oitPipeline: GPURenderPipeline | null = null;
+  try {
+    const oitCode = WebGPUOIT.injectOITOutput(SPLAT_WGSL, "fragmentMain");
+    const oitSM = device.createShaderModule({
+      label: "GaussianSplat-OIT-GS-WSR",
+      code: oitCode,
+    });
+    oitPipeline = device.createRenderPipeline({
+      label: "GaussianSplat-OIT-Pipeline",
+      layout,
+      vertex: {
+        module: oitSM,
+        entryPoint: "vertexMain",
+        buffers: [
+          {
+            arrayStride: 8,
+            stepMode: "vertex" as GPUVertexStepMode,
+            attributes: [
+              {
+                shaderLocation: 0,
+                offset: 0,
+                format: "float32x2" as GPUVertexFormat,
+              },
+            ],
+          },
+          {
+            arrayStride: 64,
+            stepMode: "instance" as GPUVertexStepMode,
+            attributes: [
+              {
+                shaderLocation: 1,
+                offset: 0,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 2,
+                offset: 12,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 3,
+                offset: 24,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 4,
+                offset: 36,
+                format: "float32x3" as GPUVertexFormat,
+              },
+              {
+                shaderLocation: 5,
+                offset: 48,
+                format: "float32x4" as GPUVertexFormat,
+              },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module: oitSM,
+        entryPoint: "fragmentMain",
+        targets: WebGPUOIT.OIT_TARGETS,
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
+        depthCompare: "less",
+      },
+    });
+  } catch (e) {
+    // OIT variant creation is non-fatal — falls back to standard alpha blending
+  }
+
+  return { pipeline, oitPipeline, bgl, layout };
 }
 
 function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
@@ -223,6 +305,7 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
     primitive._webgpuCache = {
       uniformBuffer: null,
       pipeline: null,
+      oitPipeline: null,
       shaderModule: null,
       bindGroup: null,
       quadVertexBuffer: null,
@@ -231,6 +314,7 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
       command: null,
       initialized: false,
       lastRevision: -1,
+      pipelineLayout: null,
     } as GaussianSplatCache;
   }
 
@@ -238,12 +322,18 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
   if (!cache.initialized) {
+    // 40 floats RTE matrices/cam + 4 floats viewport/focal = 44 floats = 176 bytes
     cache.uniformBuffer = device.createBuffer({
-      size: 256,
+      size: 176,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    const { pipeline, bgl } = buildPipeline(device, canvasFormat);
+    const { pipeline, oitPipeline, bgl, layout } = buildPipeline(
+      device,
+      canvasFormat,
+    );
     cache.pipeline = pipeline;
+    cache.oitPipeline = oitPipeline;
+    cache.pipelineLayout = layout;
     cache.bindGroup = device.createBindGroup({
       layout: bgl,
       entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer } }],
@@ -317,18 +407,24 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
   data[38] = scratchEncoded.low.z;
   data[39] = 0;
 
-  // Viewport + focal length
+  // Viewport + focal length derived from the perspective projection matrix.
+  // For a standard perspective: P[0][0] = 1/(aspect*tan(fov/2)),
+  // P[1][1] = 1/tan(fov/2). Pixel-space focal = P[i][i] * (viewportDim/2).
   const vpData = new Float32Array(4);
-  const canvas = context._canvas || { width: 1920, height: 1080 };
-  vpData[0] = canvas.width;
-  vpData[1] = canvas.height;
-  vpData[2] = canvas.width * 0.5; // focal X approximation
-  vpData[3] = canvas.height * 0.5; // focal Y approximation
+  const viewportW =
+    context.drawingBufferWidth || context._canvas?.width || 1920;
+  const viewportH =
+    context.drawingBufferHeight || context._canvas?.height || 1080;
+  const proj = m4Values(us.projection);
+  vpData[0] = viewportW;
+  vpData[1] = viewportH;
+  vpData[2] = proj[0] * (viewportW * 0.5); // focal X (pixels)
+  vpData[3] = proj[5] * (viewportH * 0.5); // focal Y (pixels)
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
   device.queue.writeBuffer(cache.uniformBuffer!, 160, vpData);
 
   if (!cache.command) {
-    cache.command = new WebGPUDrawCommand({
+    const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: [cache.bindGroup],
       vertexBuffers: [cache.quadVertexBuffer, cache.splatBuffer],
@@ -336,6 +432,13 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
       instanceCount: cache.splatCount,
       pass: Pass.GAUSSIAN_SPLATS,
     });
+    // GS-WSR: attach OIT pipeline variant for weighted-sum rendering
+    if (cache.oitPipeline) {
+      cmd._oitPipeline = cache.oitPipeline;
+    }
+    // Store shader code for dynamic OIT variant creation via scene renderer
+    cmd._shaderCode = SPLAT_WGSL;
+    cache.command = cmd;
   }
 
   commandList.push(cache.command);

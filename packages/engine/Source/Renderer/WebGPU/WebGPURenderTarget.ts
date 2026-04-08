@@ -54,6 +54,24 @@ export interface WebGPURenderTargetDescriptor {
    * Mipmap level count (default: 1)
    */
   mipLevelCount?: number;
+
+  /**
+   * Whether the depth attachment should be sampleable as a texture in
+   * subsequent passes. Adds `TEXTURE_BINDING` to the depth texture usage
+   * and creates a `aspect: "depth-only"` view via {@link WebGPURenderTarget.getDepthSampleableView}.
+   *
+   * Cost: forces `storeOp: "store"` on the depth attachment (negates the
+   * TBDR mobile-GPU `discard` optimization). Use only when downstream
+   * passes actually need the depth — depth-as-color debug overlay, soft
+   * particles, depth-aware post-processing, etc.
+   *
+   * Note: incompatible with MSAA depth — multisampled depth textures
+   * cannot be sampled in WGSL. When `sampleCount > 1` this flag is
+   * silently ignored and the depth view stays non-sampleable.
+   *
+   * Default: false.
+   */
+  depthSamplable?: boolean;
 }
 
 /**
@@ -79,6 +97,9 @@ export class WebGPURenderTarget {
 
   // Depth/stencil attachment (optional)
   private depthStencilAttachment?: RenderTargetAttachment;
+
+  // Depth-only aspect view for sampling (only created when depthSamplable=true)
+  private _depthSampleableView?: GPUTextureView;
 
   // MSAA resolve targets (if MSAA enabled)
   private resolveTargets: RenderTargetAttachment[] = [];
@@ -159,11 +180,21 @@ export class WebGPURenderTarget {
 
     // Create depth/stencil attachment if specified
     if (depthStencilFormat) {
+      // Sampleability requires single-sample depth — multisampled depth
+      // textures can't be sampled in WGSL. When MSAA is on the request
+      // is silently ignored.
+      const wantSampleable =
+        this.descriptor.depthSamplable === true && (sampleCount ?? 1) === 1;
+      let depthUsage: GPUTextureUsageFlags = GPUTextureUsage.RENDER_ATTACHMENT;
+      if (wantSampleable) {
+        depthUsage |= GPUTextureUsage.TEXTURE_BINDING;
+      }
+
       const depthTexture = this.device.createTexture({
         label: `${this.descriptor.name}_depth`,
         size: { width, height, depthOrArrayLayers: 1 },
         format: depthStencilFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        usage: depthUsage,
         sampleCount: sampleCount!,
         mipLevelCount: 1, // Depth textures don't use mipmaps
       });
@@ -173,6 +204,16 @@ export class WebGPURenderTarget {
         view: depthTexture.createView(),
         format: depthStencilFormat,
       };
+
+      // Cache the depth-only aspect view for sampling. This is the view
+      // bound to a `texture_depth_2d` in WGSL — separate from the
+      // attachment view (which is depth+stencil aspect for rendering).
+      if (wantSampleable) {
+        this._depthSampleableView = depthTexture.createView({
+          label: `${this.descriptor.name}_depth_sampleable`,
+          aspect: "depth-only",
+        });
+      }
     }
   }
 
@@ -292,6 +333,20 @@ export class WebGPURenderTarget {
    */
   getDepthStencilTextureView(): GPUTextureView | undefined {
     return this.depthStencilAttachment?.view;
+  }
+
+  /**
+   * Get the depth-only aspect view for sampling. Returns undefined unless
+   * the descriptor opted in via `depthSamplable: true` AND the depth
+   * texture is single-sample (multisampled depth can't be sampled).
+   *
+   * Bind this view to a `texture_depth_2d` in WGSL — the regular
+   * attachment view (depth+stencil aspect) is not valid for that binding.
+   *
+   * @returns Sampleable depth view or undefined
+   */
+  getDepthSampleableView(): GPUTextureView | undefined {
+    return this._depthSampleableView;
   }
 
   /**

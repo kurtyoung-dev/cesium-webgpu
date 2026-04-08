@@ -33,6 +33,7 @@ import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
+import { WebGPUViewportQuad } from "./WebGPUViewportQuad.js";
 import {
   createWebGLCompatibilityStub,
   type WebGLStubState,
@@ -55,6 +56,7 @@ import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
 import { WebGPUStorageBufferPool } from "./WebGPUStorageBufferPool.js";
 import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
 import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
+import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
 import {
   createDefaultTextures,
   copyTexture as copyTextureUtil,
@@ -69,6 +71,44 @@ import {
   WebGPUPerformanceManager,
   type PerformanceConfig,
 } from "./WebGPUPerformanceManager.js";
+import { jsModule } from "./webgpuTypeHelpers.js";
+
+/** Type-shape for the JS-only RenderState.fromCache() static. */
+interface RenderStateStatics {
+  fromCache: (renderState?: object) => unknown;
+}
+
+/**
+ * Type-shape for the JS-only ContextLimits module's writable internal
+ * fields. Cesium intentionally exposes ContextLimits as a const-like
+ * object whose `_xxx` fields are written by the active context during
+ * device initialization. The TypeScript compiler can't see those fields
+ * because ContextLimits.js declares them via Object.defineProperties.
+ */
+interface ContextLimitsInternals {
+  _maximumTextureSize: number;
+  _maximumCubeMapSize: number;
+  _maximumRenderbufferSize: number;
+  _maximumTextureImageUnits: number;
+  _maximumVertexTextureImageUnits: number;
+  _maximumCombinedTextureImageUnits: number;
+  _maximumVertexAttributes: number;
+  _maximumViewportWidth: number;
+  _maximumViewportHeight: number;
+  _maximumFragmentUniformVectors: number;
+  _maximumVaryingVectors: number;
+  _maximumVertexUniformVectors: number;
+  _minimumAliasedLineWidth: number;
+  _maximumAliasedLineWidth: number;
+  _minimumAliasedPointSize: number;
+  _maximumAliasedPointSize: number;
+  _maximumTextureFilterAnisotropy: number;
+  _maximumDrawBuffers: number;
+  _maximumColorAttachments: number;
+  _maximumSamples: number;
+  _highpFloatSupported: boolean;
+  _highpIntSupported: boolean;
+}
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
@@ -81,6 +121,14 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
    * Preferred GPU power preference
    */
   powerPreference?: GPUPowerPreference;
+
+  /**
+   * WebGPU feature level: "core" (default) or "compatibility".
+   * Compatibility mode runs on WebGL2 hardware via a restricted WebGPU feature set.
+   * This enables WebGPU API benefits (modern shader compilation, pipeline caching)
+   * on hardware that doesn't support full WebGPU.
+   */
+  featureLevel?: "core" | "compatibility";
 
   /**
    * Required features for the device
@@ -118,6 +166,12 @@ export class WebGPUContext extends GraphicsContext {
   // WebGL compatibility - stub object with WebGL constants for backward compatibility
   // This allows legacy Texture.js code to work without crashing
   public _gl: any;
+
+  // WGF-6: Cached reference to WebGPUPrimitiveIndexUtils so Scene.js can probe
+  // `@builtin(primitive_index)` support without importing from Renderer/WebGPU.
+  // Populated lazily by initialize() — Scene reads it via the public
+  // `triangulationDebugSupported` getter.
+  public _primitiveIndexUtilsCache: any = null;
 
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
@@ -251,6 +305,7 @@ export class WebGPUContext extends GraphicsContext {
   // Viewport quad for full-screen effects
   private _viewportQuadVertexBuffer: WebGPUBuffer | null = null;
   private _viewportQuadPipeline: GPURenderPipeline | null = null;
+  private _viewportQuad: WebGPUViewportQuad | null = null;
 
   // Pick objects — managed by GraphicsContext base class
   // (_pickObjects Map and _nextPickColor counter are inherited)
@@ -297,7 +352,8 @@ export class WebGPUContext extends GraphicsContext {
     // Initialize uniform and pass state
     this._uniformState = new UniformState();
     this._defaultPassState = new PassState(this as any);
-    this._defaultRenderState = (RenderState as any).fromCache();
+    this._defaultRenderState =
+      jsModule<RenderStateStatics>(RenderState).fromCache();
     this._currentRenderState = this._defaultRenderState;
     this._currentPassState = this._defaultPassState;
 
@@ -375,9 +431,14 @@ export class WebGPUContext extends GraphicsContext {
   private async _initialize(): Promise<void> {
     try {
       // Request GPU adapter
-      this._adapter = await navigator.gpu.requestAdapter({
+      // featureLevel "compatibility" runs WebGPU on WebGL2 hardware
+      const adapterOptions: GPURequestAdapterOptions = {
         powerPreference: this._options.powerPreference ?? "high-performance",
-      });
+      };
+      if (this._options.featureLevel === "compatibility") {
+        (adapterOptions as any).featureLevel = "compatibility";
+      }
+      this._adapter = await navigator.gpu.requestAdapter(adapterOptions);
 
       if (!this._adapter) {
         throw new RuntimeError(
@@ -417,6 +478,15 @@ export class WebGPUContext extends GraphicsContext {
       // Update capability flags based on enabled features
       this._updateFeatureFlags();
 
+      // WGF-6: Cache the primitive_index utility module so backend-agnostic
+      // Scene code can probe support without importing from Renderer/WebGPU.
+      try {
+        const primIdxMod = await import("./WebGPUPrimitiveIndexUtils.js");
+        this._primitiveIndexUtilsCache = primIdxMod.WebGPUPrimitiveIndexUtils;
+      } catch (e) {
+        this._primitiveIndexUtilsCache = null;
+      }
+
       // Configure canvas context
       this._context = this._canvas.getContext("webgpu") as GPUCanvasContext;
 
@@ -439,6 +509,11 @@ export class WebGPUContext extends GraphicsContext {
       this._initializeDefaultTextures();
 
       // Initialization complete — adapter and format selected
+      const level = this._options.featureLevel ?? "core";
+      this.log(
+        "info",
+        `Initialized (featureLevel: ${level}, adapter: ${this._adapter?.info?.vendor ?? "unknown"})`,
+      );
 
       // Register all WebGPU feature renderers so scene files can access them
       // via context.getFeatureRenderer('name') instead of importing directly
@@ -457,11 +532,38 @@ export class WebGPUContext extends GraphicsContext {
           await sceneRendererFR.initCollectionShaders();
         }
       }
+
+      // Pipeline warm-up: proactively initialize common renderers to avoid
+      // first-frame stutter from synchronous pipeline compilation.
+      this._warmUpPipelines();
     } catch (error) {
       throw new RuntimeError(
         `Failed to initialize WebGPU context: ${(error as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Proactively initialize common renderers to avoid first-frame pipeline stutter.
+   * Fires-and-forgets — initialization happens in background.
+   * @private
+   */
+  private _warmUpPipelines(): void {
+    // Touch the globe surface FR to trigger its RendererClass instantiation.
+    // The constructor compiles the terrain shader module and creates pipeline layout.
+    const globeFR = this.getFeatureRenderer(
+      FeatureRendererKey.GLOBE_SURFACE,
+    ) as any;
+    if (globeFR?.RendererClass && !globeFR._instance) {
+      try {
+        globeFR._instance = new globeFR.RendererClass(this);
+      } catch (e) {
+        // Non-fatal — will be created lazily on first use
+      }
+    }
+
+    // Trigger async GPU culler initialization (loads FrustumCull.wgsl + compiles compute pipeline)
+    void this.gpuCuller;
   }
 
   /**
@@ -530,7 +632,16 @@ export class WebGPUContext extends GraphicsContext {
    * The renderer type for this context
    */
   get rendererType(): RendererType {
-    return RendererType.WEBGPU;
+    return this._options.featureLevel === "compatibility"
+      ? RendererType.WEBGPU_COMPAT
+      : RendererType.WEBGPU;
+  }
+
+  /**
+   * The WebGPU feature level: "core" or "compatibility"
+   */
+  get featureLevel(): string {
+    return this._options.featureLevel ?? "core";
   }
 
   /**
@@ -701,6 +812,11 @@ export class WebGPUContext extends GraphicsContext {
     this._drawCallCount = 0;
     this._triangleCount = 0;
     this._frameCount++;
+
+    // Advance ring buffer allocator to next page
+    if (this._uniformAllocator) {
+      this._uniformAllocator.beginFrame();
+    }
 
     // Create command encoder for this frame
     this._currentCommandEncoder = this._device.createCommandEncoder({
@@ -951,6 +1067,11 @@ export class WebGPUContext extends GraphicsContext {
     const commandBuffer = this._currentCommandEncoder.finish();
     this._device.queue.submit([commandBuffer]);
 
+    // Finalize ring buffer frame
+    if (this._uniformAllocator) {
+      this._uniformAllocator.endFrame();
+    }
+
     // Clear frame state
     this._currentCommandEncoder = null;
     this._currentTextureView = null;
@@ -1118,9 +1239,13 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     const limits = this._device.limits;
-    const cl = ContextLimits as any;
+    // ContextLimits is a JS module that exposes its internal `_xxx`
+    // fields via Object.defineProperties. The host context is expected
+    // to write these on init. See ContextLimitsInternals at the top of
+    // this file for the full shape.
+    const cl = jsModule<ContextLimitsInternals>(ContextLimits);
 
-    // Map WebGPU limits to ContextLimits (using 'as any' to access internal properties)
+    // Map WebGPU limits to ContextLimits internals.
     cl._maximumTextureSize = limits.maxTextureDimension2D;
     cl._maximumCubeMapSize = limits.maxTextureDimension2D;
     cl._maximumRenderbufferSize = limits.maxTextureDimension2D;
@@ -1325,6 +1450,30 @@ export class WebGPUContext extends GraphicsContext {
         ctx._scissorTest = v;
       },
 
+      // ── Stub-local state (not mirrored on the context) ──
+      // Pixel-store flags consumed by the texture stub when uploading
+      // CPU pixel data via texImage2D / texSubImage2D.
+      pixelStore: {
+        unpackFlipY: false,
+        unpackPremultiplyAlpha: false,
+        unpackAlignment: 4,
+      },
+      // Stencil state mirrors WebGL defaults; tracked for future
+      // pipeline creation that needs stencil ops.
+      stencilTestEnabled: false,
+      stencilFrontCompare: "always" as GPUCompareFunction,
+      stencilBackCompare: "always" as GPUCompareFunction,
+      stencilReadMask: 0xff,
+      stencilWriteMask: 0xff,
+      stencilReference: 0,
+      stencilFailOp: "keep" as GPUStencilOperation,
+      stencilDepthFailOp: "keep" as GPUStencilOperation,
+      stencilPassOp: "keep" as GPUStencilOperation,
+      // Lazy mipmap generator — created the first time generateMipmap is
+      // called. Stored on `state` so the texture stub can dispatch a real
+      // blit-down compute pass instead of falling back to a no-op.
+      mipmapGenerator: null,
+
       // Methods that delegate to WebGPUContext methods
       setViewport: (x: number, y: number, w: number, h: number) =>
         ctx.setViewport(x, y, w, h),
@@ -1397,51 +1546,81 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Creates a viewport quad command for screen-space effects - PRIORITY 2 IMPLEMENTED
-   * Used for post-processing, full-screen passes, etc.
-   * @param {any} fragmentShader - The fragment shader for the quad (WGSL shader module)
-   * @param {any} [options] - Additional options (uniformMap, framebuffer)
-   * @returns {any} A viewport quad command
+   * Creates a viewport quad command for screen-space effects.
+   *
+   * Accepts WGSL shader code (string with @vertex/@fragment, or object with
+   * `_wgslCode` property). GLSL shaders return a noop command — callers that
+   * need WebGPU support must provide WGSL equivalents.
+   *
+   * Delegates to {@link WebGPUViewportQuad} for pipeline caching, bind group
+   * creation, and fullscreen triangle rendering.
+   *
+   * @see WebGPUViewportQuad for shader conventions and binding layout
+   * @param {any} fragmentShader - WGSL shader code or GLSL source
+   * @param {any} [options] - uniformMap, framebuffer, owner, renderState, pass,
+   *   pipelineConfig (blend/depth/stencil)
+   * @returns {any} A command object with execute(passEncoder?, context?)
    */
   createViewportQuadCommand(fragmentShader: any, options?: any): any {
-    // Ensure viewport quad is initialized
-    if (!this._viewportQuadVertexBuffer) {
-      this._initializeViewportQuad();
+    const device = this._device;
+    options = options || {};
+
+    // Determine WGSL code from various input types
+    let wgslCode: string | null = null;
+    if (typeof fragmentShader === "string") {
+      if (
+        fragmentShader.includes("@vertex") ||
+        fragmentShader.includes("@fragment")
+      ) {
+        wgslCode = fragmentShader;
+      }
+    } else if (fragmentShader?._wgslCode) {
+      wgslCode = fragmentShader._wgslCode;
     }
 
-    const that = this;
+    if (!wgslCode || !device) {
+      // GLSL or no device — return noop command
+      return {
+        execute: () => {},
+        shaderProgram: fragmentShader,
+        uniformMap: options.uniformMap || {},
+        framebuffer: options.framebuffer || null,
+        owner: options.owner,
+        renderState: options.renderState,
+        pass: options.pass,
+        _isViewportQuadCommand: true,
+        destroy: () => {},
+      };
+    }
 
-    return {
-      execute: (renderPassEncoder?: GPURenderPassEncoder) => {
-        const passEncoder = renderPassEncoder || that._currentRenderPassEncoder;
+    // Lazy-init the viewport quad utility
+    if (!this._viewportQuad) {
+      this._viewportQuad = new WebGPUViewportQuad(device);
+    }
 
-        if (!passEncoder || !that._viewportQuadVertexBuffer) {
-          that.log(
-            "warn",
-            "Cannot execute viewport quad - no render pass or vertex buffer",
-          );
-          return;
-        }
+    const targetFormat: GPUTextureFormat =
+      this._presentationFormat || "bgra8unorm";
 
-        // Note: Actual pipeline creation would require the fragment shader
-        // For now, this provides the structure. Full implementation requires:
-        // 1. Create pipeline with fragment shader
-        // 2. Create bind group from uniformMap
-        // 3. Execute draw call
+    return this._viewportQuad.createCommand(wgslCode, targetFormat, {
+      uniformMap: options.uniformMap,
+      framebuffer: options.framebuffer,
+      owner: options.owner,
+      renderState: options.renderState,
+      pass: options.pass,
+      pipelineConfig: options.pipelineConfig,
+      bindGroupEntries: options.bindGroupEntries,
+    });
+  }
 
-        that.log(
-          "warn",
-          "Viewport quad execution - pipeline creation not implemented",
-        );
-        // passEncoder.setPipeline(pipeline);
-        // passEncoder.setBindGroup(0, bindGroup);
-        // passEncoder.setVertexBuffer(0, that._viewportQuadVertexBuffer.buffer);
-        // passEncoder.draw(4, 1, 0, 0); // 4 vertices, triangle strip
-      },
-      shaderProgram: fragmentShader,
-      uniformMap: options?.uniformMap || {},
-      framebuffer: options?.framebuffer || null,
-    };
+  /**
+   * Direct access to the WebGPUViewportQuad utility for advanced use cases
+   * (targeted render passes, explicit bind groups, etc.).
+   */
+  get viewportQuad(): WebGPUViewportQuad | null {
+    if (!this._viewportQuad && this._device) {
+      this._viewportQuad = new WebGPUViewportQuad(this._device);
+    }
+    return this._viewportQuad;
   }
 
   /**
@@ -2150,17 +2329,19 @@ export class WebGPUContext extends GraphicsContext {
       if (shadowMap.outOfView) {
         continue;
       }
+      // Collect cast commands from all shadow passes.
+      // insertShadowCastCommands was called from Scene.js before this,
+      // populating each pass's commandList.
       const { passes } = shadowMap;
-      for (let j = 0; j < passes.length; ++j) {
-        passes[j].commandList.length = 0;
-      }
-      // insertShadowCastCommands is called from Scene.js before this
-      // but we need to collect commands here too
       const castCommands: any[] = [];
       for (let j = 0; j < passes.length; ++j) {
         for (let k = 0; k < passes[j].commandList.length; ++k) {
           castCommands.push(passes[j].commandList[k]);
         }
+      }
+      // Clear after collecting — not before
+      for (let j = 0; j < passes.length; ++j) {
+        passes[j].commandList.length = 0;
       }
       if (castCommands.length > 0) {
         this.endCurrentRenderPass();
@@ -2270,6 +2451,12 @@ export class WebGPUContext extends GraphicsContext {
     this._bindGroupLayoutCache.clear();
     this._bindGroupCache.clear();
 
+    // Destroy viewport quad utility
+    if (this._viewportQuad) {
+      this._viewportQuad.destroy();
+      this._viewportQuad = null;
+    }
+
     // Clear buffer pools
     this._bufferPool.clear();
     this._uniformBufferPool = [];
@@ -2296,6 +2483,10 @@ export class WebGPUContext extends GraphicsContext {
     if (this._indirectDrawManager) {
       this._indirectDrawManager.destroy();
       this._indirectDrawManager = null;
+    }
+    if (this._gpuCuller) {
+      this._gpuCuller.destroy();
+      this._gpuCuller = null;
     }
     if (this._bufferMapper) {
       this._bufferMapper.destroy();
@@ -2684,7 +2875,16 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Create a texture from image data - PRIORITY 3 NEW
-   * Helper method for common texture creation from images
+   * Helper method for common texture creation from images.
+   *
+   * Synchronous fast path: copies the source as-is via
+   * `queue.copyExternalImageToTexture`. This does NOT respect EXIF orientation
+   * — for `HTMLImageElement` decoded from a JPEG with a non-trivial Orientation
+   * tag, the GPU sees pixels in their unrotated layout. If the caller needs
+   * orientation handling, route through {@link createTextureFromImageAsync}
+   * which uses the WGF-8 `WebGPUImageUpload` helper to bake EXIF rotation in
+   * via `createImageBitmap`.
+   *
    * @param {ImageBitmap | HTMLImageElement | HTMLCanvasElement} source - Image source
    * @param {GPUTextureFormat} [format='rgba8unorm'] - Texture format
    * @param {boolean} [generateMipmaps=false] - Whether to generate mipmaps
@@ -2726,6 +2926,75 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     // Generate mipmaps if requested and texture has multiple mip levels
+    if (generateMipmaps && mipLevelCount > 1) {
+      texture.generateMipmaps(this.mipmapGenerator);
+    }
+
+    return texture;
+  }
+
+  /**
+   * Async variant of {@link createTextureFromImage} that routes through the
+   * WGF-8 {@link WebGPUImageUpload} helper. Use this when the source is an
+   * `HTMLImageElement` or `Blob` that may carry EXIF orientation metadata
+   * (rotated phone photos, scanned documents) — the helper decodes through
+   * `createImageBitmap({ imageOrientation: "from-image" })` so the resulting
+   * texture pixels are upright.
+   *
+   * Allocates the destination texture *before* awaiting the decode so callers
+   * that need a placeholder ID immediately can chain off the returned promise
+   * without an extra round trip.
+   */
+  async createTextureFromImageAsync(
+    source:
+      | ImageBitmap
+      | HTMLImageElement
+      | HTMLCanvasElement
+      | OffscreenCanvas
+      | Blob,
+    format: GPUTextureFormat = "rgba8unorm",
+    generateMipmaps: boolean = false,
+    options: {
+      flipY?: boolean;
+      premultipliedAlpha?: boolean;
+      respectEXIF?: boolean;
+    } = {},
+  ): Promise<WebGPUTexture | null> {
+    if (!this._device) {
+      return null;
+    }
+
+    const { WebGPUImageUpload } = await import("./WebGPUImageUpload.js");
+    const decoded = await WebGPUImageUpload.decodeWithOrientation(source);
+
+    // After EXIF rotation the bitmap dimensions can be swapped (90°/270°), so
+    // pull width/height from the decoded surface, not the original source.
+    const width = (decoded as { width: number }).width;
+    const height = (decoded as { height: number }).height;
+    const mipLevelCount = generateMipmaps
+      ? Math.floor(Math.log2(Math.max(width, height))) + 1
+      : 1;
+
+    const texture = WebGPUTexture.create2D(
+      this._device,
+      width,
+      height,
+      format,
+      mipLevelCount,
+      "Texture from Image (async)",
+    );
+
+    await WebGPUImageUpload.uploadImageToTexture(
+      this._device,
+      decoded,
+      texture.texture,
+      {
+        respectEXIF: false, // already decoded above
+        flipY: options.flipY,
+        premultipliedAlpha: options.premultipliedAlpha,
+      },
+    );
+
     if (generateMipmaps && mipLevelCount > 1) {
       texture.generateMipmaps(this.mipmapGenerator);
     }
@@ -2777,6 +3046,27 @@ export class WebGPUContext extends GraphicsContext {
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
+  private _uniformAllocator: WebGPURingBufferAllocator | null = null;
+  private _gpuCuller: any | null = null;
+  private _gpuCullerInitializing: boolean = false;
+
+  /**
+   * Ring buffer allocator for per-frame uniform buffer suballocation.
+   * Reduces GPU memory fragmentation by suballocating from pre-created pages
+   * instead of creating new buffers each frame. Triple-buffered (3 pages).
+   * Lazy-initialized on first access.
+   */
+  get uniformAllocator(): WebGPURingBufferAllocator | null {
+    if (!this._uniformAllocator && this._device) {
+      this._uniformAllocator = new WebGPURingBufferAllocator(this._device, {
+        pageSize: 4 * 1024 * 1024, // 4MB per page
+        pageCount: 3, // Triple-buffered
+        minAlignment: 256, // WebGPU uniform buffer offset alignment
+        label: "Uniform ring buffer",
+      });
+    }
+    return this._uniformAllocator;
+  }
 
   /**
    * Performance manager that orchestrates all WebGPU performance infrastructure:
@@ -2848,6 +3138,40 @@ export class WebGPUContext extends GraphicsContext {
       this._bufferMapper = new WebGPUBufferMapper(this._device);
     }
     return this._bufferMapper;
+  }
+
+  /**
+   * GPU frustum culler for compute-shader-based visibility testing.
+   * Lazy-initialized on first access. Async init loads the FrustumCull.wgsl shader.
+   * @returns The culler instance (may not be initialized yet — check .initialized)
+   */
+  get gpuCuller(): any | null {
+    if (!this._gpuCuller && this._device && !this._gpuCullerInitializing) {
+      this._gpuCullerInitializing = true;
+      import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
+        const culler = new WebGPUGPUCuller(this._device!, {
+          maxObjects: 65536,
+          label: `ctx-${this._id}`,
+        });
+        import("../../Shaders/WebGPU/Compute/FrustumCull.js")
+          .then((mod: any) => {
+            const code = mod.default || mod;
+            return culler.initialize(typeof code === "string" ? code : "");
+          })
+          .then(() => {
+            this._gpuCuller = culler;
+            this._gpuCullerInitializing = false;
+          })
+          .catch((e: any) => {
+            console.warn(
+              `[CesiumJS:webgpu:ctx-${this._id}] GPU culler init failed:`,
+              e,
+            );
+            this._gpuCullerInitializing = false;
+          });
+      });
+    }
+    return this._gpuCuller;
   }
 
   /**

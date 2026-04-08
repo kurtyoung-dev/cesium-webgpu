@@ -193,7 +193,7 @@ export function createWebGLCompatibilityStub(state: WebGLStubState): any {
     ...createFramebufferStubs(state, logUsage),
     ...createBufferStubs(state, logUsage),
     ...createPipelineStateStubs(state, logUsage),
-    ...createShaderStubs(logUsage),
+    ...createShaderStubs(state, logUsage),
   };
 }
 

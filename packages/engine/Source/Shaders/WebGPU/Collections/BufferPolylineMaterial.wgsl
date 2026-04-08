@@ -18,6 +18,7 @@ struct BufferPolylineUniforms {
   padding0   : f32,
   padding1   : f32,
   padding2   : f32,
+  viewport   : vec4<f32>, // x,y,width,height in pixels
 };
 
 @group(0) @binding(0) var<uniform> camera : CameraUniforms;
@@ -79,12 +80,12 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   let nextEC = (camera.modelViewRelativeToEye * pNext).xyz;
 
   // Project to clip space
-  let clipPos = camera.projection * vec4<f32>(posEC, 1.0);
-  let prevClip = camera.projection * vec4<f32>(prevEC, 1.0);
-  let nextClip = camera.projection * vec4<f32>(nextEC, 1.0);
+  let clipPos = camera.projectionMatrix * vec4<f32>(posEC, 1.0);
+  let prevClip = camera.projectionMatrix * vec4<f32>(prevEC, 1.0);
+  let nextClip = camera.projectionMatrix * vec4<f32>(nextEC, 1.0);
 
   // Convert to screen space for miter computation
-  let viewport = camera.viewport;
+  let viewport = params.viewport;
   let screenCurr = (clipPos.xy / clipPos.w) * 0.5 * viewport.zw;
   let screenPrev = (prevClip.xy / prevClip.w) * 0.5 * viewport.zw;
   let screenNext = (nextClip.xy / nextClip.w) * 0.5 * viewport.zw;

@@ -15,9 +15,12 @@ let _wasmSupported = null;
 /**
  * Expected WASM module version — must match `version()` from lib.rs.
  * Bump when the Rust WASM API changes.
+ * - v1: initial frustum cull + radix sort
+ * - v2: terrain/RTE/matrix/point-cloud additions
+ * - v3: FORK-45 per-bridge arena slots (alloc_buffer_slot family)
  * @type {number}
  */
-const EXPECTED_WASM_VERSION = 2;
+const EXPECTED_WASM_VERSION = 3;
 
 /**
  * SIMD test bytes — a minimal valid WASM module using v128:
@@ -26,14 +29,37 @@ const EXPECTED_WASM_VERSION = 2;
  * @private
  */
 const SIMD_TEST_BYTES = new Uint8Array([
-  0x00, 0x61, 0x73, 0x6d, // magic: \0asm
-  0x01, 0x00, 0x00, 0x00, // version: 1
-  0x01, 0x05, 0x01, 0x60, // type section: 1 func type, () -> v128
-  0x00, 0x01, 0x7b,
-  0x03, 0x02, 0x01, 0x00, // function section: 1 function, type 0
-  0x0a, 0x0a, 0x01, 0x08, // code section
-  0x00, 0x41, 0x00, 0xfd, // v128.const i32x4 0 0 0 0
-  0x0f, 0xfd, 0x62, 0x0b,
+  0x00,
+  0x61,
+  0x73,
+  0x6d, // magic: \0asm
+  0x01,
+  0x00,
+  0x00,
+  0x00, // version: 1
+  0x01,
+  0x05,
+  0x01,
+  0x60, // type section: 1 func type, () -> v128
+  0x00,
+  0x01,
+  0x7b,
+  0x03,
+  0x02,
+  0x01,
+  0x00, // function section: 1 function, type 0
+  0x0a,
+  0x0a,
+  0x01,
+  0x08, // code section
+  0x00,
+  0x41,
+  0x00,
+  0xfd, // v128.const i32x4 0 0 0 0
+  0x0f,
+  0xfd,
+  0x62,
+  0x0b,
 ]);
 
 /**

@@ -6,6 +6,14 @@
  * fully infer. This module provides type-safe wrappers and casts to bridge
  * the gap without using `as any`.
  *
+ * Adoption rule of thumb:
+ * - **DO** route legitimate JS-interop casts through these helpers — they
+ *   centralize the cast in one place that's auditable, documents the WHY,
+ *   and gives us a single point of attack when CesiumJS adds proper types.
+ * - **DO NOT** route renderer-internal `(this as any)._debugLogged = true`
+ *   debug-state stashing through here. Those casts are intentional and
+ *   local; centralizing them buys nothing.
+ *
  * @private
  */
 
@@ -53,4 +61,49 @@ export function gpuData(
   data: ArrayBufferView | ArrayBuffer,
 ): GPUAllowSharedBufferSource {
   return data as unknown as GPUAllowSharedBufferSource;
+}
+
+/**
+ * Type-erased view of a CesiumJS JS module/class.
+ *
+ * CesiumJS core modules like `IndexDatatype`, `EncodedCartesian3`,
+ * `RenderState`, and `ContextLimits` are written in JavaScript with no
+ * accompanying `.d.ts`. Static methods (`createTypedArray`, `encode`,
+ * `fromCache`, etc.) are not visible to TypeScript, so call sites
+ * normally need a `(Foo as any).bar()` cast.
+ *
+ * Use `jsModule(Foo).bar(...)` instead — it's the same cast but
+ * centralizes it here so future cleanup (e.g., adding real type
+ * declarations) can find every site by greping for `jsModule(`.
+ *
+ * @example
+ * import IndexDatatype from "../../Core/IndexDatatype.js";
+ * const indices = jsModule<{
+ *   createTypedArray: (max: number, count: number) => Uint16Array | Uint32Array;
+ * }>(IndexDatatype).createTypedArray(vertexCountMax, indexCount);
+ */
+export function jsModule<T>(mod: unknown): T {
+  return mod as T;
+}
+
+/**
+ * Casts a TypedArray-like buffer to `number[]` for CesiumJS APIs that
+ * declare `number[]` parameters but accept any indexable numeric source
+ * at runtime (e.g., `Cartesian3.fromArray`, `Cartesian2.fromArray`).
+ *
+ * The cast is safe because the underlying JS implementations only call
+ * `array[i]` on the parameter — they never invoke `Array.prototype`
+ * methods like `push`, `slice`, or `forEach`. Float32Array satisfies
+ * the index-access shape just fine.
+ *
+ * Use this instead of inline `as any` so reviewers can spot the
+ * "TypedArray fed into a number[] API" pattern at a glance.
+ *
+ * @example
+ * Cartesian3.fromArray(numericArray(positions), j * 3, scratchCart);
+ */
+export function numericArray(
+  source: ArrayLike<number> | Float32Array | Float64Array,
+): number[] {
+  return source as unknown as number[];
 }

@@ -81,13 +81,19 @@ const FeatureRendererKey = {
   // ── Procedural environment ──
   PROCEDURAL_CLOUDS: 32,
 
-  // ── Deferred rendering ──
-  DEFERRED_GBUFFER: 33,
-
   // ── Buffer Primitive collections (v1.140 vector tiles) ──
-  BUFFER_POINT_COLLECTION: 34,
-  BUFFER_POLYLINE_COLLECTION: 35,
-  BUFFER_POLYGON_COLLECTION: 36,
+  BUFFER_POINT_COLLECTION: 33,
+  BUFFER_POLYLINE_COLLECTION: 34,
+  BUFFER_POLYGON_COLLECTION: 35,
+
+  // ── Label rendering (SDF text) ──
+  LABEL_COLLECTION: 36,
+
+  // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
+  // sessions for a planned deferred renderer. It was never registered and
+  // never consumed by any scene code, so it was removed and the subsequent
+  // keys were shifted down by one to keep the lookup array dense. If a
+  // deferred path is added in the future, append it after LABEL_COLLECTION.
 
   /**
    * Total number of feature renderer keys (excluding COUNT itself).

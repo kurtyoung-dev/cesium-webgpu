@@ -47,9 +47,13 @@ const _asyncPick = {
 };
 
 // Maximum camera movement (meters) before an async pick result is considered stale
-const ASYNC_PICK_STALE_THRESHOLD = 100.0;
+const ASYNC_PICK_STALE_THRESHOLD = 50.0;
 // Maximum camera direction change (dot product) before stale
-const ASYNC_PICK_DIR_THRESHOLD = 0.999;
+const ASYNC_PICK_DIR_THRESHOLD = 0.9995;
+// Maximum ratio between async depth distance and ray distance before
+// the async result is rejected. Prevents 1-frame-stale depth from
+// causing dramatic camera jumps.
+const ASYNC_PICK_DISTANCE_RATIO = 1.5;
 
 export function pickPosition(controller, mousePosition, result) {
   const scene = controller._scene;
@@ -138,7 +142,15 @@ export function pickPosition(controller, mousePosition, result) {
     return undefined;
   }
 
-  if (pickDistance < rayDistance) {
+  // When both results are valid, reject the async depth pick if it
+  // disagrees too much with the ray pick — the depth value is 1 frame
+  // stale in async renderers and can cause camera jitter during fast
+  // movement. The ray pick is always current-frame accurate.
+  if (
+    pickDistance < rayDistance &&
+    (rayDistance === Number.POSITIVE_INFINITY ||
+      pickDistance / rayDistance > 1.0 / ASYNC_PICK_DISTANCE_RATIO)
+  ) {
     return Cartesian3.clone(depthIntersection, result);
   }
 

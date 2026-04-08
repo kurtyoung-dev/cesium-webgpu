@@ -22,11 +22,13 @@
  * @private
  */
 import WeatherParticlesWGSL from "../../Shaders/WebGPU/Compute/WeatherParticles.js";
+import WeatherParticleRenderWGSL from "../../Shaders/WebGPU/Compute/WeatherParticleRender.js";
 
 const WEATHER_TYPES = { rain: 0, snow: 1, fog: 2, hail: 3 } as const;
 const PARTICLE_SIZE_BYTES = 32; // 8 floats per particle
 const WEATHER_PARAMS_FLOATS = 24; // matches WeatherParams struct
 const WEATHER_PARAMS_BYTES = WEATHER_PARAMS_FLOATS * 4;
+const RENDER_UNIFORM_SIZE = 128; // CameraUniforms for render pass
 
 interface WeatherCache {
   resetPipeline: GPUComputePipeline | null;
@@ -40,6 +42,13 @@ interface WeatherCache {
   uniformData: Float32Array;
   maxParticles: number;
   initialized: boolean;
+  // Render pass resources
+  renderPipeline: GPURenderPipeline | null;
+  renderBindGroupLayout: GPUBindGroupLayout | null;
+  renderBindGroup: GPUBindGroup | null;
+  renderUniformBuffer: GPUBuffer | null;
+  renderUniformData: Float32Array;
+  renderInitialized: boolean;
 }
 
 function ensureWeatherCache(context: any): WeatherCache {
@@ -56,6 +65,12 @@ function ensureWeatherCache(context: any): WeatherCache {
       uniformData: new Float32Array(WEATHER_PARAMS_FLOATS),
       maxParticles: 0,
       initialized: false,
+      renderPipeline: null,
+      renderBindGroupLayout: null,
+      renderBindGroup: null,
+      renderUniformBuffer: null,
+      renderUniformData: new Float32Array(RENDER_UNIFORM_SIZE / 4),
+      renderInitialized: false,
     } as WeatherCache;
   }
   return context._weatherCache;
@@ -81,9 +96,21 @@ function initializeWeatherPipelines(
   cache.bindGroupLayout = device.createBindGroupLayout({
     label: "Weather BGL",
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage" },
+      },
     ],
   });
 
@@ -110,10 +137,12 @@ function initializeWeatherPipelines(
   });
 
   // Create particle storage buffer (zero-initialized = all dead)
+  // STORAGE for compute, VERTEX for render pass readback
   cache.particleBuffer = device.createBuffer({
     label: "Weather particles",
     size: maxParticles * PARTICLE_SIZE_BYTES,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage:
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
   });
 
   // Counter buffer: 3 u32 atomics
@@ -177,7 +206,9 @@ export function updateWeatherParticles(
   data[offset++] = weatherConfig.windSpeed ?? 5.0;
 
   // gravity (vec4): xyz=direction, w=magnitude
-  data[offset++] = 0; data[offset++] = -1; data[offset++] = 0;
+  data[offset++] = 0;
+  data[offset++] = -1;
+  data[offset++] = 0;
   data[offset++] = 9.81;
 
   // spawnVolume (vec4): xyz=half-extents, w=maxParticles
@@ -243,6 +274,178 @@ export function getWeatherMaxParticles(context: any): number {
   return context._weatherCache?.maxParticles ?? 0;
 }
 
+/**
+ * Initialize the weather particle render pipeline (once).
+ * Creates pipeline, bind group layout, and uniform buffer for rendering
+ * particles as instanced camera-facing quads.
+ */
+function initializeRenderPipeline(
+  device: GPUDevice,
+  cache: WeatherCache,
+  format: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+): void {
+  if (cache.renderInitialized) return;
+
+  const shaderModule = device.createShaderModule({
+    label: "WeatherParticle render",
+    code: WeatherParticleRenderWGSL,
+  });
+
+  cache.renderBindGroupLayout = device.createBindGroupLayout({
+    label: "Weather render BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  const pipelineLayout = device.createPipelineLayout({
+    bindGroupLayouts: [cache.renderBindGroupLayout],
+  });
+
+  cache.renderPipeline = device.createRenderPipeline({
+    label: "Weather particle render",
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  });
+
+  cache.renderUniformBuffer = device.createBuffer({
+    label: "Weather render uniforms",
+    size: RENDER_UNIFORM_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  cache.renderInitialized = true;
+}
+
+/**
+ * Render weather particles to the current render pass.
+ * Should be called after compute simulation, during the environmental effects phase.
+ *
+ * @param context - WebGPU context
+ * @param frameState - Current frame state (camera, timing)
+ * @param weatherConfig - Weather configuration
+ * @param renderPassEncoder - Active render pass encoder
+ */
+export function renderWeatherParticles(
+  context: any,
+  frameState: any,
+  weatherConfig: any,
+  renderPassEncoder: GPURenderPassEncoder,
+): void {
+  const device: GPUDevice | undefined = context._device;
+  const cache = context._weatherCache as WeatherCache | undefined;
+  if (!device || !cache?.initialized || !cache.particleBuffer) return;
+  if (!weatherConfig?.enabled) return;
+
+  const format: GPUTextureFormat = context.presentationFormat ?? "bgra8unorm";
+  const depthFormat: GPUTextureFormat =
+    context.depthFormat ?? "depth24plus-stencil8";
+
+  initializeRenderPipeline(device, cache, format, depthFormat);
+  if (!cache.renderPipeline || !cache.renderUniformBuffer) return;
+
+  // Pack render uniforms: CameraUniforms struct
+  const data = cache.renderUniformData;
+  const cam = frameState.camera;
+  const uniformState = context.uniformState;
+
+  // viewProjection (mat4x4) — 16 floats
+  if (uniformState?.viewProjection) {
+    const vp = uniformState.viewProjection;
+    for (let i = 0; i < 16; i++) {
+      data[i] = vp[i];
+    }
+  }
+
+  // cameraRight (vec3 + pad)
+  const right = cam?.rightWC;
+  data[16] = right?.x ?? 1;
+  data[17] = right?.y ?? 0;
+  data[18] = right?.z ?? 0;
+  data[19] = 0;
+
+  // cameraUp (vec3 + pad)
+  const up = cam?.upWC;
+  data[20] = up?.x ?? 0;
+  data[21] = up?.y ?? 1;
+  data[22] = up?.z ?? 0;
+  data[23] = 0;
+
+  // cameraPosition (vec3) + maxLifetime
+  const camPos = cam?.positionWC;
+  data[24] = camPos?.x ?? 0;
+  data[25] = camPos?.y ?? 0;
+  data[26] = camPos?.z ?? 0;
+  data[27] = weatherConfig.particleLifetime ?? 5.0;
+
+  // viewportSize (vec2) + weatherType (u32) + particleAlpha
+  const canvas = context.canvas;
+  data[28] = canvas?.width ?? 1920;
+  data[29] = canvas?.height ?? 1080;
+  // weatherType as u32 bit pattern
+  const typeStr = weatherConfig.type ?? "rain";
+  const typeId = WEATHER_TYPES[typeStr as keyof typeof WEATHER_TYPES] ?? 0;
+  const u32View = new Uint32Array(data.buffer, 30 * 4, 1);
+  u32View[0] = typeId;
+  data[31] = weatherConfig.intensity ?? 0.5;
+
+  device.queue.writeBuffer(cache.renderUniformBuffer, 0, data);
+
+  // Create render bind group (per-frame — particle buffer may have been recreated)
+  cache.renderBindGroup = device.createBindGroup({
+    layout: cache.renderBindGroupLayout!,
+    entries: [
+      { binding: 0, resource: { buffer: cache.particleBuffer } },
+      { binding: 1, resource: { buffer: cache.renderUniformBuffer } },
+    ],
+  });
+
+  // Draw: 6 vertices per quad, instanced by particle count
+  renderPassEncoder.setPipeline(cache.renderPipeline);
+  renderPassEncoder.setBindGroup(0, cache.renderBindGroup);
+  renderPassEncoder.draw(6, cache.maxParticles);
+}
+
 export function destroyWeatherResources(context: any): void {
   const cache = context._weatherCache as WeatherCache | undefined;
   if (cache) {
@@ -258,6 +461,12 @@ export function destroyWeatherResources(context: any): void {
     cache.bindGroupLayout = null;
     cache.bindGroup = null;
     cache.initialized = false;
+    cache.renderPipeline = null;
+    cache.renderBindGroupLayout = null;
+    cache.renderBindGroup = null;
+    cache.renderUniformBuffer?.destroy();
+    cache.renderUniformBuffer = null;
+    cache.renderInitialized = false;
     context._weatherCache = undefined;
   }
 }

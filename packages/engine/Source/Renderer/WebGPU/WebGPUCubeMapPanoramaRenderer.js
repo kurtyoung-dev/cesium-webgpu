@@ -62,7 +62,32 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let color = textureSample(cubeMapTexture, cubeMapSampler, normalize(input.texCoord));
+  // Tier 1 debug — single-face isolation. params.z encodes the requested
+  // face: 0=all (production), 1=+X, 2=-X, 3=+Y, 4=-Y, 5=+Z, 6=-Z.
+  // We pick the face for each fragment by finding the dominant axis of
+  // the cube direction; mismatched fragments discard so the chosen face
+  // renders through its natural skybox projection over the full hemisphere
+  // it covers. Lets you verify cubemap face data and orientation without
+  // external tools.
+  let dir = normalize(input.texCoord);
+  let requested = i32(uniforms.params.z + 0.5);
+  if (requested != 0) {
+    let absDir = abs(dir);
+    let maxAxis = max(absDir.x, max(absDir.y, absDir.z));
+    var face: i32 = 0;
+    if (absDir.x >= maxAxis) {
+      if (dir.x > 0.0) { face = 1; } else { face = 2; }
+    } else if (absDir.y >= maxAxis) {
+      if (dir.y > 0.0) { face = 3; } else { face = 4; }
+    } else {
+      if (dir.z > 0.0) { face = 5; } else { face = 6; }
+    }
+    if (face != requested) {
+      discard;
+    }
+  }
+
+  let color = textureSample(cubeMapTexture, cubeMapSampler, dir);
   let morphTime = uniforms.params.y;
   let corrected = pow(color.rgb, vec3<f32>(1.0 / 2.2));
   return vec4<f32>(corrected, morphTime);
@@ -345,16 +370,18 @@ export function createBindGroups(device, uniformBuffer, sampler, cubeMapView) {
  * @param {GPUDevice} device
  * @param {GPUBuffer} uniformBuffer
  * @param {Float32Array} uniformData
- * @param {Object} uniformState - CesiumJS UniformState
+ * @param {Object} frameState - CesiumJS FrameState (provides uniformState + per-frame debug toggles)
  * @param {Matrix3|Matrix4|undefined} panoramaTransform - Panorama orientation transform
  */
 export function updateUniforms(
   device,
   uniformBuffer,
   uniformData,
-  uniformState,
+  frameState,
   panoramaTransform,
 ) {
+  const uniformState = frameState.context.uniformState;
+
   // Projection matrix (offset 0, 16 floats)
   packMatrix4(uniformState.projection, uniformData, 0);
 
@@ -376,10 +403,14 @@ export function updateUniforms(
   }
   packMatrix3As4x4(transform, uniformData, 32);
 
-  // Params: x=far, y=morphTime (offset 48, 4 floats)
+  // Params: x=far, y=morphTime, z=debugCubeFace (Tier 1 debug)
+  // The debug field is sourced from frameState rather than a dedicated
+  // parameter so future per-frame additions slot in without churning
+  // every call site. When the debug toggle is off the value is just 0
+  // (production behavior).
   uniformData[48] = uniformState.entireFrustum.y; // far
   uniformData[49] = uniformState.morphTime;
-  uniformData[50] = 0.0;
+  uniformData[50] = frameState.debugShowCubeMapFace | 0; // 0=all, 1..6=face
   uniformData[51] = 0.0;
 
   device.queue.writeBuffer(uniformBuffer, 0, uniformData);
@@ -611,7 +642,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     device,
     state.uniformBuffer,
     state.uniformData,
-    context.uniformState,
+    frameState,
     panorama._transform,
   );
 

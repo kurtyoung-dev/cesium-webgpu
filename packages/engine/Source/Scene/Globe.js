@@ -20,6 +20,7 @@ import GlobeFS from "../Shaders/GlobeFS.js";
 import GlobeVS from "../Shaders/GlobeVS.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import GroundAtmosphere from "../Shaders/GroundAtmosphere.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
 import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
@@ -1091,13 +1092,25 @@ class Globe {
 
       // ── Enhanced WebGPU rendering properties ──
       tileProvider.enableNightLights = this.enableNightLights;
-      tileProvider.nightIntensity = this.enableNightLights ? this.nightIntensity : 0.0;
+      tileProvider.nightIntensity = this.enableNightLights
+        ? this.nightIntensity
+        : 0.0;
       tileProvider.enableEnhancedOcean = this.enableEnhancedOcean;
-      tileProvider.oceanDeepColor = this.enableEnhancedOcean ? this.oceanDeepColor : undefined;
-      tileProvider.oceanFresnelPower = this.enableEnhancedOcean ? this.oceanFresnelPower : 0.0;
-      tileProvider.oceanReflectivity = this.enableEnhancedOcean ? this.oceanReflectivity : 0.0;
-      tileProvider.oceanFoamThreshold = this.enableEnhancedOcean ? this.oceanFoamThreshold : 0.0;
-      tileProvider.oceanDarkening = this.enableEnhancedOcean ? this.oceanDarkening : 0.0;
+      tileProvider.oceanDeepColor = this.enableEnhancedOcean
+        ? this.oceanDeepColor
+        : undefined;
+      tileProvider.oceanFresnelPower = this.enableEnhancedOcean
+        ? this.oceanFresnelPower
+        : 0.0;
+      tileProvider.oceanReflectivity = this.enableEnhancedOcean
+        ? this.oceanReflectivity
+        : 0.0;
+      tileProvider.oceanFoamThreshold = this.enableEnhancedOcean
+        ? this.oceanFoamThreshold
+        : 0.0;
+      tileProvider.oceanDarkening = this.enableEnhancedOcean
+        ? this.oceanDarkening
+        : 0.0;
 
       // ── Procedural cloud properties (WebGPU only) ──
       tileProvider.showProceduralClouds = this.showProceduralClouds;
@@ -1109,6 +1122,15 @@ class Globe {
         tileProvider.cloudWindDirection = this.cloudWindDirection;
         tileProvider.cloudDensity = this.cloudDensity;
         tileProvider.cloudQuality = this.cloudQuality;
+      }
+
+      // ── Ground atmosphere uniform buffer (WebGPU only) ──
+      const context = frameState.context;
+      const gaFR = context.getFeatureRenderer(
+        FeatureRendererKey.GROUND_ATMOSPHERE,
+      );
+      if (gaFR) {
+        gaFR.update(this, frameState);
       }
 
       surface.beginFrame(frameState);
@@ -1179,6 +1201,15 @@ class Globe {
     this._surface = this._surface && this._surface.destroy();
     this._oceanNormalMap =
       this._oceanNormalMap && this._oceanNormalMap.destroy();
+    // Cleanup WebGPU ground atmosphere resources
+    if (this._webgpuAtmosphereCache) {
+      const cache = this._webgpuAtmosphereCache;
+      if (cache.uniformBuffer) {
+        cache.uniformBuffer.destroy();
+      }
+      this._webgpuAtmosphereCache = undefined;
+      this._webgpuAtmosphereBuffer = undefined;
+    }
     return destroyObject(this);
   }
 }

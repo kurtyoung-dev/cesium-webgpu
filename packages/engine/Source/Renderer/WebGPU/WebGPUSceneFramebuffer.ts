@@ -58,6 +58,15 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
+   * Depth-only aspect view suitable for binding to `texture_depth_2d` in
+   * WGSL. Returns undefined when MSAA is on (multisampled depth can't be
+   * sampled). Used by the Tier 2 debug depth-as-color overlay.
+   */
+  get depthSampleableView(): GPUTextureView | undefined {
+    return this._colorTarget?.getDepthSampleableView();
+  }
+
+  /**
    * The GPURenderPassDescriptor for writing to this framebuffer.
    */
   get framebuffer(): GPURenderPassDescriptor | null {
@@ -108,7 +117,13 @@ export class WebGPUSceneFramebuffer {
     this._colorTarget?.destroy();
     this._idTarget?.destroy();
 
-    // Create main color target with MSAA + depth-stencil
+    // Create main color target with MSAA + depth-stencil.
+    //
+    // depthSamplable=true makes the depth attachment usable as a sampled
+    // texture in subsequent passes (depth-as-color debug overlay, future
+    // soft-particle / depth-aware effects). Only takes effect when
+    // sampleCount === 1 — multisampled depth textures can't be sampled
+    // in WGSL, so MSAA scenes silently fall back to non-sampleable depth.
     this._colorTarget = new WebGPURenderTarget(device, {
       name: "SceneFramebuffer-Color",
       width,
@@ -116,6 +131,7 @@ export class WebGPUSceneFramebuffer {
       colorFormats: [colorFormat],
       depthStencilFormat: "depth24plus-stencil8",
       sampleCount: numSamples,
+      depthSamplable: true,
     });
 
     // Create ID target for picking (no MSAA, always rgba8unorm)

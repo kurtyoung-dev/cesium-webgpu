@@ -35,6 +35,40 @@ import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 
 // =========================================================================
+// Transient attachment helper (WGF-2)
+// =========================================================================
+//
+// `GPUTextureUsage.TRANSIENT_ATTACHMENT` is an optional flag that lets a
+// driver keep a render-attachment-only texture in tile memory and never
+// write its contents back to DRAM. It saves substantial bandwidth on
+// tile-based mobile GPUs (Apple, Mali, Adreno) for textures that:
+//   - have RENDER_ATTACHMENT in their usage
+//   - have NO TEXTURE_BINDING / STORAGE_BINDING / COPY_SRC / COPY_DST
+//   - are written by exactly one render pass per frame
+//   - use loadOp=clear (no preserved content)
+//   - use storeOp=discard (or are an MSAA source resolved + discarded)
+//
+// The bit is not yet enabled by default in every browser. We feature-detect
+// via `device.features.has("transient-attachments")` (the spec name during
+// the Chrome rollout) and fall back to 0 — OR-ing 0 is a no-op so callers
+// don't need to branch.
+function getTransientAttachmentBit(device: GPUDevice): number {
+  // The texture-usage constant may not exist on older `@webgpu/types`. Read
+  // it dynamically so we don't pin a TypeScript build to a specific version.
+  const bit =
+    (GPUTextureUsage as unknown as { TRANSIENT_ATTACHMENT?: number })
+      .TRANSIENT_ATTACHMENT ?? 0x10;
+  // Two possible feature names depending on spec snapshot — accept either.
+  if (
+    device.features.has("transient-attachments" as GPUFeatureName) ||
+    device.features.has("transient-attachment" as GPUFeatureName)
+  ) {
+    return bit;
+  }
+  return 0;
+}
+
+// =========================================================================
 // Types
 // =========================================================================
 
@@ -248,10 +282,15 @@ export class WebGPUFramebufferManager {
 
         // MSAA texture (if multisampled)
         if (this._numSamples > 1) {
+          // MSAA source textures are pure render attachments — they're
+          // resolved into _colorTextures and then discarded each pass.
+          // Mark them transient on devices that support it so the driver
+          // can keep them in tile memory only (TBDR memoryless).
+          const transientBit = getTransientAttachmentBit(device);
           this._msaaColorTextures[i] = device.createTexture({
             size: { width, height },
             format: this._colorFormat,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | transientBit,
             sampleCount: this._numSamples,
             label: `${this._label}_MSAAColor${i}`,
           });
@@ -269,6 +308,12 @@ export class WebGPUFramebufferManager {
       let depthUsage = GPUTextureUsage.RENDER_ATTACHMENT;
       if (this._depthSamplable) {
         depthUsage |= GPUTextureUsage.TEXTURE_BINDING;
+      } else {
+        // Pure render-attachment depth: a later color pass will not sample
+        // it, so the contents never need to leave tile memory. Pair this
+        // with depthStoreOp: "discard" (already done in
+        // getRenderPassDescriptor) to maximise the bandwidth win on TBDR.
+        depthUsage |= getTransientAttachmentBit(device);
       }
 
       this._depthTexture = device.createTexture({
@@ -316,7 +361,12 @@ export class WebGPUFramebufferManager {
     const loadOp: GPULoadOp = opts.loadOp ?? "clear";
     const storeOp: GPUStoreOp = opts.storeOp ?? "store";
     const depthLoadOp: GPULoadOp = opts.depthLoadOp ?? "clear";
-    const depthStoreOp: GPUStoreOp = opts.depthStoreOp ?? "store";
+    // Transient depth optimization: when the depth texture is not sampled by
+    // any later pass, discard it after rendering. On tile-based mobile GPUs
+    // (Apple/Mali/Adreno) the driver can then keep the depth buffer in
+    // on-chip tile memory only (memoryless), avoiding writeback to DRAM.
+    const depthStoreOp: GPUStoreOp =
+      opts.depthStoreOp ?? (this._depthSamplable ? "store" : "discard");
     const depthClearValue = opts.depthClearValue ?? 1.0;
     const stencilClearValue = opts.stencilClearValue ?? 0;
 
@@ -325,13 +375,16 @@ export class WebGPUFramebufferManager {
     if (this._hasColor) {
       for (let i = 0; i < this._colorAttachmentsLength; i++) {
         if (this._numSamples > 1) {
-          // MSAA: render to multisample texture, resolve to single-sample
+          // MSAA: render to multisample texture, resolve to single-sample.
+          // Transient MSAA: discard the multisample texture after the resolve
+          // — only the resolve target is sampled later. This lets TBDR drivers
+          // keep the multisample buffer in tile memory only (memoryless).
           colorAttachments.push({
             view: this._msaaColorTextureViews[i]!,
             resolveTarget: this._colorTextureViews[i]!,
             clearValue: clearColor,
             loadOp,
-            storeOp,
+            storeOp: "discard",
           });
         } else {
           colorAttachments.push({

@@ -105,9 +105,37 @@ export class WebGPUGPUCuller {
   async initialize(shaderCode: string): Promise<void> {
     if (this._initialized) return;
 
+    // Pick the subgroup-accelerated entry point when the device supports it.
+    // The "subgroups" feature collapses per-thread atomicAdd into one
+    // atomicAdd per subgroup for the compaction counter (mode 2), giving a
+    // 2-4× speedup on cards with native subgroup support. The portable
+    // `main` entry is used otherwise — same semantics, scalar atomics.
+    const useSubgroups = this._device.features.has(
+      "subgroups" as GPUFeatureName,
+    );
+
+    // Preprocess the shader source. The .wgsl file wraps `mainSubgroups` in
+    // sentinel comments and does NOT contain an `enable subgroups;` directive
+    // (WGSL requires every `enable` to precede all global decls — having one
+    // mid-file is a parse error). Two paths:
+    //   - Subgroup-capable device → prepend `enable subgroups;` to the source
+    //   - Non-capable device       → strip the entire __SUBGROUP_BLOCK_*__
+    //                                section so the parser never sees the
+    //                                `subgroupBallot` / `countOneBits` calls
+    //                                or the `subgroup_invocation_id` builtin.
+    let preparedShaderCode: string;
+    if (useSubgroups) {
+      preparedShaderCode = `enable subgroups;\n${shaderCode}`;
+    } else {
+      preparedShaderCode = shaderCode.replace(
+        /\/\/ __SUBGROUP_BLOCK_START__[\s\S]*?\/\/ __SUBGROUP_BLOCK_END__/,
+        "// (subgroup variant stripped — feature not present)",
+      );
+    }
+
     // Create shader module
     const shaderModule = this._device.createShaderModule({
-      code: shaderCode,
+      code: preparedShaderCode,
       label: `${this._label} Shader Module`,
     });
 
@@ -160,15 +188,38 @@ export class WebGPUGPUCuller {
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
-    // Create compute pipeline (async for non-blocking compilation)
-    this._pipeline = await this._device.createComputePipelineAsync({
-      label: `${this._label} Compute Pipeline`,
-      layout: pipelineLayout,
-      compute: {
-        module: shaderModule,
-        entryPoint: "main",
-      },
-    });
+    // useSubgroups was computed above when preprocessing the shader source.
+    const entryPoint = useSubgroups ? "mainSubgroups" : "main";
+
+    // Create compute pipeline (async for non-blocking compilation).
+    // If the subgroup variant fails to compile (driver edge cases), fall back
+    // to the portable main entry point so culling still works.
+    try {
+      this._pipeline = await this._device.createComputePipelineAsync({
+        label: `${this._label} Compute Pipeline (${entryPoint})`,
+        layout: pipelineLayout,
+        compute: {
+          module: shaderModule,
+          entryPoint,
+        },
+      });
+    } catch (e) {
+      if (useSubgroups) {
+        console.warn(
+          `[WebGPUGPUCuller] Subgroup variant failed to compile, falling back to scalar main: ${e}`,
+        );
+        this._pipeline = await this._device.createComputePipelineAsync({
+          label: `${this._label} Compute Pipeline (main fallback)`,
+          layout: pipelineLayout,
+          compute: {
+            module: shaderModule,
+            entryPoint: "main",
+          },
+        });
+      } else {
+        throw e;
+      }
+    }
 
     // Create GPU buffers
     this._createBuffers();

@@ -18,19 +18,25 @@
 9. [Active Issues: Stars & Terrain Not Rendering](#active-issues-stars--terrain-not-rendering)
 10. [Session 14: WebMercatorT Shader Support & UV Stretching Fix](#session-14-webmercatort-shader-support--uv-stretching-fix)
 11. [Session 15: LOD Unlock & TexCoordsRect Alpha Masking](#session-15-lod-unlock--texcoordsrect-alpha-masking)
-12. [Files Modified Summary](#files-modified-summary)
+12. [Session 16: Architecture Cleanup, Shadow Casting & Performance](#session-16-architecture-cleanup-shadow-casting--performance)
+13. [Files Modified Summary](#files-modified-summary)
 
 ---
 
 ## Current Status
 
-**What works:** Globe renders with satellite imagery at multiple LODs in the WebGPU viewer. WebMercatorT texture coordinate support matches WebGL. Higher LOD tiles load and render as camera zooms in. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system now compiles WGSL shaders + TypeScript.  
-**What's being investigated:**
+**What works:** Globe renders with satellite imagery at multiple LODs. WebMercatorT texture coordinate support matches WebGL. Higher LOD tiles load and render as camera zooms in. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system compiles WGSL shaders + TypeScript. Camera jitter significantly reduced via async staleness validation + distance ratio checks. Fill tile black lines eliminated by skip. Backend-agnostic architecture enforced: zero `isWebGPUDrawCommand` checks in Scene code. Shadow cast pipeline wired. Render bundles activated for terrain. Ring buffer allocator initialized.
 
-- ⚠️ Black tears/seams between some tiles (fill tile index buffer stride mismatches)
-- ⚠️ Star map / space imagery (CubeMapPanorama depth-stencil fixed — needs visual verification)
-- ⚠️ 2D mode still renders as sphere
-- ⚠️ Camera jittering at close zoom
+**What needs visual verification:**
+
+- Stars/skybox rendering (panoramaCommandList clearing fixed, diagnostic logging improved)
+- Shadow casting end-to-end (pipeline wired, bias fixed, command collection fixed)
+
+**Known remaining issues:**
+
+- ⚠️ 2D/Columbus View mode implemented in WebGPU globe shader (Session 18) — needs visual verification
+- ⚠️ Advanced renderers (Cloud, Voxel, GaussianSplat, PointCloud, Ellipsoid) built but untested end-to-end
+- ⚠️ Buffer primitive collections (v1.140 vector tiles) are intentional stubs
 
 ---
 
@@ -404,6 +410,358 @@ The "blue globe" seen by the user likely means:
 
 ---
 
+## Session 16: Architecture Cleanup, Shadow Casting & Performance
+
+**Date:** April 6, 2026
+
+### Overview
+
+Comprehensive codebase audit + bug fixes + architecture cleanup + performance activation. Reviewed all 103 WebGPU renderer files, 238 WGSL shaders, and all Scene files for backend-agnosticism violations.
+
+### Bug 16.1: panoramaCommandList Never Cleared (Stars/Skybox)
+- **File:** `Scene.js`
+- **Root cause:** `updateFrameState()` cleared `commandList` and `shadowMaps` each frame but NOT `panoramaCommandList`. For panoramas using `_returnCommand=false`, commands accumulated every frame (1, 2, 3... N copies rendered per frame).
+- **Fix:** Added `frameState.panoramaCommandList.length = 0` alongside the other list clears.
+- **Note:** The SkyBox path uses `_returnCommand=true` (returns command as `skyBoxCommand`), so this accumulation bug primarily affects standalone CubeMapPanorama instances. Improved diagnostic logging to fire when `skyBoxCommand` transitions from undefined to defined after async cubemap load.
+
+### Bug 16.2: Camera Jitter from Stale Async Depth (Improved)
+- **File:** `SSCCInputHelpers.js`
+- **Root cause:** Async depth readback is always 1 frame behind. During fast camera movement, the stale depth creates a feedback loop (camera zooms in -> old depth pulls it back -> oscillation).
+- **Fix:** Tightened staleness thresholds (100m->50m, direction dot 0.999->0.9995). Added `ASYNC_PICK_DISTANCE_RATIO` (1.5x) check: when both async depth pick and ray pick are valid, reject the depth pick if it disagrees with the ray pick by more than 50%. The ray pick is always current-frame accurate.
+
+### Bug 16.3: Shadow Cast Command Lists Cleared Before Reading
+- **File:** `WebGPUContext.ts`
+- **Root cause:** `executeShadowMapCastCommands()` cleared `passes[j].commandList.length = 0` BEFORE iterating them to collect cast commands. Result: `castCommands` was always empty, shadows never rendered.
+- **Fix:** Moved clear AFTER collection.
+
+### Bug 16.4: Shadow Map Point Light Guard Logic Error
+- **File:** `WebGPUShadowMapRenderer.js`
+- **Root cause:** `!shadowMap._isPointLight === false` evaluates as `(!shadowMap._isPointLight) === false`, which is `true` when `_isPointLight` is `false` -- the exact opposite of the intended guard. Prevented all directional shadow maps from initializing.
+- **Fix:** Changed to `shadowMap._isPointLight` (skip point lights, only handle directional/spot).
+
+### Bug 16.5: Shadow Map Bias Access Path
+- **File:** `WebGPUShadowMapRenderer.js`
+- **Root cause:** `shadowMap._bias?.depthBias` accessed undefined `_bias` property. ShadowMap uses `_primitiveBias`, `_terrainBias`, and `_pointBias` instead.
+- **Fix:** Changed to `shadowMap._primitiveBias || shadowMap._terrainBias || {}`.
+
+### Architecture Fix 16.6: isWebGPUDrawCommand Removed from All Scene Code
+- **Files:** `PrimitiveCommandHelpers.js`, `SceneRenderer.js`, `EnvironmentRenderer.js`, `GlobeSurfaceTileProviderRendering.js`
+- **Root cause:** 8 violations of backend-agnosticism in 5 Scene files. Scene code should NEVER check command backend type.
+- **Fix:**
+  - `PrimitiveCommandHelpers.js`: 3 checks replaced with duck-typing via `defined(command._webgpuShaderType)`
+  - `SceneRenderer.js`: `maybeInject` uses `typeof cmd.execute === "function"` instead of `isWebGPUDrawCommand`
+  - `EnvironmentRenderer.js`: Uses `defined(panoramaCommand.pipeline)` for duck-typing
+  - `GlobeSurfaceTileProviderRendering.js`: Removed direct `import` from `Shaders/WebGPU/`. Shader code now provided by FR via `getShaderCode()`. Removed `isWebGPUDrawCommand: true` from ad-hoc globe commands.
+  - `WebGPUFeatureRenderers.ts`: Added `getShaderCode` to GLOBE_SURFACE FR registration
+  - `WebGPUSceneRenderer.ts`: `executeWebGPUCommand` uses duck-typing (`pipeline`/`_pipeline`) alongside backward-compat `isWebGPUDrawCommand`
+
+### Performance 16.7: Render Bundles Activated for Terrain
+- **File:** `WebGPUSceneRenderer.ts`
+- **Change:** Globe pass now records commands into a `GPURenderBundleEncoder` when 8+ tile commands exist, then executes the bundle. Reduces driver overhead for terrain tile draw calls. Falls back to individual execution if bundle recording fails.
+
+### Performance 16.8: Ring Buffer Allocator Wired
+- **File:** `WebGPUContext.ts`
+- **Change:** `WebGPURingBufferAllocator` initialized (4MB pages, triple-buffered, 256-byte alignment). `beginFrame()` advances to next page, `endFrame()` finalizes. Accessible via `context.uniformAllocator` for renderers to use opportunistically.
+
+### Performance 16.9: Shadow Cast Pass Added to Scene Renderer
+- **File:** `WebGPUSceneRenderer.ts`
+- **Change:** Added `context.executeShadowMapCastCommands(scene)` before multi-frustum loop (non-pick frames only). Shadow depth texture is rendered once per frame from the light's perspective.
+
+### Testing 16.10: First WebGPU Unit Tests
+- **Files:** 5 new spec files in `packages/engine/Specs/Renderer/WebGPU/`
+- **Tests:** WebGPUDrawCommand (15 tests), WebGPUBuffer (10 tests), WebGPUTexture (10 tests), GraphicsContext/FeatureRendererKey (5 tests), ContextFactory (5 tests)
+- **Registered:** All added to `Specs/SpecList.js`
+
+### Files Modified
+
+| File | Changes |
+|---|---|
+| `Scene.js` | Added `panoramaCommandList.length = 0` in `updateFrameState()` |
+| `SceneRenderer.js` | Duck-typed `maybeInject`, improved skyBox diagnostic logging |
+| `SSCCInputHelpers.js` | Tightened staleness thresholds, added distance ratio check |
+| `PrimitiveCommandHelpers.js` | 3x `isWebGPUDrawCommand` -> `_webgpuShaderType` duck-typing |
+| `EnvironmentRenderer.js` | `isWebGPUDrawCommand` -> `defined(cmd.pipeline)` |
+| `GlobeSurfaceTileProviderRendering.js` | Removed WebGPU shader import, shader from FR, removed `isWebGPUDrawCommand` marker |
+| `WebGPUContext.ts` | Shadow cast command collection fix, ring buffer allocator wiring |
+| `WebGPUSceneRenderer.ts` | Shadow cast pass, render bundles for globe, duck-typed command dispatch |
+| `WebGPUFeatureRenderers.ts` | `getShaderCode` on GLOBE_SURFACE FR, GlobeTerrain shader import |
+| `WebGPUShadowMapRenderer.js` | Point light guard fix, bias path fix, improved command geometry resolution |
+| `SpecList.js` | 5 new WebGPU test imports |
+| 5 new test files | WebGPUDrawCommandSpec, WebGPUBufferSpec, WebGPUTextureSpec, GraphicsContextSpec, ContextFactorySpec |
+
+---
+
+## Session 17: Feature Wiring, Full Shader Restore & Performance Infrastructure
+
+**Date:** April 6, 2026
+
+### Overview
+
+Wired unwired feature renderers, restored the full GlobeTerrain.wgsl fragment shader (lighting, fog, atmosphere, shadows, ocean, night effects), activated GPU compute culler infrastructure, added pipeline warm-up, and verified post-process pipeline completeness.
+
+### Feature 17.1: GROUND_ATMOSPHERE Feature Renderer Wired
+- **File:** `Globe.js`
+- **Change:** Added `FeatureRendererKey` import and FR call in `beginFrame()` after setting tileProvider properties. The FR creates/updates a GPU uniform buffer (`globe._webgpuAtmosphereBuffer`) with packed atmosphere parameters (inner/outer radius, Rayleigh/Mie coefficients, scale heights, light intensity). Added cleanup in `destroy()`.
+
+### Feature 17.2: Full GlobeTerrain.wgsl Fragment Shader Restored
+- **File:** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`
+- **Change:** Replaced simplified imagery-only compositing (debug mode) with full shader code:
+  - Shadow factor computation (textureSampleCompare from uniform control flow)
+  - Clipping planes discard + edge highlighting
+  - Cartographic limit rectangle clipping
+  - Day/night alpha blending with per-layer webMercator UV selection via `selectLayerUV()`
+  - Color adjustment (brightness, contrast, saturation) per imagery layer
+  - Night lights emission (city light glow on dark side)
+  - Enhanced ocean rendering (Fresnel, deep water, foam, wave normals)
+  - Lambert diffuse lighting with shadow receive
+  - Terminator glow at day/night boundary
+  - Fog blending with atmosphere-colored fog
+- **Key fix:** Original full code referenced undefined `uv` variable. Fixed to use per-layer UVs: `selectLayerUV(geoUV, webMercT, useWebMerc.x)` for each layer.
+- **Safety:** Placeholder effects bind group sets `shadowDarkness=1.0` (shadows no-op) and `clippingPlaneCount=0` (clipping no-op), so the full shader works safely without active shadow/clipping resources.
+
+### Feature 17.3: GPU Frustum Culler Infrastructure Activated
+- **Files:** `WebGPUContext.ts`, `WebGPUSceneRenderer.ts`
+- **Change:** Added lazy-initialized `gpuCuller` singleton to WebGPUContext. Async initialization loads FrustumCull.wgsl compute shader and compiles pipeline. Added `gpuCullCommands()` method to WebGPUSceneRenderer with 256-command threshold gate — only activates GPU culling when command count justifies the overhead. Uses previous-frame async readback results for current-frame filtering (1-frame latency).
+
+### Feature 17.4: Pipeline Warm-up Added
+- **File:** `WebGPUContext.ts`
+- **Change:** Added `_warmUpPipelines()` called during context initialization after shader loading. Proactively instantiates the globe terrain renderer (shader module + pipeline layout compilation) and triggers GPU culler async init. Reduces first-frame stutter by front-loading pipeline compilation.
+
+### Feature 17.5: Post-Process Pipeline Verified Complete
+- **Status:** Tonemapping (5 operators), FXAA 3.11, Bloom, SSAO, DoF are fully wired.
+- **No changes needed** — pipeline was already completely integrated.
+
+### Feature 17.6: Feature Renderer Audit Results
+- **FOG:** Already wired via tile uniform buffer (fogDensity, fogMinimumBrightness at offsets 49-51). FR's `getParameters()` is a utility for other consumers.
+- **PROCEDURAL_CLOUDS, SCREEN_SPACE_REFLECTIONS, WEATHER_PARTICLES:** Already wired in `WebGPUSceneRenderer._executeEnvironmentalEffects()`. Initial audit missed these because it only searched Scene/ files.
+- **GROUND_ATMOSPHERE:** Only truly unwired FR — now wired (17.1).
+- **Buffer primitives (point/polyline/polygon):** No-op stubs, fall back to WebGL.
+
+### Files Modified
+
+| File | Changes |
+|---|---|
+| `Globe.js` | Added FeatureRendererKey import, GROUND_ATMOSPHERE FR call in beginFrame(), cleanup in destroy() |
+| `GlobeTerrain.wgsl` | Full fragment shader restored: lighting, shadows, fog, atmosphere, ocean, night effects, clipping |
+| `WebGPUContext.ts` | GPU culler singleton (lazy async init), pipeline warm-up method, culler cleanup in destroy() |
+| `WebGPUSceneRenderer.ts` | `gpuCullCommands()` method with 256-threshold gate and async readback |
+
+---
+
+## Session 20: ParticleSystem Confirmation, Buffer Primitive Picking, WGF-1 Subgroups, WGF-6 Primitive Index
+
+**Date:** April 7, 2026
+
+### Overview
+Tier-1/Tier-2 follow-ups: confirmed general ParticleSystem already routes through the WebGPU billboard FR (no separate work needed), wired picking through Buffer Primitive collections via shader-variant pick pipelines, lit up the existing `WebGPUSubgroupUtils` infrastructure with a real production use case in the GPU culler, and added WGF-6 primitive_index support via a chunk + utility class.
+
+### 20.1 — General ParticleSystem (no-op closure)
+`Scene/ParticleSystem.js` already delegates rendering to a `BillboardCollection`, which routes through `FeatureRendererKey.BILLBOARD_COLLECTION` → `WebGPUBillboardRenderer.js`. The Session 18 backlog item was a stale entry — `ParticleSystem.update()` (line 704-706) explicitly comments "WebGPU: ParticleSystem delegates to BillboardCollection which has a dedicated WebGPU rendering path. No guard needed." Closed without code changes.
+
+### 20.2 — Picking for BufferPrimitive Collections
+Session 19 left picking deferred for the new `WebGPUBufferPrimitiveRenderer.ts`. This session completed it.
+
+Approach:
+- The 3 Buffer* WGSL shaders all already write `v_pickColor` into VertexOutput (it was being uploaded but never read in fragment).
+- A `PICK_FRAGMENT_SUFFIX` constant in `WebGPUBufferPrimitiveRenderer.ts` appends a `fragmentPickMain` entry point to every preprocessed shader source. The pick variant returns `input.v_pickColor` instead of `input.v_color`, with the same alpha-discard threshold so picks line up with visible pixels.
+- One shader module per collection serves both pipelines: the color pipeline uses `entryPoint: "fragmentMain"`, the pick pipeline uses `"fragmentPickMain"`.
+- Each `init*Cache` builds both pipelines via the same `build*Pipeline` builder (which now accepts a `fragmentEntryPoint` parameter).
+- Each `repack*Dirty` now actually allocates pick IDs via `context.createPickId({ collection, index, get primitive() })` when `_allowPicking` is true and `_pickId === 0`. Allocated IDs are tracked on `cache.pickIds` and released in the destroy function via the new shared `destroyPickIds` helper.
+- Each `update*` checks `frameState.passes.render` and `frameState.passes.pick` independently and pushes the matching command. The two commands share the same vertex buffers, index buffer, and bind groups — only the pipeline differs.
+
+Files: `Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts` (extended; ~+200 lines)
+
+### 20.3 — WGF-1 Subgroups Wired Into GPU Culler
+`WebGPUSubgroupUtils.ts` and the `subgroups` device feature were already in place from Sessions 16/17 — but no production shader was actually using them. This session adds the first real use case.
+
+`Shaders/WebGPU/Compute/FrustumCull.wgsl` previously did per-thread `atomicAdd(&visibleCount, 1u)` for mode 2 (compaction counter). On dense scenes with thousands of visible objects this serializes through a single atomic, leaving GPU lanes idle. Added a second entry point `mainSubgroups` that:
+
+1. Uses `enable subgroups;`
+2. Calls `subgroupBallot(visible)` to get a 64-bit visibility bitmask for the subgroup
+3. Reduces it to a single count via `countOneBits(ballot.x) + countOneBits(ballot.y)`
+4. Has lane 0 of each subgroup do **one** `atomicAdd` for the whole group
+
+`WebGPUGPUCuller.initialize()` now picks the entry point based on `device.features.has("subgroups")`, with try/catch fallback to the portable scalar `main` if the subgroup variant fails to compile (driver edge cases).
+
+Expected speedup on dense scenes (mode 2): 2-4× on hardware with native 32/64-lane subgroup support (NVIDIA, Intel, modern AMD/Apple). Same semantics as the scalar path — visibility flags and indirect-draw zeroing are unchanged. Out-of-range threads now participate in the ballot but vote `false`, so subgroup uniformity is preserved.
+
+Files:
+- `Shaders/WebGPU/Compute/FrustumCull.wgsl` (added `mainSubgroups` entry point)
+- `Renderer/WebGPU/WebGPUGPUCuller.ts` (entry-point selection + try/catch fallback)
+
+### 20.4 — WGF-6 `@builtin(primitive_index)`
+`primitive_index` is a WGSL fragment-shader builtin that reports the triangle index of the rasterized primitive within the current draw call. WebGL has no equivalent (`gl_PrimitiveID` exists only in geometry shaders, which WebGL doesn't expose) so this is a WebGPU-only capability.
+
+Two new files lay the foundation; consumers can plug them into terrain debug overlays, polygon triangulation visualizers, or per-triangle picking flows without a separate pick pass.
+
+- NEW `Shaders/WebGPU/chunks/functions/csm_primitiveIndex.wgsl` — chunk file importable via `#import csm_primitiveIndex`. Provides:
+  - `csm_debugFaceColor(primIndex: u32) -> vec4<f32>` — deterministic per-triangle rainbow color via prime hash
+  - `csm_encodePrimitiveIndex(primIndex: u32) -> vec4<f32>` — packs a u32 into RGBA8 for pick-buffer readback
+  - `csm_isWireframeEdge(bary: vec3<f32>, lineWidthPixels: f32) -> bool` — wireframe edge test using fwidth + smoothstep (combine with primitive_index for triangle-level wireframe overlays without a geometry shader)
+
+- NEW `Renderer/WebGPU/WebGPUPrimitiveIndexUtils.ts` — TS-side helper class:
+  - `isSupported(device)` — capability probe with cached result via `pushErrorScope("validation")` + test compile (handles flaky drivers)
+  - `generateFaceColorWGSL()` — standalone fragment shader for per-face debug coloring
+  - `generatePrimitivePickWGSL()` — fragment shader that encodes triangle index as RGBA8
+  - `decodePrimitivePick(rgba, offset)` — JS-side decoder for the readback buffer
+
+Both files mirror the existing `WebGPUSubgroupUtils.ts` pattern. Production wiring (e.g., a "Debug → Show Triangulation" toggle on Scene) is left as a follow-up — the infrastructure is in place.
+
+### Build / Test
+- `npx gulp build` clean (TypeScript + WGSL compilation)
+- All four 20.x changes verified to compile against the production build pipeline
+- Subgroup variant requires hardware testing on a device with `subgroups` feature for perf measurement; scalar fallback path is exercised by every other GPU
+- Buffer Primitive picking needs a live BufferPolygon/Polyline/Point fixture with `Scene#pick` to verify roundtrip
+
+---
+
+## Session 19: Renderer Verification, Buffer Primitives, Mobile Perf, UBO Cleanup
+
+**Date:** April 6, 2026
+
+### Overview
+Tier-1 follow-ups after Session 18 testing handoff: audited all "built-but-untested" renderers, fixed two critical bugs, implemented full WebGPU support for the experimental BufferPrimitive collections (vector tile path), enabled transient render attachments for tile-based mobile GPUs, and tightened UBO sizes.
+
+### 19.1 — Renderer Verification & Bug Fixes
+Audited Cloud, Voxel, GaussianSplat, PointCloud, Ellipsoid, and PointCloudEDL renderers for completeness.
+
+| File | Bug | Fix |
+|---|---|---|
+| `WebGPUEllipsoidPrimitiveRenderer.ts` | `packCameraUniforms()` returned 40 floats but `CameraUniforms` struct ends with `viewportSize: vec2<f32>` at byte offset 160 → shader read garbage for aspect ratio (`viewportSize.x / viewportSize.y` ≈ NaN) | Extended pack to 44 floats, write `drawingBufferWidth/Height` at indices 40-41 |
+| `WebGPUGaussianSplatRenderer.ts` | Focal length approximated as `canvas.width * 0.5` (very coarse) | Derive from projection matrix: `proj[0] * (vw/2)`, `proj[5] * (vh/2)` |
+| `WebGPUPointCloudEyeDomeLighting.ts` | Allocated FBO + pipeline + bind groups but never created or pushed any draw command — pure orphaned setup | Replaced with a clean documented no-op stub. Full EDL post-process port (point-command hijacking into offscreen FBO) deferred — `WebGPUPointCloudRenderer` already draws directly to the main framebuffer |
+
+`WebGPUCloudRenderer`, `WebGPUVoxelRenderer`, and `WebGPUPointCloudRenderer` were verified COMPLETE (no bugs, but Voxel still uses placeholder gradient data and Point Cloud silently no-ops if `_parsedContent` missing — both expected and not blocking).
+
+### 19.2 — Buffer Primitive Collections (Vector Tile Path)
+Replaced the no-op stubs at `WebGPUFeatureRenderers.ts` with a full unified renderer.
+
+- **NEW:** `WebGPUBufferPrimitiveRenderer.ts` (~1000 lines) — handles all three subtypes:
+  - `BufferPolygonCollection` → indexed triangle-list, 4 vertex attribs (posHigh, posLow, pickColor, showAndColor)
+  - `BufferPolylineCollection` → indexed triangle-list with miter quad expansion in vertex shader, 8 attribs (curr/prev/next RTE pairs + pickColor + showColorWidthAndTexCoord)
+  - `BufferPointCollection` → 6-vertex quad instanced per point, 5 instance attribs + 1 per-vertex quad corner
+- CPU-side packing mirrors the WebGL reference renderers in `Scene/renderBuffer{Polygon,Polyline,Point}Collection.js` (RTE encoding via `EncodedCartesian3.fromCartesian`, color packing via `AttributeCompression.encodeRGB8`).
+- Camera UBO matches the standard 368-byte `CameraUniforms` struct from `Shaders/WebGPU/chunks/structs/CameraUniforms.wgsl`.
+- Per-collection caches GPU buffers + pipeline + bind groups; rebuilds on `_dirtyCount > 0`.
+- Picking is **not** yet routed through the WebGPU pick framebuffer for these experimental collections — pick data is packed but the pick render path is a follow-up.
+
+**Shader fixes** (3 files):
+- `BufferPolygonMaterial.wgsl`, `BufferPolylineMaterial.wgsl`, `BufferPointMaterial.wgsl` referenced `camera.projection` and `camera.viewport` — fields that don't exist on the standard `CameraUniforms` chunk. Renamed to `camera.projectionMatrix` and moved viewport into the per-shader `params` UBO (added `viewport: vec4<f32>` to `BufferPointUniforms` and `BufferPolylineUniforms`). The polygon shader needs no viewport.
+
+Files:
+- `Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts` (NEW)
+- `Renderer/WebGPU/WebGPUFeatureRenderers.ts` (replaced 3 stubs)
+- `Shaders/WebGPU/Collections/BufferPolygonMaterial.wgsl`
+- `Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl`
+- `Shaders/WebGPU/Collections/BufferPointMaterial.wgsl`
+
+### 19.3 — Transient Render Attachments (Mobile Perf)
+WebGPU has no explicit `TRANSIENT_ATTACHMENT` flag (Vulkan does), but tile-based mobile GPUs (Apple Silicon, Mali, Adreno) can keep an attachment in on-chip tile memory only when:
+1. The texture has only `RENDER_ATTACHMENT` usage (no `TEXTURE_BINDING` / `COPY_SRC`)
+2. The render pass uses `storeOp: "discard"`
+
+`WebGPUFramebufferManager.ts` already creates MSAA color textures and non-samplable depth textures with minimal usage. The missing piece was the storeOp.
+
+Changes in `WebGPUFramebufferManager.getRenderPassDescriptor()`:
+- **MSAA color attachments:** Always force `storeOp: "discard"` on the multisample texture. The `resolveTarget` (single-sample resolve) is what's sampled in subsequent passes — the MSAA texture itself never needs to persist.
+- **Depth attachments:** Default `depthStoreOp` to `"discard"` when `_depthSamplable` is false (caller can still override). When the depth buffer isn't read by a later pass, this lets the driver keep it tile-resident.
+
+Expected impact on mobile: roughly 1× framebuffer-bandwidth reduction per draw frame for the MSAA path, more on multi-pass renders.
+
+### 19.4 — UBO Size Cleanup
+Several inline-WGSL renderers allocated 256-byte UBOs for ~100 bytes of data. Tightened:
+
+| File | UBO | Before | After |
+|---|---|---|---|
+| `WebGPUEllipsoidPrimitiveRenderer.ts` | Camera (now includes viewportSize) | 256 | 176 |
+| `WebGPUEllipsoidPrimitiveRenderer.ts` | Ellipsoid (radii + color + center) | 256 | 96 |
+| `WebGPUGaussianSplatRenderer.ts` | Camera + viewport + focal | 256 | 176 |
+
+256-byte alignment is only required for **dynamic** UBO bindings; static UBOs only need 16-byte alignment, so all of these are well within spec.
+
+### Build / Test
+- `npx gulp build` clean (TypeScript + WGSL compilation)
+- All four 19.x changes verified to compile against the production build pipeline
+- Visual verification deferred to user testing — most paths require live scene fixtures (vector tiles, ellipsoid primitives, splat clouds, mobile devices for transient attachment perf measurement)
+
+---
+
+## Session 18: Parity Closure — Viewport Quad, Labels, Particles, 2D/Columbus
+
+**Date:** April 6, 2026
+
+### Overview
+
+Closed four critical parity gaps with WebGL: viewport quad rendering, label/text SDF rendering, weather particle render pass, and 2D/Columbus View mode for the globe terrain. All build cleanly via `npx gulp build`.
+
+### Feature 18.1: Viewport Quad Rendering — Full Implementation
+- **Files:** `WebGPUViewportQuad.ts` (NEW), `WebGPUContext.ts`, `Scene/ViewportQuad.js`, `Shaders/WebGPU/ViewportQuad.wgsl`, `Shaders/WebGPU/ViewportQuadTexture.wgsl` (NEW)
+- **Change:** Replaced stubbed `createViewportQuadCommand()` with a fully functional `WebGPUViewportQuad` utility class providing:
+  - Pipeline caching (by shader hash + format + blend/depth/stencil config)
+  - Bind group auto-detection from uniform maps (textures, samplers, UBOs, colors, Cartesians)
+  - Three shared samplers (linear, nearest, comparison)
+  - Fullscreen 3-vertex triangle pattern (no vertex buffer needed)
+  - Targeted render pass support via `drawToTarget()` for rendering into specific framebuffers
+  - Configurable blend states (alpha, additive, premultiplied), depth/stencil, color write masks
+- **Scene integration:** `ViewportQuad.js` now branches on `context.isWebGPU` to use WGSL `ViewportQuad.wgsl` shader with material color uniforms.
+- **Note:** GlobeDepth, OIT, and PostProcess already have dedicated WebGPU implementations (`WebGPUGlobeDepth.ts`, `WebGPUOIT.ts`, `WebGPUPostProcessPipeline.ts`) so the viewport quad utility is needed only for the remaining callers (TranslucentTileClassification, GlobeTranslucencyFramebuffer, AutoExposure, ViewportQuad primitive, debug visualizations).
+
+### Feature 18.2: Label/Text Rendering with SDF
+- **Files:** `WebGPULabelRenderer.js` (NEW), `Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl` (NEW), `WebGPUFeatureRenderers.ts`, `WebGPUCollectionShaders.js`, `FeatureRendererKey.js`, `Scene/LabelCollection.js`
+- **Change:**
+  - Added `LABEL_COLLECTION = 37` to FeatureRendererKey (COUNT now 38)
+  - Created SDF billboard shader with 5-tap supersampling, outline support, and resolution-independent antialiasing using screen-space derivatives
+  - Instance data layout: 32 floats (128 bytes) extending standard billboard layout with `outlineColor` (vec4) and `sdfParams` (vec4: outlineWidth, sdfEdge, _, _)
+  - SDF_EDGE = `1.0 - SDFSettings.CUTOFF` = 0.75
+  - `LabelCollection.update()` now branches: WebGPU uses LABEL_COLLECTION FR with SDF; WebGL falls back to per-billboard collection update
+  - Background billboards routed through standard BILLBOARD_COLLECTION FR
+- **Algorithm:** Ports `getSDFColor()` from BillboardCollectionFS.glsl to WGSL — fill color, outline edge clamping, smoothstep alpha based on distance field
+
+### Feature 18.3: Weather Particle Render Pass
+- **Files:** `WebGPUWeatherRenderer.ts`, `Shaders/WebGPU/Compute/WeatherParticleRender.wgsl` (NEW), `WebGPUFeatureRenderers.ts`, `WebGPUSceneRenderer.ts`
+- **Change:** Weather particles previously had compute simulation but no render pass — particles were updated but invisible. Added:
+  - WGSL render shader reading the GPU particle storage buffer as instanced vertex data
+  - Camera-facing billboard expansion using camera right/up vectors
+  - Per-weather-type fragment shader: rain (vertical streak), snow (soft circle), fog (large faint circle), hail (sharper bluish circle)
+  - Lifetime-based fade-in/fade-out alpha blending
+  - `renderWeatherParticles()` function called from `_executeEnvironmentalEffects()` after compute update
+  - Particle storage buffer now also has `VERTEX` usage flag for read-only-storage binding
+  - Render pipeline registered as `render` method on the WEATHER_PARTICLES feature renderer
+
+### Feature 18.4: 2D / Columbus View Mode for Globe Terrain
+- **Files:** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceRenderer.ts`
+- **Change:** Added scene mode support to the globe terrain shader:
+  - Extended CameraUniforms with `tileRectangle` (vec4), `southAndNorthLatitude` (vec2), `southMercatorYAndOneOverHeight` (vec2), `sceneMode` (f32), `morphTime` (f32), `useWebMercator` (f32) — 12 new floats (80 total)
+  - Added `latitudeToWebMercatorFraction()`, `get2DYPositionFraction()`, `computePlanarPosition()` helper functions
+  - Vertex shader branches on `camera.sceneMode`:
+    - **MORPHING (0)** — blends 3D and planar positions using `morphTime`
+    - **COLUMBUS_VIEW (1)** — planar projection with terrain height
+    - **SCENE2D (2)** — top-down planar with height forced to 0
+    - **SCENE3D (3)** — original RTE path (default, unchanged)
+  - CPU-side: `_createCameraUniformBuffer()` extended with `frameState` and `tile` parameters to pack scene mode, morph time, projection type (Web Mercator vs Geographic), tile rectangle, and computed Mercator Y bounds
+- **Vertical exaggeration:** Now restricted to 3D mode only (skipped in 2D/Columbus where height has different semantics)
+
+### Files Modified
+
+| File | Changes |
+|---|---|
+| `WebGPUViewportQuad.ts` | NEW — Pipeline cache, bind group auto-detect, fullscreen triangle utility |
+| `WebGPUContext.ts` | New `_viewportQuad` field, lazy init, `viewportQuad` getter, destroy cleanup |
+| `Scene/ViewportQuad.js` | WebGPU branch using WGSL shader + material color uniform |
+| `WebGPULabelRenderer.js` | NEW — SDF instance buffer build, render command creation |
+| `BillboardCollectionSDF.wgsl` | NEW — SDF text shader with 5-tap supersampling and outlines |
+| `Scene/LabelCollection.js` | LABEL_COLLECTION FR delegation, WebGL fallback |
+| `FeatureRendererKey.js` | Added LABEL_COLLECTION = 37 |
+| `WebGPUCollectionShaders.js` | Registered `billboardSDF` shader |
+| `WebGPUWeatherRenderer.ts` | Render pipeline init + `renderWeatherParticles()`, VERTEX usage flag |
+| `WeatherParticleRender.wgsl` | NEW — Camera-facing instanced quads with per-type fragments |
+| `WebGPUFeatureRenderers.ts` | Registered LABEL_COLLECTION + weather render method |
+| `WebGPUSceneRenderer.ts` | Weather render call after compute update |
+| `GlobeTerrain.wgsl` | Scene mode branching + planar position helpers + new uniforms |
+| `WebGPUGlobeSurfaceRenderer.ts` | Camera uniform buffer extended with 2D/Columbus uniforms |
+
+---
+
 ## Files Modified Summary (All Sessions)
 
 | File | Sessions | Changes |
@@ -762,4 +1120,679 @@ CesiumJS terrain vertex data layout varies by encoding:
 
 ---
 
-*This document will be updated as additional bugs are found and fixed.*
+## Session 21 — Tier-2 Cleanup Pass (WGF-3, WGF-5, WGF-7, WGF-8, WGF-6 wiring)
+
+Followup to Session 20. Audited the four remaining WGF cleanup tickets and
+wired the WGF-6 primitive_index capability into Scene.js.
+
+### Audit results
+
+- **WGF-3 (`texture_and_sampler_let` cleanup)** — *no work needed*. Survey of
+  19+ shader files in `packages/engine/Source/Shaders/WebGPU/` (Globe, Primitive,
+  PostProcess) found zero workarounds for the old WGSL restriction. Terrain
+  imagery sampling already passes texture/sampler as function parameters into
+  `sampleImagery()`, which is the recommended pattern.
+- **WGF-7 (enhanced storage texture formats)** — *no work needed*. The 8 compute
+  shaders that write to storage textures (BrdfLutGenerate, HiZPyramid,
+  AtmosphereLUT, PolygonSignedDistance, RadiancePrefilter, IrradianceConvolution,
+  Sun) all already use the right format for their kernel output. No format
+  upgrades are warranted.
+
+### WGF-5 — Texture component swizzle (Bug 21.1)
+
+**Files**:
+- `packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatNormalMapLit.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatNormalMapFlat.wgsl`
+
+**Root Cause**: `swizzleChannel()` used a 3-branch if-else to extract one of
+{r,g,b,a} from a `vec4<f32>` based on a runtime index. WGSL allows dynamic
+vector subscript, so the branches are unnecessary.
+
+**Fix Applied**: Replaced the branch chain with `texColor[clamp(i32(idx), 0, 3)]`.
+Saves three branches per fragment for normal-mapped surfaces. The clamp protects
+against out-of-range channel uniforms (defensive — the CPU path already produces
+0..3, but a stray uniform write would otherwise cause undefined behavior).
+
+### WGF-8 — EXIF/orientation handling for image upload (Bug 21.2)
+
+**Files**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts` — *new* (~210 lines)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` — added
+  `createTextureFromImageAsync()`
+
+**Root Cause**: `GPUQueue.copyExternalImageToTexture()` does not consult EXIF
+metadata. JPEG sources with non-trivial Orientation tags (rotated phone photos,
+scanner output) land sideways or mirrored in the resulting texture. The
+synchronous `createTextureFromImage()` had no orientation handling.
+
+**Fix Applied**: New `WebGPUImageUpload` utility module with:
+- `decodeWithOrientation(source)` — wraps `createImageBitmap(source, { imageOrientation: "from-image" })`
+  for `HTMLImageElement`/`Blob` sources, pass-through for already-decoded surfaces.
+- `uploadImageToTexture(device, source, dest, opts)` — full upload helper with
+  `flipY` / `premultipliedAlpha` / mip-level / origin / colorSpace knobs.
+- `isOrientationSupported()` — feature-probes `imageOrientation: "from-image"`
+  via a 1×1 PNG decode, cached result.
+- New `WebGPUContext.createTextureFromImageAsync()` async sibling of
+  `createTextureFromImage()` that routes through the helper. Reads decoded
+  width/height *after* the orientation pass since 90°/270° rotations swap them.
+
+The synchronous fast path is preserved (existing call sites unchanged); callers
+that need orientation handling opt in via the async variant.
+
+### WGF-6 — Primitive index capability wiring (Bug 21.3)
+
+**Files**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` — cache primitive
+  index utility module on context init
+- `packages/engine/Source/Scene/Scene.js` — `debugShowTriangulation` flag,
+  `triangulationDebugSupported` getter
+
+**Root Cause**: Session 20 created `WebGPUPrimitiveIndexUtils` and the
+companion `csm_primitiveIndex.wgsl` chunk but left them as utilities without a
+public Scene-level surface. Backend-agnostic Scene code couldn't probe support
+without violating the "Scene must not import from Renderer/WebGPU" rule.
+
+**Fix Applied**: WebGPUContext lazy-imports `WebGPUPrimitiveIndexUtils` after
+device creation and stores the module on `_primitiveIndexUtilsCache`. Scene
+exposes a new public boolean property `debugShowTriangulation` (default false)
+and a read-only `triangulationDebugSupported` getter that consults the cached
+utils through the context. WebGL contexts always return false (no
+`gl_PrimitiveID` without a geometry shader). Feature renderers that opt in
+(future work for Globe surface, BufferPrimitive collections) can swap their
+fragment shader to a face-color variant when both flags are true.
+
+Production wiring intentionally stops at the capability surface; switching
+individual feature renderers to a face-color fragment variant is left to
+follow-up work scoped to each renderer.
+
+### Files Modified
+1. `packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatNormalMapLit.wgsl` — collapse swizzle branch
+2. `packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatNormalMapFlat.wgsl` — collapse swizzle branch
+3. `packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts` — *new*, EXIF/orientation upload helper
+4. `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` — `createTextureFromImageAsync`, primitive_index cache
+5. `packages/engine/Source/Scene/Scene.js` — `debugShowTriangulation`, `triangulationDebugSupported`
+6. `migration_doc/WEBGPU_DEBUGGING_LOG.md` — Session 21 documentation
+
+### Build Status
+- `npx tsc --noEmit` — Zero errors
+- `npx gulp build` — Passes (~41s)
+
+---
+
+## Session 22 — Unit Tests + debugShowTriangulation Wiring
+
+Followup to Session 21. Added unit-test coverage for the Session 18-21
+utilities and wired the WGF-6 `debugShowTriangulation` flag through to the
+Globe surface renderer with a face-color fragment variant.
+
+### Bug 22.1 — Unit test coverage gap
+
+**Files** (new):
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUPrimitiveIndexUtilsSpec.js`
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUSubgroupUtilsSpec.js`
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUImageUploadSpec.js`
+
+**Root Cause**: Sessions 18-21 added six utility/renderer modules
+(`WebGPUPrimitiveIndexUtils`, `WebGPUSubgroupUtils`, `WebGPUImageUpload`,
+`WebGPUBufferPrimitiveRenderer`, `WebGPUEllipsoidPrimitiveRenderer`, plus
+the Session 19 viewport fix) without unit-test coverage. Pure-logic
+surfaces (WGSL string generators, RGBA index decoder, image-source
+pass-through paths) were testable without a GPU device but had nothing
+exercising them.
+
+**Fix Applied**: Three new spec files following the existing
+`WebGPUBufferSpec` pattern (Jasmine, opt-in GPU device acquisition with
+`pending()` fallback when WebGPU is unavailable). Coverage:
+
+- **PrimitiveIndexUtils**: static surface check, `generateFaceColorWGSL`
+  emits the expected `@builtin(primitive_index)` fragment, deterministic
+  output, `generatePrimitivePickWGSL` packs all four bytes,
+  `decodePrimitivePick` round-trip across 1234, 24-bit, offset and zero
+  cases, GPU-gated `isSupported` cache stability.
+- **SubgroupUtils**: static surface, `getRequiredFeatures` includes
+  `subgroups`, all four WGSL generators emit the expected directives and
+  thread parameters through, `generateWorkgroupReductionWGSL` correctly
+  computes `ceil(workgroupSize/subgroupSize)` for the shared-memory
+  array length, GPU-gated `isSupported` and `getInfo` shape.
+- **ImageUpload**: static surface, `decodeWithOrientation` pass-through
+  paths for `HTMLCanvasElement` / `OffscreenCanvas` / existing
+  `ImageBitmap`, real `Blob → ImageBitmap` decode of a 1×1 PNG,
+  `isOrientationSupported` cache stability, GPU-gated end-to-end
+  `uploadImageToTexture` with a 4×4 red canvas source.
+
+`WebGPUBufferPrimitiveRenderer` picking and the `WebGPUEllipsoidPrimitiveRenderer`
+viewport fix are exercised through scene-level integration tests rather than
+unit tests — their entry points are render-loop hooks that aren't unit-testable
+without a complete frame state.
+
+### Bug 22.2 — debugShowTriangulation production wiring
+
+**Files**:
+- `packages/engine/Source/Scene/Scene.js` — forward `debugShowTriangulation`
+  onto frame state in `updateFrameState()`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` —
+  augmented shader module + cold-path pipeline cache + opt-in selection
+
+**Root Cause**: Session 21 added `Scene.debugShowTriangulation` and a
+capability getter but no renderer actually consumed it. Toggling the flag
+had no visible effect.
+
+**Fix Applied**:
+
+1. **Scene → frameState forwarding**: `updateFrameState()` now copies
+   `this.debugShowTriangulation` onto `frameState.debugShowTriangulation`
+   each frame, alongside the other per-frame debug flags. Backend-agnostic
+   — WebGL renderers simply ignore the field.
+
+2. **Augmented shader module**: `WebGPUGlobeSurfaceRenderer` now caches
+   the original shader source and lazily builds a second module on first
+   debug request. The augmentation appends a `fragmentDebugTri` entry
+   point that reads `@builtin(primitive_index)` and emits a deterministic
+   per-triangle color via the same hash used by
+   `WebGPUPrimitiveIndexUtils.generateFaceColorWGSL`. The build is wrapped
+   in `pushErrorScope("validation")` so a driver that rejects the builtin
+   disables the path instead of crashing the frame.
+
+3. **Cold-path pipeline cache**: A separate `_debugTriPipelineCache` and
+   `_selectDebugTriPipeline()` method live alongside `_selectPipeline()`
+   so the production path stays branch-free. The hot loop in
+   `createTileCommands()` reads `frameState.debugShowTriangulation` once
+   *outside* the per-pass loop, then a single local-bool branch picks
+   between the standard and debug pipeline selectors. When the debug
+   selector returns null (driver doesn't support primitive_index), it
+   falls back transparently to the production pipeline.
+
+4. **Cache key parity**: Debug pipelines key off the same
+   `Q/U/N/X/M/G/B/O_<stride>` string used by the production cache so the
+   shape variants stay aligned. Toggling the flag off doesn't evict
+   production pipelines — the caches are independent.
+
+The architecture preserves the principle that debug-only features should
+have *zero overhead* on the production hot path. The only added work
+when the flag is off is one local-bool comparison per pass, which the
+branch predictor handles for free.
+
+### Files Modified
+1. `packages/engine/Specs/Renderer/WebGPU/WebGPUPrimitiveIndexUtilsSpec.js` — *new*
+2. `packages/engine/Specs/Renderer/WebGPU/WebGPUSubgroupUtilsSpec.js` — *new*
+3. `packages/engine/Specs/Renderer/WebGPU/WebGPUImageUploadSpec.js` — *new*
+4. `packages/engine/Source/Scene/Scene.js` — frame state forwarding for debugShowTriangulation
+5. `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — augmented shader module, debug pipeline cache, cold-path selector
+6. `migration_doc/WEBGPU_DEBUGGING_LOG.md` — Session 22 documentation
+
+### Build Status
+- `npx tsc --noEmit` — Zero errors
+- `npx gulp build` — Passes (~48s)
+- Specs follow the existing `WebGPUBufferSpec` pattern; will run via `gulp test --workspace @cesium/engine`
+
+---
+
+## Session 23 — Tier 1 Render Debug Features
+
+Added three production-grade debug visualizations identified by the
+Session 22 audit. All three use the same Scene→frameState→renderer
+forwarding pattern established by `debugShowTriangulation`, with cold-path
+discipline so production performance is unaffected when toggles are off.
+
+### Bug 23.1 — Activate orphaned globe wireframe pipeline
+
+**Files**:
+- `packages/engine/Source/Scene/Scene.js` — `debugShowGlobeWireframe` flag + frame state forwarding
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — refactored wireframe pipeline cache + cold-path selector + IB swap
+
+**Root Cause**: `WebGPUGlobeSurfaceRenderer` had a fully built
+`_wireframePipelines[4]` array, `_wireframeIndexCache`, and a
+`_getWireframePipeline` builder, but nothing in the production render
+loop ever called them. The legacy `createWireframeTileCommands` entry
+point existed but was unreferenced. Worse, the existing pipeline builder
+hard-coded vertex strides of 12/16/24/28 with no `hasWebMercatorT`
+support — calling it on real WebMerc-encoded tiles would crash the GPU
+with a stride mismatch.
+
+**Fix Applied**:
+
+1. **Pipeline cache refactor**: Replaced `_wireframePipelines: (GPURenderPipeline | null)[4]`
+   with `_wireframePipelineCache: Map<string, GPURenderPipeline>` keyed
+   by the same `Q/U + N/X + M/G + stride` string used by `_selectPipeline`
+   so wireframe variants align 1:1 with production.
+2. **Vertex layout parity**: New `_createWireframePipelineVariant` mirrors
+   `_createPipelineVariant`'s vertex format selection exactly — every
+   quantization × normals × WebMercator combination is supported with
+   the correct stride. Only the topology (`line-list`), cullMode (`none`),
+   and depth compare (`less-equal` to avoid z-fight with the surface)
+   differ.
+3. **Cold-path selector**: New `_selectWireframePipeline()` method,
+   modeled on `_selectDebugTriPipeline`, lives entirely off the
+   production hot path. The hot loop in `createTileCommands` reads
+   `frameState.debugShowGlobeWireframe` once *outside* the per-pass loop;
+   per-pass cost when off is one local-bool comparison.
+4. **IB swap**: When wireframe is active for a tile, the descriptor's
+   `indexBuffer`/`indexCount`/`indexFormat` are swapped to the line-list
+   index buffer produced by `_getOrCreateWireframeIndices()` (each
+   triangle becomes three line segments). Subsequent imagery passes
+   skip wireframe — they would just double-rasterize the same edges.
+5. **Legacy fixup**: Updated the leftover `createWireframeTileCommands`
+   entry point and the `destroy()` cleanup to use the new selector and
+   cache identifiers.
+
+### Bug 23.2 — SkyAtmosphere scattering bypass
+
+**Files**:
+- `packages/engine/Source/Scene/Scene.js` — `debugDisableAtmosphereScattering` flag
+- `packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — new `debug: vec4<f32>` uniform field + early-out
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` — pack debug field at uniform offset 52
+
+**Root Cause**: When the sky color looks wrong, the bug could live in
+the Nishita scattering integral, the LUT inputs, the HSB shift, the
+tonemap, or the post-process composite. There was no way to isolate
+which stage was at fault without forking the shader.
+
+**Fix Applied**: Added a `debug: vec4<f32>` uniform field to the
+SkyAtmosphere WGSL struct (sized for future Tier 3 additions) and a
+single-line early-out at the top of the fragment scattering computation.
+When `debug.x > 0.5` the shader returns flat magenta (1, 0, 1, 0.5)
+without running scattering — confirms only that the draw call,
+ray-sphere intersection, and shell coverage are reaching the fragment
+stage. Magenta is intentional: it picks up immediately on a blue sky
+and is unmistakable for any natural sky color.
+
+The TS pack function already received `frameState`, so wiring required
+only one new line at offset 52. Reserved offsets 53-55 for the Tier 3
+LUT-inspector and sun-direction-override toggles so the layout doesn't
+churn next session.
+
+### Bug 23.3 — SkyBox cubemap face isolation
+
+**Files**:
+- `packages/engine/Source/Scene/Scene.js` — `debugShowCubeMapFace` integer flag
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` — fragment-shader face discard + signature refactor
+
+**Root Cause**: When a starfield, panorama, or skybox cubemap looks
+wrong, you can't tell whether it's a single bad face, a swap between
+faces, a missing face, or a sampler/orientation issue without dumping
+the texture to an external tool.
+
+**Fix Applied**:
+
+1. **Per-face discard in WGSL**: The fragment shader picks the cubemap
+   face for each fragment by finding the dominant axis of the cube
+   sample direction. When `params.z` (the new debug field) is non-zero,
+   fragments whose face doesn't match the requested face index are
+   discarded. The chosen face renders through its natural skybox
+   projection over the full hemisphere it covers — far more useful than
+   a single texel of color, because you see the actual face content
+   in situ.
+2. **Encoding**: 0 = all faces (production), 1 = +X, 2 = -X, 3 = +Y,
+   4 = -Y, 5 = +Z, 6 = -Z.
+3. **Signature improvement**: `updateUniforms()` previously took
+   `uniformState` directly. Refactored to take `frameState` instead
+   (which exposes `uniformState` via `frameState.context.uniformState`).
+   This is a strict superset that lets future per-frame additions —
+   debug or production — slot in without churning the signature.
+   Current cost: zero (same per-frame call shape, one extra property
+   lookup that the JIT inlines).
+
+### Architectural notes (for future debug features)
+
+- **Hot-path discipline**: every Tier 1 toggle reads from frameState
+  *once*, outside any per-tile/per-pass loop. The production path,
+  when the toggle is off, pays one local-bool comparison — well within
+  the noise floor.
+- **Cache parity**: debug pipeline caches use the same key shape as
+  the production cache (`Q/U + N/X + M/G + stride`) so toggling the
+  flag doesn't evict production pipelines and the variant granularity
+  is automatic.
+- **Shader vec4 reservations**: SkyAtmosphere now reserves a `debug:
+  vec4<f32>` for Tier 3 future additions. New debug fields plug in by
+  swizzle (`debug.y`, `debug.z`, `debug.w`) without struct churn.
+- **Forwarding rule**: per-frame debug fields go on `frameState`, not
+  on `Scene` properties read directly by renderers. Keeps the
+  read-once-per-frame discipline obvious.
+
+### Files Modified
+1. `packages/engine/Source/Scene/Scene.js` — three new debug flags + frame state forwarding
+2. `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — wireframe cache refactor, cold-path selector, IB swap, legacy fixup
+3. `packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — `debug: vec4<f32>` uniform + bypass
+4. `packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` — pack debug field
+5. `packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` — face-isolation fragment, signature refactor
+6. `migration_doc/WEBGPU_DEBUGGING_LOG.md` — Session 23 documentation
+
+### Build Status
+- `npx tsc --noEmit` — Zero errors
+- `npx gulp build` — Passes (~38s)
+
+### How to use the new flags
+```javascript
+// In your viewer setup or DevTools console:
+viewer.scene.debugShowGlobeWireframe = true;        // overlay terrain wireframe
+viewer.scene.debugDisableAtmosphereScattering = true; // flat magenta atmosphere
+viewer.scene.debugShowCubeMapFace = 1;              // 1=+X, 2=-X, 3=+Y, 4=-Y, 5=+Z, 6=-Z
+```
+
+---
+
+## Session 24 — Tier 2 Render Debug Features
+
+Followup to Session 23. Added the four Tier 2 visualizations identified
+in the Session 22 audit, plus a structural refactor of the debug
+pipeline cache to support N fragment variants without code duplication.
+
+### Bug 24.1 — Refactor: unified debug fragment pipeline system
+
+**Files**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+
+**Root Cause**: Session 22 added `_debugTriShaderModule`, `_debugTriPipelineCache`,
+and `_selectDebugTriPipeline()` for the WGF-6 triangulation overlay.
+Adding LOD and Normal variants the same way would have meant six more
+parallel members and two more nearly-identical methods. The duplication
+would scale linearly with each new debug variant.
+
+**Fix Applied**: Replaced the `_debugTri*` cluster with a unified
+`_debugFragment*` system:
+
+- New `DebugFragmentMode` enum (NONE / TRIANGULATION / LOD / NORMAL).
+- Single `_debugFragmentShaderModule` hosting all three debug fragment
+  entry points (`fragmentDebugTri`, `fragmentDebugLod`,
+  `fragmentDebugNormal`). The vertex stages are reused unchanged from
+  the production module — no duplication of vertex code.
+- Single `_debugFragmentPipelineCache: Map<string, GPURenderPipeline>`
+  with the mode integer mixed into the cache key
+  (`{mode}_{Q/U}{N/X}{M/G}{B/O}_{stride}`).
+- Single `_selectDebugFragmentPipeline(mode, ...)` cold-path selector.
+- `_createPipelineVariant` takes `debugFragmentMode: DebugFragmentMode`
+  instead of `debugTri: boolean`. The fragment-stage selector is a
+  `switch` over the mode that picks the right entry point and label.
+
+The hot path in `createTileCommands` now reads the three flags
+(`debugShowTriangulation`, `debugShowTerrainLOD`, `debugShowTerrainNormals`)
+*once* outside the per-pass loop, collapses them into a single
+`DebugFragmentMode` integer, and the per-pass branch is one comparison
+against `NONE`. Adding a 4th, 5th, ... debug fragment variant in the
+future is one new entry point, one new enum value, one new switch arm.
+
+### Bug 24.2 — Add `tile.level` and `isolateImageryLayer` to TileUniforms
+
+**Files**:
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+
+**Root Cause**: Tile-level data needed by the LOD overlay
+(`tile.level` integer) and the imagery layer isolation feature
+(`isolateImageryLayer` index) wasn't in the tile UBO.
+
+**Fix Applied**: Added a `debugFields: vec4<f32>` slot at the end of
+the WGSL `TileUniforms` struct. The slot reserves all four channels:
+
+- `.x = tileLevel` — LOD depth integer (read by `fragmentDebugLod`)
+- `.y = isolateImageryLayer` — index 0..3 to render alone, or -1 for all
+- `.z, .w` — reserved for future per-tile debug toggles
+
+`TILE_UNIFORM_FLOATS` bumped from 92 to 96. The TS pack function writes
+both fields at offsets 92 and 93 from `tile.level` and
+`frameState.debugShowImageryLayer`. Production cost is two property
+reads + two array writes per tile, sub-noise-floor.
+
+### Bug 24.3 — LOD color overlay (`debugShowTerrainLOD`)
+
+**Files**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+- `packages/engine/Source/Scene/Scene.js`
+
+**Root Cause**: No way to visually verify tile refinement, culling
+boundaries, or screen-space-error decisions.
+
+**Fix Applied**: New `fragmentDebugLod` entry point in the augmented
+shader module reads `tile.debugFields.x` (the LOD level integer) and
+maps it through a deterministic 12-color palette via WGSL `switch`.
+Levels 0..11 cycle through hues; levels above 11 wrap. New
+`Scene.debugShowTerrainLOD` boolean forwarded to
+`frameState.debugShowTerrainLOD`. Activation goes through the unified
+debug fragment selector — same hot-path discipline as triangulation.
+
+### Bug 24.4 — Normal-as-color (`debugShowTerrainNormals`)
+
+**Files**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+- `packages/engine/Source/Scene/Scene.js`
+
+**Root Cause**: After the WGF-5 normal-map shader modernization, there
+was no visual way to verify that the new vector subscript path produced
+sensible normals.
+
+**Fix Applied**: New `fragmentDebugNormal` entry point reads the
+interpolated `v_normalEC` (eye-space normal), normalizes it, remaps from
+[-1,1] to [0,1], and emits as RGB. Flat-shaded tiles show single colors
+per primitive; smooth-shaded tiles show gradients. New
+`Scene.debugShowTerrainNormals` boolean forwarded to
+`frameState.debugShowTerrainNormals`.
+
+### Bug 24.5 — Imagery layer isolation (`debugShowImageryLayer`)
+
+**Files**:
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+- `packages/engine/Source/Scene/Scene.js`
+
+**Root Cause**: When a multi-imagery composite shows blending artifacts,
+there was no way to tell whether the bug was in a specific layer or in
+the blend math without removing layers from the imagery collection.
+
+**Fix Applied**: Reads `tile.debugFields.y` in the production
+`fragmentMain`. The four layer compositing blocks each multiply their
+`effectiveAlpha` by a per-layer mask:
+
+```wgsl
+let isolate = i32(tile.debugFields.y);
+let mask0 = select(0.0, 1.0, isolate < 0 || isolate == 0);
+// ...
+let effectiveAlpha0 = mask0 * layer0.alpha * tex0.a * ...;
+```
+
+Implemented as a multiplicative mask rather than restructuring the
+if-else chain — the existing lighting/shadow/fog math stays untouched.
+Negative `isolate` (default -1) is the production all-layers behavior.
+0..3 selects exactly that layer slot in the current pass.
+
+Note: the index refers to the *per-pass* layer slot, not the absolute
+imagery layer index in `Globe.imageryLayers`. Tiles with more than 4
+imagery layers split into multiple passes; layer 0 of the second pass
+is the 5th imagery layer overall.
+
+New `Scene.debugShowImageryLayer` integer property (default -1)
+forwarded to `frameState.debugShowImageryLayer`.
+
+### Bug 24.6 — Depth-as-color overlay (`debugShowDepthAsColor`)
+
+**Files** (new):
+- `packages/engine/Source/Renderer/WebGPU/WebGPUDebugDepthOverlay.ts`
+
+**Files modified**:
+- `packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts` — added `depthSamplable` option + `getDepthSampleableView()`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneFramebuffer.ts` — opted into `depthSamplable: true` + new `depthSampleableView` getter
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` — `_executeDebugDepthOverlay()` cold path
+- `packages/engine/Source/Scene/Scene.js` — `debugShowDepthAsColor` boolean + `debugDepthAsColorMode` integer
+
+**Root Cause**: Z-fighting and depth precision bugs at the horizon
+(stars vs terrain, terrain vs 3D Tiles) had no diagnostic visualization.
+The scene depth attachment was created with only `RENDER_ATTACHMENT`
+usage — not sampleable as a texture.
+
+**Fix Applied**: Three coordinated changes:
+
+1. **Sampleable depth opt-in.** Added `depthSamplable?: boolean` to
+   `WebGPURenderTargetDescriptor`. When set and `sampleCount === 1`,
+   the depth texture is created with `TEXTURE_BINDING` usage and a
+   cached `aspect: "depth-only"` view is exposed via
+   `getDepthSampleableView()`. MSAA depth is silently non-sampleable
+   (hardware limitation — multisampled depth can't be sampled in WGSL).
+
+2. **Standalone debug overlay module.**
+   `WebGPUDebugDepthOverlay.ts` (~230 lines) is a self-contained
+   fullscreen pass: vertex stage emits a single triangle covering the
+   viewport, fragment samples `texture_depth_2d`, linearizes via the
+   standard `(near*far)/(far - depth*(far-near))` formula, and emits
+   grayscale (or raw, or combined R=linear G=raw based on mode). Owns
+   its own bind group layout because depth textures need
+   `sampleType: "depth"` + `non-filtering` sampler — incompatible with
+   the production post-process bind group layout.
+
+3. **Cold-path integration.** `WebGPUSceneRenderer._runPostProcessing`
+   now checks `frameState.debugShowDepthAsColor` *before* the early-out,
+   and swaps in `_executeDebugDepthOverlay()` instead of the production
+   post-process chain. The overlay reads camera near/far from
+   `scene.camera.frustum` for linearization. When MSAA is on the
+   sampleable depth view is undefined; the renderer logs a one-shot
+   warning and skips the overlay (the other Tier 2 features still work).
+
+Cost when off: zero — the debug branch is one frame-state property read
+in the post-process entry method. Cost when on: one extra texture-store
+on the depth attachment per frame (~few MB bandwidth at 1080p),
+balanced by skipping the entire production post-process chain.
+
+### Architectural notes
+
+- **Cold-path discipline still holds.** The production hot path in
+  `createTileCommands` reads the three new fragment debug flags +
+  imagery isolation index *once* outside the per-pass loop. The
+  per-pass branch is one comparison against `NONE`. Adding more
+  fragment variants is now one enum value + one shader entry point.
+- **Reserved vec4 pattern continues.** `tile.debugFields` and
+  `SkyAtmosphere`'s `debug` vec4 both reserve 4 channels with two
+  in use. New per-tile or per-atmosphere debug fields plug into the
+  reserved channels without struct churn.
+- **Shader source augmentation pattern.** The augmented shader module
+  is the original source plus appended fragment entry points. The
+  vertex stages are shared across both modules because they're
+  literally the same WGSL text. No fork-and-maintain risk.
+- **Failed-capability degradation.** The augmented module compile is
+  wrapped in `pushErrorScope("validation")`. A driver that rejects
+  `@builtin(primitive_index)` flips the support flag off and the
+  selector returns null; the production pipeline kicks in
+  transparently. Same pattern as Session 22's WGF-6 capability probe.
+
+### Files Modified
+1. `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` — debug pipeline refactor + LOD + Normal fragments + tile UBO debug fields
+2. `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` — `debugFields: vec4` + imagery isolation mask
+3. `packages/engine/Source/Renderer/WebGPU/WebGPUDebugDepthOverlay.ts` — *new*, standalone depth visualization pass
+4. `packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts` — `depthSamplable` opt-in
+5. `packages/engine/Source/Renderer/WebGPU/WebGPUSceneFramebuffer.ts` — opt into sampleable depth + new getter
+6. `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` — debug depth overlay integration
+7. `packages/engine/Source/Scene/Scene.js` — five new Scene flags + frame state forwarding
+8. `migration_doc/WEBGPU_DEBUGGING_LOG.md` — Session 24 documentation
+
+### Build Status
+- `npx tsc --noEmit` — Zero errors
+- `npx gulp build` — Passes (~41s)
+
+### How to use the new flags
+```javascript
+viewer.scene.debugShowTerrainLOD = true;       // 12-color tile depth overlay
+viewer.scene.debugShowTerrainNormals = true;   // eye-space normal as RGB
+viewer.scene.debugShowImageryLayer = 0;        // -1=all, 0..3=isolate slot
+viewer.scene.debugShowDepthAsColor = true;     // depth visualization (non-MSAA only)
+viewer.scene.debugDepthAsColorMode = 0;        // 0=linearized, 1=raw, 2=combined
+```
+
+Mutually exclusive groups (only one fires per frame):
+- Wireframe wins over fragment debug modes
+- Among fragment debug modes: triangulation > LOD > normals
+- Depth-as-color replaces the entire post-process chain
+
+---
+
+---
+
+## Session 26 — Imagery Layer Rendering Audit (2026-04-07)
+
+### Issue (carried from prior session)
+
+Per-tile diagnostic logs at `WebGPUGlobeSurfaceRenderer.ts:801` reported
+`hasImage=true hasWebGPUTex=true` — meaning textures were uploaded and bound
+correctly — yet the rendered output showed no imagery on the globe. Required
+visual verification environment which was deferred.
+
+### Code-Level Audit Findings (no browser, static analysis only)
+
+Walked the full data path from `Imagery._reprojectTexture` through to the
+fragment shader sample. No smoking gun, but ruled out the following possible
+causes:
+
+1. **Bind group layout / sample type mismatch.** Reprojection writes
+   `rgba8unorm` (`getOutputFormat()` at `WebGPUImageryReprojection.ts:74`),
+   bind group layout 1 declares `sampleType: "float"` for slots 0-3
+   (`WebGPUGlobeSurfaceRenderer.ts:380`). Compatible.
+
+2. **Stale uniform buffer leakage.** `_packTileUniforms` calls `data.fill(0)`
+   at `WebGPUGlobeSurfaceRenderer.ts:1469` before each tile, so per-tile
+   imagery slots cannot leak from previous tiles.
+
+3. **Std140 alignment drift between host and shader.** Verified offset by
+   offset: `layers` 0-47 (4 × 12 floats), `layerCount` 48, fog 49-51,
+   waterMask 52-55, cartoLimit 56-59, nightFade 60-61, dayNightAlpha 62-69,
+   padding 70-71 (host correctly skips), `flags` 72-75 (vec4-aligned),
+   `useWebMercatorTLayer` 88-91, `debugFields` 92-95. Host writes match
+   the WGSL `TileUniforms` struct exactly.
+
+4. **dayAlpha / nightAlpha argument swap.** Host writes
+   `data[dnOffset]=dayAlpha, data[dnOffset+1]=nightAlpha`. Shader reads
+   `dna.x=dayAlpha, dna.y=nightAlpha` and computes
+   `mix(dna.y, dna.x, dayFade)` = `mix(nightAlpha, dayAlpha, dayFade)`.
+   Resolves to `dayAlpha` on the day side and `nightAlpha` on the night
+   side. Correct.
+
+5. **`textureTranslationAndScale` undefined → zero scale.** Else branch at
+   `WebGPUGlobeSurfaceRenderer.ts:1496-1499` writes `(0,0,1,1)` (full tile)
+   when `tileImagery.textureTranslationAndScale` is missing. Combined with
+   the `data.fill(0)` reset above, this is safe — no fall-through to a
+   prior tile's translation.
+
+6. **Texture cache returning stale views after destroy.** Cache key is
+   `imagery.key || "${x}_${y}_${level}"` at line 1778. The cache stores
+   `{texture, view}` and returns the view on hit. If the underlying
+   `_webgpuReprojectedTexture` has been recreated by a re-load between
+   frames, the cached view would still point at the old (destroyed) GPU
+   texture. **Recommended next-session check**: log
+   `cached.texture === imagery._webgpuReprojectedTexture` on cache hit.
+
+### Most Likely Root Causes (verify in browser)
+
+In rough order of likelihood, given the existing diagnostics:
+
+A. **Reprojection produces alpha=0 across the whole texture.** The
+   reprojection render pass clears to `{r:0, g:0, b:0, a:0}`
+   (`WebGPUImageryReprojection.ts:239`). If the full-screen triangle's
+   coverage is correct this is harmless, but if any sample writes alpha=0
+   then `effectiveAlpha = layer.alpha * tex.a * ...` collapses to zero
+   and `mix(color, adj0, 0)` becomes a no-op, hiding the imagery.
+   **Verify**: temporarily change clear alpha to `1.0` and see if any
+   imagery appears.
+
+B. **`tileImagery.textureCoordinateRectangle` is `(0,0,0,0)` instead of
+   undefined.** If it has been initialized to a zero rect rather than
+   left undefined, the `texCoordsAlpha` mask in the shader returns 0
+   for every fragment (every UV is "outside" a degenerate rect),
+   killing the contribution. **Verify**: existing diag log at line 807
+   already prints `texCoordsRect` — confirm whether it shows
+   `(0.0000, 0.0000, 1.0000, 1.0000)` or `(0.0000, 0.0000, 0.0000, 0.0000)`.
+
+C. **Stale view in `_imageryTextureCache`** — see point 6 above.
+
+### Next-Session Probe (when visual env is up)
+
+1. Open the existing test scene; check console for the
+   `[WebGPU:GlobeTile]` lines that already get printed for the first
+   ~10 tiles. Specifically capture the `texCoordsRect` and `transScale`
+   values reported by lines 805-808.
+2. Toggle `tile.debugFields.x = 1` (tier 2 LOD overlay) in the host
+   to confirm the tile geometry is rasterizing correctly in the first
+   place. If the LOD overlay shows up but imagery doesn't, the bug is
+   in the imagery composite path (pick A or B above).
+3. If the LOD overlay also doesn't appear, the bug is upstream of the
+   fragment shader (depth/clear/render-pass attachment issue).
+
+### Status
+
+Code audit complete; no defect identifiable without runtime inspection.
+Backlog item BUG-11 stays open as **Needs visual env** with the probe
+checklist above as the resumption point.

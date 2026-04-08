@@ -7,9 +7,9 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
     />
     <title>WebGL vs WebGPU — Split-Screen Comparison</title>
-    <script src="../../Build/Cesium/Cesium.js"></script>
+    <script src="../../Build/CesiumUnminified/Cesium.js"></script>
     <style>
-      @import url(../../Build/Cesium/Widgets/widgets.css);
+      @import url(../../Build/CesiumUnminified/Widgets/widgets.css);
 
       * {
         box-sizing: border-box;
@@ -389,7 +389,14 @@
         } catch (e) {
           // ignore — viewer may be mid-destroy
         }
-        syncingCamera = false;
+        // BUG-4 fix: camera.changed fires on the target's NEXT update tick,
+        // not synchronously inside setView. Resetting the guard immediately
+        // would let the target's change event bounce the camera back to the
+        // source, causing oscillation under fast input. Defer the reset to
+        // the next animation frame so the bounce-back is suppressed.
+        requestAnimationFrame(function () {
+          syncingCamera = false;
+        });
       }
 
       function setupCameraSync() {
@@ -501,6 +508,12 @@
           if (webglOk && webgpuOk) {
             setupCameraSync();
             setGeometryButtonsEnabled(true);
+
+            // Expose viewers globally so automated tests (Playwright) can
+            // drive the camera, toggle scene flags, and inspect state.
+            // Test-only — no production code depends on this.
+            window.webglViewer = webglViewer;
+            window.webgpuViewer = webgpuViewer;
 
             // Set a default view (San Francisco)
             var sfPosition = Cesium.Cartesian3.fromDegrees(

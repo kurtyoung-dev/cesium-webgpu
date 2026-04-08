@@ -26,21 +26,68 @@ import {
  */
 
 // ─── Uniform buffer sizes (must match GlobeTerrain.wgsl CameraUniforms) ───
-// CameraUniforms: mvpRTE(16) + modifiedMV(16) + camHigh(3+1) + camLow(3+1) +
-//   center3D(3+1) + sunDirEC(3)+enableLighting(1) + scaleAndBias(16) +
-//   minMaxHeight(2) + pad(2) = 68 floats
-const CAMERA_UNIFORM_FLOATS = 68;
+// CameraUniforms: mvpRTE(16) + modifiedMV(16) + modifiedMVP(16) +
+//   camHigh(3+1) + camLow(3+1) + center3D(3+1) +
+//   sunDirEC(3)+enableLighting(1) + scaleAndBias(16) +
+//   minMaxHeight(2) + pad(2) = 84 floats (3D core)
+//   + tileRectangle(4) + southAndNorthLatitude(2) + southMercY(2) +
+//   sceneMode(1) + morphTime(1) + useWebMercator(1) + pad(1) = 12 floats (2D/Columbus)
+//   = 96 floats total
+const CAMERA_UNIFORM_FLOATS = 96;
 const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
 //   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
 //   dayNightAlpha0-3(4×2=8) + flags(4) + exaggeration(2) + time(1) + pad(1)
-//   + oceanParams(4) + nightOceanParams(4) + useWebMercatorTLayer(4) = 92 floats
-const TILE_UNIFORM_FLOATS = 92;
+//   + oceanParams(4) + nightOceanParams(4) + useWebMercatorTLayer(4)
+//   + debugFields(4) = 96 floats
+//
+// debugFields layout (offsets 92-95):
+//   .x = tileLevel (LOD depth integer, read by fragmentDebugLod)
+//   .y = isolateImageryLayer (-1 or 0..3, read by fragmentMain)
+//   .z, .w = reserved
+const TILE_UNIFORM_FLOATS = 96;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
 const MAX_IMAGERY_LAYERS = 4;
+
+// Column-major 4×4 matrix multiply: result = a × b. All inputs and result
+// are stored as Float64Array of length 16 in column-major order (Cesium's
+// Matrix4 convention). Used by the camera UB to build modifiedMVP from
+// projection × modifiedModelView for 2D / Columbus View paths.
+function multiplyMat4ColumnMajor(
+  a: ArrayLike<number>,
+  b: ArrayLike<number>,
+  result: Float64Array,
+): void {
+  const a00 = a[0],
+    a01 = a[4],
+    a02 = a[8],
+    a03 = a[12];
+  const a10 = a[1],
+    a11 = a[5],
+    a12 = a[9],
+    a13 = a[13];
+  const a20 = a[2],
+    a21 = a[6],
+    a22 = a[10],
+    a23 = a[14];
+  const a30 = a[3],
+    a31 = a[7],
+    a32 = a[11],
+    a33 = a[15];
+  for (let col = 0; col < 4; col++) {
+    const b0 = b[col * 4 + 0];
+    const b1 = b[col * 4 + 1];
+    const b2 = b[col * 4 + 2];
+    const b3 = b[col * 4 + 3];
+    result[col * 4 + 0] = a00 * b0 + a01 * b1 + a02 * b2 + a03 * b3;
+    result[col * 4 + 1] = a10 * b0 + a11 * b1 + a12 * b2 + a13 * b3;
+    result[col * 4 + 2] = a20 * b0 + a21 * b1 + a22 * b2 + a23 * b3;
+    result[col * 4 + 3] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
+  }
+}
 
 /** Pipeline variant key: encodes quantization + normals state */
 const enum PipelineKey {
@@ -89,11 +136,37 @@ export interface TileDrawDescriptor {
   isSubsequentPass: boolean;
 }
 
+/**
+ * Mutually-exclusive debug fragment variants for the globe surface.
+ * Bumped through `frameState.debugTerrainFragmentMode` (set by Scene from
+ * the individual `debugShow*` flags). NONE = production fragment.
+ *
+ * The values are stable; do not renumber without updating Scene.js.
+ */
+export const enum DebugFragmentMode {
+  NONE = 0,
+  TRIANGULATION = 1, // per-triangle face color via @builtin(primitive_index)
+  LOD = 2, // tile depth-level color overlay
+  NORMAL = 3, // eye-space normal as RGB
+}
+
 export class WebGPUGlobeSurfaceRenderer {
   private _device: GPUDevice | null = null;
   private _diagTileCount = 0;
   private _pipelineCache: Map<string, GPURenderPipeline> = new Map();
   private _shaderModule: GPUShaderModule | null = null;
+  // Source preserved so we can lazily augment it with debug fragment
+  // entry points (triangulation / LOD overlay / normal-as-color).
+  private _shaderCode: string = "";
+  // Single augmented shader module hosting all debug fragment entry
+  // points. Built once on first request, cached forever. Single-source
+  // module + multiple entry points avoids the duplication cost of
+  // separate modules per debug variant.
+  private _debugFragmentShaderModule: GPUShaderModule | null = null;
+  private _debugFragmentPipelineCache: Map<string, GPURenderPipeline> =
+    new Map();
+  private _debugFragmentSupportProbed: boolean = false;
+  private _debugFragmentSupported: boolean = false;
   private _sampler: GPUSampler | null = null;
   private _waterMaskSampler: GPUSampler | null = null;
   private _bindGroupLayout0: GPUBindGroupLayout | null = null;
@@ -109,10 +182,10 @@ export class WebGPUGlobeSurfaceRenderer {
   private _placeholderView: GPUTextureView | null = null;
   private _canvasFormat: GPUTextureFormat = "bgra8unorm";
 
-  // Wireframe pipelines (lazily created on first wireframe request)
-  private _wireframePipelines: (GPURenderPipeline | null)[] = new Array(4).fill(
-    null,
-  );
+  // Wireframe pipelines — keyed by the same shape string used by
+  // _selectPipeline so they share variant granularity (Q/U, N/X, M/G, stride).
+  // Lazily built on first wireframe request; production cache is untouched.
+  private _wireframePipelineCache: Map<string, GPURenderPipeline> = new Map();
   private _wireframeIndexCache: Map<
     string,
     { buffer: GPUBuffer; count: number; format: GPUIndexFormat }
@@ -127,6 +200,10 @@ export class WebGPUGlobeSurfaceRenderer {
   private _cameraUniformData: Float32Array = new Float32Array(
     CAMERA_UNIFORM_FLOATS,
   );
+  // Scratch for projection × modifiedModelView (column-major Float64).
+  // 2D/CV/Morphing paths in the vertex shader use this matrix instead of
+  // mvpRelativeToEye, since their positions are planar (not RTE).
+  private _cameraMvpScratch: Float64Array = new Float64Array(16);
   private _tileUniformData: Float32Array = new Float32Array(
     TILE_UNIFORM_FLOATS,
   );
@@ -166,10 +243,122 @@ export class WebGPUGlobeSurfaceRenderer {
 
   // ─── Shader Module ───
   private _createShaderModule(code: string): void {
+    this._shaderCode = code;
     this._shaderModule = this._device!.createShaderModule({
       label: "GlobeTerrain shader",
       code,
     });
+  }
+
+  /**
+   * Lazily builds the augmented shader module that hosts every debug
+   * fragment entry point. The vertex stages are reused unchanged from the
+   * production module, so the augmented version can pair with any of the
+   * existing `vertexMain*` variants — only the fragment binding differs.
+   *
+   * Hosted entry points:
+   *   - `fragmentDebugTri`     — per-triangle face color via @builtin(primitive_index)
+   *   - `fragmentDebugLod`     — tile depth-level color overlay (reads tile.tileLevel)
+   *   - `fragmentDebugNormal`  — eye-space normal mapped into RGB
+   *
+   * Wrapped in `pushErrorScope("validation")` so a driver that rejects
+   * `@builtin(primitive_index)` (older Mali/Intel paths) disables the
+   * entire debug path silently instead of crashing the frame.
+   *
+   * Returns null if the device fails to compile the augmented module.
+   * Result is cached forever.
+   */
+  private _getDebugFragmentShaderModule(): GPUShaderModule | null {
+    if (this._debugFragmentSupportProbed) {
+      return this._debugFragmentShaderModule;
+    }
+    this._debugFragmentSupportProbed = true;
+    const device = this._device;
+    if (!device || !this._shaderCode) {
+      return null;
+    }
+
+    // The three debug fragment entry points share the same vertex outputs
+    // as the production fragment, so they can be appended to the existing
+    // shader source without touching VertexOutput / TileUniforms.
+    //
+    // - fragmentDebugTri: uses @builtin(primitive_index) for face coloring.
+    // - fragmentDebugLod: reads `tile.tileLevel` (added to TileUniforms in
+    //   this session) and maps it to a deterministic color.
+    // - fragmentDebugNormal: emits the interpolated eye-space normal as
+    //   RGB after a [-1,1]→[0,1] remap. Useful for verifying the
+    //   normal-map shaders we modernized in WGF-5.
+    const augmented = `${this._shaderCode}
+
+@fragment
+fn fragmentDebugTri(@builtin(primitive_index) primIndex: u32)
+    -> @location(0) vec4<f32> {
+  let r = f32((primIndex * 73u) & 255u) / 255.0;
+  let g = f32((primIndex * 151u + 31u) & 255u) / 255.0;
+  let b = f32((primIndex * 211u + 89u) & 255u) / 255.0;
+  return vec4<f32>(r, g, b, 1.0);
+}
+
+@fragment
+fn fragmentDebugLod(input: VertexOutput) -> @location(0) vec4<f32> {
+  // Deterministic per-level palette: 12 hues cycle through the spectrum
+  // so adjacent levels are visually distinct. Levels above 11 wrap.
+  let level = u32(tile.debugFields.x + 0.5) % 12u;
+  var color: vec3<f32>;
+  switch (level) {
+    case 0u:  { color = vec3<f32>(1.00, 0.00, 0.00); }
+    case 1u:  { color = vec3<f32>(1.00, 0.50, 0.00); }
+    case 2u:  { color = vec3<f32>(1.00, 1.00, 0.00); }
+    case 3u:  { color = vec3<f32>(0.50, 1.00, 0.00); }
+    case 4u:  { color = vec3<f32>(0.00, 1.00, 0.00); }
+    case 5u:  { color = vec3<f32>(0.00, 1.00, 0.50); }
+    case 6u:  { color = vec3<f32>(0.00, 1.00, 1.00); }
+    case 7u:  { color = vec3<f32>(0.00, 0.50, 1.00); }
+    case 8u:  { color = vec3<f32>(0.00, 0.00, 1.00); }
+    case 9u:  { color = vec3<f32>(0.50, 0.00, 1.00); }
+    case 10u: { color = vec3<f32>(1.00, 0.00, 1.00); }
+    default:  { color = vec3<f32>(1.00, 0.00, 0.50); }
+  }
+  return vec4<f32>(color, 1.0);
+}
+
+@fragment
+fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
+  // Eye-space normal as RGB. Remap from [-1,1] to [0,1] so all components
+  // are visible. Useful for verifying that vertex normals are correctly
+  // interpolated and that the normal-map shaders (WGF-5) produce
+  // sensible orientations. Flat-shaded tiles will show single colors
+  // per primitive; smooth-shaded tiles will show gradients.
+  let n = normalize(input.v_normalEC);
+  return vec4<f32>(n * 0.5 + 0.5, 1.0);
+}
+`;
+
+    try {
+      device.pushErrorScope("validation");
+      const mod = device.createShaderModule({
+        label: "GlobeTerrain shader (debug variants)",
+        code: augmented,
+      });
+      // Drain the validation scope. If the driver rejected the builtin we
+      // still hold the module reference, but the next pipeline build will
+      // fail noisily — flip _debugFragmentSupported off so we never try.
+      device.popErrorScope().then((err) => {
+        if (err) {
+          this._debugFragmentSupported = false;
+          this._debugFragmentShaderModule = null;
+          console.warn(
+            `[WebGPUGlobeSurfaceRenderer] debug fragment variants disabled: ${err.message}`,
+          );
+        }
+      });
+      this._debugFragmentShaderModule = mod;
+      this._debugFragmentSupported = true;
+    } catch (e) {
+      this._debugFragmentShaderModule = null;
+      this._debugFragmentSupported = false;
+    }
+    return this._debugFragmentShaderModule;
   }
 
   // ─── Bind Group Layouts ───
@@ -325,6 +514,7 @@ export class WebGPUGlobeSurfaceRenderer {
     hasWebMercatorT: boolean,
     isBlend: boolean,
     strideBytes: number,
+    debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE,
   ): GPURenderPipeline {
     const device = this._device!;
 
@@ -418,8 +608,37 @@ export class WebGPUGlobeSurfaceRenderer {
         }
       : undefined;
 
+    // When a debug fragment mode is selected the fragment stage uses the
+    // augmented shader module which hosts every debug entry point. Vertex
+    // stage stays on the standard module — both modules share identical
+    // vertex outputs because the debug module is the original source plus
+    // appended entry points.
+    let fragmentModule: GPUShaderModule = this._shaderModule!;
+    let fragmentEntry: string = "fragmentMain";
+    let debugLabel: string = "";
+    if (
+      debugFragmentMode !== DebugFragmentMode.NONE &&
+      this._debugFragmentShaderModule
+    ) {
+      fragmentModule = this._debugFragmentShaderModule;
+      switch (debugFragmentMode) {
+        case DebugFragmentMode.TRIANGULATION:
+          fragmentEntry = "fragmentDebugTri";
+          debugLabel = ", debugTri";
+          break;
+        case DebugFragmentMode.LOD:
+          fragmentEntry = "fragmentDebugLod";
+          debugLabel = ", debugLod";
+          break;
+        case DebugFragmentMode.NORMAL:
+          fragmentEntry = "fragmentDebugNormal";
+          debugLabel = ", debugNormal";
+          break;
+      }
+    }
+
     return device.createRenderPipeline({
-      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel})`,
+      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel})`,
       layout: this._pipelineLayout!,
       vertex: {
         module: this._shaderModule!,
@@ -427,8 +646,8 @@ export class WebGPUGlobeSurfaceRenderer {
         buffers: vertexBuffers,
       },
       fragment: {
-        module: this._shaderModule!,
-        entryPoint: "fragmentMain",
+        module: fragmentModule,
+        entryPoint: fragmentEntry,
         targets: [
           {
             format: this._canvasFormat,
@@ -475,6 +694,50 @@ export class WebGPUGlobeSurfaceRenderer {
     return pipeline;
   }
 
+  /**
+   * Cold path used when any of the per-fragment debug modes
+   * (TRIANGULATION / LOD / NORMAL) is active for this frame. Kept off
+   * `_selectPipeline` so the production hot path stays branch-free.
+   *
+   * Returns null when:
+   *   - the requested mode is NONE (caller should use the production path)
+   *   - the device fails the augmented-module compile probe (driver
+   *     missing primitive_index support, etc.) — caller should fall back
+   *     to the production pipeline transparently
+   *
+   * Cache key includes the mode integer so the four debug variants share
+   * a single map without collision. Production cache is untouched.
+   */
+  private _selectDebugFragmentPipeline(
+    mode: DebugFragmentMode,
+    isQuantized: boolean,
+    hasNormals: boolean,
+    hasWebMercatorT: boolean,
+    isBlend: boolean,
+    strideBytes: number,
+  ): GPURenderPipeline | null {
+    if (mode === DebugFragmentMode.NONE) {
+      return null;
+    }
+    if (!this._getDebugFragmentShaderModule()) {
+      return null;
+    }
+    const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}`;
+    let pipeline = this._debugFragmentPipelineCache.get(cacheKey);
+    if (!pipeline) {
+      pipeline = this._createPipelineVariant(
+        isQuantized,
+        hasNormals,
+        hasWebMercatorT,
+        isBlend,
+        strideBytes,
+        mode,
+      );
+      this._debugFragmentPipelineCache.set(cacheKey, pipeline);
+    }
+    return pipeline;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // Tile Command Creation
   // ═══════════════════════════════════════════════════════════════════════
@@ -492,6 +755,13 @@ export class WebGPUGlobeSurfaceRenderer {
     uniformState: any,
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
+
+    // Eagerly touch the uniform ring buffer allocator on first use. The
+    // context's lazy getter only constructs the allocator on first access,
+    // and `context.beginFrame()` only calls `beginFrame()` on the allocator
+    // when it already exists. Without this touch the allocator would never
+    // initialize and BUG-9's per-frame buffer leak would re-emerge.
+    void (frameState as any)?.context?.uniformAllocator;
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -579,19 +849,71 @@ export class WebGPUGlobeSurfaceRenderer {
       }
     }
 
+    // Hot-path discipline: read all per-frame debug flags once *outside*
+    // the per-pass loop. The four fragment debug modes are mutually
+    // exclusive (you can only show one fragment overlay at a time);
+    // collapse them into a single integer mode so the per-pass branch
+    // is one comparison against NONE rather than a chain of if-elses.
+    //
+    // Wireframe is *not* a fragment mode — it's a topology + IB swap —
+    // so it stays as its own boolean and wins over fragment modes
+    // (more structural diagnostic value).
+    const debugWireframe = frameState.debugShowGlobeWireframe === true;
+    let debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE;
+    if (frameState.debugShowTriangulation === true) {
+      debugFragmentMode = DebugFragmentMode.TRIANGULATION;
+    } else if (frameState.debugShowTerrainLOD === true) {
+      debugFragmentMode = DebugFragmentMode.LOD;
+    } else if (frameState.debugShowTerrainNormals === true) {
+      debugFragmentMode = DebugFragmentMode.NORMAL;
+    }
+
     for (let pass = 0; pass < passCount; pass++) {
       const isSubsequentPass = pass > 0;
       const layerStart = pass * MAX_IMAGERY_LAYERS;
       const layerEnd = Math.min(layerStart + MAX_IMAGERY_LAYERS, totalLayers);
       const passLayers = readyLayers.slice(layerStart, layerEnd);
 
-      const pipeline = this._selectPipeline(
-        gpuResources.isQuantized,
-        gpuResources.hasNormals,
-        gpuResources.hasWebMercatorT,
-        isSubsequentPass,
-        gpuResources.strideBytes,
-      );
+      let pipeline: GPURenderPipeline;
+      // Wireframe is a structural overlay — only the first pass renders it,
+      // subsequent passes are the multi-imagery overdraw which would just
+      // double-rasterize the same edges.
+      if (debugWireframe && !isSubsequentPass) {
+        pipeline = this._selectWireframePipeline(
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          gpuResources.strideBytes,
+        );
+      } else if (debugFragmentMode !== DebugFragmentMode.NONE) {
+        // Cold path: try the debug fragment variant; gracefully fall back
+        // to the production pipeline if the device can't compile the
+        // augmented module (driver missing primitive_index, etc.).
+        pipeline =
+          this._selectDebugFragmentPipeline(
+            debugFragmentMode,
+            gpuResources.isQuantized,
+            gpuResources.hasNormals,
+            gpuResources.hasWebMercatorT,
+            isSubsequentPass,
+            gpuResources.strideBytes,
+          ) ??
+          this._selectPipeline(
+            gpuResources.isQuantized,
+            gpuResources.hasNormals,
+            gpuResources.hasWebMercatorT,
+            isSubsequentPass,
+            gpuResources.strideBytes,
+          );
+      } else {
+        pipeline = this._selectPipeline(
+          gpuResources.isQuantized,
+          gpuResources.hasNormals,
+          gpuResources.hasWebMercatorT,
+          isSubsequentPass,
+          gpuResources.strideBytes,
+        );
+      }
 
       const cameraUB = this._createCameraUniformBuffer(
         device,
@@ -599,6 +921,8 @@ export class WebGPUGlobeSurfaceRenderer {
         surfaceTile,
         tileProvider,
         mesh,
+        frameState,
+        tile,
       );
       const tileUB = this._createTileUniformBuffer(
         device,
@@ -613,8 +937,22 @@ export class WebGPUGlobeSurfaceRenderer {
       const bindGroup0 = device.createBindGroup({
         layout: this._bindGroupLayout0!,
         entries: [
-          { binding: 0, resource: { buffer: cameraUB } },
-          { binding: 1, resource: { buffer: tileUB } },
+          {
+            binding: 0,
+            resource: {
+              buffer: cameraUB.buffer,
+              offset: cameraUB.offset,
+              size: cameraUB.size,
+            },
+          },
+          {
+            binding: 1,
+            resource: {
+              buffer: tileUB.buffer,
+              offset: tileUB.offset,
+              size: tileUB.size,
+            },
+          },
         ],
       });
 
@@ -630,13 +968,29 @@ export class WebGPUGlobeSurfaceRenderer {
       // until real shadow/clipping resources are provided per-frame
       const bindGroup3 = this._placeholderEffectsBG!;
 
+      // Wireframe overlay: swap the index buffer to the line-list version.
+      // The wireframe IB is only used on the first pass (matches the pipeline
+      // selection above) — subsequent passes still use the standard tri IB
+      // because they're not running the wireframe pipeline.
+      let drawIndexBuffer = gpuResources.indexBuffer;
+      let drawIndexCount = gpuResources.indexCount;
+      let drawIndexFormat = gpuResources.indexFormat;
+      if (debugWireframe && !isSubsequentPass) {
+        const wire = this._getOrCreateWireframeIndices(tileKey, mesh);
+        if (wire) {
+          drawIndexBuffer = wire.buffer;
+          drawIndexCount = wire.count;
+          drawIndexFormat = wire.format;
+        }
+      }
+
       commands.push({
         pipeline,
         bindGroups: [bindGroup0, bindGroup1, bindGroup2, bindGroup3],
         vertexBuffer: gpuResources.vertexBuffer,
-        indexBuffer: gpuResources.indexBuffer,
-        indexCount: gpuResources.indexCount,
-        indexFormat: gpuResources.indexFormat,
+        indexBuffer: drawIndexBuffer,
+        indexCount: drawIndexCount,
+        indexFormat: drawIndexFormat,
         boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
         isSubsequentPass,
       });
@@ -888,7 +1242,9 @@ export class WebGPUGlobeSurfaceRenderer {
     surfaceTile: any,
     tileProvider: any,
     mesh: any,
-  ): GPUBuffer {
+    frameState?: any,
+    tile?: any,
+  ): { buffer: GPUBuffer; offset: number; size: number } {
     const data = this._cameraUniformData;
     let offset = 0;
 
@@ -897,10 +1253,20 @@ export class WebGPUGlobeSurfaceRenderer {
     for (let i = 0; i < 16; i++) data[offset++] = mvpRTE[i];
 
     // modifiedModelView (mat4x4, 16 floats)
-    const mv = m4Values(
-      this._computeModifiedModelView(uniformState, surfaceTile),
+    const modifiedView = this._computeModifiedModelView(
+      uniformState,
+      surfaceTile,
     );
+    const mv = m4Values(modifiedView);
     for (let i = 0; i < 16; i++) data[offset++] = mv[i];
+
+    // modifiedModelViewProjection (mat4x4, 16 floats) — used by 2D/CV/Morphing
+    // paths in the WGSL vertex shader. Equals projection × modifiedModelView.
+    // Matches WebGL u_modifiedModelViewProjection (see
+    // GlobeSurfaceTileProviderRendering.js).
+    const mvp = this._cameraMvpScratch;
+    multiplyMat4ColumnMajor(uniformState.projection, modifiedView, mvp);
+    for (let i = 0; i < 16; i++) data[offset++] = mvp[i];
 
     // encodedCameraHigh (vec3 + pad)
     const camHigh = uniformState.encodedCameraPositionMCHigh;
@@ -955,9 +1321,117 @@ export class WebGPUGlobeSurfaceRenderer {
     data[offset++] = 0; // pad
     data[offset++] = 0; // pad
 
+    // ─── 2D / Columbus View support ───
+    // tileRectangle (vec4): west, south, east, north (radians)
+    const rectangle = tile?.rectangle;
+    if (rectangle) {
+      data[offset++] = rectangle.west;
+      data[offset++] = rectangle.south;
+      data[offset++] = rectangle.east;
+      data[offset++] = rectangle.north;
+    } else {
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+    }
+
+    // southAndNorthLatitude (vec2)
+    if (rectangle) {
+      data[offset++] = rectangle.south;
+      data[offset++] = rectangle.north;
+    } else {
+      data[offset++] = 0;
+      data[offset++] = 0;
+    }
+
+    // southMercatorYAndOneOverHeight (vec2)
+    // Computed from tile rectangle: southMercY = log((1+sin(south))/(1-sin(south))) * 0.5
+    // mercatorHeight = northMercY - southMercY
+    if (rectangle) {
+      const south = Math.max(rectangle.south, -1.4844222297453324);
+      const north = Math.min(rectangle.north, 1.4844222297453324);
+      const sinS = Math.sin(south);
+      const sinN = Math.sin(north);
+      const southMercY = 0.5 * Math.log((1 + sinS) / (1 - sinS));
+      const northMercY = 0.5 * Math.log((1 + sinN) / (1 - sinN));
+      const height = northMercY - southMercY;
+      data[offset++] = southMercY;
+      data[offset++] = height > 1e-9 ? 1.0 / height : 0.0;
+    } else {
+      data[offset++] = 0;
+      data[offset++] = 0;
+    }
+
+    // sceneMode (f32): 0=MORPH, 1=COLUMBUS, 2=2D, 3=3D
+    data[offset++] = frameState?.mode ?? 3;
+    // morphTime (f32): 0..1, used for morphing transitions
+    data[offset++] = frameState?.morphTime ?? 1.0;
+    // useWebMercator (f32): 1 if Web Mercator projection, 0 if Geographic
+    const projection = frameState?.mapProjection;
+    const isWebMercator =
+      projection &&
+      projection.constructor &&
+      projection.constructor.name === "WebMercatorProjection";
+    data[offset++] = isWebMercator ? 1.0 : 0.0;
+    data[offset++] = 0; // pad
+
     const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
+    return this._writeUniformSlice(
+      device,
+      frameState,
+      data,
+      bufferSize,
+      "Terrain camera UB",
+    );
+  }
+
+  /**
+   * Sub-allocate a uniform buffer slice from the context's ring buffer
+   * (when available) and write `data` into it. Falls back to a fresh
+   * `device.createBuffer` for the rare path where the ring allocator is
+   * unavailable (early init / non-WebGPU context). Caller binds the slice
+   * via `{ buffer, offset, size }` in the bind group entry.
+   *
+   * BUG-9 fix: previously every call here allocated a fresh `GPUBuffer`
+   * with no destruction. With ~30 tiles × 2 buffers per frame × 60fps the
+   * device ran out of memory in seconds and reported "Device lost (OOM)".
+   * The ring allocator suballocates from triple-buffered 4MB pages,
+   * eliminating the per-frame churn entirely.
+   */
+  private _writeUniformSlice(
+    device: GPUDevice,
+    frameState: any,
+    data: Float32Array,
+    bufferSize: number,
+    label: string,
+  ): { buffer: GPUBuffer; offset: number; size: number } {
+    const ctx: any = frameState?.context;
+    const allocator = ctx?.uniformAllocator;
+    const writeBytes = Math.min(data.byteLength, bufferSize);
+
+    if (allocator) {
+      const alloc = allocator.allocate(bufferSize);
+      device.queue.writeBuffer(
+        alloc.buffer,
+        alloc.offset,
+        data.buffer,
+        data.byteOffset,
+        writeBytes,
+      );
+      // Bind exactly the requested struct size, not the allocator's
+      // 256-aligned slice size. The shader struct is `bufferSize` bytes;
+      // padding bytes [bufferSize, alloc.size) belong to the allocator's
+      // alignment slack and may overlap into the next allocation's data
+      // on the next frame. Reporting the exact struct size keeps the
+      // binding view tight against the WGSL struct definition.
+      return { buffer: alloc.buffer, offset: alloc.offset, size: bufferSize };
+    }
+
+    // Fallback path — only reached when the ring allocator hasn't been
+    // initialized yet (e.g., very first frame on a fresh context).
     const buffer = device.createBuffer({
-      label: "Terrain camera UB",
+      label,
       size: bufferSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -966,9 +1440,9 @@ export class WebGPUGlobeSurfaceRenderer {
       0,
       data.buffer,
       data.byteOffset,
-      Math.min(data.byteLength, bufferSize),
+      writeBytes,
     );
-    return buffer;
+    return { buffer, offset: 0, size: bufferSize };
   }
 
   private _computeModifiedModelView(
@@ -1001,7 +1475,7 @@ export class WebGPUGlobeSurfaceRenderer {
     tile: any,
     passLayers: any[],
     isSubsequentPass: boolean,
-  ): GPUBuffer {
+  ): { buffer: GPUBuffer; offset: number; size: number } {
     const data = this._tileUniformData;
     const u32 = this._tileUniformU32View;
     data.fill(0);
@@ -1178,19 +1652,29 @@ export class WebGPUGlobeSurfaceRenderer {
     data[86] = tileProvider?.oceanFoamThreshold ?? 0.0; // 0 = use shader default (0.35)
     data[87] = tileProvider?.oceanDarkening ?? 0.0; // 0 = use shader default (0.6)
 
-    const buffer = device.createBuffer({
-      label: "Terrain tile UB",
-      size: Math.max(TILE_UNIFORM_BYTES, 256),
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(
-      buffer,
-      0,
-      data.buffer,
-      data.byteOffset,
-      Math.min(data.byteLength, Math.max(TILE_UNIFORM_BYTES, 256)),
+    // ─── Per-tile debug fields (offsets 92-95, vec4) ───
+    // Tier 2 debug: tile depth-level + imagery layer isolation. Both
+    // sourced from frameState so a single Scene property toggle flips
+    // them on for every tile uniformly. Production cost is two property
+    // reads + two array writes per tile, sub-noise-floor.
+    //   .x = tileLevel — read by fragmentDebugLod for the LOD overlay
+    //   .y = isolateImageryLayer — when >= 0, fragmentMain renders only
+    //        that layer index (0..3 within the current pass) and skips
+    //        the rest of the imagery composite. -1 = production behavior.
+    //   .z, .w = reserved for future per-tile debug toggles
+    data[92] = tile?.level ?? 0;
+    const isolate = frameState.debugShowImageryLayer;
+    data[93] = typeof isolate === "number" && isolate >= 0 ? isolate : -1;
+    data[94] = 0;
+    data[95] = 0;
+
+    return this._writeUniformSlice(
+      device,
+      frameState,
+      data,
+      Math.max(TILE_UNIFORM_BYTES, 256),
+      "Terrain tile UB",
     );
-    return buffer;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1426,39 +1910,96 @@ export class WebGPUGlobeSurfaceRenderer {
    * quantization/normals combination. Wireframe pipelines reuse the same
    * shaders but use line-list topology with no back-face culling.
    */
-  private _getWireframePipeline(
+  /**
+   * Cold-path wireframe pipeline selector. Mirrors `_selectPipeline` exactly
+   * in shape (Q/U, N/X, M/G, stride) so the wireframe variant uses the same
+   * vertex layout as the production pipeline for the tile being drawn —
+   * crucial because mismatched strides crash the GPU. Only differs in
+   * topology (line-list vs triangle-list) and cull mode.
+   *
+   * Kept entirely off the hot path; only invoked when
+   * `frameState.debugShowGlobeWireframe` is true.
+   */
+  private _selectWireframePipeline(
     isQuantized: boolean,
     hasNormals: boolean,
+    hasWebMercatorT: boolean,
+    strideBytes: number,
   ): GPURenderPipeline {
-    const key = (isQuantized ? 2 : 0) + (hasNormals ? 0 : 1);
-    if (this._wireframePipelines[key]) {
-      return this._wireframePipelines[key]!;
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}`;
+    let pipeline = this._wireframePipelineCache.get(cacheKey);
+    if (pipeline) {
+      return pipeline;
     }
+    pipeline = this._createWireframePipelineVariant(
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      strideBytes,
+    );
+    this._wireframePipelineCache.set(cacheKey, pipeline);
+    return pipeline;
+  }
 
+  /**
+   * Builds a wireframe variant of the terrain pipeline. Vertex stage is the
+   * full production layout (matching `_createPipelineVariant`); only the
+   * primitive topology and depth/cull state differ. Reuses the production
+   * shader module — no special wireframe entry point needed because line-list
+   * topology applied to triangle indices produces edges automatically when
+   * the IB is converted (see `_getOrCreateWireframeIndices`).
+   */
+  private _createWireframePipelineVariant(
+    isQuantized: boolean,
+    hasNormals: boolean,
+    hasWebMercatorT: boolean,
+    strideBytes: number,
+  ): GPURenderPipeline {
     const device = this._device!;
+
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
 
     if (isQuantized) {
-      const stride = hasNormals ? 16 : 12;
-      const format: GPUVertexFormat = hasNormals ? "float32x4" : "float32x3";
-      entryPoint = "vertexMainQuantized";
+      let format: GPUVertexFormat;
+      if (hasWebMercatorT) {
+        format = "float32x4";
+        entryPoint = "vertexMainQuantizedWebMerc";
+      } else if (hasNormals) {
+        format = "float32x4";
+        entryPoint = "vertexMainQuantized";
+      } else {
+        format = "float32x3";
+        entryPoint = "vertexMainQuantized";
+      }
+      const minStride = hasWebMercatorT || hasNormals ? 16 : 12;
+      const actualStride = Math.max(strideBytes, minStride);
       vertexBuffers = [
         {
-          arrayStride: stride,
+          arrayStride: actualStride,
           stepMode: "vertex",
           attributes: [{ shaderLocation: 0, offset: 0, format }],
         },
       ];
     } else {
-      const stride = hasNormals ? 28 : 24;
-      const texCoordFormat: GPUVertexFormat = hasNormals
-        ? "float32x3"
-        : "float32x2";
-      entryPoint = "vertexMain";
+      let texCoordFormat: GPUVertexFormat;
+      if (hasWebMercatorT && hasNormals) {
+        texCoordFormat = "float32x4";
+        entryPoint = "vertexMainWebMercNormals";
+      } else if (hasWebMercatorT) {
+        texCoordFormat = "float32x3";
+        entryPoint = "vertexMainWebMerc";
+      } else if (hasNormals) {
+        texCoordFormat = "float32x3";
+        entryPoint = "vertexMain";
+      } else {
+        texCoordFormat = "float32x2";
+        entryPoint = "vertexMain";
+      }
+      const actualStride = Math.max(strideBytes, 24);
       vertexBuffers = [
         {
-          arrayStride: stride,
+          arrayStride: actualStride,
           stepMode: "vertex",
           attributes: [
             { shaderLocation: 0, offset: 0, format: "float32x4" },
@@ -1470,9 +2011,10 @@ export class WebGPUGlobeSurfaceRenderer {
 
     const quantLabel = isQuantized ? "quantized" : "uncompressed";
     const normLabel = hasNormals ? "normals" : "noNormals";
+    const mercLabel = hasWebMercatorT ? "webMerc" : "geo";
 
-    const pipeline = device.createRenderPipeline({
-      label: `Globe wireframe (${quantLabel}, ${normLabel})`,
+    return device.createRenderPipeline({
+      label: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b)`,
       layout: this._pipelineLayout!,
       vertex: {
         module: this._shaderModule!,
@@ -1490,13 +2032,13 @@ export class WebGPUGlobeSurfaceRenderer {
       },
       depthStencil: {
         format: "depth24plus-stencil8",
+        // Slight depth bias would be ideal here, but WebGPU's depthBias
+        // applies only to triangle topology — for line-list we accept the
+        // co-planar z-fight and rely on the wireframe being a debug overlay.
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       },
     });
-
-    this._wireframePipelines[key] = pipeline;
-    return pipeline;
   }
 
   /**
@@ -1579,9 +2121,11 @@ export class WebGPUGlobeSurfaceRenderer {
     const wireIB = this._getOrCreateWireframeIndices(tileKey, mesh);
     if (!wireIB) return null;
 
-    const pipeline = this._getWireframePipeline(
+    const pipeline = this._selectWireframePipeline(
       gpuResources.isQuantized,
       gpuResources.hasNormals,
+      gpuResources.hasWebMercatorT,
+      gpuResources.strideBytes,
     );
 
     // Single pass for wireframe — no multi-pass imagery needed
@@ -1591,6 +2135,8 @@ export class WebGPUGlobeSurfaceRenderer {
       surfaceTile,
       tileProvider,
       mesh,
+      frameState,
+      tile,
     );
     const tileUB = this._createTileUniformBuffer(
       device,
@@ -1605,8 +2151,22 @@ export class WebGPUGlobeSurfaceRenderer {
     const bindGroup0 = device.createBindGroup({
       layout: this._bindGroupLayout0!,
       entries: [
-        { binding: 0, resource: { buffer: cameraUB } },
-        { binding: 1, resource: { buffer: tileUB } },
+        {
+          binding: 0,
+          resource: {
+            buffer: cameraUB.buffer,
+            offset: cameraUB.offset,
+            size: cameraUB.size,
+          },
+        },
+        {
+          binding: 1,
+          resource: {
+            buffer: tileUB.buffer,
+            offset: tileUB.offset,
+            size: tileUB.size,
+          },
+        },
       ],
     });
 
@@ -1737,7 +2297,8 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     this._pipelineCache.clear();
-    this._wireframePipelines.fill(null);
+    this._wireframePipelineCache.clear();
+    this._debugFragmentPipelineCache.clear();
     this._shaderModule = null;
     this._sampler = null;
     this._waterMaskSampler = null;

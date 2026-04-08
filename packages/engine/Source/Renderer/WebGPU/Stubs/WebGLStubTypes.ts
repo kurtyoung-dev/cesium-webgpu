@@ -54,6 +54,29 @@ export interface WebGLStubState {
   blendOpAlpha: GPUBlendOperation;
   scissorTest: boolean;
 
+  // Pixel-store state set via gl.pixelStorei() — read by texImage2D
+  // when uploading data so it can correctly flip rows / premultiply.
+  pixelStore: {
+    unpackFlipY: boolean;
+    unpackPremultiplyAlpha: boolean;
+    unpackAlignment: number;
+  };
+
+  // Stencil state (tracked for pipeline creation)
+  stencilTestEnabled: boolean;
+  stencilFrontCompare: GPUCompareFunction;
+  stencilBackCompare: GPUCompareFunction;
+  stencilReadMask: number;
+  stencilWriteMask: number;
+  stencilReference: number;
+  stencilFailOp: GPUStencilOperation;
+  stencilDepthFailOp: GPUStencilOperation;
+  stencilPassOp: GPUStencilOperation;
+
+  // Lazy mipmap generator — set on first generateMipmap call.
+  // Boxed `any` to avoid a hard import dependency cycle in this types file.
+  mipmapGenerator: any;
+
   // Methods provided by WebGPUContext
   setViewport(x: number, y: number, w: number, h: number): void;
   setScissorRect(x: number, y: number, w: number, h: number): void;

@@ -29,9 +29,19 @@
 //   compressed0: vec4 (compressedXY, compressedZH, compressedUV, encodedNormal)
 
 // ─── Camera Uniforms (Group 0, Binding 0) ───
+//
+// Scene mode constants (matches SceneMode.js):
+//   0 = MORPHING       — transitional state during mode changes
+//   1 = COLUMBUS_VIEW  — 2.5D perspective with planar projection + height
+//   2 = SCENE2D        — top-down orthographic, planar projection, height=0
+//   3 = SCENE3D        — full 3D perspective with RTE positioning
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   modifiedModelView: mat4x4<f32>,
+  // Projection * modifiedModelView. Used by 2D / Columbus / Morphing paths
+  // where positions are planar (vec3(height, lon, lat)) and the RTE/eye
+  // encoding is meaningless. Matches WebGL u_modifiedModelViewProjection.
+  modifiedModelViewProjection: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
   _pad0: f32,
   encodedCameraLow: vec3<f32>,
@@ -43,6 +53,21 @@ struct CameraUniforms {
   scaleAndBias: mat4x4<f32>,
   minMaxHeight: vec2<f32>,
   _pad3: vec2<f32>,
+  // ─── 2D / Columbus View support ───
+  // tileRectangle: west, south, east, north (radians)
+  tileRectangle: vec4<f32>,
+  // southAndNorthLatitude: x=south, y=north (radians)
+  // southMercatorYAndOneOverHeight: x=southMercatorY, y=1/mercatorHeight
+  southAndNorthLatitude: vec2<f32>,
+  southMercatorYAndOneOverHeight: vec2<f32>,
+  // sceneMode: 0=MORPH, 1=COLUMBUS, 2=2D, 3=3D
+  // morphTime: 0..1 blend factor (0=2D, 1=3D)
+  // useWebMercator: 1 if map projection is Web Mercator, 0 if Geographic
+  // _pad4: alignment padding
+  sceneMode: f32,
+  morphTime: f32,
+  useWebMercator: f32,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -84,6 +109,12 @@ struct TileUniforms {
   // instead of geographic V (.y) for imagery sampling. Matches WebGL's
   // u_dayTextureUseWebMercatorT. x=layer0, y=layer1, z=layer2, w=layer3.
   useWebMercatorTLayer: vec4<f32>,
+  // Per-tile debug fields (Tier 2 debug). All zero in production:
+  //   x = tileLevel — LOD depth integer (read by fragmentDebugLod)
+  //   y = isolateImageryLayer — index 0..3 to render alone, or -1 for all
+  //                              (read by fragmentMain when set)
+  //   z, w = reserved for future debug toggles
+  debugFields: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -110,7 +141,7 @@ struct EffectsUniforms {
     clippingPlaneCount: u32,
     clippingUnionMode: u32,
     clippingEdgeWidth: f32,
-    _pad5: f32,
+    clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
 }
 
@@ -119,6 +150,8 @@ struct EffectsUniforms {
 @group(3) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(3) @binding(3) var clippingPlaneTex: texture_2d<f32>;
 @group(3) @binding(4) var clippingPlaneSampler: sampler;
+@group(3) @binding(5) var polygonSDFTex: texture_2d<f32>;
+@group(3) @binding(6) var polygonSDFSampler: sampler;
 
 // ─── Vertex Input / Output ───
 struct VertexInput {
@@ -218,6 +251,56 @@ fn decompressTextureCoordinates(compressed: f32) -> vec2<f32> {
   );
 }
 
+// ─── Web Mercator latitude conversion ───
+// Maps a geographic latitude (radians) to the Y position fraction in
+// Web Mercator-projected texture space, given the south Mercator Y and
+// 1/mercatorHeight uniforms (computed CPU-side from the tile rectangle).
+const WEB_MERCATOR_MAX_LATITUDE: f32 = 1.4844222297453324; // ±85.05113°
+fn latitudeToWebMercatorFraction(latitude: f32, southMercatorY: f32, oneOverHeight: f32) -> f32 {
+  let sinLat = sin(latitude);
+  let mercatorY = 0.5 * log((1.0 + sinLat) / (1.0 - sinLat));
+  return (mercatorY - southMercatorY) * oneOverHeight;
+}
+
+// Returns the Y fraction (0..1) along the tile rectangle for a given
+// vertex texture coordinate. When tile spans large latitude range and
+// Web Mercator projection is in use, the latitude is reprojected.
+fn get2DYPositionFraction(textureCoordinates: vec2<f32>) -> f32 {
+  if (camera.useWebMercator < 0.5) {
+    // Geographic projection — direct linear V coordinate
+    return textureCoordinates.y;
+  }
+
+  // Web Mercator: linear interpolation when tile is small enough
+  let southLatitude = camera.southAndNorthLatitude.x;
+  let northLatitude = camera.southAndNorthLatitude.y;
+  let maxTileWidth: f32 = 0.003068;
+  if (northLatitude - southLatitude < maxTileWidth) {
+    return textureCoordinates.y;
+  }
+
+  // Reproject latitude into Mercator fraction
+  let southMercatorY = camera.southMercatorYAndOneOverHeight.x;
+  let oneOverHeight = camera.southMercatorYAndOneOverHeight.y;
+  var lat = mix(southLatitude, northLatitude, textureCoordinates.y);
+  lat = clamp(lat, -WEB_MERCATOR_MAX_LATITUDE, WEB_MERCATOR_MAX_LATITUDE);
+  return latitudeToWebMercatorFraction(lat, southMercatorY, oneOverHeight);
+}
+
+// Compute planar earth position for 2D / Columbus view modes.
+// Returns world-space position vec3 with X=height, Y=longitude, Z=latitude
+// (matches CesiumJS WebGL convention from getPositionPlanarEarth).
+fn computePlanarPosition(height: f32, textureCoordinates: vec2<f32>) -> vec3<f32> {
+  let yFrac = get2DYPositionFraction(textureCoordinates);
+  let west = camera.tileRectangle.x;
+  let south = camera.tileRectangle.y;
+  let east = camera.tileRectangle.z;
+  let north = camera.tileRectangle.w;
+  let lon = mix(west, east, textureCoordinates.x);
+  let lat = mix(south, north, yFrac);
+  return vec3<f32>(height, lon, lat);
+}
+
 // ─── Shared vertex processing ───
 // webMercatorT: Web Mercator vertical texture coordinate. When no Mercator
 // data is present in the vertex buffer, callers pass textureCoordinates.y
@@ -227,10 +310,10 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
                  encodedNormal: f32, webMercatorT: f32) -> VertexOutput {
   var out: VertexOutput;
 
-  // Vertical exaggeration
+  // Vertical exaggeration (3D mode only — 2D/Columbus use raw height)
   var exaggeratedPosition = position;
   let exaggeration = tile.verticalExaggeration.x;
-  if (exaggeration != 1.0) {
+  if (exaggeration != 1.0 && camera.sceneMode > 2.5) {
     let position3D = position + camera.center3D;
     let ellipsoidNormal = normalize(position3D);
     let surfaceHeight = length(position3D) - EARTH_RADIUS;
@@ -243,13 +326,42 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 
   let position3DWC = exaggeratedPosition + camera.center3D;
 
-  let rtePosition = translateRelativeToEye(
-    position3DWC, vec3<f32>(0.0),
-    camera.encodedCameraHigh, camera.encodedCameraLow
-  );
+  // Scene mode branching
+  let mode = camera.sceneMode;
 
-  out.position = camera.mvpRelativeToEye * rtePosition;
-  out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
+  if (mode < 0.5) {
+    // ── MORPHING ── blend between 3D and 2D positions
+    // Note: planar/3D positions are NOT relative-to-eye in this mode, so we
+    // use modifiedModelViewProjection (matches WebGL czm_projection * modelView).
+    let morphTime = camera.morphTime;
+    let height3D = length(position3DWC) - EARTH_RADIUS;
+    let planar = computePlanarPosition(height3D, textureCoordinates);
+    let position2DWC = vec4<f32>(planar, 1.0);
+    let position3DWC4 = vec4<f32>(position3DWC, 1.0);
+    let morphPos = mix(position2DWC, position3DWC4, morphTime);
+    out.position = camera.modifiedModelViewProjection * morphPos;
+    out.v_positionEC = (camera.modifiedModelView * morphPos).xyz;
+  } else if (mode < 1.5) {
+    // ── COLUMBUS_VIEW ── planar with terrain height
+    let height = length(position3DWC) - EARTH_RADIUS;
+    let planarPos = computePlanarPosition(height, textureCoordinates);
+    out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
+    out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
+  } else if (mode < 2.5) {
+    // ── SCENE2D ── top-down orthographic, height forced to 0
+    let planarPos = computePlanarPosition(0.0, textureCoordinates);
+    out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
+    out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
+  } else {
+    // ── SCENE3D ── default RTE path
+    let rtePosition = translateRelativeToEye(
+      position3DWC, vec3<f32>(0.0),
+      camera.encodedCameraHigh, camera.encodedCameraLow
+    );
+    out.position = camera.mvpRelativeToEye * rtePosition;
+    out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
+  }
+
   out.v_distance = length(out.v_positionEC);
   out.v_textureCoordinates = vec3<f32>(textureCoordinates, webMercatorT);
   out.v_positionMC = position3DWC;
@@ -644,203 +756,208 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Matches WebGL's u_dayTextureUseWebMercatorT behavior
   let useWebMerc = tile.useWebMercatorTLayer;
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // DEBUG MODE: Simplified imagery-only compositing
-  // UV debug: when tile._pad4 (offset 79) > 0.5, output raw UV as color
-  // to visualize whether texture coordinates interpolate correctly.
-  //   R = geoUV.x (u), G = geoUV.y (v), B = webMercT
-  // See: migration_doc/WEBGPU_DEBUGGING_LOG.md Session 13, 15
-  // ═══════════════════════════════════════════════════════════════════════
-
   // UV debug visualization: Red=U, Green=V, Blue=webMercT
+  // Triggered via tile._pad4 > 99990.0
   if (tile.time > 99990.0) {
     return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
   }
 
+  // Compute shadow factor early — textureSampleCompare must be called
+  // from uniform control flow (before any non-uniform discard/return).
+  // camera.enableLighting is a uniform value so this branch is uniform.
+  var shadowFactor: f32 = 1.0;
+  if (camera.enableLighting > 0.5) {
+    shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+  }
+
+  // ─── Clipping planes discard ───
+  if (globeClipByPlanes(input.v_positionMC)) { discard; }
+
+  // ─── Clipping edge highlight ───
+  if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
+    let clipCount = effects.clippingPlaneCount;
+    let texW = f32(clipCount);
+    var minClipDist: f32 = 1e10;
+    for (var ci: u32 = 0u; ci < clipCount; ci++) {
+      let texelU = (f32(ci) + 0.5) / texW;
+      let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
+                                         vec2<f32>(texelU, 0.5), 0.0);
+      let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
+      minClipDist = min(minClipDist, dist);
+    }
+    if (minClipDist < effects.clippingEdgeWidth) {
+      return effects.clippingEdgeColor;
+    }
+  }
+
+  // ─── Polygon SDF clipping ───
+  if (effects.clippingPolygonCount > 0u) {
+    let PI_SDF = 3.14159265358979;
+    // Convert tile UV to geographic coordinates (radians) for SDF lookup.
+    // geoUV is in [0,1] tile space — we need actual lon/lat for global SDF.
+    // For now, use the position in model coordinates to derive geographic coords.
+    let posWC = input.v_positionMC;
+    let lon = atan2(posWC.y, posWC.x);
+    let lat = atan2(posWC.z, sqrt(posWC.x * posWC.x + posWC.y * posWC.y));
+    let sdfU = (lon + PI_SDF) / (2.0 * PI_SDF);
+    let sdfV = (lat + PI_SDF * 0.5) / PI_SDF;
+    let sdfUV = clamp(vec2<f32>(sdfU, sdfV), vec2<f32>(0.0), vec2<f32>(1.0));
+    let sdfValue = textureSampleLevel(polygonSDFTex, polygonSDFSampler, sdfUV, 0.0).r;
+
+    // SDF < 0.5 = inside polygon (keep), >= 0.5 = outside (discard)
+    if (sdfValue >= 0.5) { discard; }
+
+    // Edge highlight for polygon clipping
+    if (effects.clippingEdgeWidth > 0.0) {
+      let edgeDist = abs(sdfValue - 0.5) * 2.0;
+      // Scale edge width from world to SDF space (approximate)
+      let sdfEdgeWidth = effects.clippingEdgeWidth * 0.001;
+      if (edgeDist < sdfEdgeWidth) {
+        return effects.clippingEdgeColor;
+      }
+    }
+  }
+
+  // ─── Cartographic limit rectangle clipping ───
+  if (tile.flags.y > 0.5) {
+    let clampRect = tile.cartographicLimitRect;
+    if (geoUV.x < clampRect.x || geoUV.x > clampRect.z ||
+        geoUV.y < clampRect.y || geoUV.y > clampRect.w) {
+      discard;
+    }
+  }
+
+  let isSubsequentPass = tile.flags.w > 0.5;
+
+  // Base color: dark for first pass (night side will be very dark),
+  // transparent for subsequent multi-pass imagery
+  var color: vec3<f32>;
+  var alpha: f32;
+  if (isSubsequentPass) {
+    color = vec3<f32>(0.0, 0.0, 0.0);
+    alpha = 0.0;
+  } else {
+    color = vec3<f32>(0.04, 0.04, 0.06);
+    alpha = 1.0;
+  }
+
+  let normal = normalize(input.v_normalEC);
+  let sunDir = normalize(camera.sunDirectionEC);
+
+  // Day/night fade factor: 0 = night, 1 = day
+  let dayFade = computeDayNightFade(normal, sunDir);
+  // Inverse for night-side effects
+  let nightBlend = 1.0 - dayFade;
+
+  // ─── Composite imagery layers (per-layer webMercator UV selection) ───
   let count = u32(tile.layerCount);
-  var color = vec3<f32>(0.04, 0.04, 0.06);
-  if (count >= 1) {
+
+  // Tier 2 debug: imagery layer isolation. Negative => all layers render
+  // (production). 0..3 => only that layer's slot in the current pass
+  // contributes to the composite. Implemented as a per-layer alpha mask
+  // so the loop structure and lighting math stay untouched.
+  let isolate = i32(tile.debugFields.y);
+  let mask0 = select(0.0, 1.0, isolate < 0 || isolate == 0);
+  let mask1 = select(0.0, 1.0, isolate < 0 || isolate == 1);
+  let mask2 = select(0.0, 1.0, isolate < 0 || isolate == 2);
+  let mask3 = select(0.0, 1.0, isolate < 0 || isolate == 3);
+
+  if (count >= 1u) {
     let layer0 = tile.layers[0];
-    let v0 = select(geoUV.y, webMercT, useWebMerc.x > 0.5);
-    let uv0 = vec2<f32>(geoUV.x, v0);
-    let sUV0 = uv0 * layer0.translationAndScale.zw + layer0.translationAndScale.xy;
-    let tex0 = textureSampleLevel(dayTexture0, texSampler, sUV0, 0.0);
-    // Alpha mask: zero out when tileUV is outside texCoordsRect (WebGL parity)
-    let alpha0 = layer0.alpha * tex0.a * texCoordsAlpha(uv0, layer0.texCoordsRect);
-    color = mix(color, tex0.rgb, alpha0);
+    let uv0 = selectLayerUV(geoUV, webMercT, useWebMerc.x);
+    let tex0 = sampleImagery(dayTexture0, texSampler, uv0, layer0);
+    let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
+    let dna0 = tile.dayNightAlpha0;
+    let effectiveAlpha0 = mask0 * layer0.alpha * tex0.a * texCoordsAlpha(uv0, layer0.texCoordsRect) * mix(dna0.y, dna0.x, dayFade);
+    color = mix(color, adj0, effectiveAlpha0);
+    alpha = max(alpha, effectiveAlpha0);
+    color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
   }
-  if (count >= 2) {
+  if (count >= 2u) {
     let layer1 = tile.layers[1];
-    let v1 = select(geoUV.y, webMercT, useWebMerc.y > 0.5);
-    let uv1 = vec2<f32>(geoUV.x, v1);
-    let sUV1 = uv1 * layer1.translationAndScale.zw + layer1.translationAndScale.xy;
-    let tex1 = textureSampleLevel(dayTexture1, texSampler, sUV1, 0.0);
-    let alpha1 = layer1.alpha * tex1.a * texCoordsAlpha(uv1, layer1.texCoordsRect);
-    color = mix(color, tex1.rgb, alpha1);
+    let uv1 = selectLayerUV(geoUV, webMercT, useWebMerc.y);
+    let tex1 = sampleImagery(dayTexture1, texSampler, uv1, layer1);
+    let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
+    let dna1 = tile.dayNightAlpha1;
+    let effectiveAlpha1 = mask1 * layer1.alpha * tex1.a * texCoordsAlpha(uv1, layer1.texCoordsRect) * mix(dna1.y, dna1.x, dayFade);
+    color = mix(color, adj1, effectiveAlpha1);
+    alpha = max(alpha, effectiveAlpha1);
+    color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
   }
-  return vec4<f32>(color, 1.0);
+  if (count >= 3u) {
+    let layer2 = tile.layers[2];
+    let uv2 = selectLayerUV(geoUV, webMercT, useWebMerc.z);
+    let tex2 = sampleImagery(dayTexture2, texSampler, uv2, layer2);
+    let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
+    let dna2 = tile.dayNightAlpha2;
+    let effectiveAlpha2 = mask2 * layer2.alpha * tex2.a * texCoordsAlpha(uv2, layer2.texCoordsRect) * mix(dna2.y, dna2.x, dayFade);
+    color = mix(color, adj2, effectiveAlpha2);
+    alpha = max(alpha, effectiveAlpha2);
+    color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
+  }
+  if (count >= 4u) {
+    let layer3 = tile.layers[3];
+    let uv3 = selectLayerUV(geoUV, webMercT, useWebMerc.w);
+    let tex3 = sampleImagery(dayTexture3, texSampler, uv3, layer3);
+    let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
+    let dna3 = tile.dayNightAlpha3;
+    let effectiveAlpha3 = mask3 * layer3.alpha * tex3.a * texCoordsAlpha(uv3, layer3.texCoordsRect) * mix(dna3.y, dna3.x, dayFade);
+    color = mix(color, adj3, effectiveAlpha3);
+    alpha = max(alpha, effectiveAlpha3);
+    color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
+  }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // FULL SHADER CODE (temporarily disabled — restore when geometry is fixed)
-  // ═══════════════════════════════════════════════════════════════════════
+  // Subsequent passes only apply imagery — skip all effects
+  if (isSubsequentPass) {
+    return vec4<f32>(color, alpha);
+  }
 
-  // // Compute shadow factor early — textureSampleCompare must be called
-  // // from uniform control flow (before any non-uniform discard/return).
-  // // camera.enableLighting is a uniform value so this branch is uniform.
-  // var shadowFactor: f32 = 1.0;
-  // if (camera.enableLighting > 0.5) {
-  //   shadowFactor = globeComputeShadowFactor(input.v_positionEC);
-  // }
-  //
-  // // ─── Clipping planes discard ───
-  // if (globeClipByPlanes(input.v_positionMC)) { discard; }
-  //
-  // // ─── Clipping edge highlight ───
-  // if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
-  //   let clipCount = effects.clippingPlaneCount;
-  //   let texW = f32(clipCount);
-  //   var minClipDist: f32 = 1e10;
-  //   for (var ci: u32 = 0u; ci < clipCount; ci++) {
-  //     let texelU = (f32(ci) + 0.5) / texW;
-  //     let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
-  //                                        vec2<f32>(texelU, 0.5), 0.0);
-  //     let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
-  //     minClipDist = min(minClipDist, dist);
-  //   }
-  //   if (minClipDist < effects.clippingEdgeWidth) {
-  //     return effects.clippingEdgeColor;
-  //   }
-  // }
-  //
-  // // ─── Cartographic limit rectangle clipping ───
-  // if (tile.flags.y > 0.5) {
-  //   let clampRect = tile.cartographicLimitRect;
-  //   if (uv.x < clampRect.x || uv.x > clampRect.z ||
-  //       uv.y < clampRect.y || uv.y > clampRect.w) {
-  //     discard;
-  //   }
-  // }
-  //
-  // let isSubsequentPass = tile.flags.w > 0.5;
-  //
-  // // Base color: dark for first pass (night side will be very dark),
-  // // transparent for subsequent multi-pass imagery
-  // var color: vec3<f32>;
-  // var alpha: f32;
-  // if (isSubsequentPass) {
-  //   color = vec3<f32>(0.0, 0.0, 0.0);
-  //   alpha = 0.0;
-  // } else {
-  //   color = vec3<f32>(0.04, 0.04, 0.06);
-  //   alpha = 1.0;
-  // }
-  //
-  // let normal = normalize(input.v_normalEC);
-  // let sunDir = normalize(camera.sunDirectionEC);
-  //
-  // // Day/night fade factor: 0 = night, 1 = day
-  // let dayFade = computeDayNightFade(normal, sunDir);
-  // // Inverse for night-side effects
-  // let nightBlend = 1.0 - dayFade;
-  //
-  // // ─── Composite imagery layers ───
-  // let count = u32(tile.layerCount);
-  //
-  // if (count >= 1) {
-  //   let layer0 = tile.layers[0];
-  //   let tex0 = sampleImagery(dayTexture0, texSampler, uv, layer0);
-  //   let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
-  //   let dna0 = tile.dayNightAlpha0;
-  //   let effectiveAlpha0 = layer0.alpha * tex0.a * mix(dna0.y, dna0.x, dayFade);
-  //   color = mix(color, adj0, effectiveAlpha0);
-  //   alpha = max(alpha, effectiveAlpha0);
-  //   // Night lights emission for this layer
-  //   color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
-  // }
-  // if (count >= 2) {
-  //   let layer1 = tile.layers[1];
-  //   let tex1 = sampleImagery(dayTexture1, texSampler, uv, layer1);
-  //   let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
-  //   let dna1 = tile.dayNightAlpha1;
-  //   let effectiveAlpha1 = layer1.alpha * tex1.a * mix(dna1.y, dna1.x, dayFade);
-  //   color = mix(color, adj1, effectiveAlpha1);
-  //   alpha = max(alpha, effectiveAlpha1);
-  //   color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
-  // }
-  // if (count >= 3) {
-  //   let layer2 = tile.layers[2];
-  //   let tex2 = sampleImagery(dayTexture2, texSampler, uv, layer2);
-  //   let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
-  //   let dna2 = tile.dayNightAlpha2;
-  //   let effectiveAlpha2 = layer2.alpha * tex2.a * mix(dna2.y, dna2.x, dayFade);
-  //   color = mix(color, adj2, effectiveAlpha2);
-  //   alpha = max(alpha, effectiveAlpha2);
-  //   color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
-  // }
-  // if (count >= 4) {
-  //   let layer3 = tile.layers[3];
-  //   let tex3 = sampleImagery(dayTexture3, texSampler, uv, layer3);
-  //   let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
-  //   let dna3 = tile.dayNightAlpha3;
-  //   let effectiveAlpha3 = layer3.alpha * tex3.a * mix(dna3.y, dna3.x, dayFade);
-  //   color = mix(color, adj3, effectiveAlpha3);
-  //   alpha = max(alpha, effectiveAlpha3);
-  //   color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
-  // }
-  //
-  // // Subsequent passes only apply imagery — skip all effects
-  // if (isSubsequentPass) {
-  //   return vec4<f32>(color, alpha);
-  // }
-  //
-  // // ─── Enhanced Water mask + ocean rendering ───
-  // if (tile.flags.x > 0.5) {
-  //   let wmTS = tile.waterMaskTranslationAndScale;
-  //   let waterUV = uv * wmTS.zw + wmTS.xy;
-  //   let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
-  //
-  //   if (waterMask > 0.01) {
-  //     color = computeEnhancedOcean(
-  //       color, input.v_positionEC, normal, sunDir,
-  //       uv, waterMask, dayFade, input.v_distance
-  //     );
-  //   }
-  // }
-  //
-  // // ─── Lambert diffuse lighting + shadow receive ───
-  // if (camera.enableLighting > 0.5) {
-  //   let NdotL = max(dot(normal, sunDir), 0.0);
-  //   let ambient = 0.12;
-  //   // shadowFactor was pre-computed at the top of fragmentMain
-  //   // Day side: normal Lambert diffuse with shadow
-  //   let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
-  //   // Night side: very dark, only ambient light (moonlight approximation)
-  //   let nightAmbient = 0.025;
-  //   let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
-  //   color = color * diffuse;
-  //
-  //   // Terminator glow: warm atmosphere color right at the day-night boundary
-  //   color += computeTerminatorGlow(normal, sunDir);
-  // }
-  //
-  // // ─── Fog blending ───
-  // let fogDensity = tile.fogDensity;
-  // if (fogDensity > 0.0) {
-  //   let fogAmount = computeFog(input.v_distance, fogDensity);
-  //
-  //   let atmosphereColor = computeAtmosphereColor(
-  //     input.v_positionEC, normal, sunDir,
-  //   );
-  //
-  //   // Night-side fog is darker — don't brighten with atmosphere on dark side
-  //   let nightFogDimming = mix(0.05, 1.0, dayFade);
-  //   let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
-  //   color = mix(color, fogColor, fogAmount);
-  //
-  //   if (fogAmount > 0.98) {
-  //     alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
-  //   }
-  // }
-  //
-  // return vec4<f32>(color, alpha);
+  // ─── Enhanced Water mask + ocean rendering ───
+  if (tile.flags.x > 0.5) {
+    let wmTS = tile.waterMaskTranslationAndScale;
+    let waterUV = geoUV * wmTS.zw + wmTS.xy;
+    let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
+
+    if (waterMask > 0.01) {
+      color = computeEnhancedOcean(
+        color, input.v_positionEC, normal, sunDir,
+        geoUV, waterMask, dayFade, input.v_distance
+      );
+    }
+  }
+
+  // ─── Lambert diffuse lighting + shadow receive ───
+  if (camera.enableLighting > 0.5) {
+    let NdotL = max(dot(normal, sunDir), 0.0);
+    let ambient = 0.12;
+    // shadowFactor was pre-computed at the top of fragmentMain
+    let dayDiffuse = NdotL * 0.88 * shadowFactor + ambient;
+    let nightAmbient = 0.025;
+    let diffuse = mix(nightAmbient, dayDiffuse, dayFade);
+    color = color * diffuse;
+
+    // Terminator glow: warm atmosphere color right at the day-night boundary
+    color += computeTerminatorGlow(normal, sunDir);
+  }
+
+  // ─── Fog blending ───
+  let fogDensity = tile.fogDensity;
+  if (fogDensity > 0.0) {
+    let fogAmount = computeFog(input.v_distance, fogDensity);
+
+    let atmosphereColor = computeAtmosphereColor(
+      input.v_positionEC, normal, sunDir,
+    );
+
+    // Night-side fog is darker — don't brighten with atmosphere on dark side
+    let nightFogDimming = mix(0.05, 1.0, dayFade);
+    let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
+    color = mix(color, fogColor, fogAmount);
+
+    if (fogAmount > 0.98) {
+      alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
+    }
+  }
+
+  return vec4<f32>(color, alpha);
 }

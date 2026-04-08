@@ -17,14 +17,39 @@ struct Uniforms {
   mieAnisotropy: f32,
   intensity: f32,
   hsbShift: vec3<f32>,  // hue, saturation, brightness shifts
-  _pad4: f32,
+  // LUT enable flag. When > 0.5 the fragment shader replaces the per-pixel
+  // 16-step Nishita ray march with a single inscatter LUT sample (the LUT is
+  // baked once per sun-direction change by `WebGPUPerformanceManager`).
+  // Renderer leaves this 0 if compute shaders are unavailable or the LUT
+  // bind group is missing.
+  useLut: f32,
   rayleighCoefficient: vec3<f32>,
   _pad5: f32,
   mieCoefficient: vec3<f32>,
   _pad6: f32,
+  // Debug controls (Tier 1):
+  //   x = disableScattering — when > 0.5 the fragment shader bypasses the
+  //       Nishita Rayleigh+Mie integral and returns a flat magenta diagnostic
+  //       color. Lets you isolate scattering math bugs from LUT/composite
+  //       errors. Magenta is intentional — picks up immediately on a blue
+  //       sky and is unmistakable for any natural sky color.
+  //   y = showLutOnly — reserved (Tier 3 LUT inspector)
+  //   z = forceSunDirOverride — reserved (Tier 3 sun override)
+  //   w = unused
+  debug: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+// Optional precomputed atmosphere LUTs. Bound by the renderer when
+// `useLut > 0.5`. The transmittance LUT (256×64) stores extinction along
+// view rays of varying zenith angle and altitude; the inscatter LUT
+// (256×128) is the full Rayleigh+Mie integral with the current sun
+// direction baked in by AtmosphereLUT.wgsl. Sampling the inscatter table
+// replaces the 16-step ray march below with a single texture fetch.
+@group(1) @binding(0) var lutSampler: sampler;
+@group(1) @binding(1) var transmittanceLut: texture_2d<f32>;
+@group(1) @binding(2) var inscatterLut: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) positionHigh: vec3<f32>,
@@ -153,6 +178,31 @@ fn computeScattering(
   );
 }
 
+// LUT-based scattering: replaces the 16-step Nishita integral with a single
+// texture sample of the inscatter LUT (already integrated for the current
+// sun direction at LUT-generation time). The mapping mirrors the U/V
+// encoding in AtmosphereLUT.wgsl::computeInscatter:
+//   U = (cosViewZenith + 1) / 2     where cosViewZenith = dot(viewDir, up)
+//   V = altitude / atmosphereThickness
+// Returns vec3 ready to feed straight into the post-scattering tonemap.
+fn sampleScatteringLut(
+  rayOrigin: vec3<f32>,
+  rayDir: vec3<f32>,
+  innerRadius: f32,
+  outerRadius: f32,
+) -> vec3<f32> {
+  let upDir = normalize(rayOrigin);
+  let cosViewZenith = clamp(dot(rayDir, upDir), -1.0, 1.0);
+  let altitude = max(0.0, length(rayOrigin) - innerRadius);
+  let thickness = max(1.0, outerRadius - innerRadius);
+  let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+  let vCoord = clamp(altitude / thickness, 0.0, 1.0);
+  let s = textureSampleLevel(
+    inscatterLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
+  );
+  return s.rgb * u.intensity;
+}
+
 // HSB shift for color correction
 fn rgbToHsb(c: vec3<f32>) -> vec3<f32> {
   let maxC = max(c.r, max(c.g, c.b));
@@ -220,8 +270,27 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
 
+  // Tier 1 debug: bypass scattering and emit diagnostic magenta. Lets you
+  // see the atmosphere shell's geometric coverage without scattering math
+  // muddying the picture — confirms ray-sphere intersection + draw call
+  // are reaching the fragment stage.
+  if (u.debug.x > 0.5) {
+    return vec4<f32>(1.0, 0.0, 1.0, 0.5);
+  }
+
   let startPoint = rayOrigin + rayDir * rayStart;
-  let color = computeScattering(startPoint, rayDir, rayLength, u.sunDirectionWC, innerRadius, outerRadius);
+  // Fast path: when the renderer reports the precomputed LUT is bound and
+  // up-to-date for the current sun direction, replace the 16-step ray
+  // march with a single inscatter texture fetch. The LUT was integrated
+  // by AtmosphereLUT.wgsl with phase functions and Beer-Lambert
+  // attenuation already applied, so the result drops straight into the
+  // tonemap below.
+  var color: vec3<f32>;
+  if (u.useLut > 0.5) {
+    color = sampleScatteringLut(startPoint, rayDir, innerRadius, outerRadius);
+  } else {
+    color = computeScattering(startPoint, rayDir, rayLength, u.sunDirectionWC, innerRadius, outerRadius);
+  }
 
   // Apply HSB shift
   var finalColor = color;

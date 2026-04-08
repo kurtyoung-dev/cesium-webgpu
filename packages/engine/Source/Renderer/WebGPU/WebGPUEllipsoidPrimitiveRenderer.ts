@@ -228,9 +228,14 @@ function createPipelineAndLayouts(
   return { pipeline, shaderModule, bindGroupLayout0, bindGroupLayout1 };
 }
 
-function packCameraUniforms(uniformState: any, modelMatrix: any): Float32Array {
-  // 160 bytes = 40 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1)
-  const data = new Float32Array(40);
+function packCameraUniforms(
+  uniformState: any,
+  modelMatrix: any,
+  viewportWidth: number,
+  viewportHeight: number,
+): Float32Array {
+  // 176 bytes = 44 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1) + viewport(2+2 pad)
+  const data = new Float32Array(44);
   const view = uniformState.view;
   const projection = uniformState.projection;
   const mvM4 = Matrix4.multiply(view, modelMatrix, scratchMV);
@@ -271,6 +276,12 @@ function packCameraUniforms(uniformState: any, modelMatrix: any): Float32Array {
   data[37] = scratchEncodedPosition.low.y;
   data[38] = scratchEncodedPosition.low.z;
   data[39] = 0; // pad
+
+  // viewportSize at offset 160 (float index 40)
+  data[40] = viewportWidth;
+  data[41] = viewportHeight;
+  data[42] = 0; // _pad2
+  data[43] = 0; // _pad3
   return data;
 }
 
@@ -364,15 +375,15 @@ function updateWebGPUEllipsoidPrimitive(primitive: any, frameState: any): void {
 
   // One-time initialization
   if (!cache.initialized) {
-    // Camera uniform buffer: 160 bytes, aligned to 256
+    // Camera UBO: 44 floats × 4 = 176 bytes (mvpRTE + mvRTE + camHigh/Low + viewport)
     cache.uniformBuffer = device.createBuffer({
-      size: 256,
+      size: 176,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Ellipsoid uniform buffer: 96 bytes, aligned to 256
+    // Ellipsoid UBO: 24 floats × 4 = 96 bytes (radii + oneOverRadiiSq + color + center)
     cache.ellipsoidUniformBuffer = device.createBuffer({
-      size: 256,
+      size: 96,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -406,11 +417,14 @@ function updateWebGPUEllipsoidPrimitive(primitive: any, frameState: any): void {
   const uniformState = context.uniformState;
   const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
 
-  // Add viewport size to camera uniforms
-  const cameraData = packCameraUniforms(uniformState, modelMatrix);
-  // Append viewport size at offset 40 (but our buffer starts at the struct layout)
-  // The struct expects viewportSize at offset 128 bytes (after two mat4x4s + 2 vec4s)
-  // Actually our packCameraUniforms returns 40 floats = 160 bytes exactly matching struct
+  const viewportWidth = context.drawingBufferWidth || 1;
+  const viewportHeight = context.drawingBufferHeight || 1;
+  const cameraData = packCameraUniforms(
+    uniformState,
+    modelMatrix,
+    viewportWidth,
+    viewportHeight,
+  );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(cameraData));
 
   const ellipsoidData = packEllipsoidUniforms(primitive);

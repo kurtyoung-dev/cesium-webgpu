@@ -1,4 +1,35 @@
-import { MeshoptDecoder } from "meshoptimizer";
+// Lazy-loaded `MeshoptDecoder` from `meshoptimizer`. Same rationale as
+// the lazy import in `Scene/GltfBufferViewLoader.js` — meshoptimizer is
+// ~110 KB minified across three files and is only needed when a 3D Tiles
+// terrain tile uses the EXT_meshopt_compression extension. Static import
+// shipped the cost to every Cesium consumer; this dynamic import lets
+// esbuild split it into a chunk that's only fetched when terrain tiles
+// actually require decoding.
+//
+// The decoder is stored on a module-level variable after first resolve so
+// the synchronous helper functions in this file (`decodePositions`,
+// `decodeNormals`, `decodeIndices`, `decodeEdgeIndices`) can reference it
+// without becoming async themselves. The async `createMesh` entry point
+// is responsible for calling `awaitMeshoptDecoder()` before any decode
+// helper runs.
+let _meshoptDecoder = null;
+let _meshoptDecoderPromise = null;
+async function awaitMeshoptDecoder() {
+  if (_meshoptDecoder) {
+    return _meshoptDecoder;
+  }
+  if (!_meshoptDecoderPromise) {
+    _meshoptDecoderPromise = import("meshoptimizer").then(async (mod) => {
+      // The published meshoptimizer module exposes a `.ready` promise that
+      // resolves once the decoder's internal state machine is initialised.
+      await mod.MeshoptDecoder.ready;
+      _meshoptDecoder = mod.MeshoptDecoder;
+      return _meshoptDecoder;
+    });
+  }
+  return _meshoptDecoderPromise;
+}
+
 import AttributeCompression from "./AttributeCompression.js";
 import Axis from "../Scene/Axis.js";
 import AxisAlignedBoundingBox from "./AxisAlignedBoundingBox.js";
@@ -163,11 +194,13 @@ Cesium3DTilesTerrainGeometryProcessor.createMesh = async function (options) {
     gltf.extensionsRequired !== undefined &&
     gltf.extensionsRequired.indexOf("EXT_meshopt_compression") !== -1;
 
-  const decoderPromise = hasMeshOptCompression
-    ? MeshoptDecoder.ready
-    : Promise.resolve(undefined);
-
-  await decoderPromise;
+  // Awaiting `awaitMeshoptDecoder()` triggers the dynamic import on first
+  // call (downloads ~110 KB chunk + initialises the decoder). Subsequent
+  // calls reuse the cached promise so there's no per-tile penalty. We
+  // only do this work when the tile actually needs the decoder.
+  if (hasMeshOptCompression) {
+    await awaitMeshoptDecoder();
+  }
 
   const tileMinLongitude = rectangle.west;
   const tileMinLatitude = rectangle.south;
@@ -486,7 +519,7 @@ function decodePositions(gltf) {
   const positionByteLength = bufferViewMeshOpt.byteStride;
   const PositionType = positionByteLength === 4 ? Uint8Array : Uint16Array;
   const positionsResult = new PositionType(positionCount * 4);
-  MeshoptDecoder.decodeVertexBuffer(
+  _meshoptDecoder.decodeVertexBuffer(
     new Uint8Array(positionsResult.buffer),
     positionCount,
     positionByteLength,
@@ -547,7 +580,7 @@ function decodeNormals(gltf) {
   const normalByteLength = bufferViewMeshOpt.byteStride;
   const normalsResult = new Int8Array(normalCount * normalByteLength);
 
-  MeshoptDecoder.decodeVertexBuffer(
+  _meshoptDecoder.decodeVertexBuffer(
     new Uint8Array(normalsResult.buffer),
     normalCount,
     normalByteLength,
@@ -626,7 +659,7 @@ function decodeIndices(gltf) {
   );
 
   const indices = new SizedIndexType(indexCount);
-  MeshoptDecoder.decodeIndexBuffer(
+  _meshoptDecoder.decodeIndexBuffer(
     new Uint8Array(indices.buffer),
     indexCount,
     bufferViewMeshOpt.byteStride,
@@ -680,7 +713,7 @@ function decodeEdgeIndices(gltf, name) {
 
   const indices = new SizedIndexType(indexCount);
   const indexByteLength = bufferViewMeshOpt.byteStride;
-  MeshoptDecoder.decodeIndexSequence(
+  _meshoptDecoder.decodeIndexSequence(
     new Uint8Array(indices.buffer),
     indexCount,
     indexByteLength,
