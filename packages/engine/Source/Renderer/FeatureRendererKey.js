@@ -89,11 +89,37 @@ const FeatureRendererKey = {
   // ── Label rendering (SDF text) ──
   LABEL_COLLECTION: 36,
 
+  // ── Volumetric fog (Phase 5: froxel-grid participating media) ──
+  // Allocates a 3D texture pair (scattered light + transmittance),
+  // runs three compute passes per frame (density injection, light
+  // scattering, ray-march integration), and composites into the
+  // scene color before post-processing. See
+  // CELESTIAL_ATMOSPHERE_DESIGN.md §4.8.
+  VOLUMETRIC_FOG: 37,
+
+  // ── Hi-Z occlusion culling (Phase 3: activated 2026-04-09) ──
+  // Builds the Hi-Z pyramid from the previous frame's depth buffer,
+  // then tests each command's bounding sphere against the pyramid to
+  // decide visibility. Owned by `WebGPUHiZOcclusionDispatcher` on the
+  // WebGPU side; consumed by `Scene/OcclusionCulling.js` on the
+  // Scene side via the feature renderer registry so Scene code
+  // doesn't have to import from `Renderer/WebGPU/`.
+  HI_Z_OCCLUSION: 38,
+
+  // ── GPU sort keys (Phase 3: dispatcher landed 2026-04-09) ──
+  // Produces packed 64-bit sort keys for >50K draw commands so the
+  // subsequent sort pass can reorder commands without a CPU
+  // comparator. Owned by `WebGPUGPUSortKeysDispatcher`. Infrastructure
+  // only — RenderScheduler still uses the JS multi-level comparator
+  // for the common <50K case because the encoder → submit → readback
+  // round trip dominates for small command counts.
+  GPU_SORT_KEYS: 39,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
   // keys were shifted down by one to keep the lookup array dense. If a
-  // deferred path is added in the future, append it after LABEL_COLLECTION.
+  // deferred path is added in the future, append it after GPU_SORT_KEYS.
 
   /**
    * Total number of feature renderer keys (excluding COUNT itself).
@@ -101,7 +127,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 37,
+  COUNT: 40,
 };
 
 export default Object.freeze(FeatureRendererKey);

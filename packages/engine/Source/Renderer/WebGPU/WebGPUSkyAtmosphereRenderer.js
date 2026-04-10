@@ -122,6 +122,10 @@ function createPipeline(device, shaderCode, format, depthFormat) {
   // the pipeline layout never changes — when the LUT compute path is
   // unavailable we still bind 1×1 placeholder views and clear the
   // `useLut` uniform flag so the fragment shader takes the ray-march path.
+  //
+  // Phase 1.3c — bindings 3 and 4 hold the moon LUT pair. They're bound
+  // unconditionally too, falling back to the same placeholder when
+  // dual-light scattering isn't active so the layout stays constant.
   const lutBindGroupLayout = device.createBindGroupLayout({
     label: "SkyAtmosphere LUT bind group layout",
     entries: [
@@ -137,6 +141,16 @@ function createPipeline(device, shaderCode, format, depthFormat) {
       },
       {
         binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 4,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: "float", viewDimension: "2d" },
       },
@@ -249,6 +263,13 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 0, resource: cache.lutSampler },
           { binding: 1, resource: cache.placeholderLutView },
           { binding: 2, resource: cache.placeholderLutView },
+          // Phase 1.3c — moon LUT placeholders. Same 1×1 zero texture
+          // as the sun side; the fragment shader's dual-light branch is
+          // gated on `dualLightControl.x > 0.5`, which the renderer
+          // clears whenever compute is unavailable, so these are never
+          // sampled in this code path.
+          { binding: 3, resource: cache.placeholderLutView },
+          { binding: 4, resource: cache.placeholderLutView },
         ],
       });
     }
@@ -274,6 +295,64 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     }
   }
 
+  // Phase 1.3c — track moon direction changes for the dual-light LUT.
+  // Same threshold-gated invalidation pattern as the sun above. Only
+  // active when both `enableDualLightAtmosphere` is on and the moon
+  // direction has been populated by Moon.update() — on the first frame
+  // (before Moon.update has run) the moon direction is undefined and
+  // we skip the moon LUT dispatch entirely.
+  const ac = frameState.atmosphericConditions;
+  const lighting = ac && ac.lighting ? ac.lighting : undefined;
+  const enableDualLight =
+    lighting && lighting.enableDualLightAtmosphere !== false;
+  const moonDir = defined(frameState.moonDirectionWC)
+    ? frameState.moonDirectionWC
+    : undefined;
+
+  // Phase 1.4 — invalidate BOTH LUTs when weather coefficients change.
+  // The LUT bakes the rayleigh/mie coefficients at compute time, so a
+  // mid-session humidity change wouldn't take effect until the sun
+  // moved without this. Compare against the cached previous values
+  // and force a re-dispatch on any meaningful delta. Also invalidates
+  // the moon LUT in lockstep so dual-light scattering stays coherent.
+  const weatherCheck = ac && ac.weather ? ac.weather : undefined;
+  const humidityNow =
+    weatherCheck && typeof weatherCheck.humidity === "number"
+      ? weatherCheck.humidity
+      : 0.5;
+  const airQualityNow =
+    weatherCheck && typeof weatherCheck.airQuality === "number"
+      ? weatherCheck.airQuality
+      : 1.0;
+  if (
+    cache.lastHumidity !== humidityNow ||
+    cache.lastAirQuality !== airQualityNow
+  ) {
+    cache.lastHumidity = humidityNow;
+    cache.lastAirQuality = airQualityNow;
+    perfMgr.invalidateAtmosphereLUT();
+    if (enableDualLight) {
+      perfMgr.invalidateMoonAtmosphereLUT();
+    }
+  }
+
+  if (enableDualLight && defined(moonDir)) {
+    const lastMoon = cache.lastMoonDirection;
+    if (!lastMoon) {
+      cache.lastMoonDirection = Cartesian3.clone(moonDir, new Cartesian3());
+      perfMgr.invalidateMoonAtmosphereLUT();
+    } else {
+      const moonDot =
+        lastMoon.x * moonDir.x +
+        lastMoon.y * moonDir.y +
+        lastMoon.z * moonDir.z;
+      if (moonDot < 0.9999) {
+        Cartesian3.clone(moonDir, lastMoon);
+        perfMgr.invalidateMoonAtmosphereLUT();
+      }
+    }
+  }
+
   // Resolve the LUT views so we can build the bind group. If perf manager
   // returns null we degrade to the placeholder path.
   const res = perfMgr.ensureAtmosphereLUTResources(device);
@@ -286,6 +365,8 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 0, resource: cache.lutSampler },
           { binding: 1, resource: cache.placeholderLutView },
           { binding: 2, resource: cache.placeholderLutView },
+          { binding: 3, resource: cache.placeholderLutView },
+          { binding: 4, resource: cache.placeholderLutView },
         ],
       });
     }
@@ -298,7 +379,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
   if (
     !defined(cache.lutBindGroup) ||
     cache.lutTransmittanceView !== res.transmittanceView ||
-    cache.lutInscatterView !== res.inscatterView
+    cache.lutInscatterView !== res.inscatterView ||
+    cache.lutMoonTransmittanceView !== res.moonTransmittanceView ||
+    cache.lutMoonInscatterView !== res.moonInscatterView
   ) {
     cache.lutBindGroup = device.createBindGroup({
       label: "SkyAtmosphere LUT bind group",
@@ -307,45 +390,121 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
         { binding: 0, resource: cache.lutSampler },
         { binding: 1, resource: res.transmittanceView },
         { binding: 2, resource: res.inscatterView },
+        { binding: 3, resource: res.moonTransmittanceView },
+        { binding: 4, resource: res.moonInscatterView },
       ],
     });
     cache.lutTransmittanceView = res.transmittanceView;
     cache.lutInscatterView = res.inscatterView;
+    cache.lutMoonTransmittanceView = res.moonTransmittanceView;
+    cache.lutMoonInscatterView = res.moonInscatterView;
   }
 
   // If the LUT is dirty (first frame, or sun direction moved), dispatch
   // the compute pass on a one-shot encoder. We feed it the same scattering
   // constants we'd otherwise use in the ray march so the LUT and the
   // fallback path agree. Once `useLut` flips on, the fragment shader
-  // shortcuts to a single texture sample.
-  if (perfMgr.shouldRecomputeAtmosphereLUT()) {
+  // shortcuts to a single texture sample. Phase 1.3c — when the moon LUT
+  // is also dirty AND dual-light is enabled, batch both dispatches into
+  // the same one-shot encoder so the moon path doesn't pay an extra
+  // submit cost.
+  const sunDirty = perfMgr.shouldRecomputeAtmosphereLUT();
+  const moonDirty =
+    enableDualLight &&
+    defined(moonDir) &&
+    perfMgr.shouldRecomputeMoonAtmosphereLUT();
+
+  if (sunDirty || moonDirty) {
     const ellipsoid = skyAtmosphere._ellipsoid || Ellipsoid.WGS84;
     const innerRadius = Cartesian3.maximumComponent(ellipsoid.radii);
     const outerRadius = innerRadius * ATMOSPHERE_SCALE;
+    const intensity = skyAtmosphere.atmosphereLightIntensity || 50.0;
+
+    // Phase 1.4 — atmospheric conditions modulate the scattering
+    // coefficients before the LUT compute pass:
+    //   humidity   (0..1, default 0.5) → mie scale (0.5 + humidity)
+    //                 0.0 → 0.5× (very dry, sharp horizon)
+    //                 0.5 → 1.0× (no change)
+    //                 1.0 → 1.5× (humid haze, softer horizon)
+    //   airQuality (0..2+, default 1.0) → rayleigh scale 1/airQuality
+    //                 1.0 → 1.0× (clean air, full blue sky)
+    //                 0.5 → 2.0× rayleigh (strong scattering)
+    //                 2.0 → 0.5× rayleigh (washed out, dusty)
+    // The coefficients are baked into the LUT once per direction
+    // change, so the cost is amortized — switching weather presets
+    // recomputes the LUT but per-frame cost stays at one texture sample.
+    const ac = frameState.atmosphericConditions;
+    const weather = ac && ac.weather ? ac.weather : undefined;
+    const humidity =
+      weather && typeof weather.humidity === "number" ? weather.humidity : 0.5;
+    const airQuality =
+      weather && typeof weather.airQuality === "number"
+        ? weather.airQuality
+        : 1.0;
+    const mieScale = 0.5 + humidity;
+    const rayleighScale = airQuality > 0.001 ? 1.0 / airQuality : 1000.0;
+
+    const rayleighCoefficient = [
+      DEFAULT_RAYLEIGH_COEFFICIENT.x * rayleighScale,
+      DEFAULT_RAYLEIGH_COEFFICIENT.y * rayleighScale,
+      DEFAULT_RAYLEIGH_COEFFICIENT.z * rayleighScale,
+    ];
+    const mieCoefficient = [
+      DEFAULT_MIE_COEFFICIENT.x * mieScale,
+      DEFAULT_MIE_COEFFICIENT.y * mieScale,
+      DEFAULT_MIE_COEFFICIENT.z * mieScale,
+    ];
+
     const encoder = device.createCommandEncoder({
       label: "SkyAtmosphere LUT dispatch",
     });
-    const ok = perfMgr.dispatchAtmosphereLUT(encoder, device, {
-      innerRadius,
-      outerRadius,
-      rayleighScaleHeight: DEFAULT_RAYLEIGH_SCALE_HEIGHT,
-      mieScaleHeight: DEFAULT_MIE_SCALE_HEIGHT,
-      mieAnisotropy: DEFAULT_MIE_ANISOTROPY,
-      intensity: skyAtmosphere.atmosphereLightIntensity || 50.0,
-      rayleighCoefficient: [
-        DEFAULT_RAYLEIGH_COEFFICIENT.x,
-        DEFAULT_RAYLEIGH_COEFFICIENT.y,
-        DEFAULT_RAYLEIGH_COEFFICIENT.z,
-      ],
-      mieCoefficient: [
-        DEFAULT_MIE_COEFFICIENT.x,
-        DEFAULT_MIE_COEFFICIENT.y,
-        DEFAULT_MIE_COEFFICIENT.z,
-      ],
-      sunDirection: [sunDir.x, sunDir.y, sunDir.z],
-    });
+
+    let sunOk = true;
+    if (sunDirty) {
+      sunOk = perfMgr.dispatchAtmosphereLUT(
+        encoder,
+        device,
+        {
+          innerRadius,
+          outerRadius,
+          rayleighScaleHeight: DEFAULT_RAYLEIGH_SCALE_HEIGHT,
+          mieScaleHeight: DEFAULT_MIE_SCALE_HEIGHT,
+          mieAnisotropy: DEFAULT_MIE_ANISOTROPY,
+          intensity,
+          rayleighCoefficient,
+          mieCoefficient,
+          sunDirection: [sunDir.x, sunDir.y, sunDir.z],
+        },
+        "sun",
+      );
+    }
+
+    if (moonDirty) {
+      // The moon dispatch reuses the same compute kernel; only the
+      // direction (and the per-light params buffer it writes into)
+      // differs. Rayleigh / Mie / scale heights stay identical because
+      // the scattering medium is the same atmosphere — only the source
+      // light direction changes.
+      perfMgr.dispatchAtmosphereLUT(
+        encoder,
+        device,
+        {
+          innerRadius,
+          outerRadius,
+          rayleighScaleHeight: DEFAULT_RAYLEIGH_SCALE_HEIGHT,
+          mieScaleHeight: DEFAULT_MIE_SCALE_HEIGHT,
+          mieAnisotropy: DEFAULT_MIE_ANISOTROPY,
+          intensity,
+          rayleighCoefficient,
+          mieCoefficient,
+          sunDirection: [moonDir.x, moonDir.y, moonDir.z],
+        },
+        "moon",
+      );
+    }
+
     device.queue.submit([encoder.finish()]);
-    if (ok) {
+    if (sunOk) {
       cache.lutReady = true;
     }
   }
@@ -442,6 +601,41 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
   uniformData[53] = 0.0;
   uniformData[54] = 0.0;
   uniformData[55] = 0.0;
+
+  // Phase 1.3c — Dual-light atmosphere scattering inputs.
+  // moonDirectionWC (vec3 + pad) at offsets 56-59. Default to a "full
+  // moon overhead" stand-in (0,0,1) when the moon hasn't been ticked
+  // yet so the shader's vec3 read never picks up uninitialised data.
+  const moonDir = defined(frameState.moonDirectionWC)
+    ? frameState.moonDirectionWC
+    : { x: 0, y: 0, z: 1 };
+  uniformData[56] = moonDir.x;
+  uniformData[57] = moonDir.y;
+  uniformData[58] = moonDir.z;
+  uniformData[59] = 0.0;
+
+  // dualLightControl: x=enableDualLight, y=moonPhaseFraction, z=intensityScale, w=pad.
+  // Driven by `frameState.atmosphericConditions.lighting.enableDualLightAtmosphere`
+  // (default ON per B12/B14 lock) AND requires that compute shaders /
+  // the moon LUT are actually available — `useLut` gates the entire
+  // shader-side LUT path, and the dual-light branch is only entered
+  // when the inscatter LUTs are bound. The intensity scale defaults to
+  // 0.05 (~5% of sun) so a full-moon-overhead night sky reads as a
+  // gentle blue glow rather than full daytime blue.
+  const acLighting =
+    frameState.atmosphericConditions &&
+    frameState.atmosphericConditions.lighting
+      ? frameState.atmosphericConditions.lighting
+      : undefined;
+  const enableDual =
+    !!acLighting &&
+    acLighting.enableDualLightAtmosphere !== false &&
+    defined(frameState.moonDirectionWC) &&
+    useLut === true;
+  uniformData[60] = enableDual ? 1.0 : 0.0;
+  uniformData[61] = frameState.moonPhaseFraction ?? 1.0;
+  uniformData[62] = acLighting?.moonIntensity ?? 0.05;
+  uniformData[63] = 0.0;
 }
 
 /**

@@ -73,6 +73,25 @@ const SHADOW_CAST_VARIANTS = {
       },
     ],
   },
+  // Non-RTE single-position models: one float32x3 at offset 0, stride 12.
+  // Used by any model path that doesn't split positions into high/low
+  // (e.g., small objects near origin, debug primitives, legacy glTF
+  // meshes). The position is treated as already being in world coords
+  // so the camera subtract that RTE needs is skipped.
+  p12: {
+    vsCode: `
+@vertex fn vs(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
+  var pos = u.lightVP * vec4f(p, 1.0);
+  pos.z += u.depthBias;
+  return pos;
+}`,
+    buffers: [
+      {
+        arrayStride: 12,
+        attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
+      },
+    ],
+  },
 };
 
 const _shadowLayoutWarned = new Set();
@@ -88,9 +107,14 @@ function _inferShadowLayoutKey(cmd, vbStride) {
   if (defined(cmd._shadowCastLayout)) {
     return cmd._shadowCastLayout;
   }
-  // Stride-24 = canonical RTE primitive layout.
+  // Stride-24 = canonical RTE primitive layout (positionHigh + positionLow).
   if (vbStride === 24 || !defined(vbStride)) {
     return "rte24";
+  }
+  // Stride-12 = single-vec3 world-space position. Second most common
+  // layout after RTE — covers non-RTE models and debug primitives.
+  if (vbStride === 12) {
+    return "p12";
   }
   if (!_shadowLayoutWarned.has(vbStride)) {
     _shadowLayoutWarned.add(vbStride);
@@ -100,6 +124,16 @@ function _inferShadowLayoutKey(cmd, vbStride) {
     );
   }
   return null;
+}
+
+/**
+ * Test-only hook — resets the "warned once" dedupe set so specs can
+ * verify the warning path fires deterministically. Not exported on the
+ * default object; only reachable through the named export.
+ * @private
+ */
+function _resetShadowLayoutWarningsForSpec() {
+  _shadowLayoutWarned.clear();
 }
 
 const SHADOW_CAST_BIND_GROUP_PREFIX = `
@@ -459,6 +493,8 @@ export {
   destroyWebGPUShadowMapResources,
   registerShadowCastVariant,
   getRegisteredShadowCastVariantKeys,
+  _inferShadowLayoutKey,
+  _resetShadowLayoutWarningsForSpec,
 };
 
 export default {

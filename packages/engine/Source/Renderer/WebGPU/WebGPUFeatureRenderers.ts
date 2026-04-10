@@ -60,12 +60,37 @@ import {
   updateWebGPUMoon,
   destroyWebGPUMoonResources,
   getWebGPUFogParameters,
+  getWebGPUMoonStatistics,
 } from "./WebGPUEnvironmentRenderer.js";
 import { updateWebGPUSkyAtmosphere } from "./WebGPUSkyAtmosphereRenderer.js";
 import {
   updateCubeMapPanorama,
   destroyCubeMapPanorama,
 } from "./WebGPUCubeMapPanoramaRenderer.js";
+// Phase 5a — froxel-grid volumetric fog (infrastructure only).
+import {
+  updateWebGPUVolumetricFog,
+  compositeWebGPUVolumetricFog,
+  destroyWebGPUVolumetricFog,
+  getWebGPUVolumetricFogStatistics,
+} from "./WebGPUVolumetricFogRenderer.js";
+
+// Phase 3 — Hi-Z occlusion culling (dispatcher + bind group factory).
+import {
+  initWebGPUHiZOcclusion,
+  dispatchWebGPUHiZOcclusion,
+  readbackWebGPUHiZOcclusion,
+  getWebGPUHiZOcclusionStatistics,
+  destroyWebGPUHiZOcclusion,
+} from "./WebGPUHiZOcclusionDispatcher.js";
+
+// Phase 3 — GPU sort keys (packed 64-bit draw command sort keys).
+import {
+  initWebGPUGPUSortKeys,
+  dispatchWebGPUGPUSortKeys,
+  getWebGPUGPUSortKeysStatistics,
+  destroyWebGPUGPUSortKeys,
+} from "./WebGPUGPUSortKeysDispatcher.js";
 
 // ── Shadow / Ground ──
 import {
@@ -247,6 +272,11 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.MOON, {
     update: updateWebGPUMoon,
     destroy: destroyWebGPUMoonResources,
+    // Phase 6 debug surface — `getStatistics(moon)` returns the
+    // per-instance moon cache state (texture loaded, phase, frozen, ...).
+    // Called by `Moon.getDebugStatistics()` from the backend-agnostic
+    // dispatch path.
+    getStatistics: getWebGPUMoonStatistics,
   });
 
   context.registerFeatureRenderer(FeatureRendererKey.SKY_ATMOSPHERE, {
@@ -260,6 +290,102 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA, {
     update: updateCubeMapPanorama,
     destroy: destroyCubeMapPanorama,
+  });
+
+  // Phase 5a — froxel-grid volumetric fog. The renderer exposes both an
+  // `update` (compute passes) and `composite` (full-screen pass) entry
+  // point so the WebGPUSceneRenderer can call them in the right order
+  // relative to the other environmental effects. `update` runs first to
+  // populate the integrated 3D volume; `composite` runs last (after
+  // procedural clouds, SSR, weather particles) to multiply the scene
+  // color by transmittance and add the in-scattered light.
+  context.registerFeatureRenderer(FeatureRendererKey.VOLUMETRIC_FOG, {
+    update: updateWebGPUVolumetricFog,
+    composite: compositeWebGPUVolumetricFog,
+    destroy: destroyWebGPUVolumetricFog,
+    // Phase 6 debug surface — `getStatistics()` returns the per-context
+    // fog instance state. Called by `WebGPUContext.getRendererStatistics`.
+    getStatistics: function () {
+      return getWebGPUVolumetricFogStatistics(context);
+    },
+  });
+
+  // Phase 3 — GPU sort keys. Dispatcher-only registration; the
+  // consumer integration in RenderScheduler is a separate step.
+  // Infrastructure is in place so a future scene with >50K commands
+  // can flip the switch without any renderer-layer changes.
+  context.registerFeatureRenderer(FeatureRendererKey.GPU_SORT_KEYS, {
+    init: function (maxCommands: number) {
+      return initWebGPUGPUSortKeys(
+        context as unknown as { device: GPUDevice },
+        maxCommands,
+      );
+    },
+    dispatch: function (encoder: GPUCommandEncoder, soa: any, params: any) {
+      return dispatchWebGPUGPUSortKeys(
+        context as unknown as { device: GPUDevice },
+        encoder,
+        soa,
+        params,
+      );
+    },
+    destroy: function () {
+      destroyWebGPUGPUSortKeys(context as unknown as { device: GPUDevice });
+    },
+    getStatistics: function () {
+      return getWebGPUGPUSortKeysStatistics(
+        context as unknown as { device: GPUDevice },
+      );
+    },
+  });
+
+  // Phase 3 — Hi-Z occlusion culling. The dispatcher owns the Hi-Z
+  // pyramid texture, the SOA sphere buffers, and the visibility
+  // staging buffer. Scene-side `OcclusionCulling.initialize()` calls
+  // `init()` to allocate; `beginFrame` → `dispatch()` runs the two
+  // compute passes; `readback()` pulls the previous frame's
+  // visibility bits for CPU-side command splitting.
+  context.registerFeatureRenderer(FeatureRendererKey.HI_Z_OCCLUSION, {
+    init: function (
+      inputWidth: number,
+      inputHeight: number,
+      maxCommands: number,
+    ) {
+      return initWebGPUHiZOcclusion(
+        context as unknown as { device: GPUDevice },
+        inputWidth,
+        inputHeight,
+        maxCommands,
+      );
+    },
+    dispatch: function (
+      encoder: GPUCommandEncoder,
+      depthTextureView: GPUTextureView,
+      soa: any,
+      params: any,
+    ) {
+      return dispatchWebGPUHiZOcclusion(
+        context as unknown as { device: GPUDevice },
+        encoder,
+        depthTextureView,
+        soa,
+        params,
+      );
+    },
+    readback: function (count: number) {
+      return readbackWebGPUHiZOcclusion(
+        context as unknown as { device: GPUDevice },
+        count,
+      );
+    },
+    destroy: function () {
+      destroyWebGPUHiZOcclusion(context as unknown as { device: GPUDevice });
+    },
+    getStatistics: function () {
+      return getWebGPUHiZOcclusionStatistics(
+        context as unknown as { device: GPUDevice },
+      );
+    },
   });
 
   // ── Shadow / Ground ──

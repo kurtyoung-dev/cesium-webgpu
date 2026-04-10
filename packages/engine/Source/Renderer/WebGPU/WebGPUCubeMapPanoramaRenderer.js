@@ -5,11 +5,12 @@
  * Creates pipelines, buffers, bind groups, and WebGPUDrawCommand instances for cubemap
  * panorama rendering in the WebGPU renderer.
  *
- * Uniform layout matches CubeMapPanorama.wgsl (208 bytes, 256-aligned):
+ * Uniform layout matches CubeMapPanorama.wgsl (224 bytes, 256-aligned):
  *   projection:         mat4x4<f32>  (offset 0,  64 bytes)
  *   viewRotation:       mat4x4<f32>  (offset 64, 64 bytes)
  *   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes)
- *   params:             vec4<f32>    (offset 192, 16 bytes)
+ *   params:             vec4<f32>    (offset 192, 16 bytes) — far, morphTime, debugCubeFace, skyBrightness
+ *   starModulation:     vec4<f32>    (offset 208, 16 bytes) — inflection, steepness, enableFlag, cloudCover
  */
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -23,7 +24,12 @@ struct CubeMapPanoramaUniforms {
   projection: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   panoramaTransform: mat4x4<f32>,
+  // params.w is the Phase 1.3a sky brightness scalar (0..1).
   params: vec4<f32>,
+  // Phase 1.3b star modulation tunables, sourced from
+  // atmosphericConditions.skyAtmosphere.starModulationCurve.
+  // x = inflection, y = steepness, z = enableFlag (0/1), w = pad
+  starModulation: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CubeMapPanoramaUniforms;
@@ -89,7 +95,33 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let color = textureSample(cubeMapTexture, cubeMapSampler, dir);
   let morphTime = uniforms.params.y;
-  let corrected = pow(color.rgb, vec3<f32>(1.0 / 2.2));
+
+  // Phase 1.3b — Star brightness modulation. Stars need to dim toward
+  // black as the sky brightens (sun above horizon, full moon overhead)
+  // so the cubemap doesn't punch through the daytime atmosphere. The
+  // smoothstep curve has two B4-locked tunables (inflection, steepness)
+  // exposed via atmosphericConditions.skyAtmosphere.starModulationCurve.
+  // When the toggle is off (enableFlag == 0) the modulation is skipped
+  // entirely — same byte cost as before, no visible change.
+  // Phase 1.4 — Cloud cover star occlusion. starModulation.w carries
+  // atmosphericConditions.weather.cloudCover (0..1). The final modulated
+  // color is multiplied by (1 - cloudCover) so a fully overcast sky
+  // hides stars completely without requiring a separate occlusion pass.
+  let skyBrightness = uniforms.params.w;
+  let inflection = uniforms.starModulation.x;
+  let steepness = uniforms.starModulation.y;
+  let enableMod = uniforms.starModulation.z > 0.5;
+  let cloudCover = clamp(uniforms.starModulation.w, 0.0, 1.0);
+
+  var modulated = color.rgb;
+  if (enableMod) {
+    let t = clamp((skyBrightness - inflection) * steepness, 0.0, 1.0);
+    let factor = 1.0 - smoothstep(0.0, 1.0, t);
+    modulated = modulated * factor;
+  }
+  modulated = modulated * (1.0 - cloudCover);
+
+  let corrected = pow(modulated, vec3<f32>(1.0 / 2.2));
   return vec4<f32>(corrected, morphTime);
 }
 `;
@@ -403,15 +435,47 @@ export function updateUniforms(
   }
   packMatrix3As4x4(transform, uniformData, 32);
 
-  // Params: x=far, y=morphTime, z=debugCubeFace (Tier 1 debug)
+  // Params: x=far, y=morphTime, z=debugCubeFace, w=skyBrightness
   // The debug field is sourced from frameState rather than a dedicated
   // parameter so future per-frame additions slot in without churning
   // every call site. When the debug toggle is off the value is just 0
-  // (production behavior).
+  // (production behavior). skyBrightness is the Phase 1.3a CPU estimate
+  // forwarded from `Scene.updateFrameState()`; defaults to 1.0 (fully
+  // bright sky → stars hidden) when no estimator value is available.
   uniformData[48] = uniformState.entireFrustum.y; // far
   uniformData[49] = uniformState.morphTime;
   uniformData[50] = frameState.debugShowCubeMapFace | 0; // 0=all, 1..6=face
-  uniformData[51] = 0.0;
+  uniformData[51] = frameState.skyBrightness ?? 1.0;
+
+  // Phase 1.3b — star modulation tunables. Sourced from the canonical
+  // atmospheric conditions home so the user can override per-scene via
+  // `scene.globe.atmosphericConditions.skyAtmosphere.starModulationCurve`.
+  // The B4 locked defaults are inflection=0.3, steepness=4.0, but
+  // AtmosphericConditions ships its own initial values; we read those
+  // here and fall back to the locked values for safety.
+  const ac = frameState.atmosphericConditions;
+  const sky = ac && ac.skyAtmosphere ? ac.skyAtmosphere : undefined;
+  const curve =
+    sky && sky.starModulationCurve
+      ? sky.starModulationCurve
+      : { inflection: 0.3, steepness: 4.0 };
+  // Default ON: stars should dim during the day in any normal scene.
+  // Apps that want the legacy "always full brightness" behavior set
+  // `enableStarBrightnessModulation = false` on AtmosphericConditions.
+  const enableModulation = !sky || sky.enableStarBrightnessModulation !== false;
+  uniformData[52] = curve.inflection;
+  uniformData[53] = curve.steepness;
+  uniformData[54] = enableModulation ? 1.0 : 0.0;
+  // Phase 1.4 — cloud cover star occlusion. Sourced from
+  // `atmosphericConditions.weather.cloudCover` (which delegates to
+  // `globe.cloudCoverage` in AtmosphericConditions). The shader
+  // multiplies the modulated star color by `(1 - cloudCover)` so
+  // overcast skies hide stars completely. Defaults to 0 (clear sky)
+  // when no globe / weather is wired up.
+  const weather = ac && ac.weather ? ac.weather : undefined;
+  const cloudCover =
+    weather && typeof weather.cloudCover === "number" ? weather.cloudCover : 0;
+  uniformData[55] = cloudCover;
 
   device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 }

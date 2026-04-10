@@ -229,6 +229,12 @@ export function reprojectWebMercatorWebGPU(
     label: "ReprojectWebMercator Encoder",
   });
 
+  // BUG-11 hypothesis A defense: clear alpha to 1.0 (instead of 0.0) so
+  // any unwritten texel — present today only via a future `discard` path,
+  // but a footgun waiting to happen — does NOT collapse the downstream
+  // composite to zero via `tex.a * effectiveAlpha`. The full-screen
+  // triangle currently overwrites every texel, so this is a defensive
+  // change with no behavior impact today.
   const pass = encoder.beginRenderPass({
     label: "ReprojectWebMercator RenderPass",
     colorAttachments: [
@@ -236,7 +242,7 @@ export function reprojectWebMercatorWebGPU(
         view: outputView,
         loadOp: "clear" as GPULoadOp,
         storeOp: "store" as GPUStoreOp,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
   });

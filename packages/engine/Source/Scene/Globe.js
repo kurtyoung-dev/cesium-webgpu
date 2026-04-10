@@ -506,6 +506,13 @@ class Globe {
      * @default 0.3
      */
     this.vertexShadowDarkness = 0.3;
+
+    // Phase 0.3 canonical facades — wired by Scene after construction to
+    // avoid a circular import (Scene imports AtmosphericConditions/GlobeWater
+    // and hangs them here once `scene.atmosphere`, `scene.fog`, and
+    // `scene.skyAtmosphere` are all built).
+    this._atmosphericConditions = undefined;
+    this._water = undefined;
   }
 
   /**
@@ -514,6 +521,29 @@ class Globe {
    */
   get ellipsoid() {
     return this._ellipsoid;
+  }
+
+  /**
+   * Canonical facade for atmosphere/fog/cloud/weather/night state.
+   * Delegates through to the existing legacy storage — see
+   * {@link AtmosphericConditions}. Lazily wired by {@link Scene} during
+   * construction; `undefined` if this Globe has not yet been attached to
+   * a Scene.
+   * @type {AtmosphericConditions}
+   * @readonly
+   */
+  get atmosphericConditions() {
+    return this._atmosphericConditions;
+  }
+
+  /**
+   * Canonical facade for water state. Delegates to the existing Globe
+   * water fields — see {@link GlobeWater}.
+   * @type {GlobeWater}
+   * @readonly
+   */
+  get water() {
+    return this._water;
   }
 
   /**

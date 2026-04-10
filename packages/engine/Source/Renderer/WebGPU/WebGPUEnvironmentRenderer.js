@@ -9,17 +9,42 @@
  * @private
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
+import createGuid from "../../Core/createGuid.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import Resource from "../../Core/Resource.js";
+import MoonShaderCode from "../../Shaders/WebGPU/Environment/Moon.js";
+import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// Phase 1.x consolidation — shared bounding-cube + base uniform pack
+// for ellipsoid bodies. Moon is the first consumer; future Sun-as-
+// ellipsoid and custom planet renderers will share these helpers.
+import {
+  createEllipsoidBoundingCube,
+  createEllipsoidBindGroupLayout,
+  packEllipsoidBaseUniforms,
+} from "./WebGPUEllipsoidRenderer.js";
 
 const UNIFORM_BUFFER_SIZE = 256;
+// Moon uses a slightly larger uniform buffer to fit the full Phase 1.2c v2
+// state (RTE moon center + camera split + 3x3 inverse-modelView + radii +
+// 2 light directions + celestial state + Phong tunables + log-depth far).
+const MOON_UNIFORM_BUFFER_SIZE = 320;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
+// Phase 1.x consolidation — the inverseModelView3, cameraMC, sunMC,
+// sceneLightMC, inverseModelMatrix, and inverseModelRot3 scratches that
+// the old `_packMoonUniforms` body used were moved into
+// `WebGPUEllipsoidRenderer.ts` along with the base uniform pack. The
+// scratches kept here are still used by the Sun renderer
+// (`scratchEncodedPos`, `scratchEncodedCamera`) and the Moon
+// behind-camera early-out (`scratchMoonPositionWC`, `scratchCameraToMoon`).
 const scratchEncodedCamera = new EncodedCartesian3();
+const scratchMoonPositionWC = new Cartesian3();
+const scratchCameraToMoon = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
 
 // ============================================================
@@ -346,101 +371,27 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 
 // ============================================================
-// Moon Renderer — Textured Sphere with Diffuse Lighting
+// Moon Renderer — Ray-Marched Analytic Ellipsoid (Phase 1.2c)
 // ============================================================
 
-const MOON_SEGMENTS = 32;
-const MOON_RINGS = 16;
-
 /**
- * Generates a UV sphere mesh for the Moon.
- * Vertex layout: posHigh(3) + posLow(3) + normal(3) + uv(2) = 11 floats = 44 bytes
+ * Bounding cube for the ray-marched moon shader. Phase 1.x consolidation:
+ * the geometry was extracted to `WebGPUEllipsoidRenderer.ts` so future
+ * ellipsoid bodies (Sun-as-ellipsoid, custom planets) can share the
+ * same 8-vert / 36-index unit cube. The vertex shader still scales by
+ * `radii` to wrap the moon ellipsoid, mirroring WebGL's
+ * `EllipsoidPrimitive` which uses `BoxGeometry.fromDimensions({2,2,2})`.
+ *
+ * Why a cube and not a full-screen quad: the cube's screen footprint is
+ * the moon's actual on-screen size, so the fragment shader runs only on
+ * pixels that could possibly contain the moon. A full-screen quad would
+ * run the FS on every pixel of the canvas (~8M FS invocations at 4K),
+ * all of which would discard early but still cost rasterizer scheduling.
+ *
  * @private
  */
-function createMoonSphereGeometry(device, radii) {
-  const rx = radii.x;
-  const ry = radii.y;
-  const rz = radii.z;
-  const segments = MOON_SEGMENTS;
-  const rings = MOON_RINGS;
-
-  const vertCount = (segments + 1) * (rings + 1);
-  const idxCount = segments * rings * 6;
-  const floatsPerVert = 11;
-  const vertices = new Float32Array(vertCount * floatsPerVert);
-  const indices = new Uint16Array(idxCount);
-
-  let vOff = 0;
-  for (let r = 0; r <= rings; r++) {
-    const phi = (r / rings) * Math.PI;
-    const sinPhi = Math.sin(phi);
-    const cosPhi = Math.cos(phi);
-
-    for (let s = 0; s <= segments; s++) {
-      const theta = (s / segments) * 2.0 * Math.PI;
-      const sinT = Math.sin(theta);
-      const cosT = Math.cos(theta);
-
-      // Normal (unit sphere)
-      const nx = cosT * sinPhi;
-      const ny = cosPhi;
-      const nz = sinT * sinPhi;
-
-      // Position (scaled by radii)
-      const px = nx * rx;
-      const py = ny * ry;
-      const pz = nz * rz;
-
-      // RTE encode model-local position
-      // Model-local positions are small (~1737km), posHigh ≈ position, posLow ≈ 0
-      EncodedCartesian3.fromCartesian(
-        new Cartesian3(px, py, pz),
-        scratchEncodedPos,
-      );
-
-      vertices[vOff + 0] = scratchEncodedPos.high.x;
-      vertices[vOff + 1] = scratchEncodedPos.high.y;
-      vertices[vOff + 2] = scratchEncodedPos.high.z;
-      vertices[vOff + 3] = scratchEncodedPos.low.x;
-      vertices[vOff + 4] = scratchEncodedPos.low.y;
-      vertices[vOff + 5] = scratchEncodedPos.low.z;
-      vertices[vOff + 6] = nx;
-      vertices[vOff + 7] = ny;
-      vertices[vOff + 8] = nz;
-      vertices[vOff + 9] = s / segments;
-      vertices[vOff + 10] = r / rings;
-      vOff += floatsPerVert;
-    }
-  }
-
-  let iOff = 0;
-  for (let r = 0; r < rings; r++) {
-    for (let s = 0; s < segments; s++) {
-      const a = r * (segments + 1) + s;
-      const b = a + segments + 1;
-      indices[iOff++] = a;
-      indices[iOff++] = b;
-      indices[iOff++] = a + 1;
-      indices[iOff++] = a + 1;
-      indices[iOff++] = b;
-      indices[iOff++] = b + 1;
-    }
-  }
-
-  const vb = WebGPUBuffer.createVertexBuffer(
-    device,
-    vertices,
-    "Moon sphere VB",
-  );
-
-  const ib = device.createBuffer({
-    label: "Moon sphere IB",
-    size: indices.byteLength,
-    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(ib, 0, indices);
-
-  return { vertexBuffer: vb, indexBuffer: ib, indexCount: idxCount };
+function createMoonBoundingCube(device) {
+  return createEllipsoidBoundingCube(device);
 }
 
 /**
@@ -448,75 +399,17 @@ function createMoonSphereGeometry(device, radii) {
  * @private
  */
 function createMoonPipeline(device, format, depthFormat) {
-  const code = `
-struct U {
-  mvpRTE: mat4x4<f32>,
-  camH: vec3<f32>, _p0: f32,
-  camL: vec3<f32>, _p1: f32,
-  moonH: vec3<f32>, _p2: f32,
-  moonL: vec3<f32>, _p3: f32,
-  sunDir: vec3<f32>, _p4: f32,
-  nMat0: vec3<f32>, _p5: f32,
-  nMat1: vec3<f32>, _p6: f32,
-  nMat2: vec3<f32>, _p7: f32,
-};
-@group(0) @binding(0) var<uniform> u: U;
-@group(0) @binding(1) var tex: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
-struct VI {
-  @location(0) pH: vec3<f32>,
-  @location(1) pL: vec3<f32>,
-  @location(2) n: vec3<f32>,
-  @location(3) uv: vec2<f32>,
-};
-struct VO {
-  @builtin(position) pos: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-  @location(1) nEC: vec3<f32>,
-};
-
-@vertex fn vs(i: VI) -> VO {
-  var o: VO;
-  let rte = (i.pH - u.camH) + (i.pL - u.camL);
-  o.pos = u.mvpRTE * vec4f(rte, 1.0);
-  let nMat = mat3x3<f32>(u.nMat0, u.nMat1, u.nMat2);
-  o.nEC = normalize(nMat * i.n);
-  o.uv = i.uv;
-  return o;
-}
-
-@fragment fn fs(i: VO) -> @location(0) vec4<f32> {
-  let tc = textureSample(tex, samp, i.uv);
-  let N = normalize(i.nEC);
-  let NdotL = max(dot(N, normalize(u.sunDir)), 0.0);
-  let ambient = 0.05;
-  let diffuse = NdotL;
-  let color = tc.rgb * (ambient + diffuse);
-  return vec4f(color, 1.0);
-}`;
-
-  const mod = device.createShaderModule({ label: "Moon shader", code });
-
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-    ],
+  // Phase 1.2b: shader extracted to packages/engine/Source/Shaders/WebGPU/
+  // Environment/Moon.wgsl. The .js wrapper is hand-written until the next
+  // gulp build regenerates it via wgslToJavaScript.
+  const mod = device.createShaderModule({
+    label: "Moon shader",
+    code: MoonShaderCode,
   });
+
+  // Phase 1.x consolidation — use the shared bind group layout from
+  // WebGPUEllipsoidRenderer so future ellipsoid bodies match exactly.
+  const bgl = createEllipsoidBindGroupLayout(device);
 
   const pipeline = device.createRenderPipeline({
     label: "Moon pipeline",
@@ -524,14 +417,13 @@ struct VO {
     vertex: {
       module: mod,
       entryPoint: "vs",
+      // Phase 1.2c v2 — bounding cube vertex layout. 12 bytes per vertex,
+      // 8 vertices, 36 indices.
       buffers: [
         {
-          arrayStride: 44, // 11 floats
+          arrayStride: 12,
           attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
-            { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
-            { shaderLocation: 2, offset: 24, format: "float32x3" }, // normal
-            { shaderLocation: 3, offset: 36, format: "float32x2" }, // uv
+            { shaderLocation: 0, offset: 0, format: "float32x3" }, // cubePos
           ],
         },
       ],
@@ -557,15 +449,96 @@ struct VO {
         },
       ],
     },
+    // Bounding cube — cull back faces. We render the front faces of the
+    // cube and the FS ray-marches inward. If the camera enters the cube
+    // (close-up moon flythrough), back-face culling would discard the
+    // visible faces — handled in JS by switching cullMode dynamically OR
+    // by accepting that close-up flythroughs are out of scope. For now
+    // we cull back faces; close-up flythrough is a follow-up.
     primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: depthFormat,
+      // Phase 1.2b: depth test off for full parity with WebGL Moon, which
+      // sets `depthTestEnabled: false` on its EllipsoidPrimitive. Moon
+      // composes over the sky/scene without occluding or being occluded
+      // by terrain — the existing render order handles draw layering.
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      depthCompare: "always",
     },
   });
 
   return { pipeline, bgl };
+}
+
+/**
+ * Asynchronously loads the real moon texture and replaces the placeholder.
+ * Idempotent — re-running with the same URL is a no-op while a load is in
+ * flight; the cache tracks `_textureLoading` and `_cachedTextureUrl` to
+ * prevent duplicate fetches and to detect URL changes at runtime.
+ *
+ * On success, the new GPU texture replaces `cache.moonTexture` /
+ * `moonTextureView`. The bind group is recreated each frame in
+ * `updateWebGPUMoon`, so the new texture picks up automatically on the
+ * next frame.
+ *
+ * On failure, logs once and keeps the placeholder. No retries.
+ *
+ * @private
+ */
+function _loadRealMoonTexture(device, cache, textureUrl) {
+  if (cache._textureLoading) {
+    return;
+  }
+  if (cache._cachedTextureUrl === textureUrl) {
+    return;
+  }
+  cache._textureLoading = true;
+  cache._cachedTextureUrl = textureUrl;
+
+  Resource.createIfNeeded(textureUrl)
+    .fetchImage()
+    .then(function (image) {
+      const width = image.width;
+      const height = image.height;
+      const newTexture = device.createTexture({
+        label: "Moon texture",
+        size: [width, height, 1],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      return WebGPUImageUpload.uploadImageToTexture(
+        device,
+        image,
+        newTexture,
+      ).then(function () {
+        // Destroy the placeholder before replacing.
+        if (defined(cache.moonTexture)) {
+          cache.moonTexture.destroy();
+        }
+        cache.moonTexture = newTexture;
+        cache.moonTextureView = newTexture.createView();
+        cache._textureLoading = false;
+        // Invalidate the bind group + render bundle so the next frame
+        // rebuilds them with the new texture view. The bundle manager's
+        // invalidate() is called from updateWebGPUMoon when it sees the
+        // _bundleStale flag.
+        cache.bindGroup = undefined;
+        cache._bundleStale = true;
+      });
+    })
+    .catch(function (err) {
+      console.warn(
+        "[WebGPUEnvironmentRenderer] Moon texture load failed:",
+        err && err.message ? err.message : err,
+      );
+      cache._textureLoading = false;
+      // Leave _cachedTextureUrl set so we don't retry the same broken URL
+      // on every frame. A subsequent change to moon.textureUrl will trigger
+      // a fresh load.
+    });
 }
 
 /**
@@ -596,7 +569,28 @@ function createMoonPlaceholderTexture(device) {
 }
 
 /**
- * Updates WebGPU Moon rendering with full sphere geometry + pipeline + draw command.
+ * Updates WebGPU Moon rendering — Phase 1.2c v2.
+ *
+ * Architecture: bounding-cube rasterization + analytic ray-marched
+ * ellipsoid in model space + RTE 64-bit precision in the VS. Mirrors the
+ * WebGL EllipsoidPrimitive moon path with full feature parity, plus the
+ * Phase 1.2 celestial improvements (phase gating, earthshine).
+ *
+ * Performance leverage from Phase 0:
+ *   - Render bundle pre-encoding via WebGPURenderBundleManager. The
+ *     pipeline + bind group + vertex/index buffer + draw call sequence
+ *     is identical every frame; we cache the encoded bundle and replay
+ *     it. The uniform buffer contents change each frame (writeBuffer),
+ *     but the bundle reads from the same buffer object so the new data
+ *     just shows up on the next replay.
+ *   - SnapshotModeService freezable registration. When snapshot mode is
+ *     active, the moon's per-frame uniform writes still happen on the
+ *     first frame after entering, then become a no-op until thaw — the
+ *     bundle replays the captured uniforms verbatim.
+ *   - Behind-camera early-out before any work, so a moon below the
+ *     horizon doesn't even submit a draw command.
+ *
+ * @private
  */
 function updateWebGPUMoon(moon, frameState, commandList) {
   if (!moon.show) {
@@ -613,13 +607,37 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   }
   const cache = moon._webgpuCache;
 
-  // Create sphere geometry once
-  if (!defined(cache.geometry)) {
-    const radii = moon._ellipsoid.radii;
-    cache.geometry = createMoonSphereGeometry(device, radii);
+  // ── Behind-camera early-out ─────────────────────────────────────────
+  // If the moon is fully behind the camera, don't submit anything. The
+  // bounding cube would be culled by the rasterizer anyway, but skipping
+  // the draw command avoids the bundle execute and the per-frame uniform
+  // writes too.
+  const cameraPosWC = frameState.camera.positionWC;
+  const cameraDirWC = frameState.camera.directionWC;
+  const ellipsoidPrimitive = moon._ellipsoidPrimitive;
+  const modelMatrix = ellipsoidPrimitive.modelMatrix;
+  Matrix4.getTranslation(modelMatrix, scratchMoonPositionWC);
+  Cartesian3.subtract(scratchMoonPositionWC, cameraPosWC, scratchCameraToMoon);
+  // Pad by max radius so a partially-visible moon at the screen edge is
+  // still drawn. Cheap conservative test.
+  const maxRadius = Math.max(
+    moon._ellipsoid.radii.x,
+    moon._ellipsoid.radii.y,
+    moon._ellipsoid.radii.z,
+  );
+  const dotForward = Cartesian3.dot(scratchCameraToMoon, cameraDirWC);
+  if (dotForward < -maxRadius) {
+    return; // moon is fully behind the camera
   }
 
-  // Create pipeline once
+  // ── One-time resource creation ──────────────────────────────────────
+
+  // Bounding cube geometry (8 verts, 36 indices)
+  if (!defined(cache.geometry)) {
+    cache.geometry = createMoonBoundingCube(device);
+  }
+
+  // Pipeline + bind group layout
   if (!defined(cache.pipeline)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -628,7 +646,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.bgl = result.bgl;
   }
 
-  // Moon texture (placeholder until real texture loads)
+  // Moon texture (placeholder until async load completes)
   if (!defined(cache.moonTexture)) {
     cache.moonTexture = createMoonPlaceholderTexture(device);
     cache.moonTextureView = cache.moonTexture.createView();
@@ -637,99 +655,115 @@ function updateWebGPUMoon(moon, frameState, commandList) {
       magFilter: "linear",
     });
   }
+  if (defined(moon.textureUrl)) {
+    _loadRealMoonTexture(device, cache, moon.textureUrl);
+  }
 
-  // Uniform buffer
+  // Uniform buffer (Phase 1.2c v2 layout = 320 bytes / 80 floats)
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
-      UNIFORM_BUFFER_SIZE,
+      MOON_UNIFORM_BUFFER_SIZE,
       undefined,
       "Moon uniforms",
     );
-    cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+    cache.uniformData = new Float32Array(MOON_UNIFORM_BUFFER_SIZE / 4);
   }
 
-  // Compute RTE uniforms
-  const uniformState = context.uniformState;
-  const ellipsoidPrimitive = moon._ellipsoidPrimitive;
-  const modelMatrix = ellipsoidPrimitive.modelMatrix;
-
-  const viewMatrix = uniformState.view;
-  const projMatrix = uniformState.projection;
-  const mv = Matrix4.multiply(viewMatrix, modelMatrix, scratchModelView);
-  const mvRTE = Matrix4.clone(mv, scratchMVRTE);
-  mvRTE[12] = 0.0;
-  mvRTE[13] = 0.0;
-  mvRTE[14] = 0.0;
-  const mvpRTE = Matrix4.multiply(projMatrix, mvRTE, scratchMVPRTE);
-
-  EncodedCartesian3.fromCartesian(
-    frameState.camera.positionWC,
-    scratchEncodedCamera,
-  );
-
-  const moonPos = Matrix4.getTranslation(modelMatrix, new Cartesian3());
-  EncodedCartesian3.fromCartesian(moonPos, scratchEncodedPos);
-
-  const sunDir = uniformState.sunDirectionWC;
-
-  const ud = cache.uniformData;
-  for (let i = 0; i < 16; i++) {
-    ud[i] = mvpRTE[i];
+  // Bind group (recreated whenever the texture changes; see invalidation
+  // path in _loadRealMoonTexture which clears cache.bindGroup).
+  if (!defined(cache.bindGroup)) {
+    cache.bindGroup = device.createBindGroup({
+      label: "Moon bind group",
+      layout: cache.bgl,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+        { binding: 1, resource: cache.moonTextureView },
+        { binding: 2, resource: cache.sampler },
+      ],
+    });
+    // Bind group changed → render bundle (if any) is stale.
+    cache._bundleStale = true;
   }
-  ud[16] = scratchEncodedCamera.high.x;
-  ud[17] = scratchEncodedCamera.high.y;
-  ud[18] = scratchEncodedCamera.high.z;
-  ud[19] = 0;
-  ud[20] = scratchEncodedCamera.low.x;
-  ud[21] = scratchEncodedCamera.low.y;
-  ud[22] = scratchEncodedCamera.low.z;
-  ud[23] = 0;
-  ud[24] = scratchEncodedPos.high.x;
-  ud[25] = scratchEncodedPos.high.y;
-  ud[26] = scratchEncodedPos.high.z;
-  ud[27] = 0;
-  ud[28] = scratchEncodedPos.low.x;
-  ud[29] = scratchEncodedPos.low.y;
-  ud[30] = scratchEncodedPos.low.z;
-  ud[31] = 0;
-  ud[32] = sunDir.x;
-  ud[33] = sunDir.y;
-  ud[34] = sunDir.z;
-  ud[35] = 0;
-  // Normal matrix (3x3 from mvRTE, packed as 3 vec4)
-  ud[36] = mvRTE[0];
-  ud[37] = mvRTE[1];
-  ud[38] = mvRTE[2];
-  ud[39] = 0;
-  ud[40] = mvRTE[4];
-  ud[41] = mvRTE[5];
-  ud[42] = mvRTE[6];
-  ud[43] = 0;
-  ud[44] = mvRTE[8];
-  ud[45] = mvRTE[9];
-  ud[46] = mvRTE[10];
-  ud[47] = 0;
 
-  device.queue.writeBuffer(
-    cache.uniformBuffer.buffer,
-    0,
-    ud.buffer,
-    ud.byteOffset,
-    ud.byteLength,
-  );
+  // Snapshot mode freezable registration. First-time only. Each Moon
+  // instance gets one freezable registration; the freezable just toggles
+  // a flag the per-frame path consults to skip uniform writes. The
+  // service reference is stashed on the cache so destroy() can
+  // unregister later — without it, the closure would leak after the
+  // moon's GPU resources are destroyed.
+  if (!cache._snapshotRegistered) {
+    const scene = frameState.scene;
+    if (defined(scene) && defined(scene.snapshotMode)) {
+      scene.snapshotMode.registerFreezable(
+        "moon-renderer",
+        createMoonFreezable(cache),
+      );
+      cache._snapshotRegistered = true;
+      cache._snapshotService = scene.snapshotMode;
+    }
+  }
 
-  // Create bind group (recreated each frame for simplicity)
-  cache.bindGroup = device.createBindGroup({
-    layout: cache.bgl,
-    entries: [
-      { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      { binding: 1, resource: cache.moonTextureView },
-      { binding: 2, resource: cache.sampler },
-    ],
-  });
+  // ── Per-frame uniform pack ──────────────────────────────────────────
+  //
+  // Skip the entire pack-and-write when the snapshot service has frozen
+  // us. The bundle's recorded `setBindGroup` still points at the same
+  // GPU uniform buffer, so it reads whatever was last written.
+  if (!cache._frozen) {
+    _packMoonUniforms(moon, frameState, cache);
+    device.queue.writeBuffer(
+      cache.uniformBuffer.buffer,
+      0,
+      cache.uniformData.buffer,
+      cache.uniformData.byteOffset,
+      cache.uniformData.byteLength,
+    );
+  }
 
-  // Create draw command with indexed geometry
+  // ── Render bundle: pre-encoded draw sequence ────────────────────────
+  //
+  // The pipeline + bind group + vertex/index buffer + indexed draw is
+  // identical every frame, so we record it once into a GPURenderBundle
+  // and replay it via executeBundles. WebGPURenderBundleManager handles
+  // caching and eviction. The bundle becomes stale on:
+  //   - first frame for this moon
+  //   - texture upgrade (cache.bindGroup replaced)
+  //   - explicit invalidation
+  // Bundle key includes the surface format set so different render passes
+  // (e.g. picking) get their own bundles.
+  const bundleMgr = context.renderBundleManager;
+  if (defined(bundleMgr)) {
+    const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.presentationFormat}:${context.depthFormat}`;
+    if (cache._bundleStale) {
+      bundleMgr.invalidate(bundleKey);
+      cache._bundleStale = false;
+    }
+    const bundle = bundleMgr.getOrCreate(
+      bundleKey,
+      {
+        colorFormats: [context.presentationFormat || "bgra8unorm"],
+        depthStencilFormat: context.depthFormat || "depth24plus-stencil8",
+        label: "Moon bundle",
+      },
+      function (encoder) {
+        encoder.setPipeline(cache.pipeline);
+        encoder.setBindGroup(0, cache.bindGroup);
+        encoder.setVertexBuffer(0, cache.geometry.vertexBuffer.buffer);
+        encoder.setIndexBuffer(cache.geometry.indexBuffer, "uint16");
+        encoder.drawIndexed(cache.geometry.indexCount);
+        return 1; // one draw call
+      },
+    );
+    cache.bundle = bundle;
+  }
+
+  // ── Submit ──────────────────────────────────────────────────────────
+  //
+  // Build a draw command that carries the bundle. The Pass.ENVIRONMENT
+  // executor will call executeBundles when it sees `command.bundle` set.
+  // For renderers that don't yet support bundle execution, the command
+  // also carries the pipeline/bindgroup/buffers so it can fall back to
+  // a normal indexed draw.
   cache.command = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
@@ -740,8 +774,179 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     pass: 0, // Pass.ENVIRONMENT
     owner: moon,
   });
+  // Attach the bundle so a bundle-aware pass executor can replay it
+  // instead of recording the draw calls again.
+  if (defined(cache.bundle)) {
+    cache.command.bundle = cache.bundle;
+  }
 
   commandList.push(cache.command);
+}
+
+/**
+ * Packs the moon uniform buffer for one frame. Pulled out of
+ * updateWebGPUMoon so the snapshot-mode skip path is a single conditional.
+ *
+ * Layout matches the `U` struct in Moon.wgsl (Phase 1.2c v2):
+ *   mvpRTE             0..15  (mat4)
+ *   camH + pad         16..19
+ *   camL + pad         20..23
+ *   moonH + pad        24..27
+ *   moonL + pad        28..31
+ *   ivmRow0 + pad      32..35
+ *   ivmRow1 + pad      36..39
+ *   ivmRow2 + pad      40..43
+ *   cameraPosMC + pad  44..47
+ *   radii + pad        48..51
+ *   oneOverRadiiSq+pad 52..55
+ *   sunDirMC + onlySun 56..59
+ *   sceneLightMC + pad 60..63
+ *   moonDirWC + phase  64..67
+ *   shineFlag/log/shin/spec 68..71
+ *   farPlane + 3 pad   72..75
+ *   spare              76..79
+ *
+ * @private
+ */
+function _packMoonUniforms(moon, frameState, cache) {
+  const context = frameState.context;
+  const uniformState = context.uniformState;
+  const ellipsoidPrimitive = moon._ellipsoidPrimitive;
+  const modelMatrix = ellipsoidPrimitive.modelMatrix;
+  const viewMatrix = uniformState.view;
+  const projMatrix = uniformState.projection;
+
+  // Compute mvpRelativeToEye: projection × (view × model with the moon
+  // translation zeroed). Same math as before; the body translation is
+  // applied via the RTE position split written by the shared packer.
+  Matrix4.multiply(viewMatrix, modelMatrix, scratchModelView);
+  Matrix4.clone(scratchModelView, scratchMVRTE);
+  scratchMVRTE[12] = 0.0;
+  scratchMVRTE[13] = 0.0;
+  scratchMVRTE[14] = 0.0;
+  Matrix4.multiply(projMatrix, scratchMVRTE, scratchMVPRTE);
+
+  const ud = cache.uniformData;
+  ud.fill(0);
+
+  // ── Phase 1.x consolidation: shared base uniform pack (offsets 0..63) ──
+  // Fills mvpRTE, camH/L split, centerH/L split, ivmRow0..2, cameraPosMC,
+  // radii, oneOverRadiiSq, sunDirMC, sceneLightDirMC. Body-specific
+  // writes follow at offsets 64+.
+  packEllipsoidBaseUniforms(ud, {
+    mvpRelativeToEye: scratchMVPRTE,
+    viewMatrix: viewMatrix,
+    cameraPositionWC: frameState.camera.positionWC,
+    modelMatrix: modelMatrix,
+    radii: moon._ellipsoid.radii,
+    oneOverRadiiSquared: moon._ellipsoid.oneOverRadiiSquared,
+    sunDirectionWC: uniformState.sunDirectionWC,
+    sceneLightDirectionWC: defined(uniformState.lightDirectionWC)
+      ? uniformState.lightDirectionWC
+      : uniformState.sunDirectionWC,
+  });
+
+  // The shared packer leaves the .w slot of sunDirMC (offset 59) at zero.
+  // The Moon shader uses that slot for the `onlySunLighting` flag.
+  ud[59] = moon.onlySunLighting === false ? 0.0 : 1.0;
+
+  // ── Moon-specific uniforms (offsets 64..79) ──
+  const moonDirWC = frameState.moonDirectionWC;
+  const ac = frameState.atmosphericConditions;
+  const earthshineOn =
+    defined(ac) && defined(ac.lighting) && ac.lighting.enableEarthshine === true
+      ? 1.0
+      : 0.0;
+
+  // moonDirWC + phaseFraction — offsets 64..67
+  ud[64] = defined(moonDirWC) ? moonDirWC.x : 0.0;
+  ud[65] = defined(moonDirWC) ? moonDirWC.y : 0.0;
+  ud[66] = defined(moonDirWC) ? moonDirWC.z : 0.0;
+  ud[67] = frameState.moonPhaseFraction ?? 1.0;
+
+  // earthshine, useLogDepth, shininess, specularStrength — offsets 68..71
+  ud[68] = earthshineOn;
+  ud[69] = frameState.useLogDepth === true ? 1.0 : 0.0;
+  ud[70] = 5.0; // shininess (Phong exponent — rocky lunar surface)
+  ud[71] = 0.3; // specularStrength
+
+  // farPlane + 3 pad — offsets 72..75
+  ud[72] = defined(uniformState.currentFrustum)
+    ? uniformState.currentFrustum.y
+    : 1.0e9;
+  ud[73] = 0;
+  ud[74] = 0;
+  ud[75] = 0;
+
+  // Offsets 76..79 are spare; ud.fill(0) above already zeroed them.
+}
+
+/**
+ * Build a SnapshotFreezable-shaped object for a moon cache. Mirrors the
+ * pattern used by `WebGPURenderBundleManager.asFreezable()` and
+ * `WebGPUVolumetricFogRenderer.asFreezable()` so the registration site
+ * is symmetric and the spec layer can drive the freezable contract
+ * without needing a real GPU device.
+ *
+ * @param {object} cache The moon's `_webgpuCache` object.
+ * @returns {{ name: string, freeze: function, thaw: function, isFrozen: function }}
+ */
+function createMoonFreezable(cache) {
+  return {
+    name: "moon-renderer",
+    freeze: function () {
+      cache._frozen = true;
+    },
+    thaw: function () {
+      cache._frozen = false;
+    },
+    isFrozen: function () {
+      return cache._frozen === true;
+    },
+  };
+}
+
+/**
+ * Phase 6 debug surface — return a diagnostic snapshot of a Moon's
+ * WebGPU cache. Returns `null` when the moon hasn't yet had its first
+ * `update()` call (cache absent) or when called against a non-WebGPU
+ * scene. Pure read; safe to call from `Scene.getDebugSnapshot()`.
+ *
+ * @param {Moon} moon
+ * @returns {object|null}
+ */
+function getWebGPUMoonStatistics(moon) {
+  if (!defined(moon) || !defined(moon._webgpuCache)) {
+    return null;
+  }
+  const cache = moon._webgpuCache;
+  // Pull the moon-specific uniforms back out of the packed buffer for
+  // a quick "what got pushed to the GPU last frame" view. The offsets
+  // here mirror `_packMoonUniforms()` (offsets 64..75 are moon tail).
+  const ud = cache.uniformData;
+  const moonDirWC =
+    defined(ud) && ud.length > 67 ? { x: ud[64], y: ud[65], z: ud[66] } : null;
+  const phaseFraction = defined(ud) && ud.length > 67 ? ud[67] : null;
+  const earthshineOn = defined(ud) && ud.length > 68 ? ud[68] === 1.0 : null;
+  const useLogDepth = defined(ud) && ud.length > 69 ? ud[69] === 1.0 : null;
+  const shininess = defined(ud) && ud.length > 70 ? ud[70] : null;
+  const specularStrength = defined(ud) && ud.length > 71 ? ud[71] : null;
+  return {
+    backend: "webgpu",
+    pipelineReady: defined(cache.pipeline),
+    bindGroupReady: defined(cache.bindGroup),
+    moonTextureLoaded: defined(cache.moonTexture),
+    moonTextureUrl: cache.moonTextureUrl ?? null,
+    bundleStale: cache._bundleStale === true,
+    snapshotRegistered: cache._snapshotRegistered === true,
+    frozen: cache._frozen === true,
+    moonDirectionWC: moonDirWC,
+    phaseFraction,
+    earthshineOn,
+    useLogDepth,
+    shininess,
+    specularStrength,
+  };
 }
 
 // ============================================================
@@ -790,6 +995,20 @@ function destroyWebGPUMoonResources(moon) {
   if (!defined(cache)) {
     return;
   }
+  // Phase 6 audit fix — the moon registers a "moon-renderer" freezable
+  // with `scene.snapshotMode` during update(). The closure captures the
+  // `cache` object; without explicit unregistration, the registration
+  // outlives the moon's GPU resources and freeze()/thaw() would mutate
+  // a destroyed cache on the next snapshot enter/exit.
+  if (cache._snapshotRegistered && defined(cache._snapshotService)) {
+    try {
+      cache._snapshotService.unregisterFreezable("moon-renderer");
+    } catch (e) {
+      console.warn("[WebGPU:Moon] unregisterFreezable failed:", e);
+    }
+    cache._snapshotRegistered = false;
+    cache._snapshotService = undefined;
+  }
   if (defined(cache.geometry)) {
     if (defined(cache.geometry.vertexBuffer)) {
       cache.geometry.vertexBuffer.destroy();
@@ -813,6 +1032,8 @@ export {
   getWebGPUFogParameters,
   destroyWebGPUSunResources,
   destroyWebGPUMoonResources,
+  getWebGPUMoonStatistics,
+  createMoonFreezable,
 };
 
 export default {
@@ -821,4 +1042,6 @@ export default {
   getWebGPUFogParameters,
   destroyWebGPUSunResources,
   destroyWebGPUMoonResources,
+  getWebGPUMoonStatistics,
+  createMoonFreezable,
 };

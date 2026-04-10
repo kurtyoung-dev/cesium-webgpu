@@ -37,19 +37,37 @@ struct Uniforms {
   //   z = forceSunDirOverride — reserved (Tier 3 sun override)
   //   w = unused
   debug: vec4<f32>,
+  // Phase 1.3c — Dual-light atmosphere scattering. The moon LUT is
+  // baked separately from the sun LUT (by WebGPUPerformanceManager
+  // with target="moon") and the fragment shader sums both contributions
+  // when `dualLightControl.x > 0.5`. The moon term scales linearly with
+  // `moonPhaseFraction` (0 = new moon → no contribution, 1 = full moon).
+  moonDirectionWC: vec3<f32>,
+  _pad7: f32,
+  // x = enableDualLightAtmosphere flag (0/1)
+  // y = moonPhaseFraction (0..1)
+  // z = moonIntensityScale (default 0.05 — moon is much dimmer than sun)
+  // w = pad
+  dualLightControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// Optional precomputed atmosphere LUTs. Bound by the renderer when
-// `useLut > 0.5`. The transmittance LUT (256×64) stores extinction along
-// view rays of varying zenith angle and altitude; the inscatter LUT
-// (256×128) is the full Rayleigh+Mie integral with the current sun
+// Precomputed atmosphere LUTs. Bound unconditionally so the pipeline
+// layout never changes. The transmittance LUT (256×64) stores extinction
+// along view rays of varying zenith angle and altitude; the inscatter LUT
+// (256×128) is the full Rayleigh+Mie integral with the relevant light
 // direction baked in by AtmosphereLUT.wgsl. Sampling the inscatter table
 // replaces the 16-step ray march below with a single texture fetch.
+//
+// Phase 1.3c — moon LUTs at bindings 3+4 mirror the sun LUTs at 1+2.
+// When dual-light scattering is off the moon LUTs still bind to valid
+// (cleared) textures so the layout stays constant.
 @group(1) @binding(0) var lutSampler: sampler;
 @group(1) @binding(1) var transmittanceLut: texture_2d<f32>;
 @group(1) @binding(2) var inscatterLut: texture_2d<f32>;
+@group(1) @binding(3) var moonTransmittanceLut: texture_2d<f32>;
+@group(1) @binding(4) var moonInscatterLut: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) positionHigh: vec3<f32>,
@@ -179,13 +197,20 @@ fn computeScattering(
 }
 
 // LUT-based scattering: replaces the 16-step Nishita integral with a single
-// texture sample of the inscatter LUT (already integrated for the current
-// sun direction at LUT-generation time). The mapping mirrors the U/V
+// texture sample of the inscatter LUT (already integrated for the relevant
+// light direction at LUT-generation time). The mapping mirrors the U/V
 // encoding in AtmosphereLUT.wgsl::computeInscatter:
 //   U = (cosViewZenith + 1) / 2     where cosViewZenith = dot(viewDir, up)
 //   V = altitude / atmosphereThickness
 // Returns vec3 ready to feed straight into the post-scattering tonemap.
+//
+// Phase 1.3c — accepts a texture parameter so the same helper can be
+// reused for both sun and moon inscatter samples without duplicating
+// the U/V math. WGSL doesn't have first-class texture parameters in
+// every backend, but `texture_2d<f32>` is fine for vertex/fragment
+// stages on every WebGPU 1.0 implementation.
 fn sampleScatteringLut(
+  inscatterTex: texture_2d<f32>,
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
   innerRadius: f32,
@@ -198,7 +223,7 @@ fn sampleScatteringLut(
   let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
   let vCoord = clamp(altitude / thickness, 0.0, 1.0);
   let s = textureSampleLevel(
-    inscatterLut, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
+    inscatterTex, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
   );
   return s.rgb * u.intensity;
 }
@@ -285,9 +310,30 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // by AtmosphereLUT.wgsl with phase functions and Beer-Lambert
   // attenuation already applied, so the result drops straight into the
   // tonemap below.
+  //
+  // Phase 1.3c — Dual-light scattering. When `dualLightControl.x > 0.5`
+  // we ALSO sample the moon inscatter LUT (baked separately for the
+  // current moon direction) and add its contribution scaled by the moon
+  // phase fraction × the moon intensity scale. The moon term costs one
+  // extra texture sample on the LUT path; on the fallback ray-march
+  // path it's currently skipped (the per-pixel ray march only handles
+  // a single light source — adding moon there is a Phase 5 task that
+  // ties into volumetric fog scattering occlusion).
   var color: vec3<f32>;
   if (u.useLut > 0.5) {
-    color = sampleScatteringLut(startPoint, rayDir, innerRadius, outerRadius);
+    color = sampleScatteringLut(
+      inscatterLut, startPoint, rayDir, innerRadius, outerRadius,
+    );
+    if (u.dualLightControl.x > 0.5 && u.dualLightControl.y > 0.001) {
+      let moonColor = sampleScatteringLut(
+        moonInscatterLut, startPoint, rayDir, innerRadius, outerRadius,
+      );
+      // Scale by phase fraction (linear; new moon → 0) and the moon
+      // intensity multiplier so the moon term sits at a few percent of
+      // the sun term at full moon.
+      let moonScale = u.dualLightControl.y * u.dualLightControl.z;
+      color = color + moonColor * moonScale;
+    }
   } else {
     color = computeScattering(startPoint, rayDir, rayLength, u.sunDirectionWC, innerRadius, outerRadius);
   }

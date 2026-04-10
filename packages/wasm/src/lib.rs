@@ -127,9 +127,15 @@ pub fn alloc_buffer_slot(slot: usize, size_bytes: usize) -> *mut u8 {
 
     let mut arena = ARENAS[slot].lock().unwrap_or_else(|e| e.into_inner());
 
-    // If we need more capacity, try to reserve it — returns Err on OOM
+    // If we need more capacity, try to reserve it — returns Err on OOM.
+    //
+    // The `arena.len()` is hoisted into a local because `try_reserve`
+    // takes `&mut self` and the borrow checker rejects the in-line
+    // `arena.try_reserve(size_bytes - arena.len())` form (immutable +
+    // mutable borrow in the same expression).
     if size_bytes > arena.capacity() {
-        if arena.try_reserve(size_bytes - arena.len()).is_err() {
+        let current_len = arena.len();
+        if arena.try_reserve(size_bytes - current_len).is_err() {
             // OOM: return null pointer so JS bridge can fall back
             return std::ptr::null_mut();
         }

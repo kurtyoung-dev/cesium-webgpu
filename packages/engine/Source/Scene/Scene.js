@@ -33,6 +33,12 @@ import ContextLimits from "../Renderer/ContextLimits.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import Atmosphere from "./Atmosphere.js";
+import AtmosphericConditions from "./AtmosphericConditions.js";
+import { computeSkyBrightness } from "./SkyBrightness.js";
+import GlobeWater from "./GlobeWater.js";
+import VisualPerformanceTargetService from "../Services/VisualPerformanceTargetService.js";
+import SnapshotModeService from "../Services/SnapshotModeService.js";
+import PerformanceTracker from "../Services/PerformanceTracker.js";
 import BrdfLutGenerator from "./BrdfLutGenerator.js";
 import {
   callAfterRenderFunctions,
@@ -678,6 +684,26 @@ class Scene {
     /**
      * This property is for debugging only; it is not for production use.
      * <p>
+     * When set to <code>true</code>, the WebGPU globe surface renderer
+     * dumps the next 4 tile updates to the console with the full imagery
+     * probe payload (encoding, stride, ready imagery state, texture
+     * coordinate rectangle, translation+scale, sample vertex UVs). Used
+     * for the BUG-11 imagery investigation. The flag latches at the
+     * 4-tile mark — set it back to <code>false</code> and re-set to
+     * <code>true</code> to capture another batch.
+     * </p>
+     * <p>
+     * Off by default; the diagnostic does nothing in normal renders.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowImageryProbe = false;
+
+    /**
+     * This property is for debugging only; it is not for production use.
+     * <p>
      * When <code>true</code>, the WebGPU scene renderer replaces the
      * production post-process chain with a fullscreen depth visualization
      * pass. Linearized depth is rendered as grayscale, useful for
@@ -918,6 +944,49 @@ class Scene {
     this.requestRenderMode = options.requestRenderMode ?? false;
     this._renderRequested = true;
 
+    // Bumped by subsystems that mutate scene-visible state in ways that
+    // invalidate frozen render bundles. Used by the snapshot/locked-orbit
+    // mode (future Phase 0.7) to know when to discard cached bundles.
+    // Currently bumped only by Cesium3DTilesInvalidationFeed.apply().
+    this._snapshotVersion = 0;
+
+    // Adaptive visual quality coordinator. Disabled by default — features
+    // register probes/sinks against this surface so the auto-tuner (future
+    // phase) can scale them to hit a target framerate. See
+    // VisualPerformanceTargetService for the contract.
+    this._visualPerformanceTarget = new VisualPerformanceTargetService();
+
+    // Snapshot / locked-orbit mode coordinator. Disabled by default —
+    // freezable subsystems (WebGPURenderBundleManager in Phase 1+, fog
+    // froxel grids in Phase 2) register here so the service can ask
+    // them to freeze/thaw their caches in lockstep. Reconciles against
+    // `_snapshotVersion` (see below) to auto-thaw on invalidation.
+    this._snapshotMode = new SnapshotModeService();
+
+    // Phase 2 perf benchmarking — backend-neutral trace recorder.
+    // Inactive by default; activated by `Scene.beginPerformanceTrace()`
+    // and ticked once per rendered frame between begin/end. While
+    // inactive its `sample()` is a one-comparison no-op so production
+    // scenes pay nothing.
+    this._performanceTracker = new PerformanceTracker();
+
+    // Phase 6 audit fix — primitive collection mutations now bump
+    // `_snapshotVersion` so SnapshotModeService.tick() can auto-thaw
+    // on the next frame. Without this, adding/removing entities or
+    // tilesets while frozen would silently leak the new state out
+    // of the bundle cache (or fail to render the new content at all).
+    // Cesium3DTilesInvalidationFeed.apply() also bumps this for tile
+    // refines; here we cover the coarser collection-level mutations.
+    const bumpSnapshotVersion = () => {
+      this._snapshotVersion = (this._snapshotVersion ?? 0) + 1;
+    };
+    this._primitives.primitiveAdded.addEventListener(bumpSnapshotVersion);
+    this._primitives.primitiveRemoved.addEventListener(bumpSnapshotVersion);
+    this._groundPrimitives.primitiveAdded.addEventListener(bumpSnapshotVersion);
+    this._groundPrimitives.primitiveRemoved.addEventListener(
+      bumpSnapshotVersion,
+    );
+
     /**
      * If {@link Scene#requestRenderMode} is <code>true</code>, this value defines the maximum change in
      * simulation time allowed before a render is requested. Lower values increase the number of frames rendered
@@ -1031,6 +1100,18 @@ class Scene {
      * @default false
      */
     this._enableEdgeVisibility = false;
+
+    // Phase 0.3: wire canonical facades onto the Globe. Runs after
+    // `this.atmosphere`, `this.fog`, and `this.skyAtmosphere` are all set up
+    // because the facade reads from those during property access. See
+    // `Scene/AtmosphericConditions.js` and `Scene/GlobeWater.js`.
+    if (defined(this._globe)) {
+      this._globe._atmosphericConditions = new AtmosphericConditions(
+        this,
+        this._globe,
+      );
+      this._globe._water = new GlobeWater(this, this._globe);
+    }
 
     // Give frameState, camera, and screen space camera controller initial state before rendering
     updateFrameNumber(this, 0.0, JulianDate.now());
@@ -1290,7 +1371,278 @@ class Scene {
     this._globe = this._globe && this._globe.destroy();
     this._globe = globe;
 
+    // Phase 0.3: re-wire canonical facades on the new Globe. See
+    // `Scene/AtmosphericConditions.js` and `Scene/GlobeWater.js`.
+    if (defined(globe)) {
+      globe._atmosphericConditions = new AtmosphericConditions(this, globe);
+      globe._water = new GlobeWater(this, globe);
+    }
+
     updateGlobeListeners(this, globe);
+  }
+
+  /**
+   * Adaptive visual quality coordinator. Features with a tunable quality
+   * dial (cloud sample count, fog froxel resolution, terrain LOD bias,
+   * etc.) register sinks against this service so the auto-tuner can scale
+   * them to hold a target framerate. Disabled by default — opt in via
+   * `scene.visualPerformanceTarget.enabled = true`.
+   *
+   * @type {VisualPerformanceTargetService}
+   * @readonly
+   */
+  get visualPerformanceTarget() {
+    return this._visualPerformanceTarget;
+  }
+
+  /**
+   * Snapshot / locked-orbit mode coordinator. When enabled and entered,
+   * tells registered freezable subsystems (e.g. the WebGPU render
+   * bundle manager) to treat their current cache state as frozen for
+   * the duration of the snapshot, yielding a Babylon-style FAST mode
+   * speedup for static scenes (presentation mode, slow guided tours,
+   * inspection cameras). Auto-thaws when `scene._snapshotVersion`
+   * advances past the captured baseline. Disabled by default.
+   *
+   * @type {SnapshotModeService}
+   * @readonly
+   */
+  get snapshotMode() {
+    return this._snapshotMode;
+  }
+
+  /**
+   * Phase 6C — Notify the active snapshot that scene state has
+   * changed in a way that the version-counter / camera-delta paths
+   * can't catch on their own. Forces an auto-thaw of any active
+   * snapshot so cached bundles get rebuilt against the new state.
+   *
+   * Typical callers:
+   *   - User `postUpdate` listeners that mutate entity properties
+   *     (the snapshot service has no way to detect mutations
+   *     performed by JS handlers, so the contract is that the
+   *     handler calls `scene.markSnapshotDirty(reason)` when it
+   *     changes anything visible)
+   *   - Animation systems on first tick of a new clip
+   *   - The HDR / log-depth toggle (already wired internally —
+   *     listed here for completeness)
+   *   - Volumetric fog quality dial changes mid-snapshot (the
+   *     froxel grid resolution can't change inside a frozen frame)
+   *
+   * Idempotent and safe to call when no snapshot is active. The
+   * `reason` is captured in `scene.snapshotMode.getStatistics()`
+   * for diagnostics.
+   *
+   * @param {string} [reason] Human-readable reason for the dirty
+   *   notification. Defaults to a generic placeholder.
+   */
+  markSnapshotDirty(reason) {
+    if (defined(this._snapshotMode)) {
+      this._snapshotMode.markDirty(reason);
+    }
+  }
+
+  /**
+   * Phase 6 debug surface — returns a structured diagnostic snapshot
+   * of the entire scene. Aggregates state from every subsystem with a
+   * `getStatistics()` accessor: snapshot mode, VPT, the renderer
+   * (bundle cache, fog, perf manager), the moon, and the current debug
+   * toggles. Pure read; safe to call from any callback at any time.
+   *
+   * The shape is intentionally permissive — every nested field is
+   * optional, so a WebGL scene that doesn't have a bundle manager
+   * still produces a usable snapshot. Use {@link Scene#logDebugSnapshot}
+   * for a console-friendly pretty-print.
+   *
+   * @returns {object} A debug snapshot, suitable for `console.log()` or
+   *   `JSON.stringify()`.
+   *
+   * @example
+   * // From a postUpdate listener:
+   * scene.postUpdate.addEventListener(() => {
+   *   if (scene.frameState.frameNumber % 60 === 0) {
+   *     scene.logDebugSnapshot();
+   *   }
+   * });
+   *
+   * @example
+   * // Programmatic — pull just the bundle stats:
+   * const snap = scene.getDebugSnapshot();
+   * console.table(snap.renderer?.bundleManager?.keyPrefixes);
+   */
+  getDebugSnapshot() {
+    const fs = this._frameState;
+    const snap = {
+      scene: {
+        backend: this._context?.rendererType ?? "unknown",
+        contextId: this._context?.id ?? null,
+        frameNumber: fs?.frameNumber ?? -1,
+        snapshotVersion: this._snapshotVersion ?? 0,
+        requestRenderMode: this.requestRenderMode === true,
+        renderRequested: this._renderRequested === true,
+        mode: fs?.mode ?? null,
+        morphTime: fs?.morphTime ?? null,
+        useLogDepth: this._logDepthBuffer === true,
+        useHdr: this._hdr === true,
+        primitivesCount: this._primitives?.length ?? 0,
+        groundPrimitivesCount: this._groundPrimitives?.length ?? 0,
+      },
+      snapshotMode: null,
+      visualPerformanceTarget: null,
+      renderer: null,
+      moon: null,
+      debugToggles: {
+        debugShowFramesPerSecond: this.debugShowFramesPerSecond === true,
+        debugShowCommands: this.debugShowCommands === true,
+        debugShowFrustums: this.debugShowFrustums === true,
+        debugShowFrustumPlanes: this.debugShowFrustumPlanes === true,
+        debugShowDepthFrustum: this.debugShowDepthFrustum ?? 1,
+        debugShowGlobeWireframe: this.debugShowGlobeWireframe === true,
+        debugShowCubeMapFace: this.debugShowCubeMapFace ?? 0,
+        debugShowTerrainLOD: this.debugShowTerrainLOD === true,
+        debugShowTerrainNormals: this.debugShowTerrainNormals === true,
+        debugShowImageryLayer: this.debugShowImageryLayer ?? -1,
+        debugShowImageryProbe: this.debugShowImageryProbe === true,
+        debugShowDepthAsColor: this.debugShowDepthAsColor === true,
+        debugShowTriangulation: this.debugShowTriangulation === true,
+        debugDisableAtmosphereScattering:
+          this.debugDisableAtmosphereScattering === true,
+      },
+    };
+    if (defined(this._snapshotMode)) {
+      try {
+        snap.snapshotMode = this._snapshotMode.getStatistics();
+      } catch (e) {
+        snap.snapshotMode = { error: String(e?.message ?? e) };
+      }
+    }
+    if (defined(this._visualPerformanceTarget)) {
+      try {
+        snap.visualPerformanceTarget =
+          this._visualPerformanceTarget.getStatistics();
+      } catch (e) {
+        snap.visualPerformanceTarget = { error: String(e?.message ?? e) };
+      }
+    }
+    if (
+      defined(this._context) &&
+      typeof this._context.getRendererStatistics === "function"
+    ) {
+      try {
+        snap.renderer = this._context.getRendererStatistics();
+      } catch (e) {
+        snap.renderer = { error: String(e?.message ?? e) };
+      }
+    }
+    if (
+      defined(this.moon) &&
+      typeof this.moon.getDebugStatistics === "function"
+    ) {
+      try {
+        snap.moon = this.moon.getDebugStatistics(this);
+      } catch (e) {
+        snap.moon = { error: String(e?.message ?? e) };
+      }
+    }
+    return snap;
+  }
+
+  /**
+   * Phase 6 debug surface — pretty-print the result of
+   * {@link Scene#getDebugSnapshot} to the console using grouped
+   * sections and `console.table()` for tabular sub-objects. Designed
+   * for ad-hoc developer use from DevTools or postUpdate callbacks.
+   *
+   * Quiet by default — calling this is the only way to see the dump.
+   * Production code should never call this on every frame.
+   */
+  /**
+   * Phase 2 perf benchmarking — start a trace. Records one sample per
+   * rendered frame between this call and {@link Scene#endPerformanceTrace}.
+   * Auto-ends when `options.frames` is reached (default 600).
+   *
+   * Pure read on the rendering side — sampling is bounded to a few
+   * field copies per frame and a single Map lookup. Production scenes
+   * pay nothing while no trace is active.
+   *
+   * @param {string} label Diagnostic label carried into the result.
+   * @param {object} [options]
+   * @param {number} [options.frames=600] Max frames before auto-end.
+   *
+   * @example
+   * // From the dev tools console:
+   * scene.beginPerformanceTrace("idle-orbit", { frames: 300 });
+   * // ... let the scene render for 5 seconds ...
+   * const result = scene.endPerformanceTrace();
+   * console.log(scene.performanceTracker.toCSV(result));
+   */
+  beginPerformanceTrace(label, options) {
+    this._performanceTracker.beginTrace(label, options);
+  }
+
+  /**
+   * Phase 2 perf benchmarking — end the active trace and return the
+   * structured result. Returns `null` if no trace was started.
+   *
+   * @returns {object|null}
+   */
+  endPerformanceTrace() {
+    return this._performanceTracker.endTrace();
+  }
+
+  /**
+   * The {@link PerformanceTracker} owned by this scene. Exposed so the
+   * operator can call `toCSV()` / `toJSON()` / `logToConsole()` on the
+   * result without having to thread the result object through the
+   * application.
+   *
+   * @type {PerformanceTracker}
+   * @readonly
+   */
+  get performanceTracker() {
+    return this._performanceTracker;
+  }
+
+  logDebugSnapshot() {
+    const snap = this.getDebugSnapshot();
+    const tag = `[CesiumJS:${snap.scene.backend}:${snap.scene.contextId ?? "?"}] DebugSnapshot frame=${snap.scene.frameNumber}`;
+    if (typeof console.groupCollapsed === "function") {
+      console.groupCollapsed(tag);
+    } else {
+      console.log(tag);
+    }
+    console.log("scene:", snap.scene);
+    console.log("debugToggles:", snap.debugToggles);
+    if (snap.snapshotMode) {
+      console.log("snapshotMode:", snap.snapshotMode);
+    }
+    if (snap.visualPerformanceTarget) {
+      console.log("visualPerformanceTarget:", snap.visualPerformanceTarget);
+    }
+    if (snap.renderer) {
+      console.log("renderer:", snap.renderer);
+    }
+    if (snap.moon) {
+      console.log("moon:", snap.moon);
+    }
+    if (typeof console.groupEnd === "function") {
+      console.groupEnd();
+    }
+    return snap;
+  }
+
+  /**
+   * Monotonic counter bumped whenever a subsystem mutates scene-visible
+   * state in ways that invalidate cached/frozen render bundles. The future
+   * snapshot/locked-orbit mode (Phase 0.7) compares this against its cached
+   * value to know when to discard bundles. Currently bumped only by
+   * {@link Cesium3DTilesInvalidationFeed#apply}.
+   *
+   * @type {number}
+   * @readonly
+   */
+  get snapshotVersion() {
+    return this._snapshotVersion;
   }
 
   /**
@@ -2268,6 +2620,11 @@ class Scene {
       typeof this.debugShowImageryLayer === "number"
         ? this.debugShowImageryLayer
         : -1;
+    // BUG-11 imagery probe — when true, the WebGPU globe surface
+    // renderer logs the next 4 tile updates with the full encoding +
+    // imagery state payload. Used for ad-hoc imagery debugging; off
+    // by default and self-quieting after the 4-tile latch.
+    frameState.debugShowImageryProbe = this.debugShowImageryProbe === true;
     // Tier 2 debug — depth-as-color overlay (replaces post-process chain).
     // Mode integer selects linearized vs raw vs combined visualization.
     frameState.debugShowDepthAsColor = this.debugShowDepthAsColor === true;
@@ -2766,8 +3123,28 @@ class Scene {
       shouldRender = shouldRender || difference > this.maximumRenderTimeChange;
     }
 
+    // Snapshot mode coordination — fires every frame regardless of
+    // shouldRender so the service can track idle frames and auto-enter
+    // when `autoEnterIdleFrames` is configured. Lives outside the
+    // `if (shouldRender)` block on purpose; the actual snapshot
+    // version + camera-delta auto-thaw checks live inside the render
+    // path because they only matter when something is actually
+    // happening.
+    this._snapshotMode.notifyFrame(this, shouldRender);
+
     if (shouldRender) {
       this._lastRenderTime = JulianDate.clone(time, this._lastRenderTime);
+      // Phase 6C — HDR / log-depth dirty flags invalidate cached
+      // bundles because the swap chain attachments those bundles were
+      // encoded against are about to be rebuilt with different
+      // formats. Mark the snapshot dirty BEFORE we clear the flags
+      // so the snapshot service has a chance to thaw on this frame.
+      if (this._hdrDirty || this._logDepthBufferDirty) {
+        const reason = this._hdrDirty
+          ? "HDR mode changed — swap chain rebuild invalidates bundles"
+          : "log-depth buffer changed — depth attachment format mismatch";
+        this._snapshotMode.markDirty(reason);
+      }
       this._renderRequested = false;
       this._logDepthBufferDirty = false;
       this._hdrDirty = false;
@@ -2779,6 +3156,45 @@ class Scene {
       );
       updateFrameNumber(this, frameNumber, time);
       frameState.newFrame = true;
+
+      // Phase 6 audit fix — service tick ordering. Snapshot mode runs
+      // FIRST so it can settle this frame's frozen state, THEN we
+      // forward the flag to VPT, THEN VPT ticks against the
+      // current-frame value. The previous order had VPT seeing last
+      // frame's stale flag, which meant one wasted measurement on the
+      // entry frame and one missed measurement on the thaw frame.
+      this._snapshotMode.tick(this);
+      this._snapshotMode.tickCamera(this);
+
+      // Phase 6A — register the WebGPU render bundle manager as a
+      // freezable on first sight. The manager lives on the
+      // WebGPUContext, is lazy-allocated on first access, and may not
+      // exist on a WebGL-only scene (no-op in that case). Idempotent —
+      // re-registering with the same name overwrites the entry on the
+      // service's Map but the freezable contract is identical so the
+      // visible behavior doesn't change.
+      const ctx = frameState.context;
+      if (ctx && ctx.isWebGPU && !this._bundleManagerSnapshotRegistered) {
+        const bundleMgr = ctx.renderBundleManager;
+        if (bundleMgr && typeof bundleMgr.asFreezable === "function") {
+          this._snapshotMode.registerFreezable(
+            "webgpu-bundle-manager",
+            bundleMgr.asFreezable(),
+          );
+          this._bundleManagerSnapshotRegistered = true;
+        }
+      }
+
+      // Forward snapshot state to VPT BEFORE its tick so the auto-tuner
+      // pauses on the same frame the snapshot enters/thaws (instead of
+      // one frame late). The flag write is the cheapest possible
+      // coordination point — VPT just reads it and short-circuits.
+      this._visualPerformanceTarget.snapshotMode = this._snapshotMode.isFrozen;
+
+      // VisualPerformanceTargetService tick — Phase 0 no-op past the
+      // contract guards. Now sees the CURRENT frame's snapshot flag
+      // (post-fix) instead of last frame's stale value.
+      this._visualPerformanceTarget.tick(this);
     }
 
     tryAndCatchError(this, prePassesUpdate);
@@ -2808,6 +3224,14 @@ class Scene {
      */
     updateDebugShowFramesPerSecond(this, shouldRender);
     tryAndCatchError(this, postPassesUpdate);
+
+    // Phase 2 perf benchmarking — record one trace sample per rendered
+    // frame. Inactive by default; the `sample()` call is a one-comparison
+    // no-op when no trace is open. We sample after `postPassesUpdate`
+    // so the bundle stats reflect the frame we just rendered.
+    if (shouldRender && this._performanceTracker.active) {
+      _samplePerformanceTrace(this);
+    }
 
     // Often used to trigger events (so don't want in trycatch) that the user
     // might be subscribed to. Things like the tile load events, promises, etc.
@@ -2864,10 +3288,20 @@ class Scene {
    * Requests a new rendered frame when {@link Scene#requestRenderMode} is set to <code>true</code>.
    * The render rate will not exceed the {@link CesiumWidget#targetFrameRate}.
    *
+   * If snapshot mode is currently active, calling this also marks the
+   * snapshot dirty so the next frame rebuilds bundles against fresh
+   * state — the caller is asking for a new frame because something
+   * changed, and a frozen snapshot replaying old bundles would be
+   * visually wrong.
+   *
    * @see Scene#requestRenderMode
+   * @see Scene#markSnapshotDirty
    */
   requestRender() {
     this._renderRequested = true;
+    if (defined(this._snapshotMode) && this._snapshotMode.isFrozen) {
+      this._snapshotMode.markDirty("Scene.requestRender() called");
+    }
   }
 
   /**
@@ -3636,6 +4070,31 @@ class Scene {
     this._defaultView = this._defaultView && this._defaultView.destroy();
     this._view = undefined;
 
+    // Phase 6 audit fix — orchestration services were never cleaned up.
+    // Each service holds references to registered freezables / probes /
+    // sinks, which in turn close over scene-owned resources. Failing to
+    // destroy them on Scene teardown leaks the entire registration map
+    // and (for active snapshots) prevents the freezables from receiving
+    // their final thaw. Both destroys are idempotent + safe to call
+    // even if the service was never used.
+    if (defined(this._snapshotMode)) {
+      this._snapshotMode.destroy();
+      this._snapshotMode = undefined;
+    }
+    if (defined(this._visualPerformanceTarget)) {
+      this._visualPerformanceTarget.destroy();
+      this._visualPerformanceTarget = undefined;
+    }
+    // Phase 2 perf benchmarking — end any active trace cleanly so the
+    // operator's hold on a reference to the result object doesn't
+    // also pin a destroyed scene.
+    if (defined(this._performanceTracker)) {
+      if (this._performanceTracker.active) {
+        this._performanceTracker.endTrace();
+      }
+      this._performanceTracker = undefined;
+    }
+
     if (this._removeCreditContainer) {
       this._canvas.parentNode.removeChild(this._creditContainer);
     }
@@ -3677,6 +4136,58 @@ class Scene {
 // (These rely on function hoisting or are declared before first use)
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Phase 2 perf benchmarking — record one trace sample for the frame
+ * that just rendered. Pulls bundle stats and snapshot state from the
+ * central debug surface so all the per-subsystem getStatistics()
+ * methods are exercised through one path.
+ *
+ * Called from `Scene.render()` only when a trace is active. The
+ * `_performanceTracker.sample()` call itself is no-op-when-inactive,
+ * so this function is a pure cost only when a trace is open.
+ *
+ * @private
+ * @param {Scene} scene
+ */
+function _samplePerformanceTrace(scene) {
+  const tracker = scene._performanceTracker;
+  if (!defined(tracker) || !tracker.active) {
+    return;
+  }
+  const fs = scene._frameState;
+  let bundleStats;
+  let gpuMs;
+  const ctx = scene._context;
+  if (ctx && typeof ctx.getRendererStatistics === "function") {
+    try {
+      const rendererStats = ctx.getRendererStatistics();
+      if (rendererStats && rendererStats.bundleManager) {
+        bundleStats = rendererStats.bundleManager;
+      }
+      // Pull the timestamp profiler frame time when available.
+      if (
+        rendererStats &&
+        rendererStats.timestamps &&
+        typeof rendererStats.timestamps.frameMs === "number"
+      ) {
+        gpuMs = rendererStats.timestamps.frameMs;
+      }
+    } catch (e) {
+      // Diagnostic getters must never break the trace path.
+    }
+  }
+  const snapshotFrozen =
+    defined(scene._snapshotMode) && scene._snapshotMode.isFrozen === true;
+  tracker.sample({
+    frameNumber: fs?.frameNumber ?? -1,
+    gpuMs,
+    drawCount: fs?.commandList ? fs.commandList.length : undefined,
+    commandCount: fs?.commandList ? fs.commandList.length : undefined,
+    bundleStats,
+    snapshotFrozen,
+  });
+}
+
 function updateGlobeListeners(scene, globe) {
   for (let i = 0; i < scene._removeGlobeCallbacks.length; ++i) {
     scene._removeGlobeCallbacks[i]();
@@ -3694,6 +4205,18 @@ function updateGlobeListeners(scene, globe) {
       globe.terrainProviderChanged.addEventListener(
         requestRenderAfterFrame(scene),
       ),
+    );
+    // Phase 6 audit fix — imagery/terrain mutations also bump
+    // `_snapshotVersion` so an active snapshot auto-thaws when the
+    // base layer changes underneath it.
+    const bumpSnapshotVersion = function () {
+      scene._snapshotVersion = (scene._snapshotVersion ?? 0) + 1;
+    };
+    removeGlobeCallbacks.push(
+      globe.imageryLayersUpdatedEvent.addEventListener(bumpSnapshotVersion),
+    );
+    removeGlobeCallbacks.push(
+      globe.terrainProviderChanged.addEventListener(bumpSnapshotVersion),
     );
   }
   scene._removeGlobeCallbacks = removeGlobeCallbacks;
@@ -3866,9 +4389,36 @@ function render(scene) {
   frameState.backgroundColor = backgroundColor;
 
   frameState.atmosphere = scene.atmosphere;
+  // Phase 1.1: forward the canonical atmospheric conditions facade so
+  // renderers can read B-series toggles (sun/moon lighting, scattering
+  // occlusion, star modulation, volumetric fog/clouds, weather, night)
+  // through one stable reference. Undefined if no globe attached.
+  frameState.atmosphericConditions = defined(scene.globe)
+    ? scene.globe.atmosphericConditions
+    : undefined;
   scene.fog.update(frameState);
 
   uniformState.update(frameState);
+
+  // Phase 1.2: forward sun direction (world coords) onto frameState so
+  // celestial / atmosphere renderers can read it without reaching into
+  // the per-context uniform state. Phase 1.3 atmosphere scattering also
+  // relies on this.
+  frameState.sunDirectionWC = uniformState.sunDirectionWC;
+
+  // Phase 1.3a: cheap CPU sky brightness estimate consumed by star
+  // modulation in the cubemap panorama shader and (later) by night-sky
+  // dimming in the sky atmosphere shader. Uses the previous frame's
+  // moon direction (still on `frameState.moonDirectionWC` from the
+  // prior `Moon.update()` call) — visually indistinguishable from the
+  // current value at any reasonable simulation rate, and avoids
+  // duplicating the Simon 1994 ephemeris computation here.
+  frameState.skyBrightness = computeSkyBrightness(
+    uniformState.sunDirectionWC,
+    frameState.moonDirectionWC,
+    frameState.moonPhaseFraction ?? 1.0,
+    frameState.camera?.positionWC,
+  );
 
   const shadowMap = scene.shadowMap;
   if (defined(shadowMap) && shadowMap.enabled) {

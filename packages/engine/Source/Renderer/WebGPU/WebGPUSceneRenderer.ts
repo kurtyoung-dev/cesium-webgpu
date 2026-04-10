@@ -1375,6 +1375,47 @@ export class WebGPUSceneRenderer {
         }
       }
     }
+
+    // 4. Volumetric fog — Phase 5a infrastructure (no visual change).
+    // Runs the three compute passes that populate the froxel grid (Phase
+    // 5a kernels are placeholders that clear their outputs), then the
+    // composite pass that samples the integrated 3D volume in screen UV +
+    // linearized depth and writes the modulated scene color back. Per
+    // B22, this runs AFTER opaque + OIT-resolved color and after the
+    // other environmental effects, BEFORE post-processing.
+    //
+    // Gated on `atmosphericConditions.volumetricFog.enabled` (B18:
+    // default FALSE) — the entire path is skipped when the toggle is
+    // off, so unsubscribed users pay zero cost.
+    const ac = (frameState as any).atmosphericConditions;
+    const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
+    if (vf?.enabled === true) {
+      const fogFR = context.getFeatureRenderer(
+        FeatureRendererKey.VOLUMETRIC_FOG,
+      );
+      if (fogFR?.update) {
+        try {
+          context.endCurrentRenderPass?.();
+          fogFR.update(context, frameState, scene);
+          if (fogFR.composite) {
+            const fmt: GPUTextureFormat =
+              context.presentationFormat || "bgra8unorm";
+            fogFR.composite(
+              context,
+              frameState,
+              colorView,
+              depthView,
+              outputView,
+              fmt,
+            );
+          }
+          context.resumeDefaultRenderPass?.();
+        } catch (e: any) {
+          context.log?.("warn", `Volumetric fog failed: ${e.message}`);
+          context.resumeDefaultRenderPass?.();
+        }
+      }
+    }
   }
 
   // --- Post-processing ---

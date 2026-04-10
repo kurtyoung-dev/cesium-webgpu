@@ -153,6 +153,10 @@ export const enum DebugFragmentMode {
 export class WebGPUGlobeSurfaceRenderer {
   private _device: GPUDevice | null = null;
   private _diagTileCount = 0;
+  // BUG-11 imagery probe — last observed value of `frameState.debugShowImageryProbe`,
+  // used to detect the rising edge so the probe latch resets when the
+  // operator toggles the flag back on for a second sample.
+  private _lastProbeFlag = false;
   private _pipelineCache: Map<string, GPURenderPipeline> = new Map();
   private _shaderModule: GPUShaderModule | null = null;
   // Source preserved so we can lazily augment it with debug fragment
@@ -792,9 +796,21 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     const passCount = Math.max(1, Math.ceil(totalLayers / MAX_IMAGERY_LAYERS));
     const commands: TileDrawDescriptor[] = [];
 
-    // Diagnostic: log encoding + imagery status (DEBUG — remove after fixing)
-    this._diagTileCount++;
-    if (this._diagTileCount <= 4) {
+    // BUG-11 imagery probe diagnostic. Off by default — opt in via
+    // `scene.debugShowImageryProbe = true` when investigating an
+    // imagery render bug. Logs the first 4 tiles after the flag is set,
+    // then quiets so the console doesn't drown. Toggling the flag from
+    // false → true resets the latch so a second sample can be captured.
+    const probeOn = frameState.debugShowImageryProbe === true;
+    if (probeOn && !this._lastProbeFlag) {
+      // Rising edge — reset the latch so the next 4 tiles dump again.
+      this._diagTileCount = 0;
+    }
+    this._lastProbeFlag = probeOn;
+    if (probeOn) {
+      this._diagTileCount++;
+    }
+    if (probeOn && this._diagTileCount <= 4) {
       const imgLen = imageryCollection ? imageryCollection.length : 0;
       const rect = tile.rectangle;
       const latInfo = rect
@@ -1555,8 +1571,19 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // ─── Fog parameters (offsets 49-51) ───
+    // Phase 1.4 — `frameState.atmosphericConditions.weather.humidity`
+    // (default 0.5 = no change) modulates fog density on a (0.5+humidity)
+    // multiplier: 0.0 humidity → 0.5× density (very dry desert), 0.5 →
+    // 1.0× (default, no change), 1.0 → 1.5× (tropical jungle haze).
+    // Linear and bounded so the existing fog tuning stays predictable.
     if (frameState && frameState.fog) {
-      data[49] = frameState.fog.density ?? 0.0;
+      let density = frameState.fog.density ?? 0.0;
+      const ac = frameState.atmosphericConditions;
+      const weather = ac && ac.weather ? ac.weather : undefined;
+      if (weather && typeof weather.humidity === "number") {
+        density = density * (0.5 + weather.humidity);
+      }
+      data[49] = density;
       data[50] = frameState.fog.offset ?? 0.0;
       data[51] = frameState.fog.minimumBrightness ?? 0.03;
     } else {

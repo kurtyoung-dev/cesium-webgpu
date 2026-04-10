@@ -3093,6 +3093,111 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Phase 6 debug surface — overrides {@link GraphicsContext#getRendererStatistics}
+   * to expose WebGPU-specific introspection: bundle cache state, fog
+   * froxel grid state, GPU memory pool usage, indirect draw counters,
+   * etc. Pure read; safe to call from `Scene.getDebugSnapshot()` even
+   * when Scene code can't import from `Renderer/WebGPU/`.
+   *
+   * Most fields are populated lazily — they only return non-empty data
+   * once the corresponding subsystem has been touched at least once
+   * during a frame. Callers should treat every field as optional.
+   */
+  override getRendererStatistics(): Record<string, unknown> {
+    const stats: Record<string, unknown> = {
+      backend: "webgpu",
+      contextId: this._id,
+      hasDevice: !!this._device,
+      isDestroyed: this.isDestroyed,
+    };
+    if (this._renderBundleManager) {
+      try {
+        stats.bundleManager = this._renderBundleManager.statistics;
+      } catch (e) {
+        stats.bundleManager = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    if (this._performanceManager) {
+      // The perf manager exposes a `getFrameTimings()` method that
+      // returns the per-pass GPU timing snapshot. Call it defensively
+      // because it may not be wired in every code path.
+      try {
+        const pm: any = this._performanceManager;
+        if (typeof pm.getFrameTimings === "function") {
+          stats.performance = pm.getFrameTimings();
+        }
+      } catch (e) {
+        stats.performance = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    if (this._timestampProfiler) {
+      try {
+        const tp: any = this._timestampProfiler;
+        if (typeof tp.getResults === "function") {
+          stats.timestamps = tp.getResults();
+        }
+      } catch (e) {
+        stats.timestamps = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    if (this._indirectDrawManager) {
+      stats.indirectDraw = {
+        drawCount: (this._indirectDrawManager as any).drawCount ?? 0,
+      };
+    }
+    // Volumetric fog renderer is wired through the feature renderer
+    // registry, not a direct context field. Pull it via the standard
+    // dispatch path so the lookup respects the lazy load contract.
+    try {
+      const fogFR: any = this.getFeatureRenderer(
+        FeatureRendererKey.VOLUMETRIC_FOG,
+      );
+      if (fogFR && typeof fogFR.getStatistics === "function") {
+        stats.volumetricFog = fogFR.getStatistics();
+      }
+    } catch (e) {
+      stats.volumetricFog = { error: String((e as Error)?.message ?? e) };
+    }
+    // Phase 3 — Hi-Z occlusion + GPU sort keys diagnostic snapshots.
+    try {
+      const hiZFR: any = this.getFeatureRenderer(
+        FeatureRendererKey.HI_Z_OCCLUSION,
+      );
+      if (hiZFR && typeof hiZFR.getStatistics === "function") {
+        stats.hiZOcclusion = hiZFR.getStatistics();
+      }
+    } catch (e) {
+      stats.hiZOcclusion = { error: String((e as Error)?.message ?? e) };
+    }
+    try {
+      const sortFR: any = this.getFeatureRenderer(
+        FeatureRendererKey.GPU_SORT_KEYS,
+      );
+      if (sortFR && typeof sortFR.getStatistics === "function") {
+        stats.gpuSortKeys = sortFR.getStatistics();
+      }
+    } catch (e) {
+      stats.gpuSortKeys = { error: String((e as Error)?.message ?? e) };
+    }
+    // Phase 5 — capability snapshot. Lists every WebGPU optional
+    // feature the device negotiated successfully so an operator can
+    // confirm at a glance what's available on this adapter. The list
+    // is the source of truth for "can I wire shader-f16 yet" decisions.
+    stats.capabilities = {
+      enabledFeatures: this.enabledFeatures,
+      hasShaderF16: this.hasFeature("shader-f16"),
+      hasDualSourceBlending: this.hasFeature("dual-source-blending"),
+      hasClipDistances: this.hasFeature("clip-distances"),
+      hasTimestampQuery: this.hasFeature("timestamp-query"),
+      hasIndirectFirstInstance: this.hasFeature("indirect-first-instance"),
+      hasFloat32Filterable: this.hasFeature("float32-filterable"),
+      hasSubgroups: this.hasFeature("subgroups"),
+      hasBgra8UnormStorage: this.hasFeature("bgra8unorm-storage"),
+    };
+    return stats;
+  }
+
+  /**
    * GPU timestamp profiler for measuring render pass durations.
    * Requires 'timestamp-query' feature to be enabled.
    */

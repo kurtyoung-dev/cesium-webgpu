@@ -1,0 +1,93 @@
+name: visual-regression
+# WebGPU ↔ WebGL pixel-diff regression sweep. Runs the
+# `Tools/visual-regression/capture-and-diff.mjs` script against the
+# split-screen comparison page for every scene in `scenes.json`.
+#
+# Currently `workflow_dispatch` only — GitHub-hosted Linux runners do
+# not yet ship a WebGPU-capable Chromium adapter without extra setup,
+# so we trigger this manually from the Actions tab when we want a
+# baseline check. Promote to `pull_request` once the runner image
+# (or a self-hosted runner) reliably exposes a WebGPU adapter.
+#
+# Inputs:
+#   threshold  — fail when any scene's diff ratio exceeds this fraction.
+#                Default 0.02 (= 2 % of pixels). Loose by design at the
+#                start so the run doesn't go red on every flaky imagery
+#                tile.
+#   update     — when "true", promote the captured outputs to baseline
+#                and skip the gating comparison. Use this to refresh
+#                the baseline corpus after an intentional visual change.
+on:
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Per-scene diff ratio failure threshold (0..1)"
+        required: false
+        default: "0.02"
+      update:
+        description: "Promote captured outputs to baseline (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: visual-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-and-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: npm install
+        run: npm install
+
+      - name: install playwright + chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: build
+        run: npm run build
+
+      - name: start dev server (background)
+        run: |
+          npm run start &
+          # Wait for the server to come up before continuing.
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8080/ > /dev/null; then
+              echo "Dev server is up"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: run visual regression
+        env:
+          THRESHOLD: ${{ github.event.inputs.threshold || '0.02' }}
+          UPDATE: ${{ github.event.inputs.update || 'false' }}
+        run: |
+          if [ "$UPDATE" = "true" ]; then
+            node Tools/visual-regression/capture-and-diff.mjs \
+              --browser chromium \
+              --threshold "$THRESHOLD" \
+              --update
+          else
+            node Tools/visual-regression/capture-and-diff.mjs \
+              --browser chromium \
+              --threshold "$THRESHOLD"
+          fi
+
+      - name: upload diff artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression-output
+          path: |
+            Tools/visual-regression/output/**
+            Tools/visual-regression/baseline/**
+          retention-days: 14

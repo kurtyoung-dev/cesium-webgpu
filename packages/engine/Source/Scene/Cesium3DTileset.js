@@ -37,6 +37,8 @@ import Cesium3DTileOptimizations from "./Cesium3DTileOptimizations.js";
 import Cesium3DTilePass from "./Cesium3DTilePass.js";
 import Cesium3DTileRefine from "./Cesium3DTileRefine.js";
 import Cesium3DTilesetCache from "./Cesium3DTilesetCache.js";
+import Cesium3DTilesInvalidationFeed from "./Cesium3DTilesInvalidationFeed.js";
+import TilePathEncoding from "./TilePathEncoding.js";
 import Cesium3DTilesetHeatmap from "./Cesium3DTilesetHeatmap.js";
 import Cesium3DTilesetStatistics from "./Cesium3DTilesetStatistics.js";
 import Cesium3DTileStyleEngine from "./Cesium3DTileStyleEngine.js";
@@ -340,6 +342,53 @@ function Cesium3DTileset(options) {
   this._classificationType = options.classificationType;
   this._heightReference = options.heightReference;
   this._scene = options.scene;
+
+  // Optional 3D Tiles live invalidation feed (Phase 0.5 Phase 1). Constructed
+  // only when the caller passes either a fully-built feed or an adapter +
+  // layer list. Tilesets without this option are completely unaffected.
+  this._invalidationFeed = undefined;
+  if (defined(options.invalidationFeed)) {
+    const feedOpt = options.invalidationFeed;
+    // Accept either a fully-built Cesium3DTilesInvalidationFeed instance OR
+    // a config object { adapter, layers, pathEncoding }. Each tileset owning
+    // its own feed (with its own encoding) is the whole point of the
+    // TilePathEncoding rewrite.
+    if (feedOpt instanceof Cesium3DTilesInvalidationFeed) {
+      this._invalidationFeed = feedOpt;
+    } else if (
+      defined(feedOpt) &&
+      defined(feedOpt.adapter) &&
+      defined(feedOpt.layers)
+    ) {
+      this._invalidationFeed = new Cesium3DTilesInvalidationFeed(this, {
+        adapter: feedOpt.adapter,
+        layers: feedOpt.layers,
+        pathEncoding: feedOpt.pathEncoding ?? TilePathEncoding.CHILD_INDEX,
+        scene: this._scene,
+      });
+    } else {
+      // Legacy: duck-typed feed instance (setScene present).
+      this._invalidationFeed = feedOpt;
+    }
+    if (
+      defined(this._invalidationFeed) &&
+      typeof this._invalidationFeed.setScene === "function" &&
+      defined(this._scene)
+    ) {
+      this._invalidationFeed.setScene(this._scene);
+    }
+  } else if (
+    defined(options.invalidationFeedAdapter) &&
+    defined(options.invalidationFeedLayers)
+  ) {
+    this._invalidationFeed = new Cesium3DTilesInvalidationFeed(this, {
+      adapter: options.invalidationFeedAdapter,
+      layers: options.invalidationFeedLayers,
+      pathEncoding:
+        options.invalidationFeedPathEncoding ?? TilePathEncoding.CHILD_INDEX,
+      scene: this._scene,
+    });
+  }
 
   this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
 
@@ -1845,6 +1894,22 @@ Object.defineProperties(Cesium3DTileset.prototype, {
   scene: {
     get: function () {
       return this._scene;
+    },
+  },
+
+  /**
+   * Optional live invalidation feed attached to this tileset. Returns
+   * <code>undefined</code> when the tileset was created without an
+   * <code>invalidationFeed</code> (or adapter + layers) option. See
+   * {@link Cesium3DTilesInvalidationFeed}.
+   *
+   * @memberof Cesium3DTileset.prototype
+   * @type {Cesium3DTilesInvalidationFeed|undefined}
+   * @readonly
+   */
+  invalidationFeed: {
+    get: function () {
+      return this._invalidationFeed;
     },
   },
 
@@ -3481,6 +3546,17 @@ Cesium3DTileset.prototype.getTraversal = function (passOptions) {
  * @param {FrameState} frameState
  */
 Cesium3DTileset.prototype.update = function (frameState) {
+  // Forward-wire the scene reference into the invalidation feed once. The
+  // feed needs Scene to bump _snapshotVersion, but Cesium3DTileset is often
+  // constructed before being added to a scene.
+  if (
+    defined(this._invalidationFeed) &&
+    defined(frameState) &&
+    defined(frameState.scene) &&
+    typeof this._invalidationFeed.setScene === "function"
+  ) {
+    this._invalidationFeed.setScene(frameState.scene);
+  }
   this.updateForPass(frameState, frameState.tilesetPassState);
 };
 

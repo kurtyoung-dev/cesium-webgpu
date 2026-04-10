@@ -1,10 +1,24 @@
 # Celestial & Atmospheric Systems — Design Document
 
-**Status:** Draft v2 — Session 24 followup (adds participating media + scattering occlusion)
+**Status:** Draft v3 — Session 24 v2 + 2026-04-08 decisions locked (B1-B23)
 **Scope:** Sun, Moon, atmosphere, clouds, fog, stars, volumetric fog, varying
 atmospheric density, scattering occlusion (god rays), and the lighting/visibility
 coupling between them
 **Audience:** CesiumJS WebGPU fork maintainers
+**Sibling doc:** [WATER_RENDERING_DESIGN.md](WATER_RENDERING_DESIGN.md) — water
+consumes the same `AtmosphericConditions`, sun/moon directions, and froxel grid
+defined here.
+**Decision log:** [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
+locks all 23 B-series decisions referenced throughout this doc. When in doubt
+on a value, that section is the source of truth.
+
+> **Reading guide for v3:** §3 Toggle Architecture is now structured under the
+> nested `scene.globe.atmosphericConditions.*` canonical home (introduced by
+> the Phase 0 prep PR — see §12). §4 Subsystem Designs has been updated in
+> place with the locked B decisions. §7 (formerly "Open Questions") and §10
+> (formerly "Decision points") are now "Resolved" pointer tables. New §11
+> documents the VisualPerformanceTargetService (emerged from B7). New §12
+> documents the Phase 0 toggle audit prep PR.
 
 ---
 
@@ -108,86 +122,190 @@ direction. Users have to wire that up by hand.
 ## 3. Toggle Architecture
 
 This is the user's hardest requirement: **everything individually
-togglable**. Here's the rule set, then the explicit toggle list.
+togglable**. Per **B16 locked decision**, leaf names stay flat
+(`enableMoonLight`, not `moon.contributesToLighting`), but they're
+**organized under nested config groups** under one canonical home:
+`scene.globe.atmosphericConditions.*`. The toggle audit prep PR
+(§12) introduces this nested home before any feature work begins.
 
 ### Rules
 
-1. **One source of truth: `Scene` properties.** Every toggle is a
-   public boolean (or small enum) on `Scene`, defaulting to the same
-   value as today's behavior so toggling nothing produces zero
-   regression.
+1. **One canonical home: `scene.globe.atmosphericConditions`.** Every
+   new atmospheric / lighting toggle lives somewhere in this nested
+   tree. The historical scattered locations
+   (`scene.atmosphere`, `scene.fog`, `globe.enableLighting`,
+   `globe.atmosphereHueShift`, etc.) are preserved as **delegating
+   getter/setter shells** that read/write through to the canonical
+   home. Existing apps continue to work unchanged. See §12 for the
+   prep PR pattern.
 2. **Frame state forwarding.** `Scene.updateFrameState()` copies each
    toggle onto `frameState` once per frame. Renderers read from
-   `frameState`, never from `Scene` directly. This is the same pattern
-   already established for `debugShowGlobeWireframe`,
-   `debugShowTriangulation`, etc.
+   `frameState`, never from `scene.globe.atmosphericConditions`
+   directly. This is the same pattern already established for
+   `debugShowGlobeWireframe`, `debugShowTriangulation`, etc.
 3. **Cold-path discipline.** When a toggle is in its default state,
    the production hot path pays at most one local-bool comparison.
    Renderers branch on the local at the top of their per-frame update,
    not per-object/per-tile.
 4. **Backend-agnostic surface.** Every toggle is documented and
-   defined in `Scene.js` even if only the WebGPU renderer reads it.
-   WebGL renderers ignore unknown frame state fields harmlessly.
+   defined in `Scene.js` (or its companions) even if only the WebGPU
+   renderer reads it. WebGL renderers ignore unknown frame state
+   fields harmlessly.
 5. **Dependency disclosure.** A toggle that depends on another
-   (e.g. `enableMoonLight` is a no-op if `enableMoon` is off) is
+   (e.g. `enableMoonLight` is a no-op if `Scene.moon` is undefined) is
    documented in JSDoc. Renderers must handle the off-path gracefully.
 6. **Renderer parity.** Existing scene-level toggles like
    `Scene.skyAtmosphere.show` and `Scene.fog.enabled` stay where they
-   are — those are the canonical "primary" toggles. The new flags
-   live alongside them and refine behavior, never replace it.
+   are AND become delegating shells over the canonical home. Per
+   **B12 locked decision** for `enableSunLight = true` by default,
+   the breaking-app concern raised in v2 risk #4 is moot — the
+   existing `SunLight` API doesn't expose a `direction` field, so
+   there are no apps to break.
 
-### Toggle inventory
+### Canonical toggle structure (locked)
 
-**Existing toggles (don't move, don't break):**
+After the Phase 0 prep PR lands (§12), the canonical nested home is:
 
-| Toggle | Type | Default | Effect |
-|---|---|---|---|
-| `Scene.sun.show` | bool | true | Render the sun disk |
-| `Scene.moon.show` | bool | true | Render the moon |
-| `Scene.skyAtmosphere.show` | bool | true | Render sky atmosphere shell |
-| `Scene.skyBox.show` | bool | true | Render the cubemap (stars) |
-| `Scene.fog.enabled` | bool | true | Apply distance fog to terrain |
-| `Scene.globe.enableLighting` | bool | false | Lambertian terrain lighting |
-| `Scene.globe.showGroundAtmosphere` | bool | true | Horizon haze |
+```text
+scene.globe.atmosphericConditions = {
 
-**New scene-level toggles (this design):**
+  // ── Lighting (sun + moon symmetry per B2/B14) ─────────────────
+  lighting: {
+    enableSunLight,                        // B12: default TRUE
+    enableMoonLight,                       // B14: default TRUE (mirrors sun)
+    enableMoonPhase,                       // B1: default TRUE
+    enableEarthshine,                      // B13: default TRUE (gated by enableMoonPhase)
+    enableDualLightAtmosphere,             // B12: default TRUE
+    sunIntensity,
+    moonIntensity,
+    sunTint,                               // B3: vec3, constant at construction
+    moonTint,                              // B3: vec3, constant at construction (slightly bluer)
+  },
 
-| Toggle | Type | Default | Effect |
-|---|---|---|---|
-| `Scene.enableSunLight` | bool | true | Sync `scene.light` to actual sun direction (today: manual) |
-| `Scene.enableMoonLight` | bool | true | Add moonlight as a secondary light source for PBR + terrain |
-| `Scene.enableMoonPhase` | bool | true | Compute and render the lit fraction of the moon (illuminated face only) |
-| `Scene.enableDualLightAtmosphere` | bool | true | Add moon contribution to atmosphere scattering |
-| `Scene.enableStarBrightnessModulation` | bool | true | Dim stars based on sky brightness |
-| `Scene.enableVolumetricClouds` | bool | false | Replace billboard cumulus with raymarched volumetrics (perf cost) |
-| `Scene.enableAtmosphericConditions` | bool | true | Apply the `AtmosphericConditions` model (cloud cover / humidity / haze) |
-| `Scene.enableNightSkyDimming` | bool | true | Skybox brightness fades up at dusk and down at dawn |
-| `Scene.atmosphere.useLUT` | bool | true | Sample precomputed LUT instead of per-pixel ray march |
-| `Scene.enableVolumetricFog` | bool | false | Froxel-grid participating media fog (supersedes `Scene.fog` when on) |
-| `Scene.enableVaryingAtmosphereDensity` | bool | false | Layer local density modulation on top of the base Nishita atmosphere |
-| `Scene.enableScatteringOcclusion` | bool | true | Shadow-aware in-scattering (god rays, cloud shadows in fog, terrain shadow shafts) |
-| `Scene.volumetricFog.froxelResolution` | enum | "medium" | "low"(80×45×64) / "medium"(160×90×128) / "high"(240×135×192) |
-| `Scene.volumetricFog.maxDistance` | f32 | 50000 | Meters — view-ray distance past which the froxel grid stops integrating |
+  // ── Sky atmosphere ────────────────────────────────────────────
+  skyAtmosphere: {
+    enabled,                               // delegates to legacy scene.skyAtmosphere.show
+    useLUT,                                // default TRUE
+    lightIntensity,
+    rayleighCoefficient, mieCoefficient,
+    rayleighScaleHeight, mieScaleHeight, mieAnisotropy,
+    hueShift, saturationShift, brightnessShift,
+    starModulationCurve: {                 // B4: smoothstep, independently controllable
+      inflection,                          //   default 0.3
+      steepness,                           //   default 4.0
+    },
+    enableNightSkyDimming,                 // default TRUE
+    enableStarBrightnessModulation,        // default TRUE
+  },
 
-Defaults are chosen so the *combined* effect of all new toggles in
-default state matches today's visual behavior wherever the underlying
-feature already exists, and is "off" wherever it doesn't (volumetric
-clouds, moon-light contribution, dual-light atmosphere).
+  // ── Ground atmosphere ─────────────────────────────────────────
+  groundAtmosphere: {
+    enabled,                               // delegates to legacy globe.showGroundAtmosphere
+    perFragment,
+  },
 
-**Tunable scene properties (not boolean toggles, but related):**
+  // ── Fog (atmospheric haze, distance-based) ────────────────────
+  fog: {
+    enabled,                               // delegates to legacy scene.fog.enabled
+    renderable,
+    density, heightScalar, heightFalloff, maxHeight,
+    visualDensityScalar, screenSpaceErrorFactor, minimumBrightness,
+  },
 
-| Property | Type | Default | Effect |
-|---|---|---|---|
-| `Scene.atmosphericConditions.cloudCover` | f32 [0..1] | 0 | Global cloud-cover fraction |
-| `Scene.atmosphericConditions.humidity` | f32 [0..1] | 0.5 | Affects haze near the horizon |
-| `Scene.atmosphericConditions.airQuality` | f32 [0..1] | 1 | Affects mie scattering coefficient |
-| `Scene.atmosphericConditions.starVisibilityThreshold` | f32 | 0.05 | Sky brightness above which stars vanish |
-| `Scene.atmosphericConditions.fogDensityMultiplier` | f32 | 1.0 | Scales the base volumetric fog density field |
-| `Scene.atmosphericConditions.fogHeightFalloff` | f32 | 0.001 | Exponential falloff per meter of altitude (ground-fog steepness) |
-| `Scene.atmosphericConditions.fogAnisotropy` | f32 [-1..1] | 0.3 | Henyey-Greenstein g parameter; +0.8 = strong forward scatter (sun halos in mist), 0 = isotropic |
-| `Scene.atmosphericConditions.fogAlbedo` | vec3 | (0.9, 0.92, 0.95) | Fog particle base color (tinted slightly blue for haze, white for cumulus mist, gray for pollution) |
-| `Scene.atmosphericConditions.atmosphereDensityNoiseScale` | f32 | 5000 | Meters — spatial scale of the 3D noise field used to modulate base atmosphere density |
-| `Scene.atmosphericConditions.atmosphereDensityNoiseStrength` | f32 [0..1] | 0 | How much the noise field varies the base Nishita density (0 = uniform, 1 = wild) |
+  // ── Volumetric fog (froxel grid participating media) ──────────
+  volumetricFog: {
+    enabled,                               // B18: default FALSE
+    quality,                               // B7/B17: "low" | "medium" | "high" | "auto"
+    maxDistance,                           // default 50000 m
+    density, falloff,
+    fogAnisotropy,                         // HG g parameter, default 0.3
+    fogAlbedo,                             // vec3, default (0.9, 0.92, 0.95)
+    enableScatteringOcclusion,             // B20: independently toggleable, default FALSE
+                                           //       (silent no-op when volumetricFog.enabled is false per B9)
+  },
+
+  // ── Varying atmosphere density ────────────────────────────────
+  varyingAtmosphereDensity: {
+    enabled,                               // B19: default FALSE
+    noiseScale,                            // default 5000 m
+    noiseStrength,                         // default 0
+    // Per B21: this feature requires volumetricFog.enabled. The per-pixel
+    // sky atmosphere ray-march fallback is intentionally NOT implemented
+    // — when volumetricFog.enabled is false, this is a no-op + documented
+    // as a known limitation.
+  },
+
+  // ── Clouds (procedural 2D + volumetric upgrade) ───────────────
+  clouds: {
+    proceduralCoverage,                    // existing 2D procedural cloud cover
+    enableVolumetric,                      // B15: default FALSE; ships after Phase 5a-5d
+    volumetricQuality,                     // "low" | "medium" | "high" | "auto"
+    volumetricEnableAltitude,              // B15: 50_000 m default (volumetric kicks in below)
+    volumetricDisableAltitude,             // B15: 100_000 m default (pure procedural above)
+    // Per B15: volumetric path reads from the existing
+    // WebGPUProceduralCloudRenderer noise field, not its own.
+    // See §4.6 for the cutover model.
+  },
+
+  // ── Stars and night ───────────────────────────────────────────
+  night: {
+    enableNightLights,                     // delegates to legacy globe.enableNightLights
+    nightIntensity,
+    enableTerminatorGlow,
+  },
+};
+```
+
+> **All B-series defaults locked:** B7/B17 quality enum auto-selects via
+> the VisualPerformanceTargetService init benchmark (§11). B8/B19
+> default off. B10 fog interaction with 3D Tiles opacity is
+> post-composite v1, per-fragment follow-up. B11 temporal reprojection
+> deferred to Phase 5f. B22 fog composite placement: after opaque +
+> OIT-resolved, before UI overlay. B23: phases 1-4 land first, then 5
+> as separate feature branch.
+
+### Legacy compatibility shells
+
+Per **B16** and the toggle audit findings in
+`SESSION_2026-04-08_RESEARCH_REPORT.md §9.5`, every existing scattered
+toggle becomes a delegating getter/setter that reads/writes through
+to the canonical home. Apps written before v3 keep working unchanged:
+
+```js
+// Globe.js — preserved for backward compat (illustrative)
+Object.defineProperty(Globe.prototype, "atmosphereHueShift", {
+  get() { return this._atmosphericConditions.skyAtmosphere.hueShift; },
+  set(v) { this._atmosphericConditions.skyAtmosphere.hueShift = v; },
+});
+Object.defineProperty(Globe.prototype, "showGroundAtmosphere", {
+  get() { return this._atmosphericConditions.groundAtmosphere.enabled; },
+  set(v) { this._atmosphericConditions.groundAtmosphere.enabled = v; },
+});
+
+// Scene.js — same pattern
+Object.defineProperty(Scene.prototype, "fog", {
+  get() {
+    // Returns a thin proxy that delegates each property to the canonical home
+    return this._fogShell;
+  },
+});
+```
+
+This means:
+
+1. Existing apps that set `scene.fog.density = 0.001` keep working —
+   the value flows through to `scene.globe.atmosphericConditions.fog.density`.
+2. The duplication between `Scene.atmosphere.*` and
+   `Globe.atmosphere*` is fixed at the storage layer — both shells
+   point at the same underlying object.
+3. The new design has a clean nested home for new toggles that
+   doesn't add to the existing scatter.
+4. We don't deprecate or rename anything in this pass — that's a
+   separate (much larger) effort. This change is purely additive:
+   new canonical home + delegating shells.
+5. Upstream sync stays clean — when upstream adds new properties to
+   `Scene.atmosphere`, we add them to the canonical home and add a
+   delegating shell. No conflict.
 
 ### Failure mode policy
 
@@ -195,7 +313,8 @@ If a toggle is on but the underlying capability isn't supported on
 this device (e.g. volumetric clouds need 3D textures + compute, LUT
 mode needs storage textures), the renderer logs a warning **once** and
 silently degrades to the next-best variant. Same pattern as the WGF-6
-primitive_index probe in Session 22.
+primitive_index probe in Session 22. Per **B6**, a sanity profile of
+the per-renderer toggle-read cost happens after Phase 1 lands.
 
 ---
 
@@ -205,10 +324,15 @@ primitive_index probe in Session 22.
 
 **Already exists.** Three things to add:
 
-1. **`Scene.enableSunLight`** — when true, `Scene.updateFrameState()`
-   sets `scene.light.direction` from `frameState.sunDirectionWC` each
-   frame. When false, behavior is today's manual mode. Single conditional
-   in `updateFrameState()`. ~5 lines.
+1. **`scene.globe.atmosphericConditions.lighting.enableSunLight`** — when
+   true (per **B12, default TRUE**), `Scene.updateFrameState()` sets
+   `scene.light.direction` from `frameState.sunDirectionWC` each frame.
+   When false, behavior is today's manual mode. Single conditional in
+   `updateFrameState()`. ~5 lines. **The breaking-app concern from v2
+   risk #4 is moot:** the existing `SunLight` API doesn't expose a
+   `direction` field, so there are no apps that could be manually
+   configuring the sun direction today. Defaulting to TRUE on first
+   release is safe.
 2. **Sun below horizon handling** — when the sun is below the local
    horizon, the existing renderer happily draws the disk through the
    earth. The fix is a depth test against the inner sphere, already
@@ -219,31 +343,82 @@ primitive_index probe in Session 22.
    the angle between sun direction and local up at the camera position.
    Existing math; just needs to be exposed.
 
+Per **B3 locked decision**, `SunLight` gains a `tint: vec3` field
+(default white-ish), set at construction and held as a constant per-light
+uniform — not a per-frame value. Atmosphere LUT compute consumes this
+to give the sun a slightly warmer tint at sunrise/sunset (or whatever
+the user configures).
+
 ### 4.2 Moon
 
-**Already exists for position/orientation/sphere rendering.** Five
-things to add:
+**Already exists for position/orientation/sphere rendering.** Per **B1
+locked decision**, moon geometry is already correct: the existing
+[Moon.js](../packages/engine/Source/Scene/Moon.js) computes its position
+via `Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame()`
+in real ICRF coordinates (real ~384,400 km distance), uses
+`Ellipsoid.MOON.radii` for real lunar radii, and applies
+`IauOrientationAxes` for the real IAU lunar reference frame so the
+correct face points at Earth. **No fix needed for the geometry** — the
+work is purely on the lighting/phase/visibility side.
+
+The moon should be visible from arbitrary camera positions (Earth
+orbit, lunar orbit, deep space). The geometry already supports this;
+historical defaults just haven't tested it because the typical Cesium
+use case is "camera near Earth surface."
+
+> **Future follow-up (NEW-6 in SESSION report §10):** higher-resolution
+> moon texture. The current `moonSmall.jpg` is fine from
+> Earth-distance views but blurry at close range. Half-session task,
+> deferred. Tracked in the backlog as `NEW-6`.
+
+#### Moon mirrors Sun symmetrically (B2 / B14)
+
+Per **B2 / B14 locked decision**, `MoonLight` is a **marker class
+mirroring `SunLight`** — NOT a `DirectionalLight` subclass. The
+engine writes its direction internally each frame from ephemeris,
+exactly like the existing `SunLight` magic-marker pattern. Apps
+wanting manual moon direction construct a regular `DirectionalLight`
+instead and bypass the moon ephemeris.
+
+**Why mirroring is the right call:**
+
+- The existing `SunLight` class is a marker without a `direction`
+  field — the engine fills it in from `Simon1994PlanetaryPositions`
+  each frame
+- Mirroring this pattern for moon means **both celestial bodies share
+  the same idiomatic API** rather than introducing an asymmetric
+  "sun is magic, moon is explicit" split
+- Apps that need manual control of either light just construct a
+  `DirectionalLight` and bypass the ephemeris entirely
+
+#### Five things to add
 
 1. **Moon phase computation.** Given the sun direction, moon direction,
    and moon position relative to camera, compute the illuminated
    fraction in the fragment shader. The existing `Moon.wgsl` already
    does Lambertian lighting from `sunDirectionEC` — extending this to
-   show only the lit face is straightforward (just don't render dark-side
-   pixels, or render them as the very dim earthshine color).
-2. **`MoonLight` class.** New `Scene/MoonLight.js`, mirrors `SunLight.js`
-   structure: extends the abstract `Light` base, has `color` (default
-   cool blue-white), `intensity` (default ~0.005 of sun, the realistic
-   ratio is ~0.0014 but visual taste pushes it higher).
-3. **Light contribution.** When `enableMoonLight` is on, the moon
-   light is added to `scene.lights`. The PBR shader path already
-   handles multi-light via `LightUniforms.wgsl` — this is wiring, not
-   new shader work.
-4. **Direction synchronization.** Same pattern as sun: `MoonLight.direction`
-   set from `frameState.moonDirectionWC` (a new field, computed in
+   show only the lit face is straightforward (just don't render
+   dark-side pixels, or render them as the very dim earthshine color
+   per item 5 below).
+2. **`MoonLight` class** — new `Scene/MoonLight.js`, mirrors
+   `SunLight.js` structure exactly: marker class extending the abstract
+   `Light` base, has `color` (default cool blue-white), `intensity`
+   (default ~0.005 of sun, the realistic ratio is ~0.0014 but visual
+   taste pushes it higher), and `tint: vec3` per **B3** (set at
+   construction, constant per-light uniform).
+3. **Light contribution.** When `enableMoonLight` is on (default
+   TRUE per **B14 mirroring B12**), the moon light is added to
+   `scene.lights`. The PBR shader path already handles multi-light
+   via `LightUniforms.wgsl` — this is wiring, not new shader work.
+4. **Direction synchronization.** Same pattern as sun:
+   `MoonLight.direction` set internally each frame from
+   `frameState.moonDirectionWC` (a new field, computed in
    `UniformStateComputations.js` exactly like `sunDirectionWC`).
-5. **Earthshine.** Optional cosmetic. Dark side of the moon at new-moon
-   phase has a faint blue glow from earthlight reflection. Single
-   shader uniform, blends a tint into the unlit hemisphere.
+5. **Earthshine** (per **B13** locked, default ON): dark side of the
+   moon at new-moon phase has a faint blue glow from earthlight
+   reflection. Single shader uniform, blends a constant blue tint
+   into the unlit hemisphere. Gated by `enableMoonPhase`. No full
+   earth-radiosity model — the blue tint is a constant.
 
 ### 4.3 Atmosphere — multi-light scattering
 
@@ -345,36 +520,89 @@ cubemap is fine.
 
 ### 4.5 Atmospheric Conditions
 
-**New class:** `Scene/AtmosphericConditions.js`. Mirrors the structure
-of `Fog.js` — a small property bag with documented defaults. Read by
-multiple renderers via `frameState.atmosphericConditions`.
+**New class:** `Scene/AtmosphericConditions.js`. Per **B4 / B16 locked
+decisions**, this is the **canonical home** for all atmospheric and
+weather state — accessed as `scene.globe.atmosphericConditions` (per
+the toggle audit prep PR in §12). The legacy scattered locations
+(`Scene.atmosphere.*`, `Scene.fog.*`, `Globe.atmosphere*`, etc.) become
+delegating shells over this single source of truth.
 
 ```js
 class AtmosphericConditions {
   constructor(options = {}) {
-    this.cloudCover = options.cloudCover ?? 0;       // [0..1]
-    this.humidity = options.humidity ?? 0.5;          // [0..1]
-    this.airQuality = options.airQuality ?? 1.0;      // [0..1]
+    // Weather / sky state (consumed by atmosphere, sky, clouds, fog, water)
+    this.cloudCover = options.cloudCover ?? 0;            // [0..1]
+    this.humidity = options.humidity ?? 0.5;              // [0..1]
+    this.airQuality = options.airQuality ?? 1.0;          // [0..1]
+    this.windSpeed = options.windSpeed ?? 0;              // m/s
+    this.windDirection = options.windDirection ?? 0;      // radians
+
+    // Star modulation (B4: smoothstep with independently tunable curve)
+    this.starModulationCurve = options.starModulationCurve ?? {
+      inflection: 0.3,                                    // sky brightness at midpoint
+      steepness: 4.0,                                     // smoothstep slope
+    };
     this.starVisibilityThreshold = options.starVisibilityThreshold ?? 0.05;
+
+    // The full nested config tree under
+    // scene.globe.atmosphericConditions.{lighting, skyAtmosphere,
+    // groundAtmosphere, fog, volumetricFog, varyingAtmosphereDensity,
+    // clouds, night} is initialized here too — see §3 for the full
+    // structure. This constructor block shows just the leaf weather
+    // state; the nested config groups are wired up in the prep PR
+    // (§12) as additional sub-objects on `this`.
   }
 }
 ```
 
 **Consumers:**
 
-- Sky atmosphere shader: humidity → mie coefficient scale; airQuality →
-  rayleigh coefficient scale.
-- Star shader: cloudCover, starVisibilityThreshold.
-- Volumetric cloud shader: cloudCover (controls density threshold).
-- Fog: humidity → density modulation.
+- Sky atmosphere shader: `humidity` → mie coefficient scale;
+  `airQuality` → rayleigh coefficient scale.
+- Star shader: `cloudCover`, `starVisibilityThreshold`,
+  `starModulationCurve` (smoothstep with independently tunable
+  inflection + steepness per **B4**).
+- Volumetric cloud shader: `cloudCover` (controls density threshold).
+- Fog: `humidity` → density modulation.
+- **Water rendering** (sibling doc): `windSpeed`, `windDirection`,
+  `cloudCover` for surface displacement and reflection brightness.
+  Per **B4**, water is a first-class consumer of the same
+  `AtmosphericConditions` instance.
 
-The class is intentionally small. Adding a 5th property is one line in
-the constructor, one Scene→frameState forward, one shader uniform field.
-The growth pattern is well-defined.
+The class grows by adding leaves to the nested structure documented
+in §3. Adding a new property is one line in the constructor, one
+Scene→frameState forward, one shader uniform field. The growth
+pattern is well-defined.
+
+#### Star modulation curve detail (B4)
+
+Per **B4 locked decision**, the star modulation curve is a smoothstep
+(linear is too sharp — stars pop in/out at twilight) with two
+**independently tunable** parameters that live in `AtmosphericConditions`:
+
+```wgsl
+// Pseudocode for the star brightness modulation
+fn computeStarBrightness(skyBrightness: f32, curve: StarModulationCurve) -> f32 {
+  let t = saturate((skyBrightness - curve.inflection) * curve.steepness);
+  return 1.0 - smoothstep(0.0, 1.0, t);
+}
+```
+
+The curve is independently controllable by the user — bright-eyed
+desert sky setups can use a sharp curve, light-polluted urban setups
+can use a softer curve. Both `inflection` and `steepness` flow through
+`frameState.atmosphericConditions.starModulationCurve` to the cubemap
+panorama shader.
 
 ### 4.6 Volumetric Clouds
 
-**Largest unknown.** Three viable approaches:
+**Per B15 locked decision: PROMOTED from "deferred" to "ships
+immediately after Phase 5a-5d."** Three approaches were considered;
+this design uses a hybrid of approach #1 (raymarched volumetrics) for
+near-altitude views AND the existing `WebGPUProceduralCloudRenderer`
+for far-altitude views, with a configurable cutover.
+
+#### Three approaches considered
 
 1. **Schneider/Häggström raymarched clouds** (Horizon Zero Dawn,
    Frostbite, Far Cry 5). 3D worley + perlin density texture, sampled
@@ -387,18 +615,112 @@ The growth pattern is well-defined.
 3. **2D screen-space clouds.** Sample a 2D cloud texture projected
    from the cloud layer altitude. Cheap, but visually flat.
 
-**Recommendation: Schneider raymarch as a future implementation,
-gated behind `enableVolumetricClouds = false` default.** The default
-stays on the existing billboard cumulus collection, which is fine for
-GIS visualization. Volumetric raymarched clouds are a quality upgrade
-opt-in for users who want it and have the GPU budget.
+**Locked design: hybrid raymarched (approach #1) at near altitude +
+existing procedural 2D (built-in) at far altitude, with configurable
+cutover.** Per **B15**, `enableVolumetricClouds` defaults to FALSE
+(opt-in) but ships in this design's Phase 6 (immediately after
+5a-5d) — not deferred indefinitely.
+
+#### Why volumetric clouds got promoted
+
+The original v2 design deferred this to "Phase 6, may not ship." The
+v3 reasoning to ship it:
+
+1. **The Phase 5 froxel grid infrastructure is already the foundation**
+   that volumetric clouds build on. Once 5a-5d ship, Phase 6 is "add
+   cloud density to the existing froxel density field + raymarch +
+   composite," not "build a parallel system from scratch." Much smaller
+   incremental cost.
+2. **Volumetric clouds are visually the single biggest 'wow' feature**
+   Cesium could ship in 2026. Game engines have had them since 2017;
+   geospatial engines mostly haven't because the GPU budget assumed
+   mobile/integrated. For modern desktop WebGPU users this constraint
+   is gone.
+3. **5e (cloud shadows in fog) was previously blocked on Phase 6.**
+   Promoting Phase 6 unblocks 5e at the same time — both ship together.
+
+#### Altitude-based cutover
+
+The volumetric raymarch is expensive but only valuable when the camera
+is *near or inside* the cloud layer. When the camera is far above
+(e.g., looking down from orbit), the existing
+`WebGPUProceduralCloudRenderer` 2D procedural cloud cover is visually
+indistinguishable from volumetric and ~50× cheaper. Crossfade between
+them based on camera altitude:
+
+```text
+camera altitude:        0 ──────── 50km ──── 100km ──── ∞
+volumetric raymarch:    ████████████████░░░░░░          (full → fade out)
+procedural 2D:                       ░░░░░░░████████████ (fade in → full)
+```
+
+Configurable thresholds (defaults shown):
+
+```js
+scene.globe.atmosphericConditions.clouds.volumetricEnableAltitude   = 50_000;  // m
+scene.globe.atmosphericConditions.clouds.volumetricDisableAltitude  = 100_000; // m
+scene.globe.atmosphericConditions.clouds.enableVolumetric           = false;   // B15: opt-in
+scene.globe.atmosphericConditions.clouds.volumetricQuality          = "auto";  // "low"|"medium"|"high"|"auto"
+```
+
+Both layers share the **same `proceduralCoverage` value** so flipping
+in/out of the volumetric range doesn't change cloud density visually
+— just renders the same coverage with a different technique.
+
+#### Critical: shared noise field
+
+**The volumetric path reads from the existing
+`WebGPUProceduralCloudRenderer` noise field**, not its own. Otherwise
+cloud shapes wouldn't match across the crossfade zone — clouds would
+visibly morph as you descend from orbit to cruise altitude. This is
+the optimization that makes Phase 6 strictly an *addition* on top of
+existing infrastructure, not a parallel system.
+
+The procedural renderer already generates the underlying 3D worley +
+perlin noise that the volumetric path needs. The volumetric path
+becomes "raymarch through that existing noise field with density +
+lighting + scattering occlusion from Phase 5c," rather than "build
+your own cloud field from scratch."
+
+#### Effort estimate revision
+
+Because the noise field is already generated and the froxel grid +
+scattering occlusion are already in place, the original 3-4 session
+estimate **drops to 2-3 sessions**. The breakdown:
+
+- **Phase 6a — Volumetric raymarch shader (1 session):** WGSL
+  raymarch over the existing procedural noise field, samples
+  altitude band, evaluates HG phase function, integrates scattered
+  light per froxel. Composite into the existing froxel grid as a
+  cloud-density contribution.
+- **Phase 6b — Crossfade with procedural (0.5 session):**
+  Altitude-based blend between volumetric raymarch and procedural 2D
+  output. Hysteresis on the thresholds to prevent flicker at the
+  transition altitude.
+- **Phase 6c — Cloud shadows (5e folded in, 0.5 session):** The
+  volumetric cloud density field casts shadows into the fog grid via
+  the same per-froxel light raymarch already wired up by Phase 5c.
+  Light integration multiplies the cloud extinction into the
+  scattering occlusion term. **5e is no longer a separate phase** —
+  it's bundled into 6c since both are active simultaneously.
+- **Phase 6d — Quality dial (0.5 session):** "low" / "medium" /
+  "high" / "auto" sample counts, wired into the
+  VisualPerformanceTargetService (§11) so `quality: "auto"` adapts
+  to frame budget.
+
+#### What this design uses
 
 The compute shader infrastructure (storage textures, async dispatch,
-WebGPUCompute pipeline) is in place from Session 12-18 work, so the
-volumetric cloud kernel can plug in cleanly when implemented.
+WebGPUCompute pipeline) is in place from Session 12-18 work; the
+froxel grid is delivered by Phase 5a; the procedural 2D cloud noise
+field is delivered by `WebGPUProceduralCloudRenderer`. Phase 6 just
+ties them together.
 
-This subsystem is **deferred to Phase 4** and is not a blocker for
-the rest of the work.
+> **Risk mitigation.** Per **B15**, default off + quality dial means
+> mobile users opt out by default; desktop power users get the full
+> experience. "Auto" via the new VisualPerformanceTargetService (§11)
+> means even desktop users can let the engine adapt the quality
+> dynamically if their target FPS isn't being met.
 
 ### 4.7 Fog (distance fog)
 
@@ -415,6 +737,18 @@ tied with Phase 3 atmosphere multi-light. Delivered as a froxel-grid
 (frustum-voxel) participating media renderer modeled on Frostbite's
 GDC 2015 talk and reused since by Unreal, Unity HDRP, id Tech 7, and
 the Horizon engines.
+
+> **B18 locked: `enableVolumetricFog` defaults to FALSE.** No perf
+> regression for users who don't opt in. Documented prominently in
+> the release notes so users know to try it. The Phase 5a-5d work
+> delivers the infrastructure; turning the toggle on is a one-line
+> opt-in.
+>
+> **B22 locked: composite placement.** Volumetric fog runs **after
+> opaque + OIT-resolved color, before UI overlay**. Transparent 3D
+> Tiles get post-composite fog (an approximate result) in v1; the
+> per-fragment correct path is a follow-up if visible artifacts
+> warrant it (per **B10**).
 
 #### What a froxel grid is
 
@@ -504,6 +838,17 @@ is a user opt-in for high-end systems.
 
 ### 4.9 Varying Atmosphere Density
 
+> **B19 locked: `enableVaryingAtmosphereDensity` defaults to FALSE.**
+> The 3D noise sample adds non-trivial constant cost to the density
+> injection pass. Default off, opt-in toggle.
+>
+> **B21 locked: when `enableVolumetricFog` is FALSE, varying atmosphere
+> density is also a no-op.** The per-pixel sky atmosphere ray-march
+> fallback documented in v2's "failure mode" section is **NOT
+> implemented**. Document the limitation: `enableVaryingAtmosphereDensity`
+> requires `enableVolumetricFog` to have any visible effect. May be
+> revisited in a future phase if there's demand.
+
 **Physical motivation.** The existing Nishita scattering model assumes
 a radially-symmetric atmosphere with exponential-decay density (scale
 heights for Rayleigh and Mie independently). That's fine for pure
@@ -573,6 +918,19 @@ avoids maintaining a separate code path.
 
 ### 4.10 Scattering Occlusion (god rays / crepuscular rays)
 
+> **B20 locked: `enableScatteringOcclusion` is independently toggleable,
+> defaults to FALSE.** Originally proposed as "on when fog is on, no-op
+> when fog is off." The locked version is **stronger separation of
+> concerns**: the toggle is its own boolean and is set/unset
+> independently of `enableVolumetricFog`.
+>
+> **B9 locked: silent gating when fog is off.** When `enableVolumetricFog
+> = false`, scattering occlusion has no visible effect — there's no
+> participating media for the shadow-occluded light to scatter through.
+> The toggle is set but does nothing. **Document this dependency in
+> JSDoc**, do NOT log a warning. Per **B21**, no per-pixel sky
+> atmosphere ray-march fallback is implemented for the standalone case.
+
 **Physical motivation.** When a sunbeam passes through a gap in the
 clouds, the air it crosses is brightly in-scattered while the
 shadowed air on either side is dimmer. Your eye interprets the
@@ -635,14 +993,17 @@ reasonable approximation for far fog.
 
 #### Togglability and cost
 
-- `enableScatteringOcclusion = false`: Pass 2 skips all shadow map
-  queries, uses `shadowFactor = 1.0`. Saves ~40% of Pass 2 cost
-  (~0.5 ms at medium resolution).
-- `enableScatteringOcclusion = true` (default when volumetric fog
-  is on): full shadow queries, god rays visible.
+- `enableScatteringOcclusion = false` **(default per B20)**: Pass 2
+  skips all shadow map queries, uses `shadowFactor = 1.0`. Saves
+  ~40% of Pass 2 cost (~0.5 ms at medium resolution).
+- `enableScatteringOcclusion = true`: full shadow queries, god rays
+  visible. Independent toggle — does NOT auto-enable when fog is
+  enabled. User opts in explicitly.
 - Dependency: requires `enableVolumetricFog = true` to have any
-  visual effect; the flag is a no-op when the froxel grid isn't
-  running. Documented in JSDoc.
+  visual effect; the flag is a **silent no-op** when the froxel grid
+  isn't running (per **B9** — no log warning, JSDoc-only documentation
+  of the dependency). Per **B21**, no per-pixel sky-atmosphere ray-march
+  fallback exists.
 
 #### Ambient term
 
@@ -693,61 +1054,112 @@ work unchanged. Renderers that opt into multi-light read from
 
 ## 6. Implementation Phases
 
-**Phase 1 — Toggle scaffolding (1 session):**
-- Add all 9 new boolean toggles to `Scene.js` with defaults
-- Add `AtmosphericConditions` class with the 4 tunable properties
-- Wire `Scene.updateFrameState()` to forward all 9 toggles + the
-  conditions object onto `frameState`
-- No renderer changes; the toggles do nothing yet but are documented
-  and reachable
-- Tests: confirm defaults preserve current behavior
+> **B23 locked: Phases 1-4 land first as one feature branch; Phase 5
+> ships as a separate feature branch; Phase 6 ships immediately after
+> 5a-5d.** Phases 1-4 deliver standalone value (celestial ephemeris +
+> multi-light sky) without touching the participating media system.
+> Both review cycles are shorter than one giant PR.
+>
+> Phase 0 (toggle audit prep PR — see §12) is the prerequisite for
+> Phase 1. The prep PR is shared with the water rendering design and
+> establishes the canonical nested home `scene.globe.atmosphericConditions`
+> + delegating shells for legacy paths.
+>
+> **Implementation status (2026-04-09):** Phase 0 ✅ and Phase 1 (the
+> "toggle scaffolding plus sun+moon sync" sub-phases originally planned
+> as Phase 1 and Phase 2 of this section) ✅. Phase 3 (atmosphere
+> multi-light and LUT activation) and Phase 4 (atmospheric conditions
+> integration) are next.
 
-**Phase 2 — Sun + Moon synchronization (1-2 sessions):**
-- `Scene.enableSunLight` wires sun direction → `scene.light.direction`
-- New `MoonLight` class
-- `frameState.moonDirectionWC` populated in `UniformStateComputations.js`
-  using existing `Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame`
-- `Scene.enableMoonLight` adds moon light to `scene.lights`
-- Moon phase fraction computed CPU-side from sun/moon directions
-- `Moon.wgsl` extended to render lit hemisphere only (or full sphere
-  with earthshine on dark side, gated by `enableMoonPhase`)
-- Sun horizon falloff for `SunLight.intensity`
-- Tests: ephemeris tests against known dates (full moon 2025-03-14, etc.)
+**Phase 0 — Toggle audit prep PR (1-2 sessions, shared with water doc) — ✅ COMPLETED 2026-04-09:**
+
+- ✅ Introduce `scene.globe.atmosphericConditions` canonical nested object → `AtmosphericConditions.js` facade with 12 leaves
+- ✅ Delegating getter/setter shells for every existing scattered path (`Scene.atmosphere.*`, `Scene.fog.*`, `Globe.atmosphere*`, `Globe.showGroundAtmosphere`, etc.) per the toggle audit findings — 97 properties across 11 surfaces inventoried and shelled
+- ✅ Pure refactor — no behavior change. Existing apps work unchanged. `npx tsc --noEmit` clean throughout.
+- ✅ Lands BEFORE both this design's Phase 1 AND the water design's Phase 1
+- (Tests are deferred to a follow-up — Phase 0.x sub-phases were validated via typecheck + smoke parser tests)
+- **Bonus delivered alongside Phase 0:** `VisualPerformanceTargetService` (Phase 0.4), 3D Tiles invalidation feed Phase 1 (Phase 0.5), NEW-5 spec verification (Phase 0.6), `SnapshotModeService` skeleton + spike memo (Phase 0.7). See `WEBGPU_MIGRATION_STATUS.md` § "Recent Progress" for the full inventory.
+
+**Phase 1 — Toggle scaffolding (1 session) — ✅ COMPLETED 2026-04-09:**
+
+- ✅ Add all locked B-series toggles (§3) to the canonical home with the locked defaults (mostly off; sun + moon lighting on per B12/B14) — defaults verified in `AtmosphericConditions.js` `buildLighting()`, `buildVolumetricFog()`, `buildVaryingAtmosphereDensity()`, `buildClouds()`, `buildSkyAtmosphere()`
+- ✅ Wire `Scene.updateFrameState()` to forward atmosphericConditions onto `frameState` — single-line forward in the standalone render function next to the existing `frameState.atmosphere = scene.atmosphere`
+- ✅ Added 5 new fields to `FrameState`: `atmosphericConditions`, `skyBrightness`, `sunDirectionWC`, `moonDirectionWC`, `moonPhaseFraction`
+- ✅ Renderers now have a stable read surface for B-series toggles via `frameState.atmosphericConditions.*`
+
+**Phase 2 — Sun + Moon synchronization (1-2 sessions) — ✅ COMPLETED 2026-04-09:**
+
+This was the largest sub-phase by far. It actually landed in three rounds (1.2a, 1.2b, 1.2c v2) because the moon parity audit revealed the WebGPU moon was significantly behind WebGL beyond what the original brief covered. Final state:
+
+- ✅ **`MoonLight` marker class** (`packages/engine/Source/Scene/MoonLight.js`) mirroring `SunLight` per B2/B14 — opt-in via `scene.light = new MoonLight()`. Default color `(0.85, 0.88, 1.0, 1.0)` cool tint, default intensity `0.05`.
+- ✅ **`frameState.moonDirectionWC` populated** in `Moon.update(frameState)` (the canonical place per Option A — not a separate `UniformStateComputations.js` helper) using the existing `Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame` call already in Moon.js
+- ✅ **Moon phase fraction** computed CPU-side from sun/moon directions: `0.5 * (1 - cos(angle(moonDir, sunDir)))`. Gated on `atmosphericConditions.lighting.enableMoonPhase`; falls back to `1.0` (full moon) when the toggle is off or no globe is attached.
+- ✅ **Full WebGL parity moon shader port** — `Moon.wgsl` was rewritten to match `EllipsoidPrimitive.js` + `EllipsoidVS.glsl` + `EllipsoidFS.glsl` exactly:
+  - **Bounding-cube rasterization** (8 verts, 36 indices, vec3 cube position) — replaces the original UV-sphere mesh approach. Cube screen footprint scales with the moon's actual on-screen size; matches WebGL's `BoxGeometry.fromDimensions({2,2,2})` exactly.
+  - **Analytic ray-ellipsoid intersection** in moon model space
+  - **Geodetic surface normal** via `position * oneOverRadiiSq` gradient — accounts for moon ellipsoid oblateness
+  - **Back-face inside pass** matching `EllipsoidFS.glsl`'s `outsideFaceColor`/`insideFaceColor` mix
+  - **CsmMaterial-style filling** — texture sample → `m.diffuse`; Phong runs through it (matches `Material.fromType(Material.ImageType)`)
+  - **Phong lighting** (Lambert diffuse + specular) matching `czm_private_phong` exactly
+  - **`onlySunLighting` toggle** honored — picks `sunDirMC` vs `sceneLightDirMC`
+  - **Canonical spherical UV unwrap** via inlined `csm_ellipsoidTextureCoordinates`
+  - **Exact log depth write** via VS-output clip-space `w`
+- ✅ **Lit hemisphere with earthshine** per B1/B13 — gated on `atmosphericConditions.lighting.enableEarthshine`. Soft blue-grey ambient `vec3(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL)` on the unlit side.
+- ✅ **Phase gating** via `smoothstep(0.0, 0.3, phaseFraction)` on the lit term — new moon (phase ~0) fades the lit hemisphere toward black; quarter onward reaches full intensity.
+- ✅ **Real moon texture loading** via `Resource.fetchImage()` + `WebGPUImageUpload.uploadImageToTexture()` — fixes the longstanding "gray placeholder" regression where every WebGPU user saw a 4×4 gray sphere.
+- ✅ **RTE 64-bit precision in the VS** — improvement beyond WebGL parity; per project rule.
+- ✅ **Render bundle pre-encoding** via `WebGPURenderBundleManager.getOrCreate()` — moon is the first real consumer of the bundle manager. Pipeline + bind group + draw sequence cached and replayed via `passEncoder.executeBundles([bundle])` from a new fast path in `WebGPUDrawCommand.execute()`. Bundle invalidates on bind group change (texture upgrade).
+- ✅ **Snapshot mode freezable registration** — moon is the first real consumer of `SnapshotModeService`. Per-frame uniform writes become a no-op when frozen; bundle replays the captured state.
+- ✅ **Behind-camera early-out** before any GPU work
+- ⏸ **`lightTint: vec3` field on SunLight and MoonLight per B3** — deferred. The current Phase 1.2 work uses light color directly without a separate tint multiplier; B3 can land in a small follow-up if a real consumer needs it.
+- ⏸ **Sun horizon falloff for `SunLight.intensity`** — deferred. Belongs more naturally in Phase 3 (atmosphere multi-light) where the LUT is the right place to tune sun intensity by altitude.
+- ⏸ **Ephemeris tests against known dates** — Jasmine specs deferred to a follow-up (Phase 1.2 was validated via `npx tsc --noEmit` only).
 
 **Phase 3 — Atmosphere multi-light + LUT activation (2-3 sessions):**
+
 - Wire `AtmosphereLUT.wgsl` compute shader into the atmosphere render
-  path; activate `Scene.atmosphere.useLUT = true` by default
-- Add `Scene.enableDualLightAtmosphere`:
+  path; activate `useLUT = true` by default
+- Add `enableDualLightAtmosphere`:
   - Per-frame compute pass builds two LUT pairs (sun, moon)
   - Runtime fragment shader samples both
   - Moon contribution scaled by phase fraction
 - CPU-side sky brightness estimator → `frameState.skyBrightness`
 - Star modulation: cubemap shader reads `frameState.skyBrightness` via
-  a new uniform field, multiplies sampled color by it
-- `Scene.enableStarBrightnessModulation` and
-  `Scene.enableNightSkyDimming` toggles
+  a new uniform field, multiplies sampled color by it; uses the
+  smoothstep `starModulationCurve` per **B4**
+- `enableStarBrightnessModulation` and `enableNightSkyDimming` toggles
 - Tests: visual regression on a fixed sun/moon date pair; sanity tests
   on the LUT compute output (transmittance monotonically decreases
   with altitude, etc.)
 
 **Phase 4 — Atmospheric conditions integration (1 session):**
+
 - `AtmosphericConditions.humidity` → fog density and atmosphere
   scattering coefficients
 - `AtmosphericConditions.cloudCover` → star occlusion factor in
   the modulation calculation
 - `AtmosphericConditions.airQuality` → rayleigh / mie coefficient
   scale in the LUT compute shader
-- All consumers gated by `Scene.enableAtmosphericConditions`
+- `AtmosphericConditions.windSpeed`, `windDirection` exposed to
+  consumers (sky atmosphere, future water rendering, future weather
+  particles)
+- All consumers gated by their respective enable flags
 - Tests: parameter sweep visual checks
 
+**Phases 1-4 land as one feature branch** per **B23**. Phase 5
+follows as a separate feature branch.
+
+---
+
 **Phase 5 — Participating media + scattering occlusion (3-4 sessions):**
+
 The heaviest rendering work in the project. Implements the unified
 volumetric fog + varying atmosphere density + scattering occlusion
 system (§4.8-4.10).
 
 - **5a — Froxel grid infrastructure (1 session):** Allocate the
   3D textures (two rgba16float at configurable resolution), wire
-  screen-UV + log-depth parameterization, add `Scene.enableVolumetricFog`
+  screen-UV + log-depth parameterization, add `enableVolumetricFog`
   toggle and resolution enum. Empty density injection pass. Final
   composite pass samples the grid and multiplies into scene color
   with a transmittance = 1.0 default → no visual change yet, just
@@ -770,27 +1182,56 @@ system (§4.8-4.10).
   `AtmosphericConditions` atmosphere-density tunables. Since the
   unified density field is already in place, this is ~100 lines
   of shader code plus the CPU tunables.
-- **5e — Cloud shadow contribution (0.5 session, optional):**
-  When volumetric clouds (Phase 6) are active, the light scattering
-  pass does a small 8-step raymarch through the cloud density
-  texture toward each light to compute cloud extinction. Falls
-  back to `extinction = 0` when clouds are off.
+- **5f — Temporal reprojection / blue-noise jitter polish (per B11,
+  optional):** If low-resolution froxel grids shimmer during camera
+  motion, add temporal blue-noise jitter to density sampling. Full
+  TAA-style history-buffer reprojection is a future enhancement.
+  **Renamed from 5e** because cloud shadows are now folded into Phase 6c.
 
 Tests: visual regression against baseline screenshots, GPU timing
 sanity checks against the cost estimates above, toggle-independence
 tests for each sub-phase flag.
 
-**Phase 6 (deferred) — Volumetric clouds:**
-- Schneider/Häggström raymarch implementation
-- 3D worley + perlin density texture generation (one-time compute)
-- Cloud layer raymarch fragment shader
-- `Scene.enableVolumetricClouds` toggle (default false)
-- Falls back to existing `CloudCollection` when off
-- Integrates with Phase 5c scattering occlusion to produce cloud
-  shadows inside the volumetric fog
+---
 
-Phases 1-5 are the core deliverable (~8-11 sessions). Phase 6 is a
-quality opt-in that can ship later.
+**Phase 6 — Volumetric clouds (PROMOTED per B15, 2-3 sessions):**
+
+Originally deferred in v2; promoted in v3 because the Phase 5 froxel
+infrastructure makes Phase 6 a strict additive layer rather than a
+parallel system. **Ships immediately after 5a-5d** (or after 5d if
+5f is skipped). Default off. See §4.6 for full design.
+
+- **6a — Volumetric raymarch shader (1 session):** WGSL raymarch over
+  the existing `WebGPUProceduralCloudRenderer` noise field. Samples
+  altitude band, evaluates HG phase function, integrates scattered
+  light per froxel. Composite into the existing froxel grid as a
+  cloud-density contribution. Single shader variant, gated behind
+  `enableVolumetric = false` default.
+- **6b — Crossfade with procedural (0.5 session):** Altitude-based
+  blend between volumetric raymarch (≤50 km altitude) and procedural
+  2D output (≥100 km altitude). Hysteresis on the thresholds to
+  prevent flicker at the transition altitude.
+- **6c — Cloud shadow contribution (0.5 session — was Phase 5e):**
+  The volumetric cloud density field casts shadows into the fog grid
+  via the same per-froxel light raymarch wired up by Phase 5c.
+  Multiplies cloud extinction into the scattering occlusion term.
+  Falls back to `extinction = 0` when volumetric clouds are off.
+- **6d — Quality dial (0.5 session):** "low" / "medium" / "high" /
+  "auto" sample counts. "auto" wired into the
+  VisualPerformanceTargetService (§11) so the engine adapts the
+  sample count if frame budget is exceeded.
+
+**Why Phase 6 is no longer deferred:**
+
+1. The Phase 5a froxel grid IS the foundation Phase 6 builds on
+2. Volumetric clouds are visually the single biggest "wow" feature
+3. 5e (cloud shadows in fog) was previously blocked on Phase 6 —
+   promoting Phase 6 unblocks 5e at the same time (now bundled as 6c)
+4. Sharing the noise field with `WebGPUProceduralCloudRenderer`
+   reduces the Phase 6 effort from 3-4 sessions to 2-3 sessions
+
+Mobile users opt out by default; desktop power users get the full
+experience. "Auto" mode adapts dynamically.
 
 ---
 
@@ -809,11 +1250,16 @@ quality opt-in that can ship later.
 3. **Moon position accuracy at high zoom.** Simon 1994 is ~1 arcmin
    accurate. Visually fine at any reasonable zoom; only matters if
    someone tries to do precise lunar occultation visualization.
-4. **`scene.light` synchronization breaking existing apps.** Some
+4. **`scene.light` synchronization breaking existing apps.** ~~Some
    apps manually configure `scene.light.direction`. The
-   `enableSunLight` toggle defaulting to `true` could break them.
-   **Mitigation:** Default to `false` for the first release, document
-   the migration, default to `true` in a follow-up release.
+   `enableSunLight` toggle defaulting to `true` could break them.~~
+   **RESOLVED on 2026-04-08 (B12):** the existing `SunLight` API
+   doesn't expose a `direction` field — the sun's direction is
+   computed by the engine from `frameState.uniformState.sunDirectionWC`,
+   which is always tracked from simulation time and not user-controllable.
+   **There are no apps that could be manually configuring sun direction
+   today**, so defaulting `enableSunLight = true` for the first release
+   is safe. Risk closed.
 5. **Volumetric cloud GPU budget.** Schneider raymarch is expensive.
    Devices below ~mid-tier desktop won't sustain 60fps with it on.
    Default-off mitigates.
@@ -848,66 +1294,25 @@ quality opt-in that can ship later.
     per-froxel blue noise, same jitter used for density temporal
     stability. Costs nothing extra if the jitter is already computed.
 
-### Open questions
+### Open questions — RESOLVED on 2026-04-08
 
-1. **Earthshine on the dark side of the moon — yes or no?** It's a
-   real visible effect at new-moon phase, but it adds shader complexity
-   and a configuration parameter. Vote: yes, gated by `enableMoonPhase`,
-   constant blue tint, no need for full earth-radiosity model.
-2. **Should `MoonLight` be a `DirectionalLight` or its own type?** It
-   behaves like a directional light (parallel rays at planetary scale),
-   so a subclass of `DirectionalLight` is the cleanest fit.
-3. **Wavelength dependence of atmospheric coefficients.** Currently
-   `atmosphereLightIntensity` is a scalar. Real moonlight is bluer
-   than sunlight. Should we expose `lightTint: vec3` per light?
-   Vote: yes, but constant per-light at construction time, not a
-   per-frame uniform.
-4. **Star modulation curve.** Linear `1 - skyBrightness` is too sharp;
-   stars pop in/out at twilight. Probably want a smoothstep, with the
-   inflection point and the steepness as tunables. Add to
-   `AtmosphericConditions` or a separate `starModulationCurve` field?
-5. **What happens to `Scene.skyAtmosphere.show = false` + dual-light
-   enabled?** Atmosphere off means no scattering, so dual-light has
-   nothing to do. The toggle should be a no-op in that case. Document
-   the dependency.
-6. **Per-renderer cost of toggle reads.** With 14+ new toggles flowing
-   through frameState, each render path now reads more state. Each
-   read is one property lookup — JIT-friendly, ~free — but worth a
-   sanity profile after Phase 1.
-7. **Default froxel resolution on desktop.** "Low" is safe for every
-   device but undersells quality on desktop. "Medium" is the sweet
-   spot but costs ~3 ms on mid-range GPUs. Proposal: auto-select based
-   on `navigator.gpu.wgslLanguageFeatures` or a one-time benchmark of
-   empty compute dispatches at init. Fall back to "low" if the probe
-   is inconclusive.
-8. **Should varying atmosphere density ship enabled by default?**
-   With `atmosphereDensityNoiseStrength = 0` it's visually identical
-   to the Nishita baseline, so defaulting the toggle on costs nothing
-   visually. But the 3D noise sample adds a non-trivial constant cost
-   to the density injection pass. Vote: default off, opt in via the
-   toggle for users who want the effect.
-9. **Scattering occlusion without volumetric fog — valid?** The
-   `enableScatteringOcclusion` flag depends on `enableVolumetricFog`
-   to have any visible effect. Users might be confused when flipping
-   the occlusion flag does nothing. Options: (a) silently no-op,
-   (b) log a warning once, (c) enable the sky atmosphere's per-pixel
-   ray march to sample shadow maps even without the froxel grid.
-   Option (c) is the most "correct" but adds cost to a code path
-   that doesn't otherwise need it. Vote: (b) — one-shot warning.
-10. **Fog interaction with 3D Tiles opacity.** 3D Tiles models can
-    have per-feature alpha, which the volumetric fog composite
-    applies *after* rasterization. For features drawn through thick
-    fog with low alpha, the fog may over-darken them. The correct
-    fix is per-fragment transmittance application, which requires
-    sampling the 3D fog grid inside the 3D Tiles fragment shader
-    rather than doing a post-composite. Tradeoff: correctness vs
-    touching every material shader. Vote: post-composite for initial
-    release, per-fragment in a follow-up if artifacts are visible.
-11. **Temporal reprojection — include in Phase 5b or defer?**
-    Without it, low-resolution froxel grids shimmer during camera
-    motion. With it, we need a history buffer and reprojection
-    vectors. Vote: defer to a Phase 5f polish step after 5a-5d land.
-    Blue-noise jitter alone may be enough.
+All eleven open questions from v2 have been answered. The canonical
+answers live in `SESSION_2026-04-08_RESEARCH_REPORT.md §8.2`. Quick
+pointer table:
+
+| OQ | Resolution | Reference |
+|---|---|---|
+| OQ1 — Earthshine on the dark side of the moon | **Yes**, gated by `enableMoonPhase`, constant blue tint, no full earth-radiosity model. See §4.2. | B1 / B13 |
+| OQ2 — `MoonLight` as `DirectionalLight` subclass or own type | **Marker class mirroring `SunLight`** — NOT a `DirectionalLight` subclass. Engine writes its direction internally each frame from ephemeris. Apps wanting manual moon direction use a regular `DirectionalLight`. See §4.2. | B2 / B14 |
+| OQ3 — Wavelength dependence (`lightTint` per light) | **Yes**, `tint: vec3` per light, constant at construction time, not a per-frame uniform. Stored in `SunLight` and `MoonLight`. | B3 |
+| OQ4 — Star modulation curve location | **Smoothstep** with inflection + steepness as tunables, lives in `AtmosphericConditions.starModulationCurve` (independently controllable). See §4.5. | B4 |
+| OQ5 — `skyAtmosphere.show = false` + dual-light enabled | **No-op + document the dependency** in JSDoc. | B5 |
+| OQ6 — Per-renderer cost of toggle reads | **Profile sanity check after Phase 1** lands. Not a blocking decision. | B6 |
+| OQ7 — Default froxel resolution | **Auto-select via init benchmark** (see VisualPerformanceTargetService in §11), fall back to "low" if probe is inconclusive. | B7 / B17 |
+| OQ8 — Varying atmosphere density default | **Off by default.** 3D noise sample adds non-trivial cost. | B8 / B19 |
+| OQ9 — Scattering occlusion without volumetric fog | **Silently no-op** when fog is off. Document the dependency in JSDoc. NO log warning. | B9 |
+| OQ10 — Fog interaction with 3D Tiles opacity | **Post-composite for v1**, per-fragment in follow-up if visible artifacts. | B10 |
+| OQ11 — Temporal reprojection — Phase 5b or defer? | **Defer to Phase 5f polish step** after 5a-5d land. Blue-noise jitter alone may be enough. | B11 |
 
 ---
 
@@ -936,86 +1341,288 @@ quality opt-in that can ship later.
 
 ## 9. Estimated Effort
 
-| Phase | Sessions | Risk |
+Updated for v3 — adds Phase 0 prep PR, promotes Phase 6 from deferred,
+folds 5e into 6c, renames 5e slot to 5f for the optional temporal
+reprojection polish.
+
+| Phase | Sessions | Risk | Branch |
+|---|---|---|---|
+| **0 — Toggle audit prep PR** | 1-2 | Low | Standalone (shared with water doc) |
+| 1 — Toggle scaffolding | 1 | Low | Branch A (1-4) |
+| 2 — Sun + Moon sync + phases | 1-2 | Low-Medium | Branch A |
+| 3 — Atmosphere multi-light + LUT | 2-3 | Medium-High | Branch A |
+| 4 — Atmospheric conditions | 1 | Low | Branch A |
+| 5a — Froxel grid infrastructure | 1 | Low | Branch B (5) |
+| 5b — Density injection + height fog | 1 | Medium | Branch B |
+| 5c — Scattering occlusion + ambient | 1 | Medium-High | Branch B |
+| 5d — Varying atmosphere density | 0.5 | Low | Branch B |
+| 5f — Temporal reprojection polish (B11, optional) | 0.5 | Low | Branch B |
+| **6a — Volumetric raymarch shader (PROMOTED)** | 1 | Medium | Branch C (6) |
+| **6b — Crossfade with procedural** | 0.5 | Low | Branch C |
+| **6c — Cloud shadow contribution (was 5e)** | 0.5 | Medium | Branch C |
+| **6d — Quality dial (auto via §11)** | 0.5 | Low | Branch C |
+
+**Total v3:** **9.5-12.5 focused sessions** + 1-2 prep PR sessions.
+
+Risk distribution:
+
+- **Phase 3 (atmosphere multi-light + LUT activation)** — high-value
+  visual payoff, deserves extra care
+- **Phase 5c (scattering occlusion)** — the "wow" moment of the whole
+  project; god rays, crepuscular beams, terrain shadow shafts
+- **Phase 6a (volumetric raymarch)** — promoted from deferred per
+  B15, but mitigated because it builds on Phase 5a's froxel grid AND
+  shares the noise field with `WebGPUProceduralCloudRenderer`
+
+Phases 0, 1, 2, 4, 5a, 5b, 5d, 5f, 6b, 6c, 6d are largely mechanical
+wiring against infrastructure that either already exists or is being
+delivered in an earlier phase.
+
+Phase 5c remains the project's natural early-stop milestone if the
+budget shrinks: the result is a visually dramatic upgrade even
+without 5d (subtle), 5f (polish), or Phase 6 (volumetric clouds).
+Stopping after 5c still ships god rays and crepuscular rays.
+
+---
+
+## 10. Decision points — RESOLVED on 2026-04-08
+
+All twelve decision points from v2 have been answered. The canonical
+answers live in `SESSION_2026-04-08_RESEARCH_REPORT.md §8.2`. Quick
+pointer table:
+
+| DP | Resolution | Reference |
 |---|---|---|
-| 1 — Toggle scaffolding | 1 | Low |
-| 2 — Sun + Moon sync + phases | 1-2 | Low-Medium |
-| 3 — Atmosphere multi-light + LUT | 2-3 | Medium-High |
-| 4 — Atmospheric conditions | 1 | Low |
-| 5a — Froxel grid infrastructure | 1 | Low |
-| 5b — Density injection + height fog | 1 | Medium |
-| 5c — Scattering occlusion + ambient | 1 | Medium-High |
-| 5d — Varying atmosphere density | 0.5 | Low |
-| 5e — Cloud shadow contribution | 0.5 | Medium (gated on Phase 6) |
-| 6 — Volumetric clouds (deferred) | 3-4 | High |
-
-**Phases 1-5: 8-11 focused sessions.** Phase 6 deferred.
-
-The risk is now distributed across two high-value pieces:
-Phase 3 (atmosphere multi-light + LUT activation) and Phase 5c
-(scattering occlusion). Both are the high-quality visual payoffs
-and both benefit from extra care. Phases 1, 2, 4, 5a, 5b, 5d are
-largely mechanical wiring against infrastructure that already
-exists (toggle forwarding, shader module augmentation, additional
-compute kernels on the existing compute pipeline infrastructure).
-
-Phase 5c is where god rays, crepuscular beams, and terrain shadow
-shafts actually appear on screen. If the project budget ever has
-to stop short, stopping after 5c is a natural milestone: the result
-is a visually dramatic upgrade even without 5d (which is subtle)
-or 5e (which depends on Phase 6).
+| DP1 — Default for `enableSunLight` | **`true`** (auto-sync). The breaking-app concern from v2 risk #4 is moot — `SunLight` doesn't expose `direction`, so there are no apps that could be manually configuring it. See §4.1. | B12 |
+| DP2 — Earthshine on/off | **On**, gated by `enableMoonPhase`, constant blue tint. See §4.2. | B1 / B13 |
+| DP3 — `MoonLight` subclass or standalone | **Marker class mirroring `SunLight`** (NOT a `DirectionalLight` subclass). See §4.2. | B2 / B14 |
+| DP4 — Phase 6 (volumetric clouds) timing | **Promoted from "deferred" to "ships immediately after 5a-5d"**, default off, cutover at 50-100 km altitude. Volumetric path reads from existing `WebGPUProceduralCloudRenderer` noise field. Effort drops from 3-4 sessions to 2-3 sessions. See §4.6 and §6 Phase 6. | B15 |
+| DP5 — Naming style | **Stay flat** (`enableMoonLight`), but organized under nested config groups (`scene.globe.atmosphericConditions.lighting.enableMoonLight`). | B16 |
+| DP6 — Default froxel resolution | **Auto-select via init benchmark** (VisualPerformanceTargetService init probe per §11), fall back to "low" if probe inconclusive. | B7 / B17 |
+| DP7 — Default for `enableVolumetricFog` | **Off by default.** Documented prominently in release notes. | B18 |
+| DP8 — Default for `enableVaryingAtmosphereDensity` | **Off by default.** | B8 / B19 |
+| DP9 — Default for `enableScatteringOcclusion` | **Off by default, independently toggleable** (NOT auto-enabled when fog is on, contrary to v2 vote). Silent no-op when fog is off. See §4.10. | B9 / B20 |
+| DP10 — Varying atmosphere density without froxel grid | **Skip** — per-pixel sky atmosphere ray-march fallback is intentionally NOT implemented. Document the limitation. | B21 |
+| DP11 — Fog composite placement | **After opaque + OIT-resolved, before UI overlay.** Transparent 3D Tiles get post-composite (approximate) in v1; per-fragment correct path in follow-up if visible artifacts. | B10 / B22 |
+| DP12 — Phase 5 blocking | **Land 1-4 first, then 5 as separate feature branch.** Both review cycles shorter than one giant PR. Phase 6 ships immediately after 5a-5d. See §6. | B23 |
 
 ---
 
-## 10. Decision points before starting
+## 11. VisualPerformanceTargetService
 
-These need confirmation before Phase 1 kicks off:
+Per **B7 / B17 locked decisions**, the original "auto-select froxel
+resolution" toggle expanded into a new dedicated service that watches
+frame time and dynamically degrades/upgrades quality features to
+hit a target FPS. This service is **opt-in, off by default**, and
+shipped in **Sprint 4** (after Phase 5 lands and there are enough
+quality knobs to make adaptive control valuable).
 
-1. **Default for `enableSunLight`** — `true` (auto-sync) or `false`
-   (preserve manual mode)? See risk #4.
-2. **Earthshine on/off?** See open question #1.
-3. **`MoonLight` as `DirectionalLight` subclass or standalone?**
-   See open question #2.
-4. **Phase 6 timing** — start volumetric clouds after Phase 5, or
-   freeze the design and defer indefinitely?
-5. **Naming** — `enableMoonLight` vs `moon.contributesToLighting`?
-   The flat property style matches existing `enableLighting`,
-   `showGroundAtmosphere`. Vote: stay flat.
-6. **Default froxel resolution.** Low (safe, dull) or Medium (good,
-   ~3ms on mid desktop)? Auto-select based on init probe? See open
-   question #7.
-7. **Default for `enableVolumetricFog`.** Off is the safest — no
-   perf regression, users opt in. On is the more ambitious
-   default — "modern renderer" expectation. Vote: off by default,
-   documented prominently in the release notes so users know to
-   try it.
-8. **Default for `enableVaryingAtmosphereDensity`.** See open
-   question #8. Vote: off.
-9. **Default for `enableScatteringOcclusion`.** On when volumetric
-   fog is on (god rays are the main visual payoff); no-op when
-   volumetric fog is off. See open question #9.
-10. **Varying atmosphere density without the froxel grid** — should
-    the per-pixel ray march sample the same 3D noise field when
-    `enableVolumetricFog = false`? Cheaper to skip and document the
-    limitation. Vote: skip; varying density requires the froxel grid.
-11. **Fog composite placement in the pipeline.** Before or after
-    3D Tiles transparent pass? See open question #10. Vote: after
-    opaque + OIT-resolved, before UI overlay. Transparent 3D Tiles
-    get post-composite fog (approximate) in v1; per-fragment fog
-    in a follow-up if needed.
-12. **Phase 5 blocking vs non-blocking for other work.** Phases 1-4
-    deliver standalone value (celestial ephemeris + multi-light sky)
-    without touching the participating media system. Phase 5 can
-    ship independently after 1-4 are in main. Vote: land 1-4 first,
-    then 5 as a separate feature branch. Both review cycles are
-    shorter than one giant PR.
+### Concept
+
+```js
+// Off by default — users opt in
+scene.adaptiveQuality.enable({
+  targetFPS: 30,                            // or 60, 120, custom
+  // optional: feature priority list — first to degrade when budget is blown
+  degradePriority: [
+    "ssr",                                   // future: screen-space reflections
+    "taa",                                   // future: temporal anti-aliasing
+    "volumetricCloudQuality",                // §4.6
+    "shadowMapResolution",                   // future: shadow cascade size
+    "froxelResolution",                      // §4.8
+    "atmosphereLutResolution",
+  ],
+});
+```
+
+### How it interacts with other Cesium systems
+
+The service must NOT misinterpret idle frames as "we're below target,
+degrade quality." It explicitly accounts for:
+
+1. **`scene.requestRenderMode = true`** — when explicit-render-mode is
+   active and `Scene._renderRequested === false`, the scene is
+   intentionally idle (no draw work this frame). The service skips
+   sampling on these frames.
+2. **Snapshot rendering mode** (NEW-3 in SESSION report §10) — when
+   the snapshot is locked, GPU work is replaying a recorded command
+   buffer at near-zero CPU cost. Frame time will be artificially low.
+   The service skips sampling when `Scene._snapshotLocked === true`,
+   and ignores the one-frame spike when the snapshot is briefly
+   unlocked for invalidation/animation.
+
+### Hysteresis
+
+Critical for preventing flicker (features visibly toggling on/off
+mid-render):
+
+- **Degrade fast:** after **3 consecutive over-budget frames**, drop
+  the highest-priority feature one quality level
+- **Upgrade slow:** after **60 consecutive under-budget frames** with
+  significant headroom, restore the lowest-priority degraded feature
+  one quality level
+- **Cooldown:** after any change, require N frames before another
+  change can fire (prevents oscillation around the budget)
+
+### Quality dial integration
+
+Every feature with a `quality: "auto"` setting feeds into this
+service. Initial features (after Phase 5 + 6 ship):
+
+- `volumetricFog.quality` — froxel grid resolution (low / medium / high)
+- `clouds.volumetricQuality` — cloud raymarch sample count
+- `atmosphereLut.quality` — LUT resolution
+
+Future features that will plug in as they ship:
+
+- TAA sample count
+- SSR step count
+- Shadow map cascade size
+- Bloom downsample chain depth
+- Indirect light probe count
+
+### Effort and slot
+
+- **Slot:** Sprint 4 (after Phase 5 of this design lands and after
+  the Tier-A visual quality features in
+  `SESSION_2026-04-08_RESEARCH_REPORT.md §7 Sprint 2` ship)
+- **Effort:** ~2-3 weeks
+- **Backlog ID:** NEW-2 in
+  `SESSION_2026-04-08_RESEARCH_REPORT.md §10`
+- **Default:** Off — `scene.adaptiveQuality.enabled === false`
+
+### Why it's not in this design's Phase 1
+
+The service has more knobs to turn AFTER the visual quality features
+land. Building the framework before there are features for it to
+adapt would mean shipping an empty service for a year. The right
+order is:
+
+1. Ship the celestial design's Phases 1-5 + Phase 6 (this doc)
+2. Ship the cross-cutting Sprint 1 + Sprint 2 visual quality
+   activations (`SESSION_2026-04-08_RESEARCH_REPORT.md §7`)
+3. THEN ship VisualPerformanceTargetService that adapts all of them
 
 ---
 
-*End of design draft v2. Review before Phase 1 implementation begins.
-v2 adds: participating media (volumetric fog), varying atmosphere
-density, and scattering occlusion (god rays / crepuscular rays).
-These three features are unified through a single froxel grid that
-also feeds into atmosphere density modulation, giving a coherent
-participating media + light transport system for ~3-4 sessions of
-implementation.*
+## 12. Phase 0 — Toggle Audit Prep PR
+
+Per the toggle audit findings in
+`SESSION_2026-04-08_RESEARCH_REPORT.md §9.5`, the current Cesium
+toggle landscape is scattered across at least 5 owners with
+overlapping/duplicated state. The worst offender is the
+`Scene.atmosphere.*` ↔ `Globe.atmosphere*` duplication — same values
+in two homes with no enforcement that they match.
+
+This design would make that worse if it added 14+ new toggles
+without first establishing a canonical home. **Phase 0 fixes the
+foundation before Phase 1 begins.**
+
+### Goals
+
+1. Introduce `scene.globe.atmosphericConditions` as the canonical
+   nested home for ALL atmospheric / lighting / fog / cloud / star
+   state (see §3 for the full structure).
+2. Convert every existing scattered property into a delegating
+   getter/setter that reads/writes through to the canonical home.
+3. **Zero behavior change** for existing apps. Pure refactor.
+4. Lands BEFORE this design's Phase 1. Also serves as the foundation
+   for the water rendering design's Phase 1 (see
+   `WATER_RENDERING_DESIGN.md §6 Phase 0`).
+
+### Scope
+
+**Properties migrated to delegating shells:**
+
+- `Scene.atmosphere.*` (10 properties) →
+  `scene.globe.atmosphericConditions.skyAtmosphere.*`
+- `Scene.fog.*` (9 properties) →
+  `scene.globe.atmosphericConditions.fog.*`
+- `Globe.enableLighting`, `Globe.dynamicAtmosphereLighting`,
+  `Globe.dynamicAtmosphereLightingFromSun`,
+  `Globe.showGroundAtmosphere`, `Globe.enableNightLights`,
+  `Globe.showProceduralClouds` → respective canonical homes
+- `Globe.atmosphereLightIntensity`, `Globe.atmosphereRayleighCoefficient`,
+  `Globe.atmosphereMieCoefficient`, `Globe.atmosphereRayleighScaleHeight`,
+  `Globe.atmosphereMieScaleHeight`, `Globe.atmosphereMieAnisotropy`,
+  `Globe.atmosphereHueShift`, `Globe.atmosphereSaturationShift`,
+  `Globe.atmosphereBrightnessShift` →
+  `scene.globe.atmosphericConditions.skyAtmosphere.*`
+  (these are the **duplicate** `Scene.atmosphere.*` values currently
+  living in two places — Phase 0 fixes the duplication)
+- `Scene.skyAtmosphere`, `Scene.skyBox`, `Scene.sun`, `Scene.moon`
+  remain as existence-based on/off (set to undefined to disable),
+  but their member properties also gain delegating shells where
+  applicable
+
+**Test coverage:**
+
+- Assertion test for every legacy property: setting it via the legacy
+  path produces the same observable value as setting it via the
+  canonical path
+- Behavior regression test: a Scene constructed with no toggles
+  changed produces a `frameState` byte-for-byte identical to the
+  pre-prep-PR baseline (where comparable)
+- Existing Sandcastle examples that use legacy paths
+  (e.g. `viewer.scene.fog.density = 0.001`) continue to render
+  identically
+
+### Effort and slot
+
+- **Slot:** Pre-Phase-1 of both this design AND the water rendering
+  design. Ship as a standalone PR before any feature work.
+- **Effort:** 1-2 sessions
+- **Backlog ID:** NEW-1 in
+  `SESSION_2026-04-08_RESEARCH_REPORT.md §10`
+- **Risk:** Low — pure refactor, no behavior change
+
+### Why it's a separate PR
+
+1. **Smaller diffs.** This design's Phase 1 PR doesn't need to also
+   include 200 lines of delegating getters/setters that aren't related
+   to the celestial/atmospheric work.
+2. **Independent value.** The prep PR fixes pre-existing technical
+   debt (the `Scene.atmosphere` ↔ `Globe.atmosphere*` duplication)
+   even if the celestial work is delayed.
+3. **Foundation for water too.** The water rendering design's
+   `scene.water.*` namespace is established by the same prep PR,
+   so both designs benefit from one focused refactor instead of
+   each duplicating the work.
+4. **Easier upstream sync.** When upstream adds new properties to
+   `Scene.atmosphere`, the canonical-home pattern is already in
+   place — we just add the new property to the canonical home and a
+   delegating shell. No conflict.
+
+---
+
+## 13. Cross-references
+
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
+  — locked B1-B23 decisions referenced throughout this doc
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.5](SESSION_2026-04-08_RESEARCH_REPORT.md#95--toggle-audit-findings-current-state-of-sceneglobefogatmosphere-toggles)
+  — toggle audit findings (the Phase 0 prep PR)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §10](SESSION_2026-04-08_RESEARCH_REPORT.md#10-new-backlog-items-from-this-session)
+  — new backlog items (NEW-1 toggle audit, NEW-2
+  VisualPerformanceTargetService, NEW-3 snapshot mode, NEW-6 higher-res
+  moon texture)
+- [WATER_RENDERING_DESIGN.md](WATER_RENDERING_DESIGN.md) — sibling
+  design that consumes the same `AtmosphericConditions` instance and
+  shares the Phase 0 toggle audit prep PR
+- [packages/engine/Source/Scene/Moon.js](../packages/engine/Source/Scene/Moon.js)
+  — existing moon ephemeris implementation (B1 verification)
+- [packages/engine/Source/Scene/SunLight.js](../packages/engine/Source/Scene/SunLight.js)
+  — existing marker class pattern that `MoonLight` mirrors (B2 / B14)
+- [packages/engine/Source/Core/Simon1994PlanetaryPositions.js](../packages/engine/Source/Core/Simon1994PlanetaryPositions.js)
+  — sun + moon ephemeris source
+
+---
+
+*End of design draft v3. All 23 B-series decisions are locked — see
+§7 (open questions resolved) and §10 (decision points resolved) for
+the resolution tables. Phase 0 (toggle audit prep PR — §12) is the
+next implementation step, shared with the water rendering design.
+Phases 1-4 land as one feature branch, Phase 5 as a separate feature
+branch, Phase 6 (volumetric clouds, **promoted from deferred**) ships
+immediately after 5a-5d. The VisualPerformanceTargetService (§11)
+is a new feature emerging from B7, scheduled for Sprint 4 after the
+visual quality features land.*

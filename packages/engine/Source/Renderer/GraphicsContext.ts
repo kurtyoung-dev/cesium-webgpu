@@ -943,6 +943,29 @@ export abstract class GraphicsContext {
   }
 
   // ═══════════════════════════════════════════════════════════
+  // CONCRETE: DEBUG / DIAGNOSTIC SURFACE
+  // Backend-specific introspection routed through the abstract base
+  // so Scene code can call this without violating the "no
+  // Renderer/WebGPU imports from Scene" rule. Default returns an
+  // empty object; backends override to expose what they own.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * Phase 6 debug surface — returns a snapshot of backend-specific
+   * diagnostic state (bundle cache stats, fog froxel state, GPU memory
+   * usage, etc.). Default returns an empty object. Backends override
+   * to populate the fields they care about. Pure read; safe to call
+   * any time, including from `Scene.getDebugSnapshot()`.
+   *
+   * Stable shape contract: callers should treat any returned field as
+   * optional (`stats.bundleManager?.cacheSize`) since the WebGL
+   * backend will leave most fields unset.
+   */
+  getRendererStatistics(): Record<string, unknown> {
+    return {};
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // CONCRETE: CONTEXT-AWARE LOGGING
   // All messages automatically include [CesiumJS:type:shortId]
   // ═══════════════════════════════════════════════════════════

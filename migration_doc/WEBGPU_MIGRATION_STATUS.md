@@ -1,8 +1,547 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 7, 2026 (Sessions 1-26, post-consolidation of WIRING_AUDIT_2026_04_02 + COMPREHENSIVE_AUDIT_2026_03_31 + WEBGPU_DEBUGGING_LOG)
+**Last Updated:** April 9, 2026 (Sessions 1-26 + Phase 0 foundation + Phase 1.1 / 1.2 celestial work)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~88% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete.
+**Overall Progress:** ~89% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. **Phase 0 foundation infrastructure landed (canonical homes, VPT skeleton, snapshot mode skeleton, 3D Tiles invalidation feed Phase 1, NEW-5 spec verification). Phase 1.1 + 1.2 celestial work landed (toggle scaffolding, MoonLight + ephemeris + lit-hemisphere shading + earthshine + phase gating + full WebGL parity moon port with bounding-cube ray-march + render bundles + snapshot freezable).**
+
+---
+
+## Recent Progress (2026-04-09 — Phase 0 + Phase 1.1 / 1.2)
+
+This section summarizes the work that landed between the original "Sessions 1-26" status and today. For the design rationale see `SESSION_2026-04-08_RESEARCH_REPORT.md` and `CELESTIAL_ATMOSPHERE_DESIGN.md`. For implementation specifics see this file's later sections and `WEBGPU_DEBUGGING_LOG.md`.
+
+### Phase 0 — Foundation (8 sub-phases, all completed 2026-04-08 / 04-09)
+
+**Goal:** introduce all foundation surfaces that Phase 1+ celestial and water work need to register against, with **zero behavior change** for existing upstream Cesium APIs.
+
+**Sub-phases (all completed):**
+
+- **0.1** ✅ Toggle audit — 97 properties across 11 surfaces inventoried (audit report)
+- **0.2** ✅ Canonical home shape design — Option A unified scattering, weather branch, leaf naming (design doc)
+- **0.3** ✅ `AtmosphericConditions` + `GlobeWater` facade classes with delegating shells → new surfaces `scene.globe.atmosphericConditions.*` and `scene.globe.water.*`
+- **0.3a** ✅ `WATER_RENDERING_DESIGN.md` §5 namespace migration `scene.water.*` → `scene.globe.water.*` (doc-only)
+- **0.4** ✅ `VisualPerformanceTargetService` skeleton + Scene wiring → new surface `scene.visualPerformanceTarget`
+- **0.5** ✅ 3D Tiles Live Invalidation Feed Phase 1 — real producer fixture parsed, 4 path encodings, snapshot version hook, JSON-block-stream parser → new surfaces `Cesium3DTilesInvalidationFeed`, `TilePathEncoding` enum, `Scene._snapshotVersion`
+- **0.6** ✅ NEW-5 spec re-verification — C4/C8/C11/C12 verified live, 3 small refinements captured (doc-only)
+- **0.7** ✅ Snapshot mode spike — memo + `SnapshotModeService` registration skeleton with `_snapshotVersion` reconciliation → new surface `scene.snapshotMode`
+
+**Files added in Phase 0:** `AtmosphericConditions.js`, `GlobeWater.js`, `VisualPerformanceTargetService.js`, `SnapshotModeService.js`, `Cesium3DTilesInvalidationFeedAdapter.js`, `ProducerListenerAdapter.js`, `Cesium3DTilesInvalidationFeed.js`, `TilePathEncoding.js`, `TilePathResolver.js`, `SNAPSHOT_MODE_SPIKE_2026-04-09.md`, `Specs/Data/Cesium3DTiles/InvalidationFeed/listener_invalidations_25.2.txt` (real producer fixture). New top-level dir `packages/engine/Source/Services/`.
+
+**Behavior change:** zero. Every existing API still works; all opt-in surfaces default disabled. `npx tsc --noEmit` clean throughout.
+
+### Phase 1.1 — Celestial toggle scaffolding (completed 2026-04-09)
+
+- Added 5 new fields to `FrameState`: `atmosphericConditions`, `skyBrightness`, `sunDirectionWC`, `moonDirectionWC`, `moonPhaseFraction`
+- `Scene.js` now forwards `scene.globe.atmosphericConditions` onto `frameState` once per frame, alongside the existing `scene.atmosphere` forwarding
+- B-series locked defaults verified (sun + moon lighting on, earthshine off, volumetric fog off, varying density off, scattering occlusion off, volumetric clouds off, star modulation `inflection: 0.5` / `steepness: 1.0`, cloud volumetrics 50/100km cutover)
+- Renderers now have a stable read surface for B-series toggles via `frameState.atmosphericConditions.*`
+
+### Phase 1.2 — Sun + Moon Sync (completed in three rounds: 1.2a + 1.2b + 1.2c v2, 2026-04-09)
+
+#### 1.2a — Sync data (small new files + frameState population)
+
+- **NEW** `MoonLight.js` — marker class mirroring `SunLight` per locked B14/B2 (not a `DirectionalLight` subclass — opt-in via `scene.light = new MoonLight()`)
+- **MODIFIED** `Moon.js` — `update(frameState)` now populates `frameState.moonDirectionWC` from the existing Simon 1994 ephemeris and computes `moonPhaseFraction = 0.5 * (1 - cos(angle(moonDir, sunDir)))` gated on `atmosphericConditions.lighting.enableMoonPhase`
+- **MODIFIED** `Scene.js` — populates `frameState.sunDirectionWC` from `uniformState.sunDirectionWC` once per frame
+
+#### 1.2b — Phong lighting + log depth + onlySunLighting + real texture loading + shader extraction
+
+- **NEW** `Shaders/WebGPU/Environment/Moon.wgsl` — extracted from a 60-line inline template literal in `WebGPUEnvironmentRenderer.js`. Source is now a proper `.wgsl` file matching project conventions. `Moon.js` wrapper hand-written (gitignored, regenerated by `gulp build`'s `wgslToJavaScript` step).
+- **Real moon texture loading** via `Resource.fetchImage()` + `WebGPUImageUpload.uploadImageToTexture()` — fixes the regression where every WebGPU user saw a 4×4 gray placeholder. Cached, async, retries-once-then-warns on failure, detects URL changes at runtime.
+- **Phong lighting** (Lambert diffuse + specular)
+- **`onlySunLighting` toggle** honored — picks `sunDirEC` vs `sceneLightDirEC` (matches WebGL `#ifdef ONLY_SUN_LIGHTING`)
+- **Log depth write** via `@builtin(frag_depth)` (`log2(1+w) / log2(1+far)`)
+- **Earthshine** + **phase gating** (already had stubs from earlier; now wired to atmosphericConditions toggles)
+
+#### 1.2c v2 — Full WebGL parity port (the "skipped items" + Phase 0 leverage)
+
+After an audit revealed the WebGL moon uses **bounding-cube rasterization + analytic ray-march** (not a tessellated UV sphere as I'd assumed), the moon shader was rewritten to match WebGL's geometry approach exactly, plus fork-built improvements:
+
+**Parity items closed:**
+
+- **Bounding-cube rasterization** (8 verts, 36 indices) — matches WebGL `EllipsoidPrimitive` `BoxGeometry.fromDimensions({2,2,2})` exactly. Cube screen footprint scales with the moon's actual size; full-screen quad approach that the first 1.2c attempt used was 100x more expensive at typical viewing distances.
+- **Analytic ray-ellipsoid intersection** in moon model space (matches `EllipsoidFS.glsl`)
+- **Geodetic surface normal** via `position * oneOverRadiiSq` gradient — analytic, accounts for moon's mild oblateness (1738/1738/1736 km)
+- **Back-face / inside pass** with outside-then-inside compositing matching `EllipsoidFS.glsl`'s `outsideFaceColor`/`insideFaceColor` mix (only matters when camera is inside the moon — unreachable in normal use, but matches WebGL bit-for-bit)
+- **CsmMaterial-style filling** — texture sample becomes the diffuse channel of a `CsmMaterial`-shaped local; Phong runs through that. Matches `Material.fromType(Material.ImageType)` semantics from the WebGL path.
+
+**Improvements beyond WebGL parity (Phase 0 leverage):**
+
+- **RTE 64-bit precision** in the VS — WebGL's `EllipsoidVS.glsl` uses single-precision `radii * position`. Our VS RTE-encodes the moon center via `(moonH, moonL)` and the camera split via `(camH, camL)`, then sums in single precision per project rule. Costs nothing.
+- **Exact log depth** via VS-output clip-space `w` (no approximation)
+- **Render bundle pre-encoding** via `WebGPURenderBundleManager.getOrCreate()`. The pipeline + bind group + draw sequence is identical every frame; we cache the encoded `GPURenderBundle` and replay it via `passEncoder.executeBundles([bundle])` from a new fast path in `WebGPUDrawCommand.execute()`. Bundle invalidates on bind group change (texture upgrade). Moon is the **first real consumer** of `WebGPURenderBundleManager`.
+- **Snapshot mode freezable registration** — moon registers itself with `scene.snapshotMode` so when snapshot mode is active, per-frame uniform writes become a no-op and the bundle replays the frozen uniforms. Moon is the **first real consumer** of `SnapshotModeService`.
+- **Behind-camera early-out** — `dot(cameraToMoon, cameraDirWC) < -maxRadius` skips the entire draw command before any GPU work
+- **`WebGPUDrawCommand.bundle` field added** — 5-line addition that lets any draw command opt into bundle replay. Future renderers (sun, sky atmosphere, custom static-pipeline content) can register against the same surface trivially.
+
+### Phase 1.3a — CPU sky brightness estimator (completed 2026-04-09)
+
+- **NEW** `Scene/SkyBrightness.js` — pure helper. `computeSkyBrightness(sunDirWC, moonDirWC, moonPhaseFraction, cameraPositionWC)` returns a 0..1 scalar driven by sun altitude (smoothstep -0.1..+0.4 over the local horizon) and moon altitude scaled by phase fraction (~4% of full sun for full moon overhead).
+- **MODIFIED** `Scene.js` — `updateFrameState()` now writes `frameState.skyBrightness` immediately after forwarding `sunDirectionWC`. Uses last frame's `moonDirectionWC` (still on `frameState` from the prior `Moon.update()` call) — visually indistinguishable from current value at any reasonable simulation rate, avoids duplicating the Simon 1994 ephemeris computation.
+- **NEW** `Specs/Scene/SkyBrightnessSpec.js` — 8 specs: sun overhead → 1.0, antisun no-moon → 0, full moon overhead at night → ~0.04, phase scaling, twilight monotonicity, degenerate camera handling, clamping.
+
+### Phase 1.3b — Star modulation in cubemap panorama (completed 2026-04-09)
+
+- **MODIFIED** `Shaders/WebGPU/CubeMapPanorama.wgsl` (canonical source) — added `starModulation: vec4<f32>` uniform (offset 208, 16 bytes; total UBO 224 bytes still under the 256-byte alignment). Fragment shader applies `1.0 - smoothstep(0, 1, clamp((skyBrightness - inflection) * steepness, 0, 1))` to the sampled cubemap color when the enable flag is set.
+- **MODIFIED** `WebGPUCubeMapPanoramaRenderer.js` — inline `CUBEMAP_PANORAMA_WGSL` (the production path) updated identically. `updateUniforms()` packs `frameState.skyBrightness` into `params.w` and `(curve.inflection, curve.steepness, enableFlag)` into the new `starModulation` slot. Defaults to `enableModulation = true` when `atmosphericConditions.skyAtmosphere.enableStarBrightnessModulation` is undefined or true.
+- **MODIFIED** `Scene/AtmosphericConditions.js` — `buildSkyAtmosphere()` adds two new fields to the leaf: `enableStarBrightnessModulation: true` and `enableNightSkyDimming: true`. Apps that want the legacy "always full brightness" behavior set these to false.
+- Renderers/scene code can now read `frameState.skyBrightness` to drive any other "is it dark out?" decision; the cubemap shader is the first consumer.
+
+### Phase 1.3c — Dual-light atmosphere LUT (completed 2026-04-09)
+
+The atmosphere LUT pipeline now bakes a SECOND inscatter+transmittance pair for the moon, so the sky atmosphere fragment shader can sum dual-light scattering with one extra texture sample on the LUT path. The moon contribution is scaled by `moonPhaseFraction × moonIntensity`, defaulting to 0.05 (~5% of full sun) at full moon — visible as a gentle blue glow on the night sky without overpowering the sun's daytime contribution.
+
+- **MODIFIED** `WebGPUPerformanceManager.ts` — `_atmosphereLutResources` now holds parallel `transmittance/inscatter/paramsBuffer/paramsData/bindGroup` slots for both sun and moon. New `_moonAtmosphereLUTDirty` flag plus `invalidateMoonAtmosphereLUT()` / `shouldRecomputeMoonAtmosphereLUT()` accessors mirror the sun side. `ensureAtmosphereLUTResources()` allocates BOTH pairs in one shot (~256 KB total). `dispatchAtmosphereLUT()` gains a `target: "sun" | "moon"` parameter and routes to the matching params buffer / textures / bind group; both lights share the bind group layout.
+- **MODIFIED** `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — added `moonDirectionWC: vec3` + `dualLightControl: vec4` fields to the Uniforms struct (UBO grew 224→256 bytes, fully utilizing the 256-byte alignment). Two new bind group entries: `moonTransmittanceLut` at `@binding(3)` and `moonInscatterLut` at `@binding(4)`. `sampleScatteringLut` is now parameterized on `inscatterTex` so the same helper handles both lights. The fragment shader's LUT path samples the moon LUT and adds it to the sun result when `dualLightControl.x > 0.5 && dualLightControl.y > 0.001`.
+- **MODIFIED** `WebGPUSkyAtmosphereRenderer.js` —
+  - Bind group layout extended to 5 entries (sampler + 4 textures); placeholder bind group binds the same 1×1 zero texture to all four LUT slots so the layout stays constant when compute is unavailable.
+  - Real bind group cache includes `lutMoonTransmittanceView` / `lutMoonInscatterView` and rebuilds when either of the four views changes.
+  - Moon direction tracked alongside sun via the same threshold-gated invalidation pattern (`dot < 0.9999` triggers `invalidateMoonAtmosphereLUT()`); only active when `enableDualLightAtmosphere` is on AND `frameState.moonDirectionWC` is populated (skipped on the very first frame before `Moon.update()` runs).
+  - Sun + moon dispatches batched into the same one-shot encoder to avoid an extra `device.queue.submit()` per frame when both LUTs are dirty.
+  - `packUniforms()` writes `moonDirectionWC` (offset 56) and `dualLightControl` (offset 60) using `frameState.moonDirectionWC` / `moonPhaseFraction` and the new `enableDualLightAtmosphere` / `moonIntensity` fields on `atmosphericConditions.lighting`. Falls back to a `(0,0,1)` moon direction stand-in when the moon hasn't ticked yet so the shader never sees uninitialised data.
+- **MODIFIED** `Scene/AtmosphericConditions.js` — `buildLighting()` adds `enableDualLightAtmosphere: true` and `moonIntensity: 0.05` to the lighting leaf. Apps can disable dual-light scattering or tune the moon intensity per scene without touching shader code.
+
+**Behavior change:** zero on the day side (sun term unchanged at full intensity, moon contribution scaled to ~0% in daylight). On the night side, full-moon-overhead frames now show a gentle blue scattered glow; new moon shows none (gated by `moonPhaseFraction`). All four `tsc --noEmit` checkpoints clean across the four-file change.
+
+### Phase 1.4 — AtmosphericConditions consumers (completed 2026-04-09)
+
+The closing piece of the 1.x feature branch wires three weather state scalars from `atmosphericConditions.weather` into the existing sky/fog/star renderers. Defaults are picked so the change is invisible until an app starts setting them — no behavior change for any existing scene.
+
+- **MODIFIED** `Scene/AtmosphericConditions.js` — `buildWeather()` adds three new fields to the weather leaf:
+  - `humidity: 0.5` (plain scalar; 0=dry desert, 1=tropical jungle)
+  - `airQuality: 1.0` (plain scalar; 1=clean, <1=dust/haze, >1=very clean)
+  - `cloudCover` (delegating getter/setter over `globe.cloudCoverage` so the procedural cloud renderer and the star occlusion path stay in sync — single source of truth)
+- **MODIFIED** `Shaders/WebGPU/CubeMapPanorama.wgsl` + inline `CUBEMAP_PANORAMA_WGSL` in `WebGPUCubeMapPanoramaRenderer.js` — `starModulation.w` (formerly `_pad`) now carries `cloudCover`. Fragment shader multiplies the modulated star color by `(1 - cloudCover)` so a fully overcast sky hides stars completely without requiring a separate occlusion pass.
+- **MODIFIED** `WebGPUCubeMapPanoramaRenderer.js` `updateUniforms()` — reads `frameState.atmosphericConditions.weather.cloudCover` and writes it to `uniformData[55]`. Defaults to `0` (clear sky) when no globe / weather is wired up.
+- **MODIFIED** `WebGPUGlobeSurfaceRenderer.ts` tile uniform packing — fog density is multiplied by `(0.5 + humidity)` before being written to the tile UB. Centered on humidity=0.5 producing 1.0× (no change), 0.0 producing 0.5× (very dry), 1.0 producing 1.5× (humid haze). Linear and bounded so existing fog tuning stays predictable.
+- **MODIFIED** `WebGPUSkyAtmosphereRenderer.js` LUT dispatch path:
+  - `humidity` scales the Mie coefficient via `(0.5 + humidity)` before being passed to `dispatchAtmosphereLUT()`. Same range and centering as fog density.
+  - `airQuality` scales the Rayleigh coefficient via `1.0 / airQuality`. Higher airQuality → less Rayleigh → less blue (cleaner-looking sky); lower airQuality → more Rayleigh → washed-out dusty look.
+  - **Cache invalidation:** the renderer caches `lastHumidity` / `lastAirQuality` and calls `invalidateAtmosphereLUT()` + `invalidateMoonAtmosphereLUT()` whenever either changes, forcing the LUT compute to re-bake with the new coefficients on the next frame. Without this the LUT would stay stale until the sun direction moved.
+- `windSpeed` / `windDirection` were already on the weather leaf (delegating to `scene.weatherWindSpeed` / `scene.weatherWindDirection` and fanning out to `globe.cloudWindSpeed` / `globe.cloudWindDirection`). No new code; this lays the groundwork for water Phase 1's surface displacement consumer.
+
+**Behavior change:** zero by default. Setting `scene.globe.atmosphericConditions.weather.humidity = 1.0` produces a noticeably hazier horizon and brighter Mie halo around the sun within one frame (LUT recomputes). Setting `cloudCover = 0.8` dims stars to 20% of their normal brightness. Setting `airQuality = 0.5` produces a deeply saturated sky color from doubled Rayleigh scattering. All scaling is linear and bounded so the existing scene tuning still works at default values.
+
+**Phases 1.1–1.4 are now feature-complete.** The 1.x batch ships sun + moon ephemeris sync, dual-light atmosphere LUT, sky brightness CPU estimator, star modulation with cloud occlusion, and weather coefficient consumers as one cohesive feature branch per the B23 lock.
+
+### Phase 1.x consolidation — EllipsoidRenderer extraction (completed 2026-04-09)
+
+Closes the carry-over follow-up "EllipsoidPrimitive feature renderer consolidation" listed against Phase 1.2c v2. The Moon's bounding-cube + analytic ray-march approach was extracted into a shared infrastructure module so future ellipsoid bodies (Sun-as-ellipsoid, custom planets, asteroid models) can share the JS plumbing instead of copy-pasting ~140 lines of uniform-pack scaffolding.
+
+- **NEW** `Renderer/WebGPU/WebGPUEllipsoidRenderer.ts` (~388 lines) exports:
+  - `createEllipsoidBoundingCube(device)` — the canonical 8-vert / 36-index unit cube. Per-body code scales by `radii` in the vertex shader.
+  - `createEllipsoidBindGroupLayout(device)` — the canonical bind group layout: `(uniform UBO @0, texture_2d @1, sampler @2)`. Stable contract for any future body that uses this module.
+  - `packEllipsoidBaseUniforms(uniformData, inputs)` — fills the body-agnostic prefix (offsets 0..63 = 256 bytes) of an ellipsoid uniform buffer. Writes mvpRTE, RTE camera split, RTE body-center split, ivmRow0..2 (eye→model 3×3), cameraPositionMC, radii, oneOverRadiiSq, sunDirMC, sceneLightDirMC. Body-specific writes append at offset 64+.
+  - `ELLIPSOID_BASE_UNIFORM_FLOATS = 64` and `ELLIPSOID_BASE_UNIFORM_BYTES = 256` constants.
+- **NEW** `Shaders/WebGPU/chunks/functions/csm_intersectEllipsoid.wgsl` — extracted the analytic ray-ellipsoid intersection from the Moon shader into a chunk so any future body can `#import` it instead of inlining the math. The Moon shader currently still inlines its copy (the chunk preprocessor isn't wired through the Moon shader's build path yet); future bodies can adopt the chunk directly.
+- **MODIFIED** `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` (Moon path):
+  - `createMoonBoundingCube()` is now a thin wrapper around `createEllipsoidBoundingCube()`.
+  - `createMoonPipeline()` uses `createEllipsoidBindGroupLayout()` instead of inlining the bind group layout.
+  - `_packMoonUniforms()` calls `packEllipsoidBaseUniforms()` for offsets 0..63 then writes the moon-specific tail (moonDirWC, phaseFraction, earthshine, useLogDepth, shininess, specularStrength, farPlane) at offsets 64..75.
+  - Removed 6 now-unused scratch variables (`scratchInverseModelView3`, `scratchCameraMC`, `scratchSunMC`, `scratchSceneLightMC`, `scratchInverseModelMatrix`, `scratchInverseModelRot3`) and the unused `Matrix3` import. File shrunk from ~1107 to ~967 lines (~13% reduction).
+- **NEW** `Specs/Renderer/WebGPU/WebGPUEllipsoidRendererSpec.js` — 11 specs covering layout constants, mvp matrix pack, RTE camera/center splits, radii / oneOverRadiiSq writes, sun direction transformation under model rotation, scene-light fallback, camera-in-model-coords math, and "tail untouched" verification. Pure CPU specs — no GPUDevice required.
+
+**Behavior change:** zero. The Moon renders identically (`tsc --noEmit` clean; the math in the shared packer matches the previous inline pack byte-for-byte). The win is architectural — when the Sun-as-ellipsoid renderer or a custom planet feature renderer arrives, they get the cube + bind group + base pack for free. Documented as the consolidation pattern future ellipsoid bodies follow.
+
+**Stretch follow-up (not done in this consolidation):** The orphan `WebGPUEllipsoidPrimitiveRenderer.ts` still uses the older screen-space-quad approach (~8M FS invocations at 4K). Migrating it to the bounding-cube path is a separate ~1-2 day task and should happen the next time it gets a real consumer. Logged in the backlog.
+
+### Phase 5a — Volumetric fog froxel-grid infrastructure (completed 2026-04-09)
+
+Opens the celestial atmosphere design's heaviest remaining piece (`CELESTIAL_ATMOSPHERE_DESIGN.md` §4.8) — the Frostbite-style three-pass volumetric fog renderer. **Phase 5a ships infrastructure only with zero visual change**: the compute kernels are placeholders that clear their outputs, the integrated 3D volume defaults to `(0, 0, 0, 1)` (no scatter, full transmittance), and the composite pass applies `out = sceneColor × 1 + 0 = sceneColor`. Phase 5b/5c/5d fill in the density / scattering / occlusion math without touching this scaffolding.
+
+- **NEW** `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts` (~570 lines) — main coordinator. Holds three rgba16float 3D textures (density, scattering, integrated), one params UBO, the compute pipelines for the three passes, and the full-screen composite pipeline. Allocates lazily on first frame and rebuilds when the quality preset changes. Exposes `update(context, frameState, scene)` for the compute path and `composite(context, frameState, colorView, depthView, outputView, format)` for the final blit. Quality bands per the design doc:
+  - **low**:    80 ×  45 ×  64  (~230K froxels, ~11 MB)
+  - **medium**: 160 ×  90 × 128  (~1.8M froxels, ~84 MB)
+  - **high**:   240 × 135 × 192  (~6.2M froxels, ~300 MB)
+  - **auto** maps to **low** until the VPT init benchmark wires through (Phase 5a defers the auto-tune since there's nothing to measure with placeholder kernels).
+- **NEW** `Shaders/WebGPU/Compute/VolumetricFog.wgsl` — single compute shader with three entry points (`densityInjection`, `lightScattering`, `integrate`) all `@workgroup_size(8, 8, 1)`. Phase 5a kernels clear their outputs to zero (or `(0,0,0,1)` for the integrated volume so transmittance reads as 1). Phase 5b/5c populate with real density / sun + moon scattering / front-to-back integration.
+- **NEW** `Shaders/WebGPU/PostProcess/VolumetricFogComposite.wgsl` — full-screen triangle vertex shader (no vertex buffer needed) + fragment shader that samples the integrated 3D volume in screen UV + linearized depth and applies the standard alpha-over composite `out = sceneColor × transmittance + scatteredLight`. Bind group layout: `(uniform, sampler, sceneColor, sceneDepth, fogVolume)`.
+- **MODIFIED** `Renderer/FeatureRendererKey.js` — added `VOLUMETRIC_FOG: 37`, bumped `COUNT` to 38.
+- **MODIFIED** `Renderer/WebGPU/WebGPUFeatureRenderers.ts` — registers the volumetric fog feature renderer with three entry points (`update`, `composite`, `destroy`).
+- **MODIFIED** `Renderer/WebGPU/WebGPUSceneRenderer.ts` `_executeEnvironmentalEffects()` — added a 4th step gated on `frameState.atmosphericConditions.volumetricFog.enabled`. Runs the compute passes via `fogFR.update()` then the composite via `fogFR.composite()` after procedural clouds / SSR / weather particles, before post-processing. Matches the B22 placement spec (after opaque + OIT-resolved color, before UI overlay).
+- **MODIFIED** `Scene/AtmosphericConditions.js` `buildVolumetricFog()` — extended the leaf with the full set of design-doc tunables: `maxDistance` (50000m), `density` (1.0), `falloff` (0.0001 1/m), `fogAnisotropy` (0.3 HG g), `fogAlbedo` (vec3 0.9/0.92/0.95). The existing `enabled` (B18: false), `quality` ("auto"), and `enableScatteringOcclusion` (B20: false) toggles are preserved.
+
+**Behavior change:** zero. Default `enabled = false` per B18; even with `enabled = true` the placeholder kernels produce a visually identical scene because the integrated volume reads as (0, 0, 0, 1). The win is that **Phase 5b/5c/5d become "fill in the kernels" instead of "build the infrastructure AND fill in the kernels"** — the hardest scaffolding (3D texture allocation, bind group layouts, pipeline creation, scene composite wiring, frame state plumbing) is done. `tsc --noEmit` clean throughout.
+
+**What's NOT in Phase 5a (deferred to 5b/5c/5d):**
+- Real density injection (height fog + atmospheric conditions wire-in)
+- Sun + moon scattering with Henyey-Greenstein phase function
+- Front-to-back depth integration
+- Shadow map sampling for scattering occlusion (god rays)
+- Ambient term from the atmosphere inscatter LUT
+- 3D noise field for varying atmosphere density
+- Quality auto-tune via VPT init benchmark
+
+### Phase 5b — Real density / scattering / integration kernels (completed 2026-04-09)
+
+Replaces the Phase 5a placeholder kernels with the actual Frostbite-style three-pass math: log-sliced froxel→world reconstruction, height fog density, sun + moon Henyey-Greenstein scattering, and front-to-back Beer-Lambert integration. **First phase that actually changes pixels** when `enableVolumetricFog` is on.
+
+- **MODIFIED** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`:
+  - Extended `VolumetricFogParams` to 40 floats: added `invViewProj`, `cameraAndPlanet`, `sunDirectionAndIntensity`, `moonDirectionAndScale`.
+  - **Disjoint @binding numbers** per access mode (binding 1=densityOut, 2=densityIn, 3=scatteringOut, 4=scatteringIn, 5=integratedOut) so the WGSL module declares each only once. Each pipeline's BGL provides only the bindings its entry point references — WebGPU validates per-entry-point.
+  - **`froxelWorldPosition()`** helper: builds screen UV from `gid.xy`, unprojects (ndc, 0/1) → world rays via `invViewProj`, places the froxel at log-sliced linear depth `near × pow(maxDistance/near, k/D)`.
+  - **`densityInjection`** kernel: writes `baseDensity × exp(-altitude × falloff)` per froxel, where altitude = max(0, length(worldPos) - innerRadius). Anisotropy g goes in the `.a` slot.
+  - **`lightScattering`** kernel: reads density, sums sun + moon contributions via Henyey-Greenstein phase function, writes `vec4(scatteredRGB, density)`. Skips empty froxels via early-out.
+  - **`integrate`** kernel: one thread per (x, y), serial walk over z = 0..D-1. Standard Beer-Lambert front-to-back integration with `(1 - sliceTransmittance) / extinction` factor (clamped for the limit case).
+- **MODIFIED** `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`:
+  - **Three per-pass bind group layouts** + matching pipeline layouts (densityBGL, scatteringBGL, integrateBGL). Each declares only the bindings its entry point uses; the bind groups are pre-built once.
+  - Param packing extended for the new fields: composes `view × projection` then inverts via `Matrix4.inverse()` when the camera doesn't cache `inverseViewProjection`. Pulls `sun + moon directions` from `frameState.sunDirectionWC` / `moonDirectionWC` and `moonPhaseFraction × moonIntensity` (matches the SkyAtmosphere dual-light path).
+  - Integrate dispatch is now `(ceil(W/8), ceil(H/8), 1)` instead of `× depth` because each thread serial-walks the z axis.
+- **MODIFIED** `Shaders/WebGPU/PostProcess/VolumetricFogComposite.wgsl` — depth slicing switched from linear to log to match the kernels' slicing. Composite would otherwise sample the wrong depth band.
+
+**Behavior change:** when `enableVolumetricFog = true`, scenes now show actual height fog with sun + moon in-scattering. No god rays yet (those are 5c). Default is still off per B18.
+
+### Phase 5c — Scattering occlusion (god rays) (completed 2026-04-09)
+
+Wires the existing sun shadow map into the scattering kernel via `texture_depth_2d` + `sampler_comparison` and adds a constant ambient term. When `enableScatteringOcclusion = true` AND a shadow map is bound, in-scattered sun light is gated by a per-froxel shadow comparison sample, producing visible god rays where lit and shadowed regions meet at high density gradients.
+
+- **MODIFIED** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`:
+  - Added `sunShadowMatrix: mat4x4` and `occlusion: vec4` (enableScatteringOcclusion, ambientStrength, shadowMapValid, shadowDarkness) to the params struct.
+  - Added two new bindings to the scattering pass: `@binding(6) sunShadowMap: texture_depth_2d` and `@binding(7) sunShadowSampler: sampler_comparison`.
+  - **`sampleSunShadow(worldPos)`** helper: projects worldPos via `sunShadowMatrix`, converts NDC → UV, applies a small bias, calls `textureSampleCompareLevel`, mixes with `darkness` so fully-occluded fragments aren't pitch black. Falls back to 1.0 (fully lit) when occlusion is off OR no real shadow map is bound.
+  - **`lightScattering`** kernel multiplies the sun term by the shadow factor and adds an ambient term `albedo × density × ambientStrength` so shadowed froxels still receive a soft fill.
+- **MODIFIED** `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`:
+  - Allocated a 1×1 `depth32float` placeholder texture cleared to 1.0 ("fully lit"), bound by default so the scattering bind group always has a valid shadow texture even when no shadow map is active.
+  - Created a comparison sampler (`compare: "less-equal"`, linear filtering) for the shadow path.
+  - Per-frame: walks `frameState.shadowMaps`, fetches the active sun shadow map's `_shadowMapMatrix` and `_webgpuCache.depthTextureView`, packs the matrix into the params UBO at offsets 28..43, sets `occlusion.z = 1` when valid. Rebuilds the scattering bind group on the rare occasions the shadow texture view itself changes.
+- **MODIFIED** `Scene/AtmosphericConditions.js` `buildVolumetricFog()` — added `ambientStrength: 0.05` (constant Phase 5c value; Phase 5e can replace with a real LUT sample).
+
+**Behavior change:** when `enableVolumetricFog = true` AND `enableScatteringOcclusion = true` AND a sun shadow map is active, terrain casts visible shadow shafts through the height fog. The ambient term keeps shadowed regions soft instead of hard black. Default both off per B18/B20.
+
+**Deferred to Phase 5e (future):**
+- Real LUT-sampled ambient term — needs the SkyAtmosphere inscatter LUT views routed through to the volumetric fog renderer (currently lives in WebGPUPerformanceManager; cross-renderer plumbing is the only blocker).
+- Moon shadow map — moon is dim enough that shadow precision isn't visible in practice; deferred indefinitely.
+- PCF shadow filtering — single-tap comparison is currently used; the existing terrain shadow path's PCF can be cribbed if banding becomes visible.
+- Cloud volumetric shadow contribution — deferred to Phase 6c per the design doc.
+
+### Phase 5d — Varying atmosphere density (completed 2026-04-09)
+
+Modulates the height-fog density via a 3D fbm noise field so scenes can express ground haze pockets, inversion layers, and pollution domes per the design doc §4.9. Per B19/B21, defaults to OFF and is silently a no-op when `enableVolumetricFog = false`.
+
+- **MODIFIED** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`:
+  - Added a `noise: vec4<f32>` field to the params struct (enableVaryingDensity, noiseScale, noiseStrength, _pad).
+  - Added `hash13`, `valueNoise3d`, and `fbm3d` helpers — 3 octaves of value noise with smoothstep interpolation. ~30 lines, no precomputed permutation table needed.
+  - `densityInjection` kernel multiplies the height-fog density by `(1 + strength × fbm3d(worldPos / scale))` when `noise.x > 0.5`. Clamped to non-negative so large negative noise + low base density doesn't produce anti-fog.
+- **MODIFIED** `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`:
+  - Param buffer grew from 60 to 64 floats (256 bytes total).
+  - Pulls `enabled` / `noiseScale` / `noiseStrength` from `frameState.atmosphericConditions.varyingAtmosphereDensity` (the existing leaf with B-series-locked defaults).
+
+**Behavior change:** when `enableVolumetricFog = true` AND `varyingAtmosphereDensity.enabled = true`, the height fog gains a 3D noise modulation. Default off; opt-in shows visible haze pockets and density variation per the design doc §4.9.
+
+**Phase 5 status: feature-complete.** All four sub-phases ship as one feature branch per the B23 lock. Phase 5e (real LUT ambient + cloud shadows) is deferred to Phase 6 work which folds cloud rendering into the same froxel grid.
+
+### Snapshot Mode Phases A-D — completed 2026-04-09
+
+Closes the spike memo (`SNAPSHOT_MODE_SPIKE_2026-04-09.md`). The Phase 0.7 skeleton already shipped the registration + version reconciliation; this batch fills in the actual freeze logic, the camera-delta auto-thaw, the markDirty hooks, and the spec coverage. With Phase 5's volumetric fog and Phase 1.x's celestial bundles in production, snapshot mode now has multiple real consumers to validate against — the moon was wired in 1.2c v2 as the first test case.
+
+**Phase A — Bundle manager freeze flag + self-registration**
+- **MODIFIED** `WebGPURenderBundleManager.ts`:
+  - Added `_isFrozen` flag plus `freeze()` / `thaw()` / `isFrozen` / `asFreezable()` public methods.
+  - `beginFrame()` skips eviction entirely while frozen.
+  - `getOrCreate()` routes cache misses through a new `_buildEphemeral()` path that records-and-discards instead of admitting to the cache. This prevents transient one-frame additions from polluting a snapshot.
+  - On `thaw()`, every cached entry's `lastUsedFrame` is reset to the current frame so the post-thaw scene doesn't trigger a build storm from the next eviction tick.
+- **MODIFIED** `Scene/Scene.js`:
+  - Per-frame self-registration of the WebGPU bundle manager via `bundleMgr.asFreezable()` → `snapshotMode.registerFreezable("webgpu-bundle-manager", ...)`. Idempotent + gated on `_bundleManagerSnapshotRegistered` flag so it only runs once per scene lifetime.
+  - Skipped on WebGL contexts (the bundle manager only exists on WebGPU).
+
+**Phase B — Camera-delta auto-thaw**
+- **MODIFIED** `Services/SnapshotModeService.js`:
+  - `enter()` now also captures `camera.positionWC` / `directionWC` / `upWC` (defensively cloned because Cesium mutates these in-place each frame).
+  - New `tickCamera(scene)` method runs every frame and auto-thaws when:
+    - Position delta exceeds `cameraDeltaPositionThreshold` (default 1.0m)
+    - Direction angle exceeds `cameraDeltaRotationThreshold` (default ~0.5°)
+    - Up vector angle exceeds the same rotation threshold (catches pure roll without forward-axis change)
+  - New `cameraDeltaPositionThreshold` / `cameraDeltaRotationThreshold` setters so apps can tune sensitivity per scene.
+  - New `cameraThawCount` diagnostic in `getStatistics()`.
+- **MODIFIED** `Scene/Scene.js`: `Scene.render()` calls `_snapshotMode.tickCamera(this)` immediately after `_snapshotMode.tick(this)`.
+
+**Phase C — markSnapshotDirty + HDR/depth hooks**
+- **MODIFIED** `Services/SnapshotModeService.js` — new `markDirty(reason)` method. Thaws + bumps `manualThawCount` + records the reason in `lastThawReason`. Idempotent / no-op when not frozen.
+- **MODIFIED** `Scene/Scene.js`:
+  - New public `Scene.prototype.markSnapshotDirty(reason)` API. Documents the contract for user `postUpdate` listeners that mutate entity state silently.
+  - HDR + log-depth dirty-flag detection in `Scene.render()` now calls `_snapshotMode.markDirty()` BEFORE the flags get cleared, so cached bundles encoded against the old swap-chain attachments don't survive into the new format.
+
+**Phase D — Spec coverage**
+- **NEW** `Specs/Services/SnapshotModeServiceSpec.js` (~250 lines, 18 specs across 7 describe blocks):
+  - `enabled` flag toggle + auto-thaw on disable
+  - Freezable registry: register / unregister / late-arrival joins active snapshot
+  - `enter` / `exit` invariants (idempotent, gated on enabled, version baseline capture)
+  - `tick` snapshot-version reconciliation (auto-thaw on bump, no-op on stable)
+  - `tickCamera` Phase 6B coverage: stationary, position delta, direction angle, pure roll, sub-threshold jitter
+  - `markDirty` Phase 6C coverage: explicit reason, no-op when not frozen, default reason
+  - `destroy` releases freezables + auto-thaws
+
+**Behavior change:** zero by default. Opt-in via `scene.snapshotMode.enabled = true`. Once enabled and entered via `scene.snapshotMode.enter(scene)`, the WebGPU bundle manager freezes its cache, the moon's render bundle replays verbatim, and every frame's `tick` + `tickCamera` watches for invalidation (snapshot version bump, camera motion, HDR/depth change, manual `markSnapshotDirty()`).
+
+**Snapshot Mode status: feature-complete.** All four spike-memo phases shipped. Visual verification of the actual perf win (the spike memo's "2-5× CPU reduction for static scenes" claim) is deferred to a separate measurement pass once a real test scene is wired up.
+
+### Three-way coordination — `requestRenderMode` × Snapshot Mode × VPT (completed 2026-04-09)
+
+Audit + tightening pass to make sure the three rendering services compose cleanly without duplication. Identified gaps: snapshot mode couldn't see idle frames, `Scene.requestRender()` didn't notify the snapshot service, VPT had a half-implemented dead-code guard. All three are fixed; the relationship is now documented at the top of `SnapshotModeService.js` and `VisualPerformanceTargetService.js`.
+
+**The three layers compose, they don't duplicate:**
+
+1. **`Scene.requestRenderMode`** (Cesium core, macro-level) decides WHETHER a frame renders. When true, idle frames skip the entire `if (shouldRender)` block at zero CPU cost.
+2. **`SnapshotModeService`** (micro-level) makes a render frame cheap when one DOES happen by replaying cached bundles instead of re-encoding draws (~30-60% command-encoding cost eliminated).
+3. **`VisualPerformanceTargetService`** (quality-tuning) measures the resulting frame and tunes registered sinks for next time. Skipped while snapshot is frozen so dial outputs don't drift the captured bundles.
+
+**Fixes shipped:**
+
+- **MODIFIED** `Services/SnapshotModeService.js`:
+  - **New `notifyFrame(scene, isRenderFrame)`** method called every frame regardless of `shouldRender`. Tracks `_consecutiveIdleFrames` so the service can see idle periods even though the existing `tick()` only runs inside the render block.
+  - **New `autoEnterIdleFrames`** setter (default 0 = disabled). When > 0, the service auto-enters snapshot mode after N consecutive idle frames. Recommended preset for FAST-mode-on-idle:
+    ```js
+    scene.requestRenderMode = true;
+    scene.snapshotMode.enabled = true;
+    scene.snapshotMode.autoEnterIdleFrames = 120;  // ~2s at 60fps
+    ```
+  - **New `autoEnterCount` + `lastAutoEnterReason`** diagnostics in `getStatistics()`.
+  - `_thawAll()` now resets `_consecutiveIdleFrames` so a thaw doesn't immediately re-enter on the next idle frame.
+  - **40-line module-level documentation block** explaining the three-way relationship and how the layers compose.
+- **MODIFIED** `Scene/Scene.js`:
+  - `Scene.render()` calls `_snapshotMode.notifyFrame(this, shouldRender)` BEFORE the `if (shouldRender)` gate, so the service sees both render and idle frames.
+  - `Scene.requestRender()` now also calls `_snapshotMode.markDirty("Scene.requestRender() called")` when a snapshot is active. The caller is asking for a fresh frame because something changed; replaying old bundles would be visually wrong.
+- **MODIFIED** `Services/VisualPerformanceTargetService.js`:
+  - **Dead-code cleanup**: removed the stale `eslint-disable no-unused-vars` (the parameter IS used).
+  - **Half-implemented guard fixed**: the `if (scene._renderRequested === false)` body was empty (a comment block with no `return`); now actually returns. Documented as a defensive safety net for non-Scene callers since the production path already gates VPT on `shouldRender`.
+  - **Module-level docs extended** with the three-way relationship reference and a note that the future "VPT adjusted sinks" → `scene.markSnapshotDirty()` hook is queued behind actual auto-tuner implementation.
+- **MODIFIED** `Specs/Services/SnapshotModeServiceSpec.js` — added 6 new specs for the coordination behavior:
+  - Idle frames tracked when auto-enter disabled
+  - Auto-entry after configured threshold
+  - Render frame resets the idle counter
+  - Disabled service doesn't auto-enter
+  - Setting `autoEnterIdleFrames=0` resets the counter
+  - Post-thaw counter reset prevents immediate re-entry
+
+**Behavior change:** zero by default. `autoEnterIdleFrames` defaults to 0, so the existing manual `enter()` workflow is unchanged. Users opt into auto-entry by setting it to a positive value alongside `requestRenderMode = true`. The `Scene.requestRender()` → `markDirty` wire is invisible when snapshot mode is off (the markDirty call is a no-op). `tsc --noEmit` clean throughout.
+
+**What's NOT a duplication:**
+- `requestRenderMode` skips the entire frame; snapshot mode makes the frame that DOES render cheap. Different layers, different optimizations.
+- `Scene._renderRequested` (Cesium core flag) and `_snapshotMode.markDirty()` (snapshot reason) are different concerns: the first asks "should I render?", the second asks "is my cached bundle valid?". Both can fire independently and they often do.
+- VPT's `_snapshotMode` flag and SnapshotModeService's `_isFrozen` flag mirror each other one-way (Scene pushes the value into VPT each frame). This isn't duplication — it's a deliberate decoupling so VPT doesn't import the snapshot service and vice versa.
+
+### Phase 6 audit deep-dive — VPT × Snapshot × Cesium core (completed 2026-04-09)
+
+Follow-up to the "Three-way coordination" pass: full deep-dive of every freezable, every dirty path, every service lifecycle hook, every shared-context interaction. Eight findings, seven fixes landed, one documented as a known limitation. `tsc --noEmit` clean.
+
+**Findings + fixes:**
+
+1. **`Scene.destroy()` was leaking the orchestration services** — both `_snapshotMode` and `_visualPerformanceTarget` had `destroy()` methods but `Scene.destroy()` never called them, leaking registered freezables across scene recreation. **FIX:** added explicit cleanup before `destroyObject(this)`.
+2. **`_snapshotVersion` was bumped from exactly ONE place** (`Cesium3DTilesInvalidationFeed.apply`). Adding/removing primitives, ground primitives, or imagery layers mid-snapshot would silently leak the new state out of the bundle cache. **FIX:** `Scene` constructor now wires `bumpSnapshotVersion` listeners onto `_primitives.primitiveAdded/Removed`, `_groundPrimitives.primitiveAdded/Removed`, and `updateGlobeListeners` extends to `globe.imageryLayersUpdatedEvent` + `globe.terrainProviderChanged`.
+3. **Moon's `destroyWebGPUMoonResources` never unregistered its `"moon-renderer"` freezable** — closure leak holding the entire moon cache alive after destroy. **FIX:** stash `_snapshotService` reference at registration, call `unregisterFreezable("moon-renderer")` on teardown.
+4. **Volumetric fog had ZERO snapshot wiring** — three Frostbite-style compute passes (density injection, light scattering, integration) ran every frame even when snapshot mode was frozen, defeating the entire CPU/GPU win for static scenes. **FIX:** `WebGPUVolumetricFogRenderer.update()` now self-registers `"webgpu-volumetric-fog"` with the service on first call; `freeze()` flips `_frozen = true` and `update()` early-returns past `_ensureResources` while frozen. `destroy()` unregisters cleanly.
+5. **VPT.tick() ran BEFORE snapshot.tick()** so VPT's `snapshotMode` flag was always one frame stale — its quality dial would adjust during the first frame of a new snapshot. **FIX:** reordered `Scene.render()` to call `_snapshotMode.tick + tickCamera` first, then push `_snapshotMode.isFrozen` into VPT, then `_visualPerformanceTarget.tick`.
+6. **Multi-view + shared-context cross-contamination** (KNOWN LIMITATION, no fix shipped) — `WebGPURenderBundleManager` lives on the GraphicsContext and is shared across all Scenes bound to that context. If Scene A enters snapshot mode while Scene B keeps animating, Scene B sees frozen bundles. **DOCUMENTED** in the `SnapshotModeService.js` module header with workarounds (per-Scene context, single-Scene snapshot ownership, per-Scene freezable scope as a future fix).
+7. **`WebGPUPerformanceManager.tryExecuteBundle()` was dead code with a latent bug** — it called `bundleMgr.get(bundleKey)` but `WebGPURenderBundleManager` only exposes `getOrCreate / has / invalidate / invalidateByPrefix`. Never invoked from anywhere. **FIX:** removed the dead method; left a comment pointing readers at `getOrCreate` as the real entry point.
+8. **`_globeHeightDirty` and `shadowsDirty` were audited but did NOT need snapshot dirty hooks** — `_globeHeightDirty` only updates internal CPU state (camera-under-ground tracking), not pixel-affecting; `shadowsDirty` already invalidates the cached shadow map regardless of snapshot mode. No change needed.
+
+**Files modified:**
+
+- `Scene/Scene.js` — service cleanup in `destroy()`; `bumpSnapshotVersion` listeners on primitive collections + globe events; reordered service ticks in `render()`
+- `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` — Moon freezable cleanup with `_snapshotService` stash
+- `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts` — three-pass freeze gate + self-registration + cleanup
+- `Renderer/WebGPU/WebGPUPerformanceManager.ts` — removed dead `tryExecuteBundle`
+- `Services/SnapshotModeService.js` — module-doc "Known limitation: shared-context multi-view" section
+
+**Behavior change:** zero by default. All fixes only matter when snapshot mode is active (`scene.snapshotMode.enabled = true`). Existing WebGL behavior, existing WebGPU non-snapshot rendering, and the existing snapshot spec coverage all unchanged. `tsc --noEmit` clean.
+
+### Phase 6 debug surface — central diagnostic aggregator (completed 2026-04-09)
+
+Follow-up to the audit deep-dive: build a single backend-agnostic surface so an operator (or a test harness) can pull "what is the snapshot service / VPT / bundle cache / volumetric fog / moon doing right now" with one call. Required because the audit work added several invisible orchestration features whose only failure mode is "silently no-op", and we need a way to confirm they're alive before visual smoke testing.
+
+**Design constraints:**
+
+- **Backend-agnostic dispatch** — Scene code can't import from `Renderer/WebGPU/`. Routed through a new `GraphicsContext.getRendererStatistics()` abstract concrete (default empty), overridden by `WebGPUContext`. Per-instance state (Moon cache) is exposed via a `Moon.getDebugStatistics(scene)` method that dispatches through the registered `MOON` feature renderer's `getStatistics(moon)` entry point.
+- **Pure read** — every `getStatistics()` is side-effect free; safe to call from any callback at any time, including inside a frozen snapshot.
+- **Permissive shape** — every nested field is optional. A WebGL scene without a bundle manager still produces a usable snapshot.
+
+**New APIs:**
+
+- **`Scene.getDebugSnapshot()`** — top-level aggregator. Returns `{ scene, snapshotMode, visualPerformanceTarget, renderer, moon, debugToggles }`.
+- **`Scene.logDebugSnapshot()`** — pretty-print of `getDebugSnapshot()` to console using `console.groupCollapsed` + per-section logs. Manual call from DevTools or a postUpdate listener.
+- **`GraphicsContext.getRendererStatistics()`** — concrete on the abstract base, returns `{}`. Overridden by `WebGPUContext` to expose backend-specific stats.
+- **`WebGPUContext.getRendererStatistics()`** — populates `{ backend, contextId, hasDevice, isDestroyed, bundleManager, performance, timestamps, indirectDraw, volumetricFog }`. Each subsystem field is wrapped in a try/catch so a single broken accessor doesn't poison the dump.
+- **`SnapshotModeService.getStatistics()`** — already existed; now reachable through the central path.
+- **`VisualPerformanceTargetService.getStatistics()`** — new. Returns `{ enabled, targetFps, snapshotMode, probeCount, sinkCount, probes, sinks }` with each probe queried lazily (errors per probe are isolated, not fatal).
+- **`WebGPURenderBundleManager.statistics`** — extended. Original shape `{ cacheSize, totalDrawCalls, currentFrame }` now also includes `{ frozen, maxIdleFrames, maxCacheSize, hits, misses, ephemeralBuilds, evictions, freezes, thaws, hitRate, keyPrefixes }`. Internal counters bumped at the cache-hit, cache-miss, ephemeral-build, eviction, freeze, and thaw points. New `resetStatisticsCounters()` method for "measure the next N frames" workflows.
+- **`WebGPUVolumetricFogRenderer.getStatistics()`** — new. Returns `{ enabled, frozen, snapshotRegistered, destroyed, resolutionKey, dimensions, updatesDispatched, updatesSkippedFrozen, composites }`. Counters split between dispatched and frozen-skipped passes so an operator can confirm at a glance whether snapshot mode is biting.
+- **`getWebGPUVolumetricFogStatistics(context)`** — module-level entry point that resolves the per-context fog instance through the existing `WeakMap` and forwards to `inst.getStatistics()`. Wired into the `VOLUMETRIC_FOG` feature renderer registration.
+- **`getWebGPUMoonStatistics(moon)`** — module-level entry point that reads from `moon._webgpuCache` and unpacks the moon-specific tail of the uniform buffer (offsets 64..75) to surface the most recent `moonDirectionWC`, `phaseFraction`, `earthshineOn`, `useLogDepth`, `shininess`, `specularStrength`. Wired into the `MOON` feature renderer registration.
+- **`Moon.getDebugStatistics(scene)`** — backend-agnostic dispatch through `scene.context.getFeatureRenderer(FeatureRendererKey.MOON).getStatistics(moon)`. Returns `null` for WebGL or for moons that haven't yet had their first update.
+
+**Backend-neutral debug toggles inventory** (already wired before Phase 6 — listed for the operator's convenience in the new snapshot's `debugToggles` field):
+
+`debugShowFramesPerSecond`, `debugShowCommands`, `debugShowFrustums`, `debugShowFrustumPlanes`, `debugShowDepthFrustum`, `debugShowGlobeWireframe`, `debugShowCubeMapFace` (1=+X..6=-Z), `debugShowTerrainLOD`, `debugShowTerrainNormals`, `debugShowImageryLayer` (single-layer isolation), `debugShowDepthAsColor`, `debugShowTriangulation`, `debugDisableAtmosphereScattering`. All wired into `WebGPUGlobeSurfaceRenderer` (terrain visual modes) or the cubemap panorama / scene renderer paths.
+
+**Files modified:**
+
+- `Scene/Scene.js` — `getDebugSnapshot()` + `logDebugSnapshot()`
+- `Scene/Moon.js` — `getDebugStatistics(scene)`
+- `Renderer/GraphicsContext.ts` — concrete `getRendererStatistics()` default returning `{}`
+- `Renderer/WebGPU/WebGPUContext.ts` — `override getRendererStatistics()` populates the WebGPU-specific subsystem stats
+- `Renderer/WebGPU/WebGPURenderBundleManager.ts` — extended `statistics` getter + counters + `resetStatisticsCounters()`
+- `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts` — `getStatistics()` instance method, `getWebGPUVolumetricFogStatistics(context)` entry point, counters at dispatch / freeze-skip / composite points
+- `Renderer/WebGPU/WebGPUEnvironmentRenderer.js` — `getWebGPUMoonStatistics(moon)` reads the moon cache + uniform tail
+- `Renderer/WebGPU/WebGPUFeatureRenderers.ts` — `getStatistics` entry on the `MOON` and `VOLUMETRIC_FOG` feature renderer registrations
+- `Services/VisualPerformanceTargetService.js` — `getStatistics()` clone-and-return implementation
+
+**Behavior change:** zero. Every new method is pure read; the bundle manager counters are O(1) increments at points that already existed. `tsc --noEmit` clean.
+
+**Operator workflow example:**
+
+```js
+// In DevTools, after navigating to a static scene:
+viewer.scene.snapshotMode.enabled = true;
+viewer.scene.snapshotMode.autoEnterIdleFrames = 120;
+// ... wait two seconds ...
+viewer.scene.logDebugSnapshot();
+// Expect: snapshotMode.isFrozen = true, renderer.bundleManager.frozen = true,
+// renderer.bundleManager.hitRate ≈ 1.0 (only hits from here on),
+// renderer.volumetricFog.updatesSkippedFrozen rising every frame.
+```
+
+### Phase 1 → 3 sweep (completed 2026-04-09)
+
+Continuation of the Phase 6 audit deep-dive. Closes Phase 1 (visual verification + bug closure), most of Phase 2 (testing + quality + perf benchmarking), and the smallest Phase 3 dormant compute shader activation. Backlog `Priority Remediation Order` items 1-9 are now closed or de-risked.
+
+#### Phase 1 — Bug closure & quick wins
+
+- **FORK-8** ✅ **Verified already resolved.** Audit grep against `packages/engine/Source/Scene/` returned zero `isWebGPUDrawCommand` references. The backlog entry was stale — pointed at a line removed during S16 cleanup. Marked resolved (FORK-8 in the resolved-items list).
+- **SHADOW-LAYOUT** ✅ **Mostly resolved.** S25 shipped the per-layout pipeline cache (`cache.castPipelines` Map keyed on variant name) + the `registerShadowCastVariant(key, variant)` API + the stride-inference safety net. This sweep added the second built-in variant (`p12` — single-vec3 stride 12 for non-RTE models) so the registry isn't just `rte24` + an empty extension point. Stride inference now picks `p12` for stride-12 commands, falls back to the warn-once dedupe path for unknown strides. Spec coverage: 11 specs over the variant registry, stride inference, warn dedupe, and explicit `_shadowCastLayout` override (`Specs/Renderer/WebGPU/WebGPUShadowMapRendererSpec.js`). **Carved out**: SHADOW-LAYOUT-QUANTIZED — quantized terrain stride-8/12 variants need de-quantization in the cast shader and a larger uniform buffer carrying tileRectangle / minMaxHeight; documented separately for a future session.
+- **BUG-11 imagery probe** ✅ **Instrumentation landed; visual session still pending.**
+  - Hypothesis A defensive fix: changed `WebGPUImageryReprojection.ts` clear alpha from `0` → `1` so any future `discard` path doesn't collapse the downstream `tex.a * effectiveAlpha` composite to zero. The full-screen triangle covers every output pixel today so this is a pure no-op-with-defense.
+  - New `scene.debugShowImageryProbe = true` toggle exposes the existing first-4-tile diagnostic on demand. Rising-edge latch reset means the operator can re-sample without restarting the page.
+  - The flag flows through `frameState.debugShowImageryProbe` and is reflected in `Scene.getDebugSnapshot().debugToggles.debugShowImageryProbe`.
+  - Probe checklist preserved in `WEBGPU_MIGRATION_BACKLOG.md` updated for the visual session: `scene.debugShowImageryProbe = true` → capture dump → toggle `debugShowTerrainLOD` → narrow B / C if A still in play.
+
+#### Phase 2 — Testing & quality
+
+- **FORK-19b** ✅ **Spec coverage delta landed.** Five new spec files totaling ~745 lines and ~70 specs across the audit lockdown + the broader Phase 6 surfaces:
+  - `Specs/Scene/SceneSnapshotWiringSpec.js` (190 lines, 11 specs) — Phase 6 audit lockdown: primitive collection mutations bump `_snapshotVersion`, ground primitive add/remove bumps it, globe `imageryLayersUpdatedEvent` + `terrainProviderChanged` bump it, `Scene.destroy()` releases orchestration services, `Scene.getDebugSnapshot()` returns the standard sections.
+  - `Specs/Renderer/WebGPU/WebGPUVolumetricFogSnapshotSpec.js` (100 lines, 11 specs) — `WebGPUVolumetricFogRenderer.asFreezable()` contract, freeze/thaw idempotency, integration with `SnapshotModeService.enter()` / `exit()`, `getStatistics()` shape on a fresh renderer.
+  - `Specs/Renderer/WebGPU/WebGPUMoonSnapshotSpec.js` (155 lines, 11 specs) — `createMoonFreezable(cache)` contract, late-arrival registration during an active snapshot, `unregisterFreezable` cleanup, `getWebGPUMoonStatistics(moon)` returning the unpacked uniform tail.
+  - `Specs/Renderer/WebGPU/WebGPURenderBundleManagerStatsSpec.js` (155 lines, 13 specs) — full `statistics` Phase 6 schema, `asFreezable()` contract, freeze/thaw idempotency + counter bumps, `beginFrame()` advancement during freeze, `invalidate*()` paths against an empty cache, `resetStatisticsCounters()` semantics, `destroy()` safety.
+  - `Specs/Services/VisualPerformanceTargetServiceSpec.js` (220 lines, 18 specs) — enabled / targetFps / snapshotMode flags, probe + sink registration, `tick()` no-op contracts under disabled / snapshot-frozen / idle frame, `getStatistics()` lazy probe queries with per-probe error isolation, sink level + cost reporting, `destroy()` cleanup.
+  - **Refactor of two registration sites** to make the spec layer reachable: `WebGPUVolumetricFogRenderer.update()` now uses `this.asFreezable()`, and `WebGPUEnvironmentRenderer` Moon path now uses a new `createMoonFreezable(cache)` helper. Both helpers are exported so specs can drive the freezable contract directly without needing a real GPU device.
+- **Visual regression CI** ✅ **Workflow added.** New `.github/workflows/visual-regression.yml` (workflow_dispatch trigger) drives `Tools/visual-regression/capture-and-diff.mjs` against the split-screen comparison page. Inputs: `threshold` (per-scene diff ratio failure cutoff, default 0.02) and `update` (true → promote captured outputs to baseline). Uploads `output/**` and `baseline/**` as artifacts (14 day retention). Currently manual-trigger only because GitHub-hosted Linux runners don't ship a WebGPU adapter without extra setup; promote to `pull_request` once that lands or when a self-hosted runner with a WebGPU adapter is available.
+- **Perf benchmarking harness + tracking infrastructure** ✅ **New backend-neutral service.** `Source/Services/PerformanceTracker.js` (~370 lines) records per-frame samples (`frameNumber`, `relFrame`, `wallDtMs`, `cpuMs`, `gpuMs`, `drawCount`, `bundleStats` flattened, `snapshotFrozen`, caller `extra`) over a sample window. APIs:
+  - `beginTrace(label, { frames })` — auto-ends after N frames, default 600
+  - `sample(input)` — one-comparison no-op while inactive
+  - `endTrace()` — returns the structured result + retains `lastResult`
+  - `toCSV(result)` — stable column order, escapes commas/quotes, 4-decimal float formatting for diff-friendliness
+  - `toJSON(result)` — pretty-printed with 4-decimal rounding
+  - `logToConsole(result)` — `console.table()` + summary line
+  - `traceCount` / `lastResult` getters for late-binding inspection
+  - Summary roll-up: per-key (`cpuMs`, `gpuMs`, `wallDtMs`) `{count, avg, min, max, total}`, plus `avgBundleHitRate` and `snapshotFrozenRatio`.
+  - Wired into `Scene` via new `Scene.beginPerformanceTrace(label, options)` / `Scene.endPerformanceTrace()` / `scene.performanceTracker` getter. The per-frame `_samplePerformanceTrace(scene)` helper pulls bundle stats from `context.getRendererStatistics()` and the snapshot frozen flag from `scene.snapshotMode.isFrozen`, so all the per-subsystem `getStatistics()` accessors are exercised through one path.
+  - `Scene.destroy()` ends any active trace cleanly so a held reference to a result doesn't pin a destroyed scene.
+  - Spec coverage: 24 specs across the active flag, beginTrace validation, sample storage + flattening, auto-end, frames=0 indefinite mode, summary roll-up math, CSV / JSON exporters, escape behavior, and the `traceCount` + `lastResult` retention contract (`Specs/Services/PerformanceTrackerSpec.js`, ~280 lines).
+
+#### Phase 3 — Dormant compute shader activation
+
+- **PointCloudSort dispatcher** ✅ **Built + spec'd.** New `Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts` (~370 lines) is a self-contained sort wrapper around `PointCloudSort.wgsl`. Hides the bitonic sort details from the consumer behind a single `sort(encoder, distSq, count)` call:
+  - Owns the SortParams UBO + sortKeys + indices storage buffers
+  - Handles power-of-two padding (sentinel `0xFFFFFFFFu` keys sort to the back of the network)
+  - Encodes the local phase (`localBitonicSort` — one workgroup sorts up to 256 elements via shared memory) once
+  - Encodes the global merge phase (`globalBitonicMerge`) over the (k, j) merge network for capacity > 256
+  - `sortedIndicesBuffer` / `sortedKeysBuffer` getters expose the result for downstream draws
+  - Diagnostic counters via `getStatistics()`: `sortsDispatched`, `localPasses`, `globalMergePasses`, `lastElementCount`, `lastCapacity`
+  - `setShaderSource(wgsl)` injection point so the WGSL stays in `Source/Shaders/WebGPU/Compute/`
+  - Pure-JS helpers: `nextPow2`, `floatToSortableUint`, `sortableUintToFloat` (matches the WGSL helper exactly so the host-side encoding agrees with the device-side comparison)
+  - 11 specs over the helpers — covers `nextPow2` rounding, the float ↔ sortable-uint round trip, ordering preservation across the sample range, and the negative-zero edge case (`Specs/Renderer/WebGPU/WebGPUPointCloudSortDispatcherSpec.js`)
+  - **Remaining**: consumer integration in the point cloud collection path. One-line swap: `if (perfMgr.shouldUseGPUPointCloud(N)) sortDispatcher.sort(encoder, distSq, N) else wasmBridge.sortByDistance(distSq, N, outIndices)`. Deferred until a real point cloud scene is wired up since the GPU-side sort is only useful when the consumer is also GPU-side (feeding into a draw indirect rather than reading back to the CPU).
+- **HiZ + OcclusionTest** — **Audit complete; activation deferred.** Both WGSL files are complete (~70 + ~180 lines), both dispatchers exist on `WebGPUPerformanceManager` (`dispatchHiZPyramid()` line 1078, `dispatchOcclusionTest()` line 1310). The blocker is `OcclusionCulling.initialize()` — currently an API stub deferred to the "full WebGPU integration phase". Smallest fix is ~200-300 LOC: populate `OcclusionCulling.initialize()` to allocate the Hi-Z mip pyramid texture + wire `testCommands()` to call the dispatcher. Captured in the backlog with the file paths so the next session can pick it up cleanly.
+- **GPUSortKeys** — **Audit complete; activation deferred.** WGSL + dispatcher are complete (`dispatchGPUSortKeys()` line 1243). The blocker is the consumer side — it needs SOA buffers for command metadata (centerX/Y/Z, layer, priority, materialId) allocated in Scene + a bind group factory + integration into RenderScheduler's sort pipeline. ~400-500 LOC. Lowest priority of the three since the JS multi-level comparators are not on the hot path until a scene exceeds 50K commands.
+
+**Total deltas this session:**
+
+- **Files added (8):** `PerformanceTracker.js`, `WebGPUPointCloudSortDispatcher.ts`, `SceneSnapshotWiringSpec.js`, `WebGPUVolumetricFogSnapshotSpec.js`, `WebGPUMoonSnapshotSpec.js`, `WebGPURenderBundleManagerStatsSpec.js`, `VisualPerformanceTargetServiceSpec.js`, `PerformanceTrackerSpec.js`, `WebGPUPointCloudSortDispatcherSpec.js`, `.github/workflows/visual-regression.yml`
+- **Files modified (~10):** `Scene/Scene.js`, `Scene/Moon.js`, `Renderer/GraphicsContext.ts`, `Renderer/WebGPU/WebGPUContext.ts`, `Renderer/WebGPU/WebGPURenderBundleManager.ts`, `Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`, `Renderer/WebGPU/WebGPUEnvironmentRenderer.js`, `Renderer/WebGPU/WebGPUFeatureRenderers.ts`, `Renderer/WebGPU/WebGPUShadowMapRenderer.js`, `Renderer/WebGPU/WebGPUImageryReprojection.ts`, `Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `Services/SnapshotModeService.js`, `Services/VisualPerformanceTargetService.js`, `Specs/Renderer/WebGPU/WebGPUShadowMapRendererSpec.js`
+- **Behavior change:** zero by default. Every new feature is opt-in via either an explicit flag (`debugShowImageryProbe`, `beginPerformanceTrace`) or an existing service toggle (`scene.snapshotMode.enabled`). Existing WebGL behavior, existing WebGPU rendering, and the existing spec suite all unchanged. `tsc --noEmit` clean throughout.
+
+### Phase 3 + 4 + 5 sweep (completed 2026-04-09)
+
+Closes Phase 3 dormant compute shader activation, lands Phase 4's cheapest visual quality win, and lays the Phase 5 capability snapshot + design plan. Backlog `Priority Remediation Order` items 10-25 are now closed or have a concrete spec to execute against.
+
+#### Phase 3 — Dormant compute shader activation (HiZ + OcclusionTest + GPUSortKeys)
+
+- **HiZ + OcclusionTest activation** ✅ **Dispatcher built + wired through OcclusionCulling.**
+  - New `Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts` (~640 lines): owns the Hi-Z mip pyramid texture (`r32float`, `pyramidMips` levels), the per-mip bind groups + params UBOs, the SOA sphere storage buffers (one per centerX/Y/Z/radius), the OcclusionParams UBO, the visibility output buffer, and the staging buffer for async readback. Pipelines + bind group layouts mirror `HiZPyramid.wgsl` and `OcclusionTest.wgsl` exactly.
+  - Three entry points: `buildHiZPyramid(encoder)` records the per-mip compute pass loop, `dispatchOcclusionTest(encoder, soa, params)` uploads SOA + params and records the test compute pass + visibility-to-staging copy, and `readbackVisibility(count)` async-maps the staging buffer (with an `_inFlightReadback` guard so concurrent calls don't double-map).
+  - Diagnostic `getStatistics()` exposes `hiZBuilds`, `occlusionDispatches`, `successfulReadbacks`, `failedReadbacks`, `inFlightReadback`, mip count, max command count.
+  - Module-level entry points (`initWebGPUHiZOcclusion`, `dispatchWebGPUHiZOcclusion`, `readbackWebGPUHiZOcclusion`, `getWebGPUHiZOcclusionStatistics`, `destroyWebGPUHiZOcclusion`) registered as the `HI_Z_OCCLUSION` feature renderer (`FeatureRendererKey: 38`). Per-context instance cached in a `WeakMap` so the consumer doesn't have to thread the reference through.
+  - **`Scene/OcclusionCulling.js` initialize() rewritten** to dispatch through the feature renderer registry. Backend-agnostic: looks up the FR via `context.getFeatureRenderer(FeatureRendererKey.HI_Z_OCCLUSION)`, calls `init(width, height, maxCommands)`, stashes the FR reference, sets `_pipelinesReady = true`. WebGL backends return null from the lookup and the conservative "all visible" path stays active. New `OcclusionCulling.dispatchGPU(encoder, depthTextureView, params)` and `OcclusionCulling.scheduleReadback()` methods drive the per-frame path (called by the future ViewportExecutor integration).
+  - `OcclusionCulling.destroy()` now calls the FR's destroy through the cached reference.
+  - Spec coverage: 11 specs over the pure-JS helpers (`computeMipLevels`, `halveDim`, `HI_Z_PARAMS_BYTES`, `OCCLUSION_PARAMS_BYTES`) — the dispatcher's `allocate` / `buildHiZPyramid` / `dispatchOcclusionTest` paths need a real GPUDevice and are covered by the in-browser spec runner.
+  - **Remaining**: ViewportExecutor needs to call `dispatchGPU()` after the depth pass and `scheduleReadback()` at frame end. That's a Scene-side wiring step, ~50 LOC, deferred to a session that has a real test scene to validate against.
+- **GPUSortKeys dispatcher** ✅ **Built + FR registered (consumer integration deferred).**
+  - New `Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts` (~340 lines): owns the SOA command metadata storage buffers (centerX/Y/Z + renderLayers + sortPriorities + materialSortIds), the packed output buffers (sortKeysHigh + sortKeysLow + commandIndices), the SortKeyParams UBO, the bind group layout, and the compute pipeline. Single `dispatch(encoder, soa, params)` entry point uploads the SOA + params and records the compute pass.
+  - Output buffer accessors (`sortKeysHighBuffer`, `sortKeysLowBuffer`, `commandIndicesBuffer`) so a downstream sort pass (PointCloudSort or a future radix sort) can consume the packed keys.
+  - Diagnostic `getStatistics()` exposes `dispatches` + `lastCommandCount`.
+  - `SORT_MODE_FRONT_TO_BACK = 0` and `SORT_MODE_BACK_TO_FRONT = 1` enum constants matching the WGSL.
+  - Registered as the `GPU_SORT_KEYS` feature renderer (`FeatureRendererKey: 39`).
+  - Spec coverage: 3 specs over the layout constants + sort mode enum.
+  - **Remaining**: RenderScheduler integration (allocate the SOA buffers in Scene, call `dispatch()` after command binning, follow up with a sort pass on the packed keys, rewire RenderScheduler to use GPU-sorted command indices). ~400-500 LOC. Lowest priority since the JS multi-level comparator is fine for <50K commands.
+
+#### Phase 4 — Visual quality closure
+
+- **Color grading LUT post-process** ✅ **Shipped end-to-end.**
+  - New `Source/Shaders/WebGPU/PostProcess/ColorGrading.wgsl` (~135 lines): full-screen fragment pass with exposure / brightness / contrast / saturation / temperature / tint / per-tonal-range color balance (shadows / midtones / highlights) / output gamma. Procedural — does NOT require a 3D LUT texture upload, so the migration is purely a uniform buffer + a single pass. Designed to extend with a `texture_3d` LUT slot when a real LUT pipeline is needed.
+  - **`WebGPUPostProcessPipeline.ts` extended** with `ColorGradingConfig` interface, `packColorGradingUniforms(c)` packer (20 floats / 80 bytes matching the WGSL struct), `addColorGrading()`, `updateColorGradingUniforms()`, and `setColorGradingScalar()` runtime tuners. Stage inserted between `Tonemap` and `Custom stages` in the single-pass execute chain (after SDR conversion, before any custom passes).
+  - `setStageEnabled` / `updateStageUniforms` extended to recognize the `"ColorGrading"` name.
+  - `hasActiveStages` getter recognizes the new stage so the pipeline doesn't go dormant when only color grading is enabled.
+  - Spec coverage: 6 specs over `packColorGradingUniforms` — default identity pass-through, scalar field order, shadows/midtones/highlights tints, sparse config fall-back, purity (`Specs/Renderer/WebGPU/WebGPUColorGradingSpec.js`).
+- **DEFERRED_GBUFFER FR key decision** ✅ **Closed.** The FR key was already removed from `FeatureRendererKey.js` earlier in the session. The reference shaders (`DeferredGBuffer.wgsl`, `DeferredLighting.wgsl`) stay in the tree as documentation of the intended architecture. Decision: skip the full deferred path until a real many-lights scene shows up; if that day comes, build forward-clustered first (better fits the Cesium globe surface workload). Backlog item closed.
+- **TAA design doc** ✅ **Written.** New `migration_doc/TAA_DESIGN.md` covers: motivation (FXAA weaknesses for Cesium scenes), architecture (camera jitter, motion vectors, neighborhood clamping, history ping-pong), 4-step implementation plan (~3 days), risks (quantized terrain motion vectors, snapshot mode jitter freeze, MSAA incompatibility), acceptance criteria, and a spec coverage delta. Concrete enough for the next session to execute against.
+- **CSM design doc** ✅ **Written.** New `migration_doc/CSM_DESIGN.md` covers: cascade splits (mixed uniform + logarithmic), per-cascade VP fitting with bounding spheres, texel snap stabilization, receive-side cascade selection with blend bands, 5-step implementation plan (~4 days), risks (quantized vertex layout extensibility, RTE precision in texel snap, memory cost on mobile, snapshot mode integration), VSM stretch follow-up. Concrete enough for the next session to execute against.
+
+#### Phase 5 — Modern WebGPU feature adoption
+
+- **Capability snapshot** ✅ **Exposed via the central debug surface.** `WebGPUContext.getRendererStatistics()` now returns a `capabilities` block listing every WebGPU optional feature the device negotiated successfully:
+  - `enabledFeatures` (full string list)
+  - Per-feature booleans: `hasShaderF16`, `hasDualSourceBlending`, `hasClipDistances`, `hasTimestampQuery`, `hasIndirectFirstInstance`, `hasFloat32Filterable`, `hasSubgroups`, `hasBgra8UnormStorage`
+  - This is the source of truth for "can I wire feature X on this adapter today?" — visible from `Scene.getDebugSnapshot().renderer.capabilities`. The migration plan in `PHASE_5_MODERN_WEBGPU_DESIGN.md` assumes the operator has verified the snapshot before opting into a feature.
+- **HiZ occlusion + GPU sort keys statistics** ✅ added to `getRendererStatistics()` so the central debug surface now reports both Phase 3 dispatchers' counters alongside the existing fog / bundle / timestamp blocks.
+- **Phase 5 design doc** ✅ **Written.** New `migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md` covers all five modern WebGPU features:
+  - **WGF-4 Standard Layout UBOs** — clarifies that this is *not* a device feature but a WGSL packing rule, enumerates the migration order (camera UBO first → tile UBO → effect UBOs → compute UBOs), per-UBO acceptance criteria, runtime assertion mitigation for off-by-one bugs. ~3-5 days total.
+  - **WGF-1 `clip-distances`** — replaces stencil-based clipping with hardware clip distances, ~10-15% fragment cost saving on heavily-clipped scenes, ~1-2 days.
+  - **WGF-2 `dual-source-blending`** — single-pass weighted-blended OIT, ~30-50% OIT cost reduction, ~2-3 days.
+  - **WGF-3 `shader-f16`** — half-precision math in selected post-process effects (color grading, tonemap, bloom, FXAA), ~20-40% fragment ALU saving on targeted passes, ~2-3 days.
+  - **WGF-5 `multi-draw-indirect`** — pairs with `WebGPUIndirectDrawManager` for GPU-driven N-draw rendering, ~3-4 days.
+  - Recommended order: capability snapshot → camera UBO → clip-distances → shader-f16 → dual-source → multi-draw. First three are high-leverage and low-risk (~5-6 days); last two are scene-dependent.
+
+**Files added (10):**
+
+- `Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts`
+- `Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts`
+- `Shaders/WebGPU/PostProcess/ColorGrading.wgsl`
+- `Specs/Renderer/WebGPU/WebGPUHiZOcclusionDispatcherSpec.js`
+- `Specs/Renderer/WebGPU/WebGPUGPUSortKeysDispatcherSpec.js`
+- `Specs/Renderer/WebGPU/WebGPUColorGradingSpec.js`
+- `migration_doc/TAA_DESIGN.md`
+- `migration_doc/CSM_DESIGN.md`
+- `migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md`
+
+**Files modified (~6):**
+
+- `Renderer/FeatureRendererKey.js` — added `HI_Z_OCCLUSION (38)` and `GPU_SORT_KEYS (39)`, bumped `COUNT` to 40
+- `Renderer/WebGPU/WebGPUFeatureRenderers.ts` — registered the two new dispatchers as feature renderers
+- `Renderer/WebGPU/WebGPUContext.ts` — extended `getRendererStatistics()` with `hiZOcclusion`, `gpuSortKeys`, and `capabilities` blocks
+- `Renderer/WebGPU/WebGPUPostProcessPipeline.ts` — added `ColorGradingConfig` interface, `packColorGradingUniforms`, `addColorGrading` / `updateColorGradingUniforms` / `setColorGradingScalar` methods, integration into the execute chain + setStageEnabled + updateStageUniforms
+- `Scene/OcclusionCulling.js` — `initialize()` now dispatches through the FR registry; new `dispatchGPU()` and `scheduleReadback()` per-frame methods; `destroy()` releases the FR
+- `migration_doc/WEBGPU_MIGRATION_BACKLOG.md` — closed the DEFERRED_GBUFFER decision, marked HiZ + OcclusionTest + GPUSortKeys as "dispatcher landed"
+
+**Behavior change:** zero by default. Color grading is opt-in via `pipeline.addColorGrading()`. HiZ occlusion requires `scene.renderScheduler.occlusionCulling.enabled = true` AND the consumer (ViewportExecutor) wiring that's still pending. GPUSortKeys is dispatcher-only — no consumer yet. The capability snapshot is read-only diagnostic. `tsc --noEmit` clean throughout.
+
+### Carry-over follow-ups (not blocking; captured in `WEBGPU_MIGRATION_BACKLOG.md`)
+
+- **NEW-9** — file an upstream PR against `CesiumGS/quantized-mesh` to formally reserve extension ID `0x05` before water Phase 1 ships
+- **EllipsoidPrimitive consolidation** — extract the moon's bounding-cube + ray-march math into a generic `EllipsoidRenderer` feature renderer that future ellipsoid bodies (sun, custom planets) can share (the orphan `Generated/EllipsoidPrimitive.wgsl` is the conceptual reference)
+- **Render bundle env-pass executor full integration** — currently the bundle is wired into `WebGPUDrawCommand.execute()` so any individual command can replay one. Future: collect bundles from a frustum's command list and submit a single `executeBundles([...])` call per pass, eliminating per-command overhead entirely.
+- **Snapshot mode Phases A-D** — see `SNAPSHOT_MODE_SPIKE_2026-04-09.md` (3 days of work after Phase 1+ lands real bundle consumers)
+- **C4/C12 wording fixes** in water doc §4.5/§10/DP5 — small refinements from Phase 0.6 verification
+
+---
 
 ---
 

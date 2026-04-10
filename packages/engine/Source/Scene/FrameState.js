@@ -307,6 +307,50 @@ class FrameState {
     this.atmosphere = undefined;
 
     /**
+     * Canonical atmospheric conditions facade — forwarded once per frame
+     * from `scene.globe.atmosphericConditions`. Renderers read B-series
+     * toggles (sun/moon lighting, scattering occlusion, star modulation,
+     * volumetric fog, varying atmosphere density, cloud volumetrics,
+     * weather, night) through this single reference. Phase 1.1 forward.
+     * Undefined when no globe is attached to the scene.
+     * @type {AtmosphericConditions|undefined}
+     */
+    this.atmosphericConditions = undefined;
+
+    /**
+     * Sky brightness scalar (0..1) computed CPU-side once per frame from
+     * sun + moon altitudes. Phase 1.3 will populate this from the
+     * AtmosphereLUT integration; Phase 1.1 leaves it undefined.
+     * @type {number|undefined}
+     */
+    this.skyBrightness = undefined;
+
+    /**
+     * Sun direction in world coordinates, forwarded from
+     * `uniformState.sunDirectionWC` once per frame. Renderers that cannot
+     * reach the per-context `UniformState` (feature renderers, backend-
+     * agnostic scene code) read the sun direction from here. Phase 1.2.
+     * @type {Cartesian3|undefined}
+     */
+    this.sunDirectionWC = undefined;
+
+    /**
+     * Moon direction in world coordinates, computed once per frame from
+     * the existing Simon 1994 lunar ephemeris (Moon.js). Phase 1.2 will
+     * populate this; Phase 1.1 leaves it undefined.
+     * @type {Cartesian3|undefined}
+     */
+    this.moonDirectionWC = undefined;
+
+    /**
+     * Moon phase fraction (0..1, 0 = new moon, 0.5 = full moon, 1 = back
+     * to new). Used by `Moon.wgsl` for lit hemisphere shading and
+     * earthshine intensity. Phase 1.2 populates; Phase 1.1 leaves undefined.
+     * @type {number|undefined}
+     */
+    this.moonPhaseFraction = undefined;
+
+    /**
      * A scalar used to vertically exaggerate the scene
      * @type {number}
      * @default 1.0

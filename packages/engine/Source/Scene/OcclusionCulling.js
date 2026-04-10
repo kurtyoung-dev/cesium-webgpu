@@ -1,6 +1,7 @@
 import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import SOABoundingSphereLayout from "./SOABoundingSphereLayout.js";
 
 /**
@@ -186,7 +187,12 @@ Object.defineProperties(OcclusionCulling.prototype, {
    */
   isInitialized: {
     get: function () {
-      return defined(this._hiZPipeline) && defined(this._occlusionPipeline);
+      // Phase 3 activation — `_pipelinesReady` is flipped by
+      // `initialize()` when the feature renderer successfully
+      // allocates the Hi-Z pyramid + SOA buffers + visibility
+      // buffer. Legacy pipeline fields (`_hiZPipeline`, etc.) are
+      // kept around for the destroy() cleanup path.
+      return this._pipelinesReady === true;
     },
   },
 });
@@ -194,6 +200,13 @@ Object.defineProperties(OcclusionCulling.prototype, {
 /**
  * Initializes GPU resources for occlusion culling. Called lazily on first
  * frame where occlusion culling is enabled.
+ *
+ * Backend-agnostic dispatch: looks up the `HI_Z_OCCLUSION` feature
+ * renderer on the given context and delegates GPU resource allocation
+ * to it. On WebGL this returns a no-op feature renderer, so the
+ * initializer disables occlusion culling and returns. On WebGPU the
+ * dispatcher allocates the Hi-Z pyramid texture, the SOA sphere
+ * buffers, and the visibility staging buffer.
  *
  * @param {object} context The WebGPUContext (or GraphicsContext).
  * @param {number} width Depth buffer width.
@@ -207,15 +220,33 @@ OcclusionCulling.prototype.initialize = function (context, width, height) {
     return;
   }
 
-  // GPU resource creation would happen here:
-  // 1. Create Hi-Z texture (r32float, mip chain)
-  // 2. Create Hi-Z compute pipeline from HiZPyramid.wgsl
-  // 3. Create occlusion test pipeline from OcclusionTest.wgsl
-  // 4. Create visibility storage buffer
-  // 5. Create staging buffer for readback
-  //
-  // Deferred to full WebGPU integration phase.
-  // For now, the JS-side manager provides the API contract.
+  const fr = context.getFeatureRenderer(FeatureRendererKey.HI_Z_OCCLUSION);
+  if (!defined(fr) || typeof fr.init !== "function") {
+    // WebGL backend — no FR registered. Leave enabled flag alone;
+    // the `resultsReady` guard in testCommands() will keep the
+    // conservative path active.
+    this._featureRenderer = undefined;
+    return;
+  }
+  const ok = fr.init(width, height, this.maxCommands);
+  if (ok) {
+    this._featureRenderer = fr;
+    // `isInitialized` now returns true because the dispatcher has
+    // allocated its pipelines and the per-frame path can dispatch.
+    this._pipelinesReady = true;
+  } else {
+    this._featureRenderer = undefined;
+    this.enabled = false;
+  }
+};
+
+/**
+ * Whether the feature renderer allocated its GPU resources successfully.
+ * Distinct from `isInitialized`, which is the pre-audit stub check.
+ * @returns {boolean}
+ */
+OcclusionCulling.prototype.hasFeatureRenderer = function () {
+  return defined(this._featureRenderer);
 };
 
 /**
@@ -347,6 +378,18 @@ OcclusionCulling.prototype.isDestroyed = function () {
  * Destroys GPU resources.
  */
 OcclusionCulling.prototype.destroy = function () {
+  if (
+    defined(this._featureRenderer) &&
+    typeof this._featureRenderer.destroy === "function"
+  ) {
+    try {
+      this._featureRenderer.destroy();
+    } catch (e) {
+      // Swallow so we don't block the rest of Scene teardown.
+    }
+  }
+  this._featureRenderer = undefined;
+  this._pipelinesReady = false;
   this._hiZTexture = undefined;
   this._hiZPipeline = undefined;
   this._occlusionPipeline = undefined;
@@ -356,6 +399,90 @@ OcclusionCulling.prototype.destroy = function () {
   this.occludedCommands.length = 0;
   this.visibleCommands.length = 0;
   return destroyObject(this);
+};
+
+/**
+ * Dispatch one frame of Hi-Z pyramid build + occlusion test. Called
+ * from the frame executor once the scene's command list has been
+ * assembled and the bounding spheres are packed into the SOA layout.
+ *
+ * Returns true on a successful dispatch, false when the feature
+ * renderer isn't ready or the command count is zero. A false return
+ * keeps the conservative "all visible" path active.
+ *
+ * @param {GPUCommandEncoder} encoder Active GPU command encoder.
+ * @param {object} depthTextureView Mip-0 view of the current depth buffer.
+ * @param {object} params `{ viewProjection, screenWidth, screenHeight, nearPlane, farPlane }`
+ * @returns {boolean}
+ */
+OcclusionCulling.prototype.dispatchGPU = function (
+  encoder,
+  depthTextureView,
+  params,
+) {
+  if (!this.enabled || !this._pipelinesReady) {
+    return false;
+  }
+  if (
+    !defined(this._featureRenderer) ||
+    typeof this._featureRenderer.dispatch !== "function"
+  ) {
+    return false;
+  }
+  const count = this._soaLayout.count;
+  if (count <= 0) {
+    return false;
+  }
+  return this._featureRenderer.dispatch(
+    encoder,
+    depthTextureView,
+    {
+      centerX: this._soaLayout.centerX,
+      centerY: this._soaLayout.centerY,
+      centerZ: this._soaLayout.centerZ,
+      radius: this._soaLayout.radius,
+      count,
+    },
+    params,
+  );
+};
+
+/**
+ * Schedule an async readback of the previous frame's visibility
+ * buffer. When the promise resolves, the visibility bits are copied
+ * into `_soaLayout.visibility` so the next `testCommands()` call
+ * returns real results instead of the conservative default.
+ *
+ * Returns the promise for the readback, or `null` when the feature
+ * renderer isn't ready. Safe to call every frame — the dispatcher
+ * guards against concurrent maps.
+ */
+OcclusionCulling.prototype.scheduleReadback = function () {
+  if (!this.enabled || !this._pipelinesReady) {
+    return null;
+  }
+  if (
+    !defined(this._featureRenderer) ||
+    typeof this._featureRenderer.readback !== "function"
+  ) {
+    return null;
+  }
+  const count = this._soaLayout.count;
+  if (count <= 0) {
+    return null;
+  }
+  const self = this;
+  return this._featureRenderer.readback(count).then(function (u32) {
+    if (u32 === null) {
+      return null;
+    }
+    const vis = self._soaLayout.visibility;
+    for (let i = 0; i < count; i++) {
+      vis[i] = u32[i] === 0 ? 0 : 1;
+    }
+    self.resultsReady = true;
+    return u32;
+  });
 };
 
 export default OcclusionCulling;

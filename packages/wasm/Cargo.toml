@@ -19,12 +19,22 @@ codegen-units = 1   # Single codegen unit for best optimization
 strip = true        # Strip debug symbols
 panic = "abort"     # No unwinding runtime (smaller binary)
 
-# Configure wasm-opt to accept SIMD and bulk-memory instructions.
-# The bundled wasm-opt (binaryen v117) supports these features but requires
-# explicit --enable flags. Without these, wasm-opt fails validation on
-# v128.load, memory.fill, memory.copy, etc.
+# Configure wasm-opt to accept the WASM features rustc emits in release
+# builds. Each `--enable-*` flag whitelists a feature for the binaryen
+# validator; without them wasm-opt rejects the module before optimizing.
+#
+# - simd / bulk-memory: SIMD intrinsics + memory.copy / memory.fill
+# - nontrapping-float-to-int: rustc 1.45+ lowers `as i32` casts on f64
+#   to `i32.trunc_sat_f64_s` which lives behind this feature flag
+# - sign-ext: rustc emits `i32.extend8_s` etc. on byte-level sign extends
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O4", "--enable-simd", "--enable-bulk-memory"]
+wasm-opt = [
+    "-O4",
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+]
 
 [package.metadata.wasm-pack.profile.dev]
 wasm-opt = false

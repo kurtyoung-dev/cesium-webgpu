@@ -122,7 +122,7 @@
     "build-wasm-debug": "node scripts/buildWasm.js --debug",
     "build-wasm-check": "node scripts/buildWasm.js --check",
     "build-wasm-clean": "node scripts/buildWasm.js --clean",
-    "build-all": "gulp clean && gulp build && gulp buildTs && gulp tsc && gulp -f gulpfile.apps.js buildApps",
+    "build-all": "gulp clean && node scripts/buildWasm.js && gulp build && gulp buildTs && gulp tsc && gulp -f gulpfile.apps.js buildApps",
     "build-apps": "gulp -f gulpfile.apps.js buildApps",
     "build-cesium-viewer": "gulp -f gulpfile.apps.js buildCesiumViewer",
     "build-sandcastle": "gulp -f gulpfile.apps.js buildSandcastle",

@@ -127,6 +127,17 @@ class WebGPUDrawCommand {
   firstIndex: number;
   firstInstance: number;
   enabled: boolean;
+  /**
+   * Optional pre-encoded render bundle. When set, `execute()` calls
+   * `passEncoder.executeBundles([bundle])` and skips the per-frame
+   * pipeline / bind group / buffer / draw recording. Owners that benefit
+   * (static-pipeline renderers like the moon, sky atmosphere) build the
+   * bundle once via {@link WebGPURenderBundleManager#getOrCreate} and
+   * keep it cached. The fallback path still works if `bundle` is unset,
+   * so renderers can opt in incrementally. Phase 1.2c v2 — Moon is the
+   * first consumer.
+   */
+  bundle?: GPURenderBundle;
 
   // Properties needed for Scene/View command binning and culling
   pass: number;
@@ -290,6 +301,17 @@ class WebGPUDrawCommand {
     //>>includeEnd('debug');
 
     if (!this.enabled) {
+      return;
+    }
+
+    // Pre-encoded bundle fast path. When the owner has cached a
+    // GPURenderBundle (via WebGPURenderBundleManager), replay it instead
+    // of recording the draw calls again. The bundle internally captures
+    // setPipeline / setBindGroup / setVertexBuffer / setIndexBuffer /
+    // drawIndexed, so the per-frame CPU work collapses to one
+    // executeBundles call. Phase 1.2c v2 — Moon is the first consumer.
+    if (defined(this.bundle)) {
+      passEncoder.executeBundles([this.bundle!]);
       return;
     }
 

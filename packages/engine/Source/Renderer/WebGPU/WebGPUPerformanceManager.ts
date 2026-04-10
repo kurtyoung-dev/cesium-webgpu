@@ -144,7 +144,13 @@ export class WebGPUPerformanceManager {
 
   // Compute dispatch orchestration
   private _computePipelines: Map<number, CachedComputeTask> = new Map();
+  // Per-light dirty flags. Phase 1.3c adds the moon as a second LUT
+  // target so dual-light scattering can run; both flags are tracked
+  // independently because the sun and moon angles update at different
+  // rates and the LUTs are expensive enough that recomputing both
+  // every frame is wasteful.
   private _atmosphereLUTDirty: boolean = true;
+  private _moonAtmosphereLUTDirty: boolean = true;
   private _computeDispatches: number = 0;
 
   // Subgroup-preprocessed compute sources. Lazy-built on first dispatch.
@@ -159,8 +165,16 @@ export class WebGPUPerformanceManager {
   private _pointCloudLODPreparedSource: string | null = null;
   private _pointCloudLODUseSubgroups: boolean = false;
 
-  // Atmosphere LUT GPU resources (lazy-allocated on first dispatch)
+  // Atmosphere LUT GPU resources (lazy-allocated on first dispatch).
+  // Phase 1.3c: holds TWO complete LUT pairs — one for the sun and one
+  // for the moon — so the dual-light atmosphere fragment shader can
+  // sample both with a single bind group. Each light has its own
+  // params uniform buffer because the directions differ; the textures
+  // are allocated up front whether or not the moon path is ever used
+  // (~256 KB total — negligible).
   private _atmosphereLutResources: {
+    // Sun LUTs (kept under the original names so the existing
+    // single-light callers don't have to be renamed in lockstep).
     transmittance: GPUTexture;
     transmittanceView: GPUTextureView;
     inscatter: GPUTexture;
@@ -168,6 +182,15 @@ export class WebGPUPerformanceManager {
     paramsBuffer: GPUBuffer;
     paramsData: Float32Array;
     bindGroup: GPUBindGroup | null;
+    // Moon LUTs (Phase 1.3c).
+    moonTransmittance: GPUTexture;
+    moonTransmittanceView: GPUTextureView;
+    moonInscatter: GPUTexture;
+    moonInscatterView: GPUTextureView;
+    moonParamsBuffer: GPUBuffer;
+    moonParamsData: Float32Array;
+    moonBindGroup: GPUBindGroup | null;
+    // Shared bind group layout — both sun and moon use identical layouts.
     bindGroupLayout: GPUBindGroupLayout | null;
     width: number;
     inscatterHeight: number;
@@ -269,80 +292,13 @@ export class WebGPUPerformanceManager {
   // ═══════════════════════════════════════════════════════════
   // RENDER BUNDLES — For static terrain tiles
   // ═══════════════════════════════════════════════════════════
-
-  /**
-   * Try to execute commands as a cached render bundle.
-   * Returns true if a bundle was found and executed, false if individual
-   * command execution is needed.
-   *
-   * @param bundleKey - Unique key for this set of commands (e.g., tile ID + pass)
-   * @param renderPass - Active render pass encoder
-   * @param commands - Commands to execute if no bundle is cached
-   * @param count - Number of commands
-   * @param recordCallback - Callback to record commands into a bundle encoder
-   * @returns true if bundle was executed, false for individual execution
-   */
-  tryExecuteBundle(
-    bundleKey: string,
-    renderPass: GPURenderPassEncoder,
-    commands: any[],
-    count: number,
-    recordCallback: (encoder: GPURenderBundleEncoder) => void,
-  ): boolean {
-    if (
-      !this._bundleManagerActive ||
-      count < this._config.renderBundleThreshold
-    ) {
-      return false;
-    }
-
-    const bundleMgr = this._context.renderBundleManager;
-    if (!bundleMgr) {
-      return false;
-    }
-
-    const device: GPUDevice = this._context.device;
-    if (!device) {
-      return false;
-    }
-
-    // Try to get cached bundle
-    const entry = bundleMgr.get(bundleKey);
-    if (entry) {
-      renderPass.executeBundles([entry.bundle]);
-      entry.lastUsedFrame = this._frameCount;
-      this._bundleHitCount++;
-      return true;
-    }
-
-    // Cache miss — record a new bundle
-    const descriptor: GPURenderBundleEncoderDescriptor = {
-      label: `RenderBundle:${bundleKey}`,
-      colorFormats: [this._context.presentationFormat],
-      depthStencilFormat: this._context.depthFormat,
-    };
-
-    try {
-      const bundleEncoder = device.createRenderBundleEncoder(descriptor);
-      recordCallback(bundleEncoder);
-      const bundle = bundleEncoder.finish();
-
-      bundleMgr.set(bundleKey, {
-        bundle,
-        version: 1,
-        lastUsedFrame: this._frameCount,
-        createdFrame: this._frameCount,
-      });
-
-      renderPass.executeBundles([bundle]);
-      this._bundleMissCount++;
-      this._bundleHitCount++;
-      return true;
-    } catch {
-      // Bundle recording failed — fall back to individual execution
-      return false;
-    }
-  }
+  //
+  // The actual bundle cache lives on `WebGPUContext.renderBundleManager`
+  // ({@link WebGPURenderBundleManager}) and is consumed via its
+  // `getOrCreate(key, builder)` API directly by the per-feature
+  // dispatchers (terrain, primitives). The performance manager only
+  // tracks frame-level hit/miss counters and exposes invalidation
+  // helpers — it does NOT mediate the cache itself.
 
   /**
    * Invalidate a cached render bundle (e.g., when tile geometry changes).
@@ -597,34 +553,71 @@ export class WebGPUPerformanceManager {
   }
 
   /**
-   * Mark the atmosphere LUT as needing recomputation (e.g., sun moved).
+   * Mark the (sun) atmosphere LUT as needing recomputation. Called by the
+   * sky atmosphere renderer when the sun direction has moved beyond the
+   * stale-tolerance threshold. The moon LUT has its own dirty flag and
+   * is invalidated separately via `invalidateMoonAtmosphereLUT()`.
    */
   invalidateAtmosphereLUT(): void {
     this._atmosphereLUTDirty = true;
   }
 
   /**
-   * Lazy-create the GPU resources backing the atmosphere LUT — two storage
-   * textures (transmittance + inscatter), an AtmosphereParams uniform
-   * buffer, and a bind group laid out for `AtmosphereLUT.wgsl`. Returns
-   * the cached struct on subsequent calls.
+   * Phase 1.3c — moon LUT companion to `shouldRecomputeAtmosphereLUT()`.
+   * Returns true once when the moon direction (or scattering parameters
+   * affecting the moon LUT) have changed since the last dispatch and
+   * compute is available; clears the dirty flag on the read path.
+   */
+  shouldRecomputeMoonAtmosphereLUT(): boolean {
+    if (!this._config.atmosphereLUT || !this._context.supportsComputeShaders) {
+      return false;
+    }
+    if (this._moonAtmosphereLUTDirty) {
+      this._moonAtmosphereLUTDirty = false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Phase 1.3c — flag the moon LUT as needing recomputation. The sky
+   * atmosphere renderer calls this when the moon direction crosses the
+   * stale-tolerance threshold (analogous to `invalidateAtmosphereLUT`
+   * for the sun).
+   */
+  invalidateMoonAtmosphereLUT(): void {
+    this._moonAtmosphereLUTDirty = true;
+  }
+
+  /**
+   * Lazy-create the GPU resources backing the atmosphere LUT system.
+   * Phase 1.3c allocates BOTH the sun and moon LUT pairs in one shot:
+   * two storage textures per light (transmittance + inscatter), one
+   * AtmosphereParams uniform buffer per light, and a shared bind group
+   * layout. Returns the four texture views the sky atmosphere fragment
+   * shader binds for dual-light scattering.
    *
-   * The textures use rgba16float storage format, which is in the WebGPU
-   * core spec, so no feature flag is required to bind them as
-   * `texture_storage_2d<rgba16float, write>`. Sampling them later (from
-   * SkyAtmosphere / GlobeTerrain) goes through a regular texture binding,
-   * so the storage texture is created with TEXTURE_BINDING usage as well.
+   * The textures use rgba16float storage format (WebGPU core, no feature
+   * flag required) and are created with TEXTURE_BINDING usage as well so
+   * downstream samplers can read them. The moon pair is allocated even
+   * when `enableDualLightAtmosphere` is off — it's ~256 KB total and
+   * having both up front lets the sky bind group layout stay constant.
    *
    * @param device GPUDevice (passed in to avoid coupling to context shape)
    */
   ensureAtmosphereLUTResources(device: GPUDevice): {
     transmittanceView: GPUTextureView;
     inscatterView: GPUTextureView;
+    moonTransmittanceView: GPUTextureView;
+    moonInscatterView: GPUTextureView;
   } | null {
     if (this._atmosphereLutResources) {
       return {
         transmittanceView: this._atmosphereLutResources.transmittanceView,
         inscatterView: this._atmosphereLutResources.inscatterView,
+        moonTransmittanceView:
+          this._atmosphereLutResources.moonTransmittanceView,
+        moonInscatterView: this._atmosphereLutResources.moonInscatterView,
       };
     }
 
@@ -637,20 +630,35 @@ export class WebGPUPerformanceManager {
     const usage =
       GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
 
+    // ── Sun LUT pair ──
     const transmittance = device.createTexture({
-      label: "AtmosphereLUT_Transmittance",
+      label: "AtmosphereLUT_Sun_Transmittance",
       size: { width, height: transmittanceHeight },
       format: "rgba16float",
       usage,
     });
     const inscatter = device.createTexture({
-      label: "AtmosphereLUT_Inscatter",
+      label: "AtmosphereLUT_Sun_Inscatter",
       size: { width, height: inscatterHeight },
       format: "rgba16float",
       usage,
     });
 
-    // AtmosphereParams: see AtmosphereLUT.wgsl. 16 floats with std140 padding.
+    // ── Moon LUT pair (Phase 1.3c) ──
+    const moonTransmittance = device.createTexture({
+      label: "AtmosphereLUT_Moon_Transmittance",
+      size: { width, height: transmittanceHeight },
+      format: "rgba16float",
+      usage,
+    });
+    const moonInscatter = device.createTexture({
+      label: "AtmosphereLUT_Moon_Inscatter",
+      size: { width, height: inscatterHeight },
+      format: "rgba16float",
+      usage,
+    });
+
+    // AtmosphereParams: see AtmosphereLUT.wgsl. 20 floats with std140 padding.
     // Layout (offsets in floats):
     //   0: innerRadius   1: outerRadius
     //   2: rayleighScaleHeight   3: mieScaleHeight
@@ -658,11 +666,20 @@ export class WebGPUPerformanceManager {
     //   6: lutWidth (u32 reinterpreted)   7: lutHeight (u32 reinterpreted)
     //   8-10: rayleighCoefficient.xyz   11: pad
     //   12-14: mieCoefficient.xyz   15: pad
-    //   16-18: sunDirection.xyz   19: pad
+    //   16-18: lightDirection.xyz   19: pad     ← shader still calls
+    //                                            this `sunDirection` but
+    //                                            the moon pass writes its
+    //                                            own direction here.
     const paramsData = new Float32Array(20);
     const paramsBuffer = device.createBuffer({
-      label: "AtmosphereLUT_Params",
+      label: "AtmosphereLUT_Sun_Params",
       size: Math.max(paramsData.byteLength, 256),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const moonParamsData = new Float32Array(20);
+    const moonParamsBuffer = device.createBuffer({
+      label: "AtmosphereLUT_Moon_Params",
+      size: Math.max(moonParamsData.byteLength, 256),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -674,6 +691,13 @@ export class WebGPUPerformanceManager {
       paramsBuffer,
       paramsData,
       bindGroup: null,
+      moonTransmittance,
+      moonTransmittanceView: moonTransmittance.createView(),
+      moonInscatter,
+      moonInscatterView: moonInscatter.createView(),
+      moonParamsBuffer,
+      moonParamsData,
+      moonBindGroup: null,
       bindGroupLayout: null,
       width,
       transmittanceHeight,
@@ -683,14 +707,25 @@ export class WebGPUPerformanceManager {
     return {
       transmittanceView: this._atmosphereLutResources.transmittanceView,
       inscatterView: this._atmosphereLutResources.inscatterView,
+      moonTransmittanceView: this._atmosphereLutResources.moonTransmittanceView,
+      moonInscatterView: this._atmosphereLutResources.moonInscatterView,
     };
   }
 
   /**
    * Dispatch both LUT compute entry points (computeTransmittance,
-   * computeInscatter) using the cached resources. The caller is
-   * responsible for invalidating the LUT when the sun direction or
-   * scattering parameters change (call `invalidateAtmosphereLUT()`).
+   * computeInscatter) into the requested light's LUT pair. Phase 1.3c
+   * adds the `target: "sun" | "moon"` parameter so the sky atmosphere
+   * renderer can refresh either pair independently. The caller is
+   * responsible for tracking direction-change deltas and calling the
+   * matching `invalidateAtmosphereLUT()` / `invalidateMoonAtmosphereLUT()`
+   * before dispatch.
+   *
+   * The `params.sunDirection` field is keyed off the param name only —
+   * the moon dispatch passes the moon direction here under the same key.
+   * The shader still calls its uniform `sunDirection` because renaming
+   * it would force a four-shader-file rename of the AtmosphereLUT.wgsl
+   * compute kernel; the semantic is "the light direction for THIS LUT."
    *
    * Sample call site:
    *   if (perfMgr.shouldRecomputeAtmosphereLUT()) {
@@ -701,7 +736,7 @@ export class WebGPUPerformanceManager {
    *       rayleighCoefficient: [5.8e-6, 13.5e-6, 33.1e-6],
    *       mieCoefficient: [21e-6, 21e-6, 21e-6],
    *       sunDirection: [sx, sy, sz],
-   *     });
+   *     }, "sun");
    *   }
    *
    * @returns true on success, false if compute is unavailable
@@ -720,16 +755,27 @@ export class WebGPUPerformanceManager {
       mieCoefficient: [number, number, number];
       sunDirection: [number, number, number];
     },
+    target: "sun" | "moon" = "sun",
   ): boolean {
     if (!this._context.supportsComputeShaders) return false;
     const res = this.ensureAtmosphereLUTResources(device);
     if (!res || !this._atmosphereLutResources) return false;
     const lut = this._atmosphereLutResources;
 
+    // Pick the per-light slot. Sun and moon share the layout but each has
+    // its own params buffer + textures + bind group, so direction
+    // changes for one don't churn the other.
+    const isMoon = target === "moon";
+    const f = isMoon ? lut.moonParamsData : lut.paramsData;
+    const paramsBuffer = isMoon ? lut.moonParamsBuffer : lut.paramsBuffer;
+    const transmittanceView = isMoon
+      ? lut.moonTransmittanceView
+      : lut.transmittanceView;
+    const inscatterView = isMoon ? lut.moonInscatterView : lut.inscatterView;
+
     // Pack params into the typed array slot. The u32 lutWidth/lutHeight
     // entries reuse Float32Array slots via a temporary Uint32Array view —
     // valid because the underlying ArrayBuffer is shared.
-    const f = lut.paramsData;
     f[0] = params.innerRadius;
     f[1] = params.outerRadius;
     f[2] = params.rayleighScaleHeight;
@@ -756,14 +802,15 @@ export class WebGPUPerformanceManager {
     // f[19] = pad
 
     device.queue.writeBuffer(
-      lut.paramsBuffer,
+      paramsBuffer,
       0,
       f.buffer,
       f.byteOffset,
       f.byteLength,
     );
 
-    // Build the bind group lazily. Layout matches AtmosphereLUT.wgsl:
+    // Build the shared bind group layout once. Both sun and moon dispatches
+    // use identical layouts; only the bind group resources differ.
     //   binding 0: uniform AtmosphereParams
     //   binding 1: texture_storage_2d<rgba16float, write> transmittance
     //   binding 2: texture_storage_2d<rgba16float, write> inscatter
@@ -797,16 +844,36 @@ export class WebGPUPerformanceManager {
         ],
       });
     }
-    if (!lut.bindGroup) {
-      lut.bindGroup = device.createBindGroup({
-        label: "AtmosphereLUT_BG",
-        layout: lut.bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: lut.paramsBuffer } },
-          { binding: 1, resource: lut.transmittanceView },
-          { binding: 2, resource: lut.inscatterView },
-        ],
-      });
+
+    // Build (or reuse) the per-target bind group. Cached separately for
+    // sun vs moon so neither pays the rebuild cost on the other's update.
+    let targetBindGroup: GPUBindGroup | null;
+    if (isMoon) {
+      if (!lut.moonBindGroup) {
+        lut.moonBindGroup = device.createBindGroup({
+          label: "AtmosphereLUT_BG_Moon",
+          layout: lut.bindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: paramsBuffer } },
+            { binding: 1, resource: transmittanceView },
+            { binding: 2, resource: inscatterView },
+          ],
+        });
+      }
+      targetBindGroup = lut.moonBindGroup;
+    } else {
+      if (!lut.bindGroup) {
+        lut.bindGroup = device.createBindGroup({
+          label: "AtmosphereLUT_BG_Sun",
+          layout: lut.bindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: paramsBuffer } },
+            { binding: 1, resource: transmittanceView },
+            { binding: 2, resource: inscatterView },
+          ],
+        });
+      }
+      targetBindGroup = lut.bindGroup;
     }
 
     // Dispatch. The shader uses 16×16 workgroups, so we round up.
@@ -817,7 +884,7 @@ export class WebGPUPerformanceManager {
     this.dispatchCompute(
       encoder,
       ComputeTaskType.ATMOSPHERE_LUT,
-      [{ index: 0, bindGroup: lut.bindGroup }],
+      [{ index: 0, bindGroup: targetBindGroup }],
       wgsX,
       wgsT,
       1,
@@ -826,7 +893,7 @@ export class WebGPUPerformanceManager {
     this.dispatchCompute(
       encoder,
       ComputeTaskType.ATMOSPHERE_LUT,
-      [{ index: 0, bindGroup: lut.bindGroup }],
+      [{ index: 0, bindGroup: targetBindGroup }],
       wgsX,
       wgsI,
       1,

@@ -119,6 +119,49 @@ class Moon {
       ellipsoidPrimitive.modelMatrix,
     );
 
+    // Phase 1.2: publish moon ephemeris onto frameState for renderers
+    // (Moon fragment shader, atmosphere, night-side lighting). `translation`
+    // is the moon position in world coords (earth-centered fixed frame),
+    // so its normalized form is the world-space direction from the earth
+    // center toward the moon.
+    const moonDirWC = Cartesian3.normalize(translation, scratchMoonDirWC);
+
+    // Pull sun direction (WC) from the per-frame uniform state. Scene.js
+    // updates uniformState before calling Moon.update, so this is current.
+    let phaseFraction = 1.0;
+    const uniformState = defined(frameState.context)
+      ? frameState.context.uniformState
+      : undefined;
+    if (defined(uniformState) && defined(uniformState.sunDirectionWC)) {
+      const sunDirWC = uniformState.sunDirectionWC;
+      const sunLenSq = Cartesian3.magnitudeSquared(sunDirWC);
+      const moonLenSq = Cartesian3.magnitudeSquared(moonDirWC);
+      if (sunLenSq > 0.0 && moonLenSq > 0.0) {
+        // 0 = new moon (sun and moon in same direction), 0.5 = quarter,
+        // 1 = full moon (opposite directions).
+        const cosAngle = Cartesian3.dot(moonDirWC, sunDirWC);
+        phaseFraction = 0.5 * (1.0 - cosAngle);
+      } else {
+        phaseFraction = 0.5;
+      }
+    }
+
+    // Gate on atmospheric-conditions lighting toggle. When disabled or when
+    // no globe is attached, fall back to "always full" (1.0) — simpler flat
+    // disc shading that matches pre-Phase-1 behavior.
+    const ac = frameState.atmosphericConditions;
+    const enableMoonPhase =
+      defined(ac) && defined(ac.lighting) ? ac.lighting.enableMoonPhase : false;
+    if (!enableMoonPhase) {
+      phaseFraction = 1.0;
+    }
+
+    frameState.moonDirectionWC = Cartesian3.clone(
+      moonDirWC,
+      frameState.moonDirectionWC,
+    );
+    frameState.moonPhaseFraction = phaseFraction;
+
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
     const fr = context.getFeatureRenderer(FeatureRendererKey.MOON);
@@ -140,6 +183,34 @@ class Moon {
     ellipsoidPrimitive.update(frameState);
     frameState.commandList = savedCommandList;
     return scratchCommandList.length === 1 ? scratchCommandList[0] : undefined;
+  }
+
+  /**
+   * Phase 6 debug surface — returns a diagnostic snapshot of the moon's
+   * current per-frame state. Backend-agnostic dispatch: routes through
+   * the registered MOON feature renderer's `getStatistics(moon)` entry
+   * point so Scene code can call this without importing from
+   * `Renderer/WebGPU/`. Returns `null` when no feature renderer is
+   * registered (e.g., WebGL backend) or when the moon hasn't yet had
+   * its first `update()` call.
+   *
+   * @param {Scene} scene The owning scene; used to obtain the active
+   *   GraphicsContext for the feature renderer lookup.
+   * @returns {object|null}
+   */
+  getDebugStatistics(scene) {
+    if (!defined(scene) || !defined(scene.context)) {
+      return null;
+    }
+    const fr = scene.context.getFeatureRenderer(FeatureRendererKey.MOON);
+    if (!defined(fr) || typeof fr.getStatistics !== "function") {
+      return null;
+    }
+    try {
+      return fr.getStatistics(this);
+    } catch (e) {
+      return { error: String(e?.message ?? e) };
+    }
   }
 
   /**
@@ -188,6 +259,7 @@ class Moon {
 const icrfToFixed = new Matrix3();
 const rotationScratch = new Matrix3();
 const translationScratch = new Cartesian3();
+const scratchMoonDirWC = new Cartesian3();
 const scratchCommandList = [];
 
 export default Moon;
