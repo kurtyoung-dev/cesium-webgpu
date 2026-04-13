@@ -17,34 +17,79 @@ import Matrix3 from "./Matrix3.js";
  *
  * @see PackableForInterpolation
  */
-function Quaternion(x, y, z, w) {
-  /**
-   * The X component.
-   * @type {number}
-   * @default 0.0
-   */
-  this.x = x ?? 0.0;
+class Quaternion {
+  constructor(x, y, z, w) {
+    /**
+     * The X component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.x = x ?? 0.0;
+
+    /**
+     * The Y component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.y = y ?? 0.0;
+
+    /**
+     * The Z component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.z = z ?? 0.0;
+
+    /**
+     * The W component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.w = w ?? 0.0;
+  }
 
   /**
-   * The Y component.
-   * @type {number}
-   * @default 0.0
+   * Duplicates this Quaternion instance.
+   *
+   * @param {Quaternion} [result] The object onto which to store the result.
+   * @returns {Quaternion} The modified result parameter or a new Quaternion instance if one was not provided.
    */
-  this.y = y ?? 0.0;
+  clone(result) {
+    return Quaternion.clone(this, result);
+  }
 
   /**
-   * The Z component.
-   * @type {number}
-   * @default 0.0
+   * Compares this and the provided quaternion componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Quaternion} [right] The right hand side quaternion.
+   * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
    */
-  this.z = z ?? 0.0;
+  equals(right) {
+    return Quaternion.equals(this, right);
+  }
 
   /**
-   * The W component.
-   * @type {number}
-   * @default 0.0
+   * Compares this and the provided quaternion componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
+   *
+   * @param {Quaternion} [right] The right hand side quaternion.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if left and right are within the provided epsilon, <code>false</code> otherwise.
    */
-  this.w = w ?? 0.0;
+  equalsEpsilon(right, epsilon) {
+    return Quaternion.equalsEpsilon(this, right, epsilon);
+  }
+
+  /**
+   * Returns a string representing this quaternion in the format (x, y, z, w).
+   *
+   * @returns {string} A string representing this Quaternion.
+   */
+  toString() {
+    return `(${this.x}, ${this.y}, ${this.z}, ${this.w})`;
+  }
 }
 
 let fromAxisAngleScratch = new Cartesian3();
@@ -1100,46 +1145,4 @@ Quaternion.ZERO = Object.freeze(new Quaternion(0.0, 0.0, 0.0, 0.0));
  */
 Quaternion.IDENTITY = Object.freeze(new Quaternion(0.0, 0.0, 0.0, 1.0));
 
-/**
- * Duplicates this Quaternion instance.
- *
- * @param {Quaternion} [result] The object onto which to store the result.
- * @returns {Quaternion} The modified result parameter or a new Quaternion instance if one was not provided.
- */
-Quaternion.prototype.clone = function (result) {
-  return Quaternion.clone(this, result);
-};
-
-/**
- * Compares this and the provided quaternion componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Quaternion} [right] The right hand side quaternion.
- * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
- */
-Quaternion.prototype.equals = function (right) {
-  return Quaternion.equals(this, right);
-};
-
-/**
- * Compares this and the provided quaternion componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {Quaternion} [right] The right hand side quaternion.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if left and right are within the provided epsilon, <code>false</code> otherwise.
- */
-Quaternion.prototype.equalsEpsilon = function (right, epsilon) {
-  return Quaternion.equalsEpsilon(this, right, epsilon);
-};
-
-/**
- * Returns a string representing this quaternion in the format (x, y, z, w).
- *
- * @returns {string} A string representing this Quaternion.
- */
-Quaternion.prototype.toString = function () {
-  return `(${this.x}, ${this.y}, ${this.z}, ${this.w})`;
-};
 export default Quaternion;

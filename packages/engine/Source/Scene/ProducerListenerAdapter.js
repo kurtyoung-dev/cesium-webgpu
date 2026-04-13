@@ -70,113 +70,111 @@ const SUPPORTED_VERSION = "2.0";
  * @extends Cesium3DTilesInvalidationFeedAdapter
  * @private
  */
-function ProducerListenerAdapter(options) {
-  options = options ?? {};
-  this._lenient = options.lenient !== false; // default true
-  this._sourceMtime = options.sourceMtime;
-  this._sourceUrl = options.sourceUrl;
+class ProducerListenerAdapter {
+  constructor(options) {
+    options = options ?? {};
+    this._lenient = options.lenient !== false; // default true
+    this._sourceMtime = options.sourceMtime;
+    this._sourceUrl = options.sourceUrl;
+  }
+
+  /**
+   * Parse a producer listener-invalidations v2.0 payload.
+   * @param {string|ArrayBuffer} payload
+   * @param {object} [perCallOptions] Override sourceMtime / sourceUrl.
+   * @returns {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]}
+   */
+  parse(payload, perCallOptions) {
+    const text = decodePayload(payload);
+    if (!defined(text) || text.length === 0) {
+      return [];
+    }
+    const lenient = this._lenient;
+    const sourceMtime =
+      perCallOptions && defined(perCallOptions.sourceMtime)
+        ? perCallOptions.sourceMtime
+        : this._sourceMtime;
+    const sourceUrl =
+      perCallOptions && defined(perCallOptions.sourceUrl)
+        ? perCallOptions.sourceUrl
+        : this._sourceUrl;
+
+    const chunks = splitBlocks(text);
+    /** @type {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} */
+    const sets = [];
+
+    for (let b = 0; b < chunks.length; ++b) {
+      const chunk = chunks[b];
+      let json;
+      try {
+        json = JSON.parse(chunk);
+      } catch (err) {
+        const msg = `[ProducerListenerAdapter] Block ${b} JSON parse failed${sourceUrl ? ` (${sourceUrl})` : ""}: ${err.message}`;
+        if (lenient) {
+          console.warn(msg);
+          continue;
+        }
+        throw new DeveloperError(msg);
+      }
+
+      const version = typeof json.version === "string" ? json.version : undefined;
+      if (!defined(version)) {
+        const msg = `[ProducerListenerAdapter] Block ${b} missing version field.`;
+        if (lenient) {
+          console.warn(msg);
+          continue;
+        }
+        throw new DeveloperError(msg);
+      }
+      if (version !== SUPPORTED_VERSION) {
+        // Accept forward versions (2.1+) with an info note; record the string.
+        console.info(
+          `[ProducerListenerAdapter] Block ${b} has version "${version}" (expected ${SUPPORTED_VERSION}); accepting.`,
+        );
+      }
+
+      const resources = Array.isArray(json.resources) ? json.resources : [];
+      const layers = buildLayerMap(resources);
+
+      const id =
+        defined(json.id) && typeof json.id === "string"
+          ? json.id
+          : `sha:${fnv1a64Hex(canonicalize(json))}`;
+
+      let generatedAt;
+      if (typeof json.generatedAt === "string") {
+        generatedAt = json.generatedAt;
+      } else if (typeof json.generated === "string") {
+        generatedAt = json.generated;
+      } else if (typeof json.timestamp === "string") {
+        generatedAt = json.timestamp;
+      } else if (defined(sourceMtime)) {
+        generatedAt = `file:${sourceMtime}+${b}`;
+      } else {
+        generatedAt = new Date().toISOString();
+      }
+
+      sets.push({
+        id: id,
+        generatedAt: generatedAt,
+        version: version,
+        layers: layers,
+        sourceBlockIndex: b,
+      });
+    }
+
+    return sets;
+  }
+
+  get formatId() {
+    return FORMAT_ID;
+  }
 }
 
 ProducerListenerAdapter.prototype = Object.create(
   Cesium3DTilesInvalidationFeedAdapter.prototype,
 );
 ProducerListenerAdapter.prototype.constructor = ProducerListenerAdapter;
-
-Object.defineProperties(ProducerListenerAdapter.prototype, {
-  formatId: {
-    get: function () {
-      return FORMAT_ID;
-    },
-  },
-});
-
-/**
- * Parse a producer listener-invalidations v2.0 payload.
- * @param {string|ArrayBuffer} payload
- * @param {object} [perCallOptions] Override sourceMtime / sourceUrl.
- * @returns {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]}
- */
-ProducerListenerAdapter.prototype.parse = function (payload, perCallOptions) {
-  const text = decodePayload(payload);
-  if (!defined(text) || text.length === 0) {
-    return [];
-  }
-  const lenient = this._lenient;
-  const sourceMtime =
-    perCallOptions && defined(perCallOptions.sourceMtime)
-      ? perCallOptions.sourceMtime
-      : this._sourceMtime;
-  const sourceUrl =
-    perCallOptions && defined(perCallOptions.sourceUrl)
-      ? perCallOptions.sourceUrl
-      : this._sourceUrl;
-
-  const chunks = splitBlocks(text);
-  /** @type {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} */
-  const sets = [];
-
-  for (let b = 0; b < chunks.length; ++b) {
-    const chunk = chunks[b];
-    let json;
-    try {
-      json = JSON.parse(chunk);
-    } catch (err) {
-      const msg = `[ProducerListenerAdapter] Block ${b} JSON parse failed${sourceUrl ? ` (${sourceUrl})` : ""}: ${err.message}`;
-      if (lenient) {
-        console.warn(msg);
-        continue;
-      }
-      throw new DeveloperError(msg);
-    }
-
-    const version = typeof json.version === "string" ? json.version : undefined;
-    if (!defined(version)) {
-      const msg = `[ProducerListenerAdapter] Block ${b} missing version field.`;
-      if (lenient) {
-        console.warn(msg);
-        continue;
-      }
-      throw new DeveloperError(msg);
-    }
-    if (version !== SUPPORTED_VERSION) {
-      // Accept forward versions (2.1+) with an info note; record the string.
-      console.info(
-        `[ProducerListenerAdapter] Block ${b} has version "${version}" (expected ${SUPPORTED_VERSION}); accepting.`,
-      );
-    }
-
-    const resources = Array.isArray(json.resources) ? json.resources : [];
-    const layers = buildLayerMap(resources);
-
-    const id =
-      defined(json.id) && typeof json.id === "string"
-        ? json.id
-        : `sha:${fnv1a64Hex(canonicalize(json))}`;
-
-    let generatedAt;
-    if (typeof json.generatedAt === "string") {
-      generatedAt = json.generatedAt;
-    } else if (typeof json.generated === "string") {
-      generatedAt = json.generated;
-    } else if (typeof json.timestamp === "string") {
-      generatedAt = json.timestamp;
-    } else if (defined(sourceMtime)) {
-      generatedAt = `file:${sourceMtime}+${b}`;
-    } else {
-      generatedAt = new Date().toISOString();
-    }
-
-    sets.push({
-      id: id,
-      generatedAt: generatedAt,
-      version: version,
-      layers: layers,
-      sourceBlockIndex: b,
-    });
-  }
-
-  return sets;
-};
 
 /**
  * Split the raw text on block boundaries. The separator is a line containing

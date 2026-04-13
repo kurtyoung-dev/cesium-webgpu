@@ -115,6 +115,13 @@ const FeatureRendererKey = {
   // round trip dominates for small command counts.
   GPU_SORT_KEYS: 39,
 
+  // ── GPU point cloud sort (Phase 3: dispatcher landed 2026-04-09) ──
+  // Bitonic sort of point cloud distance-squared arrays on the GPU.
+  // Gated by `WasmPointCloudBridge.useGPUSort` (default false);
+  // only useful when a GPU-side consumer (indirect draw) exists so the
+  // sorted indices don't need a readback to CPU.
+  POINT_CLOUD_SORT: 40,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -127,7 +134,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 40,
+  COUNT: 41,
 };
 
 export default Object.freeze(FeatureRendererKey);

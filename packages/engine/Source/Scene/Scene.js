@@ -187,19 +187,39 @@ class Scene {
       Matrix4.setDepthRangeType("webgl");
     }
 
+    // Worker-safe headless mode: when running inside a Web Worker
+    // (DedicatedWorkerGlobalScope), `document` does not exist and
+    // `OffscreenCanvas` has no `parentNode`. The Scene + CreditDisplay
+    // pair detects this and skips all DOM construction. The credit
+    // container is replaced with a sentinel `{}` so CreditDisplay's
+    // `Check.defined("container", ...)` guard still passes; the
+    // CreditDisplay constructor sees `typeof document === "undefined"`
+    // and short-circuits all DOM ops itself.
+    const headless =
+      typeof document === "undefined" ||
+      !canvas ||
+      typeof canvas.parentNode === "undefined" ||
+      canvas.parentNode === null;
+
     const hasCreditContainer = defined(creditContainer);
     if (!hasCreditContainer) {
-      creditContainer = document.createElement("div");
-      creditContainer.style.position = "absolute";
-      creditContainer.style.bottom = "0";
-      creditContainer.style["text-shadow"] = "0 0 2px #000000";
-      creditContainer.style.color = "#ffffff";
-      creditContainer.style["font-size"] = "10px";
-      creditContainer.style["padding-right"] = "5px";
-      canvas.parentNode.appendChild(creditContainer);
+      if (headless) {
+        // Provide a sentinel object so CreditDisplay's defined-check
+        // passes; CreditDisplay will not actually call appendChild on it.
+        creditContainer = {};
+      } else {
+        creditContainer = document.createElement("div");
+        creditContainer.style.position = "absolute";
+        creditContainer.style.bottom = "0";
+        creditContainer.style["text-shadow"] = "0 0 2px #000000";
+        creditContainer.style.color = "#ffffff";
+        creditContainer.style["font-size"] = "10px";
+        creditContainer.style["padding-right"] = "5px";
+        canvas.parentNode.appendChild(creditContainer);
+      }
     }
     if (!defined(creditViewport)) {
-      creditViewport = canvas.parentNode;
+      creditViewport = headless ? {} : canvas.parentNode;
     }
 
     this._id = createGuid();
@@ -280,7 +300,27 @@ class Scene {
     );
     if (sceneRendererFR && sceneRendererFR.RendererClass) {
       this._alternateSceneRenderer = new sceneRendererFR.RendererClass();
+      console.log(
+        `[Scene:${context.isWebGPU ? "webgpu" : "webgl"}] ` +
+          `WebGPU scene renderer CREATED — ` +
+          `FR_KEY=${FeatureRendererKey.SCENE_RENDERER} ` +
+          `contextId=${context.id ?? "?"}`,
+      );
+    } else if (context.isWebGPU) {
+      // This is a CRITICAL error — the WebGPU context must have the
+      // SCENE_RENDERER FR registered so the alternate scene renderer can
+      // handle multi-frustum execution and the post-process canvas blit.
+      // Without it the canvas stays black.
+      console.error(
+        `[Scene:webgpu] CRITICAL — WebGPU scene renderer NOT CREATED. ` +
+          `SCENE_RENDERER FR not found (key=${FeatureRendererKey.SCENE_RENDERER}). ` +
+          `Canvas will be BLACK. ` +
+          `getFeatureRenderer=${typeof context.getFeatureRenderer} ` +
+          `frResult=${!!sceneRendererFR}`,
+      );
     }
+    // WebGL scenes don't use _alternateSceneRenderer — they run the
+    // traditional executeCommand path in SceneRenderer.js. No log needed.
 
     /**
      * The render scheduler manages layered sorting, material batching,
@@ -944,6 +984,30 @@ class Scene {
     this.requestRenderMode = options.requestRenderMode ?? false;
     this._renderRequested = true;
 
+    /**
+     * When true, Temporal Anti-Aliasing replaces FXAA as the primary
+     * anti-aliasing method. TAA accumulates jittered frames into a
+     * history buffer for sub-pixel quality, at the cost of one frame
+     * of latency and potential ghosting on fast-moving objects.
+     *
+     * Disables MSAA when active (the two are incompatible).
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.taaEnabled = options.taaEnabled ?? false;
+
+    /**
+     * When true, Cascaded Shadow Maps split the camera frustum into
+     * 4 depth ranges, each rendered at full shadow map resolution.
+     * Gives high-resolution shadows near the camera without
+     * sacrificing far-range coverage.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.useCascadedShadowMaps = options.useCascadedShadowMaps ?? false;
+
     // Bumped by subsystems that mutate scene-visible state in ways that
     // invalidate frozen render bundles. Used by the snapshot/locked-orbit
     // mode (future Phase 0.7) to know when to discard cached bundles.
@@ -1480,6 +1544,8 @@ class Scene {
         snapshotVersion: this._snapshotVersion ?? 0,
         requestRenderMode: this.requestRenderMode === true,
         renderRequested: this._renderRequested === true,
+        taaEnabled: this.taaEnabled === true,
+        useCascadedShadowMaps: this.useCascadedShadowMaps === true,
         mode: fs?.mode ?? null,
         morphTime: fs?.morphTime ?? null,
         useLogDepth: this._logDepthBuffer === true,
@@ -2629,6 +2695,12 @@ class Scene {
     // Mode integer selects linearized vs raw vs combined visualization.
     frameState.debugShowDepthAsColor = this.debugShowDepthAsColor === true;
     frameState.debugDepthAsColorMode = this.debugDepthAsColorMode | 0;
+    // Tier 2 debug — frustum / command visualization. WebGL's SceneRenderer
+    // reads these directly from `scene.*` for the DebugInspector path, and
+    // the WebGPU scene renderer reads them from `frameState.*` when deciding
+    // whether to run `WebGPUDebugFrustumOverlay` after the main scene pass.
+    frameState.debugShowFrustums = this.debugShowFrustums === true;
+    frameState.debugShowCommands = this.debugShowCommands === true;
 
     const { globe } = this;
     if (defined(globe) && globe._terrainExaggerationChanged) {
@@ -3231,6 +3303,14 @@ class Scene {
     // so the bundle stats reflect the frame we just rendered.
     if (shouldRender && this._performanceTracker.active) {
       _samplePerformanceTrace(this);
+    }
+
+    // Always-on live FPS recording. The recordFrame() call is a couple
+    // of typed-array writes per frame regardless of whether anyone is
+    // reading the live stats. The HUD overlay polls getLiveStats()
+    // 4-10 times per second to render the rolling FPS graph.
+    if (shouldRender && defined(this._performanceTracker)) {
+      this._performanceTracker.recordFrame();
     }
 
     // Often used to trigger events (so don't want in trycatch) that the user
@@ -4095,7 +4175,16 @@ class Scene {
       this._performanceTracker = undefined;
     }
 
-    if (this._removeCreditContainer) {
+    // Skip the DOM removal in headless mode — `_canvas` is an
+    // `OffscreenCanvas` (no `parentNode`) and `_creditContainer` is the
+    // sentinel `{}` from the worker init path. Both are GC'd along
+    // with the Scene instance.
+    if (
+      this._removeCreditContainer &&
+      this._canvas &&
+      this._canvas.parentNode &&
+      this._creditContainer
+    ) {
       this._canvas.parentNode.removeChild(this._creditContainer);
     }
 
@@ -4108,11 +4197,20 @@ class Scene {
       this._frameState.creditDisplay.destroy();
 
     if (defined(this._performanceDisplay)) {
-      this._performanceDisplay =
-        this._performanceDisplay && this._performanceDisplay.destroy();
-      this._performanceContainer.parentNode.removeChild(
-        this._performanceContainer,
-      );
+      // FpsOverlay (and the legacy PerformanceDisplay) both manage
+      // their own DOM lifecycle inside `destroy()`, so we no longer
+      // need a separate `_performanceContainer` removeChild call —
+      // the overlay's destroy() removes its own container from the
+      // parent. The historical `_performanceContainer` field is no
+      // longer set; the cleanup below is preserved as a guard for
+      // any subclass that might still be wiring it.
+      this._performanceDisplay.destroy();
+      this._performanceDisplay = undefined;
+      if (this._performanceContainer && this._performanceContainer.parentNode) {
+        this._performanceContainer.parentNode.removeChild(
+          this._performanceContainer,
+        );
+      }
     }
 
     this._removeRequestListenerCallback();
@@ -4455,6 +4553,37 @@ function render(scene) {
   }
 
   scene.updateEnvironment();
+
+  // TAA: apply sub-pixel jitter to the projection matrix before rendering.
+  // The jitter is computed from a Halton(2,3) sequence and shifts the
+  // projection by ±0.5 pixel in NDC. When snapshot mode is frozen, the
+  // jitter is zeroed to prevent dither accumulation.
+  if (scene.taaEnabled && scene._context?.isWebGPU) {
+    const pipeline = scene._context?._alternateSceneRenderer?._postProcess;
+    const taa = pipeline?.taaEffect;
+    if (taa) {
+      const frozen = scene._snapshotMode?.isFrozen === true;
+      const cam = scene.camera;
+      if (frozen) {
+        taa.jitterX = 0;
+        taa.jitterY = 0;
+      } else {
+        const jitter = taa.computeJitter(
+          frameState.frameNumber,
+          context.drawingBufferWidth,
+          context.drawingBufferHeight,
+        );
+        // Apply jitter to the projection matrix (column 2, row 0 and row 1
+        // in column-major layout = indices [8] and [9]).
+        const proj = cam.frustum.projectionMatrix;
+        if (proj) {
+          proj[8] += jitter.x;
+          proj[9] += jitter.y;
+        }
+      }
+    }
+  }
+
   scene.updateAndExecuteCommands(passState, backgroundColor);
   scene.resolveFramebuffers(passState);
 

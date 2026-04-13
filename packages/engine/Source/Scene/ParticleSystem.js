@@ -55,456 +55,736 @@ const defaultImageSize = new Cartesian2(1.0, 1.0);
  * @demo {@link https://sandcastle.cesium.com/?id=particle-system|Particle Systems Tutorial Demo}
  * @demo {@link https://sandcastle.cesium.com/?id=particle-system-fireworks|Particle Systems Fireworks Demo}
  */
-function ParticleSystem(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ParticleSystem {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  /**
-   * Whether to display the particle system.
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
+    /**
+     * Whether to display the particle system.
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
 
-  /**
-   * An array of force callbacks. The callback is passed a {@link Particle} and the difference from the last time
-   * @type {ParticleSystem.updateCallback}
-   * @default undefined
-   */
-  this.updateCallback = options.updateCallback;
+    /**
+     * An array of force callbacks. The callback is passed a {@link Particle} and the difference from the last time
+     * @type {ParticleSystem.updateCallback}
+     * @default undefined
+     */
+    this.updateCallback = options.updateCallback;
 
-  /**
-   * Whether the particle system should loop it's bursts when it is complete.
-   * @type {boolean}
-   * @default true
-   */
-  this.loop = options.loop ?? true;
+    /**
+     * Whether the particle system should loop it's bursts when it is complete.
+     * @type {boolean}
+     * @default true
+     */
+    this.loop = options.loop ?? true;
 
-  /**
-   * The URI, HTMLImageElement, or HTMLCanvasElement to use for the billboard.
-   * @type {object}
-   * @default undefined
-   */
-  this.image = options.image ?? undefined;
+    /**
+     * The URI, HTMLImageElement, or HTMLCanvasElement to use for the billboard.
+     * @type {object}
+     * @default undefined
+     */
+    this.image = options.image ?? undefined;
 
-  let emitter = options.emitter;
-  if (!defined(emitter)) {
-    emitter = new CircleEmitter(0.5);
+    let emitter = options.emitter;
+    if (!defined(emitter)) {
+      emitter = new CircleEmitter(0.5);
+    }
+    this._emitter = emitter;
+
+    this._bursts = options.bursts;
+
+    this._modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+    this._emitterModelMatrix = Matrix4.clone(
+      options.emitterModelMatrix ?? Matrix4.IDENTITY,
+    );
+    this._matrixDirty = true;
+    this._combinedMatrix = new Matrix4();
+
+    this._startColor = Color.clone(
+      options.color ?? options.startColor ?? Color.WHITE,
+    );
+    this._endColor = Color.clone(
+      options.color ?? options.endColor ?? Color.WHITE,
+    );
+
+    this._startScale = options.scale ?? options.startScale ?? 1.0;
+    this._endScale = options.scale ?? options.endScale ?? 1.0;
+
+    this._emissionRate = options.emissionRate ?? 5.0;
+
+    this._minimumSpeed = options.speed ?? options.minimumSpeed ?? 1.0;
+    this._maximumSpeed = options.speed ?? options.maximumSpeed ?? 1.0;
+
+    this._minimumParticleLife =
+      options.particleLife ?? options.minimumParticleLife ?? 5.0;
+    this._maximumParticleLife =
+      options.particleLife ?? options.maximumParticleLife ?? 5.0;
+
+    this._minimumMass = options.mass ?? options.minimumMass ?? 1.0;
+    this._maximumMass = options.mass ?? options.maximumMass ?? 1.0;
+
+    this._minimumImageSize = Cartesian2.clone(
+      options.imageSize ?? options.minimumImageSize ?? defaultImageSize,
+    );
+    this._maximumImageSize = Cartesian2.clone(
+      options.imageSize ?? options.maximumImageSize ?? defaultImageSize,
+    );
+
+    this._sizeInMeters = options.sizeInMeters ?? false;
+
+    this._lifetime = options.lifetime ?? Number.MAX_VALUE;
+
+    this._billboardCollection = undefined;
+    this._particles = [];
+
+    // An array of available particles that we can reuse instead of allocating new.
+    this._particlePool = [];
+
+    this._previousTime = undefined;
+    this._currentTime = 0.0;
+    this._carryOver = 0.0;
+
+    this._complete = new Event();
+    this._isComplete = false;
+
+    this._updateParticlePool = true;
+    this._particleEstimate = 0;
   }
-  this._emitter = emitter;
 
-  this._bursts = options.bursts;
+  /**
+   * @private
+   */
+  update(frameState) {
+    // WebGPU: ParticleSystem delegates to BillboardCollection which has a
+    // dedicated WebGPU rendering path (WebGPUBillboardRenderer). No guard needed.
+    if (!this.show) {
+      return;
+    }
 
-  this._modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
-  this._emitterModelMatrix = Matrix4.clone(
-    options.emitterModelMatrix ?? Matrix4.IDENTITY,
-  );
-  this._matrixDirty = true;
-  this._combinedMatrix = new Matrix4();
+    if (!defined(this._billboardCollection)) {
+      this._billboardCollection = new BillboardCollection();
+    }
 
-  this._startColor = Color.clone(
-    options.color ?? options.startColor ?? Color.WHITE,
-  );
-  this._endColor = Color.clone(
-    options.color ?? options.endColor ?? Color.WHITE,
-  );
+    if (this._updateParticlePool) {
+      updateParticlePool(this);
+      this._updateParticlePool = false;
+    }
 
-  this._startScale = options.scale ?? options.startScale ?? 1.0;
-  this._endScale = options.scale ?? options.endScale ?? 1.0;
+    // Compute the frame time
+    let dt = 0.0;
+    if (this._previousTime) {
+      dt = JulianDate.secondsDifference(frameState.time, this._previousTime);
+    }
 
-  this._emissionRate = options.emissionRate ?? 5.0;
+    if (dt < 0.0) {
+      dt = 0.0;
+    }
 
-  this._minimumSpeed = options.speed ?? options.minimumSpeed ?? 1.0;
-  this._maximumSpeed = options.speed ?? options.maximumSpeed ?? 1.0;
+    const particles = this._particles;
+    const emitter = this._emitter;
+    const updateCallback = this.updateCallback;
 
-  this._minimumParticleLife =
-    options.particleLife ?? options.minimumParticleLife ?? 5.0;
-  this._maximumParticleLife =
-    options.particleLife ?? options.maximumParticleLife ?? 5.0;
+    let i;
+    let particle;
 
-  this._minimumMass = options.mass ?? options.minimumMass ?? 1.0;
-  this._maximumMass = options.mass ?? options.maximumMass ?? 1.0;
+    // update particles and remove dead particles
+    let length = particles.length;
+    for (i = 0; i < length; ++i) {
+      particle = particles[i];
+      if (!particle.update(dt, updateCallback)) {
+        removeBillboard(particle);
+        // Add the particle back to the pool so it can be reused.
+        addParticleToPool(this, particle);
+        particles[i] = particles[length - 1];
+        --i;
+        --length;
+      } else {
+        updateBillboard(this, particle);
+      }
+    }
+    particles.length = length;
 
-  this._minimumImageSize = Cartesian2.clone(
-    options.imageSize ?? options.minimumImageSize ?? defaultImageSize,
-  );
-  this._maximumImageSize = Cartesian2.clone(
-    options.imageSize ?? options.maximumImageSize ?? defaultImageSize,
-  );
+    const numToEmit = calculateNumberToEmit(this, dt);
 
-  this._sizeInMeters = options.sizeInMeters ?? false;
+    if (numToEmit > 0 && defined(emitter)) {
+      // Compute the final model matrix by combining the particle systems model matrix and the emitter matrix.
+      if (this._matrixDirty) {
+        this._combinedMatrix = Matrix4.multiply(
+          this.modelMatrix,
+          this.emitterModelMatrix,
+          this._combinedMatrix,
+        );
+        this._matrixDirty = false;
+      }
 
-  this._lifetime = options.lifetime ?? Number.MAX_VALUE;
+      const combinedMatrix = this._combinedMatrix;
 
-  this._billboardCollection = undefined;
-  this._particles = [];
+      for (i = 0; i < numToEmit; i++) {
+        // Create a new particle.
+        particle = getOrCreateParticle(this);
 
-  // An array of available particles that we can reuse instead of allocating new.
-  this._particlePool = [];
+        // Let the emitter initialize the particle.
+        this._emitter.emit(particle);
 
-  this._previousTime = undefined;
-  this._currentTime = 0.0;
-  this._carryOver = 0.0;
+        //For the velocity we need to add it to the original position and then multiply by point.
+        Cartesian3.add(
+          particle.position,
+          particle.velocity,
+          rotatedVelocityScratch,
+        );
+        Matrix4.multiplyByPoint(
+          combinedMatrix,
+          rotatedVelocityScratch,
+          rotatedVelocityScratch,
+        );
 
-  this._complete = new Event();
-  this._isComplete = false;
+        // Change the position to be in world coordinates
+        particle.position = Matrix4.multiplyByPoint(
+          combinedMatrix,
+          particle.position,
+          particle.position,
+        );
 
-  this._updateParticlePool = true;
-  this._particleEstimate = 0;
-}
+        // Orient the velocity in world space as well.
+        Cartesian3.subtract(
+          rotatedVelocityScratch,
+          particle.position,
+          particle.velocity,
+        );
+        Cartesian3.normalize(particle.velocity, particle.velocity);
 
-Object.defineProperties(ParticleSystem.prototype, {
+        // Add the particle to the system.
+        addParticle(this, particle);
+        updateBillboard(this, particle);
+      }
+    }
+
+    this._billboardCollection.update(frameState);
+    this._previousTime = JulianDate.clone(frameState.time, this._previousTime);
+    this._currentTime += dt;
+
+    if (
+      this._lifetime !== Number.MAX_VALUE &&
+      this._currentTime > this._lifetime
+    ) {
+      if (this.loop) {
+        this._currentTime = CesiumMath.mod(this._currentTime, this._lifetime);
+        if (this.bursts) {
+          const burstLength = this.bursts.length;
+          // Reset any bursts
+          for (i = 0; i < burstLength; i++) {
+            this.bursts[i]._complete = false;
+          }
+        }
+      } else {
+        this._isComplete = true;
+        this._complete.raiseEvent(this);
+      }
+    }
+
+    // free particles in the pool and release billboard GPU memory
+    if (frameState.frameNumber % 120 === 0) {
+      freeParticlePool(this);
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see ParticleSystem#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see ParticleSystem#isDestroyed
+   */
+  destroy() {
+    this._billboardCollection =
+      this._billboardCollection && this._billboardCollection.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * The particle emitter for this
    * @memberof ParticleSystem.prototype
    * @type {ParticleEmitter}
    * @default CircleEmitter
    */
-  emitter: {
-    get: function () {
-      return this._emitter;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
-      this._emitter = value;
-    },
-  },
+  get emitter() {
+    return this._emitter;
+  }
+
+  /**
+   * The particle emitter for this
+   * @memberof ParticleSystem.prototype
+   * @type {ParticleEmitter}
+   * @default CircleEmitter
+   */
+  set emitter(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+    this._emitter = value;
+  }
+
   /**
    * An array of {@link ParticleBurst}, emitting bursts of particles at periodic times.
    * @memberof ParticleSystem.prototype
    * @type {ParticleBurst[]}
    * @default undefined
    */
-  bursts: {
-    get: function () {
-      return this._bursts;
-    },
-    set: function (value) {
-      this._bursts = value;
-      this._updateParticlePool = true;
-    },
-  },
+  get bursts() {
+    return this._bursts;
+  }
+
+  /**
+   * An array of {@link ParticleBurst}, emitting bursts of particles at periodic times.
+   * @memberof ParticleSystem.prototype
+   * @type {ParticleBurst[]}
+   * @default undefined
+   */
+  set bursts(value) {
+    this._bursts = value;
+    this._updateParticlePool = true;
+  }
+
   /**
    * The 4x4 transformation matrix that transforms the particle system from model to world coordinates.
    * @memberof ParticleSystem.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    */
-  modelMatrix: {
-    get: function () {
-      return this._modelMatrix;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
-      this._matrixDirty =
-        this._matrixDirty || !Matrix4.equals(this._modelMatrix, value);
-      Matrix4.clone(value, this._modelMatrix);
-    },
-  },
+  get modelMatrix() {
+    return this._modelMatrix;
+  }
+
+  /**
+   * The 4x4 transformation matrix that transforms the particle system from model to world coordinates.
+   * @memberof ParticleSystem.prototype
+   * @type {Matrix4}
+   * @default Matrix4.IDENTITY
+   */
+  set modelMatrix(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+    this._matrixDirty =
+      this._matrixDirty || !Matrix4.equals(this._modelMatrix, value);
+    Matrix4.clone(value, this._modelMatrix);
+  }
+
   /**
    * The 4x4 transformation matrix that transforms the particle system emitter within the particle systems local coordinate system.
    * @memberof ParticleSystem.prototype
    * @type {Matrix4}
    * @default Matrix4.IDENTITY
    */
-  emitterModelMatrix: {
-    get: function () {
-      return this._emitterModelMatrix;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
-      this._matrixDirty =
-        this._matrixDirty || !Matrix4.equals(this._emitterModelMatrix, value);
-      Matrix4.clone(value, this._emitterModelMatrix);
-    },
-  },
+  get emitterModelMatrix() {
+    return this._emitterModelMatrix;
+  }
+
+  /**
+   * The 4x4 transformation matrix that transforms the particle system emitter within the particle systems local coordinate system.
+   * @memberof ParticleSystem.prototype
+   * @type {Matrix4}
+   * @default Matrix4.IDENTITY
+   */
+  set emitterModelMatrix(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+    this._matrixDirty =
+      this._matrixDirty || !Matrix4.equals(this._emitterModelMatrix, value);
+    Matrix4.clone(value, this._emitterModelMatrix);
+  }
+
   /**
    * The color of the particle at the beginning of its life.
    * @memberof ParticleSystem.prototype
    * @type {Color}
    * @default Color.WHITE
    */
-  startColor: {
-    get: function () {
-      return this._startColor;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
-      Color.clone(value, this._startColor);
-    },
-  },
+  get startColor() {
+    return this._startColor;
+  }
+
+  /**
+   * The color of the particle at the beginning of its life.
+   * @memberof ParticleSystem.prototype
+   * @type {Color}
+   * @default Color.WHITE
+   */
+  set startColor(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+    Color.clone(value, this._startColor);
+  }
+
   /**
    * The color of the particle at the end of its life.
    * @memberof ParticleSystem.prototype
    * @type {Color}
    * @default Color.WHITE
    */
-  endColor: {
-    get: function () {
-      return this._endColor;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
-      Color.clone(value, this._endColor);
-    },
-  },
+  get endColor() {
+    return this._endColor;
+  }
+
+  /**
+   * The color of the particle at the end of its life.
+   * @memberof ParticleSystem.prototype
+   * @type {Color}
+   * @default Color.WHITE
+   */
+  set endColor(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+    Color.clone(value, this._endColor);
+  }
+
   /**
    * The initial scale to apply to the image of the particle at the beginning of its life.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  startScale: {
-    get: function () {
-      return this._startScale;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._startScale = value;
-    },
-  },
+  get startScale() {
+    return this._startScale;
+  }
+
+  /**
+   * The initial scale to apply to the image of the particle at the beginning of its life.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set startScale(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._startScale = value;
+  }
+
   /**
    * The final scale to apply to the image of the particle at the end of its life.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  endScale: {
-    get: function () {
-      return this._endScale;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._endScale = value;
-    },
-  },
+  get endScale() {
+    return this._endScale;
+  }
+
+  /**
+   * The final scale to apply to the image of the particle at the end of its life.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set endScale(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._endScale = value;
+  }
+
   /**
    * The number of particles to emit per second.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5
    */
-  emissionRate: {
-    get: function () {
-      return this._emissionRate;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._emissionRate = value;
-      this._updateParticlePool = true;
-    },
-  },
+  get emissionRate() {
+    return this._emissionRate;
+  }
+
+  /**
+   * The number of particles to emit per second.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 5
+   */
+  set emissionRate(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._emissionRate = value;
+    this._updateParticlePool = true;
+  }
+
   /**
    * Sets the minimum bound in meters per second above which a particle's actual speed will be randomly chosen.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  minimumSpeed: {
-    get: function () {
-      return this._minimumSpeed;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._minimumSpeed = value;
-    },
-  },
+  get minimumSpeed() {
+    return this._minimumSpeed;
+  }
+
+  /**
+   * Sets the minimum bound in meters per second above which a particle's actual speed will be randomly chosen.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set minimumSpeed(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._minimumSpeed = value;
+  }
+
   /**
    * Sets the maximum bound in meters per second below which a particle's actual speed will be randomly chosen.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  maximumSpeed: {
-    get: function () {
-      return this._maximumSpeed;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._maximumSpeed = value;
-    },
-  },
+  get maximumSpeed() {
+    return this._maximumSpeed;
+  }
+
+  /**
+   * Sets the maximum bound in meters per second below which a particle's actual speed will be randomly chosen.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set maximumSpeed(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._maximumSpeed = value;
+  }
+
   /**
    * Sets the minimum bound in seconds for the possible duration of a particle's life above which a particle's actual life will be randomly chosen.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5.0
    */
-  minimumParticleLife: {
-    get: function () {
-      return this._minimumParticleLife;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._minimumParticleLife = value;
-    },
-  },
+  get minimumParticleLife() {
+    return this._minimumParticleLife;
+  }
+
+  /**
+   * Sets the minimum bound in seconds for the possible duration of a particle's life above which a particle's actual life will be randomly chosen.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 5.0
+   */
+  set minimumParticleLife(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._minimumParticleLife = value;
+  }
+
   /**
    * Sets the maximum bound in seconds for the possible duration of a particle's life below which a particle's actual life will be randomly chosen.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 5.0
    */
-  maximumParticleLife: {
-    get: function () {
-      return this._maximumParticleLife;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._maximumParticleLife = value;
-      this._updateParticlePool = true;
-    },
-  },
+  get maximumParticleLife() {
+    return this._maximumParticleLife;
+  }
+
+  /**
+   * Sets the maximum bound in seconds for the possible duration of a particle's life below which a particle's actual life will be randomly chosen.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 5.0
+   */
+  set maximumParticleLife(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._maximumParticleLife = value;
+    this._updateParticlePool = true;
+  }
+
   /**
    * Sets the minimum mass of particles in kilograms.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  minimumMass: {
-    get: function () {
-      return this._minimumMass;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._minimumMass = value;
-    },
-  },
+  get minimumMass() {
+    return this._minimumMass;
+  }
+
+  /**
+   * Sets the minimum mass of particles in kilograms.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set minimumMass(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._minimumMass = value;
+  }
+
   /**
    * Sets the maximum mass of particles in kilograms.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default 1.0
    */
-  maximumMass: {
-    get: function () {
-      return this._maximumMass;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._maximumMass = value;
-    },
-  },
+  get maximumMass() {
+    return this._maximumMass;
+  }
+
+  /**
+   * Sets the maximum mass of particles in kilograms.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set maximumMass(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._maximumMass = value;
+  }
+
   /**
    * Sets the minimum bound, width by height, above which to randomly scale the particle image's dimensions in pixels.
    * @memberof ParticleSystem.prototype
    * @type {Cartesian2}
    * @default new Cartesian2(1.0, 1.0)
    */
-  minimumImageSize: {
-    get: function () {
-      return this._minimumImageSize;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("value", value);
-      Check.typeOf.number.greaterThanOrEquals("value.x", value.x, 0.0);
-      Check.typeOf.number.greaterThanOrEquals("value.y", value.y, 0.0);
-      //>>includeEnd('debug');
-      this._minimumImageSize = value;
-    },
-  },
+  get minimumImageSize() {
+    return this._minimumImageSize;
+  }
+
+  /**
+   * Sets the minimum bound, width by height, above which to randomly scale the particle image's dimensions in pixels.
+   * @memberof ParticleSystem.prototype
+   * @type {Cartesian2}
+   * @default new Cartesian2(1.0, 1.0)
+   */
+  set minimumImageSize(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("value", value);
+    Check.typeOf.number.greaterThanOrEquals("value.x", value.x, 0.0);
+    Check.typeOf.number.greaterThanOrEquals("value.y", value.y, 0.0);
+    //>>includeEnd('debug');
+    this._minimumImageSize = value;
+  }
+
   /**
    * Sets the maximum bound, width by height, below which to randomly scale the particle image's dimensions in pixels.
    * @memberof ParticleSystem.prototype
    * @type {Cartesian2}
    * @default new Cartesian2(1.0, 1.0)
    */
-  maximumImageSize: {
-    get: function () {
-      return this._maximumImageSize;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("value", value);
-      Check.typeOf.number.greaterThanOrEquals("value.x", value.x, 0.0);
-      Check.typeOf.number.greaterThanOrEquals("value.y", value.y, 0.0);
-      //>>includeEnd('debug');
-      this._maximumImageSize = value;
-    },
-  },
+  get maximumImageSize() {
+    return this._maximumImageSize;
+  }
+
+  /**
+   * Sets the maximum bound, width by height, below which to randomly scale the particle image's dimensions in pixels.
+   * @memberof ParticleSystem.prototype
+   * @type {Cartesian2}
+   * @default new Cartesian2(1.0, 1.0)
+   */
+  set maximumImageSize(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("value", value);
+    Check.typeOf.number.greaterThanOrEquals("value.x", value.x, 0.0);
+    Check.typeOf.number.greaterThanOrEquals("value.y", value.y, 0.0);
+    //>>includeEnd('debug');
+    this._maximumImageSize = value;
+  }
+
   /**
    * Gets or sets if the particle size is in meters or pixels. <code>true</code> to size particles in meters; otherwise, the size is in pixels.
    * @memberof ParticleSystem.prototype
    * @type {boolean}
    * @default false
    */
-  sizeInMeters: {
-    get: function () {
-      return this._sizeInMeters;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.bool("value", value);
-      //>>includeEnd('debug');
-      this._sizeInMeters = value;
-    },
-  },
+  get sizeInMeters() {
+    return this._sizeInMeters;
+  }
+
+  /**
+   * Gets or sets if the particle size is in meters or pixels. <code>true</code> to size particles in meters; otherwise, the size is in pixels.
+   * @memberof ParticleSystem.prototype
+   * @type {boolean}
+   * @default false
+   */
+  set sizeInMeters(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("value", value);
+    //>>includeEnd('debug');
+    this._sizeInMeters = value;
+  }
+
   /**
    * How long the particle system will emit particles, in seconds.
    * @memberof ParticleSystem.prototype
    * @type {number}
    * @default Number.MAX_VALUE
    */
-  lifetime: {
-    get: function () {
-      return this._lifetime;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
-      //>>includeEnd('debug');
-      this._lifetime = value;
-    },
-  },
+  get lifetime() {
+    return this._lifetime;
+  }
+
+  /**
+   * How long the particle system will emit particles, in seconds.
+   * @memberof ParticleSystem.prototype
+   * @type {number}
+   * @default Number.MAX_VALUE
+   */
+  set lifetime(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0.0);
+    //>>includeEnd('debug');
+    this._lifetime = value;
+  }
+
   /**
    * Fires an event when the particle system has reached the end of its lifetime.
    * @memberof ParticleSystem.prototype
    * @type {Event}
    */
-  complete: {
-    get: function () {
-      return this._complete;
-    },
-  },
+  get complete() {
+    return this._complete;
+  }
+
   /**
    * When <code>true</code>, the particle system has reached the end of its lifetime; <code>false</code> otherwise.
    * @memberof ParticleSystem.prototype
    * @type {boolean}
    */
-  isComplete: {
-    get: function () {
-      return this._isComplete;
-    },
-  },
-});
+  get isComplete() {
+    return this._isComplete;
+  }
+}
 
 function updateParticlePool(system) {
   const emissionRate = system._emissionRate;
@@ -697,175 +977,6 @@ function calculateNumberToEmit(system, dt) {
 }
 
 const rotatedVelocityScratch = new Cartesian3();
-
-/**
- * @private
- */
-ParticleSystem.prototype.update = function (frameState) {
-  // WebGPU: ParticleSystem delegates to BillboardCollection which has a
-  // dedicated WebGPU rendering path (WebGPUBillboardRenderer). No guard needed.
-  if (!this.show) {
-    return;
-  }
-
-  if (!defined(this._billboardCollection)) {
-    this._billboardCollection = new BillboardCollection();
-  }
-
-  if (this._updateParticlePool) {
-    updateParticlePool(this);
-    this._updateParticlePool = false;
-  }
-
-  // Compute the frame time
-  let dt = 0.0;
-  if (this._previousTime) {
-    dt = JulianDate.secondsDifference(frameState.time, this._previousTime);
-  }
-
-  if (dt < 0.0) {
-    dt = 0.0;
-  }
-
-  const particles = this._particles;
-  const emitter = this._emitter;
-  const updateCallback = this.updateCallback;
-
-  let i;
-  let particle;
-
-  // update particles and remove dead particles
-  let length = particles.length;
-  for (i = 0; i < length; ++i) {
-    particle = particles[i];
-    if (!particle.update(dt, updateCallback)) {
-      removeBillboard(particle);
-      // Add the particle back to the pool so it can be reused.
-      addParticleToPool(this, particle);
-      particles[i] = particles[length - 1];
-      --i;
-      --length;
-    } else {
-      updateBillboard(this, particle);
-    }
-  }
-  particles.length = length;
-
-  const numToEmit = calculateNumberToEmit(this, dt);
-
-  if (numToEmit > 0 && defined(emitter)) {
-    // Compute the final model matrix by combining the particle systems model matrix and the emitter matrix.
-    if (this._matrixDirty) {
-      this._combinedMatrix = Matrix4.multiply(
-        this.modelMatrix,
-        this.emitterModelMatrix,
-        this._combinedMatrix,
-      );
-      this._matrixDirty = false;
-    }
-
-    const combinedMatrix = this._combinedMatrix;
-
-    for (i = 0; i < numToEmit; i++) {
-      // Create a new particle.
-      particle = getOrCreateParticle(this);
-
-      // Let the emitter initialize the particle.
-      this._emitter.emit(particle);
-
-      //For the velocity we need to add it to the original position and then multiply by point.
-      Cartesian3.add(
-        particle.position,
-        particle.velocity,
-        rotatedVelocityScratch,
-      );
-      Matrix4.multiplyByPoint(
-        combinedMatrix,
-        rotatedVelocityScratch,
-        rotatedVelocityScratch,
-      );
-
-      // Change the position to be in world coordinates
-      particle.position = Matrix4.multiplyByPoint(
-        combinedMatrix,
-        particle.position,
-        particle.position,
-      );
-
-      // Orient the velocity in world space as well.
-      Cartesian3.subtract(
-        rotatedVelocityScratch,
-        particle.position,
-        particle.velocity,
-      );
-      Cartesian3.normalize(particle.velocity, particle.velocity);
-
-      // Add the particle to the system.
-      addParticle(this, particle);
-      updateBillboard(this, particle);
-    }
-  }
-
-  this._billboardCollection.update(frameState);
-  this._previousTime = JulianDate.clone(frameState.time, this._previousTime);
-  this._currentTime += dt;
-
-  if (
-    this._lifetime !== Number.MAX_VALUE &&
-    this._currentTime > this._lifetime
-  ) {
-    if (this.loop) {
-      this._currentTime = CesiumMath.mod(this._currentTime, this._lifetime);
-      if (this.bursts) {
-        const burstLength = this.bursts.length;
-        // Reset any bursts
-        for (i = 0; i < burstLength; i++) {
-          this.bursts[i]._complete = false;
-        }
-      }
-    } else {
-      this._isComplete = true;
-      this._complete.raiseEvent(this);
-    }
-  }
-
-  // free particles in the pool and release billboard GPU memory
-  if (frameState.frameNumber % 120 === 0) {
-    freeParticlePool(this);
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see ParticleSystem#destroy
- */
-ParticleSystem.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see ParticleSystem#isDestroyed
- */
-ParticleSystem.prototype.destroy = function () {
-  this._billboardCollection =
-    this._billboardCollection && this._billboardCollection.destroy();
-  return destroyObject(this);
-};
 
 /**
  * A function used to modify attributes of the particle at each time step. This can include force modifications,

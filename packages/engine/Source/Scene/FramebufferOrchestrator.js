@@ -86,13 +86,18 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   }
 
   const postProcess = scene.postProcessStages;
+  // WebGPU always renders to an offscreen framebuffer — the post-process
+  // pipeline is the ONLY path that blits it to the canvas. Without it
+  // the canvas stays black. WebGL only needs post-processing when an
+  // effect is actually enabled.
+  const hasEffects =
+    scene._hdr ||
+    postProcess.length > 0 ||
+    postProcess.ambientOcclusion.enabled ||
+    postProcess.fxaa.enabled ||
+    postProcess.bloom.enabled;
   let usePostProcess = (environmentState.usePostProcess =
-    !picking &&
-    (scene._hdr ||
-      postProcess.length > 0 ||
-      postProcess.ambientOcclusion.enabled ||
-      postProcess.fxaa.enabled ||
-      postProcess.bloom.enabled));
+    !picking && (context.isWebGPU === true || hasEffects));
   environmentState.usePostProcessSelected = false;
   if (usePostProcess) {
     view.sceneFramebuffer.update(
@@ -106,7 +111,13 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
     postProcess.update(context, frameState.useLogDepth, scene._hdr);
     postProcess.clear(context);
 
-    usePostProcess = environmentState.usePostProcess = postProcess.ready;
+    // WebGPU must keep usePostProcess=true even when the WebGL
+    // PostProcessStageCollection reports ready=false (no stages active).
+    // The WebGPU scene renderer's post-process pipeline handles the
+    // canvas blit independently of the WebGL stage collection.
+    const isWebGPU = context.isWebGPU === true;
+    usePostProcess = environmentState.usePostProcess =
+      isWebGPU || postProcess.ready;
     environmentState.usePostProcessSelected =
       usePostProcess && postProcess.hasSelected;
   }

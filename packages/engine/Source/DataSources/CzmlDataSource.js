@@ -40,7 +40,6 @@ import HorizontalOrigin from "../Scene/HorizontalOrigin.js";
 import LabelStyle from "../Scene/LabelStyle.js";
 import ShadowMode from "../Scene/ShadowMode.js";
 import VerticalOrigin from "../Scene/VerticalOrigin.js";
-import Uri from "urijs";
 import BillboardGraphics from "./BillboardGraphics.js";
 import BoxGraphics from "./BoxGraphics.js";
 import CallbackProperty from "./CallbackProperty.js";
@@ -4828,19 +4827,175 @@ function DocumentPacket() {
  *
  * @demo {@link https://sandcastle.cesium.com/index.html?id=czml|Cesium Sandcastle CZML Demo}
  */
-function CzmlDataSource(name) {
-  this._name = name;
-  this._changed = new Event();
-  this._error = new Event();
-  this._isLoading = false;
-  this._loading = new Event();
-  this._clock = undefined;
-  this._documentPacket = new DocumentPacket();
-  this._version = undefined;
-  this._entityCollection = new EntityCollection(this);
-  this._entityCluster = new EntityCluster();
-  this._credit = undefined;
-  this._resourceCredits = [];
+class CzmlDataSource {
+  constructor(name) {
+    this._name = name;
+    this._changed = new Event();
+    this._error = new Event();
+    this._isLoading = false;
+    this._loading = new Event();
+    this._clock = undefined;
+    this._documentPacket = new DocumentPacket();
+    this._version = undefined;
+    this._entityCollection = new EntityCollection(this);
+    this._entityCluster = new EntityCluster();
+    this._credit = undefined;
+    this._resourceCredits = [];
+  }
+
+  /**
+   * Processes the provided url or CZML object without clearing any existing data.
+   *
+   * @param {Resource|string|object} czml A url or CZML object to be processed.
+   * @param {CzmlDataSource.LoadOptions} [options] An object specifying configuration options
+   *
+   * @returns {Promise<CzmlDataSource>} A promise that resolves to this instances once the data is processed.
+   */
+  process(czml, options) {
+    return load(this, czml, options, false);
+  }
+
+  /**
+   * Loads the provided url or CZML object, replacing any existing data.
+   *
+   * @param {Resource|string|object} czml A url or CZML object to be processed.
+   * @param {CzmlDataSource.LoadOptions} [options] An object specifying configuration options
+   *
+   * @returns {Promise<CzmlDataSource>} A promise that resolves to this instances once the data is processed.
+   */
+  load(czml, options) {
+    return load(this, czml, options, true);
+  }
+
+  /**
+   * Updates the data source to the provided time.  This function is optional and
+   * is not required to be implemented.  It is provided for data sources which
+   * retrieve data based on the current animation time or scene state.
+   * If implemented, update will be called by {@link DataSourceDisplay} once a frame.
+   *
+   * @param {JulianDate} time The simulation time.
+   * @returns {boolean} True if this data source is ready to be displayed at the provided time, false otherwise.
+   */
+  update(time) {
+    return true;
+  }
+
+  /**
+   * Gets a human-readable name for this instance.
+   * @memberof CzmlDataSource.prototype
+   * @type {string}
+   */
+  get name() {
+    return this._name;
+  }
+
+  /**
+   * Gets the clock settings defined by the loaded CZML.  If no clock is explicitly
+   * defined in the CZML, the combined availability of all objects is returned.  If
+   * only static data exists, this value is undefined.
+   * @memberof CzmlDataSource.prototype
+   * @type {DataSourceClock}
+   */
+  get clock() {
+    return this._clock;
+  }
+
+  /**
+   * Gets the collection of {@link Entity} instances.
+   * @memberof CzmlDataSource.prototype
+   * @type {EntityCollection}
+   */
+  get entities() {
+    return this._entityCollection;
+  }
+
+  /**
+   * Gets a value indicating if the data source is currently loading data.
+   * @memberof CzmlDataSource.prototype
+   * @type {boolean}
+   */
+  get isLoading() {
+    return this._isLoading;
+  }
+
+  /**
+   * Gets an event that will be raised when the underlying data changes.
+   * @memberof CzmlDataSource.prototype
+   * @type {Event}
+   */
+  get changedEvent() {
+    return this._changed;
+  }
+
+  /**
+   * Gets an event that will be raised if an error is encountered during processing.
+   * @memberof CzmlDataSource.prototype
+   * @type {Event}
+   */
+  get errorEvent() {
+    return this._error;
+  }
+
+  /**
+   * Gets an event that will be raised when the data source either starts or stops loading.
+   * @memberof CzmlDataSource.prototype
+   * @type {Event}
+   */
+  get loadingEvent() {
+    return this._loading;
+  }
+
+  /**
+   * Gets whether or not this data source should be displayed.
+   * @memberof CzmlDataSource.prototype
+   * @type {boolean}
+   */
+  get show() {
+    return this._entityCollection.show;
+  }
+
+  /**
+   * Gets whether or not this data source should be displayed.
+   * @memberof CzmlDataSource.prototype
+   * @type {boolean}
+   */
+  set show(value) {
+    this._entityCollection.show = value;
+  }
+
+  /**
+   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
+   *
+   * @memberof CzmlDataSource.prototype
+   * @type {EntityCluster}
+   */
+  get clustering() {
+    return this._entityCluster;
+  }
+
+  /**
+   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
+   *
+   * @memberof CzmlDataSource.prototype
+   * @type {EntityCluster}
+   */
+  set clustering(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value must be defined.");
+    }
+    //>>includeEnd('debug');
+    this._entityCluster = value;
+  }
+
+  /**
+   * Gets the credit that will be displayed for the data source
+   * @memberof CzmlDataSource.prototype
+   * @type {Credit}
+   */
+  get credit() {
+    return this._credit;
+  }
 }
 
 /**
@@ -4854,124 +5009,6 @@ function CzmlDataSource(name) {
 CzmlDataSource.load = function (czml, options) {
   return new CzmlDataSource().load(czml, options);
 };
-
-Object.defineProperties(CzmlDataSource.prototype, {
-  /**
-   * Gets a human-readable name for this instance.
-   * @memberof CzmlDataSource.prototype
-   * @type {string}
-   */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
-  /**
-   * Gets the clock settings defined by the loaded CZML.  If no clock is explicitly
-   * defined in the CZML, the combined availability of all objects is returned.  If
-   * only static data exists, this value is undefined.
-   * @memberof CzmlDataSource.prototype
-   * @type {DataSourceClock}
-   */
-  clock: {
-    get: function () {
-      return this._clock;
-    },
-  },
-  /**
-   * Gets the collection of {@link Entity} instances.
-   * @memberof CzmlDataSource.prototype
-   * @type {EntityCollection}
-   */
-  entities: {
-    get: function () {
-      return this._entityCollection;
-    },
-  },
-  /**
-   * Gets a value indicating if the data source is currently loading data.
-   * @memberof CzmlDataSource.prototype
-   * @type {boolean}
-   */
-  isLoading: {
-    get: function () {
-      return this._isLoading;
-    },
-  },
-  /**
-   * Gets an event that will be raised when the underlying data changes.
-   * @memberof CzmlDataSource.prototype
-   * @type {Event}
-   */
-  changedEvent: {
-    get: function () {
-      return this._changed;
-    },
-  },
-  /**
-   * Gets an event that will be raised if an error is encountered during processing.
-   * @memberof CzmlDataSource.prototype
-   * @type {Event}
-   */
-  errorEvent: {
-    get: function () {
-      return this._error;
-    },
-  },
-  /**
-   * Gets an event that will be raised when the data source either starts or stops loading.
-   * @memberof CzmlDataSource.prototype
-   * @type {Event}
-   */
-  loadingEvent: {
-    get: function () {
-      return this._loading;
-    },
-  },
-  /**
-   * Gets whether or not this data source should be displayed.
-   * @memberof CzmlDataSource.prototype
-   * @type {boolean}
-   */
-  show: {
-    get: function () {
-      return this._entityCollection.show;
-    },
-    set: function (value) {
-      this._entityCollection.show = value;
-    },
-  },
-
-  /**
-   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
-   *
-   * @memberof CzmlDataSource.prototype
-   * @type {EntityCluster}
-   */
-  clustering: {
-    get: function () {
-      return this._entityCluster;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value must be defined.");
-      }
-      //>>includeEnd('debug');
-      this._entityCluster = value;
-    },
-  },
-  /**
-   * Gets the credit that will be displayed for the data source
-   * @memberof CzmlDataSource.prototype
-   * @type {Credit}
-   */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
-});
 
 /**
  * @callback CzmlDataSource.UpdaterFunction
@@ -5037,43 +5074,6 @@ CzmlDataSource.unregisterUpdater = function (updater) {
     const index = CzmlDataSource.updaters.indexOf(updater);
     CzmlDataSource.updaters.splice(index, 1);
   }
-};
-
-/**
- * Processes the provided url or CZML object without clearing any existing data.
- *
- * @param {Resource|string|object} czml A url or CZML object to be processed.
- * @param {CzmlDataSource.LoadOptions} [options] An object specifying configuration options
- *
- * @returns {Promise<CzmlDataSource>} A promise that resolves to this instances once the data is processed.
- */
-CzmlDataSource.prototype.process = function (czml, options) {
-  return load(this, czml, options, false);
-};
-
-/**
- * Loads the provided url or CZML object, replacing any existing data.
- *
- * @param {Resource|string|object} czml A url or CZML object to be processed.
- * @param {CzmlDataSource.LoadOptions} [options] An object specifying configuration options
- *
- * @returns {Promise<CzmlDataSource>} A promise that resolves to this instances once the data is processed.
- */
-CzmlDataSource.prototype.load = function (czml, options) {
-  return load(this, czml, options, true);
-};
-
-/**
- * Updates the data source to the provided time.  This function is optional and
- * is not required to be implemented.  It is provided for data sources which
- * retrieve data based on the current animation time or scene state.
- * If implemented, update will be called by {@link DataSourceDisplay} once a frame.
- *
- * @param {JulianDate} time The simulation time.
- * @returns {boolean} True if this data source is ready to be displayed at the provided time, false otherwise.
- */
-CzmlDataSource.prototype.update = function (time) {
-  return true;
 };
 
 /**

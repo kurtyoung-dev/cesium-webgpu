@@ -22,37 +22,52 @@ import PropertyAttributeProperty from "./PropertyAttributeProperty.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function PropertyAttribute(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const propertyAttribute = options.propertyAttribute;
-  const classDefinition = options.class;
+class PropertyAttribute {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const propertyAttribute = options.propertyAttribute;
+    const classDefinition = options.class;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.propertyAttribute", propertyAttribute);
-  Check.typeOf.object("options.class", classDefinition);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.propertyAttribute", propertyAttribute);
+    Check.typeOf.object("options.class", classDefinition);
+    //>>includeEnd('debug');
 
-  const properties = {};
-  if (defined(propertyAttribute.properties)) {
-    for (const propertyId in propertyAttribute.properties) {
-      if (propertyAttribute.properties.hasOwnProperty(propertyId)) {
-        properties[propertyId] = new PropertyAttributeProperty({
-          property: propertyAttribute.properties[propertyId],
-          classProperty: classDefinition.properties[propertyId],
-        });
+    const properties = {};
+    if (defined(propertyAttribute.properties)) {
+      for (const propertyId in propertyAttribute.properties) {
+        if (propertyAttribute.properties.hasOwnProperty(propertyId)) {
+          properties[propertyId] = new PropertyAttributeProperty({
+            property: propertyAttribute.properties[propertyId],
+            classProperty: classDefinition.properties[propertyId],
+          });
+        }
       }
     }
+
+    this._name = options.name;
+    this._id = options.id;
+    this._class = classDefinition;
+    this._properties = properties;
+    this._extras = propertyAttribute.extras;
+    this._extensions = propertyAttribute.extensions;
   }
 
-  this._name = options.name;
-  this._id = options.id;
-  this._class = classDefinition;
-  this._properties = properties;
-  this._extras = propertyAttribute.extras;
-  this._extensions = propertyAttribute.extensions;
-}
+  /**
+   * Gets the property with the given property ID.
+   *
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {PropertyAttributeProperty|undefined} The property, or <code>undefined</code> if the property does not exist.
+   * @private
+   */
+  getProperty(propertyId) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("propertyId", propertyId);
+    //>>includeEnd('debug');
 
-Object.defineProperties(PropertyAttribute.prototype, {
+    return this._properties[propertyId];
+  }
+
   /**
    * A human-readable name for this attribute
    *
@@ -62,11 +77,10 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
+
   /**
    * An identifier for this attribute. Useful for debugging.
    *
@@ -76,11 +90,10 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  id: {
-    get: function () {
-      return this._id;
-    },
-  },
+  get id() {
+    return this._id;
+  }
+
   /**
    * The class that properties conform to.
    *
@@ -90,11 +103,9 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  class: {
-    get: function () {
-      return this._class;
-    },
-  },
+  get class() {
+    return this._class;
+  }
 
   /**
    * The properties in this property attribute.
@@ -105,11 +116,9 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  properties: {
-    get: function () {
-      return this._properties;
-    },
-  },
+  get properties() {
+    return this._properties;
+  }
 
   /**
    * Extra user-defined properties.
@@ -120,11 +129,9 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -135,26 +142,9 @@ Object.defineProperties(PropertyAttribute.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
-
-/**
- * Gets the property with the given property ID.
- *
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {PropertyAttributeProperty|undefined} The property, or <code>undefined</code> if the property does not exist.
- * @private
- */
-PropertyAttribute.prototype.getProperty = function (propertyId) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("propertyId", propertyId);
-  //>>includeEnd('debug');
-
-  return this._properties[propertyId];
-};
+  get extensions() {
+    return this._extensions;
+  }
+}
 
 export default PropertyAttribute;

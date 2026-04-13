@@ -22,17 +22,17 @@ import defined from "../../Core/defined.js";
  *
  * @see Model#getNode
  */
-function ModelNode(model, runtimeNode) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("model", model);
-  Check.typeOf.object("runtimeNode", runtimeNode);
-  //>>includeEnd('debug');
+class ModelNode {
+  constructor(model, runtimeNode) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("model", model);
+    Check.typeOf.object("runtimeNode", runtimeNode);
+    //>>includeEnd('debug');
 
-  this._model = model;
-  this._runtimeNode = runtimeNode;
-}
+    this._model = model;
+    this._runtimeNode = runtimeNode;
+  }
 
-Object.defineProperties(ModelNode.prototype, {
   /**
    * The value of the <code>name</code> property of this node.
    *
@@ -41,11 +41,9 @@ Object.defineProperties(ModelNode.prototype, {
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._runtimeNode._name;
-    },
-  },
+  get name() {
+    return this._runtimeNode._name;
+  }
 
   /**
    * The index of the node in the glTF.
@@ -55,11 +53,9 @@ Object.defineProperties(ModelNode.prototype, {
    * @type {number}
    * @readonly
    */
-  id: {
-    get: function () {
-      return this._runtimeNode._id;
-    },
-  },
+  get id() {
+    return this._runtimeNode._id;
+  }
 
   /**
    * Determines if this node and its children will be shown.
@@ -69,14 +65,21 @@ Object.defineProperties(ModelNode.prototype, {
    *
    * @default true
    */
-  show: {
-    get: function () {
-      return this._runtimeNode.show;
-    },
-    set: function (value) {
-      this._runtimeNode.show = value;
-    },
-  },
+  get show() {
+    return this._runtimeNode.show;
+  }
+
+  /**
+   * Determines if this node and its children will be shown.
+   *
+   * @memberof ModelNode.prototype
+   * @type {boolean}
+   *
+   * @default true
+   */
+  set show(value) {
+    this._runtimeNode.show = value;
+  }
 
   /**
    * The node's 4x4 matrix transform from its local coordinates to
@@ -91,21 +94,33 @@ Object.defineProperties(ModelNode.prototype, {
    * @memberof ModelNode.prototype
    * @type {Matrix4}
    */
-  matrix: {
-    get: function () {
-      return this._runtimeNode.transform;
-    },
-    set: function (value) {
-      if (defined(value)) {
-        this._runtimeNode.transform = value;
-        this._runtimeNode.userAnimated = true;
-        this._model._userAnimationDirty = true;
-      } else {
-        this._runtimeNode.transform = this.originalMatrix;
-        this._runtimeNode.userAnimated = false;
-      }
-    },
-  },
+  get matrix() {
+    return this._runtimeNode.transform;
+  }
+
+  /**
+   * The node's 4x4 matrix transform from its local coordinates to
+   * its parent's. Setting the matrix to undefined will restore the
+   * node's original transform, and allow the node to be animated by
+   * any animations in the model again.
+   * <p>
+   * For changes to take effect, this property must be assigned to;
+   * setting individual elements of the matrix will not work.
+   * </p>
+   *
+   * @memberof ModelNode.prototype
+   * @type {Matrix4}
+   */
+  set matrix(value) {
+    if (defined(value)) {
+      this._runtimeNode.transform = value;
+      this._runtimeNode.userAnimated = true;
+      this._model._userAnimationDirty = true;
+    } else {
+      this._runtimeNode.transform = this.originalMatrix;
+      this._runtimeNode.userAnimated = false;
+    }
+  }
 
   /**
    * Gets the node's original 4x4 matrix transform from its local
@@ -115,11 +130,9 @@ Object.defineProperties(ModelNode.prototype, {
    * @memberof ModelNode.prototype
    * @type {Matrix4}
    */
-  originalMatrix: {
-    get: function () {
-      return this._runtimeNode.originalTransform;
-    },
-  },
-});
+  get originalMatrix() {
+    return this._runtimeNode.originalTransform;
+  }
+}
 
 export default ModelNode;

@@ -26,130 +26,126 @@ import defined from "../Core/defined.js";
  * @see RenderScheduler
  * @see SortMode
  */
-function MaterialSortIdAllocator() {
+class MaterialSortIdAllocator {
+  constructor() {
+    /**
+     * Maps ShaderProgram.id (number) → materialSortId (number).
+     * Using a plain object with integer keys for fast lookup.
+     * @private
+     * @type {Object<number, number>}
+     */
+    this._shaderToSortId = {};
+
+    /**
+     * Next available sort ID. Incremented monotonically.
+     * @private
+     * @type {number}
+     */
+    this._nextId = 1; // Start at 1; 0 means "not assigned"
+
+    /**
+     * Number of unique materials tracked.
+     * @private
+     * @type {number}
+     */
+    this._count = 0;
+  }
+
   /**
-   * Maps ShaderProgram.id (number) → materialSortId (number).
-   * Using a plain object with integer keys for fast lookup.
-   * @private
-   * @type {Object<number, number>}
+   * Returns the materialSortId for a given DrawCommand. If the command's
+   * shader program hasn't been seen before, a new ID is allocated.
+   *
+   * For WebGL DrawCommands, the key is ShaderProgram.id.
+   * For WebGPU DrawCommands (with pipeline), the key is derived from
+   * the pipeline's label or a fallback hash.
+   *
+   * @param {object} command A DrawCommand or WebGPUDrawCommand.
+   * @returns {number} The materialSortId (positive integer). Returns 0 if
+   *   the command has no shader program (e.g., compute commands).
    */
-  this._shaderToSortId = {};
+  getIdForCommand(command) {
+    // WebGL path: use ShaderProgram.id
+    if (defined(command._shaderProgram)) {
+      return this._getOrAllocate(command._shaderProgram.id);
+    }
+
+    // Also handle shaderProgram as direct property (non-underscore)
+    if (defined(command.shaderProgram) && defined(command.shaderProgram.id)) {
+      return this._getOrAllocate(command.shaderProgram.id);
+    }
+
+    // WebGPU path: use pipeline reference identity.
+    // GPURenderPipeline objects are cached by WebGPURenderPipelineCache,
+    // so same config → same object → same key.
+    if (defined(command.pipeline)) {
+      // Use a WeakMap-based approach for object identity.
+      // Fall back to pipeline label if available.
+      return this._getOrAllocateForPipeline(command.pipeline);
+    }
+
+    return 0; // No shader info — can't batch
+  }
 
   /**
-   * Next available sort ID. Incremented monotonically.
+   * Gets or allocates a sort ID for a shader program integer key.
    * @private
-   * @type {number}
+   * @param {number} key The ShaderProgram.id
+   * @returns {number} The materialSortId
    */
-  this._nextId = 1; // Start at 1; 0 means "not assigned"
+  _getOrAllocate(key) {
+    let id = this._shaderToSortId[key];
+    if (!defined(id)) {
+      id = this._nextId++;
+      this._shaderToSortId[key] = id;
+      this._count++;
+    }
+    return id;
+  }
 
   /**
-   * Number of unique materials tracked.
+   * Gets or allocates a sort ID for a WebGPU pipeline using object identity.
+   * Uses a WeakMap to avoid holding strong references to GPU objects.
    * @private
-   * @type {number}
+   * @param {GPURenderPipeline} pipeline
+   * @returns {number}
    */
-  this._count = 0;
-}
+  _getOrAllocateForPipeline(pipeline) {
+    // Lazy-init the WeakMap (not created in constructor to avoid overhead
+    // when only WebGL is used)
+    if (!defined(this._pipelineMap)) {
+      this._pipelineMap = new WeakMap();
+    }
 
-/**
- * Returns the materialSortId for a given DrawCommand. If the command's
- * shader program hasn't been seen before, a new ID is allocated.
- *
- * For WebGL DrawCommands, the key is ShaderProgram.id.
- * For WebGPU DrawCommands (with pipeline), the key is derived from
- * the pipeline's label or a fallback hash.
- *
- * @param {object} command A DrawCommand or WebGPUDrawCommand.
- * @returns {number} The materialSortId (positive integer). Returns 0 if
- *   the command has no shader program (e.g., compute commands).
- */
-MaterialSortIdAllocator.prototype.getIdForCommand = function (command) {
-  // WebGL path: use ShaderProgram.id
-  if (defined(command._shaderProgram)) {
-    return this._getOrAllocate(command._shaderProgram.id);
+    let id = this._pipelineMap.get(pipeline);
+    if (!defined(id)) {
+      id = this._nextId++;
+      this._pipelineMap.set(pipeline, id);
+      this._count++;
+    }
+    return id;
   }
 
-  // Also handle shaderProgram as direct property (non-underscore)
-  if (defined(command.shaderProgram) && defined(command.shaderProgram.id)) {
-    return this._getOrAllocate(command.shaderProgram.id);
+  /**
+   * Auto-populates the materialSortId on a command if it hasn't been set.
+   * Called by the RenderScheduler during command binning.
+   *
+   * @param {object} command A DrawCommand or WebGPUDrawCommand.
+   */
+  ensureMaterialSortId(command) {
+    if (command.materialSortId === 0) {
+      command.materialSortId = this.getIdForCommand(command);
+    }
   }
 
-  // WebGPU path: use pipeline reference identity.
-  // GPURenderPipeline objects are cached by WebGPURenderPipelineCache,
-  // so same config → same object → same key.
-  if (defined(command.pipeline)) {
-    // Use a WeakMap-based approach for object identity.
-    // Fall back to pipeline label if available.
-    return this._getOrAllocateForPipeline(command.pipeline);
-  }
-
-  return 0; // No shader info — can't batch
-};
-
-/**
- * Gets or allocates a sort ID for a shader program integer key.
- * @private
- * @param {number} key The ShaderProgram.id
- * @returns {number} The materialSortId
- */
-MaterialSortIdAllocator.prototype._getOrAllocate = function (key) {
-  let id = this._shaderToSortId[key];
-  if (!defined(id)) {
-    id = this._nextId++;
-    this._shaderToSortId[key] = id;
-    this._count++;
-  }
-  return id;
-};
-
-/**
- * Gets or allocates a sort ID for a WebGPU pipeline using object identity.
- * Uses a WeakMap to avoid holding strong references to GPU objects.
- * @private
- * @param {GPURenderPipeline} pipeline
- * @returns {number}
- */
-MaterialSortIdAllocator.prototype._getOrAllocateForPipeline = function (
-  pipeline,
-) {
-  // Lazy-init the WeakMap (not created in constructor to avoid overhead
-  // when only WebGL is used)
-  if (!defined(this._pipelineMap)) {
-    this._pipelineMap = new WeakMap();
-  }
-
-  let id = this._pipelineMap.get(pipeline);
-  if (!defined(id)) {
-    id = this._nextId++;
-    this._pipelineMap.set(pipeline, id);
-    this._count++;
-  }
-  return id;
-};
-
-/**
- * Auto-populates the materialSortId on a command if it hasn't been set.
- * Called by the RenderScheduler during command binning.
- *
- * @param {object} command A DrawCommand or WebGPUDrawCommand.
- */
-MaterialSortIdAllocator.prototype.ensureMaterialSortId = function (command) {
-  if (command.materialSortId === 0) {
-    command.materialSortId = this.getIdForCommand(command);
-  }
-};
-
-Object.defineProperties(MaterialSortIdAllocator.prototype, {
   /**
    * The number of unique materials tracked by this allocator.
    * @memberof MaterialSortIdAllocator.prototype
    * @type {number}
    * @readonly
    */
-  count: {
-    get: function () {
-      return this._count;
-    },
-  },
-});
+  get count() {
+    return this._count;
+  }
+}
 
 export default MaterialSortIdAllocator;

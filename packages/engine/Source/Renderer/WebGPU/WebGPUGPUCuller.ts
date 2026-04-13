@@ -205,9 +205,11 @@ export class WebGPUGPUCuller {
       });
     } catch (e) {
       if (useSubgroups) {
+        //>>includeStart('debug', pragmas.debug);
         console.warn(
           `[WebGPUGPUCuller] Subgroup variant failed to compile, falling back to scalar main: ${e}`,
         );
+        //>>includeEnd('debug');
         this._pipeline = await this._device.createComputePipelineAsync({
           label: `${this._label} Compute Pipeline (main fallback)`,
           layout: pipelineLayout,

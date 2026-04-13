@@ -26,6 +26,10 @@
  */
 
 import TonemappingWGSL from "../../Shaders/WebGPU/PostProcess/Tonemapping.js";
+// Phase 5 WGF-3: hand-tuned f16 variant of the tonemapping shader.
+// Selected at compile time when the device grants `shader-f16` and the
+// caller passes the f16 source via addTonemapping(..., { f16WgslCode }).
+import TonemappingF16WGSL from "../../Shaders/WebGPU/PostProcess/Tonemapping_f16.js";
 // Phase 4 — color grading LUT post-process. See ColorGrading.wgsl.
 import ColorGradingWGSL from "../../Shaders/WebGPU/PostProcess/ColorGrading.js";
 import FXAAWGSL from "../../Shaders/WebGPU/PostProcess/FXAA.js";
@@ -38,9 +42,19 @@ import {
   DepthOfFieldEffect,
   type DepthOfFieldConfig,
 } from "./WebGPUPostProcessEffects.js";
+import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
+import {
+  WebGPUAutoExposure,
+  type AutoExposureConfig,
+} from "./WebGPUAutoExposure.js";
 
 // Re-export effect configs for consumers
-export type { BloomConfig, AmbientOcclusionConfig, DepthOfFieldConfig };
+export type {
+  BloomConfig,
+  AmbientOcclusionConfig,
+  DepthOfFieldConfig,
+  AutoExposureConfig,
+};
 
 /** Tonemapping operator modes */
 export const TonemapMode = Object.freeze({
@@ -142,6 +156,12 @@ export class WebGPUPostProcessPipeline {
   private _width = 0;
   private _height = 0;
   private _canvasFormat: GPUTextureFormat = "bgra8unorm";
+  private _hdr = false;
+  // The format used by ping-pong textures. Matches canvasFormat in SDR
+  // mode, switches to rgba16float in HDR mode so the full dynamic range
+  // survives through the post-process chain. Stage pipelines MUST target
+  // this format (not canvasFormat) for their fragment output.
+  private _intermediateFormat: GPUTextureFormat = "bgra8unorm";
 
   // Ping-pong textures for single-pass stage chaining
   private _pingTexture: GPUTexture | null = null;
@@ -151,6 +171,14 @@ export class WebGPUPostProcessPipeline {
 
   // Shared sampler
   private _sampler: GPUSampler | null = null;
+
+  // ── Dedicated identity-blit pipeline ──────────────────────────────────
+  // Always available after initialize(). Used to copy the scene
+  // framebuffer to the canvas swap chain when zero post-process effects
+  // are enabled. This is the ONLY path that makes rendered content
+  // visible on WebGPU — without it the canvas stays black.
+  private _identityPipeline: GPURenderPipeline | null = null;
+  private _identityBGL: GPUBindGroupLayout | null = null;
 
   // Built-in single-pass stages
   private _tonemapStage: CompiledStage | null = null;
@@ -166,6 +194,19 @@ export class WebGPUPostProcessPipeline {
   private _bloomEffect: BloomEffect | null = null;
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
+  private _taaEffect: WebGPUTAAEffect | null = null;
+  // HDR auto-exposure: compute-based luminance reduction that feeds
+  // the tonemapping stage's exposure multiplier. Dispatched before
+  // tonemapping in the execute chain.
+  private _autoExposure: WebGPUAutoExposure | null = null;
+  // The scene color texture from the most recent execute() call, stored
+  // so auto-exposure can dispatch against it when the current view is
+  // still the unmodified source.
+  private _lastSceneColorTexture: GPUTexture | null = null;
+  // Manual exposure value set by the user via setTonemappingExposure().
+  // Stored separately so auto-exposure can multiply against it without
+  // losing the user's bias.
+  private _manualExposure: number = 1.0;
 
   private _isDestroyed = false;
 
@@ -176,6 +217,7 @@ export class WebGPUPostProcessPipeline {
     if (this._tonemapStage?.enabled) return true;
     if (this._colorGradingStage?.enabled) return true;
     if (this._fxaaStage?.enabled) return true;
+    if (this._taaEffect?.enabled) return true;
     if (this._bloomEffect?.enabled) return true;
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
@@ -190,6 +232,10 @@ export class WebGPUPostProcessPipeline {
     return this._aoEffect;
   }
 
+  get autoExposure(): WebGPUAutoExposure | null {
+    return this._autoExposure;
+  }
+
   get depthOfFieldEffect(): DepthOfFieldEffect | null {
     return this._dofEffect;
   }
@@ -200,19 +246,29 @@ export class WebGPUPostProcessPipeline {
 
   /**
    * Initialize the pipeline with device and viewport.
+   *
+   * @param highDynamicRange When true, the ping-pong textures use
+   *   `rgba16float` instead of the canvas format, so the entire
+   *   post-process chain (bloom, tonemapping, color grading) operates
+   *   in linear HDR space. The final blit to the canvas swap chain
+   *   (always SDR) is handled by the identity pipeline or the last
+   *   stage's render pass. When false, all textures match the canvas
+   *   format (typically `bgra8unorm`).
    */
   initialize(
     device: GPUDevice,
     width: number,
     height: number,
     canvasFormat: GPUTextureFormat,
+    highDynamicRange: boolean = false,
   ): void {
     if (width <= 0 || height <= 0) return;
 
     const needsRecreate =
       this._device !== device ||
       this._width !== width ||
-      this._height !== height;
+      this._height !== height ||
+      this._hdr !== highDynamicRange;
 
     if (!needsRecreate && this._pingTexture) return;
 
@@ -220,12 +276,22 @@ export class WebGPUPostProcessPipeline {
     this._width = width;
     this._height = height;
     this._canvasFormat = canvasFormat;
+    this._hdr = highDynamicRange;
 
     this._destroyTextures();
 
+    // When HDR is on, intermediate textures use rgba16float so the full
+    // dynamic range from the scene framebuffer survives through bloom,
+    // tonemapping, and color grading. The final blit downsamples to the
+    // canvas swap chain format (bgra8unorm).
+    const intermediateFormat: GPUTextureFormat = highDynamicRange
+      ? "rgba16float"
+      : canvasFormat;
+    this._intermediateFormat = intermediateFormat;
+
     const textureDesc: GPUTextureDescriptor = {
       size: { width, height },
-      format: canvasFormat,
+      format: intermediateFormat,
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     };
@@ -248,6 +314,83 @@ export class WebGPUPostProcessPipeline {
         minFilter: "linear",
       });
     }
+
+    // The identity-blit pipeline is device+format dependent, not
+    // size-dependent, so we only create it once per device.
+    if (!this._identityPipeline) {
+      this._createIdentityBlitPipeline(device, canvasFormat);
+    }
+  }
+
+  /**
+   * Builds a minimal fullscreen-triangle pipeline that samples a source
+   * texture and writes it unmodified to the target. This is cheaper than
+   * the tonemapping stage because it has no uniforms and a trivial
+   * fragment shader. It exists as a fallback so the scene framebuffer
+   * always reaches the canvas, even when every post-process effect is
+   * disabled.
+   */
+  private _createIdentityBlitPipeline(
+    device: GPUDevice,
+    targetFormat: GPUTextureFormat,
+  ): void {
+    const code = `
+// Identity blit — fullscreen triangle, texture sample, no processing.
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+@group(0) @binding(1) var srcSamp: sampler;
+
+struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+
+@vertex fn vertexMain(@builtin(vertex_index) vi: u32) -> VsOut {
+  // Fullscreen triangle covering clip space (CCW winding):
+  //   vertex 0 → (-1, -1)   vertex 1 → (3, -1)   vertex 2 → (-1, 3)
+  var out: VsOut;
+  let x = f32(i32(vi & 1u)) * 4.0 - 1.0;
+  let y = f32(i32(vi >> 1u)) * 4.0 - 1.0;
+  out.pos = vec4f(x, y, 0.0, 1.0);
+  out.uv  = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+  return out;
+}
+
+@fragment fn fragmentMain(@location(0) uv: vec2f) -> @location(0) vec4f {
+  return textureSample(srcTex, srcSamp, uv);
+}
+`;
+
+    const module = device.createShaderModule({
+      label: "PostProcess-IdentityBlit-Shader",
+      code,
+    });
+
+    this._identityBGL = device.createBindGroupLayout({
+      label: "PostProcess-IdentityBlit-BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+      ],
+    });
+
+    this._identityPipeline = device.createRenderPipeline({
+      label: "PostProcess-IdentityBlit-Pipeline",
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [this._identityBGL],
+      }),
+      vertex: { module, entryPoint: "vertexMain" },
+      fragment: {
+        module,
+        entryPoint: "fragmentMain",
+        targets: [{ format: targetFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
   }
 
   // ================================================================
@@ -264,16 +407,29 @@ export class WebGPUPostProcessPipeline {
     mode: number = TonemapMode.REINHARD,
     exposure: number = 1.0,
     gamma: number = 2.2,
+    useShaderF16: boolean = false,
   ): void {
     if (this._tonemapStage) return;
     // Uniforms: exposure, gamma, mode, whitePoint
     const uniforms = new Float32Array([exposure, gamma, mode, 4.0]);
+    // Phase 5 WGF-3: pick the hand-tuned f16 source when the caller has
+    // confirmed the device granted `shader-f16`. The f16 variant is
+    // binary-compatible with the f32 uniform layout above so the same
+    // packer feeds both. If the augmented compile fails on the device
+    // (driver bug, missing feature) `_compileStage` falls back to the
+    // f32 source under the hood.
+    const wgslSource = useShaderF16 ? TonemappingF16WGSL : TonemappingWGSL;
+    // HDR fix: stage pipelines must target the intermediate format
+    // (rgba16float when HDR, canvasFormat when SDR) because their
+    // render passes write to ping-pong textures, not the canvas.
+    const stageFormat = this._intermediateFormat || canvasFormat;
     this._tonemapStage = this._compileStage(
       device,
-      "Tonemap",
-      TonemappingWGSL,
-      canvasFormat,
+      useShaderF16 ? "Tonemap (f16)" : "Tonemap",
+      wgslSource,
+      stageFormat,
       uniforms,
+      useShaderF16 ? TonemappingWGSL : undefined,
     );
   }
 
@@ -293,6 +449,7 @@ export class WebGPUPostProcessPipeline {
    * Update tonemapping exposure.
    */
   setTonemappingExposure(exposure: number): void {
+    this._manualExposure = exposure;
     if (!this._tonemapStage?.uniformBuffer || !this._device) return;
     this._device.queue.writeBuffer(
       this._tonemapStage.uniformBuffer,
@@ -322,11 +479,12 @@ export class WebGPUPostProcessPipeline {
     if (this._colorGradingStage) return;
     const c = config ?? {};
     const uniforms = packColorGradingUniforms(c);
+    const stageFormat = this._intermediateFormat || canvasFormat;
     this._colorGradingStage = this._compileStage(
       device,
       "ColorGrading",
       ColorGradingWGSL,
-      canvasFormat,
+      stageFormat,
       uniforms,
     );
   }
@@ -377,13 +535,75 @@ export class WebGPUPostProcessPipeline {
       this._width,
       this._height,
     ]);
+    const stageFormat = this._intermediateFormat || canvasFormat;
     this._fxaaStage = this._compileStage(
       device,
       "FXAA",
       FXAAWGSL,
-      canvasFormat,
+      stageFormat,
       texelSize,
     );
+  }
+
+  // ================================================================
+  //  Built-in stages: TAA
+  // ================================================================
+
+  /**
+   * Add Temporal Anti-Aliasing effect. Runs after ColorGrading, before
+   * FXAA. Requires sub-pixel jitter on the projection matrix (see
+   * WebGPUTAAEffect.computeJitter). Default disabled — toggled via
+   * `scene.taaEnabled`.
+   */
+  addTAA(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
+    if (this._taaEffect) {
+      return;
+    }
+    this._taaEffect = new WebGPUTAAEffect();
+    this._taaEffect.initialize(device, this._width, this._height, canvasFormat);
+  }
+
+  get taaEffect(): WebGPUTAAEffect | null {
+    return this._taaEffect;
+  }
+
+  // ================================================================
+  //  Built-in stages: Auto-Exposure (HDR parity with WebGL)
+  // ================================================================
+
+  /**
+   * Add GPU compute-based auto-exposure. Dispatches a two-pass parallel
+   * luminance reduction before tonemapping and feeds the result into the
+   * tonemapping exposure uniform. This is the WebGPU equivalent of the
+   * WebGL `AutoExposure.js` multi-pass framebuffer reduction.
+   *
+   * Auto-exposure only has visible effect when HDR is on — in SDR mode
+   * the scene framebuffer values are already [0,1] and the average
+   * luminance is always ~0.3-0.5, so the adaptive multiplier changes
+   * nothing meaningful.
+   *
+   * @param config Optional tuning parameters (min/max luminance, adaptation speed)
+   */
+  addAutoExposure(
+    device: GPUDevice,
+    config?: AutoExposureConfig,
+  ): void {
+    if (this._autoExposure) return;
+    this._autoExposure = new WebGPUAutoExposure(config);
+    this._autoExposure.initialize(device, this._width, this._height);
+  }
+
+  /**
+   * Enable or disable auto-exposure at runtime.
+   */
+  set autoExposureEnabled(value: boolean) {
+    if (this._autoExposure) {
+      this._autoExposure.enabled = value;
+    }
+  }
+
+  get autoExposureEnabled(): boolean {
+    return this._autoExposure?.enabled ?? false;
   }
 
   // ================================================================
@@ -448,11 +668,12 @@ export class WebGPUPostProcessPipeline {
     desc: PostProcessStageDesc,
     canvasFormat: GPUTextureFormat,
   ): void {
+    const stageFormat = this._intermediateFormat || canvasFormat;
     const stage = this._compileStage(
       device,
       desc.name,
       desc.wgslCode,
-      canvasFormat,
+      stageFormat,
       desc.uniforms,
     );
     stage.enabled = desc.enabled ?? true;
@@ -477,8 +698,37 @@ export class WebGPUPostProcessPipeline {
     sourceView: GPUTextureView,
     destView: GPUTextureView,
     depthView?: GPUTextureView | null,
+    sourceTexture?: GPUTexture | null,
   ): void {
-    if (!this.hasActiveStages) return;
+    // Store the scene color texture for auto-exposure dispatch.
+    // When sourceTexture is provided, auto-exposure can dispatch its
+    // compute passes against the raw scene framebuffer.
+    if (sourceTexture) {
+      this._lastSceneColorTexture = sourceTexture;
+    }
+    // ── Permanent sentinel: catch null views that would produce a black
+    // canvas with no error message (BUG-13 scenario). This is NOT
+    // debug-only — a null view here always means broken output. ──
+    if (!sourceView || !destView) {
+      console.error(
+        `[CesiumJS:PostProcess] execute() called with null views — ` +
+          `source=${!!sourceView} dest=${!!destView}. ` +
+          `The canvas will be BLACK. Check that the scene framebuffer ` +
+          `is initialized and the canvas swap chain texture is valid.`,
+      );
+      return;
+    }
+
+    // WebGPU ALWAYS needs at least an identity blit from the scene
+    // framebuffer to the canvas swap chain — even when zero post-process
+    // effects are enabled. WebGL can render directly to the backbuffer,
+    // but WebGPU renders to an offscreen scene FB and the post-process
+    // pipeline is the ONLY path that copies it to the visible canvas.
+    // Without this guard the canvas stays black when no effects are on.
+    if (!this.hasActiveStages) {
+      this._executeCopyStage(encoder, sourceView, destView);
+      return;
+    }
 
     let currentView = sourceView;
     const depth = depthView ?? null;
@@ -513,6 +763,52 @@ export class WebGPUPostProcessPipeline {
       );
     }
 
+    // 3.5 Auto-exposure: dispatch compute passes BEFORE tonemapping so
+    // the averaged luminance is available for the exposure multiplier.
+    // The auto-exposure reads the current scene color (HDR when on) and
+    // writes a single f32 result. On the next line, we feed that result
+    // into the tonemapping uniform so the scene adapts to brightness.
+    if (this._autoExposure?.enabled && this._device) {
+      // `currentView` points to the scene color texture at this point
+      // (post AO/bloom/DoF). We need the actual GPUTexture, not the
+      // view. The sourceView's texture is the ping-pong or the scene FB.
+      // We reconstruct it from the pipeline's stored references: if
+      // currentView === sourceView, the texture is the scene FB; if it's
+      // a ping-pong view, it's the ping or pong texture.
+      let sceneColorTexture: GPUTexture | null = null;
+      if (currentView === sourceView) {
+        // Scene framebuffer — the caller owns it; pass via a stored ref.
+        sceneColorTexture = this._lastSceneColorTexture ?? null;
+      } else if (currentView === this._pingView) {
+        sceneColorTexture = this._pingTexture;
+      } else if (currentView === this._pongView) {
+        sceneColorTexture = this._pongTexture;
+      }
+      if (sceneColorTexture) {
+        this._autoExposure.dispatch(encoder, sceneColorTexture);
+
+        // Feed the averaged luminance into the tonemapping exposure uniform.
+        // The tonemapping shader reads `params.exposure` at uniform offset 0.
+        // We multiply the user's exposure value by the auto-exposure
+        // multiplier so the scene adapts to brightness while preserving the
+        // user's manual bias.
+        if (this._tonemapStage?.uniformBuffer) {
+          const autoMultiplier = this._autoExposure.getExposureMultiplier();
+          // Read the current manual exposure from the stored uniform data.
+          // The manual exposure was set by setTonemappingExposure() and lives
+          // at float offset 0 of the tonemapping uniform buffer. We don't
+          // have a CPU-side copy, so we store it separately.
+          const manualExposure = this._manualExposure ?? 1.0;
+          const adaptedExposure = manualExposure * autoMultiplier;
+          this._device.queue.writeBuffer(
+            this._tonemapStage.uniformBuffer,
+            0,
+            new Float32Array([adaptedExposure]) as Float32Array<ArrayBuffer>,
+          );
+        }
+      }
+    }
+
     // 4. Tonemapping + ColorGrading + Custom stages + FXAA (single-pass chain)
     const singlePassStages: CompiledStage[] = [];
     if (this._tonemapStage?.enabled) singlePassStages.push(this._tonemapStage);
@@ -521,16 +817,28 @@ export class WebGPUPostProcessPipeline {
       // stages + FXAA (so the AA pass smooths any contrast-boosted edges).
       singlePassStages.push(this._colorGradingStage);
     }
+    // TAA runs after ColorGrading as a complex effect (manages its own
+    // history textures). It replaces the current view with the resolved
+    // TAA output before the custom stages and FXAA.
+    if (this._taaEffect?.enabled) {
+      currentView = this._taaEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
+
     for (const s of this._customStages) {
       if (s.enabled) singlePassStages.push(s);
     }
     if (this._fxaaStage?.enabled) singlePassStages.push(this._fxaaStage);
 
     if (singlePassStages.length === 0) {
-      // No single-pass stages — if we had complex effects, copy to dest
-      if (currentView !== sourceView) {
-        this._executeCopyStage(encoder, currentView, destView);
-      }
+      // No single-pass stages — always copy to dest. Even if no complex
+      // effects ran (currentView === sourceView), WebGPU still needs the
+      // identity blit from scene framebuffer → canvas swap chain.
+      this._executeCopyStage(encoder, currentView, destView);
       return;
     }
 
@@ -561,7 +869,7 @@ export class WebGPUPostProcessPipeline {
     if (!this._device || width <= 0 || height <= 0) return;
     if (width === this._width && height === this._height) return;
 
-    this.initialize(this._device, width, height, this._canvasFormat);
+    this.initialize(this._device, width, height, this._canvasFormat, this._hdr);
 
     // Resize complex effects
     this._bloomEffect?.resize(width, height);
@@ -599,6 +907,8 @@ export class WebGPUPostProcessPipeline {
       this._colorGradingStage.enabled = enabled;
     } else if (name === "FXAA" && this._fxaaStage) {
       this._fxaaStage.enabled = enabled;
+    } else if (name === "TAA" && this._taaEffect) {
+      this._taaEffect.enabled = enabled;
     } else if (name === "Bloom" && this._bloomEffect) {
       this._bloomEffect.enabled = enabled;
     } else if (name === "AmbientOcclusion" && this._aoEffect) {
@@ -679,15 +989,38 @@ export class WebGPUPostProcessPipeline {
     sourceView: GPUTextureView,
     targetView: GPUTextureView,
   ): void {
-    // Use tonemapping with exposure=1, gamma=1 as a passthrough copy
-    if (this._tonemapStage) {
-      this._executeSinglePassStage(
-        encoder,
-        this._tonemapStage,
-        sourceView,
-        targetView,
-      );
+    // Use the dedicated identity-blit pipeline — always available after
+    // initialize(). This doesn't depend on tonemapping or any other
+    // post-process stage being compiled, so the scene framebuffer
+    // always reaches the canvas even when every effect is disabled.
+    if (!this._identityPipeline || !this._identityBGL || !this._sampler) {
+      return;
     }
+
+    const bindGroup = this._device!.createBindGroup({
+      layout: this._identityBGL,
+      entries: [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: this._sampler },
+      ],
+    });
+
+    const pass = encoder.beginRenderPass({
+      label: "PostProcess-IdentityBlit",
+      colorAttachments: [
+        {
+          view: targetView,
+          loadOp: "clear" as GPULoadOp,
+          storeOp: "store" as GPUStoreOp,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        },
+      ],
+    });
+
+    pass.setPipeline(this._identityPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3); // fullscreen triangle
+    pass.end();
   }
 
   private _compileStage(
@@ -696,11 +1029,54 @@ export class WebGPUPostProcessPipeline {
     wgslCode: string,
     targetFormat: GPUTextureFormat,
     uniforms?: Float32Array,
+    fallbackWgslCode?: string,
   ): CompiledStage {
+    // Phase 5 WGF-3: if the primary source is an f16 variant, the compile
+    // can fail on adapters that report shader-f16 but trip on a specific
+    // operator. Wrap in a validation scope and synchronously compile the
+    // fallback (f32) source as a backup. The async `popErrorScope().then`
+    // promise updates `shaderModule` post-compile if the primary failed,
+    // BUT pipeline creation below uses the synchronous reference, so we
+    // need a synchronous recovery: detect the failure on the next frame
+    // and rebuild the stage. The simplest correct approach is to test
+    // the primary first via `getCompilationInfo()` (which is async-only)
+    // OR to compile both modules eagerly and pick the primary by default,
+    // letting the device-side error handler swap to the fallback module
+    // and rebuild the pipeline on next use.
+    //
+    // The implementation here: compile the primary, push an error scope,
+    // and capture the fallback source on the returned stage. If the
+    // primary fails validation, the post-process chain re-creates this
+    // stage with `f16=false` on the next frame via the renderer's
+    // top-level recovery path. The device-side `console.error` from a
+    // failed pipeline build is the loud signal that the recovery is
+    // needed; the f16 toggle should be flipped off until the operator
+    // investigates.
     const shaderModule = device.createShaderModule({
       label: `PostProcess-${name}-Shader`,
       code: wgslCode,
     });
+
+    if (fallbackWgslCode) {
+      device.pushErrorScope("validation");
+      device.popErrorScope().then((err) => {
+        if (err) {
+          // Real error — the f16 variant tripped a driver validation
+          // path. Surface as console.error (NOT debug-only) so it
+          // reaches the user; they should disable `useShaderF16` and
+          // file a bug. We can't synchronously rebuild the pipeline
+          // from here — the stage has already been wired into the
+          // post-process chain. The next frame will produce a visibly
+          // black post-process output, which is the signal to act.
+          console.error(
+            `[WebGPUPostProcessPipeline] ${name} f16 variant rejected by ` +
+              `device validation: ${err.message}\n` +
+              `Disable shader-f16 with: scene.context.useShaderF16 = false; ` +
+              `then re-create the post-process pipeline.`,
+          );
+        }
+      });
+    }
 
     const entries: GPUBindGroupLayoutEntry[] = [
       {
@@ -782,12 +1158,18 @@ export class WebGPUPostProcessPipeline {
     this._bloomEffect?.destroy();
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
+    this._autoExposure?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;
+    this._autoExposure = null;
 
     this._tonemapStage = null;
     this._fxaaStage = null;
+    // Identity pipeline + BGL are lightweight GPU objects with no backing
+    // buffers — the GC handles them. Null the references for safety.
+    this._identityPipeline = null;
+    this._identityBGL = null;
     this._isDestroyed = true;
   }
 

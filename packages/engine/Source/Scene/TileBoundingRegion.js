@@ -32,84 +32,176 @@ import SceneMode from "./SceneMode.js";
  *
  * @private
  */
-function TileBoundingRegion(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  Check.typeOf.object("options.rectangle", options.rectangle);
-  //>>includeEnd('debug');
+class TileBoundingRegion {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    Check.typeOf.object("options.rectangle", options.rectangle);
+    //>>includeEnd('debug');
 
-  this.rectangle = Rectangle.clone(options.rectangle);
-  this.minimumHeight = options.minimumHeight ?? 0.0;
-  this.maximumHeight = options.maximumHeight ?? 0.0;
+    this.rectangle = Rectangle.clone(options.rectangle);
+    this.minimumHeight = options.minimumHeight ?? 0.0;
+    this.maximumHeight = options.maximumHeight ?? 0.0;
 
-  /**
-   * The world coordinates of the southwest corner of the tile's rectangle.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.southwestCornerCartesian = new Cartesian3();
+    /**
+     * The world coordinates of the southwest corner of the tile's rectangle.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.southwestCornerCartesian = new Cartesian3();
 
-  /**
-   * The world coordinates of the northeast corner of the tile's rectangle.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.northeastCornerCartesian = new Cartesian3();
+    /**
+     * The world coordinates of the northeast corner of the tile's rectangle.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.northeastCornerCartesian = new Cartesian3();
 
-  /**
-   * A normal that, along with southwestCornerCartesian, defines a plane at the western edge of
-   * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.westNormal = new Cartesian3();
+    /**
+     * A normal that, along with southwestCornerCartesian, defines a plane at the western edge of
+     * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.westNormal = new Cartesian3();
 
-  /**
-   * A normal that, along with southwestCornerCartesian, defines a plane at the southern edge of
-   * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
-   * Because points of constant latitude do not necessary lie in a plane, positions below this
-   * plane are not necessarily inside the tile, but they are close.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.southNormal = new Cartesian3();
+    /**
+     * A normal that, along with southwestCornerCartesian, defines a plane at the southern edge of
+     * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
+     * Because points of constant latitude do not necessary lie in a plane, positions below this
+     * plane are not necessarily inside the tile, but they are close.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.southNormal = new Cartesian3();
 
-  /**
-   * A normal that, along with northeastCornerCartesian, defines a plane at the eastern edge of
-   * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.eastNormal = new Cartesian3();
+    /**
+     * A normal that, along with northeastCornerCartesian, defines a plane at the eastern edge of
+     * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.eastNormal = new Cartesian3();
 
-  /**
-   * A normal that, along with northeastCornerCartesian, defines a plane at the eastern edge of
-   * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
-   * Because points of constant latitude do not necessary lie in a plane, positions below this
-   * plane are not necessarily inside the tile, but they are close.
-   *
-   * @type {Cartesian3}
-   * @default Cartesian3()
-   */
-  this.northNormal = new Cartesian3();
+    /**
+     * A normal that, along with northeastCornerCartesian, defines a plane at the eastern edge of
+     * the tile.  Any position above (in the direction of the normal) this plane is outside the tile.
+     * Because points of constant latitude do not necessary lie in a plane, positions below this
+     * plane are not necessarily inside the tile, but they are close.
+     *
+     * @type {Cartesian3}
+     * @default Cartesian3()
+     */
+    this.northNormal = new Cartesian3();
 
-  const ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
-  computeBox(this, options.rectangle, ellipsoid);
+    const ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+    computeBox(this, options.rectangle, ellipsoid);
 
-  this._orientedBoundingBox = undefined;
-  this._boundingSphere = undefined;
+    this._orientedBoundingBox = undefined;
+    this._boundingSphere = undefined;
 
-  if (options.computeBoundingVolumes ?? true) {
-    this.computeBoundingVolumes(ellipsoid);
+    if (options.computeBoundingVolumes ?? true) {
+      this.computeBoundingVolumes(ellipsoid);
+    }
   }
-}
 
-Object.defineProperties(TileBoundingRegion.prototype, {
+  computeBoundingVolumes(ellipsoid) {
+    // An oriented bounding box that encloses this tile's region.  This is used to calculate tile visibility.
+    this._orientedBoundingBox = OrientedBoundingBox.fromRectangle(
+      this.rectangle,
+      this.minimumHeight,
+      this.maximumHeight,
+      ellipsoid,
+    );
+
+    this._boundingSphere = BoundingSphere.fromOrientedBoundingBox(
+      this._orientedBoundingBox,
+    );
+  }
+
+  /**
+   * Gets the distance from the camera to the closest point on the tile.  This is used for level of detail selection.
+   *
+   * @param {FrameState} frameState The state information of the current rendering frame.
+   * @returns {number} The distance from the camera to the closest point on the tile, in meters.
+   */
+  distanceToCamera(frameState) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("frameState", frameState);
+    //>>includeEnd('debug');
+
+    const regionResult = distanceToCameraRegion(this, frameState);
+    if (
+      frameState.mode === SceneMode.SCENE3D &&
+      defined(this._orientedBoundingBox)
+    ) {
+      const obbResult = Math.sqrt(
+        this._orientedBoundingBox.distanceSquaredTo(frameState.camera.positionWC),
+      );
+      return Math.max(regionResult, obbResult);
+    }
+    return regionResult;
+  }
+
+  /**
+   * Determines which side of a plane this box is located.
+   *
+   * @param {Plane} plane The plane to test against.
+   * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
+   *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
+   *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
+   *                      intersects the plane.
+   */
+  intersectPlane(plane) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("plane", plane);
+    //>>includeEnd('debug');
+    return this._orientedBoundingBox.intersectPlane(plane);
+  }
+
+  /**
+   * Creates a debug primitive that shows the outline of the tile bounding region.
+   *
+   * @param {Color} color The desired color of the primitive's mesh
+   * @return {Primitive}
+   *
+   * @private
+   */
+  createDebugVolume(color) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("color", color);
+    //>>includeEnd('debug');
+
+    const modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    const geometry = new RectangleOutlineGeometry({
+      rectangle: this.rectangle,
+      height: this.minimumHeight,
+      extrudedHeight: this.maximumHeight,
+    });
+    const instance = new GeometryInstance({
+      geometry: geometry,
+      id: "outline",
+      modelMatrix: modelMatrix,
+      attributes: {
+        color: ColorGeometryInstanceAttribute.fromColor(color),
+      },
+    });
+
+    return new Primitive({
+      geometryInstances: instance,
+      appearance: new PerInstanceColorAppearance({
+        translucent: false,
+        flat: true,
+      }),
+      asynchronous: false,
+    });
+  }
+
   /**
    * The underlying bounding volume
    *
@@ -118,11 +210,10 @@ Object.defineProperties(TileBoundingRegion.prototype, {
    * @type {object}
    * @readonly
    */
-  boundingVolume: {
-    get: function () {
-      return this._orientedBoundingBox;
-    },
-  },
+  get boundingVolume() {
+    return this._orientedBoundingBox;
+  }
+
   /**
    * The underlying bounding sphere
    *
@@ -131,26 +222,10 @@ Object.defineProperties(TileBoundingRegion.prototype, {
    * @type {BoundingSphere}
    * @readonly
    */
-  boundingSphere: {
-    get: function () {
-      return this._boundingSphere;
-    },
-  },
-});
-
-TileBoundingRegion.prototype.computeBoundingVolumes = function (ellipsoid) {
-  // An oriented bounding box that encloses this tile's region.  This is used to calculate tile visibility.
-  this._orientedBoundingBox = OrientedBoundingBox.fromRectangle(
-    this.rectangle,
-    this.minimumHeight,
-    this.maximumHeight,
-    ellipsoid,
-  );
-
-  this._boundingSphere = BoundingSphere.fromOrientedBoundingBox(
-    this._orientedBoundingBox,
-  );
-};
+  get boundingSphere() {
+    return this._boundingSphere;
+  }
+}
 
 const cartesian3Scratch = new Cartesian3();
 const cartesian3Scratch2 = new Cartesian3();
@@ -409,81 +484,4 @@ function distanceToCameraRegion(tileBB, frameState) {
   return Math.sqrt(result);
 }
 
-/**
- * Gets the distance from the camera to the closest point on the tile.  This is used for level of detail selection.
- *
- * @param {FrameState} frameState The state information of the current rendering frame.
- * @returns {number} The distance from the camera to the closest point on the tile, in meters.
- */
-TileBoundingRegion.prototype.distanceToCamera = function (frameState) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("frameState", frameState);
-  //>>includeEnd('debug');
-
-  const regionResult = distanceToCameraRegion(this, frameState);
-  if (
-    frameState.mode === SceneMode.SCENE3D &&
-    defined(this._orientedBoundingBox)
-  ) {
-    const obbResult = Math.sqrt(
-      this._orientedBoundingBox.distanceSquaredTo(frameState.camera.positionWC),
-    );
-    return Math.max(regionResult, obbResult);
-  }
-  return regionResult;
-};
-
-/**
- * Determines which side of a plane this box is located.
- *
- * @param {Plane} plane The plane to test against.
- * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
- *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
- *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
- *                      intersects the plane.
- */
-TileBoundingRegion.prototype.intersectPlane = function (plane) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("plane", plane);
-  //>>includeEnd('debug');
-  return this._orientedBoundingBox.intersectPlane(plane);
-};
-
-/**
- * Creates a debug primitive that shows the outline of the tile bounding region.
- *
- * @param {Color} color The desired color of the primitive's mesh
- * @return {Primitive}
- *
- * @private
- */
-TileBoundingRegion.prototype.createDebugVolume = function (color) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("color", color);
-  //>>includeEnd('debug');
-
-  const modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
-  const geometry = new RectangleOutlineGeometry({
-    rectangle: this.rectangle,
-    height: this.minimumHeight,
-    extrudedHeight: this.maximumHeight,
-  });
-  const instance = new GeometryInstance({
-    geometry: geometry,
-    id: "outline",
-    modelMatrix: modelMatrix,
-    attributes: {
-      color: ColorGeometryInstanceAttribute.fromColor(color),
-    },
-  });
-
-  return new Primitive({
-    geometryInstances: instance,
-    appearance: new PerInstanceColorAppearance({
-      translucent: false,
-      flat: true,
-    }),
-    asynchronous: false,
-  });
-};
 export default TileBoundingRegion;

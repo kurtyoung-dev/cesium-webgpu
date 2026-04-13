@@ -178,327 +178,2310 @@ import ModelImagery from "./ModelImagery.js";
  *
  * @demo {@link https://sandcastle.cesium.com/index.html?id=3d-models|Cesium Sandcastle Models Demo}
  */
-function Model(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.loader", options.loader);
-  Check.typeOf.object("options.resource", options.resource);
-  //>>includeEnd('debug');
+class Model {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.loader", options.loader);
+    Check.typeOf.object("options.resource", options.resource);
+    //>>includeEnd('debug');
+
+    /**
+     * The loader used to load resources for this model.
+     *
+     * @type {ResourceLoader}
+     * @private
+     */
+    this._loader = options.loader;
+    this._resource = options.resource;
+
+    /**
+     * Type of this model, to distinguish individual glTF files from 3D Tiles
+     * internally.
+     *
+     * @type {ModelType}
+     * @readonly
+     *
+     * @private
+     */
+    this.type = options.type ?? ModelType.GLTF;
+
+    /**
+     * The 4x4 transformation matrix that transforms the model from model to world coordinates.
+     * When this is the identity matrix, the model is drawn in world coordinates, i.e., Earth's Cartesian WGS84 coordinates.
+     * Local reference frames can be used by providing a different transformation matrix, like that returned
+     * by {@link Transforms.eastNorthUpToFixedFrame}.
+     *
+     * @type {Matrix4}
+
+     * @default {@link Matrix4.IDENTITY}
+     *
+     * @example
+     * const origin = Cesium.Cartesian3.fromDegrees(-95.0, 40.0, 200000.0);
+     * m.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+     */
+    this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+    this._modelMatrix = Matrix4.clone(this.modelMatrix);
+    this._scale = options.scale ?? 1.0;
+
+    this._minimumPixelSize = options.minimumPixelSize ?? 0.0;
+
+    this._maximumScale = options.maximumScale;
+
+    /**
+     * The scale value after being clamped by the maximum scale parameter.
+     * Used to adjust bounding spheres without repeated calculation.
+     *
+     * @type {number}
+     * @private
+     */
+    this._clampedScale = defined(this._maximumScale)
+      ? Math.min(this._scale, this._maximumScale)
+      : this._scale;
+
+    this._computedScale = this._clampedScale;
+
+    /**
+     * Whether or not the ModelSceneGraph should call updateModelMatrix.
+     * This will be true if any of the model matrix, scale, minimum pixel size, or maximum scale are dirty.
+     *
+     * @type {number}
+     * @private
+     */
+    this._updateModelMatrix = false;
+
+    /**
+     * If defined, this matrix is used to transform miscellaneous properties like
+     * clipping planes and image-based lighting instead of the modelMatrix. This is
+     * so that when models are part of a tileset, these properties get transformed
+     * relative to a common reference (such as the root).
+     *
+     * @type {Matrix4}
+     * @private
+     */
+    this.referenceMatrix = undefined;
+    this._iblReferenceFrameMatrix = Matrix3.clone(Matrix3.IDENTITY); // Derived from reference matrix and the current view matrix
+
+    this._resourcesLoaded = false;
+    this._drawCommandsBuilt = false;
+
+    this._ready = false;
+    this._customShader = options.customShader;
+    this._content = options.content;
+
+    this._texturesLoaded = false;
+    this._defaultTexture = undefined;
+
+    this._activeAnimations = new ModelAnimationCollection(this);
+    this._clampAnimations = options.clampAnimations ?? true;
+
+    // This flag is true when the Cesium API, not a glTF animation, changes
+    // the transform of a node in the model.
+    this._userAnimationDirty = false;
+
+    this._id = options.id;
+    this._idDirty = false;
+
+    this._color = Color.clone(options.color);
+    this._colorBlendMode = options.colorBlendMode ?? ColorBlendMode.HIGHLIGHT;
+    this._colorBlendAmount = options.colorBlendAmount ?? 0.5;
+
+    const silhouetteColor = options.silhouetteColor ?? Color.RED;
+    this._silhouetteColor = Color.clone(silhouetteColor);
+    this._silhouetteSize = options.silhouetteSize ?? 0.0;
+    this._silhouetteDirty = false;
+
+    // If silhouettes are used for the model, this will be set to the number
+    // of the stencil buffer used for rendering the silhouette. This is set
+    // by ModelSilhouettePipelineStage, not by Model itself.
+    this._silhouetteId = undefined;
+
+    this._cull = options.cull ?? true;
+    this._opaquePass = options.opaquePass ?? Pass.OPAQUE;
+    this._allowPicking = options.allowPicking ?? true;
+    this._show = options.show ?? true;
+
+    this._style = undefined;
+    this._styleDirty = false;
+    this._styleCommandsNeeded = undefined;
+
+    let featureIdLabel = options.featureIdLabel ?? "featureId_0";
+    if (typeof featureIdLabel === "number") {
+      featureIdLabel = `featureId_${featureIdLabel}`;
+    }
+    this._featureIdLabel = featureIdLabel;
+
+    let instanceFeatureIdLabel =
+      options.instanceFeatureIdLabel ?? "instanceFeatureId_0";
+    if (typeof instanceFeatureIdLabel === "number") {
+      instanceFeatureIdLabel = `instanceFeatureId_${instanceFeatureIdLabel}`;
+    }
+    this._instanceFeatureIdLabel = instanceFeatureIdLabel;
+
+    this._featureTables = [];
+    this._featureTableId = undefined;
+    this._featureTableIdDirty = true;
+
+    // Keeps track of resources that need to be destroyed when the draw commands are reset.
+    this._pipelineResources = [];
+
+    // Keeps track of resources that need to be destroyed when the Model is destroyed.
+    this._modelResources = [];
+
+    // Keeps track of the pick IDs for this model. These are stored and destroyed in the
+    // pipeline resources array; the purpose of this array is to separate them from other
+    // resources and update their ID objects when necessary.
+    this._pickIds = [];
+
+    // The model's bounding sphere and its initial radius are computed
+    // in ModelSceneGraph.
+    this._boundingSphere = new BoundingSphere();
+    this._initialRadius = undefined;
+
+    this._heightReference = options.heightReference ?? HeightReference.NONE;
+    this._heightDirty = this._heightReference !== HeightReference.NONE;
+    this._removeUpdateHeightCallback = undefined;
+
+    this._enableVerticalExaggeration = options.enableVerticalExaggeration ?? true;
+    this._hasVerticalExaggeration = false;
+
+    this._clampedModelMatrix = undefined; // For use with height reference
+
+    const scene = options.scene;
+    if (defined(scene) && defined(scene.terrainProviderChanged)) {
+      this._terrainProviderChangedCallback =
+        scene.terrainProviderChanged.addEventListener(() => {
+          this._heightDirty = true;
+        });
+    }
+    this._scene = scene;
+
+    this._distanceDisplayCondition = options.distanceDisplayCondition;
+
+    const pointCloudShading = new PointCloudShading(options.pointCloudShading);
+    this._pointCloudShading = pointCloudShading;
+    this._attenuation = pointCloudShading.attenuation;
+    this._pointCloudBackFaceCulling = pointCloudShading.backFaceCulling;
+
+    // If the given clipping planes don't have an owner, make this model its owner.
+    // Otherwise, the clipping planes are passed down from a tileset.
+    const clippingPlanes = options.clippingPlanes;
+    if (defined(clippingPlanes) && clippingPlanes.owner === undefined) {
+      ClippingPlaneCollection.setOwner(clippingPlanes, this, "_clippingPlanes");
+    } else {
+      this._clippingPlanes = clippingPlanes;
+    }
+    this._clippingPlanesState = 0; // If this value changes, the shaders need to be regenerated.
+    this._clippingPlanesMatrix = Matrix4.clone(Matrix4.IDENTITY); // Derived from reference matrix and the current view matrix
+
+    // If the given clipping polygons don't have an owner, make this model its owner.
+    // Otherwise, the clipping polygons are passed down from a tileset.
+    const clippingPolygons = options.clippingPolygons;
+    if (defined(clippingPolygons) && clippingPolygons.owner === undefined) {
+      ClippingPolygonCollection.setOwner(
+        clippingPolygons,
+        this,
+        "_clippingPolygons",
+      );
+    } else {
+      this._clippingPolygons = clippingPolygons;
+    }
+    this._clippingPolygonsState = 0; // If this value changes, the shaders need to be regenerated.
+
+    this._modelImagery = new ModelImagery(this);
+
+    this._lightColor = Cartesian3.clone(options.lightColor);
+
+    this._imageBasedLighting = defined(options.imageBasedLighting)
+      ? options.imageBasedLighting
+      : new ImageBasedLighting();
+    this._shouldDestroyImageBasedLighting = !defined(options.imageBasedLighting);
+
+    this._environmentMapManager = undefined;
+    const environmentMapManager = new DynamicEnvironmentMapManager(
+      options.environmentMapOptions,
+    );
+    DynamicEnvironmentMapManager.setOwner(
+      environmentMapManager,
+      this,
+      "_environmentMapManager",
+    );
+
+    this._backFaceCulling = options.backFaceCulling ?? true;
+    this._backFaceCullingDirty = false;
+
+    this._shadows = options.shadows ?? ShadowMode.ENABLED;
+    this._shadowsDirty = false;
+
+    this._debugShowBoundingVolumeDirty = false;
+    this._debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    this._enableDebugWireframe = options.enableDebugWireframe ?? false;
+    this._enableShowOutline = options.enableShowOutline ?? true;
+    this._debugWireframe = options.debugWireframe ?? false;
+
+    // Warning for improper setup of debug wireframe
+    if (
+      this._debugWireframe === true &&
+      this._enableDebugWireframe === false &&
+      this.type === ModelType.GLTF
+    ) {
+      oneTimeWarning(
+        "model-debug-wireframe-ignored",
+        "enableDebugWireframe must be set to true in Model.fromGltf, otherwise debugWireframe will be ignored.",
+      );
+    }
+
+    // Credit specified by the user.
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+
+    this._credits = [];
+    this._credit = credit;
+
+    // Credits to be added from the Resource (if it is an IonResource)
+    this._resourceCredits = [];
+
+    // Credits parsed from the glTF by GltfLoader.
+    this._gltfCredits = [];
+
+    this._showCreditsOnScreen = options.showCreditsOnScreen ?? false;
+    this._showCreditsOnScreenDirty = true;
+
+    this._splitDirection = options.splitDirection ?? SplitDirection.NONE;
+
+    this._enableShowOutline = options.enableShowOutline ?? true;
+
+    /**
+     * Whether to display the outline for models using the
+     * {@link https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/CESIUM_primitive_outline|CESIUM_primitive_outline} extension.
+     * When true, outlines are displayed. When false, outlines are not displayed.
+     *
+     * @type {boolean}
+     *
+     * @default true
+     */
+    this.showOutline = options.showOutline ?? true;
+
+    /**
+     * The color to use when rendering outlines.
+     *
+     * @type {Color}
+     *
+     * @default Color.BLACK
+     */
+    this.outlineColor = options.outlineColor ?? Color.BLACK;
+
+    this._classificationType = options.classificationType;
+
+    this._statistics = new ModelStatistics();
+
+    this._sceneMode = undefined;
+    this._projectTo2D = options.projectTo2D ?? false;
+    this._enablePick = options.enablePick ?? false;
+
+    this._fogRenderable = undefined;
+
+    this._skipLevelOfDetail = false;
+    this._ignoreCommands = options.ignoreCommands ?? false;
+
+    this._errorEvent = new Event();
+    this._readyEvent = new Event();
+    this._texturesReadyEvent = new Event();
+
+    this._sceneGraph = undefined;
+    this._nodesByName = {}; // Stores the nodes by their names in the glTF.
+
+    /**
+     * Used for picking primitives that wrap a model.
+     *
+     * @private
+     */
+    this.pickObject = options.pickObject;
+  }
 
   /**
-   * The loader used to load resources for this model.
+   * Returns the node with the given <code>name</code> in the glTF. This is used to
+   * modify a node's transform for user-defined animation.
    *
-   * @type {ResourceLoader}
+   * @param {string} name The name of the node in the glTF.
+   * @returns {ModelNode} The node, or <code>undefined</code> if no node with the <code>name</code> exists.
+   *
+   * @exception {DeveloperError} The model is not loaded.  Use Model.readyEvent or wait for Model.ready to be true.
+   *
+   * @example
+   * // Apply non-uniform scale to node "Hand"
+   * const node = model.getNode("Hand");
+   * node.matrix = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(5.0, 1.0, 1.0), node.matrix);
+   */
+  getNode(name) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._ready) {
+      throw new DeveloperError(
+        "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
+      );
+    }
+    Check.typeOf.string("name", name);
+    //>>includeEnd('debug');
+
+    return this._nodesByName[name];
+  }
+
+  /**
+   * Sets the current value of an articulation stage.  After setting one or
+   * multiple stage values, call Model.applyArticulations() to
+   * cause the node matrices to be recalculated.
+   *
+   * @param {string} articulationStageKey The name of the articulation, a space, and the name of the stage.
+   * @param {number} value The numeric value of this stage of the articulation.
+   *
+   * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
+   *
+   * @see Model#applyArticulations
+   *
+   * @example
+   * // Sets the value of the stage named "MoveX" belonging to the articulation named "SampleArticulation"
+   * model.setArticulationStage("SampleArticulation MoveX", 50.0);
+   */
+  setArticulationStage(articulationStageKey, value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("value", value);
+    if (!this._ready) {
+      throw new DeveloperError(
+        "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    this._sceneGraph.setArticulationStage(articulationStageKey, value);
+  }
+
+  /**
+   * Applies any modified articulation stages to the matrix of each node that
+   * participates in any articulation. Note that this will overwrite any node
+   * transformations on participating nodes.
+   *
+   * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
+   */
+  applyArticulations() {
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._ready) {
+      throw new DeveloperError(
+        "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    this._sceneGraph.applyArticulations();
+  }
+
+  /**
+   * Returns the object that was created for the given extension.
+   *
+   * The given name may be the name of a glTF extension, like `"EXT_example_extension"`.
+   * If the specified extension was present in the root of the underlying glTF asset,
+   * and a loader for the specified extension has processed the extension data, then
+   * this will return the model representation of the extension.
+   *
+   * @param {string} extensionName The name of the extension
+   * @returns {object|undefined} The object, or `undefined`
+   * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
+   *
+   * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  getExtension(extensionName) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("extensionName", extensionName);
+    if (!this._ready) {
+      throw new DeveloperError(
+        "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
+      );
+    }
+    //>>includeEnd('debug');
+    const components = this._loader.components;
+    return components.extensions[extensionName];
+  }
+
+  /**
+   * Marks the model's {@link Model#style} as dirty, which forces all features
+   * to re-evaluate the style in the next frame the model is visible.
+   */
+  makeStyleDirty() {
+    this._styleDirty = true;
+  }
+
+  /**
+   * Resets the draw commands for this model.
+   *
    * @private
    */
-  this._loader = options.loader;
-  this._resource = options.resource;
+  resetDrawCommands() {
+    this._drawCommandsBuilt = false;
+  }
 
   /**
-   * Type of this model, to distinguish individual glTF files from 3D Tiles
-   * internally.
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
+   * <p>
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
+   * </p>
    *
-   * @type {ModelType}
+   * @exception {RuntimeError} Failed to load external reference.
+   */
+  update(frameState) {
+    let finishedProcessing = false;
+    try {
+      // Keep processing the model every frame until the main resources
+      // (buffer views) and textures (which may be loaded asynchronously)
+      // are processed.
+      finishedProcessing = processLoader(this, frameState);
+    } catch (error) {
+      if (
+        !this._loader.incrementallyLoadTextures &&
+        error.name === "TextureError"
+      ) {
+        handleError(this, error);
+      } else {
+        const runtimeError = ModelUtility.getError(
+          "model",
+          this._resource,
+          error,
+        );
+        handleError(this, runtimeError);
+      }
+    }
+
+    // A custom shader may have to load texture uniforms.
+    updateCustomShader(this, frameState);
+
+    // Environment maps, specular maps, and spherical harmonics may need to be updated or regenerated
+    updateEnvironmentMap(this, frameState);
+
+    // The image-based lighting may have to load texture uniforms
+    // for specular maps.
+    updateImageBasedLighting(this, frameState);
+
+    if (!this._resourcesLoaded && finishedProcessing) {
+      this._resourcesLoaded = true;
+
+      const components = this._loader.components;
+      if (!defined(components)) {
+        if (this._loader.isUnloaded()) {
+          return;
+        }
+
+        const error = ModelUtility.getError(
+          "model",
+          this._resource,
+          new RuntimeError("Failed to load model."),
+        );
+        handleError(error);
+        this._rejectLoad = this._rejectLoad && this._rejectLoad(error);
+      }
+
+      const structuralMetadata = components.structuralMetadata;
+      if (
+        defined(structuralMetadata) &&
+        structuralMetadata.propertyTableCount > 0
+      ) {
+        createModelFeatureTables(this, structuralMetadata);
+      }
+
+      const sceneGraph = new ModelSceneGraph({
+        model: this,
+        modelComponents: components,
+      });
+
+      this._sceneGraph = sceneGraph;
+      this._gltfCredits = sceneGraph.components.asset.credits;
+    }
+
+    // Short-circuit if the model resources aren't ready or the scene
+    // is currently morphing.
+    if (!this._resourcesLoaded || frameState.mode === SceneMode.MORPHING) {
+      return;
+    }
+
+    const modelImagery = this._modelImagery;
+    modelImagery.update(frameState);
+    if (!modelImagery.ready) {
+      // If the imagery loading should not happen asynchronously,
+      // then do not let the model count as 'ready' until the
+      // modelImagery is 'ready'
+      const asynchronouslyLoadImagery =
+        this._content?.tileset?._asynchronouslyLoadImagery ?? false;
+      if (!asynchronouslyLoadImagery) {
+        return;
+      }
+    }
+
+    updateFeatureTableId(this);
+    updateStyle(this);
+    updateFeatureTables(this, frameState);
+    updatePointCloudShading(this);
+    updateSilhouette(this, frameState);
+    updateSkipLevelOfDetail(this, frameState);
+    updateClippingPlanes(this, frameState);
+    updateClippingPolygons(this, frameState);
+    updateSceneMode(this, frameState);
+    updateFog(this, frameState);
+    updateVerticalExaggeration(this, frameState);
+
+    this._defaultTexture = frameState.context.defaultTexture;
+
+    buildDrawCommands(this, frameState);
+    updateModelMatrix(this, frameState);
+
+    // Many features (e.g. image-based lighting, clipping planes) depend on the model
+    // matrix being updated for the current height reference, so update it first.
+    updateClamping(this);
+
+    updateBoundingSphereAndScale(this, frameState);
+    updateReferenceMatrices(this, frameState);
+
+    // This check occurs after the bounding sphere has been updated so that
+    // zooming to the bounding sphere can account for any modifications
+    // from the clamp-to-ground setting.
+    if (!this._ready) {
+      // Set the model as ready after the first frame render since the user might set up events subscribed to
+      // the post render event, and the model may not be ready for those past the first frame.
+      frameState.afterRender.push(() => {
+        this._ready = true;
+        this._readyEvent.raiseEvent(this);
+      });
+
+      // Don't render until the next frame after the ready event has been raised.
+      return;
+    }
+
+    if (
+      this._loader.incrementallyLoadTextures &&
+      !this._texturesLoaded &&
+      this._loader.texturesLoaded
+    ) {
+      // Re-run the pipeline so texture memory statistics are re-computed
+      this.resetDrawCommands();
+
+      this._texturesLoaded = true;
+      this._texturesReadyEvent.raiseEvent(this);
+    }
+
+    updatePickIds(this);
+
+    // Update the scene graph and draw commands for any changes in model's properties
+    // (e.g. model matrix, back-face culling)
+    updateSceneGraph(this, frameState);
+    updateShowCreditsOnScreen(this);
+    submitDrawCommands(this, frameState);
+  }
+
+  /**
+   * Gets whether or not the model is translucent based on its assigned model color.
+   * If the model color's alpha is equal to zero, then it is considered invisible,
+   * not translucent.
+   *
+   * @returns {boolean} <code>true</code> if the model is translucent, otherwise <code>false</code>.
+   * @private
+   */
+  isTranslucent() {
+    const color = this.color;
+    return defined(color) && color.alpha > 0.0 && color.alpha < 1.0;
+  }
+
+  /**
+   * Gets whether or not the model is invisible, i.e. if the model color's alpha
+   * is equal to zero.
+   *
+   * @returns {boolean} <code>true</code> if the model is invisible, otherwise <code>false</code>.
+   * @private
+   */
+  isInvisible() {
+    const color = this.color;
+    return defined(color) && color.alpha === 0.0;
+  }
+
+  /**
+   * Gets whether or not the model has a silhouette. This accounts for whether
+   * silhouettes are supported (i.e. the context supports stencil buffers).
+   * <p>
+   * If the model classifies another model, its silhouette will be disabled.
+   * </p>
+   *
+   * @param {FrameState} The frame state.
+   * @returns {boolean} <code>true</code> if the model has silhouettes, otherwise <code>false</code>.
+   * @private
+   */
+  hasSilhouette(frameState) {
+    return (
+      supportsSilhouettes(frameState) &&
+      this._silhouetteSize > 0.0 &&
+      this._silhouetteColor.alpha > 0.0 &&
+      !defined(this._classificationType)
+    );
+  }
+
+  /**
+   * Gets whether or not the model is part of a tileset that uses the
+   * skipLevelOfDetail optimization. This accounts for whether skipLevelOfDetail
+   * is supported (i.e. the context supports stencil buffers).
+   *
+   * @param {FrameState} frameState The frame state.
+   * @returns {boolean} <code>true</code> if the model is part of a tileset that uses the skipLevelOfDetail optimization, <code>false</code> otherwise.
+   * @private
+   */
+  hasSkipLevelOfDetail(frameState) {
+    if (!ModelType.is3DTiles(this.type)) {
+      return false;
+    }
+
+    const supportsSkipLevelOfDetail = frameState.context.stencilBuffer;
+    const tileset = this._content.tileset;
+    return supportsSkipLevelOfDetail && tileset.isSkippingLevelOfDetail;
+  }
+
+  /**
+   * Gets whether or not clipping planes are enabled for this model.
+   *
+   * @returns {boolean} <code>true</code> if clipping planes are enabled for this model, <code>false</code>.
+   * @private
+   */
+  isClippingEnabled() {
+    const clippingPlanes = this._clippingPlanes;
+    return (
+      defined(clippingPlanes) &&
+      clippingPlanes.enabled &&
+      clippingPlanes.length !== 0
+    );
+  }
+
+  /**
+   * Find an intersection between a ray and the model surface that was rendered. The ray must be given in world coordinates.
+   *
+   * @param {Ray} ray The ray to test for intersection.
+   * @param {FrameState} frameState The frame state.
+   * @param {number} [verticalExaggeration=1.0] A scalar used to exaggerate the height of a position relative to the ellipsoid. If the value is 1.0 there will be no effect.
+   * @param {number} [relativeHeight=0.0] The height above the ellipsoid relative to which a position is exaggerated. If the value is 0.0 the position will be exaggerated relative to the ellipsoid surface.
+   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
+   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+   *
+   * @private
+   */
+  pick(ray, frameState, verticalExaggeration, relativeHeight, result) {
+    return pickModel(
+      this,
+      ray,
+      frameState,
+      verticalExaggeration,
+      relativeHeight,
+      result,
+    );
+  }
+
+  /**
+   * Gets whether or not clipping polygons are enabled for this model.
+   *
+   * @returns {boolean} <code>true</code> if clipping polygons are enabled for this model, <code>false</code>.
+   * @private
+   */
+  isClippingPolygonsEnabled() {
+    const clippingPolygons = this._clippingPolygons;
+    return (
+      defined(clippingPolygons) &&
+      clippingPolygons.enabled &&
+      clippingPolygons.length !== 0
+    );
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see Model#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * model = model && model.destroy();
+   *
+   * @see Model#isDestroyed
+   */
+  destroy() {
+    const loader = this._loader;
+    if (defined(loader)) {
+      loader.destroy();
+    }
+
+    const featureTables = this._featureTables;
+    if (defined(featureTables)) {
+      const length = featureTables.length;
+      for (let i = 0; i < length; i++) {
+        featureTables[i].destroy();
+      }
+    }
+
+    this.destroyPipelineResources();
+    this.destroyModelResources();
+
+    // Remove callbacks for height reference behavior.
+    if (defined(this._removeUpdateHeightCallback)) {
+      this._removeUpdateHeightCallback();
+      this._removeUpdateHeightCallback = undefined;
+    }
+
+    if (defined(this._terrainProviderChangedCallback)) {
+      this._terrainProviderChangedCallback();
+      this._terrainProviderChangedCallback = undefined;
+    }
+
+    // Only destroy the ClippingPlaneCollection if this is the owner.
+    const clippingPlaneCollection = this._clippingPlanes;
+    if (
+      defined(clippingPlaneCollection) &&
+      !clippingPlaneCollection.isDestroyed() &&
+      clippingPlaneCollection.owner === this
+    ) {
+      clippingPlaneCollection.destroy();
+    }
+    this._clippingPlanes = undefined;
+
+    // Only destroy the ClippingPolygonCollection if this is the owner.
+    const clippingPolygonCollection = this._clippingPolygons;
+    if (
+      defined(clippingPolygonCollection) &&
+      !clippingPolygonCollection.isDestroyed() &&
+      clippingPolygonCollection.owner === this
+    ) {
+      clippingPolygonCollection.destroy();
+    }
+    this._clippingPolygons = undefined;
+
+    // Only destroy the ImageBasedLighting if this is the owner.
+    if (
+      this._shouldDestroyImageBasedLighting &&
+      !this._imageBasedLighting.isDestroyed()
+    ) {
+      this._imageBasedLighting.destroy();
+    }
+    this._imageBasedLighting = undefined;
+
+    // Only destroy the environment map manager if this is the owner.
+    const environmentMapManager = this._environmentMapManager;
+    if (
+      !environmentMapManager.isDestroyed() &&
+      environmentMapManager.owner === this
+    ) {
+      environmentMapManager.destroy();
+    }
+    this._environmentMapManager = undefined;
+
+    const modelFr = this._featureRenderer;
+    if (modelFr) {
+      modelFr.destroy(this);
+    }
+    destroyObject(this);
+  }
+
+  /**
+   * Destroys resources generated in the pipeline stages
+   * that must be destroyed when draw commands are rebuilt.
+   * @private
+   */
+  destroyPipelineResources() {
+    const resources = this._pipelineResources;
+    for (let i = 0; i < resources.length; i++) {
+      resources[i].destroy();
+    }
+    this._pipelineResources.length = 0;
+    this._pickIds.length = 0;
+  }
+
+  /**
+   * Destroys resources generated in the pipeline stages
+   * that exist for the lifetime of the model.
+   * @private
+   */
+  destroyModelResources() {
+    const resources = this._modelResources;
+    for (let i = 0; i < resources.length; i++) {
+      resources[i].destroy();
+    }
+    this._modelResources.length = 0;
+  }
+
+  /**
+   * @private
+   */
+  applyColorAndShow(style) {
+    const previousColor = Color.clone(this._color, scratchColor);
+    const hasColorStyle = defined(style) && defined(style.color);
+    const hasShowStyle = defined(style) && defined(style.show);
+
+    this._color = hasColorStyle
+      ? style.color.evaluateColor(undefined, this._color)
+      : Color.clone(Color.WHITE, this._color);
+    this._show = hasShowStyle ? style.show.evaluate(undefined) : true;
+
+    if (isColorAlphaDirty(previousColor, this._color)) {
+      this.resetDrawCommands();
+    }
+  }
+
+  /**
+   * @private
+   */
+  applyStyle(style) {
+    const isPnts = this.type === ModelType.TILE_PNTS;
+
+    const hasFeatureTable =
+      defined(this.featureTableId) &&
+      this.featureTables[this.featureTableId].featuresLength > 0;
+
+    const propertyAttributes = defined(this.structuralMetadata)
+      ? this.structuralMetadata.propertyAttributes
+      : undefined;
+    const hasPropertyAttributes =
+      defined(propertyAttributes) && defined(propertyAttributes[0]);
+
+    // Point clouds will be styled on the GPU unless they contain a batch table.
+    // That is, CPU styling will not be applied if:
+    // - points have no metadata at all, or
+    // - points have metadata stored as a property attribute
+    if (isPnts && (!hasFeatureTable || hasPropertyAttributes)) {
+      // Commands are rebuilt for point cloud styling since the new style may
+      // contain different shader functions.
+      this.resetDrawCommands();
+      return;
+    }
+
+    // The style is only set by the ModelFeatureTable. If there are no features,
+    // the color and show from the style are directly applied.
+    if (hasFeatureTable) {
+      const featureTable = this.featureTables[this.featureTableId];
+      featureTable.applyStyle(style);
+      updateStyleCommandsNeeded(this, style);
+    } else {
+      this.applyColorAndShow(style);
+      this._styleCommandsNeeded = undefined;
+    }
+  }
+
+  /**
+   * When <code>true</code>, this model is ready to render, i.e., the external binary, image,
+   * and shader files were downloaded and the WebGL resources were created.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   *
+   * @default false
+   */
+  get ready() {
+    return this._ready;
+  }
+
+  /**
+   * Gets an event that is raised when the model encounters an asynchronous rendering error.  By subscribing
+   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
+   * are passed an instance of {@link ModelError}.
+   * @memberof Model.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get errorEvent() {
+    return this._errorEvent;
+  }
+
+  /**
+   * Gets an event that is raised when the model is loaded and ready for rendering, i.e. when the external resources
+   * have been downloaded and the WebGL resources are created. Event listeners
+   * are passed an instance of the {@link Model}.
+   *
+   * <p>
+   * If {@link Model.incrementallyLoadTextures} is true, this event will be raised before all textures are loaded and ready for rendering. Subscribe to {@link Model.texturesReadyEvent} to be notified when the textures are ready.
+   * </p>
+   *
+   * @memberof Model.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get readyEvent() {
+    return this._readyEvent;
+  }
+
+  /**
+   * Returns true if textures are loaded separately from the other glTF resources.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   * @private
+   */
+  get incrementallyLoadTextures() {
+    return this._loader.incrementallyLoadTextures ?? false;
+  }
+
+  /**
+   * Gets an event that, if {@link Model.incrementallyLoadTextures} is true, is raised when the model textures are loaded and ready for rendering, i.e. when the external resources
+   * have been downloaded and the WebGL resources are created. Event listeners
+   * are passed an instance of the {@link Model}.
+   *
+   * @memberof Model.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get texturesReadyEvent() {
+    return this._texturesReadyEvent;
+  }
+
+  /**
+   * @private
+   */
+  get loader() {
+    return this._loader;
+  }
+
+  /**
+   * Get the estimated memory usage statistics for this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ModelStatistics}
    * @readonly
    *
    * @private
    */
-  this.type = options.type ?? ModelType.GLTF;
+  get statistics() {
+    return this._statistics;
+  }
 
   /**
-   * The 4x4 transformation matrix that transforms the model from model to world coordinates.
-   * When this is the identity matrix, the model is drawn in world coordinates, i.e., Earth's Cartesian WGS84 coordinates.
-   * Local reference frames can be used by providing a different transformation matrix, like that returned
-   * by {@link Transforms.eastNorthUpToFixedFrame}.
+   * The currently playing glTF animations.
    *
-   * @type {Matrix4}
-
-   * @default {@link Matrix4.IDENTITY}
+   * @memberof Model.prototype
    *
-   * @example
-   * const origin = Cesium.Cartesian3.fromDegrees(-95.0, 40.0, 200000.0);
-   * m.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+   * @type {ModelAnimationCollection}
+   * @readonly
    */
-  this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
-  this._modelMatrix = Matrix4.clone(this.modelMatrix);
-  this._scale = options.scale ?? 1.0;
-
-  this._minimumPixelSize = options.minimumPixelSize ?? 0.0;
-
-  this._maximumScale = options.maximumScale;
+  get activeAnimations() {
+    return this._activeAnimations;
+  }
 
   /**
-   * The scale value after being clamped by the maximum scale parameter.
-   * Used to adjust bounding spheres without repeated calculation.
+   * Determines if the model's animations should hold a pose over frames where no keyframes are specified.
    *
-   * @type {number}
+   * @memberof Model.prototype
+   * @type {boolean}
+   *
+   * @default true
+   */
+  get clampAnimations() {
+    return this._clampAnimations;
+  }
+
+  /**
+   * Determines if the model's animations should hold a pose over frames where no keyframes are specified.
+   *
+   * @memberof Model.prototype
+   * @type {boolean}
+   *
+   * @default true
+   */
+  set clampAnimations(value) {
+    this._clampAnimations = value;
+  }
+
+  /**
+   * Whether or not to cull the model using frustum/horizon culling. If the model is part of a 3D Tiles tileset, this property
+   * will always be false, since the 3D Tiles culling system is used.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   *
    * @private
    */
-  this._clampedScale = defined(this._maximumScale)
-    ? Math.min(this._scale, this._maximumScale)
-    : this._scale;
-
-  this._computedScale = this._clampedScale;
+  get cull() {
+    return this._cull;
+  }
 
   /**
-   * Whether or not the ModelSceneGraph should call updateModelMatrix.
-   * This will be true if any of the model matrix, scale, minimum pixel size, or maximum scale are dirty.
+   * The pass to use in the {@link DrawCommand} for the opaque portions of the model.
    *
-   * @type {number}
+   * @memberof Model.prototype
+   *
+   * @type {Pass}
+   * @readonly
+   *
    * @private
    */
-  this._updateModelMatrix = false;
+  get opaquePass() {
+    return this._opaquePass;
+  }
 
   /**
-   * If defined, this matrix is used to transform miscellaneous properties like
-   * clipping planes and image-based lighting instead of the modelMatrix. This is
-   * so that when models are part of a tileset, these properties get transformed
-   * relative to a common reference (such as the root).
+   * Point cloud shading settings for controlling point cloud attenuation
+   * and lighting. For 3D Tiles, this is inherited from the
+   * {@link Cesium3DTileset}.
    *
-   * @type {Matrix4}
+   * @memberof Model.prototype
+   *
+   * @type {PointCloudShading}
+   */
+  get pointCloudShading() {
+    return this._pointCloudShading;
+  }
+
+  /**
+   * Point cloud shading settings for controlling point cloud attenuation
+   * and lighting. For 3D Tiles, this is inherited from the
+   * {@link Cesium3DTileset}.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {PointCloudShading}
+   */
+  set pointCloudShading(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("pointCloudShading", value);
+    //>>includeEnd('debug');
+    if (value !== this._pointCloudShading) {
+      this.resetDrawCommands();
+    }
+    this._pointCloudShading = value;
+  }
+
+  /**
+   * The model's custom shader, if it exists. Using custom shaders with a {@link Cesium3DTileStyle}
+   * may lead to undefined behavior.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {CustomShader}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get customShader() {
+    return this._customShader;
+  }
+
+  /**
+   * The model's custom shader, if it exists. Using custom shaders with a {@link Cesium3DTileStyle}
+   * may lead to undefined behavior.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {CustomShader}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set customShader(value) {
+    if (value !== this._customShader) {
+      this.resetDrawCommands();
+    }
+    this._customShader = value;
+  }
+
+  /**
+   * The scene graph of this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ModelSceneGraph}
    * @private
    */
-  this.referenceMatrix = undefined;
-  this._iblReferenceFrameMatrix = Matrix3.clone(Matrix3.IDENTITY); // Derived from reference matrix and the current view matrix
-
-  this._resourcesLoaded = false;
-  this._drawCommandsBuilt = false;
-
-  this._ready = false;
-  this._customShader = options.customShader;
-  this._content = options.content;
-
-  this._texturesLoaded = false;
-  this._defaultTexture = undefined;
-
-  this._activeAnimations = new ModelAnimationCollection(this);
-  this._clampAnimations = options.clampAnimations ?? true;
-
-  // This flag is true when the Cesium API, not a glTF animation, changes
-  // the transform of a node in the model.
-  this._userAnimationDirty = false;
-
-  this._id = options.id;
-  this._idDirty = false;
-
-  this._color = Color.clone(options.color);
-  this._colorBlendMode = options.colorBlendMode ?? ColorBlendMode.HIGHLIGHT;
-  this._colorBlendAmount = options.colorBlendAmount ?? 0.5;
-
-  const silhouetteColor = options.silhouetteColor ?? Color.RED;
-  this._silhouetteColor = Color.clone(silhouetteColor);
-  this._silhouetteSize = options.silhouetteSize ?? 0.0;
-  this._silhouetteDirty = false;
-
-  // If silhouettes are used for the model, this will be set to the number
-  // of the stencil buffer used for rendering the silhouette. This is set
-  // by ModelSilhouettePipelineStage, not by Model itself.
-  this._silhouetteId = undefined;
-
-  this._cull = options.cull ?? true;
-  this._opaquePass = options.opaquePass ?? Pass.OPAQUE;
-  this._allowPicking = options.allowPicking ?? true;
-  this._show = options.show ?? true;
-
-  this._style = undefined;
-  this._styleDirty = false;
-  this._styleCommandsNeeded = undefined;
-
-  let featureIdLabel = options.featureIdLabel ?? "featureId_0";
-  if (typeof featureIdLabel === "number") {
-    featureIdLabel = `featureId_${featureIdLabel}`;
+  get sceneGraph() {
+    return this._sceneGraph;
   }
-  this._featureIdLabel = featureIdLabel;
 
-  let instanceFeatureIdLabel =
-    options.instanceFeatureIdLabel ?? "instanceFeatureId_0";
-  if (typeof instanceFeatureIdLabel === "number") {
-    instanceFeatureIdLabel = `instanceFeatureId_${instanceFeatureIdLabel}`;
+  /**
+   * The tile content this model belongs to, if it is loaded as part of a {@link Cesium3DTileset}.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Cesium3DTileContent}
+   * @readonly
+   *
+   * @private
+   */
+  get content() {
+    return this._content;
   }
-  this._instanceFeatureIdLabel = instanceFeatureIdLabel;
 
-  this._featureTables = [];
-  this._featureTableId = undefined;
-  this._featureTableIdDirty = true;
-
-  // Keeps track of resources that need to be destroyed when the draw commands are reset.
-  this._pipelineResources = [];
-
-  // Keeps track of resources that need to be destroyed when the Model is destroyed.
-  this._modelResources = [];
-
-  // Keeps track of the pick IDs for this model. These are stored and destroyed in the
-  // pipeline resources array; the purpose of this array is to separate them from other
-  // resources and update their ID objects when necessary.
-  this._pickIds = [];
-
-  // The model's bounding sphere and its initial radius are computed
-  // in ModelSceneGraph.
-  this._boundingSphere = new BoundingSphere();
-  this._initialRadius = undefined;
-
-  this._heightReference = options.heightReference ?? HeightReference.NONE;
-  this._heightDirty = this._heightReference !== HeightReference.NONE;
-  this._removeUpdateHeightCallback = undefined;
-
-  this._enableVerticalExaggeration = options.enableVerticalExaggeration ?? true;
-  this._hasVerticalExaggeration = false;
-
-  this._clampedModelMatrix = undefined; // For use with height reference
-
-  const scene = options.scene;
-  if (defined(scene) && defined(scene.terrainProviderChanged)) {
-    this._terrainProviderChangedCallback =
-      scene.terrainProviderChanged.addEventListener(() => {
-        this._heightDirty = true;
-      });
+  /**
+   * The height reference of the model, which determines how the model is drawn
+   * relative to terrain.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {HeightReference}
+   * @default {HeightReference.NONE}
+   *
+   */
+  get heightReference() {
+    return this._heightReference;
   }
-  this._scene = scene;
 
-  this._distanceDisplayCondition = options.distanceDisplayCondition;
-
-  const pointCloudShading = new PointCloudShading(options.pointCloudShading);
-  this._pointCloudShading = pointCloudShading;
-  this._attenuation = pointCloudShading.attenuation;
-  this._pointCloudBackFaceCulling = pointCloudShading.backFaceCulling;
-
-  // If the given clipping planes don't have an owner, make this model its owner.
-  // Otherwise, the clipping planes are passed down from a tileset.
-  const clippingPlanes = options.clippingPlanes;
-  if (defined(clippingPlanes) && clippingPlanes.owner === undefined) {
-    ClippingPlaneCollection.setOwner(clippingPlanes, this, "_clippingPlanes");
-  } else {
-    this._clippingPlanes = clippingPlanes;
+  /**
+   * The height reference of the model, which determines how the model is drawn
+   * relative to terrain.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {HeightReference}
+   * @default {HeightReference.NONE}
+   *
+   */
+  set heightReference(value) {
+    if (value !== this._heightReference) {
+      this._heightDirty = true;
+    }
+    this._heightReference = value;
   }
-  this._clippingPlanesState = 0; // If this value changes, the shaders need to be regenerated.
-  this._clippingPlanesMatrix = Matrix4.clone(Matrix4.IDENTITY); // Derived from reference matrix and the current view matrix
 
-  // If the given clipping polygons don't have an owner, make this model its owner.
-  // Otherwise, the clipping polygons are passed down from a tileset.
-  const clippingPolygons = options.clippingPolygons;
-  if (defined(clippingPolygons) && clippingPolygons.owner === undefined) {
-    ClippingPolygonCollection.setOwner(
-      clippingPolygons,
-      this,
-      "_clippingPolygons",
-    );
-  } else {
-    this._clippingPolygons = clippingPolygons;
+  /**
+   * Gets or sets the distance display condition, which specifies at what distance
+   * from the camera this model will be displayed.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {DistanceDisplayCondition}
+   *
+   * @default undefined
+   *
+   */
+  get distanceDisplayCondition() {
+    return this._distanceDisplayCondition;
   }
-  this._clippingPolygonsState = 0; // If this value changes, the shaders need to be regenerated.
 
-  this._modelImagery = new ModelImagery(this);
-
-  this._lightColor = Cartesian3.clone(options.lightColor);
-
-  this._imageBasedLighting = defined(options.imageBasedLighting)
-    ? options.imageBasedLighting
-    : new ImageBasedLighting();
-  this._shouldDestroyImageBasedLighting = !defined(options.imageBasedLighting);
-
-  this._environmentMapManager = undefined;
-  const environmentMapManager = new DynamicEnvironmentMapManager(
-    options.environmentMapOptions,
-  );
-  DynamicEnvironmentMapManager.setOwner(
-    environmentMapManager,
-    this,
-    "_environmentMapManager",
-  );
-
-  this._backFaceCulling = options.backFaceCulling ?? true;
-  this._backFaceCullingDirty = false;
-
-  this._shadows = options.shadows ?? ShadowMode.ENABLED;
-  this._shadowsDirty = false;
-
-  this._debugShowBoundingVolumeDirty = false;
-  this._debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
-
-  this._enableDebugWireframe = options.enableDebugWireframe ?? false;
-  this._enableShowOutline = options.enableShowOutline ?? true;
-  this._debugWireframe = options.debugWireframe ?? false;
-
-  // Warning for improper setup of debug wireframe
-  if (
-    this._debugWireframe === true &&
-    this._enableDebugWireframe === false &&
-    this.type === ModelType.GLTF
-  ) {
-    oneTimeWarning(
-      "model-debug-wireframe-ignored",
-      "enableDebugWireframe must be set to true in Model.fromGltf, otherwise debugWireframe will be ignored.",
+  /**
+   * Gets or sets the distance display condition, which specifies at what distance
+   * from the camera this model will be displayed.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {DistanceDisplayCondition}
+   *
+   * @default undefined
+   *
+   */
+  set distanceDisplayCondition(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value.far <= value.near) {
+      throw new DeveloperError("far must be greater than near");
+    }
+    //>>includeEnd('debug');
+    this._distanceDisplayCondition = DistanceDisplayCondition.clone(
+      value,
+      this._distanceDisplayCondition,
     );
   }
 
-  // Credit specified by the user.
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+  /**
+   * The structural metadata from the EXT_structural_metadata extension
+   *
+   * @memberof Model.prototype
+   *
+   * @type {StructuralMetadata}
+   * @readonly
+   *
+   * @private
+   */
+  get structuralMetadata() {
+    return this._sceneGraph.components.structuralMetadata;
   }
 
-  this._credits = [];
-  this._credit = credit;
-
-  // Credits to be added from the Resource (if it is an IonResource)
-  this._resourceCredits = [];
-
-  // Credits parsed from the glTF by GltfLoader.
-  this._gltfCredits = [];
-
-  this._showCreditsOnScreen = options.showCreditsOnScreen ?? false;
-  this._showCreditsOnScreenDirty = true;
-
-  this._splitDirection = options.splitDirection ?? SplitDirection.NONE;
-
-  this._enableShowOutline = options.enableShowOutline ?? true;
+  /**
+   * The ID for the feature table to use for picking and styling in this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @private
+   */
+  get featureTableId() {
+    return this._featureTableId;
+  }
 
   /**
-   * Whether to display the outline for models using the
-   * {@link https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/CESIUM_primitive_outline|CESIUM_primitive_outline} extension.
-   * When true, outlines are displayed. When false, outlines are not displayed.
+   * The ID for the feature table to use for picking and styling in this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @private
+   */
+  set featureTableId(value) {
+    this._featureTableId = value;
+  }
+
+  /**
+   * The feature tables for this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Array}
+   * @readonly
+   *
+   * @private
+   */
+  get featureTables() {
+    return this._featureTables;
+  }
+
+  /**
+   * The feature tables for this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Array}
+   * @readonly
+   *
+   * @private
+   */
+  set featureTables(value) {
+    this._featureTables = value;
+  }
+
+  /**
+   * A user-defined object that is returned when the model is picked.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {object}
+   *
+   * @default undefined
+   *
+   * @see Scene#pick
+   */
+  get id() {
+    return this._id;
+  }
+
+  /**
+   * A user-defined object that is returned when the model is picked.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {object}
+   *
+   * @default undefined
+   *
+   * @see Scene#pick
+   */
+  set id(value) {
+    if (value !== this._id) {
+      this._idDirty = true;
+    }
+
+    this._id = value;
+  }
+
+  /**
+   * When <code>true</code>, each primitive is pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   *
+   * @private
+   */
+  get allowPicking() {
+    return this._allowPicking;
+  }
+
+  /**
+   * The style to apply to the features in the model. Cannot be applied if a {@link CustomShader} is also applied.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Cesium3DTileStyle}
+   */
+  get style() {
+    return this._style;
+  }
+
+  /**
+   * The style to apply to the features in the model. Cannot be applied if a {@link CustomShader} is also applied.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Cesium3DTileStyle}
+   */
+  set style(value) {
+    this._style = value;
+    this._styleDirty = true;
+  }
+
+  /**
+   * The color to blend with the model's rendered color.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Color}
+   *
+   * @default undefined
+   */
+  get color() {
+    return this._color;
+  }
+
+  /**
+   * The color to blend with the model's rendered color.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Color}
+   *
+   * @default undefined
+   */
+  set color(value) {
+    if (isColorAlphaDirty(value, this._color)) {
+      this.resetDrawCommands();
+    }
+    this._color = Color.clone(value, this._color);
+  }
+
+  /**
+   * Defines how the color blends with the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Cesium3DTileColorBlendMode|ColorBlendMode}
+   *
+   * @default ColorBlendMode.HIGHLIGHT
+   */
+  get colorBlendMode() {
+    return this._colorBlendMode;
+  }
+
+  /**
+   * Defines how the color blends with the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Cesium3DTileColorBlendMode|ColorBlendMode}
+   *
+   * @default ColorBlendMode.HIGHLIGHT
+   */
+  set colorBlendMode(value) {
+    this._colorBlendMode = value;
+  }
+
+  /**
+   * Value used to determine the color strength when the <code>colorBlendMode</code> is <code>MIX</code>. A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with any value in-between resulting in a mix of the two.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.5
+   */
+  get colorBlendAmount() {
+    return this._colorBlendAmount;
+  }
+
+  /**
+   * Value used to determine the color strength when the <code>colorBlendMode</code> is <code>MIX</code>. A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with any value in-between resulting in a mix of the two.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.5
+   */
+  set colorBlendAmount(value) {
+    this._colorBlendAmount = value;
+  }
+
+  /**
+   * The silhouette color.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Color}
+   *
+   * @default Color.RED
+   */
+  get silhouetteColor() {
+    return this._silhouetteColor;
+  }
+
+  /**
+   * The silhouette color.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Color}
+   *
+   * @default Color.RED
+   */
+  set silhouetteColor(value) {
+    if (!Color.equals(value, this._silhouetteColor)) {
+      const alphaDirty = isColorAlphaDirty(value, this._silhouetteColor);
+      this._silhouetteDirty = this._silhouetteDirty || alphaDirty;
+    }
+
+    this._silhouetteColor = Color.clone(value, this._silhouetteColor);
+  }
+
+  /**
+   * The size of the silhouette in pixels.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.0
+   */
+  get silhouetteSize() {
+    return this._silhouetteSize;
+  }
+
+  /**
+   * The size of the silhouette in pixels.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.0
+   */
+  set silhouetteSize(value) {
+    if (value !== this._silhouetteSize) {
+      const currentSize = this._silhouetteSize;
+      const sizeDirty =
+        (value > 0.0 && currentSize === 0.0) ||
+        (value === 0.0 && currentSize > 0.0);
+      this._silhouetteDirty = this._silhouetteDirty || sizeDirty;
+
+      // Back-face culling needs to be updated in case the silhouette size
+      // is greater than zero.
+      this._backFaceCullingDirty = this._backFaceCullingDirty || sizeDirty;
+    }
+
+    this._silhouetteSize = value;
+  }
+
+  /**
+   * Gets the model's bounding sphere in world space. This does not take into account
+   * glTF animations, skins, or morph targets. It also does not account for
+   * {@link Model#minimumPixelSize}.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {BoundingSphere}
+   * @readonly
+   */
+  get boundingSphere() {
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._ready) {
+      throw new DeveloperError(
+        "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const modelMatrix = defined(this._clampedModelMatrix)
+      ? this._clampedModelMatrix
+      : this.modelMatrix;
+    updateBoundingSphere(this, modelMatrix);
+
+    return this._boundingSphere;
+  }
+
+  /**
+   * This property is for debugging only; it is not for production use nor is it optimized.
+   * <p>
+   * Draws the bounding sphere for each draw command in the model.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  get debugShowBoundingVolume() {
+    return this._debugShowBoundingVolume;
+  }
+
+  /**
+   * This property is for debugging only; it is not for production use nor is it optimized.
+   * <p>
+   * Draws the bounding sphere for each draw command in the model.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  set debugShowBoundingVolume(value) {
+    if (this._debugShowBoundingVolume !== value) {
+      this._debugShowBoundingVolumeDirty = true;
+    }
+    this._debugShowBoundingVolume = value;
+  }
+
+  /**
+   * This property is for debugging only; it is not for production use nor is it optimized.
+   * <p>
+   * Draws the model in wireframe.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  get debugWireframe() {
+    return this._debugWireframe;
+  }
+
+  /**
+   * This property is for debugging only; it is not for production use nor is it optimized.
+   * <p>
+   * Draws the model in wireframe.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  set debugWireframe(value) {
+    if (this._debugWireframe !== value) {
+      this.resetDrawCommands();
+    }
+    this._debugWireframe = value;
+
+    // Warning for improper setup of debug wireframe
+    if (
+      this._debugWireframe === true &&
+      this._enableDebugWireframe === false &&
+      this.type === ModelType.GLTF
+    ) {
+      oneTimeWarning(
+        "model-debug-wireframe-ignored",
+        "enableDebugWireframe must be set to true in Model.fromGltfAsync, otherwise debugWireframe will be ignored.",
+      );
+    }
+  }
+
+  /**
+   * Whether or not to render the model.
+   *
+   * @memberof Model.prototype
    *
    * @type {boolean}
    *
    * @default true
    */
-  this.showOutline = options.showOutline ?? true;
+  get show() {
+    return this._show;
+  }
 
   /**
-   * The color to use when rendering outlines.
+   * Whether or not to render the model.
    *
-   * @type {Color}
+   * @memberof Model.prototype
    *
-   * @default Color.BLACK
+   * @type {boolean}
+   *
+   * @default true
    */
-  this.outlineColor = options.outlineColor ?? Color.BLACK;
-
-  this._classificationType = options.classificationType;
-
-  this._statistics = new ModelStatistics();
-
-  this._sceneMode = undefined;
-  this._projectTo2D = options.projectTo2D ?? false;
-  this._enablePick = options.enablePick ?? false;
-
-  this._fogRenderable = undefined;
-
-  this._skipLevelOfDetail = false;
-  this._ignoreCommands = options.ignoreCommands ?? false;
-
-  this._errorEvent = new Event();
-  this._readyEvent = new Event();
-  this._texturesReadyEvent = new Event();
-
-  this._sceneGraph = undefined;
-  this._nodesByName = {}; // Stores the nodes by their names in the glTF.
+  set show(value) {
+    this._show = value;
+  }
 
   /**
-   * Used for picking primitives that wrap a model.
+   * Label of the feature ID set to use for picking and styling.
+   * <p>
+   * For EXT_mesh_features, this is the feature ID's label property, or
+   * "featureId_N" (where N is the index in the featureIds array) when not
+   * specified. EXT_feature_metadata did not have a label field, so such
+   * feature ID sets are always labeled "featureId_N" where N is the index in
+   * the list of all feature Ids, where feature ID attributes are listed before
+   * feature ID textures.
+   * </p>
+   * <p>
+   * If featureIdLabel is set to an integer N, it is converted to
+   * the string "featureId_N" automatically. If both per-primitive and
+   * per-instance feature IDs are present, the instance feature IDs take
+   * priority.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get featureIdLabel() {
+    return this._featureIdLabel;
+  }
+
+  /**
+   * Label of the feature ID set to use for picking and styling.
+   * <p>
+   * For EXT_mesh_features, this is the feature ID's label property, or
+   * "featureId_N" (where N is the index in the featureIds array) when not
+   * specified. EXT_feature_metadata did not have a label field, so such
+   * feature ID sets are always labeled "featureId_N" where N is the index in
+   * the list of all feature Ids, where feature ID attributes are listed before
+   * feature ID textures.
+   * </p>
+   * <p>
+   * If featureIdLabel is set to an integer N, it is converted to
+   * the string "featureId_N" automatically. If both per-primitive and
+   * per-instance feature IDs are present, the instance feature IDs take
+   * priority.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set featureIdLabel(value) {
+    // indices get converted into featureId_N
+    if (typeof value === "number") {
+      value = `featureId_${value}`;
+    }
+
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("value", value);
+    //>>includeEnd('debug');
+
+    if (value !== this._featureIdLabel) {
+      this._featureTableIdDirty = true;
+    }
+
+    this._featureIdLabel = value;
+  }
+
+  /**
+   * Label of the instance feature ID set used for picking and styling.
+   * <p>
+   * If instanceFeatureIdLabel is set to an integer N, it is converted to
+   * the string "instanceFeatureId_N" automatically.
+   * If both per-primitive and per-instance feature IDs are present, the
+   * instance feature IDs take priority.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  get instanceFeatureIdLabel() {
+    return this._instanceFeatureIdLabel;
+  }
+
+  /**
+   * Label of the instance feature ID set used for picking and styling.
+   * <p>
+   * If instanceFeatureIdLabel is set to an integer N, it is converted to
+   * the string "instanceFeatureId_N" automatically.
+   * If both per-primitive and per-instance feature IDs are present, the
+   * instance feature IDs take priority.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set instanceFeatureIdLabel(value) {
+    // indices get converted into instanceFeatureId_N
+    if (typeof value === "number") {
+      value = `instanceFeatureId_${value}`;
+    }
+
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("value", value);
+    //>>includeEnd('debug');
+
+    if (value !== this._instanceFeatureIdLabel) {
+      this._featureTableIdDirty = true;
+    }
+
+    this._instanceFeatureIdLabel = value;
+  }
+
+  /**
+   * The {@link ClippingPlaneCollection} used to selectively disable rendering the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ClippingPlaneCollection}
+   */
+  get clippingPlanes() {
+    return this._clippingPlanes;
+  }
+
+  /**
+   * The {@link ClippingPlaneCollection} used to selectively disable rendering the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ClippingPlaneCollection}
+   */
+  set clippingPlanes(value) {
+    if (value !== this._clippingPlanes) {
+      // Handle destroying old clipping planes, new clipping planes ownership
+      ClippingPlaneCollection.setOwner(value, this, "_clippingPlanes");
+      this.resetDrawCommands();
+    }
+  }
+
+  /**
+   * The {@link ClippingPolygonCollection} used to selectively disable rendering the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ClippingPolygonCollection}
+   */
+  get clippingPolygons() {
+    return this._clippingPolygons;
+  }
+
+  /**
+   * The {@link ClippingPolygonCollection} used to selectively disable rendering the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ClippingPolygonCollection}
+   */
+  set clippingPolygons(value) {
+    if (value !== this._clippingPolygons) {
+      // Handle destroying old clipping polygons, new clipping polygons ownership
+      ClippingPolygonCollection.setOwner(value, this, "_clippingPolygons");
+      this.resetDrawCommands();
+    }
+  }
+
+  /**
+   * If <code>true</code>, the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
+   *
+   * @memberof Model.prototype
+   * @type {boolean}
+   * @default true
+   *
+   * @example
+   * // Exaggerate terrain by a factor of 2, but prevent model exaggeration
+   * scene.verticalExaggeration = 2.0;
+   * model.enableVerticalExaggeration = false;
+   */
+  get enableVerticalExaggeration() {
+    return this._enableVerticalExaggeration;
+  }
+
+  /**
+   * If <code>true</code>, the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
+   *
+   * @memberof Model.prototype
+   * @type {boolean}
+   * @default true
+   *
+   * @example
+   * // Exaggerate terrain by a factor of 2, but prevent model exaggeration
+   * scene.verticalExaggeration = 2.0;
+   * model.enableVerticalExaggeration = false;
+   */
+  set enableVerticalExaggeration(value) {
+    if (value !== this._enableVerticalExaggeration) {
+      this.resetDrawCommands();
+    }
+    this._enableVerticalExaggeration = value;
+  }
+
+  /**
+   * If <code>true</code>, the model is vertically exaggerated along the ellipsoid normal.
+   *
+   * @memberof Model.prototype
+   * @type {boolean}
+   * @default true
+   * @readonly
+   * @private
+   */
+  get hasVerticalExaggeration() {
+    return this._hasVerticalExaggeration;
+  }
+
+  /**
+   * If this model is part of a <code>Model3DTileContent</code> of a tileset,
+   * then this will return the <code>ImageryLayerCollection</code>
+   * of that tileset. Otherwise, <code>undefined</code> is returned.
+   *
+   * @memberof Model.prototype
+   * @type {ImageryLayerCollection|undefined}
+   * @readonly
+   * @private
+   */
+  get imageryLayers() {
+    if (defined(this._content)) {
+      const tileset = this._content.tileset;
+      if (defined(tileset)) {
+        return tileset.imageryLayers;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * The directional light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
+   * <p>
+   * Disabling additional light sources by setting
+   * <code>model.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
+   * will make the model much darker. Here, increasing the intensity of the light source will make the model brighter.
+   * </p>
+   * @memberof Model.prototype
+   *
+   * @type {Cartesian3}
+   *
+   * @default undefined
+   */
+  get lightColor() {
+    return this._lightColor;
+  }
+
+  /**
+   * The directional light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
+   * <p>
+   * Disabling additional light sources by setting
+   * <code>model.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
+   * will make the model much darker. Here, increasing the intensity of the light source will make the model brighter.
+   * </p>
+   * @memberof Model.prototype
+   *
+   * @type {Cartesian3}
+   *
+   * @default undefined
+   */
+  set lightColor(value) {
+    if (defined(value) !== defined(this._lightColor)) {
+      this.resetDrawCommands();
+    }
+
+    this._lightColor = Cartesian3.clone(value, this._lightColor);
+  }
+
+  /**
+   * The properties for managing image-based lighting on this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ImageBasedLighting}
+   */
+  get imageBasedLighting() {
+    return this._imageBasedLighting;
+  }
+
+  /**
+   * The properties for managing image-based lighting on this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ImageBasedLighting}
+   */
+  set imageBasedLighting(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("imageBasedLighting", value);
+    //>>includeEnd('debug');
+
+    if (value !== this._imageBasedLighting) {
+      if (
+        this._shouldDestroyImageBasedLighting &&
+        !this._imageBasedLighting.isDestroyed()
+      ) {
+        this._imageBasedLighting.destroy();
+      }
+      this._imageBasedLighting = value;
+      this._shouldDestroyImageBasedLighting = false;
+      this.resetDrawCommands();
+    }
+  }
+
+  /**
+   * The properties for managing dynamic environment maps on this model. Affects lighting.
+   * @memberof Model.prototype
+   * @readonly
+   *
+   * @example
+   * // Change the ground color used for a model's environment map to a forest green
+   * const environmentMapManager = model.environmentMapManager;
+   * environmentMapManager.groundColor = Cesium.Color.fromCssColorString("#203b34");
+   *
+   * @type {DynamicEnvironmentMapManager}
+   */
+  get environmentMapManager() {
+    return this._environmentMapManager;
+  }
+
+  /**
+   * The properties for managing dynamic environment maps on this model. Affects lighting.
+   * @memberof Model.prototype
+   * @readonly
+   *
+   * @example
+   * // Change the ground color used for a model's environment map to a forest green
+   * const environmentMapManager = model.environmentMapManager;
+   * environmentMapManager.groundColor = Cesium.Color.fromCssColorString("#203b34");
+   *
+   * @type {DynamicEnvironmentMapManager}
+   */
+  set environmentMapManager(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("environmentMapManager", value);
+    //>>includeEnd('debug');
+
+    if (value !== this.environmentMapManager) {
+      DynamicEnvironmentMapManager.setOwner(
+        value,
+        this,
+        "_environmentMapManager",
+      );
+      this.resetDrawCommands();
+    }
+  }
+
+  /**
+   * Whether to cull back-facing geometry. When true, back face culling is
+   * determined by the material's doubleSided property; when false, back face
+   * culling is disabled. Back faces are not culled if {@link Model#color}
+   * is translucent or {@link Model#silhouetteSize} is greater than 0.0.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default true
+   */
+  get backFaceCulling() {
+    return this._backFaceCulling;
+  }
+
+  /**
+   * Whether to cull back-facing geometry. When true, back face culling is
+   * determined by the material's doubleSided property; when false, back face
+   * culling is disabled. Back faces are not culled if {@link Model#color}
+   * is translucent or {@link Model#silhouetteSize} is greater than 0.0.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default true
+   */
+  set backFaceCulling(value) {
+    if (value !== this._backFaceCulling) {
+      this._backFaceCullingDirty = true;
+    }
+
+    this._backFaceCulling = value;
+  }
+
+  /**
+   * A uniform scale applied to this model before the {@link Model#modelMatrix}.
+   * Values greater than <code>1.0</code> increase the size of the model; values
+   * less than <code>1.0</code> decrease.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 1.0
+   */
+  get scale() {
+    return this._scale;
+  }
+
+  /**
+   * A uniform scale applied to this model before the {@link Model#modelMatrix}.
+   * Values greater than <code>1.0</code> increase the size of the model; values
+   * less than <code>1.0</code> decrease.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 1.0
+   */
+  set scale(value) {
+    if (value !== this._scale) {
+      this._updateModelMatrix = true;
+    }
+    this._scale = value;
+  }
+
+  /**
+   * The true scale of the model after being affected by the model's scale,
+   * minimum pixel size, and maximum scale parameters.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   * @readonly
    *
    * @private
    */
-  this.pickObject = options.pickObject;
+  get computedScale() {
+    return this._computedScale;
+  }
+
+  /**
+   * The approximate minimum pixel size of the model regardless of zoom.
+   * This can be used to ensure that a model is visible even when the viewer
+   * zooms out.  When <code>0.0</code>, no minimum size is enforced.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.0
+   */
+  get minimumPixelSize() {
+    return this._minimumPixelSize;
+  }
+
+  /**
+   * The approximate minimum pixel size of the model regardless of zoom.
+   * This can be used to ensure that a model is visible even when the viewer
+   * zooms out.  When <code>0.0</code>, no minimum size is enforced.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   *
+   * @default 0.0
+   */
+  set minimumPixelSize(value) {
+    if (value !== this._minimumPixelSize) {
+      this._updateModelMatrix = true;
+    }
+    this._minimumPixelSize = value;
+  }
+
+  /**
+   * The maximum scale size for a model. This can be used to give
+   * an upper limit to the {@link Model#minimumPixelSize}, ensuring that the model
+   * is never an unreasonable scale.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   */
+  get maximumScale() {
+    return this._maximumScale;
+  }
+
+  /**
+   * The maximum scale size for a model. This can be used to give
+   * an upper limit to the {@link Model#minimumPixelSize}, ensuring that the model
+   * is never an unreasonable scale.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {number}
+   */
+  set maximumScale(value) {
+    if (value !== this._maximumScale) {
+      this._updateModelMatrix = true;
+    }
+    this._maximumScale = value;
+  }
+
+  /**
+   * Determines whether the model casts or receives shadows from light sources.
+
+   * @memberof Model.prototype
+   *
+   * @type {ShadowMode}
+   *
+   * @default ShadowMode.ENABLED
+   */
+  get shadows() {
+    return this._shadows;
+  }
+
+  /**
+   * Determines whether the model casts or receives shadows from light sources.
+
+   * @memberof Model.prototype
+   *
+   * @type {ShadowMode}
+   *
+   * @default ShadowMode.ENABLED
+   */
+  set shadows(value) {
+    if (value !== this._shadows) {
+      this._shadowsDirty = true;
+    }
+
+    this._shadows = value;
+  }
+
+  /**
+   * Gets the credit that will be displayed for the model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {Credit}
+   * @readonly
+   */
+  get credit() {
+    return this._credit;
+  }
+
+  /**
+   * Gets or sets whether the credits of the model will be displayed
+   * on the screen.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  get showCreditsOnScreen() {
+    return this._showCreditsOnScreen;
+  }
+
+  /**
+   * Gets or sets whether the credits of the model will be displayed
+   * on the screen.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {boolean}
+   *
+   * @default false
+   */
+  set showCreditsOnScreen(value) {
+    if (this._showCreditsOnScreen !== value) {
+      this._showCreditsOnScreenDirty = true;
+    }
+
+    this._showCreditsOnScreen = value;
+  }
+
+  /**
+   * The {@link SplitDirection} to apply to this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {SplitDirection}
+   *
+   * @default {@link SplitDirection.NONE}
+   */
+  get splitDirection() {
+    return this._splitDirection;
+  }
+
+  /**
+   * The {@link SplitDirection} to apply to this model.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {SplitDirection}
+   *
+   * @default {@link SplitDirection.NONE}
+   */
+  set splitDirection(value) {
+    if (this._splitDirection !== value) {
+      this.resetDrawCommands();
+    }
+    this._splitDirection = value;
+  }
+
+  /**
+   * Gets the model's classification type. This determines whether terrain,
+   * 3D Tiles, or both will be classified by this model.
+   * <p>
+   * Additionally, there are a few requirements/limitations:
+   * <ul>
+   *     <li>The glTF cannot contain morph targets, skins, or animations.</li>
+   *     <li>The glTF cannot contain the <code>EXT_mesh_gpu_instancing</code> extension.</li>
+   *     <li>Only meshes with TRIANGLES can be used to classify other assets.</li>
+   *     <li>The meshes must be watertight.</li>
+   *     <li>The POSITION attribute is required.</li>
+   *     <li>If feature IDs and an index buffer are both present, all indices with the same feature id must occupy contiguous sections of the index buffer.</li>
+   *     <li>If feature IDs are present without an index buffer, all positions with the same feature id must occupy contiguous sections of the position buffer.</li>
+   * </ul>
+   * </p>
+   * <p>
+   * The 3D Tiles or terrain receiving the classification must be opaque.
+   * </p>
+   *
+   * @memberof Model.prototype
+   *
+   * @type {ClassificationType}
+   * @default undefined
+   *
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   * @readonly
+   */
+  get classificationType() {
+    return this._classificationType;
+  }
+
+  /**
+   * Reference to the pick IDs. This is only used internally, e.g. for
+   * per-feature post-processing in {@link PostProcessStage}.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {PickId[]}
+   * @readonly
+   *
+   * @private
+   */
+  get pickIds() {
+    return this._pickIds;
+  }
+
+  /**
+   * The {@link StyleCommandsNeeded} for the style currently applied to
+   * the features in the model. This is used internally by the {@link ModelDrawCommand}
+   * when determining which commands to submit in an update.
+   *
+   * @memberof Model.prototype
+   *
+   * @type {StyleCommandsNeeded}
+   * @readonly
+   *
+   * @private
+   */
+  get styleCommandsNeeded() {
+    return this._styleCommandsNeeded;
+  }
 }
 
 function handleError(model, error) {
@@ -601,1434 +2584,9 @@ function isColorAlphaDirty(currentColor, previousColor) {
   );
 }
 
-Object.defineProperties(Model.prototype, {
-  /**
-   * When <code>true</code>, this model is ready to render, i.e., the external binary, image,
-   * and shader files were downloaded and the WebGL resources were created.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   *
-   * @default false
-   */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
-
-  /**
-   * Gets an event that is raised when the model encounters an asynchronous rendering error.  By subscribing
-   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
-   * are passed an instance of {@link ModelError}.
-   * @memberof Model.prototype
-   * @type {Event}
-   * @readonly
-   */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
-
-  /**
-   * Gets an event that is raised when the model is loaded and ready for rendering, i.e. when the external resources
-   * have been downloaded and the WebGL resources are created. Event listeners
-   * are passed an instance of the {@link Model}.
-   *
-   * <p>
-   * If {@link Model.incrementallyLoadTextures} is true, this event will be raised before all textures are loaded and ready for rendering. Subscribe to {@link Model.texturesReadyEvent} to be notified when the textures are ready.
-   * </p>
-   *
-   * @memberof Model.prototype
-   * @type {Event}
-   * @readonly
-   */
-  readyEvent: {
-    get: function () {
-      return this._readyEvent;
-    },
-  },
-
-  /**
-   * Returns true if textures are loaded separately from the other glTF resources.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   * @private
-   */
-  incrementallyLoadTextures: {
-    get: function () {
-      return this._loader.incrementallyLoadTextures ?? false;
-    },
-  },
-
-  /**
-   * Gets an event that, if {@link Model.incrementallyLoadTextures} is true, is raised when the model textures are loaded and ready for rendering, i.e. when the external resources
-   * have been downloaded and the WebGL resources are created. Event listeners
-   * are passed an instance of the {@link Model}.
-   *
-   * @memberof Model.prototype
-   * @type {Event}
-   * @readonly
-   */
-  texturesReadyEvent: {
-    get: function () {
-      return this._texturesReadyEvent;
-    },
-  },
-
-  /**
-   * @private
-   */
-  loader: {
-    get: function () {
-      return this._loader;
-    },
-  },
-
-  /**
-   * Get the estimated memory usage statistics for this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ModelStatistics}
-   * @readonly
-   *
-   * @private
-   */
-  statistics: {
-    get: function () {
-      return this._statistics;
-    },
-  },
-
-  /**
-   * The currently playing glTF animations.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ModelAnimationCollection}
-   * @readonly
-   */
-  activeAnimations: {
-    get: function () {
-      return this._activeAnimations;
-    },
-  },
-
-  /**
-   * Determines if the model's animations should hold a pose over frames where no keyframes are specified.
-   *
-   * @memberof Model.prototype
-   * @type {boolean}
-   *
-   * @default true
-   */
-  clampAnimations: {
-    get: function () {
-      return this._clampAnimations;
-    },
-    set: function (value) {
-      this._clampAnimations = value;
-    },
-  },
-
-  /**
-   * Whether or not to cull the model using frustum/horizon culling. If the model is part of a 3D Tiles tileset, this property
-   * will always be false, since the 3D Tiles culling system is used.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   *
-   * @private
-   */
-  cull: {
-    get: function () {
-      return this._cull;
-    },
-  },
-
-  /**
-   * The pass to use in the {@link DrawCommand} for the opaque portions of the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Pass}
-   * @readonly
-   *
-   * @private
-   */
-  opaquePass: {
-    get: function () {
-      return this._opaquePass;
-    },
-  },
-
-  /**
-   * Point cloud shading settings for controlling point cloud attenuation
-   * and lighting. For 3D Tiles, this is inherited from the
-   * {@link Cesium3DTileset}.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {PointCloudShading}
-   */
-  pointCloudShading: {
-    get: function () {
-      return this._pointCloudShading;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("pointCloudShading", value);
-      //>>includeEnd('debug');
-      if (value !== this._pointCloudShading) {
-        this.resetDrawCommands();
-      }
-      this._pointCloudShading = value;
-    },
-  },
-
-  /**
-   * The model's custom shader, if it exists. Using custom shaders with a {@link Cesium3DTileStyle}
-   * may lead to undefined behavior.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {CustomShader}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  customShader: {
-    get: function () {
-      return this._customShader;
-    },
-    set: function (value) {
-      if (value !== this._customShader) {
-        this.resetDrawCommands();
-      }
-      this._customShader = value;
-    },
-  },
-
-  /**
-   * The scene graph of this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ModelSceneGraph}
-   * @private
-   */
-  sceneGraph: {
-    get: function () {
-      return this._sceneGraph;
-    },
-  },
-
-  /**
-   * The tile content this model belongs to, if it is loaded as part of a {@link Cesium3DTileset}.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Cesium3DTileContent}
-   * @readonly
-   *
-   * @private
-   */
-  content: {
-    get: function () {
-      return this._content;
-    },
-  },
-
-  /**
-   * The height reference of the model, which determines how the model is drawn
-   * relative to terrain.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {HeightReference}
-   * @default {HeightReference.NONE}
-   *
-   */
-  heightReference: {
-    get: function () {
-      return this._heightReference;
-    },
-    set: function (value) {
-      if (value !== this._heightReference) {
-        this._heightDirty = true;
-      }
-      this._heightReference = value;
-    },
-  },
-
-  /**
-   * Gets or sets the distance display condition, which specifies at what distance
-   * from the camera this model will be displayed.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {DistanceDisplayCondition}
-   *
-   * @default undefined
-   *
-   */
-  distanceDisplayCondition: {
-    get: function () {
-      return this._distanceDisplayCondition;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value.far <= value.near) {
-        throw new DeveloperError("far must be greater than near");
-      }
-      //>>includeEnd('debug');
-      this._distanceDisplayCondition = DistanceDisplayCondition.clone(
-        value,
-        this._distanceDisplayCondition,
-      );
-    },
-  },
-
-  /**
-   * The structural metadata from the EXT_structural_metadata extension
-   *
-   * @memberof Model.prototype
-   *
-   * @type {StructuralMetadata}
-   * @readonly
-   *
-   * @private
-   */
-  structuralMetadata: {
-    get: function () {
-      return this._sceneGraph.components.structuralMetadata;
-    },
-  },
-
-  /**
-   * The ID for the feature table to use for picking and styling in this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @private
-   */
-  featureTableId: {
-    get: function () {
-      return this._featureTableId;
-    },
-    set: function (value) {
-      this._featureTableId = value;
-    },
-  },
-
-  /**
-   * The feature tables for this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Array}
-   * @readonly
-   *
-   * @private
-   */
-  featureTables: {
-    get: function () {
-      return this._featureTables;
-    },
-    set: function (value) {
-      this._featureTables = value;
-    },
-  },
-
-  /**
-   * A user-defined object that is returned when the model is picked.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {object}
-   *
-   * @default undefined
-   *
-   * @see Scene#pick
-   */
-  id: {
-    get: function () {
-      return this._id;
-    },
-    set: function (value) {
-      if (value !== this._id) {
-        this._idDirty = true;
-      }
-
-      this._id = value;
-    },
-  },
-
-  /**
-   * When <code>true</code>, each primitive is pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   *
-   * @private
-   */
-  allowPicking: {
-    get: function () {
-      return this._allowPicking;
-    },
-  },
-
-  /**
-   * The style to apply to the features in the model. Cannot be applied if a {@link CustomShader} is also applied.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Cesium3DTileStyle}
-   */
-  style: {
-    get: function () {
-      return this._style;
-    },
-    set: function (value) {
-      this._style = value;
-      this._styleDirty = true;
-    },
-  },
-
-  /**
-   * The color to blend with the model's rendered color.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Color}
-   *
-   * @default undefined
-   */
-  color: {
-    get: function () {
-      return this._color;
-    },
-    set: function (value) {
-      if (isColorAlphaDirty(value, this._color)) {
-        this.resetDrawCommands();
-      }
-      this._color = Color.clone(value, this._color);
-    },
-  },
-
-  /**
-   * Defines how the color blends with the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Cesium3DTileColorBlendMode|ColorBlendMode}
-   *
-   * @default ColorBlendMode.HIGHLIGHT
-   */
-  colorBlendMode: {
-    get: function () {
-      return this._colorBlendMode;
-    },
-    set: function (value) {
-      this._colorBlendMode = value;
-    },
-  },
-
-  /**
-   * Value used to determine the color strength when the <code>colorBlendMode</code> is <code>MIX</code>. A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with any value in-between resulting in a mix of the two.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.5
-   */
-  colorBlendAmount: {
-    get: function () {
-      return this._colorBlendAmount;
-    },
-    set: function (value) {
-      this._colorBlendAmount = value;
-    },
-  },
-
-  /**
-   * The silhouette color.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Color}
-   *
-   * @default Color.RED
-   */
-  silhouetteColor: {
-    get: function () {
-      return this._silhouetteColor;
-    },
-    set: function (value) {
-      if (!Color.equals(value, this._silhouetteColor)) {
-        const alphaDirty = isColorAlphaDirty(value, this._silhouetteColor);
-        this._silhouetteDirty = this._silhouetteDirty || alphaDirty;
-      }
-
-      this._silhouetteColor = Color.clone(value, this._silhouetteColor);
-    },
-  },
-
-  /**
-   * The size of the silhouette in pixels.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.0
-   */
-  silhouetteSize: {
-    get: function () {
-      return this._silhouetteSize;
-    },
-    set: function (value) {
-      if (value !== this._silhouetteSize) {
-        const currentSize = this._silhouetteSize;
-        const sizeDirty =
-          (value > 0.0 && currentSize === 0.0) ||
-          (value === 0.0 && currentSize > 0.0);
-        this._silhouetteDirty = this._silhouetteDirty || sizeDirty;
-
-        // Back-face culling needs to be updated in case the silhouette size
-        // is greater than zero.
-        this._backFaceCullingDirty = this._backFaceCullingDirty || sizeDirty;
-      }
-
-      this._silhouetteSize = value;
-    },
-  },
-
-  /**
-   * Gets the model's bounding sphere in world space. This does not take into account
-   * glTF animations, skins, or morph targets. It also does not account for
-   * {@link Model#minimumPixelSize}.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {BoundingSphere}
-   * @readonly
-   */
-  boundingSphere: {
-    get: function () {
-      //>>includeStart('debug', pragmas.debug);
-      if (!this._ready) {
-        throw new DeveloperError(
-          "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
-        );
-      }
-      //>>includeEnd('debug');
-
-      const modelMatrix = defined(this._clampedModelMatrix)
-        ? this._clampedModelMatrix
-        : this.modelMatrix;
-      updateBoundingSphere(this, modelMatrix);
-
-      return this._boundingSphere;
-    },
-  },
-
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the model.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  debugShowBoundingVolume: {
-    get: function () {
-      return this._debugShowBoundingVolume;
-    },
-    set: function (value) {
-      if (this._debugShowBoundingVolume !== value) {
-        this._debugShowBoundingVolumeDirty = true;
-      }
-      this._debugShowBoundingVolume = value;
-    },
-  },
-
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the model in wireframe.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  debugWireframe: {
-    get: function () {
-      return this._debugWireframe;
-    },
-    set: function (value) {
-      if (this._debugWireframe !== value) {
-        this.resetDrawCommands();
-      }
-      this._debugWireframe = value;
-
-      // Warning for improper setup of debug wireframe
-      if (
-        this._debugWireframe === true &&
-        this._enableDebugWireframe === false &&
-        this.type === ModelType.GLTF
-      ) {
-        oneTimeWarning(
-          "model-debug-wireframe-ignored",
-          "enableDebugWireframe must be set to true in Model.fromGltfAsync, otherwise debugWireframe will be ignored.",
-        );
-      }
-    },
-  },
-
-  /**
-   * Whether or not to render the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  show: {
-    get: function () {
-      return this._show;
-    },
-    set: function (value) {
-      this._show = value;
-    },
-  },
-
-  /**
-   * Label of the feature ID set to use for picking and styling.
-   * <p>
-   * For EXT_mesh_features, this is the feature ID's label property, or
-   * "featureId_N" (where N is the index in the featureIds array) when not
-   * specified. EXT_feature_metadata did not have a label field, so such
-   * feature ID sets are always labeled "featureId_N" where N is the index in
-   * the list of all feature Ids, where feature ID attributes are listed before
-   * feature ID textures.
-   * </p>
-   * <p>
-   * If featureIdLabel is set to an integer N, it is converted to
-   * the string "featureId_N" automatically. If both per-primitive and
-   * per-instance feature IDs are present, the instance feature IDs take
-   * priority.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {string}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  featureIdLabel: {
-    get: function () {
-      return this._featureIdLabel;
-    },
-    set: function (value) {
-      // indices get converted into featureId_N
-      if (typeof value === "number") {
-        value = `featureId_${value}`;
-      }
-
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.string("value", value);
-      //>>includeEnd('debug');
-
-      if (value !== this._featureIdLabel) {
-        this._featureTableIdDirty = true;
-      }
-
-      this._featureIdLabel = value;
-    },
-  },
-
-  /**
-   * Label of the instance feature ID set used for picking and styling.
-   * <p>
-   * If instanceFeatureIdLabel is set to an integer N, it is converted to
-   * the string "instanceFeatureId_N" automatically.
-   * If both per-primitive and per-instance feature IDs are present, the
-   * instance feature IDs take priority.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {string}
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   */
-  instanceFeatureIdLabel: {
-    get: function () {
-      return this._instanceFeatureIdLabel;
-    },
-    set: function (value) {
-      // indices get converted into instanceFeatureId_N
-      if (typeof value === "number") {
-        value = `instanceFeatureId_${value}`;
-      }
-
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.string("value", value);
-      //>>includeEnd('debug');
-
-      if (value !== this._instanceFeatureIdLabel) {
-        this._featureTableIdDirty = true;
-      }
-
-      this._instanceFeatureIdLabel = value;
-    },
-  },
-
-  /**
-   * The {@link ClippingPlaneCollection} used to selectively disable rendering the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ClippingPlaneCollection}
-   */
-  clippingPlanes: {
-    get: function () {
-      return this._clippingPlanes;
-    },
-    set: function (value) {
-      if (value !== this._clippingPlanes) {
-        // Handle destroying old clipping planes, new clipping planes ownership
-        ClippingPlaneCollection.setOwner(value, this, "_clippingPlanes");
-        this.resetDrawCommands();
-      }
-    },
-  },
-
-  /**
-   * The {@link ClippingPolygonCollection} used to selectively disable rendering the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ClippingPolygonCollection}
-   */
-  clippingPolygons: {
-    get: function () {
-      return this._clippingPolygons;
-    },
-    set: function (value) {
-      if (value !== this._clippingPolygons) {
-        // Handle destroying old clipping polygons, new clipping polygons ownership
-        ClippingPolygonCollection.setOwner(value, this, "_clippingPolygons");
-        this.resetDrawCommands();
-      }
-    },
-  },
-
-  /**
-   * If <code>true</code>, the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
-   *
-   * @memberof Model.prototype
-   * @type {boolean}
-   * @default true
-   *
-   * @example
-   * // Exaggerate terrain by a factor of 2, but prevent model exaggeration
-   * scene.verticalExaggeration = 2.0;
-   * model.enableVerticalExaggeration = false;
-   */
-  enableVerticalExaggeration: {
-    get: function () {
-      return this._enableVerticalExaggeration;
-    },
-    set: function (value) {
-      if (value !== this._enableVerticalExaggeration) {
-        this.resetDrawCommands();
-      }
-      this._enableVerticalExaggeration = value;
-    },
-  },
-
-  /**
-   * If <code>true</code>, the model is vertically exaggerated along the ellipsoid normal.
-   *
-   * @memberof Model.prototype
-   * @type {boolean}
-   * @default true
-   * @readonly
-   * @private
-   */
-  hasVerticalExaggeration: {
-    get: function () {
-      return this._hasVerticalExaggeration;
-    },
-  },
-
-  /**
-   * If this model is part of a <code>Model3DTileContent</code> of a tileset,
-   * then this will return the <code>ImageryLayerCollection</code>
-   * of that tileset. Otherwise, <code>undefined</code> is returned.
-   *
-   * @memberof Model.prototype
-   * @type {ImageryLayerCollection|undefined}
-   * @readonly
-   * @private
-   */
-  imageryLayers: {
-    get: function () {
-      if (defined(this._content)) {
-        const tileset = this._content.tileset;
-        if (defined(tileset)) {
-          return tileset.imageryLayers;
-        }
-      }
-      return undefined;
-    },
-  },
-
-  /**
-   * The directional light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
-   * <p>
-   * Disabling additional light sources by setting
-   * <code>model.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
-   * will make the model much darker. Here, increasing the intensity of the light source will make the model brighter.
-   * </p>
-   * @memberof Model.prototype
-   *
-   * @type {Cartesian3}
-   *
-   * @default undefined
-   */
-  lightColor: {
-    get: function () {
-      return this._lightColor;
-    },
-    set: function (value) {
-      if (defined(value) !== defined(this._lightColor)) {
-        this.resetDrawCommands();
-      }
-
-      this._lightColor = Cartesian3.clone(value, this._lightColor);
-    },
-  },
-
-  /**
-   * The properties for managing image-based lighting on this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ImageBasedLighting}
-   */
-  imageBasedLighting: {
-    get: function () {
-      return this._imageBasedLighting;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("imageBasedLighting", value);
-      //>>includeEnd('debug');
-
-      if (value !== this._imageBasedLighting) {
-        if (
-          this._shouldDestroyImageBasedLighting &&
-          !this._imageBasedLighting.isDestroyed()
-        ) {
-          this._imageBasedLighting.destroy();
-        }
-        this._imageBasedLighting = value;
-        this._shouldDestroyImageBasedLighting = false;
-        this.resetDrawCommands();
-      }
-    },
-  },
-
-  /**
-   * The properties for managing dynamic environment maps on this model. Affects lighting.
-   * @memberof Model.prototype
-   * @readonly
-   *
-   * @example
-   * // Change the ground color used for a model's environment map to a forest green
-   * const environmentMapManager = model.environmentMapManager;
-   * environmentMapManager.groundColor = Cesium.Color.fromCssColorString("#203b34");
-   *
-   * @type {DynamicEnvironmentMapManager}
-   */
-  environmentMapManager: {
-    get: function () {
-      return this._environmentMapManager;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("environmentMapManager", value);
-      //>>includeEnd('debug');
-
-      if (value !== this.environmentMapManager) {
-        DynamicEnvironmentMapManager.setOwner(
-          value,
-          this,
-          "_environmentMapManager",
-        );
-        this.resetDrawCommands();
-      }
-    },
-  },
-
-  /**
-   * Whether to cull back-facing geometry. When true, back face culling is
-   * determined by the material's doubleSided property; when false, back face
-   * culling is disabled. Back faces are not culled if {@link Model#color}
-   * is translucent or {@link Model#silhouetteSize} is greater than 0.0.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  backFaceCulling: {
-    get: function () {
-      return this._backFaceCulling;
-    },
-    set: function (value) {
-      if (value !== this._backFaceCulling) {
-        this._backFaceCullingDirty = true;
-      }
-
-      this._backFaceCulling = value;
-    },
-  },
-
-  /**
-   * A uniform scale applied to this model before the {@link Model#modelMatrix}.
-   * Values greater than <code>1.0</code> increase the size of the model; values
-   * less than <code>1.0</code> decrease.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 1.0
-   */
-  scale: {
-    get: function () {
-      return this._scale;
-    },
-    set: function (value) {
-      if (value !== this._scale) {
-        this._updateModelMatrix = true;
-      }
-      this._scale = value;
-    },
-  },
-
-  /**
-   * The true scale of the model after being affected by the model's scale,
-   * minimum pixel size, and maximum scale parameters.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   * @readonly
-   *
-   * @private
-   */
-  computedScale: {
-    get: function () {
-      return this._computedScale;
-    },
-  },
-
-  /**
-   * The approximate minimum pixel size of the model regardless of zoom.
-   * This can be used to ensure that a model is visible even when the viewer
-   * zooms out.  When <code>0.0</code>, no minimum size is enforced.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   *
-   * @default 0.0
-   */
-  minimumPixelSize: {
-    get: function () {
-      return this._minimumPixelSize;
-    },
-    set: function (value) {
-      if (value !== this._minimumPixelSize) {
-        this._updateModelMatrix = true;
-      }
-      this._minimumPixelSize = value;
-    },
-  },
-
-  /**
-   * The maximum scale size for a model. This can be used to give
-   * an upper limit to the {@link Model#minimumPixelSize}, ensuring that the model
-   * is never an unreasonable scale.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {number}
-   */
-  maximumScale: {
-    get: function () {
-      return this._maximumScale;
-    },
-    set: function (value) {
-      if (value !== this._maximumScale) {
-        this._updateModelMatrix = true;
-      }
-      this._maximumScale = value;
-    },
-  },
-
-  /**
-   * Determines whether the model casts or receives shadows from light sources.
-
-   * @memberof Model.prototype
-   *
-   * @type {ShadowMode}
-   *
-   * @default ShadowMode.ENABLED
-   */
-  shadows: {
-    get: function () {
-      return this._shadows;
-    },
-    set: function (value) {
-      if (value !== this._shadows) {
-        this._shadowsDirty = true;
-      }
-
-      this._shadows = value;
-    },
-  },
-
-  /**
-   * Gets the credit that will be displayed for the model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {Credit}
-   * @readonly
-   */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
-
-  /**
-   * Gets or sets whether the credits of the model will be displayed
-   * on the screen.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  showCreditsOnScreen: {
-    get: function () {
-      return this._showCreditsOnScreen;
-    },
-    set: function (value) {
-      if (this._showCreditsOnScreen !== value) {
-        this._showCreditsOnScreenDirty = true;
-      }
-
-      this._showCreditsOnScreen = value;
-    },
-  },
-
-  /**
-   * The {@link SplitDirection} to apply to this model.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {SplitDirection}
-   *
-   * @default {@link SplitDirection.NONE}
-   */
-  splitDirection: {
-    get: function () {
-      return this._splitDirection;
-    },
-    set: function (value) {
-      if (this._splitDirection !== value) {
-        this.resetDrawCommands();
-      }
-      this._splitDirection = value;
-    },
-  },
-
-  /**
-   * Gets the model's classification type. This determines whether terrain,
-   * 3D Tiles, or both will be classified by this model.
-   * <p>
-   * Additionally, there are a few requirements/limitations:
-   * <ul>
-   *     <li>The glTF cannot contain morph targets, skins, or animations.</li>
-   *     <li>The glTF cannot contain the <code>EXT_mesh_gpu_instancing</code> extension.</li>
-   *     <li>Only meshes with TRIANGLES can be used to classify other assets.</li>
-   *     <li>The meshes must be watertight.</li>
-   *     <li>The POSITION attribute is required.</li>
-   *     <li>If feature IDs and an index buffer are both present, all indices with the same feature id must occupy contiguous sections of the index buffer.</li>
-   *     <li>If feature IDs are present without an index buffer, all positions with the same feature id must occupy contiguous sections of the position buffer.</li>
-   * </ul>
-   * </p>
-   * <p>
-   * The 3D Tiles or terrain receiving the classification must be opaque.
-   * </p>
-   *
-   * @memberof Model.prototype
-   *
-   * @type {ClassificationType}
-   * @default undefined
-   *
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   * @readonly
-   */
-  classificationType: {
-    get: function () {
-      return this._classificationType;
-    },
-  },
-
-  /**
-   * Reference to the pick IDs. This is only used internally, e.g. for
-   * per-feature post-processing in {@link PostProcessStage}.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {PickId[]}
-   * @readonly
-   *
-   * @private
-   */
-  pickIds: {
-    get: function () {
-      return this._pickIds;
-    },
-  },
-
-  /**
-   * The {@link StyleCommandsNeeded} for the style currently applied to
-   * the features in the model. This is used internally by the {@link ModelDrawCommand}
-   * when determining which commands to submit in an update.
-   *
-   * @memberof Model.prototype
-   *
-   * @type {StyleCommandsNeeded}
-   * @readonly
-   *
-   * @private
-   */
-  styleCommandsNeeded: {
-    get: function () {
-      return this._styleCommandsNeeded;
-    },
-  },
-});
-
-/**
- * Returns the node with the given <code>name</code> in the glTF. This is used to
- * modify a node's transform for user-defined animation.
- *
- * @param {string} name The name of the node in the glTF.
- * @returns {ModelNode} The node, or <code>undefined</code> if no node with the <code>name</code> exists.
- *
- * @exception {DeveloperError} The model is not loaded.  Use Model.readyEvent or wait for Model.ready to be true.
- *
- * @example
- * // Apply non-uniform scale to node "Hand"
- * const node = model.getNode("Hand");
- * node.matrix = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(5.0, 1.0, 1.0), node.matrix);
- */
-Model.prototype.getNode = function (name) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!this._ready) {
-    throw new DeveloperError(
-      "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
-    );
-  }
-  Check.typeOf.string("name", name);
-  //>>includeEnd('debug');
-
-  return this._nodesByName[name];
-};
-
-/**
- * Sets the current value of an articulation stage.  After setting one or
- * multiple stage values, call Model.applyArticulations() to
- * cause the node matrices to be recalculated.
- *
- * @param {string} articulationStageKey The name of the articulation, a space, and the name of the stage.
- * @param {number} value The numeric value of this stage of the articulation.
- *
- * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
- *
- * @see Model#applyArticulations
- *
- * @example
- * // Sets the value of the stage named "MoveX" belonging to the articulation named "SampleArticulation"
- * model.setArticulationStage("SampleArticulation MoveX", 50.0);
- */
-Model.prototype.setArticulationStage = function (articulationStageKey, value) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("value", value);
-  if (!this._ready) {
-    throw new DeveloperError(
-      "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  this._sceneGraph.setArticulationStage(articulationStageKey, value);
-};
-
-/**
- * Applies any modified articulation stages to the matrix of each node that
- * participates in any articulation. Note that this will overwrite any node
- * transformations on participating nodes.
- *
- * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
- */
-Model.prototype.applyArticulations = function () {
-  //>>includeStart('debug', pragmas.debug);
-  if (!this._ready) {
-    throw new DeveloperError(
-      "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  this._sceneGraph.applyArticulations();
-};
-
-/**
- * Returns the object that was created for the given extension.
- *
- * The given name may be the name of a glTF extension, like `"EXT_example_extension"`.
- * If the specified extension was present in the root of the underlying glTF asset,
- * and a loader for the specified extension has processed the extension data, then
- * this will return the model representation of the extension.
- *
- * @param {string} extensionName The name of the extension
- * @returns {object|undefined} The object, or `undefined`
- * @exception {DeveloperError} The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.
- *
- * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
- */
-Model.prototype.getExtension = function (extensionName) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("extensionName", extensionName);
-  if (!this._ready) {
-    throw new DeveloperError(
-      "The model is not loaded. Use Model.readyEvent or wait for Model.ready to be true.",
-    );
-  }
-  //>>includeEnd('debug');
-  const components = this._loader.components;
-  return components.extensions[extensionName];
-};
-
-/**
- * Marks the model's {@link Model#style} as dirty, which forces all features
- * to re-evaluate the style in the next frame the model is visible.
- */
-Model.prototype.makeStyleDirty = function () {
-  this._styleDirty = true;
-};
-
-/**
- * Resets the draw commands for this model.
- *
- * @private
- */
-Model.prototype.resetDrawCommands = function () {
-  this._drawCommandsBuilt = false;
-};
-
 const scratchIBLReferenceFrameMatrix4 = new Matrix4();
 const scratchIBLReferenceFrameMatrix3 = new Matrix3();
 const scratchClippingPlanesMatrix = new Matrix4();
-
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {RuntimeError} Failed to load external reference.
- */
-Model.prototype.update = function (frameState) {
-  let finishedProcessing = false;
-  try {
-    // Keep processing the model every frame until the main resources
-    // (buffer views) and textures (which may be loaded asynchronously)
-    // are processed.
-    finishedProcessing = processLoader(this, frameState);
-  } catch (error) {
-    if (
-      !this._loader.incrementallyLoadTextures &&
-      error.name === "TextureError"
-    ) {
-      handleError(this, error);
-    } else {
-      const runtimeError = ModelUtility.getError(
-        "model",
-        this._resource,
-        error,
-      );
-      handleError(this, runtimeError);
-    }
-  }
-
-  // A custom shader may have to load texture uniforms.
-  updateCustomShader(this, frameState);
-
-  // Environment maps, specular maps, and spherical harmonics may need to be updated or regenerated
-  updateEnvironmentMap(this, frameState);
-
-  // The image-based lighting may have to load texture uniforms
-  // for specular maps.
-  updateImageBasedLighting(this, frameState);
-
-  if (!this._resourcesLoaded && finishedProcessing) {
-    this._resourcesLoaded = true;
-
-    const components = this._loader.components;
-    if (!defined(components)) {
-      if (this._loader.isUnloaded()) {
-        return;
-      }
-
-      const error = ModelUtility.getError(
-        "model",
-        this._resource,
-        new RuntimeError("Failed to load model."),
-      );
-      handleError(error);
-      this._rejectLoad = this._rejectLoad && this._rejectLoad(error);
-    }
-
-    const structuralMetadata = components.structuralMetadata;
-    if (
-      defined(structuralMetadata) &&
-      structuralMetadata.propertyTableCount > 0
-    ) {
-      createModelFeatureTables(this, structuralMetadata);
-    }
-
-    const sceneGraph = new ModelSceneGraph({
-      model: this,
-      modelComponents: components,
-    });
-
-    this._sceneGraph = sceneGraph;
-    this._gltfCredits = sceneGraph.components.asset.credits;
-  }
-
-  // Short-circuit if the model resources aren't ready or the scene
-  // is currently morphing.
-  if (!this._resourcesLoaded || frameState.mode === SceneMode.MORPHING) {
-    return;
-  }
-
-  const modelImagery = this._modelImagery;
-  modelImagery.update(frameState);
-  if (!modelImagery.ready) {
-    // If the imagery loading should not happen asynchronously,
-    // then do not let the model count as 'ready' until the
-    // modelImagery is 'ready'
-    const asynchronouslyLoadImagery =
-      this._content?.tileset?._asynchronouslyLoadImagery ?? false;
-    if (!asynchronouslyLoadImagery) {
-      return;
-    }
-  }
-
-  updateFeatureTableId(this);
-  updateStyle(this);
-  updateFeatureTables(this, frameState);
-  updatePointCloudShading(this);
-  updateSilhouette(this, frameState);
-  updateSkipLevelOfDetail(this, frameState);
-  updateClippingPlanes(this, frameState);
-  updateClippingPolygons(this, frameState);
-  updateSceneMode(this, frameState);
-  updateFog(this, frameState);
-  updateVerticalExaggeration(this, frameState);
-
-  this._defaultTexture = frameState.context.defaultTexture;
-
-  buildDrawCommands(this, frameState);
-  updateModelMatrix(this, frameState);
-
-  // Many features (e.g. image-based lighting, clipping planes) depend on the model
-  // matrix being updated for the current height reference, so update it first.
-  updateClamping(this);
-
-  updateBoundingSphereAndScale(this, frameState);
-  updateReferenceMatrices(this, frameState);
-
-  // This check occurs after the bounding sphere has been updated so that
-  // zooming to the bounding sphere can account for any modifications
-  // from the clamp-to-ground setting.
-  if (!this._ready) {
-    // Set the model as ready after the first frame render since the user might set up events subscribed to
-    // the post render event, and the model may not be ready for those past the first frame.
-    frameState.afterRender.push(() => {
-      this._ready = true;
-      this._readyEvent.raiseEvent(this);
-    });
-
-    // Don't render until the next frame after the ready event has been raised.
-    return;
-  }
-
-  if (
-    this._loader.incrementallyLoadTextures &&
-    !this._texturesLoaded &&
-    this._loader.texturesLoaded
-  ) {
-    // Re-run the pipeline so texture memory statistics are re-computed
-    this.resetDrawCommands();
-
-    this._texturesLoaded = true;
-    this._texturesReadyEvent.raiseEvent(this);
-  }
-
-  updatePickIds(this);
-
-  // Update the scene graph and draw commands for any changes in model's properties
-  // (e.g. model matrix, back-face culling)
-  updateSceneGraph(this, frameState);
-  updateShowCreditsOnScreen(this);
-  submitDrawCommands(this, frameState);
-};
 
 function processLoader(model, frameState) {
   if (
@@ -2655,265 +3213,9 @@ function addCreditsToCreditDisplay(model, frameState) {
   }
 }
 
-/**
- * Gets whether or not the model is translucent based on its assigned model color.
- * If the model color's alpha is equal to zero, then it is considered invisible,
- * not translucent.
- *
- * @returns {boolean} <code>true</code> if the model is translucent, otherwise <code>false</code>.
- * @private
- */
-Model.prototype.isTranslucent = function () {
-  const color = this.color;
-  return defined(color) && color.alpha > 0.0 && color.alpha < 1.0;
-};
-
-/**
- * Gets whether or not the model is invisible, i.e. if the model color's alpha
- * is equal to zero.
- *
- * @returns {boolean} <code>true</code> if the model is invisible, otherwise <code>false</code>.
- * @private
- */
-Model.prototype.isInvisible = function () {
-  const color = this.color;
-  return defined(color) && color.alpha === 0.0;
-};
-
 function supportsSilhouettes(frameState) {
   return frameState.context.stencilBuffer;
 }
-
-/**
- * Gets whether or not the model has a silhouette. This accounts for whether
- * silhouettes are supported (i.e. the context supports stencil buffers).
- * <p>
- * If the model classifies another model, its silhouette will be disabled.
- * </p>
- *
- * @param {FrameState} The frame state.
- * @returns {boolean} <code>true</code> if the model has silhouettes, otherwise <code>false</code>.
- * @private
- */
-Model.prototype.hasSilhouette = function (frameState) {
-  return (
-    supportsSilhouettes(frameState) &&
-    this._silhouetteSize > 0.0 &&
-    this._silhouetteColor.alpha > 0.0 &&
-    !defined(this._classificationType)
-  );
-};
-
-/**
- * Gets whether or not the model is part of a tileset that uses the
- * skipLevelOfDetail optimization. This accounts for whether skipLevelOfDetail
- * is supported (i.e. the context supports stencil buffers).
- *
- * @param {FrameState} frameState The frame state.
- * @returns {boolean} <code>true</code> if the model is part of a tileset that uses the skipLevelOfDetail optimization, <code>false</code> otherwise.
- * @private
- */
-Model.prototype.hasSkipLevelOfDetail = function (frameState) {
-  if (!ModelType.is3DTiles(this.type)) {
-    return false;
-  }
-
-  const supportsSkipLevelOfDetail = frameState.context.stencilBuffer;
-  const tileset = this._content.tileset;
-  return supportsSkipLevelOfDetail && tileset.isSkippingLevelOfDetail;
-};
-
-/**
- * Gets whether or not clipping planes are enabled for this model.
- *
- * @returns {boolean} <code>true</code> if clipping planes are enabled for this model, <code>false</code>.
- * @private
- */
-Model.prototype.isClippingEnabled = function () {
-  const clippingPlanes = this._clippingPlanes;
-  return (
-    defined(clippingPlanes) &&
-    clippingPlanes.enabled &&
-    clippingPlanes.length !== 0
-  );
-};
-
-/**
- * Find an intersection between a ray and the model surface that was rendered. The ray must be given in world coordinates.
- *
- * @param {Ray} ray The ray to test for intersection.
- * @param {FrameState} frameState The frame state.
- * @param {number} [verticalExaggeration=1.0] A scalar used to exaggerate the height of a position relative to the ellipsoid. If the value is 1.0 there will be no effect.
- * @param {number} [relativeHeight=0.0] The height above the ellipsoid relative to which a position is exaggerated. If the value is 0.0 the position will be exaggerated relative to the ellipsoid surface.
- * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
- * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
- *
- * @private
- */
-Model.prototype.pick = function (
-  ray,
-  frameState,
-  verticalExaggeration,
-  relativeHeight,
-  result,
-) {
-  return pickModel(
-    this,
-    ray,
-    frameState,
-    verticalExaggeration,
-    relativeHeight,
-    result,
-  );
-};
-
-/**
- * Gets whether or not clipping polygons are enabled for this model.
- *
- * @returns {boolean} <code>true</code> if clipping polygons are enabled for this model, <code>false</code>.
- * @private
- */
-Model.prototype.isClippingPolygonsEnabled = function () {
-  const clippingPolygons = this._clippingPolygons;
-  return (
-    defined(clippingPolygons) &&
-    clippingPolygons.enabled &&
-    clippingPolygons.length !== 0
-  );
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see Model#destroy
- */
-Model.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * model = model && model.destroy();
- *
- * @see Model#isDestroyed
- */
-Model.prototype.destroy = function () {
-  const loader = this._loader;
-  if (defined(loader)) {
-    loader.destroy();
-  }
-
-  const featureTables = this._featureTables;
-  if (defined(featureTables)) {
-    const length = featureTables.length;
-    for (let i = 0; i < length; i++) {
-      featureTables[i].destroy();
-    }
-  }
-
-  this.destroyPipelineResources();
-  this.destroyModelResources();
-
-  // Remove callbacks for height reference behavior.
-  if (defined(this._removeUpdateHeightCallback)) {
-    this._removeUpdateHeightCallback();
-    this._removeUpdateHeightCallback = undefined;
-  }
-
-  if (defined(this._terrainProviderChangedCallback)) {
-    this._terrainProviderChangedCallback();
-    this._terrainProviderChangedCallback = undefined;
-  }
-
-  // Only destroy the ClippingPlaneCollection if this is the owner.
-  const clippingPlaneCollection = this._clippingPlanes;
-  if (
-    defined(clippingPlaneCollection) &&
-    !clippingPlaneCollection.isDestroyed() &&
-    clippingPlaneCollection.owner === this
-  ) {
-    clippingPlaneCollection.destroy();
-  }
-  this._clippingPlanes = undefined;
-
-  // Only destroy the ClippingPolygonCollection if this is the owner.
-  const clippingPolygonCollection = this._clippingPolygons;
-  if (
-    defined(clippingPolygonCollection) &&
-    !clippingPolygonCollection.isDestroyed() &&
-    clippingPolygonCollection.owner === this
-  ) {
-    clippingPolygonCollection.destroy();
-  }
-  this._clippingPolygons = undefined;
-
-  // Only destroy the ImageBasedLighting if this is the owner.
-  if (
-    this._shouldDestroyImageBasedLighting &&
-    !this._imageBasedLighting.isDestroyed()
-  ) {
-    this._imageBasedLighting.destroy();
-  }
-  this._imageBasedLighting = undefined;
-
-  // Only destroy the environment map manager if this is the owner.
-  const environmentMapManager = this._environmentMapManager;
-  if (
-    !environmentMapManager.isDestroyed() &&
-    environmentMapManager.owner === this
-  ) {
-    environmentMapManager.destroy();
-  }
-  this._environmentMapManager = undefined;
-
-  const modelFr = this._featureRenderer;
-  if (modelFr) {
-    modelFr.destroy(this);
-  }
-  destroyObject(this);
-};
-
-/**
- * Destroys resources generated in the pipeline stages
- * that must be destroyed when draw commands are rebuilt.
- * @private
- */
-Model.prototype.destroyPipelineResources = function () {
-  const resources = this._pipelineResources;
-  for (let i = 0; i < resources.length; i++) {
-    resources[i].destroy();
-  }
-  this._pipelineResources.length = 0;
-  this._pickIds.length = 0;
-};
-
-/**
- * Destroys resources generated in the pipeline stages
- * that exist for the lifetime of the model.
- * @private
- */
-Model.prototype.destroyModelResources = function () {
-  const resources = this._modelResources;
-  for (let i = 0; i < resources.length; i++) {
-    resources[i].destroy();
-  }
-  this._modelResources.length = 0;
-};
 
 /**
  * <p>
@@ -3234,63 +3536,6 @@ Model.fromGeoJson = async function (options) {
 };
 
 const scratchColor = new Color();
-
-/**
- * @private
- */
-Model.prototype.applyColorAndShow = function (style) {
-  const previousColor = Color.clone(this._color, scratchColor);
-  const hasColorStyle = defined(style) && defined(style.color);
-  const hasShowStyle = defined(style) && defined(style.show);
-
-  this._color = hasColorStyle
-    ? style.color.evaluateColor(undefined, this._color)
-    : Color.clone(Color.WHITE, this._color);
-  this._show = hasShowStyle ? style.show.evaluate(undefined) : true;
-
-  if (isColorAlphaDirty(previousColor, this._color)) {
-    this.resetDrawCommands();
-  }
-};
-
-/**
- * @private
- */
-Model.prototype.applyStyle = function (style) {
-  const isPnts = this.type === ModelType.TILE_PNTS;
-
-  const hasFeatureTable =
-    defined(this.featureTableId) &&
-    this.featureTables[this.featureTableId].featuresLength > 0;
-
-  const propertyAttributes = defined(this.structuralMetadata)
-    ? this.structuralMetadata.propertyAttributes
-    : undefined;
-  const hasPropertyAttributes =
-    defined(propertyAttributes) && defined(propertyAttributes[0]);
-
-  // Point clouds will be styled on the GPU unless they contain a batch table.
-  // That is, CPU styling will not be applied if:
-  // - points have no metadata at all, or
-  // - points have metadata stored as a property attribute
-  if (isPnts && (!hasFeatureTable || hasPropertyAttributes)) {
-    // Commands are rebuilt for point cloud styling since the new style may
-    // contain different shader functions.
-    this.resetDrawCommands();
-    return;
-  }
-
-  // The style is only set by the ModelFeatureTable. If there are no features,
-  // the color and show from the style are directly applied.
-  if (hasFeatureTable) {
-    const featureTable = this.featureTables[this.featureTableId];
-    featureTable.applyStyle(style);
-    updateStyleCommandsNeeded(this, style);
-  } else {
-    this.applyColorAndShow(style);
-    this._styleCommandsNeeded = undefined;
-  }
-};
 
 function makeModelOptions(loader, modelType, options) {
   return {

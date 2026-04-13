@@ -22,220 +22,208 @@ import ShadowVolumeAppearanceFS from "../Shaders/ShadowVolumeAppearanceFS.js";
  * @param {Appearance} appearance An Appearance to be used with a ClassificationPrimitive via GroundPrimitive.
  * @private
  */
-function ShadowVolumeAppearance(extentsCulling, planarExtents, appearance) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.bool("extentsCulling", extentsCulling);
-  Check.typeOf.bool("planarExtents", planarExtents);
-  Check.typeOf.object("appearance", appearance);
-  //>>includeEnd('debug');
+class ShadowVolumeAppearance {
+  constructor(extentsCulling, planarExtents, appearance) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("extentsCulling", extentsCulling);
+    Check.typeOf.bool("planarExtents", planarExtents);
+    Check.typeOf.object("appearance", appearance);
+    //>>includeEnd('debug');
 
-  this._projectionExtentDefines = {
-    eastMostYhighDefine: "",
-    eastMostYlowDefine: "",
-    westMostYhighDefine: "",
-    westMostYlowDefine: "",
-  };
+    this._projectionExtentDefines = {
+      eastMostYhighDefine: "",
+      eastMostYlowDefine: "",
+      westMostYhighDefine: "",
+      westMostYlowDefine: "",
+    };
 
-  // Compute shader dependencies
-  const colorShaderDependencies = new ShaderDependencies();
-  colorShaderDependencies.requiresTextureCoordinates = extentsCulling;
-  colorShaderDependencies.requiresEC = !appearance.flat;
+    // Compute shader dependencies
+    const colorShaderDependencies = new ShaderDependencies();
+    colorShaderDependencies.requiresTextureCoordinates = extentsCulling;
+    colorShaderDependencies.requiresEC = !appearance.flat;
 
-  const pickShaderDependencies = new ShaderDependencies();
-  pickShaderDependencies.requiresTextureCoordinates = extentsCulling;
+    const pickShaderDependencies = new ShaderDependencies();
+    pickShaderDependencies.requiresTextureCoordinates = extentsCulling;
 
-  if (appearance instanceof PerInstanceColorAppearance) {
-    // PerInstanceColorAppearance doesn't have material.shaderSource, instead it has its own vertex and fragment shaders
-    colorShaderDependencies.requiresNormalEC = !appearance.flat;
-  } else {
-    // Scan material source for what hookups are needed. Assume czm_materialInput materialInput.
-    const materialShaderSource = `${appearance.material.shaderSource}\n${appearance.fragmentShaderSource}`;
+    if (appearance instanceof PerInstanceColorAppearance) {
+      // PerInstanceColorAppearance doesn't have material.shaderSource, instead it has its own vertex and fragment shaders
+      colorShaderDependencies.requiresNormalEC = !appearance.flat;
+    } else {
+      // Scan material source for what hookups are needed. Assume czm_materialInput materialInput.
+      const materialShaderSource = `${appearance.material.shaderSource}\n${appearance.fragmentShaderSource}`;
 
-    colorShaderDependencies.normalEC =
-      materialShaderSource.indexOf("materialInput.normalEC") !== -1 ||
-      materialShaderSource.indexOf("czm_getDefaultMaterial") !== -1;
-    colorShaderDependencies.positionToEyeEC =
-      materialShaderSource.indexOf("materialInput.positionToEyeEC") !== -1;
-    colorShaderDependencies.tangentToEyeMatrix =
-      materialShaderSource.indexOf("materialInput.tangentToEyeMatrix") !== -1;
-    colorShaderDependencies.st =
-      materialShaderSource.indexOf("materialInput.st") !== -1;
+      colorShaderDependencies.normalEC =
+        materialShaderSource.includes("materialInput.normalEC") ||
+        materialShaderSource.includes("czm_getDefaultMaterial");
+      colorShaderDependencies.positionToEyeEC =
+        materialShaderSource.includes("materialInput.positionToEyeEC");
+      colorShaderDependencies.tangentToEyeMatrix =
+        materialShaderSource.includes("materialInput.tangentToEyeMatrix");
+      colorShaderDependencies.st =
+        materialShaderSource.includes("materialInput.st");
+    }
+
+    this._colorShaderDependencies = colorShaderDependencies;
+    this._pickShaderDependencies = pickShaderDependencies;
+    this._appearance = appearance;
+    this._extentsCulling = extentsCulling;
+    this._planarExtents = planarExtents;
   }
 
-  this._colorShaderDependencies = colorShaderDependencies;
-  this._pickShaderDependencies = pickShaderDependencies;
-  this._appearance = appearance;
-  this._extentsCulling = extentsCulling;
-  this._planarExtents = planarExtents;
+  /**
+   * Create the fragment shader for a ClassificationPrimitive's color pass when rendering for color.
+   *
+   * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
+   * @returns {ShaderSource} Shader source for the fragment shader.
+   */
+  createFragmentShader(columbusView2D) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("columbusView2D", columbusView2D);
+    //>>includeEnd('debug');
+
+    const appearance = this._appearance;
+    const dependencies = this._colorShaderDependencies;
+
+    const defines = [];
+    if (!columbusView2D && !this._planarExtents) {
+      defines.push("SPHERICAL");
+    }
+    if (dependencies.requiresEC) {
+      defines.push("REQUIRES_EC");
+    }
+    if (dependencies.requiresWC) {
+      defines.push("REQUIRES_WC");
+    }
+    if (dependencies.requiresTextureCoordinates) {
+      defines.push("TEXTURE_COORDINATES");
+    }
+    if (this._extentsCulling) {
+      defines.push("CULL_FRAGMENTS");
+    }
+    if (dependencies.requiresNormalEC) {
+      defines.push("NORMAL_EC");
+    }
+    if (appearance instanceof PerInstanceColorAppearance) {
+      defines.push("PER_INSTANCE_COLOR");
+    }
+
+    // Material inputs. Use of parameters in the material is different
+    // from requirement of the parameters in the overall shader, for example,
+    // texture coordinates may be used for fragment culling but not for the material itself.
+    if (dependencies.normalEC) {
+      defines.push("USES_NORMAL_EC");
+    }
+    if (dependencies.positionToEyeEC) {
+      defines.push("USES_POSITION_TO_EYE_EC");
+    }
+    if (dependencies.tangentToEyeMatrix) {
+      defines.push("USES_TANGENT_TO_EYE");
+    }
+    if (dependencies.st) {
+      defines.push("USES_ST");
+    }
+
+    if (appearance.flat) {
+      defines.push("FLAT");
+    }
+
+    let materialSource = "";
+    if (!(appearance instanceof PerInstanceColorAppearance)) {
+      materialSource = appearance.material.shaderSource;
+    }
+
+    return new ShaderSource({
+      defines: defines,
+      sources: [materialSource, ShadowVolumeAppearanceFS],
+    });
+  }
+
+  createPickFragmentShader(columbusView2D) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("columbusView2D", columbusView2D);
+    //>>includeEnd('debug');
+
+    const dependencies = this._pickShaderDependencies;
+
+    const defines = ["PICK"];
+    if (!columbusView2D && !this._planarExtents) {
+      defines.push("SPHERICAL");
+    }
+    if (dependencies.requiresEC) {
+      defines.push("REQUIRES_EC");
+    }
+    if (dependencies.requiresWC) {
+      defines.push("REQUIRES_WC");
+    }
+    if (dependencies.requiresTextureCoordinates) {
+      defines.push("TEXTURE_COORDINATES");
+    }
+    if (this._extentsCulling) {
+      defines.push("CULL_FRAGMENTS");
+    }
+    return new ShaderSource({
+      defines: defines,
+      sources: [ShadowVolumeAppearanceFS],
+      pickColorQualifier: "in",
+    });
+  }
+
+  /**
+   * Create the vertex shader for a ClassificationPrimitive's color pass on the final of 3 shadow volume passes
+   *
+   * @param {string[]} defines External defines to pass to the vertex shader.
+   * @param {string} vertexShaderSource ShadowVolumeAppearanceVS with any required modifications for computing position.
+   * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
+   * @param {MapProjection} mapProjection Current scene's map projection.
+   * @returns {string} Shader source for the vertex shader.
+   */
+  createVertexShader(defines, vertexShaderSource, columbusView2D, mapProjection) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("defines", defines);
+    Check.typeOf.string("vertexShaderSource", vertexShaderSource);
+    Check.typeOf.bool("columbusView2D", columbusView2D);
+    Check.defined("mapProjection", mapProjection);
+    //>>includeEnd('debug');
+    return createShadowVolumeAppearanceVS(
+      this._colorShaderDependencies,
+      this._planarExtents,
+      columbusView2D,
+      defines,
+      vertexShaderSource,
+      this._appearance,
+      mapProjection,
+      this._projectionExtentDefines,
+    );
+  }
+
+  /**
+   * Create the vertex shader for a ClassificationPrimitive's pick pass on the final of 3 shadow volume passes
+   *
+   * @param {string[]} defines External defines to pass to the vertex shader.
+   * @param {string} vertexShaderSource ShadowVolumeAppearanceVS with any required modifications for computing position and picking.
+   * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
+   * @param {MapProjection} mapProjection Current scene's map projection.
+   * @returns {string} Shader source for the vertex shader.
+   */
+  createPickVertexShader(defines, vertexShaderSource, columbusView2D, mapProjection) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("defines", defines);
+    Check.typeOf.string("vertexShaderSource", vertexShaderSource);
+    Check.typeOf.bool("columbusView2D", columbusView2D);
+    Check.defined("mapProjection", mapProjection);
+    //>>includeEnd('debug');
+    return createShadowVolumeAppearanceVS(
+      this._pickShaderDependencies,
+      this._planarExtents,
+      columbusView2D,
+      defines,
+      vertexShaderSource,
+      undefined,
+      mapProjection,
+      this._projectionExtentDefines,
+    );
+  }
 }
-
-/**
- * Create the fragment shader for a ClassificationPrimitive's color pass when rendering for color.
- *
- * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
- * @returns {ShaderSource} Shader source for the fragment shader.
- */
-ShadowVolumeAppearance.prototype.createFragmentShader = function (
-  columbusView2D,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.bool("columbusView2D", columbusView2D);
-  //>>includeEnd('debug');
-
-  const appearance = this._appearance;
-  const dependencies = this._colorShaderDependencies;
-
-  const defines = [];
-  if (!columbusView2D && !this._planarExtents) {
-    defines.push("SPHERICAL");
-  }
-  if (dependencies.requiresEC) {
-    defines.push("REQUIRES_EC");
-  }
-  if (dependencies.requiresWC) {
-    defines.push("REQUIRES_WC");
-  }
-  if (dependencies.requiresTextureCoordinates) {
-    defines.push("TEXTURE_COORDINATES");
-  }
-  if (this._extentsCulling) {
-    defines.push("CULL_FRAGMENTS");
-  }
-  if (dependencies.requiresNormalEC) {
-    defines.push("NORMAL_EC");
-  }
-  if (appearance instanceof PerInstanceColorAppearance) {
-    defines.push("PER_INSTANCE_COLOR");
-  }
-
-  // Material inputs. Use of parameters in the material is different
-  // from requirement of the parameters in the overall shader, for example,
-  // texture coordinates may be used for fragment culling but not for the material itself.
-  if (dependencies.normalEC) {
-    defines.push("USES_NORMAL_EC");
-  }
-  if (dependencies.positionToEyeEC) {
-    defines.push("USES_POSITION_TO_EYE_EC");
-  }
-  if (dependencies.tangentToEyeMatrix) {
-    defines.push("USES_TANGENT_TO_EYE");
-  }
-  if (dependencies.st) {
-    defines.push("USES_ST");
-  }
-
-  if (appearance.flat) {
-    defines.push("FLAT");
-  }
-
-  let materialSource = "";
-  if (!(appearance instanceof PerInstanceColorAppearance)) {
-    materialSource = appearance.material.shaderSource;
-  }
-
-  return new ShaderSource({
-    defines: defines,
-    sources: [materialSource, ShadowVolumeAppearanceFS],
-  });
-};
-
-ShadowVolumeAppearance.prototype.createPickFragmentShader = function (
-  columbusView2D,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.bool("columbusView2D", columbusView2D);
-  //>>includeEnd('debug');
-
-  const dependencies = this._pickShaderDependencies;
-
-  const defines = ["PICK"];
-  if (!columbusView2D && !this._planarExtents) {
-    defines.push("SPHERICAL");
-  }
-  if (dependencies.requiresEC) {
-    defines.push("REQUIRES_EC");
-  }
-  if (dependencies.requiresWC) {
-    defines.push("REQUIRES_WC");
-  }
-  if (dependencies.requiresTextureCoordinates) {
-    defines.push("TEXTURE_COORDINATES");
-  }
-  if (this._extentsCulling) {
-    defines.push("CULL_FRAGMENTS");
-  }
-  return new ShaderSource({
-    defines: defines,
-    sources: [ShadowVolumeAppearanceFS],
-    pickColorQualifier: "in",
-  });
-};
-
-/**
- * Create the vertex shader for a ClassificationPrimitive's color pass on the final of 3 shadow volume passes
- *
- * @param {string[]} defines External defines to pass to the vertex shader.
- * @param {string} vertexShaderSource ShadowVolumeAppearanceVS with any required modifications for computing position.
- * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
- * @param {MapProjection} mapProjection Current scene's map projection.
- * @returns {string} Shader source for the vertex shader.
- */
-ShadowVolumeAppearance.prototype.createVertexShader = function (
-  defines,
-  vertexShaderSource,
-  columbusView2D,
-  mapProjection,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("defines", defines);
-  Check.typeOf.string("vertexShaderSource", vertexShaderSource);
-  Check.typeOf.bool("columbusView2D", columbusView2D);
-  Check.defined("mapProjection", mapProjection);
-  //>>includeEnd('debug');
-  return createShadowVolumeAppearanceVS(
-    this._colorShaderDependencies,
-    this._planarExtents,
-    columbusView2D,
-    defines,
-    vertexShaderSource,
-    this._appearance,
-    mapProjection,
-    this._projectionExtentDefines,
-  );
-};
-
-/**
- * Create the vertex shader for a ClassificationPrimitive's pick pass on the final of 3 shadow volume passes
- *
- * @param {string[]} defines External defines to pass to the vertex shader.
- * @param {string} vertexShaderSource ShadowVolumeAppearanceVS with any required modifications for computing position and picking.
- * @param {boolean} columbusView2D Whether the shader will be used for Columbus View or 2D.
- * @param {MapProjection} mapProjection Current scene's map projection.
- * @returns {string} Shader source for the vertex shader.
- */
-ShadowVolumeAppearance.prototype.createPickVertexShader = function (
-  defines,
-  vertexShaderSource,
-  columbusView2D,
-  mapProjection,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("defines", defines);
-  Check.typeOf.string("vertexShaderSource", vertexShaderSource);
-  Check.typeOf.bool("columbusView2D", columbusView2D);
-  Check.defined("mapProjection", mapProjection);
-  //>>includeEnd('debug');
-  return createShadowVolumeAppearanceVS(
-    this._pickShaderDependencies,
-    this._planarExtents,
-    columbusView2D,
-    defines,
-    vertexShaderSource,
-    undefined,
-    mapProjection,
-    this._projectionExtentDefines,
-  );
-};
 
 const longitudeExtentsCartesianScratch = new Cartesian3();
 const longitudeExtentsCartographicScratch = new Cartographic();

@@ -26,7 +26,7 @@ interface CloudCache {
   noiseTextureView: GPUTextureView | null;
   sampler: GPUSampler | null;
   instanceCount: number;
-  command: any | null;
+  command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastCloudCount: number;
 }
@@ -93,6 +93,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
+// Scratch view matrix with translation column zeroed — used to build a
+// translation-free MVP correctly (must zero before projecting).
+const scratchMVRTE = new Matrix4();
 
 function createNoiseTexture(device: GPUDevice): {
   texture: GPUTexture;
@@ -138,7 +141,7 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
 
 function buildInstanceBuffer(
   device: GPUDevice,
-  collection: any,
+  collection: CesiumObjectWithWebGPUCache,
 ): { buffer: GPUBuffer; count: number } {
   const clouds = collection._clouds || [];
   const count = clouds.length || collection.length || 0;
@@ -151,10 +154,11 @@ function buildInstanceBuffer(
   // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16) = 56 bytes
   const data = new Float32Array(count * 14);
   for (let i = 0; i < count; i++) {
-    const cloud = clouds[i] || collection.get(i);
-    if (!cloud) {
+    const rawCloud = clouds[i] || (collection.get ? collection.get(i) : undefined);
+    if (!rawCloud) {
       continue;
     }
+    const cloud = rawCloud as { position?: CesiumCartesian3; scale?: CesiumCartesian2; brightness?: number; slice?: number; color?: CesiumColor };
     const pos = cloud.position || new Cartesian3();
     EncodedCartesian3.fromCartesian(pos, scratchEncoded);
     const off = i * 14;
@@ -182,7 +186,7 @@ function buildInstanceBuffer(
   return { buffer, count };
 }
 
-function updateWebGPUCloudCollection(collection: any, frameState: any): void {
+function updateWebGPUCloudCollection(collection: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -314,7 +318,9 @@ function updateWebGPUCloudCollection(collection: any, frameState: any): void {
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
-        depthCompare: "less",
+        // less-equal for planetary-scale precision robustness — see
+        // the matching comment in WebGPUBufferPrimitiveRenderer.
+        depthCompare: "less-equal",
       },
     });
 
@@ -347,14 +353,21 @@ function updateWebGPUCloudCollection(collection: any, frameState: any): void {
     return;
   }
 
-  // Pack camera uniforms
+  // Pack camera uniforms.
+  //
+  // RTE: zero the translation column of VIEW *before* multiplying by
+  // projection. Zeroing the result's col3 after the multiply wipes out
+  // projection's P23 depth-mapping term, producing incorrect NDC depth.
+  // See `UniformStateComputations.cleanModelViewProjectionRelativeToEye`
+  // for the canonical pattern.
   const us = context.uniformState;
   const view = us.view;
   const proj = us.projection;
-  const mvp = m4Values(Matrix4.multiply(proj, view, scratchMVP));
-  mvp[12] = 0;
-  mvp[13] = 0;
-  mvp[14] = 0;
+  Matrix4.clone(view, scratchMVRTE);
+  scratchMVRTE[12] = 0;
+  scratchMVRTE[13] = 0;
+  scratchMVRTE[14] = 0;
+  const mvp = m4Values(Matrix4.multiply(proj, scratchMVRTE, scratchMVP));
 
   const data = new Float32Array(28);
   for (let i = 0; i < 16; i++) {
@@ -375,7 +388,7 @@ function updateWebGPUCloudCollection(collection: any, frameState: any): void {
   const canvas = context._canvas || { width: 1920, height: 1080 };
   data[24] = canvas.width;
   data[25] = canvas.height;
-  data[26] = frameState.time ?? 0; // time for animation
+  data[26] = frameState.frameNumber * 0.016; // approximate time for animation
   data[27] = 0;
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
@@ -393,7 +406,7 @@ function updateWebGPUCloudCollection(collection: any, frameState: any): void {
   commandList.push(cache.command);
 }
 
-function destroyWebGPUCloudResources(collection: any): void {
+function destroyWebGPUCloudResources(collection: CesiumObjectWithWebGPUCache): void {
   const cache = collection._webgpuCache as CloudCache | undefined;
   if (!cache) {
     return;

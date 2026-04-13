@@ -20,7 +20,7 @@ struct VertexOutput {
     @location(2) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -29,22 +29,25 @@ struct Uniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // Material params
-    repeat: vec2<f32>,
-    strength: f32,
     _pad2: f32,
-    channels: vec3<f32>,  // swizzle indices: e.g. (0,1,2) = rgb
     _pad3: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var normalTexture: texture_2d<f32>;
+struct MaterialUniforms {
+    repeat: vec2<f32>,
+    strength: f32,
+    channels: vec3<f32>,  // swizzle indices: e.g. (0,1,2) = rgb,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(2) @binding(0) var textureSampler: sampler;
+@group(2) @binding(1) var normalTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -59,29 +62,29 @@ fn swizzleChannel(texColor: vec4<f32>, idx: f32) -> f32 {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * posRTE;
-    output.worldNormal = (uniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * posRTE).xyz;
+    output.clipPosition = camera.mvpRelativeToEye * posRTE;
+    output.worldNormal = (camera.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
     output.texCoord = input.texCoord;
     return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = fract(input.texCoord * uniforms.repeat);
+    let uv = fract(input.texCoord * material.repeat);
     let texColor = textureSample(normalTexture, textureSampler, uv);
 
     // Read normal from texture using channel swizzle
-    let nx = swizzleChannel(texColor, uniforms.channels.x);
-    let ny = swizzleChannel(texColor, uniforms.channels.y);
-    let nz = swizzleChannel(texColor, uniforms.channels.z);
+    let nx = swizzleChannel(texColor, material.channels.x);
+    let ny = swizzleChannel(texColor, material.channels.y);
+    let nz = swizzleChannel(texColor, material.channels.z);
 
     // Remap from [0,1] to [-1,1]
     var tangentNormal = vec3<f32>(nx, ny, nz) * 2.0 - 1.0;
     // Apply strength: blend toward flat normal (0,0,1)
     tangentNormal = normalize(vec3<f32>(
-        tangentNormal.x * uniforms.strength,
-        tangentNormal.y * uniforms.strength,
+        tangentNormal.x * material.strength,
+        tangentNormal.y * material.strength,
         tangentNormal.z
     ));
 
@@ -97,7 +100,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Blinn-Phong with perturbed normal
     let V = normalize(-input.viewPosition);
-    let L = normalize(uniforms.lightDirection.xyz);
+    let L = normalize(camera.lightDirection.xyz);
 
     let NdotL = max(dot(perturbedNormal, L), 0.0);
     let H = normalize(L + V);

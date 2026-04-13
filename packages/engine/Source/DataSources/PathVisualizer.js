@@ -929,183 +929,191 @@ PolylineUpdater.prototype.destroy = function () {
  * @param {Scene} scene The scene the primitives will be rendered in.
  * @param {EntityCollection} entityCollection The entityCollection to visualize.
  */
-function PathVisualizer(scene, entityCollection) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
-  }
-  if (!defined(entityCollection)) {
-    throw new DeveloperError("entityCollection is required.");
-  }
-  //>>includeEnd('debug');
-
-  entityCollection.collectionChanged.addEventListener(
-    PathVisualizer.prototype._onCollectionChanged,
-    this,
-  );
-
-  this._scene = scene;
-  this._updaters = {};
-  this._entityCollection = entityCollection;
-  this._items = new AssociativeArray();
-
-  this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
-}
-
-/**
- * Updates all of the primitives created by this visualizer to match their
- * Entity counterpart at the given time.
- *
- * @param {JulianDate} time The time to update to.
- * @returns {boolean} This function always returns true.
- */
-PathVisualizer.prototype.update = function (time) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(time)) {
-    throw new DeveloperError("time is required.");
-  }
-  //>>includeEnd('debug');
-
-  const updaters = this._updaters;
-  for (const key in updaters) {
-    if (updaters.hasOwnProperty(key)) {
-      updaters[key].update(time);
+class PathVisualizer {
+  constructor(scene, entityCollection) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
     }
-  }
-
-  const items = this._items.values;
-  if (
-    items.length === 0 &&
-    defined(this._updaters) &&
-    Object.keys(this._updaters).length > 0
-  ) {
-    for (const u in updaters) {
-      if (updaters.hasOwnProperty(u)) {
-        updaters[u].destroy();
-      }
+    if (!defined(entityCollection)) {
+      throw new DeveloperError("entityCollection is required.");
     }
+    //>>includeEnd('debug');
+
+    entityCollection.collectionChanged.addEventListener(
+      PathVisualizer.prototype._onCollectionChanged,
+      this,
+    );
+
+    this._scene = scene;
     this._updaters = {};
+    this._entityCollection = entityCollection;
+    this._items = new AssociativeArray();
+
+    this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
   }
 
-  for (let i = 0, len = items.length; i < len; i++) {
-    const item = items[i];
-    const entity = item.entity;
-    const positionProperty = entity._position;
-    const pathGraphics = entity._path;
+  /**
+   * Updates all of the primitives created by this visualizer to match their
+   * Entity counterpart at the given time.
+   *
+   * @param {JulianDate} time The time to update to.
+   * @returns {boolean} This function always returns true.
+   */
+  update(time) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(time)) {
+      throw new DeveloperError("time is required.");
+    }
+    //>>includeEnd('debug');
 
-    const lastUpdater = item.updater;
-
-    let isRelative = false;
-
-    let frameToVisualize = ReferenceFrame.FIXED;
-    let frameToVisualizeKey = frameToVisualize.toString();
-    if (this._scene.mode === SceneMode.SCENE3D) {
-      const relativeTo = Property.getValueOrUndefined(
-        pathGraphics.relativeTo,
-        time,
-      );
-      if (defined(relativeTo)) {
-        if (relativeTo === "FIXED") {
-          frameToVisualize = ReferenceFrame.FIXED;
-          frameToVisualizeKey = frameToVisualize.toString();
-        } else if (relativeTo === "INERTIAL") {
-          frameToVisualize = ReferenceFrame.INERTIAL;
-          frameToVisualizeKey = frameToVisualize.toString();
-        } else {
-          // Path should be relative to entity
-          // Current implementation uses VVLH, ignores entity orientation
-          isRelative = true;
-          frameToVisualize = this._entityCollection.getById(relativeTo);
-          frameToVisualizeKey = relativeTo;
-        }
-      } else {
-        frameToVisualize = positionProperty.referenceFrame;
-        frameToVisualizeKey = frameToVisualize.toString();
+    const updaters = this._updaters;
+    for (const key in updaters) {
+      if (updaters.hasOwnProperty(key)) {
+        updaters[key].update(time);
       }
     }
 
-    let currentUpdater = this._updaters[frameToVisualizeKey];
-
-    if (lastUpdater === currentUpdater && defined(currentUpdater)) {
-      currentUpdater.updateObject(time, item);
-      continue;
+    const items = this._items.values;
+    if (
+      items.length === 0 &&
+      defined(this._updaters) &&
+      Object.keys(this._updaters).length > 0
+    ) {
+      for (const u in updaters) {
+        if (updaters.hasOwnProperty(u)) {
+          updaters[u].destroy();
+        }
+      }
+      this._updaters = {};
     }
 
-    if (defined(lastUpdater)) {
-      lastUpdater.removeObject(item);
-    }
+    for (let i = 0, len = items.length; i < len; i++) {
+      const item = items[i];
+      const entity = item.entity;
+      const positionProperty = entity._position;
+      const pathGraphics = entity._path;
 
-    if (isRelative && !defined(frameToVisualize)) {
-      continue;
-    }
+      const lastUpdater = item.updater;
 
-    if (!defined(currentUpdater)) {
-      currentUpdater = new PolylineUpdater(this._scene, frameToVisualize);
-      currentUpdater.update(time);
-      this._updaters[frameToVisualizeKey] = currentUpdater;
-    }
+      let isRelative = false;
 
-    item.updater = currentUpdater;
-    if (defined(currentUpdater)) {
-      currentUpdater.updateObject(time, item);
+      let frameToVisualize = ReferenceFrame.FIXED;
+      let frameToVisualizeKey = frameToVisualize.toString();
+      if (this._scene.mode === SceneMode.SCENE3D) {
+        const relativeTo = Property.getValueOrUndefined(
+          pathGraphics.relativeTo,
+          time,
+        );
+        if (defined(relativeTo)) {
+          if (relativeTo === "FIXED") {
+            frameToVisualize = ReferenceFrame.FIXED;
+            frameToVisualizeKey = frameToVisualize.toString();
+          } else if (relativeTo === "INERTIAL") {
+            frameToVisualize = ReferenceFrame.INERTIAL;
+            frameToVisualizeKey = frameToVisualize.toString();
+          } else {
+            // Path should be relative to entity
+            // Current implementation uses VVLH, ignores entity orientation
+            isRelative = true;
+            frameToVisualize = this._entityCollection.getById(relativeTo);
+            frameToVisualizeKey = relativeTo;
+          }
+        } else {
+          frameToVisualize = positionProperty.referenceFrame;
+          frameToVisualizeKey = frameToVisualize.toString();
+        }
+      }
+
+      let currentUpdater = this._updaters[frameToVisualizeKey];
+
+      if (lastUpdater === currentUpdater && defined(currentUpdater)) {
+        currentUpdater.updateObject(time, item);
+        continue;
+      }
+
+      if (defined(lastUpdater)) {
+        lastUpdater.removeObject(item);
+      }
+
+      if (isRelative && !defined(frameToVisualize)) {
+        continue;
+      }
+
+      if (!defined(currentUpdater)) {
+        currentUpdater = new PolylineUpdater(this._scene, frameToVisualize);
+        currentUpdater.update(time);
+        this._updaters[frameToVisualizeKey] = currentUpdater;
+      }
+
+      item.updater = currentUpdater;
+      if (defined(currentUpdater)) {
+        currentUpdater.updateObject(time, item);
+      }
     }
+    return true;
   }
-  return true;
-};
 
-/**
- * Returns true if this object was destroyed; otherwise, false.
- *
- * @returns {boolean} True if this object was destroyed; otherwise, false.
- */
-PathVisualizer.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Removes and destroys all primitives created by this instance.
- */
-PathVisualizer.prototype.destroy = function () {
-  this._entityCollection.collectionChanged.removeEventListener(
-    PathVisualizer.prototype._onCollectionChanged,
-    this,
-  );
-
-  const updaters = this._updaters;
-  for (const key in updaters) {
-    if (updaters.hasOwnProperty(key)) {
-      updaters[key].destroy();
-    }
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   *
+   * @returns {boolean} True if this object was destroyed; otherwise, false.
+   */
+  isDestroyed() {
+    return false;
   }
 
-  return destroyObject(this);
-};
+  /**
+   * Removes and destroys all primitives created by this instance.
+   */
+  destroy() {
+    this._entityCollection.collectionChanged.removeEventListener(
+      PathVisualizer.prototype._onCollectionChanged,
+      this,
+    );
 
-PathVisualizer.prototype._onCollectionChanged = function (
-  entityCollection,
-  added,
-  removed,
-  changed,
-) {
-  let i;
-  let entity;
-  let item;
-  const items = this._items;
-
-  for (i = added.length - 1; i > -1; i--) {
-    entity = added[i];
-    if (defined(entity._path) && defined(entity._position)) {
-      items.set(entity.id, new EntityData(entity));
+    const updaters = this._updaters;
+    for (const key in updaters) {
+      if (updaters.hasOwnProperty(key)) {
+        updaters[key].destroy();
+      }
     }
+
+    return destroyObject(this);
   }
 
-  for (i = changed.length - 1; i > -1; i--) {
-    entity = changed[i];
-    if (defined(entity._path) && defined(entity._position)) {
-      if (!items.contains(entity.id)) {
+  _onCollectionChanged(entityCollection, added, removed, changed) {
+    let i;
+    let entity;
+    let item;
+    const items = this._items;
+
+    for (i = added.length - 1; i > -1; i--) {
+      entity = added[i];
+      if (defined(entity._path) && defined(entity._position)) {
         items.set(entity.id, new EntityData(entity));
       }
-    } else {
+    }
+
+    for (i = changed.length - 1; i > -1; i--) {
+      entity = changed[i];
+      if (defined(entity._path) && defined(entity._position)) {
+        if (!items.contains(entity.id)) {
+          items.set(entity.id, new EntityData(entity));
+        }
+      } else {
+        item = items.get(entity.id);
+        if (defined(item)) {
+          if (defined(item.updater)) {
+            item.updater.removeObject(item);
+          }
+          items.remove(entity.id);
+        }
+      }
+    }
+
+    for (i = removed.length - 1; i > -1; i--) {
+      entity = removed[i];
       item = items.get(entity.id);
       if (defined(item)) {
         if (defined(item.updater)) {
@@ -1115,18 +1123,7 @@ PathVisualizer.prototype._onCollectionChanged = function (
       }
     }
   }
-
-  for (i = removed.length - 1; i > -1; i--) {
-    entity = removed[i];
-    item = items.get(entity.id);
-    if (defined(item)) {
-      if (defined(item.updater)) {
-        item.updater.removeObject(item);
-      }
-      items.remove(entity.id);
-    }
-  }
-};
+}
 
 //for testing
 PathVisualizer._subSample = subSample;

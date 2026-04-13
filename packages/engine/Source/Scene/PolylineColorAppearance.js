@@ -44,50 +44,50 @@ const defaultFragmentShaderSource = PerInstanceFlatColorAppearanceFS;
  *   })
  * });
  */
-function PolylineColorAppearance(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class PolylineColorAppearance {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const translucent = options.translucent ?? true;
-  const closed = false;
-  const vertexFormat = PolylineColorAppearance.VERTEX_FORMAT;
+    const translucent = options.translucent ?? true;
+    const closed = false;
+    const vertexFormat = PolylineColorAppearance.VERTEX_FORMAT;
 
-  /**
-   * This property is part of the {@link Appearance} interface, but is not
-   * used by {@link PolylineColorAppearance} since a fully custom fragment shader is used.
-   *
-   * @type Material
-   *
-   * @default undefined
-   */
-  this.material = undefined;
+    /**
+     * This property is part of the {@link Appearance} interface, but is not
+     * used by {@link PolylineColorAppearance} since a fully custom fragment shader is used.
+     *
+     * @type Material
+     *
+     * @default undefined
+     */
+    this.material = undefined;
 
-  /**
-   * When <code>true</code>, the geometry is expected to appear translucent so
-   * {@link PolylineColorAppearance#renderState} has alpha blending enabled.
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  this.translucent = translucent;
+    /**
+     * When <code>true</code>, the geometry is expected to appear translucent so
+     * {@link PolylineColorAppearance#renderState} has alpha blending enabled.
+     *
+     * @type {boolean}
+     *
+     * @default true
+     */
+    this.translucent = translucent;
 
-  this._vertexShaderSource =
-    options.vertexShaderSource ?? defaultVertexShaderSource;
-  this._fragmentShaderSource =
-    options.fragmentShaderSource ?? defaultFragmentShaderSource;
-  this._renderState = Appearance.getDefaultRenderState(
-    translucent,
-    closed,
-    options.renderState,
-  );
-  this._closed = closed;
+    this._vertexShaderSource =
+      options.vertexShaderSource ?? defaultVertexShaderSource;
+    this._fragmentShaderSource =
+      options.fragmentShaderSource ?? defaultFragmentShaderSource;
+    this._renderState = Appearance.getDefaultRenderState(
+      translucent,
+      closed,
+      options.renderState,
+    );
+    this._closed = closed;
 
-  // Non-derived members
+    // Non-derived members
 
-  this._vertexFormat = vertexFormat;
-}
+    this._vertexFormat = vertexFormat;
+  }
 
-Object.defineProperties(PolylineColorAppearance.prototype, {
   /**
    * The GLSL source code for the vertex shader.
    *
@@ -96,11 +96,9 @@ Object.defineProperties(PolylineColorAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  vertexShaderSource: {
-    get: function () {
-      return this._vertexShaderSource;
-    },
-  },
+  get vertexShaderSource() {
+    return this._vertexShaderSource;
+  }
 
   /**
    * The GLSL source code for the fragment shader.
@@ -110,11 +108,9 @@ Object.defineProperties(PolylineColorAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  fragmentShaderSource: {
-    get: function () {
-      return this._fragmentShaderSource;
-    },
-  },
+  get fragmentShaderSource() {
+    return this._fragmentShaderSource;
+  }
 
   /**
    * The WebGL fixed-function state to use when rendering the geometry.
@@ -128,11 +124,9 @@ Object.defineProperties(PolylineColorAppearance.prototype, {
    * @type {object}
    * @readonly
    */
-  renderState: {
-    get: function () {
-      return this._renderState;
-    },
-  },
+  get renderState() {
+    return this._renderState;
+  }
 
   /**
    * When <code>true</code>, the geometry is expected to be closed so
@@ -146,11 +140,9 @@ Object.defineProperties(PolylineColorAppearance.prototype, {
    *
    * @default false
    */
-  closed: {
-    get: function () {
-      return this._closed;
-    },
-  },
+  get closed() {
+    return this._closed;
+  }
 
   /**
    * The {@link VertexFormat} that this appearance instance is compatible with.
@@ -164,12 +156,10 @@ Object.defineProperties(PolylineColorAppearance.prototype, {
    *
    * @default {@link PolylineColorAppearance.VERTEX_FORMAT}
    */
-  vertexFormat: {
-    get: function () {
-      return this._vertexFormat;
-    },
-  },
-});
+  get vertexFormat() {
+    return this._vertexFormat;
+  }
+}
 
 /**
  * The {@link VertexFormat} that all {@link PolylineColorAppearance} instances

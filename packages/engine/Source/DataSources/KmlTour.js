@@ -1,5 +1,6 @@
 import defined from "../Core/defined.js";
 import Event from "../Core/Event.js";
+
 /**
  * Describes a KmlTour, which uses KmlTourFlyTo, and KmlTourWait to
  * guide the camera to a specified destinations on given time intervals.
@@ -16,98 +17,100 @@ import Event from "../Core/Event.js";
  *
  * @demo {@link https://sandcastle.cesium.com/?id=kml-tours|KML Tours}
  */
-function KmlTour(name, id) {
-  /**
-   * Id of kml gx:Tour entry
-   * @type {string}
-   */
-  this.id = id;
-  /**
-   * Tour name
-   * @type {string}
-   */
-  this.name = name;
-  /**
-   * Index of current entry from playlist
-   * @type {number}
-   */
-  this.playlistIndex = 0;
-  /**
-   * Array of playlist entries
-   * @type {Array}
-   */
-  this.playlist = [];
-  /**
-   * Event will be called when tour starts to play,
-   * before any playlist entry starts to play.
-   * @type Event
-   */
-  this.tourStart = new Event();
-  /**
-   * Event will be called when all playlist entries are
-   * played, or tour playback being canceled.
-   *
-   * If tour playback was terminated, event callback will
-   * be called with terminated=true parameter.
-   * @type Event
-   */
-  this.tourEnd = new Event();
-  /**
-   * Event will be called when entry from playlist starts to play.
-   *
-   * Event callback will be called with curent entry as first parameter.
-   * @type Event
-   */
-  this.entryStart = new Event();
-  /**
-   * Event will be called when entry from playlist ends to play.
-   *
-   * Event callback will be called with following parameters:
-   * 1. entry - entry
-   * 2. terminated - true if playback was terminated by calling {@link KmlTour#stop}
-   * @type Event
-   */
-  this.entryEnd = new Event();
+class KmlTour {
+  constructor(name, id) {
+    /**
+     * Id of kml gx:Tour entry
+     * @type {string}
+     */
+    this.id = id;
+    /**
+     * Tour name
+     * @type {string}
+     */
+    this.name = name;
+    /**
+     * Index of current entry from playlist
+     * @type {number}
+     */
+    this.playlistIndex = 0;
+    /**
+     * Array of playlist entries
+     * @type {Array}
+     */
+    this.playlist = [];
+    /**
+     * Event will be called when tour starts to play,
+     * before any playlist entry starts to play.
+     * @type Event
+     */
+    this.tourStart = new Event();
+    /**
+     * Event will be called when all playlist entries are
+     * played, or tour playback being canceled.
+     *
+     * If tour playback was terminated, event callback will
+     * be called with terminated=true parameter.
+     * @type Event
+     */
+    this.tourEnd = new Event();
+    /**
+     * Event will be called when entry from playlist starts to play.
+     *
+     * Event callback will be called with curent entry as first parameter.
+     * @type Event
+     */
+    this.entryStart = new Event();
+    /**
+     * Event will be called when entry from playlist ends to play.
+     *
+     * Event callback will be called with following parameters:
+     * 1. entry - entry
+     * 2. terminated - true if playback was terminated by calling {@link KmlTour#stop}
+     * @type Event
+     */
+    this.entryEnd = new Event();
 
-  this._activeEntries = [];
+    this._activeEntries = [];
+  }
+
+  /**
+   * Add entry to this tour playlist.
+   *
+   * @param {KmlTourFlyTo|KmlTourWait} entry an entry to add to the playlist.
+   */
+  addPlaylistEntry(entry) {
+    this.playlist.push(entry);
+  }
+
+  /**
+   * Play this tour.
+   *
+   * @param {CesiumWidget} widget The widget.
+   * @param {object} [cameraOptions] these options will be merged with {@link Camera#flyTo}
+   * options for FlyTo playlist entries.
+   */
+  play(widget, cameraOptions) {
+    this.tourStart.raiseEvent();
+
+    const tour = this;
+    playEntry.call(this, widget, cameraOptions, function (terminated) {
+      tour.playlistIndex = 0;
+      // Stop nonblocking entries
+      if (!terminated) {
+        cancelAllEntries(tour._activeEntries);
+      }
+      tour.tourEnd.raiseEvent(terminated);
+    });
+  }
+
+  /**
+   * Stop curently playing tour.
+   */
+  stop() {
+    cancelAllEntries(this._activeEntries);
+  }
 }
-
-/**
- * Add entry to this tour playlist.
- *
- * @param {KmlTourFlyTo|KmlTourWait} entry an entry to add to the playlist.
- */
-KmlTour.prototype.addPlaylistEntry = function (entry) {
-  this.playlist.push(entry);
-};
-
-/**
- * Play this tour.
- *
- * @param {CesiumWidget} widget The widget.
- * @param {object} [cameraOptions] these options will be merged with {@link Camera#flyTo}
- * options for FlyTo playlist entries.
- */
-KmlTour.prototype.play = function (widget, cameraOptions) {
-  this.tourStart.raiseEvent();
-
-  const tour = this;
-  playEntry.call(this, widget, cameraOptions, function (terminated) {
-    tour.playlistIndex = 0;
-    // Stop nonblocking entries
-    if (!terminated) {
-      cancelAllEntries(tour._activeEntries);
-    }
-    tour.tourEnd.raiseEvent(terminated);
-  });
-};
-
-/**
- * Stop curently playing tour.
- */
-KmlTour.prototype.stop = function () {
-  cancelAllEntries(this._activeEntries);
-};
 
 // Stop all activeEntries.
 function cancelAllEntries(activeEntries) {

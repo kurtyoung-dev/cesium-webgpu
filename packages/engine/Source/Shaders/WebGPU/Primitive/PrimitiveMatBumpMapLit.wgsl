@@ -20,7 +20,7 @@ struct VertexOutput {
     @location(2) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -29,20 +29,23 @@ struct Uniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // Material params
+}
+
+struct MaterialUniforms {
     repeat: vec2<f32>,
-    channel: f32,  // 0=r, 1=g, 2=b, 3=a
+    channel: f32,  // 0=r, 1=g, 2=b, 3=a,
     strength: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var bumpTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(2) @binding(0) var textureSampler: sampler;
+@group(2) @binding(1) var bumpTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -58,9 +61,9 @@ fn extractChannel(texColor: vec4<f32>, ch: f32) -> f32 {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * posRTE;
-    output.worldNormal = (uniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * posRTE).xyz;
+    output.clipPosition = camera.mvpRelativeToEye * posRTE;
+    output.worldNormal = (camera.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
     output.texCoord = input.texCoord;
     return output;
 }
@@ -69,26 +72,26 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Compute bumped normal from height map
     let texDims = vec2<f32>(textureDimensions(bumpTexture, 0));
-    let uv = fract(input.texCoord * uniforms.repeat);
+    let uv = fract(input.texCoord * material.repeat);
 
     let centerBump = extractChannel(
         textureSample(bumpTexture, textureSampler, uv),
-        uniforms.channel
+        material.channel
     );
     let rightBump = extractChannel(
         textureSample(bumpTexture, textureSampler, fract(uv + vec2<f32>(1.0 / texDims.x, 0.0))),
-        uniforms.channel
+        material.channel
     );
     let topBump = extractChannel(
         textureSample(bumpTexture, textureSampler, fract(uv + vec2<f32>(0.0, 1.0 / texDims.y))),
-        uniforms.channel
+        material.channel
     );
 
     // Tangent-space normal from height differences
     let bumpNormal = normalize(vec3<f32>(
         centerBump - rightBump,
         centerBump - topBump,
-        clamp(1.0 - uniforms.strength, 0.1, 1.0)
+        clamp(1.0 - material.strength, 0.1, 1.0)
     ));
 
     // Approximate tangent-to-eye transformation using screen-space derivatives
@@ -103,7 +106,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Blinn-Phong with perturbed normal
     let V = normalize(-input.viewPosition);
-    let L = normalize(uniforms.lightDirection.xyz);
+    let L = normalize(camera.lightDirection.xyz);
 
     let NdotL = max(dot(perturbedNormal, L), 0.0);
     let H = normalize(L + V);

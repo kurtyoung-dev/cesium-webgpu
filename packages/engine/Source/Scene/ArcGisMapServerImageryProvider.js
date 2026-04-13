@@ -298,49 +298,351 @@ async function requestMetadata(resource, imageryProviderBuilder) {
  * @see {@link https://developers.arcgis.com/documentation/mapping-apis-and-services/security| ArcGIS Access Token }
 
  */
-function ArcGisMapServerImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ArcGisMapServerImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
 
-  this._tileDiscardPolicy = options.tileDiscardPolicy;
-  this._tileWidth = options.tileWidth ?? 256;
-  this._tileHeight = options.tileHeight ?? 256;
-  this._maximumLevel = options.maximumLevel;
-  this._tilingScheme =
-    options.tilingScheme ??
-    new GeographicTilingScheme({ ellipsoid: options.ellipsoid });
-  this._useTiles = options.usePreCachedTilesIfAvailable ?? true;
-  this._rectangle = options.rectangle ?? this._tilingScheme.rectangle;
-  this._layers = options.layers;
-  this._credit = options.credit;
-  this._tileCredits = undefined;
+    this._tileDiscardPolicy = options.tileDiscardPolicy;
+    this._tileWidth = options.tileWidth ?? 256;
+    this._tileHeight = options.tileHeight ?? 256;
+    this._maximumLevel = options.maximumLevel;
+    this._tilingScheme =
+      options.tilingScheme ??
+      new GeographicTilingScheme({ ellipsoid: options.ellipsoid });
+    this._useTiles = options.usePreCachedTilesIfAvailable ?? true;
+    this._rectangle = options.rectangle ?? this._tilingScheme.rectangle;
+    this._layers = options.layers;
+    this._credit = options.credit;
+    this._tileCredits = undefined;
 
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+
+    /**
+     * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link ArcGisMapServerImageryProvider#pickFeatures} will
+     * invoke the "identify" operation on the ArcGIS server and return the features included in the response.  If false,
+     * {@link ArcGisMapServerImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable features)
+     * without communicating with the server.
+     * @type {boolean}
+     * @default true
+     */
+    this.enablePickFeatures = options.enablePickFeatures ?? true;
+
+    this._errorEvent = new Event();
   }
 
   /**
-   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link ArcGisMapServerImageryProvider#pickFeatures} will
-   * invoke the "identify" operation on the ArcGIS server and return the features included in the response.  If false,
-   * {@link ArcGisMapServerImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable features)
-   * without communicating with the server.
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    return this._tileCredits;
+  }
+
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    return ImageryProvider.loadImage(
+      this,
+      buildImageResource(this, x, y, level, request),
+    );
+  }
+
+  /**
+      /**
+       * Asynchronously determines what features, if any, are located at a given longitude and latitude within
+       * a tile.
+       *
+       * @param {number} x The tile X coordinate.
+       * @param {number} y The tile Y coordinate.
+       * @param {number} level The tile level.
+       * @param {number} longitude The longitude at which to pick features.
+       * @param {number} latitude  The latitude at which to pick features.
+       * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
+       *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
+       *                   instances.  The array may be empty if no features are found at the given location.
+       */
+  pickFeatures(x, y, level, longitude, latitude) {
+    if (!this.enablePickFeatures) {
+      return undefined;
+    }
+
+    const rectangle = this._tilingScheme.tileXYToNativeRectangle(x, y, level);
+
+    let horizontal;
+    let vertical;
+    let sr;
+    if (this._tilingScheme.projection instanceof GeographicProjection) {
+      horizontal = CesiumMath.toDegrees(longitude);
+      vertical = CesiumMath.toDegrees(latitude);
+      sr = "4326";
+    } else {
+      const projected = this._tilingScheme.projection.project(
+        new Cartographic(longitude, latitude, 0.0),
+      );
+      horizontal = projected.x;
+      vertical = projected.y;
+      sr = "3857";
+    }
+
+    let layers = "visible";
+    if (defined(this._layers)) {
+      layers += `:${this._layers}`;
+    }
+
+    const query = {
+      f: "json",
+      tolerance: 2,
+      geometryType: "esriGeometryPoint",
+      geometry: `${horizontal},${vertical}`,
+      mapExtent: `${rectangle.west},${rectangle.south},${rectangle.east},${rectangle.north}`,
+      imageDisplay: `${this._tileWidth},${this._tileHeight},96`,
+      sr: sr,
+      layers: layers,
+    };
+
+    const resource = this._resource.getDerivedResource({
+      url: "identify",
+      queryParameters: query,
+    });
+
+    return resource.fetchJson().then(function (json) {
+      const result = [];
+
+      const features = json.results;
+      if (!defined(features)) {
+        return result;
+      }
+
+      for (let i = 0; i < features.length; ++i) {
+        const feature = features[i];
+
+        const featureInfo = new ImageryLayerFeatureInfo();
+        featureInfo.data = feature;
+        featureInfo.name = feature.value;
+        featureInfo.properties = feature.attributes;
+        featureInfo.configureDescriptionFromProperties(feature.attributes);
+
+        // If this is a point feature, use the coordinates of the point.
+        if (feature.geometryType === "esriGeometryPoint" && feature.geometry) {
+          const wkid =
+            feature.geometry.spatialReference &&
+            feature.geometry.spatialReference.wkid
+              ? feature.geometry.spatialReference.wkid
+              : 4326;
+          if (wkid === 4326 || wkid === 4283) {
+            featureInfo.position = Cartographic.fromDegrees(
+              feature.geometry.x,
+              feature.geometry.y,
+              feature.geometry.z,
+            );
+          } else if (wkid === 102100 || wkid === 900913 || wkid === 3857) {
+            const projection = new WebMercatorProjection();
+            featureInfo.position = projection.unproject(
+              new Cartesian3(
+                feature.geometry.x,
+                feature.geometry.y,
+                feature.geometry.z,
+              ),
+            );
+          }
+        }
+
+        result.push(featureInfo);
+      }
+
+      return result;
+    });
+  }
+
+  /**
+   * Gets the URL of the ArcGIS MapServer.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {string}
+   * @readonly
+   */
+  get url() {
+    return this._resource._url;
+  }
+
+  /**
+   * Gets the ArcGIS token used to authenticate with the ArcGis MapServer service.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {string}
+   * @readonly
+   */
+  get token() {
+    return this._resource.queryParameters.token;
+  }
+
+  /**
+   * Gets the proxy used by this provider.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {Proxy}
+   * @readonly
+   */
+  get proxy() {
+    return this._resource.proxy;
+  }
+
+  /**
+   * Gets the width of each tile, in pixels.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get tileWidth() {
+    return this._tileWidth;
+  }
+
+  /**
+   * Gets the height of each tile, in pixels.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get tileHeight() {
+    return this._tileHeight;
+  }
+
+  /**
+   * Gets the maximum level-of-detail that can be requested.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  get maximumLevel() {
+    return this._maximumLevel;
+  }
+
+  /**
+   * Gets the minimum level-of-detail that can be requested.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get minimumLevel() {
+    return 0;
+  }
+
+  /**
+   * Gets the tiling scheme used by this provider.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {TilingScheme}
+   * @readonly
+   */
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
+
+  /**
+   * Gets the rectangle, in radians, of the imagery provided by this instance.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {Rectangle}
+   * @readonly
+   */
+  get rectangle() {
+    return this._rectangle;
+  }
+
+  /**
+   * Gets the tile discard policy.  If not undefined, the discard policy is responsible
+   * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
+   * returns undefined, no tiles are filtered.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {TileDiscardPolicy}
+   * @readonly
+   */
+  get tileDiscardPolicy() {
+    return this._tileDiscardPolicy;
+  }
+
+  /**
+   * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
+   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
+   * are passed an instance of {@link TileProviderError}.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get errorEvent() {
+    return this._errorEvent;
+  }
+
+  /**
+   * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
+   * the source of the imagery.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   * @type {Credit}
+   * @readonly
+   */
+  get credit() {
+    return this._credit;
+  }
+
+  /**
+   * Gets a value indicating whether this imagery provider is using pre-cached tiles from the
+   * ArcGIS MapServer.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   *
    * @type {boolean}
+   * @readonly
    * @default true
    */
-  this.enablePickFeatures = options.enablePickFeatures ?? true;
+  get usingPrecachedTiles() {
+    return this._useTiles;
+  }
 
-  this._errorEvent = new Event();
+  /**
+   * Gets a value indicating whether or not the images provided by this imagery provider
+   * include an alpha channel.  If this property is false, an alpha channel, if present, will
+   * be ignored.  If this property is true, any images without an alpha channel will be treated
+   * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
+   * and texture upload time are reduced.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   * @default true
+   */
+  get hasAlphaChannel() {
+    return true;
+  }
+
+  /**
+   * Gets the comma-separated list of layer IDs to show.
+   * @memberof ArcGisMapServerImageryProvider.prototype
+   *
+   * @type {string}
+   */
+  get layers() {
+    return this._layers;
+  }
 }
 
 /**
@@ -481,202 +783,6 @@ function buildImageResource(imageryProvider, x, y, level, request) {
   return resource;
 }
 
-Object.defineProperties(ArcGisMapServerImageryProvider.prototype, {
-  /**
-   * Gets the URL of the ArcGIS MapServer.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {string}
-   * @readonly
-   */
-  url: {
-    get: function () {
-      return this._resource._url;
-    },
-  },
-
-  /**
-   * Gets the ArcGIS token used to authenticate with the ArcGis MapServer service.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {string}
-   * @readonly
-   */
-  token: {
-    get: function () {
-      return this._resource.queryParameters.token;
-    },
-  },
-
-  /**
-   * Gets the proxy used by this provider.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {Proxy}
-   * @readonly
-   */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
-
-  /**
-   * Gets the width of each tile, in pixels.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
-
-  /**
-   * Gets the height of each tile, in pixels.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
-
-  /**
-   * Gets the maximum level-of-detail that can be requested.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {number|undefined}
-   * @readonly
-   */
-  maximumLevel: {
-    get: function () {
-      return this._maximumLevel;
-    },
-  },
-
-  /**
-   * Gets the minimum level-of-detail that can be requested.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  minimumLevel: {
-    get: function () {
-      return 0;
-    },
-  },
-
-  /**
-   * Gets the tiling scheme used by this provider.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {TilingScheme}
-   * @readonly
-   */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
-
-  /**
-   * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {Rectangle}
-   * @readonly
-   */
-  rectangle: {
-    get: function () {
-      return this._rectangle;
-    },
-  },
-
-  /**
-   * Gets the tile discard policy.  If not undefined, the discard policy is responsible
-   * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
-   * returns undefined, no tiles are filtered.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {TileDiscardPolicy}
-   * @readonly
-   */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._tileDiscardPolicy;
-    },
-  },
-
-  /**
-   * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
-   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
-   * are passed an instance of {@link TileProviderError}.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {Event}
-   * @readonly
-   */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
-
-  /**
-   * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
-   * the source of the imagery.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   * @type {Credit}
-   * @readonly
-   */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether this imagery provider is using pre-cached tiles from the
-   * ArcGIS MapServer.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   * @default true
-   */
-  usingPrecachedTiles: {
-    get: function () {
-      return this._useTiles;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the images provided by this imagery provider
-   * include an alpha channel.  If this property is false, an alpha channel, if present, will
-   * be ignored.  If this property is true, any images without an alpha channel will be treated
-   * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
-   * and texture upload time are reduced.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   *
-   * @type {boolean}
-   * @readonly
-   * @default true
-   */
-  hasAlphaChannel: {
-    get: function () {
-      return true;
-    },
-  },
-
-  /**
-   * Gets the comma-separated list of layer IDs to show.
-   * @memberof ArcGisMapServerImageryProvider.prototype
-   *
-   * @type {string}
-   */
-  layers: {
-    get: function () {
-      return this._layers;
-    },
-  },
-});
-
 /**
  * Creates an {@link ImageryProvider} which provides tiled imagery hosted by an ArcGIS MapServer.  By default, the server's pre-cached tiles are
  * used, if available.
@@ -721,155 +827,5 @@ ArcGisMapServerImageryProvider.fromUrl = async function (url, options) {
   return provider;
 };
 
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-ArcGisMapServerImageryProvider.prototype.getTileCredits = function (
-  x,
-  y,
-  level,
-) {
-  return this._tileCredits;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-ArcGisMapServerImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  return ImageryProvider.loadImage(
-    this,
-    buildImageResource(this, x, y, level, request),
-  );
-};
-
-/**
-    /**
-     * Asynchronously determines what features, if any, are located at a given longitude and latitude within
-     * a tile.
-     *
-     * @param {number} x The tile X coordinate.
-     * @param {number} y The tile Y coordinate.
-     * @param {number} level The tile level.
-     * @param {number} longitude The longitude at which to pick features.
-     * @param {number} latitude  The latitude at which to pick features.
-     * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
-     *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
-     *                   instances.  The array may be empty if no features are found at the given location.
-     */
-ArcGisMapServerImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  if (!this.enablePickFeatures) {
-    return undefined;
-  }
-
-  const rectangle = this._tilingScheme.tileXYToNativeRectangle(x, y, level);
-
-  let horizontal;
-  let vertical;
-  let sr;
-  if (this._tilingScheme.projection instanceof GeographicProjection) {
-    horizontal = CesiumMath.toDegrees(longitude);
-    vertical = CesiumMath.toDegrees(latitude);
-    sr = "4326";
-  } else {
-    const projected = this._tilingScheme.projection.project(
-      new Cartographic(longitude, latitude, 0.0),
-    );
-    horizontal = projected.x;
-    vertical = projected.y;
-    sr = "3857";
-  }
-
-  let layers = "visible";
-  if (defined(this._layers)) {
-    layers += `:${this._layers}`;
-  }
-
-  const query = {
-    f: "json",
-    tolerance: 2,
-    geometryType: "esriGeometryPoint",
-    geometry: `${horizontal},${vertical}`,
-    mapExtent: `${rectangle.west},${rectangle.south},${rectangle.east},${rectangle.north}`,
-    imageDisplay: `${this._tileWidth},${this._tileHeight},96`,
-    sr: sr,
-    layers: layers,
-  };
-
-  const resource = this._resource.getDerivedResource({
-    url: "identify",
-    queryParameters: query,
-  });
-
-  return resource.fetchJson().then(function (json) {
-    const result = [];
-
-    const features = json.results;
-    if (!defined(features)) {
-      return result;
-    }
-
-    for (let i = 0; i < features.length; ++i) {
-      const feature = features[i];
-
-      const featureInfo = new ImageryLayerFeatureInfo();
-      featureInfo.data = feature;
-      featureInfo.name = feature.value;
-      featureInfo.properties = feature.attributes;
-      featureInfo.configureDescriptionFromProperties(feature.attributes);
-
-      // If this is a point feature, use the coordinates of the point.
-      if (feature.geometryType === "esriGeometryPoint" && feature.geometry) {
-        const wkid =
-          feature.geometry.spatialReference &&
-          feature.geometry.spatialReference.wkid
-            ? feature.geometry.spatialReference.wkid
-            : 4326;
-        if (wkid === 4326 || wkid === 4283) {
-          featureInfo.position = Cartographic.fromDegrees(
-            feature.geometry.x,
-            feature.geometry.y,
-            feature.geometry.z,
-          );
-        } else if (wkid === 102100 || wkid === 900913 || wkid === 3857) {
-          const projection = new WebMercatorProjection();
-          featureInfo.position = projection.unproject(
-            new Cartesian3(
-              feature.geometry.x,
-              feature.geometry.y,
-              feature.geometry.z,
-            ),
-          );
-        }
-      }
-
-      result.push(featureInfo);
-    }
-
-    return result;
-  });
-};
 ArcGisMapServerImageryProvider._metadataCache = {};
 export default ArcGisMapServerImageryProvider;

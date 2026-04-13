@@ -21,12 +21,12 @@ import defined from "../../Core/defined.js";
  * Spiral search pattern for finding picked objects from center outward.
  */
 function pickObjectsFromPixels(
-  context: any,
+  context: CesiumGraphicsContext,
   pixels: Uint8Array,
   width: number,
   height: number,
   limit: number = 1,
-): any[] {
+): unknown[] {
   const max = Math.max(width, height);
   const length = max * max;
   const halfWidth = Math.floor(width * 0.5);
@@ -37,7 +37,7 @@ function pickObjectsFromPixels(
   let dx = 0;
   let dy = -1;
 
-  const objects = new Set<any>();
+  const objects = new Set<unknown>();
   for (let i = 0; i < length; ++i) {
     if (
       -halfWidth <= x &&
@@ -78,13 +78,13 @@ function pickObjectsFromPixels(
 }
 
 export class WebGPUPickFramebuffer {
-  private _context: any;
+  private _context: CesiumGraphicsContext;
   private _device: GPUDevice | null = null;
   private _colorTexture: GPUTexture | null = null;
   private _depthTexture: GPUTexture | null = null;
   private _width: number = 0;
   private _height: number = 0;
-  private _passState: any;
+  private _passState: CesiumPassState;
 
   // Staging buffer for color readback
   private _stagingBuffer: GPUBuffer | null = null;
@@ -95,12 +95,13 @@ export class WebGPUPickFramebuffer {
   private _readableDepthTexture: GPUTexture | null = null;
   private _depthStagingBuffer: GPUBuffer | null = null;
 
-  constructor(context: any) {
+  constructor(context: CesiumGraphicsContext) {
     this._context = context;
     this._device = context._device ?? null;
 
     // Create pass state with scissor/viewport
     this._passState = {
+      context: context,
       framebuffer: undefined,
       blendingEnabled: false,
       scissorTest: {
@@ -115,7 +116,7 @@ export class WebGPUPickFramebuffer {
    * Begin a pick rendering pass.
    * Creates/resizes the offscreen render targets and returns a pass state.
    */
-  begin(screenSpaceRectangle: any, viewport: any): any {
+  begin(screenSpaceRectangle: CesiumBoundingRectangle, viewport: CesiumBoundingRectangle): CesiumPassState {
     const device = this._context._device;
     if (!device) {
       return this._passState;
@@ -125,8 +126,8 @@ export class WebGPUPickFramebuffer {
     const { width, height } = viewport;
 
     BoundingRectangle.clone(
-      screenSpaceRectangle,
-      this._passState.scissorTest.rectangle,
+      screenSpaceRectangle as unknown as BoundingRectangle,
+      this._passState.scissorTest.rectangle as unknown as BoundingRectangle,
     );
 
     // Create or recreate render targets
@@ -204,7 +205,7 @@ export class WebGPUPickFramebuffer {
    * For practical use, this returns the result from the previous frame's readback
    * if available, while starting a new readback for the current frame.
    */
-  end(screenSpaceRectangle: any, limit: number = 1): any[] {
+  end(screenSpaceRectangle: CesiumBoundingRectangle, limit: number = 1): unknown[] {
     const context = this._context;
     const device = this._device;
 
@@ -237,10 +238,10 @@ export class WebGPUPickFramebuffer {
    * This is the recommended path for WebGPU — always returns correct results.
    */
   async endAsync(
-    screenSpaceRectangle: any,
-    frameState: any,
+    screenSpaceRectangle: CesiumBoundingRectangle,
+    frameState: CesiumFrameState,
     limit: number = 1,
-  ): Promise<any[]> {
+  ): Promise<unknown[]> {
     const context = this._context;
     const device = this._device;
 
@@ -294,7 +295,7 @@ export class WebGPUPickFramebuffer {
    * Read the center pixel of the pick rectangle.
    * Used for voxel coordinate picking and metadata picking.
    */
-  readCenterPixel(screenSpaceRectangle: any): Uint8Array {
+  readCenterPixel(screenSpaceRectangle: CesiumBoundingRectangle): Uint8Array {
     if (this._lastReadPixels) {
       const width = screenSpaceRectangle.width ?? 1;
       const height = screenSpaceRectangle.height ?? 1;

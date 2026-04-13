@@ -15,27 +15,72 @@ import scaleToGeodeticSurface from "./scaleToGeodeticSurface.js";
  *
  * @see Ellipsoid
  */
-function Cartographic(longitude, latitude, height) {
-  /**
-   * The longitude, in radians.
-   * @type {number}
-   * @default 0.0
-   */
-  this.longitude = longitude ?? 0.0;
+class Cartographic {
+  constructor(longitude, latitude, height) {
+    /**
+     * The longitude, in radians.
+     * @type {number}
+     * @default 0.0
+     */
+    this.longitude = longitude ?? 0.0;
+
+    /**
+     * The latitude, in radians.
+     * @type {number}
+     * @default 0.0
+     */
+    this.latitude = latitude ?? 0.0;
+
+    /**
+     * The height, in meters, above the ellipsoid.
+     * @type {number}
+     * @default 0.0
+     */
+    this.height = height ?? 0.0;
+  }
 
   /**
-   * The latitude, in radians.
-   * @type {number}
-   * @default 0.0
+   * Duplicates this instance.
+   *
+   * @param {Cartographic} [result] The object onto which to store the result.
+   * @returns {Cartographic} The modified result parameter or a new Cartographic instance if one was not provided.
    */
-  this.latitude = latitude ?? 0.0;
+  clone(result) {
+    return Cartographic.clone(this, result);
+  }
 
   /**
-   * The height, in meters, above the ellipsoid.
-   * @type {number}
-   * @default 0.0
+   * Compares the provided against this cartographic componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Cartographic} [right] The second cartographic.
+   * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
    */
-  this.height = height ?? 0.0;
+  equals(right) {
+    return Cartographic.equals(this, right);
+  }
+
+  /**
+   * Compares the provided against this cartographic componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
+   *
+   * @param {Cartographic} [right] The second cartographic.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if left and right are within the provided epsilon, <code>false</code> otherwise.
+   */
+  equalsEpsilon(right, epsilon) {
+    return Cartographic.equalsEpsilon(this, right, epsilon);
+  }
+
+  /**
+   * Creates a string representing this cartographic in the format '(longitude, latitude, height)'.
+   *
+   * @returns {string} A string representing the provided cartographic in the format '(longitude, latitude, height)'.
+   */
+  toString() {
+    return `(${this.longitude}, ${this.latitude}, ${this.height})`;
+  }
 }
 
 /**
@@ -259,46 +304,4 @@ Cartographic.equalsEpsilon = function (left, right, epsilon) {
  */
 Cartographic.ZERO = Object.freeze(new Cartographic(0.0, 0.0, 0.0));
 
-/**
- * Duplicates this instance.
- *
- * @param {Cartographic} [result] The object onto which to store the result.
- * @returns {Cartographic} The modified result parameter or a new Cartographic instance if one was not provided.
- */
-Cartographic.prototype.clone = function (result) {
-  return Cartographic.clone(this, result);
-};
-
-/**
- * Compares the provided against this cartographic componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Cartographic} [right] The second cartographic.
- * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
- */
-Cartographic.prototype.equals = function (right) {
-  return Cartographic.equals(this, right);
-};
-
-/**
- * Compares the provided against this cartographic componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {Cartographic} [right] The second cartographic.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if left and right are within the provided epsilon, <code>false</code> otherwise.
- */
-Cartographic.prototype.equalsEpsilon = function (right, epsilon) {
-  return Cartographic.equalsEpsilon(this, right, epsilon);
-};
-
-/**
- * Creates a string representing this cartographic in the format '(longitude, latitude, height)'.
- *
- * @returns {string} A string representing the provided cartographic in the format '(longitude, latitude, height)'.
- */
-Cartographic.prototype.toString = function () {
-  return `(${this.longitude}, ${this.latitude}, ${this.height})`;
-};
 export default Cartographic;

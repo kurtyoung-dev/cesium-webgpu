@@ -60,8 +60,8 @@ interface WebGPUDrawCommandOptions {
   firstInstance?: number;
   pass?: number;
   owner?: any;
-  boundingVolume?: any;
-  modelMatrix?: any;
+  boundingVolume?: CesiumBoundingSphere;
+  modelMatrix?: CesiumMatrix4;
   cull?: boolean;
   debugShowBoundingVolume?: boolean;
   castShadows?: boolean;
@@ -153,8 +153,8 @@ class WebGPUDrawCommand {
   /** Whether this is transmissive geometry (glass, water). Default false. */
   isTransmissive: boolean;
   owner?: any;
-  boundingVolume?: any;
-  modelMatrix?: any;
+  boundingVolume?: CesiumBoundingSphere;
+  modelMatrix?: CesiumMatrix4;
   cull: boolean;
   debugShowBoundingVolume: boolean;
   castShadows: boolean;

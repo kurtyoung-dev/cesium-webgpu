@@ -35,246 +35,246 @@ import SortMode from "./SortMode.js";
  * @see SortMode
  * @see RenderScheduler
  */
-function RenderLayer(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class RenderLayer {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options.name)) {
-    throw new DeveloperError("options.name is required.");
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options.name)) {
+      throw new DeveloperError("options.name is required.");
+    }
+    if (!defined(options.order)) {
+      throw new DeveloperError("options.order is required.");
+    }
+    //>>includeEnd('debug');
+
+    /**
+     * Human-readable layer name. Used in debug output and {@link RenderScheduler#explainRenderOrder}.
+     * @type {string}
+     * @readonly
+     */
+    this.name = options.name;
+
+    /**
+     * Execution order. Lower values render first (behind higher values).
+     * Changing this at runtime triggers re-sort of the layer collection.
+     * @type {number}
+     */
+    this._order = options.order;
+
+    /**
+     * Whether to clear the depth buffer before rendering this layer.
+     * When true, all geometry in this layer renders "on top" of previous layers.
+     *
+     * Auto mode (default): depth is cleared automatically when the layer order
+     * gap from the previous layer is >= 2. Set explicitly to override.
+     * @type {boolean}
+     * @default false
+     */
+    this.clearDepth = options.clearDepth ?? false;
+
+    /**
+     * Whether to clear the stencil buffer before rendering this layer.
+     * @type {boolean}
+     * @default false
+     */
+    this.clearStencil = options.clearStencil ?? false;
+
+    /**
+     * Sort mode for opaque draw commands in this layer.
+     *
+     * {@link SortMode.MATERIAL_MESH} groups commands by shader/texture
+     * to minimize GPU state changes (recommended for world geometry).
+     *
+     * {@link SortMode.FRONT_TO_BACK} maximizes early-Z rejection
+     * (recommended for dense scenes with heavy overdraw).
+     *
+     * @type {SortMode}
+     * @default SortMode.MATERIAL_MESH
+     */
+    this.opaqueSortMode = options.opaqueSortMode ?? SortMode.MATERIAL_MESH;
+
+    /**
+     * Sort mode for transparent draw commands in this layer.
+     * @type {SortMode}
+     * @default SortMode.BACK_TO_FRONT
+     */
+    this.transparentSortMode =
+      options.transparentSortMode ?? SortMode.BACK_TO_FRONT;
+
+    /**
+     * Sort mode for transmissive draw commands (glass, water) in this layer.
+     * Transmissive objects are rendered after opaque and before transparent.
+     * @type {SortMode}
+     * @default SortMode.BACK_TO_FRONT
+     */
+    this.transmissiveSortMode =
+      options.transmissiveSortMode ?? SortMode.BACK_TO_FRONT;
+
+    /**
+     * Custom comparator for opaque commands.
+     * Only used when {@link RenderLayer#opaqueSortMode} is {@link SortMode.CUSTOM}.
+     *
+     * Signature: `(commandA, commandB, cameraPosition) => number`
+     * Return negative if A should render before B, positive if after, 0 if equal.
+     *
+     * @type {Function|undefined}
+     * @default undefined
+     */
+    this.customOpaqueSort = options.customOpaqueSort;
+
+    /**
+     * Custom comparator for transparent commands.
+     * Only used when {@link RenderLayer#transparentSortMode} is {@link SortMode.CUSTOM}.
+     *
+     * Signature: `(commandA, commandB, cameraPosition) => number`
+     *
+     * @type {Function|undefined}
+     * @default undefined
+     */
+    this.customTransparentSort = options.customTransparentSort;
+
+    /**
+     * 32-bit bitmask for visibility group filtering. A command is visible
+     * in this layer only if `(command.visibilityMask & layer.visibilityMask) !== 0`.
+     *
+     * Default: all bits set (0xFFFFFFFF) — everything visible.
+     * @type {number}
+     * @default 0xFFFFFFFF
+     */
+    this.visibilityMask = options.visibilityMask ?? 0xffffffff;
+
+    /**
+     * Whether this layer is currently active. Disabled layers are skipped
+     * during rendering but retain their configuration.
+     * @type {boolean}
+     * @default true
+     */
+    this.enabled = options.enabled ?? true;
+
+    // --- Internal per-frame command buckets (managed by RenderScheduler) ---
+
+    /**
+     * @private
+     * @type {Array}
+     */
+    this._opaqueCommands = [];
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this._opaqueCount = 0;
+
+    /**
+     * @private
+     * @type {Array}
+     */
+    this._transparentCommands = [];
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this._transparentCount = 0;
+
+    /**
+     * @private
+     * @type {Array}
+     */
+    this._transmissiveCommands = [];
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this._transmissiveCount = 0;
+
+    /**
+     * Dirty flag — set when any configuration changes.
+     * @private
+     * @type {boolean}
+     */
+    this._dirty = true;
   }
-  if (!defined(options.order)) {
-    throw new DeveloperError("options.order is required.");
+
+  /**
+   * Resets per-frame command buckets. Called at the start of each frame
+   * by the RenderScheduler before command binning.
+   * @private
+   */
+  resetCommandBuckets() {
+    this._opaqueCount = 0;
+    this._transparentCount = 0;
+    this._transmissiveCount = 0;
   }
-  //>>includeEnd('debug');
 
   /**
-   * Human-readable layer name. Used in debug output and {@link RenderScheduler#explainRenderOrder}.
-   * @type {string}
-   * @readonly
-   */
-  this.name = options.name;
-
-  /**
-   * Execution order. Lower values render first (behind higher values).
-   * Changing this at runtime triggers re-sort of the layer collection.
-   * @type {number}
-   */
-  this._order = options.order;
-
-  /**
-   * Whether to clear the depth buffer before rendering this layer.
-   * When true, all geometry in this layer renders "on top" of previous layers.
+   * Pushes a command into the appropriate bucket (opaque, transparent, or transmissive).
    *
-   * Auto mode (default): depth is cleared automatically when the layer order
-   * gap from the previous layer is >= 2. Set explicitly to override.
-   * @type {boolean}
-   * @default false
-   */
-  this.clearDepth = options.clearDepth ?? false;
-
-  /**
-   * Whether to clear the stencil buffer before rendering this layer.
-   * @type {boolean}
-   * @default false
-   */
-  this.clearStencil = options.clearStencil ?? false;
-
-  /**
-   * Sort mode for opaque draw commands in this layer.
-   *
-   * {@link SortMode.MATERIAL_MESH} groups commands by shader/texture
-   * to minimize GPU state changes (recommended for world geometry).
-   *
-   * {@link SortMode.FRONT_TO_BACK} maximizes early-Z rejection
-   * (recommended for dense scenes with heavy overdraw).
-   *
-   * @type {SortMode}
-   * @default SortMode.MATERIAL_MESH
-   */
-  this.opaqueSortMode = options.opaqueSortMode ?? SortMode.MATERIAL_MESH;
-
-  /**
-   * Sort mode for transparent draw commands in this layer.
-   * @type {SortMode}
-   * @default SortMode.BACK_TO_FRONT
-   */
-  this.transparentSortMode =
-    options.transparentSortMode ?? SortMode.BACK_TO_FRONT;
-
-  /**
-   * Sort mode for transmissive draw commands (glass, water) in this layer.
-   * Transmissive objects are rendered after opaque and before transparent.
-   * @type {SortMode}
-   * @default SortMode.BACK_TO_FRONT
-   */
-  this.transmissiveSortMode =
-    options.transmissiveSortMode ?? SortMode.BACK_TO_FRONT;
-
-  /**
-   * Custom comparator for opaque commands.
-   * Only used when {@link RenderLayer#opaqueSortMode} is {@link SortMode.CUSTOM}.
-   *
-   * Signature: `(commandA, commandB, cameraPosition) => number`
-   * Return negative if A should render before B, positive if after, 0 if equal.
-   *
-   * @type {Function|undefined}
-   * @default undefined
-   */
-  this.customOpaqueSort = options.customOpaqueSort;
-
-  /**
-   * Custom comparator for transparent commands.
-   * Only used when {@link RenderLayer#transparentSortMode} is {@link SortMode.CUSTOM}.
-   *
-   * Signature: `(commandA, commandB, cameraPosition) => number`
-   *
-   * @type {Function|undefined}
-   * @default undefined
-   */
-  this.customTransparentSort = options.customTransparentSort;
-
-  /**
-   * 32-bit bitmask for visibility group filtering. A command is visible
-   * in this layer only if `(command.visibilityMask & layer.visibilityMask) !== 0`.
-   *
-   * Default: all bits set (0xFFFFFFFF) — everything visible.
-   * @type {number}
-   * @default 0xFFFFFFFF
-   */
-  this.visibilityMask = options.visibilityMask ?? 0xffffffff;
-
-  /**
-   * Whether this layer is currently active. Disabled layers are skipped
-   * during rendering but retain their configuration.
-   * @type {boolean}
-   * @default true
-   */
-  this.enabled = options.enabled ?? true;
-
-  // --- Internal per-frame command buckets (managed by RenderScheduler) ---
-
-  /**
+   * @param {object} command The draw command.
+   * @param {boolean} isTranslucent Whether the command is translucent.
+   * @param {boolean} [isTransmissive=false] Whether the command is transmissive (glass/water).
    * @private
-   * @type {Array}
    */
-  this._opaqueCommands = [];
+  pushCommand(command, isTranslucent, isTransmissive) {
+    if (isTransmissive) {
+      const idx = this._transmissiveCount;
+      if (idx >= this._transmissiveCommands.length) {
+        this._transmissiveCommands.push(command);
+      } else {
+        this._transmissiveCommands[idx] = command;
+      }
+      this._transmissiveCount++;
+    } else if (isTranslucent) {
+      const idx = this._transparentCount;
+      if (idx >= this._transparentCommands.length) {
+        this._transparentCommands.push(command);
+      } else {
+        this._transparentCommands[idx] = command;
+      }
+      this._transparentCount++;
+    } else {
+      const idx = this._opaqueCount;
+      if (idx >= this._opaqueCommands.length) {
+        this._opaqueCommands.push(command);
+      } else {
+        this._opaqueCommands[idx] = command;
+      }
+      this._opaqueCount++;
+    }
+  }
 
   /**
+   * Returns the total number of commands binned into this layer for the current frame.
+   * @returns {number} Total command count.
    * @private
-   * @type {number}
    */
-  this._opaqueCount = 0;
+  getCommandCount() {
+    return this._opaqueCount + this._transparentCount + this._transmissiveCount;
+  }
 
-  /**
-   * @private
-   * @type {Array}
-   */
-  this._transparentCommands = [];
-
-  /**
-   * @private
-   * @type {number}
-   */
-  this._transparentCount = 0;
-
-  /**
-   * @private
-   * @type {Array}
-   */
-  this._transmissiveCommands = [];
-
-  /**
-   * @private
-   * @type {number}
-   */
-  this._transmissiveCount = 0;
-
-  /**
-   * Dirty flag — set when any configuration changes.
-   * @private
-   * @type {boolean}
-   */
-  this._dirty = true;
-}
-
-Object.defineProperties(RenderLayer.prototype, {
   /**
    * The execution order of this layer. Lower values render first.
    * @memberof RenderLayer.prototype
    * @type {number}
    */
-  order: {
-    get: function () {
-      return this._order;
-    },
-    set: function (value) {
-      if (this._order !== value) {
-        this._order = value;
-        this._dirty = true;
-      }
-    },
-  },
-});
-
-/**
- * Resets per-frame command buckets. Called at the start of each frame
- * by the RenderScheduler before command binning.
- * @private
- */
-RenderLayer.prototype.resetCommandBuckets = function () {
-  this._opaqueCount = 0;
-  this._transparentCount = 0;
-  this._transmissiveCount = 0;
-};
-
-/**
- * Pushes a command into the appropriate bucket (opaque, transparent, or transmissive).
- *
- * @param {object} command The draw command.
- * @param {boolean} isTranslucent Whether the command is translucent.
- * @param {boolean} [isTransmissive=false] Whether the command is transmissive (glass/water).
- * @private
- */
-RenderLayer.prototype.pushCommand = function (
-  command,
-  isTranslucent,
-  isTransmissive,
-) {
-  if (isTransmissive) {
-    const idx = this._transmissiveCount;
-    if (idx >= this._transmissiveCommands.length) {
-      this._transmissiveCommands.push(command);
-    } else {
-      this._transmissiveCommands[idx] = command;
-    }
-    this._transmissiveCount++;
-  } else if (isTranslucent) {
-    const idx = this._transparentCount;
-    if (idx >= this._transparentCommands.length) {
-      this._transparentCommands.push(command);
-    } else {
-      this._transparentCommands[idx] = command;
-    }
-    this._transparentCount++;
-  } else {
-    const idx = this._opaqueCount;
-    if (idx >= this._opaqueCommands.length) {
-      this._opaqueCommands.push(command);
-    } else {
-      this._opaqueCommands[idx] = command;
-    }
-    this._opaqueCount++;
+  get order() {
+    return this._order;
   }
-};
 
-/**
- * Returns the total number of commands binned into this layer for the current frame.
- * @returns {number} Total command count.
- * @private
- */
-RenderLayer.prototype.getCommandCount = function () {
-  return this._opaqueCount + this._transparentCount + this._transmissiveCount;
-};
+  /**
+   * The execution order of this layer. Lower values render first.
+   * @memberof RenderLayer.prototype
+   * @type {number}
+   */
+  set order(value) {
+    if (this._order !== value) {
+      this._order = value;
+      this._dirty = true;
+    }
+  }
+}
 
 // ---- Pre-defined layer order constants ----
 

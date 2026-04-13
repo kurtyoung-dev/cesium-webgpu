@@ -19,130 +19,133 @@ import Resource from "../Core/Resource.js";
  *                  if all of the pixelsToCheck in the missingImageUrl have an alpha value of 0.  If false, the
  *                  discard check will proceed no matter the values of the pixelsToCheck.
  */
-function DiscardMissingTileImagePolicy(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class DiscardMissingTileImagePolicy {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options.missingImageUrl)) {
-    throw new DeveloperError("options.missingImageUrl is required.");
-  }
-
-  if (!defined(options.pixelsToCheck)) {
-    throw new DeveloperError("options.pixelsToCheck is required.");
-  }
-  //>>includeEnd('debug');
-
-  this._pixelsToCheck = options.pixelsToCheck;
-  this._missingImagePixels = undefined;
-  this._missingImageByteLength = undefined;
-  this._isReady = false;
-
-  const resource = Resource.createIfNeeded(options.missingImageUrl);
-
-  const that = this;
-
-  function success(image) {
-    if (defined(image.blob)) {
-      that._missingImageByteLength = image.blob.size;
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options.missingImageUrl)) {
+      throw new DeveloperError("options.missingImageUrl is required.");
     }
 
-    let pixels = getImagePixels(image);
+    if (!defined(options.pixelsToCheck)) {
+      throw new DeveloperError("options.pixelsToCheck is required.");
+    }
+    //>>includeEnd('debug');
 
-    if (options.disableCheckIfAllPixelsAreTransparent) {
-      let allAreTransparent = true;
-      const width = image.width;
+    this._pixelsToCheck = options.pixelsToCheck;
+    this._missingImagePixels = undefined;
+    this._missingImageByteLength = undefined;
+    this._isReady = false;
 
-      const pixelsToCheck = options.pixelsToCheck;
-      for (
-        let i = 0, len = pixelsToCheck.length;
-        allAreTransparent && i < len;
-        ++i
-      ) {
-        const pos = pixelsToCheck[i];
-        const index = pos.x * 4 + pos.y * width;
-        const alpha = pixels[index + 3];
+    const resource = Resource.createIfNeeded(options.missingImageUrl);
 
-        if (alpha > 0) {
-          allAreTransparent = false;
+    const that = this;
+
+    function success(image) {
+      if (defined(image.blob)) {
+        that._missingImageByteLength = image.blob.size;
+      }
+
+      let pixels = getImagePixels(image);
+
+      if (options.disableCheckIfAllPixelsAreTransparent) {
+        let allAreTransparent = true;
+        const width = image.width;
+
+        const pixelsToCheck = options.pixelsToCheck;
+        for (
+          let i = 0, len = pixelsToCheck.length;
+          allAreTransparent && i < len;
+          ++i
+        ) {
+          const pos = pixelsToCheck[i];
+          const index = pos.x * 4 + pos.y * width;
+          const alpha = pixels[index + 3];
+
+          if (alpha > 0) {
+            allAreTransparent = false;
+          }
+        }
+
+        if (allAreTransparent) {
+          pixels = undefined;
         }
       }
 
-      if (allAreTransparent) {
-        pixels = undefined;
-      }
+      that._missingImagePixels = pixels;
+      that._isReady = true;
     }
 
-    that._missingImagePixels = pixels;
-    that._isReady = true;
+    function failure() {
+      // Failed to download "missing" image, so assume that any truly missing tiles
+      // will also fail to download and disable the discard check.
+      that._missingImagePixels = undefined;
+      that._isReady = true;
+    }
+
+    resource
+      .fetchImage({
+        preferBlob: true,
+        preferImageBitmap: true,
+        flipY: true,
+      })
+      .then(success)
+      .catch(failure);
   }
 
-  function failure() {
-    // Failed to download "missing" image, so assume that any truly missing tiles
-    // will also fail to download and disable the discard check.
-    that._missingImagePixels = undefined;
-    that._isReady = true;
+  /**
+   * Determines if the discard policy is ready to process images.
+   * @returns {boolean} True if the discard policy is ready to process images; otherwise, false.
+   */
+  isReady() {
+    return this._isReady;
   }
 
-  resource
-    .fetchImage({
-      preferBlob: true,
-      preferImageBitmap: true,
-      flipY: true,
-    })
-    .then(success)
-    .catch(failure);
+  /**
+   * Given a tile image, decide whether to discard that image.
+   *
+   * @param {HTMLImageElement} image An image to test.
+   * @returns {boolean} True if the image should be discarded; otherwise, false.
+   *
+   * @exception {DeveloperError} <code>shouldDiscardImage</code> must not be called before the discard policy is ready.
+   */
+  shouldDiscardImage(image) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._isReady) {
+      throw new DeveloperError(
+        "shouldDiscardImage must not be called before the discard policy is ready.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const pixelsToCheck = this._pixelsToCheck;
+    const missingImagePixels = this._missingImagePixels;
+
+    // If missingImagePixels is undefined, it indicates that the discard check has been disabled.
+    if (!defined(missingImagePixels)) {
+      return false;
+    }
+
+    if (defined(image.blob) && image.blob.size !== this._missingImageByteLength) {
+      return false;
+    }
+
+    const pixels = getImagePixels(image);
+    const width = image.width;
+
+    for (let i = 0, len = pixelsToCheck.length; i < len; ++i) {
+      const pos = pixelsToCheck[i];
+      const index = pos.x * 4 + pos.y * width;
+      for (let offset = 0; offset < 4; ++offset) {
+        const pixel = index + offset;
+        if (pixels[pixel] !== missingImagePixels[pixel]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
 }
 
-/**
- * Determines if the discard policy is ready to process images.
- * @returns {boolean} True if the discard policy is ready to process images; otherwise, false.
- */
-DiscardMissingTileImagePolicy.prototype.isReady = function () {
-  return this._isReady;
-};
-
-/**
- * Given a tile image, decide whether to discard that image.
- *
- * @param {HTMLImageElement} image An image to test.
- * @returns {boolean} True if the image should be discarded; otherwise, false.
- *
- * @exception {DeveloperError} <code>shouldDiscardImage</code> must not be called before the discard policy is ready.
- */
-DiscardMissingTileImagePolicy.prototype.shouldDiscardImage = function (image) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!this._isReady) {
-    throw new DeveloperError(
-      "shouldDiscardImage must not be called before the discard policy is ready.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  const pixelsToCheck = this._pixelsToCheck;
-  const missingImagePixels = this._missingImagePixels;
-
-  // If missingImagePixels is undefined, it indicates that the discard check has been disabled.
-  if (!defined(missingImagePixels)) {
-    return false;
-  }
-
-  if (defined(image.blob) && image.blob.size !== this._missingImageByteLength) {
-    return false;
-  }
-
-  const pixels = getImagePixels(image);
-  const width = image.width;
-
-  for (let i = 0, len = pixelsToCheck.length; i < len; ++i) {
-    const pos = pixelsToCheck[i];
-    const index = pos.x * 4 + pos.y * width;
-    for (let offset = 0; offset < 4; ++offset) {
-      const pixel = index + offset;
-      if (pixels[pixel] !== missingImagePixels[pixel]) {
-        return false;
-      }
-    }
-  }
-  return true;
-};
 export default DiscardMissingTileImagePolicy;

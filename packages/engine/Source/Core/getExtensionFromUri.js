@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 
@@ -20,19 +19,23 @@ function getExtensionFromUri(uri) {
   }
   //>>includeEnd('debug');
 
-  const uriObject = new Uri(uri);
-  uriObject.normalize();
-  let path = uriObject.path();
+  // Use native URL parsing to strip query/fragment and extract the path.
+  // A placeholder base is needed because `uri` may be relative.
+  let path;
+  try {
+    path = new URL(uri, "https://placeholder.invalid/").pathname;
+  } catch {
+    path = uri;
+  }
+
   let index = path.lastIndexOf("/");
   if (index !== -1) {
-    path = path.substr(index + 1);
+    path = path.substring(index + 1);
   }
   index = path.lastIndexOf(".");
   if (index === -1) {
-    path = "";
-  } else {
-    path = path.substr(index + 1);
+    return "";
   }
-  return path;
+  return path.substring(index + 1);
 }
 export default getExtensionFromUri;

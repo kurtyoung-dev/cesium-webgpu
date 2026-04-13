@@ -71,7 +71,7 @@ function getDefaultCache(): PostProcessCache {
  * Map CesiumJS Tonemapper enum to our WebGPU tonemapping mode.
  * CesiumJS: REINHARD=0, MODIFIED_REINHARD=1, FILMIC=2, ACES=3, PBR_NEUTRAL=4
  */
-function mapTonemapType(collection: any): number {
+function mapTonemapType(collection: CesiumObjectWithWebGPUCache): number {
   const type = collection._tonemapping?.type ?? collection._tonemappingType;
   switch (type) {
     case 0: return TonemapMode.REINHARD;
@@ -90,7 +90,7 @@ function mapTonemapType(collection: any): number {
  * Caches the current enabled/disabled state of all post-processing stages.
  * Does NOT touch the WebGPU pipeline — that's configureWebGPUPostProcessPipeline's job.
  */
-function updateWebGPUPostProcessStages(collection: any, frameState: any): void {
+function updateWebGPUPostProcessStages(collection: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   if (!collection._webgpuCache) {
     collection._webgpuCache = getDefaultCache();
   }
@@ -135,14 +135,21 @@ function updateWebGPUPostProcessStages(collection: any, frameState: any): void {
  */
 function configureWebGPUPostProcessPipeline(
   pipeline: WebGPUPostProcessPipeline,
-  collection: any,
+  collection: CesiumObjectWithWebGPUCache,
   device: GPUDevice,
   canvasFormat: GPUTextureFormat,
+  scene?: CesiumScene,
 ): void {
   const cache = (collection._webgpuCache ?? getDefaultCache()) as PostProcessCache;
 
+  // --- TAA (controlled by scene.taaEnabled, not the collection) ---
+  const taaEnabled = scene?.taaEnabled === true;
+  pipeline.setStageEnabled("TAA", taaEnabled);
+  // When TAA is active, disable FXAA (TAA provides superior AA).
+  const fxaaEnabled = taaEnabled ? false : cache.fxaaEnabled;
+
   // --- FXAA ---
-  pipeline.setStageEnabled("FXAA", cache.fxaaEnabled);
+  pipeline.setStageEnabled("FXAA", fxaaEnabled);
 
   // --- Tonemapping ---
   pipeline.setStageEnabled("Tonemap", cache.tonemappingEnabled);
@@ -155,7 +162,7 @@ function configureWebGPUPostProcessPipeline(
       threshold: bloom?.uniforms?.brightness ?? 0.8,
       intensity: bloom?.uniforms?.glowOnly ? 1.0 : 0.5,
       sigma: bloom?.uniforms?.sigma ?? 3.5,
-      glowOnly: bloom?.uniforms?.glowOnly ?? false,
+      glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
     });
     cache.bloomInitialized = true;
   }
@@ -170,7 +177,7 @@ function configureWebGPUPostProcessPipeline(
       pipeline.bloomEffect.updateConfig({
         threshold: newThreshold,
         intensity: newIntensity,
-        glowOnly: bloom?.uniforms?.glowOnly ?? false,
+        glowOnly: Boolean(bloom?.uniforms?.glowOnly ?? false),
       });
       cache.bloomThreshold = newThreshold;
       cache.bloomIntensity = newIntensity;
@@ -186,7 +193,7 @@ function configureWebGPUPostProcessPipeline(
       lengthCap: ao?.uniforms?.lengthCap ?? 0.26,
       stepCount: ao?.uniforms?.stepSize ?? 4,
       directionCount: ao?.uniforms?.directionCount ?? 4,
-      ambientOcclusionOnly: ao?.uniforms?.ambientOcclusionOnly ?? false,
+      ambientOcclusionOnly: Boolean(ao?.uniforms?.ambientOcclusionOnly ?? false),
     });
     cache.aoInitialized = true;
   }
@@ -208,14 +215,14 @@ function configureWebGPUPostProcessPipeline(
 /**
  * Destroy WebGPU post-process resources.
  */
-function destroyWebGPUPostProcessResources(collection: any): void {
+function destroyWebGPUPostProcessResources(collection: CesiumObjectWithWebGPUCache): void {
   collection._webgpuCache = undefined;
 }
 
 /**
  * Check if any post-process stages are active for WebGPU.
  */
-function hasActiveWebGPUPostProcessStages(collection: any): boolean {
+function hasActiveWebGPUPostProcessStages(collection: CesiumObjectWithWebGPUCache): boolean {
   const cache = collection._webgpuCache as PostProcessCache | undefined;
   if (!cache || !cache.initialized) {
     return false;

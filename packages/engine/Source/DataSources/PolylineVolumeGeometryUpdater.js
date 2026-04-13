@@ -36,111 +36,101 @@ function PolylineVolumeGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-function PolylineVolumeGeometryUpdater(entity, scene) {
-  GeometryUpdater.call(this, {
-    entity: entity,
-    scene: scene,
-    geometryOptions: new PolylineVolumeGeometryOptions(entity),
-    geometryPropertyName: "polylineVolume",
-    observedPropertyNames: ["availability", "polylineVolume"],
-  });
+class PolylineVolumeGeometryUpdater {
+  constructor(entity, scene) {
+    GeometryUpdater.call(this, {
+      entity: entity,
+      scene: scene,
+      geometryOptions: new PolylineVolumeGeometryOptions(entity),
+      geometryPropertyName: "polylineVolume",
+      observedPropertyNames: ["availability", "polylineVolume"],
+    });
 
-  this._onEntityPropertyChanged(
-    entity,
-    "polylineVolume",
-    entity.polylineVolume,
-    undefined,
-  );
-}
-
-if (defined(Object.create)) {
-  PolylineVolumeGeometryUpdater.prototype = Object.create(
-    GeometryUpdater.prototype,
-  );
-  PolylineVolumeGeometryUpdater.prototype.constructor =
-    PolylineVolumeGeometryUpdater;
-}
-
-/**
- * Creates the geometry instance which represents the fill of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent a filled geometry.
- */
-PolylineVolumeGeometryUpdater.prototype.createFillGeometryInstance = function (
-  time,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-
-  if (!this._fillEnabled) {
-    throw new DeveloperError(
-      "This instance does not represent a filled geometry.",
+    this._onEntityPropertyChanged(
+      entity,
+      "polylineVolume",
+      entity.polylineVolume,
+      undefined,
     );
   }
-  //>>includeEnd('debug');
 
-  const entity = this._entity;
-  const isAvailable = entity.isAvailable(time);
+  /**
+   * Creates the geometry instance which represents the fill of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent a filled geometry.
+   */
+  createFillGeometryInstance(time) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
 
-  let attributes;
+    if (!this._fillEnabled) {
+      throw new DeveloperError(
+        "This instance does not represent a filled geometry.",
+      );
+    }
+    //>>includeEnd('debug');
 
-  let color;
-  const show = new ShowGeometryInstanceAttribute(
-    isAvailable &&
-      entity.isShowing &&
-      this._showProperty.getValue(time) &&
-      this._fillProperty.getValue(time),
-  );
-  const distanceDisplayCondition =
-    this._distanceDisplayConditionProperty.getValue(time);
-  const distanceDisplayConditionAttribute =
-    DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
-      distanceDisplayCondition,
+    const entity = this._entity;
+    const isAvailable = entity.isAvailable(time);
+
+    let attributes;
+
+    let color;
+    const show = new ShowGeometryInstanceAttribute(
+      isAvailable &&
+        entity.isShowing &&
+        this._showProperty.getValue(time) &&
+        this._fillProperty.getValue(time),
     );
-  if (this._materialProperty instanceof ColorMaterialProperty) {
-    let currentColor;
-    if (
-      defined(this._materialProperty.color) &&
-      (this._materialProperty.color.isConstant || isAvailable)
-    ) {
-      currentColor = this._materialProperty.color.getValue(time, scratchColor);
+    const distanceDisplayCondition =
+      this._distanceDisplayConditionProperty.getValue(time);
+    const distanceDisplayConditionAttribute =
+      DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
+        distanceDisplayCondition,
+      );
+    if (this._materialProperty instanceof ColorMaterialProperty) {
+      let currentColor;
+      if (
+        defined(this._materialProperty.color) &&
+        (this._materialProperty.color.isConstant || isAvailable)
+      ) {
+        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+      }
+      if (!defined(currentColor)) {
+        currentColor = Color.WHITE;
+      }
+      color = ColorGeometryInstanceAttribute.fromColor(currentColor);
+      attributes = {
+        show: show,
+        distanceDisplayCondition: distanceDisplayConditionAttribute,
+        color: color,
+      };
+    } else {
+      attributes = {
+        show: show,
+        distanceDisplayCondition: distanceDisplayConditionAttribute,
+      };
     }
-    if (!defined(currentColor)) {
-      currentColor = Color.WHITE;
-    }
-    color = ColorGeometryInstanceAttribute.fromColor(currentColor);
-    attributes = {
-      show: show,
-      distanceDisplayCondition: distanceDisplayConditionAttribute,
-      color: color,
-    };
-  } else {
-    attributes = {
-      show: show,
-      distanceDisplayCondition: distanceDisplayConditionAttribute,
-    };
+
+    return new GeometryInstance({
+      id: entity,
+      geometry: new PolylineVolumeGeometry(this._options),
+      attributes: attributes,
+    });
   }
 
-  return new GeometryInstance({
-    id: entity,
-    geometry: new PolylineVolumeGeometry(this._options),
-    attributes: attributes,
-  });
-};
-
-/**
- * Creates the geometry instance which represents the outline of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent an outlined geometry.
- */
-PolylineVolumeGeometryUpdater.prototype.createOutlineGeometryInstance =
-  function (time) {
+  /**
+   * Creates the geometry instance which represents the outline of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent an outlined geometry.
+   */
+  createOutlineGeometryInstance(time) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("time", time);
 
@@ -179,60 +169,60 @@ PolylineVolumeGeometryUpdater.prototype.createOutlineGeometryInstance =
           ),
       },
     });
-  };
+  }
 
-PolylineVolumeGeometryUpdater.prototype._isHidden = function (
-  entity,
-  polylineVolume,
-) {
-  return (
-    !defined(polylineVolume.positions) ||
-    !defined(polylineVolume.shape) ||
-    GeometryUpdater.prototype._isHidden.call(this, entity, polylineVolume)
-  );
-};
+  _isHidden(entity, polylineVolume) {
+    return (
+      !defined(polylineVolume.positions) ||
+      !defined(polylineVolume.shape) ||
+      GeometryUpdater.prototype._isHidden.call(this, entity, polylineVolume)
+    );
+  }
 
-PolylineVolumeGeometryUpdater.prototype._isDynamic = function (
-  entity,
-  polylineVolume,
-) {
-  return (
-    !polylineVolume.positions.isConstant || //
-    !polylineVolume.shape.isConstant || //
-    !Property.isConstant(polylineVolume.granularity) || //
-    !Property.isConstant(polylineVolume.outlineWidth) || //
-    !Property.isConstant(polylineVolume.cornerType)
-  );
-};
+  _isDynamic(entity, polylineVolume) {
+    return (
+      !polylineVolume.positions.isConstant || //
+      !polylineVolume.shape.isConstant || //
+      !Property.isConstant(polylineVolume.granularity) || //
+      !Property.isConstant(polylineVolume.outlineWidth) || //
+      !Property.isConstant(polylineVolume.cornerType)
+    );
+  }
 
-PolylineVolumeGeometryUpdater.prototype._setStaticOptions = function (
-  entity,
-  polylineVolume,
-) {
-  const granularity = polylineVolume.granularity;
-  const cornerType = polylineVolume.cornerType;
+  _setStaticOptions(entity, polylineVolume) {
+    const granularity = polylineVolume.granularity;
+    const cornerType = polylineVolume.cornerType;
 
-  const options = this._options;
-  const isColorMaterial =
-    this._materialProperty instanceof ColorMaterialProperty;
-  options.vertexFormat = isColorMaterial
-    ? PerInstanceColorAppearance.VERTEX_FORMAT
-    : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
-  options.polylinePositions = polylineVolume.positions.getValue(
-    Iso8601.MINIMUM_VALUE,
-    options.polylinePositions,
+    const options = this._options;
+    const isColorMaterial =
+      this._materialProperty instanceof ColorMaterialProperty;
+    options.vertexFormat = isColorMaterial
+      ? PerInstanceColorAppearance.VERTEX_FORMAT
+      : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
+    options.polylinePositions = polylineVolume.positions.getValue(
+      Iso8601.MINIMUM_VALUE,
+      options.polylinePositions,
+    );
+    options.shapePositions = polylineVolume.shape.getValue(
+      Iso8601.MINIMUM_VALUE,
+      options.shape,
+    );
+    options.granularity = defined(granularity)
+      ? granularity.getValue(Iso8601.MINIMUM_VALUE)
+      : undefined;
+    options.cornerType = defined(cornerType)
+      ? cornerType.getValue(Iso8601.MINIMUM_VALUE)
+      : undefined;
+  }
+}
+
+if (defined(Object.create)) {
+  PolylineVolumeGeometryUpdater.prototype = Object.create(
+    GeometryUpdater.prototype,
   );
-  options.shapePositions = polylineVolume.shape.getValue(
-    Iso8601.MINIMUM_VALUE,
-    options.shape,
-  );
-  options.granularity = defined(granularity)
-    ? granularity.getValue(Iso8601.MINIMUM_VALUE)
-    : undefined;
-  options.cornerType = defined(cornerType)
-    ? cornerType.getValue(Iso8601.MINIMUM_VALUE)
-    : undefined;
-};
+  PolylineVolumeGeometryUpdater.prototype.constructor =
+    PolylineVolumeGeometryUpdater;
+}
 
 PolylineVolumeGeometryUpdater.DynamicGeometryUpdater =
   DynamicPolylineVolumeGeometryUpdater;

@@ -33,62 +33,59 @@ const geometryUpdaters = [
  * @param {Entity} entity
  * @param {Scene} scene
  */
-function GeometryUpdaterSet(entity, scene) {
-  this.entity = entity;
-  this.scene = scene;
-  const updaters = new Array(geometryUpdaters.length);
-  const geometryChanged = new Event();
-  const eventHelper = new EventHelper();
-  for (let i = 0; i < updaters.length; i++) {
-    const updater = new geometryUpdaters[i](entity, scene);
-    eventHelper.add(updater.geometryChanged, (geometry) => {
-      geometryChanged.raiseEvent(geometry);
-    });
-    updaters[i] = updater;
-  }
-  this.updaters = updaters;
-  this.geometryChanged = geometryChanged;
-  this.eventHelper = eventHelper;
+class GeometryUpdaterSet {
+  constructor(entity, scene) {
+    this.entity = entity;
+    this.scene = scene;
+    const updaters = new Array(geometryUpdaters.length);
+    const geometryChanged = new Event();
+    const eventHelper = new EventHelper();
+    for (let i = 0; i < updaters.length; i++) {
+      const updater = new geometryUpdaters[i](entity, scene);
+      eventHelper.add(updater.geometryChanged, (geometry) => {
+        geometryChanged.raiseEvent(geometry);
+      });
+      updaters[i] = updater;
+    }
+    this.updaters = updaters;
+    this.geometryChanged = geometryChanged;
+    this.eventHelper = eventHelper;
 
-  this._removeEntitySubscription = entity.definitionChanged.addEventListener(
-    GeometryUpdaterSet.prototype._onEntityPropertyChanged,
-    this,
-  );
-}
-
-GeometryUpdaterSet.prototype._onEntityPropertyChanged = function (
-  entity,
-  propertyName,
-  newValue,
-  oldValue,
-) {
-  const updaters = this.updaters;
-  for (let i = 0; i < updaters.length; i++) {
-    updaters[i]._onEntityPropertyChanged(
-      entity,
-      propertyName,
-      newValue,
-      oldValue,
+    this._removeEntitySubscription = entity.definitionChanged.addEventListener(
+      GeometryUpdaterSet.prototype._onEntityPropertyChanged,
+      this,
     );
   }
-};
 
-GeometryUpdaterSet.prototype.forEach = function (callback) {
-  const updaters = this.updaters;
-  for (let i = 0; i < updaters.length; i++) {
-    callback(updaters[i]);
+  _onEntityPropertyChanged(entity, propertyName, newValue, oldValue) {
+    const updaters = this.updaters;
+    for (let i = 0; i < updaters.length; i++) {
+      updaters[i]._onEntityPropertyChanged(
+        entity,
+        propertyName,
+        newValue,
+        oldValue,
+      );
+    }
   }
-};
 
-GeometryUpdaterSet.prototype.destroy = function () {
-  this.eventHelper.removeAll();
-  const updaters = this.updaters;
-  for (let i = 0; i < updaters.length; i++) {
-    updaters[i].destroy();
+  forEach(callback) {
+    const updaters = this.updaters;
+    for (let i = 0; i < updaters.length; i++) {
+      callback(updaters[i]);
+    }
   }
-  this._removeEntitySubscription();
-  destroyObject(this);
-};
+
+  destroy() {
+    this.eventHelper.removeAll();
+    const updaters = this.updaters;
+    for (let i = 0; i < updaters.length; i++) {
+      updaters[i].destroy();
+    }
+    this._removeEntitySubscription();
+    destroyObject(this);
+  }
+}
 
 /**
  * Add the provided updater to the default list of updaters if not already included

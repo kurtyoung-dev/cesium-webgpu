@@ -38,183 +38,186 @@ import Primitive from "./Primitive.js";
  *   width : 10.0
  * }));
  */
-function DebugModelMatrixPrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class DebugModelMatrixPrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+
+    /**
+     * The length of the axes in meters.
+     *
+     * @type {number}
+     * @default 10000000.0
+     */
+    this.length = options.length ?? 10000000.0;
+    this._length = undefined;
+
+    /**
+     * The width of the axes in pixels.
+     *
+     * @type {number}
+     * @default 2.0
+     */
+    this.width = options.width ?? 2.0;
+    this._width = undefined;
+
+    /**
+     * Determines if this primitive will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
+
+    /**
+     * The 4x4 matrix that defines the reference frame, i.e., origin plus axes, to visualize.
+     *
+     * @type {Matrix4}
+     * @default {@link Matrix4.IDENTITY}
+     */
+    this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+    this._modelMatrix = new Matrix4();
+
+    /**
+     * User-defined value returned when the primitive is picked.
+     *
+     * @type {*}
+     * @default undefined
+     *
+     * @see Scene#pick
+     */
+    this.id = options.id;
+    this._id = undefined;
+
+    this._primitive = undefined;
+  }
 
   /**
-   * The length of the axes in meters.
-   *
-   * @type {number}
-   * @default 10000000.0
+   * @private
    */
-  this.length = options.length ?? 10000000.0;
-  this._length = undefined;
+  update(frameState) {
+    if (!this.show) {
+      return;
+    }
+
+    if (
+      !defined(this._primitive) ||
+      !Matrix4.equals(this._modelMatrix, this.modelMatrix) ||
+      this._length !== this.length ||
+      this._width !== this.width ||
+      this._id !== this.id
+    ) {
+      this._modelMatrix = Matrix4.clone(this.modelMatrix, this._modelMatrix);
+      this._length = this.length;
+      this._width = this.width;
+      this._id = this.id;
+
+      if (defined(this._primitive)) {
+        this._primitive.destroy();
+      }
+
+      // Workaround projecting (0, 0, 0)
+      if (
+        this.modelMatrix[12] === 0.0 &&
+        this.modelMatrix[13] === 0.0 &&
+        this.modelMatrix[14] === 0.0
+      ) {
+        this.modelMatrix[14] = 0.01;
+      }
+
+      const x = new GeometryInstance({
+        geometry: new PolylineGeometry({
+          positions: [Cartesian3.ZERO, Cartesian3.UNIT_X],
+          width: this.width,
+          vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
+          colors: [Color.RED, Color.RED],
+          arcType: ArcType.NONE,
+        }),
+        modelMatrix: Matrix4.multiplyByUniformScale(
+          this.modelMatrix,
+          this.length,
+          new Matrix4(),
+        ),
+        id: this.id,
+        pickPrimitive: this,
+      });
+      const y = new GeometryInstance({
+        geometry: new PolylineGeometry({
+          positions: [Cartesian3.ZERO, Cartesian3.UNIT_Y],
+          width: this.width,
+          vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
+          colors: [Color.GREEN, Color.GREEN],
+          arcType: ArcType.NONE,
+        }),
+        modelMatrix: Matrix4.multiplyByUniformScale(
+          this.modelMatrix,
+          this.length,
+          new Matrix4(),
+        ),
+        id: this.id,
+        pickPrimitive: this,
+      });
+      const z = new GeometryInstance({
+        geometry: new PolylineGeometry({
+          positions: [Cartesian3.ZERO, Cartesian3.UNIT_Z],
+          width: this.width,
+          vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
+          colors: [Color.BLUE, Color.BLUE],
+          arcType: ArcType.NONE,
+        }),
+        modelMatrix: Matrix4.multiplyByUniformScale(
+          this.modelMatrix,
+          this.length,
+          new Matrix4(),
+        ),
+        id: this.id,
+        pickPrimitive: this,
+      });
+
+      this._primitive = new Primitive({
+        geometryInstances: [x, y, z],
+        appearance: new PolylineColorAppearance(),
+        asynchronous: false,
+      });
+    }
+
+    this._primitive.update(frameState);
+  }
 
   /**
-   * The width of the axes in pixels.
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
    *
-   * @type {number}
-   * @default 2.0
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see DebugModelMatrixPrimitive#destroy
    */
-  this.width = options.width ?? 2.0;
-  this._width = undefined;
+  isDestroyed() {
+    return false;
+  }
 
   /**
-   * Determines if this primitive will be shown.
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
    *
-   * @type {boolean}
-   * @default true
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * p = p && p.destroy();
+   *
+   * @see DebugModelMatrixPrimitive#isDestroyed
    */
-  this.show = options.show ?? true;
-
-  /**
-   * The 4x4 matrix that defines the reference frame, i.e., origin plus axes, to visualize.
-   *
-   * @type {Matrix4}
-   * @default {@link Matrix4.IDENTITY}
-   */
-  this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
-  this._modelMatrix = new Matrix4();
-
-  /**
-   * User-defined value returned when the primitive is picked.
-   *
-   * @type {*}
-   * @default undefined
-   *
-   * @see Scene#pick
-   */
-  this.id = options.id;
-  this._id = undefined;
-
-  this._primitive = undefined;
+  destroy() {
+    this._primitive = this._primitive && this._primitive.destroy();
+    return destroyObject(this);
+  }
 }
 
-/**
- * @private
- */
-DebugModelMatrixPrimitive.prototype.update = function (frameState) {
-  if (!this.show) {
-    return;
-  }
-
-  if (
-    !defined(this._primitive) ||
-    !Matrix4.equals(this._modelMatrix, this.modelMatrix) ||
-    this._length !== this.length ||
-    this._width !== this.width ||
-    this._id !== this.id
-  ) {
-    this._modelMatrix = Matrix4.clone(this.modelMatrix, this._modelMatrix);
-    this._length = this.length;
-    this._width = this.width;
-    this._id = this.id;
-
-    if (defined(this._primitive)) {
-      this._primitive.destroy();
-    }
-
-    // Workaround projecting (0, 0, 0)
-    if (
-      this.modelMatrix[12] === 0.0 &&
-      this.modelMatrix[13] === 0.0 &&
-      this.modelMatrix[14] === 0.0
-    ) {
-      this.modelMatrix[14] = 0.01;
-    }
-
-    const x = new GeometryInstance({
-      geometry: new PolylineGeometry({
-        positions: [Cartesian3.ZERO, Cartesian3.UNIT_X],
-        width: this.width,
-        vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
-        colors: [Color.RED, Color.RED],
-        arcType: ArcType.NONE,
-      }),
-      modelMatrix: Matrix4.multiplyByUniformScale(
-        this.modelMatrix,
-        this.length,
-        new Matrix4(),
-      ),
-      id: this.id,
-      pickPrimitive: this,
-    });
-    const y = new GeometryInstance({
-      geometry: new PolylineGeometry({
-        positions: [Cartesian3.ZERO, Cartesian3.UNIT_Y],
-        width: this.width,
-        vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
-        colors: [Color.GREEN, Color.GREEN],
-        arcType: ArcType.NONE,
-      }),
-      modelMatrix: Matrix4.multiplyByUniformScale(
-        this.modelMatrix,
-        this.length,
-        new Matrix4(),
-      ),
-      id: this.id,
-      pickPrimitive: this,
-    });
-    const z = new GeometryInstance({
-      geometry: new PolylineGeometry({
-        positions: [Cartesian3.ZERO, Cartesian3.UNIT_Z],
-        width: this.width,
-        vertexFormat: PolylineColorAppearance.VERTEX_FORMAT,
-        colors: [Color.BLUE, Color.BLUE],
-        arcType: ArcType.NONE,
-      }),
-      modelMatrix: Matrix4.multiplyByUniformScale(
-        this.modelMatrix,
-        this.length,
-        new Matrix4(),
-      ),
-      id: this.id,
-      pickPrimitive: this,
-    });
-
-    this._primitive = new Primitive({
-      geometryInstances: [x, y, z],
-      appearance: new PolylineColorAppearance(),
-      asynchronous: false,
-    });
-  }
-
-  this._primitive.update(frameState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see DebugModelMatrixPrimitive#destroy
- */
-DebugModelMatrixPrimitive.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * p = p && p.destroy();
- *
- * @see DebugModelMatrixPrimitive#isDestroyed
- */
-DebugModelMatrixPrimitive.prototype.destroy = function () {
-  this._primitive = this._primitive && this._primitive.destroy();
-  return destroyObject(this);
-};
 export default DebugModelMatrixPrimitive;

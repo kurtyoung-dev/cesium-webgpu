@@ -64,72 +64,114 @@ const MAX_GLTF_UINT8_INDEX = 255;
  *
  * @private
  */
-function PrimitiveOutlineGenerator(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const triangleIndices = options.triangleIndices;
-  const outlineIndices = options.outlineIndices;
-  const originalVertexCount = options.originalVertexCount;
+class PrimitiveOutlineGenerator {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const triangleIndices = options.triangleIndices;
+    const outlineIndices = options.outlineIndices;
+    const originalVertexCount = options.originalVertexCount;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.triangleIndices", triangleIndices);
-  Check.typeOf.object("options.outlineIndices", outlineIndices);
-  Check.typeOf.number("options.originalVertexCount", originalVertexCount);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.triangleIndices", triangleIndices);
+    Check.typeOf.object("options.outlineIndices", outlineIndices);
+    Check.typeOf.number("options.originalVertexCount", originalVertexCount);
+    //>>includeEnd('debug');
+
+    /**
+     * The triangle indices. It will be modified in place.
+     *
+     * @type {Uint8Array|Uint16Array|Uint32Array}
+     *
+     * @private
+     */
+    this._triangleIndices = triangleIndices;
+
+    /**
+     * How many vertices were originally in the primitive
+     *
+     * @type {number}
+     *
+     * @private
+     */
+    this._originalVertexCount = originalVertexCount;
+
+    /**
+     * The outline indices represent edges of the primitive's triangle mesh where
+     * outlines must be drawn. This is stored as a hash set for efficient
+     * checks of whether an edge is present.
+     *
+     * @type {EdgeSet}
+     *
+     * @private
+     */
+    this._edges = new EdgeSet(outlineIndices, originalVertexCount);
+
+    /**
+     * The typed array that will store the outline texture coordinates
+     * once computed. This typed array should be turned into a vertex attribute
+     * when rendering outlines.
+     *
+     * @type {Float32Array}
+     *
+     * @private
+     */
+    this._outlineCoordinatesTypedArray = undefined;
+
+    /**
+     * Array containing the indices of any vertices that must be copied and
+     * appended to the list.
+     *
+     * @type {number[]}
+     *
+     * @private
+     */
+    this._extraVertices = [];
+
+    initialize(this);
+  }
 
   /**
-   * The triangle indices. It will be modified in place.
+   * After computing the outline coordinates, some vertices may need to be
+   * copied and appended to the end of the list of vertices. This function updates
+   * a typed array for a single attribute (e.g. POSITION or NORMAL).
    *
-   * @type {Uint8Array|Uint16Array|Uint32Array}
+   * @param {Uint8Array|Int8Array|Uint16Array|Int16Array|Uint32Array|Int32Array|Float32Array} attributeTypedArray The attribute values to update. This function takes ownership of this typed array
+   * @returns {Uint8Array|Int8Array|Uint16Array|Int16Array|Uint32Array|Int32Array|Float32Array} A new typed array that contains the existing attribute values, plus any copied values at the end.
    *
    * @private
    */
-  this._triangleIndices = triangleIndices;
+  updateAttribute(attributeTypedArray) {
+    const extraVertices = this._extraVertices;
 
-  /**
-   * How many vertices were originally in the primitive
-   *
-   * @type {number}
-   *
-   * @private
-   */
-  this._originalVertexCount = originalVertexCount;
+    const originalLength = attributeTypedArray.length;
 
-  /**
-   * The outline indices represent edges of the primitive's triangle mesh where
-   * outlines must be drawn. This is stored as a hash set for efficient
-   * checks of whether an edge is present.
-   *
-   * @type {EdgeSet}
-   *
-   * @private
-   */
-  this._edges = new EdgeSet(outlineIndices, originalVertexCount);
+    // This is a stride in number of typed elements. For example, a VEC3 would
+    // have a stride of 3 (floats)
+    const stride = originalLength / this._originalVertexCount;
 
-  /**
-   * The typed array that will store the outline texture coordinates
-   * once computed. This typed array should be turned into a vertex attribute
-   * when rendering outlines.
-   *
-   * @type {Float32Array}
-   *
-   * @private
-   */
-  this._outlineCoordinatesTypedArray = undefined;
+    const extraVerticesLength = extraVertices.length;
 
-  /**
-   * Array containing the indices of any vertices that must be copied and
-   * appended to the list.
-   *
-   * @type {number[]}
-   *
-   * @private
-   */
-  this._extraVertices = [];
+    // Make a larger typed array of the same type as the input
+    const ArrayType = attributeTypedArray.constructor;
+    const result = new ArrayType(
+      attributeTypedArray.length + extraVerticesLength * stride,
+    );
 
-  initialize(this);
-}
+    // Copy original vertices
+    result.set(attributeTypedArray);
 
-Object.defineProperties(PrimitiveOutlineGenerator.prototype, {
+    // Copy the vertices added for outlining
+    for (let i = 0; i < extraVerticesLength; i++) {
+      const sourceIndex = extraVertices[i] * stride;
+      const resultIndex = originalLength + i * stride;
+      for (let j = 0; j < stride; j++) {
+        result[resultIndex + j] = result[sourceIndex + j];
+      }
+    }
+
+    return result;
+  }
+
   /**
    * The updated triangle indices after generating outlines. The caller is for
    * responsible for updating the primitive's indices to use this array.
@@ -141,11 +183,9 @@ Object.defineProperties(PrimitiveOutlineGenerator.prototype, {
    *
    * @private
    */
-  updatedTriangleIndices: {
-    get: function () {
-      return this._triangleIndices;
-    },
-  },
+  get updatedTriangleIndices() {
+    return this._triangleIndices;
+  }
 
   /**
    * The computed outline coordinates. The caller is responsible for
@@ -158,12 +198,10 @@ Object.defineProperties(PrimitiveOutlineGenerator.prototype, {
    *
    * @private
    */
-  outlineCoordinates: {
-    get: function () {
-      return this._outlineCoordinatesTypedArray;
-    },
-  },
-});
+  get outlineCoordinates() {
+    return this._outlineCoordinatesTypedArray;
+  }
+}
 
 /**
  * Initialize the outline generator from the CESIUM_primitive_outline
@@ -498,50 +536,6 @@ function popcount6Bit(value) {
     ((value >> 5) & 1)
   );
 }
-
-/**
- * After computing the outline coordinates, some vertices may need to be
- * copied and appended to the end of the list of vertices. This function updates
- * a typed array for a single attribute (e.g. POSITION or NORMAL).
- *
- * @param {Uint8Array|Int8Array|Uint16Array|Int16Array|Uint32Array|Int32Array|Float32Array} attributeTypedArray The attribute values to update. This function takes ownership of this typed array
- * @returns {Uint8Array|Int8Array|Uint16Array|Int16Array|Uint32Array|Int32Array|Float32Array} A new typed array that contains the existing attribute values, plus any copied values at the end.
- *
- * @private
- */
-PrimitiveOutlineGenerator.prototype.updateAttribute = function (
-  attributeTypedArray,
-) {
-  const extraVertices = this._extraVertices;
-
-  const originalLength = attributeTypedArray.length;
-
-  // This is a stride in number of typed elements. For example, a VEC3 would
-  // have a stride of 3 (floats)
-  const stride = originalLength / this._originalVertexCount;
-
-  const extraVerticesLength = extraVertices.length;
-
-  // Make a larger typed array of the same type as the input
-  const ArrayType = attributeTypedArray.constructor;
-  const result = new ArrayType(
-    attributeTypedArray.length + extraVerticesLength * stride,
-  );
-
-  // Copy original vertices
-  result.set(attributeTypedArray);
-
-  // Copy the vertices added for outlining
-  for (let i = 0; i < extraVerticesLength; i++) {
-    const sourceIndex = extraVertices[i] * stride;
-    const resultIndex = originalLength + i * stride;
-    for (let j = 0; j < stride; j++) {
-      result[resultIndex + j] = result[sourceIndex + j];
-    }
-  }
-
-  return result;
-};
 
 /**
  * Create a mip-mapped lookup texture for rendering outlines. The texture is

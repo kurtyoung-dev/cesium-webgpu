@@ -29,20 +29,20 @@ import DeveloperError from "./DeveloperError.js";
  * @see GeometryInstance
  * @see GeometryInstanceAttribute
  */
-function ShowGeometryInstanceAttribute(show) {
-  show = show ?? true;
+class ShowGeometryInstanceAttribute {
+  constructor(show) {
+    show = show ?? true;
 
-  /**
-   * The values for the attributes stored in a typed array.
-   *
-   * @type Uint8Array
-   *
-   * @default [1.0]
-   */
-  this.value = ShowGeometryInstanceAttribute.toValue(show);
-}
+    /**
+     * The values for the attributes stored in a typed array.
+     *
+     * @type Uint8Array
+     *
+     * @default [1.0]
+     */
+    this.value = ShowGeometryInstanceAttribute.toValue(show);
+  }
 
-Object.defineProperties(ShowGeometryInstanceAttribute.prototype, {
   /**
    * The datatype of each component in the attribute, e.g., individual elements in
    * {@link ColorGeometryInstanceAttribute#value}.
@@ -54,11 +54,9 @@ Object.defineProperties(ShowGeometryInstanceAttribute.prototype, {
    *
    * @default {@link ComponentDatatype.UNSIGNED_BYTE}
    */
-  componentDatatype: {
-    get: function () {
-      return ComponentDatatype.UNSIGNED_BYTE;
-    },
-  },
+  get componentDatatype() {
+    return ComponentDatatype.UNSIGNED_BYTE;
+  }
 
   /**
    * The number of components in the attributes, i.e., {@link ColorGeometryInstanceAttribute#value}.
@@ -70,11 +68,9 @@ Object.defineProperties(ShowGeometryInstanceAttribute.prototype, {
    *
    * @default 1
    */
-  componentsPerAttribute: {
-    get: function () {
-      return 1;
-    },
-  },
+  get componentsPerAttribute() {
+    return 1;
+  }
 
   /**
    * When <code>true</code> and <code>componentDatatype</code> is an integer format,
@@ -88,12 +84,10 @@ Object.defineProperties(ShowGeometryInstanceAttribute.prototype, {
    *
    * @default true
    */
-  normalize: {
-    get: function () {
-      return false;
-    },
-  },
-});
+  get normalize() {
+    return false;
+  }
+}
 
 /**
  * Converts a boolean show to a typed array that can be used to assign a show attribute.

@@ -172,9 +172,9 @@ function getDerivedCommandState(type: number): WebGPUDerivedCommand {
  * @param frameState - Current frame state
  */
 function updateWebGPUGlobeTranslucencyDerivedCommands(
-  state: any,
-  command: any,
-  frameState: any,
+  state: CesiumObjectWithWebGPUCache,
+  command: CesiumAnyDrawCommand,
+  frameState: CesiumFrameState,
 ): void {
   if (!state._webgpuCache) {
     state._webgpuCache = {
@@ -216,7 +216,7 @@ function updateWebGPUGlobeTranslucencyDerivedCommands(
 /**
  * Destroy WebGPU globe translucency resources.
  */
-function destroyWebGPUGlobeTranslucencyResources(state: any): void {
+function destroyWebGPUGlobeTranslucencyResources(state: CesiumObjectWithWebGPUCache): void {
   if (state._webgpuCache) {
     (state._webgpuCache as GlobeTranslucencyCache).derivedCommands.clear();
   }

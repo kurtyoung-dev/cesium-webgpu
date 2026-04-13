@@ -5,8 +5,71 @@ import Check from "./Check.js";
  * Wrapper around rbush for use with Rectangle types.
  * @private
  */
-function RectangleCollisionChecker() {
-  this._tree = new RBush();
+class RectangleCollisionChecker {
+  constructor() {
+    this._tree = new RBush();
+  }
+
+  /**
+   * Insert a rectangle into the collision checker.
+   *
+   * @param {string} id Unique string ID for the rectangle being inserted.
+   * @param {Rectangle} rectangle A Rectangle
+   * @private
+   */
+  insert(id, rectangle) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("id", id);
+    Check.typeOf.object("rectangle", rectangle);
+    //>>includeEnd('debug');
+
+    const withId = RectangleWithId.fromRectangleAndId(
+      id,
+      rectangle,
+      new RectangleWithId(),
+    );
+    this._tree.insert(withId);
+  }
+
+  /**
+   * Remove a rectangle from the collision checker.
+   *
+   * @param {string} id Unique string ID for the rectangle being removed.
+   * @param {Rectangle} rectangle A Rectangle
+   * @private
+   */
+  remove(id, rectangle) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("id", id);
+    Check.typeOf.object("rectangle", rectangle);
+    //>>includeEnd('debug');
+
+    const withId = RectangleWithId.fromRectangleAndId(
+      id,
+      rectangle,
+      removalScratch,
+    );
+    this._tree.remove(withId, idCompare);
+  }
+
+  /**
+   * Checks if a given rectangle collides with any of the rectangles in the collection.
+   *
+   * @param {Rectangle} rectangle A Rectangle that should be checked against the rectangles in the collision checker.
+   * @returns {boolean} Whether the rectangle collides with any of the rectangles in the collision checker.
+   */
+  collides(rectangle) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("rectangle", rectangle);
+    //>>includeEnd('debug');
+
+    const withId = RectangleWithId.fromRectangleAndId(
+      "",
+      rectangle,
+      collisionScratch,
+    );
+    return this._tree.collides(withId);
+  }
 }
 
 function RectangleWithId() {
@@ -26,70 +89,11 @@ RectangleWithId.fromRectangleAndId = function (id, rectangle, result) {
   return result;
 };
 
-/**
- * Insert a rectangle into the collision checker.
- *
- * @param {string} id Unique string ID for the rectangle being inserted.
- * @param {Rectangle} rectangle A Rectangle
- * @private
- */
-RectangleCollisionChecker.prototype.insert = function (id, rectangle) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("id", id);
-  Check.typeOf.object("rectangle", rectangle);
-  //>>includeEnd('debug');
-
-  const withId = RectangleWithId.fromRectangleAndId(
-    id,
-    rectangle,
-    new RectangleWithId(),
-  );
-  this._tree.insert(withId);
-};
-
 function idCompare(a, b) {
   return a.id === b.id;
 }
 
 const removalScratch = new RectangleWithId();
-/**
- * Remove a rectangle from the collision checker.
- *
- * @param {string} id Unique string ID for the rectangle being removed.
- * @param {Rectangle} rectangle A Rectangle
- * @private
- */
-RectangleCollisionChecker.prototype.remove = function (id, rectangle) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("id", id);
-  Check.typeOf.object("rectangle", rectangle);
-  //>>includeEnd('debug');
-
-  const withId = RectangleWithId.fromRectangleAndId(
-    id,
-    rectangle,
-    removalScratch,
-  );
-  this._tree.remove(withId, idCompare);
-};
 
 const collisionScratch = new RectangleWithId();
-/**
- * Checks if a given rectangle collides with any of the rectangles in the collection.
- *
- * @param {Rectangle} rectangle A Rectangle that should be checked against the rectangles in the collision checker.
- * @returns {boolean} Whether the rectangle collides with any of the rectangles in the collision checker.
- */
-RectangleCollisionChecker.prototype.collides = function (rectangle) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("rectangle", rectangle);
-  //>>includeEnd('debug');
-
-  const withId = RectangleWithId.fromRectangleAndId(
-    "",
-    rectangle,
-    collisionScratch,
-  );
-  return this._tree.collides(withId);
-};
 export default RectangleCollisionChecker;

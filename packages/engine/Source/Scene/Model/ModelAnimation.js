@@ -22,111 +22,126 @@ import ModelAnimationChannel from "./ModelAnimationChannel.js";
  *
  * @see ModelAnimationCollection#add
  */
-function ModelAnimation(model, animation, options) {
-  this._animation = animation;
-  this._name = animation.name;
-  this._runtimeChannels = undefined;
+class ModelAnimation {
+  constructor(model, animation, options) {
+    this._animation = animation;
+    this._name = animation.name;
+    this._runtimeChannels = undefined;
 
-  this._startTime = JulianDate.clone(options.startTime);
-  this._delay = options.delay ?? 0.0; // in seconds
-  this._stopTime = JulianDate.clone(options.stopTime);
+    this._startTime = JulianDate.clone(options.startTime);
+    this._delay = options.delay ?? 0.0; // in seconds
+    this._stopTime = JulianDate.clone(options.stopTime);
+
+    /**
+     * When <code>true</code>, the animation is removed after it stops playing.
+     * This is slightly more efficient that not removing it, but if, for example,
+     * time is reversed, the animation is not played again.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.removeOnStop = options.removeOnStop ?? false;
+    this._multiplier = options.multiplier ?? 1.0;
+    this._reverse = options.reverse ?? false;
+    this._loop = options.loop ?? ModelAnimationLoop.NONE;
+    this._animationTime = options.animationTime;
+    this._prevAnimationDelta = undefined;
+
+    /**
+     * The event fired when this animation is started.  This can be used, for
+     * example, to play a sound or start a particle system, when the animation starts.
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * animation.start.addEventListener(function(model, animation) {
+     *   console.log(`Animation started: ${animation.name}`);
+     * });
+     */
+    this.start = new Event();
+
+    /**
+     * The event fired when on each frame when this animation is updated.  The
+     * current time of the animation, relative to the glTF animation time span, is
+     * passed to the event, which allows, for example, starting new animations at a
+     * specific time relative to a playing animation.
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * animation.update.addEventListener(function(model, animation, time) {
+     *   console.log(`Animation updated: ${animation.name}. glTF animation time: ${time}`);
+     * });
+     */
+    this.update = new Event();
+
+    /**
+     * The event fired when this animation is stopped.  This can be used, for
+     * example, to play a sound or start a particle system, when the animation stops.
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * animation.stop.addEventListener(function(model, animation) {
+     *   console.log(`Animation stopped: ${animation.name}`);
+     * });
+     */
+    this.stop = new Event();
+
+    this._state = ModelAnimationState.STOPPED;
+
+    // Set during animation update
+    this._computedStartTime = undefined;
+    this._duration = undefined;
+
+    // To avoid allocations in ModelAnimationCollection.update
+    const that = this;
+    this._raiseStartEvent = function () {
+      that.start.raiseEvent(model, that);
+    };
+    this._updateEventTime = 0.0;
+    this._raiseUpdateEvent = function () {
+      that.update.raiseEvent(model, that, that._updateEventTime);
+    };
+    this._raiseStopEvent = function () {
+      that.stop.raiseEvent(model, that);
+    };
+
+    this._model = model;
+
+    this._localStartTime = undefined;
+    this._localStopTime = undefined;
+
+    initialize(this);
+  }
 
   /**
-   * When <code>true</code>, the animation is removed after it stops playing.
-   * This is slightly more efficient that not removing it, but if, for example,
-   * time is reversed, the animation is not played again.
+   * Evaluate all animation channels to advance this animation.
    *
-   * @type {boolean}
-   * @default false
+   * @param {number} time The local animation time.
+   *
+   * @private
    */
-  this.removeOnStop = options.removeOnStop ?? false;
-  this._multiplier = options.multiplier ?? 1.0;
-  this._reverse = options.reverse ?? false;
-  this._loop = options.loop ?? ModelAnimationLoop.NONE;
-  this._animationTime = options.animationTime;
-  this._prevAnimationDelta = undefined;
+  animate(time) {
+    const runtimeChannels = this._runtimeChannels;
+    const length = runtimeChannels.length;
+    for (let i = 0; i < length; i++) {
+      runtimeChannels[i].animate(time);
+    }
+  }
 
-  /**
-   * The event fired when this animation is started.  This can be used, for
-   * example, to play a sound or start a particle system, when the animation starts.
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * animation.start.addEventListener(function(model, animation) {
-   *   console.log(`Animation started: ${animation.name}`);
-   * });
-   */
-  this.start = new Event();
-
-  /**
-   * The event fired when on each frame when this animation is updated.  The
-   * current time of the animation, relative to the glTF animation time span, is
-   * passed to the event, which allows, for example, starting new animations at a
-   * specific time relative to a playing animation.
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * animation.update.addEventListener(function(model, animation, time) {
-   *   console.log(`Animation updated: ${animation.name}. glTF animation time: ${time}`);
-   * });
-   */
-  this.update = new Event();
-
-  /**
-   * The event fired when this animation is stopped.  This can be used, for
-   * example, to play a sound or start a particle system, when the animation stops.
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * animation.stop.addEventListener(function(model, animation) {
-   *   console.log(`Animation stopped: ${animation.name}`);
-   * });
-   */
-  this.stop = new Event();
-
-  this._state = ModelAnimationState.STOPPED;
-
-  // Set during animation update
-  this._computedStartTime = undefined;
-  this._duration = undefined;
-
-  // To avoid allocations in ModelAnimationCollection.update
-  const that = this;
-  this._raiseStartEvent = function () {
-    that.start.raiseEvent(model, that);
-  };
-  this._updateEventTime = 0.0;
-  this._raiseUpdateEvent = function () {
-    that.update.raiseEvent(model, that, that._updateEventTime);
-  };
-  this._raiseStopEvent = function () {
-    that.stop.raiseEvent(model, that);
-  };
-
-  this._model = model;
-
-  this._localStartTime = undefined;
-  this._localStopTime = undefined;
-
-  initialize(this);
-}
-
-Object.defineProperties(ModelAnimation.prototype, {
   /**
    * The glTF animation.
    *
@@ -137,11 +152,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @private
    */
-  animation: {
-    get: function () {
-      return this._animation;
-    },
-  },
+  get animation() {
+    return this._animation;
+  }
 
   /**
    * The name that identifies this animation in the model, if it exists.
@@ -151,11 +164,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * The runtime animation channels for this animation.
@@ -167,11 +178,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @private
    */
-  runtimeChannels: {
-    get: function () {
-      return this._runtimeChannels;
-    },
-  },
+  get runtimeChannels() {
+    return this._runtimeChannels;
+  }
 
   /**
    * The {@link Model} that owns this animation.
@@ -183,11 +192,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @private
    */
-  model: {
-    get: function () {
-      return this._model;
-    },
-  },
+  get model() {
+    return this._model;
+  }
 
   /**
    * The starting point of the animation in local animation time. This is the minimum
@@ -200,11 +207,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @private
    */
-  localStartTime: {
-    get: function () {
-      return this._localStartTime;
-    },
-  },
+  get localStartTime() {
+    return this._localStartTime;
+  }
 
   /**
    * The stopping point of the animation in local animation time. This is the maximum
@@ -217,11 +222,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @private
    */
-  localStopTime: {
-    get: function () {
-      return this._localStopTime;
-    },
-  },
+  get localStopTime() {
+    return this._localStopTime;
+  }
 
   /**
    * The scene time to start playing this animation. When this is <code>undefined</code>,
@@ -234,11 +237,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default undefined
    */
-  startTime: {
-    get: function () {
-      return this._startTime;
-    },
-  },
+  get startTime() {
+    return this._startTime;
+  }
 
   /**
    * The delay, in seconds, from {@link ModelAnimation#startTime} to start playing.
@@ -250,11 +251,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default undefined
    */
-  delay: {
-    get: function () {
-      return this._delay;
-    },
-  },
+  get delay() {
+    return this._delay;
+  }
 
   /**
    * The scene time to stop playing this animation. When this is <code>undefined</code>,
@@ -268,11 +267,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default undefined
    */
-  stopTime: {
-    get: function () {
-      return this._stopTime;
-    },
-  },
+  get stopTime() {
+    return this._stopTime;
+  }
 
   /**
    * Values greater than <code>1.0</code> increase the speed that the animation is played relative
@@ -288,11 +285,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default 1.0
    */
-  multiplier: {
-    get: function () {
-      return this._multiplier;
-    },
-  },
+  get multiplier() {
+    return this._multiplier;
+  }
 
   /**
    * When <code>true</code>, the animation is played in reverse.
@@ -304,11 +299,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default false
    */
-  reverse: {
-    get: function () {
-      return this._reverse;
-    },
-  },
+  get reverse() {
+    return this._reverse;
+  }
 
   /**
    * Determines if and how the animation is looped.
@@ -320,11 +313,9 @@ Object.defineProperties(ModelAnimation.prototype, {
    *
    * @default {@link ModelAnimationLoop.NONE}
    */
-  loop: {
-    get: function () {
-      return this._loop;
-    },
-  },
+  get loop() {
+    return this._loop;
+  }
 
   /**
    * If this is defined, it will be used to compute the local animation time
@@ -335,12 +326,10 @@ Object.defineProperties(ModelAnimation.prototype, {
    * @type {ModelAnimation.AnimationTimeCallback}
    * @default undefined
    */
-  animationTime: {
-    get: function () {
-      return this._animationTime;
-    },
-  },
-});
+  get animationTime() {
+    return this._animationTime;
+  }
+}
 
 function initialize(runtimeAnimation) {
   let localStartTime = Number.MAX_VALUE;
@@ -382,21 +371,6 @@ function initialize(runtimeAnimation) {
   runtimeAnimation._localStartTime = localStartTime;
   runtimeAnimation._localStopTime = localStopTime;
 }
-
-/**
- * Evaluate all animation channels to advance this animation.
- *
- * @param {number} time The local animation time.
- *
- * @private
- */
-ModelAnimation.prototype.animate = function (time) {
-  const runtimeChannels = this._runtimeChannels;
-  const length = runtimeChannels.length;
-  for (let i = 0; i < length; i++) {
-    runtimeChannels[i].animate(time);
-  }
-};
 
 /**
  * A function used to compute the local animation time for a ModelAnimation.

@@ -25,7 +25,7 @@ interface DynEnvMapCache {
  */
 function updateWebGPUDynamicEnvironmentMap(
   manager: any,
-  frameState: any,
+  frameState: CesiumFrameState,
 ): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;

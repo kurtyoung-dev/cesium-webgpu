@@ -25,113 +25,307 @@ import Visibility from "./Visibility.js";
  * const occluderBoundingSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1), 1);
  * const occluder = new Cesium.Occluder(occluderBoundingSphere, cameraPosition);
  */
-function Occluder(occluderBoundingSphere, cameraPosition) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(occluderBoundingSphere)) {
-    throw new DeveloperError("occluderBoundingSphere is required.");
+class Occluder {
+  constructor(occluderBoundingSphere, cameraPosition) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(occluderBoundingSphere)) {
+      throw new DeveloperError("occluderBoundingSphere is required.");
+    }
+    if (!defined(cameraPosition)) {
+      throw new DeveloperError("camera position is required.");
+    }
+    //>>includeEnd('debug');
+
+    this._occluderPosition = Cartesian3.clone(occluderBoundingSphere.center);
+    this._occluderRadius = occluderBoundingSphere.radius;
+
+    this._horizonDistance = 0.0;
+    this._horizonPlaneNormal = undefined;
+    this._horizonPlanePosition = undefined;
+    this._cameraPosition = undefined;
+
+    // cameraPosition fills in the above values
+    this.cameraPosition = cameraPosition;
   }
-  if (!defined(cameraPosition)) {
-    throw new DeveloperError("camera position is required.");
+
+  /**
+   * Determines whether or not a point, the <code>occludee</code>, is hidden from view by the occluder.
+   *
+   * @param {Cartesian3} occludee The point surrounding the occludee object.
+   * @returns {boolean} <code>true</code> if the occludee is visible; otherwise <code>false</code>.
+   *
+   *
+   * @example
+   * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
+   * const littleSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1), 0.25);
+   * const occluder = new Cesium.Occluder(littleSphere, cameraPosition);
+   * const point = new Cesium.Cartesian3(0, 0, -3);
+   * occluder.isPointVisible(point); //returns true
+   *
+   * @see Occluder#computeVisibility
+   */
+  isPointVisible(occludee) {
+    if (this._horizonDistance !== Number.MAX_VALUE) {
+      let tempVec = Cartesian3.subtract(
+        occludee,
+        this._occluderPosition,
+        tempVecScratch,
+      );
+      let temp = this._occluderRadius;
+      temp = Cartesian3.magnitudeSquared(tempVec) - temp * temp;
+      if (temp > 0.0) {
+        temp = Math.sqrt(temp) + this._horizonDistance;
+        tempVec = Cartesian3.subtract(occludee, this._cameraPosition, tempVec);
+        return temp * temp > Cartesian3.magnitudeSquared(tempVec);
+      }
+    }
+    return false;
   }
-  //>>includeEnd('debug');
 
-  this._occluderPosition = Cartesian3.clone(occluderBoundingSphere.center);
-  this._occluderRadius = occluderBoundingSphere.radius;
+  /**
+   * Determines whether or not a sphere, the <code>occludee</code>, is hidden from view by the occluder.
+   *
+   * @param {BoundingSphere} occludee The bounding sphere surrounding the occludee object.
+   * @returns {boolean} <code>true</code> if the occludee is visible; otherwise <code>false</code>.
+   *
+   *
+   * @example
+   * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
+   * const littleSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1), 0.25);
+   * const occluder = new Cesium.Occluder(littleSphere, cameraPosition);
+   * const bigSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -3), 1);
+   * occluder.isBoundingSphereVisible(bigSphere); //returns true
+   *
+   * @see Occluder#computeVisibility
+   */
+  isBoundingSphereVisible(occludee) {
+    const occludeePosition = Cartesian3.clone(
+      occludee.center,
+      occludeePositionScratch,
+    );
+    const occludeeRadius = occludee.radius;
 
-  this._horizonDistance = 0.0;
-  this._horizonPlaneNormal = undefined;
-  this._horizonPlanePosition = undefined;
-  this._cameraPosition = undefined;
+    if (this._horizonDistance !== Number.MAX_VALUE) {
+      let tempVec = Cartesian3.subtract(
+        occludeePosition,
+        this._occluderPosition,
+        tempVecScratch,
+      );
+      let temp = this._occluderRadius - occludeeRadius;
+      temp = Cartesian3.magnitudeSquared(tempVec) - temp * temp;
+      if (occludeeRadius < this._occluderRadius) {
+        if (temp > 0.0) {
+          temp = Math.sqrt(temp) + this._horizonDistance;
+          tempVec = Cartesian3.subtract(
+            occludeePosition,
+            this._cameraPosition,
+            tempVec,
+          );
+          return (
+            temp * temp + occludeeRadius * occludeeRadius >
+            Cartesian3.magnitudeSquared(tempVec)
+          );
+        }
+        return false;
+      }
 
-  // cameraPosition fills in the above values
-  this.cameraPosition = cameraPosition;
-}
+      // Prevent against the case where the occludee radius is larger than the occluder's; since this is
+      // an uncommon case, the following code should rarely execute.
+      if (temp > 0.0) {
+        tempVec = Cartesian3.subtract(
+          occludeePosition,
+          this._cameraPosition,
+          tempVec,
+        );
+        const tempVecMagnitudeSquared = Cartesian3.magnitudeSquared(tempVec);
+        const occluderRadiusSquared = this._occluderRadius * this._occluderRadius;
+        const occludeeRadiusSquared = occludeeRadius * occludeeRadius;
+        if (
+          (this._horizonDistance * this._horizonDistance +
+            occluderRadiusSquared) *
+            occludeeRadiusSquared >
+          tempVecMagnitudeSquared * occluderRadiusSquared
+        ) {
+          // The occludee is close enough that the occluder cannot possible occlude the occludee
+          return true;
+        }
+        temp = Math.sqrt(temp) + this._horizonDistance;
+        return temp * temp + occludeeRadiusSquared > tempVecMagnitudeSquared;
+      }
 
-const scratchCartesian3 = new Cartesian3();
+      // The occludee completely encompasses the occluder
+      return true;
+    }
 
-Object.defineProperties(Occluder.prototype, {
+    return false;
+  }
+
+  /**
+   * Determine to what extent an occludee is visible (not visible, partially visible,  or fully visible).
+   *
+   * @param {BoundingSphere} occludeeBS The bounding sphere of the occludee.
+   * @returns {Visibility} Visibility.NONE if the occludee is not visible,
+   *                       Visibility.PARTIAL if the occludee is partially visible, or
+   *                       Visibility.FULL if the occludee is fully visible.
+   *
+   *
+   * @example
+   * const sphere1 = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1.5), 0.5);
+   * const sphere2 = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -2.5), 0.5);
+   * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
+   * const occluder = new Cesium.Occluder(sphere1, cameraPosition);
+   * occluder.computeVisibility(sphere2); //returns Visibility.NONE
+   */
+  computeVisibility(occludeeBS) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(occludeeBS)) {
+      throw new DeveloperError("occludeeBS is required.");
+    }
+    //>>includeEnd('debug');
+
+    // If the occludee radius is larger than the occluders, this will return that
+    // the entire ocludee is visible, even though that may not be the case, though this should
+    // not occur too often.
+    const occludeePosition = Cartesian3.clone(occludeeBS.center);
+    const occludeeRadius = occludeeBS.radius;
+
+    if (occludeeRadius > this._occluderRadius) {
+      return Visibility.FULL;
+    }
+
+    if (this._horizonDistance !== Number.MAX_VALUE) {
+      // The camera is outside the occluder
+      let tempVec = Cartesian3.subtract(
+        occludeePosition,
+        this._occluderPosition,
+        tempScratch,
+      );
+      let temp = this._occluderRadius - occludeeRadius;
+      const occluderToOccludeeDistSqrd = Cartesian3.magnitudeSquared(tempVec);
+      temp = occluderToOccludeeDistSqrd - temp * temp;
+      if (temp > 0.0) {
+        // The occludee is not completely inside the occluder
+        // Check to see if the occluder completely hides the occludee
+        temp = Math.sqrt(temp) + this._horizonDistance;
+        tempVec = Cartesian3.subtract(
+          occludeePosition,
+          this._cameraPosition,
+          tempVec,
+        );
+        const cameraToOccludeeDistSqrd = Cartesian3.magnitudeSquared(tempVec);
+        if (
+          temp * temp + occludeeRadius * occludeeRadius <
+          cameraToOccludeeDistSqrd
+        ) {
+          return Visibility.NONE;
+        }
+
+        // Check to see whether the occluder is fully or partially visible
+        // when the occludee does not intersect the occluder
+        temp = this._occluderRadius + occludeeRadius;
+        temp = occluderToOccludeeDistSqrd - temp * temp;
+        if (temp > 0.0) {
+          // The occludee does not intersect the occluder.
+          temp = Math.sqrt(temp) + this._horizonDistance;
+          return cameraToOccludeeDistSqrd <
+            temp * temp + occludeeRadius * occludeeRadius
+            ? Visibility.FULL
+            : Visibility.PARTIAL;
+        }
+
+        //Check to see if the occluder is fully or partially visible when the occludee DOES
+        //intersect the occluder
+        tempVec = Cartesian3.subtract(
+          occludeePosition,
+          this._horizonPlanePosition,
+          tempVec,
+        );
+        return Cartesian3.dot(tempVec, this._horizonPlaneNormal) > -occludeeRadius
+          ? Visibility.PARTIAL
+          : Visibility.FULL;
+      }
+    }
+    return Visibility.NONE;
+  }
+
   /**
    * The position of the occluder.
    * @memberof Occluder.prototype
    * @type {Cartesian3}
    */
-  position: {
-    get: function () {
-      return this._occluderPosition;
-    },
-  },
+  get position() {
+    return this._occluderPosition;
+  }
 
   /**
    * The radius of the occluder.
    * @memberof Occluder.prototype
    * @type {number}
    */
-  radius: {
-    get: function () {
-      return this._occluderRadius;
-    },
-  },
+  get radius() {
+    return this._occluderRadius;
+  }
 
   /**
    * The position of the camera.
    * @memberof Occluder.prototype
    * @type {Cartesian3}
    */
-  cameraPosition: {
-    set: function (cameraPosition) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(cameraPosition)) {
-        throw new DeveloperError("cameraPosition is required.");
-      }
-      //>>includeEnd('debug');
+  set cameraPosition(cameraPosition) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(cameraPosition)) {
+      throw new DeveloperError("cameraPosition is required.");
+    }
+    //>>includeEnd('debug');
 
-      cameraPosition = Cartesian3.clone(cameraPosition, this._cameraPosition);
+    cameraPosition = Cartesian3.clone(cameraPosition, this._cameraPosition);
 
-      const cameraToOccluderVec = Cartesian3.subtract(
-        this._occluderPosition,
-        cameraPosition,
+    const cameraToOccluderVec = Cartesian3.subtract(
+      this._occluderPosition,
+      cameraPosition,
+      scratchCartesian3,
+    );
+    let invCameraToOccluderDistance =
+      Cartesian3.magnitudeSquared(cameraToOccluderVec);
+    const occluderRadiusSqrd = this._occluderRadius * this._occluderRadius;
+
+    let horizonDistance;
+    let horizonPlaneNormal;
+    let horizonPlanePosition;
+    if (invCameraToOccluderDistance > occluderRadiusSqrd) {
+      horizonDistance = Math.sqrt(
+        invCameraToOccluderDistance - occluderRadiusSqrd,
+      );
+      invCameraToOccluderDistance =
+        1.0 / Math.sqrt(invCameraToOccluderDistance);
+      horizonPlaneNormal = Cartesian3.multiplyByScalar(
+        cameraToOccluderVec,
+        invCameraToOccluderDistance,
         scratchCartesian3,
       );
-      let invCameraToOccluderDistance =
-        Cartesian3.magnitudeSquared(cameraToOccluderVec);
-      const occluderRadiusSqrd = this._occluderRadius * this._occluderRadius;
-
-      let horizonDistance;
-      let horizonPlaneNormal;
-      let horizonPlanePosition;
-      if (invCameraToOccluderDistance > occluderRadiusSqrd) {
-        horizonDistance = Math.sqrt(
-          invCameraToOccluderDistance - occluderRadiusSqrd,
-        );
-        invCameraToOccluderDistance =
-          1.0 / Math.sqrt(invCameraToOccluderDistance);
-        horizonPlaneNormal = Cartesian3.multiplyByScalar(
-          cameraToOccluderVec,
-          invCameraToOccluderDistance,
+      const nearPlaneDistance =
+        horizonDistance * horizonDistance * invCameraToOccluderDistance;
+      horizonPlanePosition = Cartesian3.add(
+        cameraPosition,
+        Cartesian3.multiplyByScalar(
+          horizonPlaneNormal,
+          nearPlaneDistance,
           scratchCartesian3,
-        );
-        const nearPlaneDistance =
-          horizonDistance * horizonDistance * invCameraToOccluderDistance;
-        horizonPlanePosition = Cartesian3.add(
-          cameraPosition,
-          Cartesian3.multiplyByScalar(
-            horizonPlaneNormal,
-            nearPlaneDistance,
-            scratchCartesian3,
-          ),
-          scratchCartesian3,
-        );
-      } else {
-        horizonDistance = Number.MAX_VALUE;
-      }
+        ),
+        scratchCartesian3,
+      );
+    } else {
+      horizonDistance = Number.MAX_VALUE;
+    }
 
-      this._horizonDistance = horizonDistance;
-      this._horizonPlaneNormal = horizonPlaneNormal;
-      this._horizonPlanePosition = horizonPlanePosition;
-      this._cameraPosition = cameraPosition;
-    },
-  },
-});
+    this._horizonDistance = horizonDistance;
+    this._horizonPlaneNormal = horizonPlaneNormal;
+    this._horizonPlanePosition = horizonPlanePosition;
+    this._cameraPosition = cameraPosition;
+  }
+}
+
+const scratchCartesian3 = new Cartesian3();
 
 /**
  * Creates an occluder from a bounding sphere and the camera position.
@@ -169,208 +363,9 @@ Occluder.fromBoundingSphere = function (
 
 const tempVecScratch = new Cartesian3();
 
-/**
- * Determines whether or not a point, the <code>occludee</code>, is hidden from view by the occluder.
- *
- * @param {Cartesian3} occludee The point surrounding the occludee object.
- * @returns {boolean} <code>true</code> if the occludee is visible; otherwise <code>false</code>.
- *
- *
- * @example
- * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
- * const littleSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1), 0.25);
- * const occluder = new Cesium.Occluder(littleSphere, cameraPosition);
- * const point = new Cesium.Cartesian3(0, 0, -3);
- * occluder.isPointVisible(point); //returns true
- *
- * @see Occluder#computeVisibility
- */
-Occluder.prototype.isPointVisible = function (occludee) {
-  if (this._horizonDistance !== Number.MAX_VALUE) {
-    let tempVec = Cartesian3.subtract(
-      occludee,
-      this._occluderPosition,
-      tempVecScratch,
-    );
-    let temp = this._occluderRadius;
-    temp = Cartesian3.magnitudeSquared(tempVec) - temp * temp;
-    if (temp > 0.0) {
-      temp = Math.sqrt(temp) + this._horizonDistance;
-      tempVec = Cartesian3.subtract(occludee, this._cameraPosition, tempVec);
-      return temp * temp > Cartesian3.magnitudeSquared(tempVec);
-    }
-  }
-  return false;
-};
-
 const occludeePositionScratch = new Cartesian3();
 
-/**
- * Determines whether or not a sphere, the <code>occludee</code>, is hidden from view by the occluder.
- *
- * @param {BoundingSphere} occludee The bounding sphere surrounding the occludee object.
- * @returns {boolean} <code>true</code> if the occludee is visible; otherwise <code>false</code>.
- *
- *
- * @example
- * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
- * const littleSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1), 0.25);
- * const occluder = new Cesium.Occluder(littleSphere, cameraPosition);
- * const bigSphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -3), 1);
- * occluder.isBoundingSphereVisible(bigSphere); //returns true
- *
- * @see Occluder#computeVisibility
- */
-Occluder.prototype.isBoundingSphereVisible = function (occludee) {
-  const occludeePosition = Cartesian3.clone(
-    occludee.center,
-    occludeePositionScratch,
-  );
-  const occludeeRadius = occludee.radius;
-
-  if (this._horizonDistance !== Number.MAX_VALUE) {
-    let tempVec = Cartesian3.subtract(
-      occludeePosition,
-      this._occluderPosition,
-      tempVecScratch,
-    );
-    let temp = this._occluderRadius - occludeeRadius;
-    temp = Cartesian3.magnitudeSquared(tempVec) - temp * temp;
-    if (occludeeRadius < this._occluderRadius) {
-      if (temp > 0.0) {
-        temp = Math.sqrt(temp) + this._horizonDistance;
-        tempVec = Cartesian3.subtract(
-          occludeePosition,
-          this._cameraPosition,
-          tempVec,
-        );
-        return (
-          temp * temp + occludeeRadius * occludeeRadius >
-          Cartesian3.magnitudeSquared(tempVec)
-        );
-      }
-      return false;
-    }
-
-    // Prevent against the case where the occludee radius is larger than the occluder's; since this is
-    // an uncommon case, the following code should rarely execute.
-    if (temp > 0.0) {
-      tempVec = Cartesian3.subtract(
-        occludeePosition,
-        this._cameraPosition,
-        tempVec,
-      );
-      const tempVecMagnitudeSquared = Cartesian3.magnitudeSquared(tempVec);
-      const occluderRadiusSquared = this._occluderRadius * this._occluderRadius;
-      const occludeeRadiusSquared = occludeeRadius * occludeeRadius;
-      if (
-        (this._horizonDistance * this._horizonDistance +
-          occluderRadiusSquared) *
-          occludeeRadiusSquared >
-        tempVecMagnitudeSquared * occluderRadiusSquared
-      ) {
-        // The occludee is close enough that the occluder cannot possible occlude the occludee
-        return true;
-      }
-      temp = Math.sqrt(temp) + this._horizonDistance;
-      return temp * temp + occludeeRadiusSquared > tempVecMagnitudeSquared;
-    }
-
-    // The occludee completely encompasses the occluder
-    return true;
-  }
-
-  return false;
-};
-
 const tempScratch = new Cartesian3();
-/**
- * Determine to what extent an occludee is visible (not visible, partially visible,  or fully visible).
- *
- * @param {BoundingSphere} occludeeBS The bounding sphere of the occludee.
- * @returns {Visibility} Visibility.NONE if the occludee is not visible,
- *                       Visibility.PARTIAL if the occludee is partially visible, or
- *                       Visibility.FULL if the occludee is fully visible.
- *
- *
- * @example
- * const sphere1 = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -1.5), 0.5);
- * const sphere2 = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, -2.5), 0.5);
- * const cameraPosition = new Cesium.Cartesian3(0, 0, 0);
- * const occluder = new Cesium.Occluder(sphere1, cameraPosition);
- * occluder.computeVisibility(sphere2); //returns Visibility.NONE
- */
-Occluder.prototype.computeVisibility = function (occludeeBS) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(occludeeBS)) {
-    throw new DeveloperError("occludeeBS is required.");
-  }
-  //>>includeEnd('debug');
-
-  // If the occludee radius is larger than the occluders, this will return that
-  // the entire ocludee is visible, even though that may not be the case, though this should
-  // not occur too often.
-  const occludeePosition = Cartesian3.clone(occludeeBS.center);
-  const occludeeRadius = occludeeBS.radius;
-
-  if (occludeeRadius > this._occluderRadius) {
-    return Visibility.FULL;
-  }
-
-  if (this._horizonDistance !== Number.MAX_VALUE) {
-    // The camera is outside the occluder
-    let tempVec = Cartesian3.subtract(
-      occludeePosition,
-      this._occluderPosition,
-      tempScratch,
-    );
-    let temp = this._occluderRadius - occludeeRadius;
-    const occluderToOccludeeDistSqrd = Cartesian3.magnitudeSquared(tempVec);
-    temp = occluderToOccludeeDistSqrd - temp * temp;
-    if (temp > 0.0) {
-      // The occludee is not completely inside the occluder
-      // Check to see if the occluder completely hides the occludee
-      temp = Math.sqrt(temp) + this._horizonDistance;
-      tempVec = Cartesian3.subtract(
-        occludeePosition,
-        this._cameraPosition,
-        tempVec,
-      );
-      const cameraToOccludeeDistSqrd = Cartesian3.magnitudeSquared(tempVec);
-      if (
-        temp * temp + occludeeRadius * occludeeRadius <
-        cameraToOccludeeDistSqrd
-      ) {
-        return Visibility.NONE;
-      }
-
-      // Check to see whether the occluder is fully or partially visible
-      // when the occludee does not intersect the occluder
-      temp = this._occluderRadius + occludeeRadius;
-      temp = occluderToOccludeeDistSqrd - temp * temp;
-      if (temp > 0.0) {
-        // The occludee does not intersect the occluder.
-        temp = Math.sqrt(temp) + this._horizonDistance;
-        return cameraToOccludeeDistSqrd <
-          temp * temp + occludeeRadius * occludeeRadius
-          ? Visibility.FULL
-          : Visibility.PARTIAL;
-      }
-
-      //Check to see if the occluder is fully or partially visible when the occludee DOES
-      //intersect the occluder
-      tempVec = Cartesian3.subtract(
-        occludeePosition,
-        this._horizonPlanePosition,
-        tempVec,
-      );
-      return Cartesian3.dot(tempVec, this._horizonPlaneNormal) > -occludeeRadius
-        ? Visibility.PARTIAL
-        : Visibility.FULL;
-    }
-  }
-  return Visibility.NONE;
-};
 
 const occludeePointScratch = new Cartesian3();
 /**

@@ -78,100 +78,117 @@ function toggleVR(viewModel, scene, isVRMode, isOrthographic) {
  * @param {Scene} scene The scene.
  * @param {Element|string} [vrElement=document.body] The element or id to be placed into VR mode.
  */
-function VRButtonViewModel(scene, vrElement) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
-  }
-  //>>includeEnd('debug');
-
-  const that = this;
-
-  const isEnabled = knockout.observable(Fullscreen.enabled);
-  const isVRMode = knockout.observable(false);
-
-  /**
-   * Gets whether or not VR mode is active.
-   *
-   * @type {boolean}
-   */
-  this.isVRMode = undefined;
-  knockout.defineProperty(this, "isVRMode", {
-    get: function () {
-      return isVRMode();
-    },
-  });
-
-  /**
-   * Gets or sets whether or not VR functionality should be enabled.
-   *
-   * @type {boolean}
-   * @see Fullscreen.enabled
-   */
-  this.isVREnabled = undefined;
-  knockout.defineProperty(this, "isVREnabled", {
-    get: function () {
-      return isEnabled();
-    },
-    set: function (value) {
-      isEnabled(value && Fullscreen.enabled);
-    },
-  });
-
-  /**
-   * Gets the tooltip.  This property is observable.
-   *
-   * @type {string}
-   */
-  this.tooltip = undefined;
-  knockout.defineProperty(this, "tooltip", function () {
-    if (!isEnabled()) {
-      return "VR mode is unavailable";
+class VRButtonViewModel {
+  constructor(scene, vrElement) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
     }
-    return isVRMode() ? "Exit VR mode" : "Enter VR mode";
-  });
+    //>>includeEnd('debug');
 
-  const isOrthographic = knockout.observable(false);
+    const that = this;
 
-  this._isOrthographic = undefined;
-  knockout.defineProperty(this, "_isOrthographic", {
-    get: function () {
-      return isOrthographic();
-    },
-  });
+    const isEnabled = knockout.observable(Fullscreen.enabled);
+    const isVRMode = knockout.observable(false);
 
-  this._eventHelper = new EventHelper();
-  this._eventHelper.add(scene.preRender, function () {
-    isOrthographic(scene.camera.frustum instanceof OrthographicFrustum);
-  });
+    /**
+     * Gets whether or not VR mode is active.
+     *
+     * @type {boolean}
+     */
+    this.isVRMode = undefined;
+    knockout.defineProperty(this, "isVRMode", {
+      get: function () {
+        return isVRMode();
+      },
+    });
 
-  this._locked = false;
-  this._noSleep = new NoSleep();
+    /**
+     * Gets or sets whether or not VR functionality should be enabled.
+     *
+     * @type {boolean}
+     * @see Fullscreen.enabled
+     */
+    this.isVREnabled = undefined;
+    knockout.defineProperty(this, "isVREnabled", {
+      get: function () {
+        return isEnabled();
+      },
+      set: function (value) {
+        isEnabled(value && Fullscreen.enabled);
+      },
+    });
 
-  this._command = createCommand(
-    function () {
-      toggleVR(that, scene, isVRMode, isOrthographic);
-    },
-    knockout.getObservable(this, "isVREnabled"),
-  );
-
-  this._vrElement = getElement(vrElement) ?? document.body;
-
-  this._callback = function () {
-    if (!Fullscreen.fullscreen && isVRMode()) {
-      scene.useWebVR = false;
-      if (that._locked) {
-        unlockScreen();
-        that._locked = false;
+    /**
+     * Gets the tooltip.  This property is observable.
+     *
+     * @type {string}
+     */
+    this.tooltip = undefined;
+    knockout.defineProperty(this, "tooltip", function () {
+      if (!isEnabled()) {
+        return "VR mode is unavailable";
       }
-      that._noSleep.disable();
-      isVRMode(false);
-    }
-  };
-  document.addEventListener(Fullscreen.changeEventName, this._callback);
-}
+      return isVRMode() ? "Exit VR mode" : "Enter VR mode";
+    });
 
-Object.defineProperties(VRButtonViewModel.prototype, {
+    const isOrthographic = knockout.observable(false);
+
+    this._isOrthographic = undefined;
+    knockout.defineProperty(this, "_isOrthographic", {
+      get: function () {
+        return isOrthographic();
+      },
+    });
+
+    this._eventHelper = new EventHelper();
+    this._eventHelper.add(scene.preRender, function () {
+      isOrthographic(scene.camera.frustum instanceof OrthographicFrustum);
+    });
+
+    this._locked = false;
+    this._noSleep = new NoSleep();
+
+    this._command = createCommand(
+      function () {
+        toggleVR(that, scene, isVRMode, isOrthographic);
+      },
+      knockout.getObservable(this, "isVREnabled"),
+    );
+
+    this._vrElement = getElement(vrElement) ?? document.body;
+
+    this._callback = function () {
+      if (!Fullscreen.fullscreen && isVRMode()) {
+        scene.useWebVR = false;
+        if (that._locked) {
+          unlockScreen();
+          that._locked = false;
+        }
+        that._noSleep.disable();
+        isVRMode(false);
+      }
+    };
+    document.addEventListener(Fullscreen.changeEventName, this._callback);
+  }
+
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the view model.  Should be called to
+   * properly clean up the view model when it is no longer needed.
+   */
+  destroy() {
+    this._eventHelper.removeAll();
+    document.removeEventListener(Fullscreen.changeEventName, this._callback);
+    destroyObject(this);
+  }
+
   /**
    * Gets or sets the HTML element to place into VR mode when the
    * corresponding button is pressed.
@@ -179,21 +196,26 @@ Object.defineProperties(VRButtonViewModel.prototype, {
    *
    * @type {Element}
    */
-  vrElement: {
-    //TODO:@exception {DeveloperError} value must be a valid HTML Element.
-    get: function () {
-      return this._vrElement;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!(value instanceof Element)) {
-        throw new DeveloperError("value must be a valid Element.");
-      }
-      //>>includeEnd('debug');
+  get vrElement() {
+    return this._vrElement;
+  }
 
-      this._vrElement = value;
-    },
-  },
+  /**
+   * Gets or sets the HTML element to place into VR mode when the
+   * corresponding button is pressed.
+   * @memberof VRButtonViewModel.prototype
+   *
+   * @type {Element}
+   */
+  set vrElement(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!(value instanceof Element)) {
+      throw new DeveloperError("value must be a valid Element.");
+    }
+    //>>includeEnd('debug');
+
+    this._vrElement = value;
+  }
 
   /**
    * Gets the Command to toggle VR mode.
@@ -201,27 +223,9 @@ Object.defineProperties(VRButtonViewModel.prototype, {
    *
    * @type {Command}
    */
-  command: {
-    get: function () {
-      return this._command;
-    },
-  },
-});
+  get command() {
+    return this._command;
+  }
+}
 
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-VRButtonViewModel.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the view model.  Should be called to
- * properly clean up the view model when it is no longer needed.
- */
-VRButtonViewModel.prototype.destroy = function () {
-  this._eventHelper.removeAll();
-  document.removeEventListener(Fullscreen.changeEventName, this._callback);
-  destroyObject(this);
-};
 export default VRButtonViewModel;

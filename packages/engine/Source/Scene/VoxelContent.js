@@ -25,28 +25,89 @@ import MetadataType from "./MetadataType.js";
  *
  * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function VoxelContent(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  if (!defined(options.loader)) {
-    if (!defined(options.metadata)) {
-      throw new DeveloperError("One of loader and metadata must be defined.");
+class VoxelContent {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    if (!defined(options.loader)) {
+      if (!defined(options.metadata)) {
+        throw new DeveloperError("One of loader and metadata must be defined.");
+      }
+      if (!Array.isArray(options.metadata)) {
+        throw new DeveloperError("metadata must be an array of TypedArrays.");
+      }
     }
-    if (!Array.isArray(options.metadata)) {
-      throw new DeveloperError("metadata must be an array of TypedArrays.");
-    }
+    //>>includeEnd('debug');
+
+    const { loader, metadata } = options;
+
+    this._loader = loader;
+    this._metadata = metadata;
+    this._resourcesLoaded = false;
+    this._ready = false;
   }
-  //>>includeEnd('debug');
 
-  const { loader, metadata } = options;
+  /**
+   * Updates the content until all resources are ready for rendering.
+   * @param {FrameState} frameState The frame state
+   * @private
+   */
+  update(primitive, frameState) {
+    const loader = this._loader;
 
-  this._loader = loader;
-  this._metadata = metadata;
-  this._resourcesLoaded = false;
-  this._ready = false;
-}
+    if (this._ready) {
+      // Nothing to do
+      return;
+    }
 
-Object.defineProperties(VoxelContent.prototype, {
+    // Ensures frames continue to render in requestRender mode while resources are processing
+    frameState.afterRender.push(() => true);
+
+    if (!defined(loader)) {
+      this._ready = true;
+      return;
+    }
+
+    if (this._resourcesLoaded) {
+      const { structuralMetadata, scene } = loader.components;
+      const { attributes } = scene.nodes[0].primitives[0];
+      this._metadata = processAttributes(
+        attributes,
+        structuralMetadata,
+        primitive,
+      );
+      this._ready = true;
+      return;
+    }
+
+    this._resourcesLoaded = loader.process(frameState);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see VoxelContent#destroy
+   *
+   * @private
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Frees the resources used by this object.
+   * @private
+   */
+  destroy() {
+    this._loader = this._loader && this._loader.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * Returns true when the content is ready to render; otherwise false
    *
@@ -56,11 +117,9 @@ Object.defineProperties(VoxelContent.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
   /**
    * The metadata for this voxel content.
@@ -69,12 +128,10 @@ Object.defineProperties(VoxelContent.prototype, {
    * @type {Int8Array[]|Uint8Array[]|Int16Array[]|Uint16Array[]|Int32Array[]|Uint32Array[]|Float32Array[]|Float64Array[]}
    * @readonly
    */
-  metadata: {
-    get: function () {
-      return this._metadata;
-    },
-  },
-});
+  get metadata() {
+    return this._metadata;
+  }
+}
 
 /**
  * Constructs a VoxelContent from an array of metadata.
@@ -127,42 +184,6 @@ VoxelContent.fromGltf = async function (resource) {
 };
 
 /**
- * Updates the content until all resources are ready for rendering.
- * @param {FrameState} frameState The frame state
- * @private
- */
-VoxelContent.prototype.update = function (primitive, frameState) {
-  const loader = this._loader;
-
-  if (this._ready) {
-    // Nothing to do
-    return;
-  }
-
-  // Ensures frames continue to render in requestRender mode while resources are processing
-  frameState.afterRender.push(() => true);
-
-  if (!defined(loader)) {
-    this._ready = true;
-    return;
-  }
-
-  if (this._resourcesLoaded) {
-    const { structuralMetadata, scene } = loader.components;
-    const { attributes } = scene.nodes[0].primitives[0];
-    this._metadata = processAttributes(
-      attributes,
-      structuralMetadata,
-      primitive,
-    );
-    this._ready = true;
-    return;
-  }
-
-  this._resourcesLoaded = loader.process(frameState);
-};
-
-/**
  * Processes the attributes from the glTF loader, reordering them into the order expected by the primitive.
  *
  * @param {ModelComponents.Attribute[]} attributes The attributes to process
@@ -202,30 +223,5 @@ function processAttributes(attributes, structuralMetadata, primitive) {
 
   return data;
 }
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see VoxelContent#destroy
- *
- * @private
- */
-VoxelContent.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Frees the resources used by this object.
- * @private
- */
-VoxelContent.prototype.destroy = function () {
-  this._loader = this._loader && this._loader.destroy();
-  return destroyObject(this);
-};
 
 export default VoxelContent;

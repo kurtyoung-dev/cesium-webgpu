@@ -37,37 +37,91 @@ import createPropertyDescriptor from "./createPropertyDescriptor.js";
  * @see Entity
  * @demo {@link https://sandcastle.cesium.com/index.html?id=polyline|Cesium Sandcastle Polyline Demo}
  */
-function PolylineGraphics(options) {
-  this._definitionChanged = new Event();
-  this._show = undefined;
-  this._showSubscription = undefined;
-  this._positions = undefined;
-  this._positionsSubscription = undefined;
-  this._width = undefined;
-  this._widthSubscription = undefined;
-  this._granularity = undefined;
-  this._granularitySubscription = undefined;
-  this._material = undefined;
-  this._materialSubscription = undefined;
-  this._depthFailMaterial = undefined;
-  this._depthFailMaterialSubscription = undefined;
-  this._arcType = undefined;
-  this._arcTypeSubscription = undefined;
-  this._clampToGround = undefined;
-  this._clampToGroundSubscription = undefined;
-  this._shadows = undefined;
-  this._shadowsSubscription = undefined;
-  this._distanceDisplayCondition = undefined;
-  this._distanceDisplayConditionSubscription = undefined;
-  this._classificationType = undefined;
-  this._classificationTypeSubscription = undefined;
-  this._zIndex = undefined;
-  this._zIndexSubscription = undefined;
+class PolylineGraphics {
+  constructor(options) {
+    this._definitionChanged = new Event();
+    this._show = undefined;
+    this._showSubscription = undefined;
+    this._positions = undefined;
+    this._positionsSubscription = undefined;
+    this._width = undefined;
+    this._widthSubscription = undefined;
+    this._granularity = undefined;
+    this._granularitySubscription = undefined;
+    this._material = undefined;
+    this._materialSubscription = undefined;
+    this._depthFailMaterial = undefined;
+    this._depthFailMaterialSubscription = undefined;
+    this._arcType = undefined;
+    this._arcTypeSubscription = undefined;
+    this._clampToGround = undefined;
+    this._clampToGroundSubscription = undefined;
+    this._shadows = undefined;
+    this._shadowsSubscription = undefined;
+    this._distanceDisplayCondition = undefined;
+    this._distanceDisplayConditionSubscription = undefined;
+    this._classificationType = undefined;
+    this._classificationTypeSubscription = undefined;
+    this._zIndex = undefined;
+    this._zIndexSubscription = undefined;
 
-  this.merge(options ?? Frozen.EMPTY_OBJECT);
-}
+    this.merge(options ?? Frozen.EMPTY_OBJECT);
+  }
 
-Object.defineProperties(PolylineGraphics.prototype, {
+  /**
+   * Duplicates this instance.
+   *
+   * @param {PolylineGraphics} [result] The object onto which to store the result.
+   * @returns {PolylineGraphics} The modified result parameter or a new instance if one was not provided.
+   */
+  clone(result) {
+    if (!defined(result)) {
+      return new PolylineGraphics(this);
+    }
+    result.show = this.show;
+    result.positions = this.positions;
+    result.width = this.width;
+    result.granularity = this.granularity;
+    result.material = this.material;
+    result.depthFailMaterial = this.depthFailMaterial;
+    result.arcType = this.arcType;
+    result.clampToGround = this.clampToGround;
+    result.shadows = this.shadows;
+    result.distanceDisplayCondition = this.distanceDisplayCondition;
+    result.classificationType = this.classificationType;
+    result.zIndex = this.zIndex;
+    return result;
+  }
+
+  /**
+   * Assigns each unassigned property on this object to the value
+   * of the same property on the provided source object.
+   *
+   * @param {PolylineGraphics} source The object to be merged into this object.
+   */
+  merge(source) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(source)) {
+      throw new DeveloperError("source is required.");
+    }
+    //>>includeEnd('debug');
+
+    this.show = this.show ?? source.show;
+    this.positions = this.positions ?? source.positions;
+    this.width = this.width ?? source.width;
+    this.granularity = this.granularity ?? source.granularity;
+    this.material = this.material ?? source.material;
+    this.depthFailMaterial = this.depthFailMaterial ?? source.depthFailMaterial;
+    this.arcType = this.arcType ?? source.arcType;
+    this.clampToGround = this.clampToGround ?? source.clampToGround;
+    this.shadows = this.shadows ?? source.shadows;
+    this.distanceDisplayCondition =
+      this.distanceDisplayCondition ?? source.distanceDisplayCondition;
+    this.classificationType =
+      this.classificationType ?? source.classificationType;
+    this.zIndex = this.zIndex ?? source.zIndex;
+  }
+
   /**
    * Gets the event that is raised whenever a property or sub-property is changed or modified.
    * @memberof PolylineGraphics.prototype
@@ -75,167 +129,9 @@ Object.defineProperties(PolylineGraphics.prototype, {
    * @type {Event}
    * @readonly
    */
-  definitionChanged: {
-    get: function () {
-      return this._definitionChanged;
-    },
-  },
-
-  /**
-   * Gets or sets the boolean Property specifying the visibility of the polyline.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default true
-   */
-  show: createPropertyDescriptor("show"),
-
-  /**
-   * Gets or sets the Property specifying the array of {@link Cartesian3}
-   * positions that define the line strip.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   */
-  positions: createPropertyDescriptor("positions"),
-
-  /**
-   * Gets or sets the numeric Property specifying the width in pixels.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default 1.0
-   */
-  width: createPropertyDescriptor("width"),
-
-  /**
-   * Gets or sets the numeric Property specifying the angular distance between each latitude and longitude if arcType is not ArcType.NONE and clampToGround is false.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default Cesium.Math.RADIANS_PER_DEGREE
-   */
-  granularity: createPropertyDescriptor("granularity"),
-
-  /**
-   * Gets or sets the Property specifying the material used to draw the polyline.
-   * @memberof PolylineGraphics.prototype
-   * @type {MaterialProperty}
-   * @default Color.WHITE
-   */
-  material: createMaterialPropertyDescriptor("material"),
-
-  /**
-   * Gets or sets the Property specifying the material used to draw the polyline when it fails the depth test.
-   * <p>
-   * Requires the EXT_frag_depth WebGL extension to render properly. If the extension is not supported,
-   * there may be artifacts.
-   * </p>
-   * @memberof PolylineGraphics.prototype
-   * @type {MaterialProperty}
-   * @default undefined
-   */
-  depthFailMaterial: createMaterialPropertyDescriptor("depthFailMaterial"),
-
-  /**
-   * Gets or sets the {@link ArcType} Property specifying whether the line segments should be great arcs, rhumb lines or linearly connected.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default ArcType.GEODESIC
-   */
-  arcType: createPropertyDescriptor("arcType"),
-
-  /**
-   * Gets or sets the boolean Property specifying whether the polyline
-   * should be clamped to the ground.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default false
-   */
-  clampToGround: createPropertyDescriptor("clampToGround"),
-
-  /**
-   * Get or sets the enum Property specifying whether the polyline
-   * casts or receives shadows from light sources.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default ShadowMode.DISABLED
-   */
-  shadows: createPropertyDescriptor("shadows"),
-
-  /**
-   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this polyline will be displayed.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   */
-  distanceDisplayCondition: createPropertyDescriptor(
-    "distanceDisplayCondition",
-  ),
-
-  /**
-   * Gets or sets the {@link ClassificationType} Property specifying whether this polyline will classify terrain, 3D Tiles, or both when on the ground.
-   * @memberof PolylineGraphics.prototype
-   * @type {Property|undefined}
-   * @default ClassificationType.BOTH
-   */
-  classificationType: createPropertyDescriptor("classificationType"),
-
-  /**
-   * Gets or sets the zIndex Property specifying the ordering of the polyline. Only has an effect if `clampToGround` is true and polylines on terrain is supported.
-   * @memberof PolylineGraphics.prototype
-   * @type {ConstantProperty|undefined}
-   * @default 0
-   */
-  zIndex: createPropertyDescriptor("zIndex"),
-});
-
-/**
- * Duplicates this instance.
- *
- * @param {PolylineGraphics} [result] The object onto which to store the result.
- * @returns {PolylineGraphics} The modified result parameter or a new instance if one was not provided.
- */
-PolylineGraphics.prototype.clone = function (result) {
-  if (!defined(result)) {
-    return new PolylineGraphics(this);
+  get definitionChanged() {
+    return this._definitionChanged;
   }
-  result.show = this.show;
-  result.positions = this.positions;
-  result.width = this.width;
-  result.granularity = this.granularity;
-  result.material = this.material;
-  result.depthFailMaterial = this.depthFailMaterial;
-  result.arcType = this.arcType;
-  result.clampToGround = this.clampToGround;
-  result.shadows = this.shadows;
-  result.distanceDisplayCondition = this.distanceDisplayCondition;
-  result.classificationType = this.classificationType;
-  result.zIndex = this.zIndex;
-  return result;
-};
+}
 
-/**
- * Assigns each unassigned property on this object to the value
- * of the same property on the provided source object.
- *
- * @param {PolylineGraphics} source The object to be merged into this object.
- */
-PolylineGraphics.prototype.merge = function (source) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(source)) {
-    throw new DeveloperError("source is required.");
-  }
-  //>>includeEnd('debug');
-
-  this.show = this.show ?? source.show;
-  this.positions = this.positions ?? source.positions;
-  this.width = this.width ?? source.width;
-  this.granularity = this.granularity ?? source.granularity;
-  this.material = this.material ?? source.material;
-  this.depthFailMaterial = this.depthFailMaterial ?? source.depthFailMaterial;
-  this.arcType = this.arcType ?? source.arcType;
-  this.clampToGround = this.clampToGround ?? source.clampToGround;
-  this.shadows = this.shadows ?? source.shadows;
-  this.distanceDisplayCondition =
-    this.distanceDisplayCondition ?? source.distanceDisplayCondition;
-  this.classificationType =
-    this.classificationType ?? source.classificationType;
-  this.zIndex = this.zIndex ?? source.zIndex;
-};
 export default PolylineGraphics;

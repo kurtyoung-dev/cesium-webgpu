@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <title>Worker Renderers — One Thread Per Renderer</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0f0f1f;
+        color: #e0e0e0;
+      }
+
+      /* ── Top toolbar ── */
+      #toolbar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 48px;
+        background: rgba(16, 16, 32, 0.95);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 16px;
+        z-index: 2000;
+        border-bottom: 1px solid rgba(100, 140, 255, 0.25);
+      }
+      #toolbar h2 {
+        margin: 0;
+        font-size: 15px;
+        color: #67b7ff;
+        white-space: nowrap;
+      }
+      .toolbar-sep {
+        width: 1px;
+        height: 28px;
+        background: rgba(255, 255, 255, 0.15);
+      }
+      .tb-btn {
+        padding: 6px 14px;
+        background: #4a90e2;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .tb-btn:hover {
+        background: #357abd;
+      }
+      .tb-btn.danger {
+        background: #c0392b;
+      }
+      .tb-btn.danger:hover {
+        background: #962d22;
+      }
+      #status {
+        font-size: 12px;
+        color: #a0a0c0;
+        margin-left: auto;
+        white-space: nowrap;
+      }
+
+      /* ── Pane grid: 2x2 by default, configurable ── */
+      #pane-grid {
+        position: absolute;
+        top: 48px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: 1fr 1fr;
+        gap: 4px;
+        background: #000;
+      }
+
+      .pane {
+        position: relative;
+        background: #050510;
+        overflow: hidden;
+      }
+
+      .pane-label {
+        position: absolute;
+        bottom: 8px;
+        left: 8px;
+        background: rgba(0, 0, 0, 0.55);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-family: monospace;
+        z-index: 100;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <h2>Worker Renderers</h2>
+      <div class="toolbar-sep"></div>
+      <button class="tb-btn" id="btn-spawn-webgpu">+ WebGPU pane</button>
+      <button class="tb-btn" id="btn-spawn-webgl">+ WebGL pane</button>
+      <button class="tb-btn" id="btn-clear">Clear all</button>
+      <div class="toolbar-sep"></div>
+      <span style="font-size: 11px; color: #a0a0c0">FPS cap:</span>
+      <select class="tb-btn" id="sel-maxfps" style="padding: 6px 10px">
+        <option value="null" selected>vsync (default)</option>
+        <option value="30">30</option>
+        <option value="60">60</option>
+        <option value="120">120</option>
+        <option value="144">144</option>
+        <option value="240">240</option>
+        <option value="0">uncapped</option>
+        <option value="-1">paused</option>
+      </select>
+      <div class="toolbar-sep"></div>
+      <button class="tb-btn danger" id="btn-crash-first">
+        Crash first worker
+      </button>
+      <div id="status">no panes</div>
+    </div>
+    <div id="pane-grid"></div>
+
+    <script type="module">
+      // ─── Loader notes ─────────────────────────────────────────────
+      //
+      // This page deliberately uses the ESM build of Cesium so it can
+      // import `WorkerSceneHost` + `FpsOverlay` directly from the
+      // engine package without going through the IIFE global. The
+      // worker itself loads the same engine via dynamic import inside
+      // its own module graph (see RendererWorker.js).
+      //
+      // Path resolution: we point at the unminified build's chunked
+      // ESM output where the worker chunk is alongside index.js. The
+      // import.meta.url resolution inside WorkerSceneHost will pick
+      // up the worker URL relative to wherever the host module
+      // actually got loaded from.
+
+      import {
+        WorkerSceneHost,
+        FpsOverlay,
+      } from "../../Build/CesiumUnminified/index.js";
+
+      // Explicit worker URL — sibling of the bundled index.js. We pass
+      // it to every host so the URL resolution is unambiguous regardless
+      // of which page directory loads this file. (The host has a sane
+      // default that lands on the same path, but being explicit makes
+      // the wiring obvious to anyone reading the test page.)
+      const RENDERER_WORKER_URL = new URL(
+        "../../Build/CesiumUnminified/Workers/RendererWorker.js",
+        import.meta.url,
+      );
+
+      const grid = document.getElementById("pane-grid");
+      const status = document.getElementById("status");
+      const btnWebgpu = document.getElementById("btn-spawn-webgpu");
+      const btnWebgl = document.getElementById("btn-spawn-webgl");
+      const btnClear = document.getElementById("btn-clear");
+      const btnCrash = document.getElementById("btn-crash-first");
+      const selMaxFps = document.getElementById("sel-maxfps");
+
+      const panes = [];
+      let nextPaneId = 1;
+
+      // Read the dropdown's current value as the maxFps argument the
+      // host wants. The dropdown's option values are strings, so we
+      // parse them: "null" → null, anything else → number.
+      function currentMaxFps() {
+        const raw = selMaxFps.value;
+        if (raw === "null") return null;
+        const n = Number(raw);
+        return isFinite(n) ? n : null;
+      }
+
+      function updateStatus() {
+        const counts = panes.reduce(
+          (acc, p) => {
+            acc[p.host.rendererType] = (acc[p.host.rendererType] ?? 0) + 1;
+            return acc;
+          },
+          {},
+        );
+        const parts = Object.entries(counts).map(
+          ([k, v]) => `${k}:${v}`,
+        );
+        status.textContent =
+          panes.length === 0 ? "no panes" : parts.join("  ");
+      }
+
+      function relayoutGrid() {
+        // Pick a sensible 2D layout for N panes: ceil(sqrt) columns,
+        // ceil(N/cols) rows. Caps out at 4×4 = 16 panes.
+        const n = Math.min(panes.length, 16);
+        if (n === 0) {
+          grid.style.gridTemplateColumns = "1fr";
+          grid.style.gridTemplateRows = "1fr";
+          return;
+        }
+        const cols = Math.ceil(Math.sqrt(n));
+        const rows = Math.ceil(n / cols);
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+      }
+
+      function spawnPane(rendererType) {
+        const id = nextPaneId++;
+        const paneEl = document.createElement("div");
+        paneEl.className = "pane";
+        paneEl.id = `pane-${id}`;
+        const label = document.createElement("div");
+        label.className = "pane-label";
+        label.textContent = `pane ${id} · ${rendererType}`;
+        paneEl.appendChild(label);
+        grid.appendChild(paneEl);
+
+        const host = new WorkerSceneHost({
+          parent: paneEl,
+          rendererType,
+          autoRestart: true,
+          workerUrl: RENDERER_WORKER_URL,
+          maxFps: currentMaxFps(),
+          onReady: (info) => {
+            console.log(
+              `[pane ${id}] worker ready, session=${info.sessionId}`,
+            );
+          },
+          onCrash: (info) => {
+            console.warn(`[pane ${id}] worker crashed:`, info);
+            label.textContent = `pane ${id} · ${rendererType} · RESTARTING (${info.reason})`;
+            setTimeout(() => {
+              label.textContent = `pane ${id} · ${rendererType}`;
+            }, 2000);
+          },
+          onFailure: (info) => {
+            console.error(`[pane ${id}] worker failed permanently:`, info);
+            label.textContent = `pane ${id} · ${rendererType} · FAILED`;
+          },
+        });
+
+        const overlay = new FpsOverlay({
+          parent: paneEl,
+          dataSource: host,
+          label: `${rendererType} #${id}`,
+          position: "top-left",
+          width: 280,
+          height: 88,
+        });
+
+        panes.push({ id, host, overlay, paneEl });
+        relayoutGrid();
+        updateStatus();
+      }
+
+      function clearAll() {
+        for (const p of panes) {
+          p.overlay.destroy();
+          p.host.destroy();
+          if (p.paneEl.parentNode) {
+            p.paneEl.parentNode.removeChild(p.paneEl);
+          }
+        }
+        panes.length = 0;
+        relayoutGrid();
+        updateStatus();
+      }
+
+      function crashFirstWorker() {
+        if (panes.length === 0) return;
+        // Trigger a hard restart by terminating the worker manually.
+        // The host's heartbeat timeout will detect the dead worker
+        // within ~3 seconds and restart it via the recovery path.
+        const first = panes[0];
+        if (first.host._worker) {
+          console.warn(
+            `[pane ${first.id}] manually killing worker to test recovery`,
+          );
+          first.host._worker.terminate();
+          first.host._worker = null;
+          // The next heartbeat will see no responses and trigger restart.
+        }
+      }
+
+      btnWebgpu.addEventListener("click", () => spawnPane("webgpu"));
+      btnWebgl.addEventListener("click", () => spawnPane("webgl"));
+      btnClear.addEventListener("click", clearAll);
+      btnCrash.addEventListener("click", crashFirstWorker);
+
+      // Apply the dropdown selection live to every existing pane.
+      // New panes pick up the same value via currentMaxFps().
+      selMaxFps.addEventListener("change", () => {
+        const value = currentMaxFps();
+        for (const p of panes) {
+          p.host.setMaxFps(value);
+        }
+        console.log(
+          `[worker-renderers] applied maxFps=${value === null ? "null (vsync)" : value} to ${panes.length} pane(s)`,
+        );
+      });
+
+      // Console helpers — exposed on window so users debugging in
+      // dev tools can drive the panes from the console without
+      // touching the toolbar. These mirror the same setMaxFps API
+      // that the actual application would call.
+      //
+      //   setMaxFps(60)            // cap all panes at 60 fps
+      //   setMaxFps(null)          // back to vsync
+      //   setMaxFps(0)             // uncapped
+      //   setMaxFps(-1)            // pause
+      //   setPaneMaxFps(0, 120)    // cap pane index 0 at 120
+      //   listPanes()              // print { id, rendererType, maxFps, avgFps }
+      window.setMaxFps = function (value) {
+        for (const p of panes) {
+          p.host.setMaxFps(value);
+        }
+        // Sync the dropdown if the value matches one of the options.
+        const asString = value === null ? "null" : String(value);
+        const opt = Array.from(selMaxFps.options).find(
+          (o) => o.value === asString,
+        );
+        if (opt) selMaxFps.value = asString;
+        return `applied maxFps=${value === null ? "null" : value} to ${panes.length} pane(s)`;
+      };
+      window.setPaneMaxFps = function (paneIndex, value) {
+        const p = panes[paneIndex];
+        if (!p) return `no pane at index ${paneIndex}`;
+        p.host.setMaxFps(value);
+        return `pane ${p.id} (${p.host.rendererType}) → maxFps=${value}`;
+      };
+      window.listPanes = function () {
+        return panes.map((p, i) => {
+          const stats = p.host.getLiveStats();
+          return {
+            index: i,
+            id: p.id,
+            rendererType: p.host.rendererType,
+            maxFps: p.host.maxFps,
+            avgFps: stats.avgFps.toFixed(1),
+            sampleCount: stats.sampleCount,
+          };
+        });
+      };
+
+      // Spawn one of each by default so the page is useful on load.
+      spawnPane("webgpu");
+      spawnPane("webgl");
+    </script>
+  </body>
+</html>

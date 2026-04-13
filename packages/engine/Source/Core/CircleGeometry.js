@@ -36,28 +36,45 @@ import VertexFormat from "./VertexFormat.js";
  * });
  * const geometry = Cesium.CircleGeometry.createGeometry(circle);
  */
-function CircleGeometry(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const radius = options.radius;
+class CircleGeometry {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const radius = options.radius;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("radius", radius);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("radius", radius);
+    //>>includeEnd('debug');
 
-  const ellipseGeometryOptions = {
-    center: options.center,
-    semiMajorAxis: radius,
-    semiMinorAxis: radius,
-    ellipsoid: options.ellipsoid,
-    height: options.height,
-    extrudedHeight: options.extrudedHeight,
-    granularity: options.granularity,
-    vertexFormat: options.vertexFormat,
-    stRotation: options.stRotation,
-    shadowVolume: options.shadowVolume,
-  };
-  this._ellipseGeometry = new EllipseGeometry(ellipseGeometryOptions);
-  this._workerName = "createCircleGeometry";
+    const ellipseGeometryOptions = {
+      center: options.center,
+      semiMajorAxis: radius,
+      semiMinorAxis: radius,
+      ellipsoid: options.ellipsoid,
+      height: options.height,
+      extrudedHeight: options.extrudedHeight,
+      granularity: options.granularity,
+      vertexFormat: options.vertexFormat,
+      stRotation: options.stRotation,
+      shadowVolume: options.shadowVolume,
+    };
+    this._ellipseGeometry = new EllipseGeometry(ellipseGeometryOptions);
+    this._workerName = "createCircleGeometry";
+  }
+
+  /**
+   * @private
+   */
+  get rectangle() {
+    return this._ellipseGeometry.rectangle;
+  }
+
+  /**
+   * For remapping texture coordinates when rendering CircleGeometries as GroundPrimitives.
+   * @private
+   */
+  get textureCoordinateRotationPoints() {
+    return this._ellipseGeometry.textureCoordinateRotationPoints;
+  }
 }
 
 /**
@@ -185,23 +202,4 @@ CircleGeometry.createShadowVolume = function (
   });
 };
 
-Object.defineProperties(CircleGeometry.prototype, {
-  /**
-   * @private
-   */
-  rectangle: {
-    get: function () {
-      return this._ellipseGeometry.rectangle;
-    },
-  },
-  /**
-   * For remapping texture coordinates when rendering CircleGeometries as GroundPrimitives.
-   * @private
-   */
-  textureCoordinateRotationPoints: {
-    get: function () {
-      return this._ellipseGeometry.textureCoordinateRotationPoints;
-    },
-  },
-});
 export default CircleGeometry;

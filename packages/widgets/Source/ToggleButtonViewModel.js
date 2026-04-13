@@ -11,44 +11,43 @@ import knockout from "./ThirdParty/knockout.js";
  * @param {boolean} [options.toggled=false] A boolean indicating whether the button should be initially toggled.
  * @param {string} [options.tooltip=''] A string containing the button's tooltip.
  */
-function ToggleButtonViewModel(command, options) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(command)) {
-    throw new DeveloperError("command is required.");
+class ToggleButtonViewModel {
+  constructor(command, options) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(command)) {
+      throw new DeveloperError("command is required.");
+    }
+    //>>includeEnd('debug');
+
+    this._command = command;
+
+    options = options ?? Frozen.EMPTY_OBJECT;
+
+    /**
+     * Gets or sets whether the button is currently toggled.  This property is observable.
+     * @type {boolean}
+     * @default false
+     */
+    this.toggled = options.toggled ?? false;
+
+    /**
+     * Gets or sets the button's tooltip.  This property is observable.
+     * @type {string}
+     * @default ''
+     */
+    this.tooltip = options.tooltip ?? "";
+
+    knockout.track(this, ["toggled", "tooltip"]);
   }
-  //>>includeEnd('debug');
 
-  this._command = command;
-
-  options = options ?? Frozen.EMPTY_OBJECT;
-
-  /**
-   * Gets or sets whether the button is currently toggled.  This property is observable.
-   * @type {boolean}
-   * @default false
-   */
-  this.toggled = options.toggled ?? false;
-
-  /**
-   * Gets or sets the button's tooltip.  This property is observable.
-   * @type {string}
-   * @default ''
-   */
-  this.tooltip = options.tooltip ?? "";
-
-  knockout.track(this, ["toggled", "tooltip"]);
-}
-
-Object.defineProperties(ToggleButtonViewModel.prototype, {
   /**
    * Gets the command which will be executed when the button is toggled.
    * @memberof ToggleButtonViewModel.prototype
    * @type {Command}
    */
-  command: {
-    get: function () {
-      return this._command;
-    },
-  },
-});
+  get command() {
+    return this._command;
+  }
+}
+
 export default ToggleButtonViewModel;

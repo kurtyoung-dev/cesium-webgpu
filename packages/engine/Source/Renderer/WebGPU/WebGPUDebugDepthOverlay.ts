@@ -18,11 +18,21 @@
  *
  * Linearization: raw NDC depth in [0,1] is non-linear (most precision near
  * the camera). The shader linearizes via the standard
- *   `linearZ = (near * far) / (far - depth * (far - near))`
- * conversion and normalizes to [0,1] using camera near/far so the entire
- * scene maps usefully to grayscale. The unmodified raw depth is also
- * available in the green channel for diagnosing buffer-precision issues
- * directly.
+ *   linearZ = (near * far) / (far - depth * (far - near))
+ * conversion.
+ *
+ * CRITICAL — we use LOG-SCALE normalization, not linear. Cesium's planetary
+ * camera runs with near ~1m and far ~1e10m (ten decades). A pixel at a
+ * terrain feature 10 km out, linear-normalized over [1, 1e10], comes back
+ * as 1e-6 — indistinguishable from zero on an 8-bit grayscale display. The
+ * result is a pure-black image with white "nothing drawn here" patches, no
+ * useful mid-tones. log2-normalizing the same range gives the 10 km pixel
+ * a value of 13/33 ≈ 0.4, a 100 km pixel 0.5, a 1000 km pixel 0.6 — visible,
+ * distinguishable grey tones across the scale you actually care about.
+ *
+ * Raw NDC depth is also available in mode 1, but because Cesium's planetary
+ * depth values sit in [0.9999, 1.0] we apply a pow() stretch so the tail is
+ * actually visible instead of saturating to white.
  */
 
 /// <reference types="@webgpu/types" />
@@ -67,25 +77,56 @@ fn linearizeDepth(rawDepth: f32, near: f32, far: f32) -> f32 {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // textureSampleLevel on a depth texture returns f32 directly.
-  let raw = textureSampleLevel(depthTexture, depthSampler, input.uv, 0.0);
+  // NOTE: depth textures require the level parameter to be i32 / u32 —
+  // abstract-float 0.0 is rejected by naga with a "no matching call"
+  // error. Use 0i explicitly.
+  let raw = textureSampleLevel(depthTexture, depthSampler, input.uv, 0i);
   let near = u.params.x;
   let far = u.params.y;
   let mode = u.params.z;
 
-  // Linearized depth normalized to [0..1] across the camera near/far range.
+  // Pixels at exactly 1.0 (or within floating-point epsilon of it) were
+  // never drawn this frame — tint them magenta so they're visually
+  // distinct from "drawn but far". If you see large magenta regions,
+  // that's content that lives in a different frustum than the one whose
+  // depth ended up in the buffer (see WebGPUSceneRenderer's debug bypass
+  // of the inter-frustum clear).
+  if (raw >= 0.99999) {
+    return vec4<f32>(0.5, 0.0, 0.5, 1.0);
+  }
+
   let linear = linearizeDepth(raw, near, far);
-  let linearNorm = clamp((linear - near) / max(far - near, 1e-6), 0.0, 1.0);
 
-  // Raw NDC depth — useful for spotting precision tiers near the far plane.
-  let rawVis = clamp(raw, 0.0, 1.0);
+  // ── Log-scale normalization ──
+  // Cesium's planetary camera runs near ≈ 1m, far ≈ 1e10m (ten decades).
+  // Linear normalization collapses every rendered pixel to near-zero
+  // grayscale. log2 spreads the useful range: a 10 km feature lands at
+  // ~0.4, 100 km at ~0.5, 1000 km at ~0.6 — visible, distinguishable
+  // bands across the altitudes you actually care about.
+  let logNear = log2(max(near, 1.0));
+  let logFar = log2(max(far, max(near, 1.0) * 2.0));
+  let logLinear = log2(max(linear, 1.0));
+  let linearNorm = clamp(
+    (logLinear - logNear) / max(logFar - logNear, 1e-6),
+    0.0,
+    1.0,
+  );
 
-  // Mode selector lets users compare linearized vs raw without recompiling.
-  // 0 = linearized grayscale, 1 = raw grayscale, 2 = combined (R=linear,
-  // G=raw, B=0). Default is mode 0.
+  // Stretched raw depth. Raw NDC depth for a planetary scene sits in
+  // [0.999, 1.0), so displaying it directly saturates to white. (1-raw)
+  // puts it in [0, 1e-3]; pow(., 0.15) stretches the tail across the
+  // full visible range so precision tiers near the far plane become
+  // readable.
+  let rawStretch = pow(clamp(1.0 - raw, 0.0, 1.0), 0.15);
+
+  // Mode selector:
+  //   0 = log-linearized grayscale (default, most useful)
+  //   1 = stretched-raw grayscale (for precision-tier diagnosis)
+  //   2 = combined (R = log-linear, G = stretched-raw)
   if (mode > 1.5) {
-    return vec4<f32>(linearNorm, rawVis, 0.0, 1.0);
+    return vec4<f32>(linearNorm, rawStretch, 0.0, 1.0);
   } else if (mode > 0.5) {
-    return vec4<f32>(rawVis, rawVis, rawVis, 1.0);
+    return vec4<f32>(rawStretch, rawStretch, rawStretch, 1.0);
   }
   return vec4<f32>(linearNorm, linearNorm, linearNorm, 1.0);
 }

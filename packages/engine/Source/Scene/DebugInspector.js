@@ -7,8 +7,32 @@ import defined from "../Core/defined.js";
 /**
  * @private
  */
-function DebugInspector() {
-  this._cachedShowFrustumsShaders = {};
+class DebugInspector {
+  constructor() {
+    this._cachedShowFrustumsShaders = {};
+  }
+
+  executeDebugShowFrustumsCommand(scene, command, passState) {
+    // create debug command
+    const shaderProgramId = command.shaderProgram.id;
+    let debugShaderProgram = this._cachedShowFrustumsShaders[shaderProgramId];
+    if (!defined(debugShaderProgram)) {
+      debugShaderProgram = createDebugShowFrustumsShaderProgram(
+        scene,
+        command.shaderProgram,
+      );
+
+      this._cachedShowFrustumsShaders[shaderProgramId] = debugShaderProgram;
+    }
+
+    const debugCommand = DrawCommand.shallowClone(
+      command,
+      scratchShowFrustumCommand,
+    );
+    debugCommand.shaderProgram = debugShaderProgram;
+    debugCommand.uniformMap = createDebugShowFrustumsUniformMap(scene, command);
+    debugCommand.execute(scene.context, passState);
+  }
 }
 
 function getAttributeLocations(shaderProgram) {
@@ -34,7 +58,7 @@ function createDebugShowFrustumsShaderProgram(scene, shaderProgram) {
     const re = /out_FragData_(\d+)/g;
     let match;
     while ((match = re.exec(source)) !== null) {
-      if (targets.indexOf(match[1]) === -1) {
+      if (!targets.includes(match[1])) {
         targets.push(match[1]);
       }
     }
@@ -123,29 +147,4 @@ function createDebugShowFrustumsUniformMap(scene, command) {
 }
 
 const scratchShowFrustumCommand = new DrawCommand();
-DebugInspector.prototype.executeDebugShowFrustumsCommand = function (
-  scene,
-  command,
-  passState,
-) {
-  // create debug command
-  const shaderProgramId = command.shaderProgram.id;
-  let debugShaderProgram = this._cachedShowFrustumsShaders[shaderProgramId];
-  if (!defined(debugShaderProgram)) {
-    debugShaderProgram = createDebugShowFrustumsShaderProgram(
-      scene,
-      command.shaderProgram,
-    );
-
-    this._cachedShowFrustumsShaders[shaderProgramId] = debugShaderProgram;
-  }
-
-  const debugCommand = DrawCommand.shallowClone(
-    command,
-    scratchShowFrustumCommand,
-  );
-  debugCommand.shaderProgram = debugShaderProgram;
-  debugCommand.uniformMap = createDebugShowFrustumsUniformMap(scene, command);
-  debugCommand.execute(scene.context, passState);
-};
 export default DebugInspector;

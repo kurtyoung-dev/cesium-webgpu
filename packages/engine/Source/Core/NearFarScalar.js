@@ -13,31 +13,54 @@ import DeveloperError from "./DeveloperError.js";
  *
  * @see Packable
  */
-function NearFarScalar(near, nearValue, far, farValue) {
+class NearFarScalar {
+  constructor(near, nearValue, far, farValue) {
+    /**
+     * The lower bound of the camera range.
+     * @type {number}
+     * @default 0.0
+     */
+    this.near = near ?? 0.0;
+    /**
+     * The value at the lower bound of the camera range.
+     * @type {number}
+     * @default 0.0
+     */
+    this.nearValue = nearValue ?? 0.0;
+    /**
+     * The upper bound of the camera range.
+     * @type {number}
+     * @default 1.0
+     */
+    this.far = far ?? 1.0;
+    /**
+     * The value at the upper bound of the camera range.
+     * @type {number}
+     * @default 0.0
+     */
+    this.farValue = farValue ?? 0.0;
+  }
+
   /**
-   * The lower bound of the camera range.
-   * @type {number}
-   * @default 0.0
+   * Duplicates this instance.
+   *
+   * @param {NearFarScalar} [result] The object onto which to store the result.
+   * @returns {NearFarScalar} The modified result parameter or a new NearFarScalar instance if one was not provided.
    */
-  this.near = near ?? 0.0;
+  clone(result) {
+    return NearFarScalar.clone(this, result);
+  }
+
   /**
-   * The value at the lower bound of the camera range.
-   * @type {number}
-   * @default 0.0
+   * Compares this instance to the provided NearFarScalar and returns <code>true</code> if they are equal,
+   * <code>false</code> otherwise.
+   *
+   * @param {NearFarScalar} [right] The right hand side NearFarScalar.
+   * @returns {boolean} <code>true</code> if left and right are equal; otherwise <code>false</code>.
    */
-  this.nearValue = nearValue ?? 0.0;
-  /**
-   * The upper bound of the camera range.
-   * @type {number}
-   * @default 1.0
-   */
-  this.far = far ?? 1.0;
-  /**
-   * The value at the upper bound of the camera range.
-   * @type {number}
-   * @default 0.0
-   */
-  this.farValue = farValue ?? 0.0;
+  equals(right) {
+    return NearFarScalar.equals(this, right);
+  }
 }
 
 /**
@@ -150,24 +173,4 @@ NearFarScalar.equals = function (left, right) {
   );
 };
 
-/**
- * Duplicates this instance.
- *
- * @param {NearFarScalar} [result] The object onto which to store the result.
- * @returns {NearFarScalar} The modified result parameter or a new NearFarScalar instance if one was not provided.
- */
-NearFarScalar.prototype.clone = function (result) {
-  return NearFarScalar.clone(this, result);
-};
-
-/**
- * Compares this instance to the provided NearFarScalar and returns <code>true</code> if they are equal,
- * <code>false</code> otherwise.
- *
- * @param {NearFarScalar} [right] The right hand side NearFarScalar.
- * @returns {boolean} <code>true</code> if left and right are equal; otherwise <code>false</code>.
- */
-NearFarScalar.prototype.equals = function (right) {
-  return NearFarScalar.equals(this, right);
-};
 export default NearFarScalar;

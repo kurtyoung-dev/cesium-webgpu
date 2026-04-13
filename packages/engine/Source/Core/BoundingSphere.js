@@ -23,20 +23,112 @@ import Rectangle from "./Rectangle.js";
  * @see BoundingRectangle
  * @see Packable
  */
-function BoundingSphere(center, radius) {
-  /**
-   * The center point of the sphere.
-   * @type {Cartesian3}
-   * @default {@link Cartesian3.ZERO}
-   */
-  this.center = Cartesian3.clone(center ?? Cartesian3.ZERO);
+class BoundingSphere {
+  constructor(center, radius) {
+    /**
+     * The center point of the sphere.
+     * @type {Cartesian3}
+     * @default {@link Cartesian3.ZERO}
+     */
+    this.center = Cartesian3.clone(center ?? Cartesian3.ZERO);
+
+    /**
+     * The radius of the sphere.
+     * @type {number}
+     * @default 0.0
+     */
+    this.radius = radius ?? 0.0;
+  }
 
   /**
-   * The radius of the sphere.
-   * @type {number}
-   * @default 0.0
+   * Determines which side of a plane the sphere is located.
+   *
+   * @param {Plane} plane The plane to test against.
+   * @returns {Intersect} {@link Intersect.INSIDE} if the entire sphere is on the side of the plane
+   *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire sphere is
+   *                      on the opposite side, and {@link Intersect.INTERSECTING} if the sphere
+   *                      intersects the plane.
    */
-  this.radius = radius ?? 0.0;
+  intersectPlane(plane) {
+    return BoundingSphere.intersectPlane(this, plane);
+  }
+
+  /**
+   * Computes the estimated distance squared from the closest point on a bounding sphere to a point.
+   *
+   * @param {Cartesian3} cartesian The point
+   * @returns {number} The estimated distance squared from the bounding sphere to the point.
+   *
+   * @example
+   * // Sort bounding spheres from back to front
+   * spheres.sort(function(a, b) {
+   *     return b.distanceSquaredTo(camera.positionWC) - a.distanceSquaredTo(camera.positionWC);
+   * });
+   */
+  distanceSquaredTo(cartesian) {
+    return BoundingSphere.distanceSquaredTo(this, cartesian);
+  }
+
+  /**
+   * The distances calculated by the vector from the center of the bounding sphere to position projected onto direction
+   * plus/minus the radius of the bounding sphere.
+   * <br>
+   * If you imagine the infinite number of planes with normal direction, this computes the smallest distance to the
+   * closest and farthest planes from position that intersect the bounding sphere.
+   *
+   * @param {Cartesian3} position The position to calculate the distance from.
+   * @param {Cartesian3} direction The direction from position.
+   * @param {Interval} [result] A Interval to store the nearest and farthest distances.
+   * @returns {Interval} The nearest and farthest distances on the bounding sphere from position in direction.
+   */
+  computePlaneDistances(position, direction, result) {
+    return BoundingSphere.computePlaneDistances(
+      this,
+      position,
+      direction,
+      result,
+    );
+  }
+
+  /**
+   * Determines whether or not a sphere is hidden from view by the occluder.
+   *
+   * @param {Occluder} occluder The occluder.
+   * @returns {boolean} <code>true</code> if the sphere is not visible; otherwise <code>false</code>.
+   */
+  isOccluded(occluder) {
+    return BoundingSphere.isOccluded(this, occluder);
+  }
+
+  /**
+   * Compares this BoundingSphere against the provided BoundingSphere componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {BoundingSphere} [right] The right hand side BoundingSphere.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
+   */
+  equals(right) {
+    return BoundingSphere.equals(this, right);
+  }
+
+  /**
+   * Duplicates this BoundingSphere instance.
+   *
+   * @param {BoundingSphere} [result] The object onto which to store the result.
+   * @returns {BoundingSphere} The modified result parameter or a new BoundingSphere instance if none was provided.
+   */
+  clone(result) {
+    return BoundingSphere.clone(this, result);
+  }
+
+  /**
+   * Computes the radius of the BoundingSphere.
+   * @returns {number} The radius of the BoundingSphere.
+   */
+  volume() {
+    const radius = this.radius;
+    return volumeConstant * radius * radius * radius;
+  }
 }
 
 const fromPointsXMin = new Cartesian3();
@@ -1410,97 +1502,4 @@ BoundingSphere.equals = function (left, right) {
   );
 };
 
-/**
- * Determines which side of a plane the sphere is located.
- *
- * @param {Plane} plane The plane to test against.
- * @returns {Intersect} {@link Intersect.INSIDE} if the entire sphere is on the side of the plane
- *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire sphere is
- *                      on the opposite side, and {@link Intersect.INTERSECTING} if the sphere
- *                      intersects the plane.
- */
-BoundingSphere.prototype.intersectPlane = function (plane) {
-  return BoundingSphere.intersectPlane(this, plane);
-};
-
-/**
- * Computes the estimated distance squared from the closest point on a bounding sphere to a point.
- *
- * @param {Cartesian3} cartesian The point
- * @returns {number} The estimated distance squared from the bounding sphere to the point.
- *
- * @example
- * // Sort bounding spheres from back to front
- * spheres.sort(function(a, b) {
- *     return b.distanceSquaredTo(camera.positionWC) - a.distanceSquaredTo(camera.positionWC);
- * });
- */
-BoundingSphere.prototype.distanceSquaredTo = function (cartesian) {
-  return BoundingSphere.distanceSquaredTo(this, cartesian);
-};
-
-/**
- * The distances calculated by the vector from the center of the bounding sphere to position projected onto direction
- * plus/minus the radius of the bounding sphere.
- * <br>
- * If you imagine the infinite number of planes with normal direction, this computes the smallest distance to the
- * closest and farthest planes from position that intersect the bounding sphere.
- *
- * @param {Cartesian3} position The position to calculate the distance from.
- * @param {Cartesian3} direction The direction from position.
- * @param {Interval} [result] A Interval to store the nearest and farthest distances.
- * @returns {Interval} The nearest and farthest distances on the bounding sphere from position in direction.
- */
-BoundingSphere.prototype.computePlaneDistances = function (
-  position,
-  direction,
-  result,
-) {
-  return BoundingSphere.computePlaneDistances(
-    this,
-    position,
-    direction,
-    result,
-  );
-};
-
-/**
- * Determines whether or not a sphere is hidden from view by the occluder.
- *
- * @param {Occluder} occluder The occluder.
- * @returns {boolean} <code>true</code> if the sphere is not visible; otherwise <code>false</code>.
- */
-BoundingSphere.prototype.isOccluded = function (occluder) {
-  return BoundingSphere.isOccluded(this, occluder);
-};
-
-/**
- * Compares this BoundingSphere against the provided BoundingSphere componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {BoundingSphere} [right] The right hand side BoundingSphere.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-BoundingSphere.prototype.equals = function (right) {
-  return BoundingSphere.equals(this, right);
-};
-
-/**
- * Duplicates this BoundingSphere instance.
- *
- * @param {BoundingSphere} [result] The object onto which to store the result.
- * @returns {BoundingSphere} The modified result parameter or a new BoundingSphere instance if none was provided.
- */
-BoundingSphere.prototype.clone = function (result) {
-  return BoundingSphere.clone(this, result);
-};
-
-/**
- * Computes the radius of the BoundingSphere.
- * @returns {number} The radius of the BoundingSphere.
- */
-BoundingSphere.prototype.volume = function () {
-  const radius = this.radius;
-  return volumeConstant * radius * radius * radius;
-};
 export default BoundingSphere;

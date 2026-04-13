@@ -1013,40 +1013,72 @@ function computeRectangle(rectangle, granularity, rotation, ellipsoid, result) {
  * });
  * const geometry = Cesium.RectangleGeometry.createGeometry(rectangle);
  */
-function RectangleGeometry(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class RectangleGeometry {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const rectangle = options.rectangle;
+    const rectangle = options.rectangle;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("rectangle", rectangle);
-  Rectangle._validate(rectangle);
-  if (rectangle.north < rectangle.south) {
-    throw new DeveloperError(
-      "options.rectangle.north must be greater than or equal to options.rectangle.south",
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("rectangle", rectangle);
+    Rectangle._validate(rectangle);
+    if (rectangle.north < rectangle.south) {
+      throw new DeveloperError(
+        "options.rectangle.north must be greater than or equal to options.rectangle.south",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const height = options.height ?? 0.0;
+    const extrudedHeight = options.extrudedHeight ?? height;
+
+    this._rectangle = Rectangle.clone(rectangle);
+    this._granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
+    this._ellipsoid = Ellipsoid.clone(options.ellipsoid ?? Ellipsoid.default);
+    this._surfaceHeight = Math.max(height, extrudedHeight);
+    this._rotation = options.rotation ?? 0.0;
+    this._stRotation = options.stRotation ?? 0.0;
+    this._vertexFormat = VertexFormat.clone(
+      options.vertexFormat ?? VertexFormat.DEFAULT,
     );
+    this._extrudedHeight = Math.min(height, extrudedHeight);
+    this._shadowVolume = options.shadowVolume ?? false;
+    this._workerName = "createRectangleGeometry";
+    this._offsetAttribute = options.offsetAttribute;
+    this._rotatedRectangle = undefined;
+
+    this._textureCoordinateRotationPoints = undefined;
   }
-  //>>includeEnd('debug');
 
-  const height = options.height ?? 0.0;
-  const extrudedHeight = options.extrudedHeight ?? height;
+  /**
+   * @private
+   */
+  get rectangle() {
+    if (!defined(this._rotatedRectangle)) {
+      this._rotatedRectangle = computeRectangle(
+        this._rectangle,
+        this._granularity,
+        this._rotation,
+        this._ellipsoid,
+      );
+    }
+    return this._rotatedRectangle;
+  }
 
-  this._rectangle = Rectangle.clone(rectangle);
-  this._granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
-  this._ellipsoid = Ellipsoid.clone(options.ellipsoid ?? Ellipsoid.default);
-  this._surfaceHeight = Math.max(height, extrudedHeight);
-  this._rotation = options.rotation ?? 0.0;
-  this._stRotation = options.stRotation ?? 0.0;
-  this._vertexFormat = VertexFormat.clone(
-    options.vertexFormat ?? VertexFormat.DEFAULT,
-  );
-  this._extrudedHeight = Math.min(height, extrudedHeight);
-  this._shadowVolume = options.shadowVolume ?? false;
-  this._workerName = "createRectangleGeometry";
-  this._offsetAttribute = options.offsetAttribute;
-  this._rotatedRectangle = undefined;
-
-  this._textureCoordinateRotationPoints = undefined;
+  /**
+   * For remapping texture coordinates when rendering RectangleGeometries as GroundPrimitives.
+   * This version permits skew in textures by computing offsets directly in cartographic space and
+   * more accurately approximates rendering RectangleGeometries with height as standard Primitives.
+   * @see Geometry#_textureCoordinateRotationPoints
+   * @private
+   */
+  get textureCoordinateRotationPoints() {
+    if (!defined(this._textureCoordinateRotationPoints)) {
+      this._textureCoordinateRotationPoints =
+        textureCoordinateRotationPoints(this);
+    }
+    return this._textureCoordinateRotationPoints;
+  }
 }
 
 /**
@@ -1443,38 +1475,4 @@ function textureCoordinateRotationPoints(rectangleGeometry) {
   return result;
 }
 
-Object.defineProperties(RectangleGeometry.prototype, {
-  /**
-   * @private
-   */
-  rectangle: {
-    get: function () {
-      if (!defined(this._rotatedRectangle)) {
-        this._rotatedRectangle = computeRectangle(
-          this._rectangle,
-          this._granularity,
-          this._rotation,
-          this._ellipsoid,
-        );
-      }
-      return this._rotatedRectangle;
-    },
-  },
-  /**
-   * For remapping texture coordinates when rendering RectangleGeometries as GroundPrimitives.
-   * This version permits skew in textures by computing offsets directly in cartographic space and
-   * more accurately approximates rendering RectangleGeometries with height as standard Primitives.
-   * @see Geometry#_textureCoordinateRotationPoints
-   * @private
-   */
-  textureCoordinateRotationPoints: {
-    get: function () {
-      if (!defined(this._textureCoordinateRotationPoints)) {
-        this._textureCoordinateRotationPoints =
-          textureCoordinateRotationPoints(this);
-      }
-      return this._textureCoordinateRotationPoints;
-    },
-  },
-});
 export default RectangleGeometry;

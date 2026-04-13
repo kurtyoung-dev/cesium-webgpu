@@ -20,7 +20,7 @@ struct VertexOutput {
     @location(4) eyePosition: vec3<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -31,11 +31,16 @@ struct Uniforms {
     lightDirection: vec4<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+struct MaterialUniforms {
+    _placeholder: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 // ─── Texture bind group ───
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var colorTexture: texture_2d<f32>;
+@group(2) @binding(0) var textureSampler: sampler;
+@group(2) @binding(1) var colorTexture: texture_2d<f32>;
 
 // ─── Effects bind group (shadow receive + clipping) ───
 struct EffectsUniforms {
@@ -46,20 +51,21 @@ struct EffectsUniforms {
     clippingPlaneCount: u32,
     clippingUnionMode: u32,
     clippingEdgeWidth: f32,
-    _pad0: f32,
+    clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
+    clipPlaneEqHW: array<vec4<f32>, 8>,
 }
 
-@group(2) @binding(0) var<uniform> effects: EffectsUniforms;
-@group(2) @binding(1) var shadowDepthTex: texture_depth_2d;
-@group(2) @binding(2) var shadowCompSampler: sampler_comparison;
-@group(2) @binding(3) var clippingPlaneTex: texture_2d<f32>;
-@group(2) @binding(4) var clippingPlaneSampler: sampler;
+@group(3) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
+@group(3) @binding(2) var shadowCompSampler: sampler_comparison;
+@group(3) @binding(3) var clippingPlaneTex: texture_2d<f32>;
+@group(3) @binding(4) var clippingPlaneSampler: sampler;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -67,20 +73,20 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let eyePos = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * eyePos;
+    output.clipPosition = camera.mvpRelativeToEye * eyePos;
     output.color = input.color;
     output.texCoord = input.texCoord;
     output.eyePosition = eyePos.xyz;
 
     let transformedNormal = normalize(
         mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
+            camera.normalMatrix[0].xyz,
+            camera.normalMatrix[1].xyz,
+            camera.normalMatrix[2].xyz
         ) * input.normal
     );
     output.worldNormal = transformedNormal;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * eyePos).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
 
     return output;
 }
@@ -171,7 +177,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let baseColor = texColor * input.color;
 
     let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
+    let lightDir = normalize(camera.lightDirection.xyz);
 
     let ambient = 0.15;
     let NdotL = max(dot(normal, lightDir), 0.0);

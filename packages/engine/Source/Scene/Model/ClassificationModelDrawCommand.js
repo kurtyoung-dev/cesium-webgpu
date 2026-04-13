@@ -28,48 +28,265 @@ import StencilOperation from "../StencilOperation.js";
  *
  * @private
  */
-function ClassificationModelDrawCommand(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ClassificationModelDrawCommand {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const command = options.command;
-  const renderResources = options.primitiveRenderResources;
+    const command = options.command;
+    const renderResources = options.primitiveRenderResources;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.command", command);
-  Check.typeOf.object("options.primitiveRenderResources", renderResources);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.command", command);
+    Check.typeOf.object("options.primitiveRenderResources", renderResources);
+    //>>includeEnd('debug');
 
-  const model = renderResources.model;
+    const model = renderResources.model;
 
-  this._command = command;
-  this._model = model;
-  this._runtimePrimitive = renderResources.runtimePrimitive;
+    this._command = command;
+    this._model = model;
+    this._runtimePrimitive = renderResources.runtimePrimitive;
 
-  // Classification models aren't supported in 2D mode, so there's no need to
-  // duplicate the model matrix for each derived command.
-  this._modelMatrix = command.modelMatrix;
-  this._boundingVolume = command.boundingVolume;
-  this._cullFace = command.renderState.cull.face;
+    // Classification models aren't supported in 2D mode, so there's no need to
+    // duplicate the model matrix for each derived command.
+    this._modelMatrix = command.modelMatrix;
+    this._boundingVolume = command.boundingVolume;
+    this._cullFace = command.renderState.cull.face;
 
-  const type = model.classificationType;
-  this._classificationType = type;
+    const type = model.classificationType;
+    this._classificationType = type;
 
-  // ClassificationType has three values: terrain only, 3D Tiles only, or both.
-  this._classifiesTerrain = type !== ClassificationType.CESIUM_3D_TILE;
-  this._classifies3DTiles = type !== ClassificationType.TERRAIN;
+    // ClassificationType has three values: terrain only, 3D Tiles only, or both.
+    this._classifiesTerrain = type !== ClassificationType.CESIUM_3D_TILE;
+    this._classifies3DTiles = type !== ClassificationType.TERRAIN;
 
-  this._useDebugWireframe = model._enableDebugWireframe && model.debugWireframe;
-  this._pickId = renderResources.pickId;
+    this._useDebugWireframe = model._enableDebugWireframe && model.debugWireframe;
+    this._pickId = renderResources.pickId;
 
-  this._commandListTerrain = [];
-  this._commandList3DTiles = [];
-  this._commandListIgnoreShow = []; // Used for inverted classification.
-  this._commandListDebugWireframe = [];
+    this._commandListTerrain = [];
+    this._commandList3DTiles = [];
+    this._commandListIgnoreShow = []; // Used for inverted classification.
+    this._commandListDebugWireframe = [];
 
-  this._commandListTerrainPicking = [];
-  this._commandList3DTilesPicking = [];
+    this._commandListTerrainPicking = [];
+    this._commandList3DTilesPicking = [];
 
-  initialize(this);
+    initialize(this);
+  }
+
+  /**
+   * Pushes the draw commands necessary to render the primitive.
+   *
+   * @param {FrameState} frameState The frame state.
+   * @param {DrawCommand[]} result The array to push the draw commands to.
+   *
+   * @returns {DrawCommand[]} The modified result parameter.
+   *
+   * @private
+   */
+  pushCommands(frameState, result) {
+    const passes = frameState.passes;
+    if (passes.render) {
+      if (this._useDebugWireframe) {
+        addAllToArray(result, this._commandListDebugWireframe);
+        return;
+      }
+
+      if (this._classifiesTerrain) {
+        addAllToArray(result, this._commandListTerrain);
+      }
+
+      if (this._classifies3DTiles) {
+        addAllToArray(result, this._commandList3DTiles);
+      }
+
+      const useIgnoreShowCommands =
+        frameState.invertClassification && this._classifies3DTiles;
+
+      if (useIgnoreShowCommands) {
+        if (this._commandListIgnoreShow.length === 0) {
+          const pass = Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW;
+          const command = deriveStencilDepthCommand(this._command, pass);
+
+          const derivedCommands = scratchDerivedCommands;
+          derivedCommands.length = 0;
+          derivedCommands.push(command);
+
+          this._commandListIgnoreShow = createBatchCommands(
+            this,
+            derivedCommands,
+            this._commandListIgnoreShow,
+          );
+        }
+
+        addAllToArray(result, this._commandListIgnoreShow);
+      }
+    }
+
+    if (passes.pick) {
+      if (this._classifiesTerrain) {
+        addAllToArray(result, this._commandListTerrainPicking);
+      }
+
+      if (this._classifies3DTiles) {
+        addAllToArray(result, this._commandList3DTilesPicking);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * The main draw command that the other commands are derived from.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {DrawCommand}
+   *
+   * @readonly
+   * @private
+   */
+  get command() {
+    return this._command;
+  }
+
+  /**
+   * The runtime primitive that the draw command belongs to.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {ModelRuntimePrimitive}
+   *
+   * @readonly
+   * @private
+   */
+  get runtimePrimitive() {
+    return this._runtimePrimitive;
+  }
+
+  /**
+   * The batch lengths used to generate multiple draw commands.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {number[]}
+   *
+   * @readonly
+   * @private
+   */
+  get batchLengths() {
+    return this._runtimePrimitive.batchLengths;
+  }
+
+  /**
+   * The batch offsets used to generate multiple draw commands.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {number[]}
+   *
+   * @readonly
+   * @private
+   */
+  get batchOffsets() {
+    return this._runtimePrimitive.batchOffsets;
+  }
+
+  /**
+   * The model that the draw command belongs to.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {Model}
+   *
+   * @readonly
+   * @private
+   */
+  get model() {
+    return this._model;
+  }
+
+  /**
+   * The classification type of the model that this draw command belongs to.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {ClassificationType}
+   *
+   * @readonly
+   * @private
+   */
+  get classificationType() {
+    return this._classificationType;
+  }
+
+  /**
+   * The current model matrix applied to the draw commands.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {Matrix4}
+   *
+   * @readonly
+   * @private
+   */
+  get modelMatrix() {
+    return this._modelMatrix;
+  }
+
+  /**
+   * The current model matrix applied to the draw commands.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {Matrix4}
+   *
+   * @readonly
+   * @private
+   */
+  set modelMatrix(value) {
+    this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
+    const boundingSphere = this._runtimePrimitive.boundingSphere;
+    this._boundingVolume = BoundingSphere.transform(
+      boundingSphere,
+      this._modelMatrix,
+      this._boundingVolume,
+    );
+  }
+
+  /**
+   * The bounding volume of the main draw command. This is equivalent
+   * to the primitive's bounding sphere transformed by the draw
+   * command's model matrix.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {BoundingSphere}
+   *
+   * @readonly
+   * @private
+   */
+  get boundingVolume() {
+    return this._boundingVolume;
+  }
+
+  /**
+   * Culling is disabled for classification models, so this has no effect on
+   * how the model renders. This only exists to match the interface of
+   * {@link ModelDrawCommand}.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {CullFace}
+   *
+   * @private
+   */
+  get cullFace() {
+    return this._cullFace;
+  }
+
+  /**
+   * Culling is disabled for classification models, so this has no effect on
+   * how the model renders. This only exists to match the interface of
+   * {@link ModelDrawCommand}.
+   *
+   * @memberof ClassificationModelDrawCommand.prototype
+   * @type {CullFace}
+   *
+   * @private
+   */
+  set cullFace(value) {
+    this._cullFace = value;
+  }
 }
 
 function getStencilDepthRenderState(stencilFunction) {
@@ -313,222 +530,5 @@ function createPickCommands(drawCommand, derivedCommands, commandList) {
 
   return createBatchCommands(drawCommand, pickCommands, commandList);
 }
-
-Object.defineProperties(ClassificationModelDrawCommand.prototype, {
-  /**
-   * The main draw command that the other commands are derived from.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {DrawCommand}
-   *
-   * @readonly
-   * @private
-   */
-  command: {
-    get: function () {
-      return this._command;
-    },
-  },
-
-  /**
-   * The runtime primitive that the draw command belongs to.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {ModelRuntimePrimitive}
-   *
-   * @readonly
-   * @private
-   */
-  runtimePrimitive: {
-    get: function () {
-      return this._runtimePrimitive;
-    },
-  },
-
-  /**
-   * The batch lengths used to generate multiple draw commands.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {number[]}
-   *
-   * @readonly
-   * @private
-   */
-  batchLengths: {
-    get: function () {
-      return this._runtimePrimitive.batchLengths;
-    },
-  },
-
-  /**
-   * The batch offsets used to generate multiple draw commands.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {number[]}
-   *
-   * @readonly
-   * @private
-   */
-  batchOffsets: {
-    get: function () {
-      return this._runtimePrimitive.batchOffsets;
-    },
-  },
-
-  /**
-   * The model that the draw command belongs to.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {Model}
-   *
-   * @readonly
-   * @private
-   */
-  model: {
-    get: function () {
-      return this._model;
-    },
-  },
-
-  /**
-   * The classification type of the model that this draw command belongs to.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {ClassificationType}
-   *
-   * @readonly
-   * @private
-   */
-  classificationType: {
-    get: function () {
-      return this._classificationType;
-    },
-  },
-
-  /**
-   * The current model matrix applied to the draw commands.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {Matrix4}
-   *
-   * @readonly
-   * @private
-   */
-  modelMatrix: {
-    get: function () {
-      return this._modelMatrix;
-    },
-    set: function (value) {
-      this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
-      const boundingSphere = this._runtimePrimitive.boundingSphere;
-      this._boundingVolume = BoundingSphere.transform(
-        boundingSphere,
-        this._modelMatrix,
-        this._boundingVolume,
-      );
-    },
-  },
-
-  /**
-   * The bounding volume of the main draw command. This is equivalent
-   * to the primitive's bounding sphere transformed by the draw
-   * command's model matrix.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {BoundingSphere}
-   *
-   * @readonly
-   * @private
-   */
-  boundingVolume: {
-    get: function () {
-      return this._boundingVolume;
-    },
-  },
-
-  /**
-   * Culling is disabled for classification models, so this has no effect on
-   * how the model renders. This only exists to match the interface of
-   * {@link ModelDrawCommand}.
-   *
-   * @memberof ClassificationModelDrawCommand.prototype
-   * @type {CullFace}
-   *
-   * @private
-   */
-  cullFace: {
-    get: function () {
-      return this._cullFace;
-    },
-    set: function (value) {
-      this._cullFace = value;
-    },
-  },
-});
-
-/**
- * Pushes the draw commands necessary to render the primitive.
- *
- * @param {FrameState} frameState The frame state.
- * @param {DrawCommand[]} result The array to push the draw commands to.
- *
- * @returns {DrawCommand[]} The modified result parameter.
- *
- * @private
- */
-ClassificationModelDrawCommand.prototype.pushCommands = function (
-  frameState,
-  result,
-) {
-  const passes = frameState.passes;
-  if (passes.render) {
-    if (this._useDebugWireframe) {
-      addAllToArray(result, this._commandListDebugWireframe);
-      return;
-    }
-
-    if (this._classifiesTerrain) {
-      addAllToArray(result, this._commandListTerrain);
-    }
-
-    if (this._classifies3DTiles) {
-      addAllToArray(result, this._commandList3DTiles);
-    }
-
-    const useIgnoreShowCommands =
-      frameState.invertClassification && this._classifies3DTiles;
-
-    if (useIgnoreShowCommands) {
-      if (this._commandListIgnoreShow.length === 0) {
-        const pass = Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW;
-        const command = deriveStencilDepthCommand(this._command, pass);
-
-        const derivedCommands = scratchDerivedCommands;
-        derivedCommands.length = 0;
-        derivedCommands.push(command);
-
-        this._commandListIgnoreShow = createBatchCommands(
-          this,
-          derivedCommands,
-          this._commandListIgnoreShow,
-        );
-      }
-
-      addAllToArray(result, this._commandListIgnoreShow);
-    }
-  }
-
-  if (passes.pick) {
-    if (this._classifiesTerrain) {
-      addAllToArray(result, this._commandListTerrainPicking);
-    }
-
-    if (this._classifies3DTiles) {
-      addAllToArray(result, this._commandList3DTilesPicking);
-    }
-  }
-
-  return result;
-};
 
 export default ClassificationModelDrawCommand;

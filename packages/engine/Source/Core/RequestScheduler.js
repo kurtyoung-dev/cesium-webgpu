@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import Check from "./Check.js";
 import defer from "./defer.js";
 import defined from "./defined.js";
@@ -33,7 +32,7 @@ const activeRequests = [];
 let numberOfActiveRequestsByServer = {};
 
 const pageUri =
-  typeof document !== "undefined" ? new Uri(document.location.href) : new Uri();
+  typeof document !== "undefined" ? document.location.href : "";
 
 const requestCompletedEvent = new Event();
 
@@ -349,16 +348,16 @@ RequestScheduler.getServerKey = function (url) {
   Check.typeOf.string("url", url);
   //>>includeEnd('debug');
 
-  let uri = new Uri(url);
-  if (uri.scheme() === "") {
-    uri = uri.absoluteTo(pageUri);
-    uri.normalize();
+  let parsed;
+  try {
+    parsed = new URL(url, pageUri || undefined);
+  } catch {
+    parsed = new URL(url, "https://placeholder.invalid/");
   }
 
-  let serverKey = uri.authority();
-  if (!/:/.test(serverKey)) {
-    // If the authority does not contain a port number, add port 443 for https or port 80 for http
-    serverKey = `${serverKey}:${uri.scheme() === "https" ? "443" : "80"}`;
+  let serverKey = parsed.host; // hostname:port
+  if (!serverKey.includes(":")) {
+    serverKey = `${serverKey}:${parsed.protocol === "https:" ? "443" : "80"}`;
   }
 
   const length = numberOfActiveRequestsByServer[serverKey];

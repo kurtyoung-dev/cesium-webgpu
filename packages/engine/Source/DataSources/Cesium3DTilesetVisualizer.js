@@ -19,212 +19,206 @@ const modelMatrixScratch = new Matrix4();
  * @param {Scene} scene The scene the primitives will be rendered in.
  * @param {EntityCollection} entityCollection The entityCollection to visualize.
  */
-function Cesium3DTilesetVisualizer(scene, entityCollection) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
+class Cesium3DTilesetVisualizer {
+  constructor(scene, entityCollection) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
+    }
+    if (!defined(entityCollection)) {
+      throw new DeveloperError("entityCollection is required.");
+    }
+    //>>includeEnd('debug');
+
+    entityCollection.collectionChanged.addEventListener(
+      Cesium3DTilesetVisualizer.prototype._onCollectionChanged,
+      this,
+    );
+
+    this._scene = scene;
+    this._primitives = scene.primitives;
+    this._entityCollection = entityCollection;
+    this._tilesetHash = {};
+    this._entitiesToVisualize = new AssociativeArray();
+    this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
   }
-  if (!defined(entityCollection)) {
-    throw new DeveloperError("entityCollection is required.");
-  }
-  //>>includeEnd('debug');
 
-  entityCollection.collectionChanged.addEventListener(
-    Cesium3DTilesetVisualizer.prototype._onCollectionChanged,
-    this,
-  );
+  /**
+   * Updates models created this visualizer to match their
+   * Entity counterpart at the given time.
+   *
+   * @param {JulianDate} time The time to update to.
+   * @returns {boolean} This function always returns true.
+   */
+  update(time) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(time)) {
+      throw new DeveloperError("time is required.");
+    }
+    //>>includeEnd('debug');
 
-  this._scene = scene;
-  this._primitives = scene.primitives;
-  this._entityCollection = entityCollection;
-  this._tilesetHash = {};
-  this._entitiesToVisualize = new AssociativeArray();
-  this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
-}
+    const entities = this._entitiesToVisualize.values;
+    const tilesetHash = this._tilesetHash;
+    const primitives = this._primitives;
 
-/**
- * Updates models created this visualizer to match their
- * Entity counterpart at the given time.
- *
- * @param {JulianDate} time The time to update to.
- * @returns {boolean} This function always returns true.
- */
-Cesium3DTilesetVisualizer.prototype.update = function (time) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(time)) {
-    throw new DeveloperError("time is required.");
-  }
-  //>>includeEnd('debug');
+    for (let i = 0, len = entities.length; i < len; i++) {
+      const entity = entities[i];
+      const tilesetGraphics = entity._tileset;
 
-  const entities = this._entitiesToVisualize.values;
-  const tilesetHash = this._tilesetHash;
-  const primitives = this._primitives;
+      let resource;
+      const tilesetData = tilesetHash[entity.id];
+      const show =
+        entity.isShowing &&
+        entity.isAvailable(time) &&
+        Property.getValueOrDefault(tilesetGraphics._show, time, true);
 
-  for (let i = 0, len = entities.length; i < len; i++) {
-    const entity = entities[i];
-    const tilesetGraphics = entity._tileset;
+      let modelMatrix;
+      if (show) {
+        modelMatrix = entity.computeModelMatrix(time, modelMatrixScratch);
+        resource = Resource.createIfNeeded(
+          Property.getValueOrUndefined(tilesetGraphics._uri, time),
+        );
+      }
 
-    let resource;
-    const tilesetData = tilesetHash[entity.id];
-    const show =
-      entity.isShowing &&
-      entity.isAvailable(time) &&
-      Property.getValueOrDefault(tilesetGraphics._show, time, true);
+      const tileset = defined(tilesetData)
+        ? tilesetData.tilesetPrimitive
+        : undefined;
 
-    let modelMatrix;
-    if (show) {
-      modelMatrix = entity.computeModelMatrix(time, modelMatrixScratch);
-      resource = Resource.createIfNeeded(
-        Property.getValueOrUndefined(tilesetGraphics._uri, time),
+      if (!show) {
+        if (defined(tileset)) {
+          tileset.show = false;
+        }
+        continue;
+      }
+
+      if (!defined(tilesetData) || resource.url !== tilesetData.url) {
+        if (defined(tileset)) {
+          primitives.removeAndDestroy(tileset);
+        }
+
+        delete tilesetHash[entity.id];
+
+        createTileset(resource, tilesetHash, entity, primitives);
+      }
+
+      if (!defined(tileset)) {
+        continue;
+      }
+
+      tileset.show = true;
+      if (defined(modelMatrix)) {
+        tileset.modelMatrix = modelMatrix;
+      }
+      tileset.maximumScreenSpaceError = Property.getValueOrDefault(
+        tilesetGraphics.maximumScreenSpaceError,
+        time,
+        tileset.maximumScreenSpaceError,
       );
     }
 
-    const tileset = defined(tilesetData)
-      ? tilesetData.tilesetPrimitive
-      : undefined;
+    return true;
+  }
 
-    if (!show) {
-      if (defined(tileset)) {
-        tileset.show = false;
-      }
-      continue;
-    }
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   *
+   * @returns {boolean} True if this object was destroyed; otherwise, false.
+   */
+  isDestroyed() {
+    return false;
+  }
 
-    if (!defined(tilesetData) || resource.url !== tilesetData.url) {
-      if (defined(tileset)) {
-        primitives.removeAndDestroy(tileset);
-      }
-
-      delete tilesetHash[entity.id];
-
-      createTileset(resource, tilesetHash, entity, primitives);
-    }
-
-    if (!defined(tileset)) {
-      continue;
-    }
-
-    tileset.show = true;
-    if (defined(modelMatrix)) {
-      tileset.modelMatrix = modelMatrix;
-    }
-    tileset.maximumScreenSpaceError = Property.getValueOrDefault(
-      tilesetGraphics.maximumScreenSpaceError,
-      time,
-      tileset.maximumScreenSpaceError,
+  /**
+   * Removes and destroys all primitives created by this instance.
+   */
+  destroy() {
+    this._entityCollection.collectionChanged.removeEventListener(
+      Cesium3DTilesetVisualizer.prototype._onCollectionChanged,
+      this,
     );
-  }
-
-  return true;
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- *
- * @returns {boolean} True if this object was destroyed; otherwise, false.
- */
-Cesium3DTilesetVisualizer.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Removes and destroys all primitives created by this instance.
- */
-Cesium3DTilesetVisualizer.prototype.destroy = function () {
-  this._entityCollection.collectionChanged.removeEventListener(
-    Cesium3DTilesetVisualizer.prototype._onCollectionChanged,
-    this,
-  );
-  const entities = this._entitiesToVisualize.values;
-  const tilesetHash = this._tilesetHash;
-  const primitives = this._primitives;
-  for (let i = entities.length - 1; i > -1; i--) {
-    removeTileset(this, entities[i], tilesetHash, primitives);
-  }
-  return destroyObject(this);
-};
-
-/**
- * Computes a bounding sphere which encloses the visualization produced for the specified entity.
- * The bounding sphere is in the fixed frame of the scene's globe.
- *
- * @param {Entity} entity The entity whose bounding sphere to compute.
- * @param {BoundingSphere} result The bounding sphere onto which to store the result.
- * @returns {BoundingSphereState} BoundingSphereState.DONE if the result contains the bounding sphere,
- *                       BoundingSphereState.PENDING if the result is still being computed, or
- *                       BoundingSphereState.FAILED if the entity has no visualization in the current scene.
- * @private
- */
-Cesium3DTilesetVisualizer.prototype.getBoundingSphere = function (
-  entity,
-  result,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(entity)) {
-    throw new DeveloperError("entity is required.");
-  }
-  if (!defined(result)) {
-    throw new DeveloperError("result is required.");
-  }
-  //>>includeEnd('debug');
-
-  const tilesetData = this._tilesetHash[entity.id];
-  if (!defined(tilesetData) || tilesetData.loadFail) {
-    return BoundingSphereState.FAILED;
-  }
-
-  const primitive = tilesetData.tilesetPrimitive;
-  if (!defined(primitive)) {
-    return BoundingSphereState.PENDING;
-  }
-
-  if (!primitive.show) {
-    return BoundingSphereState.FAILED;
-  }
-
-  BoundingSphere.clone(primitive.boundingSphere, result);
-
-  return BoundingSphereState.DONE;
-};
-
-/**
- * @private
- */
-Cesium3DTilesetVisualizer.prototype._onCollectionChanged = function (
-  entityCollection,
-  added,
-  removed,
-  changed,
-) {
-  let i;
-  let entity;
-  const entities = this._entitiesToVisualize;
-  const tilesetHash = this._tilesetHash;
-  const primitives = this._primitives;
-
-  for (i = added.length - 1; i > -1; i--) {
-    entity = added[i];
-    if (defined(entity._tileset)) {
-      entities.set(entity.id, entity);
+    const entities = this._entitiesToVisualize.values;
+    const tilesetHash = this._tilesetHash;
+    const primitives = this._primitives;
+    for (let i = entities.length - 1; i > -1; i--) {
+      removeTileset(this, entities[i], tilesetHash, primitives);
     }
+    return destroyObject(this);
   }
 
-  for (i = changed.length - 1; i > -1; i--) {
-    entity = changed[i];
-    if (defined(entity._tileset)) {
-      entities.set(entity.id, entity);
-    } else {
+  /**
+   * Computes a bounding sphere which encloses the visualization produced for the specified entity.
+   * The bounding sphere is in the fixed frame of the scene's globe.
+   *
+   * @param {Entity} entity The entity whose bounding sphere to compute.
+   * @param {BoundingSphere} result The bounding sphere onto which to store the result.
+   * @returns {BoundingSphereState} BoundingSphereState.DONE if the result contains the bounding sphere,
+   *                       BoundingSphereState.PENDING if the result is still being computed, or
+   *                       BoundingSphereState.FAILED if the entity has no visualization in the current scene.
+   * @private
+   */
+  getBoundingSphere(entity, result) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(entity)) {
+      throw new DeveloperError("entity is required.");
+    }
+    if (!defined(result)) {
+      throw new DeveloperError("result is required.");
+    }
+    //>>includeEnd('debug');
+
+    const tilesetData = this._tilesetHash[entity.id];
+    if (!defined(tilesetData) || tilesetData.loadFail) {
+      return BoundingSphereState.FAILED;
+    }
+
+    const primitive = tilesetData.tilesetPrimitive;
+    if (!defined(primitive)) {
+      return BoundingSphereState.PENDING;
+    }
+
+    if (!primitive.show) {
+      return BoundingSphereState.FAILED;
+    }
+
+    BoundingSphere.clone(primitive.boundingSphere, result);
+
+    return BoundingSphereState.DONE;
+  }
+
+  /**
+   * @private
+   */
+  _onCollectionChanged(entityCollection, added, removed, changed) {
+    let i;
+    let entity;
+    const entities = this._entitiesToVisualize;
+    const tilesetHash = this._tilesetHash;
+    const primitives = this._primitives;
+
+    for (i = added.length - 1; i > -1; i--) {
+      entity = added[i];
+      if (defined(entity._tileset)) {
+        entities.set(entity.id, entity);
+      }
+    }
+
+    for (i = changed.length - 1; i > -1; i--) {
+      entity = changed[i];
+      if (defined(entity._tileset)) {
+        entities.set(entity.id, entity);
+      } else {
+        removeTileset(this, entity, tilesetHash, primitives);
+        entities.remove(entity.id);
+      }
+    }
+
+    for (i = removed.length - 1; i > -1; i--) {
+      entity = removed[i];
       removeTileset(this, entity, tilesetHash, primitives);
       entities.remove(entity.id);
     }
   }
-
-  for (i = removed.length - 1; i > -1; i--) {
-    entity = removed[i];
-    removeTileset(this, entity, tilesetHash, primitives);
-    entities.remove(entity.id);
-  }
-};
+}
 
 function removeTileset(visualizer, entity, tilesetHash, primitives) {
   const tilesetData = tilesetHash[entity.id];

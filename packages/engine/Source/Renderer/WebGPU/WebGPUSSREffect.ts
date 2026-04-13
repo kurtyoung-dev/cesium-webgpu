@@ -132,7 +132,7 @@ function ensureNormalTexture(
  */
 export function executeSSR(
   context: any,
-  frameState: any,
+  frameState: CesiumFrameState,
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
   normalTextureView: GPUTextureView | null,

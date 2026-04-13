@@ -22,7 +22,7 @@ interface ClippingPolygonCache {
  * Update WebGPU clipping polygon resources.
  * Packs polygon position and extent data into float textures.
  */
-function updateWebGPUClippingPolygons(collection: any, frameState: any): void {
+function updateWebGPUClippingPolygons(collection: any, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 

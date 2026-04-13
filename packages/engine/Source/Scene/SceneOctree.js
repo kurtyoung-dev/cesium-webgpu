@@ -31,93 +31,245 @@ import OctreeNode from "./OctreeNode.js";
  * @constructor
  * @private
  */
-function SceneOctree(options) {
-  options = options ?? {};
+class SceneOctree {
+  constructor(options) {
+    options = options ?? {};
+
+    /**
+     * Whether the octree spatial acceleration is enabled.
+     * When disabled, falls back to brute-force linear iteration.
+     * @type {boolean}
+     * @default false
+     */
+    this.enabled = options.enabled ?? false;
+
+    /**
+     * Maximum tree depth. Deeper = finer spatial granularity but more overhead.
+     * @type {number}
+     * @default 8
+     */
+    this.maxDepth = options.maxDepth ?? 8;
+
+    /**
+     * Maximum commands per node before splitting.
+     * @type {number}
+     * @default 64
+     */
+    this.maxCommandsPerNode = options.maxCommandsPerNode ?? 64;
+
+    /**
+     * Minimum command count before octree is worthwhile.
+     * Below this, brute-force iteration is faster than tree operations.
+     * @type {number}
+     * @default 200
+     */
+    this.minCommandsForOctree = options.minCommandsForOctree ?? 200;
+
+    /**
+     * Root node half-extent in meters. Covers Earth + LEO orbit.
+     * @type {number}
+     * @default 7000000
+     */
+    this.rootHalfExtent = options.rootHalfExtent ?? 7000000.0;
+
+    /**
+     * The root node of the octree.
+     * @type {OctreeNode|undefined}
+     * @private
+     */
+    this._root = undefined;
+
+    /**
+     * Frame number of the last rebuild.
+     * @type {number}
+     * @private
+     */
+    this._lastFrameNumber = -1;
+
+    /**
+     * Per-frame statistics.
+     * @type {object}
+     */
+    this._stats = {
+      commandsInserted: 0,
+      commandsSkipped: 0,
+      nodesTraversed: 0,
+      frustumTestsSaved: 0,
+      buildTimeMs: 0,
+      cullTimeMs: 0,
+    };
+
+    /**
+     * Temporary result array for collectVisible, reused each frame.
+     * @type {Array}
+     * @private
+     */
+    this._visibleResult = [];
+  }
 
   /**
-   * Whether the octree spatial acceleration is enabled.
-   * When disabled, falls back to brute-force linear iteration.
-   * @type {boolean}
-   * @default false
+   * Builds the octree from a command list. Call once per frame after
+   * all commands have been generated but before culling/sorting.
+   *
+   * Commands that are not octree-eligible (terrain, 3D Tiles, compute,
+   * overlay, no bounding volume) are returned in the bypass array.
+   *
+   * @param {Array} commandList The full command list from frameState.
+   * @param {number} frameNumber Current frame number.
+   * @returns {object} { octreeCommands: count, bypassCommands: Array }
    */
-  this.enabled = options.enabled ?? false;
+  build(commandList, frameNumber) {
+    const startTime = performance.now();
+
+    this._lastFrameNumber = frameNumber;
+    this._stats.commandsInserted = 0;
+    this._stats.commandsSkipped = 0;
+
+    const commandCount = commandList.length;
+
+    // If below threshold, don't use octree
+    if (!this.enabled || commandCount < this.minCommandsForOctree) {
+      if (defined(this._root)) {
+        this._root.clear();
+      }
+      this._stats.buildTimeMs = performance.now() - startTime;
+      return {
+        octreeCommands: 0,
+        bypassCommands: commandList,
+        useOctree: false,
+      };
+    }
+
+    // Create or clear root
+    if (!defined(this._root)) {
+      this._root = new OctreeNode(
+        Cartesian3.ZERO, // ECEF origin
+        this.rootHalfExtent,
+        0,
+        this.maxDepth,
+        this.maxCommandsPerNode,
+      );
+    } else {
+      this._root.clear();
+    }
+
+    const bypassCommands = [];
+
+    for (let i = 0; i < commandCount; i++) {
+      const command = commandList[i];
+      if (isOctreeEligible(command)) {
+        this._root.insert(command);
+        this._stats.commandsInserted++;
+      } else {
+        bypassCommands.push(command);
+        this._stats.commandsSkipped++;
+      }
+    }
+
+    this._stats.buildTimeMs = performance.now() - startTime;
+
+    return {
+      octreeCommands: this._stats.commandsInserted,
+      bypassCommands: bypassCommands,
+      useOctree: true,
+    };
+  }
 
   /**
-   * Maximum tree depth. Deeper = finer spatial granularity but more overhead.
-   * @type {number}
-   * @default 8
+   * Performs hierarchical frustum + horizon culling on the octree.
+   * Returns only the commands that are visible from the given viewpoint.
+   *
+   * This replaces the brute-force linear iteration in
+   * View.createPotentiallyVisibleSet() for octree-eligible commands.
+   *
+   * @param {CullingVolume} cullingVolume The camera frustum.
+   * @param {object} [occluder] The horizon occluder.
+   * @returns {Array} Array of visible commands.
    */
-  this.maxDepth = options.maxDepth ?? 8;
+  collectVisible(cullingVolume, occluder) {
+    const startTime = performance.now();
+
+    this._visibleResult.length = 0;
+
+    if (!defined(this._root) || this._root.totalCommandCount === 0) {
+      this._stats.cullTimeMs = performance.now() - startTime;
+      return this._visibleResult;
+    }
+
+    // 0x3f = all 6 frustum planes need testing initially
+    const initialPlaneMask = 0x3f;
+    const added = this._root.collectVisible(
+      cullingVolume,
+      occluder,
+      initialPlaneMask,
+      this._visibleResult,
+    );
+
+    const totalCommands = this._root.totalCommandCount;
+    this._stats.frustumTestsSaved = Math.max(0, totalCommands - added);
+    this._stats.cullTimeMs = performance.now() - startTime;
+
+    return this._visibleResult;
+  }
 
   /**
-   * Maximum commands per node before splitting.
-   * @type {number}
-   * @default 64
+   * Collects visible commands in spatial sorted order (front-to-back or
+   * back-to-front). Combines hierarchical culling with hierarchical sorting.
+   *
+   * @param {CullingVolume} cullingVolume The camera frustum.
+   * @param {object} [occluder] The horizon occluder.
+   * @param {Cartesian3} cameraPosition Camera position for distance sorting.
+   * @param {boolean} frontToBack Sort direction.
+   * @returns {Array} Spatially sorted visible commands.
    */
-  this.maxCommandsPerNode = options.maxCommandsPerNode ?? 64;
+  collectVisibleSorted(cullingVolume, occluder, cameraPosition, frontToBack) {
+    // First cull, then sort the visible set
+    const visible = this.collectVisible(cullingVolume, occluder);
+
+    // For now, return the visible set — actual sorted collection
+    // through the octree hierarchy is used when the sort is integrated
+    // with RenderScheduler. The caller should apply additional sorting.
+    return visible;
+  }
 
   /**
-   * Minimum command count before octree is worthwhile.
-   * Below this, brute-force iteration is faster than tree operations.
-   * @type {number}
-   * @default 200
+   * Returns diagnostic information about the octree.
+   * @returns {string} Multi-line diagnostic string.
    */
-  this.minCommandsForOctree = options.minCommandsForOctree ?? 200;
+  getDiagnostics() {
+    if (!defined(this._root)) {
+      return "SceneOctree: not built";
+    }
+
+    const diag = this._root.getDiagnostics();
+    return [
+      `=== SceneOctree (${this.enabled ? "ENABLED" : "DISABLED"}) ===`,
+      `Nodes: ${diag.nodeCount} (${diag.leafCount} leaves)`,
+      `Max depth: ${diag.maxDepth} / ${this.maxDepth}`,
+      `Commands: ${diag.totalCommands} in tree, ${this._stats.commandsSkipped} bypassed`,
+      `Build: ${this._stats.buildTimeMs.toFixed(2)}ms`,
+      `Cull: ${this._stats.cullTimeMs.toFixed(2)}ms`,
+      `Frustum tests saved: ${this._stats.frustumTestsSaved}`,
+    ].join("\n");
+  }
 
   /**
-   * Root node half-extent in meters. Covers Earth + LEO orbit.
-   * @type {number}
-   * @default 7000000
+   * Destroys the octree and frees memory.
    */
-  this.rootHalfExtent = options.rootHalfExtent ?? 7000000.0;
+  destroy() {
+    this._root = undefined;
+    this._visibleResult.length = 0;
+  }
 
-  /**
-   * The root node of the octree.
-   * @type {OctreeNode|undefined}
-   * @private
-   */
-  this._root = undefined;
-
-  /**
-   * Frame number of the last rebuild.
-   * @type {number}
-   * @private
-   */
-  this._lastFrameNumber = -1;
-
-  /**
-   * Per-frame statistics.
-   * @type {object}
-   */
-  this._stats = {
-    commandsInserted: 0,
-    commandsSkipped: 0,
-    nodesTraversed: 0,
-    frustumTestsSaved: 0,
-    buildTimeMs: 0,
-    cullTimeMs: 0,
-  };
-
-  /**
-   * Temporary result array for collectVisible, reused each frame.
-   * @type {Array}
-   * @private
-   */
-  this._visibleResult = [];
-}
-
-Object.defineProperties(SceneOctree.prototype, {
   /**
    * Per-frame octree statistics for profiling.
    * @memberof SceneOctree.prototype
    * @type {object}
    * @readonly
    */
-  stats: {
-    get: function () {
-      return this._stats;
-    },
-  },
+  get stats() {
+    return this._stats;
+  }
 
   /**
    * Whether the octree has been built for the current frame.
@@ -125,12 +277,10 @@ Object.defineProperties(SceneOctree.prototype, {
    * @type {boolean}
    * @readonly
    */
-  isBuilt: {
-    get: function () {
-      return defined(this._root) && this._root.totalCommandCount > 0;
-    },
-  },
-});
+  get isBuilt() {
+    return defined(this._root) && this._root.totalCommandCount > 0;
+  }
+}
 
 /**
  * Passes that should be included in the octree. We only manage user
@@ -159,164 +309,5 @@ function isOctreeEligible(command) {
   }
   return false;
 }
-
-/**
- * Builds the octree from a command list. Call once per frame after
- * all commands have been generated but before culling/sorting.
- *
- * Commands that are not octree-eligible (terrain, 3D Tiles, compute,
- * overlay, no bounding volume) are returned in the bypass array.
- *
- * @param {Array} commandList The full command list from frameState.
- * @param {number} frameNumber Current frame number.
- * @returns {object} { octreeCommands: count, bypassCommands: Array }
- */
-SceneOctree.prototype.build = function (commandList, frameNumber) {
-  const startTime = performance.now();
-
-  this._lastFrameNumber = frameNumber;
-  this._stats.commandsInserted = 0;
-  this._stats.commandsSkipped = 0;
-
-  const commandCount = commandList.length;
-
-  // If below threshold, don't use octree
-  if (!this.enabled || commandCount < this.minCommandsForOctree) {
-    if (defined(this._root)) {
-      this._root.clear();
-    }
-    this._stats.buildTimeMs = performance.now() - startTime;
-    return {
-      octreeCommands: 0,
-      bypassCommands: commandList,
-      useOctree: false,
-    };
-  }
-
-  // Create or clear root
-  if (!defined(this._root)) {
-    this._root = new OctreeNode(
-      Cartesian3.ZERO, // ECEF origin
-      this.rootHalfExtent,
-      0,
-      this.maxDepth,
-      this.maxCommandsPerNode,
-    );
-  } else {
-    this._root.clear();
-  }
-
-  const bypassCommands = [];
-
-  for (let i = 0; i < commandCount; i++) {
-    const command = commandList[i];
-    if (isOctreeEligible(command)) {
-      this._root.insert(command);
-      this._stats.commandsInserted++;
-    } else {
-      bypassCommands.push(command);
-      this._stats.commandsSkipped++;
-    }
-  }
-
-  this._stats.buildTimeMs = performance.now() - startTime;
-
-  return {
-    octreeCommands: this._stats.commandsInserted,
-    bypassCommands: bypassCommands,
-    useOctree: true,
-  };
-};
-
-/**
- * Performs hierarchical frustum + horizon culling on the octree.
- * Returns only the commands that are visible from the given viewpoint.
- *
- * This replaces the brute-force linear iteration in
- * View.createPotentiallyVisibleSet() for octree-eligible commands.
- *
- * @param {CullingVolume} cullingVolume The camera frustum.
- * @param {object} [occluder] The horizon occluder.
- * @returns {Array} Array of visible commands.
- */
-SceneOctree.prototype.collectVisible = function (cullingVolume, occluder) {
-  const startTime = performance.now();
-
-  this._visibleResult.length = 0;
-
-  if (!defined(this._root) || this._root.totalCommandCount === 0) {
-    this._stats.cullTimeMs = performance.now() - startTime;
-    return this._visibleResult;
-  }
-
-  // 0x3f = all 6 frustum planes need testing initially
-  const initialPlaneMask = 0x3f;
-  const added = this._root.collectVisible(
-    cullingVolume,
-    occluder,
-    initialPlaneMask,
-    this._visibleResult,
-  );
-
-  const totalCommands = this._root.totalCommandCount;
-  this._stats.frustumTestsSaved = Math.max(0, totalCommands - added);
-  this._stats.cullTimeMs = performance.now() - startTime;
-
-  return this._visibleResult;
-};
-
-/**
- * Collects visible commands in spatial sorted order (front-to-back or
- * back-to-front). Combines hierarchical culling with hierarchical sorting.
- *
- * @param {CullingVolume} cullingVolume The camera frustum.
- * @param {object} [occluder] The horizon occluder.
- * @param {Cartesian3} cameraPosition Camera position for distance sorting.
- * @param {boolean} frontToBack Sort direction.
- * @returns {Array} Spatially sorted visible commands.
- */
-SceneOctree.prototype.collectVisibleSorted = function (
-  cullingVolume,
-  occluder,
-  cameraPosition,
-  frontToBack,
-) {
-  // First cull, then sort the visible set
-  const visible = this.collectVisible(cullingVolume, occluder);
-
-  // For now, return the visible set — actual sorted collection
-  // through the octree hierarchy is used when the sort is integrated
-  // with RenderScheduler. The caller should apply additional sorting.
-  return visible;
-};
-
-/**
- * Returns diagnostic information about the octree.
- * @returns {string} Multi-line diagnostic string.
- */
-SceneOctree.prototype.getDiagnostics = function () {
-  if (!defined(this._root)) {
-    return "SceneOctree: not built";
-  }
-
-  const diag = this._root.getDiagnostics();
-  return [
-    `=== SceneOctree (${this.enabled ? "ENABLED" : "DISABLED"}) ===`,
-    `Nodes: ${diag.nodeCount} (${diag.leafCount} leaves)`,
-    `Max depth: ${diag.maxDepth} / ${this.maxDepth}`,
-    `Commands: ${diag.totalCommands} in tree, ${this._stats.commandsSkipped} bypassed`,
-    `Build: ${this._stats.buildTimeMs.toFixed(2)}ms`,
-    `Cull: ${this._stats.cullTimeMs.toFixed(2)}ms`,
-    `Frustum tests saved: ${this._stats.frustumTestsSaved}`,
-  ].join("\n");
-};
-
-/**
- * Destroys the octree and frees memory.
- */
-SceneOctree.prototype.destroy = function () {
-  this._root = undefined;
-  this._visibleResult.length = 0;
-};
 
 export default SceneOctree;

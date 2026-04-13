@@ -186,86 +186,181 @@ const pickFeaturesTags = combine(tags, {
  * @see WebMapServiceImageryProvider
  * @see WebMapTileServiceImageryProvider
  */
-function UrlTemplateImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class UrlTemplateImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._errorEvent = new Event();
+    this._errorEvent = new Event();
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.url", options.url);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.url", options.url);
+    //>>includeEnd('debug');
 
-  const resource = Resource.createIfNeeded(options.url);
-  const pickFeaturesResource = Resource.createIfNeeded(options.pickFeaturesUrl);
+    const resource = Resource.createIfNeeded(options.url);
+    const pickFeaturesResource = Resource.createIfNeeded(options.pickFeaturesUrl);
 
-  this._resource = resource;
-  this._urlSchemeZeroPadding = options.urlSchemeZeroPadding;
-  this._getFeatureInfoFormats = options.getFeatureInfoFormats;
-  this._pickFeaturesResource = pickFeaturesResource;
+    this._resource = resource;
+    this._urlSchemeZeroPadding = options.urlSchemeZeroPadding;
+    this._getFeatureInfoFormats = options.getFeatureInfoFormats;
+    this._pickFeaturesResource = pickFeaturesResource;
 
-  let subdomains = options.subdomains;
-  if (Array.isArray(subdomains)) {
-    subdomains = subdomains.slice();
-  } else if (defined(subdomains) && subdomains.length > 0) {
-    subdomains = subdomains.split("");
-  } else {
-    subdomains = ["a", "b", "c"];
+    let subdomains = options.subdomains;
+    if (Array.isArray(subdomains)) {
+      subdomains = subdomains.slice();
+    } else if (defined(subdomains) && subdomains.length > 0) {
+      subdomains = subdomains.split("");
+    } else {
+      subdomains = ["a", "b", "c"];
+    }
+    this._subdomains = subdomains;
+
+    this._tileWidth = options.tileWidth ?? 256;
+    this._tileHeight = options.tileHeight ?? 256;
+    this._minimumLevel = options.minimumLevel ?? 0;
+    this._maximumLevel = options.maximumLevel;
+    this._tilingScheme =
+      options.tilingScheme ??
+      new WebMercatorTilingScheme({ ellipsoid: options.ellipsoid });
+
+    this._rectangle = options.rectangle ?? this._tilingScheme.rectangle;
+    this._rectangle = Rectangle.intersection(
+      this._rectangle,
+      this._tilingScheme.rectangle,
+    );
+
+    this._tileDiscardPolicy = options.tileDiscardPolicy;
+
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+    this._hasAlphaChannel = options.hasAlphaChannel ?? true;
+
+    const customTags = options.customTags;
+    const allTags = combine(tags, customTags);
+    const allPickFeaturesTags = combine(pickFeaturesTags, customTags);
+    this._tags = allTags;
+    this._pickFeaturesTags = allPickFeaturesTags;
+
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
+
+    /**
+     * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link UrlTemplateImageryProvider#pickFeatures} will
+     * request the <code>options.pickFeaturesUrl</code> and attempt to interpret the features included in the response.  If false,
+     * {@link UrlTemplateImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
+     * features) without communicating with the server.  Set this property to false if you know your data
+     * source does not support picking features or if you don't want this provider's features to be pickable.
+     * @type {boolean}
+     * @default true
+     */
+    this.enablePickFeatures = options.enablePickFeatures ?? true;
   }
-  this._subdomains = subdomains;
-
-  this._tileWidth = options.tileWidth ?? 256;
-  this._tileHeight = options.tileHeight ?? 256;
-  this._minimumLevel = options.minimumLevel ?? 0;
-  this._maximumLevel = options.maximumLevel;
-  this._tilingScheme =
-    options.tilingScheme ??
-    new WebMercatorTilingScheme({ ellipsoid: options.ellipsoid });
-
-  this._rectangle = options.rectangle ?? this._tilingScheme.rectangle;
-  this._rectangle = Rectangle.intersection(
-    this._rectangle,
-    this._tilingScheme.rectangle,
-  );
-
-  this._tileDiscardPolicy = options.tileDiscardPolicy;
-
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
-  }
-  this._credit = credit;
-  this._hasAlphaChannel = options.hasAlphaChannel ?? true;
-
-  const customTags = options.customTags;
-  const allTags = combine(tags, customTags);
-  const allPickFeaturesTags = combine(pickFeaturesTags, customTags);
-  this._tags = allTags;
-  this._pickFeaturesTags = allPickFeaturesTags;
-
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
 
   /**
-   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link UrlTemplateImageryProvider#pickFeatures} will
-   * request the <code>options.pickFeaturesUrl</code> and attempt to interpret the features included in the response.  If false,
-   * {@link UrlTemplateImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
-   * features) without communicating with the server.  Set this property to false if you know your data
-   * source does not support picking features or if you don't want this provider's features to be pickable.
-   * @type {boolean}
-   * @default true
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
    */
-  this.enablePickFeatures = options.enablePickFeatures ?? true;
-}
+  getTileCredits(x, y, level) {
+    return undefined;
+  }
 
-Object.defineProperties(UrlTemplateImageryProvider.prototype, {
+  /**
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    return ImageryProvider.loadImage(
+      this,
+      buildImageResource(this, x, y, level, request),
+    );
+  }
+
+  /**
+   * Asynchronously determines what features, if any, are located at a given longitude and latitude within
+   * a tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
+   *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
+   *                   instances.  The array may be empty if no features are found at the given location.
+   *                   It may also be undefined if picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    if (
+      !this.enablePickFeatures ||
+      !defined(this._pickFeaturesResource) ||
+      this._getFeatureInfoFormats.length === 0
+    ) {
+      return undefined;
+    }
+
+    let formatIndex = 0;
+
+    const that = this;
+
+    function handleResponse(format, data) {
+      return format.callback(data);
+    }
+
+    function doRequest() {
+      if (formatIndex >= that._getFeatureInfoFormats.length) {
+        // No valid formats, so no features picked.
+        return Promise.resolve([]);
+      }
+
+      const format = that._getFeatureInfoFormats[formatIndex];
+      const resource = buildPickFeaturesResource(
+        that,
+        x,
+        y,
+        level,
+        longitude,
+        latitude,
+        format.format,
+      );
+
+      ++formatIndex;
+
+      if (format.type === "json") {
+        return resource.fetchJson().then(format.callback).catch(doRequest);
+      } else if (format.type === "xml") {
+        return resource.fetchXML().then(format.callback).catch(doRequest);
+      } else if (format.type === "text" || format.type === "html") {
+        return resource.fetchText().then(format.callback).catch(doRequest);
+      }
+      return resource
+        .fetch({
+          responseType: format.format,
+        })
+        .then(handleResponse.bind(undefined, format))
+        .catch(doRequest);
+    }
+
+    return doRequest();
+  }
+
   /**
    * Gets the URL template to use to request tiles.  It has the following keywords:
    * <ul>
@@ -291,11 +386,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._resource.url;
-    },
-  },
+  get url() {
+    return this._resource.url;
+  }
 
   /**
    * Gets the URL scheme zero padding for each tile coordinate. The format is '000' where each coordinate will be padded on
@@ -315,11 +408,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @type {object}
    * @readonly
    */
-  urlSchemeZeroPadding: {
-    get: function () {
-      return this._urlSchemeZeroPadding;
-    },
-  },
+  get urlSchemeZeroPadding() {
+    return this._urlSchemeZeroPadding;
+  }
 
   /**
    * Gets the URL template to use to use to pick features.  If this property is not specified,
@@ -341,11 +432,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  pickFeaturesUrl: {
-    get: function () {
-      return this._pickFeaturesResource.url;
-    },
-  },
+  get pickFeaturesUrl() {
+    return this._pickFeaturesResource.url;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -354,11 +443,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default undefined
    */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
+  get proxy() {
+    return this._resource.proxy;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -367,11 +454,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default 256
    */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -380,11 +465,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default 256
    */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested, or undefined if there is no limit.
@@ -393,11 +476,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default undefined
    */
-  maximumLevel: {
-    get: function () {
-      return this._maximumLevel;
-    },
-  },
+  get maximumLevel() {
+    return this._maximumLevel;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested.
@@ -406,11 +487,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default 0
    */
-  minimumLevel: {
-    get: function () {
-      return this._minimumLevel;
-    },
-  },
+  get minimumLevel() {
+    return this._minimumLevel;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -419,11 +498,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default new WebMercatorTilingScheme()
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
@@ -432,11 +509,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default tilingScheme.rectangle
    */
-  rectangle: {
-    get: function () {
-      return this._rectangle;
-    },
-  },
+  get rectangle() {
+    return this._rectangle;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -447,11 +522,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default undefined
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._tileDiscardPolicy;
-    },
-  },
+  get tileDiscardPolicy() {
+    return this._tileDiscardPolicy;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -461,11 +534,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -475,11 +546,9 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default undefined
    */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
+  get credit() {
+    return this._credit;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -492,118 +561,10 @@ Object.defineProperties(UrlTemplateImageryProvider.prototype, {
    * @readonly
    * @default true
    */
-  hasAlphaChannel: {
-    get: function () {
-      return this._hasAlphaChannel;
-    },
-  },
-});
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-UrlTemplateImageryProvider.prototype.getTileCredits = function (x, y, level) {
-  return undefined;
-};
-
-/**
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-UrlTemplateImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  return ImageryProvider.loadImage(
-    this,
-    buildImageResource(this, x, y, level, request),
-  );
-};
-
-/**
- * Asynchronously determines what features, if any, are located at a given longitude and latitude within
- * a tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
- *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
- *                   instances.  The array may be empty if no features are found at the given location.
- *                   It may also be undefined if picking is not supported.
- */
-UrlTemplateImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  if (
-    !this.enablePickFeatures ||
-    !defined(this._pickFeaturesResource) ||
-    this._getFeatureInfoFormats.length === 0
-  ) {
-    return undefined;
+  get hasAlphaChannel() {
+    return this._hasAlphaChannel;
   }
-
-  let formatIndex = 0;
-
-  const that = this;
-
-  function handleResponse(format, data) {
-    return format.callback(data);
-  }
-
-  function doRequest() {
-    if (formatIndex >= that._getFeatureInfoFormats.length) {
-      // No valid formats, so no features picked.
-      return Promise.resolve([]);
-    }
-
-    const format = that._getFeatureInfoFormats[formatIndex];
-    const resource = buildPickFeaturesResource(
-      that,
-      x,
-      y,
-      level,
-      longitude,
-      latitude,
-      format.format,
-    );
-
-    ++formatIndex;
-
-    if (format.type === "json") {
-      return resource.fetchJson().then(format.callback).catch(doRequest);
-    } else if (format.type === "xml") {
-      return resource.fetchXML().then(format.callback).catch(doRequest);
-    } else if (format.type === "text" || format.type === "html") {
-      return resource.fetchText().then(format.callback).catch(doRequest);
-    }
-    return resource
-      .fetch({
-        responseType: format.format,
-      })
-      .then(handleResponse.bind(undefined, format))
-      .catch(doRequest);
-  }
-
-  return doRequest();
-};
+}
 
 let degreesScratchComputed = false;
 const degreesScratch = new Rectangle();

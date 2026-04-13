@@ -152,7 +152,9 @@ export class WebGPUDeviceLossRecovery {
       if (recovered) {
         this._state = DeviceLossState.HEALTHY;
         this._attempts = 0;
+        //>>includeStart('debug', pragmas.debug);
         console.log("[WebGPU] Device recovery successful");
+        //>>includeEnd('debug');
         this._notify(
           "recovered",
           "Device recovered successfully",
@@ -200,9 +202,11 @@ export class WebGPUDeviceLossRecovery {
   private async _attemptRecovery(): Promise<boolean> {
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
       this._attempts = attempt;
+      //>>includeStart('debug', pragmas.debug);
       console.log(
         `[WebGPU] Recovery attempt ${attempt}/${this._maxAttempts}...`,
       );
+      //>>includeEnd('debug');
 
       try {
         // Exponential backoff
@@ -243,7 +247,9 @@ export class WebGPUDeviceLossRecovery {
         this._host._initializeDefaultTextures();
         this._host._clearAllCaches();
 
+        //>>includeStart('debug', pragmas.debug);
         console.log(`[WebGPU] Recovery attempt ${attempt}: SUCCESS`);
+        //>>includeEnd('debug');
         return true;
       } catch (error) {
         console.warn(

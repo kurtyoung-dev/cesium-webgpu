@@ -46,90 +46,132 @@ const defaultCredit = new Credit(
  * @see {@link https://docs.mapbox.com/api/maps/raster-tiles/}
  * @see {@link https://docs.mapbox.com/api/accounts/tokens/}
  */
-function MapboxImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const mapId = options.mapId;
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(mapId)) {
-    throw new DeveloperError("options.mapId is required.");
-  }
-  //>>includeEnd('debug');
-
-  const accessToken = options.accessToken;
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(accessToken)) {
-    throw new DeveloperError("options.accessToken is required.");
-  }
-  //>>includeEnd('debug');
-
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
-
-  const resource = Resource.createIfNeeded(
-    options.url ?? "https://{s}.tiles.mapbox.com/v4/",
-  );
-
-  this._mapId = mapId;
-  this._accessToken = accessToken;
-
-  let format = options.format ?? "png";
-  if (!/\./.test(format)) {
-    format = `.${format}`;
-  }
-  this._format = format;
-
-  let templateUrl = resource.getUrlComponent();
-  if (!trailingSlashRegex.test(templateUrl)) {
-    templateUrl += "/";
-  }
-  templateUrl += `${mapId}/{z}/{x}/{y}${this._format}`;
-  resource.url = templateUrl;
-
-  resource.setQueryParameters({
-    access_token: accessToken,
-  });
-
-  let credit;
-  if (defined(options.credit)) {
-    credit = options.credit;
-    if (typeof credit === "string") {
-      credit = new Credit(credit);
+class MapboxImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const mapId = options.mapId;
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(mapId)) {
+      throw new DeveloperError("options.mapId is required.");
     }
-  } else {
-    credit = defaultCredit;
+    //>>includeEnd('debug');
+
+    const accessToken = options.accessToken;
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(accessToken)) {
+      throw new DeveloperError("options.accessToken is required.");
+    }
+    //>>includeEnd('debug');
+
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
+
+    const resource = Resource.createIfNeeded(
+      options.url ?? "https://{s}.tiles.mapbox.com/v4/",
+    );
+
+    this._mapId = mapId;
+    this._accessToken = accessToken;
+
+    let format = options.format ?? "png";
+    if (!/\./.test(format)) {
+      format = `.${format}`;
+    }
+    this._format = format;
+
+    let templateUrl = resource.getUrlComponent();
+    if (!trailingSlashRegex.test(templateUrl)) {
+      templateUrl += "/";
+    }
+    templateUrl += `${mapId}/{z}/{x}/{y}${this._format}`;
+    resource.url = templateUrl;
+
+    resource.setQueryParameters({
+      access_token: accessToken,
+    });
+
+    let credit;
+    if (defined(options.credit)) {
+      credit = options.credit;
+      if (typeof credit === "string") {
+        credit = new Credit(credit);
+      }
+    } else {
+      credit = defaultCredit;
+    }
+
+    this._resource = resource;
+    this._imageryProvider = new UrlTemplateImageryProvider({
+      url: resource,
+      credit: credit,
+      ellipsoid: options.ellipsoid,
+      minimumLevel: options.minimumLevel,
+      maximumLevel: options.maximumLevel,
+      rectangle: options.rectangle,
+    });
   }
 
-  this._resource = resource;
-  this._imageryProvider = new UrlTemplateImageryProvider({
-    url: resource,
-    credit: credit,
-    ellipsoid: options.ellipsoid,
-    minimumLevel: options.minimumLevel,
-    maximumLevel: options.maximumLevel,
-    rectangle: options.rectangle,
-  });
-}
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    return undefined;
+  }
 
-Object.defineProperties(MapboxImageryProvider.prototype, {
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    return this._imageryProvider.requestImage(x, y, level, request);
+  }
+
+  /**
+   * Asynchronously determines what features, if any, are located at a given longitude and latitude within
+   * a tile. This function is optional, so it may not exist on all ImageryProviders.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
+   *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
+   *                   instances.  The array may be empty if no features are found at the given location.
+   *                   It may also be undefined if picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    return this._imageryProvider.pickFeatures(x, y, level, longitude, latitude);
+  }
+
   /**
    * Gets the URL of the Mapbox server.
    * @memberof MapboxImageryProvider.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._imageryProvider.url;
-    },
-  },
+  get url() {
+    return this._imageryProvider.url;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by the instance.
@@ -137,11 +179,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._imageryProvider.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._imageryProvider.rectangle;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -149,11 +189,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._imageryProvider.tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._imageryProvider.tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -161,11 +199,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._imageryProvider.tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._imageryProvider.tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -173,11 +209,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return this._imageryProvider.maximumLevel;
-    },
-  },
+  get maximumLevel() {
+    return this._imageryProvider.maximumLevel;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested. Generally,
@@ -189,11 +223,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return this._imageryProvider.minimumLevel;
-    },
-  },
+  get minimumLevel() {
+    return this._imageryProvider.minimumLevel;
+  }
 
   /**
    * Gets the tiling scheme used by the provider.
@@ -201,11 +233,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._imageryProvider.tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._imageryProvider.tilingScheme;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -215,11 +245,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._imageryProvider.tileDiscardPolicy;
-    },
-  },
+  get tileDiscardPolicy() {
+    return this._imageryProvider.tileDiscardPolicy;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error..  By subscribing
@@ -229,11 +257,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._imageryProvider.errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._imageryProvider.errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -242,11 +268,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._imageryProvider.credit;
-    },
-  },
+  get credit() {
+    return this._imageryProvider.credit;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -254,11 +278,9 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._imageryProvider.proxy;
-    },
-  },
+  get proxy() {
+    return this._imageryProvider.proxy;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -270,62 +292,10 @@ Object.defineProperties(MapboxImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return this._imageryProvider.hasAlphaChannel;
-    },
-  },
-});
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-MapboxImageryProvider.prototype.getTileCredits = function (x, y, level) {
-  return undefined;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-MapboxImageryProvider.prototype.requestImage = function (x, y, level, request) {
-  return this._imageryProvider.requestImage(x, y, level, request);
-};
-
-/**
- * Asynchronously determines what features, if any, are located at a given longitude and latitude within
- * a tile. This function is optional, so it may not exist on all ImageryProviders.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
- *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
- *                   instances.  The array may be empty if no features are found at the given location.
- *                   It may also be undefined if picking is not supported.
- */
-MapboxImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return this._imageryProvider.pickFeatures(x, y, level, longitude, latitude);
-};
+  get hasAlphaChannel() {
+    return this._imageryProvider.hasAlphaChannel;
+  }
+}
 
 // Exposed for tests
 MapboxImageryProvider._defaultCredit = defaultCredit;

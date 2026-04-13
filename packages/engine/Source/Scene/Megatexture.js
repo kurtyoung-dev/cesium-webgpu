@@ -29,164 +29,302 @@ import TextureWrap from "../Renderer/TextureWrap.js";
  *
  * @private
  */
-function Megatexture(
-  context,
-  dimensions,
-  channelCount,
-  componentType,
-  availableTextureMemoryBytes = 134217728, // 128 MB
-  tileCount,
-) {
-  // TODO there are a lot of texture packing rules, see https://github.com/CesiumGS/cesium/issues/9572
-  const pixelDataType = getPixelDataType(componentType);
-  const pixelFormat = getPixelFormat(channelCount);
-
-  const bytesPerSample =
-    channelCount * MetadataComponentType.getSizeInBytes(componentType);
-  const textureDimension = Megatexture.get3DTextureDimension(
+class Megatexture {
+  constructor(
+    context,
     dimensions,
-    bytesPerSample,
-    availableTextureMemoryBytes,
+    channelCount,
+    componentType,
+    // 128 MB
+    availableTextureMemoryBytes = 134217728,
     tileCount,
-  );
+  ) {
+    // TODO there are a lot of texture packing rules, see https://github.com/CesiumGS/cesium/issues/9572
+    const pixelDataType = getPixelDataType(componentType);
+    const pixelFormat = getPixelFormat(channelCount);
 
-  const tileCounts = Cartesian3.divideComponents(
-    textureDimension,
-    dimensions,
-    new Cartesian3(),
-  );
+    const bytesPerSample =
+      channelCount * MetadataComponentType.getSizeInBytes(componentType);
+    const textureDimension = Megatexture.get3DTextureDimension(
+      dimensions,
+      bytesPerSample,
+      availableTextureMemoryBytes,
+      tileCount,
+    );
 
-  /**
-   * @type {number}
-   * @readonly
-   */
-  this.channelCount = channelCount;
+    const tileCounts = Cartesian3.divideComponents(
+      textureDimension,
+      dimensions,
+      new Cartesian3(),
+    );
 
-  /**
-   * @type {MetadataComponentType}
-   * @readonly
-   */
-  this.componentType = componentType;
+    /**
+     * @type {number}
+     * @readonly
+     */
+    this.channelCount = channelCount;
 
-  /**
-   * @type {number}
-   * @readonly
-   */
-  this.textureMemoryByteLength =
-    bytesPerSample *
-    textureDimension.x *
-    textureDimension.y *
-    textureDimension.z;
+    /**
+     * @type {MetadataComponentType}
+     * @readonly
+     */
+    this.componentType = componentType;
 
-  /**
-   * @type {Cartesian3}
-   * @readonly
-   */
-  this.tileCounts = Cartesian3.clone(tileCounts, new Cartesian3());
+    /**
+     * @type {number}
+     * @readonly
+     */
+    this.textureMemoryByteLength =
+      bytesPerSample *
+      textureDimension.x *
+      textureDimension.y *
+      textureDimension.z;
 
-  /**
-   * @type {Cartesian3}
-   * @readonly
-   */
-  this.voxelCountPerTile = Cartesian3.clone(dimensions, new Cartesian3());
+    /**
+     * @type {Cartesian3}
+     * @readonly
+     */
+    this.tileCounts = Cartesian3.clone(tileCounts, new Cartesian3());
 
-  /**
-   * @type {number}
-   * @readonly
-   */
-  this.maximumTileCount = tileCounts.x * tileCounts.y * tileCounts.z;
+    /**
+     * @type {Cartesian3}
+     * @readonly
+     */
+    this.voxelCountPerTile = Cartesian3.clone(dimensions, new Cartesian3());
 
-  /**
-   * @type {Texture3D}
-   * @readonly
-   */
-  this.texture = new Texture3D({
-    context: context,
-    pixelFormat: pixelFormat,
-    pixelDatatype: pixelDataType,
-    flipY: false,
-    width: textureDimension.x,
-    height: textureDimension.y,
-    depth: textureDimension.z,
-    sampler: new Sampler({
-      wrapR: TextureWrap.CLAMP_TO_EDGE,
-      wrapS: TextureWrap.CLAMP_TO_EDGE,
-      wrapT: TextureWrap.CLAMP_TO_EDGE,
-      minificationFilter: TextureMinificationFilter.LINEAR,
-      magnificationFilter: TextureMagnificationFilter.LINEAR,
-    }),
-  });
+    /**
+     * @type {number}
+     * @readonly
+     */
+    this.maximumTileCount = tileCounts.x * tileCounts.y * tileCounts.z;
 
-  /**
-   * @type {MegatextureNode[]}
-   * @readonly
-   */
-  this.nodes = new Array(this.maximumTileCount);
-  for (let tileIndex = 0; tileIndex < this.maximumTileCount; tileIndex++) {
-    this.nodes[tileIndex] = new MegatextureNode(tileIndex);
+    /**
+     * @type {Texture3D}
+     * @readonly
+     */
+    this.texture = new Texture3D({
+      context: context,
+      pixelFormat: pixelFormat,
+      pixelDatatype: pixelDataType,
+      flipY: false,
+      width: textureDimension.x,
+      height: textureDimension.y,
+      depth: textureDimension.z,
+      sampler: new Sampler({
+        wrapR: TextureWrap.CLAMP_TO_EDGE,
+        wrapS: TextureWrap.CLAMP_TO_EDGE,
+        wrapT: TextureWrap.CLAMP_TO_EDGE,
+        minificationFilter: TextureMinificationFilter.LINEAR,
+        magnificationFilter: TextureMagnificationFilter.LINEAR,
+      }),
+    });
+
+    /**
+     * @type {MegatextureNode[]}
+     * @readonly
+     */
+    this.nodes = new Array(this.maximumTileCount);
+    for (let tileIndex = 0; tileIndex < this.maximumTileCount; tileIndex++) {
+      this.nodes[tileIndex] = new MegatextureNode(tileIndex);
+    }
+    for (let tileIndex = 0; tileIndex < this.maximumTileCount; tileIndex++) {
+      const node = this.nodes[tileIndex];
+      node.previousNode = tileIndex > 0 ? this.nodes[tileIndex - 1] : undefined;
+      node.nextNode =
+        tileIndex < this.maximumTileCount - 1
+          ? this.nodes[tileIndex + 1]
+          : undefined;
+    }
+
+    /**
+     * @type {MegatextureNode}
+     * @readonly
+     */
+    this.occupiedList = undefined;
+
+    /**
+     * @type {MegatextureNode}
+     * @readonly
+     */
+    this.emptyList = this.nodes[0];
+
+    /**
+     * @type {number}
+     * @readonly
+     */
+    this.occupiedCount = 0;
+
+    this._nearestSampling = false;
   }
-  for (let tileIndex = 0; tileIndex < this.maximumTileCount; tileIndex++) {
-    const node = this.nodes[tileIndex];
-    node.previousNode = tileIndex > 0 ? this.nodes[tileIndex - 1] : undefined;
-    node.nextNode =
-      tileIndex < this.maximumTileCount - 1
-        ? this.nodes[tileIndex + 1]
-        : undefined;
+
+  /**
+   * Add an array of tile metadata to the megatexture.
+   * @param {Array} data The data to be added.
+   * @returns {number} The index of the tile's location in the megatexture.
+   *
+   * @exception {DeveloperError} Trying to add when there are no empty spots.
+   */
+  add(data) {
+    if (this.isFull()) {
+      throw new DeveloperError("Trying to add when there are no empty spots");
+    }
+
+    // remove head of empty list
+    const node = this.emptyList;
+    this.emptyList = this.emptyList.nextNode;
+    if (defined(this.emptyList)) {
+      this.emptyList.previousNode = undefined;
+    }
+
+    // make head of occupied list
+    node.nextNode = this.occupiedList;
+    if (defined(node.nextNode)) {
+      node.nextNode.previousNode = node;
+    }
+    this.occupiedList = node;
+
+    const index = node.index;
+    this.writeDataToTexture(index, data);
+
+    this.occupiedCount++;
+    return index;
   }
 
   /**
-   * @type {MegatextureNode}
-   * @readonly
+   * @param {number} index
+   * @exception {DeveloperError} Megatexture index out of bounds.
    */
-  this.occupiedList = undefined;
+  remove(index) {
+    if (index < 0 || index >= this.maximumTileCount) {
+      throw new DeveloperError("Megatexture index out of bounds");
+    }
+
+    // remove from list
+    const node = this.nodes[index];
+    if (defined(node.previousNode)) {
+      node.previousNode.nextNode = node.nextNode;
+    }
+    if (defined(node.nextNode)) {
+      node.nextNode.previousNode = node.previousNode;
+    }
+
+    // make head of empty list
+    node.nextNode = this.emptyList;
+    if (defined(node.nextNode)) {
+      node.nextNode.previousNode = node;
+    }
+    node.previousNode = undefined;
+    this.emptyList = node;
+    this.occupiedCount--;
+  }
 
   /**
-   * @type {MegatextureNode}
-   * @readonly
+   * @returns {boolean}
    */
-  this.emptyList = this.nodes[0];
+  isFull() {
+    return this.emptyList === undefined;
+  }
 
   /**
-   * @type {number}
-   * @readonly
+   * Write an array of tile metadata to the megatexture.
+   * @param {number} index The index of the tile's location in the megatexture.
+   * @param {Float32Array|Uint16Array|Uint8Array} tileData The data to be written.
    */
-  this.occupiedCount = 0;
+  writeDataToTexture(index, tileData) {
+    const { tileCounts, voxelCountPerTile } = this;
 
-  this._nearestSampling = false;
-}
+    const source = {
+      arrayBufferView: tileData,
+      width: voxelCountPerTile.x,
+      height: voxelCountPerTile.y,
+      depth: voxelCountPerTile.z,
+    };
 
-Object.defineProperties(Megatexture.prototype, {
+    const tilesPerZ = tileCounts.x * tileCounts.y;
+    const iz = Math.floor(index / tilesPerZ);
+    const remainder = index - iz * tilesPerZ;
+    const iy = Math.floor(remainder / tileCounts.x);
+    const ix = remainder - iy * tileCounts.x;
+
+    const copyOptions = {
+      source: source,
+      xOffset: ix * voxelCountPerTile.x,
+      yOffset: iy * voxelCountPerTile.y,
+      zOffset: iz * voxelCountPerTile.z,
+    };
+
+    this.texture.copyFrom(copyOptions);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see Megatexture#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see Megatexture#isDestroyed
+   *
+   * @example
+   * megatexture = megatexture && megatexture.destroy();
+   */
+  destroy() {
+    this.texture = this.texture && this.texture.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * Gets or sets the nearest sampling flag.
    * @memberof Megatexture.prototype
    * @type {boolean}
    */
-  nearestSampling: {
-    get: function () {
-      return this._nearestSampling;
-    },
-    set: function (nearestSampling) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.bool("nearestSampling", nearestSampling);
-      //>>includeEnd('debug');
-      if (this._nearestSampling === nearestSampling) {
-        return;
-      }
-      if (nearestSampling) {
-        this.texture.sampler = Sampler.NEAREST;
-      } else {
-        this.texture.sampler = new Sampler({
-          wrapR: TextureWrap.CLAMP_TO_EDGE,
-          wrapS: TextureWrap.CLAMP_TO_EDGE,
-          wrapT: TextureWrap.CLAMP_TO_EDGE,
-          minificationFilter: TextureMinificationFilter.LINEAR,
-          magnificationFilter: TextureMagnificationFilter.LINEAR,
-        });
-      }
-      this._nearestSampling = nearestSampling;
-    },
-  },
-});
+  get nearestSampling() {
+    return this._nearestSampling;
+  }
+
+  /**
+   * Gets or sets the nearest sampling flag.
+   * @memberof Megatexture.prototype
+   * @type {boolean}
+   */
+  set nearestSampling(nearestSampling) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("nearestSampling", nearestSampling);
+    //>>includeEnd('debug');
+    if (this._nearestSampling === nearestSampling) {
+      return;
+    }
+    if (nearestSampling) {
+      this.texture.sampler = Sampler.NEAREST;
+    } else {
+      this.texture.sampler = new Sampler({
+        wrapR: TextureWrap.CLAMP_TO_EDGE,
+        wrapS: TextureWrap.CLAMP_TO_EDGE,
+        wrapT: TextureWrap.CLAMP_TO_EDGE,
+        minificationFilter: TextureMinificationFilter.LINEAR,
+        magnificationFilter: TextureMagnificationFilter.LINEAR,
+      });
+    }
+    this._nearestSampling = nearestSampling;
+  }
+}
 
 /**
  * Get the pixel data type to use in a megatexture.
@@ -253,74 +391,6 @@ function MegatextureNode(index) {
    */
   this.previousNode = undefined;
 }
-
-/**
- * Add an array of tile metadata to the megatexture.
- * @param {Array} data The data to be added.
- * @returns {number} The index of the tile's location in the megatexture.
- *
- * @exception {DeveloperError} Trying to add when there are no empty spots.
- */
-Megatexture.prototype.add = function (data) {
-  if (this.isFull()) {
-    throw new DeveloperError("Trying to add when there are no empty spots");
-  }
-
-  // remove head of empty list
-  const node = this.emptyList;
-  this.emptyList = this.emptyList.nextNode;
-  if (defined(this.emptyList)) {
-    this.emptyList.previousNode = undefined;
-  }
-
-  // make head of occupied list
-  node.nextNode = this.occupiedList;
-  if (defined(node.nextNode)) {
-    node.nextNode.previousNode = node;
-  }
-  this.occupiedList = node;
-
-  const index = node.index;
-  this.writeDataToTexture(index, data);
-
-  this.occupiedCount++;
-  return index;
-};
-
-/**
- * @param {number} index
- * @exception {DeveloperError} Megatexture index out of bounds.
- */
-Megatexture.prototype.remove = function (index) {
-  if (index < 0 || index >= this.maximumTileCount) {
-    throw new DeveloperError("Megatexture index out of bounds");
-  }
-
-  // remove from list
-  const node = this.nodes[index];
-  if (defined(node.previousNode)) {
-    node.previousNode.nextNode = node.nextNode;
-  }
-  if (defined(node.nextNode)) {
-    node.nextNode.previousNode = node.previousNode;
-  }
-
-  // make head of empty list
-  node.nextNode = this.emptyList;
-  if (defined(node.nextNode)) {
-    node.nextNode.previousNode = node;
-  }
-  node.previousNode = undefined;
-  this.emptyList = node;
-  this.occupiedCount--;
-};
-
-/**
- * @returns {boolean}
- */
-Megatexture.prototype.isFull = function () {
-  return this.emptyList === undefined;
-};
 
 /**
  * Compute a 3D texture dimension that contains the given number of tiles, or as many tiles as can fit within the available texture memory.
@@ -414,70 +484,5 @@ Megatexture.get3DTextureDimension = function (
 function getVolume(dimensionsArray) {
   return dimensionsArray.reduce((p, d) => p * d);
 }
-
-/**
- * Write an array of tile metadata to the megatexture.
- * @param {number} index The index of the tile's location in the megatexture.
- * @param {Float32Array|Uint16Array|Uint8Array} tileData The data to be written.
- */
-Megatexture.prototype.writeDataToTexture = function (index, tileData) {
-  const { tileCounts, voxelCountPerTile } = this;
-
-  const source = {
-    arrayBufferView: tileData,
-    width: voxelCountPerTile.x,
-    height: voxelCountPerTile.y,
-    depth: voxelCountPerTile.z,
-  };
-
-  const tilesPerZ = tileCounts.x * tileCounts.y;
-  const iz = Math.floor(index / tilesPerZ);
-  const remainder = index - iz * tilesPerZ;
-  const iy = Math.floor(remainder / tileCounts.x);
-  const ix = remainder - iy * tileCounts.x;
-
-  const copyOptions = {
-    source: source,
-    xOffset: ix * voxelCountPerTile.x,
-    yOffset: iy * voxelCountPerTile.y,
-    zOffset: iz * voxelCountPerTile.z,
-  };
-
-  this.texture.copyFrom(copyOptions);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see Megatexture#destroy
- */
-Megatexture.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see Megatexture#isDestroyed
- *
- * @example
- * megatexture = megatexture && megatexture.destroy();
- */
-Megatexture.prototype.destroy = function () {
-  this.texture = this.texture && this.texture.destroy();
-  return destroyObject(this);
-};
 
 export default Megatexture;

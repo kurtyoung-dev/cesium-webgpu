@@ -1,3 +1,4 @@
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 
 /**
@@ -23,6 +24,23 @@ class WasmPointCloudBridge {
     this._lastWasmUsed = false;
     this._processCount = 0;
     this._isDestroyed = false;
+
+    /**
+     * When true and a GPU compute context is available, sorting is
+     * offloaded to the WebGPU bitonic sort dispatcher. Results are
+     * read back asynchronously, introducing one frame of latency
+     * (conservative all-visible until the first readback resolves).
+     *
+     * Default false — only useful when a GPU-side consumer exists
+     * (e.g., indirect draw) to avoid the readback cost.
+     * @type {boolean}
+     */
+    this.useGPUSort = false;
+
+    /** Cached GPU sort feature renderer reference. */
+    this._gpuSortFR = undefined;
+    /** Whether we already tried (and failed) to look up the FR. */
+    this._gpuSortFRChecked = false;
   }
 
   get threshold() { return this._threshold; }
@@ -276,11 +294,30 @@ class WasmPointCloudBridge {
    * @param {number} count - Number of points.
    * @param {Uint32Array} outIndices - Output sorted indices.
    */
-  sortByDistance(distSq, count, outIndices) {
+  sortByDistance(distSq, count, outIndices, context) {
+    // GPU path: dispatch bitonic sort on the compute pipeline.
+    // Results are read back asynchronously; the first frame sees
+    // identity order, subsequent frames see the GPU-sorted result.
+    if (this.useGPUSort && context && count >= this._threshold) {
+      const fr = this._getGPUSortFR(context);
+      if (fr && typeof fr.sort === "function") {
+        const encoder = context.currentCommandEncoder;
+        if (encoder) {
+          fr.sort(encoder, distSq, count);
+          // Identity fill — readback from previous frame will be
+          // applied by the caller's next testCommands cycle.
+          for (let i = 0; i < count; i++) {
+            outIndices[i] = i;
+          }
+          return;
+        }
+      }
+    }
+
+    // CPU fallback: populate + sort indices.
     for (let i = 0; i < count; i++) {
       outIndices[i] = i;
     }
-    // Insertion sort for small counts, Array.sort for larger
     if (count <= 64) {
       for (let i = 1; i < count; i++) {
         const key = outIndices[i];
@@ -293,11 +330,29 @@ class WasmPointCloudBridge {
         outIndices[j + 1] = key;
       }
     } else {
-      // Convert to JS array for sort, then write back
       const arr = Array.from(outIndices.subarray(0, count));
       arr.sort((a, b) => distSq[b] - distSq[a]);
       outIndices.set(arr);
     }
+  }
+
+  /**
+   * Lazily look up the GPU sort feature renderer via the backend-
+   * agnostic feature renderer registry. Caches the result so we
+   * don't query every frame.
+   * @private
+   */
+  _getGPUSortFR(context) {
+    if (this._gpuSortFRChecked) {
+      return this._gpuSortFR;
+    }
+    this._gpuSortFRChecked = true;
+    if (context && typeof context.getFeatureRenderer === "function") {
+      this._gpuSortFR = context.getFeatureRenderer(
+        FeatureRendererKey.POINT_CLOUD_SORT,
+      );
+    }
+    return this._gpuSortFR;
   }
 
   /**

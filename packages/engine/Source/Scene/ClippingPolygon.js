@@ -34,44 +34,160 @@ import Rectangle from "../Core/Rectangle.js";
  *     positions: positions
  * });
  */
-function ClippingPolygon(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  Check.typeOf.object("options.positions", options.positions);
-  Check.typeOf.number.greaterThanOrEquals(
-    "options.positions.length",
-    options.positions.length,
-    3,
-  );
-  //>>includeEnd('debug');
+class ClippingPolygon {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    Check.typeOf.object("options.positions", options.positions);
+    Check.typeOf.number.greaterThanOrEquals(
+      "options.positions.length",
+      options.positions.length,
+      3,
+    );
+    //>>includeEnd('debug');
 
-  this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
-  this._positions = copyArrayCartesian3(options.positions);
+    this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
+    this._positions = copyArrayCartesian3(options.positions);
+
+    /**
+     * A copy of the input positions.
+     *
+     * This is used to detect modifications of the positions in
+     * <code>coputeRectangle</code>: The rectangle only has
+     * to be re-computed when these positions have changed.
+     *
+     * @type {Cartesian3[]|undefined}
+     * @private
+     */
+    this._cachedPositions = undefined;
+
+    /**
+     * A cached version of the rectangle that is computed in
+     * <code>computeRectangle</code>.
+     *
+     * This is only re-computed when the positions have changed, as
+     * determined  by comparing the <code>_positions</code> to the
+     * <code>_cachedPositions</code>
+     *
+     * @type {Rectangle|undefined}
+     * @private
+     */
+    this._cachedRectangle = undefined;
+  }
 
   /**
-   * A copy of the input positions.
+   * Computes a cartographic rectangle which encloses the polygon defined by the list of positions, including cases over the international date line and the poles.
    *
-   * This is used to detect modifications of the positions in
-   * <code>coputeRectangle</code>: The rectangle only has
-   * to be re-computed when these positions have changed.
-   *
-   * @type {Cartesian3[]|undefined}
-   * @private
+   * @param {Rectangle} [result] An object in which to store the result.
+   * @returns {Rectangle} The result rectangle
    */
-  this._cachedPositions = undefined;
+  computeRectangle(result) {
+    if (equalsArrayCartesian3(this._positions, this._cachedPositions)) {
+      return Rectangle.clone(this._cachedRectangle, result);
+    }
+    const rectangle = PolygonGeometry.computeRectangleFromPositions(
+      this.positions,
+      this.ellipsoid,
+      undefined,
+      result,
+    );
+    this._cachedPositions = copyArrayCartesian3(this._positions);
+    this._cachedRectangle = Rectangle.clone(rectangle);
+    return rectangle;
+  }
 
   /**
-   * A cached version of the rectangle that is computed in
-   * <code>computeRectangle</code>.
+   * Computes a rectangle with the spherical extents that encloses the polygon defined by the list of positions, including cases over the international date line and the poles.
    *
-   * This is only re-computed when the positions have changed, as
-   * determined  by comparing the <code>_positions</code> to the
-   * <code>_cachedPositions</code>
-   *
-   * @type {Rectangle|undefined}
    * @private
+   *
+   * @param {Rectangle} [result] An object in which to store the result.
+   * @returns {Rectangle} The result rectangle with spherical extents.
    */
-  this._cachedRectangle = undefined;
+  computeSphericalExtents(result) {
+    if (!defined(result)) {
+      result = new Rectangle();
+    }
+
+    const rectangle = this.computeRectangle(scratchRectangle);
+
+    let spherePoint = Cartographic.toCartesian(
+      Rectangle.southwest(rectangle),
+      this.ellipsoid,
+      spherePointScratch,
+    );
+
+    // Project into plane with vertical for latitude
+    let magXY = Math.sqrt(
+      spherePoint.x * spherePoint.x + spherePoint.y * spherePoint.y,
+    );
+
+    // Use fastApproximateAtan2 for alignment with shader
+    let sphereLatitude = CesiumMath.fastApproximateAtan2(magXY, spherePoint.z);
+    let sphereLongitude = CesiumMath.fastApproximateAtan2(
+      spherePoint.x,
+      spherePoint.y,
+    );
+
+    result.south = sphereLatitude;
+    result.west = sphereLongitude;
+
+    spherePoint = Cartographic.toCartesian(
+      Rectangle.northeast(rectangle),
+      this.ellipsoid,
+      spherePointScratch,
+    );
+
+    // Project into plane with vertical for latitude
+    magXY = Math.sqrt(
+      spherePoint.x * spherePoint.x + spherePoint.y * spherePoint.y,
+    );
+
+    // Use fastApproximateAtan2 for alignment with shader
+    sphereLatitude = CesiumMath.fastApproximateAtan2(magXY, spherePoint.z);
+    sphereLongitude = CesiumMath.fastApproximateAtan2(
+      spherePoint.x,
+      spherePoint.y,
+    );
+
+    result.north = sphereLatitude;
+    result.east = sphereLongitude;
+
+    return result;
+  }
+
+  /**
+   * Returns the total number of positions in the polygon, include any holes.
+   *
+   * @memberof ClippingPolygon.prototype
+   * @type {number}
+   * @readonly
+   */
+  get length() {
+    return this._positions.length;
+  }
+
+  /**
+   * Returns the outer ring of positions.
+   *
+   * @memberof ClippingPolygon.prototype
+   * @type {Cartesian3[]}
+   * @readonly
+   */
+  get positions() {
+    return this._positions;
+  }
+
+  /**
+   * Returns the ellipsoid used to project the polygon onto surfaces when clipping.
+   *
+   * @memberof ClippingPolygon.prototype
+   * @type {Ellipsoid}
+   * @readonly
+   */
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
 }
 
 /**
@@ -132,45 +248,6 @@ function equalsArrayCartesian3(a, b) {
   return true;
 }
 
-Object.defineProperties(ClippingPolygon.prototype, {
-  /**
-   * Returns the total number of positions in the polygon, include any holes.
-   *
-   * @memberof ClippingPolygon.prototype
-   * @type {number}
-   * @readonly
-   */
-  length: {
-    get: function () {
-      return this._positions.length;
-    },
-  },
-  /**
-   * Returns the outer ring of positions.
-   *
-   * @memberof ClippingPolygon.prototype
-   * @type {Cartesian3[]}
-   * @readonly
-   */
-  positions: {
-    get: function () {
-      return this._positions;
-    },
-  },
-  /**
-   * Returns the ellipsoid used to project the polygon onto surfaces when clipping.
-   *
-   * @memberof ClippingPolygon.prototype
-   * @type {Ellipsoid}
-   * @readonly
-   */
-  ellipsoid: {
-    get: function () {
-      return this._ellipsoid;
-    },
-  },
-});
-
 /**
  * Clones the ClippingPolygon without setting its ownership.
  * @param {ClippingPolygon} polygon The ClippingPolygon to be cloned
@@ -214,87 +291,7 @@ ClippingPolygon.equals = function (left, right) {
   );
 };
 
-/**
- * Computes a cartographic rectangle which encloses the polygon defined by the list of positions, including cases over the international date line and the poles.
- *
- * @param {Rectangle} [result] An object in which to store the result.
- * @returns {Rectangle} The result rectangle
- */
-ClippingPolygon.prototype.computeRectangle = function (result) {
-  if (equalsArrayCartesian3(this._positions, this._cachedPositions)) {
-    return Rectangle.clone(this._cachedRectangle, result);
-  }
-  const rectangle = PolygonGeometry.computeRectangleFromPositions(
-    this.positions,
-    this.ellipsoid,
-    undefined,
-    result,
-  );
-  this._cachedPositions = copyArrayCartesian3(this._positions);
-  this._cachedRectangle = Rectangle.clone(rectangle);
-  return rectangle;
-};
-
 const scratchRectangle = new Rectangle();
 const spherePointScratch = new Cartesian3();
-/**
- * Computes a rectangle with the spherical extents that encloses the polygon defined by the list of positions, including cases over the international date line and the poles.
- *
- * @private
- *
- * @param {Rectangle} [result] An object in which to store the result.
- * @returns {Rectangle} The result rectangle with spherical extents.
- */
-ClippingPolygon.prototype.computeSphericalExtents = function (result) {
-  if (!defined(result)) {
-    result = new Rectangle();
-  }
-
-  const rectangle = this.computeRectangle(scratchRectangle);
-
-  let spherePoint = Cartographic.toCartesian(
-    Rectangle.southwest(rectangle),
-    this.ellipsoid,
-    spherePointScratch,
-  );
-
-  // Project into plane with vertical for latitude
-  let magXY = Math.sqrt(
-    spherePoint.x * spherePoint.x + spherePoint.y * spherePoint.y,
-  );
-
-  // Use fastApproximateAtan2 for alignment with shader
-  let sphereLatitude = CesiumMath.fastApproximateAtan2(magXY, spherePoint.z);
-  let sphereLongitude = CesiumMath.fastApproximateAtan2(
-    spherePoint.x,
-    spherePoint.y,
-  );
-
-  result.south = sphereLatitude;
-  result.west = sphereLongitude;
-
-  spherePoint = Cartographic.toCartesian(
-    Rectangle.northeast(rectangle),
-    this.ellipsoid,
-    spherePointScratch,
-  );
-
-  // Project into plane with vertical for latitude
-  magXY = Math.sqrt(
-    spherePoint.x * spherePoint.x + spherePoint.y * spherePoint.y,
-  );
-
-  // Use fastApproximateAtan2 for alignment with shader
-  sphereLatitude = CesiumMath.fastApproximateAtan2(magXY, spherePoint.z);
-  sphereLongitude = CesiumMath.fastApproximateAtan2(
-    spherePoint.x,
-    spherePoint.y,
-  );
-
-  result.north = sphereLatitude;
-  result.east = sphereLongitude;
-
-  return result;
-};
 
 export default ClippingPolygon;

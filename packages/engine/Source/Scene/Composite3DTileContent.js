@@ -17,114 +17,199 @@ import RuntimeError from "../Core/RuntimeError.js";
  *
  * @private
  */
-function Composite3DTileContent(tileset, tile, resource, contents) {
-  this._tileset = tileset;
-  this._tile = tile;
-  this._resource = resource;
+class Composite3DTileContent {
+  constructor(tileset, tile, resource, contents) {
+    this._tileset = tileset;
+    this._tile = tile;
+    this._resource = resource;
 
-  if (!defined(contents)) {
-    contents = [];
+    if (!defined(contents)) {
+      contents = [];
+    }
+    this._contents = contents;
+
+    this._metadata = undefined;
+    this._group = undefined;
+    this._ready = false;
   }
-  this._contents = contents;
 
-  this._metadata = undefined;
-  this._group = undefined;
-  this._ready = false;
-}
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
+   * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a tile in the composite.
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
 
-Object.defineProperties(Composite3DTileContent.prototype, {
-  featurePropertiesDirty: {
-    get: function () {
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        if (contents[i].featurePropertiesDirty) {
-          return true;
-        }
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
+   * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a tile in the composite.
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyDebugSettings(enabled, color);
+    }
+  }
+
+  applyStyle(style) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyStyle(style);
+    }
+  }
+
+  update(tileset, frameState) {
+    const contents = this._contents;
+    const length = contents.length;
+    let ready = true;
+    for (let i = 0; i < length; ++i) {
+      contents[i].update(tileset, frameState);
+      ready = ready && contents[i].ready;
+    }
+
+    if (!this._ready && ready) {
+      this._ready = true;
+    }
+  }
+
+  /**
+   * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
+   *
+   * @param {Ray} ray The ray to test for intersection.
+   * @param {FrameState} frameState The frame state.
+   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
+   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+   *
+   * @private
+   */
+  pick(ray, frameState, result) {
+    if (!this._ready) {
+      return undefined;
+    }
+
+    let intersection;
+    let minDistance = Number.POSITIVE_INFINITY;
+    const contents = this._contents;
+    const length = contents.length;
+
+    for (let i = 0; i < length; ++i) {
+      const candidate = contents[i].pick(ray, frameState, result);
+
+      if (!defined(candidate)) {
+        continue;
       }
 
-      return false;
-    },
-    set: function (value) {
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        contents[i].featurePropertiesDirty = value;
+      const distance = Cartesian3.distance(ray.origin, candidate);
+      if (distance < minDistance) {
+        intersection = candidate;
+        minDistance = distance;
       }
-    },
-  },
+    }
+
+    if (!defined(intersection)) {
+      return undefined;
+    }
+
+    return result;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].destroy();
+    }
+    return destroyObject(this);
+  }
+
+  get featurePropertiesDirty() {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      if (contents[i].featurePropertiesDirty) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  set featurePropertiesDirty(value) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].featurePropertiesDirty = value;
+    }
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>featuresLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  featuresLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get featuresLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>pointsLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  pointsLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get pointsLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>trianglesLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  trianglesLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get trianglesLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>geometryByteLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  geometryByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get geometryByteLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.   <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>texturesByteLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  texturesByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get texturesByteLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
    * always returns <code>0</code>.  Instead call <code>batchTableByteLength</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  batchTableByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get batchTableByteLength() {
+    return 0;
+  }
 
-  innerContents: {
-    get: function () {
-      return this._contents;
-    },
-  },
+  get innerContents() {
+    return this._contents;
+  }
 
   /**
    * Returns true when the tile's content is ready to render; otherwise false
@@ -135,29 +220,21 @@ Object.defineProperties(Composite3DTileContent.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
-  tileset: {
-    get: function () {
-      return this._tileset;
-    },
-  },
+  get tileset() {
+    return this._tileset;
+  }
 
-  tile: {
-    get: function () {
-      return this._tile;
-    },
-  },
+  get tile() {
+    return this._tile;
+  }
 
-  url: {
-    get: function () {
-      return this._resource.getUrlComponent(true);
-    },
-  },
+  get url() {
+    return this._resource.getUrlComponent(true);
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
@@ -166,30 +243,34 @@ Object.defineProperties(Composite3DTileContent.prototype, {
    * @private
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  metadata: {
-    get: function () {
-      return this._metadata;
-    },
-    set: function (value) {
-      this._metadata = value;
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        contents[i].metadata = value;
-      }
-    },
-  },
+  get metadata() {
+    return this._metadata;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
+   * both stores the content metadata and propagates the content metadata to all of its children.
+   * @memberof Composite3DTileContent.prototype
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set metadata(value) {
+    this._metadata = value;
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].metadata = value;
+    }
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
    * always returns <code>undefined</code>.  Instead call <code>batchTable</code> for a tile in the composite.
    * @memberof Composite3DTileContent.prototype
    */
-  batchTable: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get batchTable() {
+    return undefined;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
@@ -198,20 +279,26 @@ Object.defineProperties(Composite3DTileContent.prototype, {
    * @private
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  group: {
-    get: function () {
-      return this._group;
-    },
-    set: function (value) {
-      this._group = value;
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        contents[i].group = value;
-      }
-    },
-  },
-});
+  get group() {
+    return this._group;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface. <code>Composite3DTileContent</code>
+   * both stores the group metadata and propagates the group metadata to all of its children.
+   * @memberof Composite3DTileContent.prototype
+   * @private
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set group(value) {
+    this._group = value;
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].group = value;
+    }
+  }
+}
 
 const sizeOfUint32 = Uint32Array.BYTES_PER_ELEMENT;
 
@@ -298,106 +385,4 @@ Composite3DTileContent.fromTileType = async function (
   return content;
 };
 
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
- * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a tile in the composite.
- */
-Composite3DTileContent.prototype.hasProperty = function (batchId, name) {
-  return false;
-};
-
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Composite3DTileContent</code>
- * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a tile in the composite.
- */
-Composite3DTileContent.prototype.getFeature = function (batchId) {
-  return undefined;
-};
-
-Composite3DTileContent.prototype.applyDebugSettings = function (
-  enabled,
-  color,
-) {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].applyDebugSettings(enabled, color);
-  }
-};
-
-Composite3DTileContent.prototype.applyStyle = function (style) {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].applyStyle(style);
-  }
-};
-
-Composite3DTileContent.prototype.update = function (tileset, frameState) {
-  const contents = this._contents;
-  const length = contents.length;
-  let ready = true;
-  for (let i = 0; i < length; ++i) {
-    contents[i].update(tileset, frameState);
-    ready = ready && contents[i].ready;
-  }
-
-  if (!this._ready && ready) {
-    this._ready = true;
-  }
-};
-
-/**
- * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
- *
- * @param {Ray} ray The ray to test for intersection.
- * @param {FrameState} frameState The frame state.
- * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
- * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
- *
- * @private
- */
-Composite3DTileContent.prototype.pick = function (ray, frameState, result) {
-  if (!this._ready) {
-    return undefined;
-  }
-
-  let intersection;
-  let minDistance = Number.POSITIVE_INFINITY;
-  const contents = this._contents;
-  const length = contents.length;
-
-  for (let i = 0; i < length; ++i) {
-    const candidate = contents[i].pick(ray, frameState, result);
-
-    if (!defined(candidate)) {
-      continue;
-    }
-
-    const distance = Cartesian3.distance(ray.origin, candidate);
-    if (distance < minDistance) {
-      intersection = candidate;
-      minDistance = distance;
-    }
-  }
-
-  if (!defined(intersection)) {
-    return undefined;
-  }
-
-  return result;
-};
-
-Composite3DTileContent.prototype.isDestroyed = function () {
-  return false;
-};
-
-Composite3DTileContent.prototype.destroy = function () {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].destroy();
-  }
-  return destroyObject(this);
-};
 export default Composite3DTileContent;

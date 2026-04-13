@@ -28,15 +28,12 @@ import { WebGPUTexture } from "./WebGPUTexture.js";
 import {
   selectWebGPUShader,
   getVertexLayoutForShader,
-  getUniformSizeForShader,
   getPickShaderForType,
   getMaterialPickShaderForType,
-  getPickUniformSize,
   isPhongShader,
   isTexturedShader,
   selectMaterialShader,
   getMaterialVertexLayout,
-  getMaterialUniformSize,
   isMaterialLitShader,
   isPBRShader,
 } from "./WebGPUPrimitiveShaders.js";
@@ -57,8 +54,19 @@ const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 // Scratch for encoding a single vertex position
 const scratchEncodedPosition = new EncodedCartesian3();
-// RTE uniform scratch buffers (64 floats = 256 bytes)
+// RTE camera uniform scratch buffers (60 floats = 240 bytes max for lit)
 const scratchRTEUniformData = new Float32Array(64);
+
+// Camera-only UBO sizes (no material fields)
+const FLAT_CAMERA_BYTES = 96; // mvpRTE(64) + camHigh(16) + camLow(16)
+const LIT_CAMERA_BYTES = 240; // mvpRTE(64) + mvRTE(64) + normalMatrix(64) + camHigh(16) + camLow(16) + lightDir(16)
+const PICK_CAMERA_BYTES = 96; // same as flat
+
+// Placeholder material UBO for shaders that don't use material uniforms
+// Must be at least 16 bytes (vec4) for WebGPU minimum binding size
+const PLACEHOLDER_MATERIAL_BYTES = 16;
+// Pick material: pickColor(vec4) = 16 bytes
+const PICK_MATERIAL_BYTES = 16;
 
 // =========================================================================
 // Shared Position Extraction — RTE (positionHigh + positionLow)
@@ -243,28 +251,9 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
   ud[59] = 0.0;
 }
 
-/**
- * Writes RTE uniform data for a pick shader.
- * Layout: mvpRTE(16) + camHigh(4) + camLow(4) + pickColor(4) = 28 floats = 112 bytes
- * @private
- */
-function writeRTEUniformsPick(ud, rte, pickColor) {
-  Matrix4.pack(rte.mvpRTE, ud, 0);
-  ud[16] = rte.camHigh.x;
-  ud[17] = rte.camHigh.y;
-  ud[18] = rte.camHigh.z;
-  ud[19] = 0.0;
-  ud[20] = rte.camLow.x;
-  ud[21] = rte.camLow.y;
-  ud[22] = rte.camLow.z;
-  ud[23] = 0.0;
-  if (defined(pickColor)) {
-    ud[24] = pickColor.red;
-    ud[25] = pickColor.green;
-    ud[26] = pickColor.blue;
-    ud[27] = pickColor.alpha;
-  }
-}
+// writeRTEUniformsPick removed — pick shaders now use split camera/material
+// bind groups. Camera data uses writeRTEUniformsFlat; pick color goes in
+// a separate material UBO.
 
 // =========================================================================
 // Per-Frame Uniform Update
@@ -281,7 +270,7 @@ function writeRTEUniformsPick(ud, rte, pickColor) {
  * @private
  */
 function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
-  if (!command.isWebGPUDrawCommand || !command._webgpuUniformBuffer) {
+  if (!command.isWebGPUDrawCommand || !command._webgpuCameraBuffer) {
     return;
   }
 
@@ -301,15 +290,21 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
   if (isPhongShader(command._webgpuShaderType)) {
     writeRTEUniformsLit(ud, rte, context.uniformState);
     device.queue.writeBuffer(
-      command._webgpuUniformBuffer,
+      command._webgpuCameraBuffer,
       0,
       ud.buffer,
       0,
-      240,
+      LIT_CAMERA_BYTES,
     );
   } else {
     writeRTEUniformsFlat(ud, rte);
-    device.queue.writeBuffer(command._webgpuUniformBuffer, 0, ud.buffer, 0, 96);
+    device.queue.writeBuffer(
+      command._webgpuCameraBuffer,
+      0,
+      ud.buffer,
+      0,
+      FLAT_CAMERA_BYTES,
+    );
   }
 }
 
@@ -326,7 +321,7 @@ const scratchPickUniformData = new Float32Array(64);
 function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
   if (
     !command.isWebGPUDrawCommand ||
-    !command._webgpuUniformBuffer ||
+    !command._webgpuCameraBuffer ||
     !command._isPickCommand
   ) {
     return;
@@ -343,9 +338,20 @@ function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
     frameState.camera,
     modelMatrix,
   );
+
+  // Write camera uniforms (flat layout for pick shaders)
   const ud = scratchPickUniformData;
-  writeRTEUniformsPick(ud, rte, command._webgpuPickColor);
-  device.queue.writeBuffer(command._webgpuUniformBuffer, 0, ud.buffer, 0, 112);
+  writeRTEUniformsFlat(ud, rte);
+  device.queue.writeBuffer(
+    command._webgpuCameraBuffer,
+    0,
+    ud.buffer,
+    0,
+    PICK_CAMERA_BYTES,
+  );
+
+  // Pick color is in the material buffer — only update if color changed
+  // (pick colors are assigned once and don't change per frame)
 }
 
 // =========================================================================
@@ -403,9 +409,12 @@ function createWebGPUCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
-      bindGroupLayout: null,
-      uniformBuffers: [],
-      bindGroups: [],
+      cameraBindGroupLayout: null,
+      materialBindGroupLayout: null,
+      cameraBuffers: [],
+      cameraBindGroups: [],
+      materialBuffer: null,
+      materialBindGroup: null,
       vertexBuffers: [],
       indexBuffers: [],
       indexFormats: [],
@@ -413,9 +422,12 @@ function createWebGPUCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
-      pickBindGroupLayout: null,
-      pickUniformBuffers: [],
-      pickBindGroups: [],
+      pickCameraBindGroupLayout: null,
+      pickMaterialBindGroupLayout: null,
+      pickCameraBuffers: [],
+      pickCameraBindGroups: [],
+      pickMaterialBuffers: [],
+      pickMaterialBindGroups: [],
     };
   }
   const cache = primitive._webgpuCache;
@@ -424,10 +436,11 @@ function createWebGPUCommands(
   const firstGeometry = geometries[0];
   const shaderInfo = selectWebGPUShader(firstGeometry.attributes);
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
-  const uniformSize = getUniformSizeForShader(shaderInfo.type);
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const needsTexture = isTexturedShader(shaderInfo.type);
+  const isLit = isPhongShader(shaderInfo.type);
+  const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
   if (shaderChanged) {
     cache.shaderType = shaderInfo.type;
@@ -438,22 +451,38 @@ function createWebGPUCommands(
       label: `${shaderInfo.type} Shader`,
     });
 
-    const uniformVisibility = isPhongShader(shaderInfo.type)
+    // Camera BGL — group(0): camera uniforms
+    const cameraVisibility = isLit
       ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
       : GPUShaderStage.VERTEX;
 
-    cache.bindGroupLayout = device.createBindGroupLayout({
-      label: "Uniform BGL",
+    cache.cameraBindGroupLayout = device.createBindGroupLayout({
+      label: "Camera BGL",
       entries: [
         {
           binding: 0,
-          visibility: uniformVisibility,
+          visibility: cameraVisibility,
           buffer: { type: "uniform" },
         },
       ],
     });
 
-    const bindGroupLayouts = [cache.bindGroupLayout];
+    // Material BGL — group(1): placeholder material uniforms
+    cache.materialBindGroupLayout = device.createBindGroupLayout({
+      label: "Material BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+
+    const bindGroupLayouts = [
+      cache.cameraBindGroupLayout,
+      cache.materialBindGroupLayout,
+    ];
 
     if (needsTexture) {
       cache.textureBindGroupLayout = device.createBindGroupLayout({
@@ -505,8 +534,27 @@ function createWebGPUCommands(
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       },
+    });
+
+    // Shared placeholder material buffer for per-instance-color shaders
+    // (these shaders don't use material uniforms — just a placeholder vec4)
+    cache.materialBuffer = device.createBuffer({
+      size: PLACEHOLDER_MATERIAL_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: "Placeholder Material UB",
+    });
+    device.queue.writeBuffer(
+      cache.materialBuffer,
+      0,
+      new Float32Array([0, 0, 0, 0]),
+    );
+    cache.materialBindGroup = device.createBindGroup({
+      layout: cache.materialBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.materialBuffer } },
+      ],
     });
 
     // Default placeholder texture for textured shaders
@@ -517,9 +565,9 @@ function createWebGPUCommands(
       for (let y = 0; y < texSize; y++) {
         for (let x = 0; x < texSize; x++) {
           const idx = (y * texSize + x) * 4;
-          const isLight =
+          const isLight2 =
             (Math.floor(x / tileSize) + Math.floor(y / tileSize)) % 2 === 0;
-          const val = isLight ? 230 : 80;
+          const val = isLight2 ? 230 : 80;
           checkerboard[idx] = val;
           checkerboard[idx + 1] = val;
           checkerboard[idx + 2] = val;
@@ -550,7 +598,7 @@ function createWebGPUCommands(
       });
     }
 
-    // ── Pick pipeline ──
+    // ── Pick pipeline (split camera/material bind groups) ──
     if (hasPickIds) {
       const pickShaderCode = getPickShaderForType(shaderInfo.type);
       cache.pickShaderModule = WebGPUShaderModule.create({
@@ -558,19 +606,37 @@ function createWebGPUCommands(
         code: pickShaderCode,
         label: `${shaderInfo.type} Pick Shader`,
       });
-      cache.pickBindGroupLayout = device.createBindGroupLayout({
-        label: "Pick BGL",
+
+      // Pick camera BGL — group(0)
+      cache.pickCameraBindGroupLayout = device.createBindGroupLayout({
+        label: "Pick Camera BGL",
         entries: [
           {
             binding: 0,
-            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            visibility: GPUShaderStage.VERTEX,
             buffer: { type: "uniform" },
           },
         ],
       });
+
+      // Pick material BGL — group(1): pickColor
+      cache.pickMaterialBindGroupLayout = device.createBindGroupLayout({
+        label: "Pick Material BGL",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: { type: "uniform" },
+          },
+        ],
+      });
+
       cache.pickPipeline = device.createRenderPipeline({
         layout: device.createPipelineLayout({
-          bindGroupLayouts: [cache.pickBindGroupLayout],
+          bindGroupLayouts: [
+            cache.pickCameraBindGroupLayout,
+            cache.pickMaterialBindGroupLayout,
+          ],
         }),
         vertex: {
           module: cache.pickShaderModule.module,
@@ -592,7 +658,7 @@ function createWebGPUCommands(
         depthStencil: {
           format: "depth24plus-stencil8",
           depthWriteEnabled: true,
-          depthCompare: "less",
+          depthCompare: "less-equal",
         },
       });
     }
@@ -776,33 +842,39 @@ function createWebGPUCommands(
     ensureIndexBuffer(device, geometry, cache, i);
     cache.vertexCounts[i] = numVertices;
 
-    // ── Uniform buffer (RTE layout) ──
-    if (!defined(cache.uniformBuffers[i])) {
-      cache.uniformBuffers[i] = device.createBuffer({
-        size: uniformSize,
+    // ── Camera uniform buffer (RTE layout) ──
+    if (!defined(cache.cameraBuffers[i])) {
+      cache.cameraBuffers[i] = device.createBuffer({
+        size: cameraBufferSize,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        label: `Primitive UB ${i}`,
+        label: `Primitive Camera UB ${i}`,
       });
     }
 
-    // Write initial RTE uniform data
-    const uniformData = new Float32Array(uniformSize / 4);
-    if (isPhongShader(shaderInfo.type)) {
-      writeRTEUniformsLit(uniformData, rte, context.uniformState);
+    // Write initial camera RTE uniform data
+    const cameraData = new Float32Array(cameraBufferSize / 4);
+    if (isLit) {
+      writeRTEUniformsLit(cameraData, rte, context.uniformState);
     } else {
-      writeRTEUniformsFlat(uniformData, rte);
+      writeRTEUniformsFlat(cameraData, rte);
     }
-    device.queue.writeBuffer(cache.uniformBuffers[i], 0, uniformData);
+    device.queue.writeBuffer(cache.cameraBuffers[i], 0, cameraData);
 
-    // ── Bind group ──
-    cache.bindGroups[i] = device.createBindGroup({
-      layout: cache.bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: cache.uniformBuffers[i] } }],
+    // ── Camera bind group — group(0) ──
+    cache.cameraBindGroups[i] = device.createBindGroup({
+      layout: cache.cameraBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.cameraBuffers[i] } },
+      ],
     });
 
     const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
 
-    const commandBindGroups = [cache.bindGroups[i]];
+    // Build bind group array: [camera, material, texture?, effects]
+    const commandBindGroups = [
+      cache.cameraBindGroups[i],
+      cache.materialBindGroup,
+    ];
     if (needsTexture && defined(cache.textureBindGroup)) {
       commandBindGroups.push(cache.textureBindGroup);
     }
@@ -826,37 +898,65 @@ function createWebGPUCommands(
       owner: primitive,
     });
 
-    command._webgpuUniformBuffer = cache.uniformBuffers[i];
+    command._webgpuCameraBuffer = cache.cameraBuffers[i];
     command._webgpuShaderType = shaderInfo.type;
     validCommands.push(command);
 
-    // ── Pick command ──
+    // ── Pick command (split camera/material bind groups) ──
     if (hasPickIds && i < pickIds.length && defined(cache.pickPipeline)) {
       const pickColor = pickIds[i].color;
-      const pickUniformSize = getPickUniformSize();
 
-      if (!defined(cache.pickUniformBuffers[i])) {
-        cache.pickUniformBuffers[i] = device.createBuffer({
-          size: pickUniformSize,
+      // Pick camera buffer — same flat layout as basic camera
+      if (!defined(cache.pickCameraBuffers[i])) {
+        cache.pickCameraBuffers[i] = device.createBuffer({
+          size: PICK_CAMERA_BYTES,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-          label: `Pick UB ${i}`,
+          label: `Pick Camera UB ${i}`,
         });
       }
 
-      const pickUD = new Float32Array(pickUniformSize / 4);
-      writeRTEUniformsPick(pickUD, rte, pickColor);
-      device.queue.writeBuffer(cache.pickUniformBuffers[i], 0, pickUD);
+      const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
+      writeRTEUniformsFlat(pickCameraData, rte);
+      device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
 
-      cache.pickBindGroups[i] = device.createBindGroup({
-        layout: cache.pickBindGroupLayout,
+      cache.pickCameraBindGroups[i] = device.createBindGroup({
+        layout: cache.pickCameraBindGroupLayout,
         entries: [
-          { binding: 0, resource: { buffer: cache.pickUniformBuffers[i] } },
+          { binding: 0, resource: { buffer: cache.pickCameraBuffers[i] } },
+        ],
+      });
+
+      // Pick material buffer — pickColor(vec4)
+      if (!defined(cache.pickMaterialBuffers[i])) {
+        cache.pickMaterialBuffers[i] = device.createBuffer({
+          size: PICK_MATERIAL_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          label: `Pick Material UB ${i}`,
+        });
+      }
+
+      const pickMatData = new Float32Array(PICK_MATERIAL_BYTES / 4);
+      if (defined(pickColor)) {
+        pickMatData[0] = pickColor.red;
+        pickMatData[1] = pickColor.green;
+        pickMatData[2] = pickColor.blue;
+        pickMatData[3] = pickColor.alpha;
+      }
+      device.queue.writeBuffer(cache.pickMaterialBuffers[i], 0, pickMatData);
+
+      cache.pickMaterialBindGroups[i] = device.createBindGroup({
+        layout: cache.pickMaterialBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.pickMaterialBuffers[i] } },
         ],
       });
 
       const pickCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline,
-        bindGroups: [cache.pickBindGroups[i]],
+        bindGroups: [
+          cache.pickCameraBindGroups[i],
+          cache.pickMaterialBindGroups[i],
+        ],
         vertexBuffer: cache.vertexBuffers[i],
         indexBuffer: cache.indexBuffers[i],
         indexFormat: cache.indexFormats[i],
@@ -870,7 +970,7 @@ function createWebGPUCommands(
         owner: primitive,
       });
 
-      pickCommand._webgpuUniformBuffer = cache.pickUniformBuffers[i];
+      pickCommand._webgpuCameraBuffer = cache.pickCameraBuffers[i];
       pickCommand._webgpuShaderType = "pick";
       pickCommand._webgpuPickColor = pickColor;
       pickCommand._isPickCommand = true;
@@ -1005,300 +1105,6 @@ function ensureMaterialTextureBindGroup(
 }
 
 // =========================================================================
-// Material Uniform Packing
-// =========================================================================
-
-const scratchMaterialUniformData = new Float32Array(64);
-
-/**
- * Packs material-specific uniform parameters into a Float32Array.
- * Camera/RTE matrices are packed separately; this fills material parameter slots.
- *
- * @param {Float32Array} uniformData - Target array (64 floats / 256 bytes)
- * @param {string} shaderType - Material shader type
- * @param {object} material - CesiumJS Material object
- * @param {number} startOffset - Float offset where material params begin
- *   Flat shaders: 24 (after mvpRTE + camHigh + camLow)
- *   Lit shaders:  60 (after mvpRTE + mvRTE + normalMatrix + camHigh + camLow + lightDir)
- * @private
- */
-function packMaterialUniforms(uniformData, shaderType, material, startOffset) {
-  const u =
-    defined(material) && defined(material.uniforms) ? material.uniforms : {};
-  const o = startOffset;
-
-  if (shaderType === "matColorFlat" || shaderType === "matColorLit") {
-    const c = defined(u.color)
-      ? u.color
-      : { red: 1, green: 1, blue: 1, alpha: 1 };
-    uniformData[o] = defined(c.red) ? c.red : 1.0;
-    uniformData[o + 1] = defined(c.green) ? c.green : 1.0;
-    uniformData[o + 2] = defined(c.blue) ? c.blue : 1.0;
-    uniformData[o + 3] = defined(c.alpha) ? c.alpha : 1.0;
-  } else if (
-    shaderType === "matCheckerFlat" ||
-    shaderType === "matCheckerLit"
-  ) {
-    const lc = u.lightColor || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const dc = u.darkColor || { red: 0, green: 0, blue: 0, alpha: 1 };
-    const rep = u.repeat || { x: 5.0, y: 5.0 };
-    uniformData[o] = lc.red ?? 1;
-    uniformData[o + 1] = lc.green ?? 1;
-    uniformData[o + 2] = lc.blue ?? 1;
-    uniformData[o + 3] = lc.alpha ?? 1;
-    uniformData[o + 4] = dc.red ?? 0;
-    uniformData[o + 5] = dc.green ?? 0;
-    uniformData[o + 6] = dc.blue ?? 0;
-    uniformData[o + 7] = dc.alpha ?? 1;
-    uniformData[o + 8] = rep.x ?? 5;
-    uniformData[o + 9] = rep.y ?? 5;
-    uniformData[o + 10] = 0;
-    uniformData[o + 11] = 0;
-  } else if (shaderType === "matGridFlat" || shaderType === "matGridLit") {
-    const gc = u.color || { red: 1, green: 1, blue: 0, alpha: 1 };
-    uniformData[o] = gc.red ?? 1;
-    uniformData[o + 1] = gc.green ?? 1;
-    uniformData[o + 2] = gc.blue ?? 0;
-    uniformData[o + 3] = gc.alpha ?? 1;
-    uniformData[o + 4] = u.cellAlpha ?? 0.1;
-    uniformData[o + 5] = u.lineCount?.x ?? 8;
-    uniformData[o + 6] = u.lineCount?.y ?? 8;
-    uniformData[o + 7] = 0;
-    uniformData[o + 8] = u.lineThickness?.x ?? 1;
-    uniformData[o + 9] = u.lineThickness?.y ?? 1;
-    uniformData[o + 10] = u.lineOffset?.x ?? 0;
-    uniformData[o + 11] = u.lineOffset?.y ?? 0;
-  } else if (shaderType === "matStripeFlat" || shaderType === "matStripeLit") {
-    const ec = u.evenColor || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const oc = u.oddColor || { red: 0, green: 0, blue: 1, alpha: 1 };
-    uniformData[o] = ec.red ?? 1;
-    uniformData[o + 1] = ec.green ?? 1;
-    uniformData[o + 2] = ec.blue ?? 1;
-    uniformData[o + 3] = ec.alpha ?? 1;
-    uniformData[o + 4] = oc.red ?? 0;
-    uniformData[o + 5] = oc.green ?? 0;
-    uniformData[o + 6] = oc.blue ?? 1;
-    uniformData[o + 7] = oc.alpha ?? 1;
-    uniformData[o + 8] = u.offset ?? 0;
-    uniformData[o + 9] = u.repeat ?? 5;
-    uniformData[o + 10] = u.horizontal === true ? 1.0 : 0.0;
-    uniformData[o + 11] = 0;
-  } else if (shaderType === "matDotFlat" || shaderType === "matDotLit") {
-    const lc = u.lightColor || { red: 1, green: 1, blue: 0, alpha: 1 };
-    const dc = u.darkColor || { red: 0, green: 0, blue: 0, alpha: 1 };
-    const rep = u.repeat || { x: 5.0, y: 5.0 };
-    uniformData[o] = lc.red ?? 1;
-    uniformData[o + 1] = lc.green ?? 1;
-    uniformData[o + 2] = lc.blue ?? 0;
-    uniformData[o + 3] = lc.alpha ?? 1;
-    uniformData[o + 4] = dc.red ?? 0;
-    uniformData[o + 5] = dc.green ?? 0;
-    uniformData[o + 6] = dc.blue ?? 0;
-    uniformData[o + 7] = dc.alpha ?? 1;
-    uniformData[o + 8] = rep.x ?? 5;
-    uniformData[o + 9] = rep.y ?? 5;
-    uniformData[o + 10] = 0;
-    uniformData[o + 11] = 0;
-  } else if (shaderType === "matFadeFlat" || shaderType === "matFadeLit") {
-    const fi = u.fadeInColor || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const fo = u.fadeOutColor || { red: 0, green: 0, blue: 0, alpha: 0 };
-    uniformData[o] = fi.red ?? 1;
-    uniformData[o + 1] = fi.green ?? 1;
-    uniformData[o + 2] = fi.blue ?? 1;
-    uniformData[o + 3] = fi.alpha ?? 1;
-    uniformData[o + 4] = fo.red ?? 0;
-    uniformData[o + 5] = fo.green ?? 0;
-    uniformData[o + 6] = fo.blue ?? 0;
-    uniformData[o + 7] = fo.alpha ?? 0;
-    uniformData[o + 8] = u.maximumDistance ?? 0.5;
-    uniformData[o + 9] = u.repeat === true ? 1.0 : 0.0;
-    uniformData[o + 10] = u.offset ?? 0;
-    uniformData[o + 11] = 0;
-  } else if (shaderType === "matImageFlat" || shaderType === "matImageLit") {
-    const tint = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    uniformData[o] = tint.red ?? 1;
-    uniformData[o + 1] = tint.green ?? 1;
-    uniformData[o + 2] = tint.blue ?? 1;
-    uniformData[o + 3] = tint.alpha ?? 1;
-    uniformData[o + 4] = rep.x ?? 1;
-    uniformData[o + 5] = rep.y ?? 1;
-    uniformData[o + 6] = 0;
-    uniformData[o + 7] = 0;
-  } else if (
-    shaderType === "matRimLightingFlat" ||
-    shaderType === "matRimLightingLit"
-  ) {
-    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const rc = u.rimColor || { red: 1, green: 1, blue: 1, alpha: 1 };
-    uniformData[o] = c.red ?? 1;
-    uniformData[o + 1] = c.green ?? 1;
-    uniformData[o + 2] = c.blue ?? 1;
-    uniformData[o + 3] = c.alpha ?? 1;
-    uniformData[o + 4] = rc.red ?? 1;
-    uniformData[o + 5] = rc.green ?? 1;
-    uniformData[o + 6] = rc.blue ?? 1;
-    uniformData[o + 7] = rc.alpha ?? 1;
-    uniformData[o + 8] = u.width ?? 0.3;
-    uniformData[o + 9] = 0;
-    uniformData[o + 10] = 0;
-    uniformData[o + 11] = 0;
-  } else if (
-    shaderType === "matAlphaMapFlat" ||
-    shaderType === "matAlphaMapLit"
-  ) {
-    // AlphaMap: base color + repeat + channel index (0=r,1=g,2=b,3=a)
-    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    const ch =
-      u.channel === "r" ? 0 : u.channel === "g" ? 1 : u.channel === "b" ? 2 : 3;
-    uniformData[o] = c.red ?? 1;
-    uniformData[o + 1] = c.green ?? 1;
-    uniformData[o + 2] = c.blue ?? 1;
-    uniformData[o + 3] = c.alpha ?? 1;
-    uniformData[o + 4] = rep.x ?? 1;
-    uniformData[o + 5] = rep.y ?? 1;
-    uniformData[o + 6] = ch;
-    uniformData[o + 7] = 0;
-  } else if (
-    shaderType === "matEmissionMapFlat" ||
-    shaderType === "matEmissionMapLit"
-  ) {
-    // EmissionMap: tint color + repeat
-    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    uniformData[o] = c.red ?? 1;
-    uniformData[o + 1] = c.green ?? 1;
-    uniformData[o + 2] = c.blue ?? 1;
-    uniformData[o + 3] = c.alpha ?? 1;
-    uniformData[o + 4] = rep.x ?? 1;
-    uniformData[o + 5] = rep.y ?? 1;
-    uniformData[o + 6] = 0;
-    uniformData[o + 7] = 0;
-  } else if (
-    shaderType === "matSpecularMapFlat" ||
-    shaderType === "matSpecularMapLit"
-  ) {
-    // SpecularMap: base color + repeat + channel index (0=r,1=g,2=b)
-    const c = u.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    const ch = u.channel === "g" ? 1 : u.channel === "b" ? 2 : 0;
-    uniformData[o] = c.red ?? 1;
-    uniformData[o + 1] = c.green ?? 1;
-    uniformData[o + 2] = c.blue ?? 1;
-    uniformData[o + 3] = c.alpha ?? 1;
-    uniformData[o + 4] = rep.x ?? 1;
-    uniformData[o + 5] = rep.y ?? 1;
-    uniformData[o + 6] = ch;
-    uniformData[o + 7] = 0;
-  } else if (
-    shaderType === "matBumpMapFlat" ||
-    shaderType === "matBumpMapLit"
-  ) {
-    // BumpMap: repeat + channel + strength
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    const ch =
-      u.channel === "g" ? 1 : u.channel === "b" ? 2 : u.channel === "a" ? 3 : 0;
-    uniformData[o] = rep.x ?? 1;
-    uniformData[o + 1] = rep.y ?? 1;
-    uniformData[o + 2] = ch;
-    uniformData[o + 3] = u.strength ?? 0.8;
-  } else if (
-    shaderType === "matNormalMapFlat" ||
-    shaderType === "matNormalMapLit"
-  ) {
-    // NormalMap: repeat + strength + channels swizzle indices
-    const rep = u.repeat || { x: 1.0, y: 1.0 };
-    const channelStr = u.channels || "rgb";
-    const channelMap = { r: 0, g: 1, b: 2, a: 3 };
-    uniformData[o] = rep.x ?? 1;
-    uniformData[o + 1] = rep.y ?? 1;
-    uniformData[o + 2] = u.strength ?? 0.8;
-    uniformData[o + 3] = 0;
-    uniformData[o + 4] = channelMap[channelStr[0]] ?? 0;
-    uniformData[o + 5] = channelMap[channelStr[1]] ?? 1;
-    uniformData[o + 6] = channelMap[channelStr[2]] ?? 2;
-    uniformData[o + 7] = 0;
-  } else if (shaderType === "matWaterFlat" || shaderType === "matWaterLit") {
-    // Water: baseWaterColor + blendColor + scalar params + time
-    const bwc = u.baseWaterColor || {
-      red: 0.2,
-      green: 0.3,
-      blue: 0.6,
-      alpha: 1.0,
-    };
-    const blc = u.blendColor || {
-      red: 0.0,
-      green: 1.0,
-      blue: 0.699,
-      alpha: 1.0,
-    };
-    uniformData[o] = bwc.red ?? 0.2;
-    uniformData[o + 1] = bwc.green ?? 0.3;
-    uniformData[o + 2] = bwc.blue ?? 0.6;
-    uniformData[o + 3] = bwc.alpha ?? 1.0;
-    uniformData[o + 4] = blc.red ?? 0.0;
-    uniformData[o + 5] = blc.green ?? 1.0;
-    uniformData[o + 6] = blc.blue ?? 0.699;
-    uniformData[o + 7] = blc.alpha ?? 1.0;
-    uniformData[o + 8] = u.frequency ?? 10.0;
-    uniformData[o + 9] = u.animationSpeed ?? 0.01;
-    uniformData[o + 10] = u.amplitude ?? 1.0;
-    uniformData[o + 11] = u.specularIntensity ?? 0.5;
-    uniformData[o + 12] = u.fadeFactor ?? 1.0;
-    uniformData[o + 13] = performance.now() * 0.001; // time in seconds
-    uniformData[o + 14] = 0;
-    uniformData[o + 15] = 0;
-  } else if (
-    shaderType === "matElevContourFlat" ||
-    shaderType === "matElevContourLit"
-  ) {
-    // ElevationContour: color + spacing + width
-    const c = u.color || { red: 1, green: 1, blue: 0, alpha: 1 };
-    uniformData[o] = c.red ?? 1;
-    uniformData[o + 1] = c.green ?? 1;
-    uniformData[o + 2] = c.blue ?? 0;
-    uniformData[o + 3] = c.alpha ?? 1;
-    uniformData[o + 4] = u.spacing ?? 100.0;
-    uniformData[o + 5] = u.width ?? 1.0;
-    uniformData[o + 6] = 0;
-    uniformData[o + 7] = 0;
-  } else if (
-    shaderType === "matElevRampFlat" ||
-    shaderType === "matElevRampLit"
-  ) {
-    // ElevationRamp: minimumHeight + maximumHeight
-    uniformData[o] = u.minimumHeight ?? 0.0;
-    uniformData[o + 1] = u.maximumHeight ?? 8848.0;
-    uniformData[o + 2] = 0;
-    uniformData[o + 3] = 0;
-  } else if (
-    shaderType === "matSlopeRampFlat" ||
-    shaderType === "matSlopeRampLit" ||
-    shaderType === "matAspectRampFlat" ||
-    shaderType === "matAspectRampLit"
-  ) {
-    // SlopeRamp / AspectRamp: no additional material uniforms beyond texture
-    // (slope/aspect are computed from geometry, ramp is a texture lookup)
-  } else if (shaderType === "pbrSimple" || shaderType === "pbrTextured") {
-    const bc = u.baseColorFactor || { red: 1, green: 1, blue: 1, alpha: 1 };
-    uniformData[o] = bc.red ?? 1;
-    uniformData[o + 1] = bc.green ?? 1;
-    uniformData[o + 2] = bc.blue ?? 1;
-    uniformData[o + 3] = bc.alpha ?? 1;
-    uniformData[o + 4] = u.metallic ?? 0.0;
-    uniformData[o + 5] = u.roughness ?? 0.5;
-    uniformData[o + 6] = u.occlusionStrength ?? 1.0;
-    uniformData[o + 7] = 0;
-    const em = u.emissiveFactor || { red: 0, green: 0, blue: 0 };
-    uniformData[o + 8] = em.red ?? 0;
-    uniformData[o + 9] = em.green ?? 0;
-    uniformData[o + 10] = em.blue ?? 0;
-    uniformData[o + 11] = 0;
-  }
-}
-
-// =========================================================================
 // Material Pipeline Creation
 // =========================================================================
 
@@ -1312,6 +1118,7 @@ function createMaterialPipelineAndCache(
   shaderInfo,
   vertexLayout,
   context,
+  isLit,
 ) {
   if (cache.shaderType === shaderInfo.type) {
     return false;
@@ -1324,8 +1131,23 @@ function createMaterialPipelineAndCache(
     label: `${shaderInfo.type} Material Shader`,
   });
 
-  cache.bindGroupLayout = device.createBindGroupLayout({
-    label: "Material Uniform BGL",
+  // Camera BGL — group(0)
+  cache.cameraBindGroupLayout = device.createBindGroupLayout({
+    label: "Mat Camera BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: isLit
+          ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
+          : GPUShaderStage.VERTEX,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  // Material BGL — group(1): material uniforms from MaterialUniformBuffer
+  cache.materialBindGroupLayout = device.createBindGroupLayout({
+    label: "Mat Material BGL",
     entries: [
       {
         binding: 0,
@@ -1335,7 +1157,10 @@ function createMaterialPipelineAndCache(
     ],
   });
 
-  const bindGroupLayouts = [cache.bindGroupLayout];
+  const bindGroupLayouts = [
+    cache.cameraBindGroupLayout,
+    cache.materialBindGroupLayout,
+  ];
 
   if (shaderInfo.needsTexture) {
     cache.textureBindGroupLayout = device.createBindGroupLayout({
@@ -1380,7 +1205,7 @@ function createMaterialPipelineAndCache(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      depthCompare: "less-equal",
     },
   });
 
@@ -1492,10 +1317,13 @@ function createWebGPUMaterialCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
-      bindGroupLayout: null,
+      cameraBindGroupLayout: null,
+      materialBindGroupLayout: null,
       textureBindGroupLayout: null,
-      uniformBuffers: [],
-      bindGroups: [],
+      cameraBuffers: [],
+      cameraBindGroups: [],
+      materialBuffer: null,
+      materialBindGroup: null,
       vertexBuffers: [],
       indexBuffers: [],
       indexFormats: [],
@@ -1503,9 +1331,12 @@ function createWebGPUMaterialCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
-      pickBindGroupLayout: null,
-      pickUniformBuffers: [],
-      pickBindGroups: [],
+      pickCameraBindGroupLayout: null,
+      pickMaterialBindGroupLayout: null,
+      pickCameraBuffers: [],
+      pickCameraBindGroups: [],
+      pickMaterialBuffers: [],
+      pickMaterialBindGroups: [],
     };
   }
   const cache = primitive._webgpuCache;
@@ -1520,7 +1351,7 @@ function createWebGPUMaterialCommands(
   const isLit =
     isMaterialLitShader(shaderInfo.type) || isPBRShader(shaderInfo.type);
   const vertexLayout = getMaterialVertexLayout(shaderInfo.type);
-  const uniformSize = getMaterialUniformSize(shaderInfo.type);
+  const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
   const shaderChanged = createMaterialPipelineAndCache(
     cache,
@@ -1528,6 +1359,7 @@ function createWebGPUMaterialCommands(
     shaderInfo,
     vertexLayout,
     context,
+    isLit,
   );
 
   // Bind real material texture (from Material._imageSources) or fall back to
@@ -1544,7 +1376,7 @@ function createWebGPUMaterialCommands(
     );
   }
 
-  // Pick support
+  // Pick support (split camera/material bind groups)
   const pickIds = primitive._pickIds;
   const hasPickIds =
     primitive._allowPicking && defined(pickIds) && pickIds.length > 0;
@@ -1555,21 +1387,39 @@ function createWebGPUMaterialCommands(
       code: pickCode,
       label: `${shaderInfo.type} MatPick`,
     });
-    cache.pickBindGroupLayout = device.createBindGroupLayout({
-      label: "MatPick BGL",
+
+    // Pick camera BGL — group(0)
+    cache.pickCameraBindGroupLayout = device.createBindGroupLayout({
+      label: "MatPick Camera BGL",
       entries: [
         {
           binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          visibility: GPUShaderStage.VERTEX,
           buffer: { type: "uniform" },
         },
       ],
     });
+
+    // Pick material BGL — group(1): pickColor
+    cache.pickMaterialBindGroupLayout = device.createBindGroupLayout({
+      label: "MatPick Material BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+
     const fmt =
       context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
     cache.pickPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({
-        bindGroupLayouts: [cache.pickBindGroupLayout],
+        bindGroupLayouts: [
+          cache.pickCameraBindGroupLayout,
+          cache.pickMaterialBindGroupLayout,
+        ],
       }),
       vertex: {
         module: cache.pickShaderModule.module,
@@ -1585,7 +1435,7 @@ function createWebGPUMaterialCommands(
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       },
     });
   }
@@ -1598,10 +1448,55 @@ function createWebGPUMaterialCommands(
   );
   const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
 
-  // Material param offset: AFTER RTE camera uniforms
-  // Flat: mvpRTE(16) + camHigh(4) + camLow(4) = 24 → material starts at 24
-  // Lit:  mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4) + lightDir(4) = 60 → material starts at 60
-  const materialParamOffset = isLit ? 60 : 24;
+  // Create or update shared material GPU buffer from MaterialUniformBuffer
+  const matUB = defined(material) ? material._uniformBuffer : undefined;
+  const matGpuData = defined(matUB) ? matUB.gpuData : undefined;
+  const matByteSize = defined(matGpuData)
+    ? Math.max(matGpuData.byteLength, PLACEHOLDER_MATERIAL_BYTES)
+    : PLACEHOLDER_MATERIAL_BYTES;
+
+  if (
+    !defined(cache.materialBuffer) ||
+    cache._materialBufferSize !== matByteSize
+  ) {
+    if (defined(cache.materialBuffer)) {
+      cache.materialBuffer.destroy();
+    }
+    cache.materialBuffer = device.createBuffer({
+      size: matByteSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: "Mat Material UB",
+    });
+    cache._materialBufferSize = matByteSize;
+    cache.materialBindGroup = null; // Force rebind
+  }
+
+  // Upload material data (only when dirty or first time)
+  if (defined(matGpuData)) {
+    if (!defined(matUB) || matUB.isDirty || !defined(cache.materialBindGroup)) {
+      device.queue.writeBuffer(cache.materialBuffer, 0, matGpuData);
+      if (defined(matUB)) {
+        matUB.clearDirty();
+      }
+    }
+  } else {
+    // No material uniform buffer — write placeholder zeros
+    device.queue.writeBuffer(
+      cache.materialBuffer,
+      0,
+      new Float32Array(matByteSize / 4),
+    );
+  }
+
+  // Create material bind group if needed
+  if (!defined(cache.materialBindGroup)) {
+    cache.materialBindGroup = device.createBindGroup({
+      layout: cache.materialBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.materialBuffer } },
+      ],
+    });
+  }
 
   const validCommands = [];
   const validPickCommands = [];
@@ -1650,30 +1545,34 @@ function createWebGPUMaterialCommands(
     ensureIndexBuffer(device, geometry, cache, i);
     cache.vertexCounts[i] = numVertices;
 
-    if (!defined(cache.uniformBuffers[i])) {
-      cache.uniformBuffers[i] = device.createBuffer({
-        size: uniformSize,
+    // Camera uniform buffer — per geometry instance
+    if (!defined(cache.cameraBuffers[i])) {
+      cache.cameraBuffers[i] = device.createBuffer({
+        size: cameraBufferSize,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        label: `Mat UB ${i}`,
+        label: `Mat Camera UB ${i}`,
       });
     }
 
-    // Pack RTE uniforms + material params
-    const ud = new Float32Array(uniformSize / 4);
+    // Write camera RTE data
+    const cameraData = new Float32Array(cameraBufferSize / 4);
     if (isLit) {
-      writeRTEUniformsLit(ud, rte, context.uniformState);
+      writeRTEUniformsLit(cameraData, rte, context.uniformState);
     } else {
-      writeRTEUniformsFlat(ud, rte);
+      writeRTEUniformsFlat(cameraData, rte);
     }
-    packMaterialUniforms(ud, shaderInfo.type, material, materialParamOffset);
-    device.queue.writeBuffer(cache.uniformBuffers[i], 0, ud);
+    device.queue.writeBuffer(cache.cameraBuffers[i], 0, cameraData);
 
-    cache.bindGroups[i] = device.createBindGroup({
-      layout: cache.bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: cache.uniformBuffers[i] } }],
+    // Camera bind group — group(0)
+    cache.cameraBindGroups[i] = device.createBindGroup({
+      layout: cache.cameraBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.cameraBuffers[i] } },
+      ],
     });
 
-    const cmdBGs = [cache.bindGroups[i]];
+    // Build bind group array: [camera, material, texture?]
+    const cmdBGs = [cache.cameraBindGroups[i], cache.materialBindGroup];
     if (shaderInfo.needsTexture && defined(cache.textureBindGroup)) {
       cmdBGs.push(cache.textureBindGroup);
     }
@@ -1691,33 +1590,65 @@ function createWebGPUMaterialCommands(
       pass,
       owner: primitive,
     });
-    cmd._webgpuUniformBuffer = cache.uniformBuffers[i];
+    cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;
     validCommands.push(cmd);
 
-    // Pick command
+    // Pick command (split camera/material bind groups)
     if (hasPickIds && i < pickIds.length && defined(cache.pickPipeline)) {
       const pc = pickIds[i].color;
-      const puSize = getPickUniformSize();
-      if (!defined(cache.pickUniformBuffers[i])) {
-        cache.pickUniformBuffers[i] = device.createBuffer({
-          size: puSize,
+
+      // Pick camera buffer
+      if (!defined(cache.pickCameraBuffers[i])) {
+        cache.pickCameraBuffers[i] = device.createBuffer({
+          size: PICK_CAMERA_BYTES,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-          label: `MatPick UB ${i}`,
+          label: `MatPick Camera UB ${i}`,
         });
       }
-      const pud = new Float32Array(puSize / 4);
-      writeRTEUniformsPick(pud, rte, pc);
-      device.queue.writeBuffer(cache.pickUniformBuffers[i], 0, pud);
-      cache.pickBindGroups[i] = device.createBindGroup({
-        layout: cache.pickBindGroupLayout,
+
+      const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
+      writeRTEUniformsFlat(pickCameraData, rte);
+      device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
+
+      cache.pickCameraBindGroups[i] = device.createBindGroup({
+        layout: cache.pickCameraBindGroupLayout,
         entries: [
-          { binding: 0, resource: { buffer: cache.pickUniformBuffers[i] } },
+          { binding: 0, resource: { buffer: cache.pickCameraBuffers[i] } },
         ],
       });
+
+      // Pick material buffer — pickColor(vec4)
+      if (!defined(cache.pickMaterialBuffers[i])) {
+        cache.pickMaterialBuffers[i] = device.createBuffer({
+          size: PICK_MATERIAL_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          label: `MatPick Material UB ${i}`,
+        });
+      }
+
+      const pickMatData = new Float32Array(PICK_MATERIAL_BYTES / 4);
+      if (defined(pc)) {
+        pickMatData[0] = pc.red;
+        pickMatData[1] = pc.green;
+        pickMatData[2] = pc.blue;
+        pickMatData[3] = pc.alpha;
+      }
+      device.queue.writeBuffer(cache.pickMaterialBuffers[i], 0, pickMatData);
+
+      cache.pickMaterialBindGroups[i] = device.createBindGroup({
+        layout: cache.pickMaterialBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.pickMaterialBuffers[i] } },
+        ],
+      });
+
       const pickCmd = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline,
-        bindGroups: [cache.pickBindGroups[i]],
+        bindGroups: [
+          cache.pickCameraBindGroups[i],
+          cache.pickMaterialBindGroups[i],
+        ],
         vertexBuffer: cache.vertexBuffers[i],
         indexBuffer: cache.indexBuffers[i],
         indexFormat: cache.indexFormats[i],
@@ -1728,7 +1659,7 @@ function createWebGPUMaterialCommands(
         pass,
         owner: primitive,
       });
-      pickCmd._webgpuUniformBuffer = cache.pickUniformBuffers[i];
+      pickCmd._webgpuCameraBuffer = cache.pickCameraBuffers[i];
       pickCmd._webgpuShaderType = "pick";
       pickCmd._webgpuPickColor = pc;
       pickCmd._isPickCommand = true;
@@ -1750,13 +1681,16 @@ function createWebGPUMaterialCommands(
 // Material Per-Frame Uniform Update
 // =========================================================================
 
+// Scratch buffer for per-frame material camera uniform updates
+const scratchMaterialCameraData = new Float32Array(64);
+
 /**
  * Updates camera matrices for a material/PBR draw command each frame.
- * Material parameters are constant — only camera matrices need updating.
+ * Material parameters are in a separate bind group — only camera data needs per-frame update.
  * @private
  */
 function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
-  if (!command.isWebGPUDrawCommand || !command._webgpuUniformBuffer) {
+  if (!command.isWebGPUDrawCommand || !command._webgpuCameraBuffer) {
     return;
   }
   const context = frameState.context;
@@ -1771,22 +1705,28 @@ function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
     modelMatrix,
   );
   const shaderType = command._webgpuShaderType;
-  const isLit = isMaterialLitShader(shaderType) || isPBRShader(shaderType);
+  const isLit2 = isMaterialLitShader(shaderType) || isPBRShader(shaderType);
 
-  const ud = scratchMaterialUniformData;
+  const ud = scratchMaterialCameraData;
 
-  if (isLit) {
+  if (isLit2) {
     writeRTEUniformsLit(ud, rte, context.uniformState);
     device.queue.writeBuffer(
-      command._webgpuUniformBuffer,
+      command._webgpuCameraBuffer,
       0,
       ud.buffer,
       0,
-      240,
+      LIT_CAMERA_BYTES,
     );
   } else {
     writeRTEUniformsFlat(ud, rte);
-    device.queue.writeBuffer(command._webgpuUniformBuffer, 0, ud.buffer, 0, 96);
+    device.queue.writeBuffer(
+      command._webgpuCameraBuffer,
+      0,
+      ud.buffer,
+      0,
+      FLAT_CAMERA_BYTES,
+    );
   }
 }
 

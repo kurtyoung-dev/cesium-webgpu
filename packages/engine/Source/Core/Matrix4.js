@@ -53,40 +53,101 @@ import RuntimeError from "./RuntimeError.js";
  * @see Matrix3
  * @see Packable
  */
-function Matrix4(
-  column0Row0,
-  column1Row0,
-  column2Row0,
-  column3Row0,
-  column0Row1,
-  column1Row1,
-  column2Row1,
-  column3Row1,
-  column0Row2,
-  column1Row2,
-  column2Row2,
-  column3Row2,
-  column0Row3,
-  column1Row3,
-  column2Row3,
-  column3Row3,
-) {
-  this[0] = column0Row0 ?? 0.0;
-  this[1] = column0Row1 ?? 0.0;
-  this[2] = column0Row2 ?? 0.0;
-  this[3] = column0Row3 ?? 0.0;
-  this[4] = column1Row0 ?? 0.0;
-  this[5] = column1Row1 ?? 0.0;
-  this[6] = column1Row2 ?? 0.0;
-  this[7] = column1Row3 ?? 0.0;
-  this[8] = column2Row0 ?? 0.0;
-  this[9] = column2Row1 ?? 0.0;
-  this[10] = column2Row2 ?? 0.0;
-  this[11] = column2Row3 ?? 0.0;
-  this[12] = column3Row0 ?? 0.0;
-  this[13] = column3Row1 ?? 0.0;
-  this[14] = column3Row2 ?? 0.0;
-  this[15] = column3Row3 ?? 0.0;
+class Matrix4 {
+  constructor(
+    column0Row0,
+    column1Row0,
+    column2Row0,
+    column3Row0,
+    column0Row1,
+    column1Row1,
+    column2Row1,
+    column3Row1,
+    column0Row2,
+    column1Row2,
+    column2Row2,
+    column3Row2,
+    column0Row3,
+    column1Row3,
+    column2Row3,
+    column3Row3,
+  ) {
+    this[0] = column0Row0 ?? 0.0;
+    this[1] = column0Row1 ?? 0.0;
+    this[2] = column0Row2 ?? 0.0;
+    this[3] = column0Row3 ?? 0.0;
+    this[4] = column1Row0 ?? 0.0;
+    this[5] = column1Row1 ?? 0.0;
+    this[6] = column1Row2 ?? 0.0;
+    this[7] = column1Row3 ?? 0.0;
+    this[8] = column2Row0 ?? 0.0;
+    this[9] = column2Row1 ?? 0.0;
+    this[10] = column2Row2 ?? 0.0;
+    this[11] = column2Row3 ?? 0.0;
+    this[12] = column3Row0 ?? 0.0;
+    this[13] = column3Row1 ?? 0.0;
+    this[14] = column3Row2 ?? 0.0;
+    this[15] = column3Row3 ?? 0.0;
+  }
+
+  /**
+   * Duplicates the provided Matrix4 instance.
+   *
+   * @param {Matrix4} [result] The object onto which to store the result.
+   * @returns {Matrix4} The modified result parameter or a new Matrix4 instance if one was not provided.
+   */
+  clone(result) {
+    return Matrix4.clone(this, result);
+  }
+
+  /**
+   * Compares this matrix to the provided matrix componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Matrix4} [right] The right hand side matrix.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
+   */
+  equals(right) {
+    return Matrix4.equals(this, right);
+  }
+
+  /**
+   * Compares this matrix to the provided matrix componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
+   *
+   * @param {Matrix4} [right] The right hand side matrix.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
+   */
+  equalsEpsilon(right, epsilon) {
+    return Matrix4.equalsEpsilon(this, right, epsilon);
+  }
+
+  /**
+   * Computes a string representing this Matrix with each row being
+   * on a separate line and in the format '(column0, column1, column2, column3)'.
+   *
+   * @returns {string} A string representing the provided Matrix with each row being on a separate line and in the format '(column0, column1, column2, column3)'.
+   */
+  toString() {
+    return (
+      `(${this[0]}, ${this[4]}, ${this[8]}, ${this[12]})\n` +
+      `(${this[1]}, ${this[5]}, ${this[9]}, ${this[13]})\n` +
+      `(${this[2]}, ${this[6]}, ${this[10]}, ${this[14]})\n` +
+      `(${this[3]}, ${this[7]}, ${this[11]}, ${this[15]})`
+    );
+  }
+
+  /**
+   * Gets the number of items in the collection.
+   * @memberof Matrix4.prototype
+   *
+   * @type {number}
+   */
+  get length() {
+    return Matrix4.packedLength;
+  }
 }
 
 /**
@@ -3223,41 +3284,6 @@ Matrix4.COLUMN3ROW2 = 14;
  */
 Matrix4.COLUMN3ROW3 = 15;
 
-Object.defineProperties(Matrix4.prototype, {
-  /**
-   * Gets the number of items in the collection.
-   * @memberof Matrix4.prototype
-   *
-   * @type {number}
-   */
-  length: {
-    get: function () {
-      return Matrix4.packedLength;
-    },
-  },
-});
-
-/**
- * Duplicates the provided Matrix4 instance.
- *
- * @param {Matrix4} [result] The object onto which to store the result.
- * @returns {Matrix4} The modified result parameter or a new Matrix4 instance if one was not provided.
- */
-Matrix4.prototype.clone = function (result) {
-  return Matrix4.clone(this, result);
-};
-
-/**
- * Compares this matrix to the provided matrix componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Matrix4} [right] The right hand side matrix.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-Matrix4.prototype.equals = function (right) {
-  return Matrix4.equals(this, right);
-};
-
 /**
  * @private
  */
@@ -3282,31 +3308,4 @@ Matrix4.equalsArray = function (matrix, array, offset) {
   );
 };
 
-/**
- * Compares this matrix to the provided matrix componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {Matrix4} [right] The right hand side matrix.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
- */
-Matrix4.prototype.equalsEpsilon = function (right, epsilon) {
-  return Matrix4.equalsEpsilon(this, right, epsilon);
-};
-
-/**
- * Computes a string representing this Matrix with each row being
- * on a separate line and in the format '(column0, column1, column2, column3)'.
- *
- * @returns {string} A string representing the provided Matrix with each row being on a separate line and in the format '(column0, column1, column2, column3)'.
- */
-Matrix4.prototype.toString = function () {
-  return (
-    `(${this[0]}, ${this[4]}, ${this[8]}, ${this[12]})\n` +
-    `(${this[1]}, ${this[5]}, ${this[9]}, ${this[13]})\n` +
-    `(${this[2]}, ${this[6]}, ${this[10]}, ${this[14]})\n` +
-    `(${this[3]}, ${this[7]}, ${this[11]}, ${this[15]})`
-  );
-};
 export default Matrix4;

@@ -65,82 +65,178 @@ const trailingSlashRegex = /\/$/;
  * @see {@link https://cldr.unicode.org/|Common Locale Data Repository region identifiers}
  */
 
-function Google2DImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  this._maximumLevel = options.maximumLevel ?? 22;
-  this._minimumLevel = options.minimumLevel ?? 0;
+class Google2DImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    this._maximumLevel = options.maximumLevel ?? 22;
+    this._minimumLevel = options.minimumLevel ?? 0;
 
-  //>>includeStart("debug", pragmas.debug);
-  Check.defined("options.session", options.session);
-  Check.defined("options.tileWidth", options.tileWidth);
-  Check.defined("options.tileHeight", options.tileHeight);
-  Check.defined("options.key", options.key);
-  //>>includeEnd("debug");
+    //>>includeStart("debug", pragmas.debug);
+    Check.defined("options.session", options.session);
+    Check.defined("options.tileWidth", options.tileWidth);
+    Check.defined("options.tileHeight", options.tileHeight);
+    Check.defined("options.key", options.key);
+    //>>includeEnd("debug");
 
-  this._session = options.session;
-  this._key = options.key;
-  this._tileWidth = options.tileWidth;
-  this._tileHeight = options.tileHeight;
+    this._session = options.session;
+    this._key = options.key;
+    this._tileWidth = options.tileWidth;
+    this._tileHeight = options.tileHeight;
 
-  const resource =
-    options.url instanceof IonResource
-      ? options.url
-      : Resource.createIfNeeded(options.url ?? GoogleMaps.mapTilesApiEndpoint);
+    const resource =
+      options.url instanceof IonResource
+        ? options.url
+        : Resource.createIfNeeded(options.url ?? GoogleMaps.mapTilesApiEndpoint);
 
-  let templateUrl = resource.getUrlComponent();
-  if (!trailingSlashRegex.test(templateUrl)) {
-    templateUrl += "/";
-  }
-  const tilesUrl = `${templateUrl}v1/2dtiles/{z}/{x}/{y}`;
-  this._viewportUrl = `${templateUrl}tile/v1/viewport`;
-
-  resource.url = tilesUrl;
-
-  resource.setQueryParameters({
-    session: encodeURIComponent(options.session),
-    key: encodeURIComponent(options.key),
-  });
-
-  this._resource = resource.clone();
-
-  let credit;
-  if (defined(options.credit)) {
-    credit = options.credit;
-    if (typeof credit === "string") {
-      credit = new Credit(credit);
+    let templateUrl = resource.getUrlComponent();
+    if (!trailingSlashRegex.test(templateUrl)) {
+      templateUrl += "/";
     }
+    const tilesUrl = `${templateUrl}v1/2dtiles/{z}/{x}/{y}`;
+    this._viewportUrl = `${templateUrl}tile/v1/viewport`;
+
+    resource.url = tilesUrl;
+
+    resource.setQueryParameters({
+      session: encodeURIComponent(options.session),
+      key: encodeURIComponent(options.key),
+    });
+
+    this._resource = resource.clone();
+
+    let credit;
+    if (defined(options.credit)) {
+      credit = options.credit;
+      if (typeof credit === "string") {
+        credit = new Credit(credit);
+      }
+    }
+
+    const provider = new UrlTemplateImageryProvider({
+      url: resource,
+      credit: credit,
+      tileWidth: options.tileWidth,
+      tileHeight: options.tileHeight,
+      ellipsoid: options.ellipsoid,
+      rectangle: options.rectangle,
+      maximumLevel: this._maximumLevel,
+      minimumLevel: this._minimumLevel,
+    });
+    provider._resource = resource;
+    this._imageryProvider = provider;
+
+    // This will be defined for ion resources
+    this._tileCredits = resource.credits;
+    this._attributionsByLevel = undefined;
   }
 
-  const provider = new UrlTemplateImageryProvider({
-    url: resource,
-    credit: credit,
-    tileWidth: options.tileWidth,
-    tileHeight: options.tileHeight,
-    ellipsoid: options.ellipsoid,
-    rectangle: options.rectangle,
-    maximumLevel: this._maximumLevel,
-    minimumLevel: this._minimumLevel,
-  });
-  provider._resource = resource;
-  this._imageryProvider = provider;
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]|undefined} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    const hasAttributions = defined(this._attributionsByLevel);
 
-  // This will be defined for ion resources
-  this._tileCredits = resource.credits;
-  this._attributionsByLevel = undefined;
-}
+    if (!hasAttributions || !defined(this._tileCredits)) {
+      return undefined;
+    }
 
-Object.defineProperties(Google2DImageryProvider.prototype, {
+    const innerCredits = this._attributionsByLevel.get(level);
+    if (!defined(this._tileCredits)) {
+      return innerCredits;
+    }
+
+    return this._tileCredits.concat(innerCredits);
+  }
+
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    const promise = this._imageryProvider.requestImage(x, y, level, request);
+
+    // If the requestImage call returns undefined, it couldn't be scheduled this frame. Make sure to return undefined so this can be handled upstream.
+    if (!defined(promise)) {
+      return undefined;
+    }
+
+    // Asynchronously request and populate _attributionsByLevel if it hasn't been already. We do this here so that the promise can be properly awaited.
+    if (!defined(this._attributionsByLevel)) {
+      return Promise.all([promise, this.getViewportCredits()]).then(
+        (results) => results[0],
+      );
+    }
+
+    return promise;
+  }
+
+  /**
+   * Picking features is not currently supported by this imagery provider, so this function simply returns
+   * undefined.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {undefined} Undefined since picking is not supported.
+   */
+  async pickFeatures(x, y, level, longitude, latitude) {
+    return undefined;
+  }
+
+  /**
+   * Get attribution for imagery from Google Maps to display in the credits
+   * @private
+   * @return {Promise<Map<Credit[]>>} The list of attribution sources to display in the credits.
+   */
+  async getViewportCredits() {
+    const maximumLevel = this._maximumLevel;
+
+    const promises = [];
+    for (let level = 0; level < maximumLevel + 1; level++) {
+      promises.push(
+        fetchViewportAttribution(this._resource, this._viewportUrl, level),
+      );
+    }
+    const results = await Promise.all(promises);
+
+    const attributionsByLevel = new Map();
+    for (let level = 0; level < maximumLevel + 1; level++) {
+      const credits = [];
+      const attributions = results[level];
+      if (attributions) {
+        const levelCredits = new Credit(attributions);
+        credits.push(levelCredits);
+      }
+      attributionsByLevel.set(level, credits);
+    }
+
+    this._attributionsByLevel = attributionsByLevel;
+
+    return attributionsByLevel;
+  }
+
   /**
    * Gets the URL of the Google 2D Imagery server.
    * @memberof Google2DImageryProvider.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._imageryProvider.url;
-    },
-  },
+  get url() {
+    return this._imageryProvider.url;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by the instance.
@@ -148,11 +244,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._imageryProvider.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._imageryProvider.rectangle;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -160,11 +254,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._imageryProvider.tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._imageryProvider.tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -172,11 +264,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._imageryProvider.tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._imageryProvider.tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -184,11 +274,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return this._imageryProvider.maximumLevel;
-    },
-  },
+  get maximumLevel() {
+    return this._imageryProvider.maximumLevel;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested. Generally,
@@ -200,11 +288,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return this._imageryProvider.minimumLevel;
-    },
-  },
+  get minimumLevel() {
+    return this._imageryProvider.minimumLevel;
+  }
 
   /**
    * Gets the tiling scheme used by the provider.
@@ -212,11 +298,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._imageryProvider.tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._imageryProvider.tilingScheme;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -226,11 +310,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._imageryProvider.tileDiscardPolicy;
-    },
-  },
+  get tileDiscardPolicy() {
+    return this._imageryProvider.tileDiscardPolicy;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -240,11 +322,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._imageryProvider.errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._imageryProvider.errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -253,11 +333,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._imageryProvider.credit;
-    },
-  },
+  get credit() {
+    return this._imageryProvider.credit;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -265,11 +343,9 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._imageryProvider.proxy;
-    },
-  },
+  get proxy() {
+    return this._imageryProvider.proxy;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -281,12 +357,10 @@ Object.defineProperties(Google2DImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return this._imageryProvider.hasAlphaChannel;
-    },
-  },
-});
+  get hasAlphaChannel() {
+    return this._imageryProvider.hasAlphaChannel;
+  }
+}
 
 /**
  * Creates an {@link ImageryProvider} which provides 2D global tiled imagery from {@link https://developers.google.com/maps/documentation/tile/2d-tiles-overview|Google 2D Tiles}, streamed using the Cesium ion REST API.
@@ -445,115 +519,6 @@ Google2DImageryProvider.fromUrl = async function (options) {
     ...options,
     credit: options.credit ?? GoogleMaps.getDefaultCredit(),
   });
-};
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]|undefined} The credits to be displayed when the tile is displayed.
- */
-Google2DImageryProvider.prototype.getTileCredits = function (x, y, level) {
-  const hasAttributions = defined(this._attributionsByLevel);
-
-  if (!hasAttributions || !defined(this._tileCredits)) {
-    return undefined;
-  }
-
-  const innerCredits = this._attributionsByLevel.get(level);
-  if (!defined(this._tileCredits)) {
-    return innerCredits;
-  }
-
-  return this._tileCredits.concat(innerCredits);
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-Google2DImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const promise = this._imageryProvider.requestImage(x, y, level, request);
-
-  // If the requestImage call returns undefined, it couldn't be scheduled this frame. Make sure to return undefined so this can be handled upstream.
-  if (!defined(promise)) {
-    return undefined;
-  }
-
-  // Asynchronously request and populate _attributionsByLevel if it hasn't been already. We do this here so that the promise can be properly awaited.
-  if (!defined(this._attributionsByLevel)) {
-    return Promise.all([promise, this.getViewportCredits()]).then(
-      (results) => results[0],
-    );
-  }
-
-  return promise;
-};
-
-/**
- * Picking features is not currently supported by this imagery provider, so this function simply returns
- * undefined.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {undefined} Undefined since picking is not supported.
- */
-Google2DImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return undefined;
-};
-
-/**
- * Get attribution for imagery from Google Maps to display in the credits
- * @private
- * @return {Promise<Map<Credit[]>>} The list of attribution sources to display in the credits.
- */
-Google2DImageryProvider.prototype.getViewportCredits = async function () {
-  const maximumLevel = this._maximumLevel;
-
-  const promises = [];
-  for (let level = 0; level < maximumLevel + 1; level++) {
-    promises.push(
-      fetchViewportAttribution(this._resource, this._viewportUrl, level),
-    );
-  }
-  const results = await Promise.all(promises);
-
-  const attributionsByLevel = new Map();
-  for (let level = 0; level < maximumLevel + 1; level++) {
-    const credits = [];
-    const attributions = results[level];
-    if (attributions) {
-      const levelCredits = new Credit(attributions);
-      credits.push(levelCredits);
-    }
-    attributionsByLevel.set(level, credits);
-  }
-
-  this._attributionsByLevel = attributionsByLevel;
-
-  return attributionsByLevel;
 };
 
 async function fetchViewportAttribution(resource, url, level) {

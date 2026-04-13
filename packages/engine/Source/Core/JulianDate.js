@@ -202,33 +202,78 @@ const iso8601ErrorMessage = "Invalid ISO 8601 date.";
  * @param {number} [secondsOfDay=0.0] The number of seconds into the current Julian Day Number.  Fractional seconds, negative seconds and seconds greater than a day will be handled correctly.
  * @param {TimeStandard} [timeStandard=TimeStandard.UTC] The time standard in which the first two parameters are defined.
  */
-function JulianDate(julianDayNumber, secondsOfDay, timeStandard) {
-  /**
-   * Gets or sets the number of whole days.
-   * @type {number}
-   */
-  this.dayNumber = undefined;
+class JulianDate {
+  constructor(julianDayNumber, secondsOfDay, timeStandard) {
+    /**
+     * Gets or sets the number of whole days.
+     * @type {number}
+     */
+    this.dayNumber = undefined;
+
+    /**
+     * Gets or sets the number of seconds into the current day.
+     * @type {number}
+     */
+    this.secondsOfDay = undefined;
+
+    julianDayNumber = julianDayNumber ?? 0.0;
+    secondsOfDay = secondsOfDay ?? 0.0;
+    timeStandard = timeStandard ?? TimeStandard.UTC;
+
+    //If julianDayNumber is fractional, make it an integer and add the number of seconds the fraction represented.
+    const wholeDays = julianDayNumber | 0;
+    secondsOfDay =
+      secondsOfDay +
+      (julianDayNumber - wholeDays) * TimeConstants.SECONDS_PER_DAY;
+
+    setComponents(wholeDays, secondsOfDay, this);
+
+    if (timeStandard === TimeStandard.UTC) {
+      convertUtcToTai(this);
+    }
+  }
 
   /**
-   * Gets or sets the number of seconds into the current day.
-   * @type {number}
+   * Duplicates this instance.
+   *
+   * @param {JulianDate} [result] An existing instance to use for the result.
+   * @returns {JulianDate} The modified result parameter or a new instance if none was provided.
    */
-  this.secondsOfDay = undefined;
+  clone(result) {
+    return JulianDate.clone(this, result);
+  }
 
-  julianDayNumber = julianDayNumber ?? 0.0;
-  secondsOfDay = secondsOfDay ?? 0.0;
-  timeStandard = timeStandard ?? TimeStandard.UTC;
+  /**
+   * Compares this and the provided instance and returns <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {JulianDate} [right] The second instance.
+   * @returns {boolean} <code>true</code> if the dates are equal; otherwise, <code>false</code>.
+   */
+  equals(right) {
+    return JulianDate.equals(this, right);
+  }
 
-  //If julianDayNumber is fractional, make it an integer and add the number of seconds the fraction represented.
-  const wholeDays = julianDayNumber | 0;
-  secondsOfDay =
-    secondsOfDay +
-    (julianDayNumber - wholeDays) * TimeConstants.SECONDS_PER_DAY;
+  /**
+   * Compares this and the provided instance and returns <code>true</code> if they are within <code>epsilon</code> seconds of
+   * each other.  That is, in order for the dates to be considered equal (and for
+   * this function to return <code>true</code>), the absolute value of the difference between them, in
+   * seconds, must be less than <code>epsilon</code>.
+   *
+   * @param {JulianDate} [right] The second instance.
+   * @param {number} [epsilon=0] The maximum number of seconds that should separate the two instances.
+   * @returns {boolean} <code>true</code> if the two dates are within <code>epsilon</code> seconds of each other; otherwise <code>false</code>.
+   */
+  equalsEpsilon(right, epsilon) {
+    return JulianDate.equalsEpsilon(this, right, epsilon);
+  }
 
-  setComponents(wholeDays, secondsOfDay, this);
-
-  if (timeStandard === TimeStandard.UTC) {
-    convertUtcToTai(this);
+  /**
+   * Creates a string representing this date in ISO8601 format.
+   *
+   * @returns {string} A string representing this date in ISO8601 format.
+   */
+  toString() {
+    return JulianDate.toIso8601(this);
   }
 }
 
@@ -1146,49 +1191,6 @@ JulianDate.greaterThan = function (left, right) {
  */
 JulianDate.greaterThanOrEquals = function (left, right) {
   return JulianDate.compare(left, right) >= 0;
-};
-
-/**
- * Duplicates this instance.
- *
- * @param {JulianDate} [result] An existing instance to use for the result.
- * @returns {JulianDate} The modified result parameter or a new instance if none was provided.
- */
-JulianDate.prototype.clone = function (result) {
-  return JulianDate.clone(this, result);
-};
-
-/**
- * Compares this and the provided instance and returns <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {JulianDate} [right] The second instance.
- * @returns {boolean} <code>true</code> if the dates are equal; otherwise, <code>false</code>.
- */
-JulianDate.prototype.equals = function (right) {
-  return JulianDate.equals(this, right);
-};
-
-/**
- * Compares this and the provided instance and returns <code>true</code> if they are within <code>epsilon</code> seconds of
- * each other.  That is, in order for the dates to be considered equal (and for
- * this function to return <code>true</code>), the absolute value of the difference between them, in
- * seconds, must be less than <code>epsilon</code>.
- *
- * @param {JulianDate} [right] The second instance.
- * @param {number} [epsilon=0] The maximum number of seconds that should separate the two instances.
- * @returns {boolean} <code>true</code> if the two dates are within <code>epsilon</code> seconds of each other; otherwise <code>false</code>.
- */
-JulianDate.prototype.equalsEpsilon = function (right, epsilon) {
-  return JulianDate.equalsEpsilon(this, right, epsilon);
-};
-
-/**
- * Creates a string representing this date in ISO8601 format.
- *
- * @returns {string} A string representing this date in ISO8601 format.
- */
-JulianDate.prototype.toString = function () {
-  return JulianDate.toIso8601(this);
 };
 
 /**

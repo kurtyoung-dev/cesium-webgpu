@@ -29,142 +29,144 @@ import defined from "../Core/defined.js";
  * @constructor
  * @private
  */
-function SOABoundingSphereLayout(capacity, useSharedMemory) {
-  /**
-   * Maximum number of spheres this layout can hold.
-   * @type {number}
-   */
-  this.capacity = capacity;
+class SOABoundingSphereLayout {
+  constructor(capacity, useSharedMemory) {
+    /**
+     * Maximum number of spheres this layout can hold.
+     * @type {number}
+     */
+    this.capacity = capacity;
+
+    /**
+     * Current number of spheres stored.
+     * @type {number}
+     */
+    this.count = 0;
+
+    const BufferType = useSharedMemory ? SharedArrayBuffer : ArrayBuffer;
+    const byteLength = capacity * 4; // 4 bytes per float32
+
+    /**
+     * Sphere center X coordinates (ECEF, float32).
+     * @type {Float32Array}
+     */
+    this.centerX = new Float32Array(new BufferType(byteLength));
+
+    /**
+     * Sphere center Y coordinates (ECEF, float32).
+     * @type {Float32Array}
+     */
+    this.centerY = new Float32Array(new BufferType(byteLength));
+
+    /**
+     * Sphere center Z coordinates (ECEF, float32).
+     * @type {Float32Array}
+     */
+    this.centerZ = new Float32Array(new BufferType(byteLength));
+
+    /**
+     * Sphere radii (float32).
+     * @type {Float32Array}
+     */
+    this.radius = new Float32Array(new BufferType(byteLength));
+
+    /**
+     * Command index mapping — maps SOA index back to original command index.
+     * @type {Uint32Array}
+     */
+    this.commandIndices = new Uint32Array(new BufferType(capacity * 4));
+
+    /**
+     * Visibility result buffer — written by WASM culler.
+     * 0 = occluded/culled, 1 = visible.
+     * @type {Uint8Array}
+     */
+    this.visibility = new Uint8Array(new BufferType(capacity));
+
+    /**
+     * Whether SharedArrayBuffer is used (enables cross-thread WASM).
+     * @type {boolean}
+     */
+    this.isShared = useSharedMemory === true;
+  }
 
   /**
-   * Current number of spheres stored.
-   * @type {number}
+   * Resets the count to 0 for a new frame. Does NOT clear the arrays
+   * (overwritten during populate).
    */
-  this.count = 0;
-
-  const BufferType = useSharedMemory ? SharedArrayBuffer : ArrayBuffer;
-  const byteLength = capacity * 4; // 4 bytes per float32
+  reset() {
+    this.count = 0;
+  }
 
   /**
-   * Sphere center X coordinates (ECEF, float32).
-   * @type {Float32Array}
+   * Populates the SOA layout from a command list. Extracts bounding sphere
+   * data into contiguous float32 arrays suitable for SIMD processing.
+   *
+   * @param {Array} commands Array of DrawCommands with boundingVolume.
+   * @returns {number} Number of spheres populated.
    */
-  this.centerX = new Float32Array(new BufferType(byteLength));
+  populate(commands) {
+    const length = Math.min(commands.length, this.capacity);
+    let writeIndex = 0;
 
-  /**
-   * Sphere center Y coordinates (ECEF, float32).
-   * @type {Float32Array}
-   */
-  this.centerY = new Float32Array(new BufferType(byteLength));
+    for (let i = 0; i < length; i++) {
+      const cmd = commands[i];
+      if (!defined(cmd.boundingVolume)) {
+        continue;
+      }
 
-  /**
-   * Sphere center Z coordinates (ECEF, float32).
-   * @type {Float32Array}
-   */
-  this.centerZ = new Float32Array(new BufferType(byteLength));
+      const center = cmd.boundingVolume.center;
+      const r = cmd.boundingVolume.radius;
 
-  /**
-   * Sphere radii (float32).
-   * @type {Float32Array}
-   */
-  this.radius = new Float32Array(new BufferType(byteLength));
-
-  /**
-   * Command index mapping — maps SOA index back to original command index.
-   * @type {Uint32Array}
-   */
-  this.commandIndices = new Uint32Array(new BufferType(capacity * 4));
-
-  /**
-   * Visibility result buffer — written by WASM culler.
-   * 0 = occluded/culled, 1 = visible.
-   * @type {Uint8Array}
-   */
-  this.visibility = new Uint8Array(new BufferType(capacity));
-
-  /**
-   * Whether SharedArrayBuffer is used (enables cross-thread WASM).
-   * @type {boolean}
-   */
-  this.isShared = useSharedMemory === true;
-}
-
-/**
- * Resets the count to 0 for a new frame. Does NOT clear the arrays
- * (overwritten during populate).
- */
-SOABoundingSphereLayout.prototype.reset = function () {
-  this.count = 0;
-};
-
-/**
- * Populates the SOA layout from a command list. Extracts bounding sphere
- * data into contiguous float32 arrays suitable for SIMD processing.
- *
- * @param {Array} commands Array of DrawCommands with boundingVolume.
- * @returns {number} Number of spheres populated.
- */
-SOABoundingSphereLayout.prototype.populate = function (commands) {
-  const length = Math.min(commands.length, this.capacity);
-  let writeIndex = 0;
-
-  for (let i = 0; i < length; i++) {
-    const cmd = commands[i];
-    if (!defined(cmd.boundingVolume)) {
-      continue;
+      this.centerX[writeIndex] = center.x;
+      this.centerY[writeIndex] = center.y;
+      this.centerZ[writeIndex] = center.z;
+      this.radius[writeIndex] = r;
+      this.commandIndices[writeIndex] = i;
+      writeIndex++;
     }
 
-    const center = cmd.boundingVolume.center;
-    const r = cmd.boundingVolume.radius;
-
-    this.centerX[writeIndex] = center.x;
-    this.centerY[writeIndex] = center.y;
-    this.centerZ[writeIndex] = center.z;
-    this.radius[writeIndex] = r;
-    this.commandIndices[writeIndex] = i;
-    writeIndex++;
+    this.count = writeIndex;
+    return writeIndex;
   }
 
-  this.count = writeIndex;
-  return writeIndex;
-};
+  /**
+   * Resizes the layout if needed. Creates new arrays if capacity is insufficient.
+   *
+   * @param {number} newCapacity The new capacity.
+   */
+  resize(newCapacity) {
+    if (newCapacity <= this.capacity) {
+      return;
+    }
 
-/**
- * Resizes the layout if needed. Creates new arrays if capacity is insufficient.
- *
- * @param {number} newCapacity The new capacity.
- */
-SOABoundingSphereLayout.prototype.resize = function (newCapacity) {
-  if (newCapacity <= this.capacity) {
-    return;
+    const BufferType = this.isShared ? SharedArrayBuffer : ArrayBuffer;
+    const byteLength = newCapacity * 4;
+
+    this.centerX = new Float32Array(new BufferType(byteLength));
+    this.centerY = new Float32Array(new BufferType(byteLength));
+    this.centerZ = new Float32Array(new BufferType(byteLength));
+    this.radius = new Float32Array(new BufferType(byteLength));
+    this.commandIndices = new Uint32Array(new BufferType(newCapacity * 4));
+    this.visibility = new Uint8Array(new BufferType(newCapacity));
+    this.capacity = newCapacity;
   }
 
-  const BufferType = this.isShared ? SharedArrayBuffer : ArrayBuffer;
-  const byteLength = newCapacity * 4;
-
-  this.centerX = new Float32Array(new BufferType(byteLength));
-  this.centerY = new Float32Array(new BufferType(byteLength));
-  this.centerZ = new Float32Array(new BufferType(byteLength));
-  this.radius = new Float32Array(new BufferType(byteLength));
-  this.commandIndices = new Uint32Array(new BufferType(newCapacity * 4));
-  this.visibility = new Uint8Array(new BufferType(newCapacity));
-  this.capacity = newCapacity;
-};
-
-/**
- * Returns the underlying buffers for WASM interop.
- * @returns {object} Object with buffer references.
- */
-SOABoundingSphereLayout.prototype.getBuffers = function () {
-  return {
-    centerX: this.centerX.buffer,
-    centerY: this.centerY.buffer,
-    centerZ: this.centerZ.buffer,
-    radius: this.radius.buffer,
-    commandIndices: this.commandIndices.buffer,
-    visibility: this.visibility.buffer,
-    count: this.count,
-  };
-};
+  /**
+   * Returns the underlying buffers for WASM interop.
+   * @returns {object} Object with buffer references.
+   */
+  getBuffers() {
+    return {
+      centerX: this.centerX.buffer,
+      centerY: this.centerY.buffer,
+      centerZ: this.centerZ.buffer,
+      radius: this.radius.buffer,
+      commandIndices: this.commandIndices.buffer,
+      visibility: this.visibility.buffer,
+      count: this.count,
+    };
+  }
+}
 
 export default SOABoundingSphereLayout;

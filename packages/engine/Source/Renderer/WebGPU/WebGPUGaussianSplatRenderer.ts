@@ -25,7 +25,7 @@ interface GaussianSplatCache {
   quadVertexBuffer: GPUBuffer | null;
   splatBuffer: GPUBuffer | null;
   splatCount: number;
-  command: any | null;
+  command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
   pipelineLayout: GPUPipelineLayout | null;
@@ -210,7 +210,8 @@ function buildPipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: false,
-      depthCompare: "less",
+      // less-equal for planetary-scale precision robustness.
+      depthCompare: "less-equal",
     },
   });
 
@@ -282,7 +283,8 @@ function buildPipeline(
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
-        depthCompare: "less",
+        // less-equal for planetary-scale precision robustness.
+      depthCompare: "less-equal",
       },
     });
   } catch (e) {
@@ -292,7 +294,7 @@ function buildPipeline(
   return { pipeline, oitPipeline, bgl, layout };
 }
 
-function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
+function updateWebGPUGaussianSplats(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -373,18 +375,21 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
     return;
   }
 
-  // Pack uniforms
+  // Pack uniforms.
+  //
+  // RTE: zero the translation column of MV *before* multiplying by
+  // projection. Zeroing after the multiply wipes out projection's P23
+  // depth-mapping term, producing incorrect NDC depth and breaking
+  // depth testing at planetary scale.
   const us = context.uniformState;
   const mm = primitive.modelMatrix ?? Matrix4.IDENTITY;
-  const mvM4 = Matrix4.multiply(us.view, mm, scratchMV);
-  const mv = m4Values(mvM4);
-  const mvp = m4Values(Matrix4.multiply(us.projection, mvM4, scratchMVP));
-  mvp[12] = 0;
-  mvp[13] = 0;
-  mvp[14] = 0;
-  mv[12] = 0;
-  mv[13] = 0;
-  mv[14] = 0;
+  Matrix4.multiply(us.view, mm, scratchMV);
+  scratchMV[12] = 0;
+  scratchMV[13] = 0;
+  scratchMV[14] = 0;
+  Matrix4.multiply(us.projection, scratchMV, scratchMVP);
+  const mv = m4Values(scratchMV);
+  const mvp = m4Values(scratchMVP);
 
   const camWorld = us.cameraPosition;
   const invM = Matrix4.inverse(mm, new Matrix4());
@@ -444,7 +449,7 @@ function updateWebGPUGaussianSplats(primitive: any, frameState: any): void {
   commandList.push(cache.command);
 }
 
-function destroyWebGPUGaussianSplatResources(primitive: any): void {
+function destroyWebGPUGaussianSplatResources(primitive: CesiumObjectWithWebGPUCache): void {
   const cache = primitive._webgpuCache as GaussianSplatCache | undefined;
   if (!cache) {
     return;

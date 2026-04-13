@@ -415,6 +415,55 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   }
 
   executeCommands(scene, passState);
+
+  // ── GPU-side Hi-Z occlusion dispatch ──────────────────────────────
+  //
+  // After executeCommands the depth attachment is populated. End the
+  // active render pass, dispatch the Hi-Z pyramid build + occlusion
+  // test compute passes on the same command encoder, then resume the
+  // render pass (if needed for overlays/post-processing downstream).
+  //
+  // The OcclusionCulling.dispatchGPU method routes through the feature
+  // renderer so this code stays backend-agnostic — the encoder and
+  // depth view are opaque handles that only the dispatcher understands.
+  //
+  // scheduleReadback is fire-and-forget: the async mapAsync resolves
+  // before the NEXT frame's testCommands() call reads the visibility
+  // bits, closing the one-frame-latency loop.
+  if (occlusionCulling.enabled) {
+    const context = scene.context;
+    const encoder = context.currentCommandEncoder;
+    const depthView = context.depthOnlyTextureView;
+
+    if (encoder && depthView) {
+      // Lazy initialization on first frame with depth available.
+      if (!occlusionCulling.isInitialized) {
+        occlusionCulling.initialize(
+          context,
+          context.drawingBufferWidth,
+          context.drawingBufferHeight,
+        );
+      }
+
+      if (occlusionCulling.isInitialized) {
+        context.endCurrentRenderPass();
+
+        const camera = scene.frameState.camera;
+        const frustum = camera.frustum;
+        occlusionCulling.dispatchGPU(encoder, depthView, {
+          viewProjection: context.uniformState.viewProjection,
+          screenWidth: context.drawingBufferWidth,
+          screenHeight: context.drawingBufferHeight,
+          nearPlane: frustum.near,
+          farPlane: frustum.far,
+        });
+
+        occlusionCulling.scheduleReadback();
+
+        context.resumeDefaultRenderPass();
+      }
+    }
+  }
 }
 
 export {

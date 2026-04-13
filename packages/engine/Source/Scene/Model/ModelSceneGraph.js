@@ -40,136 +40,633 @@ import addAllToArray from "../../Core/addAllToArray.js";
  *
  * @private
  */
-function ModelSceneGraph(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const components = options.modelComponents;
+class ModelSceneGraph {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const components = options.modelComponents;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.model", options.model);
-  Check.typeOf.object("options.modelComponents", components);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.model", options.model);
+    Check.typeOf.object("options.modelComponents", components);
+    //>>includeEnd('debug');
+
+    /**
+     * A reference to the {@link Model} that owns this scene graph.
+     *
+     * @type {Model}
+     * @readonly
+     *
+     * @private
+     */
+    this._model = options.model;
+
+    /**
+     * The model components that represent the contents of the 3D model file.
+     *
+     * @type {ModelComponents}
+     * @readonly
+     *
+     * @private
+     */
+    this._components = components;
+
+    /**
+     * Pipeline stages to apply across the model.
+     *
+     * @type {object[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._pipelineStages = [];
+
+    /**
+     * Update stages to apply across the model.
+     *
+     * @type {object[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._updateStages = [];
+
+    /**
+     * The runtime nodes that make up the scene graph
+     *
+     * @type {ModelRuntimeNode[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._runtimeNodes = [];
+
+    /**
+     * The indices of the root nodes in the runtime nodes array.
+     *
+     * @type {number[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._rootNodes = [];
+
+    /**
+     * The indices of the skinned nodes in the runtime nodes array. These refer
+     * to the nodes that will be manipulated by their skin, as opposed to the nodes
+     * acting as joints for the skin.
+     *
+     * @type {number[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._skinnedNodes = [];
+
+    /**
+     * The runtime skins that affect nodes in the scene graph.
+     *
+     * @type {ModelSkin[]}
+     * @readonly
+     *
+     * @private
+     */
+    this._runtimeSkins = [];
+
+    /**
+     * Pipeline stages to apply to this model. This
+     * is an array of classes, each with a static method called
+     * <code>process()</code>
+     *
+     * @type {object[]}
+     * @readonly
+     *
+     * @private
+     */
+    this.modelPipelineStages = [];
+
+    // The scene graph's bounding sphere is model space, so that
+    // the model's bounding sphere can be recomputed when given a
+    // new model matrix.
+    this._boundingSphere = undefined;
+
+    // The 2D bounding sphere is in world space. This is checked
+    // by the draw commands to see if the model is over the IDL,
+    // and if so, renders the primitives using extra commands.
+    this._boundingSphere2D = undefined;
+
+    this._computedModelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    this._computedModelMatrix2D = Matrix4.clone(Matrix4.IDENTITY);
+
+    this._axisCorrectionMatrix = ModelUtility.getAxisCorrectionMatrix(
+      components.upAxis,
+      components.forwardAxis,
+      new Matrix4(),
+    );
+
+    // Store articulations from the AGI_articulations extension
+    // by name in a dictionary for easy retrieval.
+    this._runtimeArticulations = {};
+
+    initialize(this);
+  }
 
   /**
-   * A reference to the {@link Model} that owns this scene graph.
+   * Generates the {@link ModelDrawCommand} for each primitive in the model.
+   * If the model is used for classification, a {@link ClassificationModelDrawCommand}
+   * is generated for each primitive instead.
    *
-   * @type {Model}
-   * @readonly
+   * @param {FrameState} frameState The current frame state. This is needed to
+   * allocate GPU resources as needed.
    *
    * @private
    */
-  this._model = options.model;
+  buildDrawCommands(frameState) {
+    const modelRenderResources = this.buildRenderResources(frameState);
+    this.computeBoundingVolumes(modelRenderResources);
+    this.createDrawCommands(modelRenderResources, frameState);
+  }
 
   /**
-   * The model components that represent the contents of the 3D model file.
+   * Generates the {@link ModelRenderResources} for the model.
    *
-   * @type {ModelComponents}
-   * @readonly
+   * This will traverse the model, nodes and primitives of the scene graph,
+   * and perform the following tasks:
+   *
+   * - configure the pipeline stages by calling `configurePipeline`,
+   *   `runtimeNode.configurePipeline`, and `runtimePrimitive.configurePipeline`
+   * - create the `ModelRenderResources`, `NodeRenderResources`, and
+   *   `PrimitiveRenderResources`
+   * - Process the render resources with the respective pipelines
+   *
+   * @param {FrameState} frameState The current frame state. This is needed to
+   * allocate GPU resources as needed.
+   * @returns {ModelRenderResources} The model render resources
    *
    * @private
    */
-  this._components = components;
+  buildRenderResources(frameState) {
+    const model = this._model;
+    const modelRenderResources = new ModelRenderResources(model);
+
+    // Reset the memory counts before running the pipeline
+    model.statistics.clear();
+
+    this.configurePipeline(frameState);
+    const modelPipelineStages = this.modelPipelineStages;
+
+    for (let i = 0; i < modelPipelineStages.length; i++) {
+      const modelPipelineStage = modelPipelineStages[i];
+      modelPipelineStage.process(modelRenderResources, model, frameState);
+    }
+
+    for (let i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+
+      // If a node in the model was unreachable from the scene graph, there will
+      // be no corresponding runtime node and therefore should be skipped.
+      if (!defined(runtimeNode)) {
+        continue;
+      }
+
+      runtimeNode.configurePipeline();
+      const nodePipelineStages = runtimeNode.pipelineStages;
+
+      const nodeRenderResources = new NodeRenderResources(
+        modelRenderResources,
+        runtimeNode,
+      );
+      modelRenderResources.nodeRenderResources[i] = nodeRenderResources;
+
+      for (let j = 0; j < nodePipelineStages.length; j++) {
+        const nodePipelineStage = nodePipelineStages[j];
+
+        nodePipelineStage.process(
+          nodeRenderResources,
+          runtimeNode.node,
+          frameState,
+        );
+      }
+
+      for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
+        const runtimePrimitive = runtimeNode.runtimePrimitives[j];
+
+        runtimePrimitive.configurePipeline(frameState);
+        const primitivePipelineStages = runtimePrimitive.pipelineStages;
+
+        const primitiveRenderResources = new PrimitiveRenderResources(
+          nodeRenderResources,
+          runtimePrimitive,
+        );
+        nodeRenderResources.primitiveRenderResources[j] =
+          primitiveRenderResources;
+
+        for (let k = 0; k < primitivePipelineStages.length; k++) {
+          const primitivePipelineStage = primitivePipelineStages[k];
+          primitivePipelineStage.process(
+            primitiveRenderResources,
+            runtimePrimitive.primitive,
+            frameState,
+          );
+        }
+      }
+    }
+    return modelRenderResources;
+  }
 
   /**
-   * Pipeline stages to apply across the model.
+   * Computes the bounding volumes for the scene graph and the model.
    *
-   * @type {object[]}
-   * @readonly
+   * This will traverse the model, nodes and primitives of the scene graph,
+   * and compute the bounding volumes. Specifically, it will compute
+   *
+   * - this._boundingSphere
+   * - model._boundingSphere
+   *
+   * With the latter being modified as of
+   *
+   * - model._initialRadius = model._boundingSphere.radius;
+   * - model._boundingSphere.radius *= model._clampedScale;
+   *
+   * NOTE: This contains some bugs. See https://github.com/CesiumGS/cesium/issues/12108
+   *
+   * @param {ModelRenderResources} modelRenderResources The model render resources
    *
    * @private
    */
-  this._pipelineStages = [];
+  computeBoundingVolumes(modelRenderResources) {
+    const model = this._model;
+
+    const modelPositionMin = Cartesian3.fromElements(
+      Number.MAX_VALUE,
+      Number.MAX_VALUE,
+      Number.MAX_VALUE,
+      scratchModelPositionMin,
+    );
+    const modelPositionMax = Cartesian3.fromElements(
+      -Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+      scratchModelPositionMax,
+    );
+
+    for (let i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+
+      // If a node in the model was unreachable from the scene graph, there will
+      // be no corresponding runtime node and therefore should be skipped.
+      if (!defined(runtimeNode)) {
+        continue;
+      }
+
+      const nodeRenderResources = modelRenderResources.nodeRenderResources[i];
+      const nodeTransform = runtimeNode.computedTransform;
+      for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
+        const runtimePrimitive = runtimeNode.runtimePrimitives[j];
+
+        const primitiveRenderResources =
+          nodeRenderResources.primitiveRenderResources[j];
+
+        runtimePrimitive.boundingSphere = BoundingSphere.clone(
+          primitiveRenderResources.boundingSphere,
+          new BoundingSphere(),
+        );
+
+        const primitivePositionMin = Matrix4.multiplyByPoint(
+          nodeTransform,
+          primitiveRenderResources.positionMin,
+          scratchPrimitivePositionMin,
+        );
+        const primitivePositionMax = Matrix4.multiplyByPoint(
+          nodeTransform,
+          primitiveRenderResources.positionMax,
+          scratchPrimitivePositionMax,
+        );
+
+        Cartesian3.minimumByComponent(
+          modelPositionMin,
+          primitivePositionMin,
+          modelPositionMin,
+        );
+        Cartesian3.maximumByComponent(
+          modelPositionMax,
+          primitivePositionMax,
+          modelPositionMax,
+        );
+      }
+    }
+
+    this._boundingSphere = BoundingSphere.fromCornerPoints(
+      modelPositionMin,
+      modelPositionMax,
+      new BoundingSphere(),
+    );
+
+    this._boundingSphere = BoundingSphere.transformWithoutScale(
+      this._boundingSphere,
+      this._axisCorrectionMatrix,
+      this._boundingSphere,
+    );
+
+    this._boundingSphere = BoundingSphere.transform(
+      this._boundingSphere,
+      this._components.transform,
+      this._boundingSphere,
+    );
+
+    model._boundingSphere = BoundingSphere.transform(
+      this._boundingSphere,
+      model.modelMatrix,
+      model._boundingSphere,
+    );
+
+    model._initialRadius = model._boundingSphere.radius;
+    model._boundingSphere.radius *= model._clampedScale;
+  }
 
   /**
-   * Update stages to apply across the model.
+   * Creates the draw commands for the primitives in the scene graph.
    *
-   * @type {object[]}
-   * @readonly
+   * This will traverse the model, nodes and primitives of the scene graph,
+   * and create the respective draw commands for the primitives, storing
+   * them as the `runtimePrimitive.drawCommand`, respectively.
+   *
+   * @param {ModelRenderResources} modelRenderResources The model render resources
    *
    * @private
    */
-  this._updateStages = [];
+  createDrawCommands(modelRenderResources, frameState) {
+    for (let i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+
+      // If a node in the model was unreachable from the scene graph, there will
+      // be no corresponding runtime node and therefore should be skipped.
+      if (!defined(runtimeNode)) {
+        continue;
+      }
+
+      const nodeRenderResources = modelRenderResources.nodeRenderResources[i];
+
+      for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
+        const runtimePrimitive = runtimeNode.runtimePrimitives[j];
+
+        const primitiveRenderResources =
+          nodeRenderResources.primitiveRenderResources[j];
+
+        const drawCommand = ModelDrawCommands.buildModelDrawCommand(
+          primitiveRenderResources,
+          frameState,
+        );
+        runtimePrimitive.drawCommand = drawCommand;
+      }
+    }
+  }
 
   /**
-   * The runtime nodes that make up the scene graph
+   * Configure the model pipeline stages. If the pipeline needs to be re-run, call
+   * this method again to ensure the correct sequence of pipeline stages are
+   * used.
    *
-   * @type {ModelRuntimeNode[]}
-   * @readonly
+   * @param {FrameState} frameState
+   * @private
+   */
+  configurePipeline(frameState) {
+    const modelPipelineStages = this.modelPipelineStages;
+    modelPipelineStages.length = 0;
+
+    const model = this._model;
+    const fogRenderable = frameState.fog.enabled && frameState.fog.renderable;
+
+    if (defined(model.color)) {
+      modelPipelineStages.push(ModelColorPipelineStage);
+    }
+
+    // Skip these pipeline stages for classification models.
+    if (defined(model.classificationType)) {
+      return;
+    }
+
+    if (model.imageBasedLighting.enabled) {
+      modelPipelineStages.push(ImageBasedLightingPipelineStage);
+    }
+
+    if (model.isClippingEnabled()) {
+      modelPipelineStages.push(ModelClippingPlanesPipelineStage);
+    }
+
+    if (model.isClippingPolygonsEnabled()) {
+      modelPipelineStages.push(ModelClippingPolygonsPipelineStage);
+    }
+
+    if (model.hasSilhouette(frameState)) {
+      modelPipelineStages.push(ModelSilhouettePipelineStage);
+    }
+
+    if (
+      defined(model.splitDirection) &&
+      model.splitDirection !== SplitDirection.NONE
+    ) {
+      modelPipelineStages.push(ModelSplitterPipelineStage);
+    }
+
+    if (ModelType.is3DTiles(model.type)) {
+      modelPipelineStages.push(TilesetPipelineStage);
+    }
+
+    if (fogRenderable) {
+      modelPipelineStages.push(AtmospherePipelineStage);
+    }
+  }
+
+  update(frameState, updateForAnimations) {
+    let i, j, k;
+
+    for (i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+
+      // If a node in the model was unreachable from the scene graph, there will
+      // be no corresponding runtime node and therefore should be skipped.
+      if (!defined(runtimeNode)) {
+        continue;
+      }
+
+      for (j = 0; j < runtimeNode.updateStages.length; j++) {
+        const nodeUpdateStage = runtimeNode.updateStages[j];
+        nodeUpdateStage.update(runtimeNode, this, frameState);
+      }
+
+      const disableAnimations =
+        frameState.mode !== SceneMode.SCENE3D && this._model._projectTo2D;
+      if (updateForAnimations && !disableAnimations) {
+        this.updateJointMatrices();
+      }
+
+      for (j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
+        const runtimePrimitive = runtimeNode.runtimePrimitives[j];
+        for (k = 0; k < runtimePrimitive.updateStages.length; k++) {
+          const stage = runtimePrimitive.updateStages[k];
+          stage.update(runtimePrimitive, this);
+        }
+      }
+    }
+  }
+
+  updateModelMatrix(modelMatrix, frameState) {
+    computeModelMatrix(this, modelMatrix);
+    if (frameState.mode !== SceneMode.SCENE3D) {
+      computeModelMatrix2D(this, frameState);
+    }
+
+    // Mark all root nodes as dirty. Any and all children will be
+    // affected recursively in the update stage.
+    const rootNodes = this._rootNodes;
+    for (let i = 0; i < rootNodes.length; i++) {
+      const node = this._runtimeNodes[rootNodes[i]];
+      node._transformDirty = true;
+    }
+  }
+
+  /**
+   * Updates the joint matrices for the skins and nodes of the model.
    *
    * @private
    */
-  this._runtimeNodes = [];
+  updateJointMatrices() {
+    const skinnedNodes = this._skinnedNodes;
+    const length = skinnedNodes.length;
+
+    for (let i = 0; i < length; i++) {
+      const nodeIndex = skinnedNodes[i];
+      const runtimeNode = this._runtimeNodes[nodeIndex];
+      runtimeNode.updateJointMatrices();
+    }
+  }
 
   /**
-   * The indices of the root nodes in the runtime nodes array.
+   * Traverses through all draw commands and changes the back-face culling setting.
    *
-   * @type {number[]}
-   * @readonly
+   * @param {boolean} backFaceCulling The new value for the back-face culling setting.
    *
    * @private
    */
-  this._rootNodes = [];
+  updateBackFaceCulling(backFaceCulling) {
+    const backFaceCullingOptions = scratchBackFaceCullingOptions;
+    backFaceCullingOptions.backFaceCulling = backFaceCulling;
+    forEachRuntimePrimitive(
+      this,
+      false,
+      updatePrimitiveBackFaceCulling,
+      backFaceCullingOptions,
+    );
+  }
 
   /**
-   * The indices of the skinned nodes in the runtime nodes array. These refer
-   * to the nodes that will be manipulated by their skin, as opposed to the nodes
-   * acting as joints for the skin.
+   * Traverses through all draw commands and changes the shadow settings.
    *
-   * @type {number[]}
-   * @readonly
+   * @param {ShadowMode} shadowMode The new shadow settings.
    *
    * @private
    */
-  this._skinnedNodes = [];
+  updateShadows(shadowMode) {
+    const shadowOptions = scratchShadowOptions;
+    shadowOptions.shadowMode = shadowMode;
+    forEachRuntimePrimitive(this, false, updatePrimitiveShadows, shadowOptions);
+  }
 
   /**
-   * The runtime skins that affect nodes in the scene graph.
+   * Traverses through all draw commands and changes whether to show the debug bounding volume.
    *
-   * @type {ModelSkin[]}
-   * @readonly
+   * @param {boolean} debugShowBoundingVolume The new value for showing the debug bounding volume.
    *
    * @private
    */
-  this._runtimeSkins = [];
+  updateShowBoundingVolume(debugShowBoundingVolume) {
+    const showBoundingVolumeOptions = scratchShowBoundingVolumeOptions;
+    showBoundingVolumeOptions.debugShowBoundingVolume = debugShowBoundingVolume;
+
+    forEachRuntimePrimitive(
+      this,
+      false,
+      updatePrimitiveShowBoundingVolume,
+      showBoundingVolumeOptions,
+    );
+  }
 
   /**
-   * Pipeline stages to apply to this model. This
-   * is an array of classes, each with a static method called
-   * <code>process()</code>
+   * Traverses through the scene graph and pushes the draw commands associated
+   * with each primitive to the frame state's command list.
    *
-   * @type {object[]}
-   * @readonly
+   * @param {FrameState} frameState The frame state.
    *
    * @private
    */
-  this.modelPipelineStages = [];
+  pushDrawCommands(frameState) {
+    // If a model has silhouettes, the commands that draw the silhouettes for
+    // each primitive can only be invoked after the entire model has drawn.
+    // Otherwise, the silhouette may draw on top of the model. This requires
+    // gathering the original commands and the silhouette commands separately.
+    const silhouetteCommands = scratchSilhouetteCommands;
+    silhouetteCommands.length = 0;
 
-  // The scene graph's bounding sphere is model space, so that
-  // the model's bounding sphere can be recomputed when given a
-  // new model matrix.
-  this._boundingSphere = undefined;
+    // Gather edge commands for the edge pass
+    const edgeCommands = scratchEdgeCommands;
+    edgeCommands.length = 0;
 
-  // The 2D bounding sphere is in world space. This is checked
-  // by the draw commands to see if the model is over the IDL,
-  // and if so, renders the primitives using extra commands.
-  this._boundingSphere2D = undefined;
+    // Since this function is called each frame, the options object is
+    // preallocated in a scratch variable
+    const pushDrawCommandOptions = scratchPushDrawCommandOptions;
+    pushDrawCommandOptions.hasSilhouette = this._model.hasSilhouette(frameState);
+    pushDrawCommandOptions.frameState = frameState;
 
-  this._computedModelMatrix = Matrix4.clone(Matrix4.IDENTITY);
-  this._computedModelMatrix2D = Matrix4.clone(Matrix4.IDENTITY);
+    forEachRuntimePrimitive(
+      this,
+      true,
+      pushPrimitiveDrawCommands,
+      pushDrawCommandOptions,
+    );
 
-  this._axisCorrectionMatrix = ModelUtility.getAxisCorrectionMatrix(
-    components.upAxis,
-    components.forwardAxis,
-    new Matrix4(),
-  );
+    addAllToArray(frameState.commandList, silhouetteCommands);
+    addAllToArray(frameState.commandList, edgeCommands);
+  }
 
-  // Store articulations from the AGI_articulations extension
-  // by name in a dictionary for easy retrieval.
-  this._runtimeArticulations = {};
+  /**
+   * Sets the current value of an articulation stage.
+   *
+   * @param {string} articulationStageKey The name of the articulation, a space, and the name of the stage.
+   * @param {number} value The numeric value of this stage of the articulation.
+   *
+   * @private
+   */
+  setArticulationStage(articulationStageKey, value) {
+    const names = articulationStageKey.split(" ");
+    if (names.length !== 2) {
+      return;
+    }
 
-  initialize(this);
-}
+    const articulationName = names[0];
+    const stageName = names[1];
 
-Object.defineProperties(ModelSceneGraph.prototype, {
+    const runtimeArticulation = this._runtimeArticulations[articulationName];
+    if (defined(runtimeArticulation)) {
+      runtimeArticulation.setArticulationStage(stageName, value);
+    }
+  }
+
+  /**
+   * Applies any modified articulation stages to the matrix of each node that participates
+   * in any articulation.  Note that this will overwrite any nodeTransformations on participating nodes.
+   *
+   * @private
+   */
+  applyArticulations() {
+    const runtimeArticulations = this._runtimeArticulations;
+    for (const articulationName in runtimeArticulations) {
+      if (runtimeArticulations.hasOwnProperty(articulationName)) {
+        const articulation = runtimeArticulations[articulationName];
+        articulation.apply();
+      }
+    }
+  }
+
   /**
    * The model components this scene graph represents.
    *
@@ -178,11 +675,9 @@ Object.defineProperties(ModelSceneGraph.prototype, {
    *
    * @private
    */
-  components: {
-    get: function () {
-      return this._components;
-    },
-  },
+  get components() {
+    return this._components;
+  }
 
   /**
    * The axis-corrected model matrix.
@@ -192,11 +687,9 @@ Object.defineProperties(ModelSceneGraph.prototype, {
    *
    * @private
    */
-  computedModelMatrix: {
-    get: function () {
-      return this._computedModelMatrix;
-    },
-  },
+  get computedModelMatrix() {
+    return this._computedModelMatrix;
+  }
 
   /**
    * A matrix to correct from y-up in some model formats (e.g. glTF) to the
@@ -207,11 +700,9 @@ Object.defineProperties(ModelSceneGraph.prototype, {
    *
    * @private
    */
-  axisCorrectionMatrix: {
-    get: function () {
-      return this._axisCorrectionMatrix;
-    },
-  },
+  get axisCorrectionMatrix() {
+    return this._axisCorrectionMatrix;
+  }
 
   /**
    * The bounding sphere containing all the primitives in the scene graph
@@ -222,12 +713,10 @@ Object.defineProperties(ModelSceneGraph.prototype, {
    *
    * @private
    */
-  boundingSphere: {
-    get: function () {
-      return this._boundingSphere;
-    },
-  },
-});
+  get boundingSphere() {
+    return this._boundingSphere;
+  }
+}
 
 function initialize(sceneGraph) {
   const components = sceneGraph._components;
@@ -448,385 +937,6 @@ const scratchPrimitivePositionMin = new Cartesian3();
 const scratchPrimitivePositionMax = new Cartesian3();
 
 /**
- * Generates the {@link ModelDrawCommand} for each primitive in the model.
- * If the model is used for classification, a {@link ClassificationModelDrawCommand}
- * is generated for each primitive instead.
- *
- * @param {FrameState} frameState The current frame state. This is needed to
- * allocate GPU resources as needed.
- *
- * @private
- */
-ModelSceneGraph.prototype.buildDrawCommands = function (frameState) {
-  const modelRenderResources = this.buildRenderResources(frameState);
-  this.computeBoundingVolumes(modelRenderResources);
-  this.createDrawCommands(modelRenderResources, frameState);
-};
-
-/**
- * Generates the {@link ModelRenderResources} for the model.
- *
- * This will traverse the model, nodes and primitives of the scene graph,
- * and perform the following tasks:
- *
- * - configure the pipeline stages by calling `configurePipeline`,
- *   `runtimeNode.configurePipeline`, and `runtimePrimitive.configurePipeline`
- * - create the `ModelRenderResources`, `NodeRenderResources`, and
- *   `PrimitiveRenderResources`
- * - Process the render resources with the respective pipelines
- *
- * @param {FrameState} frameState The current frame state. This is needed to
- * allocate GPU resources as needed.
- * @returns {ModelRenderResources} The model render resources
- *
- * @private
- */
-ModelSceneGraph.prototype.buildRenderResources = function (frameState) {
-  const model = this._model;
-  const modelRenderResources = new ModelRenderResources(model);
-
-  // Reset the memory counts before running the pipeline
-  model.statistics.clear();
-
-  this.configurePipeline(frameState);
-  const modelPipelineStages = this.modelPipelineStages;
-
-  for (let i = 0; i < modelPipelineStages.length; i++) {
-    const modelPipelineStage = modelPipelineStages[i];
-    modelPipelineStage.process(modelRenderResources, model, frameState);
-  }
-
-  for (let i = 0; i < this._runtimeNodes.length; i++) {
-    const runtimeNode = this._runtimeNodes[i];
-
-    // If a node in the model was unreachable from the scene graph, there will
-    // be no corresponding runtime node and therefore should be skipped.
-    if (!defined(runtimeNode)) {
-      continue;
-    }
-
-    runtimeNode.configurePipeline();
-    const nodePipelineStages = runtimeNode.pipelineStages;
-
-    const nodeRenderResources = new NodeRenderResources(
-      modelRenderResources,
-      runtimeNode,
-    );
-    modelRenderResources.nodeRenderResources[i] = nodeRenderResources;
-
-    for (let j = 0; j < nodePipelineStages.length; j++) {
-      const nodePipelineStage = nodePipelineStages[j];
-
-      nodePipelineStage.process(
-        nodeRenderResources,
-        runtimeNode.node,
-        frameState,
-      );
-    }
-
-    for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
-      const runtimePrimitive = runtimeNode.runtimePrimitives[j];
-
-      runtimePrimitive.configurePipeline(frameState);
-      const primitivePipelineStages = runtimePrimitive.pipelineStages;
-
-      const primitiveRenderResources = new PrimitiveRenderResources(
-        nodeRenderResources,
-        runtimePrimitive,
-      );
-      nodeRenderResources.primitiveRenderResources[j] =
-        primitiveRenderResources;
-
-      for (let k = 0; k < primitivePipelineStages.length; k++) {
-        const primitivePipelineStage = primitivePipelineStages[k];
-        primitivePipelineStage.process(
-          primitiveRenderResources,
-          runtimePrimitive.primitive,
-          frameState,
-        );
-      }
-    }
-  }
-  return modelRenderResources;
-};
-
-/**
- * Computes the bounding volumes for the scene graph and the model.
- *
- * This will traverse the model, nodes and primitives of the scene graph,
- * and compute the bounding volumes. Specifically, it will compute
- *
- * - this._boundingSphere
- * - model._boundingSphere
- *
- * With the latter being modified as of
- *
- * - model._initialRadius = model._boundingSphere.radius;
- * - model._boundingSphere.radius *= model._clampedScale;
- *
- * NOTE: This contains some bugs. See https://github.com/CesiumGS/cesium/issues/12108
- *
- * @param {ModelRenderResources} modelRenderResources The model render resources
- *
- * @private
- */
-ModelSceneGraph.prototype.computeBoundingVolumes = function (
-  modelRenderResources,
-) {
-  const model = this._model;
-
-  const modelPositionMin = Cartesian3.fromElements(
-    Number.MAX_VALUE,
-    Number.MAX_VALUE,
-    Number.MAX_VALUE,
-    scratchModelPositionMin,
-  );
-  const modelPositionMax = Cartesian3.fromElements(
-    -Number.MAX_VALUE,
-    -Number.MAX_VALUE,
-    -Number.MAX_VALUE,
-    scratchModelPositionMax,
-  );
-
-  for (let i = 0; i < this._runtimeNodes.length; i++) {
-    const runtimeNode = this._runtimeNodes[i];
-
-    // If a node in the model was unreachable from the scene graph, there will
-    // be no corresponding runtime node and therefore should be skipped.
-    if (!defined(runtimeNode)) {
-      continue;
-    }
-
-    const nodeRenderResources = modelRenderResources.nodeRenderResources[i];
-    const nodeTransform = runtimeNode.computedTransform;
-    for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
-      const runtimePrimitive = runtimeNode.runtimePrimitives[j];
-
-      const primitiveRenderResources =
-        nodeRenderResources.primitiveRenderResources[j];
-
-      runtimePrimitive.boundingSphere = BoundingSphere.clone(
-        primitiveRenderResources.boundingSphere,
-        new BoundingSphere(),
-      );
-
-      const primitivePositionMin = Matrix4.multiplyByPoint(
-        nodeTransform,
-        primitiveRenderResources.positionMin,
-        scratchPrimitivePositionMin,
-      );
-      const primitivePositionMax = Matrix4.multiplyByPoint(
-        nodeTransform,
-        primitiveRenderResources.positionMax,
-        scratchPrimitivePositionMax,
-      );
-
-      Cartesian3.minimumByComponent(
-        modelPositionMin,
-        primitivePositionMin,
-        modelPositionMin,
-      );
-      Cartesian3.maximumByComponent(
-        modelPositionMax,
-        primitivePositionMax,
-        modelPositionMax,
-      );
-    }
-  }
-
-  this._boundingSphere = BoundingSphere.fromCornerPoints(
-    modelPositionMin,
-    modelPositionMax,
-    new BoundingSphere(),
-  );
-
-  this._boundingSphere = BoundingSphere.transformWithoutScale(
-    this._boundingSphere,
-    this._axisCorrectionMatrix,
-    this._boundingSphere,
-  );
-
-  this._boundingSphere = BoundingSphere.transform(
-    this._boundingSphere,
-    this._components.transform,
-    this._boundingSphere,
-  );
-
-  model._boundingSphere = BoundingSphere.transform(
-    this._boundingSphere,
-    model.modelMatrix,
-    model._boundingSphere,
-  );
-
-  model._initialRadius = model._boundingSphere.radius;
-  model._boundingSphere.radius *= model._clampedScale;
-};
-
-/**
- * Creates the draw commands for the primitives in the scene graph.
- *
- * This will traverse the model, nodes and primitives of the scene graph,
- * and create the respective draw commands for the primitives, storing
- * them as the `runtimePrimitive.drawCommand`, respectively.
- *
- * @param {ModelRenderResources} modelRenderResources The model render resources
- *
- * @private
- */
-ModelSceneGraph.prototype.createDrawCommands = function (
-  modelRenderResources,
-  frameState,
-) {
-  for (let i = 0; i < this._runtimeNodes.length; i++) {
-    const runtimeNode = this._runtimeNodes[i];
-
-    // If a node in the model was unreachable from the scene graph, there will
-    // be no corresponding runtime node and therefore should be skipped.
-    if (!defined(runtimeNode)) {
-      continue;
-    }
-
-    const nodeRenderResources = modelRenderResources.nodeRenderResources[i];
-
-    for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
-      const runtimePrimitive = runtimeNode.runtimePrimitives[j];
-
-      const primitiveRenderResources =
-        nodeRenderResources.primitiveRenderResources[j];
-
-      const drawCommand = ModelDrawCommands.buildModelDrawCommand(
-        primitiveRenderResources,
-        frameState,
-      );
-      runtimePrimitive.drawCommand = drawCommand;
-    }
-  }
-};
-
-/**
- * Configure the model pipeline stages. If the pipeline needs to be re-run, call
- * this method again to ensure the correct sequence of pipeline stages are
- * used.
- *
- * @param {FrameState} frameState
- * @private
- */
-ModelSceneGraph.prototype.configurePipeline = function (frameState) {
-  const modelPipelineStages = this.modelPipelineStages;
-  modelPipelineStages.length = 0;
-
-  const model = this._model;
-  const fogRenderable = frameState.fog.enabled && frameState.fog.renderable;
-
-  if (defined(model.color)) {
-    modelPipelineStages.push(ModelColorPipelineStage);
-  }
-
-  // Skip these pipeline stages for classification models.
-  if (defined(model.classificationType)) {
-    return;
-  }
-
-  if (model.imageBasedLighting.enabled) {
-    modelPipelineStages.push(ImageBasedLightingPipelineStage);
-  }
-
-  if (model.isClippingEnabled()) {
-    modelPipelineStages.push(ModelClippingPlanesPipelineStage);
-  }
-
-  if (model.isClippingPolygonsEnabled()) {
-    modelPipelineStages.push(ModelClippingPolygonsPipelineStage);
-  }
-
-  if (model.hasSilhouette(frameState)) {
-    modelPipelineStages.push(ModelSilhouettePipelineStage);
-  }
-
-  if (
-    defined(model.splitDirection) &&
-    model.splitDirection !== SplitDirection.NONE
-  ) {
-    modelPipelineStages.push(ModelSplitterPipelineStage);
-  }
-
-  if (ModelType.is3DTiles(model.type)) {
-    modelPipelineStages.push(TilesetPipelineStage);
-  }
-
-  if (fogRenderable) {
-    modelPipelineStages.push(AtmospherePipelineStage);
-  }
-};
-
-ModelSceneGraph.prototype.update = function (frameState, updateForAnimations) {
-  let i, j, k;
-
-  for (i = 0; i < this._runtimeNodes.length; i++) {
-    const runtimeNode = this._runtimeNodes[i];
-
-    // If a node in the model was unreachable from the scene graph, there will
-    // be no corresponding runtime node and therefore should be skipped.
-    if (!defined(runtimeNode)) {
-      continue;
-    }
-
-    for (j = 0; j < runtimeNode.updateStages.length; j++) {
-      const nodeUpdateStage = runtimeNode.updateStages[j];
-      nodeUpdateStage.update(runtimeNode, this, frameState);
-    }
-
-    const disableAnimations =
-      frameState.mode !== SceneMode.SCENE3D && this._model._projectTo2D;
-    if (updateForAnimations && !disableAnimations) {
-      this.updateJointMatrices();
-    }
-
-    for (j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
-      const runtimePrimitive = runtimeNode.runtimePrimitives[j];
-      for (k = 0; k < runtimePrimitive.updateStages.length; k++) {
-        const stage = runtimePrimitive.updateStages[k];
-        stage.update(runtimePrimitive, this);
-      }
-    }
-  }
-};
-
-ModelSceneGraph.prototype.updateModelMatrix = function (
-  modelMatrix,
-  frameState,
-) {
-  computeModelMatrix(this, modelMatrix);
-  if (frameState.mode !== SceneMode.SCENE3D) {
-    computeModelMatrix2D(this, frameState);
-  }
-
-  // Mark all root nodes as dirty. Any and all children will be
-  // affected recursively in the update stage.
-  const rootNodes = this._rootNodes;
-  for (let i = 0; i < rootNodes.length; i++) {
-    const node = this._runtimeNodes[rootNodes[i]];
-    node._transformDirty = true;
-  }
-};
-
-/**
- * Updates the joint matrices for the skins and nodes of the model.
- *
- * @private
- */
-ModelSceneGraph.prototype.updateJointMatrices = function () {
-  const skinnedNodes = this._skinnedNodes;
-  const length = skinnedNodes.length;
-
-  for (let i = 0; i < length; i++) {
-    const nodeIndex = skinnedNodes[i];
-    const runtimeNode = this._runtimeNodes[nodeIndex];
-    runtimeNode.updateJointMatrices();
-  }
-};
-
-/**
  * A callback to be applied once at each runtime primitive in the
  * scene graph
  * @callback traverseSceneGraphCallback
@@ -906,24 +1016,6 @@ const scratchBackFaceCullingOptions = {
   backFaceCulling: undefined,
 };
 
-/**
- * Traverses through all draw commands and changes the back-face culling setting.
- *
- * @param {boolean} backFaceCulling The new value for the back-face culling setting.
- *
- * @private
- */
-ModelSceneGraph.prototype.updateBackFaceCulling = function (backFaceCulling) {
-  const backFaceCullingOptions = scratchBackFaceCullingOptions;
-  backFaceCullingOptions.backFaceCulling = backFaceCulling;
-  forEachRuntimePrimitive(
-    this,
-    false,
-    updatePrimitiveBackFaceCulling,
-    backFaceCullingOptions,
-  );
-};
-
 // Callback is defined here to avoid allocating a closure in the render loop
 function updatePrimitiveBackFaceCulling(runtimePrimitive, options) {
   const drawCommand = runtimePrimitive.drawCommand;
@@ -934,19 +1026,6 @@ const scratchShadowOptions = {
   shadowMode: undefined,
 };
 
-/**
- * Traverses through all draw commands and changes the shadow settings.
- *
- * @param {ShadowMode} shadowMode The new shadow settings.
- *
- * @private
- */
-ModelSceneGraph.prototype.updateShadows = function (shadowMode) {
-  const shadowOptions = scratchShadowOptions;
-  shadowOptions.shadowMode = shadowMode;
-  forEachRuntimePrimitive(this, false, updatePrimitiveShadows, shadowOptions);
-};
-
 // Callback is defined here to avoid allocating a closure in the render loop
 function updatePrimitiveShadows(runtimePrimitive, options) {
   const drawCommand = runtimePrimitive.drawCommand;
@@ -955,27 +1034,6 @@ function updatePrimitiveShadows(runtimePrimitive, options) {
 
 const scratchShowBoundingVolumeOptions = {
   debugShowBoundingVolume: undefined,
-};
-
-/**
- * Traverses through all draw commands and changes whether to show the debug bounding volume.
- *
- * @param {boolean} debugShowBoundingVolume The new value for showing the debug bounding volume.
- *
- * @private
- */
-ModelSceneGraph.prototype.updateShowBoundingVolume = function (
-  debugShowBoundingVolume,
-) {
-  const showBoundingVolumeOptions = scratchShowBoundingVolumeOptions;
-  showBoundingVolumeOptions.debugShowBoundingVolume = debugShowBoundingVolume;
-
-  forEachRuntimePrimitive(
-    this,
-    false,
-    updatePrimitiveShowBoundingVolume,
-    showBoundingVolumeOptions,
-  );
 };
 
 // Callback is defined here to avoid allocating a closure in the render loop
@@ -989,43 +1047,6 @@ const scratchEdgeCommands = [];
 const scratchPushDrawCommandOptions = {
   frameState: undefined,
   hasSilhouette: undefined,
-};
-
-/**
- * Traverses through the scene graph and pushes the draw commands associated
- * with each primitive to the frame state's command list.
- *
- * @param {FrameState} frameState The frame state.
- *
- * @private
- */
-ModelSceneGraph.prototype.pushDrawCommands = function (frameState) {
-  // If a model has silhouettes, the commands that draw the silhouettes for
-  // each primitive can only be invoked after the entire model has drawn.
-  // Otherwise, the silhouette may draw on top of the model. This requires
-  // gathering the original commands and the silhouette commands separately.
-  const silhouetteCommands = scratchSilhouetteCommands;
-  silhouetteCommands.length = 0;
-
-  // Gather edge commands for the edge pass
-  const edgeCommands = scratchEdgeCommands;
-  edgeCommands.length = 0;
-
-  // Since this function is called each frame, the options object is
-  // preallocated in a scratch variable
-  const pushDrawCommandOptions = scratchPushDrawCommandOptions;
-  pushDrawCommandOptions.hasSilhouette = this._model.hasSilhouette(frameState);
-  pushDrawCommandOptions.frameState = frameState;
-
-  forEachRuntimePrimitive(
-    this,
-    true,
-    pushPrimitiveDrawCommands,
-    pushDrawCommandOptions,
-  );
-
-  addAllToArray(frameState.commandList, silhouetteCommands);
-  addAllToArray(frameState.commandList, edgeCommands);
 };
 
 // Callback is defined here to avoid allocating a closure in the render loop
@@ -1052,47 +1073,5 @@ function pushPrimitiveDrawCommands(runtimePrimitive, options) {
     primitiveDrawCommand.pushEdgeCommands(frameState, edgeCommands);
   }
 }
-
-/**
- * Sets the current value of an articulation stage.
- *
- * @param {string} articulationStageKey The name of the articulation, a space, and the name of the stage.
- * @param {number} value The numeric value of this stage of the articulation.
- *
- * @private
- */
-ModelSceneGraph.prototype.setArticulationStage = function (
-  articulationStageKey,
-  value,
-) {
-  const names = articulationStageKey.split(" ");
-  if (names.length !== 2) {
-    return;
-  }
-
-  const articulationName = names[0];
-  const stageName = names[1];
-
-  const runtimeArticulation = this._runtimeArticulations[articulationName];
-  if (defined(runtimeArticulation)) {
-    runtimeArticulation.setArticulationStage(stageName, value);
-  }
-};
-
-/**
- * Applies any modified articulation stages to the matrix of each node that participates
- * in any articulation.  Note that this will overwrite any nodeTransformations on participating nodes.
- *
- * @private
- */
-ModelSceneGraph.prototype.applyArticulations = function () {
-  const runtimeArticulations = this._runtimeArticulations;
-  for (const articulationName in runtimeArticulations) {
-    if (runtimeArticulations.hasOwnProperty(articulationName)) {
-      const articulation = runtimeArticulations[articulationName];
-      articulation.apply();
-    }
-  }
-};
 
 export default ModelSceneGraph;

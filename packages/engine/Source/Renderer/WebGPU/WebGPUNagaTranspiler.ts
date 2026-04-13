@@ -105,10 +105,12 @@ async function loadNaga(): Promise<NagaModule | null> {
         detect_shader_language: mod.detect_shader_language,
         validate_shader_detailed: mod.validate_shader_detailed,
       };
+      //>>includeStart('debug', pragmas.debug);
       // eslint-disable-next-line no-console
       console.log(
         "[WebGPU:Naga] naga-wasm initialized — GLSL→WGSL transpilation enabled",
       );
+      //>>includeEnd('debug');
       return _nagaModule;
     } catch (err) {
       _nagaUnavailable = true;

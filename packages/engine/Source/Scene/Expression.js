@@ -34,30 +34,142 @@ import ExpressionNodeType from "./ExpressionNodeType.js";
  * const expression = new Cesium.Expression('(${Temperature} > 90) ? color("red") : color("white")');
  * expression.evaluateColor(feature, result); // returns a Cesium.Color object
  */
-function Expression(expression, defines) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("expression", expression);
-  //>>includeEnd('debug');
+class Expression {
+  constructor(expression, defines) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("expression", expression);
+    //>>includeEnd('debug');
 
-  this._expression = expression;
-  expression = replaceDefines(expression, defines);
-  expression = replaceVariables(removeBackslashes(expression));
+    this._expression = expression;
+    expression = replaceDefines(expression, defines);
+    expression = replaceVariables(removeBackslashes(expression));
 
-  // customize jsep operators
-  jsep.addBinaryOp("=~", 0);
-  jsep.addBinaryOp("!~", 0);
+    // customize jsep operators
+    jsep.addBinaryOp("=~", 0);
+    jsep.addBinaryOp("!~", 0);
 
-  let ast;
-  try {
-    ast = jsep(expression);
-  } catch (e) {
-    throw new RuntimeError(e);
+    let ast;
+    try {
+      ast = jsep(expression);
+    } catch (e) {
+      throw new RuntimeError(e);
+    }
+
+    this._runtimeAst = createRuntimeAst(this, ast);
   }
 
-  this._runtimeAst = createRuntimeAst(this, ast);
-}
+  /**
+   * Evaluates the result of an expression, optionally using the provided feature's properties. If the result of
+   * the expression in the
+   * {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/Styling|3D Tiles Styling language}
+   * is of type <code>Boolean</code>, <code>Number</code>, or <code>String</code>, the corresponding JavaScript
+   * primitive type will be returned. If the result is a <code>RegExp</code>, a Javascript <code>RegExp</code>
+   * object will be returned. If the result is a <code>Cartesian2</code>, <code>Cartesian3</code>, or <code>Cartesian4</code>,
+   * a {@link Cartesian2}, {@link Cartesian3}, or {@link Cartesian4} object will be returned. If the <code>result</code> argument is
+   * a {@link Color}, the {@link Cartesian4} value is converted to a {@link Color} and then returned.
+   *
+   * @param {Cesium3DTileFeature} feature The feature whose properties may be used as variables in the expression.
+   * @param {object} [result] The object onto which to store the result.
+   * @returns {boolean|number|string|RegExp|Cartesian2|Cartesian3|Cartesian4|Color} The result of evaluating the expression.
+   */
+  evaluate(feature, result) {
+    scratchStorage.reset();
+    const value = this._runtimeAst.evaluate(feature);
+    if (result instanceof Color && value instanceof Cartesian4) {
+      return Color.fromCartesian4(value, result);
+    }
+    if (
+      value instanceof Cartesian2 ||
+      value instanceof Cartesian3 ||
+      value instanceof Cartesian4
+    ) {
+      return value.clone(result);
+    }
+    return value;
+  }
 
-Object.defineProperties(Expression.prototype, {
+  /**
+   * Evaluates the result of a Color expression, optionally using the provided feature's properties.
+   * <p>
+   * This is equivalent to {@link Expression#evaluate} but always returns a {@link Color} object.
+   * </p>
+   *
+   * @param {Cesium3DTileFeature} feature The feature whose properties may be used as variables in the expression.
+   * @param {Color} [result] The object in which to store the result
+   * @returns {Color} The modified result parameter or a new Color instance if one was not provided.
+   */
+  evaluateColor(feature, result) {
+    scratchStorage.reset();
+    const color = this._runtimeAst.evaluate(feature);
+    return Color.fromCartesian4(color, result);
+  }
+
+  /**
+   * Gets the shader function for this expression.
+   * Returns undefined if the shader function can't be generated from this expression.
+   *
+   * @param {string} functionSignature Signature of the generated function.
+   * @param {object} variableSubstitutionMap Maps variable names to shader variable names.
+   * @param {object} shaderState Stores information about the generated shader function, including whether it is translucent.
+   * @param {string} returnType The return type of the generated function.
+   *
+   * @returns {string} The shader function.
+   *
+   * @private
+   */
+  getShaderFunction(functionSignature, variableSubstitutionMap, shaderState, returnType) {
+    let shaderExpression = this.getShaderExpression(
+      variableSubstitutionMap,
+      shaderState,
+    );
+
+    shaderExpression =
+      `${returnType} ${functionSignature}\n` +
+      `{\n` +
+      `    return ${shaderExpression};\n` +
+      `}\n`;
+
+    return shaderExpression;
+  }
+
+  /**
+   * Gets the shader expression for this expression.
+   * Returns undefined if the shader expression can't be generated from this expression.
+   *
+   * @param {object} variableSubstitutionMap Maps variable names to shader variable names.
+   * @param {object} shaderState Stores information about the generated shader function, including whether it is translucent.
+   *
+   * @returns {string} The shader expression.
+   *
+   * @private
+   */
+  getShaderExpression(variableSubstitutionMap, shaderState) {
+    return this._runtimeAst.getShaderExpression(
+      variableSubstitutionMap,
+      shaderState,
+    );
+  }
+
+  /**
+   * Gets the variables used by the expression.
+   *
+   * @returns {string[]} The variables used by the expression.
+   *
+   * @private
+   */
+  getVariables() {
+    let variables = [];
+
+    this._runtimeAst.getVariables(variables);
+
+    // Remove duplicates
+    variables = variables.filter(function (variable, index, variables) {
+      return variables.indexOf(variable) === index;
+    });
+
+    return variables;
+  }
+
   /**
    * Gets the expression defined in the 3D Tiles Styling language.
    *
@@ -68,12 +180,10 @@ Object.defineProperties(Expression.prototype, {
    *
    * @default undefined
    */
-  expression: {
-    get: function () {
-      return this._expression;
-    },
-  },
-});
+  get expression() {
+    return this._expression;
+  }
+}
 
 // Scratch storage manager while evaluating deep expressions.
 // For example, an expression like dot(vec4(${red}), vec4(${green}) * vec4(${blue}) requires 3 scratch Cartesian4's
@@ -118,126 +228,6 @@ const scratchStorage = {
     }
     return this.cartesian4Array[this.cartesian4Index++];
   },
-};
-
-/**
- * Evaluates the result of an expression, optionally using the provided feature's properties. If the result of
- * the expression in the
- * {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/Styling|3D Tiles Styling language}
- * is of type <code>Boolean</code>, <code>Number</code>, or <code>String</code>, the corresponding JavaScript
- * primitive type will be returned. If the result is a <code>RegExp</code>, a Javascript <code>RegExp</code>
- * object will be returned. If the result is a <code>Cartesian2</code>, <code>Cartesian3</code>, or <code>Cartesian4</code>,
- * a {@link Cartesian2}, {@link Cartesian3}, or {@link Cartesian4} object will be returned. If the <code>result</code> argument is
- * a {@link Color}, the {@link Cartesian4} value is converted to a {@link Color} and then returned.
- *
- * @param {Cesium3DTileFeature} feature The feature whose properties may be used as variables in the expression.
- * @param {object} [result] The object onto which to store the result.
- * @returns {boolean|number|string|RegExp|Cartesian2|Cartesian3|Cartesian4|Color} The result of evaluating the expression.
- */
-Expression.prototype.evaluate = function (feature, result) {
-  scratchStorage.reset();
-  const value = this._runtimeAst.evaluate(feature);
-  if (result instanceof Color && value instanceof Cartesian4) {
-    return Color.fromCartesian4(value, result);
-  }
-  if (
-    value instanceof Cartesian2 ||
-    value instanceof Cartesian3 ||
-    value instanceof Cartesian4
-  ) {
-    return value.clone(result);
-  }
-  return value;
-};
-
-/**
- * Evaluates the result of a Color expression, optionally using the provided feature's properties.
- * <p>
- * This is equivalent to {@link Expression#evaluate} but always returns a {@link Color} object.
- * </p>
- *
- * @param {Cesium3DTileFeature} feature The feature whose properties may be used as variables in the expression.
- * @param {Color} [result] The object in which to store the result
- * @returns {Color} The modified result parameter or a new Color instance if one was not provided.
- */
-Expression.prototype.evaluateColor = function (feature, result) {
-  scratchStorage.reset();
-  const color = this._runtimeAst.evaluate(feature);
-  return Color.fromCartesian4(color, result);
-};
-
-/**
- * Gets the shader function for this expression.
- * Returns undefined if the shader function can't be generated from this expression.
- *
- * @param {string} functionSignature Signature of the generated function.
- * @param {object} variableSubstitutionMap Maps variable names to shader variable names.
- * @param {object} shaderState Stores information about the generated shader function, including whether it is translucent.
- * @param {string} returnType The return type of the generated function.
- *
- * @returns {string} The shader function.
- *
- * @private
- */
-Expression.prototype.getShaderFunction = function (
-  functionSignature,
-  variableSubstitutionMap,
-  shaderState,
-  returnType,
-) {
-  let shaderExpression = this.getShaderExpression(
-    variableSubstitutionMap,
-    shaderState,
-  );
-
-  shaderExpression =
-    `${returnType} ${functionSignature}\n` +
-    `{\n` +
-    `    return ${shaderExpression};\n` +
-    `}\n`;
-
-  return shaderExpression;
-};
-
-/**
- * Gets the shader expression for this expression.
- * Returns undefined if the shader expression can't be generated from this expression.
- *
- * @param {object} variableSubstitutionMap Maps variable names to shader variable names.
- * @param {object} shaderState Stores information about the generated shader function, including whether it is translucent.
- *
- * @returns {string} The shader expression.
- *
- * @private
- */
-Expression.prototype.getShaderExpression = function (
-  variableSubstitutionMap,
-  shaderState,
-) {
-  return this._runtimeAst.getShaderExpression(
-    variableSubstitutionMap,
-    shaderState,
-  );
-};
-
-/**
- * Gets the variables used by the expression.
- *
- * @returns {string[]} The variables used by the expression.
- *
- * @private
- */
-Expression.prototype.getVariables = function () {
-  let variables = [];
-
-  this._runtimeAst.getVariables(variables);
-
-  // Remove duplicates
-  variables = variables.filter(function (variable, index, variables) {
-    return variables.indexOf(variable) === index;
-  });
-
-  return variables;
 };
 
 const unaryOperators = ["!", "-", "+"];
@@ -637,7 +627,7 @@ function parseLiteral(ast) {
   } else if (type === "number") {
     return new Node(ExpressionNodeType.LITERAL_NUMBER, ast.value);
   } else if (type === "string") {
-    if (ast.value.indexOf("${") >= 0) {
+    if (ast.value.includes("${")) {
       return new Node(ExpressionNodeType.VARIABLE_IN_STRING, ast.value);
     }
     return new Node(
@@ -906,7 +896,7 @@ function createRuntimeAst(expression, ast) {
   } else if (ast.type === "UnaryExpression") {
     op = ast.operator;
     const child = createRuntimeAst(expression, ast.argument);
-    if (unaryOperators.indexOf(op) > -1) {
+    if (unaryOperators.includes(op)) {
       node = new Node(ExpressionNodeType.UNARY, op, child);
     } else {
       throw new RuntimeError(`Unexpected operator "${op}".`);
@@ -915,7 +905,7 @@ function createRuntimeAst(expression, ast) {
     op = ast.operator;
     left = createRuntimeAst(expression, ast.left);
     right = createRuntimeAst(expression, ast.right);
-    if (binaryOperators.indexOf(op) > -1) {
+    if (binaryOperators.includes(op)) {
       node = new Node(ExpressionNodeType.BINARY, op, left, right);
     } else {
       throw new RuntimeError(`Unexpected operator "${op}".`);
@@ -924,7 +914,7 @@ function createRuntimeAst(expression, ast) {
     op = ast.operator;
     left = createRuntimeAst(expression, ast.left);
     right = createRuntimeAst(expression, ast.right);
-    if (binaryOperators.indexOf(op) > -1) {
+    if (binaryOperators.includes(op)) {
       node = new Node(ExpressionNodeType.BINARY, op, left, right);
     }
   } else if (ast.type === "ConditionalExpression") {

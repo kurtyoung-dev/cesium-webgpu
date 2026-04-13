@@ -10,9 +10,7 @@ import defined from "../../Core/defined.js";
  * @private
  */
 function usesExtension(gltf, extension) {
-  return (
-    defined(gltf.extensionsUsed) && gltf.extensionsUsed.indexOf(extension) >= 0
-  );
+  return (defined(gltf.extensionsUsed) && gltf.extensionsUsed.includes(extension));
 }
 
 export default usesExtension;

@@ -33,35 +33,56 @@ import defined from "../Core/defined.js";
  * @param {Globe} globe The owning Globe. The facade reads the atmosphere,
  *   cloud, night, and lighting properties from it.
  */
-function AtmosphericConditions(scene, globe) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new Error("scene is required");
+class AtmosphericConditions {
+  constructor(scene, globe) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new Error("scene is required");
+    }
+    if (!defined(globe)) {
+      throw new Error("globe is required");
+    }
+    //>>includeEnd('debug');
+
+    this._scene = scene;
+    this._globe = globe;
+
+    // Build leaves once. Each leaf is a plain object whose property descriptors
+    // close over `scene`/`globe`.
+    this._scattering = buildScattering(scene, globe);
+    this._lighting = buildLighting(globe);
+    this._skyAtmosphere = buildSkyAtmosphere(scene);
+    this._groundAtmosphere = buildGroundAtmosphere(globe);
+    this._atmosphere = buildAtmosphere(scene);
+    this._fog = buildFog(scene);
+    this._volumetricFog = buildVolumetricFog();
+    this._varyingAtmosphereDensity = buildVaryingAtmosphereDensity();
+    this._clouds = buildClouds(globe);
+    this._weather = buildWeather(scene, globe);
+    this._night = buildNight(globe);
   }
-  if (!defined(globe)) {
-    throw new Error("globe is required");
+
+  /**
+   * Returns a JSON-serializable snapshot of the facade state. Used by future
+   * snapshot/record modes. Implementation is intentionally minimal for now.
+   * @returns {object} a plain-object snapshot (deep-cloned)
+   */
+  clone() {
+    // TODO(Phase 2): full structured snapshot including Cartesian3 serialization.
+    const snapshot = {
+      scattering: {
+        rayleighCoefficient: cloneCartesian3(
+          this._scattering.rayleighCoefficient,
+        ),
+        mieCoefficient: cloneCartesian3(this._scattering.mieCoefficient),
+        rayleighScaleHeight: this._scattering.rayleighScaleHeight,
+        mieScaleHeight: this._scattering.mieScaleHeight,
+        mieAnisotropy: this._scattering.mieAnisotropy,
+      },
+    };
+    return JSON.parse(JSON.stringify(snapshot));
   }
-  //>>includeEnd('debug');
 
-  this._scene = scene;
-  this._globe = globe;
-
-  // Build leaves once. Each leaf is a plain object whose property descriptors
-  // close over `scene`/`globe`.
-  this._scattering = buildScattering(scene, globe);
-  this._lighting = buildLighting(globe);
-  this._skyAtmosphere = buildSkyAtmosphere(scene);
-  this._groundAtmosphere = buildGroundAtmosphere(globe);
-  this._atmosphere = buildAtmosphere(scene);
-  this._fog = buildFog(scene);
-  this._volumetricFog = buildVolumetricFog();
-  this._varyingAtmosphereDensity = buildVaryingAtmosphereDensity();
-  this._clouds = buildClouds(globe);
-  this._weather = buildWeather(scene, globe);
-  this._night = buildNight(globe);
-}
-
-Object.defineProperties(AtmosphericConditions.prototype, {
   /**
    * Unified scattering coefficients (Option A). Setters fan out to
    * `scene.atmosphere`, `scene.skyAtmosphere`, and the `Globe` atmosphere
@@ -70,11 +91,10 @@ Object.defineProperties(AtmosphericConditions.prototype, {
    * @type {object}
    * @readonly
    */
-  scattering: {
-    get: function () {
-      return this._scattering;
-    },
-  },
+  get scattering() {
+    return this._scattering;
+  }
+
   /**
    * Lighting flags. `lambertDiffuseMultiplier`, `vertexShadowDarkness`,
    * `dynamicAtmosphereLighting`, and `dynamicAtmosphereLightingFromSun`
@@ -84,85 +104,77 @@ Object.defineProperties(AtmosphericConditions.prototype, {
    * @type {object}
    * @readonly
    */
-  lighting: {
-    get: function () {
-      return this._lighting;
-    },
-  },
+  get lighting() {
+    return this._lighting;
+  }
+
   /**
    * Sky atmosphere facade over `scene.skyAtmosphere`. Also holds the new
    * Phase 1 `starModulationCurve` state.
    * @type {object}
    * @readonly
    */
-  skyAtmosphere: {
-    get: function () {
-      return this._skyAtmosphere;
-    },
-  },
+  get skyAtmosphere() {
+    return this._skyAtmosphere;
+  }
+
   /**
    * Ground atmosphere facade over the matching `Globe` fields. Adds new
    * `perFragment` state for Phase 1.
    * @type {object}
    * @readonly
    */
-  groundAtmosphere: {
-    get: function () {
-      return this._groundAtmosphere;
-    },
-  },
+  get groundAtmosphere() {
+    return this._groundAtmosphere;
+  }
+
   /**
    * Thin mirror of `scene.atmosphere` (the shared Atmosphere object used
    * by 3D Tiles and models). Exposed here for symmetry and discoverability.
    * @type {object}
    * @readonly
    */
-  atmosphere: {
-    get: function () {
-      return this._atmosphere;
-    },
-  },
+  get atmosphere() {
+    return this._atmosphere;
+  }
+
   /**
    * Fog facade over `scene.fog`.
    * @type {object}
    * @readonly
    */
-  fog: {
-    get: function () {
-      return this._fog;
-    },
-  },
+  get fog() {
+    return this._fog;
+  }
+
   /**
    * Volumetric fog — Phase 1 state only, no legacy backing.
    * @type {object}
    * @readonly
    */
-  volumetricFog: {
-    get: function () {
-      return this._volumetricFog;
-    },
-  },
+  get volumetricFog() {
+    return this._volumetricFog;
+  }
+
   /**
    * Varying atmosphere density — Phase 1 state only, no legacy backing.
    * @type {object}
    * @readonly
    */
-  varyingAtmosphereDensity: {
-    get: function () {
-      return this._varyingAtmosphereDensity;
-    },
-  },
+  get varyingAtmosphereDensity() {
+    return this._varyingAtmosphereDensity;
+  }
+
   /**
    * Clouds facade over the Globe cloud fields. New volumetric cloud state
    * is stored directly on the facade.
    * @type {object}
    * @readonly
    */
-  clouds: {
-    get: function () {
-      return this._clouds;
-    },
-  },
+  get clouds() {
+    return this._clouds;
+  }
+
   /**
    * Weather facade over `scene._enableWeather` / `_weather*` fields. The
    * wind setter additionally fans out to `globe.cloudWindSpeed` /
@@ -170,43 +182,19 @@ Object.defineProperties(AtmosphericConditions.prototype, {
    * @type {object}
    * @readonly
    */
-  weather: {
-    get: function () {
-      return this._weather;
-    },
-  },
+  get weather() {
+    return this._weather;
+  }
+
   /**
    * Night lighting facade over Globe night fields.
    * @type {object}
    * @readonly
    */
-  night: {
-    get: function () {
-      return this._night;
-    },
-  },
-});
-
-/**
- * Returns a JSON-serializable snapshot of the facade state. Used by future
- * snapshot/record modes. Implementation is intentionally minimal for now.
- * @returns {object} a plain-object snapshot (deep-cloned)
- */
-AtmosphericConditions.prototype.clone = function () {
-  // TODO(Phase 2): full structured snapshot including Cartesian3 serialization.
-  const snapshot = {
-    scattering: {
-      rayleighCoefficient: cloneCartesian3(
-        this._scattering.rayleighCoefficient,
-      ),
-      mieCoefficient: cloneCartesian3(this._scattering.mieCoefficient),
-      rayleighScaleHeight: this._scattering.rayleighScaleHeight,
-      mieScaleHeight: this._scattering.mieScaleHeight,
-      mieAnisotropy: this._scattering.mieAnisotropy,
-    },
-  };
-  return JSON.parse(JSON.stringify(snapshot));
-};
+  get night() {
+    return this._night;
+  }
+}
 
 function cloneCartesian3(v) {
   if (!defined(v)) {

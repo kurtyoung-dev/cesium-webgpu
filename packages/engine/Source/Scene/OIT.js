@@ -21,75 +21,457 @@ import BlendFunction from "./BlendFunction.js";
  * @constructor
  * @param {Context} context
  */
-function OIT(context) {
-  this._numSamples = 1;
-  // We support multipass for the Chrome D3D9 backend and ES 2.0 on mobile.
-  this._translucentMultipassSupport = false;
-  this._translucentMRTSupport = false;
+class OIT {
+  constructor(context) {
+    this._numSamples = 1;
+    // We support multipass for the Chrome D3D9 backend and ES 2.0 on mobile.
+    this._translucentMultipassSupport = false;
+    this._translucentMRTSupport = false;
 
-  const extensionsSupported =
-    context.colorBufferFloat && context.depthTexture && context.floatBlend;
-  this._translucentMRTSupport = context.drawBuffers && extensionsSupported;
-  this._translucentMultipassSupport =
-    !this._translucentMRTSupport && extensionsSupported;
+    const extensionsSupported =
+      context.colorBufferFloat && context.depthTexture && context.floatBlend;
+    this._translucentMRTSupport = context.drawBuffers && extensionsSupported;
+    this._translucentMultipassSupport =
+      !this._translucentMRTSupport && extensionsSupported;
 
-  this._opaqueFBO = undefined;
-  this._opaqueTexture = undefined;
-  this._depthStencilTexture = undefined;
+    this._opaqueFBO = undefined;
+    this._opaqueTexture = undefined;
+    this._depthStencilTexture = undefined;
 
-  this._accumulationTexture = undefined;
+    this._accumulationTexture = undefined;
 
-  this._translucentFBO = new FramebufferManager({
-    colorAttachmentsLength: this._translucentMRTSupport ? 2 : 1,
-    createColorAttachments: false,
-    createDepthAttachments: false,
-    depth: true,
-  });
-  this._alphaFBO = new FramebufferManager({
-    createColorAttachments: false,
-    createDepthAttachments: false,
-    depth: true,
-  });
+    this._translucentFBO = new FramebufferManager({
+      colorAttachmentsLength: this._translucentMRTSupport ? 2 : 1,
+      createColorAttachments: false,
+      createDepthAttachments: false,
+      depth: true,
+    });
+    this._alphaFBO = new FramebufferManager({
+      createColorAttachments: false,
+      createDepthAttachments: false,
+      depth: true,
+    });
 
-  this._adjustTranslucentFBO = new FramebufferManager({
-    colorAttachmentsLength: this._translucentMRTSupport ? 2 : 1,
-    createColorAttachments: false,
-  });
-  this._adjustAlphaFBO = new FramebufferManager({
-    createColorAttachments: false,
-  });
+    this._adjustTranslucentFBO = new FramebufferManager({
+      colorAttachmentsLength: this._translucentMRTSupport ? 2 : 1,
+      createColorAttachments: false,
+    });
+    this._adjustAlphaFBO = new FramebufferManager({
+      createColorAttachments: false,
+    });
 
-  this._opaqueClearCommand = new ClearCommand({
-    color: new Color(0.0, 0.0, 0.0, 0.0),
-    owner: this,
-  });
-  this._translucentMRTClearCommand = new ClearCommand({
-    color: new Color(0.0, 0.0, 0.0, 1.0),
-    owner: this,
-  });
-  this._translucentMultipassClearCommand = new ClearCommand({
-    color: new Color(0.0, 0.0, 0.0, 0.0),
-    owner: this,
-  });
-  this._alphaClearCommand = new ClearCommand({
-    color: new Color(1.0, 1.0, 1.0, 1.0),
-    owner: this,
-  });
+    this._opaqueClearCommand = new ClearCommand({
+      color: new Color(0.0, 0.0, 0.0, 0.0),
+      owner: this,
+    });
+    this._translucentMRTClearCommand = new ClearCommand({
+      color: new Color(0.0, 0.0, 0.0, 1.0),
+      owner: this,
+    });
+    this._translucentMultipassClearCommand = new ClearCommand({
+      color: new Color(0.0, 0.0, 0.0, 0.0),
+      owner: this,
+    });
+    this._alphaClearCommand = new ClearCommand({
+      color: new Color(1.0, 1.0, 1.0, 1.0),
+      owner: this,
+    });
 
-  this._translucentRenderStateCache = {};
-  this._alphaRenderStateCache = {};
+    this._translucentRenderStateCache = {};
+    this._alphaRenderStateCache = {};
 
-  this._compositeCommand = undefined;
-  this._adjustTranslucentCommand = undefined;
-  this._adjustAlphaCommand = undefined;
+    this._compositeCommand = undefined;
+    this._adjustTranslucentCommand = undefined;
+    this._adjustAlphaCommand = undefined;
 
-  this._viewport = new BoundingRectangle();
-  this._rs = undefined;
+    this._viewport = new BoundingRectangle();
+    this._rs = undefined;
 
-  this._useScissorTest = false;
-  this._scissorRectangle = undefined;
+    this._useScissorTest = false;
+    this._scissorRectangle = undefined;
 
-  this._useHDR = false;
+    this._useHDR = false;
+  }
+
+  /**
+   * @private
+   * @param {Context} context
+   * @param {PassState} passState
+   * @param {Framebuffer} framebuffer
+   * @param {boolean} useHDR
+   * @param {number} numSamples
+   */
+  update(context, passState, framebuffer, useHDR, numSamples) {
+    if (!this.isSupported()) {
+      return;
+    }
+
+    this._opaqueFBO = framebuffer;
+    this._opaqueTexture = framebuffer.getColorTexture(0);
+    this._depthStencilTexture = framebuffer.getDepthStencilTexture();
+
+    const { width, height } = this._opaqueTexture;
+
+    const accumulationTexture = this._accumulationTexture;
+    const textureChanged =
+      !defined(accumulationTexture) ||
+      accumulationTexture.width !== width ||
+      accumulationTexture.height !== height ||
+      useHDR !== this._useHDR;
+    const samplesChanged = this._numSamples !== numSamples;
+
+    if (textureChanged || samplesChanged) {
+      this._numSamples = numSamples;
+      updateTextures(this, context, width, height);
+    }
+
+    if (
+      !defined(this._translucentFBO.framebuffer) ||
+      textureChanged ||
+      samplesChanged
+    ) {
+      if (!updateFramebuffers(this, context)) {
+        // framebuffer creation failed
+        return;
+      }
+    }
+
+    this._useHDR = useHDR;
+
+    const that = this;
+    let fs;
+    let uniformMap;
+
+    if (!defined(this._compositeCommand)) {
+      fs = new ShaderSource({
+        sources: [CompositeOITFS],
+      });
+      if (this._translucentMRTSupport) {
+        fs.defines.push("MRT");
+      }
+
+      uniformMap = {
+        u_opaque: function () {
+          return that._opaqueTexture;
+        },
+        u_accumulation: function () {
+          return that._accumulationTexture;
+        },
+        u_revealage: function () {
+          return that._revealageTexture;
+        },
+      };
+      this._compositeCommand = context.createViewportQuadCommand(fs, {
+        uniformMap: uniformMap,
+        owner: this,
+      });
+    }
+
+    if (!defined(this._adjustTranslucentCommand)) {
+      if (this._translucentMRTSupport) {
+        fs = new ShaderSource({
+          defines: ["MRT"],
+          sources: [AdjustTranslucentFS],
+        });
+
+        uniformMap = {
+          u_bgColor: function () {
+            return that._translucentMRTClearCommand.color;
+          },
+          u_depthTexture: function () {
+            return that._depthStencilTexture;
+          },
+        };
+
+        this._adjustTranslucentCommand = context.createViewportQuadCommand(fs, {
+          uniformMap: uniformMap,
+          owner: this,
+        });
+      } else if (this._translucentMultipassSupport) {
+        fs = new ShaderSource({
+          sources: [AdjustTranslucentFS],
+        });
+
+        uniformMap = {
+          u_bgColor: function () {
+            return that._translucentMultipassClearCommand.color;
+          },
+          u_depthTexture: function () {
+            return that._depthStencilTexture;
+          },
+        };
+
+        this._adjustTranslucentCommand = context.createViewportQuadCommand(fs, {
+          uniformMap: uniformMap,
+          owner: this,
+        });
+
+        uniformMap = {
+          u_bgColor: function () {
+            return that._alphaClearCommand.color;
+          },
+          u_depthTexture: function () {
+            return that._depthStencilTexture;
+          },
+        };
+
+        this._adjustAlphaCommand = context.createViewportQuadCommand(fs, {
+          uniformMap: uniformMap,
+          owner: this,
+        });
+      }
+    }
+
+    this._viewport.width = width;
+    this._viewport.height = height;
+
+    const useScissorTest = !BoundingRectangle.equals(
+      this._viewport,
+      passState.viewport,
+    );
+    let updateScissor = useScissorTest !== this._useScissorTest;
+    this._useScissorTest = useScissorTest;
+
+    if (!BoundingRectangle.equals(this._scissorRectangle, passState.viewport)) {
+      this._scissorRectangle = BoundingRectangle.clone(
+        passState.viewport,
+        this._scissorRectangle,
+      );
+      updateScissor = true;
+    }
+
+    if (
+      !defined(this._rs) ||
+      !BoundingRectangle.equals(this._viewport, this._rs.viewport) ||
+      updateScissor
+    ) {
+      this._rs = RenderState.fromCache({
+        viewport: this._viewport,
+        scissorTest: {
+          enabled: this._useScissorTest,
+          rectangle: this._scissorRectangle,
+        },
+      });
+    }
+
+    if (defined(this._compositeCommand)) {
+      this._compositeCommand.renderState = this._rs;
+    }
+
+    if (this._adjustTranslucentCommand) {
+      this._adjustTranslucentCommand.renderState = this._rs;
+    }
+
+    if (defined(this._adjustAlphaCommand)) {
+      this._adjustAlphaCommand.renderState = this._rs;
+    }
+  }
+
+  /**
+   * @private
+   * @param {DrawCommand} command
+   * @param {Context} context
+   * @param {*} result
+   * @returns {*}
+   */
+  createDerivedCommands(command, context, result) {
+    if (!defined(result)) {
+      result = {};
+    }
+
+    if (this._translucentMRTSupport) {
+      let translucentShader;
+      let translucentRenderState;
+      if (defined(result.translucentCommand)) {
+        translucentShader = result.translucentCommand.shaderProgram;
+        translucentRenderState = result.translucentCommand.renderState;
+      }
+
+      result.translucentCommand = DrawCommand.shallowClone(
+        command,
+        result.translucentCommand,
+      );
+
+      if (
+        !defined(translucentShader) ||
+        result.shaderProgramId !== command.shaderProgram.id
+      ) {
+        result.translucentCommand.shaderProgram = getTranslucentMRTShaderProgram(
+          context,
+          command.shaderProgram,
+        );
+        result.translucentCommand.renderState = getTranslucentMRTRenderState(
+          this,
+          context,
+          command.renderState,
+        );
+        result.shaderProgramId = command.shaderProgram.id;
+      } else {
+        result.translucentCommand.shaderProgram = translucentShader;
+        result.translucentCommand.renderState = translucentRenderState;
+      }
+      return result;
+    }
+
+    let colorShader;
+    let colorRenderState;
+    let alphaShader;
+    let alphaRenderState;
+    if (defined(result.translucentCommand)) {
+      colorShader = result.translucentCommand.shaderProgram;
+      colorRenderState = result.translucentCommand.renderState;
+      alphaShader = result.alphaCommand.shaderProgram;
+      alphaRenderState = result.alphaCommand.renderState;
+    }
+
+    result.translucentCommand = DrawCommand.shallowClone(
+      command,
+      result.translucentCommand,
+    );
+    result.alphaCommand = DrawCommand.shallowClone(command, result.alphaCommand);
+
+    if (
+      !defined(colorShader) ||
+      result.shaderProgramId !== command.shaderProgram.id
+    ) {
+      result.translucentCommand.shaderProgram = getTranslucentColorShaderProgram(
+        context,
+        command.shaderProgram,
+      );
+      result.translucentCommand.renderState = getTranslucentColorRenderState(
+        this,
+        context,
+        command.renderState,
+      );
+      result.alphaCommand.shaderProgram = getTranslucentAlphaShaderProgram(
+        context,
+        command.shaderProgram,
+      );
+      result.alphaCommand.renderState = getTranslucentAlphaRenderState(
+        this,
+        context,
+        command.renderState,
+      );
+      result.shaderProgramId = command.shaderProgram.id;
+    } else {
+      result.translucentCommand.shaderProgram = colorShader;
+      result.translucentCommand.renderState = colorRenderState;
+      result.alphaCommand.shaderProgram = alphaShader;
+      result.alphaCommand.renderState = alphaRenderState;
+    }
+
+    return result;
+  }
+
+  /**
+   * @private
+   * @param {Scene} scene
+   * @param {Function} executeFunction
+   * @param {PassState} passState
+   * @param {DrawCommand[]} commands
+   * @param {InvertClassification} invertClassification
+   */
+  executeCommands(scene, executeFunction, passState, commands, invertClassification) {
+    if (this._translucentMRTSupport) {
+      executeTranslucentCommandsSortedMRT(
+        this,
+        scene,
+        executeFunction,
+        passState,
+        commands,
+        invertClassification,
+      );
+      return;
+    }
+
+    executeTranslucentCommandsSortedMultipass(
+      this,
+      scene,
+      executeFunction,
+      passState,
+      commands,
+      invertClassification,
+    );
+  }
+
+  /**
+   * @private
+   * @param {Context} context
+   * @param {PassState} passState
+   */
+  execute(context, passState) {
+    this._compositeCommand.execute(context, passState);
+  }
+
+  /**
+   * @private
+   * @param {Context} context
+   * @param {PassState} passState
+   * @param {Color} clearColor
+   */
+  clear(context, passState, clearColor) {
+    const framebuffer = passState.framebuffer;
+
+    passState.framebuffer = this._opaqueFBO.framebuffer;
+    Color.clone(clearColor, this._opaqueClearCommand.color);
+    this._opaqueClearCommand.execute(context, passState);
+
+    passState.framebuffer = this._translucentFBO.framebuffer;
+    const translucentClearCommand = this._translucentMRTSupport
+      ? this._translucentMRTClearCommand
+      : this._translucentMultipassClearCommand;
+    translucentClearCommand.execute(context, passState);
+
+    if (this._translucentMultipassSupport) {
+      passState.framebuffer = this._alphaFBO.framebuffer;
+      this._alphaClearCommand.execute(context, passState);
+    }
+
+    passState.framebuffer = framebuffer;
+  }
+
+  /**
+   * @private
+   * @returns {boolean}
+   */
+  isSupported() {
+    return this._translucentMRTSupport || this._translucentMultipassSupport;
+  }
+
+  /**
+   * @private
+   * @returns {boolean}
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * @private
+   */
+  destroy() {
+    destroyResources(this);
+
+    if (defined(this._compositeCommand)) {
+      this._compositeCommand.shaderProgram =
+        this._compositeCommand.shaderProgram &&
+        this._compositeCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._adjustTranslucentCommand)) {
+      this._adjustTranslucentCommand.shaderProgram =
+        this._adjustTranslucentCommand.shaderProgram &&
+        this._adjustTranslucentCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._adjustAlphaCommand)) {
+      this._adjustAlphaCommand.shaderProgram =
+        this._adjustAlphaCommand.shaderProgram &&
+        this._adjustAlphaCommand.shaderProgram.destroy();
+    }
+
+    return destroyObject(this);
+  }
 }
 
 /**
@@ -224,186 +606,6 @@ function updateFramebuffers(oit, context) {
 
   return supported;
 }
-
-/**
- * @private
- * @param {Context} context
- * @param {PassState} passState
- * @param {Framebuffer} framebuffer
- * @param {boolean} useHDR
- * @param {number} numSamples
- */
-OIT.prototype.update = function (
-  context,
-  passState,
-  framebuffer,
-  useHDR,
-  numSamples,
-) {
-  if (!this.isSupported()) {
-    return;
-  }
-
-  this._opaqueFBO = framebuffer;
-  this._opaqueTexture = framebuffer.getColorTexture(0);
-  this._depthStencilTexture = framebuffer.getDepthStencilTexture();
-
-  const { width, height } = this._opaqueTexture;
-
-  const accumulationTexture = this._accumulationTexture;
-  const textureChanged =
-    !defined(accumulationTexture) ||
-    accumulationTexture.width !== width ||
-    accumulationTexture.height !== height ||
-    useHDR !== this._useHDR;
-  const samplesChanged = this._numSamples !== numSamples;
-
-  if (textureChanged || samplesChanged) {
-    this._numSamples = numSamples;
-    updateTextures(this, context, width, height);
-  }
-
-  if (
-    !defined(this._translucentFBO.framebuffer) ||
-    textureChanged ||
-    samplesChanged
-  ) {
-    if (!updateFramebuffers(this, context)) {
-      // framebuffer creation failed
-      return;
-    }
-  }
-
-  this._useHDR = useHDR;
-
-  const that = this;
-  let fs;
-  let uniformMap;
-
-  if (!defined(this._compositeCommand)) {
-    fs = new ShaderSource({
-      sources: [CompositeOITFS],
-    });
-    if (this._translucentMRTSupport) {
-      fs.defines.push("MRT");
-    }
-
-    uniformMap = {
-      u_opaque: function () {
-        return that._opaqueTexture;
-      },
-      u_accumulation: function () {
-        return that._accumulationTexture;
-      },
-      u_revealage: function () {
-        return that._revealageTexture;
-      },
-    };
-    this._compositeCommand = context.createViewportQuadCommand(fs, {
-      uniformMap: uniformMap,
-      owner: this,
-    });
-  }
-
-  if (!defined(this._adjustTranslucentCommand)) {
-    if (this._translucentMRTSupport) {
-      fs = new ShaderSource({
-        defines: ["MRT"],
-        sources: [AdjustTranslucentFS],
-      });
-
-      uniformMap = {
-        u_bgColor: function () {
-          return that._translucentMRTClearCommand.color;
-        },
-        u_depthTexture: function () {
-          return that._depthStencilTexture;
-        },
-      };
-
-      this._adjustTranslucentCommand = context.createViewportQuadCommand(fs, {
-        uniformMap: uniformMap,
-        owner: this,
-      });
-    } else if (this._translucentMultipassSupport) {
-      fs = new ShaderSource({
-        sources: [AdjustTranslucentFS],
-      });
-
-      uniformMap = {
-        u_bgColor: function () {
-          return that._translucentMultipassClearCommand.color;
-        },
-        u_depthTexture: function () {
-          return that._depthStencilTexture;
-        },
-      };
-
-      this._adjustTranslucentCommand = context.createViewportQuadCommand(fs, {
-        uniformMap: uniformMap,
-        owner: this,
-      });
-
-      uniformMap = {
-        u_bgColor: function () {
-          return that._alphaClearCommand.color;
-        },
-        u_depthTexture: function () {
-          return that._depthStencilTexture;
-        },
-      };
-
-      this._adjustAlphaCommand = context.createViewportQuadCommand(fs, {
-        uniformMap: uniformMap,
-        owner: this,
-      });
-    }
-  }
-
-  this._viewport.width = width;
-  this._viewport.height = height;
-
-  const useScissorTest = !BoundingRectangle.equals(
-    this._viewport,
-    passState.viewport,
-  );
-  let updateScissor = useScissorTest !== this._useScissorTest;
-  this._useScissorTest = useScissorTest;
-
-  if (!BoundingRectangle.equals(this._scissorRectangle, passState.viewport)) {
-    this._scissorRectangle = BoundingRectangle.clone(
-      passState.viewport,
-      this._scissorRectangle,
-    );
-    updateScissor = true;
-  }
-
-  if (
-    !defined(this._rs) ||
-    !BoundingRectangle.equals(this._viewport, this._rs.viewport) ||
-    updateScissor
-  ) {
-    this._rs = RenderState.fromCache({
-      viewport: this._viewport,
-      scissorTest: {
-        enabled: this._useScissorTest,
-        rectangle: this._scissorRectangle,
-      },
-    });
-  }
-
-  if (defined(this._compositeCommand)) {
-    this._compositeCommand.renderState = this._rs;
-  }
-
-  if (this._adjustTranslucentCommand) {
-    this._adjustTranslucentCommand.renderState = this._rs;
-  }
-
-  if (defined(this._adjustAlphaCommand)) {
-    this._adjustAlphaCommand.renderState = this._rs;
-  }
-};
 
 const translucentMRTBlend = {
   enabled: true,
@@ -603,102 +805,6 @@ function getTranslucentAlphaShaderProgram(context, shaderProgram) {
 
 /**
  * @private
- * @param {DrawCommand} command
- * @param {Context} context
- * @param {*} result
- * @returns {*}
- */
-OIT.prototype.createDerivedCommands = function (command, context, result) {
-  if (!defined(result)) {
-    result = {};
-  }
-
-  if (this._translucentMRTSupport) {
-    let translucentShader;
-    let translucentRenderState;
-    if (defined(result.translucentCommand)) {
-      translucentShader = result.translucentCommand.shaderProgram;
-      translucentRenderState = result.translucentCommand.renderState;
-    }
-
-    result.translucentCommand = DrawCommand.shallowClone(
-      command,
-      result.translucentCommand,
-    );
-
-    if (
-      !defined(translucentShader) ||
-      result.shaderProgramId !== command.shaderProgram.id
-    ) {
-      result.translucentCommand.shaderProgram = getTranslucentMRTShaderProgram(
-        context,
-        command.shaderProgram,
-      );
-      result.translucentCommand.renderState = getTranslucentMRTRenderState(
-        this,
-        context,
-        command.renderState,
-      );
-      result.shaderProgramId = command.shaderProgram.id;
-    } else {
-      result.translucentCommand.shaderProgram = translucentShader;
-      result.translucentCommand.renderState = translucentRenderState;
-    }
-    return result;
-  }
-
-  let colorShader;
-  let colorRenderState;
-  let alphaShader;
-  let alphaRenderState;
-  if (defined(result.translucentCommand)) {
-    colorShader = result.translucentCommand.shaderProgram;
-    colorRenderState = result.translucentCommand.renderState;
-    alphaShader = result.alphaCommand.shaderProgram;
-    alphaRenderState = result.alphaCommand.renderState;
-  }
-
-  result.translucentCommand = DrawCommand.shallowClone(
-    command,
-    result.translucentCommand,
-  );
-  result.alphaCommand = DrawCommand.shallowClone(command, result.alphaCommand);
-
-  if (
-    !defined(colorShader) ||
-    result.shaderProgramId !== command.shaderProgram.id
-  ) {
-    result.translucentCommand.shaderProgram = getTranslucentColorShaderProgram(
-      context,
-      command.shaderProgram,
-    );
-    result.translucentCommand.renderState = getTranslucentColorRenderState(
-      this,
-      context,
-      command.renderState,
-    );
-    result.alphaCommand.shaderProgram = getTranslucentAlphaShaderProgram(
-      context,
-      command.shaderProgram,
-    );
-    result.alphaCommand.renderState = getTranslucentAlphaRenderState(
-      this,
-      context,
-      command.renderState,
-    );
-    result.shaderProgramId = command.shaderProgram.id;
-  } else {
-    result.translucentCommand.shaderProgram = colorShader;
-    result.translucentCommand.renderState = colorRenderState;
-    result.alphaCommand.shaderProgram = alphaShader;
-    result.alphaCommand.renderState = alphaRenderState;
-  }
-
-  return result;
-};
-
-/**
- * @private
  * @param {OIT} oit
  * @param {Scene} scene
  * @param {Function} executeFunction
@@ -826,121 +932,5 @@ function executeTranslucentCommandsSortedMRT(
 
   passState.framebuffer = framebuffer;
 }
-
-/**
- * @private
- * @param {Scene} scene
- * @param {Function} executeFunction
- * @param {PassState} passState
- * @param {DrawCommand[]} commands
- * @param {InvertClassification} invertClassification
- */
-OIT.prototype.executeCommands = function (
-  scene,
-  executeFunction,
-  passState,
-  commands,
-  invertClassification,
-) {
-  if (this._translucentMRTSupport) {
-    executeTranslucentCommandsSortedMRT(
-      this,
-      scene,
-      executeFunction,
-      passState,
-      commands,
-      invertClassification,
-    );
-    return;
-  }
-
-  executeTranslucentCommandsSortedMultipass(
-    this,
-    scene,
-    executeFunction,
-    passState,
-    commands,
-    invertClassification,
-  );
-};
-
-/**
- * @private
- * @param {Context} context
- * @param {PassState} passState
- */
-OIT.prototype.execute = function (context, passState) {
-  this._compositeCommand.execute(context, passState);
-};
-
-/**
- * @private
- * @param {Context} context
- * @param {PassState} passState
- * @param {Color} clearColor
- */
-OIT.prototype.clear = function (context, passState, clearColor) {
-  const framebuffer = passState.framebuffer;
-
-  passState.framebuffer = this._opaqueFBO.framebuffer;
-  Color.clone(clearColor, this._opaqueClearCommand.color);
-  this._opaqueClearCommand.execute(context, passState);
-
-  passState.framebuffer = this._translucentFBO.framebuffer;
-  const translucentClearCommand = this._translucentMRTSupport
-    ? this._translucentMRTClearCommand
-    : this._translucentMultipassClearCommand;
-  translucentClearCommand.execute(context, passState);
-
-  if (this._translucentMultipassSupport) {
-    passState.framebuffer = this._alphaFBO.framebuffer;
-    this._alphaClearCommand.execute(context, passState);
-  }
-
-  passState.framebuffer = framebuffer;
-};
-
-/**
- * @private
- * @returns {boolean}
- */
-OIT.prototype.isSupported = function () {
-  return this._translucentMRTSupport || this._translucentMultipassSupport;
-};
-
-/**
- * @private
- * @returns {boolean}
- */
-OIT.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * @private
- */
-OIT.prototype.destroy = function () {
-  destroyResources(this);
-
-  if (defined(this._compositeCommand)) {
-    this._compositeCommand.shaderProgram =
-      this._compositeCommand.shaderProgram &&
-      this._compositeCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._adjustTranslucentCommand)) {
-    this._adjustTranslucentCommand.shaderProgram =
-      this._adjustTranslucentCommand.shaderProgram &&
-      this._adjustTranslucentCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._adjustAlphaCommand)) {
-    this._adjustAlphaCommand.shaderProgram =
-      this._adjustAlphaCommand.shaderProgram &&
-      this._adjustAlphaCommand.shaderProgram.destroy();
-  }
-
-  return destroyObject(this);
-};
 
 export default OIT;

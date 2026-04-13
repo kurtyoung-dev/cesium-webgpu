@@ -19,49 +19,49 @@ import defined from "../Core/defined.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function PropertyAttributeProperty(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const property = options.property;
-  const classProperty = options.classProperty;
+class PropertyAttributeProperty {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const property = options.property;
+    const classProperty = options.classProperty;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.property", property);
-  Check.typeOf.object("options.classProperty", classProperty);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.property", property);
+    Check.typeOf.object("options.classProperty", classProperty);
+    //>>includeEnd('debug');
 
-  this._attribute = property.attribute;
-  this._classProperty = classProperty;
-  this._min = property.min;
-  this._max = property.max;
+    this._attribute = property.attribute;
+    this._classProperty = classProperty;
+    this._min = property.min;
+    this._max = property.max;
 
-  let offset = property.offset;
-  let scale = property.scale;
+    let offset = property.offset;
+    let scale = property.scale;
 
-  // This needs to be set before handling default values
-  const hasValueTransform =
-    classProperty.hasValueTransform || defined(offset) || defined(scale);
+    // This needs to be set before handling default values
+    const hasValueTransform =
+      classProperty.hasValueTransform || defined(offset) || defined(scale);
 
-  // If the property attribute does not define an offset/scale, it inherits from
-  // the class property. The class property handles setting the default of
-  // identity: (offset 0, scale 1) with the same scalar/vector/matrix types.
-  // array types are disallowed by the spec.
-  offset = offset ?? classProperty.offset;
-  scale = scale ?? classProperty.scale;
+    // If the property attribute does not define an offset/scale, it inherits from
+    // the class property. The class property handles setting the default of
+    // identity: (offset 0, scale 1) with the same scalar/vector/matrix types.
+    // array types are disallowed by the spec.
+    offset = offset ?? classProperty.offset;
+    scale = scale ?? classProperty.scale;
 
-  // offset and scale are applied on the GPU, so unpack the values
-  // as math types we can use in uniform callbacks.
-  offset = classProperty.unpackVectorAndMatrixTypes(offset);
-  scale = classProperty.unpackVectorAndMatrixTypes(scale);
+    // offset and scale are applied on the GPU, so unpack the values
+    // as math types we can use in uniform callbacks.
+    offset = classProperty.unpackVectorAndMatrixTypes(offset);
+    scale = classProperty.unpackVectorAndMatrixTypes(scale);
 
-  this._offset = offset;
-  this._scale = scale;
-  this._hasValueTransform = hasValueTransform;
+    this._offset = offset;
+    this._scale = scale;
+    this._hasValueTransform = hasValueTransform;
 
-  this._extras = property.extras;
-  this._extensions = property.extensions;
-}
+    this._extras = property.extras;
+    this._extensions = property.extensions;
+  }
 
-Object.defineProperties(PropertyAttributeProperty.prototype, {
   /**
    * The attribute semantic
    *
@@ -70,11 +70,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  attribute: {
-    get: function () {
-      return this._attribute;
-    },
-  },
+  get attribute() {
+    return this._attribute;
+  }
 
   /**
    * True if offset/scale should be applied. If both offset/scale were
@@ -85,11 +83,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  hasValueTransform: {
-    get: function () {
-      return this._hasValueTransform;
-    },
-  },
+  get hasValueTransform() {
+    return this._hasValueTransform;
+  }
 
   /**
    * The offset to be added to property values as part of the value transform.
@@ -105,11 +101,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  offset: {
-    get: function () {
-      return this._offset;
-    },
-  },
+  get offset() {
+    return this._offset;
+  }
 
   /**
    * The scale to be multiplied to property values as part of the value transform.
@@ -125,11 +119,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  scale: {
-    get: function () {
-      return this._scale;
-    },
-  },
+  get scale() {
+    return this._scale;
+  }
 
   /**
    * The properties inherited from this property's class
@@ -139,11 +131,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  classProperty: {
-    get: function () {
-      return this._classProperty;
-    },
-  },
+  get classProperty() {
+    return this._classProperty;
+  }
 
   /**
    * Extra user-defined properties.
@@ -153,11 +143,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -167,11 +155,9 @@ Object.defineProperties(PropertyAttributeProperty.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
+  get extensions() {
+    return this._extensions;
+  }
+}
 
 export default PropertyAttributeProperty;

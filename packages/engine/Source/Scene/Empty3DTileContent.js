@@ -14,55 +14,73 @@ import DeveloperError from "../Core/DeveloperError.js";
  *
  * @private
  */
-function Empty3DTileContent(tileset, tile) {
-  this._tileset = tileset;
-  this._tile = tile;
+class Empty3DTileContent {
+  constructor(tileset, tile) {
+    this._tileset = tileset;
+    this._tile = tile;
 
-  this.featurePropertiesDirty = false;
-}
+    this.featurePropertiesDirty = false;
+  }
 
-Object.defineProperties(Empty3DTileContent.prototype, {
-  featuresLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
+   * always returns <code>false</code> since a tile of this type does not have any features.
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
 
-  pointsLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
+   * always returns <code>undefined</code> since a tile of this type does not have any features.
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
 
-  trianglesLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  applyDebugSettings(enabled, color) {}
+  applyStyle(style) {}
+  update(tileset, frameState) {}
 
-  geometryByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  pick(ray, frameState, result) {
+    return undefined;
+  }
 
-  texturesByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  isDestroyed() {
+    return false;
+  }
 
-  batchTableByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  destroy() {
+    return destroyObject(this);
+  }
 
-  innerContents: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get featuresLength() {
+    return 0;
+  }
+
+  get pointsLength() {
+    return 0;
+  }
+
+  get trianglesLength() {
+    return 0;
+  }
+
+  get geometryByteLength() {
+    return 0;
+  }
+
+  get texturesByteLength() {
+    return 0;
+  }
+
+  get batchTableByteLength() {
+    return 0;
+  }
+
+  get innerContents() {
+    return undefined;
+  }
 
   /**
    * Returns true when the tile's content is ready to render; otherwise false
@@ -73,92 +91,47 @@ Object.defineProperties(Empty3DTileContent.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      return true;
-    },
-  },
+  get ready() {
+    return true;
+  }
 
-  tileset: {
-    get: function () {
-      return this._tileset;
-    },
-  },
+  get tileset() {
+    return this._tileset;
+  }
 
-  tile: {
-    get: function () {
-      return this._tile;
-    },
-  },
+  get tile() {
+    return this._tile;
+  }
 
-  url: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get url() {
+    return undefined;
+  }
 
-  metadata: {
-    get: function () {
-      return undefined;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        "Empty3DTileContent cannot have content metadata",
-      );
-      //>>includeEnd('debug');
-    },
-  },
+  get metadata() {
+    return undefined;
+  }
 
-  batchTable: {
-    get: function () {
-      return undefined;
-    },
-  },
+  set metadata(value) {
+    //>>includeStart('debug', pragmas.debug);
+    throw new DeveloperError(
+      "Empty3DTileContent cannot have content metadata",
+    );
+    //>>includeEnd('debug');
+  }
 
-  group: {
-    get: function () {
-      return undefined;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError("Empty3DTileContent cannot have group metadata");
-      //>>includeEnd('debug');
-    },
-  },
-});
+  get batchTable() {
+    return undefined;
+  }
 
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
- * always returns <code>false</code> since a tile of this type does not have any features.
- */
-Empty3DTileContent.prototype.hasProperty = function (batchId, name) {
-  return false;
-};
+  get group() {
+    return undefined;
+  }
 
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Empty3DTileContent</code>
- * always returns <code>undefined</code> since a tile of this type does not have any features.
- */
-Empty3DTileContent.prototype.getFeature = function (batchId) {
-  return undefined;
-};
+  set group(value) {
+    //>>includeStart('debug', pragmas.debug);
+    throw new DeveloperError("Empty3DTileContent cannot have group metadata");
+    //>>includeEnd('debug');
+  }
+}
 
-Empty3DTileContent.prototype.applyDebugSettings = function (enabled, color) {};
-
-Empty3DTileContent.prototype.applyStyle = function (style) {};
-
-Empty3DTileContent.prototype.update = function (tileset, frameState) {};
-
-Empty3DTileContent.prototype.pick = function (ray, frameState, result) {
-  return undefined;
-};
-
-Empty3DTileContent.prototype.isDestroyed = function () {
-  return false;
-};
-
-Empty3DTileContent.prototype.destroy = function () {
-  return destroyObject(this);
-};
 export default Empty3DTileContent;

@@ -68,61 +68,139 @@ import Quaternion from "../Core/Quaternion.js";
  *
  * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function Cesium3DTilesVoxelProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class Cesium3DTilesVoxelProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const {
-    className,
-    names,
-    types,
-    componentTypes,
-    shape,
-    dimensions,
-    paddingBefore = Cartesian3.ZERO.clone(),
-    paddingAfter = Cartesian3.ZERO.clone(),
-    globalTransform = Matrix4.IDENTITY.clone(),
-    shapeTransform = Matrix4.IDENTITY.clone(),
-    minBounds,
-    maxBounds,
-    minimumValues,
-    maximumValues,
-    maximumTileCount,
-  } = options;
+    const {
+      className,
+      names,
+      types,
+      componentTypes,
+      shape,
+      dimensions,
+      paddingBefore = Cartesian3.ZERO.clone(),
+      paddingAfter = Cartesian3.ZERO.clone(),
+      globalTransform = Matrix4.IDENTITY.clone(),
+      shapeTransform = Matrix4.IDENTITY.clone(),
+      minBounds,
+      maxBounds,
+      minimumValues,
+      maximumValues,
+      maximumTileCount,
+    } = options;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("className", className);
-  Check.typeOf.object("names", names);
-  Check.typeOf.object("types", types);
-  Check.typeOf.object("componentTypes", componentTypes);
-  Check.typeOf.string("shape", shape);
-  Check.typeOf.object("dimensions", dimensions);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("className", className);
+    Check.typeOf.object("names", names);
+    Check.typeOf.object("types", types);
+    Check.typeOf.object("componentTypes", componentTypes);
+    Check.typeOf.string("shape", shape);
+    Check.typeOf.object("dimensions", dimensions);
+    //>>includeEnd('debug');
 
-  this._shapeTransform = shapeTransform;
-  this._globalTransform = globalTransform;
-  this._shape = shape;
-  this._minBounds = minBounds;
-  this._maxBounds = maxBounds;
-  this._dimensions = dimensions;
-  this._paddingBefore = paddingBefore;
-  this._paddingAfter = paddingAfter;
-  this._className = className;
-  this._names = names;
-  this._types = types;
-  this._componentTypes = componentTypes;
-  this._metadataOrder =
-    shape === VoxelShapeType.ELLIPSOID
-      ? VoxelMetadataOrder.Z_UP
-      : VoxelMetadataOrder.Y_UP;
-  this._minimumValues = minimumValues;
-  this._maximumValues = maximumValues;
-  this._maximumTileCount = maximumTileCount;
-  this._availableLevels = undefined;
-  this._implicitTileset = undefined;
-  this._subtreeCache = new ImplicitSubtreeCache();
-}
+    this._shapeTransform = shapeTransform;
+    this._globalTransform = globalTransform;
+    this._shape = shape;
+    this._minBounds = minBounds;
+    this._maxBounds = maxBounds;
+    this._dimensions = dimensions;
+    this._paddingBefore = paddingBefore;
+    this._paddingAfter = paddingAfter;
+    this._className = className;
+    this._names = names;
+    this._types = types;
+    this._componentTypes = componentTypes;
+    this._metadataOrder =
+      shape === VoxelShapeType.ELLIPSOID
+        ? VoxelMetadataOrder.Z_UP
+        : VoxelMetadataOrder.Y_UP;
+    this._minimumValues = minimumValues;
+    this._maximumValues = maximumValues;
+    this._maximumTileCount = maximumTileCount;
+    this._availableLevels = undefined;
+    this._implicitTileset = undefined;
+    this._subtreeCache = new ImplicitSubtreeCache();
+  }
 
-Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
+  /**
+   * Requests the data for a given tile.
+   *
+   * @param {object} [options] Object with the following properties:
+   * @param {number} [options.tileLevel=0] The tile's level.
+   * @param {number} [options.tileX=0] The tile's X coordinate.
+   * @param {number} [options.tileY=0] The tile's Y coordinate.
+   * @param {number} [options.tileZ=0] The tile's Z coordinate.
+   * @privateparam {number} [options.keyframe=0] The requested keyframe.
+   * @returns {Promise<VoxelContent>|undefined} A promise resolving to a VoxelContent containing the data for the tile, or undefined if the request could not be scheduled this frame.
+   */
+  async requestData(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const {
+      tileLevel = 0,
+      tileX = 0,
+      tileY = 0,
+      tileZ = 0,
+      keyframe = 0,
+    } = options;
+
+    if (keyframe !== 0) {
+      return Promise.reject(
+        `3D Tiles currently doesn't support time-dynamic data.`,
+      );
+    }
+
+    // 1. Load the subtree that the tile belongs to (possibly from the subtree cache)
+    // 2. Load the voxel content if available
+
+    // Can't use a scratch variable here because the object is used inside the promise chain.
+    const implicitTileset = this._implicitTileset;
+    const tileCoordinates = new ImplicitTileCoordinates({
+      subdivisionScheme: implicitTileset.subdivisionScheme,
+      subtreeLevels: implicitTileset.subtreeLevels,
+      level: tileLevel,
+      x: tileX,
+      y: tileY,
+      z: tileZ,
+    });
+
+    // Find the coordinates of the parent subtree containing tileCoordinates
+    // If tileCoordinates is a subtree child, use that subtree
+    // If tileCoordinates is a subtree root, use its parent subtree
+    const isSubtreeRoot =
+      tileCoordinates.isSubtreeRoot() && tileCoordinates.level > 0;
+
+    const subtreeCoord = isSubtreeRoot
+      ? tileCoordinates.getParentSubtreeCoordinates()
+      : tileCoordinates.getSubtreeCoordinates();
+
+    const that = this;
+
+    const subtree = await getSubtree(that, subtreeCoord);
+    // NOTE: these two subtree methods are ONLY used by voxels!
+    const isAvailable = isSubtreeRoot
+      ? subtree.childSubtreeIsAvailableAtCoordinates
+      : subtree.tileIsAvailableAtCoordinates;
+
+    const available = isAvailable.call(subtree, tileCoordinates);
+
+    if (!available) {
+      return Promise.reject(
+        `Tile is not available at level ${tileLevel}, x ${tileX}, y ${tileY}, z ${tileZ}.`,
+      );
+    }
+
+    const { contentUriTemplates, baseResource } = implicitTileset;
+    const gltfRelative = contentUriTemplates[0].getDerivedResource({
+      templateValues: tileCoordinates.getTemplateValues(),
+    });
+    const gltfResource = baseResource.getDerivedResource({
+      url: gltfRelative.url,
+    });
+
+    return VoxelContent.fromGltf(gltfResource);
+  }
+
   /**
    * A transform from local space to global space.
    *
@@ -131,11 +209,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @default Matrix4.IDENTITY
    * @readonly
    */
-  globalTransform: {
-    get: function () {
-      return this._globalTransform;
-    },
-  },
+  get globalTransform() {
+    return this._globalTransform;
+  }
 
   /**
    * A transform from shape space to local space.
@@ -145,11 +221,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @default Matrix4.IDENTITY
    * @readonly
    */
-  shapeTransform: {
-    get: function () {
-      return this._shapeTransform;
-    },
-  },
+  get shapeTransform() {
+    return this._shapeTransform;
+  }
 
   /**
    * Gets the {@link VoxelShapeType}
@@ -158,11 +232,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {VoxelShapeType}
    * @readonly
    */
-  shape: {
-    get: function () {
-      return this._shape;
-    },
-  },
+  get shape() {
+    return this._shape;
+  }
 
   /**
    * Gets the minimum bounds.
@@ -172,11 +244,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {Cartesian3|undefined}
    * @readonly
    */
-  minBounds: {
-    get: function () {
-      return this._minBounds;
-    },
-  },
+  get minBounds() {
+    return this._minBounds;
+  }
 
   /**
    * Gets the maximum bounds.
@@ -186,11 +256,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {Cartesian3|undefined}
    * @readonly
    */
-  maxBounds: {
-    get: function () {
-      return this._maxBounds;
-    },
-  },
+  get maxBounds() {
+    return this._maxBounds;
+  }
 
   /**
    * Gets the number of voxels per dimension of a tile. This is the same for all tiles in the dataset.
@@ -199,11 +267,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {Cartesian3}
    * @readonly
    */
-  dimensions: {
-    get: function () {
-      return this._dimensions;
-    },
-  },
+  get dimensions() {
+    return this._dimensions;
+  }
 
   /**
    * Gets the number of padding voxels before the tile. This improves rendering quality when sampling the edge of a tile, but it increases memory usage.
@@ -213,11 +279,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @default Cartesian3.ZERO
    * @readonly
    */
-  paddingBefore: {
-    get: function () {
-      return this._paddingBefore;
-    },
-  },
+  get paddingBefore() {
+    return this._paddingBefore;
+  }
 
   /**
    * Gets the number of padding voxels after the tile. This improves rendering quality when sampling the edge of a tile, but it increases memory usage.
@@ -227,11 +291,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @default Cartesian3.ZERO
    * @readonly
    */
-  paddingAfter: {
-    get: function () {
-      return this._paddingAfter;
-    },
-  },
+  get paddingAfter() {
+    return this._paddingAfter;
+  }
 
   /**
    * The metadata class for this tileset.
@@ -240,11 +302,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  className: {
-    get: function () {
-      return this._className;
-    },
-  },
+  get className() {
+    return this._className;
+  }
 
   /**
    * Gets the metadata names.
@@ -253,11 +313,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {string[]}
    * @readonly
    */
-  names: {
-    get: function () {
-      return this._names;
-    },
-  },
+  get names() {
+    return this._names;
+  }
 
   /**
    * Gets the metadata types.
@@ -266,11 +324,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {MetadataType[]}
    * @readonly
    */
-  types: {
-    get: function () {
-      return this._types;
-    },
-  },
+  get types() {
+    return this._types;
+  }
 
   /**
    * Gets the metadata component types.
@@ -279,11 +335,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {MetadataComponentType[]}
    * @readonly
    */
-  componentTypes: {
-    get: function () {
-      return this._componentTypes;
-    },
-  },
+  get componentTypes() {
+    return this._componentTypes;
+  }
 
   /**
    * Gets the ordering of the metadata in the buffers.
@@ -293,11 +347,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @readonly
    * @private
    */
-  metadataOrder: {
-    get: function () {
-      return this._metadataOrder;
-    },
-  },
+  get metadataOrder() {
+    return this._metadataOrder;
+  }
 
   /**
    * Gets the metadata minimum values.
@@ -306,11 +358,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {number[][]|undefined}
    * @readonly
    */
-  minimumValues: {
-    get: function () {
-      return this._minimumValues;
-    },
-  },
+  get minimumValues() {
+    return this._minimumValues;
+  }
 
   /**
    * Gets the metadata maximum values.
@@ -319,11 +369,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {number[][]|undefined}
    * @readonly
    */
-  maximumValues: {
-    get: function () {
-      return this._maximumValues;
-    },
-  },
+  get maximumValues() {
+    return this._maximumValues;
+  }
 
   /**
    * The maximum number of tiles that exist for this provider.
@@ -334,11 +382,9 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumTileCount: {
-    get: function () {
-      return this._maximumTileCount;
-    },
-  },
+  get maximumTileCount() {
+    return this._maximumTileCount;
+  }
 
   /**
    * The number of levels of detail containing available tiles in the tileset.
@@ -347,12 +393,10 @@ Object.defineProperties(Cesium3DTilesVoxelProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  availableLevels: {
-    get: function () {
-      return this._availableLevels;
-    },
-  },
-});
+  get availableLevels() {
+    return this._availableLevels;
+  }
+}
 
 /**
  * Creates a {@link Cesium3DTilesVoxelProvider} that fetches voxel data from a 3D Tiles tileset.
@@ -678,83 +722,5 @@ async function getSubtree(provider, subtreeCoord) {
   subtreeCache.addSubtree(subtree);
   return subtree;
 }
-
-/**
- * Requests the data for a given tile.
- *
- * @param {object} [options] Object with the following properties:
- * @param {number} [options.tileLevel=0] The tile's level.
- * @param {number} [options.tileX=0] The tile's X coordinate.
- * @param {number} [options.tileY=0] The tile's Y coordinate.
- * @param {number} [options.tileZ=0] The tile's Z coordinate.
- * @privateparam {number} [options.keyframe=0] The requested keyframe.
- * @returns {Promise<VoxelContent>|undefined} A promise resolving to a VoxelContent containing the data for the tile, or undefined if the request could not be scheduled this frame.
- */
-Cesium3DTilesVoxelProvider.prototype.requestData = async function (options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const {
-    tileLevel = 0,
-    tileX = 0,
-    tileY = 0,
-    tileZ = 0,
-    keyframe = 0,
-  } = options;
-
-  if (keyframe !== 0) {
-    return Promise.reject(
-      `3D Tiles currently doesn't support time-dynamic data.`,
-    );
-  }
-
-  // 1. Load the subtree that the tile belongs to (possibly from the subtree cache)
-  // 2. Load the voxel content if available
-
-  // Can't use a scratch variable here because the object is used inside the promise chain.
-  const implicitTileset = this._implicitTileset;
-  const tileCoordinates = new ImplicitTileCoordinates({
-    subdivisionScheme: implicitTileset.subdivisionScheme,
-    subtreeLevels: implicitTileset.subtreeLevels,
-    level: tileLevel,
-    x: tileX,
-    y: tileY,
-    z: tileZ,
-  });
-
-  // Find the coordinates of the parent subtree containing tileCoordinates
-  // If tileCoordinates is a subtree child, use that subtree
-  // If tileCoordinates is a subtree root, use its parent subtree
-  const isSubtreeRoot =
-    tileCoordinates.isSubtreeRoot() && tileCoordinates.level > 0;
-
-  const subtreeCoord = isSubtreeRoot
-    ? tileCoordinates.getParentSubtreeCoordinates()
-    : tileCoordinates.getSubtreeCoordinates();
-
-  const that = this;
-
-  const subtree = await getSubtree(that, subtreeCoord);
-  // NOTE: these two subtree methods are ONLY used by voxels!
-  const isAvailable = isSubtreeRoot
-    ? subtree.childSubtreeIsAvailableAtCoordinates
-    : subtree.tileIsAvailableAtCoordinates;
-
-  const available = isAvailable.call(subtree, tileCoordinates);
-
-  if (!available) {
-    return Promise.reject(
-      `Tile is not available at level ${tileLevel}, x ${tileX}, y ${tileY}, z ${tileZ}.`,
-    );
-  }
-
-  const { contentUriTemplates, baseResource } = implicitTileset;
-  const gltfRelative = contentUriTemplates[0].getDerivedResource({
-    templateValues: tileCoordinates.getTemplateValues(),
-  });
-  const gltfResource = baseResource.getDerivedResource({
-    url: gltfRelative.url,
-  });
-
-  return VoxelContent.fromGltf(gltfResource);
-};
 
 export default Cesium3DTilesVoxelProvider;

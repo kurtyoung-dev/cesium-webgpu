@@ -645,12 +645,39 @@ function packUniforms(uniformData, frameState, skyAtmosphere, useLut) {
  * @param {Array} commandList
  */
 function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
+  //>>includeStart('debug', pragmas.debug);
+  // Diagnostic — one-shot log covering the early-exit reasons so we can
+  // tell why `envState.isSkyAtmosphereVisible` stays false in the EnvInject
+  // log. Fires once per renderer instance; won't spam.
+  const globalScope = /** @type {any} */ (globalThis);
+  if (!globalScope.__skyAtmoDiagLogged) {
+    globalScope.__skyAtmoDiagLogged = true;
+    console.log(
+      `[WebGPU:SkyAtmo] update entry — show=${skyAtmosphere.show} ` +
+        `mode=${frameState.mode} renderPass=${frameState.passes?.render} ` +
+        `hasContext=${!!frameState.context} ` +
+        `hasDevice=${!!frameState.context?.device}`,
+    );
+  }
+  //>>includeEnd('debug');
+
   if (!skyAtmosphere.show) {
     return;
   }
 
   const context = frameState.context;
   const device = context.device;
+
+  //>>includeStart('debug', pragmas.debug);
+  if (!globalScope.__skyAtmoDiagPushLogged) {
+    globalScope.__skyAtmoDiagPushLogged = true;
+    console.log(
+      `[WebGPU:SkyAtmo] past show check — hasPipeline=${!!skyAtmosphere._webgpuCache?.pipeline} ` +
+        `presentationFormat=${context.presentationFormat} ` +
+        `depthFormat=${context.depthFormat}`,
+    );
+  }
+  //>>includeEnd('debug');
 
   if (!defined(skyAtmosphere._webgpuCache)) {
     skyAtmosphere._webgpuCache = {};
@@ -659,13 +686,25 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
 
   // Create pipeline once (getShaderSource is synchronous — no await needed)
   if (!defined(cache.pipeline)) {
-    const shaderCode = getShaderSource();
-    const format = context.presentationFormat || "bgra8unorm";
-    const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createPipeline(device, shaderCode, format, depthFmt);
-    cache.pipeline = result.pipeline;
-    cache.bindGroupLayout = result.bindGroupLayout;
-    cache.lutBindGroupLayout = result.lutBindGroupLayout;
+    try {
+      const shaderCode = getShaderSource();
+      const format = context.presentationFormat || "bgra8unorm";
+      const depthFmt = context.depthFormat || "depth24plus-stencil8";
+      const result = createPipeline(device, shaderCode, format, depthFmt);
+      cache.pipeline = result.pipeline;
+      cache.bindGroupLayout = result.bindGroupLayout;
+      cache.lutBindGroupLayout = result.lutBindGroupLayout;
+    } catch (e) {
+      console.error(
+        `[WebGPU:SkyAtmosphere] pipeline creation failed: ${e?.message ?? e}. ` +
+          `Sky atmosphere will not render. Check shader compile errors above.`,
+      );
+      cache._pipelineFailed = true;
+      return;
+    }
+  }
+  if (cache._pipelineFailed) {
+    return;
   }
 
   // Create geometry once
@@ -742,6 +781,16 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   }
 
   commandList.push(cache.command);
+
+  //>>includeStart('debug', pragmas.debug);
+  if (!globalScope.__skyAtmoDiagFinalLogged) {
+    globalScope.__skyAtmoDiagFinalLogged = true;
+    console.log(
+      `[WebGPU:SkyAtmo] command pushed — indexCount=${cache.indexCount} ` +
+        `listLenAfterPush=${commandList.length}`,
+    );
+  }
+  //>>includeEnd('debug');
 }
 
 /**

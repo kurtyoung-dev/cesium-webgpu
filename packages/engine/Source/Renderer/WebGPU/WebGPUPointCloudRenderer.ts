@@ -23,7 +23,7 @@ interface PointCloudCache {
   quadVertexBuffer: GPUBuffer | null;
   instanceBuffer: GPUBuffer | null;
   instanceCount: number;
-  command: any | null;
+  command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
 }
@@ -84,6 +84,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
+// RTE scratch: view×model with translation column zeroed, used to
+// build MVP correctly (must zero before projecting).
+const scratchMVRTE = new Matrix4();
 
 function createQuadVB(device: GPUDevice): GPUBuffer {
   const verts = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
@@ -170,7 +173,8 @@ function buildPipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      // less-equal for planetary-scale precision robustness.
+      depthCompare: "less-equal",
     },
   });
   return { pipeline, shaderModule, bgl };
@@ -178,8 +182,8 @@ function buildPipeline(
 
 function buildInstanceBuffer(
   device: GPUDevice,
-  pointCloud: any,
-  modelMatrix: any,
+  pointCloud: CesiumObjectWithWebGPUCache,
+  modelMatrix: CesiumMatrix4,
 ): { buffer: GPUBuffer; count: number } {
   // Read point positions, colors from pointCloud._drawCommand or _parsedContent
   const parsedContent =
@@ -240,15 +244,20 @@ function buildInstanceBuffer(
   return { buffer, count: pointCount };
 }
 
-function packUniforms(uniformState: any, modelMatrix: any): Float32Array {
+function packUniforms(uniformState: CesiumUniformState, modelMatrix: CesiumMatrix4): Float32Array {
   const data = new Float32Array(28);
   const view = uniformState.view;
   const projection = uniformState.projection;
-  const mv = Matrix4.multiply(view, modelMatrix, new Matrix4());
-  const mvp = m4Values(Matrix4.multiply(projection, mv, scratchMVP));
-  mvp[12] = 0;
-  mvp[13] = 0;
-  mvp[14] = 0;
+
+  // RTE: zero the translation column of MV *before* multiplying by
+  // projection. Zeroing after the multiply wipes out projection's P23
+  // depth-mapping term. See
+  // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
+  const mvRte = Matrix4.multiply(view, modelMatrix, scratchMVRTE);
+  mvRte[12] = 0;
+  mvRte[13] = 0;
+  mvRte[14] = 0;
+  const mvp = m4Values(Matrix4.multiply(projection, mvRte, scratchMVP));
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -281,7 +290,7 @@ function packUniforms(uniformState: any, modelMatrix: any): Float32Array {
   return data;
 }
 
-function updateWebGPUPointCloud(pointCloud: any, frameState: any): void {
+function updateWebGPUPointCloud(pointCloud: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -324,7 +333,7 @@ function updateWebGPUPointCloud(pointCloud: any, frameState: any): void {
   }
 
   // Rebuild instance data when point data changes
-  const modelMatrix = pointCloud.modelMatrix ?? Matrix4.IDENTITY;
+  const modelMatrix = (pointCloud.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
   const revision = pointCloud._pointsLength ?? 0;
   if (revision !== cache.lastRevision || !cache.instanceBuffer) {
     if (cache.instanceBuffer) {
@@ -359,7 +368,7 @@ function updateWebGPUPointCloud(pointCloud: any, frameState: any): void {
   commandList.push(cache.command);
 }
 
-function destroyWebGPUPointCloudResources(pointCloud: any): void {
+function destroyWebGPUPointCloudResources(pointCloud: CesiumObjectWithWebGPUCache): void {
   const cache = pointCloud._webgpuCache as PointCloudCache | undefined;
   if (!cache) {
     return;

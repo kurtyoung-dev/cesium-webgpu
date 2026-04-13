@@ -313,153 +313,154 @@ Batch.prototype.removeAllPrimitives = function () {
 /**
  * @private
  */
-function StaticOutlineGeometryBatch(primitives, scene, shadows) {
-  this._primitives = primitives;
-  this._scene = scene;
-  this._shadows = shadows;
-  this._solidBatches = new AssociativeArray();
-  this._translucentBatches = new AssociativeArray();
+class StaticOutlineGeometryBatch {
+  constructor(primitives, scene, shadows) {
+    this._primitives = primitives;
+    this._scene = scene;
+    this._shadows = shadows;
+    this._solidBatches = new AssociativeArray();
+    this._translucentBatches = new AssociativeArray();
+  }
+
+  add(time, updater) {
+    const instance = updater.createOutlineGeometryInstance(time);
+    const width = this._scene.clampLineWidth(updater.outlineWidth);
+    let batches;
+    let batch;
+    if (instance.attributes.color.value[3] === 255) {
+      batches = this._solidBatches;
+      batch = batches.get(width);
+      if (!defined(batch)) {
+        batch = new Batch(this._primitives, false, width, this._shadows);
+        batches.set(width, batch);
+      }
+      batch.add(updater, instance);
+    } else {
+      batches = this._translucentBatches;
+      batch = batches.get(width);
+      if (!defined(batch)) {
+        batch = new Batch(this._primitives, true, width, this._shadows);
+        batches.set(width, batch);
+      }
+      batch.add(updater, instance);
+    }
+  }
+
+  remove(updater) {
+    let i;
+
+    const solidBatches = this._solidBatches.values;
+    const solidBatchesLength = solidBatches.length;
+    for (i = 0; i < solidBatchesLength; i++) {
+      if (solidBatches[i].remove(updater)) {
+        return;
+      }
+    }
+
+    const translucentBatches = this._translucentBatches.values;
+    const translucentBatchesLength = translucentBatches.length;
+    for (i = 0; i < translucentBatchesLength; i++) {
+      if (translucentBatches[i].remove(updater)) {
+        return;
+      }
+    }
+  }
+
+  update(time) {
+    let i;
+    let x;
+    let updater;
+    let batch;
+    const solidBatches = this._solidBatches.values;
+    const solidBatchesLength = solidBatches.length;
+    const translucentBatches = this._translucentBatches.values;
+    const translucentBatchesLength = translucentBatches.length;
+    let itemsToRemove;
+    let isUpdated = true;
+    let needUpdate = false;
+
+    do {
+      needUpdate = false;
+      for (x = 0; x < solidBatchesLength; x++) {
+        batch = solidBatches[x];
+        //Perform initial update
+        isUpdated = batch.update(time);
+
+        //If any items swapped between solid/translucent, we need to
+        //move them between batches
+        itemsToRemove = batch.itemsToRemove;
+        const solidsToMoveLength = itemsToRemove.length;
+        if (solidsToMoveLength > 0) {
+          needUpdate = true;
+          for (i = 0; i < solidsToMoveLength; i++) {
+            updater = itemsToRemove[i];
+            batch.remove(updater);
+            this.add(time, updater);
+          }
+        }
+      }
+      for (x = 0; x < translucentBatchesLength; x++) {
+        batch = translucentBatches[x];
+        //Perform initial update
+        isUpdated = batch.update(time);
+
+        //If any items swapped between solid/translucent, we need to
+        //move them between batches
+        itemsToRemove = batch.itemsToRemove;
+        const translucentToMoveLength = itemsToRemove.length;
+        if (translucentToMoveLength > 0) {
+          needUpdate = true;
+          for (i = 0; i < translucentToMoveLength; i++) {
+            updater = itemsToRemove[i];
+            batch.remove(updater);
+            this.add(time, updater);
+          }
+        }
+      }
+    } while (needUpdate);
+
+    return isUpdated;
+  }
+
+  getBoundingSphere(updater, result) {
+    let i;
+
+    const solidBatches = this._solidBatches.values;
+    const solidBatchesLength = solidBatches.length;
+    for (i = 0; i < solidBatchesLength; i++) {
+      const solidBatch = solidBatches[i];
+      if (solidBatch.contains(updater)) {
+        return solidBatch.getBoundingSphere(updater, result);
+      }
+    }
+
+    const translucentBatches = this._translucentBatches.values;
+    const translucentBatchesLength = translucentBatches.length;
+    for (i = 0; i < translucentBatchesLength; i++) {
+      const translucentBatch = translucentBatches[i];
+      if (translucentBatch.contains(updater)) {
+        return translucentBatch.getBoundingSphere(updater, result);
+      }
+    }
+
+    return BoundingSphereState.FAILED;
+  }
+
+  removeAllPrimitives() {
+    let i;
+
+    const solidBatches = this._solidBatches.values;
+    const solidBatchesLength = solidBatches.length;
+    for (i = 0; i < solidBatchesLength; i++) {
+      solidBatches[i].removeAllPrimitives();
+    }
+
+    const translucentBatches = this._translucentBatches.values;
+    const translucentBatchesLength = translucentBatches.length;
+    for (i = 0; i < translucentBatchesLength; i++) {
+      translucentBatches[i].removeAllPrimitives();
+    }
+  }
 }
-StaticOutlineGeometryBatch.prototype.add = function (time, updater) {
-  const instance = updater.createOutlineGeometryInstance(time);
-  const width = this._scene.clampLineWidth(updater.outlineWidth);
-  let batches;
-  let batch;
-  if (instance.attributes.color.value[3] === 255) {
-    batches = this._solidBatches;
-    batch = batches.get(width);
-    if (!defined(batch)) {
-      batch = new Batch(this._primitives, false, width, this._shadows);
-      batches.set(width, batch);
-    }
-    batch.add(updater, instance);
-  } else {
-    batches = this._translucentBatches;
-    batch = batches.get(width);
-    if (!defined(batch)) {
-      batch = new Batch(this._primitives, true, width, this._shadows);
-      batches.set(width, batch);
-    }
-    batch.add(updater, instance);
-  }
-};
 
-StaticOutlineGeometryBatch.prototype.remove = function (updater) {
-  let i;
-
-  const solidBatches = this._solidBatches.values;
-  const solidBatchesLength = solidBatches.length;
-  for (i = 0; i < solidBatchesLength; i++) {
-    if (solidBatches[i].remove(updater)) {
-      return;
-    }
-  }
-
-  const translucentBatches = this._translucentBatches.values;
-  const translucentBatchesLength = translucentBatches.length;
-  for (i = 0; i < translucentBatchesLength; i++) {
-    if (translucentBatches[i].remove(updater)) {
-      return;
-    }
-  }
-};
-
-StaticOutlineGeometryBatch.prototype.update = function (time) {
-  let i;
-  let x;
-  let updater;
-  let batch;
-  const solidBatches = this._solidBatches.values;
-  const solidBatchesLength = solidBatches.length;
-  const translucentBatches = this._translucentBatches.values;
-  const translucentBatchesLength = translucentBatches.length;
-  let itemsToRemove;
-  let isUpdated = true;
-  let needUpdate = false;
-
-  do {
-    needUpdate = false;
-    for (x = 0; x < solidBatchesLength; x++) {
-      batch = solidBatches[x];
-      //Perform initial update
-      isUpdated = batch.update(time);
-
-      //If any items swapped between solid/translucent, we need to
-      //move them between batches
-      itemsToRemove = batch.itemsToRemove;
-      const solidsToMoveLength = itemsToRemove.length;
-      if (solidsToMoveLength > 0) {
-        needUpdate = true;
-        for (i = 0; i < solidsToMoveLength; i++) {
-          updater = itemsToRemove[i];
-          batch.remove(updater);
-          this.add(time, updater);
-        }
-      }
-    }
-    for (x = 0; x < translucentBatchesLength; x++) {
-      batch = translucentBatches[x];
-      //Perform initial update
-      isUpdated = batch.update(time);
-
-      //If any items swapped between solid/translucent, we need to
-      //move them between batches
-      itemsToRemove = batch.itemsToRemove;
-      const translucentToMoveLength = itemsToRemove.length;
-      if (translucentToMoveLength > 0) {
-        needUpdate = true;
-        for (i = 0; i < translucentToMoveLength; i++) {
-          updater = itemsToRemove[i];
-          batch.remove(updater);
-          this.add(time, updater);
-        }
-      }
-    }
-  } while (needUpdate);
-
-  return isUpdated;
-};
-
-StaticOutlineGeometryBatch.prototype.getBoundingSphere = function (
-  updater,
-  result,
-) {
-  let i;
-
-  const solidBatches = this._solidBatches.values;
-  const solidBatchesLength = solidBatches.length;
-  for (i = 0; i < solidBatchesLength; i++) {
-    const solidBatch = solidBatches[i];
-    if (solidBatch.contains(updater)) {
-      return solidBatch.getBoundingSphere(updater, result);
-    }
-  }
-
-  const translucentBatches = this._translucentBatches.values;
-  const translucentBatchesLength = translucentBatches.length;
-  for (i = 0; i < translucentBatchesLength; i++) {
-    const translucentBatch = translucentBatches[i];
-    if (translucentBatch.contains(updater)) {
-      return translucentBatch.getBoundingSphere(updater, result);
-    }
-  }
-
-  return BoundingSphereState.FAILED;
-};
-
-StaticOutlineGeometryBatch.prototype.removeAllPrimitives = function () {
-  let i;
-
-  const solidBatches = this._solidBatches.values;
-  const solidBatchesLength = solidBatches.length;
-  for (i = 0; i < solidBatchesLength; i++) {
-    solidBatches[i].removeAllPrimitives();
-  }
-
-  const translucentBatches = this._translucentBatches.values;
-  const translucentBatchesLength = translucentBatches.length;
-  for (i = 0; i < translucentBatchesLength; i++) {
-    translucentBatches[i].removeAllPrimitives();
-  }
-};
 export default StaticOutlineGeometryBatch;

@@ -6,11 +6,11 @@
  * @constructor
  * @private
  */
-function MeshPrimitiveGpmLocal(ppeTextures) {
-  this._ppeTextures = ppeTextures;
-}
+class MeshPrimitiveGpmLocal {
+  constructor(ppeTextures) {
+    this._ppeTextures = ppeTextures;
+  }
 
-Object.defineProperties(MeshPrimitiveGpmLocal.prototype, {
   /**
    * An array of ppe textures.
    *
@@ -18,11 +18,9 @@ Object.defineProperties(MeshPrimitiveGpmLocal.prototype, {
    * @type {PpeTexture[]|undefined}
    * @readonly
    */
-  ppeTextures: {
-    get: function () {
-      return this._ppeTextures;
-    },
-  },
-});
+  get ppeTextures() {
+    return this._ppeTextures;
+  }
+}
 
 export default MeshPrimitiveGpmLocal;

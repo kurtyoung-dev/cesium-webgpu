@@ -119,122 +119,190 @@ import CustomShaderTranslucencyMode from "./CustomShaderTranslucencyMode.js";
  *   `
  * });
  */
-function CustomShader(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class CustomShader {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+
+    /**
+     * A value determining how the custom shader interacts with the overall
+     * fragment shader. This is used by {@link CustomShaderPipelineStage}
+     *
+     * @type {CustomShaderMode}
+     * @readonly
+     */
+    this.mode = options.mode ?? CustomShaderMode.MODIFY_MATERIAL;
+    /**
+     * The lighting model to use when using the custom shader.
+     * This is used by {@link CustomShaderPipelineStage}
+     *
+     * @type {LightingModel}
+     * @readonly
+     */
+    this.lightingModel = options.lightingModel;
+    /**
+     * Additional uniforms as declared by the user.
+     *
+     * @type {Object<string, UniformSpecifier>}
+     * @readonly
+     */
+    this.uniforms = options.uniforms ?? Frozen.EMPTY_OBJECT;
+    /**
+     * Additional varyings as declared by the user.
+     * This is used by {@link CustomShaderPipelineStage}
+     *
+     * @type {Object<string, VaryingType>}
+     * @readonly
+     */
+    this.varyings = options.varyings ?? Frozen.EMPTY_OBJECT;
+    /**
+     * The user-defined GLSL code for the vertex shader
+     *
+     * @type {string}
+     * @readonly
+     */
+    this.vertexShaderText = options.vertexShaderText;
+    /**
+     * The user-defined GLSL code for the fragment shader
+     *
+     * @type {string}
+     * @readonly
+     */
+    this.fragmentShaderText = options.fragmentShaderText;
+
+    /**
+     * The translucency mode, which determines how the custom shader will be applied. If the value is
+     * CustomShaderTransulcencyMode.OPAQUE or CustomShaderTransulcencyMode.TRANSLUCENT, the custom shader
+     * will override settings from the model's material. If the value isCustomShaderTransulcencyMode.INHERIT,
+     * the custom shader will render as either opaque or translucent depending on the primitive's material settings.
+     *
+     * @type {CustomShaderTranslucencyMode}
+     * @default CustomShaderTranslucencyMode.INHERIT
+     * @readonly
+     */
+    this.translucencyMode =
+      options.translucencyMode ?? CustomShaderTranslucencyMode.INHERIT;
+
+    /**
+     * texture uniforms require some asynchronous processing. This is delegated
+     * to a texture manager.
+     *
+     * @type {TextureManager}
+     * @readonly
+     * @private
+     */
+    this._textureManager = new TextureManager();
+    /**
+     * The default texture (from the {@link Context}) to use while textures
+     * are loading
+     *
+     * @type {Texture}
+     * @readonly
+     * @private
+     */
+    this._defaultTexture = undefined;
+    /**
+     * The map of uniform names to a function that returns a value. This map
+     * is combined with the overall uniform map used by the {@link DrawCommand}
+     *
+     * @type {Object<string, Function>}
+     * @readonly
+     * @private
+     */
+    this.uniformMap = buildUniformMap(this);
+
+    /**
+     * A collection of variables used in <code>vertexShaderText</code>. This
+     * is used only for optimizations in {@link CustomShaderPipelineStage}.
+     * @type {VertexVariableSets}
+     * @private
+     */
+    this.usedVariablesVertex = {
+      attributeSet: {},
+      featureIdSet: {},
+      metadataSet: {},
+    };
+    /**
+     * A collection of variables used in <code>fragmentShaderText</code>. This
+     * is used only for optimizations in {@link CustomShaderPipelineStage}.
+     * @type {FragmentVariableSets}
+     * @private
+     */
+    this.usedVariablesFragment = {
+      attributeSet: {},
+      featureIdSet: {},
+      metadataSet: {},
+      materialSet: {},
+    };
+
+    findUsedVariables(this);
+    validateBuiltinVariables(this);
+  }
 
   /**
-   * A value determining how the custom shader interacts with the overall
-   * fragment shader. This is used by {@link CustomShaderPipelineStage}
-   *
-   * @type {CustomShaderMode}
-   * @readonly
+   * Update the value of a uniform declared in the shader
+   * @param {string} uniformName The GLSL name of the uniform. This must match one of the uniforms declared in the constructor
+   * @param {boolean|number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4|string|Resource|TextureUniform} value The new value of the uniform.
    */
-  this.mode = options.mode ?? CustomShaderMode.MODIFY_MATERIAL;
-  /**
-   * The lighting model to use when using the custom shader.
-   * This is used by {@link CustomShaderPipelineStage}
-   *
-   * @type {LightingModel}
-   * @readonly
-   */
-  this.lightingModel = options.lightingModel;
-  /**
-   * Additional uniforms as declared by the user.
-   *
-   * @type {Object<string, UniformSpecifier>}
-   * @readonly
-   */
-  this.uniforms = options.uniforms ?? Frozen.EMPTY_OBJECT;
-  /**
-   * Additional varyings as declared by the user.
-   * This is used by {@link CustomShaderPipelineStage}
-   *
-   * @type {Object<string, VaryingType>}
-   * @readonly
-   */
-  this.varyings = options.varyings ?? Frozen.EMPTY_OBJECT;
-  /**
-   * The user-defined GLSL code for the vertex shader
-   *
-   * @type {string}
-   * @readonly
-   */
-  this.vertexShaderText = options.vertexShaderText;
-  /**
-   * The user-defined GLSL code for the fragment shader
-   *
-   * @type {string}
-   * @readonly
-   */
-  this.fragmentShaderText = options.fragmentShaderText;
+  setUniform(uniformName, value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("uniformName", uniformName);
+    Check.defined("value", value);
+    if (!defined(this.uniforms[uniformName])) {
+      throw new DeveloperError(
+        `Uniform ${uniformName} must be declared in the CustomShader constructor.`,
+      );
+    }
+    //>>includeEnd('debug');
+    const uniform = this.uniforms[uniformName];
+    if (uniform.type === UniformType.SAMPLER_2D) {
+      // Textures are loaded asynchronously
+      this._textureManager.loadTexture2D(uniformName, value);
+    } else if (defined(value.clone)) {
+      // clone Cartesian and Matrix types.
+      uniform.value = value.clone(uniform.value);
+    } else {
+      uniform.value = value;
+    }
+  }
+
+  update(frameState) {
+    this._defaultTexture = frameState.context.defaultTexture;
+    this._textureManager.update(frameState);
+  }
 
   /**
-   * The translucency mode, which determines how the custom shader will be applied. If the value is
-   * CustomShaderTransulcencyMode.OPAQUE or CustomShaderTransulcencyMode.TRANSLUCENT, the custom shader
-   * will override settings from the model's material. If the value isCustomShaderTransulcencyMode.INHERIT,
-   * the custom shader will render as either opaque or translucent depending on the primitive's material settings.
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
    *
-   * @type {CustomShaderTranslucencyMode}
-   * @default CustomShaderTranslucencyMode.INHERIT
-   * @readonly
+   * @returns {boolean} True if this object was destroyed; otherwise, false.
+   *
+   * @see CustomShader#destroy
    */
-  this.translucencyMode =
-    options.translucencyMode ?? CustomShaderTranslucencyMode.INHERIT;
+  isDestroyed() {
+    return false;
+  }
 
   /**
-   * texture uniforms require some asynchronous processing. This is delegated
-   * to a texture manager.
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
    *
-   * @type {TextureManager}
-   * @readonly
-   * @private
-   */
-  this._textureManager = new TextureManager();
-  /**
-   * The default texture (from the {@link Context}) to use while textures
-   * are loading
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
    *
-   * @type {Texture}
-   * @readonly
-   * @private
-   */
-  this._defaultTexture = undefined;
-  /**
-   * The map of uniform names to a function that returns a value. This map
-   * is combined with the overall uniform map used by the {@link DrawCommand}
+   * @example
+   * customShader = customShader && customShader.destroy();
    *
-   * @type {Object<string, Function>}
-   * @readonly
-   * @private
+   * @see CustomShader#isDestroyed
    */
-  this.uniformMap = buildUniformMap(this);
-
-  /**
-   * A collection of variables used in <code>vertexShaderText</code>. This
-   * is used only for optimizations in {@link CustomShaderPipelineStage}.
-   * @type {VertexVariableSets}
-   * @private
-   */
-  this.usedVariablesVertex = {
-    attributeSet: {},
-    featureIdSet: {},
-    metadataSet: {},
-  };
-  /**
-   * A collection of variables used in <code>fragmentShaderText</code>. This
-   * is used only for optimizations in {@link CustomShaderPipelineStage}.
-   * @type {FragmentVariableSets}
-   * @private
-   */
-  this.usedVariablesFragment = {
-    attributeSet: {},
-    featureIdSet: {},
-    metadataSet: {},
-    materialSet: {},
-  };
-
-  findUsedVariables(this);
-  validateBuiltinVariables(this);
+  destroy() {
+    this._textureManager = this._textureManager && this._textureManager.destroy();
+    destroyObject(this);
+  }
 }
 
 function buildUniformMap(customShader) {
@@ -404,71 +472,5 @@ function validateBuiltinVariables(customShader) {
   validateVariableUsage(attributesFS, "tangentMC", "tangentEC", "fragment");
   validateVariableUsage(attributesFS, "bitangentMC", "bitangentEC", "fragment");
 }
-
-/**
- * Update the value of a uniform declared in the shader
- * @param {string} uniformName The GLSL name of the uniform. This must match one of the uniforms declared in the constructor
- * @param {boolean|number|Cartesian2|Cartesian3|Cartesian4|Matrix2|Matrix3|Matrix4|string|Resource|TextureUniform} value The new value of the uniform.
- */
-CustomShader.prototype.setUniform = function (uniformName, value) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("uniformName", uniformName);
-  Check.defined("value", value);
-  if (!defined(this.uniforms[uniformName])) {
-    throw new DeveloperError(
-      `Uniform ${uniformName} must be declared in the CustomShader constructor.`,
-    );
-  }
-  //>>includeEnd('debug');
-  const uniform = this.uniforms[uniformName];
-  if (uniform.type === UniformType.SAMPLER_2D) {
-    // Textures are loaded asynchronously
-    this._textureManager.loadTexture2D(uniformName, value);
-  } else if (defined(value.clone)) {
-    // clone Cartesian and Matrix types.
-    uniform.value = value.clone(uniform.value);
-  } else {
-    uniform.value = value;
-  }
-};
-
-CustomShader.prototype.update = function (frameState) {
-  this._defaultTexture = frameState.context.defaultTexture;
-  this._textureManager.update(frameState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} True if this object was destroyed; otherwise, false.
- *
- * @see CustomShader#destroy
- */
-CustomShader.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * customShader = customShader && customShader.destroy();
- *
- * @see CustomShader#isDestroyed
- */
-CustomShader.prototype.destroy = function () {
-  this._textureManager = this._textureManager && this._textureManager.destroy();
-  destroyObject(this);
-};
 
 export default CustomShader;

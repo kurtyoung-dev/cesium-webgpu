@@ -138,69 +138,286 @@ import Rectangle from "../Core/Rectangle.js";
  *   console.log(`There was an error creating the I3S Data Provider: ${error}`);
  * }
  */
-function I3SDataProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class I3SDataProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  // All public configuration is defined as ES5 properties
-  // These are just the "private" variables and their defaults.
-  this._name = options.name;
-  this._show = options.show ?? true;
-  this._geoidTiledTerrainProvider = options.geoidTiledTerrainProvider;
-  this._showFeatures = options.showFeatures ?? false;
-  this._adjustMaterialAlphaMode = options.adjustMaterialAlphaMode ?? false;
-  this._applySymbology = options.applySymbology ?? false;
-  this._calculateNormals = options.calculateNormals ?? false;
+    // All public configuration is defined as ES5 properties
+    // These are just the "private" variables and their defaults.
+    this._name = options.name;
+    this._show = options.show ?? true;
+    this._geoidTiledTerrainProvider = options.geoidTiledTerrainProvider;
+    this._showFeatures = options.showFeatures ?? false;
+    this._adjustMaterialAlphaMode = options.adjustMaterialAlphaMode ?? false;
+    this._applySymbology = options.applySymbology ?? false;
+    this._calculateNormals = options.calculateNormals ?? false;
 
-  this._cesium3dTilesetOptions =
-    options.cesium3dTilesetOptions ?? Frozen.EMPTY_OBJECT;
+    this._cesium3dTilesetOptions =
+      options.cesium3dTilesetOptions ?? Frozen.EMPTY_OBJECT;
 
-  this._layers = [];
-  this._sublayers = [];
-  this._data = undefined;
-  this._extent = undefined;
-  this._geoidDataPromise = undefined;
-  this._geoidDataList = undefined;
-  this._decoderTaskProcessor = undefined;
-  this._taskProcessorReadyPromise = undefined;
-  this._attributeStatistics = [];
-  this._layersExtent = [];
-}
+    this._layers = [];
+    this._sublayers = [];
+    this._data = undefined;
+    this._extent = undefined;
+    this._geoidDataPromise = undefined;
+    this._geoidDataList = undefined;
+    this._decoderTaskProcessor = undefined;
+    this._taskProcessorReadyPromise = undefined;
+    this._attributeStatistics = [];
+    this._layersExtent = [];
+  }
 
-Object.defineProperties(I3SDataProvider.prototype, {
+  /**
+   * Destroys the WebGL resources held by this object. Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception. Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see I3SDataProvider#isDestroyed
+   */
+  destroy() {
+    for (let i = 0; i < this._layers.length; i++) {
+      if (defined(this._layers[i]._tileset)) {
+        this._layers[i]._tileset.destroy();
+      }
+    }
+
+    return destroyObject(this);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see I3SDataProvider#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * @private
+   */
+  update(frameState) {
+    for (let i = 0; i < this._layers.length; i++) {
+      if (defined(this._layers[i]._tileset)) {
+        this._layers[i]._tileset.update(frameState);
+      }
+    }
+  }
+
+  /**
+   * @private
+   */
+  prePassesUpdate(frameState) {
+    for (let i = 0; i < this._layers.length; i++) {
+      if (defined(this._layers[i]._tileset)) {
+        this._layers[i]._tileset.prePassesUpdate(frameState);
+      }
+    }
+  }
+
+  /**
+   * @private
+   */
+  postPassesUpdate(frameState) {
+    for (let i = 0; i < this._layers.length; i++) {
+      if (defined(this._layers[i]._tileset)) {
+        this._layers[i]._tileset.postPassesUpdate(frameState);
+      }
+    }
+  }
+
+  /**
+   * @private
+   */
+  async updateForPass(frameState, passState) {
+    for (let i = 0; i < this._layers.length; i++) {
+      if (defined(this._layers[i]._tileset)) {
+        this._layers[i]._tileset.updateForPass(frameState, passState);
+      }
+    }
+  }
+
+  /**
+   * @private
+   */
+  async _loadBinary(resource) {
+    const buffer = await resource.fetchArrayBuffer();
+    if (buffer.byteLength > 0) {
+      // Check if we have a JSON response with 404
+      const array = new Uint8Array(buffer);
+      if (array[0] === "{".charCodeAt(0)) {
+        const textContent = new TextDecoder();
+        const str = textContent.decode(buffer);
+        if (str.includes("404")) {
+          throw new RuntimeError(`Failed to load binary: ${resource.url}`);
+        }
+      }
+    }
+    return buffer;
+  }
+
+  /**
+   * @private
+   */
+  _binarizeGltf(rawGltf) {
+    const encoder = new TextEncoder();
+    const rawGltfData = encoder.encode(JSON.stringify(rawGltf));
+    const binaryGltfData = new Uint8Array(rawGltfData.byteLength + 20);
+    const binaryGltf = {
+      magic: new Uint8Array(binaryGltfData.buffer, 0, 4),
+      version: new Uint32Array(binaryGltfData.buffer, 4, 1),
+      length: new Uint32Array(binaryGltfData.buffer, 8, 1),
+      chunkLength: new Uint32Array(binaryGltfData.buffer, 12, 1),
+      chunkType: new Uint32Array(binaryGltfData.buffer, 16, 1),
+      chunkData: new Uint8Array(
+        binaryGltfData.buffer,
+        20,
+        rawGltfData.byteLength,
+      ),
+    };
+
+    binaryGltf.magic[0] = "g".charCodeAt();
+    binaryGltf.magic[1] = "l".charCodeAt();
+    binaryGltf.magic[2] = "T".charCodeAt();
+    binaryGltf.magic[3] = "F".charCodeAt();
+
+    binaryGltf.version[0] = 2;
+    binaryGltf.length[0] = binaryGltfData.byteLength;
+    binaryGltf.chunkLength[0] = rawGltfData.byteLength;
+    binaryGltf.chunkType[0] = 0x4e4f534a; // JSON
+    binaryGltf.chunkData.set(rawGltfData);
+
+    return binaryGltfData;
+  }
+
+  /**
+   * @private
+   */
+  loadGeoidData() {
+    if (defined(this._geoidDataPromise)) {
+      return this._geoidDataPromise;
+    }
+
+    this._geoidDataPromise = loadGeoidData(this);
+    return this._geoidDataPromise;
+  }
+
+  /**
+   * @private
+   */
+  _computeExtent() {
+    let rectangle;
+
+    // Compute the extent from all layers
+    for (
+      let layerIndex = 0;
+      layerIndex < this._layersExtent.length;
+      layerIndex++
+    ) {
+      const layerExtent = this._layersExtent[layerIndex];
+      if (!defined(rectangle)) {
+        rectangle = Rectangle.clone(layerExtent);
+      } else {
+        Rectangle.union(rectangle, layerExtent, rectangle);
+      }
+    }
+
+    this._extent = rectangle;
+  }
+
+  /**
+   * Returns the collection of names for all available attributes
+   * @returns {string[]} The collection of attribute names
+   */
+  getAttributeNames() {
+    const attributes = [];
+    for (let i = 0; i < this._attributeStatistics.length; ++i) {
+      attributes.push(...this._attributeStatistics[i].names);
+    }
+    return attributes;
+  }
+
+  /**
+   * Returns the collection of values for the attribute with the given name
+   * @param {string} name The attribute name
+   * @returns {string[]} The collection of attribute values
+   */
+  getAttributeValues(name) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("name", name);
+    //>>includeEnd('debug');
+
+    for (let i = 0; i < this._attributeStatistics.length; ++i) {
+      const values = this._attributeStatistics[i]._getValues(name);
+      if (defined(values)) {
+        return values;
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Filters the drawn elements of a scene to specific attribute names and values
+   * @param {I3SNode.AttributeFilter[]} [filters=[]] The collection of attribute filters
+   * @returns {Promise<void>} A promise that is resolved when the filter is applied
+   */
+  filterByAttributes(filters) {
+    const promises = [];
+    for (let i = 0; i < this._layers.length; i++) {
+      const promise = this._layers[i].filterByAttributes(filters);
+      promises.push(promise);
+    }
+    return Promise.all(promises);
+  }
+
   /**
    * Gets a human-readable name for this dataset.
    * @memberof I3SDataProvider.prototype
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * Determines if the dataset will be shown.
    * @memberof I3SDataProvider.prototype
    * @type {boolean}
    */
-  show: {
-    get: function () {
-      return this._show;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
+  get show() {
+    return this._show;
+  }
 
-      if (this._show !== value) {
-        this._show = value;
-        for (let i = 0; i < this._layers.length; i++) {
-          this._layers[i]._updateVisibility();
-        }
+  /**
+   * Determines if the dataset will be shown.
+   * @memberof I3SDataProvider.prototype
+   * @type {boolean}
+   */
+  set show(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+
+    if (this._show !== value) {
+      this._show = value;
+      for (let i = 0; i < this._layers.length; i++) {
+        this._layers[i]._updateVisibility();
       }
-    },
-  },
+    }
+  }
 
   /**
    * The terrain provider referencing the GEOID service to be used for orthometric to ellipsoidal conversion.
@@ -208,11 +425,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {ArcGISTiledElevationTerrainProvider}
    * @readonly
    */
-  geoidTiledTerrainProvider: {
-    get: function () {
-      return this._geoidTiledTerrainProvider;
-    },
-  },
+  get geoidTiledTerrainProvider() {
+    return this._geoidTiledTerrainProvider;
+  }
 
   /**
    * Gets the collection of layers.
@@ -220,11 +435,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {I3SLayer[]}
    * @readonly
    */
-  layers: {
-    get: function () {
-      return this._layers;
-    },
-  },
+  get layers() {
+    return this._layers;
+  }
 
   /**
    * Gets the collection of building sublayers.
@@ -232,11 +445,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {I3SSublayer[]}
    * @readonly
    */
-  sublayers: {
-    get: function () {
-      return this._sublayers;
-    },
-  },
+  get sublayers() {
+    return this._sublayers;
+  }
 
   /**
    * Gets the I3S data for this object.
@@ -244,11 +455,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {object}
    * @readonly
    */
-  data: {
-    get: function () {
-      return this._data;
-    },
-  },
+  get data() {
+    return this._data;
+  }
 
   /**
    * Gets the extent covered by this I3S.
@@ -256,11 +465,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  extent: {
-    get: function () {
-      return this._extent;
-    },
-  },
+  get extent() {
+    return this._extent;
+  }
 
   /**
    * The resource used to fetch the I3S dataset.
@@ -268,11 +475,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
 
   /**
    * Determines if the features will be shown.
@@ -280,11 +485,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  showFeatures: {
-    get: function () {
-      return this._showFeatures;
-    },
-  },
+  get showFeatures() {
+    return this._showFeatures;
+  }
 
   /**
    * Determines if the alpha mode of the material will be adjusted depending on the color vertex attribute.
@@ -292,11 +495,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  adjustMaterialAlphaMode: {
-    get: function () {
-      return this._adjustMaterialAlphaMode;
-    },
-  },
+  get adjustMaterialAlphaMode() {
+    return this._adjustMaterialAlphaMode;
+  }
 
   /**
    * Determines if the I3S symbology will be parsed and applied for the layers.
@@ -304,11 +505,9 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  applySymbology: {
-    get: function () {
-      return this._applySymbology;
-    },
-  },
+  get applySymbology() {
+    return this._applySymbology;
+  }
 
   /**
    * Determines if the flat normals will be generated for I3S geometry without normals.
@@ -316,94 +515,10 @@ Object.defineProperties(I3SDataProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  calculateNormals: {
-    get: function () {
-      return this._calculateNormals;
-    },
-  },
-});
-
-/**
- * Destroys the WebGL resources held by this object. Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception. Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see I3SDataProvider#isDestroyed
- */
-I3SDataProvider.prototype.destroy = function () {
-  for (let i = 0; i < this._layers.length; i++) {
-    if (defined(this._layers[i]._tileset)) {
-      this._layers[i]._tileset.destroy();
-    }
+  get calculateNormals() {
+    return this._calculateNormals;
   }
-
-  return destroyObject(this);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see I3SDataProvider#destroy
- */
-I3SDataProvider.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype.update = function (frameState) {
-  for (let i = 0; i < this._layers.length; i++) {
-    if (defined(this._layers[i]._tileset)) {
-      this._layers[i]._tileset.update(frameState);
-    }
-  }
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype.prePassesUpdate = function (frameState) {
-  for (let i = 0; i < this._layers.length; i++) {
-    if (defined(this._layers[i]._tileset)) {
-      this._layers[i]._tileset.prePassesUpdate(frameState);
-    }
-  }
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype.postPassesUpdate = function (frameState) {
-  for (let i = 0; i < this._layers.length; i++) {
-    if (defined(this._layers[i]._tileset)) {
-      this._layers[i]._tileset.postPassesUpdate(frameState);
-    }
-  }
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype.updateForPass = function (frameState, passState) {
-  for (let i = 0; i < this._layers.length; i++) {
-    if (defined(this._layers[i]._tileset)) {
-      this._layers[i]._tileset.updateForPass(frameState, passState);
-    }
-  }
-};
+}
 
 function buildLayerUrl(provider, layerId) {
   const dataProviderUrl = provider.resource.getUrlComponent();
@@ -606,59 +721,6 @@ I3SDataProvider.loadJson = async function (resource) {
   return data;
 };
 
-/**
- * @private
- */
-I3SDataProvider.prototype._loadBinary = async function (resource) {
-  const buffer = await resource.fetchArrayBuffer();
-  if (buffer.byteLength > 0) {
-    // Check if we have a JSON response with 404
-    const array = new Uint8Array(buffer);
-    if (array[0] === "{".charCodeAt(0)) {
-      const textContent = new TextDecoder();
-      const str = textContent.decode(buffer);
-      if (str.includes("404")) {
-        throw new RuntimeError(`Failed to load binary: ${resource.url}`);
-      }
-    }
-  }
-  return buffer;
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype._binarizeGltf = function (rawGltf) {
-  const encoder = new TextEncoder();
-  const rawGltfData = encoder.encode(JSON.stringify(rawGltf));
-  const binaryGltfData = new Uint8Array(rawGltfData.byteLength + 20);
-  const binaryGltf = {
-    magic: new Uint8Array(binaryGltfData.buffer, 0, 4),
-    version: new Uint32Array(binaryGltfData.buffer, 4, 1),
-    length: new Uint32Array(binaryGltfData.buffer, 8, 1),
-    chunkLength: new Uint32Array(binaryGltfData.buffer, 12, 1),
-    chunkType: new Uint32Array(binaryGltfData.buffer, 16, 1),
-    chunkData: new Uint8Array(
-      binaryGltfData.buffer,
-      20,
-      rawGltfData.byteLength,
-    ),
-  };
-
-  binaryGltf.magic[0] = "g".charCodeAt();
-  binaryGltf.magic[1] = "l".charCodeAt();
-  binaryGltf.magic[2] = "T".charCodeAt();
-  binaryGltf.magic[3] = "F".charCodeAt();
-
-  binaryGltf.version[0] = 2;
-  binaryGltf.length[0] = binaryGltfData.byteLength;
-  binaryGltf.chunkLength[0] = rawGltfData.byteLength;
-  binaryGltf.chunkType[0] = 0x4e4f534a; // JSON
-  binaryGltf.chunkData.set(rawGltfData);
-
-  return binaryGltfData;
-};
-
 const scratchCartesian2 = new Cartesian2();
 
 function getCoveredTiles(terrainProvider, extent) {
@@ -776,85 +838,5 @@ async function loadGeoidData(provider) {
     );
   }
 }
-
-/**
- * @private
- */
-I3SDataProvider.prototype.loadGeoidData = async function () {
-  if (defined(this._geoidDataPromise)) {
-    return this._geoidDataPromise;
-  }
-
-  this._geoidDataPromise = loadGeoidData(this);
-  return this._geoidDataPromise;
-};
-
-/**
- * @private
- */
-I3SDataProvider.prototype._computeExtent = function () {
-  let rectangle;
-
-  // Compute the extent from all layers
-  for (
-    let layerIndex = 0;
-    layerIndex < this._layersExtent.length;
-    layerIndex++
-  ) {
-    const layerExtent = this._layersExtent[layerIndex];
-    if (!defined(rectangle)) {
-      rectangle = Rectangle.clone(layerExtent);
-    } else {
-      Rectangle.union(rectangle, layerExtent, rectangle);
-    }
-  }
-
-  this._extent = rectangle;
-};
-
-/**
- * Returns the collection of names for all available attributes
- * @returns {string[]} The collection of attribute names
- */
-I3SDataProvider.prototype.getAttributeNames = function () {
-  const attributes = [];
-  for (let i = 0; i < this._attributeStatistics.length; ++i) {
-    attributes.push(...this._attributeStatistics[i].names);
-  }
-  return attributes;
-};
-
-/**
- * Returns the collection of values for the attribute with the given name
- * @param {string} name The attribute name
- * @returns {string[]} The collection of attribute values
- */
-I3SDataProvider.prototype.getAttributeValues = function (name) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("name", name);
-  //>>includeEnd('debug');
-
-  for (let i = 0; i < this._attributeStatistics.length; ++i) {
-    const values = this._attributeStatistics[i]._getValues(name);
-    if (defined(values)) {
-      return values;
-    }
-  }
-  return [];
-};
-
-/**
- * Filters the drawn elements of a scene to specific attribute names and values
- * @param {I3SNode.AttributeFilter[]} [filters=[]] The collection of attribute filters
- * @returns {Promise<void>} A promise that is resolved when the filter is applied
- */
-I3SDataProvider.prototype.filterByAttributes = function (filters) {
-  const promises = [];
-  for (let i = 0; i < this._layers.length; i++) {
-    const promise = this._layers[i].filterByAttributes(filters);
-    promises.push(promise);
-  }
-  return Promise.all(promises);
-};
 
 export default I3SDataProvider;

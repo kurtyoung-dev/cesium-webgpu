@@ -37,21 +37,123 @@ import Rectangle from "./Rectangle.js";
  * @see BoundingSphere
  * @see BoundingRectangle
  */
-function OrientedBoundingBox(center, halfAxes) {
+class OrientedBoundingBox {
+  constructor(center, halfAxes) {
+    /**
+     * The center of the box.
+     * @type {Cartesian3}
+     * @default {@link Cartesian3.ZERO}
+     */
+    this.center = Cartesian3.clone(center ?? Cartesian3.ZERO);
+    /**
+     * The three orthogonal half-axes of the bounding box. Equivalently, the
+     * transformation matrix, to rotate and scale a 2x2x2 cube centered at the
+     * origin.
+     * @type {Matrix3}
+     * @default {@link Matrix3.ZERO}
+     */
+    this.halfAxes = Matrix3.clone(halfAxes ?? Matrix3.ZERO);
+  }
+
   /**
-   * The center of the box.
-   * @type {Cartesian3}
-   * @default {@link Cartesian3.ZERO}
+   * Determines which side of a plane the oriented bounding box is located.
+   *
+   * @param {Plane} plane The plane to test against.
+   * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
+   *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
+   *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
+   *                      intersects the plane.
    */
-  this.center = Cartesian3.clone(center ?? Cartesian3.ZERO);
+  intersectPlane(plane) {
+    return OrientedBoundingBox.intersectPlane(this, plane);
+  }
+
   /**
-   * The three orthogonal half-axes of the bounding box. Equivalently, the
-   * transformation matrix, to rotate and scale a 2x2x2 cube centered at the
-   * origin.
-   * @type {Matrix3}
-   * @default {@link Matrix3.ZERO}
+   * Computes the estimated distance squared from the closest point on a bounding box to a point.
+   *
+   * @param {Cartesian3} cartesian The point
+   * @returns {number} The estimated distance squared from the bounding sphere to the point.
+   *
+   * @example
+   * // Sort bounding boxes from back to front
+   * boxes.sort(function(a, b) {
+   *     return b.distanceSquaredTo(camera.positionWC) - a.distanceSquaredTo(camera.positionWC);
+   * });
    */
-  this.halfAxes = Matrix3.clone(halfAxes ?? Matrix3.ZERO);
+  distanceSquaredTo(cartesian) {
+    return OrientedBoundingBox.distanceSquaredTo(this, cartesian);
+  }
+
+  /**
+   * The distances calculated by the vector from the center of the bounding box to position projected onto direction.
+   * <br>
+   * If you imagine the infinite number of planes with normal direction, this computes the smallest distance to the
+   * closest and farthest planes from position that intersect the bounding box.
+   *
+   * @param {Cartesian3} position The position to calculate the distance from.
+   * @param {Cartesian3} direction The direction from position.
+   * @param {Interval} [result] A Interval to store the nearest and farthest distances.
+   * @returns {Interval} The nearest and farthest distances on the bounding box from position in direction.
+   */
+  computePlaneDistances(position, direction, result) {
+    return OrientedBoundingBox.computePlaneDistances(
+      this,
+      position,
+      direction,
+      result,
+    );
+  }
+
+  /**
+   * Computes the eight corners of an oriented bounding box. The corners are ordered by (-X, -Y, -Z), (-X, -Y, +Z), (-X, +Y, -Z), (-X, +Y, +Z), (+X, -Y, -Z), (+X, -Y, +Z), (+X, +Y, -Z), (+X, +Y, +Z).
+   *
+   * @param {Cartesian3[]} [result] An array of eight {@link Cartesian3} instances onto which to store the corners.
+   * @returns {Cartesian3[]} The modified result parameter or a new array if none was provided.
+   */
+  computeCorners(result) {
+    return OrientedBoundingBox.computeCorners(this, result);
+  }
+
+  /**
+   * Computes a transformation matrix from an oriented bounding box.
+   *
+   * @param {Matrix4} result The object onto which to store the result.
+   * @returns {Matrix4} The modified result parameter or a new {@link Matrix4} instance if none was provided.
+   */
+  computeTransformation(result) {
+    return OrientedBoundingBox.computeTransformation(this, result);
+  }
+
+  /**
+   * Determines whether or not a bounding box is hidden from view by the occluder.
+   *
+   * @param {Occluder} occluder The occluder.
+   * @returns {boolean} <code>true</code> if the sphere is not visible; otherwise <code>false</code>.
+   */
+  isOccluded(occluder) {
+    return OrientedBoundingBox.isOccluded(this, occluder);
+  }
+
+  /**
+   * Duplicates this OrientedBoundingBox instance.
+   *
+   * @param {OrientedBoundingBox} [result] The object onto which to store the result.
+   * @returns {OrientedBoundingBox} The modified result parameter or a new OrientedBoundingBox instance if one was not provided.
+   */
+  clone(result) {
+    return OrientedBoundingBox.clone(this, result);
+  }
+
+  /**
+   * Compares this OrientedBoundingBox against the provided OrientedBoundingBox componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {OrientedBoundingBox} [right] The right hand side OrientedBoundingBox.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
+   */
+  equals(right) {
+    return OrientedBoundingBox.equals(this, right);
+  }
 }
 
 /**
@@ -1149,89 +1251,6 @@ OrientedBoundingBox.isOccluded = function (box, occluder) {
 };
 
 /**
- * Determines which side of a plane the oriented bounding box is located.
- *
- * @param {Plane} plane The plane to test against.
- * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
- *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
- *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
- *                      intersects the plane.
- */
-OrientedBoundingBox.prototype.intersectPlane = function (plane) {
-  return OrientedBoundingBox.intersectPlane(this, plane);
-};
-
-/**
- * Computes the estimated distance squared from the closest point on a bounding box to a point.
- *
- * @param {Cartesian3} cartesian The point
- * @returns {number} The estimated distance squared from the bounding sphere to the point.
- *
- * @example
- * // Sort bounding boxes from back to front
- * boxes.sort(function(a, b) {
- *     return b.distanceSquaredTo(camera.positionWC) - a.distanceSquaredTo(camera.positionWC);
- * });
- */
-OrientedBoundingBox.prototype.distanceSquaredTo = function (cartesian) {
-  return OrientedBoundingBox.distanceSquaredTo(this, cartesian);
-};
-
-/**
- * The distances calculated by the vector from the center of the bounding box to position projected onto direction.
- * <br>
- * If you imagine the infinite number of planes with normal direction, this computes the smallest distance to the
- * closest and farthest planes from position that intersect the bounding box.
- *
- * @param {Cartesian3} position The position to calculate the distance from.
- * @param {Cartesian3} direction The direction from position.
- * @param {Interval} [result] A Interval to store the nearest and farthest distances.
- * @returns {Interval} The nearest and farthest distances on the bounding box from position in direction.
- */
-OrientedBoundingBox.prototype.computePlaneDistances = function (
-  position,
-  direction,
-  result,
-) {
-  return OrientedBoundingBox.computePlaneDistances(
-    this,
-    position,
-    direction,
-    result,
-  );
-};
-
-/**
- * Computes the eight corners of an oriented bounding box. The corners are ordered by (-X, -Y, -Z), (-X, -Y, +Z), (-X, +Y, -Z), (-X, +Y, +Z), (+X, -Y, -Z), (+X, -Y, +Z), (+X, +Y, -Z), (+X, +Y, +Z).
- *
- * @param {Cartesian3[]} [result] An array of eight {@link Cartesian3} instances onto which to store the corners.
- * @returns {Cartesian3[]} The modified result parameter or a new array if none was provided.
- */
-OrientedBoundingBox.prototype.computeCorners = function (result) {
-  return OrientedBoundingBox.computeCorners(this, result);
-};
-
-/**
- * Computes a transformation matrix from an oriented bounding box.
- *
- * @param {Matrix4} result The object onto which to store the result.
- * @returns {Matrix4} The modified result parameter or a new {@link Matrix4} instance if none was provided.
- */
-OrientedBoundingBox.prototype.computeTransformation = function (result) {
-  return OrientedBoundingBox.computeTransformation(this, result);
-};
-
-/**
- * Determines whether or not a bounding box is hidden from view by the occluder.
- *
- * @param {Occluder} occluder The occluder.
- * @returns {boolean} <code>true</code> if the sphere is not visible; otherwise <code>false</code>.
- */
-OrientedBoundingBox.prototype.isOccluded = function (occluder) {
-  return OrientedBoundingBox.isOccluded(this, occluder);
-};
-
-/**
  * Compares the provided OrientedBoundingBox componentwise and returns
  * <code>true</code> if they are equal, <code>false</code> otherwise.
  *
@@ -1249,24 +1268,4 @@ OrientedBoundingBox.equals = function (left, right) {
   );
 };
 
-/**
- * Duplicates this OrientedBoundingBox instance.
- *
- * @param {OrientedBoundingBox} [result] The object onto which to store the result.
- * @returns {OrientedBoundingBox} The modified result parameter or a new OrientedBoundingBox instance if one was not provided.
- */
-OrientedBoundingBox.prototype.clone = function (result) {
-  return OrientedBoundingBox.clone(this, result);
-};
-
-/**
- * Compares this OrientedBoundingBox against the provided OrientedBoundingBox componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {OrientedBoundingBox} [right] The right hand side OrientedBoundingBox.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-OrientedBoundingBox.prototype.equals = function (right) {
-  return OrientedBoundingBox.equals(this, right);
-};
 export default OrientedBoundingBox;

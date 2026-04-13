@@ -122,6 +122,9 @@ class UniformState {
     this._viewProjectionDirty = true;
     this._viewProjection = new Matrix4();
 
+    // TAA: previous frame's view-projection for reprojection.
+    this._previousViewProjection = new Matrix4();
+
     this._inverseViewProjectionDirty = true;
     this._inverseViewProjection = new Matrix4();
 
@@ -376,6 +379,10 @@ class UniformState {
   get viewProjection() {
     cleanViewProjection(this);
     return this._viewProjection;
+  }
+
+  get previousViewProjection() {
+    return this._previousViewProjection;
   }
 
   get inverseViewProjection() {
@@ -687,6 +694,10 @@ class UniformState {
    * @param {FrameState} frameState The frameState to synchronize with.
    */
   update(frameState) {
+    // TAA: save current view-projection as "previous" for next frame's
+    // reprojection before we overwrite it with the new camera state.
+    Matrix4.clone(this._viewProjection, this._previousViewProjection);
+
     this._mode = frameState.mode;
     this._mapProjection = frameState.mapProjection;
     this._ellipsoid = frameState.mapProjection.ellipsoid;

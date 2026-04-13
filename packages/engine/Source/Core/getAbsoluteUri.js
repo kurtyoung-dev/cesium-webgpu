@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 
@@ -37,10 +36,13 @@ getAbsoluteUri._implementation = function (relative, base, documentObject) {
     base = documentObject.baseURI ?? documentObject.location.href;
   }
 
-  const relativeUri = new Uri(relative);
-  if (relativeUri.scheme() !== "") {
-    return relativeUri.toString();
+  // Native URL resolution handles both absolute and relative URIs.
+  // An absolute URI (with scheme) resolves to itself regardless of base.
+  try {
+    return new URL(relative, base).href;
+  } catch {
+    // If URL parsing fails (e.g., malformed input), return the relative as-is.
+    return relative;
   }
-  return relativeUri.absoluteTo(base).toString();
 };
 export default getAbsoluteUri;

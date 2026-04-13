@@ -10,29 +10,119 @@ import srgbToLinear from "../Core/srgbToLinear.js";
  * @alias I3SSymbology
  * @internalConstructor
  */
-function I3SSymbology(layer) {
-  this._layer = layer;
-  this._defaultSymbology = undefined;
-  this._valueFields = [];
-  this._uniqueValueHash = undefined;
-  this._classBreaksHash = undefined;
+class I3SSymbology {
+  constructor(layer) {
+    this._layer = layer;
+    this._defaultSymbology = undefined;
+    this._valueFields = [];
+    this._uniqueValueHash = undefined;
+    this._classBreaksHash = undefined;
 
-  this._parseLayerSymbology();
-}
+    this._parseLayerSymbology();
+  }
 
-Object.defineProperties(I3SSymbology.prototype, {
+  /**
+   * @private
+   */
+  _parseLayerSymbology() {
+    const drawingInfo = this._layer.data.drawingInfo;
+    if (defined(drawingInfo) && defined(drawingInfo.renderer)) {
+      const cachedDrawingInfo = this._layer.data.cachedDrawingInfo;
+      const isColorCaptured =
+        defined(cachedDrawingInfo) && cachedDrawingInfo.color === true;
+      const renderer = drawingInfo.renderer;
+      if (renderer.type === "simple") {
+        this._defaultSymbology = parseSymbol(renderer.symbol, isColorCaptured);
+      } else if (renderer.type === "uniqueValue") {
+        this._defaultSymbology = parseSymbol(
+          renderer.defaultSymbol,
+          isColorCaptured,
+        );
+        this._valueFields.push(renderer.field1);
+        if (defined(renderer.field2)) {
+          this._valueFields.push(renderer.field2);
+        }
+        if (defined(renderer.field3)) {
+          this._valueFields.push(renderer.field3);
+        }
+        this._uniqueValueHash = buildUniqueValueHash(renderer, isColorCaptured);
+      } else if (renderer.type === "classBreaks") {
+        this._defaultSymbology = parseSymbol(
+          renderer.defaultSymbol,
+          isColorCaptured,
+        );
+        this._valueFields.push(renderer.field);
+        this._classBreaksHash = buildClassBreaksHash(renderer, isColorCaptured);
+      }
+    }
+  }
+
+  /**
+   * @private
+   */
+  async _getSymbology(node) {
+    const symbology = {
+      default: this._defaultSymbology,
+    };
+
+    if (this._valueFields.length > 0) {
+      const promises = [];
+      for (let i = 0; i < this._valueFields.length; i++) {
+        promises.push(node.loadField(this._valueFields[i]));
+      }
+      await Promise.all(promises);
+
+      const fieldsValues = [];
+      for (let i = 0; i < this._valueFields.length; i++) {
+        fieldsValues.push(node.fields[this._valueFields[i]].values);
+      }
+
+      let featureHashFn;
+      if (defined(this._uniqueValueHash)) {
+        featureHashFn = (featureIndex) =>
+          findHashForUniqueValues(
+            this._uniqueValueHash,
+            fieldsValues,
+            0,
+            featureIndex,
+          );
+      } else if (defined(this._classBreaksHash)) {
+        featureHashFn = (featureIndex) =>
+          findHashForClassBreaks(
+            this._classBreaksHash,
+            fieldsValues[0],
+            featureIndex,
+          );
+      }
+
+      if (defined(featureHashFn)) {
+        const firstFieldValues = fieldsValues[0];
+        for (
+          let featureIndex = 0;
+          featureIndex < firstFieldValues.length;
+          featureIndex++
+        ) {
+          const featureSymbology = featureHashFn(featureIndex);
+          if (defined(featureSymbology)) {
+            symbology[featureIndex] = featureSymbology;
+          }
+        }
+      }
+    }
+
+    return symbology;
+  }
+
   /**
    * Gets the default symbology data.
    * @memberof I3SSymbology.prototype
    * @type {object}
    * @readonly
    */
-  defaultSymbology: {
-    get: function () {
-      return this._defaultSymbology;
-    },
-  },
-});
+  get defaultSymbology() {
+    return this._defaultSymbology;
+  }
+}
 
 function convertColor(color, transparency) {
   // color is represented as a three or four-element array, values range from 0 through 255.
@@ -206,42 +296,6 @@ function buildClassBreaksHash(renderer, isColorCaptured) {
   return undefined;
 }
 
-/**
- * @private
- */
-I3SSymbology.prototype._parseLayerSymbology = function () {
-  const drawingInfo = this._layer.data.drawingInfo;
-  if (defined(drawingInfo) && defined(drawingInfo.renderer)) {
-    const cachedDrawingInfo = this._layer.data.cachedDrawingInfo;
-    const isColorCaptured =
-      defined(cachedDrawingInfo) && cachedDrawingInfo.color === true;
-    const renderer = drawingInfo.renderer;
-    if (renderer.type === "simple") {
-      this._defaultSymbology = parseSymbol(renderer.symbol, isColorCaptured);
-    } else if (renderer.type === "uniqueValue") {
-      this._defaultSymbology = parseSymbol(
-        renderer.defaultSymbol,
-        isColorCaptured,
-      );
-      this._valueFields.push(renderer.field1);
-      if (defined(renderer.field2)) {
-        this._valueFields.push(renderer.field2);
-      }
-      if (defined(renderer.field3)) {
-        this._valueFields.push(renderer.field3);
-      }
-      this._uniqueValueHash = buildUniqueValueHash(renderer, isColorCaptured);
-    } else if (renderer.type === "classBreaks") {
-      this._defaultSymbology = parseSymbol(
-        renderer.defaultSymbol,
-        isColorCaptured,
-      );
-      this._valueFields.push(renderer.field);
-      this._classBreaksHash = buildClassBreaksHash(renderer, isColorCaptured);
-    }
-  }
-};
-
 function findHashForUniqueValues(hash, values, hashLevel, valueIndex) {
   const levelValues = values[hashLevel];
   if (valueIndex < levelValues.length) {
@@ -276,61 +330,5 @@ function findHashForClassBreaks(hash, values, valueIndex) {
   const range = bisect(hash.ranges, value);
   return hash.symbols[range];
 }
-
-/**
- * @private
- */
-I3SSymbology.prototype._getSymbology = async function (node) {
-  const symbology = {
-    default: this._defaultSymbology,
-  };
-
-  if (this._valueFields.length > 0) {
-    const promises = [];
-    for (let i = 0; i < this._valueFields.length; i++) {
-      promises.push(node.loadField(this._valueFields[i]));
-    }
-    await Promise.all(promises);
-
-    const fieldsValues = [];
-    for (let i = 0; i < this._valueFields.length; i++) {
-      fieldsValues.push(node.fields[this._valueFields[i]].values);
-    }
-
-    let featureHashFn;
-    if (defined(this._uniqueValueHash)) {
-      featureHashFn = (featureIndex) =>
-        findHashForUniqueValues(
-          this._uniqueValueHash,
-          fieldsValues,
-          0,
-          featureIndex,
-        );
-    } else if (defined(this._classBreaksHash)) {
-      featureHashFn = (featureIndex) =>
-        findHashForClassBreaks(
-          this._classBreaksHash,
-          fieldsValues[0],
-          featureIndex,
-        );
-    }
-
-    if (defined(featureHashFn)) {
-      const firstFieldValues = fieldsValues[0];
-      for (
-        let featureIndex = 0;
-        featureIndex < firstFieldValues.length;
-        featureIndex++
-      ) {
-        const featureSymbology = featureHashFn(featureIndex);
-        if (defined(featureSymbology)) {
-          symbology[featureIndex] = featureSymbology;
-        }
-      }
-    }
-  }
-
-  return symbology;
-};
 
 export default I3SSymbology;

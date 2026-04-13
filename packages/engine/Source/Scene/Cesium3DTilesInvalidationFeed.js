@@ -43,217 +43,211 @@ import { createTilePathResolver } from "./TilePathResolver.js";
  *   defaults to {@link TilePathEncoding.CHILD_INDEX}.
  * @param {Scene} [options.scene]
  */
-function Cesium3DTilesInvalidationFeed(tileset, options) {
-  if (!defined(tileset)) {
-    throw new DeveloperError("tileset is required.");
-  }
-  if (!defined(options) || !defined(options.adapter)) {
-    throw new DeveloperError("options.adapter is required.");
-  }
-  if (!defined(options.layers) || !Array.isArray(options.layers)) {
-    throw new DeveloperError("options.layers must be an array of layer names.");
-  }
-
-  this._tileset = tileset;
-  this._adapter = options.adapter;
-  // Normalize configured layer names — strip trailing slash so comparisons
-  // against adapter-normalized names (also without slash) always succeed.
-  this._layers = new Set(
-    options.layers.map((name) => stripTrailingSlash(name)),
-  );
-  this._scene = options.scene;
-
-  this._pathEncoding = options.pathEncoding ?? TilePathEncoding.CHILD_INDEX;
-  this._resolver = createTilePathResolver(this._pathEncoding);
-
-  // Diagnostics.
-  this._appliedCount = 0;
-  this._lastAffectedTileCount = 0;
-  this._totalApplied = 0;
-  this._totalSkipped = 0;
-  this._tilesetJsonRequests = 0;
-  this._lastApplyMs = 0;
-}
-
-Object.defineProperties(Cesium3DTilesInvalidationFeed.prototype, {
-  tileset: {
-    get: function () {
-      return this._tileset;
-    },
-  },
-  adapter: {
-    get: function () {
-      return this._adapter;
-    },
-  },
-  layers: {
-    get: function () {
-      return Array.from(this._layers);
-    },
-  },
-  pathEncoding: {
-    get: function () {
-      return this._pathEncoding;
-    },
-  },
-  lastAffectedTileCount: {
-    get: function () {
-      return this._lastAffectedTileCount;
-    },
-  },
-});
-
-Cesium3DTilesInvalidationFeed.prototype.setScene = function (scene) {
-  this._scene = scene;
-};
-
-/**
- * Convenience: parse a raw payload (which may contain many blocks) then
- * apply every resulting set.
- * @param {string|ArrayBuffer} payload
- * @returns {number} Total tiles affected across all sets.
- */
-Cesium3DTilesInvalidationFeed.prototype.parseAndApply = function (payload) {
-  const sets = this._adapter.parse(payload);
-  if (!defined(sets) || sets.length === 0) {
-    return 0;
-  }
-  return this.applyAll(sets);
-};
-
-/**
- * Apply every set in an array. Returns the sum of affected tiles.
- * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} sets
- * @returns {number}
- */
-Cesium3DTilesInvalidationFeed.prototype.applyAll = function (sets) {
-  if (!defined(sets) || sets.length === 0) {
-    return 0;
-  }
-  let total = 0;
-  for (let i = 0; i < sets.length; ++i) {
-    total += this.apply(sets[i]);
-  }
-  return total;
-};
-
-/**
- * Apply a single normalized invalidation set.
- * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet} set
- * @returns {number}
- */
-Cesium3DTilesInvalidationFeed.prototype.apply = function (set) {
-  const t0 =
-    typeof performance !== "undefined" && typeof performance.now === "function"
-      ? performance.now()
-      : 0;
-
-  this._lastAffectedTileCount = 0;
-  if (!defined(set) || !defined(set.layers)) {
-    this._lastApplyMs =
-      typeof performance !== "undefined" &&
-      typeof performance.now === "function"
-        ? performance.now() - t0
-        : 0;
-    return 0;
-  }
-
-  const root = this._tileset._root;
-  if (!defined(root)) {
-    this._lastApplyMs =
-      typeof performance !== "undefined" &&
-      typeof performance.now === "function"
-        ? performance.now() - t0
-        : 0;
-    return 0;
-  }
-
-  let affected = 0;
-  const listenedLayers = this._layers;
-  const resolver = this._resolver;
-
-  set.layers.forEach((layer, name) => {
-    const normalized = stripTrailingSlash(name);
-    if (!listenedLayers.has(normalized)) {
-      return;
+class Cesium3DTilesInvalidationFeed {
+  constructor(tileset, options) {
+    if (!defined(tileset)) {
+      throw new DeveloperError("tileset is required.");
     }
-    const entries = layer.entries;
-    for (let i = 0; i < entries.length; ++i) {
-      const entry = entries[i];
+    if (!defined(options) || !defined(options.adapter)) {
+      throw new DeveloperError("options.adapter is required.");
+    }
+    if (!defined(options.layers) || !Array.isArray(options.layers)) {
+      throw new DeveloperError("options.layers must be an array of layer names.");
+    }
 
-      if (entry.tilesetJson === true) {
-        console.log(
-          `[InvalidationFeed] tileset.json refetch requested for layer ${normalized} — Phase 2`,
-        );
-        this._tilesetJsonRequests++;
-        continue;
+    this._tileset = tileset;
+    this._adapter = options.adapter;
+    // Normalize configured layer names — strip trailing slash so comparisons
+    // against adapter-normalized names (also without slash) always succeed.
+    this._layers = new Set(
+      options.layers.map((name) => stripTrailingSlash(name)),
+    );
+    this._scene = options.scene;
+
+    this._pathEncoding = options.pathEncoding ?? TilePathEncoding.CHILD_INDEX;
+    this._resolver = createTilePathResolver(this._pathEncoding);
+
+    // Diagnostics.
+    this._appliedCount = 0;
+    this._lastAffectedTileCount = 0;
+    this._totalApplied = 0;
+    this._totalSkipped = 0;
+    this._tilesetJsonRequests = 0;
+    this._lastApplyMs = 0;
+  }
+
+  setScene(scene) {
+    this._scene = scene;
+  }
+
+  /**
+   * Convenience: parse a raw payload (which may contain many blocks) then
+   * apply every resulting set.
+   * @param {string|ArrayBuffer} payload
+   * @returns {number} Total tiles affected across all sets.
+   */
+  parseAndApply(payload) {
+    const sets = this._adapter.parse(payload);
+    if (!defined(sets) || sets.length === 0) {
+      return 0;
+    }
+    return this.applyAll(sets);
+  }
+
+  /**
+   * Apply every set in an array. Returns the sum of affected tiles.
+   * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet[]} sets
+   * @returns {number}
+   */
+  applyAll(sets) {
+    if (!defined(sets) || sets.length === 0) {
+      return 0;
+    }
+    let total = 0;
+    for (let i = 0; i < sets.length; ++i) {
+      total += this.apply(sets[i]);
+    }
+    return total;
+  }
+
+  /**
+   * Apply a single normalized invalidation set.
+   * @param {import("./Cesium3DTilesInvalidationFeedAdapter.js").InvalidationSet} set
+   * @returns {number}
+   */
+  apply(set) {
+    const t0 =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : 0;
+
+    this._lastAffectedTileCount = 0;
+    if (!defined(set) || !defined(set.layers)) {
+      this._lastApplyMs =
+        typeof performance !== "undefined" &&
+        typeof performance.now === "function"
+          ? performance.now() - t0
+          : 0;
+      return 0;
+    }
+
+    const root = this._tileset._root;
+    if (!defined(root)) {
+      this._lastApplyMs =
+        typeof performance !== "undefined" &&
+        typeof performance.now === "function"
+          ? performance.now() - t0
+          : 0;
+      return 0;
+    }
+
+    let affected = 0;
+    const listenedLayers = this._layers;
+    const resolver = this._resolver;
+
+    set.layers.forEach((layer, name) => {
+      const normalized = stripTrailingSlash(name);
+      if (!listenedLayers.has(normalized)) {
+        return;
       }
+      const entries = layer.entries;
+      for (let i = 0; i < entries.length; ++i) {
+        const entry = entries[i];
 
-      let parsed;
-      try {
-        parsed = resolver.parsePath(entry.rawPath);
-      } catch (err) {
-        this._totalSkipped++;
-        console.warn(
-          `[InvalidationFeed] resolver failed to parse "${entry.rawPath}" (${this._pathEncoding}): ${err.message}`,
-        );
-        continue;
-      }
+        if (entry.tilesetJson === true) {
+          console.log(
+            `[InvalidationFeed] tileset.json refetch requested for layer ${normalized} — Phase 2`,
+          );
+          this._tilesetJsonRequests++;
+          continue;
+        }
 
-      const tiles = resolver.resolve(root, parsed, entry.kind);
-      if (!defined(tiles) || tiles.length === 0) {
-        this._totalSkipped++;
-        continue;
-      }
-
-      for (let t = 0; t < tiles.length; ++t) {
-        if (invalidateTile(tiles[t])) {
-          affected++;
-          this._totalApplied++;
-        } else {
+        let parsed;
+        try {
+          parsed = resolver.parsePath(entry.rawPath);
+        } catch (err) {
           this._totalSkipped++;
+          console.warn(
+            `[InvalidationFeed] resolver failed to parse "${entry.rawPath}" (${this._pathEncoding}): ${err.message}`,
+          );
+          continue;
+        }
+
+        const tiles = resolver.resolve(root, parsed, entry.kind);
+        if (!defined(tiles) || tiles.length === 0) {
+          this._totalSkipped++;
+          continue;
+        }
+
+        for (let t = 0; t < tiles.length; ++t) {
+          if (invalidateTile(tiles[t])) {
+            affected++;
+            this._totalApplied++;
+          } else {
+            this._totalSkipped++;
+          }
         }
       }
+    });
+
+    this._lastAffectedTileCount = affected;
+    this._appliedCount++;
+
+    if (affected > 0 && defined(this._scene)) {
+      this._scene._snapshotVersion = (this._scene._snapshotVersion ?? 0) + 1;
     }
-  });
 
-  this._lastAffectedTileCount = affected;
-  this._appliedCount++;
-
-  if (affected > 0 && defined(this._scene)) {
-    this._scene._snapshotVersion = (this._scene._snapshotVersion ?? 0) + 1;
+    this._lastApplyMs =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now() - t0
+        : 0;
+    return affected;
   }
 
-  this._lastApplyMs =
-    typeof performance !== "undefined" && typeof performance.now === "function"
-      ? performance.now() - t0
-      : 0;
-  return affected;
-};
+  /**
+   * Diagnostic snapshot.
+   * @returns {{totalApplied: number, totalSkipped: number, tilesetJsonRequests: number, lastApplyMs: number}}
+   */
+  getDiagnostics() {
+    return {
+      totalApplied: this._totalApplied,
+      totalSkipped: this._totalSkipped,
+      tilesetJsonRequests: this._tilesetJsonRequests,
+      lastApplyMs: this._lastApplyMs,
+    };
+  }
 
-/**
- * Diagnostic snapshot.
- * @returns {{totalApplied: number, totalSkipped: number, tilesetJsonRequests: number, lastApplyMs: number}}
- */
-Cesium3DTilesInvalidationFeed.prototype.getDiagnostics = function () {
-  return {
-    totalApplied: this._totalApplied,
-    totalSkipped: this._totalSkipped,
-    tilesetJsonRequests: this._tilesetJsonRequests,
-    lastApplyMs: this._lastApplyMs,
-  };
-};
+  poll(url, intervalMs) {
+    throw new DeveloperError(
+      "Cesium3DTilesInvalidationFeed.poll: network polling lands in invalidation feed Phase 2.",
+    );
+  }
 
-Cesium3DTilesInvalidationFeed.prototype.poll = function (url, intervalMs) {
-  throw new DeveloperError(
-    "Cesium3DTilesInvalidationFeed.poll: network polling lands in invalidation feed Phase 2.",
-  );
-};
+  getAuthHeaders() {
+    // TODO Phase 2: integrate with IonResource token plumbing.
+    return {};
+  }
 
-Cesium3DTilesInvalidationFeed.prototype.getAuthHeaders = function () {
-  // TODO Phase 2: integrate with IonResource token plumbing.
-  return {};
-};
+  get tileset() {
+    return this._tileset;
+  }
+
+  get adapter() {
+    return this._adapter;
+  }
+
+  get layers() {
+    return Array.from(this._layers);
+  }
+
+  get pathEncoding() {
+    return this._pathEncoding;
+  }
+
+  get lastAffectedTileCount() {
+    return this._lastAffectedTileCount;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

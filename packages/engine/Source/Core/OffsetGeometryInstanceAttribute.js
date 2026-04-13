@@ -17,20 +17,20 @@ import defined from "./defined.js";
  * @see GeometryInstance
  * @see GeometryInstanceAttribute
  */
-function OffsetGeometryInstanceAttribute(x, y, z) {
-  x = x ?? 0;
-  y = y ?? 0;
-  z = z ?? 0;
+class OffsetGeometryInstanceAttribute {
+  constructor(x, y, z) {
+    x = x ?? 0;
+    y = y ?? 0;
+    z = z ?? 0;
 
-  /**
-   * The values for the attributes stored in a typed array.
-   *
-   * @type Float32Array
-   */
-  this.value = new Float32Array([x, y, z]);
-}
+    /**
+     * The values for the attributes stored in a typed array.
+     *
+     * @type Float32Array
+     */
+    this.value = new Float32Array([x, y, z]);
+  }
 
-Object.defineProperties(OffsetGeometryInstanceAttribute.prototype, {
   /**
    * The datatype of each component in the attribute, e.g., individual elements in
    * {@link OffsetGeometryInstanceAttribute#value}.
@@ -42,11 +42,9 @@ Object.defineProperties(OffsetGeometryInstanceAttribute.prototype, {
    *
    * @default {@link ComponentDatatype.FLOAT}
    */
-  componentDatatype: {
-    get: function () {
-      return ComponentDatatype.FLOAT;
-    },
-  },
+  get componentDatatype() {
+    return ComponentDatatype.FLOAT;
+  }
 
   /**
    * The number of components in the attributes, i.e., {@link OffsetGeometryInstanceAttribute#value}.
@@ -58,11 +56,9 @@ Object.defineProperties(OffsetGeometryInstanceAttribute.prototype, {
    *
    * @default 3
    */
-  componentsPerAttribute: {
-    get: function () {
-      return 3;
-    },
-  },
+  get componentsPerAttribute() {
+    return 3;
+  }
 
   /**
    * When <code>true</code> and <code>componentDatatype</code> is an integer format,
@@ -76,12 +72,10 @@ Object.defineProperties(OffsetGeometryInstanceAttribute.prototype, {
    *
    * @default false
    */
-  normalize: {
-    get: function () {
-      return false;
-    },
-  },
-});
+  get normalize() {
+    return false;
+  }
+}
 
 /**
  * Creates a new {@link OffsetGeometryInstanceAttribute} instance given the provided an enabled flag and {@link DistanceDisplayCondition}.

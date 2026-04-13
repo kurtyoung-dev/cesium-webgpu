@@ -26,7 +26,7 @@ const allElementTypes = [
 function removeUnusedElements(gltf, elementTypes) {
   elementTypes = elementTypes ?? allElementTypes;
   allElementTypes.forEach(function (type) {
-    if (elementTypes.indexOf(type) > -1) {
+    if (elementTypes.includes(type)) {
       removeUnusedElementsByType(gltf, type);
     }
   });

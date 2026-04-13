@@ -28,41 +28,97 @@ import GeographicTilingScheme from "../Core/GeographicTilingScheme.js";
  *
  * @param {TileCoordinatesImageryProvider.ConstructorOptions} [options] Object describing initialization options
  */
-function TileCoordinatesImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class TileCoordinatesImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._tilingScheme = defined(options.tilingScheme)
-    ? options.tilingScheme
-    : new GeographicTilingScheme({ ellipsoid: options.ellipsoid });
-  this._color = options.color ?? Color.YELLOW;
-  this._errorEvent = new Event();
-  this._tileWidth = options.tileWidth ?? 256;
-  this._tileHeight = options.tileHeight ?? 256;
+    this._tilingScheme = defined(options.tilingScheme)
+      ? options.tilingScheme
+      : new GeographicTilingScheme({ ellipsoid: options.ellipsoid });
+    this._color = options.color ?? Color.YELLOW;
+    this._errorEvent = new Event();
+    this._tileWidth = options.tileWidth ?? 256;
+    this._tileHeight = options.tileHeight ?? 256;
 
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
-}
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
+  }
 
-Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    return undefined;
+  }
+
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<HTMLCanvasElement>} The resolved image as a Canvas DOM object.
+   */
+  requestImage(x, y, level, request) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext("2d");
+
+    const cssColor = this._color.toCssColorString();
+
+    context.strokeStyle = cssColor;
+    context.lineWidth = 2;
+    context.strokeRect(1, 1, 255, 255);
+
+    context.font = "bold 25px Arial";
+    context.textAlign = "center";
+    context.fillStyle = cssColor;
+    context.fillText(`L: ${level}`, 124, 86);
+    context.fillText(`X: ${x}`, 124, 136);
+    context.fillText(`Y: ${y}`, 124, 186);
+
+    return Promise.resolve(canvas);
+  }
+
+  /**
+   * Picking features is not currently supported by this imagery provider, so this function simply returns
+   * undefined.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {undefined} Undefined since picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    return undefined;
+  }
+
   /**
    * Gets the proxy used by this provider.
    * @memberof TileCoordinatesImageryProvider.prototype
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get proxy() {
+    return undefined;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -70,11 +126,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -82,11 +136,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -94,11 +146,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get maximumLevel() {
+    return undefined;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested.
@@ -106,11 +156,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get minimumLevel() {
+    return undefined;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -118,11 +166,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
@@ -130,11 +176,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._tilingScheme.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._tilingScheme.rectangle;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -144,11 +188,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get tileDiscardPolicy() {
+    return undefined;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -158,11 +200,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -171,11 +211,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get credit() {
+    return undefined;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -187,83 +225,9 @@ Object.defineProperties(TileCoordinatesImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return true;
-    },
-  },
-});
+  get hasAlphaChannel() {
+    return true;
+  }
+}
 
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-TileCoordinatesImageryProvider.prototype.getTileCredits = function (
-  x,
-  y,
-  level,
-) {
-  return undefined;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<HTMLCanvasElement>} The resolved image as a Canvas DOM object.
- */
-TileCoordinatesImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const context = canvas.getContext("2d");
-
-  const cssColor = this._color.toCssColorString();
-
-  context.strokeStyle = cssColor;
-  context.lineWidth = 2;
-  context.strokeRect(1, 1, 255, 255);
-
-  context.font = "bold 25px Arial";
-  context.textAlign = "center";
-  context.fillStyle = cssColor;
-  context.fillText(`L: ${level}`, 124, 86);
-  context.fillText(`X: ${x}`, 124, 136);
-  context.fillText(`Y: ${y}`, 124, 186);
-
-  return Promise.resolve(canvas);
-};
-
-/**
- * Picking features is not currently supported by this imagery provider, so this function simply returns
- * undefined.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {undefined} Undefined since picking is not supported.
- */
-TileCoordinatesImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return undefined;
-};
 export default TileCoordinatesImageryProvider;

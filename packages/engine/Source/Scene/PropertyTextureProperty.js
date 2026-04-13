@@ -22,60 +22,60 @@ import GltfLoaderUtil from "./GltfLoaderUtil.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function PropertyTextureProperty(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const property = options.property;
-  const classProperty = options.classProperty;
-  const textures = options.textures;
+class PropertyTextureProperty {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const property = options.property;
+    const classProperty = options.classProperty;
+    const textures = options.textures;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.property", property);
-  Check.typeOf.object("options.classProperty", classProperty);
-  Check.typeOf.object("options.textures", textures);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.property", property);
+    Check.typeOf.object("options.classProperty", classProperty);
+    Check.typeOf.object("options.textures", textures);
+    //>>includeEnd('debug');
 
-  // in EXT_structural_metadata, the property is a valid glTF textureInfo
-  const channels = defined(property.channels) ? property.channels : [0];
-  const textureInfo = property;
-  const textureReader = GltfLoaderUtil.createModelTextureReader({
-    textureInfo: textureInfo,
-    channels: reformatChannels(channels),
-    texture: textures[textureInfo.index],
-  });
+    // in EXT_structural_metadata, the property is a valid glTF textureInfo
+    const channels = defined(property.channels) ? property.channels : [0];
+    const textureInfo = property;
+    const textureReader = GltfLoaderUtil.createModelTextureReader({
+      textureInfo: textureInfo,
+      channels: reformatChannels(channels),
+      texture: textures[textureInfo.index],
+    });
 
-  this._min = property.min;
-  this._max = property.max;
+    this._min = property.min;
+    this._max = property.max;
 
-  let offset = property.offset;
-  let scale = property.scale;
+    let offset = property.offset;
+    let scale = property.scale;
 
-  // This needs to be set before handling default values
-  const hasValueTransform =
-    classProperty.hasValueTransform || defined(offset) || defined(scale);
+    // This needs to be set before handling default values
+    const hasValueTransform =
+      classProperty.hasValueTransform || defined(offset) || defined(scale);
 
-  // If the property attribute does not define an offset/scale, it inherits from
-  // the class property. The class property handles setting the default of
-  // identity: (offset 0, scale 1) with the same scalar/vector/matrix types.
-  // array types are disallowed by the spec.
-  offset = offset ?? classProperty.offset;
-  scale = scale ?? classProperty.scale;
+    // If the property attribute does not define an offset/scale, it inherits from
+    // the class property. The class property handles setting the default of
+    // identity: (offset 0, scale 1) with the same scalar/vector/matrix types.
+    // array types are disallowed by the spec.
+    offset = offset ?? classProperty.offset;
+    scale = scale ?? classProperty.scale;
 
-  // offset and scale are applied on the GPU, so unpack the values
-  // as math types we can use in uniform callbacks.
-  offset = classProperty.unpackVectorAndMatrixTypes(offset);
-  scale = classProperty.unpackVectorAndMatrixTypes(scale);
+    // offset and scale are applied on the GPU, so unpack the values
+    // as math types we can use in uniform callbacks.
+    offset = classProperty.unpackVectorAndMatrixTypes(offset);
+    scale = classProperty.unpackVectorAndMatrixTypes(scale);
 
-  this._offset = offset;
-  this._scale = scale;
-  this._hasValueTransform = hasValueTransform;
+    this._offset = offset;
+    this._scale = scale;
+    this._hasValueTransform = hasValueTransform;
 
-  this._textureReader = textureReader;
-  this._classProperty = classProperty;
-  this._extras = property.extras;
-  this._extensions = property.extensions;
-}
+    this._textureReader = textureReader;
+    this._classProperty = classProperty;
+    this._extras = property.extras;
+    this._extensions = property.extensions;
+  }
 
-Object.defineProperties(PropertyTextureProperty.prototype, {
   /**
    * The texture reader.
    *
@@ -84,11 +84,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  textureReader: {
-    get: function () {
-      return this._textureReader;
-    },
-  },
+  get textureReader() {
+    return this._textureReader;
+  }
 
   /**
    * True if offset/scale should be applied. If both offset/scale were
@@ -99,11 +97,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  hasValueTransform: {
-    get: function () {
-      return this._hasValueTransform;
-    },
-  },
+  get hasValueTransform() {
+    return this._hasValueTransform;
+  }
 
   /**
    * The offset to be added to property values as part of the value transform.
@@ -119,11 +115,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  offset: {
-    get: function () {
-      return this._offset;
-    },
-  },
+  get offset() {
+    return this._offset;
+  }
 
   /**
    * The scale to be multiplied to property values as part of the value transform.
@@ -139,11 +133,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  scale: {
-    get: function () {
-      return this._scale;
-    },
-  },
+  get scale() {
+    return this._scale;
+  }
 
   /**
    * The properties inherited from this property's class
@@ -153,11 +145,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  classProperty: {
-    get: function () {
-      return this._classProperty;
-    },
-  },
+  get classProperty() {
+    return this._classProperty;
+  }
 
   /**
    * Extra user-defined properties.
@@ -167,11 +157,9 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -181,12 +169,10 @@ Object.defineProperties(PropertyTextureProperty.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
+  get extensions() {
+    return this._extensions;
+  }
+}
 
 /**
  * Reformat from an array of channel indices like <code>[0, 1]</code> to a

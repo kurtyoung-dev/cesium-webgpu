@@ -90,7 +90,7 @@ PointCloudStylingPipelineStage.process = function (
 
     const propertyNames = getPropertyNames(shaderFunctionInfo);
 
-    const usesNormalSemantic = propertyNames.indexOf("normalMC") >= 0;
+    const usesNormalSemantic = propertyNames.includes("normalMC");
     const hasNormals = ModelUtility.getAttributeBySemantic(
       primitive,
       VertexAttributeSemantic.NORMAL,
@@ -361,7 +361,7 @@ function getBuiltinPropertyNames(source, propertyNames) {
   while (matches !== null) {
     const name = matches[1];
     // Add the property name if it isn't already in the array.
-    if (propertyNames.indexOf(name) === -1) {
+    if (!propertyNames.includes(name)) {
       propertyNames.push(name);
     }
     matches = regex.exec(source);

@@ -1047,10 +1047,10 @@ function convertTechniquesToPbr(gltf, options) {
   // Future work: convert other values like emissive, specular, etc. Only handling diffuse right now.
   ForEach.material(gltf, function (material) {
     ForEach.materialValue(material, function (value, name) {
-      if (baseColorTextureNames.indexOf(name) !== -1 && isTexture(value)) {
+      if (baseColorTextureNames.includes(name) && isTexture(value)) {
         initializePbrMaterial(material);
         material.pbrMetallicRoughness.baseColorTexture = value;
-      } else if (baseColorFactorNames.indexOf(name) !== -1 && isVec4(value)) {
+      } else if (baseColorFactorNames.includes(name) && isVec4(value)) {
         initializePbrMaterial(material);
         material.pbrMetallicRoughness.baseColorFactor = srgbToLinear(value);
       }

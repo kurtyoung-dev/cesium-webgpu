@@ -53,129 +53,131 @@ function TextureNode({ x, y, width, height }) {
  * @param {number} options.height Height of atlas, in pixels
  * @param {number} options.borderPadding Amount of border padding, in pixels
  */
-function TexturePacker({ width, height, borderPadding }) {
-  this._width = width;
-  this._height = height;
+class TexturePacker {
+  constructor({ width, height, borderPadding }) {
+    this._width = width;
+    this._height = height;
 
-  this._borderPadding = borderPadding;
+    this._borderPadding = borderPadding;
 
-  this._root = new TextureNode({
-    x: borderPadding,
-    y: borderPadding,
-    width: width - 2 * borderPadding,
-    height: height - 2 * borderPadding,
-  });
-}
-
-/**
- * Inserts the given object into the next available region based on it's dimensions. Where convenient, it's most efficient to pack items largest to smallest.
- * @private
- * @param {number} index An identifier referencing the image or other stored data
- * @param {TexturePacker.PackableObject} packableObject An object, such as an <code>Image</code>, with <code>width</code> and <code>height</code> properties in pixels.
- * @returns {TextureNode|undefined} The created region, or <code>undefined</code> if there is no region large enough to accommodate the object's dimensions.
- */
-TexturePacker.prototype.pack = function (index, { width, height }) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number.greaterThanOrEquals("index", index, 0);
-  Check.typeOf.number.greaterThanOrEquals("image.width", width, 1);
-  Check.typeOf.number.greaterThanOrEquals("image.height", height, 1);
-  //>>includeEnd('debug');
-
-  const node = this._findNode(this._root, { width, height });
-  if (!defined(node)) {
-    return;
+    this._root = new TextureNode({
+      x: borderPadding,
+      y: borderPadding,
+      width: width - 2 * borderPadding,
+      height: height - 2 * borderPadding,
+    });
   }
 
-  node.index = index;
-  return node;
-};
+  /**
+   * Inserts the given object into the next available region based on it's dimensions. Where convenient, it's most efficient to pack items largest to smallest.
+   * @private
+   * @param {number} index An identifier referencing the image or other stored data
+   * @param {TexturePacker.PackableObject} packableObject An object, such as an <code>Image</code>, with <code>width</code> and <code>height</code> properties in pixels.
+   * @returns {TextureNode|undefined} The created region, or <code>undefined</code> if there is no region large enough to accommodate the object's dimensions.
+   */
+  pack(index, { width, height }) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("index", index, 0);
+    Check.typeOf.number.greaterThanOrEquals("image.width", width, 1);
+    Check.typeOf.number.greaterThanOrEquals("image.height", height, 1);
+    //>>includeEnd('debug');
 
-// A recursive function that finds the best place to insert
-// a new image based on existing image 'nodes'.
-// Inspired by: http://blackpawn.com/texts/lightmaps/default.html
-TexturePacker.prototype._findNode = function (node, { width, height }) {
-  if (!defined(node)) {
-    return undefined;
+    const node = this._findNode(this._root, { width, height });
+    if (!defined(node)) {
+      return;
+    }
+
+    node.index = index;
+    return node;
   }
 
-  // Leaf node
-  if (!defined(node.childNode1) && !defined(node.childNode2)) {
-    if (defined(node.index)) {
-      // Node already contains an image: Skip it.
+  // A recursive function that finds the best place to insert
+  // a new image based on existing image 'nodes'.
+  // Inspired by: http://blackpawn.com/texts/lightmaps/default.html
+  _findNode(node, { width, height }) {
+    if (!defined(node)) {
       return undefined;
     }
 
-    const { rectangle } = node;
+    // Leaf node
+    if (!defined(node.childNode1) && !defined(node.childNode2)) {
+      if (defined(node.index)) {
+        // Node already contains an image: Skip it.
+        return undefined;
+      }
 
-    const nodeWidth = rectangle.width;
-    const nodeHeight = rectangle.height;
-    const widthDifference = nodeWidth - width;
-    const heightDifference = nodeHeight - height;
+      const { rectangle } = node;
 
-    // Node is smaller than the image.
-    if (widthDifference < 0 || heightDifference < 0) {
-      return undefined;
-    }
+      const nodeWidth = rectangle.width;
+      const nodeHeight = rectangle.height;
+      const widthDifference = nodeWidth - width;
+      const heightDifference = nodeHeight - height;
 
-    // If the node is the same size as the image, return the node
-    if (widthDifference === 0 && heightDifference === 0) {
-      return node;
-    }
+      // Node is smaller than the image.
+      if (widthDifference < 0 || heightDifference < 0) {
+        return undefined;
+      }
 
-    const borderPadding = this._borderPadding;
+      // If the node is the same size as the image, return the node
+      if (widthDifference === 0 && heightDifference === 0) {
+        return node;
+      }
 
-    // Vertical split (childNode1 = left half, childNode2 = right half).
-    if (widthDifference > heightDifference) {
+      const borderPadding = this._borderPadding;
+
+      // Vertical split (childNode1 = left half, childNode2 = right half).
+      if (widthDifference > heightDifference) {
+        node.childNode1 = new TextureNode({
+          x: rectangle.x,
+          y: rectangle.y,
+          width,
+          height: nodeHeight,
+        });
+
+        // Apply padding only along the vertical "cut".
+        const widthDifferencePadded = widthDifference - borderPadding;
+
+        if (widthDifferencePadded > 0) {
+          node.childNode2 = new TextureNode({
+            x: rectangle.x + width + borderPadding,
+            y: rectangle.y,
+            width: widthDifferencePadded,
+            height: nodeHeight,
+          });
+        }
+
+        return this._findNode(node.childNode1, { width, height });
+      }
+
+      // Horizontal split (childNode1 = bottom half, childNode2 = top half).
       node.childNode1 = new TextureNode({
         x: rectangle.x,
         y: rectangle.y,
-        width,
-        height: nodeHeight,
+        width: nodeWidth,
+        height,
       });
 
-      // Apply padding only along the vertical "cut".
-      const widthDifferencePadded = widthDifference - borderPadding;
+      // Apply padding only along the horizontal "cut".
+      const heightDifferencePadded = heightDifference - borderPadding;
 
-      if (widthDifferencePadded > 0) {
+      if (heightDifferencePadded > 0) {
         node.childNode2 = new TextureNode({
-          x: rectangle.x + width + borderPadding,
-          y: rectangle.y,
-          width: widthDifferencePadded,
-          height: nodeHeight,
+          x: rectangle.x,
+          y: rectangle.y + height + borderPadding,
+          width: nodeWidth,
+          height: heightDifferencePadded,
         });
       }
 
       return this._findNode(node.childNode1, { width, height });
     }
 
-    // Horizontal split (childNode1 = bottom half, childNode2 = top half).
-    node.childNode1 = new TextureNode({
-      x: rectangle.x,
-      y: rectangle.y,
-      width: nodeWidth,
-      height,
-    });
-
-    // Apply padding only along the horizontal "cut".
-    const heightDifferencePadded = heightDifference - borderPadding;
-
-    if (heightDifferencePadded > 0) {
-      node.childNode2 = new TextureNode({
-        x: rectangle.x,
-        y: rectangle.y + height + borderPadding,
-        width: nodeWidth,
-        height: heightDifferencePadded,
-      });
-    }
-
-    return this._findNode(node.childNode1, { width, height });
+    // If not a leaf node
+    return (
+      this._findNode(node.childNode1, { width, height }) ||
+      this._findNode(node.childNode2, { width, height })
+    );
   }
-
-  // If not a leaf node
-  return (
-    this._findNode(node.childNode1, { width, height }) ||
-    this._findNode(node.childNode2, { width, height })
-  );
-};
+}
 
 export default TexturePacker;

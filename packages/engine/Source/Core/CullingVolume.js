@@ -13,15 +13,102 @@ import Plane from "./Plane.js";
  *
  * @param {Cartesian4[]} [planes] An array of clipping planes.
  */
-function CullingVolume(planes) {
+class CullingVolume {
+  constructor(planes) {
+    /**
+     * Each plane is represented by a Cartesian4 object, where the x, y, and z components
+     * define the unit vector normal to the plane, and the w component is the distance of the
+     * plane from the origin.
+     * @type {Cartesian4[]}
+     * @default []
+     */
+    this.planes = planes ?? [];
+  }
+
   /**
-   * Each plane is represented by a Cartesian4 object, where the x, y, and z components
-   * define the unit vector normal to the plane, and the w component is the distance of the
-   * plane from the origin.
-   * @type {Cartesian4[]}
-   * @default []
+   * Determines whether a bounding volume intersects the culling volume.
+   *
+   * @param {object} boundingVolume The bounding volume whose intersection with the culling volume is to be tested.
+   * @returns {Intersect}  Intersect.OUTSIDE, Intersect.INTERSECTING, or Intersect.INSIDE.
    */
-  this.planes = planes ?? [];
+  computeVisibility(boundingVolume) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(boundingVolume)) {
+      throw new DeveloperError("boundingVolume is required.");
+    }
+    //>>includeEnd('debug');
+
+    const planes = this.planes;
+    let intersecting = false;
+    for (let k = 0, len = planes.length; k < len; ++k) {
+      const result = boundingVolume.intersectPlane(
+        Plane.fromCartesian4(planes[k], scratchPlane),
+      );
+      if (result === Intersect.OUTSIDE) {
+        return Intersect.OUTSIDE;
+      } else if (result === Intersect.INTERSECTING) {
+        intersecting = true;
+      }
+    }
+
+    return intersecting ? Intersect.INTERSECTING : Intersect.INSIDE;
+  }
+
+  /**
+   * Determines whether a bounding volume intersects the culling volume.
+   *
+   * @param {object} boundingVolume The bounding volume whose intersection with the culling volume is to be tested.
+   * @param {number} parentPlaneMask A bit mask from the boundingVolume's parent's check against the same culling
+   *                                 volume, such that if (planeMask & (1 << planeIndex) === 0), for k < 31, then
+   *                                 the parent (and therefore this) volume is completely inside plane[planeIndex]
+   *                                 and that plane check can be skipped.
+   * @returns {number} A plane mask as described above (which can be applied to this boundingVolume's children).
+   *
+   * @private
+   */
+  computeVisibilityWithPlaneMask(boundingVolume, parentPlaneMask) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(boundingVolume)) {
+      throw new DeveloperError("boundingVolume is required.");
+    }
+    if (!defined(parentPlaneMask)) {
+      throw new DeveloperError("parentPlaneMask is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (
+      parentPlaneMask === CullingVolume.MASK_OUTSIDE ||
+      parentPlaneMask === CullingVolume.MASK_INSIDE
+    ) {
+      // parent is completely outside or completely inside, so this child is as well.
+      return parentPlaneMask;
+    }
+
+    // Start with MASK_INSIDE (all zeros) so that after the loop, the return value can be compared with MASK_INSIDE.
+    // (Because if there are fewer than 31 planes, the upper bits wont be changed.)
+    let mask = CullingVolume.MASK_INSIDE;
+
+    const planes = this.planes;
+    for (let k = 0, len = planes.length; k < len; ++k) {
+      // For k greater than 31 (since 31 is the maximum number of INSIDE/INTERSECTING bits we can store), skip the optimization.
+      const flag = k < 31 ? 1 << k : 0;
+      if (k < 31 && (parentPlaneMask & flag) === 0) {
+        // boundingVolume is known to be INSIDE this plane.
+        continue;
+      }
+
+      const result = boundingVolume.intersectPlane(
+        Plane.fromCartesian4(planes[k], scratchPlane),
+      );
+      if (result === Intersect.OUTSIDE) {
+        return CullingVolume.MASK_OUTSIDE;
+      } else if (result === Intersect.INTERSECTING) {
+        mask |= flag;
+      }
+    }
+
+    return mask;
+  }
 }
 
 const faces = [new Cartesian3(), new Cartesian3(), new Cartesian3()];
@@ -97,94 +184,6 @@ CullingVolume.fromBoundingSphere = function (boundingSphere, result) {
   }
 
   return result;
-};
-
-/**
- * Determines whether a bounding volume intersects the culling volume.
- *
- * @param {object} boundingVolume The bounding volume whose intersection with the culling volume is to be tested.
- * @returns {Intersect}  Intersect.OUTSIDE, Intersect.INTERSECTING, or Intersect.INSIDE.
- */
-CullingVolume.prototype.computeVisibility = function (boundingVolume) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(boundingVolume)) {
-    throw new DeveloperError("boundingVolume is required.");
-  }
-  //>>includeEnd('debug');
-
-  const planes = this.planes;
-  let intersecting = false;
-  for (let k = 0, len = planes.length; k < len; ++k) {
-    const result = boundingVolume.intersectPlane(
-      Plane.fromCartesian4(planes[k], scratchPlane),
-    );
-    if (result === Intersect.OUTSIDE) {
-      return Intersect.OUTSIDE;
-    } else if (result === Intersect.INTERSECTING) {
-      intersecting = true;
-    }
-  }
-
-  return intersecting ? Intersect.INTERSECTING : Intersect.INSIDE;
-};
-
-/**
- * Determines whether a bounding volume intersects the culling volume.
- *
- * @param {object} boundingVolume The bounding volume whose intersection with the culling volume is to be tested.
- * @param {number} parentPlaneMask A bit mask from the boundingVolume's parent's check against the same culling
- *                                 volume, such that if (planeMask & (1 << planeIndex) === 0), for k < 31, then
- *                                 the parent (and therefore this) volume is completely inside plane[planeIndex]
- *                                 and that plane check can be skipped.
- * @returns {number} A plane mask as described above (which can be applied to this boundingVolume's children).
- *
- * @private
- */
-CullingVolume.prototype.computeVisibilityWithPlaneMask = function (
-  boundingVolume,
-  parentPlaneMask,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(boundingVolume)) {
-    throw new DeveloperError("boundingVolume is required.");
-  }
-  if (!defined(parentPlaneMask)) {
-    throw new DeveloperError("parentPlaneMask is required.");
-  }
-  //>>includeEnd('debug');
-
-  if (
-    parentPlaneMask === CullingVolume.MASK_OUTSIDE ||
-    parentPlaneMask === CullingVolume.MASK_INSIDE
-  ) {
-    // parent is completely outside or completely inside, so this child is as well.
-    return parentPlaneMask;
-  }
-
-  // Start with MASK_INSIDE (all zeros) so that after the loop, the return value can be compared with MASK_INSIDE.
-  // (Because if there are fewer than 31 planes, the upper bits wont be changed.)
-  let mask = CullingVolume.MASK_INSIDE;
-
-  const planes = this.planes;
-  for (let k = 0, len = planes.length; k < len; ++k) {
-    // For k greater than 31 (since 31 is the maximum number of INSIDE/INTERSECTING bits we can store), skip the optimization.
-    const flag = k < 31 ? 1 << k : 0;
-    if (k < 31 && (parentPlaneMask & flag) === 0) {
-      // boundingVolume is known to be INSIDE this plane.
-      continue;
-    }
-
-    const result = boundingVolume.intersectPlane(
-      Plane.fromCartesian4(planes[k], scratchPlane),
-    );
-    if (result === Intersect.OUTSIDE) {
-      return CullingVolume.MASK_OUTSIDE;
-    } else if (result === Intersect.INTERSECTING) {
-      mask |= flag;
-    }
-  }
-
-  return mask;
 };
 
 /**

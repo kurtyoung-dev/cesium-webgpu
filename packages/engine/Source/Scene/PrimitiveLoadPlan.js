@@ -109,85 +109,87 @@ function IndicesLoadPlan(indices) {
  *
  * @private
  */
-function PrimitiveLoadPlan(primitive) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("primitive", primitive);
-  //>>includeEnd('debug');
+class PrimitiveLoadPlan {
+  constructor(primitive) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("primitive", primitive);
+    //>>includeEnd('debug');
+
+    /**
+     * The primitive to track.
+     *
+     * @type {ModelComponents.Primitive}
+     * @readonly
+     * @private
+     */
+    this.primitive = primitive;
+
+    /**
+     * A flat list of attributes that need to be post-processed. This includes
+     * both regular attributes and morph target attributes.
+     *
+     * @type {PrimitiveLoadPlan.AttributeLoadPlan[]}
+     * @private
+     */
+    this.attributePlans = [];
+
+    /**
+     * Information about the triangle indices that need to be post-processed,
+     * if they exist.
+     *
+     * @type {PrimitiveLoadPlan.IndicesLoadPlan}
+     * @private
+     */
+    this.indicesPlan = undefined;
+
+    /**
+     * Set this true to indicate that the primitive has the
+     * CESIUM_primitive_outline extension and needs to be post-processed
+     *
+     * @type {boolean}
+     * @private
+     */
+    this.needsOutlines = false;
+
+    /**
+     * The outline edge indices from the CESIUM_primitive_outline extension
+     *
+     * @type {number[]}
+     * @private
+     */
+    this.outlineIndices = undefined;
+
+    /**
+     * Set this true to indicate that the primitive has the
+     * KHR_gaussian_splatting and KHR_gaussian_splatting_compression_spz_2 extension and needs to be post-processed
+     *
+     * @type {boolean}
+     * @private
+     */
+    this.needsGaussianSplats = false;
+  }
 
   /**
-   * The primitive to track.
+   * Apply post-processing steps that may modify geometry such as generating
+   * outline coordinates. If no post-processing steps are needed, this function
+   * is a no-op.
    *
-   * @type {ModelComponents.Primitive}
-   * @readonly
-   * @private
+   * @param {Context} context The context for generating buffers on the GPU
    */
-  this.primitive = primitive;
+  postProcess(context) {
+    // Handle CESIUM_primitive_outline. This modifies indices and attributes and
+    // also generates a new attribute for the outline coordinates. These steps
+    // are synchronous.
+    if (this.needsOutlines) {
+      generateOutlines(this);
+      generateBuffers(this, context);
+    }
 
-  /**
-   * A flat list of attributes that need to be post-processed. This includes
-   * both regular attributes and morph target attributes.
-   *
-   * @type {PrimitiveLoadPlan.AttributeLoadPlan[]}
-   * @private
-   */
-  this.attributePlans = [];
-
-  /**
-   * Information about the triangle indices that need to be post-processed,
-   * if they exist.
-   *
-   * @type {PrimitiveLoadPlan.IndicesLoadPlan}
-   * @private
-   */
-  this.indicesPlan = undefined;
-
-  /**
-   * Set this true to indicate that the primitive has the
-   * CESIUM_primitive_outline extension and needs to be post-processed
-   *
-   * @type {boolean}
-   * @private
-   */
-  this.needsOutlines = false;
-
-  /**
-   * The outline edge indices from the CESIUM_primitive_outline extension
-   *
-   * @type {number[]}
-   * @private
-   */
-  this.outlineIndices = undefined;
-
-  /**
-   * Set this true to indicate that the primitive has the
-   * KHR_gaussian_splatting and KHR_gaussian_splatting_compression_spz_2 extension and needs to be post-processed
-   *
-   * @type {boolean}
-   * @private
-   */
-  this.needsGaussianSplats = false;
+    if (this.needsGaussianSplats) {
+      setupGaussianSplatBuffers(this, context);
+    }
+  }
 }
-
-/**
- * Apply post-processing steps that may modify geometry such as generating
- * outline coordinates. If no post-processing steps are needed, this function
- * is a no-op.
- *
- * @param {Context} context The context for generating buffers on the GPU
- */
-PrimitiveLoadPlan.prototype.postProcess = function (context) {
-  // Handle CESIUM_primitive_outline. This modifies indices and attributes and
-  // also generates a new attribute for the outline coordinates. These steps
-  // are synchronous.
-  if (this.needsOutlines) {
-    generateOutlines(this);
-    generateBuffers(this, context);
-  }
-
-  if (this.needsGaussianSplats) {
-    setupGaussianSplatBuffers(this, context);
-  }
-};
 
 function generateOutlines(loadPlan) {
   const primitive = loadPlan.primitive;

@@ -3,8 +3,16 @@
 // Reads the particle storage buffer from the compute simulation and renders
 // each alive particle as a billboard-style screen-aligned quad.
 //
+// RTE precision — particle.position is CAMERA-RELATIVE (see
+// `WeatherParticles.wgsl` header). Clip space is computed via
+// `mvpRelativeToEye` (translation-zeroed view-projection) so particles
+// project without materializing an absolute world-space position on
+// the GPU. cameraRight/cameraUp are direction vectors — they can be
+// added to a camera-relative position without precision loss because
+// they're bounded by `particle.size` (meters).
+//
 // Particle struct (32 bytes):
-//   position: vec3<f32>  (world-space)
+//   position: vec3<f32>  (CAMERA-RELATIVE)
 //   lifetime: f32        (remaining seconds, <0 = dead)
 //   velocity: vec3<f32>  (m/s)
 //   size: f32            (world-space radius)
@@ -17,12 +25,17 @@ struct Particle {
 };
 
 struct CameraUniforms {
-  viewProjection: mat4x4<f32>,
+  // View-projection with the translation column zeroed. Safe to
+  // multiply against eye-relative positions without losing bits
+  // through a large translation add.
+  mvpRelativeToEye: mat4x4<f32>,
   cameraRight: vec3<f32>,
   _pad0: f32,
   cameraUp: vec3<f32>,
   _pad1: f32,
-  cameraPosition: vec3<f32>,
+  // Legacy cameraPosition slot kept for binary compatibility with
+  // the existing JS-side uniform layout, but unused in the shader.
+  _unusedCameraPosition: vec3<f32>,
   maxLifetime: f32,
   viewportSize: vec2<f32>,
   weatherType: u32,
@@ -79,12 +92,15 @@ fn vertexMain(
   let cornerIdx = vertexIndex % 6u;
   let corner = QUAD_OFFSETS[cornerIdx];
 
-  // Billboard: expand quad along camera right/up axes
-  let worldPos = p.position
+  // Billboard: expand quad along camera right/up axes. `p.position` is
+  // already camera-relative, and the right/up offsets are bounded by
+  // `p.size` (meters), so the sum stays well within FP32 precision.
+  let eyeRelativePos = p.position
     + cam.cameraRight * corner.x * p.size
     + cam.cameraUp * corner.y * p.size;
 
-  output.position = cam.viewProjection * vec4<f32>(worldPos, 1.0);
+  // Project with the translation-zeroed view-projection.
+  output.position = cam.mvpRelativeToEye * vec4<f32>(eyeRelativePos, 1.0);
   output.uv = QUAD_UVS[cornerIdx];
 
   // Alpha: fade in/out based on lifetime

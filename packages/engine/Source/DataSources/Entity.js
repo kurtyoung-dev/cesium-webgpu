@@ -377,7 +377,7 @@ class Entity {
     if (!defined(propertyName)) {
       throw new DeveloperError("propertyName is required.");
     }
-    if (propertyNames.indexOf(propertyName) !== -1) {
+    if (propertyNames.includes(propertyName)) {
       throw new DeveloperError(
         `${propertyName} is already a registered property.`,
       );
@@ -466,7 +466,7 @@ class Entity {
 
       //Custom properties that are registered on the source entity must also
       //get registered on this entity.
-      if (!defined(targetProperty) && propertyNames.indexOf(name) === -1) {
+      if (!defined(targetProperty) && !propertyNames.includes(name)) {
         this.addProperty(name);
       }
 

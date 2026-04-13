@@ -2,7 +2,7 @@
 // Renders dashed lines using a 16-bit bitmask pattern.
 //
 // Material uniforms (at offset 112 in uniform buffer):
-//   materialColor: vec4<f32> — dash color
+//   color: vec4<f32> — dash color
 //   gapColor:      vec4<f32> — gap color (transparent for invisible gaps)
 //   dashLength:    f32       — length of one full dash+gap cycle in pixels
 //   dashPattern:   f32       — 16-bit bitmask as float (e.g., 255.0 = 0xFF)
@@ -10,23 +10,25 @@
 // Uses screen-space fragment position and polyline angle to orient the
 // dash pattern along the line direction regardless of screen orientation.
 
-struct Uniforms {
-  mvpRelativeToEye: mat4x4<f32>,
-  encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
-  encodedCameraLow: vec3<f32>,
-  _pad1: f32,
-  viewportSize: vec2<f32>,
-  _pad2: vec2<f32>,
-  // Material uniforms (offset 112)
-  materialColor: vec4<f32>,
-  gapColor: vec4<f32>,
-  dashLength: f32,
-  dashPattern: f32,
-  _matPad: vec2<f32>,
-};
+struct CameraUniforms {
+    mvpRelativeToEye: mat4x4<f32>,
+    encodedCameraHigh: vec3<f32>,
+    _pad0: f32,
+    encodedCameraLow: vec3<f32>,
+    _pad1: f32,
+    viewportSize: vec2<f32>,
+    _pad2: vec2<f32>,
+}
 
-@group(0) @binding(0) var<uniform> u: Uniforms;
+struct MaterialUniforms {
+    color: vec4<f32>,
+    gapColor: vec4<f32>,
+    dashLength: f32,
+    dashPattern: f32,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -68,18 +70,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let startRTE = translateRelativeToEye(
     input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
   let endRTE = translateRelativeToEye(
     input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
 
-  let clipStart = u.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
-  let clipEnd = u.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+  let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
-  let screenStart = toScreenSpace(clipStart, u.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, u.viewportSize);
+  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
 
   let lineDir = normalize(screenEnd - screenStart);
   let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
@@ -105,7 +107,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, u.viewportSize);
+  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
   output.v_distFromCenter = side;
 
   return output;
@@ -127,15 +129,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   );
 
   // Compute position within the repeating dash cycle
-  let dashLen = max(u.dashLength, 1.0);
+  let dashLen = max(material.dashLength, 1.0);
   let dashPosition = fract(rotatedPos.x / dashLen);
 
   // Look up the 16-bit bitmask pattern
   let maskIndex = floor(dashPosition * MASK_LENGTH);
-  let maskTest = floor(u.dashPattern / pow(2.0, maskIndex));
+  let maskTest = floor(material.dashPattern / pow(2.0, maskIndex));
   let isDash = select(false, true, (maskTest % 2.0) >= 1.0);
 
-  let fragColor = select(u.gapColor, u.materialColor, isDash);
+  let fragColor = select(material.gapColor, material.color, isDash);
 
   if (fragColor.a < 0.005) {
     discard;

@@ -34,7 +34,7 @@ function getDepthOnlyShaderProgram(context, shaderProgram) {
     }
   }
 
-  const usesLogDepth = fs.defines.indexOf("LOG_DEPTH") >= 0;
+  const usesLogDepth = fs.defines.includes("LOG_DEPTH");
 
   if (!writesDepthOrDiscards && !usesLogDepth) {
     const source = `void main()
@@ -138,8 +138,7 @@ const vertexlogDepthRegex = /\s+czm_vertexLogDepth\(/;
 
 function getLogDepthShaderProgram(context, shaderProgram) {
   const disableLogDepthWrite =
-    shaderProgram.fragmentShaderSource.defines.indexOf("LOG_DEPTH_READ_ONLY") >=
-    0;
+    shaderProgram.fragmentShaderSource.defines.includes("LOG_DEPTH_READ_ONLY");
   if (disableLogDepthWrite) {
     return shaderProgram;
   }
@@ -195,7 +194,7 @@ void main()
     }
   }
   // This define indicates that a log depth value is written by the shader but doesn't use czm_writeLogDepth.
-  if (fs.defines.indexOf("LOG_DEPTH_WRITE") !== -1) {
+  if (fs.defines.includes("LOG_DEPTH_WRITE")) {
     writesLogDepth = true;
   }
 

@@ -204,63 +204,131 @@ async function requestMetadata(
  * @see {@link http://msdn.microsoft.com/en-us/library/ff701713.aspx|Bing Maps REST Services}
  * @see {@link http://www.w3.org/TR/cors/|Cross-Origin Resource Sharing}
  */
-function BingMapsImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class BingMapsImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = 1.0;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = 1.0;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
 
-  this._mapStyle = options.mapStyle ?? BingMapsStyle.AERIAL;
-  this._mapLayer = options.mapLayer;
-  this._culture = options.culture ?? "";
-  this._key = options.key;
+    this._mapStyle = options.mapStyle ?? BingMapsStyle.AERIAL;
+    this._mapLayer = options.mapLayer;
+    this._culture = options.culture ?? "";
+    this._key = options.key;
 
-  this._tileDiscardPolicy = options.tileDiscardPolicy;
-  if (!defined(this._tileDiscardPolicy)) {
-    this._tileDiscardPolicy = new DiscardEmptyTilePolicy();
+    this._tileDiscardPolicy = options.tileDiscardPolicy;
+    if (!defined(this._tileDiscardPolicy)) {
+      this._tileDiscardPolicy = new DiscardEmptyTilePolicy();
+    }
+
+    this._proxy = options.proxy;
+    this._credit = new Credit(
+      `<a href="https://www.microsoft.com/en-us/maps/bing-maps/product"><img src="${BingMapsImageryProvider.logoUrl}" title="Bing Imagery"/></a>`,
+    );
+
+    this._tilingScheme = new WebMercatorTilingScheme({
+      numberOfLevelZeroTilesX: 2,
+      numberOfLevelZeroTilesY: 2,
+      ellipsoid: options.ellipsoid,
+    });
+
+    this._tileWidth = undefined;
+    this._tileHeight = undefined;
+    this._maximumLevel = undefined;
+    this._imageUrlTemplate = undefined;
+    this._imageUrlSubdomains = undefined;
+    this._attributionList = undefined;
+
+    this._errorEvent = new Event();
   }
 
-  this._proxy = options.proxy;
-  this._credit = new Credit(
-    `<a href="https://www.microsoft.com/en-us/maps/bing-maps/product"><img src="${BingMapsImageryProvider.logoUrl}" title="Bing Imagery"/></a>`,
-  );
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    const rectangle = this._tilingScheme.tileXYToRectangle(
+      x,
+      y,
+      level,
+      rectangleScratch,
+    );
+    const result = getRectangleAttribution(
+      this._attributionList,
+      level,
+      rectangle,
+    );
 
-  this._tilingScheme = new WebMercatorTilingScheme({
-    numberOfLevelZeroTilesX: 2,
-    numberOfLevelZeroTilesY: 2,
-    ellipsoid: options.ellipsoid,
-  });
+    return result;
+  }
 
-  this._tileWidth = undefined;
-  this._tileHeight = undefined;
-  this._maximumLevel = undefined;
-  this._imageUrlTemplate = undefined;
-  this._imageUrlSubdomains = undefined;
-  this._attributionList = undefined;
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    const promise = ImageryProvider.loadImage(
+      this,
+      buildImageResource(this, x, y, level, request),
+    );
 
-  this._errorEvent = new Event();
-}
+    if (defined(promise)) {
+      return promise.catch(function (error) {
+        // One cause of an error here is that the image we tried to load was zero-length.
+        // This isn't actually a problem, since it indicates that there is no tile.
+        // So, in that case we return the EMPTY_IMAGE sentinel value for later discarding.
+        if (defined(error.blob) && error.blob.size === 0) {
+          return DiscardEmptyTilePolicy.EMPTY_IMAGE;
+        }
+        return Promise.reject(error);
+      });
+    }
 
-Object.defineProperties(BingMapsImageryProvider.prototype, {
+    return undefined;
+  }
+
+  /**
+   * Picking features is not currently supported by this imagery provider, so this function simply returns
+   * undefined.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {undefined} Undefined since picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    return undefined;
+  }
+
   /**
    * Gets the name of the BingMaps server url hosting the imagery.
    * @memberof BingMapsImageryProvider.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._resource.url;
-    },
-  },
+  get url() {
+    return this._resource.url;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -268,11 +336,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
+  get proxy() {
+    return this._resource.proxy;
+  }
 
   /**
    * Gets the Bing Maps key.
@@ -280,11 +346,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  key: {
-    get: function () {
-      return this._key;
-    },
-  },
+  get key() {
+    return this._key;
+  }
 
   /**
    * Gets the type of Bing Maps imagery to load.
@@ -292,11 +356,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {BingMapsStyle}
    * @readonly
    */
-  mapStyle: {
-    get: function () {
-      return this._mapStyle;
-    },
-  },
+  get mapStyle() {
+    return this._mapStyle;
+  }
 
   /**
    * Gets the additional map layer options as defined in {@link https://learn.microsoft.com/en-us/bingmaps/rest-services/imagery/get-imagery-metadata#template-parameters}/
@@ -304,11 +366,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  mapLayer: {
-    get: function () {
-      return this._mapLayer;
-    },
-  },
+  get mapLayer() {
+    return this._mapLayer;
+  }
 
   /**
    * The culture to use when requesting Bing Maps imagery. Not
@@ -318,11 +378,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {string}
    * @readonly
    */
-  culture: {
-    get: function () {
-      return this._culture;
-    },
-  },
+  get culture() {
+    return this._culture;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -330,11 +388,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -342,11 +398,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -354,11 +408,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return this._maximumLevel;
-    },
-  },
+  get maximumLevel() {
+    return this._maximumLevel;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested.
@@ -366,11 +418,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return 0;
-    },
-  },
+  get minimumLevel() {
+    return 0;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -378,11 +428,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
@@ -390,11 +438,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._tilingScheme.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._tilingScheme.rectangle;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -404,11 +450,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._tileDiscardPolicy;
-    },
-  },
+  get tileDiscardPolicy() {
+    return this._tileDiscardPolicy;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -418,11 +462,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -431,11 +473,9 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
+  get credit() {
+    return this._credit;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -447,12 +487,10 @@ Object.defineProperties(BingMapsImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return defined(this.mapLayer);
-    },
-  },
-});
+  get hasAlphaChannel() {
+    return defined(this.mapLayer);
+  }
+}
 
 /**
  * Creates an {@link ImageryProvider} which provides tiled imagery using the Bing Maps Imagery REST API.
@@ -527,87 +565,6 @@ BingMapsImageryProvider.fromUrl = async function (url, options) {
 };
 
 const rectangleScratch = new Rectangle();
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-BingMapsImageryProvider.prototype.getTileCredits = function (x, y, level) {
-  const rectangle = this._tilingScheme.tileXYToRectangle(
-    x,
-    y,
-    level,
-    rectangleScratch,
-  );
-  const result = getRectangleAttribution(
-    this._attributionList,
-    level,
-    rectangle,
-  );
-
-  return result;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-BingMapsImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const promise = ImageryProvider.loadImage(
-    this,
-    buildImageResource(this, x, y, level, request),
-  );
-
-  if (defined(promise)) {
-    return promise.catch(function (error) {
-      // One cause of an error here is that the image we tried to load was zero-length.
-      // This isn't actually a problem, since it indicates that there is no tile.
-      // So, in that case we return the EMPTY_IMAGE sentinel value for later discarding.
-      if (defined(error.blob) && error.blob.size === 0) {
-        return DiscardEmptyTilePolicy.EMPTY_IMAGE;
-      }
-      return Promise.reject(error);
-    });
-  }
-
-  return undefined;
-};
-
-/**
- * Picking features is not currently supported by this imagery provider, so this function simply returns
- * undefined.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {undefined} Undefined since picking is not supported.
- */
-BingMapsImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return undefined;
-};
 
 /**
  * Converts a tiles (x, y, level) position into a quadkey used to request an image

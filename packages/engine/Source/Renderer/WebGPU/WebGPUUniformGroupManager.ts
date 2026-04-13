@@ -16,6 +16,7 @@
 /// <reference types="@webgpu/types" />
 
 import DeveloperError from "../../Core/DeveloperError.js";
+import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 
 /**
  * Update frequency for uniform groups.
@@ -193,7 +194,7 @@ export class WebGPUUniformGroupManager {
    *
    * @param {any} uniformState - CesiumJS UniformState with camera/scene data
    */
-  updatePerFrame(uniformState: any): void {
+  updatePerFrame(uniformState: CesiumUniformState): void {
     const data = this._perFrameData;
 
     // mvpRelativeToEye (offset 0, 16 floats)
@@ -251,6 +252,22 @@ export class WebGPUUniformGroupManager {
       data[54] = camLow.z;
       data[55] = 0;
     }
+
+    //>>includeStart('debug', pragmas.debug);
+    // RTE round-trip: catch off-by-one packer bugs that swap the high/low
+    // slots. The MC-encoded pair must reconstruct to the unencoded
+    // `cameraPosition` (WC) only when the model matrix is identity, which
+    // is the per-frame default for this group-0 UBO. Skip the check if
+    // either input is missing.
+    if (camHigh && camLow && uniformState.cameraPosition) {
+      assertCameraRTERoundTrip(
+        camHigh,
+        camLow,
+        uniformState.cameraPosition,
+        "WebGPUUniformGroupManager perFrame UBO",
+      );
+    }
+    //>>includeEnd('debug');
 
     // lightDirection (offset 56, 4 floats)
     const sunDir = uniformState.sunDirectionWC;

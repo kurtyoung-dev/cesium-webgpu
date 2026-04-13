@@ -11,32 +11,238 @@ import BillboardLoadState from "./BillboardLoadState.js";
  * @alias BillboardTexture
  * @param {BillboardCollection} billboardCollection The associated billboard collecion.
  */
-function BillboardTexture(billboardCollection) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("billboardCollection", billboardCollection);
-  //>>includeEnd('debug');
+class BillboardTexture {
+  constructor(billboardCollection) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("billboardCollection", billboardCollection);
+    //>>includeEnd('debug');
 
-  this._billboardCollection = billboardCollection;
+    this._billboardCollection = billboardCollection;
 
-  this._id = undefined;
-  this._loadState = BillboardLoadState.NONE;
-  this._loadError = undefined;
+    this._id = undefined;
+    this._loadState = BillboardLoadState.NONE;
+    this._loadError = undefined;
 
-  this._index = -1;
-  this._width = undefined;
-  this._height = undefined;
+    this._index = -1;
+    this._width = undefined;
+    this._height = undefined;
 
-  this._hasSubregion = false;
+    this._hasSubregion = false;
+
+    /**
+     * Used by billboardCollection to track whcih billboards to update.
+     * @type {boolean}
+     * @private
+     */
+    this.dirty = false;
+  }
 
   /**
-   * Used by billboardCollection to track whcih billboards to update.
-   * @type {boolean}
+   * Releases reference to any associated image data.
    * @private
    */
-  this.dirty = false;
-}
+  unload() {
+    if (this._loadState === BillboardLoadState.NONE) {
+      return;
+    }
 
-Object.defineProperties(BillboardTexture.prototype, {
+    this._id = undefined;
+    this._loadError = undefined;
+    this._loadState = BillboardLoadState.NONE;
+
+    this._index = -1;
+    this._width = undefined;
+    this._height = undefined;
+
+    this.dirty = true;
+  }
+
+  /**
+   * Starts loading an image into the texture atlas.
+   * @see {TextureAtlas#addImage}
+   * @private
+   * @param {string} id An identifier to detect whether the image already exists in the atlas.
+   * @param {HTMLImageElement|HTMLCanvasElement|string|Resource|Promise|TextureAtlas.CreateImageCallback} image An image or canvas to add to the texture atlas,
+   *        or a URL to an Image, or a Promise for an image, or a function that creates an image.
+   * @param {number} width A number specifying the width of the texture. If undefined, the image width will be used.
+   * @param {number} height A number specifying the height of the texture. If undefined, the image height will be used.
+   */
+  async loadImage(id, image, width, height) {
+    if (this._id === id) {
+      // This image has already been loaded
+      return;
+    }
+
+    const collection = this._billboardCollection;
+    const cache = collection.billboardTextureCache;
+    let billboardTexture = cache.get(id);
+    if (
+      (defined(billboardTexture) &&
+        image.loadState === BillboardLoadState.LOADING) ||
+      image.loadState === BillboardLoadState.LOADED
+    ) {
+      // Use the cached texture if it is in progress or successful.
+      BillboardTexture.clone(billboardTexture, this);
+      return;
+    }
+    // Otherwise, load if not yet assigned an image, and try the load again if anything failed during the last billboard creation
+    if (!defined(billboardTexture)) {
+      billboardTexture = new BillboardTexture(collection);
+      cache.set(id, billboardTexture);
+    }
+
+    billboardTexture._id = this._id = id;
+    billboardTexture._loadState = this._loadState = BillboardLoadState.LOADING;
+    billboardTexture._loadError = this._loadError = undefined;
+
+    let index;
+    const atlas = this._billboardCollection.textureAtlas;
+    try {
+      index = atlas.addImage(id, image, width, height);
+      if (index instanceof Promise) {
+        index = await index;
+      }
+    } catch (error) {
+      // There was an error loading the image
+      billboardTexture._loadState = BillboardLoadState.ERROR;
+      billboardTexture._loadError = error;
+
+      if (this._id !== id) {
+        // Another load was initiated and resolved resolved before this one. This operation is cancelled.
+        return;
+      }
+
+      this._loadState = BillboardLoadState.ERROR;
+      this._loadError = error;
+      return;
+    }
+
+    if (!defined(index) || index === -1) {
+      // Resources destroyed or otherwise
+      billboardTexture._loadState = BillboardLoadState.FAILED;
+      billboardTexture._index = -1;
+
+      if (this._id !== id) {
+        // Another load was initiated and resolved resolved before this one. This operation is cancelled.
+        return;
+      }
+
+      this._loadState = BillboardLoadState.FAILED;
+      this._index = -1;
+
+      return;
+    }
+
+    billboardTexture._index = index;
+    billboardTexture._loadState = BillboardLoadState.LOADED;
+
+    const rectangle = atlas.rectangles[index];
+    billboardTexture._width = rectangle.width;
+    billboardTexture._height = rectangle.height;
+
+    if (this._id !== id) {
+      // Another load was initiated and resolved resolved before this one. This operation is cancelled.
+      return;
+    }
+
+    this._index = index;
+    this._loadState = BillboardLoadState.LOADED;
+    this._width = rectangle.width;
+    this._height = rectangle.height;
+
+    this.dirty = true;
+  }
+
+  /**
+   * Track a reference to a sub-region of an existing image.
+   * @see {TextureAtlas#addImageSubRegion}
+   * @private
+   * @param {string} id An identifier to detect whether the image already exists in the atlas.
+   * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
+   */
+  async addImageSubRegion(id, subRegion) {
+    this._id = id;
+    this._loadError = undefined;
+    this._hasSubregion = true;
+
+    const atlas = this._billboardCollection.textureAtlas;
+    const indexOrPromise = atlas.addImageSubRegion(id, subRegion);
+
+    if (typeof indexOrPromise === "number") {
+      this.setImageSubRegion(indexOrPromise, subRegion);
+      return;
+    }
+
+    this.loadImageSubRegion(id, subRegion, indexOrPromise);
+  }
+
+  /**
+   * @see {TextureAtlas#addImageSubRegion}
+   * @private
+   * @param {string} id An identifier to detect whether the image already exists in the atlas.
+   * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
+   * @param {Promise<number>} indexPromise A promise that resolves to the image region index.
+   */
+  async loadImageSubRegion(id, subRegion, indexPromise) {
+    let index;
+    try {
+      this._loadState = BillboardLoadState.LOADING;
+      index = await indexPromise;
+    } catch (error) {
+      // There was an error loading the referenced image
+      this._loadState = BillboardLoadState.ERROR;
+      this._loadError = error;
+      return;
+    }
+
+    if (this._id !== id) {
+      // Another load was initiated and resolved resolved before this one. This operation is cancelled.
+      return;
+    }
+
+    this._loadState = BillboardLoadState.LOADED;
+
+    this.setImageSubRegion(index, subRegion);
+  }
+
+  /**
+   * @see {TextureAtlas#addImageSubRegion}
+   * @private
+   * @param {number} index The resolved index in the {@link TextureAtlas}
+   * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
+   */
+  setImageSubRegion(index, subRegion) {
+    if (this._index === index) {
+      return;
+    }
+
+    if (!defined(index) || index === -1) {
+      this._loadState = BillboardLoadState.FAILED;
+      this._index = -1;
+      this._width = undefined;
+      this._height = undefined;
+      return;
+    }
+
+    this._width = subRegion.width;
+    this._height = subRegion.height;
+
+    this._index = index;
+
+    this.dirty = true;
+  }
+
+  /**
+   * Get the texture coordinates for reading the loaded texture in shaders.
+   * @private
+   * @param {BoundingRectangle} [result] The modified result parameter or a new BoundingRectangle instance if one was not provided.
+   * @return {BoundingRectangle} The modified result parameter or a new BoundingRectangle instance if one was not provided.
+   */
+  computeTextureCoordinates(result) {
+    const atlas = this._billboardCollection.textureAtlas;
+    return atlas.computeTextureCoordinates(this._index, result);
+  }
+
   /**
    * If defined, this error was encountered during the loading process.
    * @memberof BillboardTexture.prototype
@@ -44,11 +250,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @readonly
    * @private
    */
-  loadError: {
-    get: function () {
-      return this._loadError;
-    },
-  },
+  get loadError() {
+    return this._loadError;
+  }
 
   /**
    * The current status of the image load. When <code>BillboardLoadState.LOADED</code>, this billboard is ready to render, i.e., the image
@@ -59,11 +263,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @default BillboardLoadState.NONE
    * @private
    */
-  loadState: {
-    get: function () {
-      return this._loadState;
-    },
-  },
+  get loadState() {
+    return this._loadState;
+  }
 
   /**
    * When <code>true</code>, this texture is ready to render, i.e., the image
@@ -74,11 +276,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @default false
    * @private
    */
-  ready: {
-    get: function () {
-      return this._loadState === BillboardLoadState.LOADED;
-    },
-  },
+  get ready() {
+    return this._loadState === BillboardLoadState.LOADED;
+  }
 
   /**
    * Returns <code>true</code> if there is image data associated with this instance.
@@ -87,11 +287,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @readonly
    * @private
    */
-  hasImage: {
-    get: function () {
-      return this._loadState !== BillboardLoadState.NONE;
-    },
-  },
+  get hasImage() {
+    return this._loadState !== BillboardLoadState.NONE;
+  }
 
   /**
    * A unique identifier for the image, or undefined if no image data has been associated with this instance.
@@ -100,11 +298,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @readonly
    * @private
    */
-  id: {
-    get: function () {
-      return this._id;
-    },
-  },
+  get id() {
+    return this._id;
+  }
 
   /**
    * The width of the associated image. Before the instance is <code>ready</code>, this will be <code>undefined</code>.
@@ -113,11 +309,9 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @readonly
    * @private
    */
-  width: {
-    get: function () {
-      return this._width;
-    },
-  },
+  get width() {
+    return this._width;
+  }
 
   /**
    * The height of the associated image. Before the instance is <code>ready</code>, this will be <code>undefined</code>.
@@ -126,227 +320,10 @@ Object.defineProperties(BillboardTexture.prototype, {
    * @readonly
    * @private
    */
-  height: {
-    get: function () {
-      return this._height;
-    },
-  },
-});
-
-/**
- * Releases reference to any associated image data.
- * @private
- */
-BillboardTexture.prototype.unload = async function () {
-  if (this._loadState === BillboardLoadState.NONE) {
-    return;
+  get height() {
+    return this._height;
   }
-
-  this._id = undefined;
-  this._loadError = undefined;
-  this._loadState = BillboardLoadState.NONE;
-
-  this._index = -1;
-  this._width = undefined;
-  this._height = undefined;
-
-  this.dirty = true;
-};
-
-/**
- * Starts loading an image into the texture atlas.
- * @see {TextureAtlas#addImage}
- * @private
- * @param {string} id An identifier to detect whether the image already exists in the atlas.
- * @param {HTMLImageElement|HTMLCanvasElement|string|Resource|Promise|TextureAtlas.CreateImageCallback} image An image or canvas to add to the texture atlas,
- *        or a URL to an Image, or a Promise for an image, or a function that creates an image.
- * @param {number} width A number specifying the width of the texture. If undefined, the image width will be used.
- * @param {number} height A number specifying the height of the texture. If undefined, the image height will be used.
- */
-BillboardTexture.prototype.loadImage = async function (
-  id,
-  image,
-  width,
-  height,
-) {
-  if (this._id === id) {
-    // This image has already been loaded
-    return;
-  }
-
-  const collection = this._billboardCollection;
-  const cache = collection.billboardTextureCache;
-  let billboardTexture = cache.get(id);
-  if (
-    (defined(billboardTexture) &&
-      image.loadState === BillboardLoadState.LOADING) ||
-    image.loadState === BillboardLoadState.LOADED
-  ) {
-    // Use the cached texture if it is in progress or successful.
-    BillboardTexture.clone(billboardTexture, this);
-    return;
-  }
-  // Otherwise, load if not yet assigned an image, and try the load again if anything failed during the last billboard creation
-  if (!defined(billboardTexture)) {
-    billboardTexture = new BillboardTexture(collection);
-    cache.set(id, billboardTexture);
-  }
-
-  billboardTexture._id = this._id = id;
-  billboardTexture._loadState = this._loadState = BillboardLoadState.LOADING;
-  billboardTexture._loadError = this._loadError = undefined;
-
-  let index;
-  const atlas = this._billboardCollection.textureAtlas;
-  try {
-    index = atlas.addImage(id, image, width, height);
-    if (index instanceof Promise) {
-      index = await index;
-    }
-  } catch (error) {
-    // There was an error loading the image
-    billboardTexture._loadState = BillboardLoadState.ERROR;
-    billboardTexture._loadError = error;
-
-    if (this._id !== id) {
-      // Another load was initiated and resolved resolved before this one. This operation is cancelled.
-      return;
-    }
-
-    this._loadState = BillboardLoadState.ERROR;
-    this._loadError = error;
-    return;
-  }
-
-  if (!defined(index) || index === -1) {
-    // Resources destroyed or otherwise
-    billboardTexture._loadState = BillboardLoadState.FAILED;
-    billboardTexture._index = -1;
-
-    if (this._id !== id) {
-      // Another load was initiated and resolved resolved before this one. This operation is cancelled.
-      return;
-    }
-
-    this._loadState = BillboardLoadState.FAILED;
-    this._index = -1;
-
-    return;
-  }
-
-  billboardTexture._index = index;
-  billboardTexture._loadState = BillboardLoadState.LOADED;
-
-  const rectangle = atlas.rectangles[index];
-  billboardTexture._width = rectangle.width;
-  billboardTexture._height = rectangle.height;
-
-  if (this._id !== id) {
-    // Another load was initiated and resolved resolved before this one. This operation is cancelled.
-    return;
-  }
-
-  this._index = index;
-  this._loadState = BillboardLoadState.LOADED;
-  this._width = rectangle.width;
-  this._height = rectangle.height;
-
-  this.dirty = true;
-};
-
-/**
- * Track a reference to a sub-region of an existing image.
- * @see {TextureAtlas#addImageSubRegion}
- * @private
- * @param {string} id An identifier to detect whether the image already exists in the atlas.
- * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
- */
-BillboardTexture.prototype.addImageSubRegion = function (id, subRegion) {
-  this._id = id;
-  this._loadError = undefined;
-  this._hasSubregion = true;
-
-  const atlas = this._billboardCollection.textureAtlas;
-  const indexOrPromise = atlas.addImageSubRegion(id, subRegion);
-
-  if (typeof indexOrPromise === "number") {
-    this.setImageSubRegion(indexOrPromise, subRegion);
-    return;
-  }
-
-  this.loadImageSubRegion(id, subRegion, indexOrPromise);
-};
-
-/**
- * @see {TextureAtlas#addImageSubRegion}
- * @private
- * @param {string} id An identifier to detect whether the image already exists in the atlas.
- * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
- * @param {Promise<number>} indexPromise A promise that resolves to the image region index.
- */
-BillboardTexture.prototype.loadImageSubRegion = async function (
-  id,
-  subRegion,
-  indexPromise,
-) {
-  let index;
-  try {
-    this._loadState = BillboardLoadState.LOADING;
-    index = await indexPromise;
-  } catch (error) {
-    // There was an error loading the referenced image
-    this._loadState = BillboardLoadState.ERROR;
-    this._loadError = error;
-    return;
-  }
-
-  if (this._id !== id) {
-    // Another load was initiated and resolved resolved before this one. This operation is cancelled.
-    return;
-  }
-
-  this._loadState = BillboardLoadState.LOADED;
-
-  this.setImageSubRegion(index, subRegion);
-};
-
-/**
- * @see {TextureAtlas#addImageSubRegion}
- * @private
- * @param {number} index The resolved index in the {@link TextureAtlas}
- * @param {BoundingRectangle} subRegion An {@link BoundingRectangle} defining a region of an existing image, measured in pixels from the bottom-left of the image.
- */
-BillboardTexture.prototype.setImageSubRegion = function (index, subRegion) {
-  if (this._index === index) {
-    return;
-  }
-
-  if (!defined(index) || index === -1) {
-    this._loadState = BillboardLoadState.FAILED;
-    this._index = -1;
-    this._width = undefined;
-    this._height = undefined;
-    return;
-  }
-
-  this._width = subRegion.width;
-  this._height = subRegion.height;
-
-  this._index = index;
-
-  this.dirty = true;
-};
-
-/**
- * Get the texture coordinates for reading the loaded texture in shaders.
- * @private
- * @param {BoundingRectangle} [result] The modified result parameter or a new BoundingRectangle instance if one was not provided.
- * @return {BoundingRectangle} The modified result parameter or a new BoundingRectangle instance if one was not provided.
- */
-BillboardTexture.prototype.computeTextureCoordinates = function (result) {
-  const atlas = this._billboardCollection.textureAtlas;
-  return atlas.computeTextureCoordinates(this._index, result);
-};
+}
 
 /**
  * Clones an existing billboard texture, inlcuding any in-flight tracking, into the target billboard texture.

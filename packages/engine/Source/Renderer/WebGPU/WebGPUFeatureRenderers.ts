@@ -92,6 +92,11 @@ import {
   destroyWebGPUGPUSortKeys,
 } from "./WebGPUGPUSortKeysDispatcher.js";
 
+// Phase 3 — GPU point cloud bitonic sort.
+import { WebGPUPointCloudSortDispatcher } from "./WebGPUPointCloudSortDispatcher.js";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import PointCloudSortSource from "../../Shaders/WebGPU/Compute/PointCloudSort.js";
+
 // ── Shadow / Ground ──
 import {
   initWebGPUShadowMap,
@@ -336,6 +341,38 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
       return getWebGPUGPUSortKeysStatistics(
         context as unknown as { device: GPUDevice },
       );
+    },
+  });
+
+  // Phase 3 — GPU point cloud sort. Lazy-initialized on first sort()
+  // call. Gated by WasmPointCloudBridge.useGPUSort (default false).
+  let _pcSortDispatcher: WebGPUPointCloudSortDispatcher | null = null;
+  context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD_SORT, {
+    sort: function (
+      encoder: GPUCommandEncoder,
+      distSq: Float32Array,
+      count: number,
+    ) {
+      if (!_pcSortDispatcher) {
+        _pcSortDispatcher = new WebGPUPointCloudSortDispatcher(
+          (context as any).device,
+        );
+        _pcSortDispatcher.setShaderSource(
+          PointCloudSortSource as unknown as string,
+        );
+      }
+      return _pcSortDispatcher.sort(encoder, distSq, count);
+    },
+    destroy: function () {
+      if (_pcSortDispatcher) {
+        _pcSortDispatcher.destroy();
+        _pcSortDispatcher = null;
+      }
+    },
+    getStatistics: function () {
+      return _pcSortDispatcher
+        ? _pcSortDispatcher.getStatistics()
+        : null;
     },
   });
 

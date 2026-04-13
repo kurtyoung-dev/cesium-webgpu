@@ -300,6 +300,16 @@ class Material {
     this._uniforms = undefined;
 
     /**
+     * Packed Float32Array-backed uniform storage. Created during
+     * initialization from the fabric template. WebGPU renderers use
+     * `material._uniformBuffer.gpuData` for zero-copy upload.
+     *
+     * @type {import('./MaterialUniformBuffer.js').default|undefined}
+     * @private
+     */
+    this._uniformBuffer = undefined;
+
+    /**
      * When <code>true</code> or a function that returns <code>true</code>,
      * the geometry is expected to appear translucent.
      * @type {boolean|Function}

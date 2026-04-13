@@ -73,7 +73,11 @@ const pragmas = { debug: false };
 const stripPragmaPlugin = {
   name: "strip-pragmas",
   setup: (build) => {
-    build.onLoad({ filter: /\.js$/ }, async (args) => {
+    // Match .js AND .ts files so WebGPU TypeScript diagnostics wrapped in
+    // pragma tags get stripped in production builds too. The regex
+    // replacement is source-level (before TS→JS transpilation) so the
+    // pragma comment syntax works identically in both languages.
+    build.onLoad({ filter: /\.[jt]sx?$/ }, async (args) => {
       let source = await readFile(args.path, { encoding: "utf8" });
 
       try {
@@ -160,6 +164,7 @@ const inlineWorkerPath = "Build/InlineWorkers.js";
  * @param {BundleVariant} [options.variant="dual"] Build variant — see entryFileForVariant
  * @param {string} [options.entryPoint] Override entry file (defaults to variant's entry)
  * @param {boolean} [options.metafile=false] When true, write `metafile.json` next to the bundle for analyzeBuild.js
+ * @param {boolean} [options.splitting=false] Enable ESM code splitting (chunks/ subdir). Disabled for dev builds.
  * @returns {Promise<CesiumBundles>}
  */
 export async function bundleCesiumJs(options) {
@@ -204,25 +209,34 @@ export async function bundleCesiumJs(options) {
   const incremental = options.incremental;
   const build = incremental ? esbuild.context : esbuild.build;
 
-  // Build ESM. We enable code splitting so the dynamic
-  // `await import("./WebGPU/WebGPUContext.js")` in ContextFactory creates
-  // a separate chunk that can be loaded on demand. The dual variant
-  // benefits the most: WebGPU code lives in its own chunk and only
-  // downloads when the user actually picks WebGPU.
+  // Build ESM. Code splitting is opt-in via `options.splitting` (default
+  // false). When enabled, the dynamic `await import("./WebGPU/WebGPUContext.js")`
+  // in ContextFactory creates a separate chunk that loads on demand. The
+  // dual variant benefits the most: WebGPU code lives in its own chunk
+  // and only downloads when the user actually picks WebGPU.
   //
-  // Output shape: index.js (entry) + chunk-XXXX.js (split chunks) all
-  // in `options.path`. Modern bundlers/Vite/browsers handle the
-  // implicit relative imports between them. The IIFE/CJS bundles below
-  // still produce single-file outputs because those formats don't
-  // support code splitting.
-  const esm = await build({
+  // Splitting is DISABLED for dev builds (`gulp build` / `npm run restart`)
+  // because the dev server doesn't serve the chunk sub-directory correctly
+  // (NS_ERROR_CORRUPTED_CONTENT on Firefox, MIME issues on some setups).
+  // Release and variant builds enable it explicitly.
+  //
+  // When splitting is ON: output is outdir/index.js + outdir/chunks/*.js
+  // When splitting is OFF: output is a single outdir/index.js (outfile)
+  const useSplitting = options.splitting ?? false;
+  /** @type {esbuild.BuildOptions} */
+  const esmConfig = {
     ...buildConfig,
-    format: "esm",
-    splitting: true,
-    outdir: options.path,
-    entryNames: "index",
-    chunkNames: "chunks/[name]-[hash]",
-  });
+    format: /** @type {esbuild.Format} */ ("esm"),
+  };
+  if (useSplitting) {
+    esmConfig.splitting = true;
+    esmConfig.outdir = options.path;
+    esmConfig.entryNames = "index";
+    esmConfig.chunkNames = "chunks/[name]-[hash]";
+  } else {
+    esmConfig.outfile = path.join(options.path, "index.js");
+  }
+  const esm = await build(esmConfig);
 
   if (incremental) {
     contexts.esm = esm;
@@ -1690,6 +1704,10 @@ export async function buildCesium(options) {
 
   // Generate bundles. The variant flows through bundleCesiumJs so the
   // alias plugin can rewrite backend-specific imports to empty stubs.
+  // Code splitting is enabled for release builds (minify=true) and
+  // variant builds (non-dual), but NOT for dev builds (npm run restart)
+  // because the dev server can't serve the chunk sub-directory.
+  const useSplitting = !development || variant !== "dual";
   const contexts = await bundleCesiumJs({
     minify: minify,
     iife: iife,
@@ -1702,6 +1720,7 @@ export async function buildCesium(options) {
     variant: variant,
     entryPoint: entryFileForVariant(variant),
     metafile: options.metafile,
+    splitting: useSplitting,
   });
 
   /** @type {esbuild.BuildResult | esbuild.BuildContext | null} */

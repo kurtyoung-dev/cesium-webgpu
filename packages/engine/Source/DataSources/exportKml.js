@@ -1482,7 +1482,7 @@ function createBasicElementWithText(
 
   // Wrap value in CDATA section if it contains HTML
   const text =
-    elementValue === "string" && elementValue.indexOf("<") !== -1
+    elementValue === "string" && elementValue.includes("<")
       ? kmlDoc.createCDATASection(elementValue)
       : kmlDoc.createTextNode(elementValue);
 

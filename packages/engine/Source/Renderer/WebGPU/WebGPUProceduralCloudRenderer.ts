@@ -106,7 +106,7 @@ function initializeCloudPipeline(
  */
 export function executeProceduralClouds(
   context: any,
-  frameState: any,
+  frameState: CesiumFrameState,
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
   outputView: GPUTextureView,

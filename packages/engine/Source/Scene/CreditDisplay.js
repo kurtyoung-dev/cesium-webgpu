@@ -4,7 +4,6 @@ import Check from "../Core/Check.js";
 import Credit from "../Core/Credit.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
-import Uri from "urijs";
 
 const mobileWidth = 576;
 const lightboxHeight = 100;
@@ -298,95 +297,341 @@ function appendCss(container) {
  * const credit = new Cesium.Credit('<a href="https://cesium.com/" target="_blank">Cesium</a>');
  * viewer.creditDisplay.addStaticCredit(credit);
  */
-function CreditDisplay(container, delimiter, viewport) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("container", container);
-  //>>includeEnd('debug');
-  const that = this;
+class CreditDisplay {
+  constructor(container, delimiter, viewport) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("container", container);
+    //>>includeEnd('debug');
+    const that = this;
 
-  viewport = viewport ?? document.body;
-
-  const lightbox = document.createElement("div");
-  lightbox.className = "cesium-credit-lightbox-overlay";
-  viewport.appendChild(lightbox);
-
-  const lightboxCredits = document.createElement("div");
-  lightboxCredits.className = "cesium-credit-lightbox";
-  lightbox.appendChild(lightboxCredits);
-
-  function hideLightbox(event) {
-    if (lightboxCredits.contains(event.target)) {
+    // Worker-safe headless mode. When the host is a Web Worker (no
+    // `document` global), we skip ALL DOM construction and become a
+    // no-op shim. The Scene constructor passes a sentinel `{}` as the
+    // container in this case so the defined-check above still passes.
+    // The credit accumulation logic in beginFrame() runs unchanged
+    // because it only manipulates internal data structures; the
+    // DOM-touching methods (showLightbox, hideLightbox, update,
+    // endFrame, destroy) early-return when `_headless === true`.
+    const headless = typeof document === "undefined";
+    if (headless) {
+      this._headless = true;
+      this._delimiter = delimiter ?? "•";
+      // Stub out the fields the rest of CreditDisplay reads, so any
+      // accidental access (e.g., from a future code path) returns a
+      // safe falsy value rather than throwing.
+      this._screenContainer = null;
+      this._cesiumCreditContainer = null;
+      this._lightboxCredits = null;
+      this._creditList = null;
+      this._lightbox = null;
+      this._hideLightbox = function () {};
+      this._expandLink = null;
+      this._expanded = false;
+      this._staticCredits = [];
+      this._cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
+      this._previousCesiumCredit = undefined;
+      this._currentCesiumCredit = this._cesiumCredit;
+      this._creditDisplayElementPool = [];
+      this._creditDisplayElementPoolIndex = 0;
+      this._currentFrameCredits = {
+        screenCredits: new AssociativeArray(),
+        lightboxCredits: new AssociativeArray(),
+      };
+      this._defaultCredit = undefined;
+      this.viewport = viewport;
+      this.container = container;
+      this._lastViewportHeight = undefined;
+      this._lastViewportWidth = undefined;
       return;
     }
-    that.hideLightbox();
+    this._headless = false;
+
+    viewport = viewport ?? document.body;
+
+    const lightbox = document.createElement("div");
+    lightbox.className = "cesium-credit-lightbox-overlay";
+    viewport.appendChild(lightbox);
+
+    const lightboxCredits = document.createElement("div");
+    lightboxCredits.className = "cesium-credit-lightbox";
+    lightbox.appendChild(lightboxCredits);
+
+    function hideLightbox(event) {
+      if (lightboxCredits.contains(event.target)) {
+        return;
+      }
+      that.hideLightbox();
+    }
+    lightbox.addEventListener("click", hideLightbox, false);
+
+    const title = document.createElement("div");
+    title.className = "cesium-credit-lightbox-title";
+    title.textContent = "Data provided by:";
+    lightboxCredits.appendChild(title);
+
+    const closeButton = document.createElement("a");
+    closeButton.onclick = this.hideLightbox.bind(this);
+    closeButton.innerHTML = "&times;";
+    closeButton.className = "cesium-credit-lightbox-close";
+    lightboxCredits.appendChild(closeButton);
+
+    const creditList = document.createElement("ul");
+    lightboxCredits.appendChild(creditList);
+
+    const cesiumCreditContainer = document.createElement("div");
+    cesiumCreditContainer.className = "cesium-credit-logoContainer";
+    cesiumCreditContainer.style.display = "inline";
+    container.appendChild(cesiumCreditContainer);
+
+    const screenContainer = document.createElement("div");
+    screenContainer.className = "cesium-credit-textContainer";
+    screenContainer.style.display = "inline";
+    container.appendChild(screenContainer);
+
+    const expandLink = document.createElement("a");
+    expandLink.className = "cesium-credit-expand-link";
+    expandLink.onclick = this.showLightbox.bind(this);
+    expandLink.textContent = "Data attribution";
+    container.appendChild(expandLink);
+
+    appendCss(container);
+    const cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
+
+    this._delimiter = delimiter ?? "•";
+    this._screenContainer = screenContainer;
+    this._cesiumCreditContainer = cesiumCreditContainer;
+    this._lastViewportHeight = undefined;
+    this._lastViewportWidth = undefined;
+    this._lightboxCredits = lightboxCredits;
+    this._creditList = creditList;
+    this._lightbox = lightbox;
+    this._hideLightbox = hideLightbox;
+    this._expandLink = expandLink;
+    this._expanded = false;
+    this._staticCredits = [];
+    this._cesiumCredit = cesiumCredit;
+    this._previousCesiumCredit = undefined;
+    this._currentCesiumCredit = cesiumCredit;
+    this._creditDisplayElementPool = [];
+    this._creditDisplayElementIndex = 0;
+
+    this._currentFrameCredits = {
+      screenCredits: new AssociativeArray(),
+      lightboxCredits: new AssociativeArray(),
+    };
+
+    this._defaultCredit = undefined;
+
+    this.viewport = viewport;
+
+    /**
+     * The HTML element where credits will be displayed.
+     * @type {HTMLElement}
+     */
+    this.container = container;
   }
-  lightbox.addEventListener("click", hideLightbox, false);
-
-  const title = document.createElement("div");
-  title.className = "cesium-credit-lightbox-title";
-  title.textContent = "Data provided by:";
-  lightboxCredits.appendChild(title);
-
-  const closeButton = document.createElement("a");
-  closeButton.onclick = this.hideLightbox.bind(this);
-  closeButton.innerHTML = "&times;";
-  closeButton.className = "cesium-credit-lightbox-close";
-  lightboxCredits.appendChild(closeButton);
-
-  const creditList = document.createElement("ul");
-  lightboxCredits.appendChild(creditList);
-
-  const cesiumCreditContainer = document.createElement("div");
-  cesiumCreditContainer.className = "cesium-credit-logoContainer";
-  cesiumCreditContainer.style.display = "inline";
-  container.appendChild(cesiumCreditContainer);
-
-  const screenContainer = document.createElement("div");
-  screenContainer.className = "cesium-credit-textContainer";
-  screenContainer.style.display = "inline";
-  container.appendChild(screenContainer);
-
-  const expandLink = document.createElement("a");
-  expandLink.className = "cesium-credit-expand-link";
-  expandLink.onclick = this.showLightbox.bind(this);
-  expandLink.textContent = "Data attribution";
-  container.appendChild(expandLink);
-
-  appendCss(container);
-  const cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
-
-  this._delimiter = delimiter ?? "•";
-  this._screenContainer = screenContainer;
-  this._cesiumCreditContainer = cesiumCreditContainer;
-  this._lastViewportHeight = undefined;
-  this._lastViewportWidth = undefined;
-  this._lightboxCredits = lightboxCredits;
-  this._creditList = creditList;
-  this._lightbox = lightbox;
-  this._hideLightbox = hideLightbox;
-  this._expandLink = expandLink;
-  this._expanded = false;
-  this._staticCredits = [];
-  this._cesiumCredit = cesiumCredit;
-  this._previousCesiumCredit = undefined;
-  this._currentCesiumCredit = cesiumCredit;
-  this._creditDisplayElementPool = [];
-  this._creditDisplayElementIndex = 0;
-
-  this._currentFrameCredits = {
-    screenCredits: new AssociativeArray(),
-    lightboxCredits: new AssociativeArray(),
-  };
-
-  this._defaultCredit = undefined;
-
-  this.viewport = viewport;
 
   /**
-   * The HTML element where credits will be displayed.
-   * @type {HTMLElement}
+   * Adds a {@link Credit} that will show on screen or in the lightbox until
+   * the next frame. This is mostly for internal use. Use {@link CreditDisplay.addStaticCredit} to add a persistent credit to the screen.
+   *
+   * @see CreditDisplay.addStaticCredit
+   *
+   * @param {Credit} credit The credit to display in the next frame.
    */
-  this.container = container;
+  addCreditToNextFrame(credit) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("credit", credit);
+    //>>includeEnd('debug');
+
+    if (credit.isIon()) {
+      // If this is the an ion logo credit from the ion server
+      // Just use the default credit (which is identical) to avoid blinking
+      if (!defined(this._defaultCredit)) {
+        this._defaultCredit = Credit.clone(getDefaultCredit());
+      }
+      this._currentCesiumCredit = this._defaultCredit;
+      return;
+    }
+
+    let credits;
+    if (!credit.showOnScreen) {
+      credits = this._currentFrameCredits.lightboxCredits;
+    } else {
+      credits = this._currentFrameCredits.screenCredits;
+    }
+
+    setCredit(this, credits, credit);
+  }
+
+  /**
+   * Adds a {@link Credit} that will show on screen or in the lightbox until removed with {@link CreditDisplay.removeStaticCredit}.
+   *
+   * @param {Credit} credit The credit to added
+   *
+   * @example
+   * // Add a credit with a tooltip, image and link to display onscreen
+   * const credit = new Cesium.Credit(`<a href="https://cesium.com/" target="_blank"><img src="/images/cesium_logo.png" title="Cesium"/></a>`, true);
+   * viewer.creditDisplay.addStaticCredit(credit);
+   *
+   * @example
+   * // Add a credit with a plaintext link to display in the lightbox
+   * const credit = new Cesium.Credit('<a href="https://cesium.com/" target="_blank">Cesium</a>');
+   * viewer.creditDisplay.addStaticCredit(credit);
+   */
+  addStaticCredit(credit) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("credit", credit);
+    //>>includeEnd('debug');
+
+    const staticCredits = this._staticCredits;
+    if (!contains(staticCredits, credit)) {
+      staticCredits.push(credit);
+    }
+  }
+
+  /**
+   * Removes a static credit shown on screen or in the lightbox.
+   *
+   * @param {Credit} credit The credit to be removed.
+   */
+  removeStaticCredit(credit) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("credit", credit);
+    //>>includeEnd('debug');
+
+    const staticCredits = this._staticCredits;
+    const index = staticCredits.indexOf(credit);
+    if (index !== -1) {
+      staticCredits.splice(index, 1);
+    }
+  }
+
+  /**
+   * @private
+   */
+  showLightbox() {
+    if (this._headless) return;
+    this._lightbox.style.display = "block";
+    this._expanded = true;
+  }
+
+  /**
+   * @private
+   */
+  hideLightbox() {
+    if (this._headless) return;
+    this._lightbox.style.display = "none";
+    this._expanded = false;
+  }
+
+  /**
+   * Updates the credit display before a new frame is rendered.
+   */
+  update() {
+    if (this._headless) return;
+    if (this._expanded) {
+      styleLightboxContainer(this);
+    }
+  }
+
+  /**
+   * Resets the credit display to a beginning of frame state, clearing out current credits.
+   */
+  beginFrame() {
+    const currentFrameCredits = this._currentFrameCredits;
+    this._creditDisplayElementPoolIndex = 0;
+
+    const screenCredits = currentFrameCredits.screenCredits;
+    const lightboxCredits = currentFrameCredits.lightboxCredits;
+
+    screenCredits.removeAll();
+    lightboxCredits.removeAll();
+
+    const staticCredits = this._staticCredits;
+    for (let i = 0; i < staticCredits.length; ++i) {
+      const staticCredit = staticCredits[i];
+      const creditCollection = staticCredit.showOnScreen
+        ? screenCredits
+        : lightboxCredits;
+
+      if (
+        staticCredit.isIon() &&
+        Credit.equals(CreditDisplay.cesiumCredit, this._cesiumCredit)
+      ) {
+        // If this is an ion logo credit from the ion server,
+        // make sure to de-duplicate with the default ion credit
+        continue;
+      }
+
+      setCredit(this, creditCollection, staticCredit, Number.MAX_VALUE);
+    }
+
+    if (!Credit.equals(CreditDisplay.cesiumCredit, this._cesiumCredit)) {
+      this._cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
+    }
+    this._currentCesiumCredit = this._cesiumCredit;
+  }
+
+  /**
+   * Sets the credit display to the end of frame state, displaying credits from the last frame in the credit container.
+   */
+  endFrame() {
+    if (this._headless) {
+      // No DOM to update, but still swap the cesium credit so internal
+      // state stays consistent across frames.
+      swapCesiumCredit(this);
+      return;
+    }
+    const screenCredits = this._currentFrameCredits.screenCredits.values;
+    displayCredits(
+      this._screenContainer,
+      screenCredits,
+      this._delimiter,
+      undefined,
+    );
+
+    const lightboxCredits = this._currentFrameCredits.lightboxCredits.values;
+    this._expandLink.style.display =
+      lightboxCredits.length > 0 ? "inline" : "none";
+    displayCredits(this._creditList, lightboxCredits, undefined, "li");
+
+    swapCesiumCredit(this);
+  }
+
+  /**
+   * Destroys the resources held by this object.  Destroying an object allows for deterministic
+   * release of resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   */
+  destroy() {
+    if (this._headless) {
+      return destroyObject(this);
+    }
+    this._lightbox.removeEventListener("click", this._hideLightbox, false);
+
+    this.container.removeChild(this._cesiumCreditContainer);
+    this.container.removeChild(this._screenContainer);
+    this.container.removeChild(this._expandLink);
+    this.viewport.removeChild(this._lightbox);
+
+    return destroyObject(this);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   */
+  isDestroyed() {
+    return false;
+  }
 }
 
 function setCredit(creditDisplay, credits, credit, count) {
@@ -410,196 +655,6 @@ function setCredit(creditDisplay, credits, credit, count) {
   }
 }
 
-/**
- * Adds a {@link Credit} that will show on screen or in the lightbox until
- * the next frame. This is mostly for internal use. Use {@link CreditDisplay.addStaticCredit} to add a persistent credit to the screen.
- *
- * @see CreditDisplay.addStaticCredit
- *
- * @param {Credit} credit The credit to display in the next frame.
- */
-CreditDisplay.prototype.addCreditToNextFrame = function (credit) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("credit", credit);
-  //>>includeEnd('debug');
-
-  if (credit.isIon()) {
-    // If this is the an ion logo credit from the ion server
-    // Just use the default credit (which is identical) to avoid blinking
-    if (!defined(this._defaultCredit)) {
-      this._defaultCredit = Credit.clone(getDefaultCredit());
-    }
-    this._currentCesiumCredit = this._defaultCredit;
-    return;
-  }
-
-  let credits;
-  if (!credit.showOnScreen) {
-    credits = this._currentFrameCredits.lightboxCredits;
-  } else {
-    credits = this._currentFrameCredits.screenCredits;
-  }
-
-  setCredit(this, credits, credit);
-};
-
-/**
- * Adds a {@link Credit} that will show on screen or in the lightbox until removed with {@link CreditDisplay.removeStaticCredit}.
- *
- * @param {Credit} credit The credit to added
- *
- * @example
- * // Add a credit with a tooltip, image and link to display onscreen
- * const credit = new Cesium.Credit(`<a href="https://cesium.com/" target="_blank"><img src="/images/cesium_logo.png" title="Cesium"/></a>`, true);
- * viewer.creditDisplay.addStaticCredit(credit);
- *
- * @example
- * // Add a credit with a plaintext link to display in the lightbox
- * const credit = new Cesium.Credit('<a href="https://cesium.com/" target="_blank">Cesium</a>');
- * viewer.creditDisplay.addStaticCredit(credit);
- */
-CreditDisplay.prototype.addStaticCredit = function (credit) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("credit", credit);
-  //>>includeEnd('debug');
-
-  const staticCredits = this._staticCredits;
-  if (!contains(staticCredits, credit)) {
-    staticCredits.push(credit);
-  }
-};
-
-/**
- * Removes a static credit shown on screen or in the lightbox.
- *
- * @param {Credit} credit The credit to be removed.
- */
-CreditDisplay.prototype.removeStaticCredit = function (credit) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("credit", credit);
-  //>>includeEnd('debug');
-
-  const staticCredits = this._staticCredits;
-  const index = staticCredits.indexOf(credit);
-  if (index !== -1) {
-    staticCredits.splice(index, 1);
-  }
-};
-
-/**
- * @private
- */
-CreditDisplay.prototype.showLightbox = function () {
-  this._lightbox.style.display = "block";
-  this._expanded = true;
-};
-
-/**
- * @private
- */
-CreditDisplay.prototype.hideLightbox = function () {
-  this._lightbox.style.display = "none";
-  this._expanded = false;
-};
-
-/**
- * Updates the credit display before a new frame is rendered.
- */
-CreditDisplay.prototype.update = function () {
-  if (this._expanded) {
-    styleLightboxContainer(this);
-  }
-};
-
-/**
- * Resets the credit display to a beginning of frame state, clearing out current credits.
- */
-CreditDisplay.prototype.beginFrame = function () {
-  const currentFrameCredits = this._currentFrameCredits;
-  this._creditDisplayElementPoolIndex = 0;
-
-  const screenCredits = currentFrameCredits.screenCredits;
-  const lightboxCredits = currentFrameCredits.lightboxCredits;
-
-  screenCredits.removeAll();
-  lightboxCredits.removeAll();
-
-  const staticCredits = this._staticCredits;
-  for (let i = 0; i < staticCredits.length; ++i) {
-    const staticCredit = staticCredits[i];
-    const creditCollection = staticCredit.showOnScreen
-      ? screenCredits
-      : lightboxCredits;
-
-    if (
-      staticCredit.isIon() &&
-      Credit.equals(CreditDisplay.cesiumCredit, this._cesiumCredit)
-    ) {
-      // If this is an ion logo credit from the ion server,
-      // make sure to de-duplicate with the default ion credit
-      continue;
-    }
-
-    setCredit(this, creditCollection, staticCredit, Number.MAX_VALUE);
-  }
-
-  if (!Credit.equals(CreditDisplay.cesiumCredit, this._cesiumCredit)) {
-    this._cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
-  }
-  this._currentCesiumCredit = this._cesiumCredit;
-};
-
-/**
- * Sets the credit display to the end of frame state, displaying credits from the last frame in the credit container.
- */
-CreditDisplay.prototype.endFrame = function () {
-  const screenCredits = this._currentFrameCredits.screenCredits.values;
-  displayCredits(
-    this._screenContainer,
-    screenCredits,
-    this._delimiter,
-    undefined,
-  );
-
-  const lightboxCredits = this._currentFrameCredits.lightboxCredits.values;
-  this._expandLink.style.display =
-    lightboxCredits.length > 0 ? "inline" : "none";
-  displayCredits(this._creditList, lightboxCredits, undefined, "li");
-
-  swapCesiumCredit(this);
-};
-
-/**
- * Destroys the resources held by this object.  Destroying an object allows for deterministic
- * release of resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- */
-CreditDisplay.prototype.destroy = function () {
-  this._lightbox.removeEventListener("click", this._hideLightbox, false);
-
-  this.container.removeChild(this._cesiumCreditContainer);
-  this.container.removeChild(this._screenContainer);
-  this.container.removeChild(this._expandLink);
-  this.viewport.removeChild(this._lightbox);
-
-  return destroyObject(this);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- */
-CreditDisplay.prototype.isDestroyed = function () {
-  return false;
-};
-
 CreditDisplay._cesiumCredit = undefined;
 CreditDisplay._cesiumCreditInitialized = false;
 
@@ -615,8 +670,11 @@ function getDefaultCredit() {
       logo.indexOf("https://") !== 0 &&
       logo.indexOf("data:") !== 0
     ) {
-      const logoUrl = new Uri(logo);
-      logo = logoUrl.path();
+      try {
+        logo = new URL(logo, "https://placeholder.invalid/").pathname;
+      } catch {
+        // keep logo as-is
+      }
     }
 
     defaultCredit = new Credit(

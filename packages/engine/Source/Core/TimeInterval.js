@@ -57,63 +57,106 @@ import JulianDate from "./JulianDate.js";
  * const dateToCheck = Cesium.JulianDate.fromIso8601('1982-09-08T11:30:00Z');
  * const containsDate = Cesium.TimeInterval.contains(timeInterval, dateToCheck);
  */
-function TimeInterval(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  /**
-   * Gets or sets the start time of this interval.
-   * @type {JulianDate}
-   */
-  this.start = defined(options.start)
-    ? JulianDate.clone(options.start)
-    : new JulianDate();
+class TimeInterval {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    /**
+     * Gets or sets the start time of this interval.
+     * @type {JulianDate}
+     */
+    this.start = defined(options.start)
+      ? JulianDate.clone(options.start)
+      : new JulianDate();
+
+    /**
+     * Gets or sets the stop time of this interval.
+     * @type {JulianDate}
+     */
+    this.stop = defined(options.stop)
+      ? JulianDate.clone(options.stop)
+      : new JulianDate();
+
+    /**
+     * Gets or sets the data associated with this interval.
+     * @type {*}
+     */
+    this.data = options.data;
+
+    /**
+     * Gets or sets whether or not the start time is included in this interval.
+     * @type {boolean}
+     * @default true
+     */
+    this.isStartIncluded = options.isStartIncluded ?? true;
+
+    /**
+     * Gets or sets whether or not the stop time is included in this interval.
+     * @type {boolean}
+     * @default true
+     */
+    this.isStopIncluded = options.isStopIncluded ?? true;
+  }
 
   /**
-   * Gets or sets the stop time of this interval.
-   * @type {JulianDate}
+   * Duplicates this instance.
+   *
+   * @param {TimeInterval} [result] An existing instance to use for the result.
+   * @returns {TimeInterval} The modified result parameter or a new instance if none was provided.
    */
-  this.stop = defined(options.stop)
-    ? JulianDate.clone(options.stop)
-    : new JulianDate();
+  clone(result) {
+    return TimeInterval.clone(this, result);
+  }
 
   /**
-   * Gets or sets the data associated with this interval.
-   * @type {*}
+   * Compares this instance against the provided instance componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {TimeInterval} [right] The right hand side interval.
+   * @param {TimeInterval.DataComparer} [dataComparer] A function which compares the data of the two intervals.  If omitted, reference equality is used.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
    */
-  this.data = options.data;
+  equals(right, dataComparer) {
+    return TimeInterval.equals(this, right, dataComparer);
+  }
 
   /**
-   * Gets or sets whether or not the start time is included in this interval.
-   * @type {boolean}
-   * @default true
+   * Compares this instance against the provided instance componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
+   *
+   * @param {TimeInterval} [right] The right hand side interval.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @param {TimeInterval.DataComparer} [dataComparer] A function which compares the data of the two intervals.  If omitted, reference equality is used.
+   * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
    */
-  this.isStartIncluded = options.isStartIncluded ?? true;
+  equalsEpsilon(right, epsilon, dataComparer) {
+    return TimeInterval.equalsEpsilon(this, right, epsilon, dataComparer);
+  }
 
   /**
-   * Gets or sets whether or not the stop time is included in this interval.
-   * @type {boolean}
-   * @default true
+   * Creates a string representing this TimeInterval in ISO8601 format.
+   *
+   * @returns {string} A string representing this TimeInterval in ISO8601 format.
    */
-  this.isStopIncluded = options.isStopIncluded ?? true;
-}
+  toString() {
+    return TimeInterval.toIso8601(this);
+  }
 
-Object.defineProperties(TimeInterval.prototype, {
   /**
    * Gets whether or not this interval is empty.
    * @memberof TimeInterval.prototype
    * @type {boolean}
    * @readonly
    */
-  isEmpty: {
-    get: function () {
-      const stopComparedToStart = JulianDate.compare(this.stop, this.start);
-      return (
-        stopComparedToStart < 0 ||
-        (stopComparedToStart === 0 &&
-          (!this.isStartIncluded || !this.isStopIncluded))
-      );
-    },
-  },
-});
+  get isEmpty() {
+    const stopComparedToStart = JulianDate.compare(this.stop, this.start);
+    return (
+      stopComparedToStart < 0 ||
+      (stopComparedToStart === 0 &&
+        (!this.isStartIncluded || !this.isStopIncluded))
+    );
+  }
+}
 
 const scratchInterval = {
   start: undefined,
@@ -357,51 +400,6 @@ TimeInterval.contains = function (timeInterval, julianDate) {
   }
 
   return startComparedToDate < 0 && dateComparedToStop < 0;
-};
-
-/**
- * Duplicates this instance.
- *
- * @param {TimeInterval} [result] An existing instance to use for the result.
- * @returns {TimeInterval} The modified result parameter or a new instance if none was provided.
- */
-TimeInterval.prototype.clone = function (result) {
-  return TimeInterval.clone(this, result);
-};
-
-/**
- * Compares this instance against the provided instance componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {TimeInterval} [right] The right hand side interval.
- * @param {TimeInterval.DataComparer} [dataComparer] A function which compares the data of the two intervals.  If omitted, reference equality is used.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-TimeInterval.prototype.equals = function (right, dataComparer) {
-  return TimeInterval.equals(this, right, dataComparer);
-};
-
-/**
- * Compares this instance against the provided instance componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {TimeInterval} [right] The right hand side interval.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @param {TimeInterval.DataComparer} [dataComparer] A function which compares the data of the two intervals.  If omitted, reference equality is used.
- * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
- */
-TimeInterval.prototype.equalsEpsilon = function (right, epsilon, dataComparer) {
-  return TimeInterval.equalsEpsilon(this, right, epsilon, dataComparer);
-};
-
-/**
- * Creates a string representing this TimeInterval in ISO8601 format.
- *
- * @returns {string} A string representing this TimeInterval in ISO8601 format.
- */
-TimeInterval.prototype.toString = function () {
-  return TimeInterval.toIso8601(this);
 };
 
 /**

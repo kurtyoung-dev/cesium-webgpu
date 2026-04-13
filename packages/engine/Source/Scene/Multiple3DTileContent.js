@@ -32,53 +32,211 @@ import preprocess3DTileContent from "./preprocess3DTileContent.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function Multiple3DTileContent(tileset, tile, tilesetResource, contentsJson) {
-  this._tileset = tileset;
-  this._tile = tile;
-  this._tilesetResource = tilesetResource;
-  this._contents = [];
-  this._contentsCreated = false;
+class Multiple3DTileContent {
+  constructor(tileset, tile, tilesetResource, contentsJson) {
+    this._tileset = tileset;
+    this._tile = tile;
+    this._tilesetResource = tilesetResource;
+    this._contents = [];
+    this._contentsCreated = false;
 
-  // An older version of 3DTILES_multiple_contents used "content" instead of "contents"
-  const contentHeaders = defined(contentsJson.contents)
-    ? contentsJson.contents
-    : contentsJson.content;
+    // An older version of 3DTILES_multiple_contents used "content" instead of "contents"
+    const contentHeaders = defined(contentsJson.contents)
+      ? contentsJson.contents
+      : contentsJson.content;
 
-  this._innerContentHeaders = contentHeaders;
-  this._requestsInFlight = 0;
+    this._innerContentHeaders = contentHeaders;
+    this._requestsInFlight = 0;
 
-  // How many times cancelPendingRequests() has been called. This is
-  // used to help short-circuit computations after a tile was canceled.
-  this._cancelCount = 0;
+    // How many times cancelPendingRequests() has been called. This is
+    // used to help short-circuit computations after a tile was canceled.
+    this._cancelCount = 0;
 
-  // The number of contents that turned out to be external tilesets
-  // in createInnerContent. When all contents are external tilesets,
-  // then tile.hasRenderableContent will become `false`
-  this._externalTilesetCount = 0;
+    // The number of contents that turned out to be external tilesets
+    // in createInnerContent. When all contents are external tilesets,
+    // then tile.hasRenderableContent will become `false`
+    this._externalTilesetCount = 0;
 
-  const contentCount = this._innerContentHeaders.length;
-  this._arrayFetchPromises = new Array(contentCount);
-  this._requests = new Array(contentCount);
-  this._ready = false;
+    const contentCount = this._innerContentHeaders.length;
+    this._arrayFetchPromises = new Array(contentCount);
+    this._requests = new Array(contentCount);
+    this._ready = false;
 
-  this._innerContentResources = new Array(contentCount);
-  this._serverKeys = new Array(contentCount);
+    this._innerContentResources = new Array(contentCount);
+    this._serverKeys = new Array(contentCount);
 
-  for (let i = 0; i < contentCount; i++) {
-    const contentResource = tilesetResource.getDerivedResource({
-      url: contentHeaders[i].uri,
-    });
+    for (let i = 0; i < contentCount; i++) {
+      const contentResource = tilesetResource.getDerivedResource({
+        url: contentHeaders[i].uri,
+      });
 
-    const serverKey = RequestScheduler.getServerKey(
-      contentResource.getUrlComponent(),
-    );
+      const serverKey = RequestScheduler.getServerKey(
+        contentResource.getUrlComponent(),
+      );
 
-    this._innerContentResources[i] = contentResource;
-    this._serverKeys[i] = serverKey;
+      this._innerContentResources[i] = contentResource;
+      this._serverKeys[i] = serverKey;
+    }
   }
-}
 
-Object.defineProperties(Multiple3DTileContent.prototype, {
+  /**
+   * Request the inner contents of this <code>Multiple3DTileContent</code>. This must be called once a frame until
+   * {@link Multiple3DTileContent#contentsFetchedPromise} is defined. This promise
+   * becomes available as soon as all requests are scheduled.
+   * <p>
+   * This method also updates the tile statistics' pending request count if the
+   * requests are successfully scheduled.
+   * </p>
+   *
+   * @return {Promise<void>|undefined} A promise that resolves when the request completes, or undefined if there is no request needed, or the request cannot be scheduled.
+   * @private
+   */
+  requestInnerContents() {
+    // It's possible for these promises to leak content array buffers if the
+    // camera moves before they all are scheduled. To prevent this leak, check
+    // if we can schedule all the requests at once. If not, no requests are
+    // scheduled
+    if (!canScheduleAllRequests(this._serverKeys)) {
+      this.tileset.statistics.numberOfAttemptedRequests +=
+        this._serverKeys.length;
+      return;
+    }
+
+    const contentHeaders = this._innerContentHeaders;
+    updatePendingRequests(this, contentHeaders.length);
+
+    const originalCancelCount = this._cancelCount;
+    for (let i = 0; i < contentHeaders.length; i++) {
+      // The cancel count is needed to avoid a race condition where a content
+      // is canceled multiple times.
+      this._arrayFetchPromises[i] = requestInnerContent(
+        this,
+        i,
+        originalCancelCount,
+        this._tile._contentState,
+      );
+    }
+
+    return createInnerContents(this);
+  }
+
+  /**
+   * Cancel all requests for inner contents. This is called by the tile
+   * when a tile goes out of view.
+   *
+   * @private
+   */
+  cancelRequests() {
+    for (let i = 0; i < this._requests.length; i++) {
+      const request = this._requests[i];
+      if (defined(request)) {
+        request.cancel();
+      }
+    }
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
+   * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a specific inner content
+   * @private
+   */
+  hasProperty(batchId, name) {
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
+   * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a specific inner content
+   * @private
+   */
+  getFeature(batchId) {
+    return undefined;
+  }
+
+  applyDebugSettings(enabled, color) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyDebugSettings(enabled, color);
+    }
+  }
+
+  applyStyle(style) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].applyStyle(style);
+    }
+  }
+
+  update(tileset, frameState) {
+    const contents = this._contents;
+    const length = contents.length;
+    let ready = true;
+    for (let i = 0; i < length; ++i) {
+      contents[i].update(tileset, frameState);
+      ready = ready && contents[i].ready;
+    }
+
+    if (!this._ready && ready) {
+      this._ready = true;
+    }
+  }
+
+  /**
+   * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
+   *
+   * @param {Ray} ray The ray to test for intersection.
+   * @param {FrameState} frameState The frame state.
+   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
+   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+   *
+   * @private
+   */
+  pick(ray, frameState, result) {
+    if (!this._ready) {
+      return undefined;
+    }
+
+    let intersection;
+    let minDistance = Number.POSITIVE_INFINITY;
+    const contents = this._contents;
+    const length = contents.length;
+
+    for (let i = 0; i < length; ++i) {
+      const candidate = contents[i].pick(ray, frameState, result);
+
+      if (!defined(candidate)) {
+        continue;
+      }
+
+      const distance = Cartesian3.distance(ray.origin, candidate);
+      if (distance < minDistance) {
+        intersection = candidate;
+        minDistance = distance;
+      }
+    }
+
+    if (!defined(intersection)) {
+      return undefined;
+    }
+
+    return result;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].destroy();
+    }
+    return destroyObject(this);
+  }
+
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code> checks if any of the inner contents have dirty featurePropertiesDirty.
    * @memberof Multiple3DTileContent.prototype
@@ -87,26 +245,33 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  featurePropertiesDirty: {
-    get: function () {
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        if (contents[i].featurePropertiesDirty) {
-          return true;
-        }
+  get featurePropertiesDirty() {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      if (contents[i].featurePropertiesDirty) {
+        return true;
       }
+    }
 
-      return false;
-    },
-    set: function (value) {
-      const contents = this._contents;
-      const length = contents.length;
-      for (let i = 0; i < length; ++i) {
-        contents[i].featurePropertiesDirty = value;
-      }
-    },
-  },
+    return false;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code> checks if any of the inner contents have dirty featurePropertiesDirty.
+   * @memberof Multiple3DTileContent.prototype
+   *
+   * @type {boolean}
+   *
+   * @private
+   */
+  set featurePropertiesDirty(value) {
+    const contents = this._contents;
+    const length = contents.length;
+    for (let i = 0; i < length; ++i) {
+      contents[i].featurePropertiesDirty = value;
+    }
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
@@ -119,11 +284,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  featuresLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get featuresLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
@@ -136,11 +299,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  pointsLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get pointsLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
@@ -153,11 +314,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  trianglesLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get trianglesLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
@@ -170,11 +329,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  geometryByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get geometryByteLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
@@ -187,11 +344,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  texturesByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get texturesByteLength() {
+    return 0;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
@@ -204,17 +359,13 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    *
    * @private
    */
-  batchTableByteLength: {
-    get: function () {
-      return 0;
-    },
-  },
+  get batchTableByteLength() {
+    return 0;
+  }
 
-  innerContents: {
-    get: function () {
-      return this._contents;
-    },
-  },
+  get innerContents() {
+    return this._contents;
+  }
 
   /**
    * Returns true when the tile's content is ready to render; otherwise false
@@ -225,27 +376,21 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      if (!this._contentsCreated) {
-        return false;
-      }
+  get ready() {
+    if (!this._contentsCreated) {
+      return false;
+    }
 
-      return this._ready;
-    },
-  },
+    return this._ready;
+  }
 
-  tileset: {
-    get: function () {
-      return this._tileset;
-    },
-  },
+  get tileset() {
+    return this._tileset;
+  }
 
-  tile: {
-    get: function () {
-      return this._tile;
-    },
-  },
+  get tile() {
+    return this._tile;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface.
@@ -257,11 +402,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @readonly
    * @private
    */
-  url: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get url() {
+    return undefined;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
@@ -269,16 +412,21 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @memberof Multiple3DTileContent.prototype
    * @private
    */
-  metadata: {
-    get: function () {
-      return undefined;
-    },
-    set: function () {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError("Multiple3DTileContent cannot have metadata");
-      //>>includeEnd('debug');
-    },
-  },
+  get metadata() {
+    return undefined;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
+   * always returns <code>undefined</code>.  Instead call <code>metadata</code> for a specific inner content.
+   * @memberof Multiple3DTileContent.prototype
+   * @private
+   */
+  set metadata(value) {
+    //>>includeStart('debug', pragmas.debug);
+    throw new DeveloperError("Multiple3DTileContent cannot have metadata");
+    //>>includeEnd('debug');
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
@@ -286,11 +434,9 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @memberof Multiple3DTileContent.prototype
    * @private
    */
-  batchTable: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get batchTable() {
+    return undefined;
+  }
 
   /**
    * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
@@ -298,18 +444,23 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @memberof Multiple3DTileContent.prototype
    * @private
    */
-  group: {
-    get: function () {
-      return undefined;
-    },
-    set: function () {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        "Multiple3DTileContent cannot have group metadata",
-      );
-      //>>includeEnd('debug');
-    },
-  },
+  get group() {
+    return undefined;
+  }
+
+  /**
+   * Part of the {@link Cesium3DTileContent} interface. <code>Multiple3DTileContent</code>
+   * always returns <code>undefined</code>.  Instead call <code>group</code> for a specific inner content.
+   * @memberof Multiple3DTileContent.prototype
+   * @private
+   */
+  set group(value) {
+    //>>includeStart('debug', pragmas.debug);
+    throw new DeveloperError(
+      "Multiple3DTileContent cannot have group metadata",
+    );
+    //>>includeEnd('debug');
+  }
 
   /**
    * Get an array of the inner content URLs, regardless of whether they've
@@ -321,14 +472,12 @@ Object.defineProperties(Multiple3DTileContent.prototype, {
    * @readonly
    * @private
    */
-  innerContentUrls: {
-    get: function () {
-      return this._innerContentHeaders.map(function (contentHeader) {
-        return contentHeader.uri;
-      });
-    },
-  },
-});
+  get innerContentUrls() {
+    return this._innerContentHeaders.map(function (contentHeader) {
+      return contentHeader.uri;
+    });
+  }
+}
 
 function updatePendingRequests(multipleContents, deltaRequestCount) {
   multipleContents._requestsInFlight += deltaRequestCount;
@@ -352,47 +501,6 @@ function cancelPendingRequests(multipleContents, originalContentState) {
   const contentCount = multipleContents._innerContentHeaders.length;
   multipleContents._arrayFetchPromises = new Array(contentCount);
 }
-
-/**
- * Request the inner contents of this <code>Multiple3DTileContent</code>. This must be called once a frame until
- * {@link Multiple3DTileContent#contentsFetchedPromise} is defined. This promise
- * becomes available as soon as all requests are scheduled.
- * <p>
- * This method also updates the tile statistics' pending request count if the
- * requests are successfully scheduled.
- * </p>
- *
- * @return {Promise<void>|undefined} A promise that resolves when the request completes, or undefined if there is no request needed, or the request cannot be scheduled.
- * @private
- */
-Multiple3DTileContent.prototype.requestInnerContents = function () {
-  // It's possible for these promises to leak content array buffers if the
-  // camera moves before they all are scheduled. To prevent this leak, check
-  // if we can schedule all the requests at once. If not, no requests are
-  // scheduled
-  if (!canScheduleAllRequests(this._serverKeys)) {
-    this.tileset.statistics.numberOfAttemptedRequests +=
-      this._serverKeys.length;
-    return;
-  }
-
-  const contentHeaders = this._innerContentHeaders;
-  updatePendingRequests(this, contentHeaders.length);
-
-  const originalCancelCount = this._cancelCount;
-  for (let i = 0; i < contentHeaders.length; i++) {
-    // The cancel count is needed to avoid a race condition where a content
-    // is canceled multiple times.
-    this._arrayFetchPromises[i] = requestInnerContent(
-      this,
-      i,
-      originalCancelCount,
-      this._tile._contentState,
-    );
-  }
-
-  return createInnerContents(this);
-};
 
 /**
  * Check if all requests for inner contents can be scheduled at once. This is slower, but it avoids a potential memory leak.
@@ -601,122 +709,5 @@ function handleInnerContentFailed(multipleContents, index, error) {
     console.log(`Error: ${message}`);
   }
 }
-
-/**
- * Cancel all requests for inner contents. This is called by the tile
- * when a tile goes out of view.
- *
- * @private
- */
-Multiple3DTileContent.prototype.cancelRequests = function () {
-  for (let i = 0; i < this._requests.length; i++) {
-    const request = this._requests[i];
-    if (defined(request)) {
-      request.cancel();
-    }
-  }
-};
-
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
- * always returns <code>false</code>.  Instead call <code>hasProperty</code> for a specific inner content
- * @private
- */
-Multiple3DTileContent.prototype.hasProperty = function (batchId, name) {
-  return false;
-};
-
-/**
- * Part of the {@link Cesium3DTileContent} interface.  <code>Multiple3DTileContent</code>
- * always returns <code>undefined</code>.  Instead call <code>getFeature</code> for a specific inner content
- * @private
- */
-Multiple3DTileContent.prototype.getFeature = function (batchId) {
-  return undefined;
-};
-
-Multiple3DTileContent.prototype.applyDebugSettings = function (enabled, color) {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].applyDebugSettings(enabled, color);
-  }
-};
-
-Multiple3DTileContent.prototype.applyStyle = function (style) {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].applyStyle(style);
-  }
-};
-
-Multiple3DTileContent.prototype.update = function (tileset, frameState) {
-  const contents = this._contents;
-  const length = contents.length;
-  let ready = true;
-  for (let i = 0; i < length; ++i) {
-    contents[i].update(tileset, frameState);
-    ready = ready && contents[i].ready;
-  }
-
-  if (!this._ready && ready) {
-    this._ready = true;
-  }
-};
-
-/**
- * Find an intersection between a ray and the tile content surface that was rendered. The ray must be given in world coordinates.
- *
- * @param {Ray} ray The ray to test for intersection.
- * @param {FrameState} frameState The frame state.
- * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
- * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
- *
- * @private
- */
-Multiple3DTileContent.prototype.pick = function (ray, frameState, result) {
-  if (!this._ready) {
-    return undefined;
-  }
-
-  let intersection;
-  let minDistance = Number.POSITIVE_INFINITY;
-  const contents = this._contents;
-  const length = contents.length;
-
-  for (let i = 0; i < length; ++i) {
-    const candidate = contents[i].pick(ray, frameState, result);
-
-    if (!defined(candidate)) {
-      continue;
-    }
-
-    const distance = Cartesian3.distance(ray.origin, candidate);
-    if (distance < minDistance) {
-      intersection = candidate;
-      minDistance = distance;
-    }
-  }
-
-  if (!defined(intersection)) {
-    return undefined;
-  }
-
-  return result;
-};
-
-Multiple3DTileContent.prototype.isDestroyed = function () {
-  return false;
-};
-
-Multiple3DTileContent.prototype.destroy = function () {
-  const contents = this._contents;
-  const length = contents.length;
-  for (let i = 0; i < length; ++i) {
-    contents[i].destroy();
-  }
-  return destroyObject(this);
-};
 
 export default Multiple3DTileContent;

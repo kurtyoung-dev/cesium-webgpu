@@ -29,124 +29,162 @@ import defined from "../Core/defined.js";
  * @param {Globe} globe The owning Globe. All current properties delegate
  *   to fields on this object.
  */
-function GlobeWater(scene, globe) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new Error("scene is required");
-  }
-  if (!defined(globe)) {
-    throw new Error("globe is required");
-  }
-  //>>includeEnd('debug');
+class GlobeWater {
+  constructor(scene, globe) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new Error("scene is required");
+    }
+    if (!defined(globe)) {
+      throw new Error("globe is required");
+    }
+    //>>includeEnd('debug');
 
-  this._scene = scene;
-  this._globe = globe;
-}
+    this._scene = scene;
+    this._globe = globe;
+  }
 
-Object.defineProperties(GlobeWater.prototype, {
   /**
    * Enables or disables water rendering on the terrain surface (upstream
    * Cesium-owned). Delegates to `globe.showWaterEffect`.
    * @type {boolean}
    */
-  showWaterEffect: {
-    get: function () {
-      return this._globe.showWaterEffect;
-    },
-    set: function (v) {
-      this._globe.showWaterEffect = v;
-    },
-  },
+  get showWaterEffect() {
+    return this._globe.showWaterEffect;
+  }
+
+  /**
+   * Enables or disables water rendering on the terrain surface (upstream
+   * Cesium-owned). Delegates to `globe.showWaterEffect`.
+   * @type {boolean}
+   */
+  set showWaterEffect(v) {
+    this._globe.showWaterEffect = v;
+  }
+
   /**
    * Ocean normal map URL (upstream Cesium-owned). Delegates to
    * `globe.oceanNormalMapUrl`.
    * @type {string}
    */
-  oceanNormalMapUrl: {
-    get: function () {
-      return this._globe.oceanNormalMapUrl;
-    },
-    set: function (v) {
-      this._globe.oceanNormalMapUrl = v;
-    },
-  },
+  get oceanNormalMapUrl() {
+    return this._globe.oceanNormalMapUrl;
+  }
+
+  /**
+   * Ocean normal map URL (upstream Cesium-owned). Delegates to
+   * `globe.oceanNormalMapUrl`.
+   * @type {string}
+   */
+  set oceanNormalMapUrl(v) {
+    this._globe.oceanNormalMapUrl = v;
+  }
+
   /**
    * Enables the fork's enhanced-ocean shading path. Delegates to
    * `globe.enableEnhancedOcean`.
    * @type {boolean}
    */
-  enableEnhanced: {
-    get: function () {
-      return this._globe.enableEnhancedOcean;
-    },
-    set: function (v) {
-      this._globe.enableEnhancedOcean = v;
-    },
-  },
+  get enableEnhanced() {
+    return this._globe.enableEnhancedOcean;
+  }
+
+  /**
+   * Enables the fork's enhanced-ocean shading path. Delegates to
+   * `globe.enableEnhancedOcean`.
+   * @type {boolean}
+   */
+  set enableEnhanced(v) {
+    this._globe.enableEnhancedOcean = v;
+  }
+
   /**
    * Deep-water base color. Delegates to `globe.oceanDeepColor`.
    * @type {{x:number,y:number,z:number}}
    */
-  deepColor: {
-    get: function () {
-      return this._globe.oceanDeepColor;
-    },
-    set: function (v) {
-      this._globe.oceanDeepColor = v;
-    },
-  },
+  get deepColor() {
+    return this._globe.oceanDeepColor;
+  }
+
+  /**
+   * Deep-water base color. Delegates to `globe.oceanDeepColor`.
+   * @type {{x:number,y:number,z:number}}
+   */
+  set deepColor(v) {
+    this._globe.oceanDeepColor = v;
+  }
+
   /**
    * Fresnel exponent for ocean reflectivity. Delegates to
    * `globe.oceanFresnelPower`.
    * @type {number}
    */
-  fresnelPower: {
-    get: function () {
-      return this._globe.oceanFresnelPower;
-    },
-    set: function (v) {
-      this._globe.oceanFresnelPower = v;
-    },
-  },
+  get fresnelPower() {
+    return this._globe.oceanFresnelPower;
+  }
+
+  /**
+   * Fresnel exponent for ocean reflectivity. Delegates to
+   * `globe.oceanFresnelPower`.
+   * @type {number}
+   */
+  set fresnelPower(v) {
+    this._globe.oceanFresnelPower = v;
+  }
+
   /**
    * Base reflectivity (F0) for water surfaces. Delegates to
    * `globe.oceanReflectivity`.
    * @type {number}
    */
-  reflectivity: {
-    get: function () {
-      return this._globe.oceanReflectivity;
-    },
-    set: function (v) {
-      this._globe.oceanReflectivity = v;
-    },
-  },
+  get reflectivity() {
+    return this._globe.oceanReflectivity;
+  }
+
+  /**
+   * Base reflectivity (F0) for water surfaces. Delegates to
+   * `globe.oceanReflectivity`.
+   * @type {number}
+   */
+  set reflectivity(v) {
+    this._globe.oceanReflectivity = v;
+  }
+
   /**
    * Threshold above which foam is rendered. Delegates to
    * `globe.oceanFoamThreshold`.
    * @type {number}
    */
-  foamThreshold: {
-    get: function () {
-      return this._globe.oceanFoamThreshold;
-    },
-    set: function (v) {
-      this._globe.oceanFoamThreshold = v;
-    },
-  },
+  get foamThreshold() {
+    return this._globe.oceanFoamThreshold;
+  }
+
+  /**
+   * Threshold above which foam is rendered. Delegates to
+   * `globe.oceanFoamThreshold`.
+   * @type {number}
+   */
+  set foamThreshold(v) {
+    this._globe.oceanFoamThreshold = v;
+  }
+
   /**
    * Darkening factor applied to underwater terrain. Delegates to
    * `globe.oceanDarkening`.
    * @type {number}
    */
-  darkening: {
-    get: function () {
-      return this._globe.oceanDarkening;
-    },
-    set: function (v) {
-      this._globe.oceanDarkening = v;
-    },
-  },
-});
+  get darkening() {
+    return this._globe.oceanDarkening;
+  }
+
+  /**
+   * Darkening factor applied to underwater terrain. Delegates to
+   * `globe.oceanDarkening`.
+   * @type {number}
+   */
+  set darkening(v) {
+    this._globe.oceanDarkening = v;
+  }
+}
 
 export default GlobeWater;

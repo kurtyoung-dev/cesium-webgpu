@@ -15,24 +15,28 @@ struct VertexOutput {
     @location(0) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    lightColor: vec4<f32>,
-    darkColor: vec4<f32>,
-    repeat: vec2<f32>,
     _pad2: vec2<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+struct MaterialUniforms {
+    lightColor: vec4<f32>,
+    darkColor: vec4<f32>,
+    repeat: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -40,7 +44,7 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let eyePos = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.position = uniforms.mvpRelativeToEye * eyePos;
+    output.position = camera.mvpRelativeToEye * eyePos;
     output.texCoord = input.texCoord;
     return output;
 }
@@ -48,11 +52,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Tile UV into cells, compute distance from each cell center
-    let scaledUV = input.texCoord * uniforms.repeat;
+    let scaledUV = input.texCoord * material.repeat;
     let cellCenter = floor(scaledUV) + vec2<f32>(0.5);
     let dist = length(scaledUV - cellCenter);
 
     // Dot radius is 0.35 of cell size — smooth edge with smoothstep
     let dotMask = 1.0 - smoothstep(0.3, 0.35, dist);
-    return mix(uniforms.darkColor, uniforms.lightColor, vec4<f32>(dotMask));
+    return mix(material.darkColor, material.lightColor, vec4<f32>(dotMask));
 }

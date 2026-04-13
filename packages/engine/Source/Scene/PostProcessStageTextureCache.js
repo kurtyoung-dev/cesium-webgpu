@@ -15,15 +15,162 @@ import FramebufferManager from "../Renderer/FramebufferManager.js";
  *
  * @private
  */
-function PostProcessStageTextureCache(postProcessStageCollection) {
-  this._collection = postProcessStageCollection;
+class PostProcessStageTextureCache {
+  constructor(postProcessStageCollection) {
+    this._collection = postProcessStageCollection;
 
-  this._framebuffers = [];
-  this._stageNameToFramebuffer = {};
+    this._framebuffers = [];
+    this._stageNameToFramebuffer = {};
 
-  this._width = undefined;
-  this._height = undefined;
-  this._updateDependencies = false;
+    this._width = undefined;
+    this._height = undefined;
+    this._updateDependencies = false;
+  }
+
+  updateDependencies() {
+    this._updateDependencies = true;
+  }
+
+  /**
+   * Called before the stages in the collection are executed. Creates the minimum amount of framebuffers for a post-process collection.
+   *
+   * @param {Context} context The context.
+   */
+  update(context) {
+    const collection = this._collection;
+    const updateDependencies = this._updateDependencies;
+    const aoEnabled =
+      defined(collection.ambientOcclusion) &&
+      collection.ambientOcclusion.enabled &&
+      collection.ambientOcclusion._isSupported(context);
+    const bloomEnabled =
+      defined(collection.bloom) &&
+      collection.bloom.enabled &&
+      collection.bloom._isSupported(context);
+    const tonemappingEnabled =
+      defined(collection._tonemapping) &&
+      collection._tonemapping.enabled &&
+      collection._tonemapping._isSupported(context);
+    const fxaaEnabled =
+      defined(collection.fxaa) &&
+      collection.fxaa.enabled &&
+      collection.fxaa._isSupported(context);
+    const needsCheckDimensionsUpdate =
+      !defined(collection._activeStages) ||
+      collection._activeStages.length > 0 ||
+      aoEnabled ||
+      bloomEnabled ||
+      tonemappingEnabled ||
+      fxaaEnabled;
+    if (
+      updateDependencies ||
+      (!needsCheckDimensionsUpdate && this._framebuffers.length > 0)
+    ) {
+      releaseResources(this);
+      this._framebuffers.length = 0;
+      this._stageNameToFramebuffer = {};
+      this._width = undefined;
+      this._height = undefined;
+    }
+
+    if (!updateDependencies && !needsCheckDimensionsUpdate) {
+      return;
+    }
+
+    if (this._framebuffers.length === 0) {
+      createFramebuffers(this, context);
+    }
+
+    const width = context.drawingBufferWidth;
+    const height = context.drawingBufferHeight;
+    const dimensionsChanged = this._width !== width || this._height !== height;
+    if (!updateDependencies && !dimensionsChanged) {
+      return;
+    }
+
+    this._width = width;
+    this._height = height;
+    this._updateDependencies = false;
+    releaseResources(this);
+    updateFramebuffers(this, context);
+  }
+
+  /**
+   * Clears all of the framebuffers.
+   *
+   * @param {Context} context The context.
+   */
+  clear(context) {
+    const framebuffers = this._framebuffers;
+    for (let i = 0; i < framebuffers.length; ++i) {
+      framebuffers[i].clear.execute(context);
+    }
+  }
+
+  /**
+   * Gets the stage with the given name.
+   * @param {string} name The name of the stage.
+   * @return {PostProcessStage|PostProcessStageComposite}
+   */
+  getStageByName(name) {
+    return this._collection.getStageByName(name);
+  }
+
+  /**
+   * Gets the output texture for a stage with the given name.
+   * @param {string} name The name of the stage.
+   * @return {Texture|undefined} The output texture of the stage with the given name.
+   */
+  getOutputTexture(name) {
+    return this._collection.getOutputTexture(name);
+  }
+
+  /**
+   * Gets the framebuffer for a stage with the given name.
+   *
+   * @param {string} name The name of the stage.
+   * @return {Framebuffer|undefined} The framebuffer for the stage with the given name.
+   */
+  getFramebuffer(name) {
+    const framebuffer = this._stageNameToFramebuffer[name];
+    if (!defined(framebuffer)) {
+      return undefined;
+    }
+    return framebuffer.buffer.framebuffer;
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see PostProcessStageTextureCache#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see PostProcessStageTextureCache#isDestroyed
+   */
+  destroy() {
+    releaseResources(this);
+    return destroyObject(this);
+  }
 }
 
 function getLastStageName(stage) {
@@ -307,148 +454,4 @@ function updateFramebuffers(cache, context) {
   }
 }
 
-PostProcessStageTextureCache.prototype.updateDependencies = function () {
-  this._updateDependencies = true;
-};
-
-/**
- * Called before the stages in the collection are executed. Creates the minimum amount of framebuffers for a post-process collection.
- *
- * @param {Context} context The context.
- */
-PostProcessStageTextureCache.prototype.update = function (context) {
-  const collection = this._collection;
-  const updateDependencies = this._updateDependencies;
-  const aoEnabled =
-    defined(collection.ambientOcclusion) &&
-    collection.ambientOcclusion.enabled &&
-    collection.ambientOcclusion._isSupported(context);
-  const bloomEnabled =
-    defined(collection.bloom) &&
-    collection.bloom.enabled &&
-    collection.bloom._isSupported(context);
-  const tonemappingEnabled =
-    defined(collection._tonemapping) &&
-    collection._tonemapping.enabled &&
-    collection._tonemapping._isSupported(context);
-  const fxaaEnabled =
-    defined(collection.fxaa) &&
-    collection.fxaa.enabled &&
-    collection.fxaa._isSupported(context);
-  const needsCheckDimensionsUpdate =
-    !defined(collection._activeStages) ||
-    collection._activeStages.length > 0 ||
-    aoEnabled ||
-    bloomEnabled ||
-    tonemappingEnabled ||
-    fxaaEnabled;
-  if (
-    updateDependencies ||
-    (!needsCheckDimensionsUpdate && this._framebuffers.length > 0)
-  ) {
-    releaseResources(this);
-    this._framebuffers.length = 0;
-    this._stageNameToFramebuffer = {};
-    this._width = undefined;
-    this._height = undefined;
-  }
-
-  if (!updateDependencies && !needsCheckDimensionsUpdate) {
-    return;
-  }
-
-  if (this._framebuffers.length === 0) {
-    createFramebuffers(this, context);
-  }
-
-  const width = context.drawingBufferWidth;
-  const height = context.drawingBufferHeight;
-  const dimensionsChanged = this._width !== width || this._height !== height;
-  if (!updateDependencies && !dimensionsChanged) {
-    return;
-  }
-
-  this._width = width;
-  this._height = height;
-  this._updateDependencies = false;
-  releaseResources(this);
-  updateFramebuffers(this, context);
-};
-
-/**
- * Clears all of the framebuffers.
- *
- * @param {Context} context The context.
- */
-PostProcessStageTextureCache.prototype.clear = function (context) {
-  const framebuffers = this._framebuffers;
-  for (let i = 0; i < framebuffers.length; ++i) {
-    framebuffers[i].clear.execute(context);
-  }
-};
-
-/**
- * Gets the stage with the given name.
- * @param {string} name The name of the stage.
- * @return {PostProcessStage|PostProcessStageComposite}
- */
-PostProcessStageTextureCache.prototype.getStageByName = function (name) {
-  return this._collection.getStageByName(name);
-};
-
-/**
- * Gets the output texture for a stage with the given name.
- * @param {string} name The name of the stage.
- * @return {Texture|undefined} The output texture of the stage with the given name.
- */
-PostProcessStageTextureCache.prototype.getOutputTexture = function (name) {
-  return this._collection.getOutputTexture(name);
-};
-
-/**
- * Gets the framebuffer for a stage with the given name.
- *
- * @param {string} name The name of the stage.
- * @return {Framebuffer|undefined} The framebuffer for the stage with the given name.
- */
-PostProcessStageTextureCache.prototype.getFramebuffer = function (name) {
-  const framebuffer = this._stageNameToFramebuffer[name];
-  if (!defined(framebuffer)) {
-    return undefined;
-  }
-  return framebuffer.buffer.framebuffer;
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see PostProcessStageTextureCache#destroy
- */
-PostProcessStageTextureCache.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see PostProcessStageTextureCache#isDestroyed
- */
-PostProcessStageTextureCache.prototype.destroy = function () {
-  releaseResources(this);
-  return destroyObject(this);
-};
 export default PostProcessStageTextureCache;

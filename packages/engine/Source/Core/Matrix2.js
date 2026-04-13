@@ -24,11 +24,67 @@ import DeveloperError from "./DeveloperError.js";
  * @see Matrix3
  * @see Matrix4
  */
-function Matrix2(column0Row0, column1Row0, column0Row1, column1Row1) {
-  this[0] = column0Row0 ?? 0.0;
-  this[1] = column0Row1 ?? 0.0;
-  this[2] = column1Row0 ?? 0.0;
-  this[3] = column1Row1 ?? 0.0;
+class Matrix2 {
+  constructor(column0Row0, column1Row0, column0Row1, column1Row1) {
+    this[0] = column0Row0 ?? 0.0;
+    this[1] = column0Row1 ?? 0.0;
+    this[2] = column1Row0 ?? 0.0;
+    this[3] = column1Row1 ?? 0.0;
+  }
+
+  /**
+   * Duplicates the provided Matrix2 instance.
+   *
+   * @param {Matrix2} [result] The object onto which to store the result.
+   * @returns {Matrix2} The modified result parameter or a new Matrix2 instance if one was not provided.
+   */
+  clone(result) {
+    return Matrix2.clone(this, result);
+  }
+
+  /**
+   * Compares this matrix to the provided matrix componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Matrix2} [right] The right hand side matrix.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
+   */
+  equals(right) {
+    return Matrix2.equals(this, right);
+  }
+
+  /**
+   * Compares this matrix to the provided matrix componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
+   *
+   * @param {Matrix2} [right] The right hand side matrix.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
+   */
+  equalsEpsilon(right, epsilon) {
+    return Matrix2.equalsEpsilon(this, right, epsilon);
+  }
+
+  /**
+   * Creates a string representing this Matrix with each row being
+   * on a separate line and in the format '(column0, column1)'.
+   *
+   * @returns {string} A string representing the provided Matrix with each row being on a separate line and in the format '(column0, column1)'.
+   */
+  toString() {
+    return `(${this[0]}, ${this[2]})\n` + `(${this[1]}, ${this[3]})`;
+  }
+
+  /**
+   * Gets the number of items in the collection.
+   * @memberof Matrix2.prototype
+   *
+   * @type {number}
+   */
+  get length() {
+    return Matrix2.packedLength;
+  }
 }
 
 /**
@@ -1032,61 +1088,4 @@ Matrix2.COLUMN1ROW0 = 2;
  */
 Matrix2.COLUMN1ROW1 = 3;
 
-Object.defineProperties(Matrix2.prototype, {
-  /**
-   * Gets the number of items in the collection.
-   * @memberof Matrix2.prototype
-   *
-   * @type {number}
-   */
-  length: {
-    get: function () {
-      return Matrix2.packedLength;
-    },
-  },
-});
-
-/**
- * Duplicates the provided Matrix2 instance.
- *
- * @param {Matrix2} [result] The object onto which to store the result.
- * @returns {Matrix2} The modified result parameter or a new Matrix2 instance if one was not provided.
- */
-Matrix2.prototype.clone = function (result) {
-  return Matrix2.clone(this, result);
-};
-
-/**
- * Compares this matrix to the provided matrix componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Matrix2} [right] The right hand side matrix.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-Matrix2.prototype.equals = function (right) {
-  return Matrix2.equals(this, right);
-};
-
-/**
- * Compares this matrix to the provided matrix componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {Matrix2} [right] The right hand side matrix.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
- */
-Matrix2.prototype.equalsEpsilon = function (right, epsilon) {
-  return Matrix2.equalsEpsilon(this, right, epsilon);
-};
-
-/**
- * Creates a string representing this Matrix with each row being
- * on a separate line and in the format '(column0, column1)'.
- *
- * @returns {string} A string representing the provided Matrix with each row being on a separate line and in the format '(column0, column1)'.
- */
-Matrix2.prototype.toString = function () {
-  return `(${this[0]}, ${this[2]})\n` + `(${this[1]}, ${this[3]})`;
-};
 export default Matrix2;

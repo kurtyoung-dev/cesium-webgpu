@@ -494,6 +494,17 @@ defineUniform(
   packFloat,
 );
 
+// OPEN-5 fix: the visual density scalar modulates the fog exponential
+// to match the WebGL path's `czm_fog(dist, color, fogColor, scalar)`.
+// Without it, WebGPU fog is ~6.7x stronger than WebGL at horizontal
+// viewing angles because the scalar (default 0.15) is never applied.
+defineUniform(
+  "csm_fogVisualDensityScalar",
+  WGSLType.f32,
+  (us) => us.fogVisualDensityScalar,
+  packFloat,
+);
+
 // ---- Misc ----
 defineUniform("csm_pixelRatio", WGSLType.f32, (us) => us.pixelRatio, packFloat);
 
@@ -612,6 +623,7 @@ const UniformProfiles = Object.freeze({
     "csm_lightColor",
     "csm_fogDensity",
     "csm_fogMinimumBrightness",
+    "csm_fogVisualDensityScalar",
     "csm_frameNumber",
     "csm_morphTime",
     "csm_sceneMode",
@@ -637,6 +649,7 @@ const UniformProfiles = Object.freeze({
     "csm_eyeHeight",
     "csm_fogDensity",
     "csm_fogMinimumBrightness",
+    "csm_fogVisualDensityScalar",
   ],
 });
 

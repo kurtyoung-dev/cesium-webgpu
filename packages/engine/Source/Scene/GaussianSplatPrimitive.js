@@ -803,288 +803,866 @@ function createGaussianSplatTexture(context, splatTextureData) {
  * @private
  */
 
-function GaussianSplatPrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class GaussianSplatPrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+
+    /**
+     * The positions of the Gaussian splats in the primitive.
+     * @type {undefined|Float32Array}
+     * @private
+     */
+    this._positions = undefined;
+    /**
+     * The rotations of the Gaussian splats in the primitive.
+     * @type {undefined|Float32Array}
+     * @private
+     */
+    this._rotations = undefined;
+    /**
+     * The scales of the Gaussian splats in the primitive.
+     * @type {undefined|Float32Array}
+     * @private
+     */
+    this._scales = undefined;
+    /**
+     * The colors of the Gaussian splats in the primitive.
+     * @type {undefined|Uint8Array}
+     * @private
+     */
+    this._colors = undefined;
+    /**
+     * The indexes of the Gaussian splats in the primitive.
+     * Used to index into the splat attribute texture in the vertex shader.
+     * @type {undefined|Uint32Array}
+     * @private
+     */
+    this._indexes = undefined;
+    /**
+     * The number of splats in the primitive.
+     * This is the total number of splats across all selected tiles.
+     * @type {number}
+     * @private
+     */
+    this._numSplats = 0;
+    /**
+     * Indicates whether or not the primitive needs a Gaussian splat texture.
+     * This is set to true when the primitive is first created or when the splat attributes change.
+     * @type {boolean}
+     * @private
+     */
+    this._needsGaussianSplatTexture = true;
+    this._snapshot = undefined;
+    this._pendingSnapshot = undefined;
+    this._retiredTextures = [];
+    this._aggregateScratchBuffers = {
+      positions: [],
+      scales: [],
+      rotations: [],
+      colors: [],
+    };
+
+    /**
+     * Scratch buffer re-used across frames for aggregating packed spherical
+     * harmonics data so that a fresh typed-array allocation is avoided on
+     * every tile-selection change.
+     * @type {undefined|Uint32Array}
+     * @private
+     */
+    this._scratchAggregateShBuffer = undefined;
+    this._selectedTilesStableFrames = 0;
+    this._needsSnapshotRebuild = false;
+    this._snapshotRebuildStallFrames = 0;
+
+    /**
+     * The previous view matrix used to determine if the primitive needs to be updated.
+     * This is used to avoid unnecessary updates when the view matrix hasn't changed.
+     * @type {Matrix4}
+     * @private
+     */
+    this._prevViewMatrix = new Matrix4();
+
+    /**
+     * Indicates whether or not to show the bounding volume of the primitive for debugging purposes.
+     * This is used to visualize the bounding volume of the primitive in the scene.
+     * @type {boolean}
+     * @private
+     */
+    this._debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    /**
+     * The texture used to store the Gaussian splat attributes.
+     * This texture is created from the splat attributes (positions, scales, rotations, colors)
+     * and is used in the vertex shader to render the splats.
+     * @type {undefined|Texture}
+     * @private
+     * @see {@link GaussianSplatTextureGenerator}
+     */
+    this.gaussianSplatTexture = undefined;
+
+    /**
+     * The texture used to store the spherical harmonics coefficients for the Gaussian splats.
+     * @type {undefined|Texture}
+     * @private
+     */
+    this.sphericalHarmonicsTexture = undefined;
+
+    /**
+     * The last width of the Gaussian splat texture.
+     * This is used to track changes in the texture size and update the primitive accordingly.
+     * @type {number}
+     * @private
+     */
+    this._lastTextureWidth = 0;
+    /**
+     * The last height of the Gaussian splat texture.
+     * This is used to track changes in the texture size and update the primitive accordingly.
+     * @type {number}
+     * @private
+     */
+    this._lastTextureHeight = 0;
+    /**
+     * The vertex array used to render the Gaussian splats.
+     * This vertex array contains the attributes needed to render the splats, such as positions and indexes.
+     * @type {undefined|VertexArray}
+     * @private
+     */
+    this._vertexArray = undefined;
+    /**
+     * The length of the vertex array, used to track changes in the number of splats.
+     * This is used to determine if the vertex array needs to be rebuilt.
+     * @type {number}
+     * @private
+     */
+    this._vertexArrayLen = -1;
+    this._splitDirection = SplitDirection.NONE;
+
+    /**
+     * The dirty flag forces the primitive to render this frame.
+     * @type {boolean}
+     * @private
+     */
+    this._dirty = false;
+
+    this._tileset = options.tileset;
+
+    this._baseTilesetUpdate = this._tileset.update;
+    this._tileset.update = this._wrappedUpdate.bind(this);
+
+    this._tileset.tileLoad.addEventListener(this.onTileLoad, this);
+    this._tileset.tileVisible.addEventListener(this.onTileVisible, this);
+
+    /**
+     * Tracks current count of selected tiles.
+     * This is used to determine if the primitive needs to be rebuilt.
+     * @type {number}
+     * @private
+     */
+    this.selectedTileLength = 0;
+    this._selectedTileSet = new Set();
+
+    /**
+     * Indicates whether or not the primitive is ready for use.
+     * @type {boolean}
+     * @private
+     */
+    this._ready = false;
+
+    /**
+     * Indicates whether or not the primitive has a Gaussian splat texture.
+     * @type {boolean}
+     * @private
+     */
+    this._hasGaussianSplatTexture = false;
+
+    /**
+     * Indicates whether or not the primitive is currently generating a Gaussian splat texture.
+     * @type {boolean}
+     * @private
+     */
+    this._gaussianSplatTexturePending = false;
+
+    /**
+     * The draw command used to render the Gaussian splats.
+     * @type {undefined|DrawCommand}
+     * @private
+     */
+    this._drawCommand = undefined;
+    this._drawCommandModelMatrix = new Matrix4();
+    /**
+     * The root transform of the tileset.
+     * This is used to transform the splats into world space.
+     * @type {undefined|Matrix4}
+     * @private
+     */
+    this._rootTransform = undefined;
+
+    /**
+     * The axis correction matrix to transform the splats from Y-up to Z-up.
+     * @type {Matrix4}
+     * @private
+     */
+    this._axisCorrectionMatrix = ModelUtility.getAxisCorrectionMatrix(
+      Axis.Y,
+      Axis.X,
+      new Matrix4(),
+    );
+
+    /**
+     * Cached inverse rotation for SH evaluation, updated each snapshot rebuild.
+     * Converts a world-space view direction to the original GLB Y-up model space
+     * so that spherical harmonic coefficients are evaluated in the correct frame.
+     * @type {Matrix3}
+     * @private
+     */
+    this._shInverseRotation = new Matrix3();
+
+    /**
+     * Indicates whether or not the primitive has been destroyed.
+     * @type {boolean}
+     * @private
+     */
+    this._isDestroyed = false;
+
+    /**
+     * The state of the Gaussian splat sorting process.
+     * This is used to track the progress of the sorting operation.
+     * @type {GaussianSplatSortingState}
+     * @private
+     */
+    this._sorterState = GaussianSplatSortingState.IDLE;
+    /**
+     * A promise that resolves when the Gaussian splat sorting operation is complete.
+     * This is used to track the progress of the sorting operation.
+     * @type {undefined|Promise}
+     * @private
+     */
+    this._sorterPromise = undefined;
+    this._splatDataGeneration = 0;
+    this._sortRequestId = 0;
+    this._activeSort = undefined;
+    this._pendingSortPromise = undefined;
+    this._pendingSort = undefined;
+    this._lastSteadySortFrameNumber = -1;
+    this._lastSteadySortCameraPosition = new Cartesian3();
+    this._hasLastSteadySortCameraPosition = false;
+    this._lastSteadySortCameraDirection = new Cartesian3();
+    this._hasLastSteadySortCameraDirection = false;
+
+    /**
+     * An error that occurred during the Gaussian splat sorting operation.
+     * Thrown when state is ERROR.
+     * @type {undefined|Error}
+     * @private
+     */
+    this._sorterError = undefined;
+
+    // Splat texture row-addressing params; forwarded to the shader as uniforms.
+    // The texture width is always maximumTextureSize (varies by GPU), so these
+    // are computed per-snapshot and initialized here as safe placeholders.
+    this._splatRowMask = 0; // overwritten on first snapshot commit
+    this._splatRowShift = 0; // overwritten on first snapshot commit
+
+    /**
+     * Multiplier applied to maximumScreenSpaceError during tile traversal when
+     * the previous snapshot exceeded the splat texture budget. A value above 1.0
+     * biases traversal toward coarser LODs, lowering the total splat count.
+     * Resets to 1.0 once the splat count is within budget.
+     * @type {number}
+     * @private
+     */
+    this._splatBudgetSSEScale = 1.0;
+  }
 
   /**
-   * The positions of the Gaussian splats in the primitive.
-   * @type {undefined|Float32Array}
+   * Replaces the tileset's own update function so this primitive is updated
+   * immediately after the tileset traversal, within the same frame. When
+   * _splatBudgetSSEScale is above 1.0, maximumScreenSpaceError is inflated
+   * for the duration of the traversal to reduce the number of tiles selected.
+   * @param {FrameState} frameState
    * @private
    */
-  this._positions = undefined;
-  /**
-   * The rotations of the Gaussian splats in the primitive.
-   * @type {undefined|Float32Array}
-   * @private
-   */
-  this._rotations = undefined;
-  /**
-   * The scales of the Gaussian splats in the primitive.
-   * @type {undefined|Float32Array}
-   * @private
-   */
-  this._scales = undefined;
-  /**
-   * The colors of the Gaussian splats in the primitive.
-   * @type {undefined|Uint8Array}
-   * @private
-   */
-  this._colors = undefined;
-  /**
-   * The indexes of the Gaussian splats in the primitive.
-   * Used to index into the splat attribute texture in the vertex shader.
-   * @type {undefined|Uint32Array}
-   * @private
-   */
-  this._indexes = undefined;
-  /**
-   * The number of splats in the primitive.
-   * This is the total number of splats across all selected tiles.
-   * @type {number}
-   * @private
-   */
-  this._numSplats = 0;
-  /**
-   * Indicates whether or not the primitive needs a Gaussian splat texture.
-   * This is set to true when the primitive is first created or when the splat attributes change.
-   * @type {boolean}
-   * @private
-   */
-  this._needsGaussianSplatTexture = true;
-  this._snapshot = undefined;
-  this._pendingSnapshot = undefined;
-  this._retiredTextures = [];
-  this._aggregateScratchBuffers = {
-    positions: [],
-    scales: [],
-    rotations: [],
-    colors: [],
-  };
+  _wrappedUpdate(frameState) {
+    const tileset = this._tileset;
+    if (this._splatBudgetSSEScale !== 1.0) {
+      // Inflate SSE for this traversal only; the original value is restored
+      // immediately so the user-visible tileset property is never permanently changed.
+      const originalSSE = tileset.maximumScreenSpaceError;
+      tileset.maximumScreenSpaceError *= this._splatBudgetSSEScale;
+      this._baseTilesetUpdate.call(tileset, frameState);
+      tileset.maximumScreenSpaceError = originalSSE;
+    } else {
+      this._baseTilesetUpdate.call(tileset, frameState);
+    }
+    this.update(frameState);
+  }
 
   /**
-   * Scratch buffer re-used across frames for aggregating packed spherical
-   * harmonics data so that a fresh typed-array allocation is avoided on
-   * every tile-selection change.
-   * @type {undefined|Uint32Array}
+   * Destroys the primitive and releases its resources in a deterministic manner.
    * @private
    */
-  this._scratchAggregateShBuffer = undefined;
-  this._selectedTilesStableFrames = 0;
-  this._needsSnapshotRebuild = false;
-  this._snapshotRebuildStallFrames = 0;
+  destroy() {
+    this._positions = undefined;
+    this._rotations = undefined;
+    this._scales = undefined;
+    this._colors = undefined;
+    this._indexes = undefined;
+    destroySnapshotTextures(this._pendingSnapshot);
+    destroySnapshotTextures(this._snapshot);
+    if (defined(this._retiredTextures)) {
+      for (let i = 0; i < this._retiredTextures.length; i++) {
+        this._retiredTextures[i].texture.destroy();
+      }
+    }
+    this._retiredTextures = [];
+    this._pendingSnapshot = undefined;
+    this._snapshot = undefined;
+    this._aggregateScratchBuffers = undefined;
+    this.gaussianSplatTexture = undefined;
+    this.sphericalHarmonicsTexture = undefined;
+
+    const drawCommand = this._drawCommand;
+    if (defined(drawCommand)) {
+      drawCommand.shaderProgram =
+        drawCommand.shaderProgram && drawCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._vertexArray)) {
+      this._vertexArray.destroy();
+      this._vertexArray = undefined;
+    }
+
+    this._tileset.update = this._baseTilesetUpdate.bind(this._tileset);
+
+    if (this._featureRenderer) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
 
   /**
-   * The previous view matrix used to determine if the primitive needs to be updated.
-   * This is used to avoid unnecessary updates when the view matrix hasn't changed.
-   * @type {Matrix4}
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * @returns {boolean} Returns true if the primitive has been destroyed, otherwise false.
    * @private
    */
-  this._prevViewMatrix = new Matrix4();
+  isDestroyed() {
+    return this._isDestroyed;
+  }
 
   /**
-   * Indicates whether or not to show the bounding volume of the primitive for debugging purposes.
-   * This is used to visualize the bounding volume of the primitive in the scene.
-   * @type {boolean}
+   * Event callback for when a tile is loaded.
+   * This method is called when a tile is loaded and the primitive needs to be updated.
+   * It sets the dirty flag to true, indicating that the primitive needs to be rebuilt.
+   * @param {Cesium3DTile} tile
    * @private
    */
-  this._debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+  onTileLoad(tile) {
+    this._dirty = true;
+  }
 
   /**
-   * The texture used to store the Gaussian splat attributes.
-   * This texture is created from the splat attributes (positions, scales, rotations, colors)
-   * and is used in the vertex shader to render the splats.
-   * @type {undefined|Texture}
+   * Callback for visible tiles.
+   * @param {Cesium3DTile} tile
    * @private
-   * @see {@link GaussianSplatTextureGenerator}
    */
-  this.gaussianSplatTexture = undefined;
+  onTileVisible(tile) {}
 
   /**
-   * The texture used to store the spherical harmonics coefficients for the Gaussian splats.
-   * @type {undefined|Texture}
+   * Updates the Gaussian splat primitive for the current frame.
+   * This method checks if the primitive needs to be updated based on the current frame state,
+   * and if so, it processes the selected tiles, aggregates their attributes,
+   * and generates the Gaussian splat texture if necessary.
+   * It also handles the sorting of splat indexes and builds the draw command for rendering.
+   *
+   * @param {FrameState} frameState
    * @private
    */
-  this.sphericalHarmonicsTexture = undefined;
+  update(frameState) {
+    // Route to WebGPU feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.GAUSSIAN_SPLAT,
+    );
+    if (fr) {
+      fr.update(this, frameState);
+      this._featureRenderer = fr;
+      return;
+    }
 
-  /**
-   * The last width of the Gaussian splat texture.
-   * This is used to track changes in the texture size and update the primitive accordingly.
-   * @type {number}
-   * @private
-   */
-  this._lastTextureWidth = 0;
-  /**
-   * The last height of the Gaussian splat texture.
-   * This is used to track changes in the texture size and update the primitive accordingly.
-   * @type {number}
-   * @private
-   */
-  this._lastTextureHeight = 0;
-  /**
-   * The vertex array used to render the Gaussian splats.
-   * This vertex array contains the attributes needed to render the splats, such as positions and indexes.
-   * @type {undefined|VertexArray}
-   * @private
-   */
-  this._vertexArray = undefined;
-  /**
-   * The length of the vertex array, used to track changes in the number of splats.
-   * This is used to determine if the vertex array needs to be rebuilt.
-   * @type {number}
-   * @private
-   */
-  this._vertexArrayLen = -1;
-  this._splitDirection = SplitDirection.NONE;
+    const tileset = this._tileset;
 
-  /**
-   * The dirty flag forces the primitive to render this frame.
-   * @type {boolean}
-   * @private
-   */
-  this._dirty = false;
+    releaseRetiredTextures(this, frameState.frameNumber);
 
-  this._tileset = options.tileset;
+    if (!tileset.show) {
+      return;
+    }
 
-  this._baseTilesetUpdate = this._tileset.update;
-  this._tileset.update = this._wrappedUpdate.bind(this);
+    if (this._drawCommand) {
+      frameState.commandList.push(this._drawCommand);
+    }
 
-  this._tileset.tileLoad.addEventListener(this.onTileLoad, this);
-  this._tileset.tileVisible.addEventListener(this.onTileVisible, this);
+    if (tileset._modelMatrixChanged) {
+      this._dirty = true;
+      return;
+    }
+    const hasRootTransform = defined(this._rootTransform);
 
-  /**
-   * Tracks current count of selected tiles.
-   * This is used to determine if the primitive needs to be rebuilt.
-   * @type {number}
-   * @private
-   */
-  this.selectedTileLength = 0;
-  this._selectedTileSet = new Set();
+    if (frameState.passes.pick === true) {
+      return;
+    }
 
-  /**
-   * Indicates whether or not the primitive is ready for use.
-   * @type {boolean}
-   * @private
-   */
-  this._ready = false;
+    if (this.splitDirection !== tileset.splitDirection) {
+      this.splitDirection = tileset.splitDirection;
+    }
+    const camera = frameState.camera;
+    if (!defined(camera)) {
+      return;
+    }
 
-  /**
-   * Indicates whether or not the primitive has a Gaussian splat texture.
-   * @type {boolean}
-   * @private
-   */
-  this._hasGaussianSplatTexture = false;
+    if (this._sorterState === GaussianSplatSortingState.IDLE) {
+      const selectedTilesChanged =
+        tileset._selectedTiles.length !== 0 &&
+        haveSelectedTilesChanged(this, tileset._selectedTiles);
+      if (tileset._selectedTiles.length === 0) {
+        this._selectedTilesStableFrames = 0;
+        this._needsSnapshotRebuild = false;
+        this._snapshotRebuildStallFrames = 0;
+      } else if (selectedTilesChanged) {
+        this._selectedTilesStableFrames = 0;
+      } else {
+        this._selectedTilesStableFrames++;
+      }
+      if (selectedTilesChanged || this._dirty) {
+        this._needsSnapshotRebuild = true;
+      }
+      const isStable = this._selectedTilesStableFrames >= DEFAULT_STABLE_FRAMES;
+      const isBootstrap =
+        !defined(this._snapshot) &&
+        !defined(this._pendingSnapshot) &&
+        !defined(this._drawCommand);
+      // This prevents an indefinite wait if selected tiles never settle completely.
+      // In practice, this is the upper bound on "wait-for-stability" before forcing
+      // a rebuild to avoid visible starvation.
+      if (this._needsSnapshotRebuild && tileset._selectedTiles.length !== 0) {
+        this._snapshotRebuildStallFrames++;
+      } else {
+        this._snapshotRebuildStallFrames = 0;
+      }
+      const allowRebuild =
+        isStable ||
+        isBootstrap ||
+        this._snapshotRebuildStallFrames >= DEFAULT_MAX_SNAPSHOT_STALL_FRAMES;
+      const hasPendingWork =
+        this._dirty ||
+        this._needsSnapshotRebuild ||
+        selectedTilesChanged ||
+        defined(this._pendingSnapshot) ||
+        defined(this._pendingSortPromise) ||
+        !defined(this._drawCommand);
+      if (
+        !hasPendingWork &&
+        Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)
+      ) {
+        return;
+      }
 
-  /**
-   * Indicates whether or not the primitive is currently generating a Gaussian splat texture.
-   * @type {boolean}
-   * @private
-   */
-  this._gaussianSplatTexturePending = false;
+      if (
+        tileset._selectedTiles.length !== 0 &&
+        this._needsSnapshotRebuild &&
+        allowRebuild
+      ) {
+        this._splatDataGeneration++;
+        this._activeSort = undefined;
+        this._sorterPromise = undefined;
+        this._sorterState = GaussianSplatSortingState.IDLE;
+        this._pendingSortPromise = undefined;
+        this._pendingSort = undefined;
+        if (defined(this._pendingSnapshot)) {
+          destroySnapshotTextures(this._pendingSnapshot);
+        }
 
-  /**
-   * The draw command used to render the Gaussian splats.
-   * @type {undefined|DrawCommand}
-   * @private
-   */
-  this._drawCommand = undefined;
-  this._drawCommandModelMatrix = new Matrix4();
-  /**
-   * The root transform of the tileset.
-   * This is used to transform the splats into world space.
-   * @type {undefined|Matrix4}
-   * @private
-   */
-  this._rootTransform = undefined;
+        const tiles = tileset._selectedTiles;
 
-  /**
-   * The axis correction matrix to transform the splats from Y-up to Z-up.
-   * @type {Matrix4}
-   * @private
-   */
-  this._axisCorrectionMatrix = ModelUtility.getAxisCorrectionMatrix(
-    Axis.Y,
-    Axis.X,
-    new Matrix4(),
-  );
+        // Rebuild the ENU origin from the current tileset world center so that
+        // baked splat positions remain in a numerically small (meter-scale) local
+        // frame, regardless of the current tileset.modelMatrix value.
+        this._rootTransform = Transforms.eastNorthUpToFixedFrame(
+          tileset.boundingSphere.center,
+        );
 
-  /**
-   * Cached inverse rotation for SH evaluation, updated each snapshot rebuild.
-   * Converts a world-space view direction to the original GLB Y-up model space
-   * so that spherical harmonic coefficients are evaluated in the correct frame.
-   * @type {Matrix3}
-   * @private
-   */
-  this._shInverseRotation = new Matrix3();
+        // Compute the SH inverse rotation from the first tile's coordinate frame.
+        // SH coefficients are encoded in the GLB Y-up training space. To evaluate
+        // them correctly the view direction must be transformed by
+        //   inverse(computedTransform × axisCorrectionMatrix × worldTransform).
+        // All tiles in a typical GS tileset share the same root coordinate frame,
+        // so using the first tile is sufficient.
+        {
+          const ft = tiles[0];
+          const shFwd = Matrix4.multiplyTransformation(
+            ft.computedTransform,
+            this._axisCorrectionMatrix,
+            scratchMatrix4C,
+          );
+          Matrix4.multiplyTransformation(
+            shFwd,
+            ft.content.worldTransform ?? Matrix4.IDENTITY,
+            shFwd,
+          );
+          Matrix4.getRotation(
+            Matrix4.inverse(shFwd, shFwd),
+            this._shInverseRotation,
+          );
+        }
 
-  /**
-   * Indicates whether or not the primitive has been destroyed.
-   * @type {boolean}
-   * @private
-   */
-  this._isDestroyed = false;
+        for (const tile of tiles) {
+          GaussianSplatPrimitive.transformTile(tile);
+        }
 
-  /**
-   * The state of the Gaussian splat sorting process.
-   * This is used to track the progress of the sorting operation.
-   * @type {GaussianSplatSortingState}
-   * @private
-   */
-  this._sorterState = GaussianSplatSortingState.IDLE;
-  /**
-   * A promise that resolves when the Gaussian splat sorting operation is complete.
-   * This is used to track the progress of the sorting operation.
-   * @type {undefined|Promise}
-   * @private
-   */
-  this._sorterPromise = undefined;
-  this._splatDataGeneration = 0;
-  this._sortRequestId = 0;
-  this._activeSort = undefined;
-  this._pendingSortPromise = undefined;
-  this._pendingSort = undefined;
-  this._lastSteadySortFrameNumber = -1;
-  this._lastSteadySortCameraPosition = new Cartesian3();
-  this._hasLastSteadySortCameraPosition = false;
-  this._lastSteadySortCameraDirection = new Cartesian3();
-  this._hasLastSteadySortCameraDirection = false;
+        const totalElements = tiles.reduce(
+          (total, tile) => total + tile.content.pointsLength,
+          0,
+        );
+        const aggregateAttributeValues = (
+          key,
+          componentDatatype,
+          getAttributeCallback,
+          numberOfComponents,
+        ) => {
+          let aggregate;
+          let offset = 0;
+          let requiredLength = 0;
+          for (const tile of tiles) {
+            const attribute = getAttributeCallback(tile.content);
+            const componentsPerAttribute = defined(numberOfComponents)
+              ? numberOfComponents
+              : AttributeType.getNumberOfComponents(attribute.type);
+            const buffer = defined(attribute.typedArray)
+              ? attribute.typedArray
+              : attribute;
+            requiredLength += buffer.length;
+            if (!defined(aggregate)) {
+              aggregate = acquireAggregateScratchBuffer(
+                this,
+                key,
+                componentDatatype,
+                totalElements * componentsPerAttribute,
+              );
+            }
+          }
 
-  /**
-   * An error that occurred during the Gaussian splat sorting operation.
-   * Thrown when state is ERROR.
-   * @type {undefined|Error}
-   * @private
-   */
-  this._sorterError = undefined;
+          if (!defined(aggregate)) {
+            return ComponentDatatype.createTypedArray(componentDatatype, 0);
+          }
 
-  // Splat texture row-addressing params; forwarded to the shader as uniforms.
-  // The texture width is always maximumTextureSize (varies by GPU), so these
-  // are computed per-snapshot and initialized here as safe placeholders.
-  this._splatRowMask = 0; // overwritten on first snapshot commit
-  this._splatRowShift = 0; // overwritten on first snapshot commit
+          for (const tile of tiles) {
+            const content = tile.content;
+            const attribute = getAttributeCallback(content);
+            const buffer = defined(attribute.typedArray)
+              ? attribute.typedArray
+              : attribute;
+            aggregate.set(buffer, offset);
+            offset += buffer.length;
+          }
+          return trimAggregateScratchBuffer(aggregate, requiredLength);
+        };
 
-  /**
-   * Multiplier applied to maximumScreenSpaceError during tile traversal when
-   * the previous snapshot exceeded the splat texture budget. A value above 1.0
-   * biases traversal toward coarser LODs, lowering the total splat count.
-   * Resets to 1.0 once the splat count is within budget.
-   * @type {number}
-   * @private
-   */
-  this._splatBudgetSSEScale = 1.0;
-}
+        const aggregateShData = () => {
+          // Determine the SH degree from the first tile with SH data so we can
+          // pre-allocate the aggregate buffer once, outside the tile loop.
+          let coefs = 0;
+          for (const tile of tiles) {
+            if (tile.content.sphericalHarmonicsDegree > 0) {
+              switch (tile.content.sphericalHarmonicsDegree) {
+                case 1:
+                  coefs = 9;
+                  break;
+                case 2:
+                  coefs = 24;
+                  break;
+                case 3:
+                  coefs = 45;
+                  break;
+              }
+              break;
+            }
+          }
 
-Object.defineProperties(GaussianSplatPrimitive.prototype, {
+          if (coefs === 0) {
+            return undefined;
+          }
+
+          const requiredLength = totalElements * (coefs * (2 / 3));
+
+          // Re-use the class-level scratch buffer when it is already large
+          // enough, avoiding a fresh allocation (and eventual GC) every frame.
+          if (
+            !defined(this._scratchAggregateShBuffer) ||
+            this._scratchAggregateShBuffer.length < requiredLength
+          ) {
+            this._scratchAggregateShBuffer = new Uint32Array(requiredLength);
+          }
+          const aggregate = this._scratchAggregateShBuffer;
+
+          let offset = 0;
+          for (const tile of tiles) {
+            const tileShData = tile.content.packedSphericalHarmonicsData;
+            if (tile.content.sphericalHarmonicsDegree > 0) {
+              aggregate.set(tileShData, offset);
+              offset += tileShData.length;
+            }
+          }
+
+          // Return a correctly-sized view so downstream consumers see the
+          // exact element count they expect.
+          if (offset < aggregate.length) {
+            return aggregate.subarray(0, offset);
+          }
+          return aggregate;
+        };
+
+        const positions = aggregateAttributeValues(
+          "positions",
+          ComponentDatatype.FLOAT,
+          (content) => content.positions,
+          3,
+        );
+
+        const scales = aggregateAttributeValues(
+          "scales",
+          ComponentDatatype.FLOAT,
+          (content) => content.scales,
+          3,
+        );
+
+        const rotations = aggregateAttributeValues(
+          "rotations",
+          ComponentDatatype.FLOAT,
+          (content) => content.rotations,
+          4,
+        );
+
+        const colors = aggregateAttributeValues(
+          "colors",
+          ComponentDatatype.UNSIGNED_BYTE,
+          (content) =>
+            ModelUtility.getAttributeBySemantic(
+              content.gltfPrimitive,
+              VertexAttributeSemantic.COLOR,
+            ),
+        );
+
+        const sphericalHarmonicsDegree =
+          tiles[0].content.sphericalHarmonicsDegree;
+        const shCoefficientCount =
+          sphericalHarmonicsDegree > 0
+            ? tiles[0].content.sphericalHarmonicsCoefficientCount
+            : 0;
+        const shData = aggregateShData();
+
+        this._pendingSnapshot = {
+          generation: this._splatDataGeneration,
+          positions: positions,
+          rotations: rotations,
+          scales: scales,
+          colors: colors,
+          shData: shData,
+          sphericalHarmonicsDegree: sphericalHarmonicsDegree,
+          shCoefficientCount: shCoefficientCount,
+          numSplats: totalElements,
+          indexes: undefined,
+          gaussianSplatTexture: undefined,
+          sphericalHarmonicsTexture: undefined,
+          lastTextureWidth: 0,
+          lastTextureHeight: 0,
+          splatRowMask: 0, // set by processGeneratedSplatTextureData
+          splatRowShift: 0, // set by processGeneratedSplatTextureData
+          state: SnapshotState.BUILDING,
+        };
+
+        this.selectedTileLength = tileset._selectedTiles.length;
+        this._selectedTileSet = new Set(tileset._selectedTiles);
+        this._dirty = false;
+        this._needsSnapshotRebuild = false;
+        this._snapshotRebuildStallFrames = 0;
+      }
+
+      if (defined(this._pendingSnapshot)) {
+        const pending = this._pendingSnapshot;
+        if (pending.state === SnapshotState.BUILDING) {
+          GaussianSplatPrimitive.generateSplatTexture(this, frameState, pending);
+          return;
+        }
+        if (pending.state === SnapshotState.TEXTURE_PENDING) {
+          return;
+        }
+        if (
+          pending.state === SnapshotState.TEXTURE_READY &&
+          !defined(pending.gaussianSplatTexture)
+        ) {
+          return;
+        }
+
+        if (!hasRootTransform) {
+          return;
+        }
+
+        Matrix4.clone(camera.viewMatrix, this._prevViewMatrix);
+        Matrix4.multiply(camera.viewMatrix, this._rootTransform, scratchMatrix4A);
+
+        if (
+          pending.state === SnapshotState.TEXTURE_READY &&
+          !defined(this._pendingSortPromise)
+        ) {
+          const requestId = ++this._sortRequestId;
+          const dataGeneration = this._splatDataGeneration;
+          this._pendingSort = {
+            requestId: requestId,
+            dataGeneration: dataGeneration,
+            expectedCount: pending.numSplats,
+            snapshot: pending,
+          };
+          const sortPromise = GaussianSplatSorter.radixSortIndexes({
+            primitive: {
+              positions: new Float32Array(pending.positions),
+              modelView: Float32Array.from(scratchMatrix4A),
+              count: pending.numSplats,
+            },
+            sortType: "Index",
+          });
+          if (!defined(sortPromise)) {
+            this._pendingSortPromise = undefined;
+            this._pendingSort = undefined;
+            pending.state = SnapshotState.TEXTURE_READY;
+            return;
+          }
+          this._pendingSortPromise = sortPromise;
+          pending.state = SnapshotState.SORTING;
+          const pendingSort = this._pendingSort;
+          void resolvePendingSnapshotSort(
+            this,
+            frameState,
+            pendingSort,
+            sortPromise,
+          );
+          return;
+        }
+
+        if (!defined(this._pendingSortPromise)) {
+          if (pending.state === SnapshotState.SORTING) {
+            pending.state = SnapshotState.TEXTURE_READY;
+          }
+          return;
+        }
+        return;
+      }
+
+      if (this._numSplats === 0) {
+        return;
+      }
+
+      if (!hasRootTransform) {
+        return;
+      }
+
+      Matrix4.clone(camera.viewMatrix, this._prevViewMatrix);
+      Matrix4.multiply(camera.viewMatrix, this._rootTransform, scratchMatrix4A);
+
+      if (!defined(this._sorterPromise)) {
+        if (!shouldStartSteadySort(this, frameState)) {
+          return;
+        }
+        const requestId = ++this._sortRequestId;
+        const dataGeneration = this._splatDataGeneration;
+        const expectedCount = this._numSplats;
+        this._activeSort = {
+          requestId: requestId,
+          dataGeneration: dataGeneration,
+          expectedCount: expectedCount,
+        };
+        const rawPromise = GaussianSplatSorter.radixSortIndexes({
+          primitive: {
+            positions: new Float32Array(this._positions),
+            modelView: Float32Array.from(scratchMatrix4A),
+            count: this._numSplats,
+          },
+          sortType: "Index",
+        });
+        this._sorterPromise = rawPromise;
+        if (defined(rawPromise)) {
+          markSteadySortStart(this, frameState);
+          const activeSort = this._activeSort;
+          this._sorterState = GaussianSplatSortingState.SORTING;
+          void resolveSteadySort(this, activeSort, rawPromise);
+          return;
+        }
+      }
+
+      if (!defined(this._sorterPromise)) {
+        this._sorterState = GaussianSplatSortingState.WAITING;
+        return;
+      }
+      this._sorterState = GaussianSplatSortingState.SORTING;
+      return;
+    } else if (this._sorterState === GaussianSplatSortingState.WAITING) {
+      if (!defined(this._sorterPromise)) {
+        const requestId = ++this._sortRequestId;
+        const dataGeneration = this._splatDataGeneration;
+        const expectedCount = this._numSplats;
+        this._activeSort = {
+          requestId: requestId,
+          dataGeneration: dataGeneration,
+          expectedCount: expectedCount,
+        };
+        const rawPromise = GaussianSplatSorter.radixSortIndexes({
+          primitive: {
+            positions: new Float32Array(this._positions),
+            modelView: Float32Array.from(scratchMatrix4A),
+            count: this._numSplats,
+          },
+          sortType: "Index",
+        });
+        this._sorterPromise = rawPromise;
+        if (defined(rawPromise)) {
+          markSteadySortStart(this, frameState);
+          const activeSort = this._activeSort;
+          this._sorterState = GaussianSplatSortingState.SORTING;
+          void resolveSteadySort(this, activeSort, rawPromise);
+          return;
+        }
+      }
+      if (!defined(this._sorterPromise)) {
+        this._sorterState = GaussianSplatSortingState.WAITING;
+        return;
+      }
+      this._sorterState = GaussianSplatSortingState.SORTING;
+      return;
+    } else if (this._sorterState === GaussianSplatSortingState.SORTING) {
+      return; //still sorting, wait for next frame
+    } else if (this._sorterState === GaussianSplatSortingState.SORTED) {
+      //update the draw command if sorted
+      GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);
+      this._sorterState = GaussianSplatSortingState.IDLE; //reset state for next frame
+      this._dirty = false;
+      this._sorterPromise = undefined; //reset promise for next frame
+      this._activeSort = undefined;
+    } else if (this._sorterState === GaussianSplatSortingState.ERROR) {
+      throw this._sorterError;
+    }
+
+    this._dirty = false;
+  }
+
   /**
    * Indicates whether the primitive is ready for use.
    * @memberof GaussianSplatPrimitive.prototype
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
   /**
    * Indicates whether the primitive has completed loading and sorting.
@@ -1093,15 +1671,13 @@ Object.defineProperties(GaussianSplatPrimitive.prototype, {
    * @private
    * @readonly
    */
-  isStable: {
-    get: function () {
-      return (
-        !this._dirty &&
-        (!defined(this._pendingSnapshot) ||
-          this._pendingSnapshot.state === SnapshotState.READY)
-      );
-    },
-  },
+  get isStable() {
+    return (
+      !this._dirty &&
+      (!defined(this._pendingSnapshot) ||
+        this._pendingSnapshot.state === SnapshotState.READY)
+    );
+  }
 
   /**
    * The {@link SplitDirection} to apply to this point.
@@ -1109,114 +1685,23 @@ Object.defineProperties(GaussianSplatPrimitive.prototype, {
    * @type {SplitDirection}
    * @default {@link SplitDirection.NONE}
    */
-  splitDirection: {
-    get: function () {
-      return this._splitDirection;
-    },
-    set: function (value) {
-      if (this._splitDirection !== value) {
-        this._splitDirection = value;
-        this._dirty = true;
-      }
-    },
-  },
-});
-
-/**
- * Replaces the tileset's own update function so this primitive is updated
- * immediately after the tileset traversal, within the same frame. When
- * _splatBudgetSSEScale is above 1.0, maximumScreenSpaceError is inflated
- * for the duration of the traversal to reduce the number of tiles selected.
- * @param {FrameState} frameState
- * @private
- */
-GaussianSplatPrimitive.prototype._wrappedUpdate = function (frameState) {
-  const tileset = this._tileset;
-  if (this._splatBudgetSSEScale !== 1.0) {
-    // Inflate SSE for this traversal only; the original value is restored
-    // immediately so the user-visible tileset property is never permanently changed.
-    const originalSSE = tileset.maximumScreenSpaceError;
-    tileset.maximumScreenSpaceError *= this._splatBudgetSSEScale;
-    this._baseTilesetUpdate.call(tileset, frameState);
-    tileset.maximumScreenSpaceError = originalSSE;
-  } else {
-    this._baseTilesetUpdate.call(tileset, frameState);
+  get splitDirection() {
+    return this._splitDirection;
   }
-  this.update(frameState);
-};
 
-/**
- * Destroys the primitive and releases its resources in a deterministic manner.
- * @private
- */
-GaussianSplatPrimitive.prototype.destroy = function () {
-  this._positions = undefined;
-  this._rotations = undefined;
-  this._scales = undefined;
-  this._colors = undefined;
-  this._indexes = undefined;
-  destroySnapshotTextures(this._pendingSnapshot);
-  destroySnapshotTextures(this._snapshot);
-  if (defined(this._retiredTextures)) {
-    for (let i = 0; i < this._retiredTextures.length; i++) {
-      this._retiredTextures[i].texture.destroy();
+  /**
+   * The {@link SplitDirection} to apply to this point.
+   * @memberof GaussianSplatPrimitive.prototype
+   * @type {SplitDirection}
+   * @default {@link SplitDirection.NONE}
+   */
+  set splitDirection(value) {
+    if (this._splitDirection !== value) {
+      this._splitDirection = value;
+      this._dirty = true;
     }
   }
-  this._retiredTextures = [];
-  this._pendingSnapshot = undefined;
-  this._snapshot = undefined;
-  this._aggregateScratchBuffers = undefined;
-  this.gaussianSplatTexture = undefined;
-  this.sphericalHarmonicsTexture = undefined;
-
-  const drawCommand = this._drawCommand;
-  if (defined(drawCommand)) {
-    drawCommand.shaderProgram =
-      drawCommand.shaderProgram && drawCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._vertexArray)) {
-    this._vertexArray.destroy();
-    this._vertexArray = undefined;
-  }
-
-  this._tileset.update = this._baseTilesetUpdate.bind(this._tileset);
-
-  if (this._featureRenderer) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * @returns {boolean} Returns true if the primitive has been destroyed, otherwise false.
- * @private
- */
-GaussianSplatPrimitive.prototype.isDestroyed = function () {
-  return this._isDestroyed;
-};
-
-/**
- * Event callback for when a tile is loaded.
- * This method is called when a tile is loaded and the primitive needs to be updated.
- * It sets the dirty flag to true, indicating that the primitive needs to be rebuilt.
- * @param {Cesium3DTile} tile
- * @private
- */
-GaussianSplatPrimitive.prototype.onTileLoad = function (tile) {
-  this._dirty = true;
-};
-
-/**
- * Callback for visible tiles.
- * @param {Cesium3DTile} tile
- * @private
- */
-GaussianSplatPrimitive.prototype.onTileVisible = function (tile) {};
+}
 
 /**
  * Transforms the tile's splat primitive attributes into world space.
@@ -1672,490 +2157,6 @@ GaussianSplatPrimitive.buildGSplatDrawCommand = function (
   });
 
   primitive._drawCommand = command;
-};
-
-/**
- * Updates the Gaussian splat primitive for the current frame.
- * This method checks if the primitive needs to be updated based on the current frame state,
- * and if so, it processes the selected tiles, aggregates their attributes,
- * and generates the Gaussian splat texture if necessary.
- * It also handles the sorting of splat indexes and builds the draw command for rendering.
- *
- * @param {FrameState} frameState
- * @private
- */
-GaussianSplatPrimitive.prototype.update = function (frameState) {
-  // Route to WebGPU feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.GAUSSIAN_SPLAT,
-  );
-  if (fr) {
-    fr.update(this, frameState);
-    this._featureRenderer = fr;
-    return;
-  }
-
-  const tileset = this._tileset;
-
-  releaseRetiredTextures(this, frameState.frameNumber);
-
-  if (!tileset.show) {
-    return;
-  }
-
-  if (this._drawCommand) {
-    frameState.commandList.push(this._drawCommand);
-  }
-
-  if (tileset._modelMatrixChanged) {
-    this._dirty = true;
-    return;
-  }
-  const hasRootTransform = defined(this._rootTransform);
-
-  if (frameState.passes.pick === true) {
-    return;
-  }
-
-  if (this.splitDirection !== tileset.splitDirection) {
-    this.splitDirection = tileset.splitDirection;
-  }
-  const camera = frameState.camera;
-  if (!defined(camera)) {
-    return;
-  }
-
-  if (this._sorterState === GaussianSplatSortingState.IDLE) {
-    const selectedTilesChanged =
-      tileset._selectedTiles.length !== 0 &&
-      haveSelectedTilesChanged(this, tileset._selectedTiles);
-    if (tileset._selectedTiles.length === 0) {
-      this._selectedTilesStableFrames = 0;
-      this._needsSnapshotRebuild = false;
-      this._snapshotRebuildStallFrames = 0;
-    } else if (selectedTilesChanged) {
-      this._selectedTilesStableFrames = 0;
-    } else {
-      this._selectedTilesStableFrames++;
-    }
-    if (selectedTilesChanged || this._dirty) {
-      this._needsSnapshotRebuild = true;
-    }
-    const isStable = this._selectedTilesStableFrames >= DEFAULT_STABLE_FRAMES;
-    const isBootstrap =
-      !defined(this._snapshot) &&
-      !defined(this._pendingSnapshot) &&
-      !defined(this._drawCommand);
-    // This prevents an indefinite wait if selected tiles never settle completely.
-    // In practice, this is the upper bound on "wait-for-stability" before forcing
-    // a rebuild to avoid visible starvation.
-    if (this._needsSnapshotRebuild && tileset._selectedTiles.length !== 0) {
-      this._snapshotRebuildStallFrames++;
-    } else {
-      this._snapshotRebuildStallFrames = 0;
-    }
-    const allowRebuild =
-      isStable ||
-      isBootstrap ||
-      this._snapshotRebuildStallFrames >= DEFAULT_MAX_SNAPSHOT_STALL_FRAMES;
-    const hasPendingWork =
-      this._dirty ||
-      this._needsSnapshotRebuild ||
-      selectedTilesChanged ||
-      defined(this._pendingSnapshot) ||
-      defined(this._pendingSortPromise) ||
-      !defined(this._drawCommand);
-    if (
-      !hasPendingWork &&
-      Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)
-    ) {
-      return;
-    }
-
-    if (
-      tileset._selectedTiles.length !== 0 &&
-      this._needsSnapshotRebuild &&
-      allowRebuild
-    ) {
-      this._splatDataGeneration++;
-      this._activeSort = undefined;
-      this._sorterPromise = undefined;
-      this._sorterState = GaussianSplatSortingState.IDLE;
-      this._pendingSortPromise = undefined;
-      this._pendingSort = undefined;
-      if (defined(this._pendingSnapshot)) {
-        destroySnapshotTextures(this._pendingSnapshot);
-      }
-
-      const tiles = tileset._selectedTiles;
-
-      // Rebuild the ENU origin from the current tileset world center so that
-      // baked splat positions remain in a numerically small (meter-scale) local
-      // frame, regardless of the current tileset.modelMatrix value.
-      this._rootTransform = Transforms.eastNorthUpToFixedFrame(
-        tileset.boundingSphere.center,
-      );
-
-      // Compute the SH inverse rotation from the first tile's coordinate frame.
-      // SH coefficients are encoded in the GLB Y-up training space. To evaluate
-      // them correctly the view direction must be transformed by
-      //   inverse(computedTransform × axisCorrectionMatrix × worldTransform).
-      // All tiles in a typical GS tileset share the same root coordinate frame,
-      // so using the first tile is sufficient.
-      {
-        const ft = tiles[0];
-        const shFwd = Matrix4.multiplyTransformation(
-          ft.computedTransform,
-          this._axisCorrectionMatrix,
-          scratchMatrix4C,
-        );
-        Matrix4.multiplyTransformation(
-          shFwd,
-          ft.content.worldTransform ?? Matrix4.IDENTITY,
-          shFwd,
-        );
-        Matrix4.getRotation(
-          Matrix4.inverse(shFwd, shFwd),
-          this._shInverseRotation,
-        );
-      }
-
-      for (const tile of tiles) {
-        GaussianSplatPrimitive.transformTile(tile);
-      }
-
-      const totalElements = tiles.reduce(
-        (total, tile) => total + tile.content.pointsLength,
-        0,
-      );
-      const aggregateAttributeValues = (
-        key,
-        componentDatatype,
-        getAttributeCallback,
-        numberOfComponents,
-      ) => {
-        let aggregate;
-        let offset = 0;
-        let requiredLength = 0;
-        for (const tile of tiles) {
-          const attribute = getAttributeCallback(tile.content);
-          const componentsPerAttribute = defined(numberOfComponents)
-            ? numberOfComponents
-            : AttributeType.getNumberOfComponents(attribute.type);
-          const buffer = defined(attribute.typedArray)
-            ? attribute.typedArray
-            : attribute;
-          requiredLength += buffer.length;
-          if (!defined(aggregate)) {
-            aggregate = acquireAggregateScratchBuffer(
-              this,
-              key,
-              componentDatatype,
-              totalElements * componentsPerAttribute,
-            );
-          }
-        }
-
-        if (!defined(aggregate)) {
-          return ComponentDatatype.createTypedArray(componentDatatype, 0);
-        }
-
-        for (const tile of tiles) {
-          const content = tile.content;
-          const attribute = getAttributeCallback(content);
-          const buffer = defined(attribute.typedArray)
-            ? attribute.typedArray
-            : attribute;
-          aggregate.set(buffer, offset);
-          offset += buffer.length;
-        }
-        return trimAggregateScratchBuffer(aggregate, requiredLength);
-      };
-
-      const aggregateShData = () => {
-        // Determine the SH degree from the first tile with SH data so we can
-        // pre-allocate the aggregate buffer once, outside the tile loop.
-        let coefs = 0;
-        for (const tile of tiles) {
-          if (tile.content.sphericalHarmonicsDegree > 0) {
-            switch (tile.content.sphericalHarmonicsDegree) {
-              case 1:
-                coefs = 9;
-                break;
-              case 2:
-                coefs = 24;
-                break;
-              case 3:
-                coefs = 45;
-                break;
-            }
-            break;
-          }
-        }
-
-        if (coefs === 0) {
-          return undefined;
-        }
-
-        const requiredLength = totalElements * (coefs * (2 / 3));
-
-        // Re-use the class-level scratch buffer when it is already large
-        // enough, avoiding a fresh allocation (and eventual GC) every frame.
-        if (
-          !defined(this._scratchAggregateShBuffer) ||
-          this._scratchAggregateShBuffer.length < requiredLength
-        ) {
-          this._scratchAggregateShBuffer = new Uint32Array(requiredLength);
-        }
-        const aggregate = this._scratchAggregateShBuffer;
-
-        let offset = 0;
-        for (const tile of tiles) {
-          const tileShData = tile.content.packedSphericalHarmonicsData;
-          if (tile.content.sphericalHarmonicsDegree > 0) {
-            aggregate.set(tileShData, offset);
-            offset += tileShData.length;
-          }
-        }
-
-        // Return a correctly-sized view so downstream consumers see the
-        // exact element count they expect.
-        if (offset < aggregate.length) {
-          return aggregate.subarray(0, offset);
-        }
-        return aggregate;
-      };
-
-      const positions = aggregateAttributeValues(
-        "positions",
-        ComponentDatatype.FLOAT,
-        (content) => content.positions,
-        3,
-      );
-
-      const scales = aggregateAttributeValues(
-        "scales",
-        ComponentDatatype.FLOAT,
-        (content) => content.scales,
-        3,
-      );
-
-      const rotations = aggregateAttributeValues(
-        "rotations",
-        ComponentDatatype.FLOAT,
-        (content) => content.rotations,
-        4,
-      );
-
-      const colors = aggregateAttributeValues(
-        "colors",
-        ComponentDatatype.UNSIGNED_BYTE,
-        (content) =>
-          ModelUtility.getAttributeBySemantic(
-            content.gltfPrimitive,
-            VertexAttributeSemantic.COLOR,
-          ),
-      );
-
-      const sphericalHarmonicsDegree =
-        tiles[0].content.sphericalHarmonicsDegree;
-      const shCoefficientCount =
-        sphericalHarmonicsDegree > 0
-          ? tiles[0].content.sphericalHarmonicsCoefficientCount
-          : 0;
-      const shData = aggregateShData();
-
-      this._pendingSnapshot = {
-        generation: this._splatDataGeneration,
-        positions: positions,
-        rotations: rotations,
-        scales: scales,
-        colors: colors,
-        shData: shData,
-        sphericalHarmonicsDegree: sphericalHarmonicsDegree,
-        shCoefficientCount: shCoefficientCount,
-        numSplats: totalElements,
-        indexes: undefined,
-        gaussianSplatTexture: undefined,
-        sphericalHarmonicsTexture: undefined,
-        lastTextureWidth: 0,
-        lastTextureHeight: 0,
-        splatRowMask: 0, // set by processGeneratedSplatTextureData
-        splatRowShift: 0, // set by processGeneratedSplatTextureData
-        state: SnapshotState.BUILDING,
-      };
-
-      this.selectedTileLength = tileset._selectedTiles.length;
-      this._selectedTileSet = new Set(tileset._selectedTiles);
-      this._dirty = false;
-      this._needsSnapshotRebuild = false;
-      this._snapshotRebuildStallFrames = 0;
-    }
-
-    if (defined(this._pendingSnapshot)) {
-      const pending = this._pendingSnapshot;
-      if (pending.state === SnapshotState.BUILDING) {
-        GaussianSplatPrimitive.generateSplatTexture(this, frameState, pending);
-        return;
-      }
-      if (pending.state === SnapshotState.TEXTURE_PENDING) {
-        return;
-      }
-      if (
-        pending.state === SnapshotState.TEXTURE_READY &&
-        !defined(pending.gaussianSplatTexture)
-      ) {
-        return;
-      }
-
-      if (!hasRootTransform) {
-        return;
-      }
-
-      Matrix4.clone(camera.viewMatrix, this._prevViewMatrix);
-      Matrix4.multiply(camera.viewMatrix, this._rootTransform, scratchMatrix4A);
-
-      if (
-        pending.state === SnapshotState.TEXTURE_READY &&
-        !defined(this._pendingSortPromise)
-      ) {
-        const requestId = ++this._sortRequestId;
-        const dataGeneration = this._splatDataGeneration;
-        this._pendingSort = {
-          requestId: requestId,
-          dataGeneration: dataGeneration,
-          expectedCount: pending.numSplats,
-          snapshot: pending,
-        };
-        const sortPromise = GaussianSplatSorter.radixSortIndexes({
-          primitive: {
-            positions: new Float32Array(pending.positions),
-            modelView: Float32Array.from(scratchMatrix4A),
-            count: pending.numSplats,
-          },
-          sortType: "Index",
-        });
-        if (!defined(sortPromise)) {
-          this._pendingSortPromise = undefined;
-          this._pendingSort = undefined;
-          pending.state = SnapshotState.TEXTURE_READY;
-          return;
-        }
-        this._pendingSortPromise = sortPromise;
-        pending.state = SnapshotState.SORTING;
-        const pendingSort = this._pendingSort;
-        void resolvePendingSnapshotSort(
-          this,
-          frameState,
-          pendingSort,
-          sortPromise,
-        );
-        return;
-      }
-
-      if (!defined(this._pendingSortPromise)) {
-        if (pending.state === SnapshotState.SORTING) {
-          pending.state = SnapshotState.TEXTURE_READY;
-        }
-        return;
-      }
-      return;
-    }
-
-    if (this._numSplats === 0) {
-      return;
-    }
-
-    if (!hasRootTransform) {
-      return;
-    }
-
-    Matrix4.clone(camera.viewMatrix, this._prevViewMatrix);
-    Matrix4.multiply(camera.viewMatrix, this._rootTransform, scratchMatrix4A);
-
-    if (!defined(this._sorterPromise)) {
-      if (!shouldStartSteadySort(this, frameState)) {
-        return;
-      }
-      const requestId = ++this._sortRequestId;
-      const dataGeneration = this._splatDataGeneration;
-      const expectedCount = this._numSplats;
-      this._activeSort = {
-        requestId: requestId,
-        dataGeneration: dataGeneration,
-        expectedCount: expectedCount,
-      };
-      const rawPromise = GaussianSplatSorter.radixSortIndexes({
-        primitive: {
-          positions: new Float32Array(this._positions),
-          modelView: Float32Array.from(scratchMatrix4A),
-          count: this._numSplats,
-        },
-        sortType: "Index",
-      });
-      this._sorterPromise = rawPromise;
-      if (defined(rawPromise)) {
-        markSteadySortStart(this, frameState);
-        const activeSort = this._activeSort;
-        this._sorterState = GaussianSplatSortingState.SORTING;
-        void resolveSteadySort(this, activeSort, rawPromise);
-        return;
-      }
-    }
-
-    if (!defined(this._sorterPromise)) {
-      this._sorterState = GaussianSplatSortingState.WAITING;
-      return;
-    }
-    this._sorterState = GaussianSplatSortingState.SORTING;
-    return;
-  } else if (this._sorterState === GaussianSplatSortingState.WAITING) {
-    if (!defined(this._sorterPromise)) {
-      const requestId = ++this._sortRequestId;
-      const dataGeneration = this._splatDataGeneration;
-      const expectedCount = this._numSplats;
-      this._activeSort = {
-        requestId: requestId,
-        dataGeneration: dataGeneration,
-        expectedCount: expectedCount,
-      };
-      const rawPromise = GaussianSplatSorter.radixSortIndexes({
-        primitive: {
-          positions: new Float32Array(this._positions),
-          modelView: Float32Array.from(scratchMatrix4A),
-          count: this._numSplats,
-        },
-        sortType: "Index",
-      });
-      this._sorterPromise = rawPromise;
-      if (defined(rawPromise)) {
-        markSteadySortStart(this, frameState);
-        const activeSort = this._activeSort;
-        this._sorterState = GaussianSplatSortingState.SORTING;
-        void resolveSteadySort(this, activeSort, rawPromise);
-        return;
-      }
-    }
-    if (!defined(this._sorterPromise)) {
-      this._sorterState = GaussianSplatSortingState.WAITING;
-      return;
-    }
-    this._sorterState = GaussianSplatSortingState.SORTING;
-    return;
-  } else if (this._sorterState === GaussianSplatSortingState.SORTING) {
-    return; //still sorting, wait for next frame
-  } else if (this._sorterState === GaussianSplatSortingState.SORTED) {
-    //update the draw command if sorted
-    GaussianSplatPrimitive.buildGSplatDrawCommand(this, frameState);
-    this._sorterState = GaussianSplatSortingState.IDLE; //reset state for next frame
-    this._dirty = false;
-    this._sorterPromise = undefined; //reset promise for next frame
-    this._activeSort = undefined;
-  } else if (this._sorterState === GaussianSplatSortingState.ERROR) {
-    throw this._sorterError;
-  }
-
-  this._dirty = false;
 };
 
 export default GaussianSplatPrimitive;

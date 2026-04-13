@@ -680,7 +680,7 @@ class WebGPUVolumetricFogRenderer {
    * outputs. Phase 5b/5c populate density / scattering / integration
    * with real math.
    */
-  update(context: any, frameState: any, scene: any): void {
+  update(context: CesiumGraphicsContext, frameState: CesiumFrameState, scene: CesiumScene): void {
     if (this._isDestroyed) return;
     const _scene = scene;
     const ac = frameState.atmosphericConditions;
@@ -781,10 +781,10 @@ class WebGPUVolumetricFogRenderer {
     // sample the depth comparison; god ray formation depends on this.
     // When no shadow map is active, fill identity (the kernel skips
     // sampling via `occlusion.z = 0` instead of relying on the matrix).
-    const shadowMaps = (frameState as any).shadowMaps;
-    let activeShadowMap: any = null;
+    const shadowMaps = frameState.shadowMaps;
+    let activeShadowMap: CesiumShadowMap | null = null;
     if (Array.isArray(shadowMaps) && shadowMaps.length > 0) {
-      activeShadowMap = shadowMaps[0];
+      activeShadowMap = shadowMaps[0] as CesiumShadowMap;
     }
     let sunShadowMatrix: ArrayLike<number> | null = null;
     let realShadowView: GPUTextureView | null = null;
@@ -813,10 +813,9 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[45] = camPos?.y ?? 0;
     r.paramsData[46] = camPos?.z ?? 0;
     // Planet inner radius — derive from the globe ellipsoid if attached.
-    const ellipsoid =
-      _scene?.globe?._ellipsoid ?? _scene?.mapProjection?.ellipsoid;
-    const innerRadius = ellipsoid
-      ? Math.max(ellipsoid.radii.x, ellipsoid.radii.y, ellipsoid.radii.z)
+    const globeEllipsoid = _scene?.globe?._ellipsoid as { radii: CesiumCartesian3 } | undefined;
+    const innerRadius = globeEllipsoid
+      ? Math.max(globeEllipsoid.radii.x, globeEllipsoid.radii.y, globeEllipsoid.radii.z)
       : 6378137;
     r.paramsData[47] = innerRadius;
 
@@ -856,7 +855,8 @@ class WebGPUVolumetricFogRenderer {
     // a sibling leaf to volumetricFog. Per B21, this is silently a
     // no-op when volumetricFog is off (we only run the kernels at all
     // when vf.enabled is true), so reading it here is fine.
-    const varying = ac?.varyingAtmosphereDensity;
+    const varyingRaw = ac?.varyingAtmosphereDensity;
+    const varying = typeof varyingRaw === "object" ? varyingRaw : undefined;
     const varyingEnabled = varying?.enabled === true;
     r.paramsData[60] = varyingEnabled ? 1.0 : 0.0;
     r.paramsData[61] = varying?.noiseScale ?? 5000;
@@ -945,8 +945,8 @@ class WebGPUVolumetricFogRenderer {
    * we early-out here as defense in depth.
    */
   composite(
-    context: any,
-    frameState: any,
+    context: CesiumGraphicsContext,
+    frameState: CesiumFrameState,
     colorView: GPUTextureView,
     depthView: GPUTextureView,
     outputView: GPUTextureView,
@@ -1064,9 +1064,9 @@ class WebGPUVolumetricFogRenderer {
 
 // ─── Feature renderer factory + entry points ───────────────────────
 
-const _instances = new WeakMap<any, WebGPUVolumetricFogRenderer>();
+const _instances = new WeakMap<CesiumGraphicsContext, WebGPUVolumetricFogRenderer>();
 
-function getOrCreate(context: any): WebGPUVolumetricFogRenderer {
+function getOrCreate(context: CesiumGraphicsContext): WebGPUVolumetricFogRenderer {
   let inst = _instances.get(context);
   if (!inst) {
     inst = new WebGPUVolumetricFogRenderer(context.device);
@@ -1081,9 +1081,9 @@ function getOrCreate(context: any): WebGPUVolumetricFogRenderer {
  * per frame when `atmosphericConditions.volumetricFog.enabled` is true.
  */
 export function updateWebGPUVolumetricFog(
-  context: any,
-  frameState: any,
-  scene: any,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  scene: CesiumScene,
 ): void {
   if (!context || !context.device) return;
   const inst = getOrCreate(context);
@@ -1098,8 +1098,8 @@ export function updateWebGPUVolumetricFog(
  * post-processing.
  */
 export function compositeWebGPUVolumetricFog(
-  context: any,
-  frameState: any,
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
   colorView: GPUTextureView,
   depthView: GPUTextureView,
   outputView: GPUTextureView,
@@ -1122,7 +1122,7 @@ export function compositeWebGPUVolumetricFog(
  * Feature renderer destroy entry point. Releases all GPU resources for
  * the given context's volumetric fog instance.
  */
-export function destroyWebGPUVolumetricFog(context: any): void {
+export function destroyWebGPUVolumetricFog(context: CesiumGraphicsContext): void {
   const inst = _instances.get(context);
   if (inst) {
     inst.destroy();
@@ -1135,7 +1135,7 @@ export function destroyWebGPUVolumetricFog(context: any): void {
  * fog statistics, or `null` if the renderer has not been touched yet
  * for this context. Called by `WebGPUContext.getRendererStatistics()`.
  */
-export function getWebGPUVolumetricFogStatistics(context: any): object | null {
+export function getWebGPUVolumetricFogStatistics(context: CesiumGraphicsContext): object | null {
   const inst = _instances.get(context);
   return inst ? inst.getStatistics() : null;
 }

@@ -25,116 +25,144 @@ import EntityCollection from "./EntityCollection.js";
  *
  * viewer.dataSources.add(dataSource);
  */
-function CustomDataSource(name) {
-  this._name = name;
-  this._clock = undefined;
-  this._changed = new Event();
-  this._error = new Event();
-  this._isLoading = false;
-  this._loading = new Event();
-  this._entityCollection = new EntityCollection(this);
-  this._entityCluster = new EntityCluster();
-}
+class CustomDataSource {
+  constructor(name) {
+    this._name = name;
+    this._clock = undefined;
+    this._changed = new Event();
+    this._error = new Event();
+    this._isLoading = false;
+    this._loading = new Event();
+    this._entityCollection = new EntityCollection(this);
+    this._entityCluster = new EntityCluster();
+  }
 
-Object.defineProperties(CustomDataSource.prototype, {
+  /**
+   * Updates the data source to the provided time.  This function is optional and
+   * is not required to be implemented.  It is provided for data sources which
+   * retrieve data based on the current animation time or scene state.
+   * If implemented, update will be called by {@link DataSourceDisplay} once a frame.
+   *
+   * @param {JulianDate} time The simulation time.
+   * @returns {boolean} True if this data source is ready to be displayed at the provided time, false otherwise.
+   */
+  update(time) {
+    return true;
+  }
+
   /**
    * Gets or sets a human-readable name for this instance.
    * @memberof CustomDataSource.prototype
    * @type {string}
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-    set: function (value) {
-      if (this._name !== value) {
-        this._name = value;
-        this._changed.raiseEvent(this);
-      }
-    },
-  },
+  get name() {
+    return this._name;
+  }
+
+  /**
+   * Gets or sets a human-readable name for this instance.
+   * @memberof CustomDataSource.prototype
+   * @type {string}
+   */
+  set name(value) {
+    if (this._name !== value) {
+      this._name = value;
+      this._changed.raiseEvent(this);
+    }
+  }
+
   /**
    * Gets or sets the clock for this instance.
    * @memberof CustomDataSource.prototype
    * @type {DataSourceClock}
    */
-  clock: {
-    get: function () {
-      return this._clock;
-    },
-    set: function (value) {
-      if (this._clock !== value) {
-        this._clock = value;
-        this._changed.raiseEvent(this);
-      }
-    },
-  },
+  get clock() {
+    return this._clock;
+  }
+
+  /**
+   * Gets or sets the clock for this instance.
+   * @memberof CustomDataSource.prototype
+   * @type {DataSourceClock}
+   */
+  set clock(value) {
+    if (this._clock !== value) {
+      this._clock = value;
+      this._changed.raiseEvent(this);
+    }
+  }
+
   /**
    * Gets the collection of {@link Entity} instances.
    * @memberof CustomDataSource.prototype
    * @type {EntityCollection}
    */
-  entities: {
-    get: function () {
-      return this._entityCollection;
-    },
-  },
+  get entities() {
+    return this._entityCollection;
+  }
+
   /**
    * Gets or sets whether the data source is currently loading data.
    * @memberof CustomDataSource.prototype
    * @type {boolean}
    */
-  isLoading: {
-    get: function () {
-      return this._isLoading;
-    },
-    set: function (value) {
-      DataSource.setLoading(this, value);
-    },
-  },
+  get isLoading() {
+    return this._isLoading;
+  }
+
+  /**
+   * Gets or sets whether the data source is currently loading data.
+   * @memberof CustomDataSource.prototype
+   * @type {boolean}
+   */
+  set isLoading(value) {
+    DataSource.setLoading(this, value);
+  }
+
   /**
    * Gets an event that will be raised when the underlying data changes.
    * @memberof CustomDataSource.prototype
    * @type {Event}
    */
-  changedEvent: {
-    get: function () {
-      return this._changed;
-    },
-  },
+  get changedEvent() {
+    return this._changed;
+  }
+
   /**
    * Gets an event that will be raised if an error is encountered during processing.
    * @memberof CustomDataSource.prototype
    * @type {Event}
    */
-  errorEvent: {
-    get: function () {
-      return this._error;
-    },
-  },
+  get errorEvent() {
+    return this._error;
+  }
+
   /**
    * Gets an event that will be raised when the data source either starts or stops loading.
    * @memberof CustomDataSource.prototype
    * @type {Event}
    */
-  loadingEvent: {
-    get: function () {
-      return this._loading;
-    },
-  },
+  get loadingEvent() {
+    return this._loading;
+  }
+
   /**
    * Gets whether or not this data source should be displayed.
    * @memberof CustomDataSource.prototype
    * @type {boolean}
    */
-  show: {
-    get: function () {
-      return this._entityCollection.show;
-    },
-    set: function (value) {
-      this._entityCollection.show = value;
-    },
-  },
+  get show() {
+    return this._entityCollection.show;
+  }
+
+  /**
+   * Gets whether or not this data source should be displayed.
+   * @memberof CustomDataSource.prototype
+   * @type {boolean}
+   */
+  set show(value) {
+    this._entityCollection.show = value;
+  }
 
   /**
    * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
@@ -142,32 +170,24 @@ Object.defineProperties(CustomDataSource.prototype, {
    * @memberof CustomDataSource.prototype
    * @type {EntityCluster}
    */
-  clustering: {
-    get: function () {
-      return this._entityCluster;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value must be defined.");
-      }
-      //>>includeEnd('debug');
-      this._entityCluster = value;
-    },
-  },
-});
+  get clustering() {
+    return this._entityCluster;
+  }
 
-/**
- * Updates the data source to the provided time.  This function is optional and
- * is not required to be implemented.  It is provided for data sources which
- * retrieve data based on the current animation time or scene state.
- * If implemented, update will be called by {@link DataSourceDisplay} once a frame.
- *
- * @param {JulianDate} time The simulation time.
- * @returns {boolean} True if this data source is ready to be displayed at the provided time, false otherwise.
- */
-CustomDataSource.prototype.update = function (time) {
-  return true;
-};
+  /**
+   * Gets or sets the clustering options for this data source. This object can be shared between multiple data sources.
+   *
+   * @memberof CustomDataSource.prototype
+   * @type {EntityCluster}
+   */
+  set clustering(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value must be defined.");
+    }
+    //>>includeEnd('debug');
+    this._entityCluster = value;
+  }
+}
 
 export default CustomDataSource;

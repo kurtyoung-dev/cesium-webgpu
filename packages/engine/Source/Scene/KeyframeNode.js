@@ -16,29 +16,31 @@ const LoadState = Object.freeze({
  *
  * @private
  */
-function KeyframeNode(spatialNode, keyframe) {
-  this.spatialNode = spatialNode;
-  this.keyframe = keyframe;
-  this.state = LoadState.UNLOADED;
-  this.content = undefined;
-  this.megatextureIndex = -1;
-  this.priority = -Number.MAX_VALUE;
-  this.highPriorityFrameNumber = -1;
+class KeyframeNode {
+  constructor(spatialNode, keyframe) {
+    this.spatialNode = spatialNode;
+    this.keyframe = keyframe;
+    this.state = LoadState.UNLOADED;
+    this.content = undefined;
+    this.megatextureIndex = -1;
+    this.priority = -Number.MAX_VALUE;
+    this.highPriorityFrameNumber = -1;
+  }
+
+  /**
+   * Frees the resources used by this object.
+   * @private
+   */
+  unload() {
+    this.content = this.content && this.content.destroy();
+
+    this.spatialNode = undefined;
+    this.state = LoadState.UNLOADED;
+    this.megatextureIndex = -1;
+    this.priority = -Number.MAX_VALUE;
+    this.highPriorityFrameNumber = -1;
+  }
 }
-
-/**
- * Frees the resources used by this object.
- * @private
- */
-KeyframeNode.prototype.unload = function () {
-  this.content = this.content && this.content.destroy();
-
-  this.spatialNode = undefined;
-  this.state = LoadState.UNLOADED;
-  this.megatextureIndex = -1;
-  this.priority = -Number.MAX_VALUE;
-  this.highPriorityFrameNumber = -1;
-};
 
 /**
  * @param {KeyframeNode} a

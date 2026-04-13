@@ -69,126 +69,484 @@ import StencilOperation from "./StencilOperation.js";
  * @see GeometryInstance
  * @see Appearance
  */
-function ClassificationPrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const geometryInstances = options.geometryInstances;
+class ClassificationPrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const geometryInstances = options.geometryInstances;
+
+    /**
+     * The geometry instance rendered with this primitive.  This may
+     * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
+     * is <code>true</code> when the primitive is constructed.
+     * <p>
+     * Changing this property after the primitive is rendered has no effect.
+     * </p>
+     * <p>
+     * Because of the rendering technique used, all geometry instances must be the same color.
+     * If there is an instance with a differing color, a <code>DeveloperError</code> will be thrown
+     * on the first attempt to render.
+     * </p>
+     *
+     * @readonly
+     * @type {Array|GeometryInstance}
+     *
+     * @default undefined
+     */
+    this.geometryInstances = geometryInstances;
+    /**
+     * Determines if the primitive will be shown.  This affects all geometry
+     * instances in the primitive.
+     *
+     * @type {boolean}
+     *
+     * @default true
+     */
+    this.show = options.show ?? true;
+    /**
+     * Determines whether terrain, 3D Tiles or both will be classified.
+     *
+     * @type {ClassificationType}
+     *
+     * @default ClassificationType.BOTH
+     */
+    this.classificationType =
+      options.classificationType ?? ClassificationType.BOTH;
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the shadow volume for each geometry in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowShadowVolume = options.debugShowShadowVolume ?? false;
+    this._debugShowShadowVolume = false;
+
+    // These are used by GroundPrimitive to augment the shader and uniform map.
+    this._extruded = options._extruded ?? false;
+    this._uniformMap = options._uniformMap;
+
+    this._sp = undefined;
+    this._spStencil = undefined;
+    this._spPick = undefined;
+    this._spColor = undefined;
+
+    this._spPick2D = undefined; // only derived if necessary
+    this._spColor2D = undefined; // only derived if necessary
+
+    this._rsStencilDepthPass = undefined;
+    this._rsStencilDepthPass3DTiles = undefined;
+    this._rsColorPass = undefined;
+    this._rsPickPass = undefined;
+
+    this._commandsIgnoreShow = [];
+
+    this._ready = false;
+    this._primitive = undefined;
+    this._pickPrimitive = options._pickPrimitive;
+
+    // Set in update
+    this._hasSphericalExtentsAttribute = false;
+    this._hasPlanarExtentsAttributes = false;
+    this._hasPerColorAttribute = false;
+
+    this.appearance = options.appearance;
+
+    this._createBoundingVolumeFunction = options._createBoundingVolumeFunction;
+    this._updateAndQueueCommandsFunction =
+      options._updateAndQueueCommandsFunction;
+
+    this._usePickOffsets = false;
+
+    this._primitiveOptions = {
+      geometryInstances: undefined,
+      appearance: undefined,
+      vertexCacheOptimize: options.vertexCacheOptimize ?? false,
+      interleave: options.interleave ?? false,
+      releaseGeometryInstances: options.releaseGeometryInstances ?? true,
+      allowPicking: options.allowPicking ?? true,
+      asynchronous: options.asynchronous ?? true,
+      compressVertices: options.compressVertices ?? true,
+      _createBoundingVolumeFunction: undefined,
+      _createRenderStatesFunction: undefined,
+      _createShaderProgramFunction: undefined,
+      _createCommandsFunction: undefined,
+      _updateAndQueueCommandsFunction: undefined,
+      _createPickOffsets: true,
+    };
+  }
 
   /**
-   * The geometry instance rendered with this primitive.  This may
-   * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
-   * is <code>true</code> when the primitive is constructed.
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
    * <p>
-   * Changing this property after the primitive is rendered has no effect.
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
    * </p>
+   *
+   * @exception {DeveloperError} All instance geometries must have the same primitiveType.
+   * @exception {DeveloperError} Appearance and material have a uniform with the same name.
+   * @exception {DeveloperError} Not all of the geometry instances have the same color attribute.
+   */
+  update(frameState) {
+    if (!defined(this._primitive) && !defined(this.geometryInstances)) {
+      return;
+    }
+
+    let appearance = this.appearance;
+    if (defined(appearance) && defined(appearance.material)) {
+      appearance.material.update(frameState.context);
+    }
+
+    const that = this;
+    const primitiveOptions = this._primitiveOptions;
+
+    if (!defined(this._primitive)) {
+      const instances = Array.isArray(this.geometryInstances)
+        ? this.geometryInstances
+        : [this.geometryInstances];
+      const length = instances.length;
+
+      let i;
+      let instance;
+      let attributes;
+
+      let hasPerColorAttribute = false;
+      let allColorsSame = true;
+      let firstColor;
+      let hasSphericalExtentsAttribute = false;
+      let hasPlanarExtentsAttributes = false;
+
+      if (length > 0) {
+        attributes = instances[0].attributes;
+        // Not expecting these to be set by users, should only be set via GroundPrimitive.
+        // So don't check for mismatch.
+        hasSphericalExtentsAttribute =
+          ShadowVolumeAppearance.hasAttributesForSphericalExtents(attributes);
+        hasPlanarExtentsAttributes =
+          ShadowVolumeAppearance.hasAttributesForTextureCoordinatePlanes(
+            attributes,
+          );
+        firstColor = attributes.color;
+      }
+
+      for (i = 0; i < length; i++) {
+        instance = instances[i];
+        const color = instance.attributes.color;
+        if (defined(color)) {
+          hasPerColorAttribute = true;
+        }
+        //>>includeStart('debug', pragmas.debug);
+        else if (hasPerColorAttribute) {
+          throw new DeveloperError(
+            "All GeometryInstances must have color attributes to use per-instance color.",
+          );
+        }
+        //>>includeEnd('debug');
+
+        allColorsSame =
+          allColorsSame &&
+          defined(color) &&
+          ColorGeometryInstanceAttribute.equals(firstColor, color);
+      }
+
+      // If no attributes exist for computing spherical extents or fragment culling,
+      // throw if the colors aren't all the same.
+      if (
+        !allColorsSame &&
+        !hasSphericalExtentsAttribute &&
+        !hasPlanarExtentsAttributes
+      ) {
+        throw new DeveloperError(
+          "All GeometryInstances must have the same color attribute except via GroundPrimitives",
+        );
+      }
+
+      // default to a color appearance
+      if (hasPerColorAttribute && !defined(appearance)) {
+        appearance = new PerInstanceColorAppearance({
+          flat: true,
+        });
+        this.appearance = appearance;
+      }
+
+      //>>includeStart('debug', pragmas.debug);
+      if (
+        !hasPerColorAttribute &&
+        appearance instanceof PerInstanceColorAppearance
+      ) {
+        throw new DeveloperError(
+          "PerInstanceColorAppearance requires color GeometryInstanceAttributes on all GeometryInstances",
+        );
+      }
+      if (
+        defined(appearance.material) &&
+        !hasSphericalExtentsAttribute &&
+        !hasPlanarExtentsAttributes
+      ) {
+        throw new DeveloperError(
+          "Materials on ClassificationPrimitives are not supported except via GroundPrimitives",
+        );
+      }
+      //>>includeEnd('debug');
+
+      this._usePickOffsets =
+        !hasSphericalExtentsAttribute && !hasPlanarExtentsAttributes;
+      this._hasSphericalExtentsAttribute = hasSphericalExtentsAttribute;
+      this._hasPlanarExtentsAttributes = hasPlanarExtentsAttributes;
+      this._hasPerColorAttribute = hasPerColorAttribute;
+
+      const geometryInstances = new Array(length);
+      for (i = 0; i < length; ++i) {
+        instance = instances[i];
+        geometryInstances[i] = new GeometryInstance({
+          geometry: instance.geometry,
+          attributes: instance.attributes,
+          modelMatrix: instance.modelMatrix,
+          id: instance.id,
+          pickPrimitive: this._pickPrimitive ?? that,
+        });
+      }
+
+      primitiveOptions.appearance = appearance;
+      primitiveOptions.geometryInstances = geometryInstances;
+
+      if (defined(this._createBoundingVolumeFunction)) {
+        primitiveOptions._createBoundingVolumeFunction = function (
+          frameState,
+          geometry,
+        ) {
+          that._createBoundingVolumeFunction(frameState, geometry);
+        };
+      }
+
+      primitiveOptions._createRenderStatesFunction = function (
+        primitive,
+        context,
+        appearance,
+        twoPasses,
+      ) {
+        createRenderStates(that, context);
+      };
+      primitiveOptions._createShaderProgramFunction = function (
+        primitive,
+        frameState,
+        appearance,
+      ) {
+        createShaderProgram(that, frameState);
+      };
+      primitiveOptions._createCommandsFunction = function (
+        primitive,
+        appearance,
+        material,
+        translucent,
+        twoPasses,
+        colorCommands,
+        pickCommands,
+      ) {
+        createCommands(
+          that,
+          undefined,
+          undefined,
+          true,
+          false,
+          colorCommands,
+          pickCommands,
+        );
+      };
+
+      if (defined(this._updateAndQueueCommandsFunction)) {
+        primitiveOptions._updateAndQueueCommandsFunction = function (
+          primitive,
+          frameState,
+          colorCommands,
+          pickCommands,
+          modelMatrix,
+          cull,
+          debugShowBoundingVolume,
+          twoPasses,
+        ) {
+          that._updateAndQueueCommandsFunction(
+            primitive,
+            frameState,
+            colorCommands,
+            pickCommands,
+            modelMatrix,
+            cull,
+            debugShowBoundingVolume,
+            twoPasses,
+          );
+        };
+      } else {
+        primitiveOptions._updateAndQueueCommandsFunction = function (
+          primitive,
+          frameState,
+          colorCommands,
+          pickCommands,
+          modelMatrix,
+          cull,
+          debugShowBoundingVolume,
+          twoPasses,
+        ) {
+          updateAndQueueCommands(
+            that,
+            frameState,
+            colorCommands,
+            pickCommands,
+            modelMatrix,
+            cull,
+            debugShowBoundingVolume,
+            twoPasses,
+          );
+        };
+      }
+
+      this._primitive = new Primitive(primitiveOptions);
+    }
+
+    if (
+      this.debugShowShadowVolume &&
+      !this._debugShowShadowVolume &&
+      this._ready
+    ) {
+      this._debugShowShadowVolume = true;
+      this._rsStencilDepthPass = RenderState.fromCache(
+        getStencilDepthRenderState(false, false),
+      );
+      this._rsStencilDepthPass3DTiles = RenderState.fromCache(
+        getStencilDepthRenderState(false, true),
+      );
+      this._rsColorPass = RenderState.fromCache(getColorRenderState(false));
+    } else if (!this.debugShowShadowVolume && this._debugShowShadowVolume) {
+      this._debugShowShadowVolume = false;
+      this._rsStencilDepthPass = RenderState.fromCache(
+        getStencilDepthRenderState(true, false),
+      );
+      this._rsStencilDepthPass3DTiles = RenderState.fromCache(
+        getStencilDepthRenderState(true, true),
+      );
+      this._rsColorPass = RenderState.fromCache(getColorRenderState(true));
+    }
+    // Update primitive appearance
+    if (this._primitive.appearance !== appearance) {
+      //>>includeStart('debug', pragmas.debug);
+      // Check if the appearance is supported by the geometry attributes
+      if (
+        !this._hasSphericalExtentsAttribute &&
+        !this._hasPlanarExtentsAttributes &&
+        defined(appearance.material)
+      ) {
+        throw new DeveloperError(
+          "Materials on ClassificationPrimitives are not supported except via GroundPrimitive",
+        );
+      }
+      if (
+        !this._hasPerColorAttribute &&
+        appearance instanceof PerInstanceColorAppearance
+      ) {
+        throw new DeveloperError(
+          "PerInstanceColorAppearance requires color GeometryInstanceAttribute",
+        );
+      }
+      //>>includeEnd('debug');
+      this._primitive.appearance = appearance;
+    }
+
+    this._primitive.show = this.show;
+    this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
+    this._primitive.update(frameState);
+
+    frameState.afterRender.push(() => {
+      if (defined(this._primitive) && this._primitive.ready) {
+        this._ready = true;
+
+        if (this.releaseGeometryInstances) {
+          this.geometryInstances = undefined;
+        }
+      }
+    });
+  }
+
+  /**
+   * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
+   *
+   * @param {*} id The id of the {@link GeometryInstance}.
+   * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
+   *
+   * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
+   *
+   * @example
+   * const attributes = primitive.getGeometryInstanceAttributes('an id');
+   * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
+   * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
+   */
+  getGeometryInstanceAttributes(id) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(this._primitive)) {
+      throw new DeveloperError(
+        "must call update before calling getGeometryInstanceAttributes",
+      );
+    }
+    //>>includeEnd('debug');
+    return this._primitive.getGeometryInstanceAttributes(id);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
    * <p>
-   * Because of the rendering technique used, all geometry instances must be the same color.
-   * If there is an instance with a differing color, a <code>DeveloperError</code> will be thrown
-   * on the first attempt to render.
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
    * </p>
    *
-   * @readonly
-   * @type {Array|GeometryInstance}
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
    *
-   * @default undefined
+   * @see ClassificationPrimitive#destroy
    */
-  this.geometryInstances = geometryInstances;
+  isDestroyed() {
+    return false;
+  }
+
   /**
-   * Determines if the primitive will be shown.  This affects all geometry
-   * instances in the primitive.
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  this.show = options.show ?? true;
-  /**
-   * Determines whether terrain, 3D Tiles or both will be classified.
-   *
-   * @type {ClassificationType}
-   *
-   * @default ClassificationType.BOTH
-   */
-  this.classificationType =
-    options.classificationType ?? ClassificationType.BOTH;
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
    * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
    * </p>
    *
-   * @type {boolean}
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
    *
-   * @default false
+   * @example
+   * e = e && e.destroy();
+   *
+   * @see ClassificationPrimitive#isDestroyed
    */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the shadow volume for each geometry in the primitive.
-   * </p>
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.debugShowShadowVolume = options.debugShowShadowVolume ?? false;
-  this._debugShowShadowVolume = false;
+  destroy() {
+    this._primitive = this._primitive && this._primitive.destroy();
+    this._sp = this._sp && this._sp.destroy();
+    this._spPick = this._spPick && this._spPick.destroy();
+    this._spColor = this._spColor && this._spColor.destroy();
 
-  // These are used by GroundPrimitive to augment the shader and uniform map.
-  this._extruded = options._extruded ?? false;
-  this._uniformMap = options._uniformMap;
+    // Derived programs, destroyed above if they existed.
+    this._spPick2D = undefined;
+    this._spColor2D = undefined;
+    return destroyObject(this);
+  }
 
-  this._sp = undefined;
-  this._spStencil = undefined;
-  this._spPick = undefined;
-  this._spColor = undefined;
-
-  this._spPick2D = undefined; // only derived if necessary
-  this._spColor2D = undefined; // only derived if necessary
-
-  this._rsStencilDepthPass = undefined;
-  this._rsStencilDepthPass3DTiles = undefined;
-  this._rsColorPass = undefined;
-  this._rsPickPass = undefined;
-
-  this._commandsIgnoreShow = [];
-
-  this._ready = false;
-  this._primitive = undefined;
-  this._pickPrimitive = options._pickPrimitive;
-
-  // Set in update
-  this._hasSphericalExtentsAttribute = false;
-  this._hasPlanarExtentsAttributes = false;
-  this._hasPerColorAttribute = false;
-
-  this.appearance = options.appearance;
-
-  this._createBoundingVolumeFunction = options._createBoundingVolumeFunction;
-  this._updateAndQueueCommandsFunction =
-    options._updateAndQueueCommandsFunction;
-
-  this._usePickOffsets = false;
-
-  this._primitiveOptions = {
-    geometryInstances: undefined,
-    appearance: undefined,
-    vertexCacheOptimize: options.vertexCacheOptimize ?? false,
-    interleave: options.interleave ?? false,
-    releaseGeometryInstances: options.releaseGeometryInstances ?? true,
-    allowPicking: options.allowPicking ?? true,
-    asynchronous: options.asynchronous ?? true,
-    compressVertices: options.compressVertices ?? true,
-    _createBoundingVolumeFunction: undefined,
-    _createRenderStatesFunction: undefined,
-    _createShaderProgramFunction: undefined,
-    _createCommandsFunction: undefined,
-    _updateAndQueueCommandsFunction: undefined,
-    _createPickOffsets: true,
-  };
-}
-
-Object.defineProperties(ClassificationPrimitive.prototype, {
   /**
    * When <code>true</code>, geometry vertices are optimized for the pre and post-vertex-shader caches.
    *
@@ -199,11 +557,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default true
    */
-  vertexCacheOptimize: {
-    get: function () {
-      return this._primitiveOptions.vertexCacheOptimize;
-    },
-  },
+  get vertexCacheOptimize() {
+    return this._primitiveOptions.vertexCacheOptimize;
+  }
 
   /**
    * Determines if geometry vertex attributes are interleaved, which can slightly improve rendering performance.
@@ -215,11 +571,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default false
    */
-  interleave: {
-    get: function () {
-      return this._primitiveOptions.interleave;
-    },
-  },
+  get interleave() {
+    return this._primitiveOptions.interleave;
+  }
 
   /**
    * When <code>true</code>, the primitive does not keep a reference to the input <code>geometryInstances</code> to save memory.
@@ -231,11 +585,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default true
    */
-  releaseGeometryInstances: {
-    get: function () {
-      return this._primitiveOptions.releaseGeometryInstances;
-    },
-  },
+  get releaseGeometryInstances() {
+    return this._primitiveOptions.releaseGeometryInstances;
+  }
 
   /**
    * When <code>true</code>, each geometry instance will only be pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
@@ -247,11 +599,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default true
    */
-  allowPicking: {
-    get: function () {
-      return this._primitiveOptions.allowPicking;
-    },
-  },
+  get allowPicking() {
+    return this._primitiveOptions.allowPicking;
+  }
 
   /**
    * Determines if the geometry instances will be created and batched on a web worker.
@@ -263,11 +613,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default true
    */
-  asynchronous: {
-    get: function () {
-      return this._primitiveOptions.asynchronous;
-    },
-  },
+  get asynchronous() {
+    return this._primitiveOptions.asynchronous;
+  }
 
   /**
    * When <code>true</code>, geometry vertices are compressed, which will save memory.
@@ -279,11 +627,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    *
    * @default true
    */
-  compressVertices: {
-    get: function () {
-      return this._primitiveOptions.compressVertices;
-    },
-  },
+  get compressVertices() {
+    return this._primitiveOptions.compressVertices;
+  }
 
   /**
    * Determines if the primitive is complete and ready to render.  If this property is
@@ -295,11 +641,9 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
   /**
    * Returns true if the ClassificationPrimitive needs a separate shader and commands for 2D.
@@ -310,14 +654,12 @@ Object.defineProperties(ClassificationPrimitive.prototype, {
    * @readonly
    * @private
    */
-  _needs2DShader: {
-    get: function () {
-      return (
-        this._hasPlanarExtentsAttributes || this._hasSphericalExtentsAttribute
-      );
-    },
-  },
-});
+  get _needs2DShader() {
+    return (
+      this._hasPlanarExtentsAttributes || this._hasSphericalExtentsAttribute
+    );
+  }
+}
 
 /**
  * Determines if ClassificationPrimitive rendering is supported.
@@ -1025,363 +1367,4 @@ function updateAndQueueCommands(
   }
 }
 
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {DeveloperError} All instance geometries must have the same primitiveType.
- * @exception {DeveloperError} Appearance and material have a uniform with the same name.
- * @exception {DeveloperError} Not all of the geometry instances have the same color attribute.
- */
-ClassificationPrimitive.prototype.update = function (frameState) {
-  if (!defined(this._primitive) && !defined(this.geometryInstances)) {
-    return;
-  }
-
-  let appearance = this.appearance;
-  if (defined(appearance) && defined(appearance.material)) {
-    appearance.material.update(frameState.context);
-  }
-
-  const that = this;
-  const primitiveOptions = this._primitiveOptions;
-
-  if (!defined(this._primitive)) {
-    const instances = Array.isArray(this.geometryInstances)
-      ? this.geometryInstances
-      : [this.geometryInstances];
-    const length = instances.length;
-
-    let i;
-    let instance;
-    let attributes;
-
-    let hasPerColorAttribute = false;
-    let allColorsSame = true;
-    let firstColor;
-    let hasSphericalExtentsAttribute = false;
-    let hasPlanarExtentsAttributes = false;
-
-    if (length > 0) {
-      attributes = instances[0].attributes;
-      // Not expecting these to be set by users, should only be set via GroundPrimitive.
-      // So don't check for mismatch.
-      hasSphericalExtentsAttribute =
-        ShadowVolumeAppearance.hasAttributesForSphericalExtents(attributes);
-      hasPlanarExtentsAttributes =
-        ShadowVolumeAppearance.hasAttributesForTextureCoordinatePlanes(
-          attributes,
-        );
-      firstColor = attributes.color;
-    }
-
-    for (i = 0; i < length; i++) {
-      instance = instances[i];
-      const color = instance.attributes.color;
-      if (defined(color)) {
-        hasPerColorAttribute = true;
-      }
-      //>>includeStart('debug', pragmas.debug);
-      else if (hasPerColorAttribute) {
-        throw new DeveloperError(
-          "All GeometryInstances must have color attributes to use per-instance color.",
-        );
-      }
-      //>>includeEnd('debug');
-
-      allColorsSame =
-        allColorsSame &&
-        defined(color) &&
-        ColorGeometryInstanceAttribute.equals(firstColor, color);
-    }
-
-    // If no attributes exist for computing spherical extents or fragment culling,
-    // throw if the colors aren't all the same.
-    if (
-      !allColorsSame &&
-      !hasSphericalExtentsAttribute &&
-      !hasPlanarExtentsAttributes
-    ) {
-      throw new DeveloperError(
-        "All GeometryInstances must have the same color attribute except via GroundPrimitives",
-      );
-    }
-
-    // default to a color appearance
-    if (hasPerColorAttribute && !defined(appearance)) {
-      appearance = new PerInstanceColorAppearance({
-        flat: true,
-      });
-      this.appearance = appearance;
-    }
-
-    //>>includeStart('debug', pragmas.debug);
-    if (
-      !hasPerColorAttribute &&
-      appearance instanceof PerInstanceColorAppearance
-    ) {
-      throw new DeveloperError(
-        "PerInstanceColorAppearance requires color GeometryInstanceAttributes on all GeometryInstances",
-      );
-    }
-    if (
-      defined(appearance.material) &&
-      !hasSphericalExtentsAttribute &&
-      !hasPlanarExtentsAttributes
-    ) {
-      throw new DeveloperError(
-        "Materials on ClassificationPrimitives are not supported except via GroundPrimitives",
-      );
-    }
-    //>>includeEnd('debug');
-
-    this._usePickOffsets =
-      !hasSphericalExtentsAttribute && !hasPlanarExtentsAttributes;
-    this._hasSphericalExtentsAttribute = hasSphericalExtentsAttribute;
-    this._hasPlanarExtentsAttributes = hasPlanarExtentsAttributes;
-    this._hasPerColorAttribute = hasPerColorAttribute;
-
-    const geometryInstances = new Array(length);
-    for (i = 0; i < length; ++i) {
-      instance = instances[i];
-      geometryInstances[i] = new GeometryInstance({
-        geometry: instance.geometry,
-        attributes: instance.attributes,
-        modelMatrix: instance.modelMatrix,
-        id: instance.id,
-        pickPrimitive: this._pickPrimitive ?? that,
-      });
-    }
-
-    primitiveOptions.appearance = appearance;
-    primitiveOptions.geometryInstances = geometryInstances;
-
-    if (defined(this._createBoundingVolumeFunction)) {
-      primitiveOptions._createBoundingVolumeFunction = function (
-        frameState,
-        geometry,
-      ) {
-        that._createBoundingVolumeFunction(frameState, geometry);
-      };
-    }
-
-    primitiveOptions._createRenderStatesFunction = function (
-      primitive,
-      context,
-      appearance,
-      twoPasses,
-    ) {
-      createRenderStates(that, context);
-    };
-    primitiveOptions._createShaderProgramFunction = function (
-      primitive,
-      frameState,
-      appearance,
-    ) {
-      createShaderProgram(that, frameState);
-    };
-    primitiveOptions._createCommandsFunction = function (
-      primitive,
-      appearance,
-      material,
-      translucent,
-      twoPasses,
-      colorCommands,
-      pickCommands,
-    ) {
-      createCommands(
-        that,
-        undefined,
-        undefined,
-        true,
-        false,
-        colorCommands,
-        pickCommands,
-      );
-    };
-
-    if (defined(this._updateAndQueueCommandsFunction)) {
-      primitiveOptions._updateAndQueueCommandsFunction = function (
-        primitive,
-        frameState,
-        colorCommands,
-        pickCommands,
-        modelMatrix,
-        cull,
-        debugShowBoundingVolume,
-        twoPasses,
-      ) {
-        that._updateAndQueueCommandsFunction(
-          primitive,
-          frameState,
-          colorCommands,
-          pickCommands,
-          modelMatrix,
-          cull,
-          debugShowBoundingVolume,
-          twoPasses,
-        );
-      };
-    } else {
-      primitiveOptions._updateAndQueueCommandsFunction = function (
-        primitive,
-        frameState,
-        colorCommands,
-        pickCommands,
-        modelMatrix,
-        cull,
-        debugShowBoundingVolume,
-        twoPasses,
-      ) {
-        updateAndQueueCommands(
-          that,
-          frameState,
-          colorCommands,
-          pickCommands,
-          modelMatrix,
-          cull,
-          debugShowBoundingVolume,
-          twoPasses,
-        );
-      };
-    }
-
-    this._primitive = new Primitive(primitiveOptions);
-  }
-
-  if (
-    this.debugShowShadowVolume &&
-    !this._debugShowShadowVolume &&
-    this._ready
-  ) {
-    this._debugShowShadowVolume = true;
-    this._rsStencilDepthPass = RenderState.fromCache(
-      getStencilDepthRenderState(false, false),
-    );
-    this._rsStencilDepthPass3DTiles = RenderState.fromCache(
-      getStencilDepthRenderState(false, true),
-    );
-    this._rsColorPass = RenderState.fromCache(getColorRenderState(false));
-  } else if (!this.debugShowShadowVolume && this._debugShowShadowVolume) {
-    this._debugShowShadowVolume = false;
-    this._rsStencilDepthPass = RenderState.fromCache(
-      getStencilDepthRenderState(true, false),
-    );
-    this._rsStencilDepthPass3DTiles = RenderState.fromCache(
-      getStencilDepthRenderState(true, true),
-    );
-    this._rsColorPass = RenderState.fromCache(getColorRenderState(true));
-  }
-  // Update primitive appearance
-  if (this._primitive.appearance !== appearance) {
-    //>>includeStart('debug', pragmas.debug);
-    // Check if the appearance is supported by the geometry attributes
-    if (
-      !this._hasSphericalExtentsAttribute &&
-      !this._hasPlanarExtentsAttributes &&
-      defined(appearance.material)
-    ) {
-      throw new DeveloperError(
-        "Materials on ClassificationPrimitives are not supported except via GroundPrimitive",
-      );
-    }
-    if (
-      !this._hasPerColorAttribute &&
-      appearance instanceof PerInstanceColorAppearance
-    ) {
-      throw new DeveloperError(
-        "PerInstanceColorAppearance requires color GeometryInstanceAttribute",
-      );
-    }
-    //>>includeEnd('debug');
-    this._primitive.appearance = appearance;
-  }
-
-  this._primitive.show = this.show;
-  this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
-  this._primitive.update(frameState);
-
-  frameState.afterRender.push(() => {
-    if (defined(this._primitive) && this._primitive.ready) {
-      this._ready = true;
-
-      if (this.releaseGeometryInstances) {
-        this.geometryInstances = undefined;
-      }
-    }
-  });
-};
-
-/**
- * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
- *
- * @param {*} id The id of the {@link GeometryInstance}.
- * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
- *
- * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
- *
- * @example
- * const attributes = primitive.getGeometryInstanceAttributes('an id');
- * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
- * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
- */
-ClassificationPrimitive.prototype.getGeometryInstanceAttributes = function (
-  id,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(this._primitive)) {
-    throw new DeveloperError(
-      "must call update before calling getGeometryInstanceAttributes",
-    );
-  }
-  //>>includeEnd('debug');
-  return this._primitive.getGeometryInstanceAttributes(id);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see ClassificationPrimitive#destroy
- */
-ClassificationPrimitive.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * e = e && e.destroy();
- *
- * @see ClassificationPrimitive#isDestroyed
- */
-ClassificationPrimitive.prototype.destroy = function () {
-  this._primitive = this._primitive && this._primitive.destroy();
-  this._sp = this._sp && this._sp.destroy();
-  this._spPick = this._spPick && this._spPick.destroy();
-  this._spColor = this._spColor && this._spColor.destroy();
-
-  // Derived programs, destroyed above if they existed.
-  this._spPick2D = undefined;
-  this._spColor2D = undefined;
-  return destroyObject(this);
-};
 export default ClassificationPrimitive;

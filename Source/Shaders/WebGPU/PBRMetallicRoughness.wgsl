@@ -1,17 +1,25 @@
 // PBRMetallicRoughness.wgsl
 // Physically Based Rendering shader using metallic-roughness workflow
 // Compatible with glTF 2.0 PBR materials
+//
+// RTE — position is supplied as high/low split (locations 0/1) per the
+// engine-wide 64-bit emulation rules. Clip-space is computed via
+// `mvpRelativeToEye * translateRelativeToEye(...)` so planetary-scale
+// world coordinates don't lose precision through a naked `mvp * worldPos`.
 
 struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) texCoord: vec2<f32>,
-    @location(3) tangent: vec4<f32>, // w component is handedness
+    @location(0) positionHigh: vec3<f32>,
+    @location(1) positionLow: vec3<f32>,
+    @location(2) normal: vec3<f32>,
+    @location(3) texCoord: vec2<f32>,
+    @location(4) tangent: vec4<f32>, // w component is handedness
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) worldPosition: vec3<f32>,
+    // Eye-relative position — use for view vector and lighting. Do NOT
+    // reconstruct an absolute world position at planetary scale.
+    @location(0) positionEC: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) texCoord: vec2<f32>,
     @location(3) tangent: vec3<f32>,
@@ -22,6 +30,15 @@ struct CameraUniforms {
     viewMatrix: mat4x4<f32>,
     projectionMatrix: mat4x4<f32>,
     viewProjectionMatrix: mat4x4<f32>,
+    // RTE matrices: translation zeroed — safe to multiply with eye-
+    // relative positions.
+    mvpRelativeToEye: mat4x4<f32>,
+    modelViewRelativeToEye: mat4x4<f32>,
+    // EncodedCartesian3 camera position split into high/low halves.
+    encodedCameraPositionMCHigh: vec3<f32>,
+    _padHigh: f32,
+    encodedCameraPositionMCLow: vec3<f32>,
+    _padLow: f32,
     cameraPosition: vec3<f32>,
     _padding: f32,
 }
@@ -79,29 +96,46 @@ struct LightingUniforms {
 // Constants
 const PI: f32 = 3.14159265359;
 
+// Inline RTE helper — matches the signature used across engine shaders.
+fn translateRelativeToEye(
+    posHigh: vec3<f32>,
+    posLow: vec3<f32>,
+    camHigh: vec3<f32>,
+    camLow: vec3<f32>,
+) -> vec3<f32> {
+    let highDiff = posHigh - camHigh;
+    let lowDiff = posLow - camLow;
+    return highDiff + lowDiff;
+}
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    
-    // Transform position to world space
-    let worldPos = model.modelMatrix * vec4<f32>(input.position, 1.0);
-    output.worldPosition = worldPos.xyz;
-    
-    // Transform position to clip space
-    output.position = camera.viewProjectionMatrix * worldPos;
-    
-    // Transform normal to world space
+
+    // RTE: split world-space position → small eye-relative vec3.
+    let rte = translateRelativeToEye(
+        input.positionHigh,
+        input.positionLow,
+        camera.encodedCameraPositionMCHigh,
+        camera.encodedCameraPositionMCLow,
+    );
+
+    // Eye-relative clip + view-space position.
+    output.positionEC = (camera.modelViewRelativeToEye * vec4<f32>(rte, 1.0)).xyz;
+    output.position = camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
+
+    // Transform normal — normalMatrix is orientation-only so FP32 OK.
     output.normal = normalize((model.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz);
-    
+
     // Transform tangent to world space
     output.tangent = normalize((model.normalMatrix * vec4<f32>(input.tangent.xyz, 0.0)).xyz);
-    
+
     // Calculate bitangent
     output.bitangent = cross(output.normal, output.tangent) * input.tangent.w;
-    
+
     // Pass through texture coordinates
     output.texCoord = input.texCoord;
-    
+
     return output;
 }
 
@@ -185,7 +219,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let N = getNormalFromMap(input);
     
     // View direction
-    let V = normalize(camera.cameraPosition - input.worldPosition);
+    // Eye-relative view vector. Do NOT reconstruct a world position
+    // at planetary scale — that would reintroduce the precision loss
+    // RTE is there to avoid.
+    let V = normalize(-input.positionEC);
     
     // Calculate F0 (surface reflection at zero incidence)
     var F0 = vec3<f32>(0.04); // Dielectric base reflectivity
@@ -245,7 +282,10 @@ fn fragmentMainSimple(input: VertexOutput) -> @location(0) vec4<f32> {
     
     // Use vertex normal
     let N = normalize(input.normal);
-    let V = normalize(camera.cameraPosition - input.worldPosition);
+    // Eye-relative view vector. Do NOT reconstruct a world position
+    // at planetary scale — that would reintroduce the precision loss
+    // RTE is there to avoid.
+    let V = normalize(-input.positionEC);
     let L = normalize(-lighting.lightDirection);
     let H = normalize(V + L);
     

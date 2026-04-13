@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 
@@ -66,38 +65,32 @@ TrustedServers.remove = function (host, port) {
 };
 
 function getAuthority(url) {
-  const uri = new Uri(url);
-  uri.normalize();
-
-  // Removes username:password@ so we just have host[:port]
-  let authority = uri.authority();
-  if (authority.length === 0) {
-    return undefined; // Relative URL
-  }
-  uri.authority(authority);
-
-  if (authority.indexOf("@") !== -1) {
-    const parts = authority.split("@");
-    authority = parts[1];
+  let parsed;
+  try {
+    parsed = new URL(url, window?.location?.href ?? "https://placeholder.invalid/");
+  } catch {
+    return undefined;
   }
 
-  // If the port is missing add one based on the scheme
-  if (authority.indexOf(":") === -1) {
-    let scheme = uri.scheme();
-    if (scheme.length === 0) {
-      scheme = window.location.protocol;
-      scheme = scheme.substring(0, scheme.length - 1);
-    }
+  const hostname = parsed.hostname;
+  if (hostname.length === 0) {
+    return undefined; // Relative URL that couldn't be resolved
+  }
+
+  // Determine port — use explicit port or default for protocol
+  let port = parsed.port;
+  if (!port) {
+    const scheme = parsed.protocol.replace(":", "");
     if (scheme === "http") {
-      authority += ":80";
+      port = "80";
     } else if (scheme === "https") {
-      authority += ":443";
+      port = "443";
     } else {
       return undefined;
     }
   }
 
-  return authority;
+  return `${hostname.toLowerCase()}:${port}`;
 }
 
 /**

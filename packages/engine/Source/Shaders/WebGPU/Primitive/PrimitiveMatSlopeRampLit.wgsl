@@ -21,7 +21,7 @@ struct VertexOutput {
     @location(3) slopeT: f32,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -32,16 +32,17 @@ struct Uniforms {
     lightDirection: vec4<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var rampSampler: sampler;
-@group(1) @binding(1) var rampTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+// group(1) = MaterialUniforms placeholder (not referenced by this shader)
+@group(2) @binding(0) var rampSampler: sampler;
+@group(2) @binding(1) var rampTexture: texture_2d<f32>;
 
 const PI_OVER_2: f32 = 1.5707963268;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -49,9 +50,9 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * posRTE;
-    output.worldNormal = (uniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * posRTE).xyz;
+    output.clipPosition = camera.mvpRelativeToEye * posRTE;
+    output.worldNormal = (camera.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
     output.texCoord = input.texCoord;
     // Compute slope: angle between normal and radial (up) direction
     let worldPos = input.positionHigh + input.positionLow;
@@ -65,7 +66,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(input.worldNormal);
     let V = normalize(-input.viewPosition);
-    let L = normalize(uniforms.lightDirection.xyz);
+    let L = normalize(camera.lightDirection.xyz);
 
     let NdotL = max(dot(N, L), 0.0);
     let H = normalize(L + V);

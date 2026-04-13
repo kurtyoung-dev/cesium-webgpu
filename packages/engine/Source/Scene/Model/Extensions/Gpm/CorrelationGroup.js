@@ -24,19 +24,19 @@ import Check from "../../../../Core/Check.js";
  * @param {CorrelationGroup.ConstructorOptions} options An object describing initialization options
  * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function CorrelationGroup(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.groupFlags", options.groupFlags);
-  Check.typeOf.object("options.rotationThetas", options.rotationThetas);
-  Check.typeOf.object("options.params", options.params);
-  //>>includeEnd('debug');
+class CorrelationGroup {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.groupFlags", options.groupFlags);
+    Check.typeOf.object("options.rotationThetas", options.rotationThetas);
+    Check.typeOf.object("options.params", options.params);
+    //>>includeEnd('debug');
 
-  this._groupFlags = options.groupFlags;
-  this._rotationThetas = options.rotationThetas;
-  this._params = options.params;
-}
+    this._groupFlags = options.groupFlags;
+    this._rotationThetas = options.rotationThetas;
+    this._params = options.params;
+  }
 
-Object.defineProperties(CorrelationGroup.prototype, {
   /**
    * Array of 3 booleans indicating if parameters delta-x delta-y delta-z
    * used in the correlation group
@@ -45,11 +45,9 @@ Object.defineProperties(CorrelationGroup.prototype, {
    * @type {boolean[]}
    * @readonly
    */
-  groupFlags: {
-    get: function () {
-      return this._groupFlags;
-    },
-  },
+  get groupFlags() {
+    return this._groupFlags;
+  }
 
   /**
    * Rotations in milliradians about X, Y, Z axes, respectively
@@ -58,11 +56,9 @@ Object.defineProperties(CorrelationGroup.prototype, {
    * @type {Cartesian3}
    * @readonly
    */
-  rotationThetas: {
-    get: function () {
-      return this._rotationThetas;
-    },
-  },
+  get rotationThetas() {
+    return this._rotationThetas;
+  }
 
   /**
    * Array of 3 sets of SPDCF parameters, for the U, V, W directions, respectively
@@ -71,11 +67,9 @@ Object.defineProperties(CorrelationGroup.prototype, {
    * @type {Spdcf[]}
    * @readonly
    */
-  params: {
-    get: function () {
-      return this._params;
-    },
-  },
-});
+  get params() {
+    return this._params;
+  }
+}
 
 export default CorrelationGroup;

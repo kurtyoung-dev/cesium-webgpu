@@ -35,8 +35,13 @@ export type IndexableMatrix = Record<number, number>;
  * @returns The same object, typed to allow numeric indexing
  *
  * @example
- * const mvp = m4Values(Matrix4.multiply(proj, view, scratch));
- * mvp[12] = 0; // zero translation for RTE
+ * // RTE-correct pattern: zero the translation column of MV *before*
+ * // multiplying by projection. Zeroing after `proj * mv` wipes out
+ * // projection's P23 depth-mapping term (which lands in the same
+ * // column-3 slot during the multiply), producing incorrect NDC depth.
+ * const mv = Matrix4.multiply(view, model, scratchMV);
+ * mv[12] = 0; mv[13] = 0; mv[14] = 0;
+ * const mvp = m4Values(Matrix4.multiply(proj, mv, scratchMVP));
  * for (let i = 0; i < 16; i++) data[i] = mvp[i];
  */
 export function m4Values(matrix: unknown): IndexableMatrix {

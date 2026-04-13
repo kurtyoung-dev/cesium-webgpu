@@ -48,16 +48,252 @@ function CorridorGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-function CorridorGeometryUpdater(entity, scene) {
-  GroundGeometryUpdater.call(this, {
-    entity: entity,
-    scene: scene,
-    geometryOptions: new CorridorGeometryOptions(entity),
-    geometryPropertyName: "corridor",
-    observedPropertyNames: ["availability", "corridor"],
-  });
+class CorridorGeometryUpdater {
+  constructor(entity, scene) {
+    GroundGeometryUpdater.call(this, {
+      entity: entity,
+      scene: scene,
+      geometryOptions: new CorridorGeometryOptions(entity),
+      geometryPropertyName: "corridor",
+      observedPropertyNames: ["availability", "corridor"],
+    });
 
-  this._onEntityPropertyChanged(entity, "corridor", entity.corridor, undefined);
+    this._onEntityPropertyChanged(entity, "corridor", entity.corridor, undefined);
+  }
+
+  /**
+   * Creates the geometry instance which represents the fill of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent a filled geometry.
+   */
+  createFillGeometryInstance(time) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+
+    if (!this._fillEnabled) {
+      throw new DeveloperError(
+        "This instance does not represent a filled geometry.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const entity = this._entity;
+    const isAvailable = entity.isAvailable(time);
+
+    const attributes = {
+      show: new ShowGeometryInstanceAttribute(
+        isAvailable &&
+          entity.isShowing &&
+          this._showProperty.getValue(time) &&
+          this._fillProperty.getValue(time),
+      ),
+      distanceDisplayCondition:
+        DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
+          this._distanceDisplayConditionProperty.getValue(time),
+        ),
+      offset: undefined,
+      color: undefined,
+    };
+
+    if (this._materialProperty instanceof ColorMaterialProperty) {
+      let currentColor;
+      if (
+        defined(this._materialProperty.color) &&
+        (this._materialProperty.color.isConstant || isAvailable)
+      ) {
+        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+      }
+      if (!defined(currentColor)) {
+        currentColor = Color.WHITE;
+      }
+      attributes.color = ColorGeometryInstanceAttribute.fromColor(currentColor);
+    }
+
+    if (defined(this._options.offsetAttribute)) {
+      attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
+        Property.getValueOrDefault(
+          this._terrainOffsetProperty,
+          time,
+          defaultOffset,
+          offsetScratch,
+        ),
+      );
+    }
+
+    return new GeometryInstance({
+      id: entity,
+      geometry: new CorridorGeometry(this._options),
+      attributes: attributes,
+    });
+  }
+
+  /**
+   * Creates the geometry instance which represents the outline of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent an outlined geometry.
+   */
+  createOutlineGeometryInstance(time) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+
+    if (!this._outlineEnabled) {
+      throw new DeveloperError(
+        "This instance does not represent an outlined geometry.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const entity = this._entity;
+    const isAvailable = entity.isAvailable(time);
+    const outlineColor = Property.getValueOrDefault(
+      this._outlineColorProperty,
+      time,
+      Color.BLACK,
+      scratchColor,
+    );
+
+    const attributes = {
+      show: new ShowGeometryInstanceAttribute(
+        isAvailable &&
+          entity.isShowing &&
+          this._showProperty.getValue(time) &&
+          this._showOutlineProperty.getValue(time),
+      ),
+      color: ColorGeometryInstanceAttribute.fromColor(outlineColor),
+      distanceDisplayCondition:
+        DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
+          this._distanceDisplayConditionProperty.getValue(time),
+        ),
+      offset: undefined,
+    };
+
+    if (defined(this._options.offsetAttribute)) {
+      attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
+        Property.getValueOrDefault(
+          this._terrainOffsetProperty,
+          time,
+          defaultOffset,
+          offsetScratch,
+        ),
+      );
+    }
+
+    return new GeometryInstance({
+      id: entity,
+      geometry: new CorridorOutlineGeometry(this._options),
+      attributes: attributes,
+    });
+  }
+
+  _computeCenter(time, result) {
+    const positions = Property.getValueOrUndefined(
+      this._entity.corridor.positions,
+      time,
+    );
+    if (!defined(positions) || positions.length === 0) {
+      return;
+    }
+    return Cartesian3.clone(
+      positions[Math.floor(positions.length / 2.0)],
+      result,
+    );
+  }
+
+  _isHidden(entity, corridor) {
+    return (
+      !defined(corridor.positions) ||
+      !defined(corridor.width) ||
+      GeometryUpdater.prototype._isHidden.call(this, entity, corridor)
+    );
+  }
+
+  _isDynamic(entity, corridor) {
+    return (
+      !corridor.positions.isConstant || //
+      !Property.isConstant(corridor.height) || //
+      !Property.isConstant(corridor.extrudedHeight) || //
+      !Property.isConstant(corridor.granularity) || //
+      !Property.isConstant(corridor.width) || //
+      !Property.isConstant(corridor.outlineWidth) || //
+      !Property.isConstant(corridor.cornerType) || //
+      !Property.isConstant(corridor.zIndex) || //
+      (this._onTerrain &&
+        !Property.isConstant(this._materialProperty) &&
+        !(this._materialProperty instanceof ColorMaterialProperty))
+    );
+  }
+
+  _setStaticOptions(entity, corridor) {
+    let heightValue = Property.getValueOrUndefined(
+      corridor.height,
+      Iso8601.MINIMUM_VALUE,
+    );
+    const heightReferenceValue = Property.getValueOrDefault(
+      corridor.heightReference,
+      Iso8601.MINIMUM_VALUE,
+      HeightReference.NONE,
+    );
+    let extrudedHeightValue = Property.getValueOrUndefined(
+      corridor.extrudedHeight,
+      Iso8601.MINIMUM_VALUE,
+    );
+    const extrudedHeightReferenceValue = Property.getValueOrDefault(
+      corridor.extrudedHeightReference,
+      Iso8601.MINIMUM_VALUE,
+      HeightReference.NONE,
+    );
+    if (defined(extrudedHeightValue) && !defined(heightValue)) {
+      heightValue = 0;
+    }
+
+    const options = this._options;
+    options.vertexFormat =
+      this._materialProperty instanceof ColorMaterialProperty
+        ? PerInstanceColorAppearance.VERTEX_FORMAT
+        : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
+    options.positions = corridor.positions.getValue(
+      Iso8601.MINIMUM_VALUE,
+      options.positions,
+    );
+    options.width = corridor.width.getValue(Iso8601.MINIMUM_VALUE);
+    options.granularity = Property.getValueOrUndefined(
+      corridor.granularity,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.cornerType = Property.getValueOrUndefined(
+      corridor.cornerType,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.offsetAttribute =
+      GroundGeometryUpdater.computeGeometryOffsetAttribute(
+        heightValue,
+        heightReferenceValue,
+        extrudedHeightValue,
+        extrudedHeightReferenceValue,
+      );
+    options.height = GroundGeometryUpdater.getGeometryHeight(
+      heightValue,
+      heightReferenceValue,
+    );
+
+    extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
+      extrudedHeightValue,
+      extrudedHeightReferenceValue,
+    );
+    if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
+      extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
+        CorridorGeometry.computeRectangle(options, scratchRectangle),
+      ).minimumTerrainHeight;
+    }
+
+    options.extrudedHeight = extrudedHeightValue;
+  }
 }
 
 if (defined(Object.create)) {
@@ -66,245 +302,6 @@ if (defined(Object.create)) {
   );
   CorridorGeometryUpdater.prototype.constructor = CorridorGeometryUpdater;
 }
-
-/**
- * Creates the geometry instance which represents the fill of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent a filled geometry.
- */
-CorridorGeometryUpdater.prototype.createFillGeometryInstance = function (time) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-
-  if (!this._fillEnabled) {
-    throw new DeveloperError(
-      "This instance does not represent a filled geometry.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  const entity = this._entity;
-  const isAvailable = entity.isAvailable(time);
-
-  const attributes = {
-    show: new ShowGeometryInstanceAttribute(
-      isAvailable &&
-        entity.isShowing &&
-        this._showProperty.getValue(time) &&
-        this._fillProperty.getValue(time),
-    ),
-    distanceDisplayCondition:
-      DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
-        this._distanceDisplayConditionProperty.getValue(time),
-      ),
-    offset: undefined,
-    color: undefined,
-  };
-
-  if (this._materialProperty instanceof ColorMaterialProperty) {
-    let currentColor;
-    if (
-      defined(this._materialProperty.color) &&
-      (this._materialProperty.color.isConstant || isAvailable)
-    ) {
-      currentColor = this._materialProperty.color.getValue(time, scratchColor);
-    }
-    if (!defined(currentColor)) {
-      currentColor = Color.WHITE;
-    }
-    attributes.color = ColorGeometryInstanceAttribute.fromColor(currentColor);
-  }
-
-  if (defined(this._options.offsetAttribute)) {
-    attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
-      Property.getValueOrDefault(
-        this._terrainOffsetProperty,
-        time,
-        defaultOffset,
-        offsetScratch,
-      ),
-    );
-  }
-
-  return new GeometryInstance({
-    id: entity,
-    geometry: new CorridorGeometry(this._options),
-    attributes: attributes,
-  });
-};
-
-/**
- * Creates the geometry instance which represents the outline of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent an outlined geometry.
- */
-CorridorGeometryUpdater.prototype.createOutlineGeometryInstance = function (
-  time,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-
-  if (!this._outlineEnabled) {
-    throw new DeveloperError(
-      "This instance does not represent an outlined geometry.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  const entity = this._entity;
-  const isAvailable = entity.isAvailable(time);
-  const outlineColor = Property.getValueOrDefault(
-    this._outlineColorProperty,
-    time,
-    Color.BLACK,
-    scratchColor,
-  );
-
-  const attributes = {
-    show: new ShowGeometryInstanceAttribute(
-      isAvailable &&
-        entity.isShowing &&
-        this._showProperty.getValue(time) &&
-        this._showOutlineProperty.getValue(time),
-    ),
-    color: ColorGeometryInstanceAttribute.fromColor(outlineColor),
-    distanceDisplayCondition:
-      DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
-        this._distanceDisplayConditionProperty.getValue(time),
-      ),
-    offset: undefined,
-  };
-
-  if (defined(this._options.offsetAttribute)) {
-    attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
-      Property.getValueOrDefault(
-        this._terrainOffsetProperty,
-        time,
-        defaultOffset,
-        offsetScratch,
-      ),
-    );
-  }
-
-  return new GeometryInstance({
-    id: entity,
-    geometry: new CorridorOutlineGeometry(this._options),
-    attributes: attributes,
-  });
-};
-
-CorridorGeometryUpdater.prototype._computeCenter = function (time, result) {
-  const positions = Property.getValueOrUndefined(
-    this._entity.corridor.positions,
-    time,
-  );
-  if (!defined(positions) || positions.length === 0) {
-    return;
-  }
-  return Cartesian3.clone(
-    positions[Math.floor(positions.length / 2.0)],
-    result,
-  );
-};
-
-CorridorGeometryUpdater.prototype._isHidden = function (entity, corridor) {
-  return (
-    !defined(corridor.positions) ||
-    !defined(corridor.width) ||
-    GeometryUpdater.prototype._isHidden.call(this, entity, corridor)
-  );
-};
-
-CorridorGeometryUpdater.prototype._isDynamic = function (entity, corridor) {
-  return (
-    !corridor.positions.isConstant || //
-    !Property.isConstant(corridor.height) || //
-    !Property.isConstant(corridor.extrudedHeight) || //
-    !Property.isConstant(corridor.granularity) || //
-    !Property.isConstant(corridor.width) || //
-    !Property.isConstant(corridor.outlineWidth) || //
-    !Property.isConstant(corridor.cornerType) || //
-    !Property.isConstant(corridor.zIndex) || //
-    (this._onTerrain &&
-      !Property.isConstant(this._materialProperty) &&
-      !(this._materialProperty instanceof ColorMaterialProperty))
-  );
-};
-
-CorridorGeometryUpdater.prototype._setStaticOptions = function (
-  entity,
-  corridor,
-) {
-  let heightValue = Property.getValueOrUndefined(
-    corridor.height,
-    Iso8601.MINIMUM_VALUE,
-  );
-  const heightReferenceValue = Property.getValueOrDefault(
-    corridor.heightReference,
-    Iso8601.MINIMUM_VALUE,
-    HeightReference.NONE,
-  );
-  let extrudedHeightValue = Property.getValueOrUndefined(
-    corridor.extrudedHeight,
-    Iso8601.MINIMUM_VALUE,
-  );
-  const extrudedHeightReferenceValue = Property.getValueOrDefault(
-    corridor.extrudedHeightReference,
-    Iso8601.MINIMUM_VALUE,
-    HeightReference.NONE,
-  );
-  if (defined(extrudedHeightValue) && !defined(heightValue)) {
-    heightValue = 0;
-  }
-
-  const options = this._options;
-  options.vertexFormat =
-    this._materialProperty instanceof ColorMaterialProperty
-      ? PerInstanceColorAppearance.VERTEX_FORMAT
-      : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
-  options.positions = corridor.positions.getValue(
-    Iso8601.MINIMUM_VALUE,
-    options.positions,
-  );
-  options.width = corridor.width.getValue(Iso8601.MINIMUM_VALUE);
-  options.granularity = Property.getValueOrUndefined(
-    corridor.granularity,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.cornerType = Property.getValueOrUndefined(
-    corridor.cornerType,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.offsetAttribute =
-    GroundGeometryUpdater.computeGeometryOffsetAttribute(
-      heightValue,
-      heightReferenceValue,
-      extrudedHeightValue,
-      extrudedHeightReferenceValue,
-    );
-  options.height = GroundGeometryUpdater.getGeometryHeight(
-    heightValue,
-    heightReferenceValue,
-  );
-
-  extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
-    extrudedHeightValue,
-    extrudedHeightReferenceValue,
-  );
-  if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
-    extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
-      CorridorGeometry.computeRectangle(options, scratchRectangle),
-    ).minimumTerrainHeight;
-  }
-
-  options.extrudedHeight = extrudedHeightValue;
-};
 
 CorridorGeometryUpdater.DynamicGeometryUpdater = DynamicCorridorGeometryUpdater;
 

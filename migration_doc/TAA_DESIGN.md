@@ -97,6 +97,8 @@ The history sample is clamped to the AABB of the current pixel's 3×3 color neig
 - **Snapshot mode interaction**: when snapshot mode is frozen, the camera doesn't move and the TAA history stays valid forever — but the jittered projection still needs to NOT change between frames or the blend will introduce dither. **Mitigation**: zero the jitter offset whenever `scene.snapshotMode.isFrozen === true`. Add a hook in the Camera update step.
 - **MSAA interaction**: TAA is incompatible with MSAA on the same texture (the resolve happens before TAA samples it). **Decision**: TAA disables MSAA when active. The MSAA setting becomes a hint, not a hard requirement.
 - **Performance budget**: ~0.6ms/frame at 1080p on Chromium WebGPU + Vulkan backend (measured in similar engines). Budget for the dispatch + texture sample + clamp neighborhood. Acceptable.
+- **HDR pipeline interaction (added 2026-04-11)**: the post-process ping-pong textures are currently SDR (`bgra8unorm`), so TAA will accumulate **post-tonemap SDR** colors in its history buffer. This is the correct position — TAA after tonemapping means the variance clamp operates on perceptually-uniform values. If the HDR pipeline fix lands (promoting ping-pong to `rgba16float`), TAA must move to **before** tonemapping so it accumulates linear HDR, and the variance clamp thresholds must be retuned for the wider value range.
+- **Phase 5 WGF-3 shader-f16 interaction (added 2026-04-11)**: the f16 tonemapping variant runs before TAA. Since tonemapping output is SDR [0,1], f16's 10-bit mantissa (~3 decimal digits) provides more than enough precision for TAA's neighborhood clamp (which compares against 8-bit display precision). No interaction concern.
 
 ## Acceptance criteria
 

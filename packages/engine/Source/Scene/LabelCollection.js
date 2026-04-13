@@ -622,104 +622,385 @@ function destroyLabel(labelCollection, label) {
  *   text : 'Another label'
  * });
  */
-function LabelCollection(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class LabelCollection {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._scene = options.scene;
-  this._batchTable = options.batchTable;
+    this._scene = options.scene;
+    this._batchTable = options.batchTable;
 
-  const backgroundBillboardCollection = new BillboardCollection({
-    scene: this._scene,
-    textureAtlas: new TextureAtlas({
-      initialSize: whitePixelSize,
-    }),
-    coarseDepthTestDistance: options.coarseDepthTestDistance,
-    threePointDepthTestDistance: options.threePointDepthTestDistance,
-  });
-  this._backgroundBillboardCollection = backgroundBillboardCollection;
-  this._backgroundBillboardTexture = new BillboardTexture(
-    backgroundBillboardCollection,
-  );
+    const backgroundBillboardCollection = new BillboardCollection({
+      scene: this._scene,
+      textureAtlas: new TextureAtlas({
+        initialSize: whitePixelSize,
+      }),
+      coarseDepthTestDistance: options.coarseDepthTestDistance,
+      threePointDepthTestDistance: options.threePointDepthTestDistance,
+    });
+    this._backgroundBillboardCollection = backgroundBillboardCollection;
+    this._backgroundBillboardTexture = new BillboardTexture(
+      backgroundBillboardCollection,
+    );
 
-  this._glyphBillboardCollection = new BillboardCollection({
-    scene: this._scene,
-    batchTable: this._batchTable,
-    coarseDepthTestDistance: options.coarseDepthTestDistance,
-    threePointDepthTestDistance: options.threePointDepthTestDistance,
-  });
-  this._glyphBillboardCollection._sdf = true;
+    this._glyphBillboardCollection = new BillboardCollection({
+      scene: this._scene,
+      batchTable: this._batchTable,
+      coarseDepthTestDistance: options.coarseDepthTestDistance,
+      threePointDepthTestDistance: options.threePointDepthTestDistance,
+    });
+    this._glyphBillboardCollection._sdf = true;
 
-  this._spareBillboards = [];
-  this._textDimensionsCache = {};
-  this._labels = [];
-  this._labelsToUpdate = [];
-  this._totalGlyphCount = 0;
+    this._spareBillboards = [];
+    this._textDimensionsCache = {};
+    this._labels = [];
+    this._labelsToUpdate = [];
+    this._totalGlyphCount = 0;
 
-  this._highlightColor = Color.clone(Color.WHITE); // Only used by Vector3DTilePoints
+    this._highlightColor = Color.clone(Color.WHITE); // Only used by Vector3DTilePoints
+
+    /**
+     * Determines if labels in this collection will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
+
+    /**
+     * The 4x4 transformation matrix that transforms each label in this collection from model to world coordinates.
+     * When this is the identity matrix, the labels are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
+     * Local reference frames can be used by providing a different transformation matrix, like that returned
+     * by {@link Transforms.eastNorthUpToFixedFrame}.
+     *
+     * @type Matrix4
+     * @default {@link Matrix4.IDENTITY}
+     *
+     * @example
+     * const center = Cesium.Cartesian3.fromDegrees(-75.59777, 40.03883);
+     * labels.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+     * labels.add({
+     *   position : new Cesium.Cartesian3(0.0, 0.0, 0.0),
+     *   text     : 'Center'
+     * });
+     * labels.add({
+     *   position : new Cesium.Cartesian3(1000000.0, 0.0, 0.0),
+     *   text     : 'East'
+     * });
+     * labels.add({
+     *   position : new Cesium.Cartesian3(0.0, 1000000.0, 0.0),
+     *   text     : 'North'
+     * });
+     * labels.add({
+     *   position : new Cesium.Cartesian3(0.0, 0.0, 1000000.0),
+     *   text     : 'Up'
+     * });
+     */
+    this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    /**
+     * The label blending option. The default is used for rendering both opaque and translucent labels.
+     * However, if either all of the labels are completely opaque or all are completely translucent,
+     * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve
+     * performance by up to 2x.
+     * @type {BlendOption}
+     * @default BlendOption.OPAQUE_AND_TRANSLUCENT
+     */
+    this.blendOption = options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
+  }
 
   /**
-   * Determines if labels in this collection will be shown.
+   * Creates and adds a label with the specified initial properties to the collection.
+   * The added label is returned so it can be modified or removed from the collection later.
    *
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
-
-  /**
-   * The 4x4 transformation matrix that transforms each label in this collection from model to world coordinates.
-   * When this is the identity matrix, the labels are drawn in world coordinates, i.e., Earth's WGS84 coordinates.
-   * Local reference frames can be used by providing a different transformation matrix, like that returned
-   * by {@link Transforms.eastNorthUpToFixedFrame}.
+   * @param {Label.ConstructorOptions} [options] A template describing the label's properties as shown in Example 1.
+   * @returns {Label} The label that was added to the collection.
    *
-   * @type Matrix4
-   * @default {@link Matrix4.IDENTITY}
+   * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
+   * is rewritten; this operations is <code>O(n)</code> and also incurs
+   * CPU to GPU overhead.  For best performance, add as many billboards as possible before
+   * calling <code>update</code>.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
    *
    * @example
-   * const center = Cesium.Cartesian3.fromDegrees(-75.59777, 40.03883);
-   * labels.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-   * labels.add({
-   *   position : new Cesium.Cartesian3(0.0, 0.0, 0.0),
-   *   text     : 'Center'
+   * // Example 1:  Add a label, specifying all the default values.
+   * const l = labels.add({
+   *   show : true,
+   *   position : Cesium.Cartesian3.ZERO,
+   *   text : '',
+   *   font : '30px sans-serif',
+   *   fillColor : Cesium.Color.WHITE,
+   *   outlineColor : Cesium.Color.BLACK,
+   *   outlineWidth : 1.0,
+   *   showBackground : false,
+   *   backgroundColor : new Cesium.Color(0.165, 0.165, 0.165, 0.8),
+   *   backgroundPadding : new Cesium.Cartesian2(7, 5),
+   *   style : Cesium.LabelStyle.FILL,
+   *   pixelOffset : Cesium.Cartesian2.ZERO,
+   *   eyeOffset : Cesium.Cartesian3.ZERO,
+   *   horizontalOrigin : Cesium.HorizontalOrigin.LEFT,
+   *   verticalOrigin : Cesium.VerticalOrigin.BASELINE,
+   *   scale : 1.0,
+   *   translucencyByDistance : undefined,
+   *   pixelOffsetScaleByDistance : undefined,
+   *   heightReference : HeightReference.NONE,
+   *   distanceDisplayCondition : undefined
    * });
-   * labels.add({
-   *   position : new Cesium.Cartesian3(1000000.0, 0.0, 0.0),
-   *   text     : 'East'
+   *
+   * @example
+   * // Example 2:  Specify only the label's cartographic position,
+   * // text, and font.
+   * const l = labels.add({
+   *   position : Cesium.Cartesian3.fromRadians(longitude, latitude, height),
+   *   text : 'Hello World',
+   *   font : '24px Helvetica',
    * });
-   * labels.add({
-   *   position : new Cesium.Cartesian3(0.0, 1000000.0, 0.0),
-   *   text     : 'North'
-   * });
-   * labels.add({
-   *   position : new Cesium.Cartesian3(0.0, 0.0, 1000000.0),
-   *   text     : 'Up'
-   * });
+   *
+   *
+   * @see LabelCollection#remove
+   * @see LabelCollection#removeAll
    */
-  this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+  add(options) {
+    const label = new Label(options, this);
+
+    this._labels.push(label);
+    this._labelsToUpdate.push(label);
+
+    return label;
+  }
 
   /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
-   * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
-   * </p>
+   * Removes a label from the collection.  Once removed, a label is no longer usable.
    *
-   * @type {boolean}
+   * @param {Label} label The label to remove.
+   * @returns {boolean} <code>true</code> if the label was removed; <code>false</code> if the label was not found in the collection.
    *
-   * @default false
+   * @performance Calling <code>remove</code> is expected constant time.  However, the collection's vertex buffer
+   * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
+   * best performance, remove as many labels as possible before calling <code>update</code>.
+   * If you intend to temporarily hide a label, it is usually more efficient to call
+   * {@link Label#show} instead of removing and re-adding the label.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * const l = labels.add(...);
+   * labels.remove(l);  // Returns true
+   *
+   * @see LabelCollection#add
+   * @see LabelCollection#removeAll
+   * @see Label#show
    */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+  remove(label) {
+    if (defined(label) && label._labelCollection === this) {
+      const index = this._labels.indexOf(label);
+      if (index !== -1) {
+        this._labels.splice(index, 1);
+        destroyLabel(this, label);
+        return true;
+      }
+    }
+    return false;
+  }
 
   /**
-   * The label blending option. The default is used for rendering both opaque and translucent labels.
-   * However, if either all of the labels are completely opaque or all are completely translucent,
-   * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve
-   * performance by up to 2x.
-   * @type {BlendOption}
-   * @default BlendOption.OPAQUE_AND_TRANSLUCENT
+   * Removes all labels from the collection.
+   *
+   * @performance <code>O(n)</code>.  It is more efficient to remove all the labels
+   * from a collection and then add new ones than to create a new collection entirely.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * labels.add(...);
+   * labels.add(...);
+   * labels.removeAll();
+   *
+   * @see LabelCollection#add
+   * @see LabelCollection#remove
    */
-  this.blendOption = options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
-}
+  removeAll() {
+    const labels = this._labels;
 
-Object.defineProperties(LabelCollection.prototype, {
+    for (let i = 0, len = labels.length; i < len; ++i) {
+      destroyLabel(this, labels[i]);
+    }
+
+    labels.length = 0;
+  }
+
+  /**
+   * Check whether this collection contains a given label.
+   *
+   * @param {Label} label The label to check for.
+   * @returns {boolean} true if this collection contains the label, false otherwise.
+   *
+   * @see LabelCollection#get
+   *
+   */
+  contains(label) {
+    return defined(label) && label._labelCollection === this;
+  }
+
+  /**
+   * Returns the label in the collection at the specified index.  Indices are zero-based
+   * and increase as labels are added.  Removing a label shifts all labels after
+   * it to the left, changing their indices.  This function is commonly used with
+   * {@link LabelCollection#length} to iterate over all the labels
+   * in the collection.
+   *
+   * @param {number} index The zero-based index of the billboard.
+   *
+   * @returns {Label} The label at the specified index.
+   *
+   * @performance Expected constant time.  If labels were removed from the collection and
+   * {@link Scene#render} was not called, an implicit <code>O(n)</code>
+   * operation is performed.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * // Toggle the show property of every label in the collection
+   * const len = labels.length;
+   * for (let i = 0; i < len; ++i) {
+   *   const l = billboards.get(i);
+   *   l.show = !l.show;
+   * }
+   *
+   * @see LabelCollection#length
+   */
+  get(index) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(index)) {
+      throw new DeveloperError("index is required.");
+    }
+    //>>includeEnd('debug');
+
+    return this._labels[index];
+  }
+
+  /**
+   * @private
+   */
+  update(frameState) {
+    if (!this.show) {
+      return;
+    }
+
+    const glyphBillboardCollection = this._glyphBillboardCollection;
+    const backgroundBillboardCollection = this._backgroundBillboardCollection;
+
+    glyphBillboardCollection.modelMatrix = this.modelMatrix;
+    glyphBillboardCollection.debugShowBoundingVolume =
+      this.debugShowBoundingVolume;
+    backgroundBillboardCollection.modelMatrix = this.modelMatrix;
+    backgroundBillboardCollection.debugShowBoundingVolume =
+      this.debugShowBoundingVolume;
+
+    const len = this._labelsToUpdate.length;
+    for (let i = 0; i < len; ++i) {
+      const label = this._labelsToUpdate[i];
+      if (label.isDestroyed()) {
+        continue;
+      }
+
+      const preUpdateGlyphCount = label._glyphs.length;
+
+      if (label._rebindAllGlyphs) {
+        rebindAllGlyphs(this, label);
+        label._rebindAllGlyphs = false;
+      }
+
+      if (label._repositionAllGlyphs) {
+        repositionAllGlyphs(label);
+        label._repositionAllGlyphs = false;
+      }
+
+      const glyphCountDifference = label._glyphs.length - preUpdateGlyphCount;
+      this._totalGlyphCount += glyphCountDifference;
+    }
+
+    const blendOption =
+      backgroundBillboardCollection.length > 0
+        ? BlendOption.TRANSLUCENT
+        : this.blendOption;
+    glyphBillboardCollection.blendOption = blendOption;
+    backgroundBillboardCollection.blendOption = blendOption;
+
+    glyphBillboardCollection._highlightColor = this._highlightColor;
+    backgroundBillboardCollection._highlightColor = this._highlightColor;
+
+    this._labelsToUpdate.length = 0;
+
+    // WebGPU path: use dedicated label renderer with SDF support
+    const context = frameState.context;
+    const labelFR = context.getFeatureRenderer(
+      FeatureRendererKey.LABEL_COLLECTION,
+    );
+    if (labelFR) {
+      labelFR.update(this, frameState, frameState.commandList);
+      return;
+    }
+
+    // WebGL fallback: delegate to billboard collections
+    backgroundBillboardCollection.update(frameState);
+    glyphBillboardCollection.update(frameState);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} True if this object was destroyed; otherwise, false.
+   *
+   * @see LabelCollection#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   *
+   * @example
+   * labels = labels && labels.destroy();
+   *
+   * @see LabelCollection#isDestroyed
+   */
+  destroy() {
+    this.removeAll();
+    this._glyphBillboardCollection = this._glyphBillboardCollection.destroy();
+    this._backgroundBillboardCollection =
+      this._backgroundBillboardCollection.destroy();
+
+    return destroyObject(this);
+  }
+
   /**
    * Returns the number of labels in this collection.  This is commonly used with
    * {@link LabelCollection#get} to iterate over all the labels
@@ -728,11 +1009,9 @@ Object.defineProperties(LabelCollection.prototype, {
    * @type {number}
    * @readonly
    */
-  length: {
-    get: function () {
-      return this._labels.length;
-    },
-  },
+  get length() {
+    return this._labels.length;
+  }
 
   /**
    * Returns the size in bytes of the WebGL texture resources.
@@ -741,14 +1020,12 @@ Object.defineProperties(LabelCollection.prototype, {
    * @type {number}
    * @readonly
    */
-  sizeInBytes: {
-    get: function () {
-      return (
-        this._glyphBillboardCollection.sizeInBytes +
-        this._backgroundBillboardCollection.sizeInBytes
-      );
-    },
-  },
+  get sizeInBytes() {
+    return (
+      this._glyphBillboardCollection.sizeInBytes +
+      this._backgroundBillboardCollection.sizeInBytes
+    );
+  }
 
   /**
    * True when all labels currently in the collection are ready for rendering.
@@ -757,16 +1034,14 @@ Object.defineProperties(LabelCollection.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      const backgroundBillboard = this._backgroundBillboardCollection.get(0);
-      if (defined(backgroundBillboard) && !backgroundBillboard.ready) {
-        return false;
-      }
+  get ready() {
+    const backgroundBillboard = this._backgroundBillboardCollection.get(0);
+    if (defined(backgroundBillboard) && !backgroundBillboard.ready) {
+      return false;
+    }
 
-      return this._glyphBillboardCollection.ready;
-    },
-  },
+    return this._glyphBillboardCollection.ready;
+  }
 
   /**
    * The distance from the camera, beyond which, labels are depth-tested against an approximation of
@@ -780,18 +1055,29 @@ Object.defineProperties(LabelCollection.prototype, {
    * @memberof LabelCollection.prototype
    * @type {number}
    */
-  coarseDepthTestDistance: {
-    get: function () {
-      return this._backgroundBillboardCollection.coarseDepthTestDistance;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number("coarseDepthTestDistance", value);
-      //>>includeEnd('debug');
-      this._backgroundBillboardCollection.coarseDepthTestDistance = value;
-      this._glyphBillboardCollection.coarseDepthTestDistance = value;
-    },
-  },
+  get coarseDepthTestDistance() {
+    return this._backgroundBillboardCollection.coarseDepthTestDistance;
+  }
+
+  /**
+   * The distance from the camera, beyond which, labels are depth-tested against an approximation of
+   * the globe ellipsoid rather than against the full globe depth buffer. When set to <code>0</code>, the
+   * approximate depth test is always applied. When set to <code>Number.POSITIVE_INFINITY</code>, the
+   * approximate depth test is never applied.
+   * <br/><br/>
+   * This setting only applies when a label's {@link Label#disableDepthTestDistance} value would
+   * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
+   * label's {@link Label#disableDepthTestDistance} value.
+   * @memberof LabelCollection.prototype
+   * @type {number}
+   */
+  set coarseDepthTestDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("coarseDepthTestDistance", value);
+    //>>includeEnd('debug');
+    this._backgroundBillboardCollection.coarseDepthTestDistance = value;
+    this._glyphBillboardCollection.coarseDepthTestDistance = value;
+  }
 
   /**
    * The distance from the camera, within which, labels with a {@link Label#heightReference} value
@@ -807,298 +1093,31 @@ Object.defineProperties(LabelCollection.prototype, {
    * @memberof LabelCollection.prototype
    * @type {number}
    */
-  threePointDepthTestDistance: {
-    get: function () {
-      return this._backgroundBillboardCollection.threePointDepthTestDistance;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number("threePointDepthTestDistance", value);
-      //>>includeEnd('debug');
-      this._backgroundBillboardCollection.threePointDepthTestDistance = value;
-      this._glyphBillboardCollection.threePointDepthTestDistance = value;
-    },
-  },
-});
-
-/**
- * Creates and adds a label with the specified initial properties to the collection.
- * The added label is returned so it can be modified or removed from the collection later.
- *
- * @param {Label.ConstructorOptions} [options] A template describing the label's properties as shown in Example 1.
- * @returns {Label} The label that was added to the collection.
- *
- * @performance Calling <code>add</code> is expected constant time.  However, the collection's vertex buffer
- * is rewritten; this operations is <code>O(n)</code> and also incurs
- * CPU to GPU overhead.  For best performance, add as many billboards as possible before
- * calling <code>update</code>.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * // Example 1:  Add a label, specifying all the default values.
- * const l = labels.add({
- *   show : true,
- *   position : Cesium.Cartesian3.ZERO,
- *   text : '',
- *   font : '30px sans-serif',
- *   fillColor : Cesium.Color.WHITE,
- *   outlineColor : Cesium.Color.BLACK,
- *   outlineWidth : 1.0,
- *   showBackground : false,
- *   backgroundColor : new Cesium.Color(0.165, 0.165, 0.165, 0.8),
- *   backgroundPadding : new Cesium.Cartesian2(7, 5),
- *   style : Cesium.LabelStyle.FILL,
- *   pixelOffset : Cesium.Cartesian2.ZERO,
- *   eyeOffset : Cesium.Cartesian3.ZERO,
- *   horizontalOrigin : Cesium.HorizontalOrigin.LEFT,
- *   verticalOrigin : Cesium.VerticalOrigin.BASELINE,
- *   scale : 1.0,
- *   translucencyByDistance : undefined,
- *   pixelOffsetScaleByDistance : undefined,
- *   heightReference : HeightReference.NONE,
- *   distanceDisplayCondition : undefined
- * });
- *
- * @example
- * // Example 2:  Specify only the label's cartographic position,
- * // text, and font.
- * const l = labels.add({
- *   position : Cesium.Cartesian3.fromRadians(longitude, latitude, height),
- *   text : 'Hello World',
- *   font : '24px Helvetica',
- * });
- *
- *
- * @see LabelCollection#remove
- * @see LabelCollection#removeAll
- */
-LabelCollection.prototype.add = function (options) {
-  const label = new Label(options, this);
-
-  this._labels.push(label);
-  this._labelsToUpdate.push(label);
-
-  return label;
-};
-
-/**
- * Removes a label from the collection.  Once removed, a label is no longer usable.
- *
- * @param {Label} label The label to remove.
- * @returns {boolean} <code>true</code> if the label was removed; <code>false</code> if the label was not found in the collection.
- *
- * @performance Calling <code>remove</code> is expected constant time.  However, the collection's vertex buffer
- * is rewritten - an <code>O(n)</code> operation that also incurs CPU to GPU overhead.  For
- * best performance, remove as many labels as possible before calling <code>update</code>.
- * If you intend to temporarily hide a label, it is usually more efficient to call
- * {@link Label#show} instead of removing and re-adding the label.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * const l = labels.add(...);
- * labels.remove(l);  // Returns true
- *
- * @see LabelCollection#add
- * @see LabelCollection#removeAll
- * @see Label#show
- */
-LabelCollection.prototype.remove = function (label) {
-  if (defined(label) && label._labelCollection === this) {
-    const index = this._labels.indexOf(label);
-    if (index !== -1) {
-      this._labels.splice(index, 1);
-      destroyLabel(this, label);
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
- * Removes all labels from the collection.
- *
- * @performance <code>O(n)</code>.  It is more efficient to remove all the labels
- * from a collection and then add new ones than to create a new collection entirely.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * labels.add(...);
- * labels.add(...);
- * labels.removeAll();
- *
- * @see LabelCollection#add
- * @see LabelCollection#remove
- */
-LabelCollection.prototype.removeAll = function () {
-  const labels = this._labels;
-
-  for (let i = 0, len = labels.length; i < len; ++i) {
-    destroyLabel(this, labels[i]);
+  get threePointDepthTestDistance() {
+    return this._backgroundBillboardCollection.threePointDepthTestDistance;
   }
 
-  labels.length = 0;
-};
-
-/**
- * Check whether this collection contains a given label.
- *
- * @param {Label} label The label to check for.
- * @returns {boolean} true if this collection contains the label, false otherwise.
- *
- * @see LabelCollection#get
- *
- */
-LabelCollection.prototype.contains = function (label) {
-  return defined(label) && label._labelCollection === this;
-};
-
-/**
- * Returns the label in the collection at the specified index.  Indices are zero-based
- * and increase as labels are added.  Removing a label shifts all labels after
- * it to the left, changing their indices.  This function is commonly used with
- * {@link LabelCollection#length} to iterate over all the labels
- * in the collection.
- *
- * @param {number} index The zero-based index of the billboard.
- *
- * @returns {Label} The label at the specified index.
- *
- * @performance Expected constant time.  If labels were removed from the collection and
- * {@link Scene#render} was not called, an implicit <code>O(n)</code>
- * operation is performed.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * // Toggle the show property of every label in the collection
- * const len = labels.length;
- * for (let i = 0; i < len; ++i) {
- *   const l = billboards.get(i);
- *   l.show = !l.show;
- * }
- *
- * @see LabelCollection#length
- */
-LabelCollection.prototype.get = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(index)) {
-    throw new DeveloperError("index is required.");
+  /**
+   * The distance from the camera, within which, labels with a {@link Label#heightReference} value
+   * of {@link HeightReference.CLAMP_TO_GROUND} or {@link HeightReference.CLAMP_TO_TERRAIN} are depth tested
+   * against three key points. This ensures that if any key point of the label is visible, the whole
+   * label will be visible. When set to <code>0</code>, this feature is disabled and portions of a
+   * label behind terrain be clipped.
+   * <br/><br/>
+   * This setting only applies when a labels's {@link Label#disableDepthTestDistance} value would
+   * otherwise allow depth testing—i.e., distance from the camera to the label is less than the
+   * labels's {@link Label#disableDepthTestDistance} value.
+   * @see {@link https://cesium.com/blog/2018/07/30/billboards-on-terrain-improvements/|Billboards and Labels on Terrain Improvements}
+   * @memberof LabelCollection.prototype
+   * @type {number}
+   */
+  set threePointDepthTestDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("threePointDepthTestDistance", value);
+    //>>includeEnd('debug');
+    this._backgroundBillboardCollection.threePointDepthTestDistance = value;
+    this._glyphBillboardCollection.threePointDepthTestDistance = value;
   }
-  //>>includeEnd('debug');
+}
 
-  return this._labels[index];
-};
-
-/**
- * @private
- */
-LabelCollection.prototype.update = function (frameState) {
-  if (!this.show) {
-    return;
-  }
-
-  const glyphBillboardCollection = this._glyphBillboardCollection;
-  const backgroundBillboardCollection = this._backgroundBillboardCollection;
-
-  glyphBillboardCollection.modelMatrix = this.modelMatrix;
-  glyphBillboardCollection.debugShowBoundingVolume =
-    this.debugShowBoundingVolume;
-  backgroundBillboardCollection.modelMatrix = this.modelMatrix;
-  backgroundBillboardCollection.debugShowBoundingVolume =
-    this.debugShowBoundingVolume;
-
-  const len = this._labelsToUpdate.length;
-  for (let i = 0; i < len; ++i) {
-    const label = this._labelsToUpdate[i];
-    if (label.isDestroyed()) {
-      continue;
-    }
-
-    const preUpdateGlyphCount = label._glyphs.length;
-
-    if (label._rebindAllGlyphs) {
-      rebindAllGlyphs(this, label);
-      label._rebindAllGlyphs = false;
-    }
-
-    if (label._repositionAllGlyphs) {
-      repositionAllGlyphs(label);
-      label._repositionAllGlyphs = false;
-    }
-
-    const glyphCountDifference = label._glyphs.length - preUpdateGlyphCount;
-    this._totalGlyphCount += glyphCountDifference;
-  }
-
-  const blendOption =
-    backgroundBillboardCollection.length > 0
-      ? BlendOption.TRANSLUCENT
-      : this.blendOption;
-  glyphBillboardCollection.blendOption = blendOption;
-  backgroundBillboardCollection.blendOption = blendOption;
-
-  glyphBillboardCollection._highlightColor = this._highlightColor;
-  backgroundBillboardCollection._highlightColor = this._highlightColor;
-
-  this._labelsToUpdate.length = 0;
-
-  // WebGPU path: use dedicated label renderer with SDF support
-  const context = frameState.context;
-  const labelFR = context.getFeatureRenderer(
-    FeatureRendererKey.LABEL_COLLECTION,
-  );
-  if (labelFR) {
-    labelFR.update(this, frameState, frameState.commandList);
-    return;
-  }
-
-  // WebGL fallback: delegate to billboard collections
-  backgroundBillboardCollection.update(frameState);
-  glyphBillboardCollection.update(frameState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} True if this object was destroyed; otherwise, false.
- *
- * @see LabelCollection#destroy
- */
-LabelCollection.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- *
- * @example
- * labels = labels && labels.destroy();
- *
- * @see LabelCollection#isDestroyed
- */
-LabelCollection.prototype.destroy = function () {
-  this.removeAll();
-  this._glyphBillboardCollection = this._glyphBillboardCollection.destroy();
-  this._backgroundBillboardCollection =
-    this._backgroundBillboardCollection.destroy();
-
-  return destroyObject(this);
-};
 export default LabelCollection;

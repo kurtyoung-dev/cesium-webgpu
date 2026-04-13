@@ -18,51 +18,51 @@ import defined from "./defined.js";
  *
  * @see RuntimeError
  */
-function DeveloperError(message) {
-  /**
-   * 'DeveloperError' indicating that this exception was thrown due to a developer error.
-   * @type {string}
-   * @readonly
-   */
-  this.name = "DeveloperError";
+class DeveloperError extends Error {
+  constructor(message) {
+    super(message);
+    /**
+     * 'DeveloperError' indicating that this exception was thrown due to a developer error.
+     * @type {string}
+     * @readonly
+     */
+    this.name = "DeveloperError";
 
-  /**
-   * The explanation for why this exception was thrown.
-   * @type {string}
-   * @readonly
-   */
-  this.message = message;
+    /**
+     * The explanation for why this exception was thrown.
+     * @type {string}
+     * @readonly
+     */
+    this.message = message;
 
-  //Browsers such as IE don't have a stack property until you actually throw the error.
-  let stack;
-  try {
-    throw new Error();
-  } catch (e) {
-    stack = e.stack;
+    //Browsers such as IE don't have a stack property until you actually throw the error.
+    let stack;
+    try {
+      throw new Error();
+    } catch (e) {
+      stack = e.stack;
+    }
+
+    /**
+     * The stack trace of this exception, if available.
+     * @type {string}
+     * @readonly
+     */
+    this.stack = stack;
   }
 
-  /**
-   * The stack trace of this exception, if available.
-   * @type {string}
-   * @readonly
-   */
-  this.stack = stack;
-}
+  toString() {
+    let str = `${this.name}: ${this.message}`;
 
-if (defined(Object.create)) {
-  DeveloperError.prototype = Object.create(Error.prototype);
-  DeveloperError.prototype.constructor = DeveloperError;
-}
+    if (defined(this.stack)) {
+      str += `\n${this.stack.toString()}`;
+    }
 
-DeveloperError.prototype.toString = function () {
-  let str = `${this.name}: ${this.message}`;
-
-  if (defined(this.stack)) {
-    str += `\n${this.stack.toString()}`;
+    return str;
   }
+}
 
-  return str;
-};
+// prototype assignment removed — DeveloperError extends Error via ES6 class
 
 /**
  * @returns {never}

@@ -155,21 +155,132 @@ const S2_POSITION_TO_ORIENTATION_MASK = [
  * @param {bigint} [cellId] The 64-bit S2CellId.
  * @private
  */
-function S2Cell(cellId) {
-  if (!FeatureDetection.supportsBigInt()) {
-    throw new RuntimeError("S2 required BigInt support");
-  }
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(cellId)) {
-    throw new DeveloperError("cell ID is required.");
-  }
-  if (!S2Cell.isValidId(cellId)) {
-    throw new DeveloperError("cell ID is invalid.");
-  }
-  //>>includeEnd('debug');
+class S2Cell {
+  constructor(cellId) {
+    if (!FeatureDetection.supportsBigInt()) {
+      throw new RuntimeError("S2 required BigInt support");
+    }
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(cellId)) {
+      throw new DeveloperError("cell ID is required.");
+    }
+    if (!S2Cell.isValidId(cellId)) {
+      throw new DeveloperError("cell ID is invalid.");
+    }
+    //>>includeEnd('debug');
 
-  this._cellId = cellId;
-  this._level = S2Cell.getLevel(cellId);
+    this._cellId = cellId;
+    this._level = S2Cell.getLevel(cellId);
+  }
+
+  /**
+   * Gets the child cell of the cell at the given index.
+   *
+   * @param {number} index An integer index of the child.
+   * @returns {S2Cell} The child of the S2Cell.
+   * @private
+   */
+  getChild(index) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("index", index);
+    if (index < 0 || index > 3) {
+      throw new DeveloperError("child index must be in the range [0-3].");
+    }
+    if (this._level === 30) {
+      throw new DeveloperError("cannot get child of leaf cell.");
+    }
+    //>>includeEnd('debug');
+
+    // Shift sentinel bit 2 positions to the right.
+    const newLsb = lsb(this._cellId) >> BigInt(2);
+    // Insert child index before the sentinel bit.
+    const childCellId = this._cellId + BigInt(2 * index + 1 - 4) * newLsb;
+    return new S2Cell(childCellId);
+  }
+
+  /**
+   * Gets the parent cell of an S2Cell.
+   *
+   * @returns {S2Cell} Returns the parent of the S2Cell.
+   * @private
+   */
+  getParent() {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._level === 0) {
+      throw new DeveloperError("cannot get parent of root cell.");
+    }
+    //>>includeEnd('debug');
+    // Shift the sentinel bit 2 positions to the left.
+    const newLsb = lsb(this._cellId) << BigInt(2);
+    // Erase the left over bits to the right of the sentinel bit.
+    return new S2Cell((this._cellId & (~newLsb + BigInt(1))) | newLsb);
+  }
+
+  /**
+   * Gets the parent cell at the given level.
+   *
+   * @returns {S2Cell} Returns the parent of the S2Cell.
+   * @private
+   */
+  getParentAtLevel(level) {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._level === 0 || level < 0 || this._level < level) {
+      throw new DeveloperError("cannot get parent at invalid level.");
+    }
+    //>>includeEnd('debug');
+    const newLsb = lsbForLevel(level);
+    return new S2Cell((this._cellId & -newLsb) | newLsb);
+  }
+
+  /**
+   * Get center of the S2 cell.
+   *
+   * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.WGS84] The ellipsoid.
+   * @returns {Cartesian3} The position of center of the S2 cell.
+   * @private
+   */
+  getCenter(ellipsoid) {
+    ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
+
+    let center = getS2Center(this._cellId, this._level);
+    // Normalize XYZ.
+    center = Cartesian3.normalize(center, center);
+    const cartographic = Cartographic.fromCartesian(
+      center,
+      Ellipsoid.UNIT_SPHERE,
+    );
+    // Interpret as geodetic coordinates on the ellipsoid.
+    return Cartographic.toCartesian(cartographic, ellipsoid, new Cartesian3());
+  }
+
+  /**
+   * Get vertex of the S2 cell. Vertices are indexed in CCW order.
+   *
+   * @param {number} index An integer index of the vertex. Must be in the range [0-3].
+   * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.WGS84] The ellipsoid.
+   * @returns {Cartesian3} The position of the vertex of the S2 cell.
+   * @private
+   */
+  getVertex(index, ellipsoid) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("index", index);
+    if (index < 0 || index > 3) {
+      throw new DeveloperError("vertex index must be in the range [0-3].");
+    }
+    //>>includeEnd('debug');
+
+    ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
+
+    let vertex = getS2Vertex(this._cellId, this._level, index);
+    // Normalize XYZ.
+    vertex = Cartesian3.normalize(vertex, vertex);
+    const cartographic = Cartographic.fromCartesian(
+      vertex,
+      Ellipsoid.UNIT_SPHERE,
+    );
+    // Interpret as geodetic coordinates on the ellipsoid.
+    return Cartographic.toCartesian(cartographic, ellipsoid, new Cartesian3());
+  }
 }
 
 /**
@@ -302,115 +413,6 @@ S2Cell.getLevel = function (cellId) {
 
   // We use (>> 1) because there are 2 bits per level.
   return S2_MAX_LEVEL - (lsbPosition >> 1);
-};
-
-/**
- * Gets the child cell of the cell at the given index.
- *
- * @param {number} index An integer index of the child.
- * @returns {S2Cell} The child of the S2Cell.
- * @private
- */
-S2Cell.prototype.getChild = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("index", index);
-  if (index < 0 || index > 3) {
-    throw new DeveloperError("child index must be in the range [0-3].");
-  }
-  if (this._level === 30) {
-    throw new DeveloperError("cannot get child of leaf cell.");
-  }
-  //>>includeEnd('debug');
-
-  // Shift sentinel bit 2 positions to the right.
-  const newLsb = lsb(this._cellId) >> BigInt(2);
-  // Insert child index before the sentinel bit.
-  const childCellId = this._cellId + BigInt(2 * index + 1 - 4) * newLsb;
-  return new S2Cell(childCellId);
-};
-
-/**
- * Gets the parent cell of an S2Cell.
- *
- * @returns {S2Cell} Returns the parent of the S2Cell.
- * @private
- */
-S2Cell.prototype.getParent = function () {
-  //>>includeStart('debug', pragmas.debug);
-  if (this._level === 0) {
-    throw new DeveloperError("cannot get parent of root cell.");
-  }
-  //>>includeEnd('debug');
-  // Shift the sentinel bit 2 positions to the left.
-  const newLsb = lsb(this._cellId) << BigInt(2);
-  // Erase the left over bits to the right of the sentinel bit.
-  return new S2Cell((this._cellId & (~newLsb + BigInt(1))) | newLsb);
-};
-
-/**
- * Gets the parent cell at the given level.
- *
- * @returns {S2Cell} Returns the parent of the S2Cell.
- * @private
- */
-S2Cell.prototype.getParentAtLevel = function (level) {
-  //>>includeStart('debug', pragmas.debug);
-  if (this._level === 0 || level < 0 || this._level < level) {
-    throw new DeveloperError("cannot get parent at invalid level.");
-  }
-  //>>includeEnd('debug');
-  const newLsb = lsbForLevel(level);
-  return new S2Cell((this._cellId & -newLsb) | newLsb);
-};
-
-/**
- * Get center of the S2 cell.
- *
- * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.WGS84] The ellipsoid.
- * @returns {Cartesian3} The position of center of the S2 cell.
- * @private
- */
-S2Cell.prototype.getCenter = function (ellipsoid) {
-  ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
-
-  let center = getS2Center(this._cellId, this._level);
-  // Normalize XYZ.
-  center = Cartesian3.normalize(center, center);
-  const cartographic = Cartographic.fromCartesian(
-    center,
-    Ellipsoid.UNIT_SPHERE,
-  );
-  // Interpret as geodetic coordinates on the ellipsoid.
-  return Cartographic.toCartesian(cartographic, ellipsoid, new Cartesian3());
-};
-
-/**
- * Get vertex of the S2 cell. Vertices are indexed in CCW order.
- *
- * @param {number} index An integer index of the vertex. Must be in the range [0-3].
- * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.WGS84] The ellipsoid.
- * @returns {Cartesian3} The position of the vertex of the S2 cell.
- * @private
- */
-S2Cell.prototype.getVertex = function (index, ellipsoid) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("index", index);
-  if (index < 0 || index > 3) {
-    throw new DeveloperError("vertex index must be in the range [0-3].");
-  }
-  //>>includeEnd('debug');
-
-  ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
-
-  let vertex = getS2Vertex(this._cellId, this._level, index);
-  // Normalize XYZ.
-  vertex = Cartesian3.normalize(vertex, vertex);
-  const cartographic = Cartographic.fromCartesian(
-    vertex,
-    Ellipsoid.UNIT_SPHERE,
-  );
-  // Interpret as geodetic coordinates on the ellipsoid.
-  return Cartographic.toCartesian(cartographic, ellipsoid, new Cartesian3());
 };
 
 /**

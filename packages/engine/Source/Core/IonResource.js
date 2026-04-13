@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import Check from "./Check.js";
 import Credit from "./Credit.js";
 import Frozen from "./Frozen.js";
@@ -31,66 +30,140 @@ import RuntimeError from "./RuntimeError.js";
  * @see createWorldTerrain
  * @see https://cesium.com
  */
-function IonResource(endpoint, endpointResource) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("endpoint", endpoint);
-  Check.defined("endpointResource", endpointResource);
-  //>>includeEnd('debug');
+class IonResource extends Resource {
+  constructor(endpoint, endpointResource) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("endpoint", endpoint);
+    Check.defined("endpointResource", endpointResource);
+    //>>includeEnd('debug');
 
-  let options;
-  const externalType = endpoint.externalType;
-  const isExternal = defined(externalType);
+    let options;
+    const externalType = endpoint.externalType;
+    const isExternal = defined(externalType);
 
-  if (!isExternal) {
-    options = {
-      url: endpoint.url,
-      retryAttempts: 1,
-      retryCallback: retryCallback,
-    };
-  } else if (
-    externalType === "3DTILES" ||
-    externalType === "STK_TERRAIN_SERVER"
-  ) {
-    // 3D Tiles and STK Terrain Server external assets can still be represented as an IonResource
-    options = { url: endpoint.options.url };
-  } else {
-    //External imagery assets have additional configuration that can't be represented as a Resource
-    throw new RuntimeError(
-      "Ion.createResource does not support external imagery assets; use IonImageryProvider instead.",
-    );
+    if (!isExternal) {
+      options = {
+        url: endpoint.url,
+        retryAttempts: 1,
+        retryCallback: retryCallback,
+      };
+    } else if (
+      externalType === "3DTILES" ||
+      externalType === "STK_TERRAIN_SERVER"
+    ) {
+      // 3D Tiles and STK Terrain Server external assets can still be represented as an IonResource
+      options = { url: endpoint.options.url };
+    } else {
+      //External imagery assets have additional configuration that can't be represented as a Resource
+      throw new RuntimeError(
+        "Ion.createResource does not support external imagery assets; use IonImageryProvider instead.",
+      );
+    }
+
+    super(options);
+
+    // The asset endpoint data returned from ion.
+    this._ionEndpoint = endpoint;
+    this._ionEndpointDomain = isExternal
+      ? undefined
+      : new URL(endpoint.url).host;
+
+    // The endpoint resource to fetch when a new token is needed
+    this._ionEndpointResource = endpointResource;
+
+    // The primary IonResource from which an instance is derived
+    this._ionRoot = undefined;
+
+    // Shared promise for endpooint requests amd credits (only ever set on the root request)
+    this._pendingPromise = undefined;
+    this._credits = undefined;
+    this._isExternal = isExternal;
+
+    /**
+     * A function that, if defined, will be invoked when the access token is refreshed.
+     * @private
+     * @type {IonResourceRefreshCallback|undefined}
+     */
+    this.refreshCallback = undefined;
   }
 
-  Resource.call(this, options);
+  /** @inheritdoc */
+  clone(result) {
+    // We always want to use the root's information because it's the most up-to-date
+    const ionRoot = this._ionRoot ?? this;
 
-  // The asset endpoint data returned from ion.
-  this._ionEndpoint = endpoint;
-  this._ionEndpointDomain = isExternal
-    ? undefined
-    : new Uri(endpoint.url).authority();
+    if (!defined(result)) {
+      result = new IonResource(
+        ionRoot._ionEndpoint,
+        ionRoot._ionEndpointResource,
+      );
+    }
 
-  // The endpoint resource to fetch when a new token is needed
-  this._ionEndpointResource = endpointResource;
+    result = Resource.prototype.clone.call(this, result);
+    result._ionRoot = ionRoot;
+    result._isExternal = this._isExternal;
 
-  // The primary IonResource from which an instance is derived
-  this._ionRoot = undefined;
+    return result;
+  }
 
-  // Shared promise for endpooint requests amd credits (only ever set on the root request)
-  this._pendingPromise = undefined;
-  this._credits = undefined;
-  this._isExternal = isExternal;
+  fetchImage(options) {
+    if (!this._isExternal) {
+      const userOptions = options;
+      options = {
+        preferBlob: true,
+      };
+      if (defined(userOptions)) {
+        options.flipY = userOptions.flipY;
+        options.preferImageBitmap = userOptions.preferImageBitmap;
+      }
+    }
+
+    return Resource.prototype.fetchImage.call(this, options);
+  }
+
+  _makeRequest(options) {
+    // Don't send ion access token to non-ion servers.
+    if (
+      this._isExternal ||
+      new URL(this.url).host !== this._ionEndpointDomain
+    ) {
+      return Resource.prototype._makeRequest.call(this, options);
+    }
+
+    options.headers = addClientHeaders(options.headers);
+    options.headers.Authorization = `Bearer ${this._ionEndpoint.accessToken}`;
+
+    return Resource.prototype._makeRequest.call(this, options);
+  }
 
   /**
-   * A function that, if defined, will be invoked when the access token is refreshed.
-   * @private
-   * @type {IonResourceRefreshCallback|undefined}
+   * Gets the credits required for attribution of the asset.
+   *
+   * @memberof IonResource.prototype
+   * @type {Credit[]}
+   * @readonly
    */
-  this.refreshCallback = undefined;
+  get credits() {
+    // Only we're not the root, return its credits;
+    if (defined(this._ionRoot)) {
+      return this._ionRoot.credits;
+    }
+
+    // We are the root
+    if (defined(this._credits)) {
+      return this._credits;
+    }
+
+    this._credits = IonResource.getCreditsFromEndpoint(
+      this._ionEndpoint,
+      this._ionEndpointResource,
+    );
+
+    return this._credits;
+  }
 }
 
-if (defined(Object.create)) {
-  IonResource.prototype = Object.create(Resource.prototype);
-  IonResource.prototype.constructor = IonResource;
-}
+// prototype assignment removed — IonResource extends Resource via ES6 class
 
 /**
  * Asynchronously creates an instance.
@@ -129,36 +202,6 @@ IonResource.fromAssetId = function (assetId, options) {
   });
 };
 
-Object.defineProperties(IonResource.prototype, {
-  /**
-   * Gets the credits required for attribution of the asset.
-   *
-   * @memberof IonResource.prototype
-   * @type {Credit[]}
-   * @readonly
-   */
-  credits: {
-    get: function () {
-      // Only we're not the root, return its credits;
-      if (defined(this._ionRoot)) {
-        return this._ionRoot.credits;
-      }
-
-      // We are the root
-      if (defined(this._credits)) {
-        return this._credits;
-      }
-
-      this._credits = IonResource.getCreditsFromEndpoint(
-        this._ionEndpoint,
-        this._ionEndpointResource,
-      );
-
-      return this._credits;
-    },
-  },
-});
-
 /** @private */
 IonResource.getCreditsFromEndpoint = function (endpoint, endpointResource) {
   const credits = endpoint.attributions.map(Credit.getIonCredit);
@@ -169,55 +212,6 @@ IonResource.getCreditsFromEndpoint = function (endpoint, endpointResource) {
     credits.push(Credit.clone(defaultTokenCredit));
   }
   return credits;
-};
-
-/** @inheritdoc */
-IonResource.prototype.clone = function (result) {
-  // We always want to use the root's information because it's the most up-to-date
-  const ionRoot = this._ionRoot ?? this;
-
-  if (!defined(result)) {
-    result = new IonResource(
-      ionRoot._ionEndpoint,
-      ionRoot._ionEndpointResource,
-    );
-  }
-
-  result = Resource.prototype.clone.call(this, result);
-  result._ionRoot = ionRoot;
-  result._isExternal = this._isExternal;
-
-  return result;
-};
-
-IonResource.prototype.fetchImage = function (options) {
-  if (!this._isExternal) {
-    const userOptions = options;
-    options = {
-      preferBlob: true,
-    };
-    if (defined(userOptions)) {
-      options.flipY = userOptions.flipY;
-      options.preferImageBitmap = userOptions.preferImageBitmap;
-    }
-  }
-
-  return Resource.prototype.fetchImage.call(this, options);
-};
-
-IonResource.prototype._makeRequest = function (options) {
-  // Don't send ion access token to non-ion servers.
-  if (
-    this._isExternal ||
-    new Uri(this.url).authority() !== this._ionEndpointDomain
-  ) {
-    return Resource.prototype._makeRequest.call(this, options);
-  }
-
-  options.headers = addClientHeaders(options.headers);
-  options.headers.Authorization = `Bearer ${this._ionEndpoint.accessToken}`;
-
-  return Resource.prototype._makeRequest.call(this, options);
 };
 
 /**

@@ -219,7 +219,14 @@ fn vs(i: VI) -> VO {
   let rte = ((u.moonH + posMC) - u.camH) + (u.moonL - u.camL);
 
   let clip = u.mvpRTE * vec4<f32>(rte, 1.0);
-  o.pos = clip;
+  // Force clip-space z/w = 1 (far plane). The moon is at lunar distance,
+  // well beyond any sensible per-frustum far value at orbital altitudes,
+  // so its real projected Z is > 1 and the rasterizer would clip it.
+  // Parking it at the far plane lets the depth test (`less-equal`) draw
+  // it only in pixels not occluded by opaque geometry. `clipW` preserves
+  // the original perspective W so the fragment shader's view-direction
+  // reconstruction still works correctly.
+  o.pos = vec4<f32>(clip.x, clip.y, clip.w, clip.w);
   o.clipW = clip.w;
 
   // Reconstruct the eye-space position of this vertex by transforming the
@@ -290,7 +297,11 @@ fn computeEllipsoidColor(
   // ellipsoids. We match WebGL exactly here.
   let sphericalN = normalize(hitMC / u.radii);
   let uv = ellipsoidTexCoords(sphericalN);
-  let texColor = textureSample(tex, samp, uv);
+  // textureSampleLevel (explicit mip 0) instead of textureSample because
+  // this function is called from non-uniform control flow (the inside-face
+  // branch depends on the outside-face result). textureSample requires
+  // uniform control flow for implicit derivatives.
+  let texColor = textureSampleLevel(tex, samp, uv, 0.0);
 
   // Fill a CsmMaterial. Matches Material.fromType(Material.ImageType):
   // diffuse from texture, specular and emission zero, alpha opaque,

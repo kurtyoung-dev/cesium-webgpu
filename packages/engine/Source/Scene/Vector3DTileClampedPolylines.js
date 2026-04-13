@@ -52,69 +52,191 @@ import Vector3DTilePolylines from "./Vector3DTilePolylines.js";
  *
  * @private
  */
-function Vector3DTileClampedPolylines(options) {
-  // these arrays hold data from the tile payload
-  // and are all released after the first update.
-  this._positions = options.positions;
-  this._widths = options.widths;
-  this._counts = options.counts;
-  this._batchIds = options.batchIds;
+class Vector3DTileClampedPolylines {
+  constructor(options) {
+    // these arrays hold data from the tile payload
+    // and are all released after the first update.
+    this._positions = options.positions;
+    this._widths = options.widths;
+    this._counts = options.counts;
+    this._batchIds = options.batchIds;
 
-  this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
-  this._minimumHeight = options.minimumHeight;
-  this._maximumHeight = options.maximumHeight;
-  this._center = options.center;
-  this._rectangle = options.rectangle;
+    this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+    this._minimumHeight = options.minimumHeight;
+    this._maximumHeight = options.maximumHeight;
+    this._center = options.center;
+    this._rectangle = options.rectangle;
 
-  this._batchTable = options.batchTable;
+    this._batchTable = options.batchTable;
 
-  this._va = undefined;
-  this._sp = undefined;
-  this._rs = undefined;
-  this._uniformMap = undefined;
-  this._command = undefined;
+    this._va = undefined;
+    this._sp = undefined;
+    this._rs = undefined;
+    this._uniformMap = undefined;
+    this._command = undefined;
 
-  this._transferrableBatchIds = undefined;
-  this._packedBuffer = undefined;
-  this._minimumMaximumVectorHeights = new Cartesian2(
-    ApproximateTerrainHeights._defaultMinTerrainHeight,
-    ApproximateTerrainHeights._defaultMaxTerrainHeight,
-  );
-  this._boundingVolume = OrientedBoundingBox.fromRectangle(
-    options.rectangle,
-    ApproximateTerrainHeights._defaultMinTerrainHeight,
-    ApproximateTerrainHeights._defaultMaxTerrainHeight,
-    this._ellipsoid,
-  );
-  this._classificationType = options.classificationType;
+    this._transferrableBatchIds = undefined;
+    this._packedBuffer = undefined;
+    this._minimumMaximumVectorHeights = new Cartesian2(
+      ApproximateTerrainHeights._defaultMinTerrainHeight,
+      ApproximateTerrainHeights._defaultMaxTerrainHeight,
+    );
+    this._boundingVolume = OrientedBoundingBox.fromRectangle(
+      options.rectangle,
+      ApproximateTerrainHeights._defaultMinTerrainHeight,
+      ApproximateTerrainHeights._defaultMaxTerrainHeight,
+      this._ellipsoid,
+    );
+    this._classificationType = options.classificationType;
 
-  this._keepDecodedPositions = options.keepDecodedPositions;
-  this._decodedPositions = undefined;
-  this._decodedPositionOffsets = undefined;
+    this._keepDecodedPositions = options.keepDecodedPositions;
+    this._decodedPositions = undefined;
+    this._decodedPositionOffsets = undefined;
 
-  // Fat vertices - all information for each volume packed to a vec3 and 5 vec4s
-  this._startEllipsoidNormals = undefined;
-  this._endEllipsoidNormals = undefined;
-  this._startPositionAndHeights = undefined;
-  this._startFaceNormalAndVertexCornerIds = undefined;
-  this._endPositionAndHeights = undefined;
-  this._endFaceNormalAndHalfWidths = undefined;
-  this._vertexBatchIds = undefined;
+    // Fat vertices - all information for each volume packed to a vec3 and 5 vec4s
+    this._startEllipsoidNormals = undefined;
+    this._endEllipsoidNormals = undefined;
+    this._startPositionAndHeights = undefined;
+    this._startFaceNormalAndVertexCornerIds = undefined;
+    this._endPositionAndHeights = undefined;
+    this._endFaceNormalAndHalfWidths = undefined;
+    this._vertexBatchIds = undefined;
 
-  this._indices = undefined;
+    this._indices = undefined;
 
-  this._constantColor = Color.clone(Color.WHITE);
-  this._highlightColor = this._constantColor;
+    this._constantColor = Color.clone(Color.WHITE);
+    this._highlightColor = this._constantColor;
 
-  this._trianglesLength = 0;
-  this._geometryByteLength = 0;
+    this._trianglesLength = 0;
+    this._geometryByteLength = 0;
 
-  this._ready = false;
-  this._promise = undefined;
-  this._error = undefined;
-}
+    this._ready = false;
+    this._promise = undefined;
+    this._error = undefined;
+  }
 
-Object.defineProperties(Vector3DTileClampedPolylines.prototype, {
+  /**
+   * Get the polyline positions for the given feature.
+   *
+   * @param {number} batchId The batch ID of the feature.
+   */
+  getPositions(batchId) {
+    return Vector3DTilePolylines.getPolylinePositions(this, batchId);
+  }
+
+  /**
+   * Creates features for each polyline and places it at the batch id index of features.
+   *
+   * @param {Vector3DTileContent} content The vector tile content.
+   * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
+   */
+  createFeatures(content, features) {
+    const batchIds = this._batchIds;
+    const length = batchIds.length;
+    for (let i = 0; i < length; ++i) {
+      const batchId = batchIds[i];
+      features[batchId] = new Cesium3DTileFeature(content, batchId);
+    }
+  }
+
+  /**
+   * Colors the entire tile when enabled is true. The resulting color will be (polyline batch table color * color).
+   *
+   * @param {boolean} enabled Whether to enable debug coloring.
+   * @param {Color} color The debug color.
+   */
+  applyDebugSettings(enabled, color) {
+    this._highlightColor = enabled ? color : this._constantColor;
+  }
+
+  /**
+   * Apply a style to the content.
+   *
+   * @param {Cesium3DTileStyle} style The style.
+   * @param {Cesium3DTileFeature[]} features The dictionary of features.
+   */
+  applyStyle(style, features) {
+    if (!defined(style)) {
+      clearStyle(this, features);
+      return;
+    }
+
+    const batchIds = this._batchIds;
+    const length = batchIds.length;
+    for (let i = 0; i < length; ++i) {
+      const batchId = batchIds[i];
+      const feature = features[batchId];
+
+      feature.color = defined(style.color)
+        ? style.color.evaluateColor(feature, scratchColor)
+        : DEFAULT_COLOR_VALUE;
+      feature.show = defined(style.show)
+        ? style.show.evaluate(feature)
+        : DEFAULT_SHOW_VALUE;
+    }
+  }
+
+  /**
+   * Updates the batches and queues the commands for rendering.
+   *
+   * @param {FrameState} frameState The current frame state.
+   */
+  update(frameState) {
+    const context = frameState.context;
+    if (!this._ready) {
+      if (!defined(this._promise)) {
+        this._promise = initialize(this).then(createVertexArray(this, context));
+      }
+
+      if (defined(this._error)) {
+        const error = this._error;
+        this._error = undefined;
+        throw error;
+      }
+
+      return;
+    }
+
+    createUniformMap(this, context);
+    createShaders(this, context);
+    createRenderStates(this);
+
+    const passes = frameState.passes;
+    if (passes.render || passes.pick) {
+      queueCommands(this, frameState);
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   */
+  destroy() {
+    this._va = this._va && this._va.destroy();
+    this._sp = this._sp && this._sp.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * Gets the number of triangles.
    *
@@ -123,11 +245,9 @@ Object.defineProperties(Vector3DTileClampedPolylines.prototype, {
    * @type {number}
    * @readonly
    */
-  trianglesLength: {
-    get: function () {
-      return this._trianglesLength;
-    },
-  },
+  get trianglesLength() {
+    return this._trianglesLength;
+  }
 
   /**
    * Gets the geometry memory in bytes.
@@ -137,11 +257,9 @@ Object.defineProperties(Vector3DTileClampedPolylines.prototype, {
    * @type {number}
    * @readonly
    */
-  geometryByteLength: {
-    get: function () {
-      return this._geometryByteLength;
-    },
-  },
+  get geometryByteLength() {
+    return this._geometryByteLength;
+  }
 
   /**
    * Returns true when the primitive is ready to render.
@@ -149,12 +267,10 @@ Object.defineProperties(Vector3DTileClampedPolylines.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
-});
+  get ready() {
+    return this._ready;
+  }
+}
 
 function updateMinimumMaximumHeights(polylines, rectangle, ellipsoid) {
   const result = ApproximateTerrainHeights.getMinimumMaximumHeights(
@@ -613,46 +729,6 @@ function queueCommands(primitive, frameState) {
   }
 }
 
-/**
- * Get the polyline positions for the given feature.
- *
- * @param {number} batchId The batch ID of the feature.
- */
-Vector3DTileClampedPolylines.prototype.getPositions = function (batchId) {
-  return Vector3DTilePolylines.getPolylinePositions(this, batchId);
-};
-
-/**
- * Creates features for each polyline and places it at the batch id index of features.
- *
- * @param {Vector3DTileContent} content The vector tile content.
- * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
- */
-Vector3DTileClampedPolylines.prototype.createFeatures = function (
-  content,
-  features,
-) {
-  const batchIds = this._batchIds;
-  const length = batchIds.length;
-  for (let i = 0; i < length; ++i) {
-    const batchId = batchIds[i];
-    features[batchId] = new Cesium3DTileFeature(content, batchId);
-  }
-};
-
-/**
- * Colors the entire tile when enabled is true. The resulting color will be (polyline batch table color * color).
- *
- * @param {boolean} enabled Whether to enable debug coloring.
- * @param {Color} color The debug color.
- */
-Vector3DTileClampedPolylines.prototype.applyDebugSettings = function (
-  enabled,
-  color,
-) {
-  this._highlightColor = enabled ? color : this._constantColor;
-};
-
 function clearStyle(polygons, features) {
   const batchIds = polygons._batchIds;
   const length = batchIds.length;
@@ -669,33 +745,6 @@ const scratchColor = new Color();
 
 const DEFAULT_COLOR_VALUE = Color.WHITE;
 const DEFAULT_SHOW_VALUE = true;
-
-/**
- * Apply a style to the content.
- *
- * @param {Cesium3DTileStyle} style The style.
- * @param {Cesium3DTileFeature[]} features The dictionary of features.
- */
-Vector3DTileClampedPolylines.prototype.applyStyle = function (style, features) {
-  if (!defined(style)) {
-    clearStyle(this, features);
-    return;
-  }
-
-  const batchIds = this._batchIds;
-  const length = batchIds.length;
-  for (let i = 0; i < length; ++i) {
-    const batchId = batchIds[i];
-    const feature = features[batchId];
-
-    feature.color = defined(style.color)
-      ? style.color.evaluateColor(feature, scratchColor)
-      : DEFAULT_COLOR_VALUE;
-    feature.show = defined(style.show)
-      ? style.show.evaluate(feature)
-      : DEFAULT_SHOW_VALUE;
-  }
-};
 
 function initialize(polylines) {
   return ApproximateTerrainHeights.initialize()
@@ -716,64 +765,4 @@ function initialize(polylines) {
     });
 }
 
-/**
- * Updates the batches and queues the commands for rendering.
- *
- * @param {FrameState} frameState The current frame state.
- */
-Vector3DTileClampedPolylines.prototype.update = function (frameState) {
-  const context = frameState.context;
-  if (!this._ready) {
-    if (!defined(this._promise)) {
-      this._promise = initialize(this).then(createVertexArray(this, context));
-    }
-
-    if (defined(this._error)) {
-      const error = this._error;
-      this._error = undefined;
-      throw error;
-    }
-
-    return;
-  }
-
-  createUniformMap(this, context);
-  createShaders(this, context);
-  createRenderStates(this);
-
-  const passes = frameState.passes;
-  if (passes.render || passes.pick) {
-    queueCommands(this, frameState);
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- */
-Vector3DTileClampedPolylines.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- */
-Vector3DTileClampedPolylines.prototype.destroy = function () {
-  this._va = this._va && this._va.destroy();
-  this._sp = this._sp && this._sp.destroy();
-  return destroyObject(this);
-};
 export default Vector3DTileClampedPolylines;

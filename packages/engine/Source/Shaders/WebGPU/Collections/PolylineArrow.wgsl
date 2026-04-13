@@ -2,26 +2,29 @@
 // Draws a narrow line body with a triangular arrow head at the end (s=1).
 //
 // Material uniforms (at offset 112 in uniform buffer):
-//   materialColor: vec4<f32> — arrow color
+//   color: vec4<f32> — arrow color
 //
 // Instance data is identical to PolylineCollection.wgsl (80 bytes, 5 x vec4)
 // except padding slots carry texture coordinates:
 //   startPosLow.w → sStart (normalized distance along polyline)
 //   endPosLow.w   → sEnd
 
-struct Uniforms {
-  mvpRelativeToEye: mat4x4<f32>,
-  encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
-  encodedCameraLow: vec3<f32>,
-  _pad1: f32,
-  viewportSize: vec2<f32>,
-  _pad2: vec2<f32>,
-  // Material uniforms (offset 112)
-  materialColor: vec4<f32>,
-};
+struct CameraUniforms {
+    mvpRelativeToEye: mat4x4<f32>,
+    encodedCameraHigh: vec3<f32>,
+    _pad0: f32,
+    encodedCameraLow: vec3<f32>,
+    _pad1: f32,
+    viewportSize: vec2<f32>,
+    _pad2: vec2<f32>,
+}
 
-@group(0) @binding(0) var<uniform> u: Uniforms;
+struct MaterialUniforms {
+    color: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -66,18 +69,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let startRTE = translateRelativeToEye(
     input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
   let endRTE = translateRelativeToEye(
     input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
 
-  let clipStart = u.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
-  let clipEnd = u.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+  let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
-  let screenStart = toScreenSpace(clipStart, u.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, u.viewportSize);
+  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
 
   let lineDir = normalize(screenEnd - screenStart);
   let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
@@ -99,7 +102,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, u.viewportSize);
+  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
   // Texture coordinates: s along polyline [0,1], t across line [0,1]
   let s = mix(sStart, sEnd, isEnd);
@@ -129,7 +132,7 @@ fn antialias(color1: vec4<f32>, color2: vec4<f32>, current: vec4<f32>,
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let st = input.v_st;
-  let color = u.materialColor;
+  let color = material.color;
   let outsideColor = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
   // Arrow base position — use fwidth to scale with screen-space line length

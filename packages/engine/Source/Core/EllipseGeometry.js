@@ -917,49 +917,80 @@ function computeRectangle(
  *
  * @see EllipseGeometry.createGeometry
  */
-function EllipseGeometry(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class EllipseGeometry {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const center = options.center;
-  const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
-  const semiMajorAxis = options.semiMajorAxis;
-  const semiMinorAxis = options.semiMinorAxis;
-  const granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
-  const vertexFormat = options.vertexFormat ?? VertexFormat.DEFAULT;
+    const center = options.center;
+    const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
+    const semiMajorAxis = options.semiMajorAxis;
+    const semiMinorAxis = options.semiMinorAxis;
+    const granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
+    const vertexFormat = options.vertexFormat ?? VertexFormat.DEFAULT;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.center", center);
-  Check.typeOf.number("options.semiMajorAxis", semiMajorAxis);
-  Check.typeOf.number("options.semiMinorAxis", semiMinorAxis);
-  if (semiMajorAxis < semiMinorAxis) {
-    throw new DeveloperError(
-      "semiMajorAxis must be greater than or equal to the semiMinorAxis.",
-    );
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.center", center);
+    Check.typeOf.number("options.semiMajorAxis", semiMajorAxis);
+    Check.typeOf.number("options.semiMinorAxis", semiMinorAxis);
+    if (semiMajorAxis < semiMinorAxis) {
+      throw new DeveloperError(
+        "semiMajorAxis must be greater than or equal to the semiMinorAxis.",
+      );
+    }
+    if (granularity <= 0.0) {
+      throw new DeveloperError("granularity must be greater than zero.");
+    }
+    //>>includeEnd('debug');
+
+    const height = options.height ?? 0.0;
+    const extrudedHeight = options.extrudedHeight ?? height;
+
+    this._center = Cartesian3.clone(center);
+    this._semiMajorAxis = semiMajorAxis;
+    this._semiMinorAxis = semiMinorAxis;
+    this._ellipsoid = Ellipsoid.clone(ellipsoid);
+    this._rotation = options.rotation ?? 0.0;
+    this._stRotation = options.stRotation ?? 0.0;
+    this._height = Math.max(extrudedHeight, height);
+    this._granularity = granularity;
+    this._vertexFormat = VertexFormat.clone(vertexFormat);
+    this._extrudedHeight = Math.min(extrudedHeight, height);
+    this._shadowVolume = options.shadowVolume ?? false;
+    this._workerName = "createEllipseGeometry";
+    this._offsetAttribute = options.offsetAttribute;
+
+    this._rectangle = undefined;
+    this._textureCoordinateRotationPoints = undefined;
   }
-  if (granularity <= 0.0) {
-    throw new DeveloperError("granularity must be greater than zero.");
+
+  /**
+   * @private
+   */
+  get rectangle() {
+    if (!defined(this._rectangle)) {
+      this._rectangle = computeRectangle(
+        this._center,
+        this._semiMajorAxis,
+        this._semiMinorAxis,
+        this._rotation,
+        this._granularity,
+        this._ellipsoid,
+      );
+    }
+    return this._rectangle;
   }
-  //>>includeEnd('debug');
 
-  const height = options.height ?? 0.0;
-  const extrudedHeight = options.extrudedHeight ?? height;
-
-  this._center = Cartesian3.clone(center);
-  this._semiMajorAxis = semiMajorAxis;
-  this._semiMinorAxis = semiMinorAxis;
-  this._ellipsoid = Ellipsoid.clone(ellipsoid);
-  this._rotation = options.rotation ?? 0.0;
-  this._stRotation = options.stRotation ?? 0.0;
-  this._height = Math.max(extrudedHeight, height);
-  this._granularity = granularity;
-  this._vertexFormat = VertexFormat.clone(vertexFormat);
-  this._extrudedHeight = Math.min(extrudedHeight, height);
-  this._shadowVolume = options.shadowVolume ?? false;
-  this._workerName = "createEllipseGeometry";
-  this._offsetAttribute = options.offsetAttribute;
-
-  this._rectangle = undefined;
-  this._textureCoordinateRotationPoints = undefined;
+  /**
+   * For remapping texture coordinates when rendering EllipseGeometries as GroundPrimitives.
+   * @private
+   */
+  get textureCoordinateRotationPoints() {
+    if (!defined(this._textureCoordinateRotationPoints)) {
+      this._textureCoordinateRotationPoints =
+        textureCoordinateRotationPoints(this);
+    }
+    return this._textureCoordinateRotationPoints;
+  }
 }
 
 /**
@@ -1282,37 +1313,4 @@ function textureCoordinateRotationPoints(ellipseGeometry) {
   );
 }
 
-Object.defineProperties(EllipseGeometry.prototype, {
-  /**
-   * @private
-   */
-  rectangle: {
-    get: function () {
-      if (!defined(this._rectangle)) {
-        this._rectangle = computeRectangle(
-          this._center,
-          this._semiMajorAxis,
-          this._semiMinorAxis,
-          this._rotation,
-          this._granularity,
-          this._ellipsoid,
-        );
-      }
-      return this._rectangle;
-    },
-  },
-  /**
-   * For remapping texture coordinates when rendering EllipseGeometries as GroundPrimitives.
-   * @private
-   */
-  textureCoordinateRotationPoints: {
-    get: function () {
-      if (!defined(this._textureCoordinateRotationPoints)) {
-        this._textureCoordinateRotationPoints =
-          textureCoordinateRotationPoints(this);
-      }
-      return this._textureCoordinateRotationPoints;
-    },
-  },
-});
 export default EllipseGeometry;

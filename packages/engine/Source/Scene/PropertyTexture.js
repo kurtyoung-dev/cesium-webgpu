@@ -23,43 +23,58 @@ import PropertyTextureProperty from "./PropertyTextureProperty.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function PropertyTexture(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const propertyTexture = options.propertyTexture;
-  const classDefinition = options.class;
-  const textures = options.textures;
+class PropertyTexture {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const propertyTexture = options.propertyTexture;
+    const classDefinition = options.class;
+    const textures = options.textures;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.propertyTexture", propertyTexture);
-  Check.typeOf.object("options.class", classDefinition);
-  Check.typeOf.object("options.textures", textures);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.propertyTexture", propertyTexture);
+    Check.typeOf.object("options.class", classDefinition);
+    Check.typeOf.object("options.textures", textures);
+    //>>includeEnd('debug');
 
-  const extensions = propertyTexture.extensions;
-  const extras = propertyTexture.extras;
+    const extensions = propertyTexture.extensions;
+    const extras = propertyTexture.extras;
 
-  const properties = {};
-  if (defined(propertyTexture.properties)) {
-    for (const propertyId in propertyTexture.properties) {
-      if (propertyTexture.properties.hasOwnProperty(propertyId)) {
-        properties[propertyId] = new PropertyTextureProperty({
-          property: propertyTexture.properties[propertyId],
-          classProperty: classDefinition.properties[propertyId],
-          textures: textures,
-        });
+    const properties = {};
+    if (defined(propertyTexture.properties)) {
+      for (const propertyId in propertyTexture.properties) {
+        if (propertyTexture.properties.hasOwnProperty(propertyId)) {
+          properties[propertyId] = new PropertyTextureProperty({
+            property: propertyTexture.properties[propertyId],
+            classProperty: classDefinition.properties[propertyId],
+            textures: textures,
+          });
+        }
       }
     }
+
+    this._name = options.name;
+    this._id = options.id;
+    this._class = classDefinition;
+    this._properties = properties;
+    this._extras = extras;
+    this._extensions = extensions;
   }
 
-  this._name = options.name;
-  this._id = options.id;
-  this._class = classDefinition;
-  this._properties = properties;
-  this._extras = extras;
-  this._extensions = extensions;
-}
+  /**
+   * Gets the property with the given property ID.
+   *
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {PropertyTextureProperty|undefined} The property, or <code>undefined</code> if the property does not exist.
+   * @private
+   */
+  getProperty(propertyId) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("propertyId", propertyId);
+    //>>includeEnd('debug');
 
-Object.defineProperties(PropertyTexture.prototype, {
+    return this._properties[propertyId];
+  }
+
   /**
    * A human-readable name for this texture
    *
@@ -68,11 +83,10 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
+
   /**
    * An identifier for this texture. Useful for debugging.
    *
@@ -81,11 +95,10 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  id: {
-    get: function () {
-      return this._id;
-    },
-  },
+  get id() {
+    return this._id;
+  }
+
   /**
    * The class that properties conform to.
    *
@@ -94,11 +107,9 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  class: {
-    get: function () {
-      return this._class;
-    },
-  },
+  get class() {
+    return this._class;
+  }
 
   /**
    * The properties in this property texture.
@@ -109,11 +120,9 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  properties: {
-    get: function () {
-      return this._properties;
-    },
-  },
+  get properties() {
+    return this._properties;
+  }
 
   /**
    * Extra user-defined properties.
@@ -123,11 +132,9 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -137,26 +144,9 @@ Object.defineProperties(PropertyTexture.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
-
-/**
- * Gets the property with the given property ID.
- *
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {PropertyTextureProperty|undefined} The property, or <code>undefined</code> if the property does not exist.
- * @private
- */
-PropertyTexture.prototype.getProperty = function (propertyId) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("propertyId", propertyId);
-  //>>includeEnd('debug');
-
-  return this._properties[propertyId];
-};
+  get extensions() {
+    return this._extensions;
+  }
+}
 
 export default PropertyTexture;

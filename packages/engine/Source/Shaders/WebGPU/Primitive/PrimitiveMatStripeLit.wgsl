@@ -17,7 +17,7 @@ struct VertexOutput {
     @location(2) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -26,20 +26,24 @@ struct Uniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
+    _pad2: f32,
+}
+
+struct MaterialUniforms {
     lightColor: vec4<f32>,
     darkColor: vec4<f32>,
     repeat: f32,
     offset: f32,
     orientation: f32,
-    _pad2: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -47,30 +51,30 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let eyePos = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * eyePos;
+    output.clipPosition = camera.mvpRelativeToEye * eyePos;
     output.texCoord = input.texCoord;
 
     let transformedNormal = normalize(
         mat3x3<f32>(
-            uniforms.normalMatrix[0].xyz,
-            uniforms.normalMatrix[1].xyz,
-            uniforms.normalMatrix[2].xyz
+            camera.normalMatrix[0].xyz,
+            camera.normalMatrix[1].xyz,
+            camera.normalMatrix[2].xyz
         ) * input.normal
     );
     output.worldNormal = transformedNormal;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * eyePos).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
 
     return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let coord = select(input.texCoord.x, input.texCoord.y, uniforms.orientation > 0.5);
-    let stripe = fract((coord + uniforms.offset) * uniforms.repeat);
-    let baseColor = select(uniforms.lightColor, uniforms.darkColor, stripe > 0.5);
+    let coord = select(input.texCoord.x, input.texCoord.y, material.orientation > 0.5);
+    let stripe = fract((coord + material.offset) * material.repeat);
+    let baseColor = select(material.lightColor, material.darkColor, stripe > 0.5);
 
     let normal = normalize(input.worldNormal);
-    let lightDir = normalize(uniforms.lightDirection.xyz);
+    let lightDir = normalize(camera.lightDirection.xyz);
 
     let ambient = 0.15;
     let NdotL = max(dot(normal, lightDir), 0.0);

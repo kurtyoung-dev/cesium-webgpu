@@ -67,142 +67,334 @@ import ConvolveSpecularMapVS from "../Shaders/ConvolveSpecularMapVS.js";
  * const environmentMapManager = model.environmentMapManager;
  * environmentMapManager.groundColor = Cesium.Color.fromCssColorString("#203b34");
  */
-function DynamicEnvironmentMapManager(options) {
-  this._position = undefined;
+class DynamicEnvironmentMapManager {
+  constructor(options) {
+    this._position = undefined;
 
-  this._radianceMapDirty = false;
-  this._radianceCommandsDirty = false;
-  this._convolutionsCommandsDirty = false;
-  this._irradianceCommandDirty = false;
-  this._irradianceTextureDirty = false;
-  this._sphericalHarmonicCoefficientsDirty = false;
+    this._radianceMapDirty = false;
+    this._radianceCommandsDirty = false;
+    this._convolutionsCommandsDirty = false;
+    this._irradianceCommandDirty = false;
+    this._irradianceTextureDirty = false;
+    this._sphericalHarmonicCoefficientsDirty = false;
 
-  this._shouldRegenerateShaders = false;
-  this._shouldReset = false;
+    this._shouldRegenerateShaders = false;
+    this._shouldReset = false;
 
-  options = options ?? Frozen.EMPTY_OBJECT;
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const mipmapLevels = Math.max(
-    Math.floor(
-      Math.min(
-        options.mipmapLevels ?? 7,
-        Math.log2(ContextLimits.maximumCubeMapSize),
+    const mipmapLevels = Math.max(
+      Math.floor(
+        Math.min(
+          options.mipmapLevels ?? 7,
+          Math.log2(ContextLimits.maximumCubeMapSize),
+        ),
       ),
-    ),
-    0,
-  );
+      0,
+    );
 
-  this._mipmapLevels = mipmapLevels;
+    this._mipmapLevels = mipmapLevels;
 
-  const arrayLength = Math.max(mipmapLevels - 1, 0) * 6;
-  this._radianceMapComputeCommands = new Array(6);
-  this._convolutionComputeCommands = new Array(arrayLength);
-  this._irradianceComputeCommand = undefined;
+    const arrayLength = Math.max(mipmapLevels - 1, 0) * 6;
+    this._radianceMapComputeCommands = new Array(6);
+    this._convolutionComputeCommands = new Array(arrayLength);
+    this._irradianceComputeCommand = undefined;
 
-  this._radianceMapFS = undefined;
-  this._irradianceMapFS = undefined;
-  this._convolveSP = undefined;
-  this._va = undefined;
+    this._radianceMapFS = undefined;
+    this._irradianceMapFS = undefined;
+    this._convolveSP = undefined;
+    this._va = undefined;
 
-  this._radianceMapTextures = new Array(6);
-  this._specularMapTextures = new Array(arrayLength);
-  this._radianceCubeMap = undefined;
-  this._irradianceMapTexture = undefined;
+    this._radianceMapTextures = new Array(6);
+    this._specularMapTextures = new Array(arrayLength);
+    this._radianceCubeMap = undefined;
+    this._irradianceMapTexture = undefined;
 
-  this._sphericalHarmonicCoefficients =
-    DynamicEnvironmentMapManager.DEFAULT_SPHERICAL_HARMONIC_COEFFICIENTS.slice();
+    this._sphericalHarmonicCoefficients =
+      DynamicEnvironmentMapManager.DEFAULT_SPHERICAL_HARMONIC_COEFFICIENTS.slice();
 
-  this._lastTime = new JulianDate();
-  const width = Math.max(Math.pow(2, mipmapLevels - 1), 1);
-  this._textureDimensions = new Cartesian2(width, width);
+    this._lastTime = new JulianDate();
+    const width = Math.max(Math.pow(2, mipmapLevels - 1), 1);
+    this._textureDimensions = new Cartesian2(width, width);
 
-  this._radiiAndDynamicAtmosphereColor = new Cartesian3();
-  this._sceneEnvironmentMap = undefined;
-  this._backgroundColor = undefined;
+    this._radiiAndDynamicAtmosphereColor = new Cartesian3();
+    this._sceneEnvironmentMap = undefined;
+    this._backgroundColor = undefined;
 
-  // If this DynamicEnvironmentMapManager has an owner, only its owner should update or destroy it.
-  // This is because in a Cesium3DTileset multiple models may reference one tileset's DynamicEnvironmentMapManager.
-  this._owner = undefined;
+    // If this DynamicEnvironmentMapManager has an owner, only its owner should update or destroy it.
+    // This is because in a Cesium3DTileset multiple models may reference one tileset's DynamicEnvironmentMapManager.
+    this._owner = undefined;
+
+    /**
+     * If true, the environment map and related properties will continue to update.
+     * @type {boolean}
+     * @default true
+     */
+    this.enabled = options.enabled ?? true;
+
+    /**
+     * Disables updates. For internal use.
+     * @private
+     * @default true
+     */
+    this.shouldUpdate = true;
+
+    /**
+     * The maximum amount of elapsed seconds before a new environment map is created.
+     * @type {number}
+     * @default 3600
+     */
+    this.maximumSecondsDifference = options.maximumSecondsDifference ?? 60 * 60;
+
+    /**
+     * The maximum difference in position before a new environment map is created, in meters. Small differences in position will not visibly affect results.
+     * @type {number}
+     * @default 1000
+     */
+    this.maximumPositionEpsilon = options.maximumPositionEpsilon ?? 1000.0;
+
+    /**
+     * The intensity of the scattered light emitted from the atmosphere. This should be adjusted relative to the value of {@link Scene.light} intensity.
+     * @type {number}
+     * @default 2.0
+     * @see DirectionalLight.intensity
+     * @see SunLight.intensity
+     */
+    this.atmosphereScatteringIntensity =
+      options.atmosphereScatteringIntensity ?? 2.0;
+
+    /**
+     * The gamma correction to apply to the range of light emitted from the environment. 1.0 uses the unmodified incoming light color.
+     * @type {number}
+     * @default 1.0
+     */
+    this.gamma = options.gamma ?? 1.0;
+
+    /**
+     * The brightness of light emitted from the environment. 1.0 uses the unmodified emitted environment color. Less than 1.0
+     * makes the light darker while greater than 1.0 makes it brighter.
+     * @type {number}
+     * @default 1.0
+     */
+    this.brightness = options.brightness ?? 1.0;
+
+    /**
+     * The saturation of the light emitted from the environment. 1.0 uses the unmodified emitted environment color. Less than 1.0 reduces the
+     * saturation while greater than 1.0 increases it.
+     * @type {number}
+     * @default 1.0
+     */
+    this.saturation = options.saturation ?? 1.0;
+
+    /**
+     * Solid color used to represent the ground.
+     * @type {Color}
+     * @default DynamicEnvironmentMapManager.AVERAGE_EARTH_GROUND_COLOR
+     */
+    this.groundColor =
+      options.groundColor ??
+      DynamicEnvironmentMapManager.AVERAGE_EARTH_GROUND_COLOR;
+
+    /**
+     * The percentage of light reflected from the ground. The average earth albedo is 0.31.
+     * @type {number}
+     * @default 0.31
+     */
+    this.groundAlbedo = options.groundAlbedo ?? 0.31;
+  }
 
   /**
-   * If true, the environment map and related properties will continue to update.
-   * @type {boolean}
-   * @default true
-   */
-  this.enabled = options.enabled ?? true;
-
-  /**
-   * Disables updates. For internal use.
+   * Cancels any in-progress commands and marks the environment map as dirty.
    * @private
-   * @default true
    */
-  this.shouldUpdate = true;
+  reset() {
+    let length = this._radianceMapComputeCommands.length;
+    for (let i = 0; i < length; ++i) {
+      if (defined(this._radianceMapComputeCommands[i])) {
+        this._radianceMapComputeCommands[i].canceled = true;
+      }
+      this._radianceMapComputeCommands[i] = undefined;
+    }
+
+    length = this._convolutionComputeCommands.length;
+    for (let i = 0; i < length; ++i) {
+      if (defined(this._convolutionComputeCommands[i])) {
+        this._convolutionComputeCommands[i].canceled = true;
+      }
+      this._convolutionComputeCommands[i] = undefined;
+    }
+
+    if (defined(this._irradianceComputeCommand)) {
+      this._irradianceComputeCommand.canceled = true;
+      this._irradianceComputeCommand = undefined;
+    }
+
+    this._radianceMapDirty = true;
+    this._radianceCommandsDirty = true;
+    this._convolutionsCommandsDirty = false;
+    this._irradianceCommandDirty = false;
+  }
 
   /**
-   * The maximum amount of elapsed seconds before a new environment map is created.
-   * @type {number}
-   * @default 3600
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * build the resources for the environment maps.
+   * <p>
+   * Do not call this function directly.
+   * </p>
+   * @private
    */
-  this.maximumSecondsDifference = options.maximumSecondsDifference ?? 60 * 60;
+  update(frameState) {
+    // Route to WebGPU feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.DYNAMIC_ENVIRONMENT_MAP,
+    );
+    if (fr) {
+      fr.update(this, frameState);
+      this._featureRenderer = fr;
+      return;
+    }
+
+    const mode = frameState.mode;
+    const isSupported =
+      // @ts-expect-error A FrameState type works here because the function only references the context parameter.
+      DynamicEnvironmentMapManager.isDynamicUpdateSupported(frameState) &&
+      this._mipmapLevels >= 1;
+
+    if (
+      !isSupported ||
+      !this.enabled ||
+      !this.shouldUpdate ||
+      !defined(this._position) ||
+      mode === SceneMode.MORPHING
+    ) {
+      this._shouldRegenerateShaders = false;
+      return;
+    }
+
+    DynamicEnvironmentMapManager._updateCommandQueue(frameState);
+
+    const dynamicLighting = frameState.atmosphere.dynamicLighting;
+    const regenerateEnvironmentMap =
+      atmosphereNeedsUpdate(this, frameState) ||
+      (dynamicLighting === DynamicAtmosphereLightingType.SUNLIGHT &&
+        !JulianDate.equalsEpsilon(
+          frameState.time,
+          this._lastTime,
+          this.maximumSecondsDifference,
+        ));
+
+    if (this._shouldReset || regenerateEnvironmentMap) {
+      this.reset();
+      this._shouldReset = false;
+      this._lastTime = JulianDate.clone(frameState.time, this._lastTime);
+      return;
+    }
+
+    if (this._radianceMapDirty) {
+      updateRadianceMap(this, frameState);
+      this._radianceMapDirty = false;
+    }
+
+    if (this._convolutionsCommandsDirty) {
+      updateSpecularMaps(this, frameState);
+      this._convolutionsCommandsDirty = false;
+    }
+
+    if (this._irradianceCommandDirty) {
+      updateIrradianceResources(this, frameState);
+      this._irradianceCommandDirty = false;
+    }
+
+    if (this._irradianceTextureDirty) {
+      this._shouldRegenerateShaders = false;
+      return;
+    }
+
+    if (this._sphericalHarmonicCoefficientsDirty) {
+      updateSphericalHarmonicCoefficients(this, frameState);
+      this._sphericalHarmonicCoefficientsDirty = false;
+      return;
+    }
+
+    this._shouldRegenerateShaders = false;
+  }
 
   /**
-   * The maximum difference in position before a new environment map is created, in meters. Small differences in position will not visibly affect results.
-   * @type {number}
-   * @default 1000
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   * @see DynamicEnvironmentMapManager#destroy
    */
-  this.maximumPositionEpsilon = options.maximumPositionEpsilon ?? 1000.0;
+  isDestroyed() {
+    return false;
+  }
 
   /**
-   * The intensity of the scattered light emitted from the atmosphere. This should be adjusted relative to the value of {@link Scene.light} intensity.
-   * @type {number}
-   * @default 2.0
-   * @see DirectionalLight.intensity
-   * @see SunLight.intensity
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * @throws {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   * @example
+   * mapManager = mapManager && mapManager.destroy();
+   * @see DynamicEnvironmentMapManager#isDestroyed
    */
-  this.atmosphereScatteringIntensity =
-    options.atmosphereScatteringIntensity ?? 2.0;
+  destroy() {
+    // Cancel in-progress commands
+    let length = this._radianceMapComputeCommands.length;
+    for (let i = 0; i < length; ++i) {
+      this._radianceMapComputeCommands[i] = undefined;
+    }
 
-  /**
-   * The gamma correction to apply to the range of light emitted from the environment. 1.0 uses the unmodified incoming light color.
-   * @type {number}
-   * @default 1.0
-   */
-  this.gamma = options.gamma ?? 1.0;
+    length = this._convolutionComputeCommands.length;
+    for (let i = 0; i < length; ++i) {
+      this._convolutionComputeCommands[i] = undefined;
+    }
 
-  /**
-   * The brightness of light emitted from the environment. 1.0 uses the unmodified emitted environment color. Less than 1.0
-   * makes the light darker while greater than 1.0 makes it brighter.
-   * @type {number}
-   * @default 1.0
-   */
-  this.brightness = options.brightness ?? 1.0;
+    this._irradianceMapComputeCommand = undefined;
 
-  /**
-   * The saturation of the light emitted from the environment. 1.0 uses the unmodified emitted environment color. Less than 1.0 reduces the
-   * saturation while greater than 1.0 increases it.
-   * @type {number}
-   * @default 1.0
-   */
-  this.saturation = options.saturation ?? 1.0;
+    // Destroy all textures
+    length = this._radianceMapTextures.length;
+    for (let i = 0; i < length; ++i) {
+      this._radianceMapTextures[i] =
+        this._radianceMapTextures[i] &&
+        !this._radianceMapTextures[i].isDestroyed() &&
+        this._radianceMapTextures[i].destroy();
+    }
 
-  /**
-   * Solid color used to represent the ground.
-   * @type {Color}
-   * @default DynamicEnvironmentMapManager.AVERAGE_EARTH_GROUND_COLOR
-   */
-  this.groundColor =
-    options.groundColor ??
-    DynamicEnvironmentMapManager.AVERAGE_EARTH_GROUND_COLOR;
+    length = this._specularMapTextures.length;
+    for (let i = 0; i < length; ++i) {
+      this._specularMapTextures[i] =
+        this._specularMapTextures[i] &&
+        !this._specularMapTextures[i].isDestroyed() &&
+        this._specularMapTextures[i].destroy();
+    }
 
-  /**
-   * The percentage of light reflected from the ground. The average earth albedo is 0.31.
-   * @type {number}
-   * @default 0.31
-   */
-  this.groundAlbedo = options.groundAlbedo ?? 0.31;
-}
+    this._radianceCubeMap =
+      this._radianceCubeMap && this._radianceCubeMap.destroy();
+    this._irradianceMapTexture =
+      this._irradianceMapTexture &&
+      !this._irradianceMapTexture.isDestroyed() &&
+      this._irradianceMapTexture.destroy();
 
-Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
+    if (defined(this._va)) {
+      this._va.destroy();
+    }
+
+    if (defined(this._convolveSP)) {
+      this._convolveSP.destroy();
+    }
+
+    if (this._featureRenderer) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
+
   /**
    * A reference to the DynamicEnvironmentMapManager's owner, if any.
    * @memberof DynamicEnvironmentMapManager.prototype
@@ -210,11 +402,9 @@ Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
    * @readonly
    * @private
    */
-  owner: {
-    get: function () {
-      return this._owner;
-    },
-  },
+  get owner() {
+    return this._owner;
+  }
 
   /**
    * True if model shaders need to be regenerated to account for updates.
@@ -223,37 +413,39 @@ Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
    * @readonly
    * @private
    */
-  shouldRegenerateShaders: {
-    get: function () {
-      return this._shouldRegenerateShaders;
-    },
-  },
+  get shouldRegenerateShaders() {
+    return this._shouldRegenerateShaders;
+  }
 
   /**
    * The position around which the environment map is generated.
    * @memberof DynamicEnvironmentMapManager.prototype
    * @type {Cartesian3|undefined}
    */
-  position: {
-    get: function () {
-      return this._position;
-    },
-    set: function (value) {
-      if (
-        Cartesian3.equalsEpsilon(
-          value,
-          this._position,
-          0.0,
-          this.maximumPositionEpsilon,
-        )
-      ) {
-        return;
-      }
+  get position() {
+    return this._position;
+  }
 
-      this._position = Cartesian3.clone(value, this._position);
-      this._shouldReset = true;
-    },
-  },
+  /**
+   * The position around which the environment map is generated.
+   * @memberof DynamicEnvironmentMapManager.prototype
+   * @type {Cartesian3|undefined}
+   */
+  set position(value) {
+    if (
+      Cartesian3.equalsEpsilon(
+        value,
+        this._position,
+        0.0,
+        this.maximumPositionEpsilon,
+      )
+    ) {
+      return;
+    }
+
+    this._position = Cartesian3.clone(value, this._position);
+    this._shouldReset = true;
+  }
 
   /**
    * The computed radiance map, or <code>undefined</code> if it has not yet been created.
@@ -262,11 +454,9 @@ Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
    * @readonly
    * @private
    */
-  radianceCubeMap: {
-    get: function () {
-      return this._radianceCubeMap;
-    },
-  },
+  get radianceCubeMap() {
+    return this._radianceCubeMap;
+  }
 
   /**
    * The maximum number of mip levels available in the radiance cubemap.
@@ -275,11 +465,9 @@ Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
    * @readonly
    * @private
    */
-  maximumMipmapLevel: {
-    get: function () {
-      return this._mipmapLevels;
-    },
-  },
+  get maximumMipmapLevel() {
+    return this._mipmapLevels;
+  }
 
   /**
    * The third order spherical harmonic coefficients used for the diffuse color of image-based lighting.
@@ -293,12 +481,10 @@ Object.defineProperties(DynamicEnvironmentMapManager.prototype, {
    * @see {@link https://graphics.stanford.edu/papers/envmap/envmap.pdf|An Efficient Representation for Irradiance Environment Maps}
    * @private
    */
-  sphericalHarmonicCoefficients: {
-    get: function () {
-      return this._sphericalHarmonicCoefficients;
-    },
-  },
-});
+  get sphericalHarmonicCoefficients() {
+    return this._sphericalHarmonicCoefficients;
+  }
+}
 
 // Internally manage a queue of commands across all instances to prevent too many commands from being added in a single frame and using too much memory at once.
 DynamicEnvironmentMapManager._maximumComputeCommandCount = 8; // This value is updated once a context is created.
@@ -391,38 +577,6 @@ DynamicEnvironmentMapManager.setOwner = function (
     environmentMapManager._owner = owner;
     owner[key] = environmentMapManager;
   }
-};
-
-/**
- * Cancels any in-progress commands and marks the environment map as dirty.
- * @private
- */
-DynamicEnvironmentMapManager.prototype.reset = function () {
-  let length = this._radianceMapComputeCommands.length;
-  for (let i = 0; i < length; ++i) {
-    if (defined(this._radianceMapComputeCommands[i])) {
-      this._radianceMapComputeCommands[i].canceled = true;
-    }
-    this._radianceMapComputeCommands[i] = undefined;
-  }
-
-  length = this._convolutionComputeCommands.length;
-  for (let i = 0; i < length; ++i) {
-    if (defined(this._convolutionComputeCommands[i])) {
-      this._convolutionComputeCommands[i].canceled = true;
-    }
-    this._convolutionComputeCommands[i] = undefined;
-  }
-
-  if (defined(this._irradianceComputeCommand)) {
-    this._irradianceComputeCommand.canceled = true;
-    this._irradianceComputeCommand = undefined;
-  }
-
-  this._radianceMapDirty = true;
-  this._radianceCommandsDirty = true;
-  this._convolutionsCommandsDirty = false;
-  this._irradianceCommandDirty = false;
 };
 
 const scratchPackedAtmosphere = new Cartesian3();
@@ -843,166 +997,6 @@ function updateSphericalHarmonicCoefficients(manager, frameState) {
   manager._irradianceMapTexture = undefined;
   manager._shouldRegenerateShaders = true;
 }
-
-/**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * build the resources for the environment maps.
- * <p>
- * Do not call this function directly.
- * </p>
- * @private
- */
-DynamicEnvironmentMapManager.prototype.update = function (frameState) {
-  // Route to WebGPU feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.DYNAMIC_ENVIRONMENT_MAP,
-  );
-  if (fr) {
-    fr.update(this, frameState);
-    this._featureRenderer = fr;
-    return;
-  }
-
-  const mode = frameState.mode;
-  const isSupported =
-    // @ts-expect-error A FrameState type works here because the function only references the context parameter.
-    DynamicEnvironmentMapManager.isDynamicUpdateSupported(frameState) &&
-    this._mipmapLevels >= 1;
-
-  if (
-    !isSupported ||
-    !this.enabled ||
-    !this.shouldUpdate ||
-    !defined(this._position) ||
-    mode === SceneMode.MORPHING
-  ) {
-    this._shouldRegenerateShaders = false;
-    return;
-  }
-
-  DynamicEnvironmentMapManager._updateCommandQueue(frameState);
-
-  const dynamicLighting = frameState.atmosphere.dynamicLighting;
-  const regenerateEnvironmentMap =
-    atmosphereNeedsUpdate(this, frameState) ||
-    (dynamicLighting === DynamicAtmosphereLightingType.SUNLIGHT &&
-      !JulianDate.equalsEpsilon(
-        frameState.time,
-        this._lastTime,
-        this.maximumSecondsDifference,
-      ));
-
-  if (this._shouldReset || regenerateEnvironmentMap) {
-    this.reset();
-    this._shouldReset = false;
-    this._lastTime = JulianDate.clone(frameState.time, this._lastTime);
-    return;
-  }
-
-  if (this._radianceMapDirty) {
-    updateRadianceMap(this, frameState);
-    this._radianceMapDirty = false;
-  }
-
-  if (this._convolutionsCommandsDirty) {
-    updateSpecularMaps(this, frameState);
-    this._convolutionsCommandsDirty = false;
-  }
-
-  if (this._irradianceCommandDirty) {
-    updateIrradianceResources(this, frameState);
-    this._irradianceCommandDirty = false;
-  }
-
-  if (this._irradianceTextureDirty) {
-    this._shouldRegenerateShaders = false;
-    return;
-  }
-
-  if (this._sphericalHarmonicCoefficientsDirty) {
-    updateSphericalHarmonicCoefficients(this, frameState);
-    this._sphericalHarmonicCoefficientsDirty = false;
-    return;
-  }
-
-  this._shouldRegenerateShaders = false;
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- * @see DynamicEnvironmentMapManager#destroy
- */
-DynamicEnvironmentMapManager.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * @throws {DeveloperError} This object was destroyed, i.e., destroy() was called.
- * @example
- * mapManager = mapManager && mapManager.destroy();
- * @see DynamicEnvironmentMapManager#isDestroyed
- */
-DynamicEnvironmentMapManager.prototype.destroy = function () {
-  // Cancel in-progress commands
-  let length = this._radianceMapComputeCommands.length;
-  for (let i = 0; i < length; ++i) {
-    this._radianceMapComputeCommands[i] = undefined;
-  }
-
-  length = this._convolutionComputeCommands.length;
-  for (let i = 0; i < length; ++i) {
-    this._convolutionComputeCommands[i] = undefined;
-  }
-
-  this._irradianceMapComputeCommand = undefined;
-
-  // Destroy all textures
-  length = this._radianceMapTextures.length;
-  for (let i = 0; i < length; ++i) {
-    this._radianceMapTextures[i] =
-      this._radianceMapTextures[i] &&
-      !this._radianceMapTextures[i].isDestroyed() &&
-      this._radianceMapTextures[i].destroy();
-  }
-
-  length = this._specularMapTextures.length;
-  for (let i = 0; i < length; ++i) {
-    this._specularMapTextures[i] =
-      this._specularMapTextures[i] &&
-      !this._specularMapTextures[i].isDestroyed() &&
-      this._specularMapTextures[i].destroy();
-  }
-
-  this._radianceCubeMap =
-    this._radianceCubeMap && this._radianceCubeMap.destroy();
-  this._irradianceMapTexture =
-    this._irradianceMapTexture &&
-    !this._irradianceMapTexture.isDestroyed() &&
-    this._irradianceMapTexture.destroy();
-
-  if (defined(this._va)) {
-    this._va.destroy();
-  }
-
-  if (defined(this._convolveSP)) {
-    this._convolveSP.destroy();
-  }
-
-  if (this._featureRenderer) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
 
 /**
  * Returns <code>true</code> if dynamic updates are supported in the current WebGL rendering context.

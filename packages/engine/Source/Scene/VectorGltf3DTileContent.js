@@ -255,7 +255,6 @@ class VectorGltf3DTileContent {
       model.modelMatrix = this._tile.computedTransform;
       model.update(frameState);
 
-      // @ts-expect-error Requires Model conversion to ES6 class.
       if (model.ready) {
         initializeVectorPrimitives(this);
         if (this._decodeModel) {
@@ -315,7 +314,6 @@ class VectorGltf3DTileContent {
     const content = new VectorGltf3DTileContent(tileset, tile, resource);
     const modelOptions = makeDecodeModelOptions(tileset, tile, content, gltf);
     const decodeModel = await Model.fromGltfAsync(modelOptions);
-    // @ts-expect-error Requires Model conversion to ES6 class.
     decodeModel.show = false;
     content._decodeModel = decodeModel;
     return content;
@@ -342,9 +340,7 @@ function makeDecodeModelOptions(tileset, tile, content, gltf) {
     forwardAxis: tileset._modelForwardAxis,
     incrementallyLoadTextures: false,
     content: content,
-    // @ts-expect-error Requires Cesium3DTileset conversion to ES6 class.
     featureIdLabel: tileset.featureIdLabel,
-    // @ts-expect-error Requires Cesium3DTileset conversion to ES6 class.
     instanceFeatureIdLabel: tileset.instanceFeatureIdLabel,
     projectTo2D: tileset._projectTo2D,
     enablePick: tileset._enablePick,

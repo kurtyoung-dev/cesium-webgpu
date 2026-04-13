@@ -16,107 +16,97 @@ import Ray from "./Ray.js";
  * @param {Cartesian2} [position] The steroegraphic coordinates.
  * @param {EllipseGeometry} [tangentPlane] The tangent plane onto which the point was projected.
  */
-function Stereographic(position, tangentPlane) {
-  this.position = position;
-  if (!defined(this.position)) {
-    this.position = new Cartesian2();
+class Stereographic {
+  constructor(position, tangentPlane) {
+    this.position = position;
+    if (!defined(this.position)) {
+      this.position = new Cartesian2();
+    }
+
+    this.tangentPlane = tangentPlane;
+    if (!defined(this.tangentPlane)) {
+      this.tangentPlane = Stereographic.NORTH_POLE_TANGENT_PLANE;
+    }
   }
 
-  this.tangentPlane = tangentPlane;
-  if (!defined(this.tangentPlane)) {
-    this.tangentPlane = Stereographic.NORTH_POLE_TANGENT_PLANE;
-  }
-}
+  /**
+   * Computes the latitude based on an ellipsoid.
+   *
+   * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid on which to compute the longitude.
+   * @returns {number} The latitude
+   */
+  getLatitude(ellipsoid) {
+    if (!defined(ellipsoid)) {
+      ellipsoid = Ellipsoid.default;
+    }
 
-Object.defineProperties(Stereographic.prototype, {
+    scratchCartographic.latitude = this.conformalLatitude;
+    scratchCartographic.longitude = this.longitude;
+    scratchCartographic.height = 0.0;
+    const cartesian = this.ellipsoid.cartographicToCartesian(
+      scratchCartographic,
+      scratchCartesian,
+    );
+    ellipsoid.cartesianToCartographic(cartesian, scratchCartographic);
+    return scratchCartographic.latitude;
+  }
+
   /**
    * Gets the ellipsoid.
    * @memberof Stereographic.prototype
    * @type {Ellipsoid}
    */
-  ellipsoid: {
-    get: function () {
-      return this.tangentPlane.ellipsoid;
-    },
-  },
+  get ellipsoid() {
+    return this.tangentPlane.ellipsoid;
+  }
 
   /**
    * Gets the x coordinate
    * @memberof Stereographic.prototype
    * @type {number}
    */
-  x: {
-    get: function () {
-      return this.position.x;
-    },
-  },
+  get x() {
+    return this.position.x;
+  }
 
   /**
    * Gets the y coordinate
    * @memberof Stereographic.prototype
    * @type {number}
    */
-  y: {
-    get: function () {
-      return this.position.y;
-    },
-  },
+  get y() {
+    return this.position.y;
+  }
 
   /**
    * Computes the conformal latitude, or the ellipsoidal latitude projected onto an arbitrary sphere.
    * @memberof Stereographic.prototype
    * @type {number}
    */
-  conformalLatitude: {
-    get: function () {
-      const r = Cartesian2.magnitude(this.position);
-      const d = 2 * this.ellipsoid.maximumRadius;
-      const sign = this.tangentPlane.plane.normal.z;
-      return sign * (CesiumMath.PI_OVER_TWO - 2 * Math.atan2(r, d));
-    },
-  },
+  get conformalLatitude() {
+    const r = Cartesian2.magnitude(this.position);
+    const d = 2 * this.ellipsoid.maximumRadius;
+    const sign = this.tangentPlane.plane.normal.z;
+    return sign * (CesiumMath.PI_OVER_TWO - 2 * Math.atan2(r, d));
+  }
 
   /**
    * Computes the longitude
    * @memberof Stereographic.prototype
    * @type {number}
    */
-  longitude: {
-    get: function () {
-      let longitude = CesiumMath.PI_OVER_TWO + Math.atan2(this.y, this.x);
-      if (longitude > Math.PI) {
-        longitude -= CesiumMath.TWO_PI;
-      }
+  get longitude() {
+    let longitude = CesiumMath.PI_OVER_TWO + Math.atan2(this.y, this.x);
+    if (longitude > Math.PI) {
+      longitude -= CesiumMath.TWO_PI;
+    }
 
-      return longitude;
-    },
-  },
-});
+    return longitude;
+  }
+}
 
 const scratchCartographic = new Cartographic();
 const scratchCartesian = new Cartesian3();
-
-/**
- * Computes the latitude based on an ellipsoid.
- *
- * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid on which to compute the longitude.
- * @returns {number} The latitude
- */
-Stereographic.prototype.getLatitude = function (ellipsoid) {
-  if (!defined(ellipsoid)) {
-    ellipsoid = Ellipsoid.default;
-  }
-
-  scratchCartographic.latitude = this.conformalLatitude;
-  scratchCartographic.longitude = this.longitude;
-  scratchCartographic.height = 0.0;
-  const cartesian = this.ellipsoid.cartographicToCartesian(
-    scratchCartographic,
-    scratchCartesian,
-  );
-  ellipsoid.cartesianToCartographic(cartesian, scratchCartographic);
-  return scratchCartographic.latitude;
-};
 
 const scratchProjectPointOntoPlaneRay = new Ray();
 const scratchProjectPointOntoPlaneRayDirection = new Cartesian3();

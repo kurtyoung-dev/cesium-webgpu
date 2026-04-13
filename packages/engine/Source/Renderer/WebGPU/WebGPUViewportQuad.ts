@@ -471,7 +471,7 @@ export class WebGPUViewportQuad {
             );
             bindGroup = result.bindGroup;
             uniformBuffer = result.uniformBuffer;
-          } catch (e: any) {
+          } catch (e: unknown) {
             // Bind group mismatch — log once, skip draw
             return;
           }

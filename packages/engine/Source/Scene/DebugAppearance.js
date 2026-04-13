@@ -32,118 +32,118 @@ import Appearance from "./Appearance.js";
  *   })
  * });
  */
-function DebugAppearance(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const attributeName = options.attributeName;
-  let perInstanceAttribute = options.perInstanceAttribute;
+class DebugAppearance {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const attributeName = options.attributeName;
+    let perInstanceAttribute = options.perInstanceAttribute;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(attributeName)) {
-    throw new DeveloperError("options.attributeName is required.");
-  }
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(attributeName)) {
+      throw new DeveloperError("options.attributeName is required.");
+    }
+    //>>includeEnd('debug');
 
-  if (!defined(perInstanceAttribute)) {
-    perInstanceAttribute = false;
-  }
-
-  let glslDatatype = options.glslDatatype ?? "vec3";
-  const varyingName = `v_${attributeName}`;
-  let getColor;
-
-  // Well-known normalized vector attributes in VertexFormat
-  if (
-    attributeName === "normal" ||
-    attributeName === "tangent" ||
-    attributeName === "bitangent"
-  ) {
-    getColor = `vec4 getColor() { return vec4((${varyingName} + vec3(1.0)) * 0.5, 1.0); }\n`;
-  } else {
-    // All other attributes, both well-known and custom
-    if (attributeName === "st") {
-      glslDatatype = "vec2";
+    if (!defined(perInstanceAttribute)) {
+      perInstanceAttribute = false;
     }
 
-    switch (glslDatatype) {
-      case "float":
-        getColor = `vec4 getColor() { return vec4(vec3(${varyingName}), 1.0); }\n`;
-        break;
-      case "vec2":
-        getColor = `vec4 getColor() { return vec4(${varyingName}, 0.0, 1.0); }\n`;
-        break;
-      case "vec3":
-        getColor = `vec4 getColor() { return vec4(${varyingName}, 1.0); }\n`;
-        break;
-      case "vec4":
-        getColor = `vec4 getColor() { return ${varyingName}; }\n`;
-        break;
-      //>>includeStart('debug', pragmas.debug);
-      default:
-        throw new DeveloperError(
-          "options.glslDatatype must be float, vec2, vec3, or vec4.",
-        );
-      //>>includeEnd('debug');
+    let glslDatatype = options.glslDatatype ?? "vec3";
+    const varyingName = `v_${attributeName}`;
+    let getColor;
+
+    // Well-known normalized vector attributes in VertexFormat
+    if (
+      attributeName === "normal" ||
+      attributeName === "tangent" ||
+      attributeName === "bitangent"
+    ) {
+      getColor = `vec4 getColor() { return vec4((${varyingName} + vec3(1.0)) * 0.5, 1.0); }\n`;
+    } else {
+      // All other attributes, both well-known and custom
+      if (attributeName === "st") {
+        glslDatatype = "vec2";
+      }
+
+      switch (glslDatatype) {
+        case "float":
+          getColor = `vec4 getColor() { return vec4(vec3(${varyingName}), 1.0); }\n`;
+          break;
+        case "vec2":
+          getColor = `vec4 getColor() { return vec4(${varyingName}, 0.0, 1.0); }\n`;
+          break;
+        case "vec3":
+          getColor = `vec4 getColor() { return vec4(${varyingName}, 1.0); }\n`;
+          break;
+        case "vec4":
+          getColor = `vec4 getColor() { return ${varyingName}; }\n`;
+          break;
+        //>>includeStart('debug', pragmas.debug);
+        default:
+          throw new DeveloperError(
+            "options.glslDatatype must be float, vec2, vec3, or vec4.",
+          );
+        //>>includeEnd('debug');
+      }
     }
+
+    const vs =
+      `${
+        "in vec3 position3DHigh;\n" +
+        "in vec3 position3DLow;\n" +
+        "in float batchId;\n"
+      }${
+        perInstanceAttribute ? "" : `in ${glslDatatype} ${attributeName};\n`
+      }out ${glslDatatype} ${varyingName};\n` +
+      `void main()\n` +
+      `{\n` +
+      `vec4 p = czm_translateRelativeToEye(position3DHigh, position3DLow);\n${
+        perInstanceAttribute
+          ? `${varyingName} = czm_batchTable_${attributeName}(batchId);\n`
+          : `${varyingName} = ${attributeName};\n`
+      }gl_Position = czm_modelViewProjectionRelativeToEye * p;\n` +
+      `}`;
+    const fs =
+      `in ${glslDatatype} ${varyingName};\n${getColor}\n` +
+      `void main()\n` +
+      `{\n` +
+      `out_FragColor = getColor();\n` +
+      `}`;
+
+    /**
+     * This property is part of the {@link Appearance} interface, but is not
+     * used by {@link DebugAppearance} since a fully custom fragment shader is used.
+     *
+     * @type Material
+     *
+     * @default undefined
+     */
+    this.material = undefined;
+
+    /**
+     * When <code>true</code>, the geometry is expected to appear translucent.
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.translucent = options.translucent ?? false;
+
+    this._vertexShaderSource = options.vertexShaderSource ?? vs;
+    this._fragmentShaderSource = options.fragmentShaderSource ?? fs;
+    this._renderState = Appearance.getDefaultRenderState(
+      false,
+      false,
+      options.renderState,
+    );
+    this._closed = options.closed ?? false;
+
+    // Non-derived members
+
+    this._attributeName = attributeName;
+    this._glslDatatype = glslDatatype;
   }
 
-  const vs =
-    `${
-      "in vec3 position3DHigh;\n" +
-      "in vec3 position3DLow;\n" +
-      "in float batchId;\n"
-    }${
-      perInstanceAttribute ? "" : `in ${glslDatatype} ${attributeName};\n`
-    }out ${glslDatatype} ${varyingName};\n` +
-    `void main()\n` +
-    `{\n` +
-    `vec4 p = czm_translateRelativeToEye(position3DHigh, position3DLow);\n${
-      perInstanceAttribute
-        ? `${varyingName} = czm_batchTable_${attributeName}(batchId);\n`
-        : `${varyingName} = ${attributeName};\n`
-    }gl_Position = czm_modelViewProjectionRelativeToEye * p;\n` +
-    `}`;
-  const fs =
-    `in ${glslDatatype} ${varyingName};\n${getColor}\n` +
-    `void main()\n` +
-    `{\n` +
-    `out_FragColor = getColor();\n` +
-    `}`;
-
-  /**
-   * This property is part of the {@link Appearance} interface, but is not
-   * used by {@link DebugAppearance} since a fully custom fragment shader is used.
-   *
-   * @type Material
-   *
-   * @default undefined
-   */
-  this.material = undefined;
-
-  /**
-   * When <code>true</code>, the geometry is expected to appear translucent.
-   *
-   * @type {boolean}
-   *
-   * @default false
-   */
-  this.translucent = options.translucent ?? false;
-
-  this._vertexShaderSource = options.vertexShaderSource ?? vs;
-  this._fragmentShaderSource = options.fragmentShaderSource ?? fs;
-  this._renderState = Appearance.getDefaultRenderState(
-    false,
-    false,
-    options.renderState,
-  );
-  this._closed = options.closed ?? false;
-
-  // Non-derived members
-
-  this._attributeName = attributeName;
-  this._glslDatatype = glslDatatype;
-}
-
-Object.defineProperties(DebugAppearance.prototype, {
   /**
    * The GLSL source code for the vertex shader.
    *
@@ -152,11 +152,9 @@ Object.defineProperties(DebugAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  vertexShaderSource: {
-    get: function () {
-      return this._vertexShaderSource;
-    },
-  },
+  get vertexShaderSource() {
+    return this._vertexShaderSource;
+  }
 
   /**
    * The GLSL source code for the fragment shader.  The full fragment shader
@@ -168,11 +166,9 @@ Object.defineProperties(DebugAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  fragmentShaderSource: {
-    get: function () {
-      return this._fragmentShaderSource;
-    },
-  },
+  get fragmentShaderSource() {
+    return this._fragmentShaderSource;
+  }
 
   /**
    * The WebGL fixed-function state to use when rendering the geometry.
@@ -182,11 +178,9 @@ Object.defineProperties(DebugAppearance.prototype, {
    * @type {object}
    * @readonly
    */
-  renderState: {
-    get: function () {
-      return this._renderState;
-    },
-  },
+  get renderState() {
+    return this._renderState;
+  }
 
   /**
    * When <code>true</code>, the geometry is expected to be closed.
@@ -198,11 +192,9 @@ Object.defineProperties(DebugAppearance.prototype, {
    *
    * @default false
    */
-  closed: {
-    get: function () {
-      return this._closed;
-    },
-  },
+  get closed() {
+    return this._closed;
+  }
 
   /**
    * The name of the attribute being visualized.
@@ -212,11 +204,9 @@ Object.defineProperties(DebugAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  attributeName: {
-    get: function () {
-      return this._attributeName;
-    },
-  },
+  get attributeName() {
+    return this._attributeName;
+  }
 
   /**
    * The GLSL datatype of the attribute being visualized.
@@ -226,12 +216,10 @@ Object.defineProperties(DebugAppearance.prototype, {
    * @type {string}
    * @readonly
    */
-  glslDatatype: {
-    get: function () {
-      return this._glslDatatype;
-    },
-  },
-});
+  get glslDatatype() {
+    return this._glslDatatype;
+  }
+}
 
 /**
  * Returns the full GLSL fragment shader source, which for {@link DebugAppearance} is just

@@ -166,64 +166,129 @@ function generateNatural(points) {
  * @see QuaternionSpline
  * @see MorphWeightSpline
  */
-function HermiteSpline(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class HermiteSpline {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const points = options.points;
-  const times = options.times;
-  const inTangents = options.inTangents;
-  const outTangents = options.outTangents;
+    const points = options.points;
+    const times = options.times;
+    const inTangents = options.inTangents;
+    const outTangents = options.outTangents;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (
-    !defined(points) ||
-    !defined(times) ||
-    !defined(inTangents) ||
-    !defined(outTangents)
-  ) {
-    throw new DeveloperError(
-      "times, points, inTangents, and outTangents are required.",
+    //>>includeStart('debug', pragmas.debug);
+    if (
+      !defined(points) ||
+      !defined(times) ||
+      !defined(inTangents) ||
+      !defined(outTangents)
+    ) {
+      throw new DeveloperError(
+        "times, points, inTangents, and outTangents are required.",
+      );
+    }
+    if (points.length < 2) {
+      throw new DeveloperError(
+        "points.length must be greater than or equal to 2.",
+      );
+    }
+    if (times.length !== points.length) {
+      throw new DeveloperError("times.length must be equal to points.length.");
+    }
+    if (
+      inTangents.length !== outTangents.length ||
+      inTangents.length !== points.length - 1
+    ) {
+      throw new DeveloperError(
+        "inTangents and outTangents must have a length equal to points.length - 1.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    this._times = times;
+    this._points = points;
+    this._pointType = Spline.getPointType(points[0]);
+    //>>includeStart('debug', pragmas.debug);
+    if (
+      this._pointType !== Spline.getPointType(inTangents[0]) ||
+      this._pointType !== Spline.getPointType(outTangents[0])
+    ) {
+      throw new DeveloperError(
+        "inTangents and outTangents must be of the same type as points.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    this._inTangents = inTangents;
+    this._outTangents = outTangents;
+
+    this._lastTimeIndex = 0;
+  }
+
+  /**
+   * Evaluates the curve at a given time.
+   *
+   * @param {number} time The time at which to evaluate the curve.
+   * @param {Cartesian3} [result] The object onto which to store the result.
+   * @returns {Cartesian3} The modified result parameter or a new instance of the point on the curve at the given time.
+   *
+   * @exception {DeveloperError} time must be in the range <code>[t<sub>0</sub>, t<sub>n</sub>]</code>, where <code>t<sub>0</sub></code>
+   *                             is the first element in the array <code>times</code> and <code>t<sub>n</sub></code> is the last element
+   *                             in the array <code>times</code>.
+   */
+  evaluate(time, result) {
+    const points = this.points;
+    const times = this.times;
+    const inTangents = this.inTangents;
+    const outTangents = this.outTangents;
+
+    this._lastTimeIndex = this.findTimeInterval(time, this._lastTimeIndex);
+    const i = this._lastTimeIndex;
+
+    const timesDelta = times[i + 1] - times[i];
+    const u = (time - times[i]) / timesDelta;
+
+    const timeVec = scratchTimeVec;
+    timeVec.z = u;
+    timeVec.y = u * u;
+    timeVec.x = timeVec.y * u;
+    timeVec.w = 1.0;
+
+    // Coefficients are returned in the following order:
+    // start, end, out-tangent, in-tangent
+    const coefs = Matrix4.multiplyByVector(
+      HermiteSpline.hermiteCoefficientMatrix,
+      timeVec,
+      timeVec,
     );
-  }
-  if (points.length < 2) {
-    throw new DeveloperError(
-      "points.length must be greater than or equal to 2.",
-    );
-  }
-  if (times.length !== points.length) {
-    throw new DeveloperError("times.length must be equal to points.length.");
-  }
-  if (
-    inTangents.length !== outTangents.length ||
-    inTangents.length !== points.length - 1
-  ) {
-    throw new DeveloperError(
-      "inTangents and outTangents must have a length equal to points.length - 1.",
-    );
-  }
-  //>>includeEnd('debug');
 
-  this._times = times;
-  this._points = points;
-  this._pointType = Spline.getPointType(points[0]);
-  //>>includeStart('debug', pragmas.debug);
-  if (
-    this._pointType !== Spline.getPointType(inTangents[0]) ||
-    this._pointType !== Spline.getPointType(outTangents[0])
-  ) {
-    throw new DeveloperError(
-      "inTangents and outTangents must be of the same type as points.",
-    );
+    // Multiply the out-tangent and in-tangent values by the time delta.
+    coefs.z *= timesDelta;
+    coefs.w *= timesDelta;
+
+    const PointType = this._pointType;
+
+    if (PointType === Number) {
+      return (
+        points[i] * coefs.x +
+        points[i + 1] * coefs.y +
+        outTangents[i] * coefs.z +
+        inTangents[i] * coefs.w
+      );
+    }
+
+    if (!defined(result)) {
+      result = new PointType();
+    }
+
+    result = PointType.multiplyByScalar(points[i], coefs.x, result);
+    PointType.multiplyByScalar(points[i + 1], coefs.y, scratchTemp);
+    PointType.add(result, scratchTemp, result);
+    PointType.multiplyByScalar(outTangents[i], coefs.z, scratchTemp);
+    PointType.add(result, scratchTemp, result);
+    PointType.multiplyByScalar(inTangents[i], coefs.w, scratchTemp);
+    return PointType.add(result, scratchTemp, result);
   }
-  //>>includeEnd('debug');
 
-  this._inTangents = inTangents;
-  this._outTangents = outTangents;
-
-  this._lastTimeIndex = 0;
-}
-
-Object.defineProperties(HermiteSpline.prototype, {
   /**
    * An array of times for the control points.
    *
@@ -232,11 +297,9 @@ Object.defineProperties(HermiteSpline.prototype, {
    * @type {number[]}
    * @readonly
    */
-  times: {
-    get: function () {
-      return this._times;
-    },
-  },
+  get times() {
+    return this._times;
+  }
 
   /**
    * An array of control points.
@@ -246,11 +309,9 @@ Object.defineProperties(HermiteSpline.prototype, {
    * @type {Cartesian3[]}
    * @readonly
    */
-  points: {
-    get: function () {
-      return this._points;
-    },
-  },
+  get points() {
+    return this._points;
+  }
 
   /**
    * An array of incoming tangents at each control point.
@@ -260,11 +321,9 @@ Object.defineProperties(HermiteSpline.prototype, {
    * @type {Cartesian3[]}
    * @readonly
    */
-  inTangents: {
-    get: function () {
-      return this._inTangents;
-    },
-  },
+  get inTangents() {
+    return this._inTangents;
+  }
 
   /**
    * An array of outgoing tangents at each control point.
@@ -274,12 +333,10 @@ Object.defineProperties(HermiteSpline.prototype, {
    * @type {Cartesian3[]}
    * @readonly
    */
-  outTangents: {
-    get: function () {
-      return this._outTangents;
-    },
-  },
-});
+  get outTangents() {
+    return this._outTangents;
+  }
+}
 
 /**
  * Creates a spline where the tangents at each control point are the same.
@@ -553,68 +610,4 @@ HermiteSpline.prototype.wrapTime = Spline.prototype.wrapTime;
  */
 HermiteSpline.prototype.clampTime = Spline.prototype.clampTime;
 
-/**
- * Evaluates the curve at a given time.
- *
- * @param {number} time The time at which to evaluate the curve.
- * @param {Cartesian3} [result] The object onto which to store the result.
- * @returns {Cartesian3} The modified result parameter or a new instance of the point on the curve at the given time.
- *
- * @exception {DeveloperError} time must be in the range <code>[t<sub>0</sub>, t<sub>n</sub>]</code>, where <code>t<sub>0</sub></code>
- *                             is the first element in the array <code>times</code> and <code>t<sub>n</sub></code> is the last element
- *                             in the array <code>times</code>.
- */
-HermiteSpline.prototype.evaluate = function (time, result) {
-  const points = this.points;
-  const times = this.times;
-  const inTangents = this.inTangents;
-  const outTangents = this.outTangents;
-
-  this._lastTimeIndex = this.findTimeInterval(time, this._lastTimeIndex);
-  const i = this._lastTimeIndex;
-
-  const timesDelta = times[i + 1] - times[i];
-  const u = (time - times[i]) / timesDelta;
-
-  const timeVec = scratchTimeVec;
-  timeVec.z = u;
-  timeVec.y = u * u;
-  timeVec.x = timeVec.y * u;
-  timeVec.w = 1.0;
-
-  // Coefficients are returned in the following order:
-  // start, end, out-tangent, in-tangent
-  const coefs = Matrix4.multiplyByVector(
-    HermiteSpline.hermiteCoefficientMatrix,
-    timeVec,
-    timeVec,
-  );
-
-  // Multiply the out-tangent and in-tangent values by the time delta.
-  coefs.z *= timesDelta;
-  coefs.w *= timesDelta;
-
-  const PointType = this._pointType;
-
-  if (PointType === Number) {
-    return (
-      points[i] * coefs.x +
-      points[i + 1] * coefs.y +
-      outTangents[i] * coefs.z +
-      inTangents[i] * coefs.w
-    );
-  }
-
-  if (!defined(result)) {
-    result = new PointType();
-  }
-
-  result = PointType.multiplyByScalar(points[i], coefs.x, result);
-  PointType.multiplyByScalar(points[i + 1], coefs.y, scratchTemp);
-  PointType.add(result, scratchTemp, result);
-  PointType.multiplyByScalar(outTangents[i], coefs.z, scratchTemp);
-  PointType.add(result, scratchTemp, result);
-  PointType.multiplyByScalar(inTangents[i], coefs.w, scratchTemp);
-  return PointType.add(result, scratchTemp, result);
-};
 export default HermiteSpline;

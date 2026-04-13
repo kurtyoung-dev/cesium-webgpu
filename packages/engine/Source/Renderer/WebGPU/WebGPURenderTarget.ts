@@ -244,15 +244,32 @@ export class WebGPURenderTarget {
   }
 
   /**
-   * Get depth/stencil attachment descriptor for render pass
+   * Get depth/stencil attachment descriptor for render pass.
+   *
+   * CRITICAL — the load/store ops MUST be overridable. Before this was
+   * parameterized, `depthLoadOp` was hard-coded to `"clear"` and every
+   * caller that reopened the scene framebuffer pass silently wiped the
+   * depth buffer. That broke multi-frustum accumulation AND made the
+   * depth-as-color debug overlay sample an all-1.0 depth texture (the
+   * "everything magenta" symptom). When reopening a pass to preserve
+   * prior-frustum depth or to sample depth in a subsequent pass, pass
+   * `depthLoadOp: "load"`.
    *
    * @param depthClearValue - Depth clear value (default: 1.0)
    * @param stencilClearValue - Stencil clear value (default: 0)
+   * @param depthLoadOp - Depth load op (default: "clear")
+   * @param depthStoreOp - Depth store op (default: "store")
+   * @param stencilLoadOp - Stencil load op (default: "clear")
+   * @param stencilStoreOp - Stencil store op (default: "store")
    * @returns Depth/stencil attachment descriptor or undefined
    */
   getDepthStencilAttachment(
     depthClearValue: number = 1.0,
     stencilClearValue: number = 0,
+    depthLoadOp: GPULoadOp = "clear",
+    depthStoreOp: GPUStoreOp = "store",
+    stencilLoadOp: GPULoadOp = "clear",
+    stencilStoreOp: GPUStoreOp = "store",
   ): GPURenderPassDepthStencilAttachment | undefined {
     if (!this.depthStencilAttachment) {
       return undefined;
@@ -261,15 +278,15 @@ export class WebGPURenderTarget {
     const descriptor: GPURenderPassDepthStencilAttachment = {
       view: this.depthStencilAttachment.view,
       depthClearValue,
-      depthLoadOp: "clear",
-      depthStoreOp: "store",
+      depthLoadOp,
+      depthStoreOp,
     };
 
     // Add stencil operations if format includes stencil
     if (this.depthStencilAttachment.format.includes("stencil")) {
       descriptor.stencilClearValue = stencilClearValue;
-      descriptor.stencilLoadOp = "clear";
-      descriptor.stencilStoreOp = "store";
+      descriptor.stencilLoadOp = stencilLoadOp;
+      descriptor.stencilStoreOp = stencilStoreOp;
     }
 
     return descriptor;

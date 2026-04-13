@@ -329,130 +329,125 @@ Batch.prototype.destroy = function () {
  * texture coordinate type, and spatial overlap.
  * @private
  */
-function StaticGroundGeometryPerMaterialBatch(
-  primitives,
-  classificationType,
-  appearanceType,
-) {
-  this._items = []; // array of Batch objects, each containing representing a primitive and a set of updaters that manage the visual representation of the primitive.
-  this._primitives = primitives; // scene level primitive collection
-  this._classificationType = classificationType;
-  this._appearanceType = appearanceType;
-}
+class StaticGroundGeometryPerMaterialBatch {
+  constructor(primitives, classificationType, appearanceType) {
+    this._items = []; // array of Batch objects, each containing representing a primitive and a set of updaters that manage the visual representation of the primitive.
+    this._primitives = primitives; // scene level primitive collection
+    this._classificationType = classificationType;
+    this._appearanceType = appearanceType;
+  }
 
-/**
- * Adds an geometry updater to a Batch. Tries to find a preexisting compatible Batch, or else creates a new Batch.
- * Used by Visualizer classes to add and update (remove->add) a primitive's Updater set.
- *
- * @param {JulianDate} time
- * @param {GeometryUpdater} updater A GeometryUpdater that manages the visual representation of a primitive.
- * @private
- */
-StaticGroundGeometryPerMaterialBatch.prototype.add = function (time, updater) {
-  const items = this._items;
-  const length = items.length;
-  const geometryInstance = updater.createFillGeometryInstance(time);
-  const usingSphericalTextureCoordinates =
-    ShadowVolumeAppearance.shouldUseSphericalCoordinates(
-      geometryInstance.geometry.rectangle,
+  /**
+   * Adds an geometry updater to a Batch. Tries to find a preexisting compatible Batch, or else creates a new Batch.
+   * Used by Visualizer classes to add and update (remove->add) a primitive's Updater set.
+   *
+   * @param {JulianDate} time
+   * @param {GeometryUpdater} updater A GeometryUpdater that manages the visual representation of a primitive.
+   * @private
+   */
+  add(time, updater) {
+    const items = this._items;
+    const length = items.length;
+    const geometryInstance = updater.createFillGeometryInstance(time);
+    const usingSphericalTextureCoordinates =
+      ShadowVolumeAppearance.shouldUseSphericalCoordinates(
+        geometryInstance.geometry.rectangle,
+      );
+    const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
+    // Check if the Entity represented by the updater can be placed in an existing batch. Requirements:
+    // * compatible material (same material or same color)
+    // * same type of texture coordinates (spherical vs. planar)
+    // * conservatively non-overlapping with any entities in the existing batch
+    for (let i = 0; i < length; ++i) {
+      const item = items[i];
+      if (
+        item.isMaterial(updater) &&
+        item.usingSphericalTextureCoordinates ===
+          usingSphericalTextureCoordinates &&
+        item.zIndex === zIndex &&
+        !item.overlapping(geometryInstance.geometry.rectangle)
+      ) {
+        item.add(time, updater, geometryInstance);
+        return;
+      }
+    }
+    // If a compatible batch wasn't found, create a new batch.
+    const batch = new Batch(
+      this._primitives,
+      this._classificationType,
+      this._appearanceType,
+      updater.fillMaterialProperty,
+      usingSphericalTextureCoordinates,
+      zIndex,
     );
-  const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
-  // Check if the Entity represented by the updater can be placed in an existing batch. Requirements:
-  // * compatible material (same material or same color)
-  // * same type of texture coordinates (spherical vs. planar)
-  // * conservatively non-overlapping with any entities in the existing batch
-  for (let i = 0; i < length; ++i) {
-    const item = items[i];
-    if (
-      item.isMaterial(updater) &&
-      item.usingSphericalTextureCoordinates ===
-        usingSphericalTextureCoordinates &&
-      item.zIndex === zIndex &&
-      !item.overlapping(geometryInstance.geometry.rectangle)
-    ) {
-      item.add(time, updater, geometryInstance);
-      return;
-    }
+    batch.add(time, updater, geometryInstance);
+    items.push(batch);
   }
-  // If a compatible batch wasn't found, create a new batch.
-  const batch = new Batch(
-    this._primitives,
-    this._classificationType,
-    this._appearanceType,
-    updater.fillMaterialProperty,
-    usingSphericalTextureCoordinates,
-    zIndex,
-  );
-  batch.add(time, updater, geometryInstance);
-  items.push(batch);
-};
 
-/**
- * Removes an updater from a Batch. Defers potential deletion until the next update.
- * @param {GeometryUpdater} updater A GeometryUpdater that manages the visual representation of a primitive.
- * @private
- */
-StaticGroundGeometryPerMaterialBatch.prototype.remove = function (updater) {
-  const items = this._items;
-  const length = items.length;
-  for (let i = length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.remove(updater)) {
-      // If the item is now empty, delete it (deferred until the next update,
-      // in case a new updater is added to the same item first).
-      break;
-    }
-  }
-};
-
-/**
- * Updates all the items (Batches) in the collection, and deletes any that are empty.
- * @param {JulianDate} time
- * @returns a boolean indicating whether any of the items (Batches) were updated.
- * @private
- */
-StaticGroundGeometryPerMaterialBatch.prototype.update = function (time) {
-  let i;
-  const items = this._items;
-  const length = items.length;
-
-  for (i = length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.updaters.length === 0) {
-      items.splice(i, 1);
-      item.destroy();
+  /**
+   * Removes an updater from a Batch. Defers potential deletion until the next update.
+   * @param {GeometryUpdater} updater A GeometryUpdater that manages the visual representation of a primitive.
+   * @private
+   */
+  remove(updater) {
+    const items = this._items;
+    const length = items.length;
+    for (let i = length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.remove(updater)) {
+        // If the item is now empty, delete it (deferred until the next update,
+        // in case a new updater is added to the same item first).
+        break;
+      }
     }
   }
 
-  let isUpdated = true;
-  for (i = 0; i < items.length; i++) {
-    isUpdated = items[i].update(time) && isUpdated;
-  }
-  return isUpdated;
-};
+  /**
+   * Updates all the items (Batches) in the collection, and deletes any that are empty.
+   * @param {JulianDate} time
+   * @returns a boolean indicating whether any of the items (Batches) were updated.
+   * @private
+   */
+  update(time) {
+    let i;
+    const items = this._items;
+    const length = items.length;
 
-StaticGroundGeometryPerMaterialBatch.prototype.getBoundingSphere = function (
-  updater,
-  result,
-) {
-  const items = this._items;
-  const length = items.length;
-  for (let i = 0; i < length; i++) {
-    const item = items[i];
-    if (item.contains(updater)) {
-      return item.getBoundingSphere(updater, result);
+    for (i = length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.updaters.length === 0) {
+        items.splice(i, 1);
+        item.destroy();
+      }
     }
-  }
-  return BoundingSphereState.FAILED;
-};
 
-StaticGroundGeometryPerMaterialBatch.prototype.removeAllPrimitives =
-  function () {
+    let isUpdated = true;
+    for (i = 0; i < items.length; i++) {
+      isUpdated = items[i].update(time) && isUpdated;
+    }
+    return isUpdated;
+  }
+
+  getBoundingSphere(updater, result) {
+    const items = this._items;
+    const length = items.length;
+    for (let i = 0; i < length; i++) {
+      const item = items[i];
+      if (item.contains(updater)) {
+        return item.getBoundingSphere(updater, result);
+      }
+    }
+    return BoundingSphereState.FAILED;
+  }
+
+  removeAllPrimitives() {
     const items = this._items;
     const length = items.length;
     for (let i = 0; i < length; i++) {
       items[i].destroy();
     }
     this._items.length = 0;
-  };
+  }
+}
+
 export default StaticGroundGeometryPerMaterialBatch;

@@ -13,15 +13,63 @@ import Property from "./Property.js";
  * @alias ColorMaterialProperty
  * @constructor
  */
-function ColorMaterialProperty(color) {
-  this._definitionChanged = new Event();
-  this._color = undefined;
-  this._colorSubscription = undefined;
+class ColorMaterialProperty {
+  constructor(color) {
+    this._definitionChanged = new Event();
+    this._color = undefined;
+    this._colorSubscription = undefined;
 
-  this.color = color;
-}
+    this.color = color;
+  }
 
-Object.defineProperties(ColorMaterialProperty.prototype, {
+  /**
+   * Gets the {@link Material} type at the provided time.
+   *
+   * @param {JulianDate} time The time for which to retrieve the type.
+   * @returns {string} The type of material.
+   */
+  getType(time) {
+    return "Color";
+  }
+
+  /**
+   * Gets the value of the property at the provided time.
+   *
+   * @param {JulianDate} [time=JulianDate.now()] The time for which to retrieve the value. If omitted, the current system time is used.
+   * @param {object} [result] The object to store the value into, if omitted, a new instance is created and returned.
+   * @returns {object} The modified result parameter or a new instance if the result parameter was not supplied.
+   */
+  getValue(time, result) {
+    if (!defined(time)) {
+      time = JulianDate.now(timeScratch);
+    }
+    if (!defined(result)) {
+      result = {};
+    }
+    result.color = Property.getValueOrClonedDefault(
+      this._color,
+      time,
+      Color.WHITE,
+      result.color,
+    );
+    return result;
+  }
+
+  /**
+   * Compares this property to the provided property and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Property} [other] The other property.
+   * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
+   */
+  equals(other) {
+    return (
+      this === other || //
+      (other instanceof ColorMaterialProperty && //
+        Property.equals(this._color, other._color))
+    );
+  }
+
   /**
    * Gets a value indicating if this property is constant.  A property is considered
    * constant if getValue always returns the same result for the current definition.
@@ -30,11 +78,9 @@ Object.defineProperties(ColorMaterialProperty.prototype, {
    * @type {boolean}
    * @readonly
    */
-  isConstant: {
-    get: function () {
-      return Property.isConstant(this._color);
-    },
-  },
+  get isConstant() {
+    return Property.isConstant(this._color);
+  }
 
   /**
    * Gets the event that is raised whenever the definition of this property changes.
@@ -45,68 +91,11 @@ Object.defineProperties(ColorMaterialProperty.prototype, {
    * @type {Event}
    * @readonly
    */
-  definitionChanged: {
-    get: function () {
-      return this._definitionChanged;
-    },
-  },
-
-  /**
-   * Gets or sets the {@link Color} {@link Property}.
-   * @memberof ColorMaterialProperty.prototype
-   * @type {Property|undefined}
-   * @default Color.WHITE
-   */
-  color: createPropertyDescriptor("color"),
-});
-
-/**
- * Gets the {@link Material} type at the provided time.
- *
- * @param {JulianDate} time The time for which to retrieve the type.
- * @returns {string} The type of material.
- */
-ColorMaterialProperty.prototype.getType = function (time) {
-  return "Color";
-};
+  get definitionChanged() {
+    return this._definitionChanged;
+  }
+}
 
 const timeScratch = new JulianDate();
 
-/**
- * Gets the value of the property at the provided time.
- *
- * @param {JulianDate} [time=JulianDate.now()] The time for which to retrieve the value. If omitted, the current system time is used.
- * @param {object} [result] The object to store the value into, if omitted, a new instance is created and returned.
- * @returns {object} The modified result parameter or a new instance if the result parameter was not supplied.
- */
-ColorMaterialProperty.prototype.getValue = function (time, result) {
-  if (!defined(time)) {
-    time = JulianDate.now(timeScratch);
-  }
-  if (!defined(result)) {
-    result = {};
-  }
-  result.color = Property.getValueOrClonedDefault(
-    this._color,
-    time,
-    Color.WHITE,
-    result.color,
-  );
-  return result;
-};
-
-/**
- * Compares this property to the provided property and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Property} [other] The other property.
- * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
- */
-ColorMaterialProperty.prototype.equals = function (other) {
-  return (
-    this === other || //
-    (other instanceof ColorMaterialProperty && //
-      Property.equals(this._color, other._color))
-  );
-};
 export default ColorMaterialProperty;

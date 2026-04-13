@@ -11,107 +11,105 @@ const cameraDisabledPath =
  * @alias InfoBoxViewModel
  * @constructor
  */
-function InfoBoxViewModel() {
-  this._cameraClicked = new Event();
-  this._closeClicked = new Event();
+class InfoBoxViewModel {
+  constructor() {
+    this._cameraClicked = new Event();
+    this._closeClicked = new Event();
+
+    /**
+     * Gets or sets the maximum height of the info box in pixels.  This property is observable.
+     * @type {number}
+     */
+    this.maxHeight = 500;
+
+    /**
+     * Gets or sets whether the camera tracking icon is enabled.
+     * @type {boolean}
+     */
+    this.enableCamera = false;
+
+    /**
+     * Gets or sets the status of current camera tracking of the selected object.
+     * @type {boolean}
+     */
+    this.isCameraTracking = false;
+
+    /**
+     * Gets or sets the visibility of the info box.
+     * @type {boolean}
+     */
+    this.showInfo = false;
+
+    /**
+     * Gets or sets the title text in the info box.
+     * @type {string}
+     */
+    this.titleText = "";
+
+    /**
+     * Gets or sets the description HTML for the info box.
+     * @type {string}
+     */
+    this.description = "";
+
+    knockout.track(this, [
+      "showInfo",
+      "titleText",
+      "description",
+      "maxHeight",
+      "enableCamera",
+      "isCameraTracking",
+    ]);
+
+    this._loadingIndicatorHtml =
+      '<div class="cesium-infoBox-loadingContainer"><span class="cesium-infoBox-loading"></span></div>';
+
+    /**
+     * Gets the SVG path of the camera icon, which can change to be "crossed out" or not.
+     * @type {string}
+     */
+    this.cameraIconPath = undefined;
+    knockout.defineProperty(this, "cameraIconPath", {
+      get: function () {
+        return !this.enableCamera || this.isCameraTracking
+          ? cameraDisabledPath
+          : cameraEnabledPath;
+      },
+    });
+
+    knockout.defineProperty(this, "_bodyless", {
+      get: function () {
+        return !defined(this.description) || this.description.length === 0;
+      },
+    });
+  }
 
   /**
-   * Gets or sets the maximum height of the info box in pixels.  This property is observable.
-   * @type {number}
+   * Gets the maximum height of sections within the info box, minus an offset, in CSS-ready form.
+   * @param {number} offset The offset in pixels.
+   * @returns {string}
    */
-  this.maxHeight = 500;
+  maxHeightOffset(offset) {
+    return `${this.maxHeight - offset}px`;
+  }
 
-  /**
-   * Gets or sets whether the camera tracking icon is enabled.
-   * @type {boolean}
-   */
-  this.enableCamera = false;
-
-  /**
-   * Gets or sets the status of current camera tracking of the selected object.
-   * @type {boolean}
-   */
-  this.isCameraTracking = false;
-
-  /**
-   * Gets or sets the visibility of the info box.
-   * @type {boolean}
-   */
-  this.showInfo = false;
-
-  /**
-   * Gets or sets the title text in the info box.
-   * @type {string}
-   */
-  this.titleText = "";
-
-  /**
-   * Gets or sets the description HTML for the info box.
-   * @type {string}
-   */
-  this.description = "";
-
-  knockout.track(this, [
-    "showInfo",
-    "titleText",
-    "description",
-    "maxHeight",
-    "enableCamera",
-    "isCameraTracking",
-  ]);
-
-  this._loadingIndicatorHtml =
-    '<div class="cesium-infoBox-loadingContainer"><span class="cesium-infoBox-loading"></span></div>';
-
-  /**
-   * Gets the SVG path of the camera icon, which can change to be "crossed out" or not.
-   * @type {string}
-   */
-  this.cameraIconPath = undefined;
-  knockout.defineProperty(this, "cameraIconPath", {
-    get: function () {
-      return !this.enableCamera || this.isCameraTracking
-        ? cameraDisabledPath
-        : cameraEnabledPath;
-    },
-  });
-
-  knockout.defineProperty(this, "_bodyless", {
-    get: function () {
-      return !defined(this.description) || this.description.length === 0;
-    },
-  });
-}
-
-/**
- * Gets the maximum height of sections within the info box, minus an offset, in CSS-ready form.
- * @param {number} offset The offset in pixels.
- * @returns {string}
- */
-InfoBoxViewModel.prototype.maxHeightOffset = function (offset) {
-  return `${this.maxHeight - offset}px`;
-};
-
-Object.defineProperties(InfoBoxViewModel.prototype, {
   /**
    * Gets an {@link Event} that is fired when the user clicks the camera icon.
    * @memberof InfoBoxViewModel.prototype
    * @type {Event}
    */
-  cameraClicked: {
-    get: function () {
-      return this._cameraClicked;
-    },
-  },
+  get cameraClicked() {
+    return this._cameraClicked;
+  }
+
   /**
    * Gets an {@link Event} that is fired when the user closes the info box.
    * @memberof InfoBoxViewModel.prototype
    * @type {Event}
    */
-  closeClicked: {
-    get: function () {
-      return this._closeClicked;
-    },
-  },
-});
+  get closeClicked() {
+    return this._closeClicked;
+  }
+}
+
 export default InfoBoxViewModel;

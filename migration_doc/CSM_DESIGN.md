@@ -145,6 +145,7 @@ let shadow = mix(s0, s1, blendT);
 - **Memory cost**: 4 × 2048² × depth32float = 64 MB. Acceptable for desktop, possibly too much for low-end mobile. **Mitigation**: expose `Scene.cascadeShadowMapResolution` as a tunable; default to 1024² (16 MB) when on a constrained adapter.
 - **Snapshot mode interaction**: cascade VPs are camera-derived, so they change every frame even under "no animation" conditions. When snapshot mode is frozen, the cascade VPs and the cast pass should both be skipped — the previous frame's cascade textures still produce visually-correct shadows. **Mitigation**: `WebGPUCSMRenderer` registers as a freezable, just like the volumetric fog and bundle manager.
 - **Receive shader compilation cost**: every shader that samples shadows now takes a 4-cascade selection function in its hot path. The compiled shader gets ~50 lines longer per variant. **Decision**: acceptable; cascade selection compiles to ~6 ALU + 1 array sample on Vulkan/Metal/D3D.
+- **EffectsUniforms struct size (added 2026-04-11)**: the shared EffectsUniforms UBO was extended to 240 bytes (from 112) by Phase 5 WGF-1, adding `clipPlaneEqHW: array<vec4<f32>, 8>` (128 bytes). The CSM receive shader's `ShadowReceiveCSM.wgsl` chunk must include the full 240-byte struct (including the WGF-1 tail) so the bind group layout matches the shared effects BGL. The cascade-specific fields (4 VP matrices, 4 split distances) should go in a **separate UBO** (new binding in group 3) rather than further extending EffectsUniforms, to keep the shared struct stable.
 
 ## Acceptance criteria
 

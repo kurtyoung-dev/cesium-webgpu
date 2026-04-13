@@ -30,241 +30,384 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
  *
  * @private
  */
-function VoxelTraversal(
-  primitive,
-  context,
-  keyframeCount,
-  maximumTextureMemoryByteLength,
-) {
-  const { provider, dimensions, inputDimensions } = primitive;
-  const { types, componentTypes } = provider;
+class VoxelTraversal {
+  constructor(primitive, context, keyframeCount, maximumTextureMemoryByteLength) {
+    const { provider, dimensions, inputDimensions } = primitive;
+    const { types, componentTypes } = provider;
 
-  if (defined(maximumTextureMemoryByteLength)) {
-    maximumTextureMemoryByteLength = Math.min(
-      Math.max(0, maximumTextureMemoryByteLength),
-      512 * 1024 * 1024,
+    if (defined(maximumTextureMemoryByteLength)) {
+      maximumTextureMemoryByteLength = Math.min(
+        Math.max(0, maximumTextureMemoryByteLength),
+        512 * 1024 * 1024,
+      );
+    } else {
+      maximumTextureMemoryByteLength = 128 * 1024 * 1024;
+    }
+
+    /**
+     * @type {VoxelPrimitive}
+     * @private
+     */
+    this._primitive = primitive;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.textureMemoryByteLength = 0;
+
+    /**
+     * @type {Megatexture[]}
+     * @readonly
+     */
+    this.megatextures = new Array(types.length);
+
+    const providerTileCount = defined(provider.maximumTileCount)
+      ? provider.maximumTileCount
+      : defined(provider.availableLevels)
+        ? (8 ** provider.availableLevels - 1) / 7
+        : undefined;
+
+    for (let i = 0; i < types.length; i++) {
+      const type = types[i];
+      const componentCount = MetadataType.getComponentCount(type);
+      const componentType = componentTypes[i];
+
+      this.megatextures[i] = new Megatexture(
+        context,
+        inputDimensions,
+        componentCount,
+        componentType,
+        maximumTextureMemoryByteLength,
+        providerTileCount,
+      );
+
+      this.textureMemoryByteLength +=
+        this.megatextures[i].textureMemoryByteLength;
+    }
+
+    const maximumTileCount = this.megatextures[0].maximumTileCount;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._simultaneousRequestCount = 0;
+
+    /**
+     * @type {boolean}
+     * @private
+     */
+    this._debugPrint = false;
+
+    /**
+     * @type {boolean}
+     * @private
+     */
+    this._calculateStatistics = this._primitive._calculateStatistics ?? false;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._frameNumber = 0;
+
+    const shape = primitive._shape;
+
+    /**
+     * @type {SpatialNode}
+     * @readonly
+     */
+    this.rootNode = new SpatialNode(0, 0, 0, 0, undefined, shape, dimensions);
+
+    /**
+     * @type {DoubleEndedPriorityQueue}
+     * @private
+     */
+    this._priorityQueue = new DoubleEndedPriorityQueue({
+      maximumLength: maximumTileCount,
+      comparator: KeyframeNode.priorityComparator,
+    });
+
+    /**
+     * @type {KeyframeNode[]}
+     * @private
+     */
+    this._highPriorityKeyframeNodes = new Array(maximumTileCount);
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._highPriorityKeyframeNodeCount = 0;
+
+    /**
+     * @type {KeyframeNode[]}
+     * @private
+     */
+    this._keyframeNodesInMegatexture = new Array(maximumTileCount);
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._keyframeCount = keyframeCount;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._sampleCount = undefined;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this._keyframeLocation = 0;
+
+    /**
+     * @type {number[]}
+     * @private
+     */
+    this._binaryTreeKeyframeWeighting = new Array(keyframeCount);
+
+    /**
+     * @type {boolean}
+     * @private
+     */
+    this._initialTilesLoaded = false;
+
+    const binaryTreeKeyframeWeighting = this._binaryTreeKeyframeWeighting;
+    binaryTreeKeyframeWeighting[0] = 0;
+    binaryTreeKeyframeWeighting[keyframeCount - 1] = 0;
+    binaryTreeWeightingRecursive(
+      binaryTreeKeyframeWeighting,
+      1,
+      keyframeCount - 2,
+      0,
     );
-  } else {
-    maximumTextureMemoryByteLength = 128 * 1024 * 1024;
+
+    const internalNodeTexelCount = 9;
+    const internalNodeTextureDimensionX = 2048;
+    const internalNodeTilesPerRow = Math.floor(
+      internalNodeTextureDimensionX / internalNodeTexelCount,
+    );
+    const internalNodeTextureDimensionY = Math.ceil(
+      maximumTileCount / internalNodeTilesPerRow,
+    );
+
+    /**
+     * @type {Texture}
+     * @readonly
+     */
+    this.internalNodeTexture = new Texture({
+      context: context,
+      pixelFormat: PixelFormat.RGBA,
+      pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
+      flipY: false,
+      width: internalNodeTextureDimensionX,
+      height: internalNodeTextureDimensionY,
+      sampler: new Sampler({
+        minificationFilter: TextureMinificationFilter.NEAREST,
+        magnificationFilter: TextureMagnificationFilter.NEAREST,
+      }),
+    });
+
+    /**
+     * @type {number}
+     * @readonly
+     */
+    this.internalNodeTilesPerRow = internalNodeTilesPerRow;
+
+    /**
+     * @type {Cartesian2}
+     * @readonly
+     */
+    this.internalNodeTexelSizeUv = new Cartesian2(
+      1.0 / internalNodeTextureDimensionX,
+      1.0 / internalNodeTextureDimensionY,
+    );
+
+    /**
+     * Only generated when there are two or more samples.
+     * @type {Texture}
+     * @readonly
+     */
+    this.leafNodeTexture = undefined;
+
+    /**
+     * Only generated when there are two or more samples.
+     * @type {number}
+     * @readonly
+     */
+    this.leafNodeTilesPerRow = undefined;
+
+    /**
+     * Only generated when there are two or more samples.
+     * @type {Cartesian2}
+     * @readonly
+     */
+    this.leafNodeTexelSizeUv = new Cartesian2();
   }
 
   /**
-   * @type {VoxelPrimitive}
-   * @private
+   * Finds a keyframe node in the traversal
+   *
+   * @param {number} megatextureIndex
+   * @returns {KeyframeNode}
    */
-  this._primitive = primitive;
-
-  /**
-   * @type {number}
-   * @private
-   */
-  this.textureMemoryByteLength = 0;
-
-  /**
-   * @type {Megatexture[]}
-   * @readonly
-   */
-  this.megatextures = new Array(types.length);
-
-  const providerTileCount = defined(provider.maximumTileCount)
-    ? provider.maximumTileCount
-    : defined(provider.availableLevels)
-      ? (8 ** provider.availableLevels - 1) / 7
-      : undefined;
-
-  for (let i = 0; i < types.length; i++) {
-    const type = types[i];
-    const componentCount = MetadataType.getComponentCount(type);
-    const componentType = componentTypes[i];
-
-    this.megatextures[i] = new Megatexture(
-      context,
-      inputDimensions,
-      componentCount,
-      componentType,
-      maximumTextureMemoryByteLength,
-      providerTileCount,
-    );
-
-    this.textureMemoryByteLength +=
-      this.megatextures[i].textureMemoryByteLength;
+  findKeyframeNode(megatextureIndex) {
+    return this._keyframeNodesInMegatexture.find(function (keyframeNode) {
+      return keyframeNode.megatextureIndex === megatextureIndex;
+    });
   }
 
-  const maximumTileCount = this.megatextures[0].maximumTileCount;
+  /**
+   * @param {FrameState} frameState
+   * @param {number} keyframeLocation
+   * @param {boolean} recomputeBoundingVolumes
+   * @param {boolean} pauseUpdate
+   */
+  update(frameState, keyframeLocation, recomputeBoundingVolumes, pauseUpdate) {
+    const primitive = this._primitive;
+    const context = frameState.context;
+    const maximumTileCount = this.megatextures[0].maximumTileCount;
+    const keyframeCount = this._keyframeCount;
+
+    const levelBlendFactor = primitive._levelBlendFactor;
+    const hasLevelBlendFactor = levelBlendFactor > 0.0;
+    const hasKeyframes = keyframeCount > 1;
+    const sampleCount = (hasLevelBlendFactor ? 2 : 1) * (hasKeyframes ? 2 : 1);
+    this._sampleCount = sampleCount;
+
+    const useLeafNodes = sampleCount >= 2;
+    if (useLeafNodes && !defined(this.leafNodeTexture)) {
+      const leafNodeTexelCount = 2;
+      const leafNodeTextureDimensionX = 1024;
+      const leafNodeTilesPerRow = Math.floor(
+        leafNodeTextureDimensionX / leafNodeTexelCount,
+      );
+      const leafNodeTextureDimensionY = Math.ceil(
+        maximumTileCount / leafNodeTilesPerRow,
+      );
+
+      this.leafNodeTexture = new Texture({
+        context: context,
+        pixelFormat: PixelFormat.RGBA,
+        pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
+        flipY: false,
+        width: leafNodeTextureDimensionX,
+        height: leafNodeTextureDimensionY,
+        sampler: new Sampler({
+          minificationFilter: TextureMinificationFilter.NEAREST,
+          magnificationFilter: TextureMagnificationFilter.NEAREST,
+        }),
+      });
+      this.leafNodeTexelSizeUv = Cartesian2.fromElements(
+        1.0 / leafNodeTextureDimensionX,
+        1.0 / leafNodeTextureDimensionY,
+        this.leafNodeTexelSizeUv,
+      );
+      this.leafNodeTilesPerRow = leafNodeTilesPerRow;
+    } else if (!useLeafNodes && defined(this.leafNodeTexture)) {
+      this.leafNodeTexture = this.leafNodeTexture.destroy();
+    }
+
+    this._keyframeLocation = CesiumMath.clamp(
+      keyframeLocation,
+      0.0,
+      keyframeCount - 1,
+    );
+
+    if (recomputeBoundingVolumes) {
+      recomputeBoundingVolumesRecursive(this, this.rootNode);
+    }
+
+    if (pauseUpdate) {
+      return;
+    }
+
+    this._frameNumber = frameState.frameNumber;
+    const timestamp0 = getTimestamp();
+    selectKeyframeNodes(this, frameState);
+    updateKeyframeNodes(this, frameState);
+    const timestamp1 = getTimestamp();
+    generateOctree(this, sampleCount, levelBlendFactor);
+    const timestamp2 = getTimestamp();
+
+    const checkEventListeners =
+      primitive.loadProgress.numberOfListeners > 0 ||
+      primitive.allTilesLoaded.numberOfListeners > 0 ||
+      primitive.initialTilesLoaded.numberOfListeners > 0;
+
+    if (this._debugPrint || this._calculateStatistics || checkEventListeners) {
+      const loadAndUnloadTimeMs = timestamp1 - timestamp0;
+      const generateOctreeTimeMs = timestamp2 - timestamp1;
+      const totalTimeMs = timestamp2 - timestamp0;
+      postPassesUpdate(
+        this,
+        frameState,
+        loadAndUnloadTimeMs,
+        generateOctreeTimeMs,
+        totalTimeMs,
+      );
+    }
+  }
 
   /**
-   * @type {number}
-   * @private
+   * Check if a node is renderable.
+   * @param {SpatialNode} tile
+   * @returns {boolean}
    */
-  this._simultaneousRequestCount = 0;
+  isRenderable(tile) {
+    return tile.isRenderable(this._frameNumber);
+  }
 
   /**
-   * @type {boolean}
-   * @private
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see VoxelTraversal#destroy
    */
-  this._debugPrint = false;
+  isDestroyed() {
+    return false;
+  }
 
   /**
-   * @type {boolean}
-   * @private
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see VoxelTraversal#isDestroyed
+   *
+   * @example
+   * voxelTraversal = voxelTraversal && voxelTraversal.destroy();
    */
-  this._calculateStatistics = this._primitive._calculateStatistics ?? false;
+  destroy() {
+    const megatextures = this.megatextures;
+    const megatextureLength = megatextures.length;
+    for (let i = 0; i < megatextureLength; i++) {
+      megatextures[i] = megatextures[i] && megatextures[i].destroy();
+    }
+    this.textureMemoryByteLength = 0;
 
-  /**
-   * @type {number}
-   * @private
-   */
-  this._frameNumber = 0;
+    this.internalNodeTexture =
+      this.internalNodeTexture && this.internalNodeTexture.destroy();
 
-  const shape = primitive._shape;
+    this.leafNodeTexture = this.leafNodeTexture && this.leafNodeTexture.destroy();
 
-  /**
-   * @type {SpatialNode}
-   * @readonly
-   */
-  this.rootNode = new SpatialNode(0, 0, 0, 0, undefined, shape, dimensions);
-
-  /**
-   * @type {DoubleEndedPriorityQueue}
-   * @private
-   */
-  this._priorityQueue = new DoubleEndedPriorityQueue({
-    maximumLength: maximumTileCount,
-    comparator: KeyframeNode.priorityComparator,
-  });
-
-  /**
-   * @type {KeyframeNode[]}
-   * @private
-   */
-  this._highPriorityKeyframeNodes = new Array(maximumTileCount);
-
-  /**
-   * @type {number}
-   * @private
-   */
-  this._highPriorityKeyframeNodeCount = 0;
-
-  /**
-   * @type {KeyframeNode[]}
-   * @private
-   */
-  this._keyframeNodesInMegatexture = new Array(maximumTileCount);
-
-  /**
-   * @type {number}
-   * @private
-   */
-  this._keyframeCount = keyframeCount;
-
-  /**
-   * @type {number}
-   * @private
-   */
-  this._sampleCount = undefined;
-
-  /**
-   * @type {number}
-   * @private
-   */
-  this._keyframeLocation = 0;
-
-  /**
-   * @type {number[]}
-   * @private
-   */
-  this._binaryTreeKeyframeWeighting = new Array(keyframeCount);
-
-  /**
-   * @type {boolean}
-   * @private
-   */
-  this._initialTilesLoaded = false;
-
-  const binaryTreeKeyframeWeighting = this._binaryTreeKeyframeWeighting;
-  binaryTreeKeyframeWeighting[0] = 0;
-  binaryTreeKeyframeWeighting[keyframeCount - 1] = 0;
-  binaryTreeWeightingRecursive(
-    binaryTreeKeyframeWeighting,
-    1,
-    keyframeCount - 2,
-    0,
-  );
-
-  const internalNodeTexelCount = 9;
-  const internalNodeTextureDimensionX = 2048;
-  const internalNodeTilesPerRow = Math.floor(
-    internalNodeTextureDimensionX / internalNodeTexelCount,
-  );
-  const internalNodeTextureDimensionY = Math.ceil(
-    maximumTileCount / internalNodeTilesPerRow,
-  );
-
-  /**
-   * @type {Texture}
-   * @readonly
-   */
-  this.internalNodeTexture = new Texture({
-    context: context,
-    pixelFormat: PixelFormat.RGBA,
-    pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
-    flipY: false,
-    width: internalNodeTextureDimensionX,
-    height: internalNodeTextureDimensionY,
-    sampler: new Sampler({
-      minificationFilter: TextureMinificationFilter.NEAREST,
-      magnificationFilter: TextureMagnificationFilter.NEAREST,
-    }),
-  });
-
-  /**
-   * @type {number}
-   * @readonly
-   */
-  this.internalNodeTilesPerRow = internalNodeTilesPerRow;
-
-  /**
-   * @type {Cartesian2}
-   * @readonly
-   */
-  this.internalNodeTexelSizeUv = new Cartesian2(
-    1.0 / internalNodeTextureDimensionX,
-    1.0 / internalNodeTextureDimensionY,
-  );
-
-  /**
-   * Only generated when there are two or more samples.
-   * @type {Texture}
-   * @readonly
-   */
-  this.leafNodeTexture = undefined;
-
-  /**
-   * Only generated when there are two or more samples.
-   * @type {number}
-   * @readonly
-   */
-  this.leafNodeTilesPerRow = undefined;
-
-  /**
-   * Only generated when there are two or more samples.
-   * @type {Cartesian2}
-   * @readonly
-   */
-  this.leafNodeTexelSizeUv = new Cartesian2();
+    return destroyObject(this);
+  }
 }
-
-/**
- * Finds a keyframe node in the traversal
- *
- * @param {number} megatextureIndex
- * @returns {KeyframeNode}
- */
-VoxelTraversal.prototype.findKeyframeNode = function (megatextureIndex) {
-  return this._keyframeNodesInMegatexture.find(function (keyframeNode) {
-    return keyframeNode.megatextureIndex === megatextureIndex;
-  });
-};
 
 function binaryTreeWeightingRecursive(arr, start, end, depth) {
   if (start > end) {
@@ -277,157 +420,6 @@ function binaryTreeWeightingRecursive(arr, start, end, depth) {
 }
 
 VoxelTraversal.simultaneousRequestCountMaximum = 50;
-
-/**
- * @param {FrameState} frameState
- * @param {number} keyframeLocation
- * @param {boolean} recomputeBoundingVolumes
- * @param {boolean} pauseUpdate
- */
-VoxelTraversal.prototype.update = function (
-  frameState,
-  keyframeLocation,
-  recomputeBoundingVolumes,
-  pauseUpdate,
-) {
-  const primitive = this._primitive;
-  const context = frameState.context;
-  const maximumTileCount = this.megatextures[0].maximumTileCount;
-  const keyframeCount = this._keyframeCount;
-
-  const levelBlendFactor = primitive._levelBlendFactor;
-  const hasLevelBlendFactor = levelBlendFactor > 0.0;
-  const hasKeyframes = keyframeCount > 1;
-  const sampleCount = (hasLevelBlendFactor ? 2 : 1) * (hasKeyframes ? 2 : 1);
-  this._sampleCount = sampleCount;
-
-  const useLeafNodes = sampleCount >= 2;
-  if (useLeafNodes && !defined(this.leafNodeTexture)) {
-    const leafNodeTexelCount = 2;
-    const leafNodeTextureDimensionX = 1024;
-    const leafNodeTilesPerRow = Math.floor(
-      leafNodeTextureDimensionX / leafNodeTexelCount,
-    );
-    const leafNodeTextureDimensionY = Math.ceil(
-      maximumTileCount / leafNodeTilesPerRow,
-    );
-
-    this.leafNodeTexture = new Texture({
-      context: context,
-      pixelFormat: PixelFormat.RGBA,
-      pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
-      flipY: false,
-      width: leafNodeTextureDimensionX,
-      height: leafNodeTextureDimensionY,
-      sampler: new Sampler({
-        minificationFilter: TextureMinificationFilter.NEAREST,
-        magnificationFilter: TextureMagnificationFilter.NEAREST,
-      }),
-    });
-    this.leafNodeTexelSizeUv = Cartesian2.fromElements(
-      1.0 / leafNodeTextureDimensionX,
-      1.0 / leafNodeTextureDimensionY,
-      this.leafNodeTexelSizeUv,
-    );
-    this.leafNodeTilesPerRow = leafNodeTilesPerRow;
-  } else if (!useLeafNodes && defined(this.leafNodeTexture)) {
-    this.leafNodeTexture = this.leafNodeTexture.destroy();
-  }
-
-  this._keyframeLocation = CesiumMath.clamp(
-    keyframeLocation,
-    0.0,
-    keyframeCount - 1,
-  );
-
-  if (recomputeBoundingVolumes) {
-    recomputeBoundingVolumesRecursive(this, this.rootNode);
-  }
-
-  if (pauseUpdate) {
-    return;
-  }
-
-  this._frameNumber = frameState.frameNumber;
-  const timestamp0 = getTimestamp();
-  selectKeyframeNodes(this, frameState);
-  updateKeyframeNodes(this, frameState);
-  const timestamp1 = getTimestamp();
-  generateOctree(this, sampleCount, levelBlendFactor);
-  const timestamp2 = getTimestamp();
-
-  const checkEventListeners =
-    primitive.loadProgress.numberOfListeners > 0 ||
-    primitive.allTilesLoaded.numberOfListeners > 0 ||
-    primitive.initialTilesLoaded.numberOfListeners > 0;
-
-  if (this._debugPrint || this._calculateStatistics || checkEventListeners) {
-    const loadAndUnloadTimeMs = timestamp1 - timestamp0;
-    const generateOctreeTimeMs = timestamp2 - timestamp1;
-    const totalTimeMs = timestamp2 - timestamp0;
-    postPassesUpdate(
-      this,
-      frameState,
-      loadAndUnloadTimeMs,
-      generateOctreeTimeMs,
-      totalTimeMs,
-    );
-  }
-};
-
-/**
- * Check if a node is renderable.
- * @param {SpatialNode} tile
- * @returns {boolean}
- */
-VoxelTraversal.prototype.isRenderable = function (tile) {
-  return tile.isRenderable(this._frameNumber);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see VoxelTraversal#destroy
- */
-VoxelTraversal.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see VoxelTraversal#isDestroyed
- *
- * @example
- * voxelTraversal = voxelTraversal && voxelTraversal.destroy();
- */
-VoxelTraversal.prototype.destroy = function () {
-  const megatextures = this.megatextures;
-  const megatextureLength = megatextures.length;
-  for (let i = 0; i < megatextureLength; i++) {
-    megatextures[i] = megatextures[i] && megatextures[i].destroy();
-  }
-  this.textureMemoryByteLength = 0;
-
-  this.internalNodeTexture =
-    this.internalNodeTexture && this.internalNodeTexture.destroy();
-
-  this.leafNodeTexture = this.leafNodeTexture && this.leafNodeTexture.destroy();
-
-  return destroyObject(this);
-};
 
 /**
  * @function

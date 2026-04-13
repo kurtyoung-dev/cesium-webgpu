@@ -18,34 +18,95 @@ import ModelArticulationStage from "./ModelArticulationStage.js";
  *
  * @private
  */
-function ModelArticulation(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ModelArticulation {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const articulation = options.articulation;
-  const sceneGraph = options.sceneGraph;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.articulation", articulation);
-  Check.typeOf.object("options.sceneGraph", sceneGraph);
-  //>>includeEnd('debug');
+    const articulation = options.articulation;
+    const sceneGraph = options.sceneGraph;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.articulation", articulation);
+    Check.typeOf.object("options.sceneGraph", sceneGraph);
+    //>>includeEnd('debug');
 
-  this._articulation = articulation;
-  this._sceneGraph = sceneGraph;
+    this._articulation = articulation;
+    this._sceneGraph = sceneGraph;
 
-  this._name = articulation.name;
-  this._runtimeStages = [];
-  this._runtimeStagesByName = {};
+    this._name = articulation.name;
+    this._runtimeStages = [];
+    this._runtimeStagesByName = {};
 
-  // Will be populated as the runtime nodes are created
-  this._runtimeNodes = [];
+    // Will be populated as the runtime nodes are created
+    this._runtimeNodes = [];
 
-  // Set to true so that the first call to
-  // ModelSceneGraph.applyArticulations will work.
-  this._dirty = true;
+    // Set to true so that the first call to
+    // ModelSceneGraph.applyArticulations will work.
+    this._dirty = true;
 
-  initialize(this);
-}
+    initialize(this);
+  }
 
-Object.defineProperties(ModelArticulation.prototype, {
+  /**
+   * Sets the current value of an articulation stage.
+   *
+   * @param {string} stageName The name of the articulation stage.
+   * @param {number} value The numeric value of this stage of the articulation.
+   *
+   * @private
+   */
+  setArticulationStage(stageName, value) {
+    const stage = this._runtimeStagesByName[stageName];
+    if (defined(stage)) {
+      stage.currentValue = value;
+    }
+  }
+
+  /**
+   * Applies the chain of articulation stages to the transform of each node that
+   * participates in the articulation. This only recomputes the node transforms
+   * if any stage in the articulation has been modified.
+   * <p>
+   * Note that this will overwrite any existing transformations on participating
+   * nodes.
+   * </p>
+   *
+   * @private
+   */
+  apply() {
+    if (!this._dirty) {
+      return;
+    }
+    this._dirty = false;
+
+    let articulationMatrix = Matrix4.clone(
+      Matrix4.IDENTITY,
+      scratchArticulationMatrix,
+    );
+
+    let i;
+    const stages = this._runtimeStages;
+    const stagesLength = stages.length;
+
+    // Compute the result of the articulation stages...
+    for (i = 0; i < stagesLength; i++) {
+      const stage = stages[i];
+      articulationMatrix = stage.applyStageToMatrix(articulationMatrix);
+    }
+
+    // ...then apply it to the transforms of the affected nodes.
+    const nodes = this._runtimeNodes;
+    const nodesLength = nodes.length;
+    for (i = 0; i < nodesLength; i++) {
+      const node = nodes[i];
+      const transform = Matrix4.multiplyTransformation(
+        node.originalTransform,
+        articulationMatrix,
+        scratchNodeMatrix,
+      );
+      node.transform = transform;
+    }
+  }
+
   /**
    * The internal articulation that this runtime articulation represents.
    *
@@ -55,11 +116,9 @@ Object.defineProperties(ModelArticulation.prototype, {
    *
    * @private
    */
-  articulation: {
-    get: function () {
-      return this._articulation;
-    },
-  },
+  get articulation() {
+    return this._articulation;
+  }
 
   /**
    * The scene graph that this articulation belongs to.
@@ -70,11 +129,9 @@ Object.defineProperties(ModelArticulation.prototype, {
    *
    * @private
    */
-  sceneGraph: {
-    get: function () {
-      return this._sceneGraph;
-    },
-  },
+  get sceneGraph() {
+    return this._sceneGraph;
+  }
 
   /**
    * The name of this articulation.
@@ -85,11 +142,9 @@ Object.defineProperties(ModelArticulation.prototype, {
    *
    * @private
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * The runtime stages that belong to this articulation.
@@ -100,11 +155,9 @@ Object.defineProperties(ModelArticulation.prototype, {
    *
    * @private
    */
-  runtimeStages: {
-    get: function () {
-      return this._runtimeStages;
-    },
-  },
+  get runtimeStages() {
+    return this._runtimeStages;
+  }
 
   /**
    * The runtime nodes that are affected by this articulation.
@@ -115,12 +168,10 @@ Object.defineProperties(ModelArticulation.prototype, {
    *
    * @private
    */
-  runtimeNodes: {
-    get: function () {
-      return this._runtimeNodes;
-    },
-  },
-});
+  get runtimeNodes() {
+    return this._runtimeNodes;
+  }
+}
 
 function initialize(runtimeArticulation) {
   const articulation = runtimeArticulation.articulation;
@@ -147,68 +198,7 @@ function initialize(runtimeArticulation) {
   }
 }
 
-/**
- * Sets the current value of an articulation stage.
- *
- * @param {string} stageName The name of the articulation stage.
- * @param {number} value The numeric value of this stage of the articulation.
- *
- * @private
- */
-ModelArticulation.prototype.setArticulationStage = function (stageName, value) {
-  const stage = this._runtimeStagesByName[stageName];
-  if (defined(stage)) {
-    stage.currentValue = value;
-  }
-};
-
 const scratchArticulationMatrix = new Matrix4();
 const scratchNodeMatrix = new Matrix4();
-
-/**
- * Applies the chain of articulation stages to the transform of each node that
- * participates in the articulation. This only recomputes the node transforms
- * if any stage in the articulation has been modified.
- * <p>
- * Note that this will overwrite any existing transformations on participating
- * nodes.
- * </p>
- *
- * @private
- */
-ModelArticulation.prototype.apply = function () {
-  if (!this._dirty) {
-    return;
-  }
-  this._dirty = false;
-
-  let articulationMatrix = Matrix4.clone(
-    Matrix4.IDENTITY,
-    scratchArticulationMatrix,
-  );
-
-  let i;
-  const stages = this._runtimeStages;
-  const stagesLength = stages.length;
-
-  // Compute the result of the articulation stages...
-  for (i = 0; i < stagesLength; i++) {
-    const stage = stages[i];
-    articulationMatrix = stage.applyStageToMatrix(articulationMatrix);
-  }
-
-  // ...then apply it to the transforms of the affected nodes.
-  const nodes = this._runtimeNodes;
-  const nodesLength = nodes.length;
-  for (i = 0; i < nodesLength; i++) {
-    const node = nodes[i];
-    const transform = Matrix4.multiplyTransformation(
-      node.originalTransform,
-      articulationMatrix,
-      scratchNodeMatrix,
-    );
-    node.transform = transform;
-  }
-};
 
 export default ModelArticulation;

@@ -28,31 +28,83 @@ const AnimatedPropertyType = ModelComponents.AnimatedPropertyType;
  *
  * @private
  */
-function ModelAnimationChannel(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ModelAnimationChannel {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const channel = options.channel;
-  const runtimeAnimation = options.runtimeAnimation;
-  const runtimeNode = options.runtimeNode;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.channel", channel);
-  Check.typeOf.object("options.runtimeAnimation", runtimeAnimation);
-  Check.typeOf.object("options.runtimeNode", runtimeNode);
-  //>>includeEnd('debug');
+    const channel = options.channel;
+    const runtimeAnimation = options.runtimeAnimation;
+    const runtimeNode = options.runtimeNode;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.channel", channel);
+    Check.typeOf.object("options.runtimeAnimation", runtimeAnimation);
+    Check.typeOf.object("options.runtimeNode", runtimeNode);
+    //>>includeEnd('debug');
 
-  this._channel = channel;
-  this._runtimeAnimation = runtimeAnimation;
-  this._runtimeNode = runtimeNode;
+    this._channel = channel;
+    this._runtimeAnimation = runtimeAnimation;
+    this._runtimeNode = runtimeNode;
 
-  // An animation channel can have multiple splines if it animates
-  // a node's morph weights, which will involve multiple morph targets.
-  this._splines = [];
-  this._path = undefined;
+    // An animation channel can have multiple splines if it animates
+    // a node's morph weights, which will involve multiple morph targets.
+    this._splines = [];
+    this._path = undefined;
 
-  initialize(this);
-}
+    initialize(this);
+  }
 
-Object.defineProperties(ModelAnimationChannel.prototype, {
+  /**
+   * Animates the target node property based on its spline.
+   *
+   * @param {number} time The local animation time.
+   *
+   * @private
+   */
+  animate(time) {
+    const splines = this._splines;
+    const path = this._path;
+    const model = this._runtimeAnimation.model;
+    const runtimeNode = this._runtimeNode;
+
+    // Weights are handled differently than the other properties because
+    // they need to be updated in place.
+    if (path === AnimatedPropertyType.WEIGHTS) {
+      const morphWeights = runtimeNode.morphWeights;
+      const length = morphWeights.length;
+      for (let i = 0; i < length; i++) {
+        const spline = splines[i];
+        const localAnimationTime = model.clampAnimations
+          ? spline.clampTime(time)
+          : spline.wrapTime(time);
+        morphWeights[i] = spline.evaluate(localAnimationTime);
+      }
+    } else if (runtimeNode.userAnimated) {
+      // If the node is being animated externally, ignore the glTF animation.
+      return;
+    } else {
+      const spline = splines[0];
+      const localAnimationTime = model.clampAnimations
+        ? spline.clampTime(time)
+        : spline.wrapTime(time);
+
+      // This sets the translate, rotate, and scale properties.
+      if (
+        path === AnimatedPropertyType.TRANSLATION ||
+        path === AnimatedPropertyType.SCALE
+      ) {
+        runtimeNode[path] = spline.evaluate(
+          localAnimationTime,
+          scratchCartesian3,
+        );
+      } else if (path === AnimatedPropertyType.ROTATION) {
+        runtimeNode[path] = spline.evaluate(
+          localAnimationTime,
+          scratchQuaternion,
+        );
+      }
+    }
+  }
+
   /**
    * The glTF animation channel.
    *
@@ -63,11 +115,9 @@ Object.defineProperties(ModelAnimationChannel.prototype, {
    *
    * @private
    */
-  channel: {
-    get: function () {
-      return this._channel;
-    },
-  },
+  get channel() {
+    return this._channel;
+  }
 
   /**
    * The runtime animation that owns this channel.
@@ -79,11 +129,9 @@ Object.defineProperties(ModelAnimationChannel.prototype, {
    *
    * @private
    */
-  runtimeAnimation: {
-    get: function () {
-      return this._runtimeAnimation;
-    },
-  },
+  get runtimeAnimation() {
+    return this._runtimeAnimation;
+  }
 
   /**
    * The runtime node that this channel animates.
@@ -95,11 +143,9 @@ Object.defineProperties(ModelAnimationChannel.prototype, {
    *
    * @private
    */
-  runtimeNode: {
-    get: function () {
-      return this._runtimeNode;
-    },
-  },
+  get runtimeNode() {
+    return this._runtimeNode;
+  }
 
   /**
    * The splines used to evaluate this animation channel.
@@ -111,12 +157,10 @@ Object.defineProperties(ModelAnimationChannel.prototype, {
    *
    * @private
    */
-  splines: {
-    get: function () {
-      return this._splines;
-    },
-  },
-});
+  get splines() {
+    return this._splines;
+  }
+}
 
 function createCubicSpline(times, points) {
   const cubicPoints = [];
@@ -238,57 +282,5 @@ function initialize(runtimeChannel) {
   runtimeChannel._splines = splines;
   runtimeChannel._path = path;
 }
-
-/**
- * Animates the target node property based on its spline.
- *
- * @param {number} time The local animation time.
- *
- * @private
- */
-ModelAnimationChannel.prototype.animate = function (time) {
-  const splines = this._splines;
-  const path = this._path;
-  const model = this._runtimeAnimation.model;
-  const runtimeNode = this._runtimeNode;
-
-  // Weights are handled differently than the other properties because
-  // they need to be updated in place.
-  if (path === AnimatedPropertyType.WEIGHTS) {
-    const morphWeights = runtimeNode.morphWeights;
-    const length = morphWeights.length;
-    for (let i = 0; i < length; i++) {
-      const spline = splines[i];
-      const localAnimationTime = model.clampAnimations
-        ? spline.clampTime(time)
-        : spline.wrapTime(time);
-      morphWeights[i] = spline.evaluate(localAnimationTime);
-    }
-  } else if (runtimeNode.userAnimated) {
-    // If the node is being animated externally, ignore the glTF animation.
-    return;
-  } else {
-    const spline = splines[0];
-    const localAnimationTime = model.clampAnimations
-      ? spline.clampTime(time)
-      : spline.wrapTime(time);
-
-    // This sets the translate, rotate, and scale properties.
-    if (
-      path === AnimatedPropertyType.TRANSLATION ||
-      path === AnimatedPropertyType.SCALE
-    ) {
-      runtimeNode[path] = spline.evaluate(
-        localAnimationTime,
-        scratchCartesian3,
-      );
-    } else if (path === AnimatedPropertyType.ROTATION) {
-      runtimeNode[path] = spline.evaluate(
-        localAnimationTime,
-        scratchQuaternion,
-      );
-    }
-  }
-};
 
 export default ModelAnimationChannel;

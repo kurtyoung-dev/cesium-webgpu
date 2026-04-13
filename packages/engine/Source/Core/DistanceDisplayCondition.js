@@ -14,44 +14,75 @@ import DeveloperError from "./DeveloperError.js";
  * // Make a billboard that is only visible when the distance to the camera is between 10 and 20 meters.
  * billboard.distanceDisplayCondition = new Cesium.DistanceDisplayCondition(10.0, 20.0);
  */
-function DistanceDisplayCondition(near, far) {
-  near = near ?? 0.0;
-  this._near = near;
+class DistanceDisplayCondition {
+  constructor(near, far) {
+    near = near ?? 0.0;
+    this._near = near;
 
-  far = far ?? Number.MAX_VALUE;
-  this._far = far;
-}
+    far = far ?? Number.MAX_VALUE;
+    this._far = far;
+  }
 
-Object.defineProperties(DistanceDisplayCondition.prototype, {
+  /**
+   * Duplicates this instance.
+   *
+   * @param {DistanceDisplayCondition} [result] The result onto which to store the result.
+   * @return {DistanceDisplayCondition} The duplicated instance.
+   */
+  clone(result) {
+    return DistanceDisplayCondition.clone(this, result);
+  }
+
+  /**
+   * Determines if this distance display condition is equal to another.
+   *
+   * @param {DistanceDisplayCondition} [other] Another distance display condition.
+   * @return {boolean} Whether this distance display condition is equal to the other.
+   */
+  equals(other) {
+    return DistanceDisplayCondition.equals(this, other);
+  }
+
   /**
    * The smallest distance in the interval where the object is visible.
    * @memberof DistanceDisplayCondition.prototype
    * @type {number}
    * @default 0.0
    */
-  near: {
-    get: function () {
-      return this._near;
-    },
-    set: function (value) {
-      this._near = value;
-    },
-  },
+  get near() {
+    return this._near;
+  }
+
+  /**
+   * The smallest distance in the interval where the object is visible.
+   * @memberof DistanceDisplayCondition.prototype
+   * @type {number}
+   * @default 0.0
+   */
+  set near(value) {
+    this._near = value;
+  }
+
   /**
    * The largest distance in the interval where the object is visible.
    * @memberof DistanceDisplayCondition.prototype
    * @type {number}
    * @default Number.MAX_VALUE
    */
-  far: {
-    get: function () {
-      return this._far;
-    },
-    set: function (value) {
-      this._far = value;
-    },
-  },
-});
+  get far() {
+    return this._far;
+  }
+
+  /**
+   * The largest distance in the interval where the object is visible.
+   * @memberof DistanceDisplayCondition.prototype
+   * @type {number}
+   * @default Number.MAX_VALUE
+   */
+  set far(value) {
+    this._far = value;
+  }
+}
 
 /**
  * The number of elements used to pack the object into an array.
@@ -149,23 +180,4 @@ DistanceDisplayCondition.clone = function (value, result) {
   return result;
 };
 
-/**
- * Duplicates this instance.
- *
- * @param {DistanceDisplayCondition} [result] The result onto which to store the result.
- * @return {DistanceDisplayCondition} The duplicated instance.
- */
-DistanceDisplayCondition.prototype.clone = function (result) {
-  return DistanceDisplayCondition.clone(this, result);
-};
-
-/**
- * Determines if this distance display condition is equal to another.
- *
- * @param {DistanceDisplayCondition} [other] Another distance display condition.
- * @return {boolean} Whether this distance display condition is equal to the other.
- */
-DistanceDisplayCondition.prototype.equals = function (other) {
-  return DistanceDisplayCondition.equals(this, other);
-};
 export default DistanceDisplayCondition;

@@ -347,7 +347,10 @@ export class WebGPURenderPipelineCache {
         depthCompare:
           variant?.depthCompare ||
           descriptor.depthStencil?.depthCompare ||
-          "less",
+          // Default to `less-equal` (not `less`) — at planetary scale,
+          // FP32 can project Z to exactly the far plane and `less`
+          // would discard those fragments. See WebGPUContext.
+          "less-equal",
         stencilFront:
           variant?.stencilFront || descriptor.depthStencil?.stencilFront,
         stencilBack:

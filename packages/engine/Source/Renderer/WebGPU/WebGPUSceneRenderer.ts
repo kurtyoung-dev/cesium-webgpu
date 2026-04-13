@@ -33,12 +33,14 @@
 
 import Pass from "../../Renderer/Pass.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
+import type { WebGPUContext } from "./WebGPUContext.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
 import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
+import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 
@@ -46,9 +48,9 @@ import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
  * Configuration for a single frame's rendering.
  */
 export interface WebGPURenderFrameConfig {
-  scene: any;
-  context: any;
-  passState: any;
+  scene: CesiumScene;
+  context: WebGPUContext;
+  passState: CesiumPassState;
   backgroundColor: { red: number; green: number; blue: number; alpha: number };
   picking: boolean;
   useGlobeDepthFramebuffer: boolean;
@@ -64,10 +66,10 @@ export interface WebGPURenderFrameConfig {
 // --------------- Module-level helpers ---------------
 
 function executeWebGPUCommand(
-  command: any,
-  scene: any,
-  context: any,
-  passState: any,
+  command: CesiumAnyDrawCommand,
+  scene: CesiumScene,
+  context: WebGPUContext,
+  passState: CesiumPassState,
 ): void {
   if (scene.debugCommandFilter && !scene.debugCommandFilter(command)) {
     return;
@@ -96,16 +98,16 @@ function executeWebGPUCommand(
 }
 
 function executeBatch(
-  commands: any[],
+  commands: CesiumAnyDrawCommand[],
   count: number,
-  scene: any,
-  context: any,
-  passState: any,
+  scene: CesiumScene,
+  context: WebGPUContext,
+  passState: CesiumPassState,
 ): void {
   for (let i = 0; i < count; i++) {
     try {
       executeWebGPUCommand(commands[i], scene, context, passState);
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Log once per command type rather than flooding — the command might
       // fail every frame, but we don't want to stop all rendering.
       const cmd = commands[i];
@@ -114,12 +116,13 @@ function executeBatch(
       if (!(context as any)._warnedCommands) {
         (context as any)._warnedCommands = new Set();
       }
-      const key = `${label}:${e.message?.substring(0, 60)}`;
+      const msg = (e as Error).message;
+      const key = `${label}:${msg?.substring(0, 60)}`;
       if (!(context as any)._warnedCommands.has(key)) {
         (context as any)._warnedCommands.add(key);
         context.log?.(
           "warn",
-          `Command execution failed (${label}): ${e.message}`,
+          `Command execution failed (${label}): ${msg}`,
         );
       }
     }
@@ -148,11 +151,11 @@ function executeBatch(
  * cloud collection) opts in.
  */
 function executeBatchIndirect(
-  commands: any[],
+  commands: CesiumAnyDrawCommand[],
   count: number,
-  scene: any,
-  context: any,
-  passState: any,
+  scene: CesiumScene,
+  context: WebGPUContext,
+  passState: CesiumPassState,
 ): void {
   const renderPass = context.currentRenderPassEncoder;
   const manager = context.indirectDrawManager;
@@ -177,7 +180,7 @@ function executeBatchIndirect(
     ) {
       try {
         executeWebGPUCommand(head, scene, context, passState);
-      } catch (e: any) {
+      } catch (e: unknown) {
         // matching the per-command logging in executeBatch
         if (!(context as any)._warnedCommands) {
           (context as any)._warnedCommands = new Set();
@@ -186,12 +189,13 @@ function executeBatchIndirect(
           head?.owner?.constructor?.name ??
           head?.constructor?.name ??
           "unknown";
-        const key = `${label}:${e.message?.substring(0, 60)}`;
+        const msg = (e as Error).message;
+        const key = `${label}:${msg?.substring(0, 60)}`;
         if (!(context as any)._warnedCommands.has(key)) {
           (context as any)._warnedCommands.add(key);
           context.log?.(
             "warn",
-            `Indirect path command failed (${label}): ${e.message}`,
+            `Indirect path command failed (${label}): ${msg}`,
           );
         }
       }
@@ -227,7 +231,7 @@ function executeBatchIndirect(
       // No batching benefit — execute as a normal draw and continue.
       try {
         executeWebGPUCommand(head, scene, context, passState);
-      } catch (e: any) {
+      } catch (e: unknown) {
         // ignored — head will simply be missing from the frame
         void e;
       }
@@ -257,12 +261,11 @@ function executeBatchIndirect(
     }
     if (headVertexBuffers) {
       for (let v = 0; v < headVertexBuffers.length; v++) {
-        const vb = headVertexBuffers[v];
-        renderPass.setVertexBuffer(v, vb.buffer ?? vb);
+        renderPass.setVertexBuffer(v, (headVertexBuffers[v] as { buffer: GPUBuffer }).buffer);
       }
     }
     renderPass.setIndexBuffer(
-      headIndexBuffer.buffer ?? headIndexBuffer,
+      (headIndexBuffer as { buffer: GPUBuffer }).buffer,
       headIndexFormat,
     );
     manager.executeBatchIndexed(renderPass, firstIndex, runLen);
@@ -300,11 +303,11 @@ function sameVertexBufferArray(
  * Used for globe depth pass — renders only to depth buffer (no color writes).
  */
 function executeBatchDepthOnly(
-  commands: any[],
+  commands: CesiumAnyDrawCommand[],
   count: number,
-  scene: any,
-  context: any,
-  passState: any,
+  scene: CesiumScene,
+  context: WebGPUContext,
+  passState: CesiumPassState,
 ): void {
   for (let i = 0; i < count; i++) {
     const cmd = commands[i];
@@ -326,11 +329,11 @@ function executeBatchDepthOnly(
  * the _webgpuTranslucencyDerived type marker.
  */
 function executeBatchTranslucent(
-  commands: any[],
+  commands: CesiumAnyDrawCommand[],
   count: number,
-  scene: any,
-  context: any,
-  passState: any,
+  scene: CesiumScene,
+  context: WebGPUContext,
+  passState: CesiumPassState,
 ): void {
   for (let i = 0; i < count; i++) {
     const cmd = commands[i];
@@ -342,10 +345,10 @@ function executeBatchTranslucent(
         depthWrite: cmd._depthWriteEnabled,
         cullMode: cmd._cullMode,
       };
-      const derived = cmd._webgpuTranslucencyDerived;
-      cmd._blendEnabled = derived.blendEnabled ?? saved.blend;
-      cmd._depthWriteEnabled = derived.depthWriteEnabled ?? saved.depthWrite;
-      cmd._cullMode = derived.cullMode ?? saved.cullMode;
+      const derived = cmd._webgpuTranslucencyDerived[0];
+      cmd._blendEnabled = derived?.blendEnabled ?? saved.blend;
+      cmd._depthWriteEnabled = derived?.depthWriteEnabled ?? saved.depthWrite;
+      cmd._cullMode = derived?.cullMode ?? saved.cullMode;
       executeWebGPUCommand(cmd, scene, context, passState);
       cmd._blendEnabled = saved.blend;
       cmd._depthWriteEnabled = saved.depthWrite;
@@ -371,10 +374,38 @@ export class WebGPUSceneRenderer {
   // on first request so production frames pay nothing.
   private _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
   private _depthOverlayWarningLogged: boolean = false;
+  // Tier 2 debug — frustum + command tint overlay (WebGPU equivalent of
+  // `debugShowFrustums` / `debugShowCommands`). Lazy.
+  private _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
+  // Captured during the frustum loop so the post-process debug overlay
+  // can tint pixels by which frustum drew them. Reset each frame.
+  private _capturedFrustumRanges: { near: number; far: number }[] = [];
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
   private _depthPlaneWarned: boolean = false;
+
+  // ── Debug log-once guards (pragma-stripped in production) ──
+  //>>includeStart('debug', pragmas.debug);
+  private _execDebugLogged: boolean = false;
+  private _debugLogged: boolean = false;
+  private _postInitDebugLogged: boolean = false;
+  private _renderPassRedirectLogged: boolean = false;
+  private _ppDebugLogged: boolean = false;
+  private _globeValidationDone: boolean = false;
+  private _globePassRPLogged: boolean = false;
+  private _globeCountLogged: boolean = false;
+  private _globeCountLogFrame: number = -1;
+  private _globePassLastLog: number = 0;
+  //>>includeEnd('debug');
+
+  // ── Runtime state that was previously ad-hoc on `this as any` ──
+  private _currentFrustumIndex: number = 0;
+  private _deferredOITSplats: {
+    commands: CesiumAnyDrawCommand[];
+    count: number;
+  } | null = null;
+  private _lastCullResults: any = null;
 
   // --- Lazy initialization ---
 
@@ -455,10 +486,35 @@ export class WebGPUSceneRenderer {
       this._postProcess = new WebGPUPostProcessPipeline();
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
-      this._postProcess.initialize(device, width, height, canvasFormat);
+      // HDR pipeline fix: when `scene.highDynamicRange=true`, the
+      // ping-pong textures use `rgba16float` so the full dynamic range
+      // from the scene framebuffer survives through bloom / tonemapping
+      // / color grading. Only the final blit down-casts to the canvas
+      // swap chain format (bgra8unorm). Without this, every post-process
+      // stage was silently clamping HDR values to [0,1] and tonemapping
+      // was a mathematical no-op.
+      this._postProcess.initialize(device, width, height, canvasFormat, hdr);
       // Add default stages
-      this._postProcess.addTonemapping(device, canvasFormat);
+      // Phase 5 WGF-3: pass the context f16 flag so the tonemap stage
+      // selects the hand-tuned half-precision variant when the device
+      // granted shader-f16. Default mode/exposure/gamma are unchanged.
+      this._postProcess.addTonemapping(
+        device,
+        canvasFormat,
+        undefined,
+        undefined,
+        undefined,
+        !!(context && (context as any).useShaderF16),
+      );
+      // TAA is added lazily when scene.taaEnabled = true (not default).
       this._postProcess.addFXAA(device, canvasFormat);
+      // Auto-exposure: add when HDR is on (matches WebGL's
+      // PostProcessStageCollection behavior where autoExposure is
+      // enabled alongside tonemapping). Off by default in SDR mode
+      // because the scene framebuffer values are already [0,1].
+      if (hdr) {
+        this._postProcess.addAutoExposure(device);
+      }
     }
     if (this._postProcess && needsResize) {
       this._postProcess.resize(width, height);
@@ -472,9 +528,10 @@ export class WebGPUSceneRenderer {
         context.presentationFormat ?? "bgra8unorm";
       configureWebGPUPostProcessPipeline(
         this._postProcess,
-        config.scene.postProcessStages,
+        config.scene.postProcessStages as unknown as CesiumObjectWithWebGPUCache,
         device,
         canvasFormat,
+        config.scene,
       );
     }
 
@@ -499,13 +556,31 @@ export class WebGPUSceneRenderer {
     const numFrustums: number = frustumCommandsList.length;
     const { uniformState } = context;
 
+    // One-time diagnostic: confirm executeCommands is reached and show
+    // the frustum count + usePostProcess value. If this never appears in
+    // the console, the WebGPU scene renderer isn't being invoked at all.
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._execDebugLogged) {
+      this._execDebugLogged = true;
+      console.warn(
+        `[WebGPU:SceneRenderer] executeCommands called — ` +
+          `numFrustums=${numFrustums} ` +
+          `usePostProcess=${config.usePostProcess} ` +
+          `_postProcess=${!!this._postProcess} ` +
+          `picking=${config.picking} ` +
+          `sceneFramebuffer=${!!this._sceneFramebuffer}`,
+      );
+    }
+    //>>includeEnd('debug');
+
     if (numFrustums === 0) {
       return;
     }
 
+    //>>includeStart('debug', pragmas.debug);
     // Temporary debug: log command counts once on first frame
-    if (!(this as any)._debugLogged) {
-      (this as any)._debugLogged = true;
+    if (!this._debugLogged) {
+      this._debugLogged = true;
       const passNames: Record<number, string> = {
         0: "ENVIRONMENT",
         2: "GLOBE",
@@ -525,9 +600,31 @@ export class WebGPUSceneRenderer {
         }
       }
     }
+    //>>includeEnd('debug');
 
     // Ensure rendering resources are created/sized
     this._ensureResources(config);
+
+    // Post-init diagnostic: log the ACTUAL resource state after
+    // _ensureResources has had a chance to create everything. This is the
+    // diagnostic that matters — the earlier one fires before init.
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._postInitDebugLogged) {
+      this._postInitDebugLogged = true;
+      const sf = this._sceneFramebuffer;
+      const pp = this._postProcess;
+      console.warn(
+        `[WebGPU:SceneRenderer] POST-INIT state — ` +
+          `_postProcess=${!!pp} hasActiveStages=${pp?.hasActiveStages} ` +
+          `sceneFramebuffer=${!!sf} colorTarget=${!!sf?.colorTarget} ` +
+          `depthStencilTexture=${!!sf?.depthStencilTexture} ` +
+          `canvasTextureView=${!!context.currentTextureView} ` +
+          `encoder=${!!context._currentCommandEncoder} ` +
+          `oit=${!!this._oit} globeDepth=${!!this._globeDepth} ` +
+          `depthPlane=${!!this._depthPlane}`,
+      );
+    }
+    //>>includeEnd('debug');
 
     // Performance infrastructure: begin frame for render bundles, indirect draws, profiling
     const perfManager = context.performanceManager;
@@ -545,6 +642,105 @@ export class WebGPUSceneRenderer {
     const opaqueFrustumNearOffset: number =
       scene.opaqueFrustumNearOffset ?? 0.9999;
 
+    // ── Redirect the render pass from the canvas to the scene framebuffer ──
+    //
+    // The WebGPU context's beginFrame() opens a default render pass
+    // targeting the canvas swap chain. But we need commands to draw into
+    // the scene framebuffer's color + depth textures so the post-process
+    // pipeline can read from them and blit to the canvas later.
+    //
+    // End the default (canvas) render pass and begin a new one targeting
+    // the scene framebuffer. After the frustum loop + environment passes,
+    // _runPostProcessing will read from the scene framebuffer and write
+    // to the canvas.
+    if (this._sceneFramebuffer?.colorTarget && config.usePostProcess) {
+      context.endCurrentRenderPass?.();
+
+      const colorTarget = this._sceneFramebuffer.colorTarget;
+      const bg = config.backgroundColor;
+      const colorAttachments = colorTarget.getColorAttachments?.([
+        {
+          r: bg?.red ?? 0,
+          g: bg?.green ?? 0,
+          b: bg?.blue ?? 0,
+          a: bg?.alpha ?? 0,
+        },
+      ]);
+      const depthStencilAttachment =
+        colorTarget.getDepthStencilAttachment?.();
+
+      if (!colorAttachments?.length) {
+        context.log(
+          "error",
+          `[SceneRenderer] CRITICAL — scene framebuffer has no color ` +
+            `attachments. Commands will draw to nothing and the canvas ` +
+            `will be BLACK. Check WebGPUSceneFramebuffer.update().`,
+        );
+      }
+      if (!depthStencilAttachment) {
+        context.log(
+          "warn",
+          `[SceneRenderer] Scene framebuffer has no depth/stencil ` +
+            `attachment. Depth testing will be disabled for all commands.`,
+        );
+      }
+
+      if (colorAttachments?.length && context._currentCommandEncoder) {
+        const passDesc: GPURenderPassDescriptor = {
+          label: "Scene Framebuffer Render Pass",
+          colorAttachments,
+          depthStencilAttachment,
+        };
+        context._currentRenderPassEncoder =
+          context._currentCommandEncoder.beginRenderPass(passDesc);
+        context._currentRenderPassEncoder.setViewport(
+          0, 0,
+          this._width, this._height,
+          0, 1,
+        );
+        context._currentRenderPassEncoder.setScissorRect(
+          0, 0,
+          this._width, this._height,
+        );
+        //>>includeStart('debug', pragmas.debug);
+        if (!this._renderPassRedirectLogged) {
+          this._renderPassRedirectLogged = true;
+          const ca0 = colorAttachments[0];
+          console.warn(
+            `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — ` +
+              `sceneFB pass OPENED. viewport=${this._width}x${this._height} ` +
+              `colorView=${!!ca0?.view} resolveTarget=${!!ca0?.resolveTarget} ` +
+              `depthView=${!!depthStencilAttachment?.view} ` +
+              `loadOp=${ca0?.loadOp} storeOp=${ca0?.storeOp} ` +
+              `clearColor=${JSON.stringify(ca0?.clearValue)}`,
+          );
+        }
+        //>>includeEnd('debug');
+      } else if (!this._renderPassRedirectLogged) {
+        this._renderPassRedirectLogged = true;
+        console.error(
+          `[WebGPU:SceneRenderer] RENDER PASS REDIRECT FAILED — ` +
+            `colorAttachments=${colorAttachments?.length} encoder=${!!context._currentCommandEncoder}`,
+        );
+      }
+    } else if (config.usePostProcess) {
+      // usePostProcess is true but no scene framebuffer — commands will
+      // draw to the canvas directly and the post-process blit will
+      // overwrite them with the empty scene framebuffer.
+      context.log(
+        "error",
+        `[SceneRenderer] CRITICAL — usePostProcess=true but no scene ` +
+          `framebuffer color target exists. The post-process blit will ` +
+          `overwrite the canvas with black. ` +
+          `sceneFramebuffer=${!!this._sceneFramebuffer} ` +
+          `colorTarget=${!!this._sceneFramebuffer?.colorTarget}`,
+      );
+    }
+
+    // Reset captured ranges — the debug frustum overlay reads this list
+    // in `_runPostProcessing` to tint pixels by which frustum drew them.
+    this._capturedFrustumRanges.length = 0;
+
     // --- Multi-frustum loop: iterate from FAR to NEAR ---
     // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
     for (let i = 0; i < numFrustums; i++) {
@@ -559,11 +755,34 @@ export class WebGPUSceneRenderer {
           : frustumCommands.near;
       const far = frustumCommands.far;
 
-      this._updateFrustumUniforms(uniformState, near, far, scene);
-      (this as any)._currentFrustumIndex = i;
+      // Store the range indexed by the ORIGINAL frustum index (0 = nearest)
+      // so `WebGPUDebugFrustumOverlay` can match the WebGL DebugInspector
+      // bitmask order. `index` already points to the natural order.
+      this._capturedFrustumRanges[index] = {
+        near: frustumCommands.near,
+        far,
+      };
 
-      // Clear depth/stencil per frustum (but not color — color accumulates across frustums)
-      this._clearDepthStencil(context);
+      this._updateFrustumUniforms(uniformState, near, far, scene);
+      this._currentFrustumIndex = i;
+
+      // Clear depth/stencil per frustum (but not color — color accumulates across frustums).
+      //
+      // EXCEPTION: when `debugShowDepthAsColor` is on, skip the inter-frustum
+      // clear (except before the very first iteration, so we start with a
+      // known-clean buffer). Without this, only the nearest frustum's
+      // geometry survives into the depth texture that the debug overlay
+      // samples — the user sees an all-cleared depth buffer at any camera
+      // altitude where the globe lives in the far frustum. Depth-test
+      // correctness is compromised for the debug frame (far-frustum geometry
+      // may incorrectly occlude near-frustum geometry through stale depth),
+      // but the viz is THE tool you'd reach for when something's wrong with
+      // depth anyway, so the tradeoff is intentional.
+      const debugDepthViz =
+        scene?._frameState?.debugShowDepthAsColor === true;
+      if (!debugDepthViz || i === 0) {
+        this._clearDepthStencil(context);
+      }
 
       // Pass 0: ENVIRONMENT (sky, sun, moon, atmosphere) — once in farthest frustum
       if (i === 0) {
@@ -601,8 +820,11 @@ export class WebGPUSceneRenderer {
         passState,
       );
 
-      // Clear globe depth if needed for primitives-on-top rendering
-      if (config.clearGlobeDepth) {
+      // Clear globe depth if needed for primitives-on-top rendering.
+      // Same debug bypass as the inter-frustum clear above — we want the
+      // debug overlay to see globe + 3D-tiles depth together, not a buffer
+      // that was wiped mid-frustum.
+      if (config.clearGlobeDepth && !debugDepthViz) {
         this._clearDepthStencil(context);
         if (config.useDepthPlane) {
           this._renderDepthPlane(config);
@@ -643,7 +865,7 @@ export class WebGPUSceneRenderer {
           // Splats will be rendered in the OIT accumulation pass below
           // by injecting them into the translucent command list.
           // Store them for later use.
-          (this as any)._deferredOITSplats = {
+          this._deferredOITSplats = {
             commands: splatCommands,
             count: splatCount,
           };
@@ -683,7 +905,7 @@ export class WebGPUSceneRenderer {
         // so PickDepth can read it via buffer copy + mapAsync
         const packedDepthTex = this._globeDepth.globeDepthTexture;
         if (pickDepth && packedDepthTex) {
-          pickDepth.update(context, packedDepthTex);
+          pickDepth.update(context as unknown as CesiumGraphicsContext, packedDepthTex);
         }
       }
     }
@@ -702,6 +924,18 @@ export class WebGPUSceneRenderer {
     this._executeEnvironmentalEffects(config);
 
     // Post-processing (tonemapping, FXAA, etc.)
+    // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
+    //>>includeStart('debug', pragmas.debug);
+    if (!this._ppDebugLogged) {
+      this._ppDebugLogged = true;
+      console.log(
+        `[WebGPU:PostProcess] _runPostProcessing entering: ` +
+          `usePostProcess=${config.usePostProcess} ` +
+          `_postProcess=${!!this._postProcess} ` +
+          `sceneFramebuffer=${!!this._sceneFramebuffer}`,
+      );
+    }
+    //>>includeEnd('debug');
     this._runPostProcessing(config);
 
     // Performance infrastructure: end frame — flush indirect draws, collect profiling
@@ -758,14 +992,14 @@ export class WebGPUSceneRenderer {
       label: "Pick render pass",
       colorAttachments: [
         {
-          view: pickFBO.colorView,
+          view: pickFBO.colorView as GPUTextureView,
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
           loadOp: "clear" as GPULoadOp,
           storeOp: "store" as GPUStoreOp,
         },
       ],
       depthStencilAttachment: {
-        view: pickFBO.depthView,
+        view: pickFBO.depthView as GPUTextureView,
         depthClearValue: 1.0,
         depthLoadOp: "clear" as GPULoadOp,
         depthStoreOp: "store" as GPUStoreOp,
@@ -854,11 +1088,11 @@ export class WebGPUSceneRenderer {
    * Commands are executed on the pick render pass encoder.
    */
   private _executePickBatch(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     passIndex: number,
-    scene: any,
-    context: any,
-    passState: any,
+    scene: CesiumScene,
+    context: WebGPUContext,
+    passState: CesiumPassState,
     pickRenderPass: GPURenderPassEncoder,
   ): void {
     const commands = frustumCommands.commands[passIndex];
@@ -890,10 +1124,10 @@ export class WebGPUSceneRenderer {
   // --- Frustum state ---
 
   private _updateFrustumUniforms(
-    uniformState: any,
+    uniformState: CesiumUniformState,
     near: number,
     far: number,
-    scene: any,
+    scene: CesiumScene,
   ): void {
     // Create a working frustum from the camera and update uniform state
     // This mirrors the WebGL path which creates a clone and sets near/far on it
@@ -913,15 +1147,72 @@ export class WebGPUSceneRenderer {
     }
   }
 
-  private _clearDepthStencil(context: any): void {
-    // Pass numeric values: depth=1.0 (far plane), stencil=0, color=false (don't clear)
+  private _clearDepthStencil(context: WebGPUContext): void {
+    // ── Multi-frustum depth clear — CRITICAL for correct rendering ──
+    //
+    // Cesium splits the scene into multiple depth-range frustums to preserve
+    // depth precision across ~10^7 meters of view distance. Between frustums
+    // WebGL calls `gl.clear(DEPTH_BUFFER_BIT)` — depth is wiped while color
+    // accumulates. This MUST happen or frustum N's depth values will
+    // stomp the depth test in frustum N+1, producing black wedges across
+    // the globe where far-frustum tiles occlude near-frustum tiles through
+    // a corrupted depth buffer.
+    //
+    // WebGPU forbids mid-pass clears, so we end the active scene-framebuffer
+    // pass and open a new one with `colorLoadOp: "load"` (preserve accumulated
+    // color) + `depthLoadOp: "clear"` (reset depth). `getDepthStencilAttachment`
+    // already defaults to depthLoadOp="clear", so we only override color.
+    const currentPass = context._currentRenderPassEncoder;
+    const label: string = currentPass?.label ?? "";
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    if (
+      label === "Scene Framebuffer Render Pass" &&
+      colorTarget &&
+      context._currentCommandEncoder
+    ) {
+      const rawColor: GPURenderPassColorAttachment[] | undefined =
+        colorTarget.getColorAttachments?.();
+      const colorAttachments = rawColor?.map((a) => ({
+        ...a,
+        loadOp: "load" as GPULoadOp,
+      }));
+      const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
+
+      if (colorAttachments?.length) {
+        context.endCurrentRenderPass?.();
+        const passDesc: GPURenderPassDescriptor = {
+          label: "Scene Framebuffer Render Pass",
+          colorAttachments,
+          depthStencilAttachment,
+        };
+        context._currentRenderPassEncoder =
+          context._currentCommandEncoder.beginRenderPass(passDesc);
+        context._currentRenderPassEncoder.setViewport(
+          0,
+          0,
+          this._width,
+          this._height,
+          0,
+          1,
+        );
+        context._currentRenderPassEncoder.setScissorRect(
+          0,
+          0,
+          this._width,
+          this._height,
+        );
+        return;
+      }
+    }
+
+    // Fallback for non-scene-FB passes (canvas direct, pick buffer, etc.)
     context.clear?.({ depth: 1.0, stencil: 0, color: false });
   }
 
   // --- Globe pass (with GlobeDepth integration) ---
 
   private _executeGlobePass(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
@@ -933,8 +1224,8 @@ export class WebGPUSceneRenderer {
 
     // One-time GPU validation error scope on first globe pass
     const device: GPUDevice | undefined = context._device;
-    if (device && !(this as any)._globeValidationDone) {
-      (this as any)._globeValidationDone = true;
+    if (device && !this._globeValidationDone) {
+      this._globeValidationDone = true;
       device.pushErrorScope("validation");
       // Pop after frame to check for silent errors
       Promise.resolve().then(() => {
@@ -944,7 +1235,9 @@ export class WebGPUSceneRenderer {
               `[WebGPU:GlobePass] GPU VALIDATION ERROR: ${error.message}`,
             );
           } else {
+            //>>includeStart('debug', pragmas.debug);
             console.log("[WebGPU:GlobePass] No GPU validation errors");
+            //>>includeEnd('debug');
           }
         });
       });
@@ -952,25 +1245,38 @@ export class WebGPUSceneRenderer {
 
     context.uniformState?.updatePass(Pass.GLOBE);
 
+    //>>includeStart('debug', pragmas.debug);
+    // Diagnostic: is the render pass pointing at the scene framebuffer?
+    if (!this._globePassRPLogged) {
+      this._globePassRPLogged = true;
+      const rp = context.currentRenderPassEncoder;
+      console.warn(
+        `[WebGPU:GlobePass] RENDER PASS CHECK — ` +
+          `hasRenderPass=${!!rp} label="${rp?.label ?? "none"}" ` +
+          `count=${count}`,
+      );
+    }
+
     // Diagnostic: log globe command count periodically
     if (
-      !(this as any)._globeCountLogged ||
-      (this as any)._globeCountLogFrame !== context._frameCount
+      !this._globeCountLogged ||
+      this._globeCountLogFrame !== context._frameCount
     ) {
+      // Throttle GlobePass log to once per 3 seconds
+      const _now = performance.now();
       if (
-        !(this as any)._globeCountLogged ||
-        count !== (this as any)._lastGlobeCount
+        !this._globePassLastLog ||
+        _now - this._globePassLastLog > 3000
       ) {
-        (this as any)._lastGlobeCount = count;
-        (this as any)._globeCountLogged = true;
-        (this as any)._globeCountLogFrame = context._frameCount;
+        this._globePassLastLog = _now;
         const hasPass = !!context.currentRenderPassEncoder;
         console.log(
           `[WebGPU:GlobePass] ${count} globe commands, ` +
-            `renderPass=${hasPass}, frustumIdx=${(this as any)._currentFrustumIndex ?? "?"}`,
+            `renderPass=${hasPass}, frustumIdx=${this._currentFrustumIndex ?? "?"}`,
         );
       }
     }
+    //>>includeEnd('debug');
 
     // Check if globe is translucent
     const globe = scene.globe;
@@ -1030,7 +1336,7 @@ export class WebGPUSceneRenderer {
   // --- 3D Tiles passes ---
 
   private _execute3DTilePasses(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
@@ -1067,7 +1373,7 @@ export class WebGPUSceneRenderer {
   // --- Opaque pass ---
 
   private _executeOpaquePass(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
@@ -1083,7 +1389,7 @@ export class WebGPUSceneRenderer {
   // --- Translucent pass (with OIT integration) ---
 
   private _executeTranslucentPass(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
@@ -1117,10 +1423,20 @@ export class WebGPUSceneRenderer {
         if (cmd._oitPipeline) {
           hasOITPipelines = true;
         } else if (cmd._shaderCode && cmd.isWebGPUDrawCommand && this._oit) {
+          const pipelineConfig = cmd._pipelineConfig as {
+            label?: string;
+            layout: GPUPipelineLayout | "auto";
+            vertexBuffers?: GPUVertexBufferLayout[];
+            vertexEntryPoint?: string;
+            fragmentEntryPoint?: string;
+            primitive?: GPUPrimitiveState;
+            depthStencil?: GPUDepthStencilState;
+            multisample?: GPUMultisampleState;
+          } | undefined;
           const oitPipeline = this._oit.createOITPipeline(
             context.device,
             cmd._shaderCode,
-            cmd._pipelineConfig ?? {
+            pipelineConfig ?? {
               label: cmd.owner?.constructor?.name ?? "auto",
               layout: "auto",
               primitive: { topology: "triangle-list" },
@@ -1142,7 +1458,7 @@ export class WebGPUSceneRenderer {
 
       if (hasOITPipelines) {
         // Full OIT path: end opaque render pass → accumulation → composite
-        const encoder: any = context._currentCommandEncoder;
+        const encoder: GPUCommandEncoder | undefined = context._currentCommandEncoder;
         const depthView = context._depthStencilView;
         if (encoder && depthView) {
           context.endCurrentRenderPass?.();
@@ -1153,7 +1469,7 @@ export class WebGPUSceneRenderer {
           if (accPassDesc) {
             const accPass = encoder.beginRenderPass(accPassDesc);
             // Helper to execute a single OIT command in the accumulation pass
-            const executeOITCommand = (cmd: any) => {
+            const executeOITCommand = (cmd: CesiumAnyDrawCommand) => {
               if (!cmd?._oitPipeline) return;
               accPass.setPipeline(cmd._oitPipeline);
               for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
@@ -1162,13 +1478,13 @@ export class WebGPUSceneRenderer {
               for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
                 accPass.setVertexBuffer(
                   vi,
-                  cmd.vertexBuffers[vi]?._buffer ?? cmd.vertexBuffers[vi],
+                  (cmd.vertexBuffers[vi] as { buffer: GPUBuffer })?.buffer,
                 );
               }
               if (cmd.indexBuffer && cmd.indexCount) {
                 accPass.setIndexBuffer(
-                  cmd.indexBuffer._buffer ?? cmd.indexBuffer,
-                  cmd.indexFormat,
+                  (cmd.indexBuffer as { buffer: GPUBuffer }).buffer,
+                  cmd.indexFormat ?? "uint16",
                 );
                 accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
               } else if (cmd.vertexCount) {
@@ -1185,12 +1501,12 @@ export class WebGPUSceneRenderer {
             }
 
             // GS-WSR: Include deferred Gaussian splat commands in OIT accumulation
-            const deferredSplats = (this as any)._deferredOITSplats;
+            const deferredSplats = this._deferredOITSplats;
             if (deferredSplats) {
               for (let si = 0; si < deferredSplats.count; si++) {
                 executeOITCommand(deferredSplats.commands[si]);
               }
-              (this as any)._deferredOITSplats = null;
+              this._deferredOITSplats = null;
             }
 
             accPass.end();
@@ -1226,7 +1542,7 @@ export class WebGPUSceneRenderer {
   // --- Overlay pass ---
 
   private _executeOverlayPass(
-    frustumCommandsList: any[],
+    frustumCommandsList: CesiumFrustumCommands[],
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
@@ -1266,10 +1582,10 @@ export class WebGPUSceneRenderer {
       if (renderPass) {
         this._depthPlane.execute(renderPass);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Depth plane is non-essential — log warning but don't crash rendering
       if (!this._depthPlaneWarned) {
-        context.log("warn", `DepthPlane error (suppressed): ${e.message}`);
+        context.log("warn", `DepthPlane error (suppressed): ${(e as Error).message}`);
         this._depthPlaneWarned = true;
       }
     }
@@ -1321,8 +1637,8 @@ export class WebGPUSceneRenderer {
             globe,
           );
           context.resumeDefaultRenderPass?.();
-        } catch (e: any) {
-          context.log?.("warn", `Procedural clouds failed: ${e.message}`);
+        } catch (e: unknown) {
+          context.log?.("warn", `Procedural clouds failed: ${(e as Error).message}`);
           context.resumeDefaultRenderPass?.();
         }
       }
@@ -1346,8 +1662,8 @@ export class WebGPUSceneRenderer {
             scene,
           );
           context.resumeDefaultRenderPass?.();
-        } catch (e: any) {
-          context.log?.("warn", `SSR failed: ${e.message}`);
+        } catch (e: unknown) {
+          context.log?.("warn", `SSR failed: ${(e as Error).message}`);
           context.resumeDefaultRenderPass?.();
         }
       }
@@ -1370,8 +1686,8 @@ export class WebGPUSceneRenderer {
               weatherFR.render(context, frameState, scene, passEncoder);
             }
           }
-        } catch (e: any) {
-          context.log?.("warn", `Weather update failed: ${e.message}`);
+        } catch (e: unknown) {
+          context.log?.("warn", `Weather update failed: ${(e as Error).message}`);
         }
       }
     }
@@ -1410,8 +1726,8 @@ export class WebGPUSceneRenderer {
             );
           }
           context.resumeDefaultRenderPass?.();
-        } catch (e: any) {
-          context.log?.("warn", `Volumetric fog failed: ${e.message}`);
+        } catch (e: unknown) {
+          context.log?.("warn", `Volumetric fog failed: ${(e as Error).message}`);
           context.resumeDefaultRenderPass?.();
         }
       }
@@ -1438,7 +1754,35 @@ export class WebGPUSceneRenderer {
       return;
     }
 
+    // Tier 2 debug — frustum / command tint override. Same pattern as
+    // depth-as-color: replaces the production post-process chain with a
+    // single fullscreen tint pass that samples scene color + depth and
+    // multiplies by a per-frustum or per-depth-bucket palette. See
+    // `WebGPUDebugFrustumOverlay` for the rationale on why this is a
+    // post-process instead of a DebugInspector-style per-command shader
+    // clone. `debugShowFrustums` takes priority over `debugShowCommands`
+    // when both are on, matching the WebGL ordering.
+    if (
+      frameState?.debugShowFrustums === true ||
+      frameState?.debugShowCommands === true
+    ) {
+      const mode = frameState.debugShowFrustums === true ? 0 : 1;
+      this._executeDebugFrustumOverlay(config, mode);
+      return;
+    }
+
     if (!this._postProcess || !config.usePostProcess) {
+      // This is a CRITICAL error on WebGPU: without the post-process
+      // pipeline the scene framebuffer never gets blitted to the visible
+      // canvas, resulting in an all-black output. Log as error (not warn)
+      // so it's impossible to miss in the console.
+      context.log(
+        "error",
+        `[PostProcess] CRITICAL — post-process pipeline not active! ` +
+          `postProcess=${!!this._postProcess} usePostProcess=${config.usePostProcess}. ` +
+          `The WebGPU canvas will be BLACK. Ensure FramebufferOrchestrator sets ` +
+          `usePostProcess=true for WebGPU (context.isWebGPU must be true).`,
+      );
       return;
     }
 
@@ -1456,7 +1800,17 @@ export class WebGPUSceneRenderer {
     const depthView: GPUTextureView | undefined = context._depthStencilView;
 
     if (encoder && sourceView && targetView) {
-      this._postProcess.execute(encoder, sourceView, targetView, depthView);
+      // Pass the scene color texture for auto-exposure compute dispatch.
+      const sceneColorTexture = colorTarget?.getColorTexture?.(0) ?? null;
+      this._postProcess.execute(
+        encoder,
+        sourceView,
+        targetView,
+        depthView,
+        sceneColorTexture,
+      );
+    } else {
+      context.log("warn", `[PostProcess] MISSING: encoder=${!!encoder} sourceView=${!!sourceView} targetView=${!!targetView}`);
     }
 
     // Resume the default render pass for any subsequent operations
@@ -1527,14 +1881,92 @@ export class WebGPUSceneRenderer {
     context.resumeDefaultRenderPass?.();
   }
 
+  /**
+   * Tier 2 debug — runs the {@link WebGPUDebugFrustumOverlay} in place of
+   * the production post-process chain. Samples the scene framebuffer's
+   * color + sampleable depth view, tints per pixel by frustum membership
+   * (mode 0) or depth-banded palette (mode 1), and blits to the canvas.
+   *
+   * Needs the same single-sample (non-MSAA) scene framebuffer contract as
+   * the depth overlay — depth can only be sampled when MSAA is off.
+   */
+  private _executeDebugFrustumOverlay(
+    config: WebGPURenderFrameConfig,
+    mode: number,
+  ): void {
+    const { context, scene } = config;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
+
+    context.endCurrentRenderPass?.();
+
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const targetView: GPUTextureView | undefined = context.currentTextureView;
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const sceneColorView: GPUTextureView | undefined =
+      colorTarget?.getColorTextureView?.(0);
+    const sceneDepthView: GPUTextureView | undefined =
+      this._sceneFramebuffer?.depthSampleableView;
+
+    if (!encoder || !targetView || !sceneColorView || !sceneDepthView) {
+      if (!this._depthOverlayWarningLogged) {
+        context.log?.(
+          "warn",
+          "[WebGPU:FrustumOverlay] requires a single-sample (non-MSAA) " +
+            "scene framebuffer with depthSampleableView; overlay skipped",
+        );
+        this._depthOverlayWarningLogged = true;
+      }
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+
+    if (!this._debugFrustumOverlay) {
+      this._debugFrustumOverlay = new WebGPUDebugFrustumOverlay();
+    }
+    this._debugFrustumOverlay.initialize(
+      device,
+      context._presentationFormat ?? "bgra8unorm",
+    );
+
+    const camera = scene?.camera;
+    const frustum = camera?.frustum;
+    const globalNear = frustum?.near ?? 1;
+    const globalFar = frustum?.far ?? 1e9;
+
+    // Captured during the multi-frustum loop. Fall back to the camera
+    // near/far as a single range if the loop didn't populate anything —
+    // happens when `numFrustums === 0` (no drawn commands this frame).
+    const ranges =
+      this._capturedFrustumRanges.length > 0
+        ? this._capturedFrustumRanges
+        : [{ near: globalNear, far: globalFar }];
+
+    this._debugFrustumOverlay.execute(
+      encoder,
+      sceneColorView,
+      sceneDepthView,
+      targetView,
+      globalNear,
+      globalFar,
+      mode,
+      ranges,
+    );
+
+    context.resumeDefaultRenderPass?.();
+  }
+
   // --- Pass helper ---
 
   private _executePassCommands(
-    frustumCommands: any,
+    frustumCommands: CesiumFrustumCommands,
     passIndex: number,
-    scene: any,
-    context: any,
-    passState: any,
+    scene: CesiumScene,
+    context: WebGPUContext,
+    passState: CesiumPassState,
   ): void {
     const commands = frustumCommands.commands[passIndex];
     const count: number = frustumCommands.indices[passIndex];
@@ -1568,33 +2000,30 @@ export class WebGPUSceneRenderer {
    * Delegates to WebGPUDerivedCommand static methods.
    */
   static createDerivedCommand(
-    baseCommand: any,
+    baseCommand: CesiumAnyDrawCommand,
     type: string,
-    context: any,
-  ): any {
+    context: WebGPUContext,
+  ): CesiumAnyDrawCommand {
     switch (type) {
       case "depthOnly":
         return WebGPUDerivedCommand.createDepthOnlyDerivedCommand(
           baseCommand,
-          context,
-        );
+        ).command ?? baseCommand;
       case "logDepth":
-        return WebGPUDerivedCommand.createLogDepthCommand(baseCommand);
+        return WebGPUDerivedCommand.createLogDepthCommand(baseCommand).command ?? baseCommand;
       case "pick":
         return WebGPUDerivedCommand.createPickDerivedCommand(
           baseCommand,
-          context,
-        );
+          baseCommand._pickColor ?? [],
+        ).command ?? baseCommand;
       case "hdr":
         return WebGPUDerivedCommand.createHDRDerivedCommand(
           baseCommand,
-          context,
-        );
+        ).command ?? baseCommand;
       case "shadow":
         return WebGPUDerivedCommand.createShadowDerivedCommand(
           baseCommand,
-          context,
-        );
+        ).command ?? baseCommand;
       default:
         return baseCommand;
     }
@@ -1647,7 +2076,7 @@ export class WebGPUSceneRenderer {
    * @param cullingVolume - Camera culling volume with planes[]
    * @returns Filtered command array (may be same reference if no culling done)
    */
-  gpuCullCommands(commands: any[], context: any, cullingVolume: any): any[] {
+  gpuCullCommands(commands: CesiumAnyDrawCommand[], context: WebGPUContext, cullingVolume: any): CesiumAnyDrawCommand[] {
     if (!commands || commands.length < WebGPUSceneRenderer.GPU_CULL_THRESHOLD) {
       return commands;
     }
@@ -1703,16 +2132,16 @@ export class WebGPUSceneRenderer {
     culler.prepareReadback(encoder, count);
     culler
       .readResults(count)
-      .then((results: any) => {
+      .then((results: unknown) => {
         // Cache results for next frame's filtering
-        (this as any)._lastCullResults = results;
+        this._lastCullResults = results;
       })
       .catch(() => {});
 
     // Use previous frame's results if available
-    const prev = (this as any)._lastCullResults;
+    const prev = this._lastCullResults;
     if (prev && prev.visibilityFlags && prev.objectCount === count) {
-      const filtered: any[] = [];
+      const filtered: CesiumAnyDrawCommand[] = [];
       for (let i = 0; i < count; i++) {
         if (prev.visibilityFlags[i] === 1) {
           filtered.push(commands[i]);

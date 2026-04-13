@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 
@@ -34,12 +33,18 @@ function getBaseUri(uri, includeQuery) {
     return basePath;
   }
 
-  uri = new Uri(uri);
-  if (uri.query().length !== 0) {
-    basePath += `?${uri.query()}`;
-  }
-  if (uri.fragment().length !== 0) {
-    basePath += `#${uri.fragment()}`;
+  // Use native URL to extract query and fragment reliably.
+  // Wrap in try/catch for relative URIs that can't be parsed standalone.
+  try {
+    const parsed = new URL(uri, "https://placeholder.invalid/");
+    if (parsed.search.length > 0) {
+      basePath += parsed.search;
+    }
+    if (parsed.hash.length > 0) {
+      basePath += parsed.hash;
+    }
+  } catch {
+    // If parsing fails, return basePath without query/fragment
   }
 
   return basePath;

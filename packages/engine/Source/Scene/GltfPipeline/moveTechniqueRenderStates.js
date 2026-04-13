@@ -18,7 +18,7 @@ function isStateEnabled(renderStates, state) {
     return false;
   }
 
-  return enabled.indexOf(state) > -1;
+  return enabled.includes(state);
 }
 
 const supportedBlendFactors = [
@@ -41,7 +41,7 @@ function getSupportedBlendFactors(value, defaultValue) {
   }
 
   for (let i = 0; i < 4; i++) {
-    if (supportedBlendFactors.indexOf(value[i]) === -1) {
+    if (!supportedBlendFactors.includes(value[i])) {
       return defaultValue;
     }
   }

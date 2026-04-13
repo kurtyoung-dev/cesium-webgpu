@@ -50,105 +50,329 @@ import Vector3DTileBatch from "./Vector3DTileBatch.js";
  *
  * @private
  */
-function Vector3DTilePrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class Vector3DTilePrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._batchTable = options.batchTable;
-  this._batchIds = options.batchIds;
+    this._batchTable = options.batchTable;
+    this._batchIds = options.batchIds;
 
-  // These arrays are released after VAO creation.
-  this._positions = options.positions;
-  this._vertexBatchIds = options.vertexBatchIds;
+    // These arrays are released after VAO creation.
+    this._positions = options.positions;
+    this._vertexBatchIds = options.vertexBatchIds;
 
-  // These arrays are kept for re-batching indices based on colors.
-  // If WebGL 2 is supported, indices will be released and re-batching uses buffer-to-buffer copies.
-  this._indices = options.indices;
-  this._indexCounts = options.indexCounts;
-  this._indexOffsets = options.indexOffsets;
-  this._batchedIndices = options.batchedIndices;
+    // These arrays are kept for re-batching indices based on colors.
+    // If WebGL 2 is supported, indices will be released and re-batching uses buffer-to-buffer copies.
+    this._indices = options.indices;
+    this._indexCounts = options.indexCounts;
+    this._indexOffsets = options.indexOffsets;
+    this._batchedIndices = options.batchedIndices;
 
-  this._boundingVolume = options.boundingVolume;
-  this._boundingVolumes = options.boundingVolumes;
+    this._boundingVolume = options.boundingVolume;
+    this._boundingVolumes = options.boundingVolumes;
 
-  this._center = options.center ?? Cartesian3.ZERO;
+    this._center = options.center ?? Cartesian3.ZERO;
 
-  this._va = undefined;
-  this._sp = undefined;
-  this._spStencil = undefined;
-  this._spPick = undefined;
-  this._uniformMap = undefined;
+    this._va = undefined;
+    this._sp = undefined;
+    this._spStencil = undefined;
+    this._spPick = undefined;
+    this._uniformMap = undefined;
 
-  // Only used with WebGL 2 to ping-pong ibos after copy.
-  this._vaSwap = undefined;
+    // Only used with WebGL 2 to ping-pong ibos after copy.
+    this._vaSwap = undefined;
 
-  this._rsStencilDepthPass = undefined;
-  this._rsStencilDepthPass3DTiles = undefined;
-  this._rsColorPass = undefined;
-  this._rsPickPass = undefined;
-  this._rsWireframe = undefined;
+    this._rsStencilDepthPass = undefined;
+    this._rsStencilDepthPass3DTiles = undefined;
+    this._rsColorPass = undefined;
+    this._rsPickPass = undefined;
+    this._rsWireframe = undefined;
 
-  this._commands = [];
-  this._commandsIgnoreShow = [];
-  this._pickCommands = [];
+    this._commands = [];
+    this._commandsIgnoreShow = [];
+    this._pickCommands = [];
 
-  this._constantColor = Color.clone(Color.WHITE);
-  this._highlightColor = this._constantColor;
+    this._constantColor = Color.clone(Color.WHITE);
+    this._highlightColor = this._constantColor;
 
-  this._batchDirty = true;
-  this._pickCommandsDirty = true;
-  this._framesSinceLastRebatch = 0;
+    this._batchDirty = true;
+    this._pickCommandsDirty = true;
+    this._framesSinceLastRebatch = 0;
 
-  this._updatingAllCommands = false;
+    this._updatingAllCommands = false;
 
-  this._trianglesLength = this._indices.length / 3;
-  this._geometryByteLength =
-    this._indices.byteLength +
-    this._positions.byteLength +
-    this._vertexBatchIds.byteLength;
+    this._trianglesLength = this._indices.length / 3;
+    this._geometryByteLength =
+      this._indices.byteLength +
+      this._positions.byteLength +
+      this._vertexBatchIds.byteLength;
 
-  /**
-   * Draw the wireframe of the classification meshes.
-   * @type {boolean}
-   * @default false
-   */
-  this.debugWireframe = false;
-  this._debugWireframe = this.debugWireframe;
-  this._wireframeDirty = false;
+    /**
+     * Draw the wireframe of the classification meshes.
+     * @type {boolean}
+     * @default false
+     */
+    this.debugWireframe = false;
+    this._debugWireframe = this.debugWireframe;
+    this._wireframeDirty = false;
 
-  /**
-   * Forces a re-batch instead of waiting after a number of frames have been rendered. For testing only.
-   * @type {boolean}
-   * @default false
-   */
-  this.forceRebatch = false;
+    /**
+     * Forces a re-batch instead of waiting after a number of frames have been rendered. For testing only.
+     * @type {boolean}
+     * @default false
+     */
+    this.forceRebatch = false;
 
-  /**
-   * What this tile will classify.
-   * @type {ClassificationType}
-   * @default ClassificationType.BOTH
-   */
-  this.classificationType =
-    options.classificationType ?? ClassificationType.BOTH;
+    /**
+     * What this tile will classify.
+     * @type {ClassificationType}
+     * @default ClassificationType.BOTH
+     */
+    this.classificationType =
+      options.classificationType ?? ClassificationType.BOTH;
 
-  // Hidden options
-  this._vertexShaderSource = options._vertexShaderSource;
-  this._fragmentShaderSource = options._fragmentShaderSource;
-  this._attributeLocations = options._attributeLocations;
-  this._uniformMap = options._uniformMap;
-  this._pickId = options._pickId;
-  this._modelMatrix = options._modelMatrix;
-  this._boundingSphere = options._boundingSphere;
+    // Hidden options
+    this._vertexShaderSource = options._vertexShaderSource;
+    this._fragmentShaderSource = options._fragmentShaderSource;
+    this._attributeLocations = options._attributeLocations;
+    this._uniformMap = options._uniformMap;
+    this._pickId = options._pickId;
+    this._modelMatrix = options._modelMatrix;
+    this._boundingSphere = options._boundingSphere;
 
-  this._batchIdLookUp = {};
+    this._batchIdLookUp = {};
 
-  const length = this._batchIds.length;
-  for (let i = 0; i < length; ++i) {
-    const batchId = this._batchIds[i];
-    this._batchIdLookUp[batchId] = i;
+    const length = this._batchIds.length;
+    for (let i = 0; i < length; ++i) {
+      const batchId = this._batchIds[i];
+      this._batchIdLookUp[batchId] = i;
+    }
   }
-}
 
-Object.defineProperties(Vector3DTilePrimitive.prototype, {
+  /**
+   * Creates features for each mesh and places it at the batch id index of features.
+   *
+   * @param {Vector3DTileContent} content The vector tile content.
+   * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
+   */
+  createFeatures(content, features) {
+    const batchIds = this._batchIds;
+    const length = batchIds.length;
+    for (let i = 0; i < length; ++i) {
+      const batchId = batchIds[i];
+      features[batchId] = new Cesium3DTileFeature(content, batchId);
+    }
+  }
+
+  /**
+   * Colors the entire tile when enabled is true. The resulting color will be (mesh batch table color * color).
+   *
+   * @param {boolean} enabled Whether to enable debug coloring.
+   * @param {Color} color The debug color.
+   */
+  applyDebugSettings(enabled, color) {
+    this._highlightColor = enabled ? color : this._constantColor;
+  }
+
+  /**
+   * Apply a style to the content.
+   *
+   * @param {Cesium3DTileStyle} style The style.
+   * @param {Cesium3DTileFeature[]} features The array of features.
+   */
+  applyStyle(style, features) {
+    if (!defined(style)) {
+      clearStyle(this, features);
+      return;
+    }
+
+    const colorExpression = style.color;
+    const isSimpleStyle =
+      colorExpression instanceof Expression &&
+      !complexExpressionReg.test(colorExpression.expression);
+    this._updatingAllCommands = isSimpleStyle;
+
+    const batchIds = this._batchIds;
+    let length = batchIds.length;
+    let i;
+
+    for (i = 0; i < length; ++i) {
+      const batchId = batchIds[i];
+      const feature = features[batchId];
+
+      feature.color = defined(style.color)
+        ? style.color.evaluateColor(feature, scratchColor)
+        : DEFAULT_COLOR_VALUE;
+      feature.show = defined(style.show)
+        ? style.show.evaluate(feature)
+        : DEFAULT_SHOW_VALUE;
+    }
+
+    if (isSimpleStyle) {
+      const batchedIndices = this._batchedIndices;
+      length = batchedIndices.length;
+
+      for (i = 0; i < length; ++i) {
+        batchedIndices[i].color = Color.clone(Color.WHITE);
+      }
+
+      this._updatingAllCommands = false;
+      this._batchDirty = true;
+    }
+  }
+
+  /**
+   * Call when updating the color of a mesh with batchId changes color. The meshes will need to be re-batched
+   * on the next update.
+   *
+   * @param {number} batchId The batch id of the meshes whose color has changed.
+   * @param {Color} color The new polygon color.
+   */
+  updateCommands(batchId, color) {
+    if (this._updatingAllCommands) {
+      return;
+    }
+
+    const batchIdLookUp = this._batchIdLookUp;
+    const index = batchIdLookUp[batchId];
+    if (!defined(index)) {
+      return;
+    }
+
+    const indexOffsets = this._indexOffsets;
+    const indexCounts = this._indexCounts;
+
+    const offset = indexOffsets[index];
+    const count = indexCounts[index];
+
+    const batchedIndices = this._batchedIndices;
+    const length = batchedIndices.length;
+
+    let i;
+    for (i = 0; i < length; ++i) {
+      const batchedOffset = batchedIndices[i].offset;
+      const batchedCount = batchedIndices[i].count;
+
+      if (offset >= batchedOffset && offset < batchedOffset + batchedCount) {
+        break;
+      }
+    }
+
+    batchedIndices.push(
+      new Vector3DTileBatch({
+        color: Color.clone(color),
+        offset: offset,
+        count: count,
+        batchIds: [batchId],
+      }),
+    );
+
+    const startIds = [];
+    const endIds = [];
+
+    const batchIds = batchedIndices[i].batchIds;
+    const batchIdsLength = batchIds.length;
+
+    for (let j = 0; j < batchIdsLength; ++j) {
+      const id = batchIds[j];
+      if (id === batchId) {
+        continue;
+      }
+
+      const offsetIndex = batchIdLookUp[id];
+      if (indexOffsets[offsetIndex] < offset) {
+        startIds.push(id);
+      } else {
+        endIds.push(id);
+      }
+    }
+
+    if (endIds.length !== 0) {
+      batchedIndices.push(
+        new Vector3DTileBatch({
+          color: Color.clone(batchedIndices[i].color),
+          offset: offset + count,
+          count:
+            batchedIndices[i].offset + batchedIndices[i].count - (offset + count),
+          batchIds: endIds,
+        }),
+      );
+    }
+
+    if (startIds.length !== 0) {
+      batchedIndices[i].count = offset - batchedIndices[i].offset;
+      batchedIndices[i].batchIds = startIds;
+    } else {
+      batchedIndices.splice(i, 1);
+    }
+
+    this._batchDirty = true;
+  }
+
+  /**
+   * Updates the batches and queues the commands for rendering.
+   *
+   * @param {FrameState} frameState The current frame state.
+   */
+  update(frameState) {
+    const context = frameState.context;
+
+    createVertexArray(this, context);
+    createShaders(this, context);
+    createRenderStates(this);
+    createUniformMap(this, context);
+
+    const passes = frameState.passes;
+    if (passes.render) {
+      createColorCommands(this, context);
+      createColorCommandsIgnoreShow(this, frameState);
+      updateWireframe(this);
+
+      if (this._debugWireframe) {
+        queueWireframeCommands(frameState, this._commands);
+      } else {
+        queueCommands(this, frameState, this._commands, this._commandsIgnoreShow);
+      }
+    }
+
+    if (passes.pick) {
+      createPickCommands(this);
+      queueCommands(this, frameState, this._pickCommands);
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   */
+  destroy() {
+    this._va = this._va && this._va.destroy();
+    this._sp = this._sp && this._sp.destroy();
+    this._spPick = this._spPick && this._spPick.destroy();
+    this._vaSwap = this._vaSwap && this._vaSwap.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * Gets the number of triangles.
    *
@@ -157,11 +381,9 @@ Object.defineProperties(Vector3DTilePrimitive.prototype, {
    * @type {number}
    * @readonly
    */
-  trianglesLength: {
-    get: function () {
-      return this._trianglesLength;
-    },
-  },
+  get trianglesLength() {
+    return this._trianglesLength;
+  }
 
   /**
    * Gets the geometry memory in bytes.
@@ -171,12 +393,10 @@ Object.defineProperties(Vector3DTilePrimitive.prototype, {
    * @type {number}
    * @readonly
    */
-  geometryByteLength: {
-    get: function () {
-      return this._geometryByteLength;
-    },
-  },
-});
+  get geometryByteLength() {
+    return this._geometryByteLength;
+  }
+}
 
 const defaultAttributeLocations = {
   position: 0,
@@ -938,31 +1158,6 @@ function createPickCommands(primitive) {
   primitive._pickCommandsDirty = false;
 }
 
-/**
- * Creates features for each mesh and places it at the batch id index of features.
- *
- * @param {Vector3DTileContent} content The vector tile content.
- * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
- */
-Vector3DTilePrimitive.prototype.createFeatures = function (content, features) {
-  const batchIds = this._batchIds;
-  const length = batchIds.length;
-  for (let i = 0; i < length; ++i) {
-    const batchId = batchIds[i];
-    features[batchId] = new Cesium3DTileFeature(content, batchId);
-  }
-};
-
-/**
- * Colors the entire tile when enabled is true. The resulting color will be (mesh batch table color * color).
- *
- * @param {boolean} enabled Whether to enable debug coloring.
- * @param {Color} color The debug color.
- */
-Vector3DTilePrimitive.prototype.applyDebugSettings = function (enabled, color) {
-  this._highlightColor = enabled ? color : this._constantColor;
-};
-
 function clearStyle(polygons, features) {
   polygons._updatingAllCommands = true;
 
@@ -995,141 +1190,6 @@ const DEFAULT_COLOR_VALUE = Color.WHITE;
 const DEFAULT_SHOW_VALUE = true;
 
 const complexExpressionReg = /\$/;
-
-/**
- * Apply a style to the content.
- *
- * @param {Cesium3DTileStyle} style The style.
- * @param {Cesium3DTileFeature[]} features The array of features.
- */
-Vector3DTilePrimitive.prototype.applyStyle = function (style, features) {
-  if (!defined(style)) {
-    clearStyle(this, features);
-    return;
-  }
-
-  const colorExpression = style.color;
-  const isSimpleStyle =
-    colorExpression instanceof Expression &&
-    !complexExpressionReg.test(colorExpression.expression);
-  this._updatingAllCommands = isSimpleStyle;
-
-  const batchIds = this._batchIds;
-  let length = batchIds.length;
-  let i;
-
-  for (i = 0; i < length; ++i) {
-    const batchId = batchIds[i];
-    const feature = features[batchId];
-
-    feature.color = defined(style.color)
-      ? style.color.evaluateColor(feature, scratchColor)
-      : DEFAULT_COLOR_VALUE;
-    feature.show = defined(style.show)
-      ? style.show.evaluate(feature)
-      : DEFAULT_SHOW_VALUE;
-  }
-
-  if (isSimpleStyle) {
-    const batchedIndices = this._batchedIndices;
-    length = batchedIndices.length;
-
-    for (i = 0; i < length; ++i) {
-      batchedIndices[i].color = Color.clone(Color.WHITE);
-    }
-
-    this._updatingAllCommands = false;
-    this._batchDirty = true;
-  }
-};
-
-/**
- * Call when updating the color of a mesh with batchId changes color. The meshes will need to be re-batched
- * on the next update.
- *
- * @param {number} batchId The batch id of the meshes whose color has changed.
- * @param {Color} color The new polygon color.
- */
-Vector3DTilePrimitive.prototype.updateCommands = function (batchId, color) {
-  if (this._updatingAllCommands) {
-    return;
-  }
-
-  const batchIdLookUp = this._batchIdLookUp;
-  const index = batchIdLookUp[batchId];
-  if (!defined(index)) {
-    return;
-  }
-
-  const indexOffsets = this._indexOffsets;
-  const indexCounts = this._indexCounts;
-
-  const offset = indexOffsets[index];
-  const count = indexCounts[index];
-
-  const batchedIndices = this._batchedIndices;
-  const length = batchedIndices.length;
-
-  let i;
-  for (i = 0; i < length; ++i) {
-    const batchedOffset = batchedIndices[i].offset;
-    const batchedCount = batchedIndices[i].count;
-
-    if (offset >= batchedOffset && offset < batchedOffset + batchedCount) {
-      break;
-    }
-  }
-
-  batchedIndices.push(
-    new Vector3DTileBatch({
-      color: Color.clone(color),
-      offset: offset,
-      count: count,
-      batchIds: [batchId],
-    }),
-  );
-
-  const startIds = [];
-  const endIds = [];
-
-  const batchIds = batchedIndices[i].batchIds;
-  const batchIdsLength = batchIds.length;
-
-  for (let j = 0; j < batchIdsLength; ++j) {
-    const id = batchIds[j];
-    if (id === batchId) {
-      continue;
-    }
-
-    const offsetIndex = batchIdLookUp[id];
-    if (indexOffsets[offsetIndex] < offset) {
-      startIds.push(id);
-    } else {
-      endIds.push(id);
-    }
-  }
-
-  if (endIds.length !== 0) {
-    batchedIndices.push(
-      new Vector3DTileBatch({
-        color: Color.clone(batchedIndices[i].color),
-        offset: offset + count,
-        count:
-          batchedIndices[i].offset + batchedIndices[i].count - (offset + count),
-        batchIds: endIds,
-      }),
-    );
-  }
-
-  if (startIds.length !== 0) {
-    batchedIndices[i].count = offset - batchedIndices[i].offset;
-    batchedIndices[i].batchIds = startIds;
-  } else {
-    batchedIndices.splice(i, 1);
-  }
-
-  this._batchDirty = true;
-};
 
 function queueCommands(primitive, frameState, commands, commandsIgnoreShow) {
   const classificationType = primitive.classificationType;
@@ -1210,67 +1270,4 @@ function updateWireframe(primitive) {
   primitive._wireframeDirty = false;
 }
 
-/**
- * Updates the batches and queues the commands for rendering.
- *
- * @param {FrameState} frameState The current frame state.
- */
-Vector3DTilePrimitive.prototype.update = function (frameState) {
-  const context = frameState.context;
-
-  createVertexArray(this, context);
-  createShaders(this, context);
-  createRenderStates(this);
-  createUniformMap(this, context);
-
-  const passes = frameState.passes;
-  if (passes.render) {
-    createColorCommands(this, context);
-    createColorCommandsIgnoreShow(this, frameState);
-    updateWireframe(this);
-
-    if (this._debugWireframe) {
-      queueWireframeCommands(frameState, this._commands);
-    } else {
-      queueCommands(this, frameState, this._commands, this._commandsIgnoreShow);
-    }
-  }
-
-  if (passes.pick) {
-    createPickCommands(this);
-    queueCommands(this, frameState, this._pickCommands);
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- */
-Vector3DTilePrimitive.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- */
-Vector3DTilePrimitive.prototype.destroy = function () {
-  this._va = this._va && this._va.destroy();
-  this._sp = this._sp && this._sp.destroy();
-  this._spPick = this._spPick && this._spPick.destroy();
-  this._vaSwap = this._vaSwap && this._vaSwap.destroy();
-  return destroyObject(this);
-};
 export default Vector3DTilePrimitive;

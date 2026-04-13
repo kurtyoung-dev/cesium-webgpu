@@ -19,41 +19,95 @@ import RuntimeError from "../Core/RuntimeError.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function ImplicitAvailabilityBitstream(options) {
-  const lengthBits = options.lengthBits;
-  let availableCount = options.availableCount;
+class ImplicitAvailabilityBitstream {
+  constructor(options) {
+    const lengthBits = options.lengthBits;
+    let availableCount = options.availableCount;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("options.lengthBits", lengthBits);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("options.lengthBits", lengthBits);
+    //>>includeEnd('debug');
 
-  const constant = options.constant;
-  const bitstream = options.bitstream;
+    const constant = options.constant;
+    const bitstream = options.bitstream;
 
-  if (defined(constant)) {
-    // if defined, constant must be 1 which means all tiles are available
-    availableCount = lengthBits;
-  } else {
-    const expectedLength = Math.ceil(lengthBits / 8);
-    if (bitstream.length !== expectedLength) {
-      throw new RuntimeError(
-        `Availability bitstream must be exactly ${expectedLength} bytes long to store ${lengthBits} bits. Actual bitstream was ${bitstream.length} bytes long.`,
-      );
+    if (defined(constant)) {
+      // if defined, constant must be 1 which means all tiles are available
+      availableCount = lengthBits;
+    } else {
+      const expectedLength = Math.ceil(lengthBits / 8);
+      if (bitstream.length !== expectedLength) {
+        throw new RuntimeError(
+          `Availability bitstream must be exactly ${expectedLength} bytes long to store ${lengthBits} bits. Actual bitstream was ${bitstream.length} bytes long.`,
+        );
+      }
+
+      // Only compute the available count if requested, as this involves looping
+      // over the bitstream.
+      const computeAvailableCountEnabled =
+        options.computeAvailableCountEnabled ?? false;
+      if (!defined(availableCount) && computeAvailableCountEnabled) {
+        availableCount = count1Bits(bitstream, lengthBits);
+      }
     }
 
-    // Only compute the available count if requested, as this involves looping
-    // over the bitstream.
-    const computeAvailableCountEnabled =
-      options.computeAvailableCountEnabled ?? false;
-    if (!defined(availableCount) && computeAvailableCountEnabled) {
-      availableCount = count1Bits(bitstream, lengthBits);
-    }
+    this._lengthBits = lengthBits;
+    this._availableCount = availableCount;
+    this._constant = constant;
+    this._bitstream = bitstream;
   }
 
-  this._lengthBits = lengthBits;
-  this._availableCount = availableCount;
-  this._constant = constant;
-  this._bitstream = bitstream;
+  /**
+   * Get a bit from the availability bitstream as a Boolean. If the bitstream
+   * is a constant, the constant value is returned instead.
+   *
+   * @param {number} index The integer index of the bit.
+   * @returns {boolean} The value of the bit
+   * @private
+   */
+  getBit(index) {
+    //>>includeStart('debug', pragmas.debug);
+    if (index < 0 || index >= this._lengthBits) {
+      throw new DeveloperError("Bit index out of bounds.");
+    }
+    //>>includeEnd('debug');
+
+    if (defined(this._constant)) {
+      return this._constant;
+    }
+
+    // byteIndex is floor(index / 8)
+    const byteIndex = index >> 3;
+    const bitIndex = index % 8;
+
+    return ((this._bitstream[byteIndex] >> bitIndex) & 1) === 1;
+  }
+
+  /**
+   * The length of the bitstream in bits.
+   *
+   * @memberof ImplicitAvailabilityBitstream.prototype
+   *
+   * @type {number}
+   * @readonly
+   * @private
+   */
+  get lengthBits() {
+    return this._lengthBits;
+  }
+
+  /**
+   * The number of bits in the bitstream with value <code>1</code>.
+   *
+   * @memberof ImplicitAvailabilityBitstream.prototype
+   *
+   * @type {number}
+   * @readonly
+   * @private
+   */
+  get availableCount() {
+    return this._availableCount;
+  }
 }
 
 /**
@@ -73,62 +127,5 @@ function count1Bits(bitstream, lengthBits) {
   }
   return count;
 }
-
-Object.defineProperties(ImplicitAvailabilityBitstream.prototype, {
-  /**
-   * The length of the bitstream in bits.
-   *
-   * @memberof ImplicitAvailabilityBitstream.prototype
-   *
-   * @type {number}
-   * @readonly
-   * @private
-   */
-  lengthBits: {
-    get: function () {
-      return this._lengthBits;
-    },
-  },
-  /**
-   * The number of bits in the bitstream with value <code>1</code>.
-   *
-   * @memberof ImplicitAvailabilityBitstream.prototype
-   *
-   * @type {number}
-   * @readonly
-   * @private
-   */
-  availableCount: {
-    get: function () {
-      return this._availableCount;
-    },
-  },
-});
-
-/**
- * Get a bit from the availability bitstream as a Boolean. If the bitstream
- * is a constant, the constant value is returned instead.
- *
- * @param {number} index The integer index of the bit.
- * @returns {boolean} The value of the bit
- * @private
- */
-ImplicitAvailabilityBitstream.prototype.getBit = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  if (index < 0 || index >= this._lengthBits) {
-    throw new DeveloperError("Bit index out of bounds.");
-  }
-  //>>includeEnd('debug');
-
-  if (defined(this._constant)) {
-    return this._constant;
-  }
-
-  // byteIndex is floor(index / 8)
-  const byteIndex = index >> 3;
-  const bitIndex = index % 8;
-
-  return ((this._bitstream[byteIndex] >> bitIndex) & 1) === 1;
-};
 
 export default ImplicitAvailabilityBitstream;

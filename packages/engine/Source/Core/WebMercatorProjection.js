@@ -17,13 +17,76 @@ import CesiumMath from "./Math.js";
  *
  * @see GeographicProjection
  */
-function WebMercatorProjection(ellipsoid) {
-  this._ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
-  this._semimajorAxis = this._ellipsoid.maximumRadius;
-  this._oneOverSemimajorAxis = 1.0 / this._semimajorAxis;
-}
+class WebMercatorProjection {
+  constructor(ellipsoid) {
+    this._ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
+    this._semimajorAxis = this._ellipsoid.maximumRadius;
+    this._oneOverSemimajorAxis = 1.0 / this._semimajorAxis;
+  }
 
-Object.defineProperties(WebMercatorProjection.prototype, {
+  /**
+   * Converts geodetic ellipsoid coordinates, in radians, to the equivalent Web Mercator
+   * X, Y, Z coordinates expressed in meters and returned in a {@link Cartesian3}.  The height
+   * is copied unmodified to the Z coordinate.
+   *
+   * @param {Cartographic} cartographic The cartographic coordinates in radians.
+   * @param {Cartesian3} [result] The instance to which to copy the result, or undefined if a
+   *        new instance should be created.
+   * @returns {Cartesian3} The equivalent web mercator X, Y, Z coordinates, in meters.
+   */
+  project(cartographic, result) {
+    const semimajorAxis = this._semimajorAxis;
+    const x = cartographic.longitude * semimajorAxis;
+    const y =
+      WebMercatorProjection.geodeticLatitudeToMercatorAngle(
+        cartographic.latitude,
+      ) * semimajorAxis;
+    const z = cartographic.height;
+
+    if (!defined(result)) {
+      return new Cartesian3(x, y, z);
+    }
+
+    result.x = x;
+    result.y = y;
+    result.z = z;
+    return result;
+  }
+
+  /**
+   * Converts Web Mercator X, Y coordinates, expressed in meters, to a {@link Cartographic}
+   * containing geodetic ellipsoid coordinates.  The Z coordinate is copied unmodified to the
+   * height.
+   *
+   * @param {Cartesian3} cartesian The web mercator Cartesian position to unrproject with height (z) in meters.
+   * @param {Cartographic} [result] The instance to which to copy the result, or undefined if a
+   *        new instance should be created.
+   * @returns {Cartographic} The equivalent cartographic coordinates.
+   */
+  unproject(cartesian, result) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(cartesian)) {
+      throw new DeveloperError("cartesian is required");
+    }
+    //>>includeEnd('debug');
+
+    const oneOverEarthSemimajorAxis = this._oneOverSemimajorAxis;
+    const longitude = cartesian.x * oneOverEarthSemimajorAxis;
+    const latitude = WebMercatorProjection.mercatorAngleToGeodeticLatitude(
+      cartesian.y * oneOverEarthSemimajorAxis,
+    );
+    const height = cartesian.z;
+
+    if (!defined(result)) {
+      return new Cartographic(longitude, latitude, height);
+    }
+
+    result.longitude = longitude;
+    result.latitude = latitude;
+    result.height = height;
+    return result;
+  }
+
   /**
    * Gets the {@link Ellipsoid}.
    *
@@ -32,12 +95,10 @@ Object.defineProperties(WebMercatorProjection.prototype, {
    * @type {Ellipsoid}
    * @readonly
    */
-  ellipsoid: {
-    get: function () {
-      return this._ellipsoid;
-    },
-  },
-});
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
+}
 
 /**
  * Converts a Mercator angle, in the range -PI to PI, to a geodetic latitude
@@ -87,66 +148,4 @@ WebMercatorProjection.geodeticLatitudeToMercatorAngle = function (latitude) {
 WebMercatorProjection.MaximumLatitude =
   WebMercatorProjection.mercatorAngleToGeodeticLatitude(Math.PI);
 
-/**
- * Converts geodetic ellipsoid coordinates, in radians, to the equivalent Web Mercator
- * X, Y, Z coordinates expressed in meters and returned in a {@link Cartesian3}.  The height
- * is copied unmodified to the Z coordinate.
- *
- * @param {Cartographic} cartographic The cartographic coordinates in radians.
- * @param {Cartesian3} [result] The instance to which to copy the result, or undefined if a
- *        new instance should be created.
- * @returns {Cartesian3} The equivalent web mercator X, Y, Z coordinates, in meters.
- */
-WebMercatorProjection.prototype.project = function (cartographic, result) {
-  const semimajorAxis = this._semimajorAxis;
-  const x = cartographic.longitude * semimajorAxis;
-  const y =
-    WebMercatorProjection.geodeticLatitudeToMercatorAngle(
-      cartographic.latitude,
-    ) * semimajorAxis;
-  const z = cartographic.height;
-
-  if (!defined(result)) {
-    return new Cartesian3(x, y, z);
-  }
-
-  result.x = x;
-  result.y = y;
-  result.z = z;
-  return result;
-};
-
-/**
- * Converts Web Mercator X, Y coordinates, expressed in meters, to a {@link Cartographic}
- * containing geodetic ellipsoid coordinates.  The Z coordinate is copied unmodified to the
- * height.
- *
- * @param {Cartesian3} cartesian The web mercator Cartesian position to unrproject with height (z) in meters.
- * @param {Cartographic} [result] The instance to which to copy the result, or undefined if a
- *        new instance should be created.
- * @returns {Cartographic} The equivalent cartographic coordinates.
- */
-WebMercatorProjection.prototype.unproject = function (cartesian, result) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(cartesian)) {
-    throw new DeveloperError("cartesian is required");
-  }
-  //>>includeEnd('debug');
-
-  const oneOverEarthSemimajorAxis = this._oneOverSemimajorAxis;
-  const longitude = cartesian.x * oneOverEarthSemimajorAxis;
-  const latitude = WebMercatorProjection.mercatorAngleToGeodeticLatitude(
-    cartesian.y * oneOverEarthSemimajorAxis,
-  );
-  const height = cartesian.z;
-
-  if (!defined(result)) {
-    return new Cartographic(longitude, latitude, height);
-  }
-
-  result.longitude = longitude;
-  result.latitude = latitude;
-  result.height = height;
-  return result;
-};
 export default WebMercatorProjection;

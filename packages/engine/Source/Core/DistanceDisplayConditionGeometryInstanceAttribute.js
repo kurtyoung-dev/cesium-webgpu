@@ -31,83 +31,74 @@ import DeveloperError from "./DeveloperError.js";
  * @see GeometryInstance
  * @see GeometryInstanceAttribute
  */
-function DistanceDisplayConditionGeometryInstanceAttribute(near, far) {
-  near = near ?? 0.0;
-  far = far ?? Number.MAX_VALUE;
+class DistanceDisplayConditionGeometryInstanceAttribute {
+  constructor(near, far) {
+    near = near ?? 0.0;
+    far = far ?? Number.MAX_VALUE;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (far <= near) {
-    throw new DeveloperError(
-      "far distance must be greater than near distance.",
-    );
+    //>>includeStart('debug', pragmas.debug);
+    if (far <= near) {
+      throw new DeveloperError(
+        "far distance must be greater than near distance.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    /**
+     * The values for the attributes stored in a typed array.
+     *
+     * @type {Float32Array}
+     *
+     * @default [0.0, 0.0, Number.MAX_VALUE]
+     */
+    this.value = new Float32Array([near, far]);
   }
-  //>>includeEnd('debug');
 
   /**
-   * The values for the attributes stored in a typed array.
+   * The datatype of each component in the attribute, e.g., individual elements in
+   * {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
    *
-   * @type {Float32Array}
+   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
    *
-   * @default [0.0, 0.0, Number.MAX_VALUE]
+   * @type {ComponentDatatype}
+   * @readonly
+   *
+   * @default {@link ComponentDatatype.FLOAT}
    */
-  this.value = new Float32Array([near, far]);
+  get componentDatatype() {
+    return ComponentDatatype.FLOAT;
+  }
+
+  /**
+   * The number of components in the attributes, i.e., {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
+   *
+   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
+   *
+   * @type {number}
+   * @readonly
+   *
+   * @default 3
+   */
+  get componentsPerAttribute() {
+    return 2;
+  }
+
+  /**
+   * When <code>true</code> and <code>componentDatatype</code> is an integer format,
+   * indicate that the components should be mapped to the range [0, 1] (unsigned)
+   * or [-1, 1] (signed) when they are accessed as floating-point for rendering.
+   *
+   * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   *
+   * @default false
+   */
+  get normalize() {
+    return false;
+  }
 }
-
-Object.defineProperties(
-  DistanceDisplayConditionGeometryInstanceAttribute.prototype,
-  {
-    /**
-     * The datatype of each component in the attribute, e.g., individual elements in
-     * {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
-     *
-     * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
-     *
-     * @type {ComponentDatatype}
-     * @readonly
-     *
-     * @default {@link ComponentDatatype.FLOAT}
-     */
-    componentDatatype: {
-      get: function () {
-        return ComponentDatatype.FLOAT;
-      },
-    },
-
-    /**
-     * The number of components in the attributes, i.e., {@link DistanceDisplayConditionGeometryInstanceAttribute#value}.
-     *
-     * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
-     *
-     * @type {number}
-     * @readonly
-     *
-     * @default 3
-     */
-    componentsPerAttribute: {
-      get: function () {
-        return 2;
-      },
-    },
-
-    /**
-     * When <code>true</code> and <code>componentDatatype</code> is an integer format,
-     * indicate that the components should be mapped to the range [0, 1] (unsigned)
-     * or [-1, 1] (signed) when they are accessed as floating-point for rendering.
-     *
-     * @memberof DistanceDisplayConditionGeometryInstanceAttribute.prototype
-     *
-     * @type {boolean}
-     * @readonly
-     *
-     * @default false
-     */
-    normalize: {
-      get: function () {
-        return false;
-      },
-    },
-  },
-);
 
 /**
  * Creates a new {@link DistanceDisplayConditionGeometryInstanceAttribute} instance given the provided an enabled flag and {@link DistanceDisplayCondition}.

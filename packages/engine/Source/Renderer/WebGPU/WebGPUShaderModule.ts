@@ -221,7 +221,8 @@ export class WebGPUShaderModule {
       pipelineDescriptor.depthStencil = {
         format: options.depthStencilFormat,
         depthWriteEnabled: true,
-        depthCompare: "less",
+        // `less-equal` default for planetary-scale robustness.
+        depthCompare: "less-equal",
       };
     }
 

@@ -72,7 +72,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   );
   let rotated = vr * transformed;
 
-  output.position = uniforms.projection * vec4<f32>(rotated, 1.0);
+  let clipPos = uniforms.projection * vec4<f32>(rotated, 1.0);
+
+  // Force the skybox to sit exactly on the far plane (z/w = 1). Combined
+  // with `depthCompare: "less-equal"` + `depthWriteEnabled: false` on
+  // the pipeline, this lets the skybox be drawn at ANY point in the
+  // frame (before or after opaque geometry) and it will only fill
+  // pixels where no closer geometry has drawn. Without this clamp the
+  // skybox pipeline had to rely on `depthCompare: "always"` and strict
+  // draw order — a footgun that broke globe rendering at orbit.
+  output.position = vec4<f32>(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
 
   // Pass original position as cubemap lookup direction
   output.texCoord = input.position;

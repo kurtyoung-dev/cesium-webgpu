@@ -12,6 +12,13 @@
  *   modelViewProjectionRelativeToEye — projection × modelViewRelativeToEye.
  *     Used with RTE positions for clip-space output.
  *
+ * Phase 5 WGF-4: position fields are vec4<f32> rather than vec3<f32> so the
+ * layout is self-documenting (no implicit alignment pads) and the .w slots
+ * are reachable by future code without rewriting the struct. The byte
+ * offsets are unchanged from the historical vec3+pad layout, so the JS
+ * packers in WebGPUBufferPrimitiveRenderer / WebGPUUniformGroupManager
+ * still pack at the same float indices. The .w lanes carry zero today.
+ *
  * @chunk structs/CameraUniforms
  */
 struct CameraUniforms {
@@ -20,18 +27,18 @@ struct CameraUniforms {
     projectionMatrix: mat4x4<f32>,                 // offset  64, size 64
     viewProjectionMatrix: mat4x4<f32>,             // offset 128, size 64
 
-    // Camera position (world space)
-    cameraPosition: vec3<f32>,                     // offset 192, size 12
-    _padding0: f32,                                // offset 204, size  4
+    // Camera position (world space). .w lane unused (reserved for altitude / log-depth far).
+    cameraPosition: vec4<f32>,                     // offset 192, size 16
 
-    // RTE: Encoded camera position in model coordinates (high/low split)
-    encodedCameraPositionMCHigh: vec3<f32>,         // offset 208, size 12
-    _padding1: f32,                                // offset 220, size  4
-    encodedCameraPositionMCLow: vec3<f32>,          // offset 224, size 12
-    _padding2: f32,                                // offset 236, size  4
+    // RTE: Encoded camera position in model coordinates (high/low split).
+    // .w lane unused on both — reserved for future per-axis scale or epoch metadata.
+    encodedCameraPositionMCHigh: vec4<f32>,        // offset 208, size 16
+    encodedCameraPositionMCLow: vec4<f32>,         // offset 224, size 16
 
     // RTE: Matrices with translation zeroed (for use with eye-relative positions)
     modelViewRelativeToEye: mat4x4<f32>,           // offset 240, size 64
     modelViewProjectionRelativeToEye: mat4x4<f32>, // offset 304, size 64
 }
-// Total size: 368 bytes
+// Total size: 368 bytes — same as the vec3 layout, but no implicit pads.
+// Any consumer that read .xyz before continues to work unchanged; .w lanes
+// were previously implicit alignment pads that any sane shader ignored.

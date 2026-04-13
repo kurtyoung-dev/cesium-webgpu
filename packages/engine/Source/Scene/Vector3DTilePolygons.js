@@ -38,68 +38,164 @@ import Vector3DTilePrimitive from "./Vector3DTilePrimitive.js";
  *
  * @private
  */
-function Vector3DTilePolygons(options) {
-  // All of the private properties will be released except _primitive after the Vector3DTilePrimitive is created.
-  this._batchTable = options.batchTable;
+class Vector3DTilePolygons {
+  constructor(options) {
+    // All of the private properties will be released except _primitive after the Vector3DTilePrimitive is created.
+    this._batchTable = options.batchTable;
 
-  this._batchIds = options.batchIds;
-  this._positions = options.positions;
-  this._counts = options.counts;
+    this._batchIds = options.batchIds;
+    this._positions = options.positions;
+    this._counts = options.counts;
 
-  this._indices = options.indices;
-  this._indexCounts = options.indexCounts;
-  this._indexOffsets = undefined;
+    this._indices = options.indices;
+    this._indexCounts = options.indexCounts;
+    this._indexOffsets = undefined;
 
-  this._batchTableColors = undefined;
-  this._packedBuffer = undefined;
+    this._batchTableColors = undefined;
+    this._packedBuffer = undefined;
 
-  this._batchedPositions = undefined;
-  this._transferrableBatchIds = undefined;
-  this._vertexBatchIds = undefined;
+    this._batchedPositions = undefined;
+    this._transferrableBatchIds = undefined;
+    this._vertexBatchIds = undefined;
 
-  this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
-  this._minimumHeight = options.minimumHeight;
-  this._maximumHeight = options.maximumHeight;
-  this._polygonMinimumHeights = options.polygonMinimumHeights;
-  this._polygonMaximumHeights = options.polygonMaximumHeights;
-  this._center = options.center ?? Cartesian3.ZERO;
-  this._rectangle = options.rectangle;
+    this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+    this._minimumHeight = options.minimumHeight;
+    this._maximumHeight = options.maximumHeight;
+    this._polygonMinimumHeights = options.polygonMinimumHeights;
+    this._polygonMaximumHeights = options.polygonMaximumHeights;
+    this._center = options.center ?? Cartesian3.ZERO;
+    this._rectangle = options.rectangle;
 
-  this._center = undefined;
+    this._center = undefined;
 
-  this._boundingVolume = options.boundingVolume;
-  this._boundingVolumes = undefined;
+    this._boundingVolume = options.boundingVolume;
+    this._boundingVolumes = undefined;
 
-  this._batchedIndices = undefined;
+    this._batchedIndices = undefined;
 
-  this._ready = false;
-  this._promise = undefined;
-  this._error = undefined;
-  this._primitive = undefined;
+    this._ready = false;
+    this._promise = undefined;
+    this._error = undefined;
+    this._primitive = undefined;
+
+    /**
+     * Draws the wireframe of the classification meshes.
+     * @type {boolean}
+     * @default false
+     */
+    this.debugWireframe = false;
+
+    /**
+     * Forces a re-batch instead of waiting after a number of frames have been rendered. For testing only.
+     * @type {boolean}
+     * @default false
+     */
+    this.forceRebatch = false;
+
+    /**
+     * What this tile will classify.
+     * @type {ClassificationType}
+     * @default ClassificationType.BOTH
+     */
+    this.classificationType = ClassificationType.BOTH;
+  }
 
   /**
-   * Draws the wireframe of the classification meshes.
-   * @type {boolean}
-   * @default false
+   * Creates features for each polygon and places it at the batch id index of features.
+   *
+   * @param {Vector3DTileContent} content The vector tile content.
+   * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
    */
-  this.debugWireframe = false;
+  createFeatures(content, features) {
+    this._primitive.createFeatures(content, features);
+  }
 
   /**
-   * Forces a re-batch instead of waiting after a number of frames have been rendered. For testing only.
-   * @type {boolean}
-   * @default false
+   * Colors the entire tile when enabled is true. The resulting color will be (polygon batch table color * color).
+   *
+   * @param {boolean} enabled Whether to enable debug coloring.
+   * @param {Color} color The debug color.
    */
-  this.forceRebatch = false;
+  applyDebugSettings(enabled, color) {
+    this._primitive.applyDebugSettings(enabled, color);
+  }
 
   /**
-   * What this tile will classify.
-   * @type {ClassificationType}
-   * @default ClassificationType.BOTH
+   * Apply a style to the content.
+   *
+   * @param {Cesium3DTileStyle} style The style.
+   * @param {Cesium3DTileFeature[]} features The array of features.
    */
-  this.classificationType = ClassificationType.BOTH;
-}
+  applyStyle(style, features) {
+    this._primitive.applyStyle(style, features);
+  }
 
-Object.defineProperties(Vector3DTilePolygons.prototype, {
+  /**
+   * Call when updating the color of a polygon with batchId changes color. The polygons will need to be re-batched
+   * on the next update.
+   *
+   * @param {number} batchId The batch id of the polygon whose color has changed.
+   * @param {Color} color The new polygon color.
+   */
+  updateCommands(batchId, color) {
+    this._primitive.updateCommands(batchId, color);
+  }
+
+  /**
+   * Updates the batches and queues the commands for rendering.
+   *
+   * @param {FrameState} frameState The current frame state.
+   */
+  update(frameState) {
+    if (!this._ready) {
+      if (!defined(this._promise)) {
+        this._promise = createPrimitive(this);
+      }
+
+      if (defined(this._error)) {
+        const error = this._error;
+        this._error = undefined;
+        throw error;
+      }
+
+      return;
+    }
+
+    this._primitive.debugWireframe = this.debugWireframe;
+    this._primitive.forceRebatch = this.forceRebatch;
+    this._primitive.classificationType = this.classificationType;
+    this._primitive.update(frameState);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   */
+  destroy() {
+    this._primitive = this._primitive && this._primitive.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * Gets the number of triangles.
    *
@@ -109,14 +205,12 @@ Object.defineProperties(Vector3DTilePolygons.prototype, {
    * @readonly
    * @private
    */
-  trianglesLength: {
-    get: function () {
-      if (defined(this._primitive)) {
-        return this._primitive.trianglesLength;
-      }
-      return 0;
-    },
-  },
+  get trianglesLength() {
+    if (defined(this._primitive)) {
+      return this._primitive.trianglesLength;
+    }
+    return 0;
+  }
 
   /**
    * Gets the geometry memory in bytes.
@@ -127,14 +221,12 @@ Object.defineProperties(Vector3DTilePolygons.prototype, {
    * @readonly
    * @private
    */
-  geometryByteLength: {
-    get: function () {
-      if (defined(this._primitive)) {
-        return this._primitive.geometryByteLength;
-      }
-      return 0;
-    },
-  },
+  get geometryByteLength() {
+    if (defined(this._primitive)) {
+      return this._primitive.geometryByteLength;
+    }
+    return 0;
+  }
 
   /**
    * Returns true when the primitive is ready to render.
@@ -143,12 +235,10 @@ Object.defineProperties(Vector3DTilePolygons.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
-});
+  get ready() {
+    return this._ready;
+  }
+}
 
 function packBuffer(polygons) {
   const packedBuffer = new Float64Array(
@@ -381,99 +471,4 @@ function finishPrimitive(polygons) {
   }
 }
 
-/**
- * Creates features for each polygon and places it at the batch id index of features.
- *
- * @param {Vector3DTileContent} content The vector tile content.
- * @param {Cesium3DTileFeature[]} features An array of features where the polygon features will be placed.
- */
-Vector3DTilePolygons.prototype.createFeatures = function (content, features) {
-  this._primitive.createFeatures(content, features);
-};
-
-/**
- * Colors the entire tile when enabled is true. The resulting color will be (polygon batch table color * color).
- *
- * @param {boolean} enabled Whether to enable debug coloring.
- * @param {Color} color The debug color.
- */
-Vector3DTilePolygons.prototype.applyDebugSettings = function (enabled, color) {
-  this._primitive.applyDebugSettings(enabled, color);
-};
-
-/**
- * Apply a style to the content.
- *
- * @param {Cesium3DTileStyle} style The style.
- * @param {Cesium3DTileFeature[]} features The array of features.
- */
-Vector3DTilePolygons.prototype.applyStyle = function (style, features) {
-  this._primitive.applyStyle(style, features);
-};
-
-/**
- * Call when updating the color of a polygon with batchId changes color. The polygons will need to be re-batched
- * on the next update.
- *
- * @param {number} batchId The batch id of the polygon whose color has changed.
- * @param {Color} color The new polygon color.
- */
-Vector3DTilePolygons.prototype.updateCommands = function (batchId, color) {
-  this._primitive.updateCommands(batchId, color);
-};
-
-/**
- * Updates the batches and queues the commands for rendering.
- *
- * @param {FrameState} frameState The current frame state.
- */
-Vector3DTilePolygons.prototype.update = function (frameState) {
-  if (!this._ready) {
-    if (!defined(this._promise)) {
-      this._promise = createPrimitive(this);
-    }
-
-    if (defined(this._error)) {
-      const error = this._error;
-      this._error = undefined;
-      throw error;
-    }
-
-    return;
-  }
-
-  this._primitive.debugWireframe = this.debugWireframe;
-  this._primitive.forceRebatch = this.forceRebatch;
-  this._primitive.classificationType = this.classificationType;
-  this._primitive.update(frameState);
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- */
-Vector3DTilePolygons.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- */
-Vector3DTilePolygons.prototype.destroy = function () {
-  this._primitive = this._primitive && this._primitive.destroy();
-  return destroyObject(this);
-};
 export default Vector3DTilePolygons;

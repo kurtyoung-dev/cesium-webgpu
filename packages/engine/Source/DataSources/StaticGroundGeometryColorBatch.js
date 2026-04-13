@@ -281,114 +281,114 @@ Batch.prototype.removeAllPrimitives = function () {
 /**
  * @private
  */
-function StaticGroundGeometryColorBatch(primitives, classificationType) {
-  this._batches = [];
-  this._primitives = primitives;
-  this._classificationType = classificationType;
+class StaticGroundGeometryColorBatch {
+  constructor(primitives, classificationType) {
+    this._batches = [];
+    this._primitives = primitives;
+    this._classificationType = classificationType;
+  }
+
+  add(time, updater) {
+    const instance = updater.createFillGeometryInstance(time);
+    const batches = this._batches;
+    const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
+    let batch;
+    const length = batches.length;
+    for (let i = 0; i < length; ++i) {
+      const item = batches[i];
+      if (
+        item.zIndex === zIndex &&
+        !item.overlapping(instance.geometry.rectangle)
+      ) {
+        batch = item;
+        break;
+      }
+    }
+
+    if (!defined(batch)) {
+      batch = new Batch(
+        this._primitives,
+        this._classificationType,
+        instance.attributes.color.value,
+        zIndex,
+      );
+      batches.push(batch);
+    }
+    batch.add(updater, instance);
+    return batch;
+  }
+
+  remove(updater) {
+    const batches = this._batches;
+    const count = batches.length;
+    for (let i = 0; i < count; ++i) {
+      if (batches[i].remove(updater)) {
+        return;
+      }
+    }
+  }
+
+  update(time) {
+    let i;
+    let updater;
+
+    //Perform initial update
+    let isUpdated = true;
+    const batches = this._batches;
+    const batchCount = batches.length;
+    for (i = 0; i < batchCount; ++i) {
+      isUpdated = batches[i].update(time) && isUpdated;
+    }
+
+    //If any items swapped between batches we need to move them
+    for (i = 0; i < batchCount; ++i) {
+      const oldBatch = batches[i];
+      const itemsToRemove = oldBatch.itemsToRemove;
+      const itemsToMoveLength = itemsToRemove.length;
+      for (let j = 0; j < itemsToMoveLength; j++) {
+        updater = itemsToRemove[j];
+        oldBatch.remove(updater);
+        const newBatch = this.add(time, updater);
+        oldBatch.isDirty = true;
+        newBatch.isDirty = true;
+      }
+    }
+
+    //If we moved anything around, we need to re-build the primitive and remove empty batches
+    for (i = batchCount - 1; i >= 0; --i) {
+      const batch = batches[i];
+      if (batch.isDirty) {
+        isUpdated = batches[i].update(time) && isUpdated;
+        batch.isDirty = false;
+      }
+      if (batch.geometry.length === 0) {
+        batches.splice(i, 1);
+      }
+    }
+
+    return isUpdated;
+  }
+
+  getBoundingSphere(updater, result) {
+    const batches = this._batches;
+    const batchCount = batches.length;
+    for (let i = 0; i < batchCount; ++i) {
+      const batch = batches[i];
+      if (batch.contains(updater)) {
+        return batch.getBoundingSphere(updater, result);
+      }
+    }
+
+    return BoundingSphereState.FAILED;
+  }
+
+  removeAllPrimitives() {
+    const batches = this._batches;
+    const batchCount = batches.length;
+    for (let i = 0; i < batchCount; ++i) {
+      batches[i].removeAllPrimitives();
+    }
+  }
 }
 
-StaticGroundGeometryColorBatch.prototype.add = function (time, updater) {
-  const instance = updater.createFillGeometryInstance(time);
-  const batches = this._batches;
-  const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
-  let batch;
-  const length = batches.length;
-  for (let i = 0; i < length; ++i) {
-    const item = batches[i];
-    if (
-      item.zIndex === zIndex &&
-      !item.overlapping(instance.geometry.rectangle)
-    ) {
-      batch = item;
-      break;
-    }
-  }
-
-  if (!defined(batch)) {
-    batch = new Batch(
-      this._primitives,
-      this._classificationType,
-      instance.attributes.color.value,
-      zIndex,
-    );
-    batches.push(batch);
-  }
-  batch.add(updater, instance);
-  return batch;
-};
-
-StaticGroundGeometryColorBatch.prototype.remove = function (updater) {
-  const batches = this._batches;
-  const count = batches.length;
-  for (let i = 0; i < count; ++i) {
-    if (batches[i].remove(updater)) {
-      return;
-    }
-  }
-};
-
-StaticGroundGeometryColorBatch.prototype.update = function (time) {
-  let i;
-  let updater;
-
-  //Perform initial update
-  let isUpdated = true;
-  const batches = this._batches;
-  const batchCount = batches.length;
-  for (i = 0; i < batchCount; ++i) {
-    isUpdated = batches[i].update(time) && isUpdated;
-  }
-
-  //If any items swapped between batches we need to move them
-  for (i = 0; i < batchCount; ++i) {
-    const oldBatch = batches[i];
-    const itemsToRemove = oldBatch.itemsToRemove;
-    const itemsToMoveLength = itemsToRemove.length;
-    for (let j = 0; j < itemsToMoveLength; j++) {
-      updater = itemsToRemove[j];
-      oldBatch.remove(updater);
-      const newBatch = this.add(time, updater);
-      oldBatch.isDirty = true;
-      newBatch.isDirty = true;
-    }
-  }
-
-  //If we moved anything around, we need to re-build the primitive and remove empty batches
-  for (i = batchCount - 1; i >= 0; --i) {
-    const batch = batches[i];
-    if (batch.isDirty) {
-      isUpdated = batches[i].update(time) && isUpdated;
-      batch.isDirty = false;
-    }
-    if (batch.geometry.length === 0) {
-      batches.splice(i, 1);
-    }
-  }
-
-  return isUpdated;
-};
-
-StaticGroundGeometryColorBatch.prototype.getBoundingSphere = function (
-  updater,
-  result,
-) {
-  const batches = this._batches;
-  const batchCount = batches.length;
-  for (let i = 0; i < batchCount; ++i) {
-    const batch = batches[i];
-    if (batch.contains(updater)) {
-      return batch.getBoundingSphere(updater, result);
-    }
-  }
-
-  return BoundingSphereState.FAILED;
-};
-
-StaticGroundGeometryColorBatch.prototype.removeAllPrimitives = function () {
-  const batches = this._batches;
-  const batchCount = batches.length;
-  for (let i = 0; i < batchCount; ++i) {
-    batches[i].removeAllPrimitives();
-  }
-};
 export default StaticGroundGeometryColorBatch;

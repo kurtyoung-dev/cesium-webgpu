@@ -711,7 +711,7 @@ function insertShadowCastCommands(scene, commandList, shadowMap) {
 
     if (
       !command.castShadows ||
-      shadowedPasses.indexOf(command.pass) < 0 ||
+      !shadowedPasses.includes(command.pass) ||
       !scene.isVisible(shadowMapCullingVolume, command)
     ) {
       continue;

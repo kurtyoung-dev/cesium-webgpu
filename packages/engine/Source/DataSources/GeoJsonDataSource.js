@@ -69,7 +69,7 @@ function defaultDescribe(properties, nameProperty) {
   let html = "";
   for (const key in properties) {
     if (properties.hasOwnProperty(key)) {
-      if (key === nameProperty || simpleStyleIdentifiers.indexOf(key) !== -1) {
+      if (key === nameProperty || simpleStyleIdentifiers.includes(key)) {
         continue;
       }
       const value = properties[key];

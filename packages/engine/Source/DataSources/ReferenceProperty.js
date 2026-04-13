@@ -87,50 +87,148 @@ function resolve(that) {
  * object5.billboard.scale = Cesium.ReferenceProperty.fromString(collection, '\\#object\\.4#billboard.scale');
  * collection.add(object5);
  */
-function ReferenceProperty(targetCollection, targetId, targetPropertyNames) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(targetCollection)) {
-    throw new DeveloperError("targetCollection is required.");
+class ReferenceProperty {
+  constructor(targetCollection, targetId, targetPropertyNames) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(targetCollection)) {
+      throw new DeveloperError("targetCollection is required.");
+    }
+    if (!defined(targetId) || targetId === "") {
+      throw new DeveloperError("targetId is required.");
+    }
+    if (!defined(targetPropertyNames) || targetPropertyNames.length === 0) {
+      throw new DeveloperError("targetPropertyNames is required.");
+    }
+    for (let i = 0; i < targetPropertyNames.length; i++) {
+      const item = targetPropertyNames[i];
+      if (!defined(item) || item === "") {
+        throw new DeveloperError("reference contains invalid properties.");
+      }
+    }
+    //>>includeEnd('debug');
+
+    this._targetCollection = targetCollection;
+    this._targetId = targetId;
+    this._targetPropertyNames = targetPropertyNames;
+    this._targetProperty = undefined;
+    this._targetEntity = undefined;
+    this._definitionChanged = new Event();
+
+    targetCollection.collectionChanged.addEventListener(
+      ReferenceProperty.prototype._onCollectionChanged,
+      this,
+    );
   }
-  if (!defined(targetId) || targetId === "") {
-    throw new DeveloperError("targetId is required.");
+
+  /**
+   * Gets the value of the property at the provided time.
+   *
+   * @param {JulianDate} [time=JulianDate.now()] The time for which to retrieve the value. If omitted, the current system time is used.
+   * @param {object} [result] The object to store the value into, if omitted, a new instance is created and returned.
+   * @returns {object} The modified result parameter or a new instance if the result parameter was not supplied.
+   */
+  getValue(time, result) {
+    const target = resolve(this);
+    if (!defined(time)) {
+      time = JulianDate.now(timeScratch);
+    }
+    return defined(target) ? target.getValue(time, result) : undefined;
   }
-  if (!defined(targetPropertyNames) || targetPropertyNames.length === 0) {
-    throw new DeveloperError("targetPropertyNames is required.");
+
+  /**
+   * Gets the value of the property at the provided time and in the provided reference frame.
+   * This method is only valid if the property being referenced is a {@link PositionProperty}.
+   *
+   * @param {JulianDate} time The time for which to retrieve the value.
+   * @param {ReferenceFrame} referenceFrame The desired referenceFrame of the result.
+   * @param {Cartesian3} [result] The object to store the value into, if omitted, a new instance is created and returned.
+   * @returns {Cartesian3} The modified result parameter or a new instance if the result parameter was not supplied.
+   */
+  getValueInReferenceFrame(time, referenceFrame, result) {
+    const target = resolve(this);
+    return defined(target)
+      ? target.getValueInReferenceFrame(time, referenceFrame, result)
+      : undefined;
   }
-  for (let i = 0; i < targetPropertyNames.length; i++) {
-    const item = targetPropertyNames[i];
-    if (!defined(item) || item === "") {
-      throw new DeveloperError("reference contains invalid properties.");
+
+  /**
+   * Gets the {@link Material} type at the provided time.
+   * This method is only valid if the property being referenced is a {@link MaterialProperty}.
+   *
+   * @param {JulianDate} time The time for which to retrieve the type.
+   * @returns {string} The type of material.
+   */
+  getType(time) {
+    const target = resolve(this);
+    return defined(target) ? target.getType(time) : undefined;
+  }
+
+  /**
+   * Compares this property to the provided property and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {Property} [other] The other property.
+   * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
+   */
+  equals(other) {
+    if (this === other) {
+      return true;
+    }
+
+    const names = this._targetPropertyNames;
+    const otherNames = other._targetPropertyNames;
+
+    if (
+      this._targetCollection !== other._targetCollection || //
+      this._targetId !== other._targetId || //
+      names.length !== otherNames.length
+    ) {
+      return false;
+    }
+
+    const length = this._targetPropertyNames.length;
+    for (let i = 0; i < length; i++) {
+      if (names[i] !== otherNames[i]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  _onTargetEntityDefinitionChanged(targetEntity, name, value, oldValue) {
+    if (defined(this._targetProperty) && this._targetPropertyNames[0] === name) {
+      this._targetProperty = undefined;
+      this._definitionChanged.raiseEvent(this);
     }
   }
-  //>>includeEnd('debug');
 
-  this._targetCollection = targetCollection;
-  this._targetId = targetId;
-  this._targetPropertyNames = targetPropertyNames;
-  this._targetProperty = undefined;
-  this._targetEntity = undefined;
-  this._definitionChanged = new Event();
+  _onCollectionChanged(collection, added, removed) {
+    let targetEntity = this._targetEntity;
+    if (defined(targetEntity) && removed.includes(targetEntity)) {
+      targetEntity.definitionChanged.removeEventListener(
+        ReferenceProperty.prototype._onTargetEntityDefinitionChanged,
+        this,
+      );
+      this._targetEntity = this._targetProperty = undefined;
+    } else if (!defined(targetEntity)) {
+      targetEntity = resolve(this);
+      if (defined(targetEntity)) {
+        this._definitionChanged.raiseEvent(this);
+      }
+    }
+  }
 
-  targetCollection.collectionChanged.addEventListener(
-    ReferenceProperty.prototype._onCollectionChanged,
-    this,
-  );
-}
-
-Object.defineProperties(ReferenceProperty.prototype, {
   /**
    * Gets a value indicating if this property is constant.
    * @memberof ReferenceProperty.prototype
    * @type {boolean}
    * @readonly
    */
-  isConstant: {
-    get: function () {
-      return Property.isConstant(resolve(this));
-    },
-  },
+  get isConstant() {
+    return Property.isConstant(resolve(this));
+  }
+
   /**
    * Gets the event that is raised whenever the definition of this property changes.
    * The definition is changed whenever the referenced property's definition is changed.
@@ -138,11 +236,10 @@ Object.defineProperties(ReferenceProperty.prototype, {
    * @type {Event}
    * @readonly
    */
-  definitionChanged: {
-    get: function () {
-      return this._definitionChanged;
-    },
-  },
+  get definitionChanged() {
+    return this._definitionChanged;
+  }
+
   /**
    * Gets the reference frame that the position is defined in.
    * This property is only valid if the referenced property is a {@link PositionProperty}.
@@ -150,57 +247,51 @@ Object.defineProperties(ReferenceProperty.prototype, {
    * @type {ReferenceFrame}
    * @readonly
    */
-  referenceFrame: {
-    get: function () {
-      const target = resolve(this);
-      return defined(target) ? target.referenceFrame : undefined;
-    },
-  },
+  get referenceFrame() {
+    const target = resolve(this);
+    return defined(target) ? target.referenceFrame : undefined;
+  }
+
   /**
    * Gets the id of the entity being referenced.
    * @memberof ReferenceProperty.prototype
    * @type {string}
    * @readonly
    */
-  targetId: {
-    get: function () {
-      return this._targetId;
-    },
-  },
+  get targetId() {
+    return this._targetId;
+  }
+
   /**
    * Gets the collection containing the entity being referenced.
    * @memberof ReferenceProperty.prototype
    * @type {EntityCollection}
    * @readonly
    */
-  targetCollection: {
-    get: function () {
-      return this._targetCollection;
-    },
-  },
+  get targetCollection() {
+    return this._targetCollection;
+  }
+
   /**
    * Gets the array of property names used to retrieve the referenced property.
    * @memberof ReferenceProperty.prototype
    * @type {}
    * @readonly
    */
-  targetPropertyNames: {
-    get: function () {
-      return this._targetPropertyNames;
-    },
-  },
+  get targetPropertyNames() {
+    return this._targetPropertyNames;
+  }
+
   /**
    * Gets the resolved instance of the underlying referenced property.
    * @memberof ReferenceProperty.prototype
    * @type {Property|undefined}
    * @readonly
    */
-  resolvedProperty: {
-    get: function () {
-      return resolve(this);
-    },
-  },
-});
+  get resolvedProperty() {
+    return resolve(this);
+  }
+}
 
 /**
  * Creates a new instance given the entity collection that will
@@ -257,115 +348,4 @@ ReferenceProperty.fromString = function (targetCollection, referenceString) {
 
 const timeScratch = new JulianDate();
 
-/**
- * Gets the value of the property at the provided time.
- *
- * @param {JulianDate} [time=JulianDate.now()] The time for which to retrieve the value. If omitted, the current system time is used.
- * @param {object} [result] The object to store the value into, if omitted, a new instance is created and returned.
- * @returns {object} The modified result parameter or a new instance if the result parameter was not supplied.
- */
-ReferenceProperty.prototype.getValue = function (time, result) {
-  const target = resolve(this);
-  if (!defined(time)) {
-    time = JulianDate.now(timeScratch);
-  }
-  return defined(target) ? target.getValue(time, result) : undefined;
-};
-
-/**
- * Gets the value of the property at the provided time and in the provided reference frame.
- * This method is only valid if the property being referenced is a {@link PositionProperty}.
- *
- * @param {JulianDate} time The time for which to retrieve the value.
- * @param {ReferenceFrame} referenceFrame The desired referenceFrame of the result.
- * @param {Cartesian3} [result] The object to store the value into, if omitted, a new instance is created and returned.
- * @returns {Cartesian3} The modified result parameter or a new instance if the result parameter was not supplied.
- */
-ReferenceProperty.prototype.getValueInReferenceFrame = function (
-  time,
-  referenceFrame,
-  result,
-) {
-  const target = resolve(this);
-  return defined(target)
-    ? target.getValueInReferenceFrame(time, referenceFrame, result)
-    : undefined;
-};
-
-/**
- * Gets the {@link Material} type at the provided time.
- * This method is only valid if the property being referenced is a {@link MaterialProperty}.
- *
- * @param {JulianDate} time The time for which to retrieve the type.
- * @returns {string} The type of material.
- */
-ReferenceProperty.prototype.getType = function (time) {
-  const target = resolve(this);
-  return defined(target) ? target.getType(time) : undefined;
-};
-
-/**
- * Compares this property to the provided property and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Property} [other] The other property.
- * @returns {boolean} <code>true</code> if left and right are equal, <code>false</code> otherwise.
- */
-ReferenceProperty.prototype.equals = function (other) {
-  if (this === other) {
-    return true;
-  }
-
-  const names = this._targetPropertyNames;
-  const otherNames = other._targetPropertyNames;
-
-  if (
-    this._targetCollection !== other._targetCollection || //
-    this._targetId !== other._targetId || //
-    names.length !== otherNames.length
-  ) {
-    return false;
-  }
-
-  const length = this._targetPropertyNames.length;
-  for (let i = 0; i < length; i++) {
-    if (names[i] !== otherNames[i]) {
-      return false;
-    }
-  }
-
-  return true;
-};
-
-ReferenceProperty.prototype._onTargetEntityDefinitionChanged = function (
-  targetEntity,
-  name,
-  value,
-  oldValue,
-) {
-  if (defined(this._targetProperty) && this._targetPropertyNames[0] === name) {
-    this._targetProperty = undefined;
-    this._definitionChanged.raiseEvent(this);
-  }
-};
-
-ReferenceProperty.prototype._onCollectionChanged = function (
-  collection,
-  added,
-  removed,
-) {
-  let targetEntity = this._targetEntity;
-  if (defined(targetEntity) && removed.indexOf(targetEntity) !== -1) {
-    targetEntity.definitionChanged.removeEventListener(
-      ReferenceProperty.prototype._onTargetEntityDefinitionChanged,
-      this,
-    );
-    this._targetEntity = this._targetProperty = undefined;
-  } else if (!defined(targetEntity)) {
-    targetEntity = resolve(this);
-    if (defined(targetEntity)) {
-      this._definitionChanged.raiseEvent(this);
-    }
-  }
-};
 export default ReferenceProperty;

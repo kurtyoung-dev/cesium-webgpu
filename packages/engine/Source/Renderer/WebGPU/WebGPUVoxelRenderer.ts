@@ -26,7 +26,7 @@ interface VoxelCache {
   voxelTexture: GPUTexture | null;
   voxelTextureView: GPUTextureView | null;
   sampler: GPUSampler | null;
-  command: any | null;
+  command: CesiumAnyDrawCommand | null;
   initialized: boolean;
 }
 
@@ -107,6 +107,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
+// RTE scratch: view×model with translation column zeroed, used to
+// build MVP correctly (must zero before projecting).
+const scratchMVRTE = new Matrix4();
 
 function createBoxGeometry(device: GPUDevice): {
   vertexBuffer: GPUBuffer;
@@ -215,7 +218,7 @@ function createPlaceholderVoxelTexture(device: GPUDevice): {
   return { texture, view: texture.createView() };
 }
 
-function updateWebGPUVoxelPrimitive(primitive: any, frameState: any): void {
+function updateWebGPUVoxelPrimitive(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -323,7 +326,8 @@ function updateWebGPUVoxelPrimitive(primitive: any, frameState: any): void {
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
-        depthCompare: "less",
+        // less-equal for planetary-scale precision robustness.
+        depthCompare: "less-equal",
       },
     });
 
@@ -343,16 +347,21 @@ function updateWebGPUVoxelPrimitive(primitive: any, frameState: any): void {
     cache.initialized = true;
   }
 
-  // Pack uniforms
+  // Pack uniforms.
+  //
+  // RTE: zero the translation column of MV *before* multiplying by
+  // projection. Zeroing after the multiply wipes out projection's P23
+  // depth-mapping term, producing incorrect NDC depth. See
+  // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
   const us = context.uniformState;
   const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
   const view = us.view;
   const projection = us.projection;
-  const mv = Matrix4.multiply(view, modelMatrix, new Matrix4());
-  const mvp = m4Values(Matrix4.multiply(projection, mv, scratchMVP));
-  mvp[12] = 0;
-  mvp[13] = 0;
-  mvp[14] = 0;
+  const mvRte = Matrix4.multiply(view, modelMatrix, scratchMVRTE);
+  mvRte[12] = 0;
+  mvRte[13] = 0;
+  mvRte[14] = 0;
+  const mvp = m4Values(Matrix4.multiply(projection, mvRte, scratchMVP));
 
   const camWorld = us.cameraPosition;
   const invModel = Matrix4.inverse(modelMatrix, new Matrix4());
@@ -407,7 +416,7 @@ function updateWebGPUVoxelPrimitive(primitive: any, frameState: any): void {
   commandList.push(cache.command);
 }
 
-function destroyWebGPUVoxelResources(primitive: any): void {
+function destroyWebGPUVoxelResources(primitive: CesiumObjectWithWebGPUCache): void {
   const cache = primitive._webgpuCache as VoxelCache | undefined;
   if (!cache) {
     return;

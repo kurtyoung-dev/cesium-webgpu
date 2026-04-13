@@ -14,54 +14,165 @@ import PixelDatatype from "../Renderer/PixelDatatype.js";
  * @constructor
  * @private
  */
-function AutoExposure() {
-  this._uniformMap = undefined;
-  this._command = undefined;
+class AutoExposure {
+  constructor() {
+    this._uniformMap = undefined;
+    this._command = undefined;
 
-  this._colorTexture = undefined;
-  this._depthTexture = undefined;
+    this._colorTexture = undefined;
+    this._depthTexture = undefined;
 
-  this._ready = false;
+    this._ready = false;
 
-  this._name = "czm_autoexposure";
+    this._name = "czm_autoexposure";
 
-  this._logDepthChanged = undefined;
-  this._useLogDepth = undefined;
+    this._logDepthChanged = undefined;
+    this._useLogDepth = undefined;
 
-  this._framebuffers = undefined;
-  this._previousLuminance = new FramebufferManager();
+    this._framebuffers = undefined;
+    this._previousLuminance = new FramebufferManager();
 
-  this._commands = undefined;
-  this._clearCommand = undefined;
+    this._commands = undefined;
+    this._clearCommand = undefined;
 
-  this._minMaxLuminance = new Cartesian2();
+    this._minMaxLuminance = new Cartesian2();
+
+    /**
+     * Whether or not to execute this post-process stage when ready.
+     *
+     * @type {boolean}
+     */
+    this.enabled = true;
+    this._enabled = true;
+
+    /**
+     * The minimum value used to clamp the luminance.
+     *
+     * @type {number}
+     * @default 0.1
+     */
+    this.minimumLuminance = 0.1;
+
+    /**
+     * The maximum value used to clamp the luminance.
+     *
+     * @type {number}
+     * @default 10.0
+     */
+    this.maximumLuminance = 10.0;
+  }
 
   /**
-   * Whether or not to execute this post-process stage when ready.
-   *
-   * @type {boolean}
+   * A function that will be called before execute. Used to clear any textures attached to framebuffers.
+   * @param {Context} context The context.
+   * @private
    */
-  this.enabled = true;
-  this._enabled = true;
+  clear(context) {
+    const framebuffers = this._framebuffers;
+    if (!defined(framebuffers)) {
+      return;
+    }
+
+    let clearCommand = this._clearCommand;
+    if (!defined(clearCommand)) {
+      clearCommand = this._clearCommand = new ClearCommand({
+        color: new Color(0.0, 0.0, 0.0, 0.0),
+        framebuffer: undefined,
+      });
+    }
+
+    const length = framebuffers.length;
+    for (let i = 0; i < length; ++i) {
+      framebuffers[i].clear(context, clearCommand);
+    }
+  }
 
   /**
-   * The minimum value used to clamp the luminance.
-   *
-   * @type {number}
-   * @default 0.1
+   * A function that will be called before execute. Used to create WebGL resources and load any textures.
+   * @param {Context} context The context.
+   * @private
    */
-  this.minimumLuminance = 0.1;
+  update(context) {
+    const width = context.drawingBufferWidth;
+    const height = context.drawingBufferHeight;
+
+    if (width !== this._width || height !== this._height) {
+      this._width = width;
+      this._height = height;
+
+      createFramebuffers(this, context);
+      createCommands(this, context);
+
+      if (!this._ready) {
+        this._ready = true;
+      }
+    }
+
+    this._minMaxLuminance.x = this.minimumLuminance;
+    this._minMaxLuminance.y = this.maximumLuminance;
+
+    const framebuffers = this._framebuffers;
+    const temp = framebuffers[framebuffers.length - 1];
+    framebuffers[framebuffers.length - 1] = this._previousLuminance;
+    this._commands[this._commands.length - 1].framebuffer =
+      this._previousLuminance.framebuffer;
+    this._previousLuminance = temp;
+  }
 
   /**
-   * The maximum value used to clamp the luminance.
-   *
-   * @type {number}
-   * @default 10.0
+   * Executes the post-process stage. The color texture is the texture rendered to by the scene or from the previous stage.
+   * @param {Context} context The context.
+   * @param {Texture} colorTexture The input color texture.
+   * @private
    */
-  this.maximumLuminance = 10.0;
-}
+  execute(context, colorTexture) {
+    this._colorTexture = colorTexture;
 
-Object.defineProperties(AutoExposure.prototype, {
+    const commands = this._commands;
+    if (!defined(commands)) {
+      return;
+    }
+
+    const length = commands.length;
+    for (let i = 0; i < length; ++i) {
+      commands[i].execute(context);
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see AutoExposure#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see AutoExposure#isDestroyed
+   */
+  destroy() {
+    destroyFramebuffers(this);
+    destroyCommands(this);
+    return destroyObject(this);
+  }
+
   /**
    * Determines if this post-process stage is ready to be executed. A stage is only executed when both <code>ready</code>
    * and {@link AutoExposure#enabled} are <code>true</code>. A stage will not be ready while it is waiting on textures
@@ -71,11 +182,10 @@ Object.defineProperties(AutoExposure.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
+
   /**
    * The unique name of this post-process stage for reference by other stages.
    *
@@ -83,11 +193,9 @@ Object.defineProperties(AutoExposure.prototype, {
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * A reference to the texture written to when executing this post process stage.
@@ -97,16 +205,14 @@ Object.defineProperties(AutoExposure.prototype, {
    * @readonly
    * @private
    */
-  outputTexture: {
-    get: function () {
-      const framebuffers = this._framebuffers;
-      if (!defined(framebuffers)) {
-        return undefined;
-      }
-      return framebuffers[framebuffers.length - 1].getColorTexture(0);
-    },
-  },
-});
+  get outputTexture() {
+    const framebuffers = this._framebuffers;
+    if (!defined(framebuffers)) {
+      return undefined;
+    }
+    return framebuffers[framebuffers.length - 1].getColorTexture(0);
+  }
+}
 
 function destroyFramebuffers(autoexposure) {
   const framebuffers = autoexposure._framebuffers;
@@ -273,114 +379,4 @@ function createCommands(autoexposure, context) {
   autoexposure._commands = commands;
 }
 
-/**
- * A function that will be called before execute. Used to clear any textures attached to framebuffers.
- * @param {Context} context The context.
- * @private
- */
-AutoExposure.prototype.clear = function (context) {
-  const framebuffers = this._framebuffers;
-  if (!defined(framebuffers)) {
-    return;
-  }
-
-  let clearCommand = this._clearCommand;
-  if (!defined(clearCommand)) {
-    clearCommand = this._clearCommand = new ClearCommand({
-      color: new Color(0.0, 0.0, 0.0, 0.0),
-      framebuffer: undefined,
-    });
-  }
-
-  const length = framebuffers.length;
-  for (let i = 0; i < length; ++i) {
-    framebuffers[i].clear(context, clearCommand);
-  }
-};
-
-/**
- * A function that will be called before execute. Used to create WebGL resources and load any textures.
- * @param {Context} context The context.
- * @private
- */
-AutoExposure.prototype.update = function (context) {
-  const width = context.drawingBufferWidth;
-  const height = context.drawingBufferHeight;
-
-  if (width !== this._width || height !== this._height) {
-    this._width = width;
-    this._height = height;
-
-    createFramebuffers(this, context);
-    createCommands(this, context);
-
-    if (!this._ready) {
-      this._ready = true;
-    }
-  }
-
-  this._minMaxLuminance.x = this.minimumLuminance;
-  this._minMaxLuminance.y = this.maximumLuminance;
-
-  const framebuffers = this._framebuffers;
-  const temp = framebuffers[framebuffers.length - 1];
-  framebuffers[framebuffers.length - 1] = this._previousLuminance;
-  this._commands[this._commands.length - 1].framebuffer =
-    this._previousLuminance.framebuffer;
-  this._previousLuminance = temp;
-};
-
-/**
- * Executes the post-process stage. The color texture is the texture rendered to by the scene or from the previous stage.
- * @param {Context} context The context.
- * @param {Texture} colorTexture The input color texture.
- * @private
- */
-AutoExposure.prototype.execute = function (context, colorTexture) {
-  this._colorTexture = colorTexture;
-
-  const commands = this._commands;
-  if (!defined(commands)) {
-    return;
-  }
-
-  const length = commands.length;
-  for (let i = 0; i < length; ++i) {
-    commands[i].execute(context);
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see AutoExposure#destroy
- */
-AutoExposure.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see AutoExposure#isDestroyed
- */
-AutoExposure.prototype.destroy = function () {
-  destroyFramebuffers(this);
-  destroyCommands(this);
-  return destroyObject(this);
-};
 export default AutoExposure;

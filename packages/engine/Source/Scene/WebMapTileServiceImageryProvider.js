@@ -177,167 +177,479 @@ import GetFeatureInfoFormat from "./GetFeatureInfoFormat.js";
  * @see WebMapServiceImageryProvider
  * @see UrlTemplateImageryProvider
  */
-function WebMapTileServiceImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class WebMapTileServiceImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options.url)) {
-    throw new DeveloperError("options.url is required.");
-  }
-  if (!defined(options.layer)) {
-    throw new DeveloperError("options.layer is required.");
-  }
-  if (!defined(options.style)) {
-    throw new DeveloperError("options.style is required.");
-  }
-  if (!defined(options.tileMatrixSetID)) {
-    throw new DeveloperError("options.tileMatrixSetID is required.");
-  }
-  if (defined(options.times) && !defined(options.clock)) {
-    throw new DeveloperError(
-      "options.times was specified, so options.clock is required.",
-    );
-  }
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options.url)) {
+      throw new DeveloperError("options.url is required.");
+    }
+    if (!defined(options.layer)) {
+      throw new DeveloperError("options.layer is required.");
+    }
+    if (!defined(options.style)) {
+      throw new DeveloperError("options.style is required.");
+    }
+    if (!defined(options.tileMatrixSetID)) {
+      throw new DeveloperError("options.tileMatrixSetID is required.");
+    }
+    if (defined(options.times) && !defined(options.clock)) {
+      throw new DeveloperError(
+        "options.times was specified, so options.clock is required.",
+      );
+    }
+    //>>includeEnd('debug');
 
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
 
-  this._getFeatureInfoUrl = options.getFeatureInfoUrl ?? options.url;
+    this._getFeatureInfoUrl = options.getFeatureInfoUrl ?? options.url;
 
-  const resource = Resource.createIfNeeded(options.url);
-  const pickFeatureResource = Resource.createIfNeeded(this._getFeatureInfoUrl);
+    const resource = Resource.createIfNeeded(options.url);
+    const pickFeatureResource = Resource.createIfNeeded(this._getFeatureInfoUrl);
 
-  const style = options.style;
-  const tileMatrixSetID = options.tileMatrixSetID;
-  const url = resource.url;
-  const format = options.format ?? "image/jpeg";
+    const style = options.style;
+    const tileMatrixSetID = options.tileMatrixSetID;
+    const url = resource.url;
+    const format = options.format ?? "image/jpeg";
 
-  const bracketMatch = url.match(/{/g);
-  if (
-    !defined(bracketMatch) ||
-    (bracketMatch.length === 1 && /{s}/.test(url))
-  ) {
-    resource.setQueryParameters(
-      WebMapTileServiceImageryProvider.DefaultParameters,
-      true,
-    );
-    this._useKvp = true;
-  } else {
-    resource.setTemplateValues(
-      WebMapTileServiceImageryProvider.DefaultParameters,
-      true,
-    );
-    this._useKvp = false;
-  }
+    const bracketMatch = url.match(/{/g);
+    if (
+      !defined(bracketMatch) ||
+      (bracketMatch.length === 1 && /{s}/.test(url))
+    ) {
+      resource.setQueryParameters(
+        WebMapTileServiceImageryProvider.DefaultParameters,
+        true,
+      );
+      this._useKvp = true;
+    } else {
+      resource.setTemplateValues(
+        WebMapTileServiceImageryProvider.DefaultParameters,
+        true,
+      );
+      this._useKvp = false;
+    }
 
-  if (this._useKvp) {
-    pickFeatureResource.setQueryParameters(
-      WebMapTileServiceImageryProvider.GetFeatureInfoDefaultParameters,
-      true,
-    );
-
-    if (defined(options.getFeatureInfoParameters)) {
+    if (this._useKvp) {
       pickFeatureResource.setQueryParameters(
-        objectToLowercase(options.getFeatureInfoParameters),
+        WebMapTileServiceImageryProvider.GetFeatureInfoDefaultParameters,
+        true,
       );
-    }
 
-    const pickFeatureParams = {
-      infoformat: "{format}",
-      i: "{i}",
-      j: "{j}",
-    };
-    pickFeatureResource.setQueryParameters(pickFeatureParams, true);
-  } else {
-    pickFeatureResource.setTemplateValues(
-      WebMapTileServiceImageryProvider.GetFeatureInfoDefaultParameters,
-      true,
-    );
+      if (defined(options.getFeatureInfoParameters)) {
+        pickFeatureResource.setQueryParameters(
+          objectToLowercase(options.getFeatureInfoParameters),
+        );
+      }
 
-    if (defined(options.getFeatureInfoParameters)) {
+      const pickFeatureParams = {
+        infoformat: "{format}",
+        i: "{i}",
+        j: "{j}",
+      };
+      pickFeatureResource.setQueryParameters(pickFeatureParams, true);
+    } else {
       pickFeatureResource.setTemplateValues(
-        objectToLowercase(options.getFeatureInfoParameters),
+        WebMapTileServiceImageryProvider.GetFeatureInfoDefaultParameters,
+        true,
       );
+
+      if (defined(options.getFeatureInfoParameters)) {
+        pickFeatureResource.setTemplateValues(
+          objectToLowercase(options.getFeatureInfoParameters),
+        );
+      }
     }
-  }
 
-  this._resource = resource;
-  this._tileMatrixLabels = options.tileMatrixLabels;
-  this._format = format;
-  this._dimensions = options.dimensions;
-  this._tilematrixset = tileMatrixSetID;
+    this._resource = resource;
+    this._tileMatrixLabels = options.tileMatrixLabels;
+    this._format = format;
+    this._dimensions = options.dimensions;
+    this._tilematrixset = tileMatrixSetID;
 
-  const parameters = {};
-  parameters.tilematrix = "{TileMatrix}";
-  parameters.layer = options.layer;
-  parameters.style = style;
-  parameters.tilerow = "{TileRow}";
-  parameters.tilecol = "{TileCol}";
-  parameters.tilematrixset = tileMatrixSetID;
+    const parameters = {};
+    parameters.tilematrix = "{TileMatrix}";
+    parameters.layer = options.layer;
+    parameters.style = style;
+    parameters.tilerow = "{TileRow}";
+    parameters.tilecol = "{TileCol}";
+    parameters.tilematrixset = tileMatrixSetID;
 
-  if (this._useKvp) {
-    resource.setQueryParameters(parameters, true);
-    resource.setQueryParameters({ format: format }, true);
-    pickFeatureResource.setQueryParameters({ format: format }, true);
-    pickFeatureResource.setQueryParameters(parameters, true);
-  } else {
-    parameters.Style = style;
-    resource.setTemplateValues(parameters);
-    resource.setTemplateValues({ format: format });
-    pickFeatureResource.setTemplateValues(parameters);
-  }
+    if (this._useKvp) {
+      resource.setQueryParameters(parameters, true);
+      resource.setQueryParameters({ format: format }, true);
+      pickFeatureResource.setQueryParameters({ format: format }, true);
+      pickFeatureResource.setQueryParameters(parameters, true);
+    } else {
+      parameters.Style = style;
+      resource.setTemplateValues(parameters);
+      resource.setTemplateValues({ format: format });
+      pickFeatureResource.setTemplateValues(parameters);
+    }
 
-  const that = this;
-  this._reload = undefined;
-  if (defined(options.times)) {
-    this._timeDynamicImagery = new TimeDynamicImagery({
-      clock: options.clock,
-      times: options.times,
-      requestImageFunction: function (x, y, level, request, interval) {
-        return requestImage(that, x, y, level, request, interval);
-      },
-      reloadFunction: function () {
-        if (defined(that._reload)) {
-          that._reload();
-        }
-      },
+    const that = this;
+    this._reload = undefined;
+    if (defined(options.times)) {
+      this._timeDynamicImagery = new TimeDynamicImagery({
+        clock: options.clock,
+        times: options.times,
+        requestImageFunction: function (x, y, level, request, interval) {
+          return requestImage(that, x, y, level, request, interval);
+        },
+        reloadFunction: function () {
+          if (defined(that._reload)) {
+            that._reload();
+          }
+        },
+      });
+    }
+
+    this._errorEvent = new Event();
+
+    // Let UrlTemplateImageryProvider do the actual URL building.
+    this._tileProvider = new UrlTemplateImageryProvider({
+      url: resource,
+      pickFeaturesUrl: pickFeatureResource,
+      tilingScheme:
+        options.tilingScheme ??
+        new WebMercatorTilingScheme({ ellipsoid: options.ellipsoid }),
+      rectangle: options.rectangle,
+      tileWidth: options.tileWidth,
+      tileHeight: options.tileHeight,
+      minimumLevel: options.minimumLevel,
+      maximumLevel: options.maximumLevel,
+      subdomains: options.subdomains,
+      tileDiscardPolicy: options.tileDiscardPolicy,
+      credit: options.credit,
+      getFeatureInfoFormats:
+        options.getFeatureInfoFormats ??
+        WebMapTileServiceImageryProvider.DefaultGetFeatureInfoFormats,
+      enablePickFeatures:
+        options.enablePickFeatures ??
+        (this._useKvp || defined(options.getFeatureInfoUrl)),
+      customTags: createCustomTags(this),
     });
   }
 
-  this._errorEvent = new Event();
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    return this._tileProvider.getTileCredits(x, y, level);
+  }
 
-  // Let UrlTemplateImageryProvider do the actual URL building.
-  this._tileProvider = new UrlTemplateImageryProvider({
-    url: resource,
-    pickFeaturesUrl: pickFeatureResource,
-    tilingScheme:
-      options.tilingScheme ??
-      new WebMercatorTilingScheme({ ellipsoid: options.ellipsoid }),
-    rectangle: options.rectangle,
-    tileWidth: options.tileWidth,
-    tileHeight: options.tileHeight,
-    minimumLevel: options.minimumLevel,
-    maximumLevel: options.maximumLevel,
-    subdomains: options.subdomains,
-    tileDiscardPolicy: options.tileDiscardPolicy,
-    credit: options.credit,
-    getFeatureInfoFormats:
-      options.getFeatureInfoFormats ??
-      WebMapTileServiceImageryProvider.DefaultGetFeatureInfoFormats,
-    enablePickFeatures:
-      options.enablePickFeatures ??
-      (this._useKvp || defined(options.getFeatureInfoUrl)),
-    customTags: createCustomTags(this),
-  });
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    let result;
+    const timeDynamicImagery = this._timeDynamicImagery;
+    let currentInterval;
+
+    // Try and load from cache
+    if (defined(timeDynamicImagery)) {
+      currentInterval = timeDynamicImagery.currentInterval;
+      result = timeDynamicImagery.getFromCache(x, y, level, request);
+    }
+
+    // Couldn't load from cache
+    if (!defined(result)) {
+      result = requestImage(this, x, y, level, request, currentInterval);
+    }
+
+    // If we are approaching an interval, preload this tile in the next interval
+    if (defined(result) && defined(timeDynamicImagery)) {
+      timeDynamicImagery.checkApproachingInterval(x, y, level, request);
+    }
+
+    return result;
+  }
+
+  /**
+   * Asynchronously determines what features, if any, are located at a given longitude and latitude within
+   * a tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
+   *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
+   *                   instances.  The array may be empty if no features are found at the given location.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    const timeDynamicImagery = this._timeDynamicImagery;
+    const currentInterval = defined(timeDynamicImagery)
+      ? timeDynamicImagery.currentInterval
+      : undefined;
+
+    return pickFeatures(this, x, y, level, longitude, latitude, currentInterval);
+  }
+
+  /**
+   * Gets the URL of the service hosting the imagery.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {string}
+   * @readonly
+   */
+  get url() {
+    return this._resource.url;
+  }
+
+  /**
+   * Gets the proxy used by this provider.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Proxy}
+   * @readonly
+   */
+  get proxy() {
+    return this._resource.proxy;
+  }
+
+  /**
+   * Gets the width of each tile, in pixels.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get tileWidth() {
+    return this._tileProvider.tileWidth;
+  }
+
+  /**
+   * Gets the height of each tile, in pixels.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get tileHeight() {
+    return this._tileProvider.tileHeight;
+  }
+
+  /**
+   * Gets the maximum level-of-detail that can be requested.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  get maximumLevel() {
+    return this._tileProvider.maximumLevel;
+  }
+
+  /**
+   * Gets the minimum level-of-detail that can be requested.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {number}
+   * @readonly
+   */
+  get minimumLevel() {
+    return this._tileProvider.minimumLevel;
+  }
+
+  /**
+   * Gets the tiling scheme used by this provider.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {TilingScheme}
+   * @readonly
+   */
+  get tilingScheme() {
+    return this._tileProvider.tilingScheme;
+  }
+
+  /**
+   * Gets the rectangle, in radians, of the imagery provided by this instance.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Rectangle}
+   * @readonly
+   */
+  get rectangle() {
+    return this._tileProvider.rectangle;
+  }
+
+  /**
+   * Gets the tile discard policy.  If not undefined, the discard policy is responsible
+   * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
+   * returns undefined, no tiles are filtered.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {TileDiscardPolicy}
+   * @readonly
+   */
+  get tileDiscardPolicy() {
+    return this._tileProvider.tileDiscardPolicy;
+  }
+
+  /**
+   * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
+   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
+   * are passed an instance of {@link TileProviderError}.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get errorEvent() {
+    return this._tileProvider.errorEvent;
+  }
+
+  /**
+   * Gets the mime type of images returned by this imagery provider.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {string}
+   * @readonly
+   */
+  get format() {
+    return this._format;
+  }
+
+  /**
+   * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
+   * the source of the imagery.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Credit}
+   * @readonly
+   */
+  get credit() {
+    return this._tileProvider.credit;
+  }
+
+  /**
+   * Gets a value indicating whether or not the images provided by this imagery provider
+   * include an alpha channel.  If this property is false, an alpha channel, if present, will
+   * be ignored.  If this property is true, any images without an alpha channel will be treated
+   * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
+   * and texture upload time are reduced.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get hasAlphaChannel() {
+    return true;
+  }
+
+  /**
+   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link WebMapTileServiceImageryProvider#pickFeatures} will
+   * invoke the <code>GetFeatureInfo</code> service on the WMTS server and attempt to interpret the features included in the response.  If false,
+   * {@link WebMapTileServiceImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
+   * features) without communicating with the server.  Set this property to false if you know your data
+   * source does not support picking features or if you don't want this provider's features to be pickable.
+   * Defaults to true for KVP encoding. For RESTful encoding, defaults to true only when
+   * {@link WebMapTileServiceImageryProvider.ConstructorOptions#getFeatureInfoUrl} is specified, and false otherwise.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {boolean}
+   */
+  get enablePickFeatures() {
+    return this._tileProvider.enablePickFeatures;
+  }
+
+  /**
+   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link WebMapTileServiceImageryProvider#pickFeatures} will
+   * invoke the <code>GetFeatureInfo</code> service on the WMTS server and attempt to interpret the features included in the response.  If false,
+   * {@link WebMapTileServiceImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
+   * features) without communicating with the server.  Set this property to false if you know your data
+   * source does not support picking features or if you don't want this provider's features to be pickable.
+   * Defaults to true for KVP encoding. For RESTful encoding, defaults to true only when
+   * {@link WebMapTileServiceImageryProvider.ConstructorOptions#getFeatureInfoUrl} is specified, and false otherwise.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {boolean}
+   */
+  set enablePickFeatures(enablePickFeatures) {
+    this._tileProvider.enablePickFeatures = enablePickFeatures;
+  }
+
+  /**
+   * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Clock}
+   */
+  get clock() {
+    return this._timeDynamicImagery.clock;
+  }
+
+  /**
+   * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Clock}
+   */
+  set clock(value) {
+    this._timeDynamicImagery.clock = value;
+  }
+
+  /**
+   * Gets or sets a time interval collection that is used to get time dynamic parameters. The data of each
+   * TimeInterval is an object containing the keys and values of the properties that are used during
+   * tile requests.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {TimeIntervalCollection}
+   */
+  get times() {
+    return this._timeDynamicImagery.times;
+  }
+
+  /**
+   * Gets or sets a time interval collection that is used to get time dynamic parameters. The data of each
+   * TimeInterval is an object containing the keys and values of the properties that are used during
+   * tile requests.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {TimeIntervalCollection}
+   */
+  set times(value) {
+    this._timeDynamicImagery.times = value;
+  }
+
+  /**
+   * Gets or sets an object that contains static dimensions and their values.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {object}
+   */
+  get dimensions() {
+    return this._dimensions;
+  }
+
+  /**
+   * Gets or sets an object that contains static dimensions and their values.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {object}
+   */
+  set dimensions(value) {
+    if (this._dimensions !== value) {
+      this._dimensions = value;
+      if (defined(this._reload)) {
+        this._reload();
+      }
+    }
+  }
+
+  /**
+   * Gets the getFeatureInfo URL of the WMTS server.
+   * @memberof WebMapTileServiceImageryProvider.prototype
+   * @type {Resource|string}
+   * @readonly
+   */
+  get getFeatureInfoUrl() {
+    return this._getFeatureInfoUrl;
+  }
 }
 
 function requestImage(imageryProvider, col, row, level, request, interval) {
@@ -367,335 +679,6 @@ function pickFeatures(
 
   return tileProvider.pickFeatures(x, y, level, longitude, latitude);
 }
-
-Object.defineProperties(WebMapTileServiceImageryProvider.prototype, {
-  /**
-   * Gets the URL of the service hosting the imagery.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {string}
-   * @readonly
-   */
-  url: {
-    get: function () {
-      return this._resource.url;
-    },
-  },
-
-  /**
-   * Gets the proxy used by this provider.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Proxy}
-   * @readonly
-   */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
-
-  /**
-   * Gets the width of each tile, in pixels.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  tileWidth: {
-    get: function () {
-      return this._tileProvider.tileWidth;
-    },
-  },
-
-  /**
-   * Gets the height of each tile, in pixels.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  tileHeight: {
-    get: function () {
-      return this._tileProvider.tileHeight;
-    },
-  },
-
-  /**
-   * Gets the maximum level-of-detail that can be requested.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {number|undefined}
-   * @readonly
-   */
-  maximumLevel: {
-    get: function () {
-      return this._tileProvider.maximumLevel;
-    },
-  },
-
-  /**
-   * Gets the minimum level-of-detail that can be requested.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {number}
-   * @readonly
-   */
-  minimumLevel: {
-    get: function () {
-      return this._tileProvider.minimumLevel;
-    },
-  },
-
-  /**
-   * Gets the tiling scheme used by this provider.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {TilingScheme}
-   * @readonly
-   */
-  tilingScheme: {
-    get: function () {
-      return this._tileProvider.tilingScheme;
-    },
-  },
-
-  /**
-   * Gets the rectangle, in radians, of the imagery provided by this instance.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Rectangle}
-   * @readonly
-   */
-  rectangle: {
-    get: function () {
-      return this._tileProvider.rectangle;
-    },
-  },
-
-  /**
-   * Gets the tile discard policy.  If not undefined, the discard policy is responsible
-   * for filtering out "missing" tiles via its shouldDiscardImage function.  If this function
-   * returns undefined, no tiles are filtered.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {TileDiscardPolicy}
-   * @readonly
-   */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._tileProvider.tileDiscardPolicy;
-    },
-  },
-
-  /**
-   * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
-   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
-   * are passed an instance of {@link TileProviderError}.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Event}
-   * @readonly
-   */
-  errorEvent: {
-    get: function () {
-      return this._tileProvider.errorEvent;
-    },
-  },
-
-  /**
-   * Gets the mime type of images returned by this imagery provider.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {string}
-   * @readonly
-   */
-  format: {
-    get: function () {
-      return this._format;
-    },
-  },
-
-  /**
-   * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
-   * the source of the imagery.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Credit}
-   * @readonly
-   */
-  credit: {
-    get: function () {
-      return this._tileProvider.credit;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the images provided by this imagery provider
-   * include an alpha channel.  If this property is false, an alpha channel, if present, will
-   * be ignored.  If this property is true, any images without an alpha channel will be treated
-   * as if their alpha is 1.0 everywhere.  When this property is false, memory usage
-   * and texture upload time are reduced.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  hasAlphaChannel: {
-    get: function () {
-      return true;
-    },
-  },
-
-  /**
-   * Gets or sets a value indicating whether feature picking is enabled.  If true, {@link WebMapTileServiceImageryProvider#pickFeatures} will
-   * invoke the <code>GetFeatureInfo</code> service on the WMTS server and attempt to interpret the features included in the response.  If false,
-   * {@link WebMapTileServiceImageryProvider#pickFeatures} will immediately return undefined (indicating no pickable
-   * features) without communicating with the server.  Set this property to false if you know your data
-   * source does not support picking features or if you don't want this provider's features to be pickable.
-   * Defaults to true for KVP encoding. For RESTful encoding, defaults to true only when
-   * {@link WebMapTileServiceImageryProvider.ConstructorOptions#getFeatureInfoUrl} is specified, and false otherwise.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {boolean}
-   */
-  enablePickFeatures: {
-    get: function () {
-      return this._tileProvider.enablePickFeatures;
-    },
-    set: function (enablePickFeatures) {
-      this._tileProvider.enablePickFeatures = enablePickFeatures;
-    },
-  },
-
-  /**
-   * Gets or sets a clock that is used to get keep the time used for time dynamic parameters.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Clock}
-   */
-  clock: {
-    get: function () {
-      return this._timeDynamicImagery.clock;
-    },
-    set: function (value) {
-      this._timeDynamicImagery.clock = value;
-    },
-  },
-  /**
-   * Gets or sets a time interval collection that is used to get time dynamic parameters. The data of each
-   * TimeInterval is an object containing the keys and values of the properties that are used during
-   * tile requests.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {TimeIntervalCollection}
-   */
-  times: {
-    get: function () {
-      return this._timeDynamicImagery.times;
-    },
-    set: function (value) {
-      this._timeDynamicImagery.times = value;
-    },
-  },
-  /**
-   * Gets or sets an object that contains static dimensions and their values.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {object}
-   */
-  dimensions: {
-    get: function () {
-      return this._dimensions;
-    },
-    set: function (value) {
-      if (this._dimensions !== value) {
-        this._dimensions = value;
-        if (defined(this._reload)) {
-          this._reload();
-        }
-      }
-    },
-  },
-
-  /**
-   * Gets the getFeatureInfo URL of the WMTS server.
-   * @memberof WebMapTileServiceImageryProvider.prototype
-   * @type {Resource|string}
-   * @readonly
-   */
-  getFeatureInfoUrl: {
-    get: function () {
-      return this._getFeatureInfoUrl;
-    },
-  },
-});
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-WebMapTileServiceImageryProvider.prototype.getTileCredits = function (
-  x,
-  y,
-  level,
-) {
-  return this._tileProvider.getTileCredits(x, y, level);
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-WebMapTileServiceImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  let result;
-  const timeDynamicImagery = this._timeDynamicImagery;
-  let currentInterval;
-
-  // Try and load from cache
-  if (defined(timeDynamicImagery)) {
-    currentInterval = timeDynamicImagery.currentInterval;
-    result = timeDynamicImagery.getFromCache(x, y, level, request);
-  }
-
-  // Couldn't load from cache
-  if (!defined(result)) {
-    result = requestImage(this, x, y, level, request, currentInterval);
-  }
-
-  // If we are approaching an interval, preload this tile in the next interval
-  if (defined(result) && defined(timeDynamicImagery)) {
-    timeDynamicImagery.checkApproachingInterval(x, y, level, request);
-  }
-
-  return result;
-};
-
-/**
- * Asynchronously determines what features, if any, are located at a given longitude and latitude within
- * a tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {Promise<ImageryLayerFeatureInfo[]>|undefined} A promise for the picked features that will resolve when the asynchronous
- *                   picking completes.  The resolved value is an array of {@link ImageryLayerFeatureInfo}
- *                   instances.  The array may be empty if no features are found at the given location.
- */
-WebMapTileServiceImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  const timeDynamicImagery = this._timeDynamicImagery;
-  const currentInterval = defined(timeDynamicImagery)
-    ? timeDynamicImagery.currentInterval
-    : undefined;
-
-  return pickFeatures(this, x, y, level, longitude, latitude, currentInterval);
-};
 
 /**
  * The default parameters to include in the WMTS URL to obtain images.  The values are as follows:

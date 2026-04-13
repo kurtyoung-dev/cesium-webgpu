@@ -11,59 +11,80 @@ import PassThroughDepth from "../Shaders/PostProcessStages/PassThroughDepth.js";
 /**
  * @private
  */
-function GlobeTranslucencyFramebuffer() {
-  this._framebuffer = new FramebufferManager({
-    depthStencil: true,
-    supportsDepthTexture: true,
-  });
-  this._packedDepthFramebuffer = new FramebufferManager();
+class GlobeTranslucencyFramebuffer {
+  constructor() {
+    this._framebuffer = new FramebufferManager({
+      depthStencil: true,
+      supportsDepthTexture: true,
+    });
+    this._packedDepthFramebuffer = new FramebufferManager();
 
-  this._renderState = undefined;
+    this._renderState = undefined;
 
-  this._packedDepthCommand = undefined;
-  this._clearCommand = undefined;
+    this._packedDepthCommand = undefined;
+    this._clearCommand = undefined;
 
-  this._viewport = new BoundingRectangle();
-  this._useScissorTest = false;
-  this._scissorRectangle = undefined;
-  this._useHdr = undefined;
+    this._viewport = new BoundingRectangle();
+    this._useScissorTest = false;
+    this._scissorRectangle = undefined;
+    this._useHdr = undefined;
+  }
+
+  updateAndClear(hdr, viewport, context, passState) {
+    const width = viewport.width;
+    const height = viewport.height;
+
+    updateResources(this, context, width, height, hdr);
+    updateCommands(this, context, width, height, passState);
+
+    this._useHdr = hdr;
+  }
+
+  clearClassification(context, passState) {
+    this._clearCommand.execute(context, passState);
+  }
+
+  packDepth(context, passState) {
+    this._packedDepthCommand.execute(context, passState);
+    return this.packedDepthTexture;
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    destroyResources(this);
+    return destroyObject(this);
+  }
+
+  // Exposed for testing
+  get classificationTexture() {
+    return this._framebuffer.getColorTexture();
+  }
+
+  get classificationFramebuffer() {
+    return this._framebuffer.framebuffer;
+  }
+
+  // Exposed for testing
+  get packedDepthFramebuffer() {
+    return this._packedDepthFramebuffer.framebuffer;
+  }
+
+  get depthStencilTexture() {
+    return this._framebuffer.getDepthStencilTexture();
+  }
+
+  // Exposed for testing
+  get depthStencilRenderbuffer() {
+    return this._framebuffer.getDepthStencilRenderbuffer();
+  }
+
+  get packedDepthTexture() {
+    return this._packedDepthFramebuffer.getColorTexture();
+  }
 }
-
-Object.defineProperties(GlobeTranslucencyFramebuffer.prototype, {
-  // Exposed for testing
-  classificationTexture: {
-    get: function () {
-      return this._framebuffer.getColorTexture();
-    },
-  },
-  classificationFramebuffer: {
-    get: function () {
-      return this._framebuffer.framebuffer;
-    },
-  },
-  // Exposed for testing
-  packedDepthFramebuffer: {
-    get: function () {
-      return this._packedDepthFramebuffer.framebuffer;
-    },
-  },
-  depthStencilTexture: {
-    get: function () {
-      return this._framebuffer.getDepthStencilTexture();
-    },
-  },
-  // Exposed for testing
-  depthStencilRenderbuffer: {
-    get: function () {
-      return this._framebuffer.getDepthStencilRenderbuffer();
-    },
-  },
-  packedDepthTexture: {
-    get: function () {
-      return this._packedDepthFramebuffer.getColorTexture();
-    },
-  },
-});
 
 function destroyResources(globeTranslucency) {
   globeTranslucency._framebuffer.destroy();
@@ -158,44 +179,5 @@ function updateCommands(globeTranslucency, context, width, height, passState) {
     globeTranslucency.classificationFramebuffer;
   globeTranslucency._clearCommand.renderState = globeTranslucency._renderState;
 }
-
-GlobeTranslucencyFramebuffer.prototype.updateAndClear = function (
-  hdr,
-  viewport,
-  context,
-  passState,
-) {
-  const width = viewport.width;
-  const height = viewport.height;
-
-  updateResources(this, context, width, height, hdr);
-  updateCommands(this, context, width, height, passState);
-
-  this._useHdr = hdr;
-};
-
-GlobeTranslucencyFramebuffer.prototype.clearClassification = function (
-  context,
-  passState,
-) {
-  this._clearCommand.execute(context, passState);
-};
-
-GlobeTranslucencyFramebuffer.prototype.packDepth = function (
-  context,
-  passState,
-) {
-  this._packedDepthCommand.execute(context, passState);
-  return this.packedDepthTexture;
-};
-
-GlobeTranslucencyFramebuffer.prototype.isDestroyed = function () {
-  return false;
-};
-
-GlobeTranslucencyFramebuffer.prototype.destroy = function () {
-  destroyResources(this);
-  return destroyObject(this);
-};
 
 export default GlobeTranslucencyFramebuffer;

@@ -192,7 +192,7 @@ Cesium3DTilesTerrainGeometryProcessor.createMesh = async function (options) {
 
   const hasMeshOptCompression =
     gltf.extensionsRequired !== undefined &&
-    gltf.extensionsRequired.indexOf("EXT_meshopt_compression") !== -1;
+    gltf.extensionsRequired.includes("EXT_meshopt_compression");
 
   // Awaiting `awaitMeshoptDecoder()` triggers the dynamic import on first
   // call (downloads ~110 KB chunk + initialises the decoder). Subsequent

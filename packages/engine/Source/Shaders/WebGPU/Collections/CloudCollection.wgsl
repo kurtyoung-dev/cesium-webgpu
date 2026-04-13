@@ -28,7 +28,7 @@ struct CloudUniforms {
   _pad2: vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> uniforms: CloudUniforms;
+@group(0) @binding(0) var<uniform> camera: CloudUniforms;
 @group(0) @binding(1) var noiseTexture: texture_2d<f32>;
 @group(0) @binding(2) var noiseSampler: sampler;
 
@@ -37,14 +37,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
 
   // RTE positioning
-  let posRTE = (input.positionHigh - uniforms.encodedCameraHigh) +
-               (input.positionLow - uniforms.encodedCameraLow);
-  let clipPos = uniforms.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
+  let posRTE = (input.positionHigh - camera.encodedCameraHigh) +
+               (input.positionLow - camera.encodedCameraLow);
+  let clipPos = camera.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
 
   // Billboard offset in clip space
   let scale = input.scaleAndBrightness.xy;
-  let aspectX = scale.x / uniforms.viewportSize.x * clipPos.w;
-  let aspectY = scale.y / uniforms.viewportSize.y * clipPos.w;
+  let aspectX = scale.x / camera.viewportSize.x * clipPos.w;
+  let aspectY = scale.y / camera.viewportSize.y * clipPos.w;
 
   var offset = clipPos;
   offset.x = offset.x + input.quadVertex.x * aspectX;

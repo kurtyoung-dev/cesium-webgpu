@@ -202,944 +202,1528 @@ import ImageryLayerCollection from "./ImageryLayerCollection.js";
  * scene.primitives.add(tileset);
  * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification|3D Tiles specification}
  */
-function Cesium3DTileset(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class Cesium3DTileset {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._url = undefined;
-  this._basePath = undefined;
-  this._root = undefined;
-  this._resource = undefined;
-  this._asset = undefined; // Metadata for the entire tileset
-  this._properties = undefined; // Metadata for per-model/point/etc properties
-  this._geometricError = undefined; // Geometric error when the tree is not rendered at all
-  this._scaledGeometricError = undefined; // Geometric error scaled by root tile scale
-  this._extensionsUsed = undefined;
-  this._extensions = undefined;
-  this._modelUpAxis = undefined;
-  this._modelForwardAxis = undefined;
-  this._cache = new Cesium3DTilesetCache();
-  this._processingQueue = [];
-  this._selectedTiles = [];
-  this._emptyTiles = [];
-  this._requestedTiles = [];
-  this._selectedTilesToStyle = [];
-  this._loadTimestamp = undefined;
-  this._timeSinceLoad = 0.0;
-  this._updatedVisibilityFrame = 0;
-  this._updatedModelMatrixFrame = 0;
-  this._modelMatrixChanged = false;
-  this._previousModelMatrix = undefined;
-  this._extras = undefined;
-  this._credits = undefined;
+    this._url = undefined;
+    this._basePath = undefined;
+    this._root = undefined;
+    this._resource = undefined;
+    this._asset = undefined; // Metadata for the entire tileset
+    this._properties = undefined; // Metadata for per-model/point/etc properties
+    this._geometricError = undefined; // Geometric error when the tree is not rendered at all
+    this._scaledGeometricError = undefined; // Geometric error scaled by root tile scale
+    this._extensionsUsed = undefined;
+    this._extensions = undefined;
+    this._modelUpAxis = undefined;
+    this._modelForwardAxis = undefined;
+    this._cache = new Cesium3DTilesetCache();
+    this._processingQueue = [];
+    this._selectedTiles = [];
+    this._emptyTiles = [];
+    this._requestedTiles = [];
+    this._selectedTilesToStyle = [];
+    this._loadTimestamp = undefined;
+    this._timeSinceLoad = 0.0;
+    this._updatedVisibilityFrame = 0;
+    this._updatedModelMatrixFrame = 0;
+    this._modelMatrixChanged = false;
+    this._previousModelMatrix = undefined;
+    this._extras = undefined;
+    this._credits = undefined;
 
-  this._showCreditsOnScreen = options.showCreditsOnScreen ?? false;
+    this._showCreditsOnScreen = options.showCreditsOnScreen ?? false;
 
-  this._cullWithChildrenBounds = options.cullWithChildrenBounds ?? true;
-  this._allTilesAdditive = true;
+    this._cullWithChildrenBounds = options.cullWithChildrenBounds ?? true;
+    this._allTilesAdditive = true;
 
-  this._hasMixedContent = false;
+    this._hasMixedContent = false;
 
-  this._stencilClearCommand = undefined;
-  this._backfaceCommands = new ManagedArray();
+    this._stencilClearCommand = undefined;
+    this._backfaceCommands = new ManagedArray();
 
-  this._maximumScreenSpaceError = options.maximumScreenSpaceError ?? 16;
-  this._memoryAdjustedScreenSpaceError = this._maximumScreenSpaceError;
+    this._maximumScreenSpaceError = options.maximumScreenSpaceError ?? 16;
+    this._memoryAdjustedScreenSpaceError = this._maximumScreenSpaceError;
 
-  this._cacheBytes = options.cacheBytes ?? 512 * 1024 * 1024;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number.greaterThanOrEquals("cacheBytes", this._cacheBytes, 0);
-  //>>includeEnd('debug');
+    this._cacheBytes = options.cacheBytes ?? 512 * 1024 * 1024;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("cacheBytes", this._cacheBytes, 0);
+    //>>includeEnd('debug');
 
-  const maximumCacheOverflowBytes =
-    options.maximumCacheOverflowBytes ?? 512 * 1024 * 1024;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number.greaterThanOrEquals(
-    "maximumCacheOverflowBytes",
-    maximumCacheOverflowBytes,
-    0,
-  );
-  //>>includeEnd('debug');
-  this._maximumCacheOverflowBytes = maximumCacheOverflowBytes;
+    const maximumCacheOverflowBytes =
+      options.maximumCacheOverflowBytes ?? 512 * 1024 * 1024;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals(
+      "maximumCacheOverflowBytes",
+      maximumCacheOverflowBytes,
+      0,
+    );
+    //>>includeEnd('debug');
+    this._maximumCacheOverflowBytes = maximumCacheOverflowBytes;
 
-  this._styleEngine = new Cesium3DTileStyleEngine();
-  this._styleApplied = false;
+    this._styleEngine = new Cesium3DTileStyleEngine();
+    this._styleApplied = false;
 
-  this._modelMatrix = defined(options.modelMatrix)
-    ? Matrix4.clone(options.modelMatrix)
-    : Matrix4.clone(Matrix4.IDENTITY);
+    this._modelMatrix = defined(options.modelMatrix)
+      ? Matrix4.clone(options.modelMatrix)
+      : Matrix4.clone(Matrix4.IDENTITY);
 
-  this._addHeightCallbacks = [];
+    this._addHeightCallbacks = [];
 
-  this._statistics = new Cesium3DTilesetStatistics();
-  this._statisticsLast = new Cesium3DTilesetStatistics();
-  this._statisticsPerPass = new Array(Cesium3DTilePass.NUMBER_OF_PASSES);
+    this._statistics = new Cesium3DTilesetStatistics();
+    this._statisticsLast = new Cesium3DTilesetStatistics();
+    this._statisticsPerPass = new Array(Cesium3DTilePass.NUMBER_OF_PASSES);
 
-  for (let i = 0; i < Cesium3DTilePass.NUMBER_OF_PASSES; ++i) {
-    this._statisticsPerPass[i] = new Cesium3DTilesetStatistics();
-  }
+    for (let i = 0; i < Cesium3DTilePass.NUMBER_OF_PASSES; ++i) {
+      this._statisticsPerPass[i] = new Cesium3DTilesetStatistics();
+    }
 
-  this._requestedTilesInFlight = [];
+    this._requestedTilesInFlight = [];
 
-  this._maximumPriority = {
-    foveatedFactor: -Number.MAX_VALUE,
-    depth: -Number.MAX_VALUE,
-    distance: -Number.MAX_VALUE,
-    reverseScreenSpaceError: -Number.MAX_VALUE,
-  };
-  this._minimumPriority = {
-    foveatedFactor: Number.MAX_VALUE,
-    depth: Number.MAX_VALUE,
-    distance: Number.MAX_VALUE,
-    reverseScreenSpaceError: Number.MAX_VALUE,
-  };
-  this._heatmap = new Cesium3DTilesetHeatmap(
-    options.debugHeatmapTilePropertyName,
-  );
+    this._maximumPriority = {
+      foveatedFactor: -Number.MAX_VALUE,
+      depth: -Number.MAX_VALUE,
+      distance: -Number.MAX_VALUE,
+      reverseScreenSpaceError: -Number.MAX_VALUE,
+    };
+    this._minimumPriority = {
+      foveatedFactor: Number.MAX_VALUE,
+      depth: Number.MAX_VALUE,
+      distance: Number.MAX_VALUE,
+      reverseScreenSpaceError: Number.MAX_VALUE,
+    };
+    this._heatmap = new Cesium3DTilesetHeatmap(
+      options.debugHeatmapTilePropertyName,
+    );
 
-  /**
-   * Optimization option. Don't request tiles that will likely be unused when they come back because of the camera's movement. This optimization only applies to stationary tilesets.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.cullRequestsWhileMoving = options.cullRequestsWhileMoving ?? true;
-  this._cullRequestsWhileMoving = false;
+    /**
+     * Optimization option. Don't request tiles that will likely be unused when they come back because of the camera's movement. This optimization only applies to stationary tilesets.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.cullRequestsWhileMoving = options.cullRequestsWhileMoving ?? true;
+    this._cullRequestsWhileMoving = false;
 
-  /**
-   * Optimization option. Multiplier used in culling requests while moving. Larger is more aggressive culling, smaller less aggressive culling.
-   *
-   * @type {number}
-   * @default 60.0
-   */
-  this.cullRequestsWhileMovingMultiplier =
-    options.cullRequestsWhileMovingMultiplier ?? 60.0;
+    /**
+     * Optimization option. Multiplier used in culling requests while moving. Larger is more aggressive culling, smaller less aggressive culling.
+     *
+     * @type {number}
+     * @default 60.0
+     */
+    this.cullRequestsWhileMovingMultiplier =
+      options.cullRequestsWhileMovingMultiplier ?? 60.0;
 
-  /**
-   * Optimization option. If between (0.0, 0.5], tiles at or above the screen space error for the reduced screen resolution of <code>progressiveResolutionHeightFraction*screenHeight</code> will be prioritized first. This can help get a quick layer of tiles down while full resolution tiles continue to load.
-   *
-   * @type {number}
-   * @default 0.3
-   */
-  this.progressiveResolutionHeightFraction = CesiumMath.clamp(
-    options.progressiveResolutionHeightFraction ?? 0.3,
-    0.0,
-    0.5,
-  );
+    /**
+     * Optimization option. If between (0.0, 0.5], tiles at or above the screen space error for the reduced screen resolution of <code>progressiveResolutionHeightFraction*screenHeight</code> will be prioritized first. This can help get a quick layer of tiles down while full resolution tiles continue to load.
+     *
+     * @type {number}
+     * @default 0.3
+     */
+    this.progressiveResolutionHeightFraction = CesiumMath.clamp(
+      options.progressiveResolutionHeightFraction ?? 0.3,
+      0.0,
+      0.5,
+    );
 
-  /**
-   * Optimization option. Prefer loading of leaves first.
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.preferLeaves = options.preferLeaves ?? false;
+    /**
+     * Optimization option. Prefer loading of leaves first.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.preferLeaves = options.preferLeaves ?? false;
 
-  this._tilesLoaded = false;
-  this._initialTilesLoaded = false;
+    this._tilesLoaded = false;
+    this._initialTilesLoaded = false;
 
-  this._tileDebugLabels = undefined;
+    this._tileDebugLabels = undefined;
 
-  this._classificationType = options.classificationType;
-  this._heightReference = options.heightReference;
-  this._scene = options.scene;
+    this._classificationType = options.classificationType;
+    this._heightReference = options.heightReference;
+    this._scene = options.scene;
 
-  // Optional 3D Tiles live invalidation feed (Phase 0.5 Phase 1). Constructed
-  // only when the caller passes either a fully-built feed or an adapter +
-  // layer list. Tilesets without this option are completely unaffected.
-  this._invalidationFeed = undefined;
-  if (defined(options.invalidationFeed)) {
-    const feedOpt = options.invalidationFeed;
-    // Accept either a fully-built Cesium3DTilesInvalidationFeed instance OR
-    // a config object { adapter, layers, pathEncoding }. Each tileset owning
-    // its own feed (with its own encoding) is the whole point of the
-    // TilePathEncoding rewrite.
-    if (feedOpt instanceof Cesium3DTilesInvalidationFeed) {
-      this._invalidationFeed = feedOpt;
+    // Optional 3D Tiles live invalidation feed (Phase 0.5 Phase 1). Constructed
+    // only when the caller passes either a fully-built feed or an adapter +
+    // layer list. Tilesets without this option are completely unaffected.
+    this._invalidationFeed = undefined;
+    if (defined(options.invalidationFeed)) {
+      const feedOpt = options.invalidationFeed;
+      // Accept either a fully-built Cesium3DTilesInvalidationFeed instance OR
+      // a config object { adapter, layers, pathEncoding }. Each tileset owning
+      // its own feed (with its own encoding) is the whole point of the
+      // TilePathEncoding rewrite.
+      if (feedOpt instanceof Cesium3DTilesInvalidationFeed) {
+        this._invalidationFeed = feedOpt;
+      } else if (
+        defined(feedOpt) &&
+        defined(feedOpt.adapter) &&
+        defined(feedOpt.layers)
+      ) {
+        this._invalidationFeed = new Cesium3DTilesInvalidationFeed(this, {
+          adapter: feedOpt.adapter,
+          layers: feedOpt.layers,
+          pathEncoding: feedOpt.pathEncoding ?? TilePathEncoding.CHILD_INDEX,
+          scene: this._scene,
+        });
+      } else {
+        // Legacy: duck-typed feed instance (setScene present).
+        this._invalidationFeed = feedOpt;
+      }
+      if (
+        defined(this._invalidationFeed) &&
+        typeof this._invalidationFeed.setScene === "function" &&
+        defined(this._scene)
+      ) {
+        this._invalidationFeed.setScene(this._scene);
+      }
     } else if (
-      defined(feedOpt) &&
-      defined(feedOpt.adapter) &&
-      defined(feedOpt.layers)
+      defined(options.invalidationFeedAdapter) &&
+      defined(options.invalidationFeedLayers)
     ) {
       this._invalidationFeed = new Cesium3DTilesInvalidationFeed(this, {
-        adapter: feedOpt.adapter,
-        layers: feedOpt.layers,
-        pathEncoding: feedOpt.pathEncoding ?? TilePathEncoding.CHILD_INDEX,
+        adapter: options.invalidationFeedAdapter,
+        layers: options.invalidationFeedLayers,
+        pathEncoding:
+          options.invalidationFeedPathEncoding ?? TilePathEncoding.CHILD_INDEX,
         scene: this._scene,
       });
+    }
+
+    this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+
+    this._initialClippingPlanesOriginMatrix = Matrix4.IDENTITY; // Computed from the tileset JSON.
+    this._clippingPlanesOriginMatrix = undefined; // Combines the above with any run-time transforms.
+    this._clippingPlanesOriginMatrixDirty = true;
+
+    this._vectorClassificationOnly = options.vectorClassificationOnly ?? false;
+
+    this._vectorKeepDecodedPositions =
+      options.vectorKeepDecodedPositions ?? false;
+
+    /**
+     * The collection of <code>ImageryLayer</code> objects providing 2D georeferenced
+     * image data that will be rendered over the tileset.
+     *
+     * @private
+     * @type {ImageryLayerCollection}
+     * @readonly
+     */
+    this._imageryLayers = new ImageryLayerCollection(this);
+
+    /**
+     * A counter that will be increased for each modification of the
+     * imagery layers (i.e. for each layerAdded, layerRemoved,
+     * layerMoved, or layerShownOrHidden event). This can be used
+     * by the <code>ModelImagery</code> class to detect changes in
+     * the imagery, and trigger the appropriate updates.
+     *
+     * @private
+     */
+    this._imageryLayersModificationCounter = 0;
+
+    /**
+     * A listener that will be attached to the layerAdded, layerRemoved,
+     * layerMoved, and layerShownOrHidden events of the imagery layers,
+     * and increment the imagery layers modification counter for each
+     * event.
+     *
+     * @private
+     * @readonly
+     */
+    this._imageryLayersListener = () => {
+      this._imageryLayersModificationCounter++;
+    };
+
+    // Attach the imagery layers listener to all events of
+    // the imagery layers collection
+    this.imageryLayers.layerAdded.addEventListener(this._imageryLayersListener);
+    this.imageryLayers.layerRemoved.addEventListener(this._imageryLayersListener);
+    this.imageryLayers.layerMoved.addEventListener(this._imageryLayersListener);
+    this.imageryLayers.layerShownOrHidden.addEventListener(
+      this._imageryLayersListener,
+    );
+
+    /**
+     * Whether loading imagery that is draped over the tileset should be
+     * done asynchronously. If this is <code>true</code>, then tile content
+     * will be displayed with its original texture until the imagery texture
+     * is loaded. If this is <code>false</code>, then the tile content will
+     * not be displayed until the imagery is ready.
+     *
+     * @private
+     */
+    this._asynchronouslyLoadImagery = options.asynchronouslyLoadImagery ?? false;
+
+    /**
+     * Preload tiles when <code>tileset.show</code> is <code>false</code>. Loads tiles as if the tileset is visible but does not render them.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.preloadWhenHidden = options.preloadWhenHidden ?? false;
+
+    /**
+     * Optimization option. Fetch tiles at the camera's flight destination while the camera is in flight.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.preloadFlightDestinations = options.preloadFlightDestinations ?? true;
+    this._pass = undefined; // Cesium3DTilePass
+
+    /**
+     * Optimization option. For street-level horizon views, use lower resolution tiles far from the camera. This reduces
+     * the amount of data loaded and improves tileset loading time with a slight drop in visual quality in the distance.
+     * <p>
+     * This optimization is strongest when the camera is close to the ground plane of the tileset and looking at the
+     * horizon. Furthermore, the results are more accurate for tightly fitting bounding volumes like box and region.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.dynamicScreenSpaceError = options.dynamicScreenSpaceError ?? true;
+
+    /**
+     * Optimization option. Prioritize loading tiles in the center of the screen by temporarily raising the
+     * screen space error for tiles around the edge of the screen. Screen space error returns to normal once all
+     * the tiles in the center of the screen as determined by the {@link Cesium3DTileset#foveatedConeSize} are loaded.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.foveatedScreenSpaceError = options.foveatedScreenSpaceError ?? true;
+    this._foveatedConeSize = options.foveatedConeSize ?? 0.1;
+    this._foveatedMinimumScreenSpaceErrorRelaxation =
+      options.foveatedMinimumScreenSpaceErrorRelaxation ?? 0.0;
+
+    /**
+     * Gets or sets a callback to control how much to raise the screen space error for tiles outside the foveated cone,
+     * interpolating between {@link Cesium3DTileset#foveatedMinimumScreenSpaceErrorRelaxation} and {@link Cesium3DTileset#maximumScreenSpaceError}.
+     *
+     * @type {Cesium3DTileset.foveatedInterpolationCallback}
+     */
+    this.foveatedInterpolationCallback =
+      options.foveatedInterpolationCallback ?? CesiumMath.lerp;
+
+    /**
+     * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control
+     * how long in seconds to wait after the camera stops moving before deferred tiles start loading in.
+     * This time delay prevents requesting tiles around the edges of the screen when the camera is moving.
+     * Setting this to 0.0 will immediately request all tiles in any given view.
+     *
+     * @type {number}
+     * @default 0.2
+     */
+    this.foveatedTimeDelay = options.foveatedTimeDelay ?? 0.2;
+
+    /**
+     * Similar to {@link Fog#density}, this option controls the camera distance at which the {@link Cesium3DTileset#dynamicScreenSpaceError}
+     * optimization applies. Larger values will cause tiles closer to the camera to be affected. This value must be
+     * non-negative.
+     * <p>
+     * This optimization works by rolling off the tile screen space error (SSE) with camera distance like a bell curve.
+     * This has the effect of selecting lower resolution tiles far from the camera. Near the camera, no adjustment is
+     * made. For tiles further away, the SSE is reduced by up to {@link Cesium3DTileset#dynamicScreenSpaceErrorFactor}
+     * (measured in pixels of error).
+     * </p>
+     * <p>
+     * Increasing the density makes the bell curve narrower so tiles closer to the camera are affected. This is analagous
+     * to moving fog closer to the camera.
+     * </p>
+     * <p>
+     * When the density is 0, the optimization will have no effect on the tileset.
+     * </p>
+     *
+     * @type {number}
+     * @default 2.0e-4
+     */
+    this.dynamicScreenSpaceErrorDensity =
+      options.dynamicScreenSpaceErrorDensity ?? 2.0e-4;
+
+    /**
+     * A parameter that controls the intensity of the {@link Cesium3DTileset#dynamicScreenSpaceError} optimization for
+     * tiles on the horizon. Larger values cause lower resolution tiles to load, improving runtime performance at a slight
+     * reduction of visual quality. The value must be non-negative.
+     * <p>
+     * More specifically, this parameter represents the maximum adjustment to screen space error (SSE) in pixels for tiles
+     * far away from the camera. See {@link Cesium3DTileset#dynamicScreenSpaceErrorDensity} for more details about how
+     * this optimization works.
+     * </p>
+     * <p>
+     * When the SSE factor is set to 0, the optimization will have no effect on the tileset.
+     * </p>
+     *
+     * @type {number}
+     * @default 24.0
+     */
+    this.dynamicScreenSpaceErrorFactor =
+      options.dynamicScreenSpaceErrorFactor ?? 24.0;
+
+    /**
+     * A ratio of the tileset's height that determines "street level" for the {@link Cesium3DTileset#dynamicScreenSpaceError}
+     * optimization. When the camera is below this height, the dynamic screen space error optimization will have the maximum
+     * effect, and it will roll off above this value. Valid values are between 0.0 and 1.0.
+     * <p>
+     *
+     * @type {number}
+     * @default 0.25
+     */
+    this.dynamicScreenSpaceErrorHeightFalloff =
+      options.dynamicScreenSpaceErrorHeightFalloff ?? 0.25;
+
+    // Updated based on the camera position and direction
+    this._dynamicScreenSpaceErrorComputedDensity = 0.0;
+
+    /**
+     * Determines whether the tileset casts or receives shadows from light sources.
+     * <p>
+     * Enabling shadows has a performance impact. A tileset that casts shadows must be rendered twice, once from the camera and again from the light's point of view.
+     * </p>
+     * <p>
+     * Shadows are rendered only when {@link Viewer#shadows} is <code>true</code>.
+     * </p>
+     *
+     * @type {ShadowMode}
+     * @default ShadowMode.ENABLED
+     */
+    this.shadows = options.shadows ?? ShadowMode.ENABLED;
+
+    /**
+     * Determines if the tileset will be shown.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.show = options.show ?? true;
+
+    /**
+     * Defines how per-feature colors set from the Cesium API or declarative styling blend with the source colors from
+     * the original feature, e.g. glTF material or per-point color in the tile.
+     *
+     * @type {Cesium3DTileColorBlendMode}
+     * @default Cesium3DTileColorBlendMode.HIGHLIGHT
+     */
+    this.colorBlendMode = Cesium3DTileColorBlendMode.HIGHLIGHT;
+
+    /**
+     * Defines the value used to linearly interpolate between the source color and feature color when the {@link Cesium3DTileset#colorBlendMode} is <code>MIX</code>.
+     * A value of 0.0 results in the source color while a value of 1.0 results in the feature color, with any value in-between
+     * resulting in a mix of the source color and feature color.
+     *
+     * @type {number}
+     * @default 0.5
+     */
+    this.colorBlendAmount = 0.5;
+
+    this._pointCloudShading = new PointCloudShading(options.pointCloudShading);
+    this._pointCloudEyeDomeLighting = new PointCloudEyeDomeLighting();
+
+    /**
+     * The event fired to indicate progress of loading new tiles.  This event is fired when a new tile
+     * is requested, when a requested tile is finished downloading, and when a downloaded tile has been
+     * processed and is ready to render.
+     * <p>
+     * The number of pending tile requests, <code>numberOfPendingRequests</code>, and number of tiles
+     * processing, <code>numberOfTilesProcessing</code> are passed to the event listener.
+     * </p>
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.loadProgress.addEventListener(function(numberOfPendingRequests, numberOfTilesProcessing) {
+     *     if ((numberOfPendingRequests === 0) && (numberOfTilesProcessing === 0)) {
+     *         console.log('Stopped loading');
+     *         return;
+     *     }
+     *
+     *     console.log(`Loading: requests: ${numberOfPendingRequests}, processing: ${numberOfTilesProcessing}`);
+     * });
+     */
+    this.loadProgress = new Event();
+
+    /**
+     * The event fired to indicate that all tiles that meet the screen space error this frame are loaded. The tileset
+     * is completely loaded for this view.
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.allTilesLoaded.addEventListener(function() {
+     *     console.log('All tiles are loaded');
+     * });
+     *
+     * @see Cesium3DTileset#tilesLoaded
+     */
+    this.allTilesLoaded = new Event();
+
+    /**
+     * The event fired to indicate that all tiles that meet the screen space error this frame are loaded. This event
+     * is fired once when all tiles in the initial view are loaded.
+     * <p>
+     * This event is fired at the end of the frame after the scene is rendered.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.initialTilesLoaded.addEventListener(function() {
+     *     console.log('Initial tiles are loaded');
+     * });
+     *
+     * @see Cesium3DTileset#allTilesLoaded
+     */
+    this.initialTilesLoaded = new Event();
+
+    /**
+     * The event fired to indicate that a tile's content was loaded.
+     * <p>
+     * The loaded {@link Cesium3DTile} is passed to the event listener.
+     * </p>
+     * <p>
+     * This event is fired during the tileset traversal while the frame is being rendered
+     * so that updates to the tile take effect in the same frame.  Do not create or modify
+     * Cesium entities or primitives during the event listener.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.tileLoad.addEventListener(function(tile) {
+     *     console.log('A tile was loaded.');
+     * });
+     */
+    this.tileLoad = new Event();
+
+    /**
+     * The event fired to indicate that a tile's content was unloaded.
+     * <p>
+     * The unloaded {@link Cesium3DTile} is passed to the event listener.
+     * </p>
+     * <p>
+     * This event is fired immediately before the tile's content is unloaded while the frame is being
+     * rendered so that the event listener has access to the tile's content.  Do not create
+     * or modify Cesium entities or primitives during the event listener.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.tileUnload.addEventListener(function(tile) {
+     *     console.log('A tile was unloaded from the cache.');
+     * });
+     *
+     * @see Cesium3DTileset#cacheBytes
+     * @see Cesium3DTileset#trimLoadedTiles
+     */
+    this.tileUnload = new Event();
+
+    /**
+     * The event fired to indicate that a tile's content failed to load.
+     * <p>
+     * If there are no event listeners, error messages will be logged to the console.
+     * </p>
+     * <p>
+     * The error object passed to the listener contains two properties:
+     * <ul>
+     * <li><code>url</code>: the url of the failed tile.</li>
+     * <li><code>message</code>: the error message.</li>
+     * </ul>
+     * <p>
+     * If multiple contents are present, this event is raised once per inner content with errors.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.tileFailed.addEventListener(function(error) {
+     *     console.log(`An error occurred loading tile: ${error.url}`);
+     *     console.log(`Error: ${error.message}`);
+     * });
+     */
+    this.tileFailed = new Event();
+
+    /**
+     * This event fires once for each visible tile in a frame.  This can be used to manually
+     * style a tileset.
+     * <p>
+     * The visible {@link Cesium3DTile} is passed to the event listener.
+     * </p>
+     * <p>
+     * This event is fired during the tileset traversal while the frame is being rendered
+     * so that updates to the tile take effect in the same frame.  Do not create or modify
+     * Cesium entities or primitives during the event listener.
+     * </p>
+     *
+     * @type {Event}
+     * @default new Event()
+     *
+     * @example
+     * tileset.tileVisible.addEventListener(function(tile) {
+     *     if (tile.content instanceof Cesium.Model3DTileContent) {
+     *         console.log('A 3D model tile is visible.');
+     *     }
+     * });
+     *
+     * @example
+     * // Apply a red style and then manually set random colors for every other feature when the tile becomes visible.
+     * tileset.style = new Cesium.Cesium3DTileStyle({
+     *     color : 'color("red")'
+     * });
+     * tileset.tileVisible.addEventListener(function(tile) {
+     *     const content = tile.content;
+     *     const featuresLength = content.featuresLength;
+     *     for (let i = 0; i < featuresLength; i+=2) {
+     *         content.getFeature(i).color = Cesium.Color.fromRandom();
+     *     }
+     * });
+     */
+    this.tileVisible = new Event();
+
+    /**
+     * Optimization option. Determines if level of detail skipping should be applied during the traversal.
+     * <p>
+     * The common strategy for replacement-refinement traversal is to store all levels of the tree in memory and require
+     * all children to be loaded before the parent can refine. With this optimization levels of the tree can be skipped
+     * entirely and children can be rendered alongside their parents. The tileset requires significantly less memory when
+     * using this optimization.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.skipLevelOfDetail = options.skipLevelOfDetail ?? false;
+
+    this._disableSkipLevelOfDetail = false;
+
+    /**
+     * The screen space error that must be reached before skipping levels of detail.
+     * <p>
+     * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
+     * </p>
+     *
+     * @type {number}
+     * @default 1024
+     */
+    this.baseScreenSpaceError = options.baseScreenSpaceError ?? 1024;
+
+    /**
+     * Multiplier defining the minimum screen space error to skip.
+     * For example, if a tile has screen space error of 100, no tiles will be loaded unless they
+     * are leaves or have a screen space error <code><= 100 / skipScreenSpaceErrorFactor</code>.
+     * <p>
+     * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
+     * </p>
+     *
+     * @type {number}
+     * @default 16
+     */
+    this.skipScreenSpaceErrorFactor = options.skipScreenSpaceErrorFactor ?? 16;
+
+    /**
+     * Constant defining the minimum number of levels to skip when loading tiles. When it is 0, no levels are skipped.
+     * For example, if a tile is level 1, no tiles will be loaded unless they are at level greater than 2.
+     * <p>
+     * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
+     * </p>
+     *
+     * @type {number}
+     * @default 1
+     */
+    this.skipLevels = options.skipLevels ?? 1;
+
+    /**
+     * When true, only tiles that meet the maximum screen space error will ever be downloaded.
+     * Skipping factors are ignored and just the desired tiles are loaded.
+     * <p>
+     * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.immediatelyLoadDesiredLevelOfDetail =
+      options.immediatelyLoadDesiredLevelOfDetail ?? false;
+
+    /**
+     * Determines whether siblings of visible tiles are always downloaded during traversal.
+     * This may be useful for ensuring that tiles are already available when the viewer turns left/right.
+     * <p>
+     * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.loadSiblings = options.loadSiblings ?? false;
+
+    this._clippingPlanes = undefined;
+    if (defined(options.clippingPlanes)) {
+      ClippingPlaneCollection.setOwner(
+        options.clippingPlanes,
+        this,
+        "_clippingPlanes",
+      );
+    }
+
+    this._clippingPolygons = undefined;
+    if (defined(options.clippingPolygons)) {
+      ClippingPolygonCollection.setOwner(
+        options.clippingPolygons,
+        this,
+        "_clippingPolygons",
+      );
+    }
+
+    if (defined(options.imageBasedLighting)) {
+      this._imageBasedLighting = options.imageBasedLighting;
+      this._shouldDestroyImageBasedLighting = false;
     } else {
-      // Legacy: duck-typed feed instance (setScene present).
-      this._invalidationFeed = feedOpt;
+      this._imageBasedLighting = new ImageBasedLighting();
+      this._shouldDestroyImageBasedLighting = true;
+    }
+
+    this._environmentMapManager = new DynamicEnvironmentMapManager(
+      options.environmentMapOptions,
+    );
+
+    /**
+     * The light color when shading models. When <code>undefined</code> the scene's light color is used instead.
+     * <p>
+     * For example, disabling additional light sources by setting
+     * <code>tileset.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
+     * will make the tileset much darker. Here, increasing the intensity of the light source will make the tileset brighter.
+     * </p>
+     *
+     * @type {Cartesian3}
+     * @default undefined
+     */
+    this.lightColor = options.lightColor;
+
+    /**
+     * Whether to cull back-facing geometry. When true, back face culling is determined
+     * by the glTF material's doubleSided property; when false, back face culling is disabled.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.backFaceCulling = options.backFaceCulling ?? true;
+
+    this._enableShowOutline = options.enableShowOutline ?? true;
+
+    /**
+     * Whether to display the outline for models using the
+     * {@link https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/CESIUM_primitive_outline|CESIUM_primitive_outline} extension.
+     * When true, outlines are displayed. When false, outlines are not displayed.
+     *
+     * @type {boolean}
+     * @default true
+     */
+    this.showOutline = options.showOutline ?? true;
+
+    /**
+     * The color to use when rendering outlines.
+     *
+     * @type {Color}
+     * @default Color.BLACK
+     */
+    this.outlineColor = options.outlineColor ?? Color.BLACK;
+
+    /**
+     * The {@link SplitDirection} to apply to this tileset.
+     *
+     * @type {SplitDirection}
+     * @default {@link SplitDirection.NONE}
+     */
+    this.splitDirection = options.splitDirection ?? SplitDirection.NONE;
+
+    /**
+     * If <code>true</code>, allows collisions for camera collisions or picking. While this is  <code>true</code> the camera will be prevented from going in or below the tileset surface if {@link ScreenSpaceCameraController#enableCollisionDetection} is true. This can have performance implecations if the tileset contains tile with a larger number of vertices.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.enableCollision = options.enableCollision ?? false;
+    this._projectTo2D = options.projectTo2D ?? false;
+    this._enablePick = options.enablePick ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * Determines if only the tiles from last frame should be used for rendering.  This
+     * effectively "freezes" the tileset to the previous frame so it is possible to zoom
+     * out and see what was rendered.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugFreezeFrame = options.debugFreezeFrame ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, assigns a random color to each tile.  This is useful for visualizing
+     * what features belong to what tiles, especially with additive refinement where features
+     * from parent tiles may be interleaved with features from child tiles.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugColorizeTiles = options.debugColorizeTiles ?? false;
+
+    this._enableDebugWireframe = options.enableDebugWireframe ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, renders each tile's content as a wireframe.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugWireframe = options.debugWireframe ?? false;
+
+    // Warning for improper setup of debug wireframe
+    if (this.debugWireframe === true && this._enableDebugWireframe === false) {
+      oneTimeWarning(
+        "tileset-debug-wireframe-ignored",
+        "enableDebugWireframe must be set to true in the Cesium3DTileset constructor, otherwise debugWireframe will be ignored.",
+      );
+    }
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, renders the bounding volume for each visible tile.  The bounding volume is
+     * white if the tile has a content bounding volume or is empty; otherwise, it is red.  Tiles that don't meet the
+     * screen space error and are still refining to their descendants are yellow.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, renders the bounding volume for each visible tile's content. The bounding volume is
+     * blue if the tile has a content bounding volume; otherwise it is red.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowContentBoundingVolume =
+      options.debugShowContentBoundingVolume ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, renders the viewer request volume for each tile.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowViewerRequestVolume =
+      options.debugShowViewerRequestVolume ?? false;
+
+    /**
+     * @private
+     * @type {LabelCollection|undefined}
+     */
+    this._tileDebugLabels = undefined;
+    this.debugPickedTileLabelOnly = false;
+    this.debugPickedTile = undefined;
+    this.debugPickPosition = undefined;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, draws labels to indicate the geometric error of each tile.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowGeometricError = options.debugShowGeometricError ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, draws labels to indicate the number of commands, points, triangles and features of each tile.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowRenderingStatistics =
+      options.debugShowRenderingStatistics ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, draws labels to indicate the geometry and texture memory usage of each tile.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowMemoryUsage = options.debugShowMemoryUsage ?? false;
+
+    /**
+     * This property is for debugging only; it is not optimized for production use.
+     * <p>
+     * When true, draws labels to indicate the url of each tile.
+     * </p>
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.debugShowUrl = options.debugShowUrl ?? false;
+
+    /**
+     * Function for examining vector lines as they are being streamed.
+     *
+     * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+     *
+     * @type {Function}
+     */
+    this.examineVectorLinesFunction = undefined;
+
+    // this is the underlying Cesium3DTileMetadata object, whether it came from
+    // the 3DTILES_metadata extension or a 3D Tiles 1.1 tileset JSON. Getters
+    // like tileset.metadata and tileset.schema will delegate to this object.
+    this._metadataExtension = undefined;
+
+    this._customShader = options.customShader;
+
+    let featureIdLabel = options.featureIdLabel ?? "featureId_0";
+    if (typeof featureIdLabel === "number") {
+      featureIdLabel = `featureId_${featureIdLabel}`;
+    }
+    this._featureIdLabel = featureIdLabel;
+
+    let instanceFeatureIdLabel =
+      options.instanceFeatureIdLabel ?? "instanceFeatureId_0";
+    if (typeof instanceFeatureIdLabel === "number") {
+      instanceFeatureIdLabel = `instanceFeatureId_${instanceFeatureIdLabel}`;
+    }
+    this._instanceFeatureIdLabel = instanceFeatureIdLabel;
+  }
+
+  /**
+   * Marks the tileset's {@link Cesium3DTileset#style} as dirty, which forces all
+   * features to re-evaluate the style in the next frame each is visible.
+   */
+  makeStyleDirty() {
+    this._styleEngine.makeDirty();
+  }
+
+  /**
+   * Loads the main tileset JSON file or a tileset JSON file referenced from a tile.
+   *
+   * @exception {RuntimeError} When the tileset asset version is not 0.0, 1.0, or 1.1,
+   * or when the tileset contains a required extension that is not supported.
+   *
+   * @private
+   */
+  loadTileset(resource, tilesetJson, parentTile) {
+    const asset = tilesetJson.asset;
+    if (!defined(asset)) {
+      throw new RuntimeError("Tileset must have an asset property.");
     }
     if (
-      defined(this._invalidationFeed) &&
-      typeof this._invalidationFeed.setScene === "function" &&
-      defined(this._scene)
+      asset.version !== "0.0" &&
+      asset.version !== "1.0" &&
+      asset.version !== "1.1"
     ) {
-      this._invalidationFeed.setScene(this._scene);
+      throw new RuntimeError(
+        "The tileset must be 3D Tiles version 0.0, 1.0, or 1.1",
+      );
     }
-  } else if (
-    defined(options.invalidationFeedAdapter) &&
-    defined(options.invalidationFeedLayers)
-  ) {
-    this._invalidationFeed = new Cesium3DTilesInvalidationFeed(this, {
-      adapter: options.invalidationFeedAdapter,
-      layers: options.invalidationFeedLayers,
-      pathEncoding:
-        options.invalidationFeedPathEncoding ?? TilePathEncoding.CHILD_INDEX,
-      scene: this._scene,
+
+    if (defined(tilesetJson.extensionsRequired)) {
+      Cesium3DTileset.checkSupportedExtensions(tilesetJson.extensionsRequired);
+    }
+
+    const statistics = this._statistics;
+
+    const tilesetVersion = asset.tilesetVersion;
+    if (defined(tilesetVersion)) {
+      // Append the tileset version to the resource
+      this._basePath += `?v=${tilesetVersion}`;
+      resource = resource.clone();
+      resource.setQueryParameters({ v: tilesetVersion });
+    }
+
+    // A tileset JSON file referenced from a tile may exist in a different directory than the root tileset.
+    // Get the basePath relative to the external tileset.
+    const rootTile = makeTile(this, resource, tilesetJson.root, parentTile);
+
+    // If there is a parentTile, add the root of the currently loading tileset
+    // to parentTile's children, and update its _depth.
+    if (defined(parentTile)) {
+      parentTile.children.push(rootTile);
+      rootTile._depth = parentTile._depth + 1;
+    }
+
+    const stack = [];
+    stack.push(rootTile);
+
+    while (stack.length > 0) {
+      const tile = stack.pop();
+      ++statistics.numberOfTilesTotal;
+      this._allTilesAdditive =
+        this._allTilesAdditive && tile.refine === Cesium3DTileRefine.ADD;
+      const children = tile._header.children;
+      if (defined(children)) {
+        for (let i = 0; i < children.length; ++i) {
+          const childHeader = children[i];
+          const childTile = makeTile(this, resource, childHeader, tile);
+          tile.children.push(childTile);
+          childTile._depth = tile._depth + 1;
+          stack.push(childTile);
+        }
+      }
+
+      if (this._cullWithChildrenBounds) {
+        Cesium3DTileOptimizations.checkChildrenWithinParent(tile);
+      }
+    }
+
+    return rootTile;
+  }
+
+  /**
+   * Perform any pass invariant tasks here. Called after the render pass.
+   * @private
+   * @param {FrameState} frameState
+   */
+  postPassesUpdate(frameState) {
+    if (!defined(this._root)) {
+      return;
+    }
+
+    cancelOutOfViewRequests(this, frameState);
+    raiseLoadProgressEvent(this, frameState);
+    this._cache.unloadTiles(this, unloadTile);
+
+    // If the style wasn't able to be applied this frame (for example,
+    // the tileset was hidden), keep it dirty so the engine can try
+    // to apply the style next frame.
+    if (this._styleApplied) {
+      this._styleEngine.resetDirty();
+    }
+    this._styleApplied = false;
+  }
+
+  /**
+   * Perform any pass invariant tasks here. Called before any passes are executed.
+   * @private
+   * @param {FrameState} frameState
+   */
+  prePassesUpdate(frameState) {
+    if (!defined(this._root)) {
+      return;
+    }
+
+    processTiles(this, frameState);
+
+    // Update clipping planes
+    const clippingPlanes = this._clippingPlanes;
+    this._clippingPlanesOriginMatrixDirty = true;
+    if (defined(clippingPlanes) && clippingPlanes.enabled) {
+      clippingPlanes.update(frameState);
+    }
+
+    // Update clipping polygons
+    const clippingPolygons = this._clippingPolygons;
+    if (defined(clippingPolygons) && clippingPolygons.enabled) {
+      clippingPolygons.update(frameState);
+    }
+
+    if (!defined(this._loadTimestamp)) {
+      this._loadTimestamp = JulianDate.clone(frameState.time);
+    }
+    this._timeSinceLoad = Math.max(
+      JulianDate.secondsDifference(frameState.time, this._loadTimestamp) * 1000,
+      0.0,
+    );
+
+    if (this.dynamicScreenSpaceError) {
+      updateDynamicScreenSpaceError(this, frameState);
+    }
+
+    if (frameState.newFrame) {
+      this._cache.reset();
+    }
+  }
+
+  /**
+   * Unloads all tiles that weren't selected the previous frame.  This can be used to
+   * explicitly manage the tile cache and reduce the total number of tiles loaded below
+   * {@link Cesium3DTileset#cacheBytes}.
+   * <p>
+   * Tile unloads occur at the next frame to keep all the WebGL delete calls
+   * within the render loop.
+   * </p>
+   */
+  trimLoadedTiles() {
+    this._cache.trim();
+  }
+
+  /**
+   * @private
+   * @param {object} passOptions
+   * @returns {Cesium3DTilesetTraversal}
+   */
+  getTraversal(passOptions) {
+    const { pass } = passOptions;
+    if (
+      pass === Cesium3DTilePass.MOST_DETAILED_PRELOAD ||
+      pass === Cesium3DTilePass.MOST_DETAILED_PICK
+    ) {
+      return Cesium3DTilesetMostDetailedTraversal;
+    }
+    return this.isSkippingLevelOfDetail
+      ? Cesium3DTilesetSkipTraversal
+      : Cesium3DTilesetBaseTraversal;
+  }
+
+  /**
+   * @private
+   * @param {FrameState} frameState
+   */
+  update(frameState) {
+    // Forward-wire the scene reference into the invalidation feed once. The
+    // feed needs Scene to bump _snapshotVersion, but Cesium3DTileset is often
+    // constructed before being added to a scene.
+    if (
+      defined(this._invalidationFeed) &&
+      defined(frameState) &&
+      defined(frameState.scene) &&
+      typeof this._invalidationFeed.setScene === "function"
+    ) {
+      this._invalidationFeed.setScene(frameState.scene);
+    }
+    this.updateForPass(frameState, frameState.tilesetPassState);
+  }
+
+  /**
+   * @private
+   * @param {FrameState} frameState
+   * @param {object} tilesetPassState
+   */
+  updateForPass(frameState, tilesetPassState) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("frameState", frameState);
+    Check.typeOf.object("tilesetPassState", tilesetPassState);
+    //>>includeEnd('debug');
+
+    this.imageryLayers._update();
+
+    const pass = tilesetPassState.pass;
+    if (
+      (pass === Cesium3DTilePass.PRELOAD &&
+        (!this.preloadWhenHidden || this.show)) ||
+      (pass === Cesium3DTilePass.PRELOAD_FLIGHT &&
+        (!this.preloadFlightDestinations ||
+          (!this.show && !this.preloadWhenHidden))) ||
+      (pass === Cesium3DTilePass.REQUEST_RENDER_MODE_DEFER_CHECK &&
+        ((!this._cullRequestsWhileMoving && this.foveatedTimeDelay <= 0) ||
+          !this.show))
+    ) {
+      return;
+    }
+
+    const originalCommandList = frameState.commandList;
+    const originalCamera = frameState.camera;
+    const originalCullingVolume = frameState.cullingVolume;
+
+    tilesetPassState.ready = false;
+
+    const passOptions = Cesium3DTilePass.getPassOptions(pass);
+    const ignoreCommands = passOptions.ignoreCommands;
+
+    const commandList = tilesetPassState.commandList ?? originalCommandList;
+    const commandStart = commandList.length;
+
+    frameState.commandList = commandList;
+    frameState.camera = tilesetPassState.camera ?? originalCamera;
+    frameState.cullingVolume =
+      tilesetPassState.cullingVolume ?? originalCullingVolume;
+
+    if (passOptions.isRender) {
+      const environmentMapManager = this._environmentMapManager;
+      if (defined(this._root)) {
+        environmentMapManager.position = this.boundingSphere.center;
+      }
+      environmentMapManager.update(frameState);
+    }
+
+    // Update clipping polygons
+    const clippingPolygons = this._clippingPolygons;
+    if (defined(clippingPolygons) && clippingPolygons.enabled) {
+      clippingPolygons.queueCommands(frameState);
+    }
+
+    const passStatistics = this._statisticsPerPass[pass];
+
+    if (this.show || ignoreCommands) {
+      this._pass = pass;
+      tilesetPassState.ready = update(
+        this,
+        frameState,
+        passStatistics,
+        passOptions,
+      );
+    }
+
+    if (ignoreCommands) {
+      commandList.length = commandStart;
+    }
+
+    frameState.commandList = originalCommandList;
+    frameState.camera = originalCamera;
+    frameState.cullingVolume = originalCullingVolume;
+  }
+
+  /**
+   * <code>true</code> if the tileset JSON file lists the extension in extensionsUsed; otherwise, <code>false</code>.
+   * @param {string} extensionName The name of the extension to check.
+   *
+   * @returns {boolean} <code>true</code> if the tileset JSON file lists the extension in extensionsUsed; otherwise, <code>false</code>.
+   */
+  hasExtension(extensionName) {
+    if (!defined(this._extensionsUsed)) {
+      return false;
+    }
+
+    return this._extensionsUsed.includes(extensionName);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see Cesium3DTileset#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * tileset = tileset && tileset.destroy();
+   *
+   * @see Cesium3DTileset#isDestroyed
+   */
+  destroy() {
+    this._tileDebugLabels =
+      this._tileDebugLabels && this._tileDebugLabels.destroy();
+    this._clippingPlanes = this._clippingPlanes && this._clippingPlanes.destroy();
+    this._clippingPolygons =
+      this._clippingPolygons && this._clippingPolygons.destroy();
+
+    // Traverse the tree and destroy all tiles
+    if (defined(this._root)) {
+      const stack = scratchStack;
+      stack.push(this._root);
+
+      while (stack.length > 0) {
+        const tile = stack.pop();
+        tile.destroy();
+
+        const children = tile.children;
+        for (let i = 0; i < children.length; ++i) {
+          stack.push(children[i]);
+        }
+      }
+    }
+    this._root = undefined;
+
+    if (
+      this._shouldDestroyImageBasedLighting &&
+      !this._imageBasedLighting.isDestroyed()
+    ) {
+      this._imageBasedLighting.destroy();
+    }
+    this._imageBasedLighting = undefined;
+
+    if (!this._environmentMapManager.isDestroyed()) {
+      this._environmentMapManager.destroy();
+    }
+    this._environmentMapManager = undefined;
+
+    if (!this._imageryLayers.isDestroyed()) {
+      this.imageryLayers.layerAdded.removeEventListener(
+        this._imageryLayersListener,
+      );
+      this.imageryLayers.layerRemoved.removeEventListener(
+        this._imageryLayersListener,
+      );
+      this.imageryLayers.layerMoved.removeEventListener(
+        this._imageryLayersListener,
+      );
+      this.imageryLayers.layerShownOrHidden.removeEventListener(
+        this._imageryLayersListener,
+      );
+      this._imageryLayers.destroy();
+    }
+    this._imageryLayers = undefined;
+
+    return destroyObject(this);
+  }
+
+  /**
+   * Get the height of the loaded surface at a given cartographic. This function will only take into account meshes for loaded tiles, not neccisarily the most detailed tiles available for a tileset. This function will always return undefined when sampling a point cloud.
+   *
+   * @param {Cartographic} cartographic The cartographic for which to find the height.
+   * @param {Scene} scene The scene where visualization is taking place.
+   * @returns {number|undefined} The height of the cartographic or undefined if it could not be found.
+   *
+   * @example
+   * const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(124624234);
+   * scene.primitives.add(tileset);
+   *
+   * const height = tileset.getHeight(scene.camera.positionCartographic, scene);
+   */
+  getHeight(cartographic, scene) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("cartographic", cartographic);
+    Check.typeOf.object("scene", scene);
+    //>>includeEnd('debug');
+
+    let ellipsoid = scene.ellipsoid;
+    if (!defined(ellipsoid)) {
+      ellipsoid = Ellipsoid.WGS84;
+    }
+
+    const ray = scratchGetHeightRay;
+    const position = ellipsoid.cartographicToCartesian(
+      cartographic,
+      ray.direction,
+    );
+    Cartesian3.normalize(ray.direction, ray.direction);
+
+    ray.direction = Cartesian3.normalize(position, ray.direction);
+    ray.direction = Cartesian3.negate(position, ray.direction);
+    ray.origin = Cartesian3.multiplyByScalar(
+      ray.direction,
+      -2 * ellipsoid.maximumRadius,
+      ray.origin,
+    );
+
+    const intersection = this.pick(ray, scene.frameState, scratchIntersection);
+    if (!defined(intersection)) {
+      return;
+    }
+
+    return ellipsoid.cartesianToCartographic(
+      intersection,
+      scratchGetHeightCartographic,
+    )?.height;
+  }
+
+  /**
+   * Calls the callback when a new tile is rendered that contains the given cartographic. The only parameter
+   * is the cartographic position on the tile.
+   *
+   * @private
+   *
+   * @param {Scene} scene The scene where visualization is taking place.
+   * @param {Cartographic} cartographic The cartographic position.
+   * @param {Function} callback The function to be called when a new tile is loaded.
+   * @param {Ellipsoid} [ellipsoid=Ellipsoid.WGS84] The ellipsoid to use.
+   * @returns {Function} The function to remove this callback from the quadtree.
+   */
+  updateHeight(cartographic, callback, ellipsoid) {
+    ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
+
+    const object = {
+      positionCartographic: cartographic,
+      ellipsoid: ellipsoid,
+      callback: callback,
+      invoked: false,
+    };
+
+    const removeCallback = () => {
+      const addedCallbacks = this._addHeightCallbacks;
+      const length = addedCallbacks.length;
+      for (let i = 0; i < length; ++i) {
+        if (addedCallbacks[i] === object) {
+          addedCallbacks.splice(i, 1);
+          break;
+        }
+      }
+
+      if (object.callback) {
+        object.callback = undefined;
+      }
+    };
+
+    this._addHeightCallbacks.push(object);
+    return removeCallback;
+  }
+
+  /**
+   * Find an intersection between a ray and the tileset surface that was rendered. The ray must be given in world coordinates.
+   *
+   * @param {Ray} ray The ray to test for intersection.
+   * @param {FrameState} frameState The frame state.
+   * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
+   * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+   *
+   * @private
+   */
+  pick(ray, frameState, result) {
+    if (!frameState.context.webgl2 && !this._enablePick) {
+      return;
+    }
+
+    const selectedTiles = this._selectedTiles;
+    const selectedLength = selectedTiles.length;
+    const candidates = [];
+
+    for (let i = 0; i < selectedLength; ++i) {
+      const tile = selectedTiles[i];
+      const boundsIntersection = IntersectionTests.raySphere(
+        ray,
+        tile.contentBoundingVolume.boundingSphere,
+        scratchSphereIntersection,
+      );
+      if (!defined(boundsIntersection) || !defined(tile.content)) {
+        continue;
+      }
+
+      candidates.push(tile);
+    }
+
+    const length = candidates.length;
+    candidates.sort((a, b) => {
+      const aDist = BoundingSphere.distanceSquaredTo(
+        a.contentBoundingVolume.boundingSphere,
+        ray.origin,
+      );
+      const bDist = BoundingSphere.distanceSquaredTo(
+        b.contentBoundingVolume.boundingSphere,
+        ray.origin,
+      );
+
+      return aDist - bDist;
     });
+
+    let intersection;
+    for (let i = 0; i < length; ++i) {
+      const tile = candidates[i];
+      const candidate = tile.content.pick(
+        ray,
+        frameState,
+        scratchPickIntersection,
+      );
+
+      if (defined(candidate)) {
+        intersection = Cartesian3.clone(candidate, result);
+        return intersection;
+      }
+    }
   }
 
-  this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
-
-  this._initialClippingPlanesOriginMatrix = Matrix4.IDENTITY; // Computed from the tileset JSON.
-  this._clippingPlanesOriginMatrix = undefined; // Combines the above with any run-time transforms.
-  this._clippingPlanesOriginMatrixDirty = true;
-
-  this._vectorClassificationOnly = options.vectorClassificationOnly ?? false;
-
-  this._vectorKeepDecodedPositions =
-    options.vectorKeepDecodedPositions ?? false;
-
   /**
-   * The collection of <code>ImageryLayer</code> objects providing 2D georeferenced
-   * image data that will be rendered over the tileset.
+   * Returns true if the given glTF extension is used by this tileset.
+   * <br/><br/>
+   * Relies on the <code>3DTILES_content_gltf</code> extension and will return
+   * false if that extension is not used.
    *
-   * @private
-   * @type {ImageryLayerCollection}
-   * @readonly
-   */
-  this._imageryLayers = new ImageryLayerCollection(this);
-
-  /**
-   * A counter that will be increased for each modification of the
-   * imagery layers (i.e. for each layerAdded, layerRemoved,
-   * layerMoved, or layerShownOrHidden event). This can be used
-   * by the <code>ModelImagery</code> class to detect changes in
-   * the imagery, and trigger the appropriate updates.
+   * @param {string} gltfExtensionName The name of the glTF extension to check.
+   * @returns {boolean} <code>true</code> if the glTF extension is used by this tileset; otherwise, <code>false</code>.
    *
    * @private
    */
-  this._imageryLayersModificationCounter = 0;
+  isGltfExtensionUsed(gltfExtensionName) {
+    if (this.hasExtension("3DTILES_content_gltf")) {
+      if (!defined(this.extensions)) {
+        return false;
+      }
+      const extensionsUsed =
+        this.extensions["3DTILES_content_gltf"]?.extensionsUsed;
+
+      if (!defined(extensionsUsed)) {
+        return false;
+      }
+
+      return extensionsUsed.includes(gltfExtensionName);
+    }
+
+    return false;
+  }
 
   /**
-   * A listener that will be attached to the layerAdded, layerRemoved,
-   * layerMoved, and layerShownOrHidden events of the imagery layers,
-   * and increment the imagery layers modification counter for each
-   * event.
+   * Returns true if the given glTF extension is used and required by this tileset.
+   * <br/><br/>
+   * Relies on the <code>3DTILES_content_gltf</code> extension and will return
+   * <code>false</code> if that extension is not used.
    *
-   * @private
-   * @readonly
-   */
-  this._imageryLayersListener = () => {
-    this._imageryLayersModificationCounter++;
-  };
-
-  // Attach the imagery layers listener to all events of
-  // the imagery layers collection
-  this.imageryLayers.layerAdded.addEventListener(this._imageryLayersListener);
-  this.imageryLayers.layerRemoved.addEventListener(this._imageryLayersListener);
-  this.imageryLayers.layerMoved.addEventListener(this._imageryLayersListener);
-  this.imageryLayers.layerShownOrHidden.addEventListener(
-    this._imageryLayersListener,
-  );
-
-  /**
-   * Whether loading imagery that is draped over the tileset should be
-   * done asynchronously. If this is <code>true</code>, then tile content
-   * will be displayed with its original texture until the imagery texture
-   * is loaded. If this is <code>false</code>, then the tile content will
-   * not be displayed until the imagery is ready.
+   * @param {string} gltfExtensionName The name of the glTF extension to check.
+   * @returns {boolean} <code>true</code> if the glTF extension is required by this tileset; otherwise, <code>false</code>.
    *
    * @private
    */
-  this._asynchronouslyLoadImagery = options.asynchronouslyLoadImagery ?? false;
+  isGltfExtensionRequired(gltfExtensionName) {
+    if (this.isGltfExtensionUsed(gltfExtensionName)) {
+      const extensionsRequired =
+        this.extensions["3DTILES_content_gltf"].extensionsRequired;
 
-  /**
-   * Preload tiles when <code>tileset.show</code> is <code>false</code>. Loads tiles as if the tileset is visible but does not render them.
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.preloadWhenHidden = options.preloadWhenHidden ?? false;
+      if (!defined(extensionsRequired)) {
+        return false;
+      }
 
-  /**
-   * Optimization option. Fetch tiles at the camera's flight destination while the camera is in flight.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.preloadFlightDestinations = options.preloadFlightDestinations ?? true;
-  this._pass = undefined; // Cesium3DTilePass
+      return extensionsRequired.includes(gltfExtensionName);
+    }
 
-  /**
-   * Optimization option. For street-level horizon views, use lower resolution tiles far from the camera. This reduces
-   * the amount of data loaded and improves tileset loading time with a slight drop in visual quality in the distance.
-   * <p>
-   * This optimization is strongest when the camera is close to the ground plane of the tileset and looking at the
-   * horizon. Furthermore, the results are more accurate for tightly fitting bounding volumes like box and region.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.dynamicScreenSpaceError = options.dynamicScreenSpaceError ?? true;
-
-  /**
-   * Optimization option. Prioritize loading tiles in the center of the screen by temporarily raising the
-   * screen space error for tiles around the edge of the screen. Screen space error returns to normal once all
-   * the tiles in the center of the screen as determined by the {@link Cesium3DTileset#foveatedConeSize} are loaded.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.foveatedScreenSpaceError = options.foveatedScreenSpaceError ?? true;
-  this._foveatedConeSize = options.foveatedConeSize ?? 0.1;
-  this._foveatedMinimumScreenSpaceErrorRelaxation =
-    options.foveatedMinimumScreenSpaceErrorRelaxation ?? 0.0;
-
-  /**
-   * Gets or sets a callback to control how much to raise the screen space error for tiles outside the foveated cone,
-   * interpolating between {@link Cesium3DTileset#foveatedMinimumScreenSpaceErrorRelaxation} and {@link Cesium3DTileset#maximumScreenSpaceError}.
-   *
-   * @type {Cesium3DTileset.foveatedInterpolationCallback}
-   */
-  this.foveatedInterpolationCallback =
-    options.foveatedInterpolationCallback ?? CesiumMath.lerp;
-
-  /**
-   * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control
-   * how long in seconds to wait after the camera stops moving before deferred tiles start loading in.
-   * This time delay prevents requesting tiles around the edges of the screen when the camera is moving.
-   * Setting this to 0.0 will immediately request all tiles in any given view.
-   *
-   * @type {number}
-   * @default 0.2
-   */
-  this.foveatedTimeDelay = options.foveatedTimeDelay ?? 0.2;
-
-  /**
-   * Similar to {@link Fog#density}, this option controls the camera distance at which the {@link Cesium3DTileset#dynamicScreenSpaceError}
-   * optimization applies. Larger values will cause tiles closer to the camera to be affected. This value must be
-   * non-negative.
-   * <p>
-   * This optimization works by rolling off the tile screen space error (SSE) with camera distance like a bell curve.
-   * This has the effect of selecting lower resolution tiles far from the camera. Near the camera, no adjustment is
-   * made. For tiles further away, the SSE is reduced by up to {@link Cesium3DTileset#dynamicScreenSpaceErrorFactor}
-   * (measured in pixels of error).
-   * </p>
-   * <p>
-   * Increasing the density makes the bell curve narrower so tiles closer to the camera are affected. This is analagous
-   * to moving fog closer to the camera.
-   * </p>
-   * <p>
-   * When the density is 0, the optimization will have no effect on the tileset.
-   * </p>
-   *
-   * @type {number}
-   * @default 2.0e-4
-   */
-  this.dynamicScreenSpaceErrorDensity =
-    options.dynamicScreenSpaceErrorDensity ?? 2.0e-4;
-
-  /**
-   * A parameter that controls the intensity of the {@link Cesium3DTileset#dynamicScreenSpaceError} optimization for
-   * tiles on the horizon. Larger values cause lower resolution tiles to load, improving runtime performance at a slight
-   * reduction of visual quality. The value must be non-negative.
-   * <p>
-   * More specifically, this parameter represents the maximum adjustment to screen space error (SSE) in pixels for tiles
-   * far away from the camera. See {@link Cesium3DTileset#dynamicScreenSpaceErrorDensity} for more details about how
-   * this optimization works.
-   * </p>
-   * <p>
-   * When the SSE factor is set to 0, the optimization will have no effect on the tileset.
-   * </p>
-   *
-   * @type {number}
-   * @default 24.0
-   */
-  this.dynamicScreenSpaceErrorFactor =
-    options.dynamicScreenSpaceErrorFactor ?? 24.0;
-
-  /**
-   * A ratio of the tileset's height that determines "street level" for the {@link Cesium3DTileset#dynamicScreenSpaceError}
-   * optimization. When the camera is below this height, the dynamic screen space error optimization will have the maximum
-   * effect, and it will roll off above this value. Valid values are between 0.0 and 1.0.
-   * <p>
-   *
-   * @type {number}
-   * @default 0.25
-   */
-  this.dynamicScreenSpaceErrorHeightFalloff =
-    options.dynamicScreenSpaceErrorHeightFalloff ?? 0.25;
-
-  // Updated based on the camera position and direction
-  this._dynamicScreenSpaceErrorComputedDensity = 0.0;
-
-  /**
-   * Determines whether the tileset casts or receives shadows from light sources.
-   * <p>
-   * Enabling shadows has a performance impact. A tileset that casts shadows must be rendered twice, once from the camera and again from the light's point of view.
-   * </p>
-   * <p>
-   * Shadows are rendered only when {@link Viewer#shadows} is <code>true</code>.
-   * </p>
-   *
-   * @type {ShadowMode}
-   * @default ShadowMode.ENABLED
-   */
-  this.shadows = options.shadows ?? ShadowMode.ENABLED;
-
-  /**
-   * Determines if the tileset will be shown.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.show = options.show ?? true;
-
-  /**
-   * Defines how per-feature colors set from the Cesium API or declarative styling blend with the source colors from
-   * the original feature, e.g. glTF material or per-point color in the tile.
-   *
-   * @type {Cesium3DTileColorBlendMode}
-   * @default Cesium3DTileColorBlendMode.HIGHLIGHT
-   */
-  this.colorBlendMode = Cesium3DTileColorBlendMode.HIGHLIGHT;
-
-  /**
-   * Defines the value used to linearly interpolate between the source color and feature color when the {@link Cesium3DTileset#colorBlendMode} is <code>MIX</code>.
-   * A value of 0.0 results in the source color while a value of 1.0 results in the feature color, with any value in-between
-   * resulting in a mix of the source color and feature color.
-   *
-   * @type {number}
-   * @default 0.5
-   */
-  this.colorBlendAmount = 0.5;
-
-  this._pointCloudShading = new PointCloudShading(options.pointCloudShading);
-  this._pointCloudEyeDomeLighting = new PointCloudEyeDomeLighting();
-
-  /**
-   * The event fired to indicate progress of loading new tiles.  This event is fired when a new tile
-   * is requested, when a requested tile is finished downloading, and when a downloaded tile has been
-   * processed and is ready to render.
-   * <p>
-   * The number of pending tile requests, <code>numberOfPendingRequests</code>, and number of tiles
-   * processing, <code>numberOfTilesProcessing</code> are passed to the event listener.
-   * </p>
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.loadProgress.addEventListener(function(numberOfPendingRequests, numberOfTilesProcessing) {
-   *     if ((numberOfPendingRequests === 0) && (numberOfTilesProcessing === 0)) {
-   *         console.log('Stopped loading');
-   *         return;
-   *     }
-   *
-   *     console.log(`Loading: requests: ${numberOfPendingRequests}, processing: ${numberOfTilesProcessing}`);
-   * });
-   */
-  this.loadProgress = new Event();
-
-  /**
-   * The event fired to indicate that all tiles that meet the screen space error this frame are loaded. The tileset
-   * is completely loaded for this view.
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.allTilesLoaded.addEventListener(function() {
-   *     console.log('All tiles are loaded');
-   * });
-   *
-   * @see Cesium3DTileset#tilesLoaded
-   */
-  this.allTilesLoaded = new Event();
-
-  /**
-   * The event fired to indicate that all tiles that meet the screen space error this frame are loaded. This event
-   * is fired once when all tiles in the initial view are loaded.
-   * <p>
-   * This event is fired at the end of the frame after the scene is rendered.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.initialTilesLoaded.addEventListener(function() {
-   *     console.log('Initial tiles are loaded');
-   * });
-   *
-   * @see Cesium3DTileset#allTilesLoaded
-   */
-  this.initialTilesLoaded = new Event();
-
-  /**
-   * The event fired to indicate that a tile's content was loaded.
-   * <p>
-   * The loaded {@link Cesium3DTile} is passed to the event listener.
-   * </p>
-   * <p>
-   * This event is fired during the tileset traversal while the frame is being rendered
-   * so that updates to the tile take effect in the same frame.  Do not create or modify
-   * Cesium entities or primitives during the event listener.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.tileLoad.addEventListener(function(tile) {
-   *     console.log('A tile was loaded.');
-   * });
-   */
-  this.tileLoad = new Event();
-
-  /**
-   * The event fired to indicate that a tile's content was unloaded.
-   * <p>
-   * The unloaded {@link Cesium3DTile} is passed to the event listener.
-   * </p>
-   * <p>
-   * This event is fired immediately before the tile's content is unloaded while the frame is being
-   * rendered so that the event listener has access to the tile's content.  Do not create
-   * or modify Cesium entities or primitives during the event listener.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.tileUnload.addEventListener(function(tile) {
-   *     console.log('A tile was unloaded from the cache.');
-   * });
-   *
-   * @see Cesium3DTileset#cacheBytes
-   * @see Cesium3DTileset#trimLoadedTiles
-   */
-  this.tileUnload = new Event();
-
-  /**
-   * The event fired to indicate that a tile's content failed to load.
-   * <p>
-   * If there are no event listeners, error messages will be logged to the console.
-   * </p>
-   * <p>
-   * The error object passed to the listener contains two properties:
-   * <ul>
-   * <li><code>url</code>: the url of the failed tile.</li>
-   * <li><code>message</code>: the error message.</li>
-   * </ul>
-   * <p>
-   * If multiple contents are present, this event is raised once per inner content with errors.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.tileFailed.addEventListener(function(error) {
-   *     console.log(`An error occurred loading tile: ${error.url}`);
-   *     console.log(`Error: ${error.message}`);
-   * });
-   */
-  this.tileFailed = new Event();
-
-  /**
-   * This event fires once for each visible tile in a frame.  This can be used to manually
-   * style a tileset.
-   * <p>
-   * The visible {@link Cesium3DTile} is passed to the event listener.
-   * </p>
-   * <p>
-   * This event is fired during the tileset traversal while the frame is being rendered
-   * so that updates to the tile take effect in the same frame.  Do not create or modify
-   * Cesium entities or primitives during the event listener.
-   * </p>
-   *
-   * @type {Event}
-   * @default new Event()
-   *
-   * @example
-   * tileset.tileVisible.addEventListener(function(tile) {
-   *     if (tile.content instanceof Cesium.Model3DTileContent) {
-   *         console.log('A 3D model tile is visible.');
-   *     }
-   * });
-   *
-   * @example
-   * // Apply a red style and then manually set random colors for every other feature when the tile becomes visible.
-   * tileset.style = new Cesium.Cesium3DTileStyle({
-   *     color : 'color("red")'
-   * });
-   * tileset.tileVisible.addEventListener(function(tile) {
-   *     const content = tile.content;
-   *     const featuresLength = content.featuresLength;
-   *     for (let i = 0; i < featuresLength; i+=2) {
-   *         content.getFeature(i).color = Cesium.Color.fromRandom();
-   *     }
-   * });
-   */
-  this.tileVisible = new Event();
-
-  /**
-   * Optimization option. Determines if level of detail skipping should be applied during the traversal.
-   * <p>
-   * The common strategy for replacement-refinement traversal is to store all levels of the tree in memory and require
-   * all children to be loaded before the parent can refine. With this optimization levels of the tree can be skipped
-   * entirely and children can be rendered alongside their parents. The tileset requires significantly less memory when
-   * using this optimization.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.skipLevelOfDetail = options.skipLevelOfDetail ?? false;
-
-  this._disableSkipLevelOfDetail = false;
-
-  /**
-   * The screen space error that must be reached before skipping levels of detail.
-   * <p>
-   * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
-   * </p>
-   *
-   * @type {number}
-   * @default 1024
-   */
-  this.baseScreenSpaceError = options.baseScreenSpaceError ?? 1024;
-
-  /**
-   * Multiplier defining the minimum screen space error to skip.
-   * For example, if a tile has screen space error of 100, no tiles will be loaded unless they
-   * are leaves or have a screen space error <code><= 100 / skipScreenSpaceErrorFactor</code>.
-   * <p>
-   * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
-   * </p>
-   *
-   * @type {number}
-   * @default 16
-   */
-  this.skipScreenSpaceErrorFactor = options.skipScreenSpaceErrorFactor ?? 16;
-
-  /**
-   * Constant defining the minimum number of levels to skip when loading tiles. When it is 0, no levels are skipped.
-   * For example, if a tile is level 1, no tiles will be loaded unless they are at level greater than 2.
-   * <p>
-   * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
-   * </p>
-   *
-   * @type {number}
-   * @default 1
-   */
-  this.skipLevels = options.skipLevels ?? 1;
-
-  /**
-   * When true, only tiles that meet the maximum screen space error will ever be downloaded.
-   * Skipping factors are ignored and just the desired tiles are loaded.
-   * <p>
-   * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.immediatelyLoadDesiredLevelOfDetail =
-    options.immediatelyLoadDesiredLevelOfDetail ?? false;
-
-  /**
-   * Determines whether siblings of visible tiles are always downloaded during traversal.
-   * This may be useful for ensuring that tiles are already available when the viewer turns left/right.
-   * <p>
-   * Only used when {@link Cesium3DTileset#skipLevelOfDetail} is <code>true</code>.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.loadSiblings = options.loadSiblings ?? false;
-
-  this._clippingPlanes = undefined;
-  if (defined(options.clippingPlanes)) {
-    ClippingPlaneCollection.setOwner(
-      options.clippingPlanes,
-      this,
-      "_clippingPlanes",
-    );
+    return false;
   }
 
-  this._clippingPolygons = undefined;
-  if (defined(options.clippingPolygons)) {
-    ClippingPolygonCollection.setOwner(
-      options.clippingPolygons,
-      this,
-      "_clippingPolygons",
-    );
-  }
-
-  if (defined(options.imageBasedLighting)) {
-    this._imageBasedLighting = options.imageBasedLighting;
-    this._shouldDestroyImageBasedLighting = false;
-  } else {
-    this._imageBasedLighting = new ImageBasedLighting();
-    this._shouldDestroyImageBasedLighting = true;
-  }
-
-  this._environmentMapManager = new DynamicEnvironmentMapManager(
-    options.environmentMapOptions,
-  );
-
-  /**
-   * The light color when shading models. When <code>undefined</code> the scene's light color is used instead.
-   * <p>
-   * For example, disabling additional light sources by setting
-   * <code>tileset.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(0.0, 0.0)</code>
-   * will make the tileset much darker. Here, increasing the intensity of the light source will make the tileset brighter.
-   * </p>
-   *
-   * @type {Cartesian3}
-   * @default undefined
-   */
-  this.lightColor = options.lightColor;
-
-  /**
-   * Whether to cull back-facing geometry. When true, back face culling is determined
-   * by the glTF material's doubleSided property; when false, back face culling is disabled.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.backFaceCulling = options.backFaceCulling ?? true;
-
-  this._enableShowOutline = options.enableShowOutline ?? true;
-
-  /**
-   * Whether to display the outline for models using the
-   * {@link https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/CESIUM_primitive_outline|CESIUM_primitive_outline} extension.
-   * When true, outlines are displayed. When false, outlines are not displayed.
-   *
-   * @type {boolean}
-   * @default true
-   */
-  this.showOutline = options.showOutline ?? true;
-
-  /**
-   * The color to use when rendering outlines.
-   *
-   * @type {Color}
-   * @default Color.BLACK
-   */
-  this.outlineColor = options.outlineColor ?? Color.BLACK;
-
-  /**
-   * The {@link SplitDirection} to apply to this tileset.
-   *
-   * @type {SplitDirection}
-   * @default {@link SplitDirection.NONE}
-   */
-  this.splitDirection = options.splitDirection ?? SplitDirection.NONE;
-
-  /**
-   * If <code>true</code>, allows collisions for camera collisions or picking. While this is  <code>true</code> the camera will be prevented from going in or below the tileset surface if {@link ScreenSpaceCameraController#enableCollisionDetection} is true. This can have performance implecations if the tileset contains tile with a larger number of vertices.
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.enableCollision = options.enableCollision ?? false;
-  this._projectTo2D = options.projectTo2D ?? false;
-  this._enablePick = options.enablePick ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * Determines if only the tiles from last frame should be used for rendering.  This
-   * effectively "freezes" the tileset to the previous frame so it is possible to zoom
-   * out and see what was rendered.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugFreezeFrame = options.debugFreezeFrame ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, assigns a random color to each tile.  This is useful for visualizing
-   * what features belong to what tiles, especially with additive refinement where features
-   * from parent tiles may be interleaved with features from child tiles.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugColorizeTiles = options.debugColorizeTiles ?? false;
-
-  this._enableDebugWireframe = options.enableDebugWireframe ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, renders each tile's content as a wireframe.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugWireframe = options.debugWireframe ?? false;
-
-  // Warning for improper setup of debug wireframe
-  if (this.debugWireframe === true && this._enableDebugWireframe === false) {
-    oneTimeWarning(
-      "tileset-debug-wireframe-ignored",
-      "enableDebugWireframe must be set to true in the Cesium3DTileset constructor, otherwise debugWireframe will be ignored.",
-    );
-  }
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, renders the bounding volume for each visible tile.  The bounding volume is
-   * white if the tile has a content bounding volume or is empty; otherwise, it is red.  Tiles that don't meet the
-   * screen space error and are still refining to their descendants are yellow.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, renders the bounding volume for each visible tile's content. The bounding volume is
-   * blue if the tile has a content bounding volume; otherwise it is red.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowContentBoundingVolume =
-    options.debugShowContentBoundingVolume ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, renders the viewer request volume for each tile.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowViewerRequestVolume =
-    options.debugShowViewerRequestVolume ?? false;
-
-  /**
-   * @private
-   * @type {LabelCollection|undefined}
-   */
-  this._tileDebugLabels = undefined;
-  this.debugPickedTileLabelOnly = false;
-  this.debugPickedTile = undefined;
-  this.debugPickPosition = undefined;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, draws labels to indicate the geometric error of each tile.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowGeometricError = options.debugShowGeometricError ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, draws labels to indicate the number of commands, points, triangles and features of each tile.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowRenderingStatistics =
-    options.debugShowRenderingStatistics ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, draws labels to indicate the geometry and texture memory usage of each tile.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowMemoryUsage = options.debugShowMemoryUsage ?? false;
-
-  /**
-   * This property is for debugging only; it is not optimized for production use.
-   * <p>
-   * When true, draws labels to indicate the url of each tile.
-   * </p>
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.debugShowUrl = options.debugShowUrl ?? false;
-
-  /**
-   * Function for examining vector lines as they are being streamed.
-   *
-   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
-   *
-   * @type {Function}
-   */
-  this.examineVectorLinesFunction = undefined;
-
-  // this is the underlying Cesium3DTileMetadata object, whether it came from
-  // the 3DTILES_metadata extension or a 3D Tiles 1.1 tileset JSON. Getters
-  // like tileset.metadata and tileset.schema will delegate to this object.
-  this._metadataExtension = undefined;
-
-  this._customShader = options.customShader;
-
-  let featureIdLabel = options.featureIdLabel ?? "featureId_0";
-  if (typeof featureIdLabel === "number") {
-    featureIdLabel = `featureId_${featureIdLabel}`;
-  }
-  this._featureIdLabel = featureIdLabel;
-
-  let instanceFeatureIdLabel =
-    options.instanceFeatureIdLabel ?? "instanceFeatureId_0";
-  if (typeof instanceFeatureIdLabel === "number") {
-    instanceFeatureIdLabel = `instanceFeatureId_${instanceFeatureIdLabel}`;
-  }
-  this._instanceFeatureIdLabel = instanceFeatureIdLabel;
-}
-
-Object.defineProperties(Cesium3DTileset.prototype, {
   /**
    * NOTE: This getter exists so that `Picking.js` can differentiate between
    *       PrimitiveCollection and Cesium3DTileset objects without inflating
    *       the size of the module via `instanceof Cesium3DTileset`
    * @private
    */
-  isCesium3DTileset: {
-    get: function () {
-      return true;
-    },
-  },
+  get isCesium3DTileset() {
+    return true;
+  }
 
   /**
    * Gets the tileset's asset object property, which contains metadata about the tileset.
@@ -1153,11 +1737,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {object}
    * @readonly
    */
-  asset: {
-    get: function () {
-      return this._asset;
-    },
-  },
+  get asset() {
+    return this._asset;
+  }
 
   /**
    * Gets the tileset's extensions object property.
@@ -1167,11 +1749,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {object}
    * @readonly
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
+  get extensions() {
+    return this._extensions;
+  }
 
   /**
    * The {@link ClippingPlaneCollection} used to selectively disable rendering the tileset.
@@ -1180,14 +1760,20 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @type {ClippingPlaneCollection}
    */
-  clippingPlanes: {
-    get: function () {
-      return this._clippingPlanes;
-    },
-    set: function (value) {
-      ClippingPlaneCollection.setOwner(value, this, "_clippingPlanes");
-    },
-  },
+  get clippingPlanes() {
+    return this._clippingPlanes;
+  }
+
+  /**
+   * The {@link ClippingPlaneCollection} used to selectively disable rendering the tileset.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {ClippingPlaneCollection}
+   */
+  set clippingPlanes(value) {
+    ClippingPlaneCollection.setOwner(value, this, "_clippingPlanes");
+  }
 
   /**
    * The {@link ClippingPolygonCollection} used to selectively disable rendering the tileset.
@@ -1196,14 +1782,20 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @type {ClippingPolygonCollection}
    */
-  clippingPolygons: {
-    get: function () {
-      return this._clippingPolygons;
-    },
-    set: function (value) {
-      ClippingPolygonCollection.setOwner(value, this, "_clippingPolygons");
-    },
-  },
+  get clippingPolygons() {
+    return this._clippingPolygons;
+  }
+
+  /**
+   * The {@link ClippingPolygonCollection} used to selectively disable rendering the tileset.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {ClippingPolygonCollection}
+   */
+  set clippingPolygons(value) {
+    ClippingPolygonCollection.setOwner(value, this, "_clippingPolygons");
+  }
 
   /**
    * The collection of <code>ImageryLayer</code> objects providing 2D georeferenced
@@ -1227,11 +1819,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * const imageryLayer = new ImageryLayer(imageryProvider);
    * tileset.imageryLayers.add(imageryLayer);
    */
-  imageryLayers: {
-    get: function () {
-      return this._imageryLayers;
-    },
-  },
+  get imageryLayers() {
+    return this._imageryLayers;
+  }
 
   /**
    * The modification counter of the imagery layers.
@@ -1247,11 +1837,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {number}
    * @private
    */
-  imageryLayersModificationCounter: {
-    get: function () {
-      return this._imageryLayersModificationCounter;
-    },
-  },
+  get imageryLayersModificationCounter() {
+    return this._imageryLayersModificationCounter;
+  }
 
   /**
    * Whether loading imagery that is draped over the tileset should be
@@ -1262,11 +1850,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {boolean}
    * @private
    */
-  asynchronouslyLoadImagery: {
-    get: function () {
-      return this._asynchronouslyLoadImagery;
-    },
-  },
+  get asynchronouslyLoadImagery() {
+    return this._asynchronouslyLoadImagery;
+  }
 
   /**
    * Gets the tileset's properties dictionary object, which contains metadata about per-feature properties.
@@ -1287,11 +1873,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @see Cesium3DTileFeature#getProperty
    * @see Cesium3DTileFeature#setProperty
    */
-  properties: {
-    get: function () {
-      return this._properties;
-    },
-  },
+  get properties() {
+    return this._properties;
+  }
 
   /**
    * When <code>true</code>, all tiles that meet the screen space error this frame are loaded. The tileset is
@@ -1306,11 +1890,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @see Cesium3DTileset#allTilesLoaded
    */
-  tilesLoaded: {
-    get: function () {
-      return this._tilesLoaded;
-    },
-  },
+  get tilesLoaded() {
+    return this._tilesLoaded;
+  }
 
   /**
    * The resource used to fetch the tileset JSON file
@@ -1320,11 +1902,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
 
   /**
    * The base path that non-absolute paths in tileset JSON file are relative to.
@@ -1335,15 +1915,13 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @readonly
    * @deprecated
    */
-  basePath: {
-    get: function () {
-      deprecationWarning(
-        "Cesium3DTileset.basePath",
-        "Cesium3DTileset.basePath has been deprecated. All tiles are relative to the url of the tileset JSON file that contains them. Use the url property instead.",
-      );
-      return this._basePath;
-    },
-  },
+  get basePath() {
+    deprecationWarning(
+      "Cesium3DTileset.basePath",
+      "Cesium3DTileset.basePath has been deprecated. All tiles are relative to the url of the tileset JSON file that contains them. Use the url property instead.",
+    );
+    return this._basePath;
+  }
 
   /**
    * The style, defined using the
@@ -1390,14 +1968,58 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/Styling|3D Tiles Styling language}
    */
-  style: {
-    get: function () {
-      return this._styleEngine.style;
-    },
-    set: function (value) {
-      this._styleEngine.style = value;
-    },
-  },
+  get style() {
+    return this._styleEngine.style;
+  }
+
+  /**
+   * The style, defined using the
+   * {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/Styling|3D Tiles Styling language},
+   * applied to each feature in the tileset.
+   * <p>
+   * Assign <code>undefined</code> to remove the style, which will restore the visual
+   * appearance of the tileset to its default when no style was applied.
+   * </p>
+   * <p>
+   * The style is applied to a tile before the {@link Cesium3DTileset#tileVisible}
+   * event is raised, so code in <code>tileVisible</code> can manually set a feature's
+   * properties (e.g. color and show) after the style is applied. When
+   * a new style is assigned any manually set properties are overwritten.
+   * </p>
+   * <p>
+   * Use an always "true" condition to specify the Color for all objects that are not
+   * overridden by pre-existing conditions. Otherwise, the default color Cesium.Color.White
+   * will be used. Similarly, use an always "true" condition to specify the show property
+   * for all objects that are not overridden by pre-existing conditions. Otherwise, the
+   * default show value true will be used.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {Cesium3DTileStyle|undefined}
+   *
+   * @default undefined
+   *
+   * @example
+   * tileset.style = new Cesium.Cesium3DTileStyle({
+   *    color : {
+   *        conditions : [
+   *            ['${Height} >= 100', 'color("purple", 0.5)'],
+   *            ['${Height} >= 50', 'color("red")'],
+   *            ['true', 'color("blue")']
+   *        ]
+   *    },
+   *    show : '${Height} > 0',
+   *    meta : {
+   *        description : '"Building id ${id} has height ${Height}."'
+   *    }
+   * });
+   *
+   * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification/Styling|3D Tiles Styling language}
+   */
+  set style(value) {
+    this._styleEngine.style = value;
+  }
 
   /**
    * A custom shader to apply to all tiles in the tileset. Only used for
@@ -1412,14 +2034,26 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  customShader: {
-    get: function () {
-      return this._customShader;
-    },
-    set: function (value) {
-      this._customShader = value;
-    },
-  },
+  get customShader() {
+    return this._customShader;
+  }
+
+  /**
+   * A custom shader to apply to all tiles in the tileset. Only used for
+   * contents that use {@link Model}. Using custom shaders with a
+   * {@link Cesium3DTileStyle} may lead to undefined behavior.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {CustomShader|undefined}
+   *
+   * @default undefined
+   *
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set customShader(value) {
+    this._customShader = value;
+  }
 
   /**
    * Whether the tileset is rendering different levels of detail in the same view.
@@ -1430,18 +2064,26 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {boolean}
    * @private
    */
-  hasMixedContent: {
-    get: function () {
-      return this._hasMixedContent;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.bool("value", value);
-      //>>includeEnd('debug');
+  get hasMixedContent() {
+    return this._hasMixedContent;
+  }
 
-      this._hasMixedContent = value;
-    },
-  },
+  /**
+   * Whether the tileset is rendering different levels of detail in the same view.
+   * Only relevant if {@link Cesium3DTileset.isSkippingLevelOfDetail} is true.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {boolean}
+   * @private
+   */
+  set hasMixedContent(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("value", value);
+    //>>includeEnd('debug');
+
+    this._hasMixedContent = value;
+  }
 
   /**
    * Whether this tileset is actually skipping levels of detail.
@@ -1454,16 +2096,14 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @private
    * @readonly
    */
-  isSkippingLevelOfDetail: {
-    get: function () {
-      return (
-        this.skipLevelOfDetail &&
-        !defined(this._classificationType) &&
-        !this._disableSkipLevelOfDetail &&
-        !this._allTilesAdditive
-      );
-    },
-  },
+  get isSkippingLevelOfDetail() {
+    return (
+      this.skipLevelOfDetail &&
+      !defined(this._classificationType) &&
+      !this._disableSkipLevelOfDetail &&
+      !this._allTilesAdditive
+    );
+  }
 
   /**
    * The tileset's schema, groups, tileset metadata and other details from the
@@ -1477,11 +2117,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  metadataExtension: {
-    get: function () {
-      return this._metadataExtension;
-    },
-  },
+  get metadataExtension() {
+    return this._metadataExtension;
+  }
 
   /**
    * The metadata properties attached to the tileset as a whole.
@@ -1494,15 +2132,13 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  metadata: {
-    get: function () {
-      if (defined(this._metadataExtension)) {
-        return this._metadataExtension.tileset;
-      }
+  get metadata() {
+    if (defined(this._metadataExtension)) {
+      return this._metadataExtension.tileset;
+    }
 
-      return undefined;
-    },
-  },
+    return undefined;
+  }
 
   /**
    * The metadata schema used in this tileset. Shorthand for
@@ -1516,15 +2152,13 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  schema: {
-    get: function () {
-      if (defined(this._metadataExtension)) {
-        return this._metadataExtension.schema;
-      }
+  get schema() {
+    if (defined(this._metadataExtension)) {
+      return this._metadataExtension.schema;
+    }
 
-      return undefined;
-    },
-  },
+    return undefined;
+  }
 
   /**
    * The maximum screen space error used to drive level of detail refinement.  This value helps determine when a tile
@@ -1546,23 +2180,42 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @exception {DeveloperError} <code>maximumScreenSpaceError</code> must be greater than or equal to zero.
    */
-  maximumScreenSpaceError: {
-    get: function () {
-      return this._maximumScreenSpaceError;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals(
-        "maximumScreenSpaceError",
-        value,
-        0,
-      );
-      //>>includeEnd('debug');
+  get maximumScreenSpaceError() {
+    return this._maximumScreenSpaceError;
+  }
 
-      this._maximumScreenSpaceError = value;
-      this._memoryAdjustedScreenSpaceError = value;
-    },
-  },
+  /**
+   * The maximum screen space error used to drive level of detail refinement.  This value helps determine when a tile
+   * refines to its descendants, and therefore plays a major role in balancing performance with visual quality.
+   * <p>
+   * A tile's screen space error is roughly equivalent to the number of pixels wide that would be drawn if a sphere with a
+   * radius equal to the tile's <b>geometric error</b> were rendered at the tile's position. If this value exceeds
+   * <code>maximumScreenSpaceError</code> the tile refines to its descendants.
+   * </p>
+   * <p>
+   * Depending on the tileset, <code>maximumScreenSpaceError</code> may need to be tweaked to achieve the right balance.
+   * Higher values provide better performance but lower visual quality.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {number}
+   * @default 16
+   *
+   * @exception {DeveloperError} <code>maximumScreenSpaceError</code> must be greater than or equal to zero.
+   */
+  set maximumScreenSpaceError(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals(
+      "maximumScreenSpaceError",
+      value,
+      0,
+    );
+    //>>includeEnd('debug');
+
+    this._maximumScreenSpaceError = value;
+    this._memoryAdjustedScreenSpaceError = value;
+  }
 
   /**
    * The amount of GPU memory (in bytes) used to cache tiles. This memory usage is estimated from
@@ -1593,18 +2246,46 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @exception {DeveloperError} <code>cacheBytes</code> must be typeof 'number' and greater than or equal to 0
    * @see Cesium3DTileset#totalMemoryUsageInBytes
    */
-  cacheBytes: {
-    get: function () {
-      return this._cacheBytes;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0);
-      //>>includeEnd('debug');
+  get cacheBytes() {
+    return this._cacheBytes;
+  }
 
-      this._cacheBytes = value;
-    },
-  },
+  /**
+   * The amount of GPU memory (in bytes) used to cache tiles. This memory usage is estimated from
+   * geometry, textures, and batch table textures of loaded tiles. For point clouds, this value also
+   * includes per-point metadata.
+   * <p>
+   * Tiles not in view are unloaded to enforce this.
+   * </p>
+   * <p>
+   * If decreasing this value results in unloading tiles, the tiles are unloaded the next frame.
+   * </p>
+   * <p>
+   * If tiles sized more than <code>cacheBytes</code> are needed to meet the
+   * desired screen space error, determined by {@link Cesium3DTileset#maximumScreenSpaceError},
+   * for the current view, then the memory usage of the tiles loaded will exceed
+   * <code>cacheBytes</code> by up to <code>maximumCacheOverflowBytes</code>.
+   * For example, if <code>cacheBytes</code> is 500000, but 600000 bytes
+   * of tiles are needed to meet the screen space error, then 600000 bytes of tiles
+   * may be loaded (if <code>maximumCacheOverflowBytes</code> is at least 100000).
+   * When these tiles go out of view, they will be unloaded.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {number}
+   * @default 536870912
+   *
+   * @exception {DeveloperError} <code>cacheBytes</code> must be typeof 'number' and greater than or equal to 0
+   * @see Cesium3DTileset#totalMemoryUsageInBytes
+   */
+  set cacheBytes(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0);
+    //>>includeEnd('debug');
+
+    this._cacheBytes = value;
+  }
 
   /**
    * The maximum additional amount of GPU memory (in bytes) that will be used to cache tiles.
@@ -1625,18 +2306,36 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @exception {DeveloperError} <code>maximumCacheOverflowBytes</code> must be typeof 'number' and greater than or equal to 0
    * @see Cesium3DTileset#totalMemoryUsageInBytes
    */
-  maximumCacheOverflowBytes: {
-    get: function () {
-      return this._maximumCacheOverflowBytes;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("value", value, 0);
-      //>>includeEnd('debug');
+  get maximumCacheOverflowBytes() {
+    return this._maximumCacheOverflowBytes;
+  }
 
-      this._maximumCacheOverflowBytes = value;
-    },
-  },
+  /**
+   * The maximum additional amount of GPU memory (in bytes) that will be used to cache tiles.
+   * <p>
+   * If tiles sized more than <code>cacheBytes</code> plus <code>maximumCacheOverflowBytes</code>
+   * are needed to meet the desired screen space error, determined by
+   * {@link Cesium3DTileset#maximumScreenSpaceError} for the current view, then
+   * {@link Cesium3DTileset#memoryAdjustedScreenSpaceError} will be adjusted
+   * until the tiles required to meet the adjusted screen space error use less
+   * than <code>cacheBytes</code> plus <code>maximumCacheOverflowBytes</code>.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {number}
+   * @default 536870912
+   *
+   * @exception {DeveloperError} <code>maximumCacheOverflowBytes</code> must be typeof 'number' and greater than or equal to 0
+   * @see Cesium3DTileset#totalMemoryUsageInBytes
+   */
+  set maximumCacheOverflowBytes(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("value", value, 0);
+    //>>includeEnd('debug');
+
+    this._maximumCacheOverflowBytes = value;
+  }
 
   /**
    * If loading the level of detail required by @{link Cesium3DTileset#maximumScreenSpaceError}
@@ -1652,11 +2351,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @private
    */
-  memoryAdjustedScreenSpaceError: {
-    get: function () {
-      return this._memoryAdjustedScreenSpaceError;
-    },
-  },
+  get memoryAdjustedScreenSpaceError() {
+    return this._memoryAdjustedScreenSpaceError;
+  }
 
   /**
    * Options for controlling point size based on geometric error and eye dome lighting.
@@ -1665,17 +2362,23 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @type {PointCloudShading}
    */
-  pointCloudShading: {
-    get: function () {
-      return this._pointCloudShading;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("pointCloudShading", value);
-      //>>includeEnd('debug');
-      this._pointCloudShading = value;
-    },
-  },
+  get pointCloudShading() {
+    return this._pointCloudShading;
+  }
+
+  /**
+   * Options for controlling point size based on geometric error and eye dome lighting.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {PointCloudShading}
+   */
+  set pointCloudShading(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("pointCloudShading", value);
+    //>>includeEnd('debug');
+    this._pointCloudShading = value;
+  }
 
   /**
    * The root tile.
@@ -1685,11 +2388,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {Cesium3DTile}
    * @readonly
    */
-  root: {
-    get: function () {
-      return this._root;
-    },
-  },
+  get root() {
+    return this._root;
+  }
 
   /**
    * The tileset's bounding sphere.
@@ -1707,12 +2408,10 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * // Set the camera to view the newly added tileset
    * viewer.camera.viewBoundingSphere(tileset.boundingSphere, new Cesium.HeadingPitchRange(0, -0.5, 0));
    */
-  boundingSphere: {
-    get: function () {
-      this._root.updateTransform(this._modelMatrix);
-      return this._root.boundingSphere;
-    },
-  },
+  get boundingSphere() {
+    this._root.updateTransform(this._modelMatrix);
+    return this._root.boundingSphere;
+  }
 
   /**
    * A 4x4 transformation matrix that transforms the entire tileset.
@@ -1732,14 +2431,31 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * const translation = Cesium.Cartesian3.subtract(offset, surface, new Cesium.Cartesian3());
    * tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
    */
-  modelMatrix: {
-    get: function () {
-      return this._modelMatrix;
-    },
-    set: function (value) {
-      this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
-    },
-  },
+  get modelMatrix() {
+    return this._modelMatrix;
+  }
+
+  /**
+   * A 4x4 transformation matrix that transforms the entire tileset.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {Matrix4}
+   * @default Matrix4.IDENTITY
+   *
+   * @example
+   * // Adjust a tileset's height from the globe's surface.
+   * const heightOffset = 20.0;
+   * const boundingSphere = tileset.boundingSphere;
+   * const cartographic = Cesium.Cartographic.fromCartesian(boundingSphere.center);
+   * const surface = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, 0.0);
+   * const offset = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, heightOffset);
+   * const translation = Cesium.Cartesian3.subtract(offset, surface, new Cesium.Cartesian3());
+   * tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
+   */
+  set modelMatrix(value) {
+    this._modelMatrix = Matrix4.clone(value, this._modelMatrix);
+  }
 
   /**
    * Returns the time, in milliseconds, since the tileset was loaded and first updated.
@@ -1749,11 +2465,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {number}
    * @readonly
    */
-  timeSinceLoad: {
-    get: function () {
-      return this._timeSinceLoad;
-    },
-  },
+  get timeSinceLoad() {
+    return this._timeSinceLoad;
+  }
 
   /**
    * The total amount of GPU memory in bytes used by the tileset. This value is estimated from
@@ -1766,56 +2480,48 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @see Cesium3DTileset#cacheBytes
    */
-  totalMemoryUsageInBytes: {
-    get: function () {
-      const statistics = this._statistics;
-      return (
-        statistics.texturesByteLength +
-        statistics.geometryByteLength +
-        statistics.batchTableByteLength
+  get totalMemoryUsageInBytes() {
+    const statistics = this._statistics;
+    return (
+      statistics.texturesByteLength +
+      statistics.geometryByteLength +
+      statistics.batchTableByteLength
+    );
+  }
+
+  /**
+   * @private
+   */
+  get clippingPlanesOriginMatrix() {
+    if (!defined(this._clippingPlanesOriginMatrix)) {
+      return Matrix4.IDENTITY;
+    }
+
+    if (this._clippingPlanesOriginMatrixDirty) {
+      Matrix4.multiply(
+        this.root.computedTransform,
+        this._initialClippingPlanesOriginMatrix,
+        this._clippingPlanesOriginMatrix,
       );
-    },
-  },
+      this._clippingPlanesOriginMatrixDirty = false;
+    }
+
+    return this._clippingPlanesOriginMatrix;
+  }
 
   /**
    * @private
    */
-  clippingPlanesOriginMatrix: {
-    get: function () {
-      if (!defined(this._clippingPlanesOriginMatrix)) {
-        return Matrix4.IDENTITY;
-      }
-
-      if (this._clippingPlanesOriginMatrixDirty) {
-        Matrix4.multiply(
-          this.root.computedTransform,
-          this._initialClippingPlanesOriginMatrix,
-          this._clippingPlanesOriginMatrix,
-        );
-        this._clippingPlanesOriginMatrixDirty = false;
-      }
-
-      return this._clippingPlanesOriginMatrix;
-    },
-  },
+  get styleEngine() {
+    return this._styleEngine;
+  }
 
   /**
    * @private
    */
-  styleEngine: {
-    get: function () {
-      return this._styleEngine;
-    },
-  },
-
-  /**
-   * @private
-   */
-  statistics: {
-    get: function () {
-      return this._statistics;
-    },
-  },
+  get statistics() {
+    return this._statistics;
+  }
 
   /**
    * Determines whether terrain, 3D Tiles, or both will be classified by this tileset.
@@ -1854,11 +2560,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    * @readonly
    */
-  classificationType: {
-    get: function () {
-      return this._classificationType;
-    },
-  },
+  get classificationType() {
+    return this._classificationType;
+  }
 
   /**
    * Specifies if the height is relative to terrain, 3D Tiles, or both.
@@ -1875,11 +2579,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    * @readonly
    */
-  heightReference: {
-    get: function () {
-      return this._heightReference;
-    },
-  },
+  get heightReference() {
+    return this._heightReference;
+  }
 
   /**
    * The {@link CesiumWidget#scene} that the tileset will be rendered in, required for tilesets that specify a {@link heightReference} value for clamping 3D Tiles vector data content- like points, lines, and labels- to terrain or 3D tiles.
@@ -1891,11 +2593,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @readonly
    *
    */
-  scene: {
-    get: function () {
-      return this._scene;
-    },
-  },
+  get scene() {
+    return this._scene;
+  }
 
   /**
    * Optional live invalidation feed attached to this tileset. Returns
@@ -1907,11 +2607,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {Cesium3DTilesInvalidationFeed|undefined}
    * @readonly
    */
-  invalidationFeed: {
-    get: function () {
-      return this._invalidationFeed;
-    },
-  },
+  get invalidationFeed() {
+    return this._invalidationFeed;
+  }
 
   /**
    * Gets an ellipsoid describing the shape of the globe.
@@ -1921,11 +2619,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {Ellipsoid}
    * @readonly
    */
-  ellipsoid: {
-    get: function () {
-      return this._ellipsoid;
-    },
-  },
+  get ellipsoid() {
+    return this._ellipsoid;
+  }
 
   /**
    * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control the cone size that determines which tiles are deferred.
@@ -1937,19 +2633,28 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {number}
    * @default 0.3
    */
-  foveatedConeSize: {
-    get: function () {
-      return this._foveatedConeSize;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals("foveatedConeSize", value, 0.0);
-      Check.typeOf.number.lessThanOrEquals("foveatedConeSize", value, 1.0);
-      //>>includeEnd('debug');
+  get foveatedConeSize() {
+    return this._foveatedConeSize;
+  }
 
-      this._foveatedConeSize = value;
-    },
-  },
+  /**
+   * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control the cone size that determines which tiles are deferred.
+   * Tiles that are inside this cone are loaded immediately. Tiles outside the cone are potentially deferred based on how far outside the cone they are and {@link Cesium3DTileset#foveatedInterpolationCallback} and {@link Cesium3DTileset#foveatedMinimumScreenSpaceErrorRelaxation}.
+   * Setting this to 0.0 means the cone will be the line formed by the camera position and its view direction. Setting this to 1.0 means the cone encompasses the entire field of view of the camera, essentially disabling the effect.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {number}
+   * @default 0.3
+   */
+  set foveatedConeSize(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals("foveatedConeSize", value, 0.0);
+    Check.typeOf.number.lessThanOrEquals("foveatedConeSize", value, 1.0);
+    //>>includeEnd('debug');
+
+    this._foveatedConeSize = value;
+  }
 
   /**
    * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control the starting screen space error relaxation for tiles outside the foveated cone.
@@ -1960,27 +2665,35 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {number}
    * @default 0.0
    */
-  foveatedMinimumScreenSpaceErrorRelaxation: {
-    get: function () {
-      return this._foveatedMinimumScreenSpaceErrorRelaxation;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number.greaterThanOrEquals(
-        "foveatedMinimumScreenSpaceErrorRelaxation",
-        value,
-        0.0,
-      );
-      Check.typeOf.number.lessThanOrEquals(
-        "foveatedMinimumScreenSpaceErrorRelaxation",
-        value,
-        this.maximumScreenSpaceError,
-      );
-      //>>includeEnd('debug');
+  get foveatedMinimumScreenSpaceErrorRelaxation() {
+    return this._foveatedMinimumScreenSpaceErrorRelaxation;
+  }
 
-      this._foveatedMinimumScreenSpaceErrorRelaxation = value;
-    },
-  },
+  /**
+   * Optimization option. Used when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control the starting screen space error relaxation for tiles outside the foveated cone.
+   * The screen space error will be raised starting with this value up to {@link Cesium3DTileset#maximumScreenSpaceError} based on the provided {@link Cesium3DTileset#foveatedInterpolationCallback}.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {number}
+   * @default 0.0
+   */
+  set foveatedMinimumScreenSpaceErrorRelaxation(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number.greaterThanOrEquals(
+      "foveatedMinimumScreenSpaceErrorRelaxation",
+      value,
+      0.0,
+    );
+    Check.typeOf.number.lessThanOrEquals(
+      "foveatedMinimumScreenSpaceErrorRelaxation",
+      value,
+      this.maximumScreenSpaceError,
+    );
+    //>>includeEnd('debug');
+
+    this._foveatedMinimumScreenSpaceErrorRelaxation = value;
+  }
 
   /**
    * Returns the <code>extras</code> property at the top-level of the tileset JSON, which contains application specific metadata.
@@ -1993,11 +2706,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @see {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification#specifying-extensions-and-application-specific-extras|Extras in the 3D Tiles specification.}
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * The properties for managing image-based lighting on this tileset.
@@ -2006,26 +2717,32 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @type {ImageBasedLighting}
    */
-  imageBasedLighting: {
-    get: function () {
-      return this._imageBasedLighting;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.object("imageBasedLighting", this._imageBasedLighting);
-      //>>includeEnd('debug');
-      if (value !== this._imageBasedLighting) {
-        if (
-          this._shouldDestroyImageBasedLighting &&
-          !this._imageBasedLighting.isDestroyed()
-        ) {
-          this._imageBasedLighting.destroy();
-        }
-        this._imageBasedLighting = value;
-        this._shouldDestroyImageBasedLighting = false;
+  get imageBasedLighting() {
+    return this._imageBasedLighting;
+  }
+
+  /**
+   * The properties for managing image-based lighting on this tileset.
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {ImageBasedLighting}
+   */
+  set imageBasedLighting(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("imageBasedLighting", this._imageBasedLighting);
+    //>>includeEnd('debug');
+    if (value !== this._imageBasedLighting) {
+      if (
+        this._shouldDestroyImageBasedLighting &&
+        !this._imageBasedLighting.isDestroyed()
+      ) {
+        this._imageBasedLighting.destroy();
       }
-    },
-  },
+      this._imageBasedLighting = value;
+      this._shouldDestroyImageBasedLighting = false;
+    }
+  }
 
   /**
    * The properties for managing dynamic environment maps on this model. Affects lighting.
@@ -2040,11 +2757,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    *
    * @type {DynamicEnvironmentMapManager}
    */
-  environmentMapManager: {
-    get: function () {
-      return this._environmentMapManager;
-    },
-  },
+  get environmentMapManager() {
+    return this._environmentMapManager;
+  }
 
   /**
    * Indicates that only the tileset's vector tiles should be used for classification.
@@ -2056,11 +2771,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {boolean}
    * @default false
    */
-  vectorClassificationOnly: {
-    get: function () {
-      return this._vectorClassificationOnly;
-    },
-  },
+  get vectorClassificationOnly() {
+    return this._vectorClassificationOnly;
+  }
 
   /**
    * Whether vector tiles should keep decoded positions in memory.
@@ -2073,11 +2786,9 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {boolean}
    * @default false
    */
-  vectorKeepDecodedPositions: {
-    get: function () {
-      return this._vectorKeepDecodedPositions;
-    },
-  },
+  get vectorKeepDecodedPositions() {
+    return this._vectorKeepDecodedPositions;
+  }
 
   /**
    * Determines whether the credits of the tileset will be displayed on the screen
@@ -2087,15 +2798,22 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {boolean}
    * @default false
    */
-  showCreditsOnScreen: {
-    get: function () {
-      return this._showCreditsOnScreen;
-    },
-    set: function (value) {
-      this._showCreditsOnScreen = value;
-      createCredits(this);
-    },
-  },
+  get showCreditsOnScreen() {
+    return this._showCreditsOnScreen;
+  }
+
+  /**
+   * Determines whether the credits of the tileset will be displayed on the screen
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {boolean}
+   * @default false
+   */
+  set showCreditsOnScreen(value) {
+    this._showCreditsOnScreen = value;
+    createCredits(this);
+  }
 
   /**
    * Label of the feature ID set to use for picking and styling.
@@ -2119,23 +2837,44 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {string}
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  featureIdLabel: {
-    get: function () {
-      return this._featureIdLabel;
-    },
-    set: function (value) {
-      // indices get converted into featureId_N
-      if (typeof value === "number") {
-        value = `featureId_${value}`;
-      }
+  get featureIdLabel() {
+    return this._featureIdLabel;
+  }
 
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.string("value", value);
-      //>>includeEnd('debug');
+  /**
+   * Label of the feature ID set to use for picking and styling.
+   * <p>
+   * For EXT_mesh_features, this is the feature ID's label property, or
+   * "featureId_N" (where N is the index in the featureIds array) when not
+   * specified. EXT_feature_metadata did not have a label field, so such
+   * feature ID sets are always labeled "featureId_N" where N is the index in
+   * the list of all feature Ids, where feature ID attributes are listed before
+   * feature ID textures.
+   * </p>
+   * <p>
+   * If featureIdLabel is set to an integer N, it is converted to
+   * the string "featureId_N" automatically. If both per-primitive and
+   * per-instance feature IDs are present, the instance feature IDs take
+   * priority.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set featureIdLabel(value) {
+    // indices get converted into featureId_N
+    if (typeof value === "number") {
+      value = `featureId_${value}`;
+    }
 
-      this._featureIdLabel = value;
-    },
-  },
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("value", value);
+    //>>includeEnd('debug');
+
+    this._featureIdLabel = value;
+  }
 
   /**
    * Label of the instance feature ID set used for picking and styling.
@@ -2151,24 +2890,37 @@ Object.defineProperties(Cesium3DTileset.prototype, {
    * @type {string}
    * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
    */
-  instanceFeatureIdLabel: {
-    get: function () {
-      return this._instanceFeatureIdLabel;
-    },
-    set: function (value) {
-      // indices get converted into instanceFeatureId_N
-      if (typeof value === "number") {
-        value = `instanceFeatureId_${value}`;
-      }
+  get instanceFeatureIdLabel() {
+    return this._instanceFeatureIdLabel;
+  }
 
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.string("value", value);
-      //>>includeEnd('debug');
+  /**
+   * Label of the instance feature ID set used for picking and styling.
+   * <p>
+   * If instanceFeatureIdLabel is set to an integer N, it is converted to
+   * the string "instanceFeatureId_N" automatically.
+   * If both per-primitive and per-instance feature IDs are present, the
+   * instance feature IDs take priority.
+   * </p>
+   *
+   * @memberof Cesium3DTileset.prototype
+   *
+   * @type {string}
+   * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  set instanceFeatureIdLabel(value) {
+    // indices get converted into instanceFeatureId_N
+    if (typeof value === "number") {
+      value = `instanceFeatureId_${value}`;
+    }
 
-      this._instanceFeatureIdLabel = value;
-    },
-  },
-});
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("value", value);
+    //>>includeEnd('debug');
+
+    this._instanceFeatureIdLabel = value;
+  }
+}
 
 /**
  * Creates a {@link https://github.com/CesiumGS/3d-tiles/tree/main/specification|3D Tiles tileset},
@@ -2338,93 +3090,6 @@ Cesium3DTileset.fromUrl = async function (url, options) {
 Cesium3DTileset.loadJson = function (tilesetUrl) {
   const resource = Resource.createIfNeeded(tilesetUrl);
   return resource.fetchJson();
-};
-
-/**
- * Marks the tileset's {@link Cesium3DTileset#style} as dirty, which forces all
- * features to re-evaluate the style in the next frame each is visible.
- */
-Cesium3DTileset.prototype.makeStyleDirty = function () {
-  this._styleEngine.makeDirty();
-};
-
-/**
- * Loads the main tileset JSON file or a tileset JSON file referenced from a tile.
- *
- * @exception {RuntimeError} When the tileset asset version is not 0.0, 1.0, or 1.1,
- * or when the tileset contains a required extension that is not supported.
- *
- * @private
- */
-Cesium3DTileset.prototype.loadTileset = function (
-  resource,
-  tilesetJson,
-  parentTile,
-) {
-  const asset = tilesetJson.asset;
-  if (!defined(asset)) {
-    throw new RuntimeError("Tileset must have an asset property.");
-  }
-  if (
-    asset.version !== "0.0" &&
-    asset.version !== "1.0" &&
-    asset.version !== "1.1"
-  ) {
-    throw new RuntimeError(
-      "The tileset must be 3D Tiles version 0.0, 1.0, or 1.1",
-    );
-  }
-
-  if (defined(tilesetJson.extensionsRequired)) {
-    Cesium3DTileset.checkSupportedExtensions(tilesetJson.extensionsRequired);
-  }
-
-  const statistics = this._statistics;
-
-  const tilesetVersion = asset.tilesetVersion;
-  if (defined(tilesetVersion)) {
-    // Append the tileset version to the resource
-    this._basePath += `?v=${tilesetVersion}`;
-    resource = resource.clone();
-    resource.setQueryParameters({ v: tilesetVersion });
-  }
-
-  // A tileset JSON file referenced from a tile may exist in a different directory than the root tileset.
-  // Get the basePath relative to the external tileset.
-  const rootTile = makeTile(this, resource, tilesetJson.root, parentTile);
-
-  // If there is a parentTile, add the root of the currently loading tileset
-  // to parentTile's children, and update its _depth.
-  if (defined(parentTile)) {
-    parentTile.children.push(rootTile);
-    rootTile._depth = parentTile._depth + 1;
-  }
-
-  const stack = [];
-  stack.push(rootTile);
-
-  while (stack.length > 0) {
-    const tile = stack.pop();
-    ++statistics.numberOfTilesTotal;
-    this._allTilesAdditive =
-      this._allTilesAdditive && tile.refine === Cesium3DTileRefine.ADD;
-    const children = tile._header.children;
-    if (defined(children)) {
-      for (let i = 0; i < children.length; ++i) {
-        const childHeader = children[i];
-        const childTile = makeTile(this, resource, childHeader, tile);
-        tile.children.push(childTile);
-        childTile._depth = tile._depth + 1;
-        stack.push(childTile);
-      }
-    }
-
-    if (this._cullWithChildrenBounds) {
-      Cesium3DTileOptimizations.checkChildrenWithinParent(tile);
-    }
-  }
-
-  return rootTile;
 };
 
 /**
@@ -2694,71 +3359,6 @@ function requestContent(tileset, tile) {
 function sortTilesByPriority(a, b) {
   return a._priority - b._priority;
 }
-
-/**
- * Perform any pass invariant tasks here. Called after the render pass.
- * @private
- * @param {FrameState} frameState
- */
-Cesium3DTileset.prototype.postPassesUpdate = function (frameState) {
-  if (!defined(this._root)) {
-    return;
-  }
-
-  cancelOutOfViewRequests(this, frameState);
-  raiseLoadProgressEvent(this, frameState);
-  this._cache.unloadTiles(this, unloadTile);
-
-  // If the style wasn't able to be applied this frame (for example,
-  // the tileset was hidden), keep it dirty so the engine can try
-  // to apply the style next frame.
-  if (this._styleApplied) {
-    this._styleEngine.resetDirty();
-  }
-  this._styleApplied = false;
-};
-
-/**
- * Perform any pass invariant tasks here. Called before any passes are executed.
- * @private
- * @param {FrameState} frameState
- */
-Cesium3DTileset.prototype.prePassesUpdate = function (frameState) {
-  if (!defined(this._root)) {
-    return;
-  }
-
-  processTiles(this, frameState);
-
-  // Update clipping planes
-  const clippingPlanes = this._clippingPlanes;
-  this._clippingPlanesOriginMatrixDirty = true;
-  if (defined(clippingPlanes) && clippingPlanes.enabled) {
-    clippingPlanes.update(frameState);
-  }
-
-  // Update clipping polygons
-  const clippingPolygons = this._clippingPolygons;
-  if (defined(clippingPolygons) && clippingPolygons.enabled) {
-    clippingPolygons.update(frameState);
-  }
-
-  if (!defined(this._loadTimestamp)) {
-    this._loadTimestamp = JulianDate.clone(frameState.time);
-  }
-  this._timeSinceLoad = Math.max(
-    JulianDate.secondsDifference(frameState.time, this._loadTimestamp) * 1000,
-    0.0,
-  );
-
-  if (this.dynamicScreenSpaceError) {
-    updateDynamicScreenSpaceError(this, frameState);
-  }
-
-  if (frameState.newFrame) {
-    this._cache.reset();
-  }
-};
 
 /**
  * @private
@@ -3324,19 +3924,6 @@ function destroyTile(tileset, tile) {
 }
 
 /**
- * Unloads all tiles that weren't selected the previous frame.  This can be used to
- * explicitly manage the tile cache and reduce the total number of tiles loaded below
- * {@link Cesium3DTileset#cacheBytes}.
- * <p>
- * Tile unloads occur at the next frame to keep all the WebGL delete calls
- * within the render loop.
- * </p>
- */
-Cesium3DTileset.prototype.trimLoadedTiles = function () {
-  this._cache.trim();
-};
-
-/**
  * @private
  * @param {Cesium3DTileset} tileset
  * @param {FrameState} frameState
@@ -3523,225 +4110,6 @@ function createCredits(tileset) {
   tileset._credits = credits;
 }
 
-/**
- * @private
- * @param {object} passOptions
- * @returns {Cesium3DTilesetTraversal}
- */
-Cesium3DTileset.prototype.getTraversal = function (passOptions) {
-  const { pass } = passOptions;
-  if (
-    pass === Cesium3DTilePass.MOST_DETAILED_PRELOAD ||
-    pass === Cesium3DTilePass.MOST_DETAILED_PICK
-  ) {
-    return Cesium3DTilesetMostDetailedTraversal;
-  }
-  return this.isSkippingLevelOfDetail
-    ? Cesium3DTilesetSkipTraversal
-    : Cesium3DTilesetBaseTraversal;
-};
-
-/**
- * @private
- * @param {FrameState} frameState
- */
-Cesium3DTileset.prototype.update = function (frameState) {
-  // Forward-wire the scene reference into the invalidation feed once. The
-  // feed needs Scene to bump _snapshotVersion, but Cesium3DTileset is often
-  // constructed before being added to a scene.
-  if (
-    defined(this._invalidationFeed) &&
-    defined(frameState) &&
-    defined(frameState.scene) &&
-    typeof this._invalidationFeed.setScene === "function"
-  ) {
-    this._invalidationFeed.setScene(frameState.scene);
-  }
-  this.updateForPass(frameState, frameState.tilesetPassState);
-};
-
-/**
- * @private
- * @param {FrameState} frameState
- * @param {object} tilesetPassState
- */
-Cesium3DTileset.prototype.updateForPass = function (
-  frameState,
-  tilesetPassState,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("frameState", frameState);
-  Check.typeOf.object("tilesetPassState", tilesetPassState);
-  //>>includeEnd('debug');
-
-  this.imageryLayers._update();
-
-  const pass = tilesetPassState.pass;
-  if (
-    (pass === Cesium3DTilePass.PRELOAD &&
-      (!this.preloadWhenHidden || this.show)) ||
-    (pass === Cesium3DTilePass.PRELOAD_FLIGHT &&
-      (!this.preloadFlightDestinations ||
-        (!this.show && !this.preloadWhenHidden))) ||
-    (pass === Cesium3DTilePass.REQUEST_RENDER_MODE_DEFER_CHECK &&
-      ((!this._cullRequestsWhileMoving && this.foveatedTimeDelay <= 0) ||
-        !this.show))
-  ) {
-    return;
-  }
-
-  const originalCommandList = frameState.commandList;
-  const originalCamera = frameState.camera;
-  const originalCullingVolume = frameState.cullingVolume;
-
-  tilesetPassState.ready = false;
-
-  const passOptions = Cesium3DTilePass.getPassOptions(pass);
-  const ignoreCommands = passOptions.ignoreCommands;
-
-  const commandList = tilesetPassState.commandList ?? originalCommandList;
-  const commandStart = commandList.length;
-
-  frameState.commandList = commandList;
-  frameState.camera = tilesetPassState.camera ?? originalCamera;
-  frameState.cullingVolume =
-    tilesetPassState.cullingVolume ?? originalCullingVolume;
-
-  if (passOptions.isRender) {
-    const environmentMapManager = this._environmentMapManager;
-    if (defined(this._root)) {
-      environmentMapManager.position = this.boundingSphere.center;
-    }
-    environmentMapManager.update(frameState);
-  }
-
-  // Update clipping polygons
-  const clippingPolygons = this._clippingPolygons;
-  if (defined(clippingPolygons) && clippingPolygons.enabled) {
-    clippingPolygons.queueCommands(frameState);
-  }
-
-  const passStatistics = this._statisticsPerPass[pass];
-
-  if (this.show || ignoreCommands) {
-    this._pass = pass;
-    tilesetPassState.ready = update(
-      this,
-      frameState,
-      passStatistics,
-      passOptions,
-    );
-  }
-
-  if (ignoreCommands) {
-    commandList.length = commandStart;
-  }
-
-  frameState.commandList = originalCommandList;
-  frameState.camera = originalCamera;
-  frameState.cullingVolume = originalCullingVolume;
-};
-
-/**
- * <code>true</code> if the tileset JSON file lists the extension in extensionsUsed; otherwise, <code>false</code>.
- * @param {string} extensionName The name of the extension to check.
- *
- * @returns {boolean} <code>true</code> if the tileset JSON file lists the extension in extensionsUsed; otherwise, <code>false</code>.
- */
-Cesium3DTileset.prototype.hasExtension = function (extensionName) {
-  if (!defined(this._extensionsUsed)) {
-    return false;
-  }
-
-  return this._extensionsUsed.indexOf(extensionName) > -1;
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see Cesium3DTileset#destroy
- */
-Cesium3DTileset.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * tileset = tileset && tileset.destroy();
- *
- * @see Cesium3DTileset#isDestroyed
- */
-Cesium3DTileset.prototype.destroy = function () {
-  this._tileDebugLabels =
-    this._tileDebugLabels && this._tileDebugLabels.destroy();
-  this._clippingPlanes = this._clippingPlanes && this._clippingPlanes.destroy();
-  this._clippingPolygons =
-    this._clippingPolygons && this._clippingPolygons.destroy();
-
-  // Traverse the tree and destroy all tiles
-  if (defined(this._root)) {
-    const stack = scratchStack;
-    stack.push(this._root);
-
-    while (stack.length > 0) {
-      const tile = stack.pop();
-      tile.destroy();
-
-      const children = tile.children;
-      for (let i = 0; i < children.length; ++i) {
-        stack.push(children[i]);
-      }
-    }
-  }
-  this._root = undefined;
-
-  if (
-    this._shouldDestroyImageBasedLighting &&
-    !this._imageBasedLighting.isDestroyed()
-  ) {
-    this._imageBasedLighting.destroy();
-  }
-  this._imageBasedLighting = undefined;
-
-  if (!this._environmentMapManager.isDestroyed()) {
-    this._environmentMapManager.destroy();
-  }
-  this._environmentMapManager = undefined;
-
-  if (!this._imageryLayers.isDestroyed()) {
-    this.imageryLayers.layerAdded.removeEventListener(
-      this._imageryLayersListener,
-    );
-    this.imageryLayers.layerRemoved.removeEventListener(
-      this._imageryLayersListener,
-    );
-    this.imageryLayers.layerMoved.removeEventListener(
-      this._imageryLayersListener,
-    );
-    this.imageryLayers.layerShownOrHidden.removeEventListener(
-      this._imageryLayersListener,
-    );
-    this._imageryLayers.destroy();
-  }
-  this._imageryLayers = undefined;
-
-  return destroyObject(this);
-};
-
 Cesium3DTileset.supportedExtensions = {
   "3DTILES_metadata": true,
   "3DTILES_implicit_tiling": true,
@@ -3776,223 +4144,8 @@ const scratchGetHeightRay = new Ray();
 const scratchIntersection = new Cartesian3();
 const scratchGetHeightCartographic = new Cartographic();
 
-/**
- * Get the height of the loaded surface at a given cartographic. This function will only take into account meshes for loaded tiles, not neccisarily the most detailed tiles available for a tileset. This function will always return undefined when sampling a point cloud.
- *
- * @param {Cartographic} cartographic The cartographic for which to find the height.
- * @param {Scene} scene The scene where visualization is taking place.
- * @returns {number|undefined} The height of the cartographic or undefined if it could not be found.
- *
- * @example
- * const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(124624234);
- * scene.primitives.add(tileset);
- *
- * const height = tileset.getHeight(scene.camera.positionCartographic, scene);
- */
-Cesium3DTileset.prototype.getHeight = function (cartographic, scene) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("cartographic", cartographic);
-  Check.typeOf.object("scene", scene);
-  //>>includeEnd('debug');
-
-  let ellipsoid = scene.ellipsoid;
-  if (!defined(ellipsoid)) {
-    ellipsoid = Ellipsoid.WGS84;
-  }
-
-  const ray = scratchGetHeightRay;
-  const position = ellipsoid.cartographicToCartesian(
-    cartographic,
-    ray.direction,
-  );
-  Cartesian3.normalize(ray.direction, ray.direction);
-
-  ray.direction = Cartesian3.normalize(position, ray.direction);
-  ray.direction = Cartesian3.negate(position, ray.direction);
-  ray.origin = Cartesian3.multiplyByScalar(
-    ray.direction,
-    -2 * ellipsoid.maximumRadius,
-    ray.origin,
-  );
-
-  const intersection = this.pick(ray, scene.frameState, scratchIntersection);
-  if (!defined(intersection)) {
-    return;
-  }
-
-  return ellipsoid.cartesianToCartographic(
-    intersection,
-    scratchGetHeightCartographic,
-  )?.height;
-};
-
-/**
- * Calls the callback when a new tile is rendered that contains the given cartographic. The only parameter
- * is the cartographic position on the tile.
- *
- * @private
- *
- * @param {Scene} scene The scene where visualization is taking place.
- * @param {Cartographic} cartographic The cartographic position.
- * @param {Function} callback The function to be called when a new tile is loaded.
- * @param {Ellipsoid} [ellipsoid=Ellipsoid.WGS84] The ellipsoid to use.
- * @returns {Function} The function to remove this callback from the quadtree.
- */
-Cesium3DTileset.prototype.updateHeight = function (
-  cartographic,
-  callback,
-  ellipsoid,
-) {
-  ellipsoid = ellipsoid ?? Ellipsoid.WGS84;
-
-  const object = {
-    positionCartographic: cartographic,
-    ellipsoid: ellipsoid,
-    callback: callback,
-    invoked: false,
-  };
-
-  const removeCallback = () => {
-    const addedCallbacks = this._addHeightCallbacks;
-    const length = addedCallbacks.length;
-    for (let i = 0; i < length; ++i) {
-      if (addedCallbacks[i] === object) {
-        addedCallbacks.splice(i, 1);
-        break;
-      }
-    }
-
-    if (object.callback) {
-      object.callback = undefined;
-    }
-  };
-
-  this._addHeightCallbacks.push(object);
-  return removeCallback;
-};
-
 const scratchSphereIntersection = new Interval();
 const scratchPickIntersection = new Cartesian3();
-
-/**
- * Find an intersection between a ray and the tileset surface that was rendered. The ray must be given in world coordinates.
- *
- * @param {Ray} ray The ray to test for intersection.
- * @param {FrameState} frameState The frame state.
- * @param {Cartesian3|undefined} [result] The intersection or <code>undefined</code> if none was found.
- * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
- *
- * @private
- */
-Cesium3DTileset.prototype.pick = function (ray, frameState, result) {
-  if (!frameState.context.webgl2 && !this._enablePick) {
-    return;
-  }
-
-  const selectedTiles = this._selectedTiles;
-  const selectedLength = selectedTiles.length;
-  const candidates = [];
-
-  for (let i = 0; i < selectedLength; ++i) {
-    const tile = selectedTiles[i];
-    const boundsIntersection = IntersectionTests.raySphere(
-      ray,
-      tile.contentBoundingVolume.boundingSphere,
-      scratchSphereIntersection,
-    );
-    if (!defined(boundsIntersection) || !defined(tile.content)) {
-      continue;
-    }
-
-    candidates.push(tile);
-  }
-
-  const length = candidates.length;
-  candidates.sort((a, b) => {
-    const aDist = BoundingSphere.distanceSquaredTo(
-      a.contentBoundingVolume.boundingSphere,
-      ray.origin,
-    );
-    const bDist = BoundingSphere.distanceSquaredTo(
-      b.contentBoundingVolume.boundingSphere,
-      ray.origin,
-    );
-
-    return aDist - bDist;
-  });
-
-  let intersection;
-  for (let i = 0; i < length; ++i) {
-    const tile = candidates[i];
-    const candidate = tile.content.pick(
-      ray,
-      frameState,
-      scratchPickIntersection,
-    );
-
-    if (defined(candidate)) {
-      intersection = Cartesian3.clone(candidate, result);
-      return intersection;
-    }
-  }
-};
-
-/**
- * Returns true if the given glTF extension is used by this tileset.
- * <br/><br/>
- * Relies on the <code>3DTILES_content_gltf</code> extension and will return
- * false if that extension is not used.
- *
- * @param {string} gltfExtensionName The name of the glTF extension to check.
- * @returns {boolean} <code>true</code> if the glTF extension is used by this tileset; otherwise, <code>false</code>.
- *
- * @private
- */
-Cesium3DTileset.prototype.isGltfExtensionUsed = function (gltfExtensionName) {
-  if (this.hasExtension("3DTILES_content_gltf")) {
-    if (!defined(this.extensions)) {
-      return false;
-    }
-    const extensionsUsed =
-      this.extensions["3DTILES_content_gltf"]?.extensionsUsed;
-
-    if (!defined(extensionsUsed)) {
-      return false;
-    }
-
-    return extensionsUsed.indexOf(gltfExtensionName) > -1;
-  }
-
-  return false;
-};
-
-/**
- * Returns true if the given glTF extension is used and required by this tileset.
- * <br/><br/>
- * Relies on the <code>3DTILES_content_gltf</code> extension and will return
- * <code>false</code> if that extension is not used.
- *
- * @param {string} gltfExtensionName The name of the glTF extension to check.
- * @returns {boolean} <code>true</code> if the glTF extension is required by this tileset; otherwise, <code>false</code>.
- *
- * @private
- */
-Cesium3DTileset.prototype.isGltfExtensionRequired = function (
-  gltfExtensionName,
-) {
-  if (this.isGltfExtensionUsed(gltfExtensionName)) {
-    const extensionsRequired =
-      this.extensions["3DTILES_content_gltf"].extensionsRequired;
-
-    if (!defined(extensionsRequired)) {
-      return false;
-    }
-
-    return extensionsRequired.indexOf(gltfExtensionName) > -1;
-  }
-
-  return false;
-};
 
 /**
  * Optimization option. Used as a callback when {@link Cesium3DTileset#foveatedScreenSpaceError} is true to control how much to raise the screen space error for tiles outside the foveated cone,

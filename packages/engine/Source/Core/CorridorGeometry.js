@@ -1069,44 +1069,72 @@ function computeRectangle(positions, ellipsoid, width, cornerType, result) {
  *   width : 100000
  * });
  */
-function CorridorGeometry(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const positions = options.positions;
-  const width = options.width;
+class CorridorGeometry {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const positions = options.positions;
+    const width = options.width;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.positions", positions);
-  Check.defined("options.width", width);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.positions", positions);
+    Check.defined("options.width", width);
+    //>>includeEnd('debug');
 
-  const height = options.height ?? 0.0;
-  const extrudedHeight = options.extrudedHeight ?? height;
+    const height = options.height ?? 0.0;
+    const extrudedHeight = options.extrudedHeight ?? height;
 
-  this._positions = positions;
-  this._ellipsoid = Ellipsoid.clone(options.ellipsoid ?? Ellipsoid.default);
-  this._vertexFormat = VertexFormat.clone(
-    options.vertexFormat ?? VertexFormat.DEFAULT,
-  );
-  this._width = width;
-  this._height = Math.max(height, extrudedHeight);
-  this._extrudedHeight = Math.min(height, extrudedHeight);
-  this._cornerType = options.cornerType ?? CornerType.ROUNDED;
-  this._granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
-  this._shadowVolume = options.shadowVolume ?? false;
-  this._workerName = "createCorridorGeometry";
-  this._offsetAttribute = options.offsetAttribute;
-  this._rectangle = undefined;
+    this._positions = positions;
+    this._ellipsoid = Ellipsoid.clone(options.ellipsoid ?? Ellipsoid.default);
+    this._vertexFormat = VertexFormat.clone(
+      options.vertexFormat ?? VertexFormat.DEFAULT,
+    );
+    this._width = width;
+    this._height = Math.max(height, extrudedHeight);
+    this._extrudedHeight = Math.min(height, extrudedHeight);
+    this._cornerType = options.cornerType ?? CornerType.ROUNDED;
+    this._granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
+    this._shadowVolume = options.shadowVolume ?? false;
+    this._workerName = "createCorridorGeometry";
+    this._offsetAttribute = options.offsetAttribute;
+    this._rectangle = undefined;
+
+    /**
+     * The number of elements used to pack the object into an array.
+     * @type {number}
+     */
+    this.packedLength =
+      1 +
+      positions.length * Cartesian3.packedLength +
+      Ellipsoid.packedLength +
+      VertexFormat.packedLength +
+      7;
+  }
 
   /**
-   * The number of elements used to pack the object into an array.
-   * @type {number}
+   * @private
    */
-  this.packedLength =
-    1 +
-    positions.length * Cartesian3.packedLength +
-    Ellipsoid.packedLength +
-    VertexFormat.packedLength +
-    7;
+  get rectangle() {
+    if (!defined(this._rectangle)) {
+      this._rectangle = computeRectangle(
+        this._positions,
+        this._ellipsoid,
+        this._width,
+        this._cornerType,
+      );
+    }
+    return this._rectangle;
+  }
+
+  /**
+   * For remapping texture coordinates when rendering CorridorGeometries as GroundPrimitives.
+   *
+   * Corridors don't support stRotation,
+   * so just return the corners of the original system.
+   * @private
+   */
+  get textureCoordinateRotationPoints() {
+    return [0, 0, 0, 1, 1, 0];
+  }
 }
 
 /**
@@ -1378,34 +1406,4 @@ CorridorGeometry.createShadowVolume = function (
   });
 };
 
-Object.defineProperties(CorridorGeometry.prototype, {
-  /**
-   * @private
-   */
-  rectangle: {
-    get: function () {
-      if (!defined(this._rectangle)) {
-        this._rectangle = computeRectangle(
-          this._positions,
-          this._ellipsoid,
-          this._width,
-          this._cornerType,
-        );
-      }
-      return this._rectangle;
-    },
-  },
-  /**
-   * For remapping texture coordinates when rendering CorridorGeometries as GroundPrimitives.
-   *
-   * Corridors don't support stRotation,
-   * so just return the corners of the original system.
-   * @private
-   */
-  textureCoordinateRotationPoints: {
-    get: function () {
-      return [0, 0, 0, 1, 1, 0];
-    },
-  },
-});
 export default CorridorGeometry;

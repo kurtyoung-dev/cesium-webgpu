@@ -16,26 +16,45 @@ import Frozen from "../../Core/Frozen.js";
  *
  * @private
  */
-function ModelSkin(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.skin", options.skin);
-  Check.typeOf.object("options.sceneGraph", options.sceneGraph);
-  //>>includeEnd('debug');
+class ModelSkin {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.skin", options.skin);
+    Check.typeOf.object("options.sceneGraph", options.sceneGraph);
+    //>>includeEnd('debug');
 
-  this._sceneGraph = options.sceneGraph;
-  const skin = options.skin;
+    this._sceneGraph = options.sceneGraph;
+    const skin = options.skin;
 
-  this._skin = skin;
+    this._skin = skin;
 
-  this._inverseBindMatrices = undefined;
-  this._joints = [];
-  this._jointMatrices = [];
+    this._inverseBindMatrices = undefined;
+    this._joints = [];
+    this._jointMatrices = [];
 
-  initialize(this);
-}
+    initialize(this);
+  }
 
-Object.defineProperties(ModelSkin.prototype, {
+  /**
+   * Updates the joint matrices for the skin.
+   *
+   * @private
+   */
+  updateJointMatrices() {
+    const jointMatrices = this._jointMatrices;
+    const length = jointMatrices.length;
+    for (let i = 0; i < length; i++) {
+      const joint = this.joints[i];
+      const inverseBindMatrix = this.inverseBindMatrices[i];
+      jointMatrices[i] = computeJointMatrix(
+        joint,
+        inverseBindMatrix,
+        jointMatrices[i],
+      );
+    }
+  }
+
   /**
    * The internal skin this runtime skin represents.
    *
@@ -45,11 +64,9 @@ Object.defineProperties(ModelSkin.prototype, {
    *
    * @private
    */
-  skin: {
-    get: function () {
-      return this._skin;
-    },
-  },
+  get skin() {
+    return this._skin;
+  }
 
   /**
    * The scene graph this skin belongs to.
@@ -60,11 +77,9 @@ Object.defineProperties(ModelSkin.prototype, {
    *
    * @private
    */
-  sceneGraph: {
-    get: function () {
-      return this._sceneGraph;
-    },
-  },
+  get sceneGraph() {
+    return this._sceneGraph;
+  }
 
   /**
    * The inverse bind matrices of the skin.
@@ -75,11 +90,9 @@ Object.defineProperties(ModelSkin.prototype, {
    *
    * @private
    */
-  inverseBindMatrices: {
-    get: function () {
-      return this._inverseBindMatrices;
-    },
-  },
+  get inverseBindMatrices() {
+    return this._inverseBindMatrices;
+  }
 
   /**
    * The joints of the skin.
@@ -90,11 +103,9 @@ Object.defineProperties(ModelSkin.prototype, {
    *
    * @private
    */
-  joints: {
-    get: function () {
-      return this._joints;
-    },
-  },
+  get joints() {
+    return this._joints;
+  }
 
   /**
    * The joint matrices for the skin, where each joint matrix is computed as
@@ -109,12 +120,10 @@ Object.defineProperties(ModelSkin.prototype, {
    *
    * @private
    */
-  jointMatrices: {
-    get: function () {
-      return this._jointMatrices;
-    },
-  },
-});
+  get jointMatrices() {
+    return this._jointMatrices;
+  }
+}
 
 function initialize(runtimeSkin) {
   const skin = runtimeSkin.skin;
@@ -157,24 +166,5 @@ function computeJointMatrix(joint, inverseBindMatrix, result) {
 
   return result;
 }
-
-/**
- * Updates the joint matrices for the skin.
- *
- * @private
- */
-ModelSkin.prototype.updateJointMatrices = function () {
-  const jointMatrices = this._jointMatrices;
-  const length = jointMatrices.length;
-  for (let i = 0; i < length; i++) {
-    const joint = this.joints[i];
-    const inverseBindMatrix = this.inverseBindMatrices[i];
-    jointMatrices[i] = computeJointMatrix(
-      joint,
-      inverseBindMatrix,
-      jointMatrices[i],
-    );
-  }
-};
 
 export default ModelSkin;

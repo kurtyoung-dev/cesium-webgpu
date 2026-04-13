@@ -3,7 +3,9 @@ import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
+  createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
+import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -153,6 +155,28 @@ export const enum DebugFragmentMode {
 export class WebGPUGlobeSurfaceRenderer {
   private _device: GPUDevice | null = null;
   private _diagTileCount = 0;
+  private _diagLastLogTime = 0;
+  private _diagLastLayerCountLogMs = 0;
+  private _diagLastFogLogMs = 0;
+  private _diagFogMissingLogged = false;
+  private _lastOverflowWarnTime = 0;
+
+  /**
+   * Throttle diagnostic logs to once per 3 seconds AND only the first tile.
+   * In production builds (`removePragmas: true`), this method is replaced
+   * with a constant `false` return by the pragma stripper, so the
+   * diagnostic code at each call site is dead-code-eliminated by esbuild.
+   */
+  private _diagShouldLog(): boolean {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._diagTileCount !== 0) return false;
+    const now = performance.now();
+    if (now - this._diagLastLogTime < 3000) return false;
+    this._diagLastLogTime = now;
+    return true;
+    //>>includeEnd('debug');
+    return false;
+  }
   // BUG-11 imagery probe — last observed value of `frameState.debugShowImageryProbe`,
   // used to detect the rising edge so the probe latch resets when the
   // operator toggles the flag back on for a second sample.
@@ -171,6 +195,17 @@ export class WebGPUGlobeSurfaceRenderer {
     new Map();
   private _debugFragmentSupportProbed: boolean = false;
   private _debugFragmentSupported: boolean = false;
+  // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
+  // by string-augmenting `_shaderCode` to (a) declare the
+  // `@builtin(clip_distances)` vertex output and (b) compute it from the
+  // precomputed `effects.clipPlaneEqHW` values. The fragment-side
+  // `globeClipByPlanes` discard is neutralized in the augmented source so
+  // the rasterizer is the sole authority. Probed once on first use; cached
+  // forever. `null` after probe means the device rejected the augmented
+  // source (driver bug or missing feature) and the production module is
+  // the fallback.
+  private _clipDistancesShaderModule: GPUShaderModule | null = null;
+  private _clipDistancesSupportProbed: boolean = false;
   private _sampler: GPUSampler | null = null;
   private _waterMaskSampler: GPUSampler | null = null;
   private _bindGroupLayout0: GPUBindGroupLayout | null = null;
@@ -248,6 +283,8 @@ export class WebGPUGlobeSurfaceRenderer {
   // ─── Shader Module ───
   private _createShaderModule(code: string): void {
     this._shaderCode = code;
+    // Shader validation is handled centrally by WebGPUContext's
+    // _installShaderValidation wrapper — no per-site validation needed.
     this._shaderModule = this._device!.createShaderModule({
       label: "GlobeTerrain shader",
       code,
@@ -363,6 +400,157 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       this._debugFragmentSupported = false;
     }
     return this._debugFragmentShaderModule;
+  }
+
+  /**
+   * Phase 5 WGF-1: build (and cache) the GlobeTerrain shader module
+   * variant that uses `@builtin(clip_distances)` for hardware clipping
+   * planes. The base source is augmented in three places:
+   *
+   *   1. The `VertexOutput` struct gets a new
+   *      `@builtin(clip_distances) clipDistances: array<f32, 8>` member.
+   *
+   *   2. The `processVertex` function writes 8 clip distances at the
+   *      end (right after the existing far-plane Z clamp), each computed
+   *      as `dot(eqHW.xyz, eyePos) + eqHW.w` against
+   *      `effects.clipPlaneEqHW[i]`. The CPU has already precomputed
+   *      `eqHW = (n.xyz, d + dot(n, cameraWC))` in FP64 — see
+   *      `WebGPUClipDistancePrecompute.ts`.
+   *
+   *   3. The fragment-side `globeClipByPlanes(input.v_positionMC)`
+   *      discard is neutralized so the rasterizer is the sole authority
+   *      for the clipping decision. The edge-highlight code path that
+   *      reads `clippingPlaneTex` for visualization is left untouched
+   *      because it's a color decoration, not a geometric clip.
+   *
+   * The variant requires the `clip-distances` device feature; the caller
+   * gates pipeline creation on `context.useHardwareClipDistances`.
+   * Returns null if the device rejects the augmented source — callers
+   * fall back to the production module + the legacy fragment-discard
+   * path.
+   */
+  private _getClipDistancesShaderModule(): GPUShaderModule | null {
+    if (this._clipDistancesSupportProbed) {
+      return this._clipDistancesShaderModule;
+    }
+    this._clipDistancesSupportProbed = true;
+    const device = this._device;
+    if (!device || !this._shaderCode) {
+      return null;
+    }
+
+    const augmented = this._buildClipDistancesShaderSource(this._shaderCode);
+    if (augmented === null) {
+      console.warn(
+        "[WebGPUGlobeSurfaceRenderer] clip-distances shader augmentation " +
+          "could not locate one of its anchor strings; falling back to the " +
+          "fragment-discard path.",
+      );
+      return null;
+    }
+
+    try {
+      device.pushErrorScope("validation");
+      const mod = device.createShaderModule({
+        label: "GlobeTerrain shader (clip-distances variant)",
+        code: augmented,
+      });
+      device.popErrorScope().then((err) => {
+        if (err) {
+          this._clipDistancesShaderModule = null;
+          console.warn(
+            `[WebGPUGlobeSurfaceRenderer] clip-distances variant disabled: ${err.message}`,
+          );
+        }
+      });
+      this._clipDistancesShaderModule = mod;
+    } catch (e) {
+      this._clipDistancesShaderModule = null;
+    }
+    return this._clipDistancesShaderModule;
+  }
+
+  /**
+   * Pure string transformation: take the base GlobeTerrain.wgsl source and
+   * return the clip-distances variant. Returns null when any of the three
+   * anchor strings is missing — that means the source has drifted and the
+   * substitution is unsafe.
+   *
+   * Kept as a separate method (not inlined) so it can be unit-tested
+   * against fixture sources without needing a real GPUDevice.
+   */
+  private _buildClipDistancesShaderSource(source: string): string | null {
+    // Anchor 1: VertexOutput struct definition. Inject the builtin
+    // clip-distances output as the last member, right before the closing
+    // brace. We match the precise existing v_distance line so the patch
+    // can't drift onto an unrelated struct.
+    const vertexOutputAnchor =
+      "@location(4) v_distance: f32,\n};";
+    if (!source.includes(vertexOutputAnchor)) {
+      return null;
+    }
+    let out = source.replace(
+      vertexOutputAnchor,
+      "@location(4) v_distance: f32,\n" +
+        "  // WGF-1: hardware clip distances. The 8 entries hold the\n" +
+        "  // signed distance from the eye-relative vertex position to\n" +
+        "  // each clipping plane; the rasterizer clips fragments where\n" +
+        "  // any value is < 0. Slots beyond the active plane count are\n" +
+        "  // computed against `(0,0,0,+inf)` and trivially survive.\n" +
+        "  @builtin(clip_distances) clipDistances: array<f32, 8>,\n" +
+        "};",
+    );
+
+    // Anchor 2: end of processVertex (right after the far-plane Z clamp).
+    // Compute eyeRelativePos in WC, then write all 8 clip distances. The
+    // 2D / Columbus / Morphing branches don't go through the RTE path,
+    // so eyePos is the direct (positionWC - cameraWC) which gives
+    // FP32-precision 0.6m noise at Earth radius — fine because clipping
+    // planes are the only consumer and they have meter-scale tolerance.
+    // For the SCENE3D path, the same expression is exactly the
+    // `rtePosition.xyz` we already computed; recomputing it here lets the
+    // augmentation work uniformly across all four scene modes.
+    const processVertexAnchor =
+      "out.position.z = min(out.position.z, out.position.w);\n\n  return out;";
+    if (!out.includes(processVertexAnchor)) {
+      return null;
+    }
+    const cdInjection =
+      "out.position.z = min(out.position.z, out.position.w);\n\n" +
+      "  // WGF-1: emit hardware clip distances. eyePosWC reconstructs the\n" +
+      "  // eye-relative position in the same coordinate frame the CPU used\n" +
+      "  // when precomputing `effects.clipPlaneEqHW`. We use position3DWC\n" +
+      "  // (the world-space terrain position) and subtract the unencoded\n" +
+      "  // camera (high+low). At Earth radius this is FP32 with ~0.6 m\n" +
+      "  // noise, which is comfortably below the meter-scale tolerance of\n" +
+      "  // any realistic clipping plane test.\n" +
+      "  let cdEyePos = position3DWC - (camera.encodedCameraHigh + camera.encodedCameraLow);\n" +
+      "  for (var cdI: u32 = 0u; cdI < 8u; cdI = cdI + 1u) {\n" +
+      "    let eq = effects.clipPlaneEqHW[cdI];\n" +
+      "    out.clipDistances[cdI] = dot(eq.xyz, cdEyePos) + eq.w;\n" +
+      "  }\n\n" +
+      "  return out;";
+    out = out.replace(processVertexAnchor, cdInjection);
+
+    // Anchor 3: fragment-side discard. The legacy path is unconditionally
+    // safe to remove because the rasterizer's clip distance check is a
+    // strict superset (it operates on every interpolated pixel of every
+    // clipped triangle). We replace the discard line with a comment so
+    // line numbers in errors stay close to the original.
+    const fragmentDiscardAnchor =
+      "if (globeClipByPlanes(input.v_positionMC)) { discard; }";
+    if (!out.includes(fragmentDiscardAnchor)) {
+      return null;
+    }
+    out = out.replace(
+      fragmentDiscardAnchor,
+      "// WGF-1: clipping handled by rasterizer via @builtin(clip_distances).",
+    );
+
+    // The clip_distances builtin requires an `enable` directive at the top
+    // of the WGSL file (matches the f16 / subgroups pattern). The directive
+    // must precede every other declaration; prepend it unconditionally.
+    return `enable clip_distances;\n${out}`;
   }
 
   // ─── Bind Group Layouts ───
@@ -519,6 +707,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     isBlend: boolean,
     strideBytes: number,
     debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE,
+    useClipDistances: boolean = false,
   ): GPURenderPipeline {
     const device = this._device!;
 
@@ -612,12 +801,26 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         }
       : undefined;
 
-    // When a debug fragment mode is selected the fragment stage uses the
-    // augmented shader module which hosts every debug entry point. Vertex
-    // stage stays on the standard module — both modules share identical
-    // vertex outputs because the debug module is the original source plus
-    // appended entry points.
+    // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
+    // both stages must come from the augmented module — the vertex stage
+    // declares the `@builtin(clip_distances)` output, and the fragment
+    // stage's `globeClipByPlanes` discard has been neutralized to avoid
+    // double-clipping.
+    let vertexModule: GPUShaderModule = this._shaderModule!;
     let fragmentModule: GPUShaderModule = this._shaderModule!;
+    let cdLabel: string = "";
+    if (useClipDistances) {
+      const cdModule = this._getClipDistancesShaderModule();
+      if (cdModule) {
+        vertexModule = cdModule;
+        fragmentModule = cdModule;
+        cdLabel = ", clipDist";
+      }
+      // If null, the augmentation failed and we silently fall back to the
+      // production module + the legacy fragment-discard path. The caller's
+      // cache key still distinguishes useClipDistances=true variants, so
+      // we just hand back a "production" pipeline under that key.
+    }
     let fragmentEntry: string = "fragmentMain";
     let debugLabel: string = "";
     if (
@@ -642,10 +845,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return device.createRenderPipeline({
-      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel})`,
+      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel})`,
       layout: this._pipelineLayout!,
       vertex: {
-        module: this._shaderModule!,
+        module: vertexModule,
         entryPoint,
         buffers: vertexBuffers,
       },
@@ -667,7 +870,14 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: !isBlend,
-        depthCompare: isBlend ? "less-equal" : "less",
+        // ALWAYS use less-equal (not less), even for the first pass.
+        // Planetary-scale FP32 precision can push the globe's clip-space
+        // Z up against the far plane, and the paired vertex-shader clamp
+        // `position.z = min(position.z, position.w)` produces exactly
+        // z/w=1 for those vertices. `less` would discard them; we need
+        // `less-equal` so they survive the depth test against the
+        // cleared depth buffer (which starts at 1.0).
+        depthCompare: "less-equal",
       },
     });
   }
@@ -682,8 +892,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     hasWebMercatorT: boolean,
     isBlend: boolean,
     strideBytes: number,
+    useClipDistances: boolean = false,
   ): GPURenderPipeline {
-    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}`;
+    // Phase 5 WGF-1: cache key includes a `C` suffix for the
+    // hardware clip-distances variant so it shares the production cache
+    // map cleanly without colliding with the legacy variants.
+    const cdSuffix = useClipDistances ? "_CD" : "";
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}`;
     let pipeline = this._pipelineCache.get(cacheKey);
     if (!pipeline) {
       pipeline = this._createPipelineVariant(
@@ -692,6 +907,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         hasWebMercatorT,
         isBlend,
         strideBytes,
+        DebugFragmentMode.NONE,
+        useClipDistances,
       );
       this._pipelineCache.set(cacheKey, pipeline);
     }
@@ -752,11 +969,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * Tiles with >4 imagery layers produce multiple passes.
    */
   createTileCommands(
-    tile: any,
-    surfaceTile: any,
-    tileProvider: any,
-    frameState: any,
-    uniformState: any,
+    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    surfaceTile: CesiumGlobeSurfaceTile,
+    tileProvider: CesiumGlobeTileProvider,
+    frameState: CesiumFrameState,
+    uniformState: CesiumUniformState,
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
 
@@ -777,7 +994,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Count total ready imagery layers
     const imageryCollection = surfaceTile.imagery;
-    const readyLayers: any[] = [];
+    const readyLayers: CesiumTileImagery[] = [];
     if (imageryCollection) {
       for (let i = 0; i < imageryCollection.length; i++) {
         const tileImagery = imageryCollection[i];
@@ -890,6 +1107,35 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       const layerEnd = Math.min(layerStart + MAX_IMAGERY_LAYERS, totalLayers);
       const passLayers = readyLayers.slice(layerStart, layerEnd);
 
+      // Phase 5 WGF-1: pick the hardware clip-distances variant only when
+      // ALL of the following hold. Each condition is a real correctness
+      // gate — the legacy fragment-discard path handles every other case.
+      //
+      //   1. context flag is on (auto-set when device granted clip-distances)
+      //   2. tile provider has an active ClippingPlaneCollection
+      //   3. SCENE3D mode — in 2D / Columbus / Morphing the vertex shader
+      //      writes `out.position` from `modifiedModelViewProjection` against
+      //      a planar position, while the clip-distance loop computes
+      //      against `position3DWC` (ECEF). The rasterizer interpolates
+      //      the clip distance across screen-space of the *drawn* primitive,
+      //      so the spatial relationship between the clipping plane and
+      //      the rendered triangle is non-linear in those modes. Falling
+      //      back to fragment discard preserves correct behavior.
+      //   4. Union mode (`unionClippingRegions === true`). The hardware
+      //      `@builtin(clip_distances)` is purely union semantics — any
+      //      negative slot causes a clip. The fragment-discard path
+      //      additionally supports intersection mode (clip only when ALL
+      //      planes clip); routing intersection-mode collections to the
+      //      hardware variant would over-clip.
+      const ctx = frameState?.context;
+      const cp = tileProvider?.clippingPlanes;
+      const isScene3D = (frameState?.mode ?? 3) >= 2.5; // SceneMode.SCENE3D = 3
+      const useClipDistances =
+        !!(ctx && ctx.useHardwareClipDistances) &&
+        !!(cp && cp.length > 0) &&
+        isScene3D &&
+        !!cp.unionClippingRegions;
+
       let pipeline: GPURenderPipeline;
       // Wireframe is a structural overlay — only the first pass renders it,
       // subsequent passes are the multi-imagery overdraw which would just
@@ -905,6 +1151,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         // Cold path: try the debug fragment variant; gracefully fall back
         // to the production pipeline if the device can't compile the
         // augmented module (driver missing primitive_index, etc.).
+        // The debug fragment + clip-distances combination is intentionally
+        // unsupported — the debug variants don't share the augmented
+        // VertexOutput. Fall through to the production module.
         pipeline =
           this._selectDebugFragmentPipeline(
             debugFragmentMode,
@@ -928,6 +1177,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           gpuResources.hasWebMercatorT,
           isSubsequentPass,
           gpuResources.strideBytes,
+          useClipDistances,
         );
       }
 
@@ -980,9 +1230,34 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         tileProvider,
       );
 
-      // Group 3: Effects (shadow receive + clipping planes) — placeholder
-      // until real shadow/clipping resources are provided per-frame
-      const bindGroup3 = this._placeholderEffectsBG!;
+      // Group 3: Effects (shadow receive + clipping planes).
+      //
+      // Phase 5 WGF-1: when clipping planes are active on the tile
+      // provider AND the hardware clip-distances pipeline variant is on,
+      // build a real effects bind group with the precomputed
+      // `clipPlaneEqHW` quads. The legacy fragment-discard path is also
+      // covered by this branch — `useClipDistances` may be false but the
+      // collection still active, in which case the bind group still
+      // populates the texture binding for the legacy path.
+      //
+      // When neither shadows nor clipping are active the placeholder is
+      // returned (no per-frame allocation), preserving the existing
+      // hot-path behavior for the common case.
+      let bindGroup3: GPUBindGroup;
+      if (
+        useClipDistances ||
+        (tileProvider?.clippingPlanes && tileProvider.clippingPlanes.length > 0)
+      ) {
+        const fxRes = createEffectsBindGroup(device, frameState, {
+          clippingPlanes: tileProvider.clippingPlanes,
+          // Globe terrain model matrix is identity, so the camera in
+          // plane-space is the same as the world camera position.
+          cameraInPlaneSpace: uniformState.cameraPosition,
+        });
+        bindGroup3 = fxRes.bindGroup;
+      } else {
+        bindGroup3 = this._placeholderEffectsBG!;
+      }
 
       // Wireframe overlay: swap the index buffer to the line-list version.
       // The wireframe IB is only used on the first pass (matches the pipeline
@@ -998,6 +1273,35 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           drawIndexCount = wire.count;
           drawIndexFormat = wire.format;
         }
+      }
+
+      // ── Index buffer overflow guard ──
+      // A mismatched indexCount vs buffer size produces a WebGPU validation
+      // error that invalidates the ENTIRE command buffer for the frame —
+      // making the canvas go black. Clamp to prevent that.
+      const bytesPerIndex = drawIndexFormat === "uint32" ? 4 : 2;
+      const maxIndicesInBuffer = Math.floor(
+        drawIndexBuffer.size / bytesPerIndex,
+      );
+      if (drawIndexCount > maxIndicesInBuffer) {
+        // PERMANENT warning (not debug-only) — this indicates real data
+        // corruption that produces visible rendering gaps. Throttled to
+        // once per 5 seconds to prevent console spam from recurring tiles.
+        const now = performance.now();
+        if (
+          !this._lastOverflowWarnTime ||
+          now - this._lastOverflowWarnTime > 5000
+        ) {
+          this._lastOverflowWarnTime = now;
+          console.error(
+            `[CesiumJS:WebGPU] INDEX OVERFLOW — tile=${tileKey} ` +
+              `indexCount=${drawIndexCount} maxInBuffer=${maxIndicesInBuffer} ` +
+              `bufSize=${drawIndexBuffer.size} format=${drawIndexFormat}. ` +
+              `Clamped to prevent command buffer invalidation. ` +
+              `This causes visible gaps in the globe.`,
+          );
+        }
+        drawIndexCount = maxIndicesInBuffer;
       }
 
       commands.push({
@@ -1020,12 +1324,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * @deprecated Use createTileCommands for multi-pass support.
    */
   createTileCommand(
-    tile: any,
-    surfaceTile: any,
-    tileProvider: any,
-    frameState: any,
-    uniformState: any,
-  ): any | null {
+    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    surfaceTile: CesiumGlobeSurfaceTile,
+    tileProvider: CesiumGlobeTileProvider,
+    frameState: CesiumFrameState,
+    uniformState: CesiumUniformState,
+  ): TileDrawDescriptor | null {
     const commands = this.createTileCommands(
       tile,
       surfaceTile,
@@ -1045,10 +1349,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       indexCount: cmd.indexCount,
       indexFormat: cmd.indexFormat,
       boundingVolume: cmd.boundingVolume,
+      isSubsequentPass: false,
     };
   }
 
-  private _getTileKey(tile: any): string {
+  private _getTileKey(tile: { level: number; x: number; y: number }): string {
     return `${tile.level}_${tile.x}_${tile.y}`;
   }
 
@@ -1058,7 +1363,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
   private _getOrCreateTileBuffers(
     tileKey: string,
-    mesh: any,
+    mesh: CesiumTerrainMesh,
   ): TileGPUResources | null {
     const device = this._device!;
     const generation = mesh._webgpuGeneration || 0;
@@ -1074,7 +1379,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     const vertices: Float32Array = mesh.vertices;
-    const indices: Uint16Array | Uint32Array = mesh.indices;
+    let indices: Uint8Array | Uint16Array | Uint32Array = mesh.indices;
     if (
       !vertices ||
       !indices ||
@@ -1082,6 +1387,22 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       indices.length === 0
     ) {
       return null;
+    }
+
+    // WebGPU does not support uint8 index format — only uint16 and uint32.
+    // `TerrainFillMesh` stores indices as `Uint8Array` when `vertexCount < 256`
+    // to save memory (see `TerrainFillMesh.js:1236`). Up-convert to Uint16Array
+    // here so the buffer size, byte-length, and declared `indexFormat` all
+    // agree. Historical bug: leaving the Uint8Array in place made
+    // `indices.byteLength` equal to `indexCount` (1 byte/index), the buffer
+    // was created at half the needed size, and the index format was still
+    // reported as uint16 — the GPU then read 2 bytes per index and tried to
+    // walk past the end of the buffer, invalidating the whole command buffer
+    // and producing an invisible globe at default zoom.
+    if (indices instanceof Uint8Array) {
+      const upconverted = new Uint16Array(indices.length);
+      for (let k = 0; k < indices.length; k++) upconverted[k] = indices[k];
+      indices = upconverted;
     }
 
     const encoding = mesh.encoding;
@@ -1254,12 +1575,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
   private _createCameraUniformBuffer(
     device: GPUDevice,
-    uniformState: any,
-    surfaceTile: any,
+    uniformState: CesiumUniformState,
+    surfaceTile: CesiumGlobeSurfaceTile,
     tileProvider: any,
-    mesh: any,
-    frameState?: any,
-    tile?: any,
+    mesh: CesiumTerrainMesh,
+    frameState?: CesiumFrameState,
+    tile?: { level: number; x: number; y: number; rectangle: CesiumRectangle },
   ): { buffer: GPUBuffer; offset: number; size: number } {
     const data = this._cameraUniformData;
     let offset = 0;
@@ -1298,17 +1619,72 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     data[offset++] = camLow.z;
     data[offset++] = 0;
 
-    // center3D (vec3 + pad) — must match the encoding center that vertex
-    // positions are relative to (mesh.encoding.center or mesh.center)
-    const center = mesh.center || mesh.encoding?.center || { x: 0, y: 0, z: 0 };
-    if (this._diagTileCount <= 5) {
-      const hasMC = !!mesh.center;
-      const hasEC = !!mesh.encoding?.center;
-      console.log(
-        `[WebGPU:GlobeTile] center3D: mesh.center=${hasMC} encoding.center=${hasEC} ` +
-          `value=(${center.x?.toFixed(1)}, ${center.y?.toFixed(1)}, ${center.z?.toFixed(1)})`,
+    //>>includeStart('debug', pragmas.debug);
+    // RTE round-trip: verify that high+low reconstructs the unencoded camera
+    // position. Catches off-by-one packer bugs that swap the high/low slots
+    // (visible symptom: ~6 m geometry jitter at orbital altitude).
+    //
+    // For terrain the model matrix is identity (`inverseModel` is identity),
+    // so the MC-encoded high/low must reconstruct to `cameraPosition` (WC)
+    // exactly. UniformState computes the encoded MC pair from
+    // `inverseModel × cameraPosition` (UniformStateComputations.js:404-416).
+    if (camHigh && camLow && uniformState.cameraPosition) {
+      assertCameraRTERoundTrip(
+        camHigh,
+        camLow,
+        uniformState.cameraPosition,
+        "Globe terrain camera UB",
       );
     }
+    //>>includeEnd('debug');
+
+    // center3D (vec3 + pad) — MUST match the encoding center that vertex
+    // positions are relative to. In `TerrainEncoding.encode`, each vertex
+    // is stored as `(position - encoding.center)`, so the vertex shader
+    // reconstructs the world position via `exaggeratedPosition + camera.center3D`.
+    // If we feed `mesh.center` here but `mesh.center !== encoding.center`,
+    // the reconstructed world position is wrong by exactly that delta —
+    // which would produce per-tile radius variance in wireframe, matching
+    // the user-reported symptom.
+    //
+    // Therefore: ALWAYS use `encoding.center` here, not `mesh.center`.
+    // They should normally be equal, but subtle paths (TerrainFillMesh OBB
+    // vs rectangle center, upsampled meshes, cloned encodings) can make
+    // them diverge, and `encoding.center` is the authoritative source for
+    // "the reference point the vertices were encoded against."
+    const encodingCenter = mesh.encoding?.center;
+    const meshCenter = mesh.center;
+    const center = encodingCenter || meshCenter || { x: 0, y: 0, z: 0 };
+    //>>includeStart('debug', pragmas.debug);
+    if (this._diagShouldLog()) {
+      const mag = Math.sqrt(
+        (center.x || 0) * (center.x || 0) +
+          (center.y || 0) * (center.y || 0) +
+          (center.z || 0) * (center.z || 0),
+      );
+      // isFill check: "fill" meshes are stored separately on
+      // `surfaceTile.fill.mesh`, not on `surfaceTile.mesh`. Check both.
+      const fillMesh = (surfaceTile as any)?.fill?.mesh;
+      const isFillByRef = mesh === fillMesh;
+      const isCachedMesh = mesh === surfaceTile.mesh;
+      // Ctor name reveals which TerrainData class produced this mesh
+      // (QuantizedMeshTerrainData / HeightmapTerrainData / Cesium3DTilesTerrainData
+      // / TerrainFillMesh). The center bug is almost certainly "which
+      // constructor was called with what center", so this is the
+      // fingerprint we need.
+      const meshCtor = mesh?.constructor?.name ?? "?";
+      const encCtor = mesh?.encoding?.constructor?.name ?? "?";
+      const tdCtor = (surfaceTile as any)?.data?.constructor?.name ?? "?";
+      console.log(
+        `[WebGPU:GlobeTile] center3D tile=${tile?.level}_${tile?.x}_${tile?.y} ` +
+          `meshCtor=${meshCtor} encCtor=${encCtor} terrainDataCtor=${tdCtor} ` +
+          `isFillByRef=${isFillByRef} isCachedMesh=${isCachedMesh} ` +
+          `magKm=${(mag / 1000).toFixed(3)} ` +
+          `center.xyz=(${(center.x || 0).toFixed(1)},${(center.y || 0).toFixed(1)},${(center.z || 0).toFixed(1)}) ` +
+          `quantized=${!!mesh.encoding?.quantization}`,
+      );
+    }
+    //>>includeEnd('debug');
     data[offset++] = center.x;
     data[offset++] = center.y;
     data[offset++] = center.z;
@@ -1417,7 +1793,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    */
   private _writeUniformSlice(
     device: GPUDevice,
-    frameState: any,
+    frameState: CesiumFrameState,
     data: Float32Array,
     bufferSize: number,
     label: string,
@@ -1462,8 +1838,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   private _computeModifiedModelView(
-    uniformState: any,
-    surfaceTile: any,
+    uniformState: CesiumUniformState,
+    surfaceTile: CesiumGlobeSurfaceTile,
   ): Float64Array {
     const view = uniformState.view;
     const center = surfaceTile.center;
@@ -1485,11 +1861,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    */
   private _createTileUniformBuffer(
     device: GPUDevice,
-    surfaceTile: any,
+    surfaceTile: CesiumGlobeSurfaceTile,
     tileProvider: any,
-    frameState: any,
-    tile: any,
-    passLayers: any[],
+    frameState: CesiumFrameState,
+    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle },
+    passLayers: CesiumTileImagery[],
     isSubsequentPass: boolean,
   ): { buffer: GPUBuffer; offset: number; size: number } {
     const data = this._tileUniformData;
@@ -1561,14 +1937,32 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // shader but the u32 interpretation was wrong.
     data[48] = layerCount;
 
-    // Diagnostic: verify layerCount is set correctly
-    if (this._diagTileCount <= 10 && layerCount > 0) {
+    //>>includeStart('debug', pragmas.debug);
+    // Dedicated diagnostic — logs EVERY frame (throttled to 1/sec) even
+    // when layerCount=0, because layerCount=0 is exactly the failure mode
+    // we need to catch. Fires independently of the shared `_diagShouldLog`
+    // counter to avoid getting starved by center3D logging.
+
+    const nowMs3 =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (
+      this._diagLastLayerCountLogMs === undefined ||
+      nowMs3 - this._diagLastLayerCountLogMs >= 1000
+    ) {
+      this._diagLastLayerCountLogMs = nowMs3;
+      const readyCount = passLayers.filter(
+        (l: CesiumTileImagery) => l?.readyImagery?.imageryLayer,
+      ).length;
+      const level = tile?.level ?? -1;
+      const tileImageryCount = (surfaceTile as any)?.imagery?.length ?? -1;
       console.log(
-        `[WebGPU:GlobeTile] UNIFORM: layerCount=${layerCount} u32[48]=${u32[48]} ` +
-          `bufSize=${Math.max(TILE_UNIFORM_BYTES, 256)} dataBytes=${data.byteLength} ` +
-          `byte192=0x${new DataView(data.buffer).getUint32(192, true).toString(16)}`,
+        `[WebGPU:GlobeTile] LAYERS tile=${level}_${tile?.x}_${tile?.y} ` +
+          `layerCount=${layerCount} passLayersLen=${passLayers.length} ` +
+          `readyInPass=${readyCount} surfaceTileImagery=${tileImageryCount} ` +
+          `isSubsequentPass=${isSubsequentPass}`,
       );
     }
+    //>>includeEnd('debug');
 
     // ─── Fog parameters (offsets 49-51) ───
     // Phase 1.4 — `frameState.atmosphericConditions.weather.humidity`
@@ -1576,18 +1970,69 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // multiplier: 0.0 humidity → 0.5× density (very dry desert), 0.5 →
     // 1.0× (default, no change), 1.0 → 1.5× (tropical jungle haze).
     // Linear and bounded so the existing fog tuning stays predictable.
+    //
+    // CRITICAL — belt-and-suspenders: when `fog.enabled === false`, force
+    // density to 0 regardless of what `fog.density` says. `Fog.update()`
+    // early-returns when `this.enabled` is false, which leaves any prior
+    // non-zero density value sitting on `frameState.fog.density` stale.
+    // At planetary scale that stale value causes the shader to fog every
+    // distant pixel to black — the "black globe at distance" bug.
+    // Explicitly zeroing when !enabled makes the GPU state consistent
+    // with the user-facing switch.
     if (frameState && frameState.fog) {
-      let density = frameState.fog.density ?? 0.0;
-      const ac = frameState.atmosphericConditions;
-      const weather = ac && ac.weather ? ac.weather : undefined;
-      if (weather && typeof weather.humidity === "number") {
-        density = density * (0.5 + weather.humidity);
+      const fogEnabled = frameState.fog.enabled !== false;
+      let density = fogEnabled ? (frameState.fog.density ?? 0.0) : 0.0;
+      if (fogEnabled) {
+        const ac = frameState.atmosphericConditions;
+        const weather = ac && ac.weather ? ac.weather : undefined;
+        if (weather && typeof weather.humidity === "number") {
+          density = density * (0.5 + weather.humidity);
+        }
       }
       data[49] = density;
-      data[50] = frameState.fog.offset ?? 0.0;
+      data[50] = fogEnabled ? (frameState.fog.offset ?? 0.0) : 0.0;
       data[51] = frameState.fog.minimumBrightness ?? 0.03;
+      //>>includeStart('debug', pragmas.debug);
+      // Dedicated throttle (independent of the tile-center3D log) so we
+      // always see fog state at camera altitude transitions. Logs once
+      // per second regardless of what other diagnostics are firing.
+      const nowMs =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+
+      if (
+        this._diagLastFogLogMs === undefined ||
+        nowMs - this._diagLastFogLogMs >= 1000
+      ) {
+        this._diagLastFogLogMs = nowMs;
+        const cameraHeight =
+          (frameState as any)?.camera?.positionCartographic?.height ?? -1;
+        console.log(
+          `[WebGPU:GlobeTile] fog density=${density.toExponential(3)} ` +
+            `rawDensity=${(frameState.fog.density ?? 0).toExponential(3)} ` +
+            `offset=${(data[50] ?? 0).toExponential(3)} ` +
+            `minBrightness=${(frameState.fog.minimumBrightness ?? 0.03).toFixed(3)} ` +
+            `enabled=${frameState.fog.enabled} gated=${fogEnabled} ` +
+            `cameraHeight=${(cameraHeight / 1000).toFixed(0)}km`,
+        );
+      }
+      //>>includeEnd('debug');
     } else {
       data[51] = 0.03;
+      //>>includeStart('debug', pragmas.debug);
+      // Called once — frameState.fog is missing entirely. That means
+      // Scene.fog.update() never ran for this frame, which would fully
+      // explain the "black globe at orbit" symptom: density stays at
+      // whatever it was last set to and no zeroing path runs.
+
+      if (!this._diagFogMissingLogged) {
+        this._diagFogMissingLogged = true;
+        console.error(
+          `[WebGPU:GlobeTile] frameState.fog is UNDEFINED — ` +
+            `Scene.fog.update() probably not running for this render path. ` +
+            `Fog density will be stale from initialization.`,
+        );
+      }
+      //>>includeEnd('debug');
     }
 
     // ─── Water mask translation and scale (offsets 52-55, vec4) ───
@@ -1659,7 +2104,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // ─── Time for ocean wave animation (offset 78) ───
     data[78] = frameState?.time ? performance.now() / 1000.0 : 0.0;
-    // offset 79 is padding (_pad4)
+    // OPEN-5 fix: fogVisualDensityScalar (offset 79) — replaces the pad.
+    // Matches WebGL's `czm_fogVisualDensityScalar` auto-uniform (default
+    // 0.15 from UniformState). Without this the fog formula is ~6.7x
+    // stronger than WebGL at horizontal viewing angles.
+    data[79] = frameState?.context?.uniformState?.fogVisualDensityScalar ?? 0.15;
 
     // ─── Ocean enhancement params (offsets 80-83, vec4) ───
     // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
@@ -1710,7 +2159,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
   private _createTextureBindGroup(
     device: GPUDevice,
-    passLayers: any[],
+    passLayers: CesiumTileImagery[],
   ): GPUBindGroup {
     const textureViews: GPUTextureView[] = [];
 
@@ -1726,7 +2175,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       const view = this._getOrCreateImageryTexture(imagery);
       if (view) {
         textureViews.push(view);
-      } else if (this._diagTileCount <= 30) {
+      } else if (this._diagShouldLog()) {
         console.warn(
           `[WebGPU:GlobeTile] _getOrCreateImageryTexture returned null for imagery`,
           {
@@ -1763,7 +2212,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    */
   private _createWaterOceanBindGroup(
     device: GPUDevice,
-    surfaceTile: any | null,
+    surfaceTile: CesiumGlobeSurfaceTile | null,
     tileProvider: any,
   ): GPUBindGroup {
     let waterMaskView = this._placeholderView!;
@@ -1834,7 +2283,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     const source = imagery.image || imagery.texture?._source;
     if (!source) {
-      if (this._diagTileCount <= 10) {
+      if (this._diagShouldLog()) {
         console.warn(`[WebGPU:GlobeTile] No image source for ${cacheKey}`, {
           hasImage: !!imagery.image,
           hasTexture: !!imagery.texture,
@@ -1844,7 +2293,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       return null;
     }
 
-    if (this._diagTileCount <= 10) {
+    if (this._diagShouldLog()) {
       console.log(
         `[WebGPU:GlobeTile] Uploading image for ${cacheKey} type=${source.constructor?.name}`,
       );
@@ -1909,7 +2358,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       });
 
       device.queue.copyExternalImageToTexture(
-        { source: source as any },
+        { source: source as unknown as GPUCopyExternalImageSource },
         { texture },
         [width, height],
       );
@@ -2075,7 +2524,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    */
   private _getOrCreateWireframeIndices(
     tileKey: string,
-    mesh: any,
+    mesh: CesiumTerrainMesh,
   ): { buffer: GPUBuffer; count: number; format: GPUIndexFormat } | null {
     const cached = this._wireframeIndexCache.get(tileKey);
     if (cached) return cached;
@@ -2129,11 +2578,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * pipeline and triangle-to-line converted index buffer.
    */
   createWireframeTileCommands(
-    tile: any,
-    surfaceTile: any,
-    tileProvider: any,
-    frameState: any,
-    uniformState: any,
+    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    surfaceTile: CesiumGlobeSurfaceTile,
+    tileProvider: { clippingPlanes?: { length: number; unionClippingRegions?: boolean } },
+    frameState: CesiumFrameState,
+    uniformState: CesiumUniformState,
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
 

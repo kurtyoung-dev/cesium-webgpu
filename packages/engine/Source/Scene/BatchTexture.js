@@ -27,56 +27,335 @@ import Texture from "../Renderer/Texture.js";
  *
  * @private
  */
-function BatchTexture(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("options.featuresLength", options.featuresLength);
-  Check.typeOf.object("options.owner", options.owner);
-  //>>includeEnd('debug');
+class BatchTexture {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("options.featuresLength", options.featuresLength);
+    Check.typeOf.object("options.owner", options.owner);
+    //>>includeEnd('debug');
 
-  this._id = createGuid();
+    this._id = createGuid();
 
-  const featuresLength = options.featuresLength;
+    const featuresLength = options.featuresLength;
 
-  // PERFORMANCE_IDEA: These parallel arrays probably generate cache misses in get/set color/show
-  // and use A LOT of memory.  How can we use less memory?
-  this._showAlphaProperties = undefined; // [Show (0 or 255), Alpha (0 to 255)] property for each feature
-  this._batchValues = undefined; // Per-feature RGBA (A is based on the color's alpha and feature's show property)
+    // PERFORMANCE_IDEA: These parallel arrays probably generate cache misses in get/set color/show
+    // and use A LOT of memory.  How can we use less memory?
+    this._showAlphaProperties = undefined; // [Show (0 or 255), Alpha (0 to 255)] property for each feature
+    this._batchValues = undefined; // Per-feature RGBA (A is based on the color's alpha and feature's show property)
 
-  this._batchValuesDirty = false;
-  this._batchTexture = undefined;
-  this._defaultTexture = undefined;
+    this._batchValuesDirty = false;
+    this._batchTexture = undefined;
+    this._defaultTexture = undefined;
 
-  this._pickTexture = undefined;
-  this._pickIds = [];
+    this._pickTexture = undefined;
+    this._pickIds = [];
 
-  // Dimensions for batch and pick textures
-  let textureDimensions;
-  let textureStep;
+    // Dimensions for batch and pick textures
+    let textureDimensions;
+    let textureStep;
 
-  if (featuresLength > 0) {
-    // PERFORMANCE_IDEA: this can waste memory in the last row in the uncommon case
-    // when more than one row is needed (e.g., > 16K features in one tile)
-    const width = Math.min(featuresLength, ContextLimits.maximumTextureSize);
-    const height = Math.ceil(featuresLength / ContextLimits.maximumTextureSize);
-    const stepX = 1.0 / width;
-    const centerX = stepX * 0.5;
-    const stepY = 1.0 / height;
-    const centerY = stepY * 0.5;
+    if (featuresLength > 0) {
+      // PERFORMANCE_IDEA: this can waste memory in the last row in the uncommon case
+      // when more than one row is needed (e.g., > 16K features in one tile)
+      const width = Math.min(featuresLength, ContextLimits.maximumTextureSize);
+      const height = Math.ceil(featuresLength / ContextLimits.maximumTextureSize);
+      const stepX = 1.0 / width;
+      const centerX = stepX * 0.5;
+      const stepY = 1.0 / height;
+      const centerY = stepY * 0.5;
 
-    textureDimensions = new Cartesian2(width, height);
-    textureStep = new Cartesian4(stepX, centerX, stepY, centerY);
+      textureDimensions = new Cartesian2(width, height);
+      textureStep = new Cartesian4(stepX, centerX, stepY, centerY);
+    }
+
+    this._translucentFeaturesLength = 0;
+    this._featuresLength = featuresLength;
+    this._textureDimensions = textureDimensions;
+    this._textureStep = textureStep;
+    this._owner = options.owner;
+    this._statistics = options.statistics;
+    this._colorChangedCallback = options.colorChangedCallback;
   }
 
-  this._translucentFeaturesLength = 0;
-  this._featuresLength = featuresLength;
-  this._textureDimensions = textureDimensions;
-  this._textureStep = textureStep;
-  this._owner = options.owner;
-  this._statistics = options.statistics;
-  this._colorChangedCallback = options.colorChangedCallback;
-}
+  /**
+   * Set whether a feature is visible.
+   *
+   * @param {number} batchId the ID of the feature
+   * @param {boolean} show <code>true</code> if the feature should be shown, <code>false</code> otherwise
+   * @private
+   */
+  setShow(batchId, show) {
+    //>>includeStart('debug', pragmas.debug);
+    checkBatchId(batchId, this._featuresLength);
+    Check.typeOf.bool("show", show);
+    //>>includeEnd('debug');
 
-Object.defineProperties(BatchTexture.prototype, {
+    if (show && !defined(this._showAlphaProperties)) {
+      // Avoid allocating since the default is show = true
+      return;
+    }
+
+    const showAlphaProperties = getShowAlphaProperties(this);
+    const propertyOffset = batchId * 2;
+
+    const newShow = show ? 255 : 0;
+    if (showAlphaProperties[propertyOffset] !== newShow) {
+      showAlphaProperties[propertyOffset] = newShow;
+
+      const batchValues = getBatchValues(this);
+
+      // Compute alpha used in the shader based on show and color.alpha properties
+      const offset = batchId * 4 + 3;
+      batchValues[offset] = show ? showAlphaProperties[propertyOffset + 1] : 0;
+
+      this._batchValuesDirty = true;
+    }
+  }
+
+  /**
+   * Set the show for all features at once.
+   *
+   * @param {boolean} show <code>true</code> if the feature should be shown, <code>false</code> otherwise
+   * @private
+   */
+  setAllShow(show) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.bool("show", show);
+    //>>includeEnd('debug');
+
+    const featuresLength = this._featuresLength;
+    for (let i = 0; i < featuresLength; ++i) {
+      this.setShow(i, show);
+    }
+  }
+
+  /**
+   * Check the current show value for a feature
+   *
+   * @param {number} batchId the ID of the feature
+   * @return {boolean} <code>true</code> if the feature is shown, or <code>false</code> otherwise
+   * @private
+   */
+  getShow(batchId) {
+    //>>includeStart('debug', pragmas.debug);
+    checkBatchId(batchId, this._featuresLength);
+    //>>includeEnd('debug');
+
+    if (!defined(this._showAlphaProperties)) {
+      // Avoid allocating since the default is show = true
+      return true;
+    }
+
+    const offset = batchId * 2;
+    return this._showAlphaProperties[offset] === 255;
+  }
+
+  /**
+   * Set the styling color of a feature
+   *
+   * @param {number} batchId the ID of the feature
+   * @param {Color} color the color to assign to this feature.
+   *
+   * @private
+   */
+  setColor(batchId, color) {
+    //>>includeStart('debug', pragmas.debug);
+    checkBatchId(batchId, this._featuresLength);
+    Check.typeOf.object("color", color);
+    //>>includeEnd('debug');
+
+    if (
+      Color.equals(color, BatchTexture.DEFAULT_COLOR_VALUE) &&
+      !defined(this._batchValues)
+    ) {
+      // Avoid allocating since the default is white
+      return;
+    }
+
+    const newColor = color.toBytes(scratchColorBytes);
+    const newAlpha = newColor[3];
+
+    const batchValues = getBatchValues(this);
+    const offset = batchId * 4;
+
+    const showAlphaProperties = getShowAlphaProperties(this);
+    const propertyOffset = batchId * 2;
+
+    if (
+      batchValues[offset] !== newColor[0] ||
+      batchValues[offset + 1] !== newColor[1] ||
+      batchValues[offset + 2] !== newColor[2] ||
+      showAlphaProperties[propertyOffset + 1] !== newAlpha
+    ) {
+      batchValues[offset] = newColor[0];
+      batchValues[offset + 1] = newColor[1];
+      batchValues[offset + 2] = newColor[2];
+
+      const wasTranslucent = showAlphaProperties[propertyOffset + 1] !== 255;
+
+      // Compute alpha used in the shader based on show and color.alpha properties
+      const show = showAlphaProperties[propertyOffset] !== 0;
+      batchValues[offset + 3] = show ? newAlpha : 0;
+      showAlphaProperties[propertyOffset + 1] = newAlpha;
+
+      // Track number of translucent features so we know if this tile needs
+      // opaque commands, translucent commands, or both for rendering.
+      const isTranslucent = newAlpha !== 255;
+      if (isTranslucent && !wasTranslucent) {
+        ++this._translucentFeaturesLength;
+      } else if (!isTranslucent && wasTranslucent) {
+        --this._translucentFeaturesLength;
+      }
+
+      this._batchValuesDirty = true;
+
+      if (defined(this._colorChangedCallback)) {
+        this._colorChangedCallback(batchId, color);
+      }
+    }
+  }
+
+  /**
+   * Set the styling color for all features at once
+   *
+   * @param {Color} color the color to assign to all features.
+   *
+   * @private
+   */
+  setAllColor(color) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("color", color);
+    //>>includeEnd('debug');
+
+    const featuresLength = this._featuresLength;
+    for (let i = 0; i < featuresLength; ++i) {
+      this.setColor(i, color);
+    }
+  }
+
+  /**
+   * Get the current color of a feature
+   *
+   * @param {number} batchId The ID of the feature
+   * @param {Color} result A color object where the result will be stored.
+   * @return {Color} The color assigned to the selected feature
+   *
+   * @private
+   */
+  getColor(batchId, result) {
+    //>>includeStart('debug', pragmas.debug);
+    checkBatchId(batchId, this._featuresLength);
+    Check.typeOf.object("result", result);
+    //>>includeEnd('debug');
+
+    if (!defined(this._batchValues)) {
+      return Color.clone(BatchTexture.DEFAULT_COLOR_VALUE, result);
+    }
+
+    const batchValues = this._batchValues;
+    const offset = batchId * 4;
+
+    const showAlphaProperties = this._showAlphaProperties;
+    const propertyOffset = batchId * 2;
+
+    return Color.fromBytes(
+      batchValues[offset],
+      batchValues[offset + 1],
+      batchValues[offset + 2],
+      showAlphaProperties[propertyOffset + 1],
+      result,
+    );
+  }
+
+  /**
+   * Get the pick color of a feature. This feature is an RGBA encoding of the
+   * pick ID.
+   *
+   * @param {number} batchId The ID of the feature
+   * @return {PickId} The picking color assigned to this feature
+   *
+   * @private
+   */
+  getPickColor(batchId) {
+    //>>includeStart('debug', pragmas.debug);
+    checkBatchId(batchId, this._featuresLength);
+    //>>includeEnd('debug');
+    return this._pickIds[batchId];
+  }
+
+  update(tileset, frameState) {
+    const context = frameState.context;
+    this._defaultTexture = context.defaultTexture;
+
+    const passes = frameState.passes;
+    if (passes.pick || passes.postProcess) {
+      createPickTexture(this, context);
+    }
+
+    if (this._batchValuesDirty) {
+      this._batchValuesDirty = false;
+
+      // Create batch texture on-demand
+      if (!defined(this._batchTexture)) {
+        this._batchTexture = createTexture(this, context, this._batchValues);
+
+        // Make sure the tileset statistics are updated the frame when the
+        // batch texture is created.
+        if (defined(this._statistics)) {
+          this._statistics.batchTableByteLength += this._batchTexture.sizeInBytes;
+        }
+      }
+
+      updateBatchTexture(this); // Apply per-feature show/color updates
+    }
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see BatchTexture#destroy
+   * @private
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * e = e && e.destroy();
+   *
+   * @see BatchTexture#isDestroyed
+   * @private
+   */
+  destroy() {
+    this._batchTexture = this._batchTexture && this._batchTexture.destroy();
+    this._pickTexture = this._pickTexture && this._pickTexture.destroy();
+
+    const pickIds = this._pickIds;
+    const length = pickIds.length;
+    for (let i = 0; i < length; ++i) {
+      pickIds[i].destroy();
+    }
+
+    return destroyObject(this);
+  }
+
   /**
    * Number of features that are translucent
    *
@@ -85,11 +364,9 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  translucentFeaturesLength: {
-    get: function () {
-      return this._translucentFeaturesLength;
-    },
-  },
+  get translucentFeaturesLength() {
+    return this._translucentFeaturesLength;
+  }
 
   /**
    * Total size of all GPU resources used by this batch texture.
@@ -99,18 +376,16 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  byteLength: {
-    get: function () {
-      let memory = 0;
-      if (defined(this._pickTexture)) {
-        memory += this._pickTexture.sizeInBytes;
-      }
-      if (defined(this._batchTexture)) {
-        memory += this._batchTexture.sizeInBytes;
-      }
-      return memory;
-    },
-  },
+  get byteLength() {
+    let memory = 0;
+    if (defined(this._pickTexture)) {
+      memory += this._pickTexture.sizeInBytes;
+    }
+    if (defined(this._batchTexture)) {
+      memory += this._batchTexture.sizeInBytes;
+    }
+    return memory;
+  }
 
   /**
    * Dimensions of the underlying batch texture.
@@ -120,11 +395,9 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  textureDimensions: {
-    get: function () {
-      return this._textureDimensions;
-    },
-  },
+  get textureDimensions() {
+    return this._textureDimensions;
+  }
 
   /**
    * Size of each texture and distance from side to center of a texel in
@@ -135,11 +408,9 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  textureStep: {
-    get: function () {
-      return this._textureStep;
-    },
-  },
+  get textureStep() {
+    return this._textureStep;
+  }
 
   /**
    * The underlying texture used for styling. The texels are accessed
@@ -151,11 +422,9 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  batchTexture: {
-    get: function () {
-      return this._batchTexture;
-    },
-  },
+  get batchTexture() {
+    return this._batchTexture;
+  }
 
   /**
    * The default texture to use when there are no batch values
@@ -165,11 +434,9 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  defaultTexture: {
-    get: function () {
-      return this._defaultTexture;
-    },
-  },
+  get defaultTexture() {
+    return this._defaultTexture;
+  }
 
   /**
    * The underlying texture used for picking. The texels are accessed by
@@ -180,12 +447,10 @@ Object.defineProperties(BatchTexture.prototype, {
    * @readonly
    * @private
    */
-  pickTexture: {
-    get: function () {
-      return this._pickTexture;
-    },
-  },
-});
+  get pickTexture() {
+    return this._pickTexture;
+  }
+}
 
 BatchTexture.DEFAULT_COLOR_VALUE = Color.WHITE;
 BatchTexture.DEFAULT_SHOW_VALUE = true;
@@ -225,213 +490,7 @@ function checkBatchId(batchId, featuresLength) {
   }
 }
 
-/**
- * Set whether a feature is visible.
- *
- * @param {number} batchId the ID of the feature
- * @param {boolean} show <code>true</code> if the feature should be shown, <code>false</code> otherwise
- * @private
- */
-BatchTexture.prototype.setShow = function (batchId, show) {
-  //>>includeStart('debug', pragmas.debug);
-  checkBatchId(batchId, this._featuresLength);
-  Check.typeOf.bool("show", show);
-  //>>includeEnd('debug');
-
-  if (show && !defined(this._showAlphaProperties)) {
-    // Avoid allocating since the default is show = true
-    return;
-  }
-
-  const showAlphaProperties = getShowAlphaProperties(this);
-  const propertyOffset = batchId * 2;
-
-  const newShow = show ? 255 : 0;
-  if (showAlphaProperties[propertyOffset] !== newShow) {
-    showAlphaProperties[propertyOffset] = newShow;
-
-    const batchValues = getBatchValues(this);
-
-    // Compute alpha used in the shader based on show and color.alpha properties
-    const offset = batchId * 4 + 3;
-    batchValues[offset] = show ? showAlphaProperties[propertyOffset + 1] : 0;
-
-    this._batchValuesDirty = true;
-  }
-};
-
-/**
- * Set the show for all features at once.
- *
- * @param {boolean} show <code>true</code> if the feature should be shown, <code>false</code> otherwise
- * @private
- */
-BatchTexture.prototype.setAllShow = function (show) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.bool("show", show);
-  //>>includeEnd('debug');
-
-  const featuresLength = this._featuresLength;
-  for (let i = 0; i < featuresLength; ++i) {
-    this.setShow(i, show);
-  }
-};
-
-/**
- * Check the current show value for a feature
- *
- * @param {number} batchId the ID of the feature
- * @return {boolean} <code>true</code> if the feature is shown, or <code>false</code> otherwise
- * @private
- */
-BatchTexture.prototype.getShow = function (batchId) {
-  //>>includeStart('debug', pragmas.debug);
-  checkBatchId(batchId, this._featuresLength);
-  //>>includeEnd('debug');
-
-  if (!defined(this._showAlphaProperties)) {
-    // Avoid allocating since the default is show = true
-    return true;
-  }
-
-  const offset = batchId * 2;
-  return this._showAlphaProperties[offset] === 255;
-};
-
 const scratchColorBytes = new Array(4);
-
-/**
- * Set the styling color of a feature
- *
- * @param {number} batchId the ID of the feature
- * @param {Color} color the color to assign to this feature.
- *
- * @private
- */
-BatchTexture.prototype.setColor = function (batchId, color) {
-  //>>includeStart('debug', pragmas.debug);
-  checkBatchId(batchId, this._featuresLength);
-  Check.typeOf.object("color", color);
-  //>>includeEnd('debug');
-
-  if (
-    Color.equals(color, BatchTexture.DEFAULT_COLOR_VALUE) &&
-    !defined(this._batchValues)
-  ) {
-    // Avoid allocating since the default is white
-    return;
-  }
-
-  const newColor = color.toBytes(scratchColorBytes);
-  const newAlpha = newColor[3];
-
-  const batchValues = getBatchValues(this);
-  const offset = batchId * 4;
-
-  const showAlphaProperties = getShowAlphaProperties(this);
-  const propertyOffset = batchId * 2;
-
-  if (
-    batchValues[offset] !== newColor[0] ||
-    batchValues[offset + 1] !== newColor[1] ||
-    batchValues[offset + 2] !== newColor[2] ||
-    showAlphaProperties[propertyOffset + 1] !== newAlpha
-  ) {
-    batchValues[offset] = newColor[0];
-    batchValues[offset + 1] = newColor[1];
-    batchValues[offset + 2] = newColor[2];
-
-    const wasTranslucent = showAlphaProperties[propertyOffset + 1] !== 255;
-
-    // Compute alpha used in the shader based on show and color.alpha properties
-    const show = showAlphaProperties[propertyOffset] !== 0;
-    batchValues[offset + 3] = show ? newAlpha : 0;
-    showAlphaProperties[propertyOffset + 1] = newAlpha;
-
-    // Track number of translucent features so we know if this tile needs
-    // opaque commands, translucent commands, or both for rendering.
-    const isTranslucent = newAlpha !== 255;
-    if (isTranslucent && !wasTranslucent) {
-      ++this._translucentFeaturesLength;
-    } else if (!isTranslucent && wasTranslucent) {
-      --this._translucentFeaturesLength;
-    }
-
-    this._batchValuesDirty = true;
-
-    if (defined(this._colorChangedCallback)) {
-      this._colorChangedCallback(batchId, color);
-    }
-  }
-};
-
-/**
- * Set the styling color for all features at once
- *
- * @param {Color} color the color to assign to all features.
- *
- * @private
- */
-BatchTexture.prototype.setAllColor = function (color) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("color", color);
-  //>>includeEnd('debug');
-
-  const featuresLength = this._featuresLength;
-  for (let i = 0; i < featuresLength; ++i) {
-    this.setColor(i, color);
-  }
-};
-
-/**
- * Get the current color of a feature
- *
- * @param {number} batchId The ID of the feature
- * @param {Color} result A color object where the result will be stored.
- * @return {Color} The color assigned to the selected feature
- *
- * @private
- */
-BatchTexture.prototype.getColor = function (batchId, result) {
-  //>>includeStart('debug', pragmas.debug);
-  checkBatchId(batchId, this._featuresLength);
-  Check.typeOf.object("result", result);
-  //>>includeEnd('debug');
-
-  if (!defined(this._batchValues)) {
-    return Color.clone(BatchTexture.DEFAULT_COLOR_VALUE, result);
-  }
-
-  const batchValues = this._batchValues;
-  const offset = batchId * 4;
-
-  const showAlphaProperties = this._showAlphaProperties;
-  const propertyOffset = batchId * 2;
-
-  return Color.fromBytes(
-    batchValues[offset],
-    batchValues[offset + 1],
-    batchValues[offset + 2],
-    showAlphaProperties[propertyOffset + 1],
-    result,
-  );
-};
-
-/**
- * Get the pick color of a feature. This feature is an RGBA encoding of the
- * pick ID.
- *
- * @param {number} batchId The ID of the feature
- * @return {PickId} The picking color assigned to this feature
- *
- * @private
- */
-BatchTexture.prototype.getPickColor = function (batchId) {
-  //>>includeStart('debug', pragmas.debug);
-  checkBatchId(batchId, this._featuresLength);
-  //>>includeEnd('debug');
-  return this._pickIds[batchId];
-};
 
 function createTexture(batchTexture, context, bytes) {
   const dimensions = batchTexture._textureDimensions;
@@ -497,78 +556,5 @@ function updateBatchTexture(batchTexture) {
     },
   });
 }
-
-BatchTexture.prototype.update = function (tileset, frameState) {
-  const context = frameState.context;
-  this._defaultTexture = context.defaultTexture;
-
-  const passes = frameState.passes;
-  if (passes.pick || passes.postProcess) {
-    createPickTexture(this, context);
-  }
-
-  if (this._batchValuesDirty) {
-    this._batchValuesDirty = false;
-
-    // Create batch texture on-demand
-    if (!defined(this._batchTexture)) {
-      this._batchTexture = createTexture(this, context, this._batchValues);
-
-      // Make sure the tileset statistics are updated the frame when the
-      // batch texture is created.
-      if (defined(this._statistics)) {
-        this._statistics.batchTableByteLength += this._batchTexture.sizeInBytes;
-      }
-    }
-
-    updateBatchTexture(this); // Apply per-feature show/color updates
-  }
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see BatchTexture#destroy
- * @private
- */
-BatchTexture.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * e = e && e.destroy();
- *
- * @see BatchTexture#isDestroyed
- * @private
- */
-BatchTexture.prototype.destroy = function () {
-  this._batchTexture = this._batchTexture && this._batchTexture.destroy();
-  this._pickTexture = this._pickTexture && this._pickTexture.destroy();
-
-  const pickIds = this._pickIds;
-  const length = pickIds.length;
-  for (let i = 0; i < length; ++i) {
-    pickIds[i].destroy();
-  }
-
-  return destroyObject(this);
-};
 
 export default BatchTexture;

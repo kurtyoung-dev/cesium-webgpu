@@ -100,11 +100,11 @@ function getClippingPlaneFloat(width, height) {
   const pixelHeight = 1.0 / height;
 
   let pixelWidthString = `${pixelWidth}`;
-  if (pixelWidthString.indexOf(".") === -1) {
+  if (!pixelWidthString.includes(".")) {
     pixelWidthString += ".0";
   }
   let pixelHeightString = `${pixelHeight}`;
-  if (pixelHeightString.indexOf(".") === -1) {
+  if (!pixelHeightString.includes(".")) {
     pixelHeightString += ".0";
   }
 
@@ -126,11 +126,11 @@ function getClippingPlaneUint8(width, height) {
   const pixelHeight = 1.0 / height;
 
   let pixelWidthString = `${pixelWidth}`;
-  if (pixelWidthString.indexOf(".") === -1) {
+  if (!pixelWidthString.includes(".")) {
     pixelWidthString += ".0";
   }
   let pixelHeightString = `${pixelHeight}`;
-  if (pixelHeightString.indexOf(".") === -1) {
+  if (!pixelHeightString.includes(".")) {
     pixelHeightString += ".0";
   }
 

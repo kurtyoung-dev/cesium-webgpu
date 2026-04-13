@@ -51,7 +51,7 @@ interface AtmosphereCache {
  * Packs atmosphere parameters into a Float32Array matching the
  * AtmosphereParams struct in GroundAtmosphere.wgsl.
  */
-function packAtmosphereParams(globe: any, ellipsoid: any): Float32Array {
+function packAtmosphereParams(globe: CesiumGlobe, ellipsoid: any): Float32Array {
   const data = new Float32Array(16);
 
   // Determine inner/outer radius from ellipsoid
@@ -90,7 +90,7 @@ function packAtmosphereParams(globe: any, ellipsoid: any): Float32Array {
  * Update ground atmosphere uniforms.
  * Called each frame from the globe surface renderer when showGroundAtmosphere is true.
  */
-function updateWebGPUGroundAtmosphere(globe: any, frameState: any): void {
+function updateWebGPUGroundAtmosphere(globe: CesiumGlobe, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -148,7 +148,7 @@ function updateWebGPUGroundAtmosphere(globe: any, frameState: any): void {
 /**
  * Destroy ground atmosphere GPU resources.
  */
-function destroyWebGPUGroundAtmosphereResources(globe: any): void {
+function destroyWebGPUGroundAtmosphereResources(globe: CesiumGlobe): void {
   const cache = globe._webgpuAtmosphereCache as AtmosphereCache | undefined;
   if (!cache) {
     return;

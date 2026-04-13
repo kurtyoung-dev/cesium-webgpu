@@ -22,7 +22,7 @@ interface ClippingPlaneCache {
  * Update WebGPU clipping plane resources.
  * Packs clipping plane data into a RGBA32Float texture.
  */
-function updateWebGPUClippingPlanes(collection: any, frameState: any): void {
+function updateWebGPUClippingPlanes(collection: any, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 

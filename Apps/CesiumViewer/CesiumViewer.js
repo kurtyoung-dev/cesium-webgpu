@@ -19,6 +19,7 @@ import {
   Viewer,
   viewerCesiumInspectorMixin,
   viewerDragDropMixin,
+  CesiumDebug,
 } from "../../Build/CesiumUnminified/index.js";
 
 // ---- State ----
@@ -283,6 +284,8 @@ window.switchRenderer = async function (mode) {
     } else if (mode === "webgpu") {
       resetContainers();
       webgpuViewer = await createWebGPUViewer("cesiumContainer");
+      window.viewer = webgpuViewer;
+      CesiumDebug(webgpuViewer);
       setupViewer(webgpuViewer);
       applyViewSettings(webgpuViewer);
     } else if (mode === "split") {

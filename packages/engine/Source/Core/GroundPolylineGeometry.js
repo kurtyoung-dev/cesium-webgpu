@@ -71,67 +71,67 @@ const WALL_INITIAL_MAX_HEIGHT = 1000.0;
  *   positions : positions
  * });
  */
-function GroundPolylineGeometry(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const positions = options.positions;
+class GroundPolylineGeometry {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const positions = options.positions;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(positions) || positions.length < 2) {
-    throw new DeveloperError("At least two positions are required.");
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(positions) || positions.length < 2) {
+      throw new DeveloperError("At least two positions are required.");
+    }
+    if (
+      defined(options.arcType) &&
+      options.arcType !== ArcType.GEODESIC &&
+      options.arcType !== ArcType.RHUMB
+    ) {
+      throw new DeveloperError(
+        "Valid options for arcType are ArcType.GEODESIC and ArcType.RHUMB.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    /**
+     * The screen space width in pixels.
+     * @type {number}
+     */
+    this.width = options.width ?? 1.0; // Doesn't get packed, not necessary for computing geometry.
+
+    this._positions = positions;
+
+    /**
+     * The distance interval used for interpolating options.points. Zero indicates no interpolation.
+     * Default of 9999.0 allows centimeter accuracy with 32 bit floating point.
+     * @type {boolean}
+     * @default 9999.0
+     */
+    this.granularity = options.granularity ?? 9999.0;
+
+    /**
+     * Whether during geometry creation a line segment will be added between the last and first line positions to make this Polyline a loop.
+     * If the geometry has two positions this parameter will be ignored.
+     * @type {boolean}
+     * @default false
+     */
+    this.loop = options.loop ?? false;
+
+    /**
+     * The type of path the polyline must follow. Valid options are {@link ArcType.GEODESIC} and {@link ArcType.RHUMB}.
+     * @type {ArcType}
+     * @default ArcType.GEODESIC
+     */
+    this.arcType = options.arcType ?? ArcType.GEODESIC;
+
+    this._ellipsoid = Ellipsoid.default;
+
+    // MapProjections can't be packed, so store the index to a known MapProjection.
+    this._projectionIndex = 0;
+    this._workerName = "createGroundPolylineGeometry";
+
+    // Used by GroundPolylinePrimitive to signal worker that scenemode is 3D only.
+    this._scene3DOnly = false;
   }
-  if (
-    defined(options.arcType) &&
-    options.arcType !== ArcType.GEODESIC &&
-    options.arcType !== ArcType.RHUMB
-  ) {
-    throw new DeveloperError(
-      "Valid options for arcType are ArcType.GEODESIC and ArcType.RHUMB.",
-    );
-  }
-  //>>includeEnd('debug');
 
-  /**
-   * The screen space width in pixels.
-   * @type {number}
-   */
-  this.width = options.width ?? 1.0; // Doesn't get packed, not necessary for computing geometry.
-
-  this._positions = positions;
-
-  /**
-   * The distance interval used for interpolating options.points. Zero indicates no interpolation.
-   * Default of 9999.0 allows centimeter accuracy with 32 bit floating point.
-   * @type {boolean}
-   * @default 9999.0
-   */
-  this.granularity = options.granularity ?? 9999.0;
-
-  /**
-   * Whether during geometry creation a line segment will be added between the last and first line positions to make this Polyline a loop.
-   * If the geometry has two positions this parameter will be ignored.
-   * @type {boolean}
-   * @default false
-   */
-  this.loop = options.loop ?? false;
-
-  /**
-   * The type of path the polyline must follow. Valid options are {@link ArcType.GEODESIC} and {@link ArcType.RHUMB}.
-   * @type {ArcType}
-   * @default ArcType.GEODESIC
-   */
-  this.arcType = options.arcType ?? ArcType.GEODESIC;
-
-  this._ellipsoid = Ellipsoid.default;
-
-  // MapProjections can't be packed, so store the index to a known MapProjection.
-  this._projectionIndex = 0;
-  this._workerName = "createGroundPolylineGeometry";
-
-  // Used by GroundPolylinePrimitive to signal worker that scenemode is 3D only.
-  this._scene3DOnly = false;
-}
-
-Object.defineProperties(GroundPolylineGeometry.prototype, {
   /**
    * The number of elements used to pack the object into an array.
    * @memberof GroundPolylineGeometry.prototype
@@ -139,21 +139,19 @@ Object.defineProperties(GroundPolylineGeometry.prototype, {
    * @readonly
    * @private
    */
-  packedLength: {
-    get: function () {
-      return (
-        1.0 +
-        this._positions.length * 3 +
-        1.0 +
-        1.0 +
-        1.0 +
-        Ellipsoid.packedLength +
-        1.0 +
-        1.0
-      );
-    },
-  },
-});
+  get packedLength() {
+    return (
+      1.0 +
+      this._positions.length * 3 +
+      1.0 +
+      1.0 +
+      1.0 +
+      Ellipsoid.packedLength +
+      1.0 +
+      1.0
+    );
+  }
+}
 
 /**
  * Set the GroundPolylineGeometry's projection and ellipsoid.

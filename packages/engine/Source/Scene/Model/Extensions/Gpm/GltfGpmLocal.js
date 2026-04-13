@@ -49,66 +49,66 @@ import StorageType from "./StorageType.js";
  *
  * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function GltfGpmLocal(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("options.storageType", options.storageType);
-  //>>includeEnd('debug');
+class GltfGpmLocal {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("options.storageType", options.storageType);
+    //>>includeEnd('debug');
 
-  this._storageType = options.storageType;
-  this._anchorPointsIndirect = options.anchorPointsIndirect;
-  this._anchorPointsDirect = options.anchorPointsDirect;
-  this._intraTileCorrelationGroups = options.intraTileCorrelationGroups;
-  this._covarianceDirect = options.covarianceDirect;
+    this._storageType = options.storageType;
+    this._anchorPointsIndirect = options.anchorPointsIndirect;
+    this._anchorPointsDirect = options.anchorPointsDirect;
+    this._intraTileCorrelationGroups = options.intraTileCorrelationGroups;
+    this._covarianceDirect = options.covarianceDirect;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (this.storageType === StorageType.Indirect) {
-    if (!defined(this.anchorPointsIndirect)) {
-      throw new RuntimeError(
-        "The anchorPointsIndirect are required for 'Indirect' storage",
-      );
+    //>>includeStart('debug', pragmas.debug);
+    if (this.storageType === StorageType.Indirect) {
+      if (!defined(this.anchorPointsIndirect)) {
+        throw new RuntimeError(
+          "The anchorPointsIndirect are required for 'Indirect' storage",
+        );
+      }
+      if (!defined(this.intraTileCorrelationGroups)) {
+        throw new RuntimeError(
+          "The intraTileCorrelationGroups are required for 'Indirect' storage",
+        );
+      }
+      if (defined(this.anchorPointsDirect)) {
+        throw new RuntimeError(
+          "The anchorPointsDirect must be omitted for 'Indirect' storage",
+        );
+      }
+      if (defined(this.covarianceDirect)) {
+        throw new RuntimeError(
+          "The covarianceDirect must be omitted for 'Indirect' storage",
+        );
+      }
+    } else {
+      // Direct storage
+      if (!defined(this.anchorPointsDirect)) {
+        throw new RuntimeError(
+          "The anchorPointsDirect are required for 'Direct' storage",
+        );
+      }
+      if (!defined(this.covarianceDirect)) {
+        throw new RuntimeError(
+          "The covarianceDirect is required for 'Direct' storage",
+        );
+      }
+      if (defined(this.anchorPointsIndirect)) {
+        throw new RuntimeError(
+          "The anchorPointsIndirect must be omitted for 'Direct' storage",
+        );
+      }
+      if (defined(this.intraTileCorrelationGroups)) {
+        throw new RuntimeError(
+          "The intraTileCorrelationGroups must be omitted for 'Direct' storage",
+        );
+      }
     }
-    if (!defined(this.intraTileCorrelationGroups)) {
-      throw new RuntimeError(
-        "The intraTileCorrelationGroups are required for 'Indirect' storage",
-      );
-    }
-    if (defined(this.anchorPointsDirect)) {
-      throw new RuntimeError(
-        "The anchorPointsDirect must be omitted for 'Indirect' storage",
-      );
-    }
-    if (defined(this.covarianceDirect)) {
-      throw new RuntimeError(
-        "The covarianceDirect must be omitted for 'Indirect' storage",
-      );
-    }
-  } else {
-    // Direct storage
-    if (!defined(this.anchorPointsDirect)) {
-      throw new RuntimeError(
-        "The anchorPointsDirect are required for 'Direct' storage",
-      );
-    }
-    if (!defined(this.covarianceDirect)) {
-      throw new RuntimeError(
-        "The covarianceDirect is required for 'Direct' storage",
-      );
-    }
-    if (defined(this.anchorPointsIndirect)) {
-      throw new RuntimeError(
-        "The anchorPointsIndirect must be omitted for 'Direct' storage",
-      );
-    }
-    if (defined(this.intraTileCorrelationGroups)) {
-      throw new RuntimeError(
-        "The intraTileCorrelationGroups must be omitted for 'Direct' storage",
-      );
-    }
+    //>>includeEnd('debug');
   }
-  //>>includeEnd('debug');
-}
 
-Object.defineProperties(GltfGpmLocal.prototype, {
   /**
    * Specifies if covariance storage is indirect or direct.
    *
@@ -116,11 +116,9 @@ Object.defineProperties(GltfGpmLocal.prototype, {
    * @type {StorageType}
    * @readonly
    */
-  storageType: {
-    get: function () {
-      return this._storageType;
-    },
-  },
+  get storageType() {
+    return this._storageType;
+  }
 
   /**
    * Array of stored indirect anchor points
@@ -129,11 +127,9 @@ Object.defineProperties(GltfGpmLocal.prototype, {
    * @type {AnchorPointIndirect[]|undefined}
    * @readonly
    */
-  anchorPointsIndirect: {
-    get: function () {
-      return this._anchorPointsIndirect;
-    },
-  },
+  get anchorPointsIndirect() {
+    return this._anchorPointsIndirect;
+  }
 
   /**
    * Array of stored direct anchor points
@@ -142,11 +138,9 @@ Object.defineProperties(GltfGpmLocal.prototype, {
    * @type {AnchorPointDirect[]|undefined}
    * @readonly
    */
-  anchorPointsDirect: {
-    get: function () {
-      return this._anchorPointsDirect;
-    },
-  },
+  get anchorPointsDirect() {
+    return this._anchorPointsDirect;
+  }
 
   /**
    * Metadata identifying parameters using same correlation modeling and
@@ -156,11 +150,9 @@ Object.defineProperties(GltfGpmLocal.prototype, {
    * @type {CorrelationGroup[]|undefined}
    * @readonly
    */
-  intraTileCorrelationGroups: {
-    get: function () {
-      return this._intraTileCorrelationGroups;
-    },
-  },
+  get intraTileCorrelationGroups() {
+    return this._intraTileCorrelationGroups;
+  }
 
   /**
    * The full covariance of anchor point parameters
@@ -169,11 +161,9 @@ Object.defineProperties(GltfGpmLocal.prototype, {
    * @type {Matrix3|undefined}
    * @readonly
    */
-  covarianceDirect: {
-    get: function () {
-      return this._covarianceDirect;
-    },
-  },
-});
+  get covarianceDirect() {
+    return this._covarianceDirect;
+  }
+}
 
 export default GltfGpmLocal;

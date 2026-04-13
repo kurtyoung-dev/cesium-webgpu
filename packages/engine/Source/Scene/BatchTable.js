@@ -59,98 +59,322 @@ import Texture from "../Renderer/Texture.js";
  *     // ...
  * }
  */
-function BatchTable(context, attributes, numberOfInstances) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(context)) {
-    throw new DeveloperError("context is required");
+class BatchTable {
+  constructor(context, attributes, numberOfInstances) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(context)) {
+      throw new DeveloperError("context is required");
+    }
+    if (!defined(attributes)) {
+      throw new DeveloperError("attributes is required");
+    }
+    if (!defined(numberOfInstances)) {
+      throw new DeveloperError("numberOfInstances is required");
+    }
+    //>>includeEnd('debug');
+
+    this._attributes = attributes;
+    this._numberOfInstances = numberOfInstances;
+
+    if (attributes.length === 0) {
+      return;
+    }
+
+    // PERFORMANCE_IDEA: We may be able to arrange the attributes so they can be packing into fewer texels.
+    // Right now, an attribute with one component uses an entire texel when 4 single component attributes can
+    // be packed into a texel.
+    //
+    // Packing floats into unsigned byte textures makes the problem worse. A single component float attribute
+    // will be packed into a single texel leaving 3 texels unused. 4 texels are reserved for each float attribute
+    // regardless of how many components it has.
+    const pixelDatatype = getDatatype(attributes);
+    const textureFloatSupported = context.floatingPointTexture;
+    const packFloats =
+      pixelDatatype === PixelDatatype.FLOAT && !textureFloatSupported;
+    const offsets = createOffsets(attributes, packFloats);
+
+    const stride = getStride(offsets, attributes, packFloats);
+    const maxNumberOfInstancesPerRow = Math.floor(
+      ContextLimits.maximumTextureSize / stride,
+    );
+
+    const instancesPerWidth = Math.min(
+      numberOfInstances,
+      maxNumberOfInstancesPerRow,
+    );
+    const width = stride * instancesPerWidth;
+    const height = Math.ceil(numberOfInstances / instancesPerWidth);
+
+    const stepX = 1.0 / width;
+    const centerX = stepX * 0.5;
+    const stepY = 1.0 / height;
+    const centerY = stepY * 0.5;
+
+    this._textureDimensions = new Cartesian2(width, height);
+    this._textureStep = new Cartesian4(stepX, centerX, stepY, centerY);
+    this._pixelDatatype = !packFloats
+      ? pixelDatatype
+      : PixelDatatype.UNSIGNED_BYTE;
+    this._packFloats = packFloats;
+    this._offsets = offsets;
+    this._stride = stride;
+    this._texture = undefined;
+
+    const batchLength = 4 * width * height;
+    this._batchValues =
+      pixelDatatype === PixelDatatype.FLOAT && !packFloats
+        ? new Float32Array(batchLength)
+        : new Uint8Array(batchLength);
+    this._batchValuesDirty = false;
   }
-  if (!defined(attributes)) {
-    throw new DeveloperError("attributes is required");
+
+  /**
+   * Gets the value of an attribute in the table.
+   *
+   * @param {number} instanceIndex The index of the instance.
+   * @param {number} attributeIndex The index of the attribute.
+   * @param {undefined|Cartesian2|Cartesian3|Cartesian4} [result] The object onto which to store the result. The type is dependent on the attribute's number of components.
+   * @returns {number|Cartesian2|Cartesian3|Cartesian4} The attribute value stored for the instance.
+   *
+   * @exception {DeveloperError} instanceIndex is out of range.
+   * @exception {DeveloperError} attributeIndex is out of range.
+   */
+  getBatchedAttribute(instanceIndex, attributeIndex, result) {
+    //>>includeStart('debug', pragmas.debug);
+    if (instanceIndex < 0 || instanceIndex >= this._numberOfInstances) {
+      throw new DeveloperError("instanceIndex is out of range.");
+    }
+    if (attributeIndex < 0 || attributeIndex >= this._attributes.length) {
+      throw new DeveloperError("attributeIndex is out of range");
+    }
+    //>>includeEnd('debug');
+
+    const attributes = this._attributes;
+    const offset = this._offsets[attributeIndex];
+    const stride = this._stride;
+
+    const index = 4 * stride * instanceIndex + 4 * offset;
+    let value;
+
+    if (
+      this._packFloats &&
+      attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
+    ) {
+      value = getPackedFloat(
+        this._batchValues,
+        index,
+        scratchGetAttributeCartesian4,
+      );
+    } else {
+      value = Cartesian4.unpack(
+        this._batchValues,
+        index,
+        scratchGetAttributeCartesian4,
+      );
+    }
+
+    const attributeType = getAttributeType(attributes, attributeIndex);
+    if (defined(attributeType.fromCartesian4)) {
+      return attributeType.fromCartesian4(value, result);
+    } else if (defined(attributeType.clone)) {
+      return attributeType.clone(value, result);
+    }
+
+    return value.x;
   }
-  if (!defined(numberOfInstances)) {
-    throw new DeveloperError("numberOfInstances is required");
+
+  /**
+   * Sets the value of an attribute in the table.
+   *
+   * @param {number} instanceIndex The index of the instance.
+   * @param {number} attributeIndex The index of the attribute.
+   * @param {number|Cartesian2|Cartesian3|Cartesian4} value The value to be stored in the table. The type of value will depend on the number of components of the attribute.
+   *
+   * @exception {DeveloperError} instanceIndex is out of range.
+   * @exception {DeveloperError} attributeIndex is out of range.
+   */
+  setBatchedAttribute(instanceIndex, attributeIndex, value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (instanceIndex < 0 || instanceIndex >= this._numberOfInstances) {
+      throw new DeveloperError("instanceIndex is out of range.");
+    }
+    if (attributeIndex < 0 || attributeIndex >= this._attributes.length) {
+      throw new DeveloperError("attributeIndex is out of range");
+    }
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    const attributes = this._attributes;
+    const result =
+      setAttributeScratchValues[
+        attributes[attributeIndex].componentsPerAttribute
+      ];
+    const currentAttribute = this.getBatchedAttribute(
+      instanceIndex,
+      attributeIndex,
+      result,
+    );
+    const attributeType = getAttributeType(this._attributes, attributeIndex);
+    const entriesEqual = defined(attributeType.equals)
+      ? attributeType.equals(currentAttribute, value)
+      : currentAttribute === value;
+    if (entriesEqual) {
+      return;
+    }
+
+    const attributeValue = setAttributeScratchCartesian4;
+    attributeValue.x = defined(value.x) ? value.x : value;
+    attributeValue.y = defined(value.y) ? value.y : 0.0;
+    attributeValue.z = defined(value.z) ? value.z : 0.0;
+    attributeValue.w = defined(value.w) ? value.w : 0.0;
+
+    const offset = this._offsets[attributeIndex];
+    const stride = this._stride;
+    const index = 4 * stride * instanceIndex + 4 * offset;
+
+    if (
+      this._packFloats &&
+      attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
+    ) {
+      setPackedAttribute(attributeValue, this._batchValues, index);
+    } else {
+      Cartesian4.pack(attributeValue, this._batchValues, index);
+    }
+
+    this._batchValuesDirty = true;
   }
-  //>>includeEnd('debug');
 
-  this._attributes = attributes;
-  this._numberOfInstances = numberOfInstances;
+  /**
+   * Creates/updates the batch table texture.
+   * @param {FrameState} frameState The frame state.
+   *
+   * @exception {RuntimeError} The floating point texture extension is required but not supported.
+   */
+  update(frameState) {
+    if (
+      (defined(this._texture) && !this._batchValuesDirty) ||
+      this._attributes.length === 0
+    ) {
+      return;
+    }
 
-  if (attributes.length === 0) {
-    return;
+    this._batchValuesDirty = false;
+
+    if (!defined(this._texture)) {
+      createTexture(this, frameState.context);
+    }
+    updateTexture(this);
   }
 
-  // PERFORMANCE_IDEA: We may be able to arrange the attributes so they can be packing into fewer texels.
-  // Right now, an attribute with one component uses an entire texel when 4 single component attributes can
-  // be packed into a texel.
-  //
-  // Packing floats into unsigned byte textures makes the problem worse. A single component float attribute
-  // will be packed into a single texel leaving 3 texels unused. 4 texels are reserved for each float attribute
-  // regardless of how many components it has.
-  const pixelDatatype = getDatatype(attributes);
-  const textureFloatSupported = context.floatingPointTexture;
-  const packFloats =
-    pixelDatatype === PixelDatatype.FLOAT && !textureFloatSupported;
-  const offsets = createOffsets(attributes, packFloats);
+  /**
+   * Gets a function that will update a uniform map to contain values for looking up values in the batch table.
+   *
+   * @returns {BatchTable.updateUniformMapCallback} A callback for updating uniform maps.
+   */
+  getUniformMapCallback() {
+    const that = this;
+    return function (uniformMap) {
+      if (that._attributes.length === 0) {
+        return uniformMap;
+      }
 
-  const stride = getStride(offsets, attributes, packFloats);
-  const maxNumberOfInstancesPerRow = Math.floor(
-    ContextLimits.maximumTextureSize / stride,
-  );
+      const batchUniformMap = {
+        batchTexture: function () {
+          return that._texture;
+        },
+        batchTextureDimensions: function () {
+          return that._textureDimensions;
+        },
+        batchTextureStep: function () {
+          return that._textureStep;
+        },
+      };
+      return combine(uniformMap, batchUniformMap);
+    };
+  }
 
-  const instancesPerWidth = Math.min(
-    numberOfInstances,
-    maxNumberOfInstancesPerRow,
-  );
-  const width = stride * instancesPerWidth;
-  const height = Math.ceil(numberOfInstances / instancesPerWidth);
+  /**
+   * Gets a function that will update a vertex shader to contain functions for looking up values in the batch table.
+   *
+   * @returns {BatchTable.updateVertexShaderSourceCallback} A callback for updating a vertex shader source.
+   */
+  getVertexShaderCallback() {
+    const attributes = this._attributes;
+    if (attributes.length === 0) {
+      return function (source) {
+        return source;
+      };
+    }
 
-  const stepX = 1.0 / width;
-  const centerX = stepX * 0.5;
-  const stepY = 1.0 / height;
-  const centerY = stepY * 0.5;
+    let batchTableShader = "uniform highp sampler2D batchTexture; \n";
+    batchTableShader += `${getGlslComputeSt(this)}\n`;
 
-  this._textureDimensions = new Cartesian2(width, height);
-  this._textureStep = new Cartesian4(stepX, centerX, stepY, centerY);
-  this._pixelDatatype = !packFloats
-    ? pixelDatatype
-    : PixelDatatype.UNSIGNED_BYTE;
-  this._packFloats = packFloats;
-  this._offsets = offsets;
-  this._stride = stride;
-  this._texture = undefined;
+    const length = attributes.length;
+    for (let i = 0; i < length; ++i) {
+      batchTableShader += getGlslAttributeFunction(this, i);
+    }
 
-  const batchLength = 4 * width * height;
-  this._batchValues =
-    pixelDatatype === PixelDatatype.FLOAT && !packFloats
-      ? new Float32Array(batchLength)
-      : new Uint8Array(batchLength);
-  this._batchValuesDirty = false;
-}
+    return function (source) {
+      const mainIndex = source.indexOf("void main");
+      const beforeMain = source.substring(0, mainIndex);
+      const afterMain = source.substring(mainIndex);
+      return `${beforeMain}\n${batchTableShader}\n${afterMain}`;
+    };
+  }
 
-Object.defineProperties(BatchTable.prototype, {
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see BatchTable#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <br /><br />
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @see BatchTable#isDestroyed
+   */
+  destroy() {
+    this._texture = this._texture && this._texture.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * The attribute descriptions.
    * @memberOf BatchTable.prototype
    * @type {object[]}
    * @readonly
    */
-  attributes: {
-    get: function () {
-      return this._attributes;
-    },
-  },
+  get attributes() {
+    return this._attributes;
+  }
+
   /**
    * The number of instances.
    * @memberOf BatchTable.prototype
    * @type {number}
    * @readonly
    */
-  numberOfInstances: {
-    get: function () {
-      return this._numberOfInstances;
-    },
-  },
-});
+  get numberOfInstances() {
+    return this._numberOfInstances;
+  }
+}
 
 function getDatatype(attributes) {
   let foundFloatDatatype = false;
@@ -244,65 +468,6 @@ function setPackedAttribute(value, array, index) {
 
 const scratchGetAttributeCartesian4 = new Cartesian4();
 
-/**
- * Gets the value of an attribute in the table.
- *
- * @param {number} instanceIndex The index of the instance.
- * @param {number} attributeIndex The index of the attribute.
- * @param {undefined|Cartesian2|Cartesian3|Cartesian4} [result] The object onto which to store the result. The type is dependent on the attribute's number of components.
- * @returns {number|Cartesian2|Cartesian3|Cartesian4} The attribute value stored for the instance.
- *
- * @exception {DeveloperError} instanceIndex is out of range.
- * @exception {DeveloperError} attributeIndex is out of range.
- */
-BatchTable.prototype.getBatchedAttribute = function (
-  instanceIndex,
-  attributeIndex,
-  result,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (instanceIndex < 0 || instanceIndex >= this._numberOfInstances) {
-    throw new DeveloperError("instanceIndex is out of range.");
-  }
-  if (attributeIndex < 0 || attributeIndex >= this._attributes.length) {
-    throw new DeveloperError("attributeIndex is out of range");
-  }
-  //>>includeEnd('debug');
-
-  const attributes = this._attributes;
-  const offset = this._offsets[attributeIndex];
-  const stride = this._stride;
-
-  const index = 4 * stride * instanceIndex + 4 * offset;
-  let value;
-
-  if (
-    this._packFloats &&
-    attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
-  ) {
-    value = getPackedFloat(
-      this._batchValues,
-      index,
-      scratchGetAttributeCartesian4,
-    );
-  } else {
-    value = Cartesian4.unpack(
-      this._batchValues,
-      index,
-      scratchGetAttributeCartesian4,
-    );
-  }
-
-  const attributeType = getAttributeType(attributes, attributeIndex);
-  if (defined(attributeType.fromCartesian4)) {
-    return attributeType.fromCartesian4(value, result);
-  } else if (defined(attributeType.clone)) {
-    return attributeType.clone(value, result);
-  }
-
-  return value.x;
-};
-
 const setAttributeScratchValues = [
   undefined,
   undefined,
@@ -311,73 +476,6 @@ const setAttributeScratchValues = [
   new Cartesian4(),
 ];
 const setAttributeScratchCartesian4 = new Cartesian4();
-
-/**
- * Sets the value of an attribute in the table.
- *
- * @param {number} instanceIndex The index of the instance.
- * @param {number} attributeIndex The index of the attribute.
- * @param {number|Cartesian2|Cartesian3|Cartesian4} value The value to be stored in the table. The type of value will depend on the number of components of the attribute.
- *
- * @exception {DeveloperError} instanceIndex is out of range.
- * @exception {DeveloperError} attributeIndex is out of range.
- */
-BatchTable.prototype.setBatchedAttribute = function (
-  instanceIndex,
-  attributeIndex,
-  value,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (instanceIndex < 0 || instanceIndex >= this._numberOfInstances) {
-    throw new DeveloperError("instanceIndex is out of range.");
-  }
-  if (attributeIndex < 0 || attributeIndex >= this._attributes.length) {
-    throw new DeveloperError("attributeIndex is out of range");
-  }
-  if (!defined(value)) {
-    throw new DeveloperError("value is required.");
-  }
-  //>>includeEnd('debug');
-
-  const attributes = this._attributes;
-  const result =
-    setAttributeScratchValues[
-      attributes[attributeIndex].componentsPerAttribute
-    ];
-  const currentAttribute = this.getBatchedAttribute(
-    instanceIndex,
-    attributeIndex,
-    result,
-  );
-  const attributeType = getAttributeType(this._attributes, attributeIndex);
-  const entriesEqual = defined(attributeType.equals)
-    ? attributeType.equals(currentAttribute, value)
-    : currentAttribute === value;
-  if (entriesEqual) {
-    return;
-  }
-
-  const attributeValue = setAttributeScratchCartesian4;
-  attributeValue.x = defined(value.x) ? value.x : value;
-  attributeValue.y = defined(value.y) ? value.y : 0.0;
-  attributeValue.z = defined(value.z) ? value.z : 0.0;
-  attributeValue.w = defined(value.w) ? value.w : 0.0;
-
-  const offset = this._offsets[attributeIndex];
-  const stride = this._stride;
-  const index = 4 * stride * instanceIndex + 4 * offset;
-
-  if (
-    this._packFloats &&
-    attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
-  ) {
-    setPackedAttribute(attributeValue, this._batchValues, index);
-  } else {
-    Cartesian4.pack(attributeValue, this._batchValues, index);
-  }
-
-  this._batchValuesDirty = true;
-};
 
 function createTexture(batchTable, context) {
   const dimensions = batchTable._textureDimensions;
@@ -402,55 +500,6 @@ function updateTexture(batchTable) {
     },
   });
 }
-
-/**
- * Creates/updates the batch table texture.
- * @param {FrameState} frameState The frame state.
- *
- * @exception {RuntimeError} The floating point texture extension is required but not supported.
- */
-BatchTable.prototype.update = function (frameState) {
-  if (
-    (defined(this._texture) && !this._batchValuesDirty) ||
-    this._attributes.length === 0
-  ) {
-    return;
-  }
-
-  this._batchValuesDirty = false;
-
-  if (!defined(this._texture)) {
-    createTexture(this, frameState.context);
-  }
-  updateTexture(this);
-};
-
-/**
- * Gets a function that will update a uniform map to contain values for looking up values in the batch table.
- *
- * @returns {BatchTable.updateUniformMapCallback} A callback for updating uniform maps.
- */
-BatchTable.prototype.getUniformMapCallback = function () {
-  const that = this;
-  return function (uniformMap) {
-    if (that._attributes.length === 0) {
-      return uniformMap;
-    }
-
-    const batchUniformMap = {
-      batchTexture: function () {
-        return that._texture;
-      },
-      batchTextureDimensions: function () {
-        return that._textureDimensions;
-      },
-      batchTextureStep: function () {
-        return that._textureStep;
-      },
-    };
-    return combine(uniformMap, batchUniformMap);
-  };
-};
 
 function getGlslComputeSt(batchTable) {
   const stride = batchTable._stride;
@@ -557,66 +606,6 @@ function getGlslAttributeFunction(batchTable, attributeIndex) {
   glslFunction += "    return value; \n" + "} \n";
   return glslFunction;
 }
-
-/**
- * Gets a function that will update a vertex shader to contain functions for looking up values in the batch table.
- *
- * @returns {BatchTable.updateVertexShaderSourceCallback} A callback for updating a vertex shader source.
- */
-BatchTable.prototype.getVertexShaderCallback = function () {
-  const attributes = this._attributes;
-  if (attributes.length === 0) {
-    return function (source) {
-      return source;
-    };
-  }
-
-  let batchTableShader = "uniform highp sampler2D batchTexture; \n";
-  batchTableShader += `${getGlslComputeSt(this)}\n`;
-
-  const length = attributes.length;
-  for (let i = 0; i < length; ++i) {
-    batchTableShader += getGlslAttributeFunction(this, i);
-  }
-
-  return function (source) {
-    const mainIndex = source.indexOf("void main");
-    const beforeMain = source.substring(0, mainIndex);
-    const afterMain = source.substring(mainIndex);
-    return `${beforeMain}\n${batchTableShader}\n${afterMain}`;
-  };
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see BatchTable#destroy
- */
-BatchTable.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <br /><br />
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @see BatchTable#isDestroyed
- */
-BatchTable.prototype.destroy = function () {
-  this._texture = this._texture && this._texture.destroy();
-  return destroyObject(this);
-};
 
 /**
  * A callback for updating uniform maps.

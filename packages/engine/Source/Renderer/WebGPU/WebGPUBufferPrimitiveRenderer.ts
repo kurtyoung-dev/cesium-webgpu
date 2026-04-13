@@ -33,6 +33,10 @@ import {
   m4Values,
   numericArray,
 } from "./webgpuTypeHelpers.js";
+import {
+  assertCameraRTERoundTrip,
+  assertMVTranslationZeroed,
+} from "./WebGPURTEAssertions.js";
 
 /** Type-shape we use to call the JS-only IndexDatatype.createTypedArray. */
 interface IndexDatatypeStatics {
@@ -81,8 +85,8 @@ interface PolygonCache extends SharedCache {
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
   bindGroup: GPUBindGroup;
-  command: any | null;
-  pickCommand: any | null;
+  command: WebGPUDrawCommand | null;
+  pickCommand: WebGPUDrawCommand | null;
   pickIds: any[];
 }
 
@@ -113,8 +117,8 @@ interface PolylineCache extends SharedCache {
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
   bindGroup: GPUBindGroup;
-  command: any | null;
-  pickCommand: any | null;
+  command: WebGPUDrawCommand | null;
+  pickCommand: WebGPUDrawCommand | null;
   pickIds: any[];
 }
 
@@ -137,8 +141,8 @@ interface PointCache extends SharedCache {
   pipeline: GPURenderPipeline;
   pickPipeline: GPURenderPipeline;
   bindGroup: GPUBindGroup;
-  command: any | null;
-  pickCommand: any | null;
+  command: WebGPUDrawCommand | null;
+  pickCommand: WebGPUDrawCommand | null;
   pickIds: any[];
 }
 
@@ -162,7 +166,7 @@ const scratchNextEnc = { high: new Cartesian3(), low: new Cartesian3() };
 
 function packCameraUniforms(
   out: Float32Array,
-  uniformState: any,
+  uniformState: CesiumUniformState,
   modelMatrix: any,
 ): void {
   const view = uniformState.view;
@@ -182,7 +186,7 @@ function packCameraUniforms(
   out[48] = camPos.x;
   out[49] = camPos.y;
   out[50] = camPos.z;
-  out[51] = 0;
+  // out[51] is implicit vec3 alignment padding — no write needed.
 
   // Encoded camera position in model coordinates
   const invModel = Matrix4.inverse(modelMatrix, scratchInvModel);
@@ -192,30 +196,61 @@ function packCameraUniforms(
   out[52] = scratchEnc.high.x;
   out[53] = scratchEnc.high.y;
   out[54] = scratchEnc.high.z;
-  out[55] = 0;
+  // out[55] is implicit vec3 alignment padding — no write needed.
   out[56] = scratchEnc.low.x;
   out[57] = scratchEnc.low.y;
   out[58] = scratchEnc.low.z;
-  out[59] = 0;
+  // out[59] is implicit vec3 alignment padding — no write needed.
 
-  // modelViewRelativeToEye = view * model with translation column zeroed
+  //>>includeStart('debug', pragmas.debug);
+  assertCameraRTERoundTrip(
+    scratchEnc.high,
+    scratchEnc.low,
+    camModel,
+    "BufferPrimitive camera UB (model-space)",
+  );
+  //>>includeEnd('debug');
+
+  // modelViewRelativeToEye = (view * model) with translation column zeroed,
+  // THEN projection applied. It is CRITICAL to zero the translation column
+  // *before* multiplying by projection — zeroing after the fact wipes out
+  // projection's P23 depth-mapping term, which lands in the same slot as
+  // the translation during the multiply. The resulting MVP would produce
+  // incorrect NDC depth and all geometry drawn through this path would
+  // fail depth testing at planetary scale.
+  //
+  // Matches `UniformStateComputations.cleanModelViewRelativeToEye` +
+  // `cleanModelViewProjectionRelativeToEye`.
+  //
+  // Keep both intermediates as Matrix4 (Float64) so rotation columns stay
+  // at FP64 precision through the multiply; only downcast to FP32 at the
+  // final UBO write.
   Matrix4.multiply(view, modelMatrix, scratchMV);
+  // Zero the translation column of MV in place. Column-major indices
+  // 12,13,14 are the xyz translation; index 15 (the homogeneous 1)
+  // stays untouched.
+  scratchMV[12] = 0;
+  scratchMV[13] = 0;
+  scratchMV[14] = 0;
+
+  //>>includeStart('debug', pragmas.debug);
+  // Cast to a numeric-indexable view; Matrix4 supports `mv[12..14]`
+  // but TS doesn't expose an index signature on the class.
+  assertMVTranslationZeroed(
+    scratchMV as unknown as { [index: number]: number },
+    "BufferPrimitive camera UB mv",
+  );
+  //>>includeEnd('debug');
+
+  // Project the already-zeroed MV. Result col3 = proj × [0,0,0,1] =
+  // [0, 0, P23, 0] — depth mapping preserved exactly.
   Matrix4.multiply(proj, scratchMV, scratchMVP);
+
   const mvIdx = m4Values(scratchMV);
   const mvpIdx = m4Values(scratchMVP);
   for (let i = 0; i < 16; i++) {
-    scratchMVCopy[i] = mvIdx[i];
-    scratchMVPCopy[i] = mvpIdx[i];
-  }
-  scratchMVCopy[12] = 0;
-  scratchMVCopy[13] = 0;
-  scratchMVCopy[14] = 0;
-  scratchMVPCopy[12] = 0;
-  scratchMVPCopy[13] = 0;
-  scratchMVPCopy[14] = 0;
-  for (let i = 0; i < 16; i++) {
-    out[60 + i] = scratchMVCopy[i];
-    out[76 + i] = scratchMVPCopy[i];
+    out[60 + i] = mvIdx[i];
+    out[76 + i] = mvpIdx[i];
   }
 }
 
@@ -246,7 +281,7 @@ fn fragmentPickMain(input : VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-function preprocessShader(context: any, name: string, source: string): string {
+function preprocessShader(context: CesiumGraphicsContext, name: string, source: string): string {
   let processed = _processedShaderCache.get(name);
   if (processed) {
     return processed;
@@ -340,7 +375,11 @@ function buildPolygonPipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      // less-equal (not less) — lets primitives that project exactly
+      // onto the far plane due to FP32 rounding still pass the depth
+      // test. Safe at planetary scale where the Z range is huge and
+      // precision collapses near z=1.
+      depthCompare: "less-equal",
     },
   });
 }
@@ -399,7 +438,11 @@ function buildPolylinePipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      // less-equal (not less) — lets primitives that project exactly
+      // onto the far plane due to FP32 rounding still pass the depth
+      // test. Safe at planetary scale where the Z range is huge and
+      // precision collapses near z=1.
+      depthCompare: "less-equal",
     },
   });
 }
@@ -472,7 +515,11 @@ function buildPointPipeline(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: false,
-      depthCompare: "less",
+      // less-equal (not less) — lets primitives that project exactly
+      // onto the far plane due to FP32 rounding still pass the depth
+      // test. Safe at planetary scale where the Z range is huge and
+      // precision collapses near z=1.
+      depthCompare: "less-equal",
     },
   });
 }
@@ -518,7 +565,7 @@ function createIB(
 
 function initPolygonCache(
   collection: any,
-  context: any,
+  context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PolygonCache {
   const device: GPUDevice = context.device;
@@ -588,7 +635,7 @@ function initPolygonCache(
 function repackPolygonDirty(
   collection: any,
   cache: PolygonCache,
-  context: any,
+  context: CesiumGraphicsContext,
 ): void {
   const dirtyOffset: number = collection._dirtyOffset;
   const dirtyCount: number = collection._dirtyCount;
@@ -675,7 +722,7 @@ function uploadPolygonBuffers(device: GPUDevice, cache: PolygonCache): void {
 
 function updateWebGPUBufferPolygonCollection(
   collection: any,
-  frameState: any,
+  frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
     return;
@@ -789,7 +836,7 @@ function destroyWebGPUBufferPolygonCollection(collection: any): void {
 
 function initPolylineCache(
   collection: any,
-  context: any,
+  context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PolylineCache {
   const device: GPUDevice = context.device;
@@ -904,7 +951,7 @@ function initPolylineCache(
 function repackPolylineDirty(
   collection: any,
   cache: PolylineCache,
-  context: any,
+  context: CesiumGraphicsContext,
 ): void {
   const dirtyOffset: number = collection._dirtyOffset;
   const dirtyCount: number = collection._dirtyCount;
@@ -1054,7 +1101,7 @@ const polylineParamsScratch = new Float32Array(8);
 
 function updateWebGPUBufferPolylineCollection(
   collection: any,
-  frameState: any,
+  frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
     return;
@@ -1182,7 +1229,7 @@ function destroyWebGPUBufferPolylineCollection(collection: any): void {
 
 function initPointCache(
   collection: any,
-  context: any,
+  context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PointCache {
   const device: GPUDevice = context.device;
@@ -1276,7 +1323,7 @@ function initPointCache(
 function repackPointDirty(
   collection: any,
   cache: PointCache,
-  context: any,
+  context: CesiumGraphicsContext,
 ): void {
   const dirtyOffset: number = collection._dirtyOffset;
   const dirtyCount: number = collection._dirtyCount;
@@ -1352,7 +1399,7 @@ const pointParamsScratch = new Float32Array(8);
 
 function updateWebGPUBufferPointCollection(
   collection: any,
-  frameState: any,
+  frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
     return;

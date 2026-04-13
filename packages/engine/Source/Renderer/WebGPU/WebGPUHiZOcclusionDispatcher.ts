@@ -73,8 +73,12 @@ interface HiZOcclusionResources {
   depthMip0View: GPUTextureView | null;
   /** Pipelines. */
   hiZPipeline: GPUComputePipeline;
+  /** Mip 0 pipeline that reads texture_depth_2d (sampleType "depth"). */
+  hiZFromDepthPipeline: GPUComputePipeline | null;
   occlusionPipeline: GPUComputePipeline;
   hiZBindGroupLayout: GPUBindGroupLayout;
+  /** Mip 0 bind group layout for depth-format input (sampleType "depth"). */
+  hiZFromDepthBindGroupLayout: GPUBindGroupLayout | null;
   occlusionBindGroupLayout: GPUBindGroupLayout;
   /** OcclusionTest sampler (comparison not required — uses linear sample). */
   hiZSampler: GPUSampler;
@@ -134,6 +138,7 @@ class WebGPUHiZOcclusionDispatcher {
   private _device: GPUDevice;
   private _resources: HiZOcclusionResources | null = null;
   private _hiZShaderModule: GPUShaderModule | null = null;
+  private _hiZFromDepthShaderModule: GPUShaderModule | null = null;
   private _occlusionShaderModule: GPUShaderModule | null = null;
   // Diagnostic counters.
   private _hiZBuilds = 0;
@@ -164,6 +169,19 @@ class WebGPUHiZOcclusionDispatcher {
     if (this._hiZShaderModule) return;
     this._hiZShaderModule = this._device.createShaderModule({
       label: "HiZPyramid_Shader",
+      code: wgsl,
+    });
+  }
+
+  /**
+   * Inject the HiZPyramidFromDepth.wgsl source — the variant that reads
+   * `texture_depth_2d` (sampleType "depth") so mip 0 can be built
+   * directly from the native depth attachment without a format copy.
+   */
+  setHiZFromDepthShaderSource(wgsl: string): void {
+    if (this._hiZFromDepthShaderModule) return;
+    this._hiZFromDepthShaderModule = this._device.createShaderModule({
+      label: "HiZPyramidFromDepth_Shader",
       code: wgsl,
     });
   }
@@ -335,6 +353,51 @@ class WebGPUHiZOcclusionDispatcher {
       },
     });
 
+    // ── Depth-format mip 0 pipeline (optional) ──
+    // When the caller passes a native depth texture view (aspect
+    // "depth-only" from a depth24plus-stencil8 attachment), the bind
+    // group layout must use sampleType "depth" and the WGSL shader
+    // must declare texture_depth_2d. This avoids a full-resolution
+    // depth → r32float copy every frame.
+    let hiZFromDepthBindGroupLayout: GPUBindGroupLayout | null = null;
+    let hiZFromDepthPipeline: GPUComputePipeline | null = null;
+    if (this._hiZFromDepthShaderModule) {
+      hiZFromDepthBindGroupLayout = device.createBindGroupLayout({
+        label: "HiZ_FromDepth_BGL",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            texture: { sampleType: "depth", viewDimension: "2d" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              access: "write-only",
+              format: "r32float",
+              viewDimension: "2d",
+            },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+        ],
+      });
+      hiZFromDepthPipeline = device.createComputePipeline({
+        label: "HiZ_FromDepth_Pipeline",
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [hiZFromDepthBindGroupLayout],
+        }),
+        compute: {
+          module: this._hiZFromDepthShaderModule,
+          entryPoint: "computeMain",
+        },
+      });
+    }
+
     // ── Per-mip bind groups for the pyramid build ──
     // Mip 0 of the pyramid consumes the input depth texture; every
     // subsequent pyramid mip consumes the previous pyramid mip. Bind
@@ -485,8 +548,10 @@ class WebGPUHiZOcclusionDispatcher {
       hiZSampleView,
       mipLevels,
       hiZPipeline,
+      hiZFromDepthPipeline,
       occlusionPipeline,
       hiZBindGroupLayout,
+      hiZFromDepthBindGroupLayout,
       occlusionBindGroupLayout,
       hiZSampler,
       sphereCenterXBuffer,
@@ -566,13 +631,21 @@ class WebGPUHiZOcclusionDispatcher {
         this._hiZParamsScratch.buffer,
       );
 
-      // Build the bind group for this mip. Per-mip bind groups can't
-      // be cached across frames because the input texture view may
-      // be a rebuilt view every frame (the caller's depth texture is
-      // not stable). Cache is therefore per-frame and discarded.
+      // For mip 0, use the depth-format pipeline when available (reads
+      // texture_depth_2d directly from the scene depth attachment). For
+      // mips 1+, use the standard r32float pipeline.
+      const useDepthPipeline =
+        m === 0 && r.hiZFromDepthPipeline && r.hiZFromDepthBindGroupLayout;
+      const layout = useDepthPipeline
+        ? r.hiZFromDepthBindGroupLayout!
+        : r.hiZBindGroupLayout;
+      const pipeline = useDepthPipeline
+        ? r.hiZFromDepthPipeline!
+        : r.hiZPipeline;
+
       const bg = this._device.createBindGroup({
         label: `HiZ_BG_Mip${m}`,
-        layout: r.hiZBindGroupLayout,
+        layout,
         entries: [
           { binding: 0, resource: inputView },
           { binding: 1, resource: mip.outputView },
@@ -586,7 +659,7 @@ class WebGPUHiZOcclusionDispatcher {
       const pass = encoder.beginComputePass({
         label: `HiZ_Pass_Mip${m}`,
       });
-      pass.setPipeline(r.hiZPipeline);
+      pass.setPipeline(pipeline);
       pass.setBindGroup(0, bg);
       pass.dispatchWorkgroups(workgroupsX, workgroupsY, 1);
       pass.end();
@@ -773,6 +846,8 @@ class WebGPUHiZOcclusionDispatcher {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+import HiZPyramidFromDepthSource from "../../Shaders/WebGPU/Compute/HiZPyramidFromDepth.js";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
 
 const _instances = new WeakMap<object, WebGPUHiZOcclusionDispatcher>();
@@ -785,6 +860,9 @@ function getOrCreateDispatcher(context: {
   if (!inst) {
     inst = new WebGPUHiZOcclusionDispatcher(context.device);
     inst.setHiZShaderSource(HiZPyramidSource as unknown as string);
+    inst.setHiZFromDepthShaderSource(
+      HiZPyramidFromDepthSource as unknown as string,
+    );
     inst.setOcclusionShaderSource(OcclusionTestSource as unknown as string);
     _instances.set(context, inst);
   }

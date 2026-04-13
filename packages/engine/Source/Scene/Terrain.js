@@ -40,20 +40,20 @@ import createWorldTerrainAsync from "../Core/createWorldTerrainAsync.js";
  *
  * @param {Promise<TerrainProvider>} terrainProviderPromise A promise which resolves to a terrain provider
  */
-function Terrain(terrainProviderPromise) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("terrainProviderPromise", terrainProviderPromise);
-  //>>includeEnd('debug');
+class Terrain {
+  constructor(terrainProviderPromise) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("terrainProviderPromise", terrainProviderPromise);
+    //>>includeEnd('debug');
 
-  this._ready = false;
-  this._provider = undefined;
-  this._errorEvent = new Event();
-  this._readyEvent = new Event();
+    this._ready = false;
+    this._provider = undefined;
+    this._errorEvent = new Event();
+    this._readyEvent = new Event();
 
-  handlePromise(this, terrainProviderPromise);
-}
+    handlePromise(this, terrainProviderPromise);
+  }
 
-Object.defineProperties(Terrain.prototype, {
   /**
    * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
@@ -62,11 +62,9 @@ Object.defineProperties(Terrain.prototype, {
    * @type {Event<Terrain.ErrorEventCallback>}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets an event that is raised when the terrain provider has been successfully created. Event listeners
@@ -75,11 +73,9 @@ Object.defineProperties(Terrain.prototype, {
    * @type {Event<Terrain.ReadyEventCallback>}
    * @readonly
    */
-  readyEvent: {
-    get: function () {
-      return this._readyEvent;
-    },
-  },
+  get readyEvent() {
+    return this._readyEvent;
+  }
 
   /**
    * Returns true when the terrain provider has been successfully created. Otherwise, returns false.
@@ -88,11 +84,9 @@ Object.defineProperties(Terrain.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
   /**
    * The terrain provider providing surface geometry to a globe. Do not use until {@link Terrain.readyEvent} is raised.
@@ -101,12 +95,11 @@ Object.defineProperties(Terrain.prototype, {
    * @type {TerrainProvider}
    * @readonly
    */
-  provider: {
-    get: function () {
-      return this._provider;
-    },
-  },
-});
+  get provider() {
+    return this._provider;
+  }
+}
+
 /**
  * Creates a {@link Terrain} instance for {@link https://cesium.com/content/#cesium-world-terrain|Cesium World Terrain}.
  *

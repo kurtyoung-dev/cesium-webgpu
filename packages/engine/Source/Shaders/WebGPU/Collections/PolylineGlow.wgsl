@@ -3,26 +3,28 @@
 // Optionally tapers the glow toward one end (s=1) of the line.
 //
 // Material uniforms (at offset 112 in uniform buffer):
-//   materialColor: vec4<f32> — glow color
+//   color: vec4<f32> — glow color
 //   glowPower:     f32       — glow intensity (higher = wider glow, default 0.25)
 //   taperPower:    f32       — taper toward end (1.0 = no taper, <1 = tapers)
 
-struct Uniforms {
-  mvpRelativeToEye: mat4x4<f32>,
-  encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
-  encodedCameraLow: vec3<f32>,
-  _pad1: f32,
-  viewportSize: vec2<f32>,
-  _pad2: vec2<f32>,
-  // Material uniforms (offset 112)
-  materialColor: vec4<f32>,
-  glowPower: f32,
-  taperPower: f32,
-  _matPad: vec2<f32>,
-};
+struct CameraUniforms {
+    mvpRelativeToEye: mat4x4<f32>,
+    encodedCameraHigh: vec3<f32>,
+    _pad0: f32,
+    encodedCameraLow: vec3<f32>,
+    _pad1: f32,
+    viewportSize: vec2<f32>,
+    _pad2: vec2<f32>,
+}
 
-@group(0) @binding(0) var<uniform> u: Uniforms;
+struct MaterialUniforms {
+    color: vec4<f32>,
+    glowPower: f32,
+    taperPower: f32,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -61,7 +63,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let lineWidth = input.startPosHighAndWidth.w;
   // Expand the quad wider for glow — the glow extends beyond the nominal line width
-  let glowExpand = max(u.glowPower * 2.0, 1.0);
+  let glowExpand = max(material.glowPower * 2.0, 1.0);
   let halfWidth = (lineWidth * 0.5 + 0.5) * glowExpand;
 
   let sStart = input.startPosLow.w;
@@ -69,18 +71,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let startRTE = translateRelativeToEye(
     input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
   let endRTE = translateRelativeToEye(
     input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
 
-  let clipStart = u.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
-  let clipEnd = u.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+  let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
-  let screenStart = toScreenSpace(clipStart, u.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, u.viewportSize);
+  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
 
   let lineDir = normalize(screenEnd - screenStart);
   let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
@@ -102,7 +104,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, u.viewportSize);
+  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
   let s = mix(sStart, sEnd, isEnd);
   let t = side * 0.5 + 0.5;
@@ -115,9 +117,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let st = input.v_st;
-  let color = u.materialColor;
-  let glowPower = u.glowPower;
-  let taperPower = u.taperPower;
+  let color = material.color;
+  let glowPower = material.glowPower;
+  let taperPower = material.taperPower;
 
   // Glow intensity based on distance from center (st.t = 0.5 at center)
   let distFromCenter = abs(st.t - 0.5);

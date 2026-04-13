@@ -42,68 +42,113 @@ import ImageryProvider from "./ImageryProvider.js";
  * @see WebMapTileServiceImageryProvider
  * @see UrlTemplateImageryProvider
  */
-function SingleTileImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class SingleTileImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
 
-  const rectangle = options.rectangle ?? Rectangle.MAX_VALUE;
-  const tilingScheme = new GeographicTilingScheme({
-    rectangle: rectangle,
-    numberOfLevelZeroTilesX: 1,
-    numberOfLevelZeroTilesY: 1,
-    ellipsoid: options.ellipsoid,
-  });
-  this._tilingScheme = tilingScheme;
-  this._image = undefined;
-  this._texture = undefined;
+    const rectangle = options.rectangle ?? Rectangle.MAX_VALUE;
+    const tilingScheme = new GeographicTilingScheme({
+      rectangle: rectangle,
+      numberOfLevelZeroTilesX: 1,
+      numberOfLevelZeroTilesY: 1,
+      ellipsoid: options.ellipsoid,
+    });
+    this._tilingScheme = tilingScheme;
+    this._image = undefined;
+    this._texture = undefined;
 
-  this._hasError = false;
-  this._errorEvent = new Event();
+    this._hasError = false;
+    this._errorEvent = new Event();
 
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("options.url", options.url);
+    //>>includeEnd('debug');
+
+    const resource = Resource.createIfNeeded(options.url);
+    this._resource = resource;
+
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("options.tileWidth", options.tileWidth);
+    Check.typeOf.number("options.tileHeight", options.tileHeight);
+    //>>includeEnd('debug');
+
+    this._tileWidth = options.tileWidth;
+    this._tileHeight = options.tileHeight;
   }
-  this._credit = credit;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("options.url", options.url);
-  //>>includeEnd('debug');
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    return undefined;
+  }
 
-  const resource = Resource.createIfNeeded(options.url);
-  this._resource = resource;
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise.<ImageryTypes>|undefined} The resolved image
+   */
+  async requestImage(x, y, level, request) {
+    if (!this._hasError && !defined(this._image)) {
+      const image = await doRequest(this._resource, this);
+      this._image = image;
+      TileProviderError.reportSuccess(this._errorEvent);
+      return image;
+    }
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("options.tileWidth", options.tileWidth);
-  Check.typeOf.number("options.tileHeight", options.tileHeight);
-  //>>includeEnd('debug');
+    return this._image;
+  }
 
-  this._tileWidth = options.tileWidth;
-  this._tileHeight = options.tileHeight;
-}
+  /**
+   * Picking features is not currently supported by this imagery provider, so this function simply returns
+   * undefined.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {undefined} Undefined since picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    return undefined;
+  }
 
-Object.defineProperties(SingleTileImageryProvider.prototype, {
   /**
    * Gets the URL of the single, top-level imagery tile.
    * @memberof SingleTileImageryProvider.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._resource.url;
-    },
-  },
+  get url() {
+    return this._resource.url;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -111,11 +156,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
+  get proxy() {
+    return this._resource.proxy;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -123,11 +166,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -135,11 +176,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -147,11 +186,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return 0;
-    },
-  },
+  get maximumLevel() {
+    return 0;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested.
@@ -159,11 +196,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return 0;
-    },
-  },
+  get minimumLevel() {
+    return 0;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -171,11 +206,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
@@ -183,11 +216,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._tilingScheme.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._tilingScheme.rectangle;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -197,11 +228,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return undefined;
-    },
-  },
+  get tileDiscardPolicy() {
+    return undefined;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -211,11 +240,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -224,11 +251,9 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
+  get credit() {
+    return this._credit;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -240,12 +265,10 @@ Object.defineProperties(SingleTileImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return true;
-    },
-  },
-});
+  get hasAlphaChannel() {
+    return true;
+  }
+}
 
 function failure(resource, error, provider, previousError) {
   let message = `Failed to load image ${resource.url}`;
@@ -320,61 +343,4 @@ SingleTileImageryProvider.fromUrl = async function (url, options) {
   return provider;
 };
 
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-SingleTileImageryProvider.prototype.getTileCredits = function (x, y, level) {
-  return undefined;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise.<ImageryTypes>|undefined} The resolved image
- */
-SingleTileImageryProvider.prototype.requestImage = async function (
-  x,
-  y,
-  level,
-  request,
-) {
-  if (!this._hasError && !defined(this._image)) {
-    const image = await doRequest(this._resource, this);
-    this._image = image;
-    TileProviderError.reportSuccess(this._errorEvent);
-    return image;
-  }
-
-  return this._image;
-};
-
-/**
- * Picking features is not currently supported by this imagery provider, so this function simply returns
- * undefined.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {undefined} Undefined since picking is not supported.
- */
-SingleTileImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return undefined;
-};
 export default SingleTileImageryProvider;

@@ -136,122 +136,228 @@ function parseFont(label) {
  *
  * @demo {@link https://sandcastle.cesium.com/index.html?id=labels|Cesium Sandcastle Labels Demo}
  */
-function Label(options, labelCollection) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class Label {
+  constructor(options, labelCollection) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  if (
-    defined(options.disableDepthTestDistance) &&
-    options.disableDepthTestDistance < 0.0
-  ) {
-    throw new DeveloperError(
-      "disableDepthTestDistance must be greater than 0.0.",
+    //>>includeStart('debug', pragmas.debug);
+    if (
+      defined(options.disableDepthTestDistance) &&
+      options.disableDepthTestDistance < 0.0
+    ) {
+      throw new DeveloperError(
+        "disableDepthTestDistance must be greater than 0.0.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    let translucencyByDistance = options.translucencyByDistance;
+    let pixelOffsetScaleByDistance = options.pixelOffsetScaleByDistance;
+    let scaleByDistance = options.scaleByDistance;
+    let distanceDisplayCondition = options.distanceDisplayCondition;
+    if (defined(translucencyByDistance)) {
+      //>>includeStart('debug', pragmas.debug);
+      if (translucencyByDistance.far <= translucencyByDistance.near) {
+        throw new DeveloperError(
+          "translucencyByDistance.far must be greater than translucencyByDistance.near.",
+        );
+      }
+      //>>includeEnd('debug');
+      translucencyByDistance = NearFarScalar.clone(translucencyByDistance);
+    }
+    if (defined(pixelOffsetScaleByDistance)) {
+      //>>includeStart('debug', pragmas.debug);
+      if (pixelOffsetScaleByDistance.far <= pixelOffsetScaleByDistance.near) {
+        throw new DeveloperError(
+          "pixelOffsetScaleByDistance.far must be greater than pixelOffsetScaleByDistance.near.",
+        );
+      }
+      //>>includeEnd('debug');
+      pixelOffsetScaleByDistance = NearFarScalar.clone(
+        pixelOffsetScaleByDistance,
+      );
+    }
+    if (defined(scaleByDistance)) {
+      //>>includeStart('debug', pragmas.debug);
+      if (scaleByDistance.far <= scaleByDistance.near) {
+        throw new DeveloperError(
+          "scaleByDistance.far must be greater than scaleByDistance.near.",
+        );
+      }
+      //>>includeEnd('debug');
+      scaleByDistance = NearFarScalar.clone(scaleByDistance);
+    }
+    if (defined(distanceDisplayCondition)) {
+      //>>includeStart('debug', pragmas.debug);
+      if (distanceDisplayCondition.far <= distanceDisplayCondition.near) {
+        throw new DeveloperError(
+          "distanceDisplayCondition.far must be greater than distanceDisplayCondition.near.",
+        );
+      }
+      //>>includeEnd('debug');
+      distanceDisplayCondition = DistanceDisplayCondition.clone(
+        distanceDisplayCondition,
+      );
+    }
+
+    this._renderedText = undefined;
+    this._text = undefined;
+    this._show = options.show ?? true;
+    this._font = options.font ?? "30px sans-serif";
+    this._fillColor = Color.clone(options.fillColor ?? Color.WHITE);
+    this._outlineColor = Color.clone(options.outlineColor ?? Color.BLACK);
+    this._outlineWidth = options.outlineWidth ?? 1.0;
+    this._showBackground = options.showBackground ?? false;
+    this._backgroundColor = Color.clone(
+      options.backgroundColor ?? defaultBackgroundColor,
+    );
+    this._backgroundPadding = Cartesian2.clone(
+      options.backgroundPadding ?? defaultBackgroundPadding,
+    );
+    this._style = options.style ?? LabelStyle.FILL;
+    this._verticalOrigin = options.verticalOrigin ?? VerticalOrigin.BASELINE;
+    this._horizontalOrigin = options.horizontalOrigin ?? HorizontalOrigin.LEFT;
+    this._pixelOffset = Cartesian2.clone(options.pixelOffset ?? Cartesian2.ZERO);
+    this._eyeOffset = Cartesian3.clone(options.eyeOffset ?? Cartesian3.ZERO);
+    this._position = Cartesian3.clone(options.position ?? Cartesian3.ZERO);
+    this._scale = options.scale ?? 1.0;
+    this._id = options.id;
+    this._translucencyByDistance = translucencyByDistance;
+    this._pixelOffsetScaleByDistance = pixelOffsetScaleByDistance;
+    this._scaleByDistance = scaleByDistance;
+    this._heightReference = options.heightReference ?? HeightReference.NONE;
+    this._distanceDisplayCondition = distanceDisplayCondition;
+    this._disableDepthTestDistance = options.disableDepthTestDistance;
+
+    this._labelCollection = labelCollection;
+    this._glyphs = [];
+    this._backgroundBillboard = undefined;
+    this._batchIndex = undefined; // Used only by Vector3DTilePoints and BillboardCollection
+
+    this._rebindAllGlyphs = true;
+    this._repositionAllGlyphs = true;
+
+    this._actualClampedPosition = undefined;
+    this._removeCallbackFunc = undefined;
+    this._mode = undefined;
+
+    this._clusterShow = true;
+
+    this.text = options.text ?? "";
+
+    this._relativeSize = 1.0;
+
+    parseFont(this);
+
+    this._updateClamping();
+  }
+
+  _updateClamping() {
+    Billboard._updateClamping(this._labelCollection, this);
+  }
+
+  /**
+   * Computes the screen-space position of the label's origin, taking into account eye and pixel offsets.
+   * The screen space origin is the top, left corner of the canvas; <code>x</code> increases from
+   * left to right, and <code>y</code> increases from top to bottom.
+   *
+   * @param {Scene} scene The scene the label is in.
+   * @param {Cartesian2} [result] The object onto which to store the result.
+   * @returns {Cartesian2} The screen-space position of the label.
+   *
+   *
+   * @example
+   * console.log(l.computeScreenSpacePosition(scene).toString());
+   *
+   * @see Label#eyeOffset
+   * @see Label#pixelOffset
+   */
+  computeScreenSpacePosition(scene, result) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (!defined(result)) {
+      result = new Cartesian2();
+    }
+
+    const labelCollection = this._labelCollection;
+    const modelMatrix = labelCollection.modelMatrix;
+    const actualPosition = defined(this._actualClampedPosition)
+      ? this._actualClampedPosition
+      : this._position;
+
+    const windowCoordinates = Billboard._computeScreenSpacePosition(
+      modelMatrix,
+      actualPosition,
+      this._eyeOffset,
+      this._pixelOffset,
+      scene,
+      result,
+    );
+    return windowCoordinates;
+  }
+
+  /**
+   * Determines if this label equals another label.  Labels are equal if all their properties
+   * are equal.  Labels in different collections can be equal.
+   *
+   * @param {Label} [other] The label to compare for equality.
+   * @returns {boolean} <code>true</code> if the labels are equal; otherwise, <code>false</code>.
+   */
+  equals(other) {
+    return (
+      this === other ||
+      (defined(other) &&
+        this._show === other._show &&
+        this._scale === other._scale &&
+        this._outlineWidth === other._outlineWidth &&
+        this._showBackground === other._showBackground &&
+        this._style === other._style &&
+        this._verticalOrigin === other._verticalOrigin &&
+        this._horizontalOrigin === other._horizontalOrigin &&
+        this._heightReference === other._heightReference &&
+        this._renderedText === other._renderedText &&
+        this._font === other._font &&
+        Cartesian3.equals(this._position, other._position) &&
+        Color.equals(this._fillColor, other._fillColor) &&
+        Color.equals(this._outlineColor, other._outlineColor) &&
+        Color.equals(this._backgroundColor, other._backgroundColor) &&
+        Cartesian2.equals(this._backgroundPadding, other._backgroundPadding) &&
+        Cartesian2.equals(this._pixelOffset, other._pixelOffset) &&
+        Cartesian3.equals(this._eyeOffset, other._eyeOffset) &&
+        NearFarScalar.equals(
+          this._translucencyByDistance,
+          other._translucencyByDistance,
+        ) &&
+        NearFarScalar.equals(
+          this._pixelOffsetScaleByDistance,
+          other._pixelOffsetScaleByDistance,
+        ) &&
+        NearFarScalar.equals(this._scaleByDistance, other._scaleByDistance) &&
+        DistanceDisplayCondition.equals(
+          this._distanceDisplayCondition,
+          other._distanceDisplayCondition,
+        ) &&
+        this._disableDepthTestDistance === other._disableDepthTestDistance &&
+        this._id === other._id)
     );
   }
-  //>>includeEnd('debug');
 
-  let translucencyByDistance = options.translucencyByDistance;
-  let pixelOffsetScaleByDistance = options.pixelOffsetScaleByDistance;
-  let scaleByDistance = options.scaleByDistance;
-  let distanceDisplayCondition = options.distanceDisplayCondition;
-  if (defined(translucencyByDistance)) {
-    //>>includeStart('debug', pragmas.debug);
-    if (translucencyByDistance.far <= translucencyByDistance.near) {
-      throw new DeveloperError(
-        "translucencyByDistance.far must be greater than translucencyByDistance.near.",
-      );
-    }
-    //>>includeEnd('debug');
-    translucencyByDistance = NearFarScalar.clone(translucencyByDistance);
-  }
-  if (defined(pixelOffsetScaleByDistance)) {
-    //>>includeStart('debug', pragmas.debug);
-    if (pixelOffsetScaleByDistance.far <= pixelOffsetScaleByDistance.near) {
-      throw new DeveloperError(
-        "pixelOffsetScaleByDistance.far must be greater than pixelOffsetScaleByDistance.near.",
-      );
-    }
-    //>>includeEnd('debug');
-    pixelOffsetScaleByDistance = NearFarScalar.clone(
-      pixelOffsetScaleByDistance,
-    );
-  }
-  if (defined(scaleByDistance)) {
-    //>>includeStart('debug', pragmas.debug);
-    if (scaleByDistance.far <= scaleByDistance.near) {
-      throw new DeveloperError(
-        "scaleByDistance.far must be greater than scaleByDistance.near.",
-      );
-    }
-    //>>includeEnd('debug');
-    scaleByDistance = NearFarScalar.clone(scaleByDistance);
-  }
-  if (defined(distanceDisplayCondition)) {
-    //>>includeStart('debug', pragmas.debug);
-    if (distanceDisplayCondition.far <= distanceDisplayCondition.near) {
-      throw new DeveloperError(
-        "distanceDisplayCondition.far must be greater than distanceDisplayCondition.near.",
-      );
-    }
-    //>>includeEnd('debug');
-    distanceDisplayCondition = DistanceDisplayCondition.clone(
-      distanceDisplayCondition,
-    );
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <br /><br />
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   *
+   * @returns {boolean} True if this object was destroyed; otherwise, false.
+   */
+  isDestroyed() {
+    return false;
   }
 
-  this._renderedText = undefined;
-  this._text = undefined;
-  this._show = options.show ?? true;
-  this._font = options.font ?? "30px sans-serif";
-  this._fillColor = Color.clone(options.fillColor ?? Color.WHITE);
-  this._outlineColor = Color.clone(options.outlineColor ?? Color.BLACK);
-  this._outlineWidth = options.outlineWidth ?? 1.0;
-  this._showBackground = options.showBackground ?? false;
-  this._backgroundColor = Color.clone(
-    options.backgroundColor ?? defaultBackgroundColor,
-  );
-  this._backgroundPadding = Cartesian2.clone(
-    options.backgroundPadding ?? defaultBackgroundPadding,
-  );
-  this._style = options.style ?? LabelStyle.FILL;
-  this._verticalOrigin = options.verticalOrigin ?? VerticalOrigin.BASELINE;
-  this._horizontalOrigin = options.horizontalOrigin ?? HorizontalOrigin.LEFT;
-  this._pixelOffset = Cartesian2.clone(options.pixelOffset ?? Cartesian2.ZERO);
-  this._eyeOffset = Cartesian3.clone(options.eyeOffset ?? Cartesian3.ZERO);
-  this._position = Cartesian3.clone(options.position ?? Cartesian3.ZERO);
-  this._scale = options.scale ?? 1.0;
-  this._id = options.id;
-  this._translucencyByDistance = translucencyByDistance;
-  this._pixelOffsetScaleByDistance = pixelOffsetScaleByDistance;
-  this._scaleByDistance = scaleByDistance;
-  this._heightReference = options.heightReference ?? HeightReference.NONE;
-  this._distanceDisplayCondition = distanceDisplayCondition;
-  this._disableDepthTestDistance = options.disableDepthTestDistance;
-
-  this._labelCollection = labelCollection;
-  this._glyphs = [];
-  this._backgroundBillboard = undefined;
-  this._batchIndex = undefined; // Used only by Vector3DTilePoints and BillboardCollection
-
-  this._rebindAllGlyphs = true;
-  this._repositionAllGlyphs = true;
-
-  this._actualClampedPosition = undefined;
-  this._removeCallbackFunc = undefined;
-  this._mode = undefined;
-
-  this._clusterShow = true;
-
-  this.text = options.text ?? "";
-
-  this._relativeSize = 1.0;
-
-  parseFont(this);
-
-  this._updateClamping();
-}
-
-Object.defineProperties(Label.prototype, {
   /**
    * Determines if this label will be shown.  Use this to hide or show a label, instead
    * of removing it and re-adding it to the collection.
@@ -259,71 +365,81 @@ Object.defineProperties(Label.prototype, {
    * @type {boolean}
    * @default true
    */
-  show: {
-    get: function () {
-      return this._show;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get show() {
+    return this._show;
+  }
 
-      if (this._show !== value) {
-        this._show = value;
+  /**
+   * Determines if this label will be shown.  Use this to hide or show a label, instead
+   * of removing it and re-adding it to the collection.
+   * @memberof Label.prototype
+   * @type {boolean}
+   * @default true
+   */
+  set show(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const billboard = glyphs[i].billboard;
-          if (defined(billboard)) {
-            billboard.show = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.show = value;
+    if (this._show !== value) {
+      this._show = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const billboard = glyphs[i].billboard;
+        if (defined(billboard)) {
+          billboard.show = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.show = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets the Cartesian position of this label.
    * @memberof Label.prototype
    * @type {Cartesian3}
    */
-  position: {
-    get: function () {
-      return this._position;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get position() {
+    return this._position;
+  }
 
-      const position = this._position;
-      if (!Cartesian3.equals(position, value)) {
-        Cartesian3.clone(value, position);
+  /**
+   * Gets or sets the Cartesian position of this label.
+   * @memberof Label.prototype
+   * @type {Cartesian3}
+   */
+  set position(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const billboard = glyphs[i].billboard;
-          if (defined(billboard)) {
-            billboard.position = value;
-          }
+    const position = this._position;
+    if (!Cartesian3.equals(position, value)) {
+      Cartesian3.clone(value, position);
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const billboard = glyphs[i].billboard;
+        if (defined(billboard)) {
+          billboard.position = value;
         }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.position = value;
-        }
-
-        this._updateClamping();
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.position = value;
+      }
+
+      this._updateClamping();
+    }
+  }
 
   /**
    * Gets or sets the height reference of this billboard.
@@ -331,66 +447,75 @@ Object.defineProperties(Label.prototype, {
    * @type {HeightReference}
    * @default HeightReference.NONE
    */
-  heightReference: {
-    get: function () {
-      return this._heightReference;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get heightReference() {
+    return this._heightReference;
+  }
 
-      if (value !== this._heightReference) {
-        this._heightReference = value;
+  /**
+   * Gets or sets the height reference of this billboard.
+   * @memberof Label.prototype
+   * @type {HeightReference}
+   * @default HeightReference.NONE
+   */
+  set heightReference(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const billboard = glyphs[i].billboard;
-          if (defined(billboard)) {
-            billboard.heightReference = value;
-          }
+    if (value !== this._heightReference) {
+      this._heightReference = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const billboard = glyphs[i].billboard;
+        if (defined(billboard)) {
+          billboard.heightReference = value;
         }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.heightReference = value;
-        }
-
-        repositionAllGlyphs(this);
-
-        this._updateClamping();
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.heightReference = value;
+      }
+
+      repositionAllGlyphs(this);
+
+      this._updateClamping();
+    }
+  }
 
   /**
    * Gets or sets the text of this label.
    * @memberof Label.prototype
    * @type {string}
    */
-  text: {
-    get: function () {
-      return this._text;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get text() {
+    return this._text;
+  }
 
-      if (this._text !== value) {
-        this._text = value;
+  /**
+   * Gets or sets the text of this label.
+   * @memberof Label.prototype
+   * @type {string}
+   */
+  set text(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const renderedValue = Label.filterUnsupportedCharacters(value);
-        this._renderedText = Label.enableRightToLeftDetection
-          ? reverseRtl(renderedValue)
-          : renderedValue;
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+    if (this._text !== value) {
+      this._text = value;
+
+      const renderedValue = Label.filterUnsupportedCharacters(value);
+      this._renderedText = Label.enableRightToLeftDetection
+        ? reverseRtl(renderedValue)
+        : renderedValue;
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the font used to draw this label. Fonts are specified using the same syntax as the CSS 'font' property.
@@ -399,24 +524,30 @@ Object.defineProperties(Label.prototype, {
    * @default '30px sans-serif'
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#text-styles|HTML canvas 2D context text styles}
    */
-  font: {
-    get: function () {
-      return this._font;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get font() {
+    return this._font;
+  }
 
-      if (this._font !== value) {
-        this._font = value;
-        rebindAllGlyphs(this);
-        parseFont(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the font used to draw this label. Fonts are specified using the same syntax as the CSS 'font' property.
+   * @memberof Label.prototype
+   * @type {string}
+   * @default '30px sans-serif'
+   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#text-styles|HTML canvas 2D context text styles}
+   */
+  set font(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (this._font !== value) {
+      this._font = value;
+      rebindAllGlyphs(this);
+      parseFont(this);
+    }
+  }
 
   /**
    * Gets or sets the fill color of this label.
@@ -425,24 +556,30 @@ Object.defineProperties(Label.prototype, {
    * @default Color.WHITE
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
    */
-  fillColor: {
-    get: function () {
-      return this._fillColor;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get fillColor() {
+    return this._fillColor;
+  }
 
-      const fillColor = this._fillColor;
-      if (!Color.equals(fillColor, value)) {
-        Color.clone(value, fillColor);
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the fill color of this label.
+   * @memberof Label.prototype
+   * @type {Color}
+   * @default Color.WHITE
+   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
+   */
+  set fillColor(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    const fillColor = this._fillColor;
+    if (!Color.equals(fillColor, value)) {
+      Color.clone(value, fillColor);
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the outline color of this label.
@@ -451,24 +588,30 @@ Object.defineProperties(Label.prototype, {
    * @default Color.BLACK
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
    */
-  outlineColor: {
-    get: function () {
-      return this._outlineColor;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get outlineColor() {
+    return this._outlineColor;
+  }
 
-      const outlineColor = this._outlineColor;
-      if (!Color.equals(outlineColor, value)) {
-        Color.clone(value, outlineColor);
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the outline color of this label.
+   * @memberof Label.prototype
+   * @type {Color}
+   * @default Color.BLACK
+   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
+   */
+  set outlineColor(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    const outlineColor = this._outlineColor;
+    if (!Color.equals(outlineColor, value)) {
+      Color.clone(value, outlineColor);
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the outline width of this label.
@@ -477,23 +620,29 @@ Object.defineProperties(Label.prototype, {
    * @default 1.0
    * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
    */
-  outlineWidth: {
-    get: function () {
-      return this._outlineWidth;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get outlineWidth() {
+    return this._outlineWidth;
+  }
 
-      if (this._outlineWidth !== value) {
-        this._outlineWidth = value;
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the outline width of this label.
+   * @memberof Label.prototype
+   * @type {number}
+   * @default 1.0
+   * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#fill-and-stroke-styles|HTML canvas 2D context fill and stroke styles}
+   */
+  set outlineWidth(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (this._outlineWidth !== value) {
+      this._outlineWidth = value;
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Determines if a background behind this label will be shown.
@@ -501,23 +650,28 @@ Object.defineProperties(Label.prototype, {
    * @default false
    * @type {boolean}
    */
-  showBackground: {
-    get: function () {
-      return this._showBackground;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get showBackground() {
+    return this._showBackground;
+  }
 
-      if (this._showBackground !== value) {
-        this._showBackground = value;
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Determines if a background behind this label will be shown.
+   * @memberof Label.prototype
+   * @default false
+   * @type {boolean}
+   */
+  set showBackground(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (this._showBackground !== value) {
+      this._showBackground = value;
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the background color of this label.
@@ -525,28 +679,33 @@ Object.defineProperties(Label.prototype, {
    * @type {Color}
    * @default new Color(0.165, 0.165, 0.165, 0.8)
    */
-  backgroundColor: {
-    get: function () {
-      return this._backgroundColor;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get backgroundColor() {
+    return this._backgroundColor;
+  }
 
-      const backgroundColor = this._backgroundColor;
-      if (!Color.equals(backgroundColor, value)) {
-        Color.clone(value, backgroundColor);
+  /**
+   * Gets or sets the background color of this label.
+   * @memberof Label.prototype
+   * @type {Color}
+   * @default new Color(0.165, 0.165, 0.165, 0.8)
+   */
+  set backgroundColor(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.color = backgroundColor;
-        }
+    const backgroundColor = this._backgroundColor;
+    if (!Color.equals(backgroundColor, value)) {
+      Color.clone(value, backgroundColor);
+
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.color = backgroundColor;
       }
-    },
-  },
+    }
+  }
 
   /**
    * Gets or sets the background padding, in pixels, of this label.  The <code>x</code> value
@@ -555,24 +714,30 @@ Object.defineProperties(Label.prototype, {
    * @type {Cartesian2}
    * @default new Cartesian2(7, 5)
    */
-  backgroundPadding: {
-    get: function () {
-      return this._backgroundPadding;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get backgroundPadding() {
+    return this._backgroundPadding;
+  }
 
-      const backgroundPadding = this._backgroundPadding;
-      if (!Cartesian2.equals(backgroundPadding, value)) {
-        Cartesian2.clone(value, backgroundPadding);
-        repositionAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the background padding, in pixels, of this label.  The <code>x</code> value
+   * controls horizontal padding, and the <code>y</code> value controls vertical padding.
+   * @memberof Label.prototype
+   * @type {Cartesian2}
+   * @default new Cartesian2(7, 5)
+   */
+  set backgroundPadding(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    const backgroundPadding = this._backgroundPadding;
+    if (!Cartesian2.equals(backgroundPadding, value)) {
+      Cartesian2.clone(value, backgroundPadding);
+      repositionAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the style of this label.
@@ -580,23 +745,28 @@ Object.defineProperties(Label.prototype, {
    * @type {LabelStyle}
    * @default LabelStyle.FILL
    */
-  style: {
-    get: function () {
-      return this._style;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get style() {
+    return this._style;
+  }
 
-      if (this._style !== value) {
-        this._style = value;
-        rebindAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the style of this label.
+   * @memberof Label.prototype
+   * @type {LabelStyle}
+   * @default LabelStyle.FILL
+   */
+  set style(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (this._style !== value) {
+      this._style = value;
+      rebindAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the pixel offset in screen space from the origin of this label.  This is commonly used
@@ -615,35 +785,51 @@ Object.defineProperties(Label.prototype, {
    * @type {Cartesian2}
    * @default Cartesian2.ZERO
    */
-  pixelOffset: {
-    get: function () {
-      return this._pixelOffset;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get pixelOffset() {
+    return this._pixelOffset;
+  }
 
-      const pixelOffset = this._pixelOffset;
-      if (!Cartesian2.equals(pixelOffset, value)) {
-        Cartesian2.clone(value, pixelOffset);
+  /**
+   * Gets or sets the pixel offset in screen space from the origin of this label.  This is commonly used
+   * to align multiple labels and billboards at the same position, e.g., an image and text.  The
+   * screen space origin is the top, left corner of the canvas; <code>x</code> increases from
+   * left to right, and <code>y</code> increases from top to bottom.
+   * <br /><br />
+   * <div align='center'>
+   * <table border='0' cellpadding='5'><tr>
+   * <td align='center'><code>default</code><br/><img src='Images/Label.setPixelOffset.default.png' width='250' height='188' /></td>
+   * <td align='center'><code>l.pixeloffset = new Cartesian2(25, 75);</code><br/><img src='Images/Label.setPixelOffset.x50y-25.png' width='250' height='188' /></td>
+   * </tr></table>
+   * The label's origin is indicated by the yellow point.
+   * </div>
+   * @memberof Label.prototype
+   * @type {Cartesian2}
+   * @default Cartesian2.ZERO
+   */
+  set pixelOffset(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.pixelOffset = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.pixelOffset = value;
+    const pixelOffset = this._pixelOffset;
+    if (!Cartesian2.equals(pixelOffset, value)) {
+      Cartesian2.clone(value, pixelOffset);
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.pixelOffset = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.pixelOffset = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets near and far translucency properties of a Label based on the Label's distance from the camera.
@@ -667,40 +853,61 @@ Object.defineProperties(Label.prototype, {
    * // disable translucency by distance
    * text.translucencyByDistance = undefined;
    */
-  translucencyByDistance: {
-    get: function () {
-      return this._translucencyByDistance;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value.far <= value.near) {
-        throw new DeveloperError(
-          "far distance must be greater than near distance.",
-        );
-      }
-      //>>includeEnd('debug');
+  get translucencyByDistance() {
+    return this._translucencyByDistance;
+  }
 
-      const translucencyByDistance = this._translucencyByDistance;
-      if (!NearFarScalar.equals(translucencyByDistance, value)) {
-        this._translucencyByDistance = NearFarScalar.clone(
-          value,
-          translucencyByDistance,
-        );
+  /**
+   * Gets or sets near and far translucency properties of a Label based on the Label's distance from the camera.
+   * A label's translucency will interpolate between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's translucency remains clamped to the nearest bound.  If undefined,
+   * translucencyByDistance will be disabled.
+   * @memberof Label.prototype
+   * @type {NearFarScalar}
+   *
+   * @example
+   * // Example 1.
+   * // Set a label's translucencyByDistance to 1.0 when the
+   * // camera is 1500 meters from the label and disappear as
+   * // the camera distance approaches 8.0e6 meters.
+   * text.translucencyByDistance = new Cesium.NearFarScalar(1.5e2, 1.0, 8.0e6, 0.0);
+   *
+   * @example
+   * // Example 2.
+   * // disable translucency by distance
+   * text.translucencyByDistance = undefined;
+   */
+  set translucencyByDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value.far <= value.near) {
+      throw new DeveloperError(
+        "far distance must be greater than near distance.",
+      );
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.translucencyByDistance = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.translucencyByDistance = value;
+    const translucencyByDistance = this._translucencyByDistance;
+    if (!NearFarScalar.equals(translucencyByDistance, value)) {
+      this._translucencyByDistance = NearFarScalar.clone(
+        value,
+        translucencyByDistance,
+      );
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.translucencyByDistance = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.translucencyByDistance = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets near and far pixel offset scaling properties of a Label based on the Label's distance from the camera.
@@ -725,40 +932,62 @@ Object.defineProperties(Label.prototype, {
    * // disable pixel offset by distance
    * text.pixelOffsetScaleByDistance = undefined;
    */
-  pixelOffsetScaleByDistance: {
-    get: function () {
-      return this._pixelOffsetScaleByDistance;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value.far <= value.near) {
-        throw new DeveloperError(
-          "far distance must be greater than near distance.",
-        );
-      }
-      //>>includeEnd('debug');
+  get pixelOffsetScaleByDistance() {
+    return this._pixelOffsetScaleByDistance;
+  }
 
-      const pixelOffsetScaleByDistance = this._pixelOffsetScaleByDistance;
-      if (!NearFarScalar.equals(pixelOffsetScaleByDistance, value)) {
-        this._pixelOffsetScaleByDistance = NearFarScalar.clone(
-          value,
-          pixelOffsetScaleByDistance,
-        );
+  /**
+   * Gets or sets near and far pixel offset scaling properties of a Label based on the Label's distance from the camera.
+   * A label's pixel offset will be scaled between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's pixel offset scaling remains clamped to the nearest bound.  If undefined,
+   * pixelOffsetScaleByDistance will be disabled.
+   * @memberof Label.prototype
+   * @type {NearFarScalar}
+   *
+   * @example
+   * // Example 1.
+   * // Set a label's pixel offset scale to 0.0 when the
+   * // camera is 1500 meters from the label and scale pixel offset to 10.0 pixels
+   * // in the y direction the camera distance approaches 8.0e6 meters.
+   * text.pixelOffset = new Cesium.Cartesian2(0.0, 1.0);
+   * text.pixelOffsetScaleByDistance = new Cesium.NearFarScalar(1.5e2, 0.0, 8.0e6, 10.0);
+   *
+   * @example
+   * // Example 2.
+   * // disable pixel offset by distance
+   * text.pixelOffsetScaleByDistance = undefined;
+   */
+  set pixelOffsetScaleByDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value.far <= value.near) {
+      throw new DeveloperError(
+        "far distance must be greater than near distance.",
+      );
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.pixelOffsetScaleByDistance = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.pixelOffsetScaleByDistance = value;
+    const pixelOffsetScaleByDistance = this._pixelOffsetScaleByDistance;
+    if (!NearFarScalar.equals(pixelOffsetScaleByDistance, value)) {
+      this._pixelOffsetScaleByDistance = NearFarScalar.clone(
+        value,
+        pixelOffsetScaleByDistance,
+      );
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.pixelOffsetScaleByDistance = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.pixelOffsetScaleByDistance = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets near and far scaling properties of a Label based on the label's distance from the camera.
@@ -782,37 +1011,58 @@ Object.defineProperties(Label.prototype, {
    * // disable scaling by distance
    * label.scaleByDistance = undefined;
    */
-  scaleByDistance: {
-    get: function () {
-      return this._scaleByDistance;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value.far <= value.near) {
-        throw new DeveloperError(
-          "far distance must be greater than near distance.",
-        );
-      }
-      //>>includeEnd('debug');
+  get scaleByDistance() {
+    return this._scaleByDistance;
+  }
 
-      const scaleByDistance = this._scaleByDistance;
-      if (!NearFarScalar.equals(scaleByDistance, value)) {
-        this._scaleByDistance = NearFarScalar.clone(value, scaleByDistance);
+  /**
+   * Gets or sets near and far scaling properties of a Label based on the label's distance from the camera.
+   * A label's scale will interpolate between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's scale remains clamped to the nearest bound.  If undefined,
+   * scaleByDistance will be disabled.
+   * @memberof Label.prototype
+   * @type {NearFarScalar}
+   *
+   * @example
+   * // Example 1.
+   * // Set a label's scaleByDistance to scale by 1.5 when the
+   * // camera is 1500 meters from the label and disappear as
+   * // the camera distance approaches 8.0e6 meters.
+   * label.scaleByDistance = new Cesium.NearFarScalar(1.5e2, 1.5, 8.0e6, 0.0);
+   *
+   * @example
+   * // Example 2.
+   * // disable scaling by distance
+   * label.scaleByDistance = undefined;
+   */
+  set scaleByDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value.far <= value.near) {
+      throw new DeveloperError(
+        "far distance must be greater than near distance.",
+      );
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.scaleByDistance = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.scaleByDistance = value;
+    const scaleByDistance = this._scaleByDistance;
+    if (!NearFarScalar.equals(scaleByDistance, value)) {
+      this._scaleByDistance = NearFarScalar.clone(value, scaleByDistance);
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.scaleByDistance = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.scaleByDistance = value;
+      }
+    }
+  }
 
   /**
    * Gets and sets the 3D Cartesian offset applied to this label in eye coordinates.  Eye coordinates is a left-handed
@@ -837,35 +1087,57 @@ Object.defineProperties(Label.prototype, {
    * @type {Cartesian3}
    * @default Cartesian3.ZERO
    */
-  eyeOffset: {
-    get: function () {
-      return this._eyeOffset;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get eyeOffset() {
+    return this._eyeOffset;
+  }
 
-      const eyeOffset = this._eyeOffset;
-      if (!Cartesian3.equals(eyeOffset, value)) {
-        Cartesian3.clone(value, eyeOffset);
+  /**
+   * Gets and sets the 3D Cartesian offset applied to this label in eye coordinates.  Eye coordinates is a left-handed
+   * coordinate system, where <code>x</code> points towards the viewer's right, <code>y</code> points up, and
+   * <code>z</code> points into the screen.  Eye coordinates use the same scale as world and model coordinates,
+   * which is typically meters.
+   * <br /><br />
+   * An eye offset is commonly used to arrange multiple label or objects at the same position, e.g., to
+   * arrange a label above its corresponding 3D model.
+   * <br /><br />
+   * Below, the label is positioned at the center of the Earth but an eye offset makes it always
+   * appear on top of the Earth regardless of the viewer's or Earth's orientation.
+   * <br /><br />
+   * <div align='center'>
+   * <table border='0' cellpadding='5'><tr>
+   * <td align='center'><img src='Images/Billboard.setEyeOffset.one.png' width='250' height='188' /></td>
+   * <td align='center'><img src='Images/Billboard.setEyeOffset.two.png' width='250' height='188' /></td>
+   * </tr></table>
+   * <code>l.eyeOffset = new Cartesian3(0.0, 8000000.0, 0.0);</code><br /><br />
+   * </div>
+   * @memberof Label.prototype
+   * @type {Cartesian3}
+   * @default Cartesian3.ZERO
+   */
+  set eyeOffset(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.eyeOffset = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.eyeOffset = value;
+    const eyeOffset = this._eyeOffset;
+    if (!Cartesian3.equals(eyeOffset, value)) {
+      Cartesian3.clone(value, eyeOffset);
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.eyeOffset = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.eyeOffset = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets the horizontal origin of this label, which determines if the label is drawn
@@ -882,23 +1154,37 @@ Object.defineProperties(Label.prototype, {
    * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
    * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
    */
-  horizontalOrigin: {
-    get: function () {
-      return this._horizontalOrigin;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get horizontalOrigin() {
+    return this._horizontalOrigin;
+  }
 
-      if (this._horizontalOrigin !== value) {
-        this._horizontalOrigin = value;
-        repositionAllGlyphs(this);
-      }
-    },
-  },
+  /**
+   * Gets or sets the horizontal origin of this label, which determines if the label is drawn
+   * to the left, center, or right of its anchor position.
+   * <br /><br />
+   * <div align='center'>
+   * <img src='Images/Billboard.setHorizontalOrigin.png' width='648' height='196' /><br />
+   * </div>
+   * @memberof Label.prototype
+   * @type {HorizontalOrigin}
+   * @default HorizontalOrigin.LEFT
+   * @example
+   * // Use a top, right origin
+   * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
+   * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
+   */
+  set horizontalOrigin(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
+
+    if (this._horizontalOrigin !== value) {
+      this._horizontalOrigin = value;
+      repositionAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the vertical origin of this label, which determines if the label is
@@ -915,36 +1201,50 @@ Object.defineProperties(Label.prototype, {
    * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
    * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
    */
-  verticalOrigin: {
-    get: function () {
-      return this._verticalOrigin;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get verticalOrigin() {
+    return this._verticalOrigin;
+  }
 
-      if (this._verticalOrigin !== value) {
-        this._verticalOrigin = value;
+  /**
+   * Gets or sets the vertical origin of this label, which determines if the label is
+   * to the above, below, or at the center of its anchor position.
+   * <br /><br />
+   * <div align='center'>
+   * <img src='Images/Billboard.setVerticalOrigin.png' width='695' height='175' /><br />
+   * </div>
+   * @memberof Label.prototype
+   * @type {VerticalOrigin}
+   * @default VerticalOrigin.BASELINE
+   * @example
+   * // Use a top, right origin
+   * l.horizontalOrigin = Cesium.HorizontalOrigin.RIGHT;
+   * l.verticalOrigin = Cesium.VerticalOrigin.TOP;
+   */
+  set verticalOrigin(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.verticalOrigin = value;
-          }
+    if (this._verticalOrigin !== value) {
+      this._verticalOrigin = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.verticalOrigin = value;
         }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.verticalOrigin = value;
-        }
-
-        repositionAllGlyphs(this);
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.verticalOrigin = value;
+      }
+
+      repositionAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets or sets the uniform scale that is multiplied with the label's size in pixels.
@@ -964,36 +1264,53 @@ Object.defineProperties(Label.prototype, {
    * @type {number}
    * @default 1.0
    */
-  scale: {
-    get: function () {
-      return this._scale;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (!defined(value)) {
-        throw new DeveloperError("value is required.");
-      }
-      //>>includeEnd('debug');
+  get scale() {
+    return this._scale;
+  }
 
-      if (this._scale !== value) {
-        this._scale = value;
+  /**
+   * Gets or sets the uniform scale that is multiplied with the label's size in pixels.
+   * A scale of <code>1.0</code> does not change the size of the label; a scale greater than
+   * <code>1.0</code> enlarges the label; a positive scale less than <code>1.0</code> shrinks
+   * the label.
+   * <br /><br />
+   * Applying a large scale value may pixelate the label.  To make text larger without pixelation,
+   * use a larger font size when calling {@link Label#font} instead.
+   * <br /><br />
+   * <div align='center'>
+   * <img src='Images/Label.setScale.png' width='400' height='300' /><br/>
+   * From left to right in the above image, the scales are <code>0.5</code>, <code>1.0</code>,
+   * and <code>2.0</code>.
+   * </div>
+   * @memberof Label.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  set scale(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(value)) {
+      throw new DeveloperError("value is required.");
+    }
+    //>>includeEnd('debug');
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.scale = value * this._relativeSize;
-          }
+    if (this._scale !== value) {
+      this._scale = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.scale = value * this._relativeSize;
         }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.scale = value * this._relativeSize;
-        }
-
-        repositionAllGlyphs(this);
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.scale = value * this._relativeSize;
+      }
+
+      repositionAllGlyphs(this);
+    }
+  }
 
   /**
    * Gets the total scale of the label, which is the label's scale multiplied by the computed relative size
@@ -1002,11 +1319,9 @@ Object.defineProperties(Label.prototype, {
    * @type {number}
    * @default 1.0
    */
-  totalScale: {
-    get: function () {
-      return this._scale * this._relativeSize;
-    },
-  },
+  get totalScale() {
+    return this._scale * this._relativeSize;
+  }
 
   /**
    * Gets or sets the condition specifying at what distance from the camera that this label will be displayed.
@@ -1014,38 +1329,43 @@ Object.defineProperties(Label.prototype, {
    * @type {DistanceDisplayCondition}
    * @default undefined
    */
-  distanceDisplayCondition: {
-    get: function () {
-      return this._distanceDisplayCondition;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value.far <= value.near) {
-        throw new DeveloperError("far must be greater than near");
-      }
-      //>>includeEnd('debug');
-      if (
-        !DistanceDisplayCondition.equals(value, this._distanceDisplayCondition)
-      ) {
-        this._distanceDisplayCondition = DistanceDisplayCondition.clone(
-          value,
-          this._distanceDisplayCondition,
-        );
+  get distanceDisplayCondition() {
+    return this._distanceDisplayCondition;
+  }
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.distanceDisplayCondition = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.distanceDisplayCondition = value;
+  /**
+   * Gets or sets the condition specifying at what distance from the camera that this label will be displayed.
+   * @memberof Label.prototype
+   * @type {DistanceDisplayCondition}
+   * @default undefined
+   */
+  set distanceDisplayCondition(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value.far <= value.near) {
+      throw new DeveloperError("far must be greater than near");
+    }
+    //>>includeEnd('debug');
+    if (
+      !DistanceDisplayCondition.equals(value, this._distanceDisplayCondition)
+    ) {
+      this._distanceDisplayCondition = DistanceDisplayCondition.clone(
+        value,
+        this._distanceDisplayCondition,
+      );
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.distanceDisplayCondition = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.distanceDisplayCondition = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets the distance from the camera, beyond which, depth testing is disabled—to, for example, prevent clipping against terrain.
@@ -1055,75 +1375,84 @@ Object.defineProperties(Label.prototype, {
    * @type {number|undefined}
    * @default undefined
    */
-  disableDepthTestDistance: {
-    get: function () {
-      return this._disableDepthTestDistance;
-    },
-    set: function (value) {
-      if (this._disableDepthTestDistance !== value) {
-        //>>includeStart('debug', pragmas.debug);
-        if (defined(value) && value < 0.0) {
-          throw new DeveloperError(
-            "disableDepthTestDistance must be greater than 0.0.",
-          );
-        }
-        //>>includeEnd('debug');
-        this._disableDepthTestDistance = value;
+  get disableDepthTestDistance() {
+    return this._disableDepthTestDistance;
+  }
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.disableDepthTestDistance = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.disableDepthTestDistance = value;
+  /**
+   * Gets or sets the distance from the camera, beyond which, depth testing is disabled—to, for example, prevent clipping against terrain.
+   * When set to <code>undefined</code> or
+   * <code>0</code>, the depth test is always applied. When set to Number.<code>POSITIVE_INFINITY</code>, the depth test is never applied.
+   * @memberof Label.prototype
+   * @type {number|undefined}
+   * @default undefined
+   */
+  set disableDepthTestDistance(value) {
+    if (this._disableDepthTestDistance !== value) {
+      //>>includeStart('debug', pragmas.debug);
+      if (defined(value) && value < 0.0) {
+        throw new DeveloperError(
+          "disableDepthTestDistance must be greater than 0.0.",
+        );
+      }
+      //>>includeEnd('debug');
+      this._disableDepthTestDistance = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.disableDepthTestDistance = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.disableDepthTestDistance = value;
+      }
+    }
+  }
 
   /**
    * Gets or sets the user-defined value returned when the label is picked.
    * @memberof Label.prototype
    * @type {*}
    */
-  id: {
-    get: function () {
-      return this._id;
-    },
-    set: function (value) {
-      if (this._id !== value) {
-        this._id = value;
+  get id() {
+    return this._id;
+  }
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.id = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.id = value;
+  /**
+   * Gets or sets the user-defined value returned when the label is picked.
+   * @memberof Label.prototype
+   * @type {*}
+   */
+  set id(value) {
+    if (this._id !== value) {
+      this._id = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.id = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.id = value;
+      }
+    }
+  }
 
   /**
    * @private
    */
-  pickId: {
-    get: function () {
-      if (this._glyphs.length === 0 || !defined(this._glyphs[0].billboard)) {
-        return undefined;
-      }
-      return this._glyphs[0].billboard.pickId;
-    },
-  },
+  get pickId() {
+    if (this._glyphs.length === 0 || !defined(this._glyphs[0].billboard)) {
+      return undefined;
+    }
+    return this._glyphs[0].billboard.pickId;
+  }
 
   /**
    * Keeps track of the position of the label based on the height reference.
@@ -1131,31 +1460,36 @@ Object.defineProperties(Label.prototype, {
    * @type {Cartesian3}
    * @private
    */
-  _clampedPosition: {
-    get: function () {
-      return this._actualClampedPosition;
-    },
-    set: function (value) {
-      this._actualClampedPosition = Cartesian3.clone(
-        value,
-        this._actualClampedPosition,
-      );
+  get _clampedPosition() {
+    return this._actualClampedPosition;
+  }
 
-      const glyphs = this._glyphs;
-      for (let i = 0, len = glyphs.length; i < len; i++) {
-        const glyph = glyphs[i];
-        if (defined(glyph.billboard)) {
-          // Set all the private values here, because we already clamped to ground
-          //  so we don't want to do it again for every glyph
-          glyph.billboard._clampedPosition = value;
-        }
+  /**
+   * Keeps track of the position of the label based on the height reference.
+   * @memberof Label.prototype
+   * @type {Cartesian3}
+   * @private
+   */
+  set _clampedPosition(value) {
+    this._actualClampedPosition = Cartesian3.clone(
+      value,
+      this._actualClampedPosition,
+    );
+
+    const glyphs = this._glyphs;
+    for (let i = 0, len = glyphs.length; i < len; i++) {
+      const glyph = glyphs[i];
+      if (defined(glyph.billboard)) {
+        // Set all the private values here, because we already clamped to ground
+        //  so we don't want to do it again for every glyph
+        glyph.billboard._clampedPosition = value;
       }
-      const backgroundBillboard = this._backgroundBillboard;
-      if (defined(backgroundBillboard)) {
-        backgroundBillboard._clampedPosition = value;
-      }
-    },
-  },
+    }
+    const backgroundBillboard = this._backgroundBillboard;
+    if (defined(backgroundBillboard)) {
+      backgroundBillboard._clampedPosition = value;
+    }
+  }
 
   /**
    * Determines whether or not this label will be shown or hidden because it was clustered.
@@ -1164,28 +1498,34 @@ Object.defineProperties(Label.prototype, {
    * @default true
    * @private
    */
-  clusterShow: {
-    get: function () {
-      return this._clusterShow;
-    },
-    set: function (value) {
-      if (this._clusterShow !== value) {
-        this._clusterShow = value;
+  get clusterShow() {
+    return this._clusterShow;
+  }
 
-        const glyphs = this._glyphs;
-        for (let i = 0, len = glyphs.length; i < len; i++) {
-          const glyph = glyphs[i];
-          if (defined(glyph.billboard)) {
-            glyph.billboard.clusterShow = value;
-          }
-        }
-        const backgroundBillboard = this._backgroundBillboard;
-        if (defined(backgroundBillboard)) {
-          backgroundBillboard.clusterShow = value;
+  /**
+   * Determines whether or not this label will be shown or hidden because it was clustered.
+   * @memberof Label.prototype
+   * @type {boolean}
+   * @default true
+   * @private
+   */
+  set clusterShow(value) {
+    if (this._clusterShow !== value) {
+      this._clusterShow = value;
+
+      const glyphs = this._glyphs;
+      for (let i = 0, len = glyphs.length; i < len; i++) {
+        const glyph = glyphs[i];
+        if (defined(glyph.billboard)) {
+          glyph.billboard.clusterShow = value;
         }
       }
-    },
-  },
+      const backgroundBillboard = this._backgroundBillboard;
+      if (defined(backgroundBillboard)) {
+        backgroundBillboard.clusterShow = value;
+      }
+    }
+  }
 
   /**
    * When <code>true</code>, this label is ready to render, i.e., the glyphs have been mapped and the WebGL resources are created. This property is exposed for testing purposes.
@@ -1194,79 +1534,29 @@ Object.defineProperties(Label.prototype, {
    * @readonly
    * @private
    */
-  ready: {
-    get: function () {
-      if (this._rebindAllGlyphs || this._repositionAllGlyphs) {
+  get ready() {
+    if (this._rebindAllGlyphs || this._repositionAllGlyphs) {
+      return false;
+    }
+
+    if (
+      defined(this._backgroundBillboard) &&
+      !this._backgroundBillboard.ready
+    ) {
+      return false;
+    }
+
+    const glyphs = this._glyphs;
+    for (let i = 0, len = glyphs.length; i < len; i++) {
+      const glyph = glyphs[i];
+      if (defined(glyph.billboard) && !glyph.billboard.ready) {
         return false;
       }
+    }
 
-      if (
-        defined(this._backgroundBillboard) &&
-        !this._backgroundBillboard.ready
-      ) {
-        return false;
-      }
-
-      const glyphs = this._glyphs;
-      for (let i = 0, len = glyphs.length; i < len; i++) {
-        const glyph = glyphs[i];
-        if (defined(glyph.billboard) && !glyph.billboard.ready) {
-          return false;
-        }
-      }
-
-      return true;
-    },
-  },
-});
-
-Label.prototype._updateClamping = function () {
-  Billboard._updateClamping(this._labelCollection, this);
-};
-
-/**
- * Computes the screen-space position of the label's origin, taking into account eye and pixel offsets.
- * The screen space origin is the top, left corner of the canvas; <code>x</code> increases from
- * left to right, and <code>y</code> increases from top to bottom.
- *
- * @param {Scene} scene The scene the label is in.
- * @param {Cartesian2} [result] The object onto which to store the result.
- * @returns {Cartesian2} The screen-space position of the label.
- *
- *
- * @example
- * console.log(l.computeScreenSpacePosition(scene).toString());
- *
- * @see Label#eyeOffset
- * @see Label#pixelOffset
- */
-Label.prototype.computeScreenSpacePosition = function (scene, result) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
+    return true;
   }
-  //>>includeEnd('debug');
-
-  if (!defined(result)) {
-    result = new Cartesian2();
-  }
-
-  const labelCollection = this._labelCollection;
-  const modelMatrix = labelCollection.modelMatrix;
-  const actualPosition = defined(this._actualClampedPosition)
-    ? this._actualClampedPosition
-    : this._position;
-
-  const windowCoordinates = Billboard._computeScreenSpacePosition(
-    modelMatrix,
-    actualPosition,
-    this._eyeOffset,
-    this._pixelOffset,
-    scene,
-    result,
-  );
-  return windowCoordinates;
-};
+}
 
 /**
  * Gets a label's screen space bounding box centered around screenSpacePosition.
@@ -1375,64 +1665,6 @@ Label.filterUnsupportedCharacters = function (text) {
     "g",
   );
   return text.replace(problematicCharactersRegex, "");
-};
-
-/**
- * Determines if this label equals another label.  Labels are equal if all their properties
- * are equal.  Labels in different collections can be equal.
- *
- * @param {Label} [other] The label to compare for equality.
- * @returns {boolean} <code>true</code> if the labels are equal; otherwise, <code>false</code>.
- */
-Label.prototype.equals = function (other) {
-  return (
-    this === other ||
-    (defined(other) &&
-      this._show === other._show &&
-      this._scale === other._scale &&
-      this._outlineWidth === other._outlineWidth &&
-      this._showBackground === other._showBackground &&
-      this._style === other._style &&
-      this._verticalOrigin === other._verticalOrigin &&
-      this._horizontalOrigin === other._horizontalOrigin &&
-      this._heightReference === other._heightReference &&
-      this._renderedText === other._renderedText &&
-      this._font === other._font &&
-      Cartesian3.equals(this._position, other._position) &&
-      Color.equals(this._fillColor, other._fillColor) &&
-      Color.equals(this._outlineColor, other._outlineColor) &&
-      Color.equals(this._backgroundColor, other._backgroundColor) &&
-      Cartesian2.equals(this._backgroundPadding, other._backgroundPadding) &&
-      Cartesian2.equals(this._pixelOffset, other._pixelOffset) &&
-      Cartesian3.equals(this._eyeOffset, other._eyeOffset) &&
-      NearFarScalar.equals(
-        this._translucencyByDistance,
-        other._translucencyByDistance,
-      ) &&
-      NearFarScalar.equals(
-        this._pixelOffsetScaleByDistance,
-        other._pixelOffsetScaleByDistance,
-      ) &&
-      NearFarScalar.equals(this._scaleByDistance, other._scaleByDistance) &&
-      DistanceDisplayCondition.equals(
-        this._distanceDisplayCondition,
-        other._distanceDisplayCondition,
-      ) &&
-      this._disableDepthTestDistance === other._disableDepthTestDistance &&
-      this._id === other._id)
-  );
-};
-
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <br /><br />
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- *
- * @returns {boolean} True if this object was destroyed; otherwise, false.
- */
-Label.prototype.isDestroyed = function () {
-  return false;
 };
 
 /**

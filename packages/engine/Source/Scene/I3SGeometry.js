@@ -15,40 +15,391 @@ import srgbToLinear from "../Core/srgbToLinear.js";
  * @privateParam {I3SNode} parent The parent of that geometry
  * @privateParam {string} uri The uri to load the data from
  */
-function I3SGeometry(parent, uri) {
-  const dataProvider = parent._dataProvider;
-  const layer = parent._layer;
+class I3SGeometry {
+  constructor(parent, uri) {
+    const dataProvider = parent._dataProvider;
+    const layer = parent._layer;
 
-  let resource;
+    let resource;
 
-  if (defined(parent._nodeIndex)) {
-    resource = layer.resource.getDerivedResource({
-      url: `nodes/${parent._data.mesh.geometry.resource}/${uri}`,
-    });
-  } else {
-    resource = parent.resource.getDerivedResource({ url: uri });
+    if (defined(parent._nodeIndex)) {
+      resource = layer.resource.getDerivedResource({
+        url: `nodes/${parent._data.mesh.geometry.resource}/${uri}`,
+      });
+    } else {
+      resource = parent.resource.getDerivedResource({ url: uri });
+    }
+
+    this._parent = parent;
+    this._dataProvider = dataProvider;
+    this._layer = layer;
+    this._resource = resource;
+
+    this._customAttributes = undefined;
   }
 
-  this._parent = parent;
-  this._dataProvider = dataProvider;
-  this._layer = layer;
-  this._resource = resource;
+  /**
+   * Loads the content.
+   * @returns {Promise<object>} A promise that is resolved when the geometry data is loaded
+   * @private
+   */
+  load() {
+    const that = this;
+    return this._dataProvider._loadBinary(this._resource).then(function (data) {
+      that._data = data;
+      return data;
+    });
+  }
 
-  this._customAttributes = undefined;
-}
+  /**
+   * Find a triangle touching the point [px, py, pz], then return the vertex closest to the search point
+   * @param {number} px The x component of the point to query
+   * @param {number} py The y component of the point to query
+   * @param {number} pz The z component of the point to query
+   * @returns {object} A structure containing the index of the closest point,
+   * the squared distance from the queried point to the point that is found,
+   * the distance from the queried point to the point that is found,
+   * the queried position in local space,
+   * the closest position in local space
+   */
+  getClosestPointIndexOnTriangle(px, py, pz) {
+    if (
+      defined(this._customAttributes) &&
+      defined(this._customAttributes.positions)
+    ) {
+      // Convert queried position to local
+      const position = new Cartesian3(px, py, pz);
 
-Object.defineProperties(I3SGeometry.prototype, {
+      position.x -= this._customAttributes.cartesianCenter.x;
+      position.y -= this._customAttributes.cartesianCenter.y;
+      position.z -= this._customAttributes.cartesianCenter.z;
+      Matrix3.multiplyByVector(
+        this._customAttributes.parentRotation,
+        position,
+        position,
+      );
+
+      let bestTriDist = Number.MAX_VALUE;
+      let bestTri;
+      let bestDistSq;
+      let bestIndex;
+      let bestPt;
+
+      // Brute force lookup, @TODO: this can be improved with a spatial partitioning search system
+      const positions = this._customAttributes.positions;
+      const indices = this._customAttributes.indices;
+
+      // We may have indexed or non-indexed triangles here
+      let triCount;
+      if (defined(indices)) {
+        triCount = indices.length;
+      } else {
+        triCount = positions.length / 3;
+      }
+
+      for (let triIndex = 0; triIndex < triCount; triIndex++) {
+        let i0, i1, i2;
+        if (defined(indices)) {
+          i0 = indices[triIndex];
+          i1 = indices[triIndex + 1];
+          i2 = indices[triIndex + 2];
+        } else {
+          i0 = triIndex * 3;
+          i1 = triIndex * 3 + 1;
+          i2 = triIndex * 3 + 2;
+        }
+
+        const v0 = Cartesian3.fromElements(
+          positions[i0 * 3],
+          positions[i0 * 3 + 1],
+          positions[i0 * 3 + 2],
+          scratchV0,
+        );
+        const v1 = Cartesian3.fromElements(
+          positions[i1 * 3],
+          positions[i1 * 3 + 1],
+          positions[i1 * 3 + 2],
+          scratchV1,
+        );
+        const v2 = new Cartesian3(
+          positions[i2 * 3],
+          positions[i2 * 3 + 1],
+          positions[i2 * 3 + 2],
+          scratchV2,
+        );
+
+        // Check how the point is positioned relative to the triangle.
+        // This will tell us whether the projection of the point in the triangle's plane lands in the triangle
+        if (
+          !sameSide(position, v0, v1, v2) ||
+          !sameSide(position, v1, v0, v2) ||
+          !sameSide(position, v2, v0, v1)
+        ) {
+          continue;
+        }
+        // Because of precision issues, we can't always reliably tell if the point lands directly on the face, so the most robust way is just to find the closest one
+        const v0v1 = Cartesian3.subtract(v1, v0, scratchV0V1);
+        const v0v2 = Cartesian3.subtract(v2, v0, scratchV0V2);
+        const crossProd = Cartesian3.cross(v0v1, v0v2, scratchCrossProd);
+
+        // Skip "triangles" with 3 colinear points
+        if (Cartesian3.magnitude(crossProd) === 0) {
+          continue;
+        }
+        const normal = Cartesian3.normalize(crossProd, scratchNormal);
+
+        const v0p = Cartesian3.subtract(position, v0, scratchV0p);
+        const normalDist = Math.abs(Cartesian3.dot(v0p, normal));
+        if (normalDist < bestTriDist) {
+          bestTriDist = normalDist;
+          bestTri = triIndex;
+
+          // Found a triangle, return the index of the closest point
+          const d0 = Cartesian3.magnitudeSquared(
+            Cartesian3.subtract(position, v0, v0p),
+          );
+          const d1 = Cartesian3.magnitudeSquared(
+            Cartesian3.subtract(position, v1, scratchV1p),
+          );
+          const d2 = Cartesian3.magnitudeSquared(
+            Cartesian3.subtract(position, v2, scratchV2p),
+          );
+          if (d0 < d1 && d0 < d2) {
+            bestIndex = i0;
+            bestPt = v0;
+            bestDistSq = d0;
+          } else if (d1 < d2) {
+            bestIndex = i1;
+            bestPt = v1;
+            bestDistSq = d1;
+          } else {
+            bestIndex = i2;
+            bestPt = v2;
+            bestDistSq = d2;
+          }
+        }
+      }
+
+      if (defined(bestTri)) {
+        return {
+          index: bestIndex,
+          distanceSquared: bestDistSq,
+          distance: Math.sqrt(bestDistSq),
+          queriedPosition: position,
+          closestPosition: Cartesian3.clone(bestPt),
+        };
+      }
+    }
+
+    // No hits found
+    return {
+      index: -1,
+      distanceSquared: Number.Infinity,
+      distance: Number.Infinity,
+    };
+  }
+
+  /**
+   * @private
+   */
+  _generateGltf(
+    nodesInScene,
+    nodes,
+    meshes,
+    buffers,
+    bufferViews,
+    accessors,
+    extensions,
+    extensionsUsed,
+  ) {
+    // Get the material definition
+    let gltfMaterial = {
+      pbrMetallicRoughness: {
+        metallicFactor: 0.0,
+      },
+      doubleSided: true,
+      name: "Material",
+    };
+
+    let isTextured = false;
+    let materialDefinition;
+    let texturePath = "";
+    if (
+      defined(this._parent._data.mesh) &&
+      defined(this._layer._data.materialDefinitions)
+    ) {
+      const materialInfo = this._parent._data.mesh.material;
+      const materialIndex = materialInfo.definition;
+      if (
+        materialIndex >= 0 &&
+        materialIndex < this._layer._data.materialDefinitions.length
+      ) {
+        materialDefinition = this._layer._data.materialDefinitions[materialIndex];
+        gltfMaterial = materialDefinition;
+
+        if (
+          defined(gltfMaterial.pbrMetallicRoughness) &&
+          defined(gltfMaterial.pbrMetallicRoughness.baseColorTexture)
+        ) {
+          isTextured = true;
+          gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = 0;
+
+          // Choose the JPG for the texture
+          let textureName = "0";
+
+          if (defined(this._layer._data.textureSetDefinitions)) {
+            for (
+              let defIndex = 0;
+              defIndex < this._layer._data.textureSetDefinitions.length;
+              defIndex++
+            ) {
+              const textureSetDefinition =
+                this._layer._data.textureSetDefinitions[defIndex];
+              for (
+                let formatIndex = 0;
+                formatIndex < textureSetDefinition.formats.length;
+                formatIndex++
+              ) {
+                const textureFormat = textureSetDefinition.formats[formatIndex];
+                if (textureFormat.format === "jpg") {
+                  textureName = textureFormat.name;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (
+            defined(this._parent._data.mesh) &&
+            this._parent._data.mesh.material.resource >= 0
+          ) {
+            texturePath = this._layer.resource.getDerivedResource({
+              url: `nodes/${this._parent._data.mesh.material.resource}/textures/${textureName}`,
+            }).url;
+          }
+        }
+
+        // Convert color factors from sRGB to linear color space
+        if (
+          defined(gltfMaterial.pbrMetallicRoughness) &&
+          defined(gltfMaterial.pbrMetallicRoughness.baseColorFactor)
+        ) {
+          gltfMaterial.pbrMetallicRoughness.baseColorFactor = convertColorFactor(
+            gltfMaterial.pbrMetallicRoughness.baseColorFactor,
+          );
+        }
+        if (defined(gltfMaterial.emissiveFactor)) {
+          gltfMaterial.emissiveFactor = convertColorFactor(
+            gltfMaterial.emissiveFactor,
+          );
+        }
+      }
+    } else if (defined(this._parent._data.textureData)) {
+      // No material definition, but if there's a texture reference, we can create a simple material using it (version 1.6 support)
+      isTextured = true;
+      texturePath = this._parent.resource.getDerivedResource({
+        url: `${this._parent._data.textureData[0].href}`,
+      }).url;
+      gltfMaterial.pbrMetallicRoughness.baseColorTexture = { index: 0 };
+    }
+    if (defined(gltfMaterial.alphaMode)) {
+      // I3S specifies alphaMode values in lowercase, but glTF expects values in uppercase
+      gltfMaterial.alphaMode = gltfMaterial.alphaMode.toUpperCase();
+    }
+
+    let gltfTextures = [];
+    let gltfImages = [];
+    let gltfSamplers = [];
+
+    if (isTextured) {
+      gltfTextures = [
+        {
+          sampler: 0,
+          source: 0,
+        },
+      ];
+
+      gltfImages = [
+        {
+          uri: texturePath,
+        },
+      ];
+
+      gltfSamplers = [
+        {
+          magFilter: 9729,
+          minFilter: 9986,
+          wrapS: 10497,
+          wrapT: 10497,
+        },
+      ];
+    }
+
+    const gltfMaterials = [];
+    const meshesLength = meshes.length;
+    for (let meshIndex = 0; meshIndex < meshesLength; meshIndex++) {
+      const primitives = meshes[meshIndex].primitives;
+      const primitivesLength = primitives.length;
+      for (
+        let primitiveIndex = 0;
+        primitiveIndex < primitivesLength;
+        primitiveIndex++
+      ) {
+        const primitive = primitives[primitiveIndex];
+        if (defined(primitive.material)) {
+          // Create as many copies of the material as specified in the mesh primitives
+          while (primitive.material >= gltfMaterials.length) {
+            const material = clone(gltfMaterial, true);
+            gltfMaterials.push(material);
+          }
+          const primitiveMaterial = gltfMaterials[primitive.material];
+          if (defined(primitive.extra) && primitive.extra.isTransparent) {
+            // If the alpha mode is not specified in the original material but the geometry is transparent, we need to force set BLEND alpha mode. Otherwise the geometry will be rendered opaque.
+            if (!defined(primitiveMaterial.alphaMode)) {
+              primitiveMaterial.alphaMode = "BLEND";
+            }
+          } else if (primitiveMaterial.alphaMode === "BLEND") {
+            // If the geometry is not transparent, but the alpha mode is set to BLEND in the original material, we need to force set OPAQUE alpha mode. Otherwise the geometry will be rendered transparent.
+            primitiveMaterial.alphaMode = "OPAQUE";
+          }
+        }
+      }
+    }
+    const gltfData = {
+      scene: 0,
+      scenes: [
+        {
+          nodes: nodesInScene,
+        },
+      ],
+      nodes: nodes,
+      meshes: meshes,
+      buffers: buffers,
+      bufferViews: bufferViews,
+      accessors: accessors,
+      materials: gltfMaterials,
+      textures: gltfTextures,
+      images: gltfImages,
+      samplers: gltfSamplers,
+      asset: {
+        version: "2.0",
+      },
+      extensions: extensions,
+      extensionsUsed: extensionsUsed,
+    };
+
+    return gltfData;
+  }
+
   /**
    * Gets the resource for the geometry
    * @memberof I3SGeometry.prototype
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
 
   /**
    * Gets the I3S data for this object.
@@ -56,36 +407,20 @@ Object.defineProperties(I3SGeometry.prototype, {
    * @type {object}
    * @readonly
    */
-  data: {
-    get: function () {
-      return this._data;
-    },
-  },
+  get data() {
+    return this._data;
+  }
+
   /**
    * Gets the custom attributes of the geometry.
    * @memberof I3SGeometry.prototype
    * @type {object}
    * @readonly
    */
-  customAttributes: {
-    get: function () {
-      return this._customAttributes;
-    },
-  },
-});
-
-/**
- * Loads the content.
- * @returns {Promise<object>} A promise that is resolved when the geometry data is loaded
- * @private
- */
-I3SGeometry.prototype.load = function () {
-  const that = this;
-  return this._dataProvider._loadBinary(this._resource).then(function (data) {
-    that._data = data;
-    return data;
-  });
-};
+  get customAttributes() {
+    return this._customAttributes;
+  }
+}
 
 const scratchAb = new Cartesian3();
 const scratchAp1 = new Cartesian3();
@@ -121,154 +456,6 @@ const scratchV0p = new Cartesian3();
 const scratchV1p = new Cartesian3();
 const scratchV2p = new Cartesian3();
 
-/**
- * Find a triangle touching the point [px, py, pz], then return the vertex closest to the search point
- * @param {number} px The x component of the point to query
- * @param {number} py The y component of the point to query
- * @param {number} pz The z component of the point to query
- * @returns {object} A structure containing the index of the closest point,
- * the squared distance from the queried point to the point that is found,
- * the distance from the queried point to the point that is found,
- * the queried position in local space,
- * the closest position in local space
- */
-I3SGeometry.prototype.getClosestPointIndexOnTriangle = function (px, py, pz) {
-  if (
-    defined(this._customAttributes) &&
-    defined(this._customAttributes.positions)
-  ) {
-    // Convert queried position to local
-    const position = new Cartesian3(px, py, pz);
-
-    position.x -= this._customAttributes.cartesianCenter.x;
-    position.y -= this._customAttributes.cartesianCenter.y;
-    position.z -= this._customAttributes.cartesianCenter.z;
-    Matrix3.multiplyByVector(
-      this._customAttributes.parentRotation,
-      position,
-      position,
-    );
-
-    let bestTriDist = Number.MAX_VALUE;
-    let bestTri;
-    let bestDistSq;
-    let bestIndex;
-    let bestPt;
-
-    // Brute force lookup, @TODO: this can be improved with a spatial partitioning search system
-    const positions = this._customAttributes.positions;
-    const indices = this._customAttributes.indices;
-
-    // We may have indexed or non-indexed triangles here
-    let triCount;
-    if (defined(indices)) {
-      triCount = indices.length;
-    } else {
-      triCount = positions.length / 3;
-    }
-
-    for (let triIndex = 0; triIndex < triCount; triIndex++) {
-      let i0, i1, i2;
-      if (defined(indices)) {
-        i0 = indices[triIndex];
-        i1 = indices[triIndex + 1];
-        i2 = indices[triIndex + 2];
-      } else {
-        i0 = triIndex * 3;
-        i1 = triIndex * 3 + 1;
-        i2 = triIndex * 3 + 2;
-      }
-
-      const v0 = Cartesian3.fromElements(
-        positions[i0 * 3],
-        positions[i0 * 3 + 1],
-        positions[i0 * 3 + 2],
-        scratchV0,
-      );
-      const v1 = Cartesian3.fromElements(
-        positions[i1 * 3],
-        positions[i1 * 3 + 1],
-        positions[i1 * 3 + 2],
-        scratchV1,
-      );
-      const v2 = new Cartesian3(
-        positions[i2 * 3],
-        positions[i2 * 3 + 1],
-        positions[i2 * 3 + 2],
-        scratchV2,
-      );
-
-      // Check how the point is positioned relative to the triangle.
-      // This will tell us whether the projection of the point in the triangle's plane lands in the triangle
-      if (
-        !sameSide(position, v0, v1, v2) ||
-        !sameSide(position, v1, v0, v2) ||
-        !sameSide(position, v2, v0, v1)
-      ) {
-        continue;
-      }
-      // Because of precision issues, we can't always reliably tell if the point lands directly on the face, so the most robust way is just to find the closest one
-      const v0v1 = Cartesian3.subtract(v1, v0, scratchV0V1);
-      const v0v2 = Cartesian3.subtract(v2, v0, scratchV0V2);
-      const crossProd = Cartesian3.cross(v0v1, v0v2, scratchCrossProd);
-
-      // Skip "triangles" with 3 colinear points
-      if (Cartesian3.magnitude(crossProd) === 0) {
-        continue;
-      }
-      const normal = Cartesian3.normalize(crossProd, scratchNormal);
-
-      const v0p = Cartesian3.subtract(position, v0, scratchV0p);
-      const normalDist = Math.abs(Cartesian3.dot(v0p, normal));
-      if (normalDist < bestTriDist) {
-        bestTriDist = normalDist;
-        bestTri = triIndex;
-
-        // Found a triangle, return the index of the closest point
-        const d0 = Cartesian3.magnitudeSquared(
-          Cartesian3.subtract(position, v0, v0p),
-        );
-        const d1 = Cartesian3.magnitudeSquared(
-          Cartesian3.subtract(position, v1, scratchV1p),
-        );
-        const d2 = Cartesian3.magnitudeSquared(
-          Cartesian3.subtract(position, v2, scratchV2p),
-        );
-        if (d0 < d1 && d0 < d2) {
-          bestIndex = i0;
-          bestPt = v0;
-          bestDistSq = d0;
-        } else if (d1 < d2) {
-          bestIndex = i1;
-          bestPt = v1;
-          bestDistSq = d1;
-        } else {
-          bestIndex = i2;
-          bestPt = v2;
-          bestDistSq = d2;
-        }
-      }
-    }
-
-    if (defined(bestTri)) {
-      return {
-        index: bestIndex,
-        distanceSquared: bestDistSq,
-        distance: Math.sqrt(bestDistSq),
-        queriedPosition: position,
-        closestPosition: Cartesian3.clone(bestPt),
-      };
-    }
-  }
-
-  // No hits found
-  return {
-    index: -1,
-    distanceSquared: Number.Infinity,
-    distance: Number.Infinity,
-  };
-};
-
 function convertColorFactor(factor) {
   const convertedFactor = [];
   const length = factor.length;
@@ -281,197 +468,5 @@ function convertColorFactor(factor) {
   }
   return convertedFactor;
 }
-
-/**
- * @private
- */
-I3SGeometry.prototype._generateGltf = function (
-  nodesInScene,
-  nodes,
-  meshes,
-  buffers,
-  bufferViews,
-  accessors,
-  extensions,
-  extensionsUsed,
-) {
-  // Get the material definition
-  let gltfMaterial = {
-    pbrMetallicRoughness: {
-      metallicFactor: 0.0,
-    },
-    doubleSided: true,
-    name: "Material",
-  };
-
-  let isTextured = false;
-  let materialDefinition;
-  let texturePath = "";
-  if (
-    defined(this._parent._data.mesh) &&
-    defined(this._layer._data.materialDefinitions)
-  ) {
-    const materialInfo = this._parent._data.mesh.material;
-    const materialIndex = materialInfo.definition;
-    if (
-      materialIndex >= 0 &&
-      materialIndex < this._layer._data.materialDefinitions.length
-    ) {
-      materialDefinition = this._layer._data.materialDefinitions[materialIndex];
-      gltfMaterial = materialDefinition;
-
-      if (
-        defined(gltfMaterial.pbrMetallicRoughness) &&
-        defined(gltfMaterial.pbrMetallicRoughness.baseColorTexture)
-      ) {
-        isTextured = true;
-        gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = 0;
-
-        // Choose the JPG for the texture
-        let textureName = "0";
-
-        if (defined(this._layer._data.textureSetDefinitions)) {
-          for (
-            let defIndex = 0;
-            defIndex < this._layer._data.textureSetDefinitions.length;
-            defIndex++
-          ) {
-            const textureSetDefinition =
-              this._layer._data.textureSetDefinitions[defIndex];
-            for (
-              let formatIndex = 0;
-              formatIndex < textureSetDefinition.formats.length;
-              formatIndex++
-            ) {
-              const textureFormat = textureSetDefinition.formats[formatIndex];
-              if (textureFormat.format === "jpg") {
-                textureName = textureFormat.name;
-                break;
-              }
-            }
-          }
-        }
-
-        if (
-          defined(this._parent._data.mesh) &&
-          this._parent._data.mesh.material.resource >= 0
-        ) {
-          texturePath = this._layer.resource.getDerivedResource({
-            url: `nodes/${this._parent._data.mesh.material.resource}/textures/${textureName}`,
-          }).url;
-        }
-      }
-
-      // Convert color factors from sRGB to linear color space
-      if (
-        defined(gltfMaterial.pbrMetallicRoughness) &&
-        defined(gltfMaterial.pbrMetallicRoughness.baseColorFactor)
-      ) {
-        gltfMaterial.pbrMetallicRoughness.baseColorFactor = convertColorFactor(
-          gltfMaterial.pbrMetallicRoughness.baseColorFactor,
-        );
-      }
-      if (defined(gltfMaterial.emissiveFactor)) {
-        gltfMaterial.emissiveFactor = convertColorFactor(
-          gltfMaterial.emissiveFactor,
-        );
-      }
-    }
-  } else if (defined(this._parent._data.textureData)) {
-    // No material definition, but if there's a texture reference, we can create a simple material using it (version 1.6 support)
-    isTextured = true;
-    texturePath = this._parent.resource.getDerivedResource({
-      url: `${this._parent._data.textureData[0].href}`,
-    }).url;
-    gltfMaterial.pbrMetallicRoughness.baseColorTexture = { index: 0 };
-  }
-  if (defined(gltfMaterial.alphaMode)) {
-    // I3S specifies alphaMode values in lowercase, but glTF expects values in uppercase
-    gltfMaterial.alphaMode = gltfMaterial.alphaMode.toUpperCase();
-  }
-
-  let gltfTextures = [];
-  let gltfImages = [];
-  let gltfSamplers = [];
-
-  if (isTextured) {
-    gltfTextures = [
-      {
-        sampler: 0,
-        source: 0,
-      },
-    ];
-
-    gltfImages = [
-      {
-        uri: texturePath,
-      },
-    ];
-
-    gltfSamplers = [
-      {
-        magFilter: 9729,
-        minFilter: 9986,
-        wrapS: 10497,
-        wrapT: 10497,
-      },
-    ];
-  }
-
-  const gltfMaterials = [];
-  const meshesLength = meshes.length;
-  for (let meshIndex = 0; meshIndex < meshesLength; meshIndex++) {
-    const primitives = meshes[meshIndex].primitives;
-    const primitivesLength = primitives.length;
-    for (
-      let primitiveIndex = 0;
-      primitiveIndex < primitivesLength;
-      primitiveIndex++
-    ) {
-      const primitive = primitives[primitiveIndex];
-      if (defined(primitive.material)) {
-        // Create as many copies of the material as specified in the mesh primitives
-        while (primitive.material >= gltfMaterials.length) {
-          const material = clone(gltfMaterial, true);
-          gltfMaterials.push(material);
-        }
-        const primitiveMaterial = gltfMaterials[primitive.material];
-        if (defined(primitive.extra) && primitive.extra.isTransparent) {
-          // If the alpha mode is not specified in the original material but the geometry is transparent, we need to force set BLEND alpha mode. Otherwise the geometry will be rendered opaque.
-          if (!defined(primitiveMaterial.alphaMode)) {
-            primitiveMaterial.alphaMode = "BLEND";
-          }
-        } else if (primitiveMaterial.alphaMode === "BLEND") {
-          // If the geometry is not transparent, but the alpha mode is set to BLEND in the original material, we need to force set OPAQUE alpha mode. Otherwise the geometry will be rendered transparent.
-          primitiveMaterial.alphaMode = "OPAQUE";
-        }
-      }
-    }
-  }
-  const gltfData = {
-    scene: 0,
-    scenes: [
-      {
-        nodes: nodesInScene,
-      },
-    ],
-    nodes: nodes,
-    meshes: meshes,
-    buffers: buffers,
-    bufferViews: bufferViews,
-    accessors: accessors,
-    materials: gltfMaterials,
-    textures: gltfTextures,
-    images: gltfImages,
-    samplers: gltfSamplers,
-    asset: {
-      version: "2.0",
-    },
-    extensions: extensions,
-    extensionsUsed: extensionsUsed,
-  };
-
-  return gltfData;
-};
 
 export default I3SGeometry;

@@ -14,24 +14,30 @@ struct VertexOutput {
     @location(0) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    gridColor: vec4<f32>,
-    cellColor: vec4<f32>,
-    cellCount: vec2<f32>,
-    lineThickness: vec2<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+struct MaterialUniforms {
+    color: vec4<f32>,
+    cellAlpha: f32,
+    _pad_ca: f32,
+    lineCount: vec2<f32>,
+    lineThickness: vec2<f32>,
+    lineOffset: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -39,16 +45,18 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let eyePos = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.position = uniforms.mvpRelativeToEye * eyePos;
+    output.position = camera.mvpRelativeToEye * eyePos;
     output.texCoord = input.texCoord;
     return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = fract(input.texCoord * uniforms.cellCount);
-    let threshold = uniforms.lineThickness;
+    let uv = fract(input.texCoord * material.lineCount - material.lineOffset);
+    let threshold = material.lineThickness;
     let onLine = step(uv, threshold) + step(vec2<f32>(1.0) - threshold, uv);
     let isGrid = max(onLine.x, onLine.y);
-    return mix(uniforms.cellColor, uniforms.gridColor, vec4<f32>(isGrid));
+    // Grid lines get the material color; cells get the color at cellAlpha opacity
+    let cellColor = vec4<f32>(material.color.rgb, material.cellAlpha);
+    return mix(cellColor, material.color, vec4<f32>(isGrid));
 }

@@ -1,8 +1,286 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 9, 2026 (Sessions 1-26 + Phase 0 foundation + Phase 1.1 / 1.2 celestial work)
+**Last Updated:** April 13, 2026 Session 28 (Sessions 1-27b + Option B Material UBO Split completion + TypeScript clean build + esbuild async fixes)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~89% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. **Phase 0 foundation infrastructure landed (canonical homes, VPT skeleton, snapshot mode skeleton, 3D Tiles invalidation feed Phase 1, NEW-5 spec verification). Phase 1.1 + 1.2 celestial work landed (toggle scaffolding, MoonLight + ephemeris + lit-hemisphere shading + earthshine + phase gating + full WebGL parity moon port with bounding-cube ray-march + render bundles + snapshot freezable).**
+**Overall Progress:** ~92% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. **2026-04-12 Session 2: massive ES6 modernization (424 files via codemod), TypeScript type-safety sweep (34 fewer `as any` casts), XSS security fix in InfoBox.js, WebGL stub Proton-style overhaul, MaterialUniformBuffer architecture (~56% memory reduction per material), and build variant infrastructure (WebGL-only / WebGPU-only / dual tree-shaken bundles).**
+
+---
+
+## Recent Progress (2026-04-13 Session 28 — Option B Completion, TypeScript Clean Build)
+
+### Option B Material UBO Split — Completed
+
+All WGSL shaders and JS renderers now use the split bind group layout: group(0)=CameraUniforms, group(1)=MaterialUniforms, group(2)=Texture, group(3)=Effects. Key changes:
+
+- **PrimitiveMatGridLit.wgsl** decomposed to match GridFlat field names
+- **4 Ramp shaders** converted from monolithic `Uniforms` to `CameraUniforms` + texture at group(2)
+- **17 textured material shaders** — texture bindings moved from group(1) to group(2), eliminating binding conflicts
+- **WebGPUPolylineRenderer.js** fully refactored — separate camera/material buffers and bind groups, `packMaterialUniforms` deleted, material data sourced from `MaterialUniformBuffer.gpuData`
+- **Billboard + Cloud collection shaders** renamed `u.` → `camera.` for consistency
+
+### TypeScript Build — Clean (202 → 0 errors)
+
+Full elimination of all TypeScript build errors from `packages/engine/tsconfig.json`:
+
+- **cesium-js-types.d.ts** — zero `any` in type positions (down from 79). 60+ missing properties added across 15 interfaces. 9 new typed interfaces added.
+- **WebGPUContext.ts** — 6 private fields made public for cross-renderer access, 5 dynamic rendering properties declared as typed class fields
+- **FeatureRenderer interface** — added optional `update`/`execute`/`render`/`composite` methods
+- **esbuild errors** — 15+ missing `async` keywords and 3 setter signature fixes across 13 codemod-affected files
+- **CLAUDE.md** — added `any` ban rule for all TypeScript code
+
+### Build Status
+
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | 0 errors |
+| `npx tsc --project packages/engine/tsconfig.json --noEmit` | 0 errors |
+| `npx gulp build` | Clean (35s) |
+
+---
+
+## Recent Progress (2026-04-12 Session 2 — ES6 Modernization, TypeScript, Security, WebGL Stubs, MaterialUniformBuffer, Build Variants)
+
+### ES6 Modernization — Massive Batch (424 files)
+
+- **jscodeshift codemod** (`scripts/codemod-es6-class.cjs`): 424 files converted from `var X = function() {}` + `X.prototype.*` patterns to ES6 `class` syntax in a single automated pass. Files that were already ES6 or contained non-trivial inheritance were left untouched by the codemod and handled manually where needed.
+- **`.includes()` migration**: All `.indexOf()` comparison patterns replaced across the codebase (~90 patterns reduced to 0). Pattern `arr.indexOf(x) !== -1` → `arr.includes(x)` / `arr.indexOf(x) === -1` → `!arr.includes(x)`.
+- **urijs removed**: All 12 source files that imported `urijs` migrated to the native `URL` API. The `urijs` dependency dropped from `package.json`.
+- **karma-ie-launcher removed**: Dead IE-targeting dev dependency removed from `package.json`.
+- **Remaining `var` declarations**: 3 remaining occurrences confirmed as comments-only or third-party code — zero actionable changes needed.
+
+### TypeScript Type Safety Sweep
+
+- **NEW** `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts` — ambient declaration file providing proper types for 20+ CesiumJS JavaScript classes: `FrameState`, `UniformState`, `DrawCommand`, `Scene`, `Globe`, `FrustumCommands`, `PassState`, `ShaderCache`, `RenderState`, `Camera`, `Context`, `BoundingRectangle`, `Cartesian2/3/4`, `Matrix3/4`, `Quaternion`, plus opaque branded types for GPU resource handles (avoids `as any` at GPU boundaries).
+- **`as any` cast reduction** (66 → 32, net -34):
+  - `WebGPUSceneRenderer.ts`: 46 → 3 (declared missing private fields: `_renderBundleEncoder`, `_currentPassEncoder`, `_sceneFramebuffer`, `_globeDepth`, `_pickFramebuffer`, scene/context handles)
+  - `WebGPUGlobeSurfaceRenderer.ts`: remaining casts replaced with proper ambient types via the new `.d.ts` file
+- **`: any` parameter annotation reduction** (~55 annotations replaced):
+  - `WebGPUBufferPrimitiveRenderer.ts`: 30 → 17 `: any` annotations
+  - `WebGPUPickFramebuffer.ts`: 9 → 1 `: any` annotations
+  - Remaining reductions spread across renderer files via automated codemod pass + manual review
+
+### Security Fix — XSS Sanitization
+
+- **`InfoBox.js`**: Added DOMPurify sanitization for entity description `innerHTML`. Entity descriptions sourced from external data (KML, GeoJSON, CZML, user-defined) were previously injected raw into the DOM. Now sanitized via `DOMPurify.sanitize(description, { ALLOWED_TAGS: [...], ALLOWED_ATTR: [...] })` before assignment.
+- **`Credit.js`**: Audited — already sanitized by existing upstream logic. No action needed.
+
+### WebGL Compatibility Stubs — Proton-Style Overhaul
+
+Full rewrite of the WebGL stub layer so CesiumJS WebGL code paths that run inside the WebGPU context produce real GPU work instead of silently no-opping:
+
+- **`WebGLStubTexture.ts`** (full rewrite): `createTexture()` allocates a real `GPUTexture` via the context device. `texImage2D()` performs real WebGL→WebGPU format translation and uploads pixels. `texParameteri()` maps WebGL filter/wrap constants to `GPUSamplerDescriptor`. `pixelStorei()` tracks `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL`. `generateMipmap()` dispatches through the real `WebGPUMipmapGenerator`.
+- **`WebGLStubShader.ts`** (extended): `getParameter()` now returns real values sourced from `device.limits` for all limit parameters (max texture size, max uniform block size, etc.). `getExtension()` returns populated stubs for 15 common WebGL extensions (`OES_texture_float`, `EXT_color_buffer_float`, `WEBGL_depth_texture`, `EXT_disjoint_timer_query_webgl2`, etc.) so feature-detection code in CesiumJS materials and terrain paths behaves as expected.
+- **`WebGLStubPipelineState.ts`** (extended): Full stencil state tracking added — `stencilFunc`, `stencilOp`, `stencilMask`, `stencilFuncSeparate`, `stencilOpSeparate`, `stencilMaskSeparate` all update an internal stencil state object that feeds into pipeline descriptor generation.
+- **NEW `WebGLStateConverters.ts`**: Shared mapping functions extracted from the stubs: `webglFormatToGPUFormat()`, `webglFilterToGPUFilter()`, `webglWrapToGPUWrap()`, `webglBlendToGPUBlend()`, `webglCompareToGPUCompare()`. Centralizes all WebGL→WebGPU constant translation so the stub files stay clean.
+
+### MaterialUniformBuffer — New Material Architecture
+
+Zero-copy, Float32Array-backed uniform storage with auto-layout, replacing the old per-property JS object approach for WebGPU material uploads:
+
+- **NEW `packages/engine/Source/Scene/MaterialUniformBuffer.js`**: `Float32Array`-backed storage with automatic std140-compatible layout inference. Dirty tracking (per-property `_dirty` flags + global `_anyDirty`). Scratch-based zero-allocation reads via `getScalar()` / `getVec2()` / `getVec3()` / `getVec4()`. Backward-compatible facade — existing `material.uniforms.color = ...` assignments continue to work via property setter proxies.
+- **`Material.js`** wired via `MaterialHelpers.js` `initializeMaterial()` — the existing material construction path now also allocates a `MaterialUniformBuffer` when `isWebGPU` is detected.
+- **`WebGPUPrimitiveCommands.js`** fast path: `uploadMaterialUniforms()` checks for `command.material._uniformBuffer._anyDirty`, uploads only changed regions via `device.queue.writeBuffer(buffer, byteOffset, data, dataOffset, size)`, and clears dirty flags. Skips per-property packing entirely for static materials. **~56% memory reduction per material** (Float32Array vs per-property JS heap), **~93% CPU reduction for static scenes** (zero JS work when no property changed).
+
+### Build Variants — Infrastructure (Partial)
+
+The tree-shaking build variant system is now wired end-to-end for all three output targets:
+
+- **NEW `scripts/bundleVariantPlugin.js`**: esbuild plugin that intercepts `onResolve` for `Renderer/WebGPU/*` imports (WebGL-only build) and `Renderer/Context.js` / `Renderer/WebGLStub*` imports (WebGPU-only build), replacing them with synthetic empty-stub modules. Decision cache avoids redundant resolution. Handles both absolute and package-relative import forms.
+- **`RendererType.ts`** extended: `setGlobalDefaultRenderer(type: RendererType)` / `getGlobalDefaultRenderer(): RendererType` static functions added. Each variant's entry barrel calls `setGlobalDefaultRenderer` at module init so the runtime default matches the build target. Users override per-Viewer via `contextOptions.renderer`.
+- **`gulpfile.js`** extended: Added `buildCesiumWebGLOnly`, `buildCesiumWebGPUOnly`, `buildCesiumDual`, and `buildAllVariants` tasks. Each wires through `createCesiumJs()` and `bundleCesiumJs()` with the appropriate variant parameter.
+- **`scripts/build.js`** extended: `createCesiumJs(options)` and `bundleCesiumJs(options)` now accept a `variant` parameter (`"webgl-only" | "webgpu-only" | "dual"`). The variant activates the `bundleVariantPlugin` with the correct alias set and sets `CESIUM_BUILD_VARIANT` define for downstream conditional code.
+
+**Output directories for variant builds:**
+- `Build/CesiumWebGPUUnminified/` — WebGPU-only (~32% smaller ESM, GLSL shaders aliased to empty stubs)
+- `Build/CesiumWebGLUnminified/` — WebGL-only (WebGPU renderer aliased to empty stubs)
+- `Build/CesiumUnminified/` — dual (default, backwards-compatible, ESM code-split)
+
+---
+
+## Recent Progress (2026-04-12 — Phase 5 + HDR Parity)
+
+### Phase 5 Modern WebGPU Features
+
+Three WGF items implemented with independent review + review-driven fixes:
+
+| WGF | Feature | Scope | Activation |
+| --- | --- | --- | --- |
+| WGF-4 | Camera UBO RTE assertions | `WebGPURTEAssertions.ts` — round-trip + MV-zeroed checks in 3 packers | Always on in debug builds (pragma-guarded) |
+| WGF-1 | Hardware clip distances | Globe terrain pipeline variant via source injection + `WebGPUClipDistancePrecompute.ts` | `context.useHardwareClipDistances = true` (SCENE3D + union mode only) |
+| WGF-3 | shader-f16 tonemapping | `Tonemapping_f16.wgsl` — all 5 operators in half precision | `context.useShaderF16 = true` |
+
+Supporting changes: EffectsUniforms extended to 240 bytes (all 5 inline definitions synced), effects BGL binding 0 now VERTEX\|FRAGMENT visible, worker feature flag replication via `MSG_SET_FEATURE_FLAGS`.
+
+### HDR Pipeline
+
+- **Bug fixed:** post-process ping-pong textures now use `rgba16float` when `highDynamicRange=true` (was always `bgra8unorm`, silently clamping HDR to [0,1])
+- **Stage format fix:** all stage pipelines target `_intermediateFormat` (not `canvasFormat`) so fragment output format matches render attachment
+- **Auto-exposure:** two-pass compute shader (`AutoExposure.wgsl` + `WebGPUAutoExposure.ts`) — parallel 16×16 tile reduction → temporal smoothing → feeds tonemapping exposure uniform. Auto-added when HDR is on.
+- **WebGL HDR:** already fully implemented upstream (GlobeDepth.js, PostProcessStageCollection, EXT_color_buffer_float). No new code needed.
+
+### Bug Fixes
+
+- **OPEN-5 (fog):** `computeFog()` now uses the 3-parameter formula with `fogVisualDensityScalar` (default 0.15), matching WebGL's `czm_fog` modifier. Was ~6.7x too strong at horizontal viewing angles.
+- **OPEN-1 (sky atmo):** added try/catch + `_pipelineFailed` latch around pipeline creation to prevent infinite retry on shader compile failure.
+- **BUG-6.1, BUG-38, BUG-39:** documented mitigation/guard status in debugging log.
+
+---
+
+## Recent Progress (2026-04-11 — Renderer Threading Sweep)
+
+This section summarizes the work that landed on top of the 2026-04-09
+celestial / phase-1 work. Full design doc:
+[OPTION_B_SCENE_IN_WORKER.md](OPTION_B_SCENE_IN_WORKER.md). Debug
+workflow guide: top of [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md).
+
+### Per-renderer FPS measurement
+
+Replaces the legacy "recent average" FPS counter with a continuous
+60-second rolling histogram and a Canvas2D HUD overlay component. Two
+new files in `Source/Services/`:
+
+- **`PerformanceTracker.js` (extended)** — added `recordFrame()`
+  (called every frame from `Scene.render()`, ~50 ns hot-path cost on
+  a preallocated 4096-slot Float32 circular buffer, zero per-frame
+  GC), `getLiveStats(windowSeconds = 60)` returning average + 1% low
+  + 1% high FPS over the rolling window, `getLiveFrameTimeSnapshot(n)`
+  for graph rendering, and `resetLiveStats()` for operator forget. The
+  existing trace API (`beginTrace` / `endTrace`) is unchanged and
+  independent — both can run at once.
+
+- **`FpsOverlay.js` (new)** — Canvas2D HUD that draws an
+  absolutely-positioned panel inside any DOM container. Header shows
+  label + average fps + frame ms. Body shows a 60-second rolling
+  graph (red bars for frames over the budget, smoothed y-axis so the
+  scale doesn't jitter). Footer shows 1% low + 1% high + sample count.
+  Polls at 6 Hz. Pluggable `dataSource` — works against
+  `scene.performanceTracker` directly OR a `WorkerSceneHost` (same
+  contract).
+
+### Per-renderer worker hosts (Option C of the threading research)
+
+Multi-threaded renderers via `OffscreenCanvas` + DedicatedWorker, with
+each renderer running in its own worker thread. Each host owns one
+worker; multiple hosts can coexist on the same page (split-screen,
+multi-view, dashboards).
+
+Three new files in `Source/Services/` and one in `Source/Workers/`:
+
+- **`WorkerSceneProtocol.js`** — message-type constants + heartbeat /
+  restart / burst-window / stats-interval tunables. Both sides import
+  from here, neither imports the other (no circular deps).
+- **`WorkerSceneHost.js`** — main-thread wrapper. Owns the parent
+  `<div>`, manages the child `<canvas>` lifecycle, transfers
+  `OffscreenCanvas` to the worker, runs the heartbeat loop,
+  implements 3-tier crash recovery, exposes the `getLiveStats()` /
+  `getLiveFrameTimeSnapshot()` contract so an `FpsOverlay` can use
+  the host as its data source unmodified.
+- **`Source/Workers/RendererWorker.js`** — worker-thread bootstrap.
+  Receives the OffscreenCanvas, dynamic-imports `@cesium/engine`
+  (esbuild code-splits the engine into a 7.9 MB sibling chunk
+  loaded on first message), constructs an empty `Scene`, runs its
+  own render loop, posts FPS stats every 125 ms, echoes heartbeats.
+  Bundled to `Build/CesiumUnminified/Workers/RendererWorker.js`
+  (~11 KB tiny bootstrap).
+
+### 3-tier crash recovery
+
+The worker host detects three classes of failure and recovers
+automatically:
+
+| Tier | Trigger | Action | Recovery time |
+|---|---|---|---|
+| **1 — in-thread** | GPU device lost | `WebGPUDeviceLossRecovery` callback fires; recovery happens inside the worker; host posts `MSG_DEVICE_LOST` then `MSG_DEVICE_RESTORED` so the application can flash a UI indicator | ~100-500 ms |
+| **2 — soft reset** | Reserved (no host trigger today; `MSG_RESET` constants in place for future use) | Worker tears down its Scene and asks the host to replay shadow state | N/A |
+| **3 — hard restart** | `worker.error` event, `messageerror`, or 3 missed heartbeat pongs (~3 seconds) | Host terminates the worker, destroys the dead `<canvas>` (because `transferControlToOffscreen` is one-time), creates a fresh `<canvas>` inside the parent, spawns a new worker, replays shadow state (camera setView, requestRenderMode, maxFps) | ~1-2 s |
+
+**Circuit breaker**: more than 3 crashes within 60 seconds opens the
+breaker — the host stops auto-restarting and fires `onFailure`. The
+application is responsible for surfacing the hard error to the user.
+Prevents infinite-loop crashes from burning CPU.
+
+### Scene/CreditDisplay headless mode (the worker DOM blocker fix)
+
+The deep review found that `Scene` constructor at
+[Scene.js:192](packages/engine/Source/Scene/Scene.js#L192) called
+`document.createElement("div")` and `canvas.parentNode.appendChild(...)`,
+both of which throw in a worker. Patched in three places (zero
+behavioral change for main-thread Viewers):
+
+- **`Scene.js`** — detects `typeof document === "undefined" || !canvas.parentNode`
+  at constructor time and passes a sentinel `{}` to CreditDisplay
+  instead of building a DOM div. The destroy path also skips
+  `parentNode.removeChild` in headless mode.
+- **`CreditDisplay.js`** — detects `typeof document === "undefined"`
+  at the top of its constructor, sets `_headless = true`, skips all
+  DOM construction. Internal credit-accumulation state still
+  initializes so `beginFrame` / `addCreditToNextFrame` /
+  `addStaticCredit` work unchanged. The DOM-touching methods
+  (`showLightbox`, `hideLightbox`, `update`, `endFrame`, `destroy`)
+  early-return when `_headless`.
+- **`RendererWorker.js`** — used to fail-fast at init with a clear
+  error message. The fail-fast was removed once the headless path was
+  in place.
+
+This unblocks Phase 1 of the [OPTION_B_SCENE_IN_WORKER.md](OPTION_B_SCENE_IN_WORKER.md)
+plan. The worker can now construct an empty Scene against an
+OffscreenCanvas. Globe / imagery / terrain / entities are NOT
+auto-added — those flow through the protocol messages and require
+the Phase 2-7 work documented in the Option B doc to be wired.
+
+### Cross-browser worker render loop
+
+`requestAnimationFrame` is exposed on `DedicatedWorkerGlobalScope` in
+Chromium-based browsers since v69, but **NOT in Firefox or Safari**
+workers as of 2026. Fix in
+[`RendererWorker.js _startRenderLoop`](packages/engine/Source/Workers/RendererWorker.js):
+feature-detect at startup; fall back to `setTimeout(tick, 1000/60)`
+when missing. Documented as a known limitation (~60 Hz approximation,
+not vsync-locked, sub-millisecond jitter).
+
+### maxFps runtime cap (with five operating modes)
+
+`WorkerSceneHost.setMaxFps(value)` exposes a runtime knob with five
+distinct modes. Equivalent to upstream `CesiumWidget.targetFrameRate`
+for the in-thread case, with two extra modes the upstream API
+doesn't support:
+
+| Value | Behavior | Use case |
+|---|---|---|
+| `null` / `undefined` (default) | rAF in Chromium → display refresh rate (60/120/144/240). setTimeout fallback at 60 in Firefox/Safari. | Normal operation. Same as `targetFrameRate = undefined` upstream. |
+| Positive number (e.g. `30`, `60`, `120`) | rAF if available, but skips callbacks that arrive less than `1000/value` ms after the previous render. setTimeout fallback uses `1000/value` directly. Effective rate = `min(displayHz, value)`. | Power saving, mobile battery, matching app frame rate to a video. |
+| `0` (uncapped) | Bypasses `requestAnimationFrame` entirely; uses `setTimeout(tick, 0)`. Workers don't have the 4 ms hidden-tab clamp. | Benchmarking the renderer's pure throughput without vsync ceiling. |
+| Negative number (e.g. `-1`) | Render loop pauses; the next non-negative `setMaxFps` resumes it. Loop handle is released so no CPU is spent while paused. | Power-saving idle, snapshot mode integration, freezing GPU state for debug snapshots. |
+| Anything else (`NaN`, strings, objects) | Coerced to `null` with a warning. | Defensive — mistyped console commands can't wedge the loop. |
+
+The cap is recorded in the host's shadow state and replayed after
+every worker restart, so the new worker's first frame already runs at
+the user-requested rate.
+
+### Test page
+
+`Apps/WebGPUTest/worker-renderers.html` — multi-pane grid (auto-sizing
+1-16 panes). Toolbar:
+
+- "+ WebGPU pane" / "+ WebGL pane" — spawn a new worker host
+- "Clear all" — destroy every host
+- FPS cap dropdown — vsync / 30 / 60 / 120 / 144 / 240 / uncapped /
+  paused, applies to every existing AND newly-spawned pane
+- "Crash first worker" — manually terminates the worker so you can
+  watch the heartbeat detect the death and run hard-restart
+
+Each pane has its own `FpsOverlay` reading from its host. Console
+helpers (`window.setMaxFps`, `window.setPaneMaxFps`,
+`window.listPanes`) mirror the toolbar so you can drive the panes
+from dev tools.
+
+### Type-check + build status
+
+- `npx tsc --noEmit` — clean
+- `npx gulp build` — clean in 41 s
+- New worker bundle at `Build/CesiumUnminified/Workers/RendererWorker.js`
+  is 11 KB; the engine code is split into a 7.9 MB sibling chunk
+  (`./.-XXXXX.js`) loaded on first message via dynamic import
 
 ---
 
@@ -626,6 +904,75 @@ if (fr) { fr.update(this, frameState); return; }
 
 **Scene.js Backend Agnosticism** (Complete): 5 concrete methods on `GraphicsContext` with WebGL-default behavior. `WebGPUContext` overrides each. Zero `isWebGPUDrawCommand` checks remain in Scene code (Session 16 cleanup replaced all with duck-typing via `defined(command._webgpuShaderType)` / `typeof cmd.execute === "function"` / `defined(cmd.pipeline)`).
 
+### Renderer Threading Topology (Option C — landed 2026-04-11)
+
+The default Cesium runtime is single-threaded: one main-thread JS pump
+drives `Scene.render()` per RAF callback. The 2026-04-11 sweep added an
+**opt-in** per-renderer worker pattern that lets multiple Scenes run on
+separate threads, each with its own `OffscreenCanvas` and its own
+render loop. The main thread is freed up during heavy renders and
+each renderer reports its own independent FPS.
+
+```
+Main thread                                  Worker thread (one per host)
+─────────────                                 ────────────────────────────
+WorkerSceneHost(parent: <div>)                RendererWorker.js (bootstrap)
+  │                                             │
+  ├─ creates child <canvas>                     │
+  ├─ canvas.transferControlToOffscreen() ───►   ├─ receives OffscreenCanvas
+  ├─ new Worker(RendererWorker.js)              ├─ dynamic-imports
+  │                                             │   "@cesium/engine" (chunked)
+  ├─ posts MSG_INIT { canvas, rendererType,     ├─ Scene.createAsync({canvas})
+  │                   sceneOptions, maxFps,     │   ↓
+  │                   sessionId } ───────────►  │   Scene constructor detects
+  │                                             │   `typeof document === "undefined"`
+  │                                             │   → headless mode (no DOM)
+  │                                             │
+  │                                             ├─ _startRenderLoop()
+  │                                             │   ├─ requestAnimationFrame (Chromium)
+  │                                             │   └─ setTimeout fallback (FF/Safari)
+  │                                             │
+  │                                             ├─ scene.render() per tick
+  │                                             ├─ scene.performanceTracker
+  │                                             │   .recordFrame() per render
+  │                                             │
+  ├─ heartbeat ping every 1s ─────────────►     ├─ heartbeat pong
+  │  (3 missed → restart)                       │
+  │                                             │
+  ├─ FpsOverlay polls host.getLiveStats()       │
+  │  6 Hz (no postMessage cost — host caches    ├─ posts MSG_STATS every 125ms
+  │  the latest stats payload from worker)  ◄───┤   { stats, frameTimes (transfer) }
+  │                                             │
+  ├─ host.setView/setMaxFps/forwardInput        │
+  │  records in shadow state → posts ─────►     ├─ applies to scene
+  │                                             │
+  └─ on crash:                                  X (worker dies)
+       Tier 1 (in-thread) device-lost recovery
+       Tier 3 hard restart:
+         worker.terminate()
+         destroy dead canvas (one-time transfer)
+         create fresh canvas inside parent
+         spawn new worker
+         replay shadow state (camera, maxFps,
+                              requestRenderMode)
+```
+
+**Key constraints documented in code:**
+
+- `OffscreenCanvas.transferControlToOffscreen()` is one-time per DOM
+  canvas. Hard-restart paths recreate the entire `<canvas>` element
+  inside the stable parent `<div>`.
+- `requestAnimationFrame` is Chromium-only inside DedicatedWorker —
+  Firefox/Safari fall back to `setTimeout(1000/60)`.
+- The headless `Scene` works (Phase 1 of Option B) but most consumer
+  features (entity adds, picking, DataSources, time-varying
+  properties) still need the Phase 2-7 work in
+  [OPTION_B_SCENE_IN_WORKER.md](OPTION_B_SCENE_IN_WORKER.md). Today
+  the worker path is best used as a measurement substrate.
+- Multiple `WorkerSceneHost` instances coexist on the same page —
+  the test page [worker-renderers.html](Apps/WebGPUTest/worker-renderers.html)
+  exercises 1-16 simultaneous panes.
+
 ### File Organization
 
 ```
@@ -642,6 +989,18 @@ packages/engine/Source/Renderer/
     |-- WebGPUPerformanceManager.ts (~960 lines, 7 perf systems orchestrator)
     |-- WebGPUNagaTranspiler.ts  (NEW S26: optional GLSL->WGSL via naga-wasm)
     |-- Feature renderers, caching, resources, commands, debug overlays, stubs
+
+packages/engine/Source/Services/    <- Backend-neutral services
+|-- PerformanceTracker.js        (live FPS histogram + trace API)
+|-- FpsOverlay.js                (Canvas2D HUD component, polls a data source)
+|-- WorkerSceneHost.js           (main-thread worker wrapper + 3-tier crash recovery)
+|-- WorkerSceneProtocol.js       (host↔worker message constants)
+|-- SnapshotModeService.js       (Phase 0.7 freezable registry, integrates with maxFps)
+|-- VisualPerformanceTargetService.js (Phase 0.4 VPT)
+
+packages/engine/Source/Workers/
+|-- RendererWorker.js            (worker-thread Scene bootstrap, ~11 KB)
+|-- (existing terrain / decoder / culling workers)
 
 packages/engine/Source/Shaders/WebGPU/    <- 238+ .wgsl files
 packages/engine/Source/Scene/             <- Modified scene files + decomposed modules
@@ -664,6 +1023,11 @@ migration_doc/                             <- This documentation
 | `Matrix4.js` | `setDepthRangeType('webgpu')` | 0-1 NDC depth |
 | `Viewer.js` | `_preInitializedScene` forwarded to CesiumWidget | Async WebGPU init path |
 | `CesiumWidget.js` | `_preInitializedScene` consumer | Skip sync Scene creation when async-built |
+| `InfoBox.js` | DOMPurify sanitization for entity description innerHTML | XSS security fix — entity descriptions from external data sources (KML, GeoJSON, CZML) were injected raw |
+| `Material.js` | `MaterialUniformBuffer` allocation via `MaterialHelpers.js initializeMaterial()` | Float32Array-backed uniform storage for WebGPU zero-copy upload path |
+| 424 JS files | ES6 class conversion via jscodeshift codemod | Eliminates prototype-based inheritance patterns; consistent with upstream v1.139 ES6 direction |
+| All `.indexOf()` comparisons | Replaced with `.includes()` (~90 patterns) | Modernization; clearer intent, same semantics |
+| 12 files using urijs | Migrated to native `URL` API | Removed third-party dep; native API has equivalent functionality |
 
 ### Infrastructure Layer (105+ files, ~46,000 LOC)
 
@@ -677,10 +1041,14 @@ migration_doc/                             <- This documentation
 | **Feature Renderers** (15+) | Globe, Primitive, Billboard, Point, Polyline, Cloud, Model, SkyAtmosphere, Sun, Moon, Label (SDF), BufferPrimitive (polygon/polyline/point), Voxel, GaussianSplat, GroundAtmosphere, etc. |
 | **Post-Processing** (7) | PostProcessPipeline, PostProcessEffects (Bloom, SSAO, DoF), Tonemapping, FXAA, Edge, Silhouette |
 | **Performance** (7) | PerformanceManager, RenderBundleManager, IndirectDrawManager, GPUCuller, TimestampProfiler, BufferMapper, UniformGroupManager |
-| **Stubs/Compat** (6) | WebGLStubBuffer, WebGLStubTexture (real generateMipmap dispatch via `WebGPUMipmapGenerator`), WebGLStubFramebuffer, WebGLStubPipelineState, WebGLStubShader (lazy GLSL capture + naga-wasm hookup), WebGLStubTypes |
+| **Stubs/Compat** (7) | WebGLStubBuffer, WebGLStubTexture (**Proton-style rewrite** — real texImage2D/texParameteri/pixelStorei/generateMipmap translation), WebGLStubFramebuffer, WebGLStubPipelineState (**full stencil state tracking**), WebGLStubShader (real device.limits values + 15-extension stubs + naga-wasm hookup), WebGLStubTypes, **WebGLStateConverters** (shared WebGL→WebGPU constant mapping functions) |
+| **Material Uniforms** (1) | `MaterialUniformBuffer.js` — Float32Array-backed uniform storage, auto-layout, dirty tracking, scratch-based zero-alloc reads, backward-compatible facade. ~56% memory reduction per material; ~93% CPU reduction for static scenes (zero JS work when no property changed). |
+| **Type Declarations** (1) | `cesium-js-types.d.ts` — ambient declarations for 20+ CesiumJS JS classes with opaque branded GPU resource types; eliminated 34 `as any` casts across WebGPU renderer files. |
 | **Model** (4) | ModelRenderer, ModelPipelineCache, ModelInstancing, ModelFeatureId |
 | **IBL/Lighting** (4) | IBLPipeline, ImageBasedLighting, GroundAtmosphere, EffectsBindGroup |
 | **Debug Overlays** (3) | DebugDepthOverlay, PrimitiveIndexUtils, augmented globe debug fragment pipeline cache |
+| **Services / Threading** (5) | `PerformanceTracker.js` (extended with live histogram + percentiles), `FpsOverlay.js` (Canvas2D HUD with rolling 60s graph), `WorkerSceneHost.js` (main-thread worker wrapper with 3-tier crash recovery + shadow state replay + maxFps), `WorkerSceneProtocol.js` (shared message-type constants), `Source/Workers/RendererWorker.js` (worker-thread Scene host, ~11 KB bootstrap + dynamic-imported engine chunk) |
+| **Headless Scene** (2) | Scene.js + CreditDisplay.js detect `typeof document === "undefined"` and skip all DOM construction. Existing main-thread behavior unchanged. Unlocks Phase 1 of [OPTION_B_SCENE_IN_WORKER.md](OPTION_B_SCENE_IN_WORKER.md). |
 
 ### WGSL Shader Library (238+ files)
 
@@ -823,10 +1191,68 @@ All 7 bridges (`WasmCullBridge`, `WasmSortBridge`, `WasmHeightmapBridge`, `WasmQ
 | TypeScript | `tsc --noEmit` -- 0 errors |
 | Build | `npx gulp build` -- passes (~38-48s) |
 | `npm run restart` | clean -> build -> start (S13) |
-| **Build variants** | **Tree-shaken WebGL-only / WebGPU-only / dual builds** via `bundleVariantPlugin.js` (synthetic-path resolve, decision cache, 4x speedup vs build.resolve) |
+| **Build variants** | **Tree-shaken WebGL-only / WebGPU-only / dual builds** via `bundleVariantPlugin.js` (synthetic-path resolve, decision cache). `RendererType.ts` `setGlobalDefaultRenderer` / `getGlobalDefaultRenderer` added. New gulp tasks: `buildCesiumDual`, `buildCesiumWebGPUOnly`, `buildCesiumWebGLOnly`, `buildAllVariants`. `createCesiumJs` / `bundleCesiumJs` in `scripts/build.js` accept `variant` param. |
 | **Bundle analyzer** | `scripts/analyzeBuild.js` parses esbuild metafile, reports top-N folders/modules, supports `--treemap` |
+| **Removed deps** | `urijs` removed (12 files migrated to native `URL` API); `karma-ie-launcher` removed (dead IE-targeting dev dep) |
 | **Lazy-loaded deps** | meshoptimizer (~110 KB), @spz-loader/core (~270 KB) split into separate chunks via dynamic `import()`. Per-feature renderers code-split. Dual ESM index.js shrunk 4.23 MB → 3.9 MB (1.18 MB → 1.05 MB gzipped, -11%). |
 | Tests | 10 Jasmine spec files: Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler. ~15K green, ~30 pre-existing failures (not from our changes). |
+| **Visual regression** | `Tools/visual-regression/capture-and-diff.mjs` — Playwright-driven WebGL↔WebGPU pixel diff (Edge, zero deps, PNG encode built-in) |
+
+#### Build & Debug Command Reference
+
+```bash
+# ─── Standard builds ───
+npx gulp build              # Dev build (includes WGSL compilation)
+npx gulp buildRelease        # Production (minified + unminified, dual variant)
+npm run restart              # Clean → build → start dev server
+
+# ─── Build variants (tree-shaking) ───
+npx gulp buildCesiumDual          # Both backends, WebGPU-first default
+npx gulp buildCesiumWebGPUOnly    # WebGPU only (~32% smaller ESM)
+npx gulp buildCesiumWebGLOnly     # WebGL only (no WebGPU chunks)
+npx gulp buildAllVariants         # All three side-by-side
+
+# ─── Type checking & tests ───
+npx tsc --noEmit             # TypeScript check (0 errors expected)
+npm test                     # Jasmine suite
+
+# ─── Visual regression ───
+node Tools/visual-regression/capture-and-diff.mjs              # All scenes
+node Tools/visual-regression/capture-and-diff.mjs --update      # Save baselines
+node Tools/visual-regression/capture-and-diff.mjs --headed      # Show browser
+
+# ─── Runtime diagnostics (DevTools console) ───
+viewer.scene.getDebugSnapshot()      # Full system state dump
+viewer.scene.logDebugSnapshot()      # Pretty-printed console output
+window.webglViewer                   # Split-screen page: WebGL viewer
+window.webgpuViewer                  # Split-screen page: WebGPU viewer
+
+# ─── CesiumDebug console commands (after install on a viewer) ───
+CesiumDebug.help()              # List all commands
+CesiumDebug.snapshot()          # Full debug snapshot (scene + renderer + toggles)
+CesiumDebug.showDepth()         # Depth buffer as grayscale
+CesiumDebug.hideDepth()         # Restore normal
+CesiumDebug.showWireframe()     # Globe wireframe overlay
+CesiumDebug.hideWireframe()     # Hide wireframe
+CesiumDebug.showFrustums()      # Colorize frustum splits
+CesiumDebug.showCommands()      # Command count overlay
+CesiumDebug.toggleFPS()         # FPS counter
+CesiumDebug.pipelineStatus()    # Shader/pipeline/device health check
+CesiumDebug.postProcess()       # Post-process pipeline state table
+CesiumDebug.canvasPixels()      # Sample canvas pixel data
+CesiumDebug.logImageryProbe()   # Dump next 4 tile updates
+CesiumDebug.scene               # Direct scene access
+CesiumDebug.context             # Direct context access
+CesiumDebug.device              # Direct GPUDevice access
+```
+
+#### Build Variant Output Directories
+
+| Variant | Minified | Unminified | Notes |
+|---------|----------|------------|-------|
+| dual (default) | `Build/Cesium/` | `Build/CesiumUnminified/` | Backwards-compatible, ESM code-split |
+| webgpu-only | `Build/CesiumWebGPU/` | `Build/CesiumWebGPUUnminified/` | GLSL shaders aliased to empty stubs |
+| webgl-only | `Build/CesiumWebGL/` | `Build/CesiumWebGLUnminified/` | WebGPU renderer aliased to empty stubs |
 
 ### Debug Visualization Stack (Sessions 22-24)
 
@@ -1032,6 +1458,20 @@ This is a consolidated index of every bug fix from `WEBGPU_DEBUGGING_LOG.md`. Ea
 - **BUG-11 imagery audit (no fix, code-level only)**: Static analysis ruled out bind-group sample-type mismatch, std140 alignment drift, day/night alpha argument swap, stale uniform leakage. Two top runtime suspects documented: (A) reprojection clear alpha=0 collapsing `tex.a * effectiveAlpha` to zero, (B) zero `texCoordsRect`. Probe checklist added for next browser session.
 - **Naga-wasm spike**: NEW `WebGPUNagaTranspiler.ts` with lazy `import("naga-wasm")`, FNV-1a-keyed transpile cache, graceful unavailable-fallback. Wired into `WebGLStubShader.shaderSource` + `compileShader` so stub shaders carry `_glslSource`/`_wgslReady`/`_wgsl` fields. Activation: `npm install naga-wasm`. Open follow-ups: bind-set remapping, vertex attribute location remapping.
 - **WebGLStubShader fix**: `maxInterStageShaderComponents` renamed to `maxInterStageShaderVariables` in newer `@webgpu/types` — read either via cast.
+
+### Session 27 (2026-04-12 Session 2) — ES6 Modernization, Type Safety, Security, Stubs Overhaul, MaterialUniformBuffer, Build Variants
+
+No new rendering bugs introduced. This session was a quality/architecture sweep:
+
+- **ES6-CODEMOD-1**: 424 files converted from prototype-based classes to ES6 classes via jscodeshift. No behavior changes; pure syntax modernization.
+- **ES6-INCLUDES-1**: ~90 `.indexOf() !== -1` patterns replaced with `.includes()`. No behavior changes.
+- **SECURITY-1 (InfoBox XSS)**: Entity description `innerHTML` in `InfoBox.js` was assigned unsanitized from external data sources. Fixed by adding DOMPurify sanitization with a configured allowlist. Root cause: direct DOM injection without sanitization. Files: `packages/engine/Source/Widgets/InfoBox/InfoBox.js`.
+- **TS-ANY-1**: 34 `as any` casts eliminated in `WebGPUSceneRenderer.ts` and `WebGPUGlobeSurfaceRenderer.ts` by declaring the missing private fields and importing proper types from new `cesium-js-types.d.ts`. Root cause: JS classes used from TS without declarations.
+- **TS-ANY-2**: ~55 `: any` parameter annotations replaced with proper ambient types in `WebGPUBufferPrimitiveRenderer.ts`, `WebGPUPickFramebuffer.ts`, and other renderer files. Root cause: same — JS class types unavailable to TS.
+- **STUB-OVERHAUL-1**: `WebGLStubTexture.ts` was a near-complete no-op (texImage2D did nothing, generateMipmap did nothing). Fixed by implementing real WebGL→WebGPU translation. Root cause: stub was scaffolded but never filled in.
+- **STUB-OVERHAUL-2**: `WebGLStubShader.ts` returned `0` for all `getParameter()` queries. Fixed by reading real values from `device.limits`. Root cause: same scaffolding gap.
+- **MATERIAL-UB-1**: Material uniforms were repacked as JS objects every frame regardless of whether any property changed. Fixed by `MaterialUniformBuffer` with dirty tracking + Float32Array backing. Root cause: performance gap in material upload path; not a correctness bug.
+- **DEP-REMOVE-1**: `urijs` import caused bundle bloat and an unmaintained third-party dep. Removed; replaced with native `URL` API across 12 files.
 
 ### Bug Pattern Analysis (cumulative across all sessions)
 1. **API mismatch** (6+): Callers passing wrong parameter types/order to WebGPU buffer/pipeline creation
@@ -1304,16 +1744,18 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
 | Shader coverage (functional) | ~95% |
 | Builtin function chunks | 91+ WGSL (of 90 GLSL — 101% coverage) |
 | CsmBuiltins.js entries | 97 (91 functions + 6 structs) |
-| WebGPU renderer files | 105+ |
-| WebGPU renderer LOC | ~46,000 |
+| WebGPU renderer files | 108+ |
+| WebGPU renderer LOC | ~47,000 |
 | Feature renderer keys | 38 (36 registered + COUNT + DEFERRED_GBUFFER reserved) |
 | Feature renderers scene-wired | 36 of 36 (100%) |
 | Lazy-loaded feature renderers | 7 (Gaussian splat, point cloud, point cloud EDL, voxel, SSR, weather particles, procedural clouds) |
-| Scene features with WebGPU | 30+ of 33+ (~91%) |
+| Scene features with WebGPU | 30+ of 33+ (~92%) |
 | Rendering passes functional | 13 of 13 (100%) |
 | Test pages | 29 |
 | Jasmine unit tests | 10 spec files (Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler) |
-| ES6 modernized files | ~75 (of ~454 total) |
+| ES6 modernized files | ~499 (424 via codemod + ~75 prior manual) |
+| TypeScript `as any` casts | 32 (down from 66; -34 this session) |
+| TypeScript `: any` parameter annotations | ~20 remaining (down from ~75; -55 this session) |
 | Verified working features | 10 (see Section 3) |
 | Active bugs (rendering) | 4 (BUG-3 partially S18, BUG-5/6 edge cases, BUG-11 imagery audit) |
 | Active bugs (architecture) | 0 (Session 16 cleanup) |
@@ -1323,6 +1765,8 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
 | Build variants | 3 (WebGL-only, WebGPU-only, dual) |
 | Bundle size (dual ESM index.js) | 3.9 MB / 1.05 MB gzipped (-11% from pre-lazy-load baseline) |
 | Debug visualization toggles | 8 (wireframe, triangulation, terrainLOD, terrainNormals, imageryLayer isolation, depthAsColor, atmosphereScattering bypass, cubemap face) |
+| Removed third-party deps | 2 (`urijs`, `karma-ie-launcher`) |
+| Security fixes | 1 (InfoBox.js XSS — DOMPurify sanitization for entity description innerHTML) |
 
 ### WebGPU Spec Features Enabled
 
@@ -1352,6 +1796,15 @@ node scripts/analyzeBuild.js --build --treemap  # Bundle analyzer
 7. **Feature parity:** Check both backends when adding/fixing features
 8. **Async:** Never sync `readPixels` in render loop; always use `mapAsync` + `.then()`
 9. **Debug visualization:** Add new toggles via the unified `DebugFragmentMode` enum + augmented shader module pattern (S24 architecture)
+10. **Logging hygiene:** Wrap all non-critical `console.log`/`console.warn` calls in
+    `//>>includeStart('debug', pragmas.debug);` ... `//>>includeEnd('debug');`
+    pragma tags so they strip in production builds (zero runtime cost). The
+    `stripPragmaPlugin` now handles both `.js` and `.ts` files. ONLY keep
+    permanent (non-pragma) logs for `console.error` that indicates real
+    rendering bugs — null blit targets, index buffer overflows, command
+    buffer invalidation, device lost, shader/pipeline compile failures,
+    infinite-loop sentinels. See the "Logging & Debug Pragmas" section in
+    `CLAUDE.md` for the full policy and examples.
 
 ---
 

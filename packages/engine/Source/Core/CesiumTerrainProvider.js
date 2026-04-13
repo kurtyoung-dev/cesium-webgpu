@@ -236,20 +236,20 @@ async function parseMetadataSuccess(terrainProviderBuilder, data, provider) {
   // over 'vertexnormals' if both extensions are supported by the server.
   if (
     defined(data.extensions) &&
-    data.extensions.indexOf("octvertexnormals") !== -1
+    data.extensions.includes("octvertexnormals")
   ) {
     hasVertexNormals = true;
   } else if (
     defined(data.extensions) &&
-    data.extensions.indexOf("vertexnormals") !== -1
+    data.extensions.includes("vertexnormals")
   ) {
     hasVertexNormals = true;
     littleEndianExtensionSize = false;
   }
-  if (defined(data.extensions) && data.extensions.indexOf("watermask") !== -1) {
+  if (defined(data.extensions) && data.extensions.includes("watermask")) {
     hasWaterMask = true;
   }
-  if (defined(data.extensions) && data.extensions.indexOf("metadata") !== -1) {
+  if (defined(data.extensions) && data.extensions.includes("metadata")) {
     hasMetadata = true;
   }
 
@@ -474,54 +474,321 @@ async function requestLayerJson(terrainProviderBuilder, provider) {
  * @see CesiumTerrainProvider.fromIonAssetId
  * @see TerrainProvider
  */
-function CesiumTerrainProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class CesiumTerrainProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._heightmapWidth = undefined;
-  this._heightmapStructure = undefined;
-  this._hasWaterMask = false;
-  this._hasVertexNormals = false;
-  this._hasMetadata = false;
-  this._scheme = undefined;
-  this._ellipsoid = options.ellipsoid;
+    this._heightmapWidth = undefined;
+    this._heightmapStructure = undefined;
+    this._hasWaterMask = false;
+    this._hasVertexNormals = false;
+    this._hasMetadata = false;
+    this._scheme = undefined;
+    this._ellipsoid = options.ellipsoid;
+
+    /**
+     * Boolean flag that indicates if the client should request vertex normals from the server.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._requestVertexNormals = options.requestVertexNormals ?? false;
+
+    /**
+     * Boolean flag that indicates if the client should request tile watermasks from the server.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._requestWaterMask = options.requestWaterMask ?? false;
+
+    /**
+     * Boolean flag that indicates if the client should request tile metadata from the server.
+     * @type {boolean}
+     * @default true
+     * @private
+     */
+    this._requestMetadata = options.requestMetadata ?? true;
+
+    this._errorEvent = new Event();
+
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+
+    this._availability = undefined;
+    this._tilingScheme = undefined;
+    this._levelZeroMaximumGeometricError = undefined;
+    this._layers = undefined;
+    this._tileCredits = undefined;
+  }
+
+  /**
+   * Requests the geometry for a given tile. The result must include terrain data and
+   * may optionally include a water mask and an indication of which child tiles are available.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   *
+   * @returns {Promise<TerrainData>|undefined} A promise for the requested geometry.  If this method
+   *          returns undefined instead of a promise, it is an indication that too many requests are already
+   *          pending and the request will be retried later.
+   *
+   */
+  requestTileGeometry(x, y, level, request) {
+    const layers = this._layers;
+    let layerToUse;
+    const layerCount = layers.length;
+    let unknownAvailability = false;
+    let availabilityPromise = Promise.resolve();
+
+    if (layerCount === 1) {
+      // Optimized path for single layers
+      layerToUse = layers[0];
+    } else {
+      for (let i = 0; i < layerCount; ++i) {
+        const layer = layers[i];
+        if (
+          !defined(layer.availability) ||
+          layer.availability.isTileAvailable(level, x, y)
+        ) {
+          layerToUse = layer;
+          break;
+        }
+
+        const availabilityUnloaded = checkLayer(
+          this,
+          x,
+          y,
+          level,
+          layer,
+          i === 0,
+        );
+        if (availabilityUnloaded.result) {
+          // We can't know yet since the availability is not yet loaded
+          unknownAvailability = true;
+          availabilityPromise = availabilityPromise.then(
+            () => availabilityUnloaded.promise,
+          );
+        }
+      }
+    }
+
+    if (!defined(layerToUse) && unknownAvailability) {
+      // Try again when availability data is ready– Otherwise the tile will be marked as failed and never re-requested
+      return availabilityPromise.then(() => {
+        // handle promise or undefined return
+        return new Promise((resolve) => {
+          // defer execution to the next event loop
+          setTimeout(() => {
+            const promise = this.requestTileGeometry(x, y, level, request);
+            resolve(promise);
+          }, 0); // next tick
+        });
+      });
+    }
+    // call overridden function below
+    return requestTileGeometry(this, x, y, level, layerToUse, request);
+  }
+
+  /**
+   * Gets the maximum geometric error allowed in a tile at a given level.
+   *
+   * @param {number} level The tile level for which to get the maximum geometric error.
+   * @returns {number} The maximum geometric error.
+   */
+  getLevelMaximumGeometricError(level) {
+    return this._levelZeroMaximumGeometricError / (1 << level);
+  }
+
+  /**
+   * Determines whether data for a tile is available to be loaded.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @returns {boolean|undefined} Undefined if not supported or availability is unknown, otherwise true or false.
+   */
+  getTileDataAvailable(x, y, level) {
+    if (!defined(this._availability)) {
+      return undefined;
+    }
+    if (level > this._availability._maximumLevel) {
+      return false;
+    }
+
+    if (this._availability.isTileAvailable(level, x, y)) {
+      // If the tile is listed as available, then we are done
+      return true;
+    }
+    if (!this._hasMetadata) {
+      // If we don't have any layers with the metadata extension then we don't have this tile
+      return false;
+    }
+
+    const layers = this._layers;
+    const count = layers.length;
+    for (let i = 0; i < count; ++i) {
+      const layerResult = checkLayer(this, x, y, level, layers[i], i === 0);
+      if (layerResult.result) {
+        // There is a layer that may or may not have the tile
+        return undefined;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Makes sure we load availability data for a tile
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @returns {undefined|Promise<void>} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
+   */
+  loadTileDataAvailability(x, y, level) {
+    if (
+      !defined(this._availability) ||
+      level > this._availability._maximumLevel ||
+      this._availability.isTileAvailable(level, x, y) ||
+      !this._hasMetadata
+    ) {
+      // We know the tile is either available or not available so nothing to wait on
+      return undefined;
+    }
+
+    const layers = this._layers;
+    const count = layers.length;
+    for (let i = 0; i < count; ++i) {
+      const layerResult = checkLayer(this, x, y, level, layers[i], i === 0);
+      if (defined(layerResult.promise)) {
+        return layerResult.promise;
+      }
+    }
+  }
+
+  /**
+   * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
+   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
+   * are passed an instance of {@link TileProviderError}.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {Event}
+   * @readonly
+   */
+  get errorEvent() {
+    return this._errorEvent;
+  }
+
+  /**
+   * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
+   * the source of the terrain.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {Credit}
+   * @readonly
+   */
+  get credit() {
+    return this._credit;
+  }
+
+  /**
+   * Gets the tiling scheme used by this provider.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {GeographicTilingScheme}
+   * @readonly
+   */
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
+
+  /**
+   * Gets a value indicating whether or not the provider includes a water mask.  The water mask
+   * indicates which areas of the globe are water rather than land, so they can be rendered
+   * as a reflective surface with animated waves.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get hasWaterMask() {
+    return this._hasWaterMask && this._requestWaterMask;
+  }
+
+  /**
+   * Gets a value indicating whether or not the requested tiles include vertex normals.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get hasVertexNormals() {
+    // returns true if we can request vertex normals from the server
+    return this._hasVertexNormals && this._requestVertexNormals;
+  }
+
+  /**
+   * Gets a value indicating whether or not the requested tiles include metadata.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get hasMetadata() {
+    // returns true if we can request metadata from the server
+    return this._hasMetadata && this._requestMetadata;
+  }
 
   /**
    * Boolean flag that indicates if the client should request vertex normals from the server.
+   * Vertex normals data is appended to the standard tile mesh data only if the client requests the vertex normals and
+   * if the server provides vertex normals.
+   * @memberof CesiumTerrainProvider.prototype
    * @type {boolean}
-   * @default false
-   * @private
+   * @readonly
    */
-  this._requestVertexNormals = options.requestVertexNormals ?? false;
-
-  /**
-   * Boolean flag that indicates if the client should request tile watermasks from the server.
-   * @type {boolean}
-   * @default false
-   * @private
-   */
-  this._requestWaterMask = options.requestWaterMask ?? false;
-
-  /**
-   * Boolean flag that indicates if the client should request tile metadata from the server.
-   * @type {boolean}
-   * @default true
-   * @private
-   */
-  this._requestMetadata = options.requestMetadata ?? true;
-
-  this._errorEvent = new Event();
-
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+  get requestVertexNormals() {
+    return this._requestVertexNormals;
   }
-  this._credit = credit;
 
-  this._availability = undefined;
-  this._tilingScheme = undefined;
-  this._levelZeroMaximumGeometricError = undefined;
-  this._layers = undefined;
-  this._tileCredits = undefined;
+  /**
+   * Boolean flag that indicates if the client should request a watermask from the server.
+   * Watermask data is appended to the standard tile mesh data only if the client requests the watermask and
+   * if the server provides a watermask.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get requestWaterMask() {
+    return this._requestWaterMask;
+  }
+
+  /**
+   * Boolean flag that indicates if the client should request metadata from the server.
+   * Metadata is appended to the standard tile mesh data only if the client requests the metadata and
+   * if the server provides a metadata.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  get requestMetadata() {
+    return this._requestMetadata;
+  }
+
+  /**
+   * Gets an object that can be used to determine availability of terrain from this provider, such as
+   * at points and in rectangles. This property may be undefined if availability
+   * information is not available. Note that this reflects tiles that are known to be available currently.
+   * Additional tiles may be discovered to be available in the future, e.g. if availability information
+   * exists deeper in the tree rather than it all being discoverable at the root. However, a tile that
+   * is available now will not become unavailable in the future.
+   * @memberof CesiumTerrainProvider.prototype
+   * @type {TileAvailability|undefined}
+   * @readonly
+   */
+  get availability() {
+    return this._availability;
+  }
 }
 
 /**
@@ -834,81 +1101,6 @@ function createQuantizedMeshTerrainData(provider, buffer, level, x, y, layer) {
   });
 }
 
-/**
- * Requests the geometry for a given tile. The result must include terrain data and
- * may optionally include a water mask and an indication of which child tiles are available.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @param {Request} [request] The request object. Intended for internal use only.
- *
- * @returns {Promise<TerrainData>|undefined} A promise for the requested geometry.  If this method
- *          returns undefined instead of a promise, it is an indication that too many requests are already
- *          pending and the request will be retried later.
- *
- */
-CesiumTerrainProvider.prototype.requestTileGeometry = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const layers = this._layers;
-  let layerToUse;
-  const layerCount = layers.length;
-  let unknownAvailability = false;
-  let availabilityPromise = Promise.resolve();
-
-  if (layerCount === 1) {
-    // Optimized path for single layers
-    layerToUse = layers[0];
-  } else {
-    for (let i = 0; i < layerCount; ++i) {
-      const layer = layers[i];
-      if (
-        !defined(layer.availability) ||
-        layer.availability.isTileAvailable(level, x, y)
-      ) {
-        layerToUse = layer;
-        break;
-      }
-
-      const availabilityUnloaded = checkLayer(
-        this,
-        x,
-        y,
-        level,
-        layer,
-        i === 0,
-      );
-      if (availabilityUnloaded.result) {
-        // We can't know yet since the availability is not yet loaded
-        unknownAvailability = true;
-        availabilityPromise = availabilityPromise.then(
-          () => availabilityUnloaded.promise,
-        );
-      }
-    }
-  }
-
-  if (!defined(layerToUse) && unknownAvailability) {
-    // Try again when availability data is ready– Otherwise the tile will be marked as failed and never re-requested
-    return availabilityPromise.then(() => {
-      // handle promise or undefined return
-      return new Promise((resolve) => {
-        // defer execution to the next event loop
-        setTimeout(() => {
-          const promise = this.requestTileGeometry(x, y, level, request);
-          resolve(promise);
-        }, 0); // next tick
-      });
-    });
-  }
-  // call overridden function below
-  return requestTileGeometry(this, x, y, level, layerToUse, request);
-};
-
 function requestTileGeometry(provider, x, y, level, layerToUse, request) {
   if (!defined(layerToUse)) {
     return Promise.reject(new RuntimeError("Terrain tile doesn't exist"));
@@ -998,158 +1190,6 @@ function requestTileGeometry(provider, x, y, level, layerToUse, request) {
     );
   });
 }
-
-Object.defineProperties(CesiumTerrainProvider.prototype, {
-  /**
-   * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
-   * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
-   * are passed an instance of {@link TileProviderError}.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {Event}
-   * @readonly
-   */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
-
-  /**
-   * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
-   * the source of the terrain.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {Credit}
-   * @readonly
-   */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
-
-  /**
-   * Gets the tiling scheme used by this provider.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {GeographicTilingScheme}
-   * @readonly
-   */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the provider includes a water mask.  The water mask
-   * indicates which areas of the globe are water rather than land, so they can be rendered
-   * as a reflective surface with animated waves.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  hasWaterMask: {
-    get: function () {
-      return this._hasWaterMask && this._requestWaterMask;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the requested tiles include vertex normals.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  hasVertexNormals: {
-    get: function () {
-      // returns true if we can request vertex normals from the server
-      return this._hasVertexNormals && this._requestVertexNormals;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the requested tiles include metadata.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  hasMetadata: {
-    get: function () {
-      // returns true if we can request metadata from the server
-      return this._hasMetadata && this._requestMetadata;
-    },
-  },
-
-  /**
-   * Boolean flag that indicates if the client should request vertex normals from the server.
-   * Vertex normals data is appended to the standard tile mesh data only if the client requests the vertex normals and
-   * if the server provides vertex normals.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  requestVertexNormals: {
-    get: function () {
-      return this._requestVertexNormals;
-    },
-  },
-
-  /**
-   * Boolean flag that indicates if the client should request a watermask from the server.
-   * Watermask data is appended to the standard tile mesh data only if the client requests the watermask and
-   * if the server provides a watermask.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  requestWaterMask: {
-    get: function () {
-      return this._requestWaterMask;
-    },
-  },
-
-  /**
-   * Boolean flag that indicates if the client should request metadata from the server.
-   * Metadata is appended to the standard tile mesh data only if the client requests the metadata and
-   * if the server provides a metadata.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {boolean}
-   * @readonly
-   */
-  requestMetadata: {
-    get: function () {
-      return this._requestMetadata;
-    },
-  },
-
-  /**
-   * Gets an object that can be used to determine availability of terrain from this provider, such as
-   * at points and in rectangles. This property may be undefined if availability
-   * information is not available. Note that this reflects tiles that are known to be available currently.
-   * Additional tiles may be discovered to be available in the future, e.g. if availability information
-   * exists deeper in the tree rather than it all being discoverable at the root. However, a tile that
-   * is available now will not become unavailable in the future.
-   * @memberof CesiumTerrainProvider.prototype
-   * @type {TileAvailability|undefined}
-   * @readonly
-   */
-  availability: {
-    get: function () {
-      return this._availability;
-    },
-  },
-});
-
-/**
- * Gets the maximum geometric error allowed in a tile at a given level.
- *
- * @param {number} level The tile level for which to get the maximum geometric error.
- * @returns {number} The maximum geometric error.
- */
-CesiumTerrainProvider.prototype.getLevelMaximumGeometricError = function (
-  level,
-) {
-  return this._levelZeroMaximumGeometricError / (1 << level);
-};
 
 /**
  * Creates a {@link TerrainProvider} from a Cesium ion asset ID that accesses terrain data in a Cesium terrain format
@@ -1245,77 +1285,6 @@ CesiumTerrainProvider.fromUrl = async function (url, options) {
   terrainProviderBuilder.build(provider);
 
   return provider;
-};
-
-/**
- * Determines whether data for a tile is available to be loaded.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @returns {boolean|undefined} Undefined if not supported or availability is unknown, otherwise true or false.
- */
-CesiumTerrainProvider.prototype.getTileDataAvailable = function (x, y, level) {
-  if (!defined(this._availability)) {
-    return undefined;
-  }
-  if (level > this._availability._maximumLevel) {
-    return false;
-  }
-
-  if (this._availability.isTileAvailable(level, x, y)) {
-    // If the tile is listed as available, then we are done
-    return true;
-  }
-  if (!this._hasMetadata) {
-    // If we don't have any layers with the metadata extension then we don't have this tile
-    return false;
-  }
-
-  const layers = this._layers;
-  const count = layers.length;
-  for (let i = 0; i < count; ++i) {
-    const layerResult = checkLayer(this, x, y, level, layers[i], i === 0);
-    if (layerResult.result) {
-      // There is a layer that may or may not have the tile
-      return undefined;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Makes sure we load availability data for a tile
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @returns {undefined|Promise<void>} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
- */
-CesiumTerrainProvider.prototype.loadTileDataAvailability = function (
-  x,
-  y,
-  level,
-) {
-  if (
-    !defined(this._availability) ||
-    level > this._availability._maximumLevel ||
-    this._availability.isTileAvailable(level, x, y) ||
-    !this._hasMetadata
-  ) {
-    // We know the tile is either available or not available so nothing to wait on
-    return undefined;
-  }
-
-  const layers = this._layers;
-  const count = layers.length;
-  for (let i = 0; i < count; ++i) {
-    const layerResult = checkLayer(this, x, y, level, layers[i], i === 0);
-    if (defined(layerResult.promise)) {
-      return layerResult.promise;
-    }
-  }
 };
 
 function getAvailabilityTile(layer, x, y, level) {

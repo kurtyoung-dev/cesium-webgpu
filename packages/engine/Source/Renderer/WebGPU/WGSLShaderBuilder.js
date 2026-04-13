@@ -680,13 +680,13 @@ function addLines(target, lines) {
 }
 
 function getLocationCount(wgslType) {
-  if (wgslType.indexOf("mat4x4") >= 0) {
+  if (wgslType.includes("mat4x4")) {
     return 4;
   }
-  if (wgslType.indexOf("mat3x3") >= 0) {
+  if (wgslType.includes("mat3x3")) {
     return 3;
   }
-  if (wgslType.indexOf("mat2x2") >= 0) {
+  if (wgslType.includes("mat2x2")) {
     return 2;
   }
   return 1;

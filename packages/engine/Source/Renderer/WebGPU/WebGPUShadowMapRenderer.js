@@ -186,7 +186,10 @@ function _getOrCreateCastPipeline(device, cache, layoutKey) {
     depthStencil: {
       format: "depth32float",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      // `less-equal` for planetary-scale precision robustness — the
+      // CSM far cascades can project shadow casters onto the cascade
+      // far plane and `less` would discard them.
+      depthCompare: "less-equal",
     },
   });
 

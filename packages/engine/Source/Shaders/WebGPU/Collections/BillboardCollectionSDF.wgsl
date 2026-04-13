@@ -24,7 +24,7 @@ struct CameraUniforms {
   _pad2: f32,
 };
 
-@group(0) @binding(0) var<uniform> u: CameraUniforms;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
 
@@ -93,8 +93,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let billboardWidth = input.miscFlags.z;
   let billboardHeight = input.miscFlags.w;
 
-  let positionRTE = translateRelativeToEye(posHigh, posLow, u.encodedCameraHigh, u.encodedCameraLow);
-  var clipPos = u.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+  let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
+  var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
   let cornerIndex = input.vertexIndex % 6u;
   var corner = QUAD_OFFSETS[cornerIndex];
@@ -109,7 +109,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
 
   let size = vec2<f32>(billboardWidth, billboardHeight) * scale;
-  let pixelToClip = 2.0 / u.viewportSize;
+  let pixelToClip = 2.0 / camera.viewportSize;
   clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
 

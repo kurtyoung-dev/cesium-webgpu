@@ -28,144 +28,174 @@ const stopSearchPath =
  * @param {number} [options.flightDuration=1.5] The duration of the camera flight to an entered location, in seconds.
  * @param {Geocoder.DestinationFoundFunction} [options.destinationFound=GeocoderViewModel.flyToDestination] A callback function that is called after a successful geocode.  If not supplied, the default behavior is to fly the camera to the result destination.
  */
-function Geocoder(options) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options) || !defined(options.container)) {
-    throw new DeveloperError("options.container is required.");
-  }
-  if (!defined(options.scene)) {
-    throw new DeveloperError("options.scene is required.");
-  }
-  //>>includeEnd('debug');
-
-  const container = getElement(options.container);
-  const viewModel = new GeocoderViewModel(options);
-
-  viewModel._startSearchPath = startSearchPath;
-  viewModel._stopSearchPath = stopSearchPath;
-
-  const form = document.createElement("form");
-  form.setAttribute("data-bind", "submit: search");
-
-  const textBox = document.createElement("input");
-  textBox.type = "search";
-  textBox.className = "cesium-geocoder-input";
-  textBox.setAttribute("placeholder", "Enter an address or landmark...");
-  textBox.setAttribute(
-    "data-bind",
-    '\
-textInput: searchText,\
-disable: isSearchInProgress,\
-event: { keyup: handleKeyUp, keydown: handleKeyDown, mouseover: deselectSuggestion },\
-css: { "cesium-geocoder-input-wide" : keepExpanded || searchText.length > 0 },\
-hasFocus: _focusTextbox',
-  );
-
-  this._onTextBoxFocus = function () {
-    // as of 2016-10-19, setTimeout is required to ensure that the
-    // text is focused on Safari 10
-    setTimeout(function () {
-      textBox.select();
-    }, 0);
-  };
-
-  textBox.addEventListener("focus", this._onTextBoxFocus, false);
-  form.appendChild(textBox);
-  this._textBox = textBox;
-
-  const searchButton = document.createElement("span");
-  searchButton.className = "cesium-geocoder-searchButton";
-  searchButton.setAttribute(
-    "data-bind",
-    "\
-click: search,\
-cesiumSvgPath: { path: isSearchInProgress ? _stopSearchPath : _startSearchPath, width: 32, height: 32 }",
-  );
-  form.appendChild(searchButton);
-
-  container.appendChild(form);
-
-  const searchSuggestionsContainer = document.createElement("div");
-  searchSuggestionsContainer.className = "search-results";
-  searchSuggestionsContainer.setAttribute(
-    "data-bind",
-    "visible: _suggestionsVisible",
-  );
-
-  const suggestionsList = document.createElement("ul");
-  suggestionsList.setAttribute("data-bind", "foreach: _suggestions");
-  const suggestions = document.createElement("li");
-  suggestionsList.appendChild(suggestions);
-  suggestions.setAttribute(
-    "data-bind",
-    "text: $data.displayName, \
-click: $parent.activateSuggestion, \
-event: { mouseover: $parent.handleMouseover}, \
-css: { active: $data === $parent._selectedSuggestion }",
-  );
-
-  searchSuggestionsContainer.appendChild(suggestionsList);
-  container.appendChild(searchSuggestionsContainer);
-
-  knockout.applyBindings(viewModel, form);
-  knockout.applyBindings(viewModel, searchSuggestionsContainer);
-
-  this._container = container;
-  this._searchSuggestionsContainer = searchSuggestionsContainer;
-  this._viewModel = viewModel;
-  this._form = form;
-
-  this._onInputBegin = function (e) {
-    // e.target will not be correct if we are inside of the Shadow DOM
-    // and contains will always fail. To retrieve the correct target,
-    // we need to access the first element of the composedPath.
-    // This allows us to use shadow DOM if it exists and fall
-    // back to legacy behavior if its not being used.
-
-    let target = e.target;
-    if (typeof e.composedPath === "function") {
-      target = e.composedPath()[0];
+class Geocoder {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options) || !defined(options.container)) {
+      throw new DeveloperError("options.container is required.");
     }
-
-    if (!container.contains(target)) {
-      viewModel._focusTextbox = false;
-      viewModel.hideSuggestions();
+    if (!defined(options.scene)) {
+      throw new DeveloperError("options.scene is required.");
     }
-  };
+    //>>includeEnd('debug');
 
-  this._onInputEnd = function (e) {
-    viewModel._focusTextbox = true;
-    viewModel.showSuggestions();
-  };
+    const container = getElement(options.container);
+    const viewModel = new GeocoderViewModel(options);
 
-  //We subscribe to both begin and end events in order to give the text box
-  //focus no matter where on the widget is clicked.
+    viewModel._startSearchPath = startSearchPath;
+    viewModel._stopSearchPath = stopSearchPath;
 
-  if (FeatureDetection.supportsPointerEvents()) {
-    document.addEventListener("pointerdown", this._onInputBegin, true);
-    container.addEventListener("pointerup", this._onInputEnd, true);
-    container.addEventListener("pointercancel", this._onInputEnd, true);
-  } else {
-    document.addEventListener("mousedown", this._onInputBegin, true);
-    container.addEventListener("mouseup", this._onInputEnd, true);
-    document.addEventListener("touchstart", this._onInputBegin, true);
-    container.addEventListener("touchend", this._onInputEnd, true);
-    container.addEventListener("touchcancel", this._onInputEnd, true);
+    const form = document.createElement("form");
+    form.setAttribute("data-bind", "submit: search");
+
+    const textBox = document.createElement("input");
+    textBox.type = "search";
+    textBox.className = "cesium-geocoder-input";
+    textBox.setAttribute("placeholder", "Enter an address or landmark...");
+    textBox.setAttribute(
+      "data-bind",
+      '\
+  textInput: searchText,\
+  disable: isSearchInProgress,\
+  event: { keyup: handleKeyUp, keydown: handleKeyDown, mouseover: deselectSuggestion },\
+  css: { "cesium-geocoder-input-wide" : keepExpanded || searchText.length > 0 },\
+  hasFocus: _focusTextbox',
+    );
+
+    this._onTextBoxFocus = function () {
+      // as of 2016-10-19, setTimeout is required to ensure that the
+      // text is focused on Safari 10
+      setTimeout(function () {
+        textBox.select();
+      }, 0);
+    };
+
+    textBox.addEventListener("focus", this._onTextBoxFocus, false);
+    form.appendChild(textBox);
+    this._textBox = textBox;
+
+    const searchButton = document.createElement("span");
+    searchButton.className = "cesium-geocoder-searchButton";
+    searchButton.setAttribute(
+      "data-bind",
+      "\
+  click: search,\
+  cesiumSvgPath: { path: isSearchInProgress ? _stopSearchPath : _startSearchPath, width: 32, height: 32 }",
+    );
+    form.appendChild(searchButton);
+
+    container.appendChild(form);
+
+    const searchSuggestionsContainer = document.createElement("div");
+    searchSuggestionsContainer.className = "search-results";
+    searchSuggestionsContainer.setAttribute(
+      "data-bind",
+      "visible: _suggestionsVisible",
+    );
+
+    const suggestionsList = document.createElement("ul");
+    suggestionsList.setAttribute("data-bind", "foreach: _suggestions");
+    const suggestions = document.createElement("li");
+    suggestionsList.appendChild(suggestions);
+    suggestions.setAttribute(
+      "data-bind",
+      "text: $data.displayName, \
+  click: $parent.activateSuggestion, \
+  event: { mouseover: $parent.handleMouseover}, \
+  css: { active: $data === $parent._selectedSuggestion }",
+    );
+
+    searchSuggestionsContainer.appendChild(suggestionsList);
+    container.appendChild(searchSuggestionsContainer);
+
+    knockout.applyBindings(viewModel, form);
+    knockout.applyBindings(viewModel, searchSuggestionsContainer);
+
+    this._container = container;
+    this._searchSuggestionsContainer = searchSuggestionsContainer;
+    this._viewModel = viewModel;
+    this._form = form;
+
+    this._onInputBegin = function (e) {
+      // e.target will not be correct if we are inside of the Shadow DOM
+      // and contains will always fail. To retrieve the correct target,
+      // we need to access the first element of the composedPath.
+      // This allows us to use shadow DOM if it exists and fall
+      // back to legacy behavior if its not being used.
+
+      let target = e.target;
+      if (typeof e.composedPath === "function") {
+        target = e.composedPath()[0];
+      }
+
+      if (!container.contains(target)) {
+        viewModel._focusTextbox = false;
+        viewModel.hideSuggestions();
+      }
+    };
+
+    this._onInputEnd = function (e) {
+      viewModel._focusTextbox = true;
+      viewModel.showSuggestions();
+    };
+
+    //We subscribe to both begin and end events in order to give the text box
+    //focus no matter where on the widget is clicked.
+
+    if (FeatureDetection.supportsPointerEvents()) {
+      document.addEventListener("pointerdown", this._onInputBegin, true);
+      container.addEventListener("pointerup", this._onInputEnd, true);
+      container.addEventListener("pointercancel", this._onInputEnd, true);
+    } else {
+      document.addEventListener("mousedown", this._onInputBegin, true);
+      container.addEventListener("mouseup", this._onInputEnd, true);
+      document.addEventListener("touchstart", this._onInputBegin, true);
+      container.addEventListener("touchend", this._onInputEnd, true);
+      container.addEventListener("touchcancel", this._onInputEnd, true);
+    }
   }
-}
 
-Object.defineProperties(Geocoder.prototype, {
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    const container = this._container;
+    if (FeatureDetection.supportsPointerEvents()) {
+      document.removeEventListener("pointerdown", this._onInputBegin, true);
+      container.removeEventListener("pointerup", this._onInputEnd, true);
+    } else {
+      document.removeEventListener("mousedown", this._onInputBegin, true);
+      container.removeEventListener("mouseup", this._onInputEnd, true);
+      document.removeEventListener("touchstart", this._onInputBegin, true);
+      container.removeEventListener("touchend", this._onInputEnd, true);
+    }
+    this._viewModel.destroy();
+    knockout.cleanNode(this._form);
+    knockout.cleanNode(this._searchSuggestionsContainer);
+    container.removeChild(this._form);
+    container.removeChild(this._searchSuggestionsContainer);
+    this._textBox.removeEventListener("focus", this._onTextBoxFocus, false);
+
+    return destroyObject(this);
+  }
+
   /**
    * Gets the parent container.
    * @memberof Geocoder.prototype
    *
    * @type {Element}
    */
-  container: {
-    get: function () {
-      return this._container;
-    },
-  },
+  get container() {
+    return this._container;
+  }
 
   /**
    * Gets the parent container.
@@ -173,11 +203,9 @@ Object.defineProperties(Geocoder.prototype, {
    *
    * @type {Element}
    */
-  searchSuggestionsContainer: {
-    get: function () {
-      return this._searchSuggestionsContainer;
-    },
-  },
+  get searchSuggestionsContainer() {
+    return this._searchSuggestionsContainer;
+  }
 
   /**
    * Gets the view model.
@@ -185,44 +213,10 @@ Object.defineProperties(Geocoder.prototype, {
    *
    * @type {GeocoderViewModel}
    */
-  viewModel: {
-    get: function () {
-      return this._viewModel;
-    },
-  },
-});
-
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-Geocoder.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-Geocoder.prototype.destroy = function () {
-  const container = this._container;
-  if (FeatureDetection.supportsPointerEvents()) {
-    document.removeEventListener("pointerdown", this._onInputBegin, true);
-    container.removeEventListener("pointerup", this._onInputEnd, true);
-  } else {
-    document.removeEventListener("mousedown", this._onInputBegin, true);
-    container.removeEventListener("mouseup", this._onInputEnd, true);
-    document.removeEventListener("touchstart", this._onInputBegin, true);
-    container.removeEventListener("touchend", this._onInputEnd, true);
+  get viewModel() {
+    return this._viewModel;
   }
-  this._viewModel.destroy();
-  knockout.cleanNode(this._form);
-  knockout.cleanNode(this._searchSuggestionsContainer);
-  container.removeChild(this._form);
-  container.removeChild(this._searchSuggestionsContainer);
-  this._textBox.removeEventListener("focus", this._onTextBoxFocus, false);
-
-  return destroyObject(this);
-};
+}
 
 /**
  * A function that handles the result of a successful geocode.

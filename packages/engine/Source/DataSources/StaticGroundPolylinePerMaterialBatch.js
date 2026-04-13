@@ -333,104 +333,99 @@ Batch.prototype.destroy = function () {
 /**
  * @private
  */
-function StaticGroundPolylinePerMaterialBatch(
-  orderedGroundPrimitives,
-  classificationType,
-  asynchronous,
-) {
-  this._items = [];
-  this._orderedGroundPrimitives = orderedGroundPrimitives;
-  this._classificationType = classificationType;
-  this._asynchronous = asynchronous ?? true;
-}
+class StaticGroundPolylinePerMaterialBatch {
+  constructor(orderedGroundPrimitives, classificationType, asynchronous) {
+    this._items = [];
+    this._orderedGroundPrimitives = orderedGroundPrimitives;
+    this._classificationType = classificationType;
+    this._asynchronous = asynchronous ?? true;
+  }
 
-StaticGroundPolylinePerMaterialBatch.prototype.add = function (time, updater) {
-  const items = this._items;
-  const length = items.length;
-  const geometryInstance = updater.createFillGeometryInstance(time);
-  const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
-  // Check if the Entity represented by the updater has the same material or a material representable with per-instance color.
-  for (let i = 0; i < length; ++i) {
-    const item = items[i];
-    if (item.isMaterial(updater) && item.zIndex === zIndex) {
-      item.add(time, updater, geometryInstance);
-      return;
+  add(time, updater) {
+    const items = this._items;
+    const length = items.length;
+    const geometryInstance = updater.createFillGeometryInstance(time);
+    const zIndex = Property.getValueOrDefault(updater.zIndex, 0);
+    // Check if the Entity represented by the updater has the same material or a material representable with per-instance color.
+    for (let i = 0; i < length; ++i) {
+      const item = items[i];
+      if (item.isMaterial(updater) && item.zIndex === zIndex) {
+        item.add(time, updater, geometryInstance);
+        return;
+      }
+    }
+    // If a compatible batch wasn't found, create a new batch.
+    const batch = new Batch(
+      this._orderedGroundPrimitives,
+      this._classificationType,
+      updater.fillMaterialProperty,
+      zIndex,
+      this._asynchronous,
+    );
+    batch.add(time, updater, geometryInstance);
+    items.push(batch);
+  }
+
+  remove(updater) {
+    const items = this._items;
+    const length = items.length;
+    for (let i = length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.remove(updater)) {
+        if (item.updaters.length === 0) {
+          items.splice(i, 1);
+          item.destroy();
+        }
+        break;
+      }
     }
   }
-  // If a compatible batch wasn't found, create a new batch.
-  const batch = new Batch(
-    this._orderedGroundPrimitives,
-    this._classificationType,
-    updater.fillMaterialProperty,
-    zIndex,
-    this._asynchronous,
-  );
-  batch.add(time, updater, geometryInstance);
-  items.push(batch);
-};
 
-StaticGroundPolylinePerMaterialBatch.prototype.remove = function (updater) {
-  const items = this._items;
-  const length = items.length;
-  for (let i = length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.remove(updater)) {
-      if (item.updaters.length === 0) {
+  update(time) {
+    let i;
+    const items = this._items;
+    const length = items.length;
+
+    for (i = length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item.invalidated) {
         items.splice(i, 1);
+        const updaters = item.updaters.values;
+        const updatersLength = updaters.length;
+        for (let h = 0; h < updatersLength; h++) {
+          this.add(time, updaters[h]);
+        }
         item.destroy();
       }
-      break;
     }
+
+    let isUpdated = true;
+    for (i = 0; i < items.length; i++) {
+      isUpdated = items[i].update(time) && isUpdated;
+    }
+    return isUpdated;
   }
-};
 
-StaticGroundPolylinePerMaterialBatch.prototype.update = function (time) {
-  let i;
-  const items = this._items;
-  const length = items.length;
-
-  for (i = length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.invalidated) {
-      items.splice(i, 1);
-      const updaters = item.updaters.values;
-      const updatersLength = updaters.length;
-      for (let h = 0; h < updatersLength; h++) {
-        this.add(time, updaters[h]);
+  getBoundingSphere(updater, result) {
+    const items = this._items;
+    const length = items.length;
+    for (let i = 0; i < length; i++) {
+      const item = items[i];
+      if (item.contains(updater)) {
+        return item.getBoundingSphere(updater, result);
       }
-      item.destroy();
     }
+    return BoundingSphereState.FAILED;
   }
 
-  let isUpdated = true;
-  for (i = 0; i < items.length; i++) {
-    isUpdated = items[i].update(time) && isUpdated;
-  }
-  return isUpdated;
-};
-
-StaticGroundPolylinePerMaterialBatch.prototype.getBoundingSphere = function (
-  updater,
-  result,
-) {
-  const items = this._items;
-  const length = items.length;
-  for (let i = 0; i < length; i++) {
-    const item = items[i];
-    if (item.contains(updater)) {
-      return item.getBoundingSphere(updater, result);
-    }
-  }
-  return BoundingSphereState.FAILED;
-};
-
-StaticGroundPolylinePerMaterialBatch.prototype.removeAllPrimitives =
-  function () {
+  removeAllPrimitives() {
     const items = this._items;
     const length = items.length;
     for (let i = 0; i < length; i++) {
       items[i].destroy();
     }
     this._items.length = 0;
-  };
+  }
+}
+
 export default StaticGroundPolylinePerMaterialBatch;

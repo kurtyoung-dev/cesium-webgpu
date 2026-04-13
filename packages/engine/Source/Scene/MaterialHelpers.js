@@ -12,6 +12,7 @@ import Resource from "../Core/Resource.js";
 import CubeMap from "../Renderer/CubeMap.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
+import MaterialUniformBuffer from "./MaterialUniformBuffer.js";
 
 /**
  * Gets or sets the default texture uniform value.
@@ -68,7 +69,7 @@ function checkForValidProperties(object, properties, result, throwNotFound) {
   if (defined(object)) {
     for (const property in object) {
       if (object.hasOwnProperty(property)) {
-        const hasProperty = properties.indexOf(property) !== -1;
+        const hasProperty = properties.includes(property);
         if (
           (throwNotFound && !hasProperty) ||
           (!throwNotFound && hasProperty)
@@ -137,7 +138,7 @@ function isMaterialFused(shaderComponent, material) {
   const materials = material._template.materials;
   for (const subMaterialId in materials) {
     if (materials.hasOwnProperty(subMaterialId)) {
-      if (shaderComponent.indexOf(subMaterialId) > -1) {
+      if (shaderComponent.includes(subMaterialId)) {
         return true;
       }
     }
@@ -527,7 +528,7 @@ function createUniform(material, uniformId) {
       material._initializationPromises.push(
         loadCubeMapImagesForUniform(material, uniformId),
       );
-    } else if (uniformType.indexOf("mat") !== -1) {
+    } else if (uniformType.includes("mat")) {
       const scratchMatrix = new matrixMap[uniformType]();
       material._uniforms[newUniformId] = function () {
         return matrixMap[uniformType].fromColumnMajorArray(
@@ -715,6 +716,28 @@ function initializeMaterial(options, result, MaterialConstructor) {
 
   createMethodDefinition(result);
   createUniforms(result);
+
+  // After createUniforms populates result.uniforms with default values,
+  // create a MaterialUniformBuffer backed by Float32Array and replace the
+  // plain object with a facade that provides backward-compatible property
+  // access while storing numeric values in a packed GPU-ready buffer.
+  //
+  // The _uniformBuffer field gives WebGPU renderers direct access to the
+  // packed data via `material._uniformBuffer.gpuData` for zero-copy upload.
+  // The facade ensures existing code (`material.uniforms.color.alpha < 1.0`)
+  // continues to work via getter/setter pass-through.
+  const uniformBuffer = new MaterialUniformBuffer(result.uniforms);
+  result._uniformBuffer = uniformBuffer;
+  const facade = uniformBuffer.createFacade();
+  // Migrate any texture references that createUniform stored in result.uniforms
+  // but that are also used by the _uniforms getter closures.
+  const oldUniforms = result.uniforms;
+  result.uniforms = facade;
+  // The _uniforms getter functions close over `material.uniforms[uniformId]`.
+  // Since we replaced result.uniforms with a facade that has the same
+  // enumerable properties and getter/setter behavior, the closures continue
+  // to work — they read/write through the facade, which routes to the buffer.
+
   createSubMaterials(result, MaterialConstructor);
 
   // If the material has a new type, add it to the cache.

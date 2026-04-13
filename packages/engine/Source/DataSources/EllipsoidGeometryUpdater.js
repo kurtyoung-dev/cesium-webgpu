@@ -58,34 +58,259 @@ function EllipsoidGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-function EllipsoidGeometryUpdater(entity, scene) {
-  GeometryUpdater.call(this, {
-    entity: entity,
-    scene: scene,
-    geometryOptions: new EllipsoidGeometryOptions(entity),
-    geometryPropertyName: "ellipsoid",
-    observedPropertyNames: [
-      "availability",
-      "position",
-      "orientation",
+class EllipsoidGeometryUpdater {
+  constructor(entity, scene) {
+    GeometryUpdater.call(this, {
+      entity: entity,
+      scene: scene,
+      geometryOptions: new EllipsoidGeometryOptions(entity),
+      geometryPropertyName: "ellipsoid",
+      observedPropertyNames: [
+        "availability",
+        "position",
+        "orientation",
+        "ellipsoid",
+      ],
+    });
+
+    this._onEntityPropertyChanged(
+      entity,
       "ellipsoid",
-    ],
-  });
+      entity.ellipsoid,
+      undefined,
+    );
+  }
 
-  this._onEntityPropertyChanged(
-    entity,
-    "ellipsoid",
-    entity.ellipsoid,
-    undefined,
-  );
-}
+  /**
+   * Creates the geometry instance which represents the fill of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @param {boolean} [skipModelMatrix=false] Whether to compute a model matrix for the geometry instance
+   * @param {Matrix4} [modelMatrixResult] Used to store the result of the model matrix calculation
+   * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent a filled geometry.
+   */
+  createFillGeometryInstance(time, skipModelMatrix, modelMatrixResult) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+    //>>includeEnd('debug');
 
-if (defined(Object.create)) {
-  EllipsoidGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  EllipsoidGeometryUpdater.prototype.constructor = EllipsoidGeometryUpdater;
-}
+    const entity = this._entity;
+    const isAvailable = entity.isAvailable(time);
 
-Object.defineProperties(EllipsoidGeometryUpdater.prototype, {
+    let color;
+    const show = new ShowGeometryInstanceAttribute(
+      isAvailable &&
+        entity.isShowing &&
+        this._showProperty.getValue(time) &&
+        this._fillProperty.getValue(time),
+    );
+    const distanceDisplayCondition =
+      this._distanceDisplayConditionProperty.getValue(time);
+    const distanceDisplayConditionAttribute =
+      DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
+        distanceDisplayCondition,
+      );
+
+    const attributes = {
+      show: show,
+      distanceDisplayCondition: distanceDisplayConditionAttribute,
+      color: undefined,
+      offset: undefined,
+    };
+
+    if (this._materialProperty instanceof ColorMaterialProperty) {
+      let currentColor;
+      if (
+        defined(this._materialProperty.color) &&
+        (this._materialProperty.color.isConstant || isAvailable)
+      ) {
+        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+      }
+      if (!defined(currentColor)) {
+        currentColor = Color.WHITE;
+      }
+      color = ColorGeometryInstanceAttribute.fromColor(currentColor);
+      attributes.color = color;
+    }
+    if (defined(this._options.offsetAttribute)) {
+      attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
+        Property.getValueOrDefault(
+          this._terrainOffsetProperty,
+          time,
+          defaultOffset,
+          offsetScratch,
+        ),
+      );
+    }
+
+    return new GeometryInstance({
+      id: entity,
+      geometry: new EllipsoidGeometry(this._options),
+      modelMatrix: skipModelMatrix
+        ? undefined
+        : entity.computeModelMatrixForHeightReference(
+            time,
+            entity.ellipsoid.heightReference,
+            this._options.radii.z * 0.5,
+            this._scene.ellipsoid,
+            modelMatrixResult,
+          ),
+      attributes: attributes,
+    });
+  }
+
+  /**
+   * Creates the geometry instance which represents the outline of the geometry.
+   *
+   * @param {JulianDate} time The time to use when retrieving initial attribute values.
+   * @param {boolean} [skipModelMatrix=false] Whether to compute a model matrix for the geometry instance
+   * @param {Matrix4} [modelMatrixResult] Used to store the result of the model matrix calculation
+   * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
+   *
+   * @exception {DeveloperError} This instance does not represent an outlined geometry.
+   */
+  createOutlineGeometryInstance(time, skipModelMatrix, modelMatrixResult) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+    //>>includeEnd('debug');
+
+    const entity = this._entity;
+    const isAvailable = entity.isAvailable(time);
+
+    const outlineColor = Property.getValueOrDefault(
+      this._outlineColorProperty,
+      time,
+      Color.BLACK,
+      scratchColor,
+    );
+    const distanceDisplayCondition =
+      this._distanceDisplayConditionProperty.getValue(time);
+
+    const attributes = {
+      show: new ShowGeometryInstanceAttribute(
+        isAvailable &&
+          entity.isShowing &&
+          this._showProperty.getValue(time) &&
+          this._showOutlineProperty.getValue(time),
+      ),
+      color: ColorGeometryInstanceAttribute.fromColor(outlineColor),
+      distanceDisplayCondition:
+        DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
+          distanceDisplayCondition,
+        ),
+      offset: undefined,
+    };
+    if (defined(this._options.offsetAttribute)) {
+      attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
+        Property.getValueOrDefault(
+          this._terrainOffsetProperty,
+          time,
+          defaultOffset,
+          offsetScratch,
+        ),
+      );
+    }
+
+    return new GeometryInstance({
+      id: entity,
+      geometry: new EllipsoidOutlineGeometry(this._options),
+      modelMatrix: skipModelMatrix
+        ? undefined
+        : entity.computeModelMatrixForHeightReference(
+            time,
+            entity.ellipsoid.heightReference,
+            this._options.radii.z * 0.5,
+            this._scene.ellipsoid,
+            modelMatrixResult,
+          ),
+      attributes: attributes,
+    });
+  }
+
+  _computeCenter(time, result) {
+    return Property.getValueOrUndefined(this._entity.position, time, result);
+  }
+
+  _isHidden(entity, ellipsoid) {
+    return (
+      !defined(entity.position) ||
+      !defined(ellipsoid.radii) ||
+      GeometryUpdater.prototype._isHidden.call(this, entity, ellipsoid)
+    );
+  }
+
+  _isDynamic(entity, ellipsoid) {
+    return (
+      !entity.position.isConstant || //
+      !Property.isConstant(entity.orientation) || //
+      !ellipsoid.radii.isConstant || //
+      !Property.isConstant(ellipsoid.innerRadii) || //
+      !Property.isConstant(ellipsoid.stackPartitions) || //
+      !Property.isConstant(ellipsoid.slicePartitions) || //
+      !Property.isConstant(ellipsoid.outlineWidth) || //
+      !Property.isConstant(ellipsoid.minimumClock) || //
+      !Property.isConstant(ellipsoid.maximumClock) || //
+      !Property.isConstant(ellipsoid.minimumCone) || //
+      !Property.isConstant(ellipsoid.maximumCone) || //
+      !Property.isConstant(ellipsoid.subdivisions)
+    );
+  }
+
+  _setStaticOptions(entity, ellipsoid) {
+    const heightReference = Property.getValueOrDefault(
+      ellipsoid.heightReference,
+      Iso8601.MINIMUM_VALUE,
+      HeightReference.NONE,
+    );
+    const options = this._options;
+    options.vertexFormat =
+      this._materialProperty instanceof ColorMaterialProperty
+        ? PerInstanceColorAppearance.VERTEX_FORMAT
+        : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
+    options.radii = ellipsoid.radii.getValue(
+      Iso8601.MINIMUM_VALUE,
+      options.radii,
+    );
+    options.innerRadii = Property.getValueOrUndefined(
+      ellipsoid.innerRadii,
+      options.radii,
+    );
+    options.minimumClock = Property.getValueOrUndefined(
+      ellipsoid.minimumClock,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.maximumClock = Property.getValueOrUndefined(
+      ellipsoid.maximumClock,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.minimumCone = Property.getValueOrUndefined(
+      ellipsoid.minimumCone,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.maximumCone = Property.getValueOrUndefined(
+      ellipsoid.maximumCone,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.stackPartitions = Property.getValueOrUndefined(
+      ellipsoid.stackPartitions,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.slicePartitions = Property.getValueOrUndefined(
+      ellipsoid.slicePartitions,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.subdivisions = Property.getValueOrUndefined(
+      ellipsoid.subdivisions,
+      Iso8601.MINIMUM_VALUE,
+    );
+    options.offsetAttribute =
+      heightReference !== HeightReference.NONE
+        ? GeometryOffsetAttribute.ALL
+        : undefined;
+  }
+
   /**
    * Gets the terrain offset property
    * @type {TerrainOffsetProperty}
@@ -93,253 +318,15 @@ Object.defineProperties(EllipsoidGeometryUpdater.prototype, {
    * @readonly
    * @private
    */
-  terrainOffsetProperty: {
-    get: function () {
-      return this._terrainOffsetProperty;
-    },
-  },
-});
-
-/**
- * Creates the geometry instance which represents the fill of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @param {boolean} [skipModelMatrix=false] Whether to compute a model matrix for the geometry instance
- * @param {Matrix4} [modelMatrixResult] Used to store the result of the model matrix calculation
- * @returns {GeometryInstance} The geometry instance representing the filled portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent a filled geometry.
- */
-EllipsoidGeometryUpdater.prototype.createFillGeometryInstance = function (
-  time,
-  skipModelMatrix,
-  modelMatrixResult,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-  //>>includeEnd('debug');
-
-  const entity = this._entity;
-  const isAvailable = entity.isAvailable(time);
-
-  let color;
-  const show = new ShowGeometryInstanceAttribute(
-    isAvailable &&
-      entity.isShowing &&
-      this._showProperty.getValue(time) &&
-      this._fillProperty.getValue(time),
-  );
-  const distanceDisplayCondition =
-    this._distanceDisplayConditionProperty.getValue(time);
-  const distanceDisplayConditionAttribute =
-    DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
-      distanceDisplayCondition,
-    );
-
-  const attributes = {
-    show: show,
-    distanceDisplayCondition: distanceDisplayConditionAttribute,
-    color: undefined,
-    offset: undefined,
-  };
-
-  if (this._materialProperty instanceof ColorMaterialProperty) {
-    let currentColor;
-    if (
-      defined(this._materialProperty.color) &&
-      (this._materialProperty.color.isConstant || isAvailable)
-    ) {
-      currentColor = this._materialProperty.color.getValue(time, scratchColor);
-    }
-    if (!defined(currentColor)) {
-      currentColor = Color.WHITE;
-    }
-    color = ColorGeometryInstanceAttribute.fromColor(currentColor);
-    attributes.color = color;
+  get terrainOffsetProperty() {
+    return this._terrainOffsetProperty;
   }
-  if (defined(this._options.offsetAttribute)) {
-    attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
-      Property.getValueOrDefault(
-        this._terrainOffsetProperty,
-        time,
-        defaultOffset,
-        offsetScratch,
-      ),
-    );
-  }
+}
 
-  return new GeometryInstance({
-    id: entity,
-    geometry: new EllipsoidGeometry(this._options),
-    modelMatrix: skipModelMatrix
-      ? undefined
-      : entity.computeModelMatrixForHeightReference(
-          time,
-          entity.ellipsoid.heightReference,
-          this._options.radii.z * 0.5,
-          this._scene.ellipsoid,
-          modelMatrixResult,
-        ),
-    attributes: attributes,
-  });
-};
-
-/**
- * Creates the geometry instance which represents the outline of the geometry.
- *
- * @param {JulianDate} time The time to use when retrieving initial attribute values.
- * @param {boolean} [skipModelMatrix=false] Whether to compute a model matrix for the geometry instance
- * @param {Matrix4} [modelMatrixResult] Used to store the result of the model matrix calculation
- * @returns {GeometryInstance} The geometry instance representing the outline portion of the geometry.
- *
- * @exception {DeveloperError} This instance does not represent an outlined geometry.
- */
-EllipsoidGeometryUpdater.prototype.createOutlineGeometryInstance = function (
-  time,
-  skipModelMatrix,
-  modelMatrixResult,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-  //>>includeEnd('debug');
-
-  const entity = this._entity;
-  const isAvailable = entity.isAvailable(time);
-
-  const outlineColor = Property.getValueOrDefault(
-    this._outlineColorProperty,
-    time,
-    Color.BLACK,
-    scratchColor,
-  );
-  const distanceDisplayCondition =
-    this._distanceDisplayConditionProperty.getValue(time);
-
-  const attributes = {
-    show: new ShowGeometryInstanceAttribute(
-      isAvailable &&
-        entity.isShowing &&
-        this._showProperty.getValue(time) &&
-        this._showOutlineProperty.getValue(time),
-    ),
-    color: ColorGeometryInstanceAttribute.fromColor(outlineColor),
-    distanceDisplayCondition:
-      DistanceDisplayConditionGeometryInstanceAttribute.fromDistanceDisplayCondition(
-        distanceDisplayCondition,
-      ),
-    offset: undefined,
-  };
-  if (defined(this._options.offsetAttribute)) {
-    attributes.offset = OffsetGeometryInstanceAttribute.fromCartesian3(
-      Property.getValueOrDefault(
-        this._terrainOffsetProperty,
-        time,
-        defaultOffset,
-        offsetScratch,
-      ),
-    );
-  }
-
-  return new GeometryInstance({
-    id: entity,
-    geometry: new EllipsoidOutlineGeometry(this._options),
-    modelMatrix: skipModelMatrix
-      ? undefined
-      : entity.computeModelMatrixForHeightReference(
-          time,
-          entity.ellipsoid.heightReference,
-          this._options.radii.z * 0.5,
-          this._scene.ellipsoid,
-          modelMatrixResult,
-        ),
-    attributes: attributes,
-  });
-};
-
-EllipsoidGeometryUpdater.prototype._computeCenter = function (time, result) {
-  return Property.getValueOrUndefined(this._entity.position, time, result);
-};
-
-EllipsoidGeometryUpdater.prototype._isHidden = function (entity, ellipsoid) {
-  return (
-    !defined(entity.position) ||
-    !defined(ellipsoid.radii) ||
-    GeometryUpdater.prototype._isHidden.call(this, entity, ellipsoid)
-  );
-};
-
-EllipsoidGeometryUpdater.prototype._isDynamic = function (entity, ellipsoid) {
-  return (
-    !entity.position.isConstant || //
-    !Property.isConstant(entity.orientation) || //
-    !ellipsoid.radii.isConstant || //
-    !Property.isConstant(ellipsoid.innerRadii) || //
-    !Property.isConstant(ellipsoid.stackPartitions) || //
-    !Property.isConstant(ellipsoid.slicePartitions) || //
-    !Property.isConstant(ellipsoid.outlineWidth) || //
-    !Property.isConstant(ellipsoid.minimumClock) || //
-    !Property.isConstant(ellipsoid.maximumClock) || //
-    !Property.isConstant(ellipsoid.minimumCone) || //
-    !Property.isConstant(ellipsoid.maximumCone) || //
-    !Property.isConstant(ellipsoid.subdivisions)
-  );
-};
-
-EllipsoidGeometryUpdater.prototype._setStaticOptions = function (
-  entity,
-  ellipsoid,
-) {
-  const heightReference = Property.getValueOrDefault(
-    ellipsoid.heightReference,
-    Iso8601.MINIMUM_VALUE,
-    HeightReference.NONE,
-  );
-  const options = this._options;
-  options.vertexFormat =
-    this._materialProperty instanceof ColorMaterialProperty
-      ? PerInstanceColorAppearance.VERTEX_FORMAT
-      : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
-  options.radii = ellipsoid.radii.getValue(
-    Iso8601.MINIMUM_VALUE,
-    options.radii,
-  );
-  options.innerRadii = Property.getValueOrUndefined(
-    ellipsoid.innerRadii,
-    options.radii,
-  );
-  options.minimumClock = Property.getValueOrUndefined(
-    ellipsoid.minimumClock,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.maximumClock = Property.getValueOrUndefined(
-    ellipsoid.maximumClock,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.minimumCone = Property.getValueOrUndefined(
-    ellipsoid.minimumCone,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.maximumCone = Property.getValueOrUndefined(
-    ellipsoid.maximumCone,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.stackPartitions = Property.getValueOrUndefined(
-    ellipsoid.stackPartitions,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.slicePartitions = Property.getValueOrUndefined(
-    ellipsoid.slicePartitions,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.subdivisions = Property.getValueOrUndefined(
-    ellipsoid.subdivisions,
-    Iso8601.MINIMUM_VALUE,
-  );
-  options.offsetAttribute =
-    heightReference !== HeightReference.NONE
-      ? GeometryOffsetAttribute.ALL
-      : undefined;
-};
+if (defined(Object.create)) {
+  EllipsoidGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
+  EllipsoidGeometryUpdater.prototype.constructor = EllipsoidGeometryUpdater;
+}
 
 EllipsoidGeometryUpdater.prototype._onEntityPropertyChanged =
   heightReferenceOnEntityPropertyChanged;

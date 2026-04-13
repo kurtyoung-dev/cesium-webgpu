@@ -428,281 +428,792 @@ SvgButton.prototype.setTooltip = function (tooltip) {
  * @see AnimationViewModel
  * @see Clock
  */
-function Animation(container, viewModel) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(container)) {
-    throw new DeveloperError("container is required.");
-  }
-  if (!defined(viewModel)) {
-    throw new DeveloperError("viewModel is required.");
-  }
-  //>>includeEnd('debug');
+class Animation {
+  constructor(container, viewModel) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(container)) {
+      throw new DeveloperError("container is required.");
+    }
+    if (!defined(viewModel)) {
+      throw new DeveloperError("viewModel is required.");
+    }
+    //>>includeEnd('debug');
 
-  container = getElement(container);
-  this._viewModel = viewModel;
-  this._container = container;
-  this._centerX = 0;
-  this._centerY = 0;
-  this._defsElement = undefined;
-  this._svgNode = undefined;
-  this._topG = undefined;
-  this._lastHeight = undefined;
-  this._lastWidth = undefined;
+    container = getElement(container);
+    this._viewModel = viewModel;
+    this._container = container;
+    this._centerX = 0;
+    this._centerY = 0;
+    this._defsElement = undefined;
+    this._svgNode = undefined;
+    this._topG = undefined;
+    this._lastHeight = undefined;
+    this._lastWidth = undefined;
 
-  const ownerDocument = container.ownerDocument;
+    const ownerDocument = container.ownerDocument;
 
-  // Firefox requires SVG references to be included directly, not imported from external CSS.
-  // Also, CSS minifiers get confused by this being in an external CSS file.
-  const cssStyle = document.createElement("style");
-  cssStyle.textContent =
-    ".cesium-animation-rectButton .cesium-animation-buttonGlow { filter: url(#animation_blurred); }\
-.cesium-animation-rectButton .cesium-animation-buttonMain { fill: url(#animation_buttonNormal); }\
-.cesium-animation-buttonToggled .cesium-animation-buttonMain { fill: url(#animation_buttonToggled); }\
-.cesium-animation-rectButton:hover .cesium-animation-buttonMain { fill: url(#animation_buttonHovered); }\
-.cesium-animation-buttonDisabled .cesium-animation-buttonMain { fill: url(#animation_buttonDisabled); }\
-.cesium-animation-shuttleRingG .cesium-animation-shuttleRingSwoosh { fill: url(#animation_shuttleRingSwooshGradient); }\
-.cesium-animation-shuttleRingG:hover .cesium-animation-shuttleRingSwoosh { fill: url(#animation_shuttleRingSwooshHovered); }\
-.cesium-animation-shuttleRingPointer { fill: url(#animation_shuttleRingPointerGradient); }\
-.cesium-animation-shuttleRingPausePointer { fill: url(#animation_shuttleRingPointerPaused); }\
-.cesium-animation-knobOuter { fill: url(#animation_knobOuter); }\
-.cesium-animation-knobInner { fill: url(#animation_knobInner); }";
+    // Firefox requires SVG references to be included directly, not imported from external CSS.
+    // Also, CSS minifiers get confused by this being in an external CSS file.
+    const cssStyle = document.createElement("style");
+    cssStyle.textContent =
+      ".cesium-animation-rectButton .cesium-animation-buttonGlow { filter: url(#animation_blurred); }\
+  .cesium-animation-rectButton .cesium-animation-buttonMain { fill: url(#animation_buttonNormal); }\
+  .cesium-animation-buttonToggled .cesium-animation-buttonMain { fill: url(#animation_buttonToggled); }\
+  .cesium-animation-rectButton:hover .cesium-animation-buttonMain { fill: url(#animation_buttonHovered); }\
+  .cesium-animation-buttonDisabled .cesium-animation-buttonMain { fill: url(#animation_buttonDisabled); }\
+  .cesium-animation-shuttleRingG .cesium-animation-shuttleRingSwoosh { fill: url(#animation_shuttleRingSwooshGradient); }\
+  .cesium-animation-shuttleRingG:hover .cesium-animation-shuttleRingSwoosh { fill: url(#animation_shuttleRingSwooshHovered); }\
+  .cesium-animation-shuttleRingPointer { fill: url(#animation_shuttleRingPointerGradient); }\
+  .cesium-animation-shuttleRingPausePointer { fill: url(#animation_shuttleRingPointerPaused); }\
+  .cesium-animation-knobOuter { fill: url(#animation_knobOuter); }\
+  .cesium-animation-knobInner { fill: url(#animation_knobInner); }";
 
-  ownerDocument.head.insertBefore(cssStyle, ownerDocument.head.childNodes[0]);
+    ownerDocument.head.insertBefore(cssStyle, ownerDocument.head.childNodes[0]);
 
-  const themeEle = document.createElement("div");
-  themeEle.className = "cesium-animation-theme";
-  themeEle.innerHTML =
-    '<div class="cesium-animation-themeNormal"></div>\
-<div class="cesium-animation-themeHover"></div>\
-<div class="cesium-animation-themeSelect"></div>\
-<div class="cesium-animation-themeDisabled"></div>\
-<div class="cesium-animation-themeKnob"></div>\
-<div class="cesium-animation-themePointer"></div>\
-<div class="cesium-animation-themeSwoosh"></div>\
-<div class="cesium-animation-themeSwooshHover"></div>';
+    const themeEle = document.createElement("div");
+    themeEle.className = "cesium-animation-theme";
+    themeEle.innerHTML =
+      '<div class="cesium-animation-themeNormal"></div>\
+  <div class="cesium-animation-themeHover"></div>\
+  <div class="cesium-animation-themeSelect"></div>\
+  <div class="cesium-animation-themeDisabled"></div>\
+  <div class="cesium-animation-themeKnob"></div>\
+  <div class="cesium-animation-themePointer"></div>\
+  <div class="cesium-animation-themeSwoosh"></div>\
+  <div class="cesium-animation-themeSwooshHover"></div>';
 
-  this._theme = themeEle;
-  this._themeNormal = themeEle.childNodes[0];
-  this._themeHover = themeEle.childNodes[1];
-  this._themeSelect = themeEle.childNodes[2];
-  this._themeDisabled = themeEle.childNodes[3];
-  this._themeKnob = themeEle.childNodes[4];
-  this._themePointer = themeEle.childNodes[5];
-  this._themeSwoosh = themeEle.childNodes[6];
-  this._themeSwooshHover = themeEle.childNodes[7];
+    this._theme = themeEle;
+    this._themeNormal = themeEle.childNodes[0];
+    this._themeHover = themeEle.childNodes[1];
+    this._themeSelect = themeEle.childNodes[2];
+    this._themeDisabled = themeEle.childNodes[3];
+    this._themeKnob = themeEle.childNodes[4];
+    this._themePointer = themeEle.childNodes[5];
+    this._themeSwoosh = themeEle.childNodes[6];
+    this._themeSwooshHover = themeEle.childNodes[7];
 
-  const svg = document.createElementNS(svgNS, "svg:svg");
-  this._svgNode = svg;
+    const svg = document.createElementNS(svgNS, "svg:svg");
+    this._svgNode = svg;
 
-  // Define the XLink namespace that SVG uses
-  svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", xlinkNS);
+    // Define the XLink namespace that SVG uses
+    svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", xlinkNS);
 
-  const topG = document.createElementNS(svgNS, "g");
-  this._topG = topG;
+    const topG = document.createElementNS(svgNS, "g");
+    this._topG = topG;
 
-  this._realtimeSVG = new SvgButton(
-    wingButton(3, 4, "animation_pathClock"),
-    viewModel.playRealtimeViewModel,
-  );
-  this._playReverseSVG = new SvgButton(
-    rectButton(44, 99, "animation_pathPlayReverse"),
-    viewModel.playReverseViewModel,
-  );
-  this._playForwardSVG = new SvgButton(
-    rectButton(124, 99, "animation_pathPlay"),
-    viewModel.playForwardViewModel,
-  );
-  this._pauseSVG = new SvgButton(
-    rectButton(84, 99, "animation_pathPause"),
-    viewModel.pauseViewModel,
-  );
+    this._realtimeSVG = new SvgButton(
+      wingButton(3, 4, "animation_pathClock"),
+      viewModel.playRealtimeViewModel,
+    );
+    this._playReverseSVG = new SvgButton(
+      rectButton(44, 99, "animation_pathPlayReverse"),
+      viewModel.playReverseViewModel,
+    );
+    this._playForwardSVG = new SvgButton(
+      rectButton(124, 99, "animation_pathPlay"),
+      viewModel.playForwardViewModel,
+    );
+    this._pauseSVG = new SvgButton(
+      rectButton(84, 99, "animation_pathPause"),
+      viewModel.pauseViewModel,
+    );
 
-  const buttonsG = document.createElementNS(svgNS, "g");
-  buttonsG.appendChild(this._realtimeSVG.svgElement);
-  buttonsG.appendChild(this._playReverseSVG.svgElement);
-  buttonsG.appendChild(this._playForwardSVG.svgElement);
-  buttonsG.appendChild(this._pauseSVG.svgElement);
+    const buttonsG = document.createElementNS(svgNS, "g");
+    buttonsG.appendChild(this._realtimeSVG.svgElement);
+    buttonsG.appendChild(this._playReverseSVG.svgElement);
+    buttonsG.appendChild(this._playForwardSVG.svgElement);
+    buttonsG.appendChild(this._pauseSVG.svgElement);
 
-  const shuttleRingBackPanel = svgFromObject({
-    tagName: "circle",
-    class: "cesium-animation-shuttleRingBack",
-    cx: 100,
-    cy: 100,
-    r: 99,
-  });
-  this._shuttleRingBackPanel = shuttleRingBackPanel;
+    const shuttleRingBackPanel = svgFromObject({
+      tagName: "circle",
+      class: "cesium-animation-shuttleRingBack",
+      cx: 100,
+      cy: 100,
+      r: 99,
+    });
+    this._shuttleRingBackPanel = shuttleRingBackPanel;
 
-  const swooshIconInfo = svgIconsById["animation_pathSwooshFX"];
-  const shuttleRingPointerIconInfo = svgIconsById["animation_pathPointer"];
+    const swooshIconInfo = svgIconsById["animation_pathSwooshFX"];
+    const shuttleRingPointerIconInfo = svgIconsById["animation_pathPointer"];
 
-  const shuttleRingSwooshG = svgFromObject({
-    tagName: "g",
-    class: "cesium-animation-shuttleRingSwoosh",
-    children: [
-      {
-        tagName: swooshIconInfo.tagName,
-        transform: "translate(100,97) scale(-1,1)",
-        id: "animation_pathSwooshFX",
-        d: swooshIconInfo.d,
-      },
-      {
-        tagName: swooshIconInfo.tagName,
-        transform: "translate(100,97)",
-        id: "animation_pathSwooshFX",
-        d: swooshIconInfo.d,
-      },
-      {
-        tagName: "line",
-        x1: 100,
-        y1: 8,
-        x2: 100,
-        y2: 22,
-      },
-    ],
-  });
-  this._shuttleRingSwooshG = shuttleRingSwooshG;
+    const shuttleRingSwooshG = svgFromObject({
+      tagName: "g",
+      class: "cesium-animation-shuttleRingSwoosh",
+      children: [
+        {
+          tagName: swooshIconInfo.tagName,
+          transform: "translate(100,97) scale(-1,1)",
+          id: "animation_pathSwooshFX",
+          d: swooshIconInfo.d,
+        },
+        {
+          tagName: swooshIconInfo.tagName,
+          transform: "translate(100,97)",
+          id: "animation_pathSwooshFX",
+          d: swooshIconInfo.d,
+        },
+        {
+          tagName: "line",
+          x1: 100,
+          y1: 8,
+          x2: 100,
+          y2: 22,
+        },
+      ],
+    });
+    this._shuttleRingSwooshG = shuttleRingSwooshG;
 
-  this._shuttleRingPointer = svgFromObject({
-    class: "cesium-animation-shuttleRingPointer",
-    id: "animation_pathPointer",
-    tagName: shuttleRingPointerIconInfo.tagName,
-    d: shuttleRingPointerIconInfo.d,
-  });
+    this._shuttleRingPointer = svgFromObject({
+      class: "cesium-animation-shuttleRingPointer",
+      id: "animation_pathPointer",
+      tagName: shuttleRingPointerIconInfo.tagName,
+      d: shuttleRingPointerIconInfo.d,
+    });
 
-  const knobG = svgFromObject({
-    tagName: "g",
-    transform: "translate(100,100)",
-  });
+    const knobG = svgFromObject({
+      tagName: "g",
+      transform: "translate(100,100)",
+    });
 
-  this._knobOuter = svgFromObject({
-    tagName: "circle",
-    class: "cesium-animation-knobOuter",
-    cx: 0,
-    cy: 0,
-    r: 71,
-  });
+    this._knobOuter = svgFromObject({
+      tagName: "circle",
+      class: "cesium-animation-knobOuter",
+      cx: 0,
+      cy: 0,
+      r: 71,
+    });
 
-  const knobInnerAndShieldSize = 61;
+    const knobInnerAndShieldSize = 61;
 
-  const knobInner = svgFromObject({
-    tagName: "circle",
-    class: "cesium-animation-knobInner",
-    cx: 0,
-    cy: 0,
-    r: knobInnerAndShieldSize,
-  });
+    const knobInner = svgFromObject({
+      tagName: "circle",
+      class: "cesium-animation-knobInner",
+      cx: 0,
+      cy: 0,
+      r: knobInnerAndShieldSize,
+    });
 
-  this._knobDate = svgText(0, -24, "");
-  this._knobTime = svgText(0, -7, "");
-  this._knobStatus = svgText(0, -41, "");
+    this._knobDate = svgText(0, -24, "");
+    this._knobTime = svgText(0, -7, "");
+    this._knobStatus = svgText(0, -41, "");
 
-  // widget shield catches clicks on the knob itself (even while DOM elements underneath are changing).
-  const knobShield = svgFromObject({
-    tagName: "circle",
-    class: "cesium-animation-blank",
-    cx: 0,
-    cy: 0,
-    r: knobInnerAndShieldSize,
-  });
+    // widget shield catches clicks on the knob itself (even while DOM elements underneath are changing).
+    const knobShield = svgFromObject({
+      tagName: "circle",
+      class: "cesium-animation-blank",
+      cx: 0,
+      cy: 0,
+      r: knobInnerAndShieldSize,
+    });
 
-  const shuttleRingBackG = document.createElementNS(svgNS, "g");
-  shuttleRingBackG.setAttribute("class", "cesium-animation-shuttleRingG");
+    const shuttleRingBackG = document.createElementNS(svgNS, "g");
+    shuttleRingBackG.setAttribute("class", "cesium-animation-shuttleRingG");
 
-  container.appendChild(themeEle);
-  topG.appendChild(shuttleRingBackG);
-  topG.appendChild(knobG);
-  topG.appendChild(buttonsG);
+    container.appendChild(themeEle);
+    topG.appendChild(shuttleRingBackG);
+    topG.appendChild(knobG);
+    topG.appendChild(buttonsG);
 
-  shuttleRingBackG.appendChild(shuttleRingBackPanel);
-  shuttleRingBackG.appendChild(shuttleRingSwooshG);
-  shuttleRingBackG.appendChild(this._shuttleRingPointer);
+    shuttleRingBackG.appendChild(shuttleRingBackPanel);
+    shuttleRingBackG.appendChild(shuttleRingSwooshG);
+    shuttleRingBackG.appendChild(this._shuttleRingPointer);
 
-  knobG.appendChild(this._knobOuter);
-  knobG.appendChild(knobInner);
-  knobG.appendChild(this._knobDate);
-  knobG.appendChild(this._knobTime);
-  knobG.appendChild(this._knobStatus);
-  knobG.appendChild(knobShield);
+    knobG.appendChild(this._knobOuter);
+    knobG.appendChild(knobInner);
+    knobG.appendChild(this._knobDate);
+    knobG.appendChild(this._knobTime);
+    knobG.appendChild(this._knobStatus);
+    knobG.appendChild(knobShield);
 
-  svg.appendChild(topG);
-  container.appendChild(svg);
+    svg.appendChild(topG);
+    container.appendChild(svg);
 
-  const that = this;
-  function mouseCallback(e) {
-    setShuttleRingFromMouseOrTouch(that, e);
-  }
-  this._mouseCallback = mouseCallback;
+    const that = this;
+    function mouseCallback(e) {
+      setShuttleRingFromMouseOrTouch(that, e);
+    }
+    this._mouseCallback = mouseCallback;
 
-  shuttleRingBackPanel.addEventListener("mousedown", mouseCallback, true);
-  shuttleRingBackPanel.addEventListener("touchstart", mouseCallback, true);
-  shuttleRingSwooshG.addEventListener("mousedown", mouseCallback, true);
-  shuttleRingSwooshG.addEventListener("touchstart", mouseCallback, true);
-  ownerDocument.addEventListener("mousemove", mouseCallback, true);
-  ownerDocument.addEventListener("touchmove", mouseCallback, true);
-  ownerDocument.addEventListener("mouseup", mouseCallback, true);
-  ownerDocument.addEventListener("touchend", mouseCallback, true);
-  ownerDocument.addEventListener("touchcancel", mouseCallback, true);
-  this._shuttleRingPointer.addEventListener("mousedown", mouseCallback, true);
-  this._shuttleRingPointer.addEventListener("touchstart", mouseCallback, true);
-  this._knobOuter.addEventListener("mousedown", mouseCallback, true);
-  this._knobOuter.addEventListener("touchstart", mouseCallback, true);
+    shuttleRingBackPanel.addEventListener("mousedown", mouseCallback, true);
+    shuttleRingBackPanel.addEventListener("touchstart", mouseCallback, true);
+    shuttleRingSwooshG.addEventListener("mousedown", mouseCallback, true);
+    shuttleRingSwooshG.addEventListener("touchstart", mouseCallback, true);
+    ownerDocument.addEventListener("mousemove", mouseCallback, true);
+    ownerDocument.addEventListener("touchmove", mouseCallback, true);
+    ownerDocument.addEventListener("mouseup", mouseCallback, true);
+    ownerDocument.addEventListener("touchend", mouseCallback, true);
+    ownerDocument.addEventListener("touchcancel", mouseCallback, true);
+    this._shuttleRingPointer.addEventListener("mousedown", mouseCallback, true);
+    this._shuttleRingPointer.addEventListener("touchstart", mouseCallback, true);
+    this._knobOuter.addEventListener("mousedown", mouseCallback, true);
+    this._knobOuter.addEventListener("touchstart", mouseCallback, true);
 
-  //TODO: Since the animation widget uses SVG and has no HTML backing,
-  //we need to wire everything up manually.  Knockout can supposedly
-  //bind to SVG, so we we figure that out we can modify our SVG
-  //to include the binding information directly.
+    //TODO: Since the animation widget uses SVG and has no HTML backing,
+    //we need to wire everything up manually.  Knockout can supposedly
+    //bind to SVG, so we we figure that out we can modify our SVG
+    //to include the binding information directly.
 
-  const timeNode = this._knobTime.childNodes[0];
-  const dateNode = this._knobDate.childNodes[0];
-  const statusNode = this._knobStatus.childNodes[0];
-  let isPaused;
-  this._subscriptions = [
-    //
-    subscribeAndEvaluate(viewModel.pauseViewModel, "toggled", function (value) {
-      if (isPaused !== value) {
-        isPaused = value;
-        if (isPaused) {
-          that._shuttleRingPointer.setAttribute(
-            "class",
-            "cesium-animation-shuttleRingPausePointer",
-          );
-        } else {
-          that._shuttleRingPointer.setAttribute(
-            "class",
-            "cesium-animation-shuttleRingPointer",
-          );
+    const timeNode = this._knobTime.childNodes[0];
+    const dateNode = this._knobDate.childNodes[0];
+    const statusNode = this._knobStatus.childNodes[0];
+    let isPaused;
+    this._subscriptions = [
+      //
+      subscribeAndEvaluate(viewModel.pauseViewModel, "toggled", function (value) {
+        if (isPaused !== value) {
+          isPaused = value;
+          if (isPaused) {
+            that._shuttleRingPointer.setAttribute(
+              "class",
+              "cesium-animation-shuttleRingPausePointer",
+            );
+          } else {
+            that._shuttleRingPointer.setAttribute(
+              "class",
+              "cesium-animation-shuttleRingPointer",
+            );
+          }
         }
+      }),
+
+      subscribeAndEvaluate(viewModel, "shuttleRingAngle", function (value) {
+        setShuttleRingPointer(that._shuttleRingPointer, that._knobOuter, value);
+      }),
+
+      subscribeAndEvaluate(viewModel, "dateLabel", function (value) {
+        if (dateNode.textContent !== value) {
+          dateNode.textContent = value;
+        }
+      }),
+
+      subscribeAndEvaluate(viewModel, "timeLabel", function (value) {
+        if (timeNode.textContent !== value) {
+          timeNode.textContent = value;
+        }
+      }),
+
+      subscribeAndEvaluate(viewModel, "multiplierLabel", function (value) {
+        if (statusNode.textContent !== value) {
+          statusNode.textContent = value;
+        }
+      }),
+    ];
+
+    this.applyThemeChanges();
+    this.resize();
+  }
+
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the animation widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    if (defined(this._observer)) {
+      this._observer.disconnect();
+      this._observer = undefined;
+    }
+
+    const doc = this._container.ownerDocument;
+
+    const mouseCallback = this._mouseCallback;
+    this._shuttleRingBackPanel.removeEventListener(
+      "mousedown",
+      mouseCallback,
+      true,
+    );
+    this._shuttleRingBackPanel.removeEventListener(
+      "touchstart",
+      mouseCallback,
+      true,
+    );
+    this._shuttleRingSwooshG.removeEventListener(
+      "mousedown",
+      mouseCallback,
+      true,
+    );
+    this._shuttleRingSwooshG.removeEventListener(
+      "touchstart",
+      mouseCallback,
+      true,
+    );
+    doc.removeEventListener("mousemove", mouseCallback, true);
+    doc.removeEventListener("touchmove", mouseCallback, true);
+    doc.removeEventListener("mouseup", mouseCallback, true);
+    doc.removeEventListener("touchend", mouseCallback, true);
+    doc.removeEventListener("touchcancel", mouseCallback, true);
+    this._shuttleRingPointer.removeEventListener(
+      "mousedown",
+      mouseCallback,
+      true,
+    );
+    this._shuttleRingPointer.removeEventListener(
+      "touchstart",
+      mouseCallback,
+      true,
+    );
+    this._knobOuter.removeEventListener("mousedown", mouseCallback, true);
+    this._knobOuter.removeEventListener("touchstart", mouseCallback, true);
+
+    this._container.removeChild(this._svgNode);
+    this._container.removeChild(this._theme);
+    this._realtimeSVG.destroy();
+    this._playReverseSVG.destroy();
+    this._playForwardSVG.destroy();
+    this._pauseSVG.destroy();
+
+    const subscriptions = this._subscriptions;
+    for (let i = 0, len = subscriptions.length; i < len; i++) {
+      subscriptions[i].dispose();
+    }
+
+    return destroyObject(this);
+  }
+
+  /**
+   * Resizes the widget to match the container size.
+   * This function should be called whenever the container size is changed.
+   */
+  resize() {
+    const parentWidth = this._container.clientWidth;
+    const parentHeight = this._container.clientHeight;
+    if (parentWidth === this._lastWidth && parentHeight === this._lastHeight) {
+      return;
+    }
+
+    const svg = this._svgNode;
+
+    //The width and height as the SVG was originally drawn.
+    const baseWidth = 200;
+    const baseHeight = 132;
+
+    let width = parentWidth;
+    let height = parentHeight;
+
+    if (parentWidth === 0 && parentHeight === 0) {
+      width = baseWidth;
+      height = baseHeight;
+    } else if (parentWidth === 0) {
+      height = parentHeight;
+      width = baseWidth * (parentHeight / baseHeight);
+    } else if (parentHeight === 0) {
+      width = parentWidth;
+      height = baseHeight * (parentWidth / baseWidth);
+    }
+
+    const scaleX = width / baseWidth;
+    const scaleY = height / baseHeight;
+
+    svg.style.cssText = `width: ${width}px; height: ${height}px; position: absolute; bottom: 0; left: 0; overflow: hidden;`;
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+    this._topG.setAttribute("transform", `scale(${scaleX},${scaleY})`);
+
+    this._centerX = Math.max(1, 100.0 * scaleX);
+    this._centerY = Math.max(1, 100.0 * scaleY);
+
+    this._lastHeight = parentWidth;
+    this._lastWidth = parentHeight;
+  }
+
+  /**
+   * Updates the widget to reflect any modified CSS rules for theming.
+   *
+   * @example
+   * //Switch to the cesium-lighter theme.
+   * document.body.className = 'cesium-lighter';
+   * animation.applyThemeChanges();
+   */
+  applyThemeChanges() {
+    // Since we rely on computed styles for themeing, we can't actually
+    // do anything if the container has not yet been added to the DOM.
+    // Set up an observer to be notified when it is added and apply
+    // the changes at that time.
+
+    const doc = this._container.ownerDocument;
+
+    if (!doc.body.contains(this._container)) {
+      if (defined(this._observer)) {
+        //Already listening.
+        return;
       }
-    }),
+      const that = this;
+      that._observer = new MutationObserver(function () {
+        if (doc.body.contains(that._container)) {
+          that._observer.disconnect();
+          that._observer = undefined;
+          that.applyThemeChanges();
+        }
+      });
+      that._observer.observe(doc, { childList: true, subtree: true });
+      return;
+    }
 
-    subscribeAndEvaluate(viewModel, "shuttleRingAngle", function (value) {
-      setShuttleRingPointer(that._shuttleRingPointer, that._knobOuter, value);
-    }),
+    const buttonNormalBackColor = getElementColor(this._themeNormal);
+    const buttonHoverBackColor = getElementColor(this._themeHover);
+    const buttonToggledBackColor = getElementColor(this._themeSelect);
+    const buttonDisabledBackColor = getElementColor(this._themeDisabled);
+    const knobBackColor = getElementColor(this._themeKnob);
+    const pointerColor = getElementColor(this._themePointer);
+    const swooshColor = getElementColor(this._themeSwoosh);
+    const swooshHoverColor = getElementColor(this._themeSwooshHover);
 
-    subscribeAndEvaluate(viewModel, "dateLabel", function (value) {
-      if (dateNode.textContent !== value) {
-        dateNode.textContent = value;
-      }
-    }),
+    const defsElement = svgFromObject({
+      tagName: "defs",
+      children: [
+        {
+          id: "animation_buttonNormal",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            //add a 'stop-opacity' field to make translucent.
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": makeColorString(
+                buttonNormalBackColor,
+                gradientEnabledColor0,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "12%",
+              "stop-color": makeColorString(
+                buttonNormalBackColor,
+                gradientEnabledColor1,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "46%",
+              "stop-color": makeColorString(
+                buttonNormalBackColor,
+                gradientEnabledColor2,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "81%",
+              "stop-color": makeColorString(
+                buttonNormalBackColor,
+                gradientEnabledColor3,
+              ),
+            },
+          ],
+        },
+        {
+          id: "animation_buttonHovered",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": makeColorString(
+                buttonHoverBackColor,
+                gradientEnabledColor0,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "12%",
+              "stop-color": makeColorString(
+                buttonHoverBackColor,
+                gradientEnabledColor1,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "46%",
+              "stop-color": makeColorString(
+                buttonHoverBackColor,
+                gradientEnabledColor2,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "81%",
+              "stop-color": makeColorString(
+                buttonHoverBackColor,
+                gradientEnabledColor3,
+              ),
+            },
+          ],
+        },
+        {
+          id: "animation_buttonToggled",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": makeColorString(
+                buttonToggledBackColor,
+                gradientEnabledColor0,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "12%",
+              "stop-color": makeColorString(
+                buttonToggledBackColor,
+                gradientEnabledColor1,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "46%",
+              "stop-color": makeColorString(
+                buttonToggledBackColor,
+                gradientEnabledColor2,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "81%",
+              "stop-color": makeColorString(
+                buttonToggledBackColor,
+                gradientEnabledColor3,
+              ),
+            },
+          ],
+        },
+        {
+          id: "animation_buttonDisabled",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": makeColorString(
+                buttonDisabledBackColor,
+                gradientDisabledColor0,
+              ),
+            },
+            {
+              tagName: "stop",
+              offset: "75%",
+              "stop-color": makeColorString(
+                buttonDisabledBackColor,
+                gradientDisabledColor1,
+              ),
+            },
+          ],
+        },
+        {
+          id: "animation_blurred",
+          tagName: "filter",
+          width: "200%",
+          height: "200%",
+          x: "-50%",
+          y: "-50%",
+          children: [
+            {
+              tagName: "feGaussianBlur",
+              stdDeviation: 4,
+              in: "SourceGraphic",
+            },
+          ],
+        },
+        {
+          id: "animation_shuttleRingSwooshGradient",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-opacity": 0.2,
+              "stop-color": swooshColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "85%",
+              "stop-opacity": 0.85,
+              "stop-color": swooshColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "95%",
+              "stop-opacity": 0.05,
+              "stop-color": swooshColor.toCssColorString(),
+            },
+          ],
+        },
+        {
+          id: "animation_shuttleRingSwooshHovered",
+          tagName: "linearGradient",
+          x1: "50%",
+          y1: "0%",
+          x2: "50%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-opacity": 0.2,
+              "stop-color": swooshHoverColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "85%",
+              "stop-opacity": 0.85,
+              "stop-color": swooshHoverColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "95%",
+              "stop-opacity": 0.05,
+              "stop-color": swooshHoverColor.toCssColorString(),
+            },
+          ],
+        },
+        {
+          id: "animation_shuttleRingPointerGradient",
+          tagName: "linearGradient",
+          x1: "0%",
+          y1: "50%",
+          x2: "100%",
+          y2: "50%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": pointerColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "40%",
+              "stop-color": pointerColor.toCssColorString(),
+            },
+            {
+              tagName: "stop",
+              offset: "60%",
+              "stop-color": makeColorString(pointerColor, gradientPointerColor),
+            },
+            {
+              tagName: "stop",
+              offset: "100%",
+              "stop-color": makeColorString(pointerColor, gradientPointerColor),
+            },
+          ],
+        },
+        {
+          id: "animation_shuttleRingPointerPaused",
+          tagName: "linearGradient",
+          x1: "0%",
+          y1: "50%",
+          x2: "100%",
+          y2: "50%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "0%",
+              "stop-color": "#CCC",
+            },
+            {
+              tagName: "stop",
+              offset: "40%",
+              "stop-color": "#CCC",
+            },
+            {
+              tagName: "stop",
+              offset: "60%",
+              "stop-color": "#555",
+            },
+            {
+              tagName: "stop",
+              offset: "100%",
+              "stop-color": "#555",
+            },
+          ],
+        },
+        {
+          id: "animation_knobOuter",
+          tagName: "linearGradient",
+          x1: "20%",
+          y1: "0%",
+          x2: "90%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "5%",
+              "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
+            },
+            {
+              tagName: "stop",
+              offset: "60%",
+              "stop-color": makeColorString(knobBackColor, gradientKnobColor),
+            },
+            {
+              tagName: "stop",
+              offset: "85%",
+              "stop-color": makeColorString(knobBackColor, gradientEnabledColor1),
+            },
+          ],
+        },
+        {
+          id: "animation_knobInner",
+          tagName: "linearGradient",
+          x1: "20%",
+          y1: "0%",
+          x2: "90%",
+          y2: "100%",
+          children: [
+            {
+              tagName: "stop",
+              offset: "5%",
+              "stop-color": makeColorString(knobBackColor, gradientKnobColor),
+            },
+            {
+              tagName: "stop",
+              offset: "60%",
+              "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
+            },
+            {
+              tagName: "stop",
+              offset: "85%",
+              "stop-color": makeColorString(knobBackColor, gradientEnabledColor3),
+            },
+          ],
+        },
+      ],
+    });
 
-    subscribeAndEvaluate(viewModel, "timeLabel", function (value) {
-      if (timeNode.textContent !== value) {
-        timeNode.textContent = value;
-      }
-    }),
+    if (!defined(this._defsElement)) {
+      this._svgNode.appendChild(defsElement);
+    } else {
+      this._svgNode.replaceChild(defsElement, this._defsElement);
+    }
+    this._defsElement = defsElement;
+  }
 
-    subscribeAndEvaluate(viewModel, "multiplierLabel", function (value) {
-      if (statusNode.textContent !== value) {
-        statusNode.textContent = value;
-      }
-    }),
-  ];
-
-  this.applyThemeChanges();
-  this.resize();
-}
-
-Object.defineProperties(Animation.prototype, {
   /**
    * Gets the parent container.
    *
@@ -710,11 +1221,9 @@ Object.defineProperties(Animation.prototype, {
    * @type {Element}
    * @readonly
    */
-  container: {
-    get: function () {
-      return this._container;
-    },
-  },
+  get container() {
+    return this._container;
+  }
 
   /**
    * Gets the view model.
@@ -723,521 +1232,9 @@ Object.defineProperties(Animation.prototype, {
    * @type {AnimationViewModel}
    * @readonly
    */
-  viewModel: {
-    get: function () {
-      return this._viewModel;
-    },
-  },
-});
-
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-Animation.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the animation widget.  Should be called if permanently
- * removing the widget from layout.
- */
-Animation.prototype.destroy = function () {
-  if (defined(this._observer)) {
-    this._observer.disconnect();
-    this._observer = undefined;
+  get viewModel() {
+    return this._viewModel;
   }
+}
 
-  const doc = this._container.ownerDocument;
-
-  const mouseCallback = this._mouseCallback;
-  this._shuttleRingBackPanel.removeEventListener(
-    "mousedown",
-    mouseCallback,
-    true,
-  );
-  this._shuttleRingBackPanel.removeEventListener(
-    "touchstart",
-    mouseCallback,
-    true,
-  );
-  this._shuttleRingSwooshG.removeEventListener(
-    "mousedown",
-    mouseCallback,
-    true,
-  );
-  this._shuttleRingSwooshG.removeEventListener(
-    "touchstart",
-    mouseCallback,
-    true,
-  );
-  doc.removeEventListener("mousemove", mouseCallback, true);
-  doc.removeEventListener("touchmove", mouseCallback, true);
-  doc.removeEventListener("mouseup", mouseCallback, true);
-  doc.removeEventListener("touchend", mouseCallback, true);
-  doc.removeEventListener("touchcancel", mouseCallback, true);
-  this._shuttleRingPointer.removeEventListener(
-    "mousedown",
-    mouseCallback,
-    true,
-  );
-  this._shuttleRingPointer.removeEventListener(
-    "touchstart",
-    mouseCallback,
-    true,
-  );
-  this._knobOuter.removeEventListener("mousedown", mouseCallback, true);
-  this._knobOuter.removeEventListener("touchstart", mouseCallback, true);
-
-  this._container.removeChild(this._svgNode);
-  this._container.removeChild(this._theme);
-  this._realtimeSVG.destroy();
-  this._playReverseSVG.destroy();
-  this._playForwardSVG.destroy();
-  this._pauseSVG.destroy();
-
-  const subscriptions = this._subscriptions;
-  for (let i = 0, len = subscriptions.length; i < len; i++) {
-    subscriptions[i].dispose();
-  }
-
-  return destroyObject(this);
-};
-
-/**
- * Resizes the widget to match the container size.
- * This function should be called whenever the container size is changed.
- */
-Animation.prototype.resize = function () {
-  const parentWidth = this._container.clientWidth;
-  const parentHeight = this._container.clientHeight;
-  if (parentWidth === this._lastWidth && parentHeight === this._lastHeight) {
-    return;
-  }
-
-  const svg = this._svgNode;
-
-  //The width and height as the SVG was originally drawn.
-  const baseWidth = 200;
-  const baseHeight = 132;
-
-  let width = parentWidth;
-  let height = parentHeight;
-
-  if (parentWidth === 0 && parentHeight === 0) {
-    width = baseWidth;
-    height = baseHeight;
-  } else if (parentWidth === 0) {
-    height = parentHeight;
-    width = baseWidth * (parentHeight / baseHeight);
-  } else if (parentHeight === 0) {
-    width = parentWidth;
-    height = baseHeight * (parentWidth / baseWidth);
-  }
-
-  const scaleX = width / baseWidth;
-  const scaleY = height / baseHeight;
-
-  svg.style.cssText = `width: ${width}px; height: ${height}px; position: absolute; bottom: 0; left: 0; overflow: hidden;`;
-  svg.setAttribute("width", width);
-  svg.setAttribute("height", height);
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-
-  this._topG.setAttribute("transform", `scale(${scaleX},${scaleY})`);
-
-  this._centerX = Math.max(1, 100.0 * scaleX);
-  this._centerY = Math.max(1, 100.0 * scaleY);
-
-  this._lastHeight = parentWidth;
-  this._lastWidth = parentHeight;
-};
-
-/**
- * Updates the widget to reflect any modified CSS rules for theming.
- *
- * @example
- * //Switch to the cesium-lighter theme.
- * document.body.className = 'cesium-lighter';
- * animation.applyThemeChanges();
- */
-Animation.prototype.applyThemeChanges = function () {
-  // Since we rely on computed styles for themeing, we can't actually
-  // do anything if the container has not yet been added to the DOM.
-  // Set up an observer to be notified when it is added and apply
-  // the changes at that time.
-
-  const doc = this._container.ownerDocument;
-
-  if (!doc.body.contains(this._container)) {
-    if (defined(this._observer)) {
-      //Already listening.
-      return;
-    }
-    const that = this;
-    that._observer = new MutationObserver(function () {
-      if (doc.body.contains(that._container)) {
-        that._observer.disconnect();
-        that._observer = undefined;
-        that.applyThemeChanges();
-      }
-    });
-    that._observer.observe(doc, { childList: true, subtree: true });
-    return;
-  }
-
-  const buttonNormalBackColor = getElementColor(this._themeNormal);
-  const buttonHoverBackColor = getElementColor(this._themeHover);
-  const buttonToggledBackColor = getElementColor(this._themeSelect);
-  const buttonDisabledBackColor = getElementColor(this._themeDisabled);
-  const knobBackColor = getElementColor(this._themeKnob);
-  const pointerColor = getElementColor(this._themePointer);
-  const swooshColor = getElementColor(this._themeSwoosh);
-  const swooshHoverColor = getElementColor(this._themeSwooshHover);
-
-  const defsElement = svgFromObject({
-    tagName: "defs",
-    children: [
-      {
-        id: "animation_buttonNormal",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          //add a 'stop-opacity' field to make translucent.
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": makeColorString(
-              buttonNormalBackColor,
-              gradientEnabledColor0,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "12%",
-            "stop-color": makeColorString(
-              buttonNormalBackColor,
-              gradientEnabledColor1,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "46%",
-            "stop-color": makeColorString(
-              buttonNormalBackColor,
-              gradientEnabledColor2,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "81%",
-            "stop-color": makeColorString(
-              buttonNormalBackColor,
-              gradientEnabledColor3,
-            ),
-          },
-        ],
-      },
-      {
-        id: "animation_buttonHovered",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": makeColorString(
-              buttonHoverBackColor,
-              gradientEnabledColor0,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "12%",
-            "stop-color": makeColorString(
-              buttonHoverBackColor,
-              gradientEnabledColor1,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "46%",
-            "stop-color": makeColorString(
-              buttonHoverBackColor,
-              gradientEnabledColor2,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "81%",
-            "stop-color": makeColorString(
-              buttonHoverBackColor,
-              gradientEnabledColor3,
-            ),
-          },
-        ],
-      },
-      {
-        id: "animation_buttonToggled",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": makeColorString(
-              buttonToggledBackColor,
-              gradientEnabledColor0,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "12%",
-            "stop-color": makeColorString(
-              buttonToggledBackColor,
-              gradientEnabledColor1,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "46%",
-            "stop-color": makeColorString(
-              buttonToggledBackColor,
-              gradientEnabledColor2,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "81%",
-            "stop-color": makeColorString(
-              buttonToggledBackColor,
-              gradientEnabledColor3,
-            ),
-          },
-        ],
-      },
-      {
-        id: "animation_buttonDisabled",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": makeColorString(
-              buttonDisabledBackColor,
-              gradientDisabledColor0,
-            ),
-          },
-          {
-            tagName: "stop",
-            offset: "75%",
-            "stop-color": makeColorString(
-              buttonDisabledBackColor,
-              gradientDisabledColor1,
-            ),
-          },
-        ],
-      },
-      {
-        id: "animation_blurred",
-        tagName: "filter",
-        width: "200%",
-        height: "200%",
-        x: "-50%",
-        y: "-50%",
-        children: [
-          {
-            tagName: "feGaussianBlur",
-            stdDeviation: 4,
-            in: "SourceGraphic",
-          },
-        ],
-      },
-      {
-        id: "animation_shuttleRingSwooshGradient",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-opacity": 0.2,
-            "stop-color": swooshColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "85%",
-            "stop-opacity": 0.85,
-            "stop-color": swooshColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "95%",
-            "stop-opacity": 0.05,
-            "stop-color": swooshColor.toCssColorString(),
-          },
-        ],
-      },
-      {
-        id: "animation_shuttleRingSwooshHovered",
-        tagName: "linearGradient",
-        x1: "50%",
-        y1: "0%",
-        x2: "50%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-opacity": 0.2,
-            "stop-color": swooshHoverColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "85%",
-            "stop-opacity": 0.85,
-            "stop-color": swooshHoverColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "95%",
-            "stop-opacity": 0.05,
-            "stop-color": swooshHoverColor.toCssColorString(),
-          },
-        ],
-      },
-      {
-        id: "animation_shuttleRingPointerGradient",
-        tagName: "linearGradient",
-        x1: "0%",
-        y1: "50%",
-        x2: "100%",
-        y2: "50%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": pointerColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "40%",
-            "stop-color": pointerColor.toCssColorString(),
-          },
-          {
-            tagName: "stop",
-            offset: "60%",
-            "stop-color": makeColorString(pointerColor, gradientPointerColor),
-          },
-          {
-            tagName: "stop",
-            offset: "100%",
-            "stop-color": makeColorString(pointerColor, gradientPointerColor),
-          },
-        ],
-      },
-      {
-        id: "animation_shuttleRingPointerPaused",
-        tagName: "linearGradient",
-        x1: "0%",
-        y1: "50%",
-        x2: "100%",
-        y2: "50%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "0%",
-            "stop-color": "#CCC",
-          },
-          {
-            tagName: "stop",
-            offset: "40%",
-            "stop-color": "#CCC",
-          },
-          {
-            tagName: "stop",
-            offset: "60%",
-            "stop-color": "#555",
-          },
-          {
-            tagName: "stop",
-            offset: "100%",
-            "stop-color": "#555",
-          },
-        ],
-      },
-      {
-        id: "animation_knobOuter",
-        tagName: "linearGradient",
-        x1: "20%",
-        y1: "0%",
-        x2: "90%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "5%",
-            "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
-          },
-          {
-            tagName: "stop",
-            offset: "60%",
-            "stop-color": makeColorString(knobBackColor, gradientKnobColor),
-          },
-          {
-            tagName: "stop",
-            offset: "85%",
-            "stop-color": makeColorString(knobBackColor, gradientEnabledColor1),
-          },
-        ],
-      },
-      {
-        id: "animation_knobInner",
-        tagName: "linearGradient",
-        x1: "20%",
-        y1: "0%",
-        x2: "90%",
-        y2: "100%",
-        children: [
-          {
-            tagName: "stop",
-            offset: "5%",
-            "stop-color": makeColorString(knobBackColor, gradientKnobColor),
-          },
-          {
-            tagName: "stop",
-            offset: "60%",
-            "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
-          },
-          {
-            tagName: "stop",
-            offset: "85%",
-            "stop-color": makeColorString(knobBackColor, gradientEnabledColor3),
-          },
-        ],
-      },
-    ],
-  });
-
-  if (!defined(this._defsElement)) {
-    this._svgNode.appendChild(defsElement);
-  } else {
-    this._svgNode.replaceChild(defsElement, this._defsElement);
-  }
-  this._defsElement = defsElement;
-};
 export default Animation;

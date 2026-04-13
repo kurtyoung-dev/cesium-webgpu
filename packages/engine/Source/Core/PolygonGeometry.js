@@ -665,86 +665,116 @@ function createGeometryFromPositionsExtruded(
  * });
  * const geometry = Cesium.PolygonGeometry.createGeometry(extrudedPolygon);
  */
-function PolygonGeometry(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  Check.typeOf.object("options.polygonHierarchy", options.polygonHierarchy);
-  if (
-    defined(options.perPositionHeight) &&
-    options.perPositionHeight &&
-    defined(options.height)
-  ) {
-    throw new DeveloperError(
-      "Cannot use both options.perPositionHeight and options.height",
-    );
+class PolygonGeometry {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    Check.typeOf.object("options.polygonHierarchy", options.polygonHierarchy);
+    if (
+      defined(options.perPositionHeight) &&
+      options.perPositionHeight &&
+      defined(options.height)
+    ) {
+      throw new DeveloperError(
+        "Cannot use both options.perPositionHeight and options.height",
+      );
+    }
+    if (
+      defined(options.arcType) &&
+      options.arcType !== ArcType.GEODESIC &&
+      options.arcType !== ArcType.RHUMB
+    ) {
+      throw new DeveloperError(
+        "Invalid arcType. Valid options are ArcType.GEODESIC and ArcType.RHUMB.",
+      );
+    }
+    //>>includeEnd('debug');
+
+    const polygonHierarchy = options.polygonHierarchy;
+    const vertexFormat = options.vertexFormat ?? VertexFormat.DEFAULT;
+    const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
+    const granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
+    const stRotation = options.stRotation ?? 0.0;
+    const textureCoordinates = options.textureCoordinates;
+    const perPositionHeight = options.perPositionHeight ?? false;
+    const perPositionHeightExtrude =
+      perPositionHeight && defined(options.extrudedHeight);
+    let height = options.height ?? 0.0;
+    let extrudedHeight = options.extrudedHeight ?? height;
+
+    if (!perPositionHeightExtrude) {
+      const h = Math.max(height, extrudedHeight);
+      extrudedHeight = Math.min(height, extrudedHeight);
+      height = h;
+    }
+
+    this._vertexFormat = VertexFormat.clone(vertexFormat);
+    this._ellipsoid = Ellipsoid.clone(ellipsoid);
+    this._granularity = granularity;
+    this._stRotation = stRotation;
+    this._height = height;
+    this._extrudedHeight = extrudedHeight;
+    this._closeTop = options.closeTop ?? true;
+    this._closeBottom = options.closeBottom ?? true;
+    this._polygonHierarchy = polygonHierarchy;
+    this._perPositionHeight = perPositionHeight;
+    this._perPositionHeightExtrude = perPositionHeightExtrude;
+    this._shadowVolume = options.shadowVolume ?? false;
+    this._workerName = "createPolygonGeometry";
+    this._offsetAttribute = options.offsetAttribute;
+    this._arcType = options.arcType ?? ArcType.GEODESIC;
+
+    this._rectangle = undefined;
+    this._textureCoordinateRotationPoints = undefined;
+    this._textureCoordinates = textureCoordinates;
+
+    /**
+     * The number of elements used to pack the object into an array.
+     * @type {number}
+     */
+    this.packedLength =
+      PolygonGeometryLibrary.computeHierarchyPackedLength(
+        polygonHierarchy,
+        Cartesian3,
+      ) +
+      Ellipsoid.packedLength +
+      VertexFormat.packedLength +
+      (textureCoordinates
+        ? PolygonGeometryLibrary.computeHierarchyPackedLength(
+            textureCoordinates,
+            Cartesian2,
+          )
+        : 1) +
+      12;
   }
-  if (
-    defined(options.arcType) &&
-    options.arcType !== ArcType.GEODESIC &&
-    options.arcType !== ArcType.RHUMB
-  ) {
-    throw new DeveloperError(
-      "Invalid arcType. Valid options are ArcType.GEODESIC and ArcType.RHUMB.",
-    );
-  }
-  //>>includeEnd('debug');
-
-  const polygonHierarchy = options.polygonHierarchy;
-  const vertexFormat = options.vertexFormat ?? VertexFormat.DEFAULT;
-  const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
-  const granularity = options.granularity ?? CesiumMath.RADIANS_PER_DEGREE;
-  const stRotation = options.stRotation ?? 0.0;
-  const textureCoordinates = options.textureCoordinates;
-  const perPositionHeight = options.perPositionHeight ?? false;
-  const perPositionHeightExtrude =
-    perPositionHeight && defined(options.extrudedHeight);
-  let height = options.height ?? 0.0;
-  let extrudedHeight = options.extrudedHeight ?? height;
-
-  if (!perPositionHeightExtrude) {
-    const h = Math.max(height, extrudedHeight);
-    extrudedHeight = Math.min(height, extrudedHeight);
-    height = h;
-  }
-
-  this._vertexFormat = VertexFormat.clone(vertexFormat);
-  this._ellipsoid = Ellipsoid.clone(ellipsoid);
-  this._granularity = granularity;
-  this._stRotation = stRotation;
-  this._height = height;
-  this._extrudedHeight = extrudedHeight;
-  this._closeTop = options.closeTop ?? true;
-  this._closeBottom = options.closeBottom ?? true;
-  this._polygonHierarchy = polygonHierarchy;
-  this._perPositionHeight = perPositionHeight;
-  this._perPositionHeightExtrude = perPositionHeightExtrude;
-  this._shadowVolume = options.shadowVolume ?? false;
-  this._workerName = "createPolygonGeometry";
-  this._offsetAttribute = options.offsetAttribute;
-  this._arcType = options.arcType ?? ArcType.GEODESIC;
-
-  this._rectangle = undefined;
-  this._textureCoordinateRotationPoints = undefined;
-  this._textureCoordinates = textureCoordinates;
 
   /**
-   * The number of elements used to pack the object into an array.
-   * @type {number}
+   * @private
    */
-  this.packedLength =
-    PolygonGeometryLibrary.computeHierarchyPackedLength(
-      polygonHierarchy,
-      Cartesian3,
-    ) +
-    Ellipsoid.packedLength +
-    VertexFormat.packedLength +
-    (textureCoordinates
-      ? PolygonGeometryLibrary.computeHierarchyPackedLength(
-          textureCoordinates,
-          Cartesian2,
-        )
-      : 1) +
-    12;
+  get rectangle() {
+    if (!defined(this._rectangle)) {
+      const positions = this._polygonHierarchy.positions;
+      this._rectangle = PolygonGeometry.computeRectangleFromPositions(
+        positions,
+        this._ellipsoid,
+        this._arcType,
+      );
+    }
+
+    return this._rectangle;
+  }
+
+  /**
+   * For remapping texture coordinates when rendering PolygonGeometries as GroundPrimitives.
+   * @private
+   */
+  get textureCoordinateRotationPoints() {
+    if (!defined(this._textureCoordinateRotationPoints)) {
+      this._textureCoordinateRotationPoints =
+        textureCoordinateRotationPoints(this);
+    }
+    return this._textureCoordinateRotationPoints;
+  }
 }
 
 /**
@@ -1545,36 +1575,4 @@ function textureCoordinateRotationPoints(polygonGeometry) {
   );
 }
 
-Object.defineProperties(PolygonGeometry.prototype, {
-  /**
-   * @private
-   */
-  rectangle: {
-    get: function () {
-      if (!defined(this._rectangle)) {
-        const positions = this._polygonHierarchy.positions;
-        this._rectangle = PolygonGeometry.computeRectangleFromPositions(
-          positions,
-          this._ellipsoid,
-          this._arcType,
-        );
-      }
-
-      return this._rectangle;
-    },
-  },
-  /**
-   * For remapping texture coordinates when rendering PolygonGeometries as GroundPrimitives.
-   * @private
-   */
-  textureCoordinateRotationPoints: {
-    get: function () {
-      if (!defined(this._textureCoordinateRotationPoints)) {
-        this._textureCoordinateRotationPoints =
-          textureCoordinateRotationPoints(this);
-      }
-      return this._textureCoordinateRotationPoints;
-    },
-  },
-});
 export default PolygonGeometry;

@@ -155,33 +155,107 @@ async function requestMetadata(terrainProviderBuilder, resource, provider) {
  *
  * @see TerrainProvider
  */
-function VRTheWorldTerrainProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class VRTheWorldTerrainProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  this._errorEvent = new Event();
+    this._errorEvent = new Event();
 
-  this._terrainDataStructure = {
-    heightScale: 1.0 / 1000.0,
-    heightOffset: -1000.0,
-    elementsPerHeight: 3,
-    stride: 4,
-    elementMultiplier: 256.0,
-    isBigEndian: true,
-    lowestEncodedHeight: 0,
-    highestEncodedHeight: 256 * 256 * 256 - 1,
-  };
+    this._terrainDataStructure = {
+      heightScale: 1.0 / 1000.0,
+      heightOffset: -1000.0,
+      elementsPerHeight: 3,
+      stride: 4,
+      elementMultiplier: 256.0,
+      isBigEndian: true,
+      lowestEncodedHeight: 0,
+      highestEncodedHeight: 256 * 256 * 256 - 1,
+    };
 
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+
+    this._tilingScheme = undefined;
+    this._rectangles = [];
   }
-  this._credit = credit;
 
-  this._tilingScheme = undefined;
-  this._rectangles = [];
-}
+  /**
+   * Requests the geometry for a given tile. The result includes terrain
+   * data and indicates that all child tiles are available.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<TerrainData>|undefined} A promise for the requested geometry.  If this method
+   *          returns undefined instead of a promise, it is an indication that too many requests are already
+   *          pending and the request will be retried later.
+   */
+  requestTileGeometry(x, y, level, request) {
+    const yTiles = this._tilingScheme.getNumberOfYTilesAtLevel(level);
+    const resource = this._resource.getDerivedResource({
+      url: `${level}/${x}/${yTiles - y - 1}.tif`,
+      queryParameters: {
+        cesium: true,
+      },
+      request: request,
+    });
+    const promise = resource.fetchImage({
+      preferImageBitmap: true,
+    });
+    if (!defined(promise)) {
+      return undefined;
+    }
 
-Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
+    const that = this;
+    return Promise.resolve(promise).then(function (image) {
+      return new HeightmapTerrainData({
+        buffer: getImagePixels(image),
+        width: that._heightmapWidth,
+        height: that._heightmapHeight,
+        childTileMask: getChildMask(that, x, y, level),
+        structure: that._terrainDataStructure,
+      });
+    });
+  }
+
+  /**
+   * Gets the maximum geometric error allowed in a tile at a given level.
+   *
+   * @param {number} level The tile level for which to get the maximum geometric error.
+   * @returns {number} The maximum geometric error.
+   */
+  getLevelMaximumGeometricError(level) {
+    return this._levelZeroMaximumGeometricError / (1 << level);
+  }
+
+  /**
+   * Determines whether data for a tile is available to be loaded.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @returns {boolean|undefined} Undefined if not supported, otherwise true or false.
+   */
+  getTileDataAvailable(x, y, level) {
+    return undefined;
+  }
+
+  /**
+   * Makes sure we load availability data for a tile
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @returns {undefined|Promise<void>} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
+   */
+  loadTileDataAvailability(x, y, level) {
+    return undefined;
+  }
+
   /**
    * Gets an event that is raised when the terrain provider encounters an asynchronous error.  By subscribing
    * to the event, you will be notified of the error and can potentially recover from it.  Event listeners
@@ -190,11 +264,9 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this terrain provider is active.  Typically this is used to credit
@@ -203,11 +275,9 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
+  get credit() {
+    return this._credit;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -215,11 +285,9 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {GeographicTilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets a value indicating whether or not the provider includes a water mask.  The water mask
@@ -229,11 +297,9 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasWaterMask: {
-    get: function () {
-      return false;
-    },
-  },
+  get hasWaterMask() {
+    return false;
+  }
 
   /**
    * Gets a value indicating whether or not the requested tiles include vertex normals.
@@ -241,11 +307,10 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasVertexNormals: {
-    get: function () {
-      return false;
-    },
-  },
+  get hasVertexNormals() {
+    return false;
+  }
+
   /**
    * Gets an object that can be used to determine availability of terrain from this provider, such as
    * at points and in rectangles. This property may be undefined if availability
@@ -254,12 +319,10 @@ Object.defineProperties(VRTheWorldTerrainProvider.prototype, {
    * @type {TileAvailability|undefined}
    * @readonly
    */
-  availability: {
-    get: function () {
-      return undefined;
-    },
-  },
-});
+  get availability() {
+    return undefined;
+  }
+}
 
 /**
  * Creates a {@link TerrainProvider} that produces terrain geometry by tessellating height maps
@@ -294,63 +357,6 @@ VRTheWorldTerrainProvider.fromUrl = async function (url, options) {
   provider._resource = resource;
 
   return provider;
-};
-
-/**
- * Requests the geometry for a given tile. The result includes terrain
- * data and indicates that all child tiles are available.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<TerrainData>|undefined} A promise for the requested geometry.  If this method
- *          returns undefined instead of a promise, it is an indication that too many requests are already
- *          pending and the request will be retried later.
- */
-VRTheWorldTerrainProvider.prototype.requestTileGeometry = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const yTiles = this._tilingScheme.getNumberOfYTilesAtLevel(level);
-  const resource = this._resource.getDerivedResource({
-    url: `${level}/${x}/${yTiles - y - 1}.tif`,
-    queryParameters: {
-      cesium: true,
-    },
-    request: request,
-  });
-  const promise = resource.fetchImage({
-    preferImageBitmap: true,
-  });
-  if (!defined(promise)) {
-    return undefined;
-  }
-
-  const that = this;
-  return Promise.resolve(promise).then(function (image) {
-    return new HeightmapTerrainData({
-      buffer: getImagePixels(image),
-      width: that._heightmapWidth,
-      height: that._heightmapHeight,
-      childTileMask: getChildMask(that, x, y, level),
-      structure: that._terrainDataStructure,
-    });
-  });
-};
-
-/**
- * Gets the maximum geometric error allowed in a tile at a given level.
- *
- * @param {number} level The tile level for which to get the maximum geometric error.
- * @returns {number} The maximum geometric error.
- */
-VRTheWorldTerrainProvider.prototype.getLevelMaximumGeometricError = function (
-  level,
-) {
-  return this._levelZeroMaximumGeometricError / (1 << level);
 };
 
 const rectangleScratch = new Rectangle();
@@ -428,35 +434,4 @@ function isTileInRectangle(tilingScheme, rectangle, x, y, level) {
   );
 }
 
-/**
- * Determines whether data for a tile is available to be loaded.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @returns {boolean|undefined} Undefined if not supported, otherwise true or false.
- */
-VRTheWorldTerrainProvider.prototype.getTileDataAvailable = function (
-  x,
-  y,
-  level,
-) {
-  return undefined;
-};
-
-/**
- * Makes sure we load availability data for a tile
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @returns {undefined|Promise<void>} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
- */
-VRTheWorldTerrainProvider.prototype.loadTileDataAvailability = function (
-  x,
-  y,
-  level,
-) {
-  return undefined;
-};
 export default VRTheWorldTerrainProvider;

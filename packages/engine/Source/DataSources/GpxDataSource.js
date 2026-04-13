@@ -116,7 +116,7 @@ function queryFirstNode(node, tagName, namespace) {
     const child = childNodes[q];
     if (
       child.localName === tagName &&
-      namespace.indexOf(child.namespaceURI) !== -1
+      namespace.includes(child.namespaceURI)
     ) {
       return child;
     }
@@ -135,7 +135,7 @@ function queryNodes(node, tagName, namespace) {
     const child = childNodes[q];
     if (
       child.localName === tagName &&
-      namespace.indexOf(child.namespaceURI) !== -1
+      namespace.includes(child.namespaceURI)
     ) {
       result.push(child);
     }
@@ -543,7 +543,7 @@ function processGpx(dataSource, node, entityCollection, options) {
       const child = childNodes[q];
       if (
         child.localName === typeName &&
-        namespaces.gpx.indexOf(child.namespaceURI) !== -1
+        namespaces.gpx.includes(child.namespaceURI)
       ) {
         processComplexTypeNode(dataSource, child, entityCollection, options);
       }

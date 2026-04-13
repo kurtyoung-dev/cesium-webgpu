@@ -23,75 +23,75 @@ import TilesetMetadata from "./TilesetMetadata.js";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function Cesium3DTilesetMetadata(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const metadataJson = options.metadataJson;
+class Cesium3DTilesetMetadata {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const metadataJson = options.metadataJson;
 
-  // The calling code is responsible for loading the schema.
-  // This keeps metadata parsing synchronous.
-  const schema = options.schema;
+    // The calling code is responsible for loading the schema.
+    // This keeps metadata parsing synchronous.
+    const schema = options.schema;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.metadataJson", metadataJson);
-  Check.typeOf.object("options.schema", schema);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.metadataJson", metadataJson);
+    Check.typeOf.object("options.schema", schema);
+    //>>includeEnd('debug');
 
-  // An older schema stored the tileset metadata in the "tileset" property.
-  const metadata = metadataJson.metadata ?? metadataJson.tileset;
+    // An older schema stored the tileset metadata in the "tileset" property.
+    const metadata = metadataJson.metadata ?? metadataJson.tileset;
 
-  let tileset;
-  if (defined(metadata)) {
-    tileset = new TilesetMetadata({
-      tileset: metadata,
-      class: schema.classes[metadata.class],
-    });
-  }
-
-  let groupIds = [];
-  const groups = [];
-  const groupsJson = metadataJson.groups;
-  if (Array.isArray(groupsJson)) {
-    const length = groupsJson.length;
-    for (let i = 0; i < length; i++) {
-      const group = groupsJson[i];
-      groups.push(
-        new GroupMetadata({
-          group: group,
-          class: schema.classes[group.class],
-        }),
-      );
+    let tileset;
+    if (defined(metadata)) {
+      tileset = new TilesetMetadata({
+        tileset: metadata,
+        class: schema.classes[metadata.class],
+      });
     }
-  } else if (defined(groupsJson)) {
-    // An older version of group metadata stored groups in a dictionary
-    // instead of an array.
-    groupIds = Object.keys(groupsJson).sort();
-    const length = groupIds.length;
-    for (let i = 0; i < length; i++) {
-      const groupId = groupIds[i];
-      if (groupsJson.hasOwnProperty(groupId)) {
-        const group = groupsJson[groupId];
+
+    let groupIds = [];
+    const groups = [];
+    const groupsJson = metadataJson.groups;
+    if (Array.isArray(groupsJson)) {
+      const length = groupsJson.length;
+      for (let i = 0; i < length; i++) {
+        const group = groupsJson[i];
         groups.push(
           new GroupMetadata({
-            id: groupId,
-            group: groupsJson[groupId],
+            group: group,
             class: schema.classes[group.class],
           }),
         );
       }
+    } else if (defined(groupsJson)) {
+      // An older version of group metadata stored groups in a dictionary
+      // instead of an array.
+      groupIds = Object.keys(groupsJson).sort();
+      const length = groupIds.length;
+      for (let i = 0; i < length; i++) {
+        const groupId = groupIds[i];
+        if (groupsJson.hasOwnProperty(groupId)) {
+          const group = groupsJson[groupId];
+          groups.push(
+            new GroupMetadata({
+              id: groupId,
+              group: groupsJson[groupId],
+              class: schema.classes[group.class],
+            }),
+          );
+        }
+      }
     }
+
+    this._schema = schema;
+    this._groups = groups;
+    this._groupIds = groupIds;
+    this._tileset = tileset;
+
+    this._statistics = metadataJson.statistics;
+    this._extras = metadataJson.extras;
+    this._extensions = metadataJson.extensions;
   }
 
-  this._schema = schema;
-  this._groups = groups;
-  this._groupIds = groupIds;
-  this._tileset = tileset;
-
-  this._statistics = metadataJson.statistics;
-  this._extras = metadataJson.extras;
-  this._extensions = metadataJson.extensions;
-}
-
-Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
   /**
    * Schema containing classes and enums.
    *
@@ -100,11 +100,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  schema: {
-    get: function () {
-      return this._schema;
-    },
-  },
+  get schema() {
+    return this._schema;
+  }
 
   /**
    * Metadata about groups of content.
@@ -114,11 +112,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  groups: {
-    get: function () {
-      return this._groups;
-    },
-  },
+  get groups() {
+    return this._groups;
+  }
 
   /**
    * The IDs of the group metadata in the corresponding groups dictionary.
@@ -129,11 +125,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  groupIds: {
-    get: function () {
-      return this._groupIds;
-    },
-  },
+  get groupIds() {
+    return this._groupIds;
+  }
 
   /**
    * Metadata about the tileset as a whole.
@@ -143,11 +137,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  tileset: {
-    get: function () {
-      return this._tileset;
-    },
-  },
+  get tileset() {
+    return this._tileset;
+  }
 
   /**
    * Statistics about the metadata.
@@ -161,11 +153,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  statistics: {
-    get: function () {
-      return this._statistics;
-    },
-  },
+  get statistics() {
+    return this._statistics;
+  }
 
   /**
    * Extra user-defined properties.
@@ -175,11 +165,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -189,11 +177,9 @@ Object.defineProperties(Cesium3DTilesetMetadata.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
+  get extensions() {
+    return this._extensions;
+  }
+}
 
 export default Cesium3DTilesetMetadata;

@@ -85,63 +85,170 @@ GoogleEarthEnterpriseDiscardPolicy.prototype.shouldDiscardImage = function (
  *
  * @see {@link http://www.w3.org/TR/cors/|Cross-Origin Resource Sharing}
  */
-function GoogleEarthEnterpriseImageryProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  this._defaultAlpha = undefined;
-  this._defaultNightAlpha = undefined;
-  this._defaultDayAlpha = undefined;
-  this._defaultBrightness = undefined;
-  this._defaultContrast = undefined;
-  this._defaultHue = undefined;
-  this._defaultSaturation = undefined;
-  this._defaultGamma = undefined;
-  this._defaultMinificationFilter = undefined;
-  this._defaultMagnificationFilter = undefined;
+class GoogleEarthEnterpriseImageryProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    this._defaultAlpha = undefined;
+    this._defaultNightAlpha = undefined;
+    this._defaultDayAlpha = undefined;
+    this._defaultBrightness = undefined;
+    this._defaultContrast = undefined;
+    this._defaultHue = undefined;
+    this._defaultSaturation = undefined;
+    this._defaultGamma = undefined;
+    this._defaultMinificationFilter = undefined;
+    this._defaultMagnificationFilter = undefined;
 
-  this._tileDiscardPolicy = options.tileDiscardPolicy;
+    this._tileDiscardPolicy = options.tileDiscardPolicy;
 
-  this._tilingScheme = new GeographicTilingScheme({
-    numberOfLevelZeroTilesX: 2,
-    numberOfLevelZeroTilesY: 2,
-    rectangle: new Rectangle(
-      -CesiumMath.PI,
-      -CesiumMath.PI,
-      CesiumMath.PI,
-      CesiumMath.PI,
-    ),
-    ellipsoid: options.ellipsoid,
-  });
+    this._tilingScheme = new GeographicTilingScheme({
+      numberOfLevelZeroTilesX: 2,
+      numberOfLevelZeroTilesY: 2,
+      rectangle: new Rectangle(
+        -CesiumMath.PI,
+        -CesiumMath.PI,
+        CesiumMath.PI,
+        CesiumMath.PI,
+      ),
+      ellipsoid: options.ellipsoid,
+    });
 
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+
+    this._tileWidth = 256;
+    this._tileHeight = 256;
+    this._maximumLevel = 23;
+
+    // Install the default tile discard policy if none has been supplied.
+    if (!defined(this._tileDiscardPolicy)) {
+      this._tileDiscardPolicy = new GoogleEarthEnterpriseDiscardPolicy();
+    }
+
+    this._errorEvent = new Event();
   }
-  this._credit = credit;
 
-  this._tileWidth = 256;
-  this._tileHeight = 256;
-  this._maximumLevel = 23;
+  /**
+   * Gets the credits to be displayed when a given tile is displayed.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level;
+   * @returns {Credit[]} The credits to be displayed when the tile is displayed.
+   */
+  getTileCredits(x, y, level) {
+    const metadata = this._metadata;
+    const info = metadata.getTileInformation(x, y, level);
+    if (defined(info)) {
+      const credit = metadata.providers[info.imageryProvider];
+      if (defined(credit)) {
+        return [credit];
+      }
+    }
 
-  // Install the default tile discard policy if none has been supplied.
-  if (!defined(this._tileDiscardPolicy)) {
-    this._tileDiscardPolicy = new GoogleEarthEnterpriseDiscardPolicy();
+    return undefined;
   }
 
-  this._errorEvent = new Event();
-}
+  /**
+   * Requests the image for a given tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
+   *          undefined if there are too many active requests to the server, and the request should be retried later.
+   */
+  requestImage(x, y, level, request) {
+    const invalidImage = this._tileDiscardPolicy._image; // Empty image or undefined depending on discard policy
+    const metadata = this._metadata;
+    const quadKey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
+    const info = metadata.getTileInformation(x, y, level);
+    if (!defined(info)) {
+      if (metadata.isValid(quadKey)) {
+        const metadataRequest = new Request({
+          throttle: request.throttle,
+          throttleByServer: request.throttleByServer,
+          type: request.type,
+          priorityFunction: request.priorityFunction,
+        });
+        metadata.populateSubtree(x, y, level, metadataRequest);
+        return undefined; // No metadata so return undefined so we can be loaded later
+      }
+      return Promise.resolve(invalidImage); // Image doesn't exist
+    }
 
-Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
+    if (!info.hasImagery()) {
+      // Already have info and there isn't any imagery here
+      return Promise.resolve(invalidImage);
+    }
+    const promise = buildImageResource(
+      this,
+      info,
+      x,
+      y,
+      level,
+      request,
+    ).fetchArrayBuffer();
+    if (!defined(promise)) {
+      return undefined; // Throttled
+    }
+
+    return promise.then(function (image) {
+      decodeGoogleEarthEnterpriseData(metadata.key, image);
+      let a = new Uint8Array(image);
+      let type;
+
+      const protoImagery = metadata.protoImagery;
+      if (!defined(protoImagery) || !protoImagery) {
+        type = getImageType(a);
+      }
+
+      if (!defined(type) && (!defined(protoImagery) || protoImagery)) {
+        const message = decodeEarthImageryPacket(a);
+        type = message.imageType;
+        a = message.imageData;
+      }
+
+      if (!defined(type) || !defined(a)) {
+        return invalidImage;
+      }
+
+      return loadImageFromTypedArray({
+        uint8Array: a,
+        format: type,
+        flipY: true,
+      });
+    });
+  }
+
+  /**
+   * Picking features is not currently supported by this imagery provider, so this function simply returns
+   * undefined.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {number} longitude The longitude at which to pick features.
+   * @param {number} latitude  The latitude at which to pick features.
+   * @return {undefined} Undefined since picking is not supported.
+   */
+  pickFeatures(x, y, level, longitude, latitude) {
+    return undefined;
+  }
+
   /**
    * Gets the name of the Google Earth Enterprise server url hosting the imagery.
    * @memberof GoogleEarthEnterpriseImageryProvider.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._metadata.url;
-    },
-  },
+  get url() {
+    return this._metadata.url;
+  }
 
   /**
    * Gets the proxy used by this provider.
@@ -149,11 +256,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._metadata.proxy;
-    },
-  },
+  get proxy() {
+    return this._metadata.proxy;
+  }
 
   /**
    * Gets the width of each tile, in pixels.
@@ -161,11 +266,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileWidth: {
-    get: function () {
-      return this._tileWidth;
-    },
-  },
+  get tileWidth() {
+    return this._tileWidth;
+  }
 
   /**
    * Gets the height of each tile, in pixels.
@@ -173,11 +276,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  tileHeight: {
-    get: function () {
-      return this._tileHeight;
-    },
-  },
+  get tileHeight() {
+    return this._tileHeight;
+  }
 
   /**
    * Gets the maximum level-of-detail that can be requested.
@@ -185,11 +286,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {number|undefined}
    * @readonly
    */
-  maximumLevel: {
-    get: function () {
-      return this._maximumLevel;
-    },
-  },
+  get maximumLevel() {
+    return this._maximumLevel;
+  }
 
   /**
    * Gets the minimum level-of-detail that can be requested.
@@ -197,11 +296,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {number}
    * @readonly
    */
-  minimumLevel: {
-    get: function () {
-      return 0;
-    },
-  },
+  get minimumLevel() {
+    return 0;
+  }
 
   /**
    * Gets the tiling scheme used by this provider.
@@ -209,11 +306,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {TilingScheme}
    * @readonly
    */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
 
   /**
    * Gets the rectangle, in radians, of the imagery provided by this instance.
@@ -221,11 +316,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {Rectangle}
    * @readonly
    */
-  rectangle: {
-    get: function () {
-      return this._tilingScheme.rectangle;
-    },
-  },
+  get rectangle() {
+    return this._tilingScheme.rectangle;
+  }
 
   /**
    * Gets the tile discard policy.  If not undefined, the discard policy is responsible
@@ -235,11 +328,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {TileDiscardPolicy}
    * @readonly
    */
-  tileDiscardPolicy: {
-    get: function () {
-      return this._tileDiscardPolicy;
-    },
-  },
+  get tileDiscardPolicy() {
+    return this._tileDiscardPolicy;
+  }
 
   /**
    * Gets an event that is raised when the imagery provider encounters an asynchronous error.  By subscribing
@@ -249,11 +340,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {Event}
    * @readonly
    */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
+  get errorEvent() {
+    return this._errorEvent;
+  }
 
   /**
    * Gets the credit to display when this imagery provider is active.  Typically this is used to credit
@@ -262,11 +351,9 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {Credit}
    * @readonly
    */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
+  get credit() {
+    return this._credit;
+  }
 
   /**
    * Gets a value indicating whether or not the images provided by this imagery provider
@@ -278,12 +365,10 @@ Object.defineProperties(GoogleEarthEnterpriseImageryProvider.prototype, {
    * @type {boolean}
    * @readonly
    */
-  hasAlphaChannel: {
-    get: function () {
-      return false;
-    },
-  },
-});
+  get hasAlphaChannel() {
+    return false;
+  }
+}
 
 /**
  * Creates a tiled imagery provider using the Google Earth Enterprise REST API.
@@ -312,130 +397,6 @@ GoogleEarthEnterpriseImageryProvider.fromMetadata = function (
   const provider = new GoogleEarthEnterpriseImageryProvider(options);
   provider._metadata = metadata;
   return provider;
-};
-
-/**
- * Gets the credits to be displayed when a given tile is displayed.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level;
- * @returns {Credit[]} The credits to be displayed when the tile is displayed.
- */
-GoogleEarthEnterpriseImageryProvider.prototype.getTileCredits = function (
-  x,
-  y,
-  level,
-) {
-  const metadata = this._metadata;
-  const info = metadata.getTileInformation(x, y, level);
-  if (defined(info)) {
-    const credit = metadata.providers[info.imageryProvider];
-    if (defined(credit)) {
-      return [credit];
-    }
-  }
-
-  return undefined;
-};
-
-/**
- * Requests the image for a given tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- * @returns {Promise<ImageryTypes>|undefined} A promise for the image that will resolve when the image is available, or
- *          undefined if there are too many active requests to the server, and the request should be retried later.
- */
-GoogleEarthEnterpriseImageryProvider.prototype.requestImage = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const invalidImage = this._tileDiscardPolicy._image; // Empty image or undefined depending on discard policy
-  const metadata = this._metadata;
-  const quadKey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
-  const info = metadata.getTileInformation(x, y, level);
-  if (!defined(info)) {
-    if (metadata.isValid(quadKey)) {
-      const metadataRequest = new Request({
-        throttle: request.throttle,
-        throttleByServer: request.throttleByServer,
-        type: request.type,
-        priorityFunction: request.priorityFunction,
-      });
-      metadata.populateSubtree(x, y, level, metadataRequest);
-      return undefined; // No metadata so return undefined so we can be loaded later
-    }
-    return Promise.resolve(invalidImage); // Image doesn't exist
-  }
-
-  if (!info.hasImagery()) {
-    // Already have info and there isn't any imagery here
-    return Promise.resolve(invalidImage);
-  }
-  const promise = buildImageResource(
-    this,
-    info,
-    x,
-    y,
-    level,
-    request,
-  ).fetchArrayBuffer();
-  if (!defined(promise)) {
-    return undefined; // Throttled
-  }
-
-  return promise.then(function (image) {
-    decodeGoogleEarthEnterpriseData(metadata.key, image);
-    let a = new Uint8Array(image);
-    let type;
-
-    const protoImagery = metadata.protoImagery;
-    if (!defined(protoImagery) || !protoImagery) {
-      type = getImageType(a);
-    }
-
-    if (!defined(type) && (!defined(protoImagery) || protoImagery)) {
-      const message = decodeEarthImageryPacket(a);
-      type = message.imageType;
-      a = message.imageData;
-    }
-
-    if (!defined(type) || !defined(a)) {
-      return invalidImage;
-    }
-
-    return loadImageFromTypedArray({
-      uint8Array: a,
-      format: type,
-      flipY: true,
-    });
-  });
-};
-
-/**
- * Picking features is not currently supported by this imagery provider, so this function simply returns
- * undefined.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {number} longitude The longitude at which to pick features.
- * @param {number} latitude  The latitude at which to pick features.
- * @return {undefined} Undefined since picking is not supported.
- */
-GoogleEarthEnterpriseImageryProvider.prototype.pickFeatures = function (
-  x,
-  y,
-  level,
-  longitude,
-  latitude,
-) {
-  return undefined;
 };
 
 //

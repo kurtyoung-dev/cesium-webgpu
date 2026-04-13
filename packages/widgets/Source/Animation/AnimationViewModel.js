@@ -102,284 +102,464 @@ function multiplierToAngle(multiplier, shuttleRingTicks, clockViewModel) {
  *
  * @see Animation
  */
-function AnimationViewModel(clockViewModel) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(clockViewModel)) {
-    throw new DeveloperError("clockViewModel is required.");
-  }
-  //>>includeEnd('debug');
-
-  const that = this;
-  this._clockViewModel = clockViewModel;
-  this._allShuttleRingTicks = [];
-  this._dateFormatter = AnimationViewModel.defaultDateFormatter;
-  this._timeFormatter = AnimationViewModel.defaultTimeFormatter;
-
-  /**
-   * Gets or sets whether the shuttle ring is currently being dragged.  This property is observable.
-   * @type {boolean}
-   * @default false
-   */
-  this.shuttleRingDragging = false;
-
-  /**
-   * Gets or sets whether dragging the shuttle ring should cause the multiplier
-   * to snap to the defined tick values rather than interpolating between them.
-   * This property is observable.
-   * @type {boolean}
-   * @default false
-   */
-  this.snapToTicks = false;
-
-  knockout.track(this, [
-    "_allShuttleRingTicks",
-    "_dateFormatter",
-    "_timeFormatter",
-    "shuttleRingDragging",
-    "snapToTicks",
-  ]);
-
-  this._sortedFilteredPositiveTicks = [];
-
-  this.setShuttleRingTicks(AnimationViewModel.defaultTicks);
-
-  /**
-   * Gets the string representation of the current time.  This property is observable.
-   * @type {string}
-   */
-  this.timeLabel = undefined;
-  knockout.defineProperty(this, "timeLabel", function () {
-    return that._timeFormatter(that._clockViewModel.currentTime, that);
-  });
-
-  /**
-   * Gets the string representation of the current date.  This property is observable.
-   * @type {string}
-   */
-  this.dateLabel = undefined;
-  knockout.defineProperty(this, "dateLabel", function () {
-    return that._dateFormatter(that._clockViewModel.currentTime, that);
-  });
-
-  /**
-   * Gets the string representation of the current multiplier.  This property is observable.
-   * @type {string}
-   */
-  this.multiplierLabel = undefined;
-  knockout.defineProperty(this, "multiplierLabel", function () {
-    const clockViewModel = that._clockViewModel;
-    if (clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK) {
-      return "Today";
+class AnimationViewModel {
+  constructor(clockViewModel) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(clockViewModel)) {
+      throw new DeveloperError("clockViewModel is required.");
     }
+    //>>includeEnd('debug');
 
-    const multiplier = clockViewModel.multiplier;
+    const that = this;
+    this._clockViewModel = clockViewModel;
+    this._allShuttleRingTicks = [];
+    this._dateFormatter = AnimationViewModel.defaultDateFormatter;
+    this._timeFormatter = AnimationViewModel.defaultTimeFormatter;
 
-    //If it's a whole number, just return it.
-    if (multiplier % 1 === 0) {
-      return `${multiplier.toFixed(0)}x`;
-    }
+    /**
+     * Gets or sets whether the shuttle ring is currently being dragged.  This property is observable.
+     * @type {boolean}
+     * @default false
+     */
+    this.shuttleRingDragging = false;
 
-    //Convert to decimal string and remove any trailing zeroes
-    return `${multiplier.toFixed(3).replace(/0{0,3}$/, "")}x`;
-  });
+    /**
+     * Gets or sets whether dragging the shuttle ring should cause the multiplier
+     * to snap to the defined tick values rather than interpolating between them.
+     * This property is observable.
+     * @type {boolean}
+     * @default false
+     */
+    this.snapToTicks = false;
 
-  /**
-   * Gets or sets the current shuttle ring angle.  This property is observable.
-   * @type {number}
-   */
-  this.shuttleRingAngle = undefined;
-  knockout.defineProperty(this, "shuttleRingAngle", {
-    get: function () {
-      return multiplierToAngle(
-        clockViewModel.multiplier,
-        that._allShuttleRingTicks,
-        clockViewModel,
-      );
-    },
-    set: function (angle) {
-      angle = Math.max(
-        Math.min(angle, maxShuttleRingAngle),
-        -maxShuttleRingAngle,
-      );
-      const ticks = that._allShuttleRingTicks;
+    knockout.track(this, [
+      "_allShuttleRingTicks",
+      "_dateFormatter",
+      "_timeFormatter",
+      "shuttleRingDragging",
+      "snapToTicks",
+    ]);
 
+    this._sortedFilteredPositiveTicks = [];
+
+    this.setShuttleRingTicks(AnimationViewModel.defaultTicks);
+
+    /**
+     * Gets the string representation of the current time.  This property is observable.
+     * @type {string}
+     */
+    this.timeLabel = undefined;
+    knockout.defineProperty(this, "timeLabel", function () {
+      return that._timeFormatter(that._clockViewModel.currentTime, that);
+    });
+
+    /**
+     * Gets the string representation of the current date.  This property is observable.
+     * @type {string}
+     */
+    this.dateLabel = undefined;
+    knockout.defineProperty(this, "dateLabel", function () {
+      return that._dateFormatter(that._clockViewModel.currentTime, that);
+    });
+
+    /**
+     * Gets the string representation of the current multiplier.  This property is observable.
+     * @type {string}
+     */
+    this.multiplierLabel = undefined;
+    knockout.defineProperty(this, "multiplierLabel", function () {
       const clockViewModel = that._clockViewModel;
-      clockViewModel.clockStep = ClockStep.SYSTEM_CLOCK_MULTIPLIER;
-
-      //If we are at the max angle, simply return the max value in either direction.
-      if (Math.abs(angle) === maxShuttleRingAngle) {
-        clockViewModel.multiplier =
-          angle > 0 ? ticks[ticks.length - 1] : ticks[0];
-        return;
+      if (clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK) {
+        return "Today";
       }
 
-      let multiplier = angleToMultiplier(angle, ticks);
-      if (that.snapToTicks) {
-        multiplier = ticks[getTypicalMultiplierIndex(multiplier, ticks)];
-      } else if (multiplier !== 0) {
-        const positiveMultiplier = Math.abs(multiplier);
+      const multiplier = clockViewModel.multiplier;
 
-        if (positiveMultiplier > 100) {
-          const numDigits = positiveMultiplier.toFixed(0).length - 2;
-          const divisor = Math.pow(10, numDigits);
-          multiplier = (Math.round(multiplier / divisor) * divisor) | 0;
-        } else if (positiveMultiplier > realtimeShuttleRingAngle) {
-          multiplier = Math.round(multiplier);
-        } else if (positiveMultiplier > 1) {
-          multiplier = +multiplier.toFixed(1);
-        } else if (positiveMultiplier > 0) {
-          multiplier = +multiplier.toFixed(2);
+      //If it's a whole number, just return it.
+      if (multiplier % 1 === 0) {
+        return `${multiplier.toFixed(0)}x`;
+      }
+
+      //Convert to decimal string and remove any trailing zeroes
+      return `${multiplier.toFixed(3).replace(/0{0,3}$/, "")}x`;
+    });
+
+    /**
+     * Gets or sets the current shuttle ring angle.  This property is observable.
+     * @type {number}
+     */
+    this.shuttleRingAngle = undefined;
+    knockout.defineProperty(this, "shuttleRingAngle", {
+      get: function () {
+        return multiplierToAngle(
+          clockViewModel.multiplier,
+          that._allShuttleRingTicks,
+          clockViewModel,
+        );
+      },
+      set: function (angle) {
+        angle = Math.max(
+          Math.min(angle, maxShuttleRingAngle),
+          -maxShuttleRingAngle,
+        );
+        const ticks = that._allShuttleRingTicks;
+
+        const clockViewModel = that._clockViewModel;
+        clockViewModel.clockStep = ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+
+        //If we are at the max angle, simply return the max value in either direction.
+        if (Math.abs(angle) === maxShuttleRingAngle) {
+          clockViewModel.multiplier =
+            angle > 0 ? ticks[ticks.length - 1] : ticks[0];
+          return;
         }
+
+        let multiplier = angleToMultiplier(angle, ticks);
+        if (that.snapToTicks) {
+          multiplier = ticks[getTypicalMultiplierIndex(multiplier, ticks)];
+        } else if (multiplier !== 0) {
+          const positiveMultiplier = Math.abs(multiplier);
+
+          if (positiveMultiplier > 100) {
+            const numDigits = positiveMultiplier.toFixed(0).length - 2;
+            const divisor = Math.pow(10, numDigits);
+            multiplier = (Math.round(multiplier / divisor) * divisor) | 0;
+          } else if (positiveMultiplier > realtimeShuttleRingAngle) {
+            multiplier = Math.round(multiplier);
+          } else if (positiveMultiplier > 1) {
+            multiplier = +multiplier.toFixed(1);
+          } else if (positiveMultiplier > 0) {
+            multiplier = +multiplier.toFixed(2);
+          }
+        }
+        clockViewModel.multiplier = multiplier;
+      },
+    });
+
+    this._canAnimate = undefined;
+    knockout.defineProperty(this, "_canAnimate", function () {
+      const clockViewModel = that._clockViewModel;
+      const clockRange = clockViewModel.clockRange;
+
+      if (that.shuttleRingDragging || clockRange === ClockRange.UNBOUNDED) {
+        return true;
       }
-      clockViewModel.multiplier = multiplier;
-    },
-  });
 
-  this._canAnimate = undefined;
-  knockout.defineProperty(this, "_canAnimate", function () {
-    const clockViewModel = that._clockViewModel;
-    const clockRange = clockViewModel.clockRange;
+      const multiplier = clockViewModel.multiplier;
+      const currentTime = clockViewModel.currentTime;
+      const startTime = clockViewModel.startTime;
 
-    if (that.shuttleRingDragging || clockRange === ClockRange.UNBOUNDED) {
-      return true;
-    }
+      let result = false;
+      if (clockRange === ClockRange.LOOP_STOP) {
+        result =
+          JulianDate.greaterThan(currentTime, startTime) ||
+          (currentTime.equals(startTime) && multiplier > 0);
+      } else {
+        const stopTime = clockViewModel.stopTime;
+        result =
+          (JulianDate.greaterThan(currentTime, startTime) &&
+            JulianDate.lessThan(currentTime, stopTime)) || //
+          (currentTime.equals(startTime) && multiplier > 0) || //
+          (currentTime.equals(stopTime) && multiplier < 0);
+      }
 
-    const multiplier = clockViewModel.multiplier;
-    const currentTime = clockViewModel.currentTime;
-    const startTime = clockViewModel.startTime;
+      if (!result) {
+        clockViewModel.shouldAnimate = false;
+      }
+      return result;
+    });
 
-    let result = false;
-    if (clockRange === ClockRange.LOOP_STOP) {
-      result =
-        JulianDate.greaterThan(currentTime, startTime) ||
-        (currentTime.equals(startTime) && multiplier > 0);
-    } else {
-      const stopTime = clockViewModel.stopTime;
-      result =
-        (JulianDate.greaterThan(currentTime, startTime) &&
-          JulianDate.lessThan(currentTime, stopTime)) || //
-        (currentTime.equals(startTime) && multiplier > 0) || //
-        (currentTime.equals(stopTime) && multiplier < 0);
-    }
+    this._isSystemTimeAvailable = undefined;
+    knockout.defineProperty(this, "_isSystemTimeAvailable", function () {
+      const clockViewModel = that._clockViewModel;
+      const clockRange = clockViewModel.clockRange;
+      if (clockRange === ClockRange.UNBOUNDED) {
+        return true;
+      }
 
-    if (!result) {
-      clockViewModel.shouldAnimate = false;
-    }
-    return result;
-  });
-
-  this._isSystemTimeAvailable = undefined;
-  knockout.defineProperty(this, "_isSystemTimeAvailable", function () {
-    const clockViewModel = that._clockViewModel;
-    const clockRange = clockViewModel.clockRange;
-    if (clockRange === ClockRange.UNBOUNDED) {
-      return true;
-    }
-
-    const systemTime = clockViewModel.systemTime;
-    return (
-      JulianDate.greaterThanOrEquals(systemTime, clockViewModel.startTime) &&
-      JulianDate.lessThanOrEquals(systemTime, clockViewModel.stopTime)
-    );
-  });
-
-  this._isAnimating = undefined;
-  knockout.defineProperty(this, "_isAnimating", function () {
-    return (
-      that._clockViewModel.shouldAnimate &&
-      (that._canAnimate || that.shuttleRingDragging)
-    );
-  });
-
-  const pauseCommand = createCommand(function () {
-    const clockViewModel = that._clockViewModel;
-    if (clockViewModel.shouldAnimate) {
-      clockViewModel.shouldAnimate = false;
-    } else if (that._canAnimate) {
-      clockViewModel.shouldAnimate = true;
-    }
-  });
-
-  this._pauseViewModel = new ToggleButtonViewModel(pauseCommand, {
-    toggled: knockout.computed(function () {
-      return !that._isAnimating;
-    }),
-    tooltip: "Pause",
-  });
-
-  const playReverseCommand = createCommand(function () {
-    const clockViewModel = that._clockViewModel;
-    const multiplier = clockViewModel.multiplier;
-    if (multiplier > 0) {
-      clockViewModel.multiplier = -multiplier;
-    }
-    clockViewModel.shouldAnimate = true;
-  });
-
-  this._playReverseViewModel = new ToggleButtonViewModel(playReverseCommand, {
-    toggled: knockout.computed(function () {
-      return that._isAnimating && clockViewModel.multiplier < 0;
-    }),
-    tooltip: "Play Reverse",
-  });
-
-  const playForwardCommand = createCommand(function () {
-    const clockViewModel = that._clockViewModel;
-    const multiplier = clockViewModel.multiplier;
-    if (multiplier < 0) {
-      clockViewModel.multiplier = -multiplier;
-    }
-    clockViewModel.shouldAnimate = true;
-  });
-
-  this._playForwardViewModel = new ToggleButtonViewModel(playForwardCommand, {
-    toggled: knockout.computed(function () {
+      const systemTime = clockViewModel.systemTime;
       return (
-        that._isAnimating &&
-        clockViewModel.multiplier > 0 &&
-        clockViewModel.clockStep !== ClockStep.SYSTEM_CLOCK
+        JulianDate.greaterThanOrEquals(systemTime, clockViewModel.startTime) &&
+        JulianDate.lessThanOrEquals(systemTime, clockViewModel.stopTime)
       );
-    }),
-    tooltip: "Play Forward",
-  });
+    });
 
-  const playRealtimeCommand = createCommand(
-    function () {
-      that._clockViewModel.clockStep = ClockStep.SYSTEM_CLOCK;
-    },
-    knockout.getObservable(this, "_isSystemTimeAvailable"),
-  );
+    this._isAnimating = undefined;
+    knockout.defineProperty(this, "_isAnimating", function () {
+      return (
+        that._clockViewModel.shouldAnimate &&
+        (that._canAnimate || that.shuttleRingDragging)
+      );
+    });
 
-  this._playRealtimeViewModel = new ToggleButtonViewModel(playRealtimeCommand, {
-    toggled: knockout.computed(function () {
-      return clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK;
-    }),
-    tooltip: knockout.computed(function () {
-      return that._isSystemTimeAvailable
-        ? "Today (real-time)"
-        : "Current time not in range";
-    }),
-  });
+    const pauseCommand = createCommand(function () {
+      const clockViewModel = that._clockViewModel;
+      if (clockViewModel.shouldAnimate) {
+        clockViewModel.shouldAnimate = false;
+      } else if (that._canAnimate) {
+        clockViewModel.shouldAnimate = true;
+      }
+    });
 
-  this._slower = createCommand(function () {
-    const clockViewModel = that._clockViewModel;
-    const shuttleRingTicks = that._allShuttleRingTicks;
-    const multiplier = clockViewModel.multiplier;
-    const index = getTypicalMultiplierIndex(multiplier, shuttleRingTicks) - 1;
-    if (index >= 0) {
-      clockViewModel.multiplier = shuttleRingTicks[index];
+    this._pauseViewModel = new ToggleButtonViewModel(pauseCommand, {
+      toggled: knockout.computed(function () {
+        return !that._isAnimating;
+      }),
+      tooltip: "Pause",
+    });
+
+    const playReverseCommand = createCommand(function () {
+      const clockViewModel = that._clockViewModel;
+      const multiplier = clockViewModel.multiplier;
+      if (multiplier > 0) {
+        clockViewModel.multiplier = -multiplier;
+      }
+      clockViewModel.shouldAnimate = true;
+    });
+
+    this._playReverseViewModel = new ToggleButtonViewModel(playReverseCommand, {
+      toggled: knockout.computed(function () {
+        return that._isAnimating && clockViewModel.multiplier < 0;
+      }),
+      tooltip: "Play Reverse",
+    });
+
+    const playForwardCommand = createCommand(function () {
+      const clockViewModel = that._clockViewModel;
+      const multiplier = clockViewModel.multiplier;
+      if (multiplier < 0) {
+        clockViewModel.multiplier = -multiplier;
+      }
+      clockViewModel.shouldAnimate = true;
+    });
+
+    this._playForwardViewModel = new ToggleButtonViewModel(playForwardCommand, {
+      toggled: knockout.computed(function () {
+        return (
+          that._isAnimating &&
+          clockViewModel.multiplier > 0 &&
+          clockViewModel.clockStep !== ClockStep.SYSTEM_CLOCK
+        );
+      }),
+      tooltip: "Play Forward",
+    });
+
+    const playRealtimeCommand = createCommand(
+      function () {
+        that._clockViewModel.clockStep = ClockStep.SYSTEM_CLOCK;
+      },
+      knockout.getObservable(this, "_isSystemTimeAvailable"),
+    );
+
+    this._playRealtimeViewModel = new ToggleButtonViewModel(playRealtimeCommand, {
+      toggled: knockout.computed(function () {
+        return clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK;
+      }),
+      tooltip: knockout.computed(function () {
+        return that._isSystemTimeAvailable
+          ? "Today (real-time)"
+          : "Current time not in range";
+      }),
+    });
+
+    this._slower = createCommand(function () {
+      const clockViewModel = that._clockViewModel;
+      const shuttleRingTicks = that._allShuttleRingTicks;
+      const multiplier = clockViewModel.multiplier;
+      const index = getTypicalMultiplierIndex(multiplier, shuttleRingTicks) - 1;
+      if (index >= 0) {
+        clockViewModel.multiplier = shuttleRingTicks[index];
+      }
+    });
+
+    this._faster = createCommand(function () {
+      const clockViewModel = that._clockViewModel;
+      const shuttleRingTicks = that._allShuttleRingTicks;
+      const multiplier = clockViewModel.multiplier;
+      const index = getTypicalMultiplierIndex(multiplier, shuttleRingTicks) + 1;
+      if (index < shuttleRingTicks.length) {
+        clockViewModel.multiplier = shuttleRingTicks[index];
+      }
+    });
+  }
+
+  /**
+   * Gets a copy of the array of positive known clock multipliers to associate with the shuttle ring.
+   *
+   * @returns {number[]} The array of known clock multipliers associated with the shuttle ring.
+   */
+  getShuttleRingTicks() {
+    return this._sortedFilteredPositiveTicks.slice(0);
+  }
+
+  /**
+   * Sets the array of positive known clock multipliers to associate with the shuttle ring.
+   * These values will have negative equivalents created for them and sets both the minimum
+   * and maximum range of values for the shuttle ring as well as the values that are snapped
+   * to when a single click is made.  The values need not be in order, as they will be sorted
+   * automatically, and duplicate values will be removed.
+   *
+   * @param {number[]} positiveTicks The list of known positive clock multipliers to associate with the shuttle ring.
+   */
+  setShuttleRingTicks(positiveTicks) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(positiveTicks)) {
+      throw new DeveloperError("positiveTicks is required.");
     }
-  });
+    //>>includeEnd('debug');
 
-  this._faster = createCommand(function () {
-    const clockViewModel = that._clockViewModel;
-    const shuttleRingTicks = that._allShuttleRingTicks;
-    const multiplier = clockViewModel.multiplier;
-    const index = getTypicalMultiplierIndex(multiplier, shuttleRingTicks) + 1;
-    if (index < shuttleRingTicks.length) {
-      clockViewModel.multiplier = shuttleRingTicks[index];
+    let i;
+    let len;
+    let tick;
+
+    const hash = {};
+    const sortedFilteredPositiveTicks = this._sortedFilteredPositiveTicks;
+    sortedFilteredPositiveTicks.length = 0;
+    for (i = 0, len = positiveTicks.length; i < len; ++i) {
+      tick = positiveTicks[i];
+      //filter duplicates
+      if (!hash.hasOwnProperty(tick)) {
+        hash[tick] = true;
+        sortedFilteredPositiveTicks.push(tick);
+      }
     }
-  });
+    sortedFilteredPositiveTicks.sort(numberComparator);
+
+    const allTicks = [];
+    for (len = sortedFilteredPositiveTicks.length, i = len - 1; i >= 0; --i) {
+      tick = sortedFilteredPositiveTicks[i];
+      if (tick !== 0) {
+        allTicks.push(-tick);
+      }
+    }
+    addAllToArray(allTicks, sortedFilteredPositiveTicks);
+
+    this._allShuttleRingTicks = allTicks;
+  }
+
+  /**
+   * Gets a command that decreases the speed of animation.
+   * @memberof AnimationViewModel.prototype
+   * @type {Command}
+   */
+  get slower() {
+    return this._slower;
+  }
+
+  /**
+   * Gets a command that increases the speed of animation.
+   * @memberof AnimationViewModel.prototype
+   * @type {Command}
+   */
+  get faster() {
+    return this._faster;
+  }
+
+  /**
+   * Gets the clock view model.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {ClockViewModel}
+   */
+  get clockViewModel() {
+    return this._clockViewModel;
+  }
+
+  /**
+   * Gets the pause toggle button view model.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {ToggleButtonViewModel}
+   */
+  get pauseViewModel() {
+    return this._pauseViewModel;
+  }
+
+  /**
+   * Gets the reverse toggle button view model.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {ToggleButtonViewModel}
+   */
+  get playReverseViewModel() {
+    return this._playReverseViewModel;
+  }
+
+  /**
+   * Gets the play toggle button view model.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {ToggleButtonViewModel}
+   */
+  get playForwardViewModel() {
+    return this._playForwardViewModel;
+  }
+
+  /**
+   * Gets the realtime toggle button view model.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {ToggleButtonViewModel}
+   */
+  get playRealtimeViewModel() {
+    return this._playRealtimeViewModel;
+  }
+
+  /**
+   * Gets or sets the function which formats a date for display.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {AnimationViewModel.DateFormatter}
+   * @default AnimationViewModel.defaultDateFormatter
+   */
+  get dateFormatter() {
+    return this._dateFormatter;
+  }
+
+  /**
+   * Gets or sets the function which formats a date for display.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {AnimationViewModel.DateFormatter}
+   * @default AnimationViewModel.defaultDateFormatter
+   */
+  set dateFormatter(dateFormatter) {
+    //>>includeStart('debug', pragmas.debug);
+    if (typeof dateFormatter !== "function") {
+      throw new DeveloperError("dateFormatter must be a function");
+    }
+    //>>includeEnd('debug');
+
+    this._dateFormatter = dateFormatter;
+  }
+
+  /**
+   * Gets or sets the function which formats a time for display.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {AnimationViewModel.TimeFormatter}
+   * @default AnimationViewModel.defaultTimeFormatter
+   */
+  get timeFormatter() {
+    return this._timeFormatter;
+  }
+
+  /**
+   * Gets or sets the function which formats a time for display.
+   * @memberof AnimationViewModel.prototype
+   *
+   * @type {AnimationViewModel.TimeFormatter}
+   * @default AnimationViewModel.defaultTimeFormatter
+   */
+  set timeFormatter(timeFormatter) {
+    //>>includeStart('debug', pragmas.debug);
+    if (typeof timeFormatter !== "function") {
+      throw new DeveloperError("timeFormatter must be a function");
+    }
+    //>>includeEnd('debug');
+
+    this._timeFormatter = timeFormatter;
+  }
 }
 
 /**
@@ -457,190 +637,6 @@ AnimationViewModel.defaultTimeFormatter = function (date, viewModel) {
     .toString()
     .padStart(2, "0")}:${gregorianDate.second.toString().padStart(2, "0")} UTC`;
 };
-
-/**
- * Gets a copy of the array of positive known clock multipliers to associate with the shuttle ring.
- *
- * @returns {number[]} The array of known clock multipliers associated with the shuttle ring.
- */
-AnimationViewModel.prototype.getShuttleRingTicks = function () {
-  return this._sortedFilteredPositiveTicks.slice(0);
-};
-
-/**
- * Sets the array of positive known clock multipliers to associate with the shuttle ring.
- * These values will have negative equivalents created for them and sets both the minimum
- * and maximum range of values for the shuttle ring as well as the values that are snapped
- * to when a single click is made.  The values need not be in order, as they will be sorted
- * automatically, and duplicate values will be removed.
- *
- * @param {number[]} positiveTicks The list of known positive clock multipliers to associate with the shuttle ring.
- */
-AnimationViewModel.prototype.setShuttleRingTicks = function (positiveTicks) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(positiveTicks)) {
-    throw new DeveloperError("positiveTicks is required.");
-  }
-  //>>includeEnd('debug');
-
-  let i;
-  let len;
-  let tick;
-
-  const hash = {};
-  const sortedFilteredPositiveTicks = this._sortedFilteredPositiveTicks;
-  sortedFilteredPositiveTicks.length = 0;
-  for (i = 0, len = positiveTicks.length; i < len; ++i) {
-    tick = positiveTicks[i];
-    //filter duplicates
-    if (!hash.hasOwnProperty(tick)) {
-      hash[tick] = true;
-      sortedFilteredPositiveTicks.push(tick);
-    }
-  }
-  sortedFilteredPositiveTicks.sort(numberComparator);
-
-  const allTicks = [];
-  for (len = sortedFilteredPositiveTicks.length, i = len - 1; i >= 0; --i) {
-    tick = sortedFilteredPositiveTicks[i];
-    if (tick !== 0) {
-      allTicks.push(-tick);
-    }
-  }
-  addAllToArray(allTicks, sortedFilteredPositiveTicks);
-
-  this._allShuttleRingTicks = allTicks;
-};
-
-Object.defineProperties(AnimationViewModel.prototype, {
-  /**
-   * Gets a command that decreases the speed of animation.
-   * @memberof AnimationViewModel.prototype
-   * @type {Command}
-   */
-  slower: {
-    get: function () {
-      return this._slower;
-    },
-  },
-
-  /**
-   * Gets a command that increases the speed of animation.
-   * @memberof AnimationViewModel.prototype
-   * @type {Command}
-   */
-  faster: {
-    get: function () {
-      return this._faster;
-    },
-  },
-
-  /**
-   * Gets the clock view model.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {ClockViewModel}
-   */
-  clockViewModel: {
-    get: function () {
-      return this._clockViewModel;
-    },
-  },
-
-  /**
-   * Gets the pause toggle button view model.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {ToggleButtonViewModel}
-   */
-  pauseViewModel: {
-    get: function () {
-      return this._pauseViewModel;
-    },
-  },
-
-  /**
-   * Gets the reverse toggle button view model.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {ToggleButtonViewModel}
-   */
-  playReverseViewModel: {
-    get: function () {
-      return this._playReverseViewModel;
-    },
-  },
-
-  /**
-   * Gets the play toggle button view model.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {ToggleButtonViewModel}
-   */
-  playForwardViewModel: {
-    get: function () {
-      return this._playForwardViewModel;
-    },
-  },
-
-  /**
-   * Gets the realtime toggle button view model.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {ToggleButtonViewModel}
-   */
-  playRealtimeViewModel: {
-    get: function () {
-      return this._playRealtimeViewModel;
-    },
-  },
-
-  /**
-   * Gets or sets the function which formats a date for display.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {AnimationViewModel.DateFormatter}
-   * @default AnimationViewModel.defaultDateFormatter
-   */
-  dateFormatter: {
-    //TODO:@exception {DeveloperError} dateFormatter must be a function.
-    get: function () {
-      return this._dateFormatter;
-    },
-    set: function (dateFormatter) {
-      //>>includeStart('debug', pragmas.debug);
-      if (typeof dateFormatter !== "function") {
-        throw new DeveloperError("dateFormatter must be a function");
-      }
-      //>>includeEnd('debug');
-
-      this._dateFormatter = dateFormatter;
-    },
-  },
-
-  /**
-   * Gets or sets the function which formats a time for display.
-   * @memberof AnimationViewModel.prototype
-   *
-   * @type {AnimationViewModel.TimeFormatter}
-   * @default AnimationViewModel.defaultTimeFormatter
-   */
-  timeFormatter: {
-    //TODO:@exception {DeveloperError} timeFormatter must be a function.
-    get: function () {
-      return this._timeFormatter;
-    },
-    set: function (timeFormatter) {
-      //>>includeStart('debug', pragmas.debug);
-      if (typeof timeFormatter !== "function") {
-        throw new DeveloperError("timeFormatter must be a function");
-      }
-      //>>includeEnd('debug');
-
-      this._timeFormatter = timeFormatter;
-    },
-  },
-});
 
 //Currently exposed for tests.
 AnimationViewModel._maxShuttleRingAngle = maxShuttleRingAngle;

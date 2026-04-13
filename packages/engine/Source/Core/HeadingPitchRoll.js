@@ -13,25 +13,76 @@ import CesiumMath from "./Math.js";
  * @param {number} [pitch=0.0] The pitch component in radians.
  * @param {number} [roll=0.0] The roll component in radians.
  */
-function HeadingPitchRoll(heading, pitch, roll) {
+class HeadingPitchRoll {
+  constructor(heading, pitch, roll) {
+    /**
+     * Gets or sets the heading.
+     * @type {number}
+     * @default 0.0
+     */
+    this.heading = heading ?? 0.0;
+    /**
+     * Gets or sets the pitch.
+     * @type {number}
+     * @default 0.0
+     */
+    this.pitch = pitch ?? 0.0;
+    /**
+     * Gets or sets the roll.
+     * @type {number}
+     * @default 0.0
+     */
+    this.roll = roll ?? 0.0;
+  }
+
   /**
-   * Gets or sets the heading.
-   * @type {number}
-   * @default 0.0
+   * Duplicates this HeadingPitchRoll instance.
+   *
+   * @param {HeadingPitchRoll} [result] The object onto which to store the result.
+   * @returns {HeadingPitchRoll} The modified result parameter or a new HeadingPitchRoll instance if one was not provided.
    */
-  this.heading = heading ?? 0.0;
+  clone(result) {
+    return HeadingPitchRoll.clone(this, result);
+  }
+
   /**
-   * Gets or sets the pitch.
-   * @type {number}
-   * @default 0.0
+   * Compares this HeadingPitchRoll against the provided HeadingPitchRoll componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {HeadingPitchRoll} [right] The right hand side HeadingPitchRoll.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
    */
-  this.pitch = pitch ?? 0.0;
+  equals(right) {
+    return HeadingPitchRoll.equals(this, right);
+  }
+
   /**
-   * Gets or sets the roll.
-   * @type {number}
-   * @default 0.0
+   * Compares this HeadingPitchRoll against the provided HeadingPitchRoll componentwise and returns
+   * <code>true</code> if they pass an absolute or relative tolerance test,
+   * <code>false</code> otherwise.
+   *
+   * @param {HeadingPitchRoll} [right] The right hand side HeadingPitchRoll.
+   * @param {number} [relativeEpsilon=0] The relative epsilon tolerance to use for equality testing.
+   * @param {number} [absoluteEpsilon=relativeEpsilon] The absolute epsilon tolerance to use for equality testing.
+   * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
    */
-  this.roll = roll ?? 0.0;
+  equalsEpsilon(right, relativeEpsilon, absoluteEpsilon) {
+    return HeadingPitchRoll.equalsEpsilon(
+      this,
+      right,
+      relativeEpsilon,
+      absoluteEpsilon,
+    );
+  }
+
+  /**
+   * Creates a string representing this HeadingPitchRoll in the format '(heading, pitch, roll)' in radians.
+   *
+   * @returns {string} A string representing the provided HeadingPitchRoll in the format '(heading, pitch, roll)'.
+   */
+  toString() {
+    return `(${this.heading}, ${this.pitch}, ${this.roll})`;
+  }
 }
 
 /**
@@ -180,56 +231,4 @@ HeadingPitchRoll.equalsEpsilon = function (
   );
 };
 
-/**
- * Duplicates this HeadingPitchRoll instance.
- *
- * @param {HeadingPitchRoll} [result] The object onto which to store the result.
- * @returns {HeadingPitchRoll} The modified result parameter or a new HeadingPitchRoll instance if one was not provided.
- */
-HeadingPitchRoll.prototype.clone = function (result) {
-  return HeadingPitchRoll.clone(this, result);
-};
-
-/**
- * Compares this HeadingPitchRoll against the provided HeadingPitchRoll componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {HeadingPitchRoll} [right] The right hand side HeadingPitchRoll.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-HeadingPitchRoll.prototype.equals = function (right) {
-  return HeadingPitchRoll.equals(this, right);
-};
-
-/**
- * Compares this HeadingPitchRoll against the provided HeadingPitchRoll componentwise and returns
- * <code>true</code> if they pass an absolute or relative tolerance test,
- * <code>false</code> otherwise.
- *
- * @param {HeadingPitchRoll} [right] The right hand side HeadingPitchRoll.
- * @param {number} [relativeEpsilon=0] The relative epsilon tolerance to use for equality testing.
- * @param {number} [absoluteEpsilon=relativeEpsilon] The absolute epsilon tolerance to use for equality testing.
- * @returns {boolean} <code>true</code> if they are within the provided epsilon, <code>false</code> otherwise.
- */
-HeadingPitchRoll.prototype.equalsEpsilon = function (
-  right,
-  relativeEpsilon,
-  absoluteEpsilon,
-) {
-  return HeadingPitchRoll.equalsEpsilon(
-    this,
-    right,
-    relativeEpsilon,
-    absoluteEpsilon,
-  );
-};
-
-/**
- * Creates a string representing this HeadingPitchRoll in the format '(heading, pitch, roll)' in radians.
- *
- * @returns {string} A string representing the provided HeadingPitchRoll in the format '(heading, pitch, roll)'.
- */
-HeadingPitchRoll.prototype.toString = function () {
-  return `(${this.heading}, ${this.pitch}, ${this.roll})`;
-};
 export default HeadingPitchRoll;

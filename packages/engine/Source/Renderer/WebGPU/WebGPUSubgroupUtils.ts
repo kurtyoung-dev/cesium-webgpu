@@ -79,7 +79,10 @@ export class WebGPUSubgroupUtils {
     // Default to 32 (NVIDIA/Intel typical)
     let subgroupSize = 32;
     if (adapter) {
-      const limits = adapter.limits as any;
+      const limits = adapter.limits as GPUSupportedLimits & {
+        minSubgroupSize?: number;
+        maxSubgroupSize?: number;
+      };
       if (limits.minSubgroupSize) {
         subgroupSize = limits.minSubgroupSize;
       }

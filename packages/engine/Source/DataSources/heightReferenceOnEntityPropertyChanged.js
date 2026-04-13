@@ -16,7 +16,7 @@ function heightReferenceOnEntityPropertyChanged(
     newValue,
     oldValue,
   );
-  if (this._observedPropertyNames.indexOf(propertyName) === -1) {
+  if (!this._observedPropertyNames.includes(propertyName)) {
     return;
   }
 

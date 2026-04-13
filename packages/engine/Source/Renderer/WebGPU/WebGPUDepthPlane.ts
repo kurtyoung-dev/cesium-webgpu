@@ -322,7 +322,8 @@ export class WebGPUDepthPlane {
       depthStencil: {
         format: depthFormat,
         depthWriteEnabled: true,
-        depthCompare: "less",
+        // less-equal for planetary-scale precision robustness.
+        depthCompare: "less-equal",
       },
       primitive: {
         topology: "triangle-strip",
@@ -387,7 +388,7 @@ export class WebGPUDepthPlane {
    * @param frameState The current frame state (contains camera, mapProjection)
    * @param device The GPU device for buffer writes
    */
-  update(frameState: any, device: GPUDevice): void {
+  update(frameState: CesiumFrameState, device: GPUDevice): void {
     // The depth plane is only used in 3D mode (SceneMode.SCENE3D = 3)
     if (
       !frameState ||
@@ -404,7 +405,8 @@ export class WebGPUDepthPlane {
 
     // Allow offsetting the ellipsoid radius to address rendering artifacts
     // below ellipsoid zero elevation (matches WebGL DepthPlane behavior)
-    const baseRadii = frameState.mapProjection.ellipsoid.radii;
+    const mapProj = frameState.mapProjection as { ellipsoid: { radii: CesiumCartesian3 } };
+    const baseRadii = mapProj.ellipsoid.radii;
     const ellipsoid = new Ellipsoid(
       baseRadii.x + this._ellipsoidOffset,
       baseRadii.y + this._ellipsoidOffset,

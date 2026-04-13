@@ -11,87 +11,89 @@ import DoubleEndedPriorityQueue from "../Core/DoubleEndedPriorityQueue.js";
  *
  * @private
  */
-function ImplicitSubtreeCache(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ImplicitSubtreeCache {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  /**
-   * @type {number}
-   * @private
-   */
-  this._maximumSubtreeCount = options.maximumSubtreeCount ?? 0;
+    /**
+     * @type {number}
+     * @private
+     */
+    this._maximumSubtreeCount = options.maximumSubtreeCount ?? 0;
 
-  /**
-   * A counter that goes up whenever a subtree is added. Used to sort subtrees by recency.
-   * @type {number}
-   * @private
-   */
-  this._subtreeRequestCounter = 0;
+    /**
+     * A counter that goes up whenever a subtree is added. Used to sort subtrees by recency.
+     * @type {number}
+     * @private
+     */
+    this._subtreeRequestCounter = 0;
 
-  /**
-   * @type {DoubleEndedPriorityQueue}
-   * @private
-   */
-  this._queue = new DoubleEndedPriorityQueue({
-    comparator: ImplicitSubtreeCache.comparator,
-  });
-}
-
-/**
- * @param {ImplicitSubtree} subtree
- */
-ImplicitSubtreeCache.prototype.addSubtree = function (subtree) {
-  const cacheNode = new ImplicitSubtreeCacheNode(
-    subtree,
-    this._subtreeRequestCounter,
-  );
-  this._subtreeRequestCounter++;
-  this._queue.insert(cacheNode);
-
-  // Make sure the parent subtree exists in the cache
-  const subtreeCoord = subtree.implicitCoordinates;
-  if (subtreeCoord.level > 0) {
-    const parentCoord = subtreeCoord.getParentSubtreeCoordinates();
-    const parentNode = this.find(parentCoord);
-
-    //>>includeStart('debug', pragmas.debug)
-    if (parentNode === undefined) {
-      throw new DeveloperError("parent node needs to exist");
-    }
-    //>>includeEnd('debug');
+    /**
+     * @type {DoubleEndedPriorityQueue}
+     * @private
+     */
+    this._queue = new DoubleEndedPriorityQueue({
+      comparator: ImplicitSubtreeCache.comparator,
+    });
   }
 
-  if (this._maximumSubtreeCount > 0) {
-    while (this._queue.length > this._maximumSubtreeCount) {
-      const lowestPriorityNode = this._queue.getMinimum();
-      if (lowestPriorityNode === cacheNode) {
-        // Don't remove itself
-        break;
+  /**
+   * @param {ImplicitSubtree} subtree
+   */
+  addSubtree(subtree) {
+    const cacheNode = new ImplicitSubtreeCacheNode(
+      subtree,
+      this._subtreeRequestCounter,
+    );
+    this._subtreeRequestCounter++;
+    this._queue.insert(cacheNode);
+
+    // Make sure the parent subtree exists in the cache
+    const subtreeCoord = subtree.implicitCoordinates;
+    if (subtreeCoord.level > 0) {
+      const parentCoord = subtreeCoord.getParentSubtreeCoordinates();
+      const parentNode = this.find(parentCoord);
+
+      //>>includeStart('debug', pragmas.debug)
+      if (parentNode === undefined) {
+        throw new DeveloperError("parent node needs to exist");
       }
+      //>>includeEnd('debug');
+    }
 
-      this._queue.removeMinimum();
+    if (this._maximumSubtreeCount > 0) {
+      while (this._queue.length > this._maximumSubtreeCount) {
+        const lowestPriorityNode = this._queue.getMinimum();
+        if (lowestPriorityNode === cacheNode) {
+          // Don't remove itself
+          break;
+        }
+
+        this._queue.removeMinimum();
+      }
     }
   }
-};
 
-/**
- * @param {ImplicitTileCoordinates} subtreeCoord
- * @returns {ImplicitSubtree|undefined}
- */
-ImplicitSubtreeCache.prototype.find = function (subtreeCoord) {
-  const queue = this._queue;
-  const array = queue.internalArray;
-  const arrayLength = queue.length;
+  /**
+   * @param {ImplicitTileCoordinates} subtreeCoord
+   * @returns {ImplicitSubtree|undefined}
+   */
+  find(subtreeCoord) {
+    const queue = this._queue;
+    const array = queue.internalArray;
+    const arrayLength = queue.length;
 
-  for (let i = 0; i < arrayLength; i++) {
-    const other = array[i];
-    const otherSubtree = other.subtree;
-    const otherCoord = otherSubtree.implicitCoordinates;
-    if (subtreeCoord.isEqual(otherCoord)) {
-      return other.subtree;
+    for (let i = 0; i < arrayLength; i++) {
+      const other = array[i];
+      const otherSubtree = other.subtree;
+      const otherCoord = otherSubtree.implicitCoordinates;
+      if (subtreeCoord.isEqual(otherCoord)) {
+        return other.subtree;
+      }
     }
+    return undefined;
   }
-  return undefined;
-};
+}
 
 /**
  * @param {ImplicitSubtreeCacheNode} a

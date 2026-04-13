@@ -1,9 +1,88 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 9, 2026 (Phase 0 foundation + Phase 1.1/1.2 celestial work landed — see `WEBGPU_MIGRATION_STATUS.md` § "Recent Progress (2026-04-09)")
+**Last Updated:** April 13, 2026 (Session 28: Option B completion + TypeScript clean build)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
 
-> **For architecture, completed work, bug fix history, current state, and the Phase 0 + Phase 1 progress section, see `WEBGPU_MIGRATION_STATUS.md`.**
+> **For architecture, completed work, bug fix history, current state, and the Phase 0 / Phase 1 / Renderer Threading / Phase 5 progress sections, see `WEBGPU_MIGRATION_STATUS.md`.**
+
+---
+
+## 2026-04-13 — Session 28 follow-ups
+
+Session 28 completed the Option B material UBO split and achieved a clean TypeScript build (0 errors from both `tsc --noEmit` and `npx gulp build`). See `NEXT_SESSION_HANDOFF.md` § "What landed in Session 28" for details.
+
+### Completed (moved to WEBGPU_MIGRATION_STATUS.md)
+
+- ~~Option B Material UBO Split~~ — all shaders + WebGPUPolylineRenderer refactored
+- ~~TypeScript build errors (202 → 0)~~ — cesium-js-types.d.ts rewrite, WebGPUContext fixes, esbuild async fixes
+- ~~CLAUDE.md `any` ban rule~~ — added
+
+### New follow-ups
+
+- **TS-DEBT-1** — **Refactor WebGPUContext public underscore fields to use getters**. 30+ external access sites should call `context.device` not `context._device`. Mechanical search-and-replace. Effort: ~2 hours.
+- **TS-DEBT-2** — **Add `getGPUBuffer()` helper** to eliminate `'buffer' in vb` narrowing at every vertexBuffer/indexBuffer access site. Effort: ~30 min.
+- **TS-DEBT-3** — **Remaining `: any` annotations** (268 across 40 WebGPU .ts files). Now safe to fix incrementally since build is clean. Effort: ~2-3 hours.
+- **TS-DEBT-4** — **Remaining `as any` casts** (33 across 10 WebGPU .ts files). Same incremental approach. Effort: ~1 hour.
+- **ES6-VAR** — **`var` → `const`/`let` codemod** (~196 files). Mechanical. Effort: ~2-3 hours.
+- **ES6-INDEXOF** — **`.indexOf()` → `.includes()` codemod** (~57 files). Codemod already exists. Effort: ~30 min.
+- **ES6-ASYNC-AUDIT** — **Full async method audit** from ES6 class codemod. Fixed 15+ that caused esbuild errors, but more may exist without causing build failures. Effort: ~1 hour.
+- **OPTION-B-BILLBOARD** — **WebGPUBillboardRenderer.js bind group split**. Still uses old monolithic pattern. Lower priority. Effort: ~2 hours.
+- **OPTION-B-VISUAL** — **Visual smoke test of all 25 material types**. Zero runtime testing on Option B changes. Must verify before shipping. Effort: ~2 hours with Playwright.
+
+---
+
+## 2026-04-12 — Phase 5 + HDR follow-ups
+
+The 2026-04-12 session landed WGF-4 (RTE assertions), WGF-1 (hardware clip-distances), WGF-3 (shader-f16 tonemapping), the HDR pipeline fix, auto-exposure compute, OPEN-5 fog fix, and OPEN-1 sky atmosphere guard. See `WEBGPU_MIGRATION_STATUS.md` § "Recent Progress (2026-04-12)".
+
+### New follow-ups
+
+- **WGF-1-EXPAND** — **Extend clip-distances to remaining shaders**. Today only the globe terrain pipeline has the hardware clip-distances variant. The 3 Primitive shaders (`PrimitiveBasicColor`, `PrimitivePhongColor`, `PrimitivePhongTexturedColor`) have the struct update but no vertex-side clip distance output. Models (`ModelPBRComplete.wgsl`) don't have clipping plane support at all yet. Effort: ~2 days per shader family. Trigger: when clipping planes are used on non-globe geometry.
+- **WGF-1-INTERSECTION** — **Intersection-mode clipping with hardware clip distances**. The hardware `@builtin(clip_distances)` builtin is purely union semantics (any slot < 0 clips). Intersection mode (clip only when ALL planes clip) requires a different approach — likely a fragment-side check against all 8 clip distances passed as varyings. Effort: ~1 day. Trigger: a user reports intersection-mode clipping broken with `useHardwareClipDistances = true` (currently gated to union-only).
+- **WGF-3-EXPAND** — **Extend shader-f16 to remaining post-process stages**. Today only `Tonemapping_f16.wgsl` exists. Candidates: ColorGrading, FXAA, BrightPass, GaussianBlur1D, BloomComposite. Each needs a hand-tuned f16 variant file + visual-diff validation against the f32 reference. Defer SkyAtmosphere/GroundAtmosphere (too close to f16 denormal range). Effort: ~0.5 day per shader. Trigger: profiler shows post-process as a bottleneck on mobile/laptop.
+- **WGF-4-EXPAND** — **RTE assertions in remaining 5 camera packers**. Today assertions are in 3 of 8 packers (BufferPrimitiveRenderer, GlobeSurfaceRenderer, UniformGroupManager). Missing: CloudRenderer, EllipsoidPrimitiveRenderer, GaussianSplatRenderer, PointCloudRenderer, VoxelRenderer. Effort: ~1 hour. Trigger: any time someone touches those files.
+- **HDR-DISPLAY** — **HDR display output (canvas HDR)**. Both WebGL and WebGPU currently tonemap to SDR before the canvas blit. Chrome supports `GPUCanvasConfiguration.colorSpace: "display-p3"` and the CSS `color-gamut` media query. When a wide-gamut / HDR display is detected, the final blit could skip tonemapping and output linear HDR directly. Effort: ~2 days research + implementation. Trigger: user with an HDR monitor requests it.
+- **AUTO-EXPOSURE-TUNE** — **Auto-exposure adaptation rate tuning**. The default `adaptationRate = 1/(60×1.5) ≈ 0.011` matches WebGL's formula but may feel too slow or too fast depending on the scene. Expose `scene.autoExposureAdaptationRate` as a tunable. Effort: ~1 hour. Trigger: visual testing reveals the adaptation is perceptibly wrong.
+- **OPEN-1-DIAGNOSE** — **Sky atmosphere shader/format diagnosis**. The try/catch + latch prevents infinite retry, but the actual compile failure needs browser-based debugging. Connect via Playwright, enable `useWebGPU`, check for shader compile errors in the console. Effort: ~1 hour. Trigger: next visual smoke-test session.
+
+### Updates to existing backlog items
+
+- **WORKER-5** — now also tracks `useHardwareClipDistances` + `useShaderF16` feature flag replication (implemented via `MSG_SET_FEATURE_FLAGS` in this session).
+- **TAA design doc** — updated with HDR pipeline interaction note and f16 non-concern note.
+- **CSM design doc** — updated with 240-byte EffectsUniforms struct constraint note.
+- **FORK-19b (Jasmine spec coverage)** — add specs for `WebGPUAutoExposure` (luminance reduction math, temporal smoothing, readback), `WebGPUClipDistancePrecompute` (dPrime round-trip, finite sentinel), `WebGPURTEAssertions` (tolerance thresholds).
+
+---
+
+## 2026-04-11 — Items added/impacted by the Renderer Threading sweep
+
+The 2026-04-11 sweep landed live FPS measurement, per-renderer worker
+scaffolding, the Scene/CreditDisplay headless mode, the maxFps runtime
+cap, and the worker-renderers test page. See
+`WEBGPU_MIGRATION_STATUS.md` § "Recent Progress (2026-04-11)" for the
+full inventory and `OPTION_B_SCENE_IN_WORKER.md` for the design + the
+9-13 week roadmap to a fully-worker-hosted Scene. The items below are
+**new follow-ups** carved out during the sweep, plus updates to
+existing backlog items that this work changes.
+
+### New follow-ups
+
+- **WORKER-1** — **Phase 1 of Option B (worker Scene functional baseline)**. The headless Scene constructor + CreditDisplay worker-safety landed as part of this sweep. The next layer is verifying that `Scene.render()` actually completes a frame against an OffscreenCanvas without hitting another DOM dependency we missed. Likely candidates: the `Camera` constructor reading `canvas.clientWidth/clientHeight`, the `ScreenSpaceCameraController` calling `addEventListener` on the canvas, `loadImage()` paths using `new Image()` (need `createImageBitmap` instead). Effort: ~1 week. **Trigger**: any time someone wants real per-renderer FPS comparison via the worker test page. See `OPTION_B_SCENE_IN_WORKER.md` §§1-2.
+- **WORKER-2** — **Soft-reset (Tier 2) host trigger**. The protocol message `MSG_RESET` and the worker-side handler are in place but no host-side method emits the message — Tier 2 of the 3-tier crash recovery is reserved for future use. When a need appears (e.g., a recoverable engine error that doesn't need a full canvas swap), add `host.softReset(reason)` and wire it to a host-detectable error class. Effort: ~half day. **Trigger**: a real soft-reset use case showing up in the bug log.
+- **WORKER-3** — **Shadow state expansion**. Today the worker host's shadow state covers `lastView`, `requestRenderMode`, and `maxFps`. To make the worker path useful for actual scenes, the shadow state needs to record entity adds/removes, imagery/terrain providers, post-process stages, and any other host-side commands so a hard restart can replay them into the new worker. The protocol message constants for these (`MSG_ADD_ENTITY`, `MSG_REMOVE_ENTITY`, `MSG_SET_IMAGERY_LAYER`, `MSG_SET_TERRAIN`) already exist; the shadow recording + replay paths are stubs. Effort: ~2-3 weeks for the entity / primitive surface alone (each Cesium type needs a serializer pair — Cartesian3, Color, Property, Material, etc.). See `OPTION_B_SCENE_IN_WORKER.md` §3.2.
+- **WORKER-4** — **WorkerScreenSpaceEventHandler**. `ScreenSpaceEventHandler` calls `addEventListener("mousedown", ...)` on its target canvas; OffscreenCanvas has no event interface even on Chromium. Worker camera control today is impossible. The fix is a `WorkerScreenSpaceEventHandler` that exposes the same `setInputAction(callback, type, modifier)` API but receives synthetic events from the host via `MSG_INPUT_EVENT` (already a defined message; today the worker handler logs and discards). Modifier-key tracking and double-click detection logic moves into the host's input forwarder. Effort: ~1-2 days. **Trigger**: WORKER-1 lands and the next obvious use case is "click on an entity in a worker pane".
+- **WORKER-5** — **`maxFps` integration with Snapshot Mode**. `SnapshotModeService` already provides freeze/thaw lifecycle hooks. When a freezable subsystem is in the worker, the natural pattern is `host.setMaxFps(-1)` on freeze and `host.setMaxFps(null)` on thaw — pause the worker's render loop instead of just skipping its bundle reuploads. Effort: ~half day. **Trigger**: when a real worker-hosted scene lands and we want it to participate in snapshot mode.
+- **WORKER-6** — **Per-frame postMessage cost audit**. The current host↔worker hot path uses `postMessage` for stats (one message every 125 ms, ~600 bytes, transferable Float32Array for the frame-time slice). For animation-heavy use cases (entity updates, hover picking) we might want to batch updates per frame (`MSG_BATCH_UPDATE`) or use object pools on both sides. This is the kind of optimization that should ONLY happen when measurements show it matters — the FPS counter use case is fine as-is. **Effort**: 1-2 days when needed. **Trigger**: animation-heavy scene profiling shows the postMessage cost on a flame graph.
+- **WORKER-7** — **Naga-wasm in the worker**. The host application can now run multiple workers with their own engine chunks; the engine chunk includes `WebGPUNagaTranspiler` for runtime GLSL→WGSL transpilation. **Verify** that naga-wasm initialization works inside the worker context (it's just `WebAssembly.instantiateStreaming` against a wasm URL, but the URL resolution needs to be checked). Effort: ~half day spike. **Trigger**: the first user-supplied GLSL shader hits the worker path.
+- **WORKER-8** — **Cross-browser worker render loop on Firefox/Safari**. The current `setTimeout(1000/60)` fallback in `RendererWorker.js` runs at ~60 Hz with sub-millisecond jitter on browsers where `requestAnimationFrame` isn't available in DedicatedWorker (Firefox, Safari as of 2026). On a 144 Hz display these workers won't ride the higher refresh rate. The canonical fix is for the main thread to post a `MSG_TICK` message on its own rAF — but that creates a hard coupling that defeats the worker isolation. **Decision**: leave as-is until a real Firefox/Safari user complains. Document in `OPTION_B_SCENE_IN_WORKER.md` §5.
+- **WORKER-9** — **Visual regression for the worker test page**. The existing visual regression workflow targets `Apps/WebGPUTest/split-screen-comparison.html`. Once WORKER-1 lands and the worker panes actually render, add `worker-renderers.html` as a second baseline target — gives us cross-browser regression coverage for the worker path AND a way to detect FPS regressions over time (e.g., new shader features that drop the average below 55 fps). Effort: ~1 day. **Trigger**: WORKER-1 landed.
+
+### Updates to existing backlog items
+
+- **FORK-19b (Jasmine spec coverage)** — needs to grow to cover the new Services layer too. Add specs for: `PerformanceTracker.recordFrame` / `getLiveStats` / percentile math, `FpsOverlay` rendering against a mock data source (jsdom Canvas), `WorkerSceneHost` heartbeat + crash recovery + shadow replay (mocking `Worker`), `RendererWorker` headless Scene init path. Estimated +1 day on top of the existing FORK-19b estimate.
+- **Performance benchmarking (Tier 4 #4.4)** — the worker hosts + per-renderer FPS overlays unblock real apples-to-apples WebGL-vs-WebGPU comparisons that were previously impossible because both renderers shared the main-thread JS pump. The benchmark task should now be: open `worker-renderers.html`, spawn one WebGL pane and one WebGPU pane, capture the 60s rolling stats from each FPS overlay's `getLiveStats()`, export. Measurable wins to verify: render bundles (50-80% CPU), GPU culler (5-20× for >50K objects), AtmosphereLUT consumer (fragment ray-march elimination), PointCloudLOD subgroups (2-4× on dense scenes).
+- **Snapshot Mode Phases A-D** — the `maxFps` cap with mode `-1` (paused) is the natural worker-side hook. Phase A's bundle manager freeze flag remains main-thread, but a worker-hosted Scene's freezable can additionally call `host.setMaxFps(-1)` on freeze for full power saving instead of just skipping bundle reuploads. WORKER-5 above tracks the wiring.
+- **OPTION_B_SCENE_IN_WORKER.md** — full design doc with the 9-13 week roadmap. Phase 1 of that doc (the headless Scene constructor + CreditDisplay) is done as part of this sweep. Phases 2-7 are the backlog items above (WORKER-1 through WORKER-9) plus the per-subsystem worker-safe variants the Option B doc inventories.
 
 ---
 
@@ -14,7 +93,7 @@ These follow-ups were carved out during Phase 0 + Phase 1.2 implementation. None
 - **NEW-9** — File an upstream PR against [`CesiumGS/quantized-mesh`](https://github.com/CesiumGS/quantized-mesh) to formally reserve **extension ID `0x05`** for the water classification extension. Phase 0.6 verification confirmed the ID is currently unassigned and the wire format is documented in `WATER_RENDERING_DESIGN.md §9.1`. **Must happen before water Phase 1 ships** to avoid racing another extension proposal. Effort: ~2 hours (PR draft + review).
 - ~~**EllipsoidPrimitive feature renderer consolidation**~~ — ✅ **Resolved 2026-04-09 (Phase 1.x consolidation).** Extracted the Moon's bounding-cube + base uniform pack into `Renderer/WebGPU/WebGPUEllipsoidRenderer.ts`. Created the `csm_intersectEllipsoid.wgsl` chunk. Refactored `WebGPUEnvironmentRenderer.js` Moon path to use the shared helpers; file shrunk by ~140 lines. New 11-spec `WebGPUEllipsoidRendererSpec.js` covers the base packer end-to-end. See `WEBGPU_MIGRATION_STATUS.md` § "Phase 1.x consolidation". Stretch follow-up: migrate the orphan `WebGPUEllipsoidPrimitiveRenderer.ts` from its current screen-space-quad approach to use the bounding-cube path — ~1-2 days, deferred until that renderer gets a real consumer.
 - **Render bundle env-pass executor full integration** — Phase 1.2c v2 wires `WebGPUDrawCommand.bundle` so any individual command can replay a `GPURenderBundle`. Future enhancement: collect bundles from a frustum's command list and submit a single `passEncoder.executeBundles([...])` call per pass, eliminating per-command CPU overhead entirely. Effort: ~1 day. Trigger: when a second renderer registers bundles (sky atmosphere, sun) so the batch path has at least 2 entries to amortize over.
-- **Snapshot mode Phases A-D** — Per `SNAPSHOT_MODE_SPIKE_2026-04-09.md`. Phase 1.2c v2 already wires the moon as the first freezable consumer, but the broader work (bundle manager freeze flag, camera-delta auto-thaw, `markSnapshotDirty` event hooks, GPU memory pressure handling) is still pending. Effort: ~3 days. Trigger: after Phase 1.3 lands more bundle-eligible content.
+- **Snapshot mode Phases A-D** — Per `SNAPSHOT_MODE_SPIKE_2026-04-09.md`. Phase 1.2c v2 already wires the moon as the first freezable consumer, but the broader work (bundle manager freeze flag, camera-delta auto-thaw, `markSnapshotDirty` event hooks, GPU memory pressure handling) is still pending. Effort: ~3 days. Trigger: after Phase 1.3 lands more bundle-eligible content. **2026-04-11 update**: when a worker-hosted Scene becomes a freezable, `host.setMaxFps(-1)` is the natural full-power-saving hook (pauses the worker render loop entirely instead of just skipping bundle reuploads). Tracked as **WORKER-5** in the 2026-04-11 section above.
 - **C4 / C12 wording fixes** in `WATER_RENDERING_DESIGN.md` §4.5 / §10 / DP5 — Phase 0.6 verification found three small refinements: (1) parent encloses child *content* not child *volumes*, (2) `EXT_:_NAME` collision-disambiguation pattern available if ever needed, (3) describe `EXT_mesh_features` + `EXT_structural_metadata` as **paired** (feature IDs + property tables) rather than alternatives. Doc-only edits, ~30 minutes; do during water Phase 1.
 - **Producer-format adapter real-data validation** — Phase 0.5 smoke-tested `ProducerListenerAdapter` against the real `listener_invalidations_25.2.txt` fixture (16 sets, 1116 entries, all 8 layers detected correctly). Still needs an end-to-end test with a real `Cesium3DTileset` consuming the feed and validating that the zero-flicker swap fires correctly for each entry. Effort: ~half session. Trigger: when a real producer + consumer pair is available to test against.
 - **Volumetric fog spellcheck dictionary entry** — multiple `migration_doc/*.md` files reference "froxel" (frustum-voxel) which the editor's spellcheck flags. Add to project dictionary. Trivial.
@@ -23,6 +102,7 @@ These follow-ups were carved out during Phase 0 + Phase 1.2 implementation. None
 
 ## Table of Contents
 
+0. [2026-04-11 — Renderer Threading sweep follow-ups (WORKER-1 to WORKER-9)](#2026-04-11--items-addedimpacted-by-the-renderer-threading-sweep)
 1. [Active Bugs](#1-active-bugs)
 2. [Tier 4: Testing, Performance & Quality](#2-tier-4-testing-performance--quality)
 3. [Sorting System Remaining](#3-sorting-system-remaining)
@@ -69,10 +149,10 @@ These features have been *fixed in code* across Sessions 16-18 but never had a f
 
 | # | Item | Effort | Status |
 |---|------|--------|--------|
-| 4.1 | **Expand Jasmine spec coverage** (FORK-19b) | 4-6 days | 10 spec files exist (Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler). Coverage is thin — 105+ WebGPU files, only ~50 tests total. Target: at least one spec per FR + per major utility module. |
-| 4.2 | **Automated visual regression (pixel-diff CI)** | ~~3-4 days~~ **CI workflow landed 2026-04-09** | `Tools/visual-regression/` scaffolding + `.github/workflows/visual-regression.yml` (workflow_dispatch trigger, threshold input, baseline `--update` toggle, artifact upload). Currently manual-trigger only because GitHub-hosted Linux runners don't ship a WebGPU adapter without extra setup; promote to `pull_request` trigger once that lands. **Remaining**: capture the initial baseline corpus + tune per-scene tolerance. |
-| 4.3 | **Browser compatibility testing** | 3-5 days | Safari, Firefox WebGPU support. Edge tested; need cross-browser smoke + capability fingerprinting for the WGF features. |
-| 4.4 | **Performance benchmarking** | 2-3 days | WebGL vs WebGPU vs WebGPU-compat comparison. Need fixed-camera scene + frame-time logging + report generation. Measurable wins to verify: render bundles (50-80% CPU), GPU culler (5-20× for >50K objects), AtmosphereLUT consumer (fragment ray-march elimination), PointCloudLOD subgroups (2-4× on dense scenes). |
+| 4.1 | **Expand Jasmine spec coverage** (FORK-19b) | 5-7 days | 10 spec files exist (Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler). Coverage is thin — 105+ WebGPU files, only ~50 tests total. Target: at least one spec per FR + per major utility module. **2026-04-11 update**: also add specs for the new Services layer — `PerformanceTracker` live histogram + percentile math, `FpsOverlay` rendering against a mock data source (jsdom Canvas), `WorkerSceneHost` heartbeat + crash recovery + shadow replay (mocking `Worker`), `RendererWorker` headless init path. ~+1 day on the original estimate. |
+| 4.2 | **Automated visual regression (pixel-diff CI)** | ~~3-4 days~~ **CI workflow landed 2026-04-09** | `Tools/visual-regression/` scaffolding + `.github/workflows/visual-regression.yml` (workflow_dispatch trigger, threshold input, baseline `--update` toggle, artifact upload). Currently manual-trigger only because GitHub-hosted Linux runners don't ship a WebGPU adapter without extra setup; promote to `pull_request` trigger once that lands. **Remaining**: capture the initial baseline corpus + tune per-scene tolerance. **2026-04-11 update**: see WORKER-9 for the follow-up to add `worker-renderers.html` as a second baseline target once the worker Scene actually renders. |
+| 4.3 | **Browser compatibility testing** | 3-5 days | Safari, Firefox WebGPU support. Edge tested; need cross-browser smoke + capability fingerprinting for the WGF features. **2026-04-11 update**: also verify the worker render loop fallback (`setTimeout(1000/60)` instead of `requestAnimationFrame`) works correctly on Firefox + Safari workers — see WORKER-8. |
+| 4.4 | **Performance benchmarking** | 2-3 days | WebGL vs WebGPU vs WebGPU-compat comparison. Need fixed-camera scene + frame-time logging + report generation. Measurable wins to verify: render bundles (50-80% CPU), GPU culler (5-20× for >50K objects), AtmosphereLUT consumer (fragment ray-march elimination), PointCloudLOD subgroups (2-4× on dense scenes). **2026-04-11 update**: this task is now substantially easier — `worker-renderers.html` provides the side-by-side comparison harness and `WorkerSceneHost.getLiveStats()` returns the rolling 60s avg + 1% lows + 1% highs as a structured object ready for export. The benchmark workflow becomes: open the page, spawn one WebGL + one WebGPU pane, run a fixed camera path, capture each pane's `host.getLiveStats()` snapshot, export to CSV. WORKER-1 (Phase 1 of Option B) is the prerequisite — without it the worker panes don't render. |
 | 4.6 | **Indirect drawing for 3D Tiles — production activation** | 2-3 days | Infrastructure built (`WebGPUIndirectDrawManager.ts`); opt-in fast path landed S26 via `executeBatchIndirect()` + `context.useIndirectDrawForTiles` flag. **Remaining**: identify a tile renderer with homogeneous pipeline+bind-group runs of ≥2 commands and flip the flag on for it. Most tile commands have unique per-tile bind groups so the win lives mainly in tightly-instanced point cloud / batched-table tile sets. |
 | 4.8 | **Console noise reduction** | 1 day | ~12 `console.warn/error` calls in standalone modules should route through `context.log(level, ...)` for per-context prefixing. |
 
@@ -110,7 +190,7 @@ These features have been *fixed in code* across Sessions 16-18 but never had a f
 
 ## 5. Fork-Specific Tech Debt
 
-Items introduced by our WebGPU additions. 33 of 46 resolved through April 2026; 13 remaining.
+Items introduced by our WebGPU additions. 38 of 51 resolved through April 2026 (Session 27); 13 remaining.
 
 ### Remaining Items (Priority Order)
 
@@ -119,20 +199,20 @@ Items introduced by our WebGPU additions. 33 of 46 resolved through April 2026; 
 | **FORK-19b** | Expand WebGPU spec coverage (10 files, ~50 tests for 105+ source files) | HIGH | 4-6 days |
 | **FORK-41** | 4 of 12 compute shaders awaiting activation (HiZ, OcclusionTest, PointCloudSort, GPUSortKeys) | MEDIUM | Per shader, 2-4 days each |
 | **FORK-45** | Single global WASM arena shared across bridges | MEDIUM | 1 day | All 7 bridges share one `Mutex<Vec<u8>>` arena. Works today because bridges run sequentially, but a parallel-frame future would corrupt it. Per-bridge arena slots needed. |
-| **FORK-11** | `webgpuTypeHelpers.ts` has limited adoption | MEDIUM | 0.5 day | The helper module exists but most call sites still inline `as any` casts. |
-| **FORK-9** | ~11 `as any` casts remain in WebGPU TypeScript | MEDIUM | -- | Replace with proper typed helpers; depends on FORK-11 adoption. |
+| ~~**FORK-11**~~ | ~~`webgpuTypeHelpers.ts` has limited adoption~~ — **RESOLVED (Session 27)**: `cesium-js-types.d.ts` now provides the broader ambient type coverage that `webgpuTypeHelpers.ts` was trying to fill piecemeal. | ~~MEDIUM~~ | -- |
+| **FORK-9** | `: any` casts in WebGPU TypeScript — was ~11 targeted, originally 66; reduced to ~32 via `cesium-js-types.d.ts` ambient type approach. Remaining casts are in complex call sites needing per-file refactoring. | MEDIUM | ~32 remain |
 | **FORK-16** | WGSL preprocessor test page reimplements preprocessor | MEDIUM | 0.5 day | Test page has its own preprocessor; should consume the production `WGSLShaderPreprocessor`. |
 | **FORK-20** | 29 test pages use 3 different module loading patterns | MEDIUM | 1 day | Standardize on a single import pattern across `Apps/WebGPUTest/`. |
 | **FORK-21** | Test pages contain hardcoded inline WGSL shaders | MEDIUM | 0.5 day | Move to shared `.wgsl` files or import from production locations. |
 | **FORK-22** | Several test pages are raw WebGPU demos | MEDIUM | 0.5 day | Refactor to use the production renderer where it exists, so the test page validates the real path. |
 | **FORK-23** | No automated visual regression testing | MEDIUM | 2-3 days | See item 4.2 above. |
-| **FORK-4** | `WebGLCompatibilityStub.ts` maintenance | MEDIUM | Ongoing | The stub layer is necessary for the imagery layer + a few other places that still call WebGL APIs through the stub. The Naga-wasm spike (S26) is the long-term path to retire it. |
+| ~~**FORK-4**~~ | ~~`WebGLCompatibilityStub.ts` maintenance~~ — **RESOLVED / Overhauled (Session 27)**: Proton-style texture, shader, and stencil translation layers added. The stub now handles full texture format mapping, shader compatibility shims, and stencil op translation rather than being a thin pass-through. Naga-wasm (Phase 6) remains the long-term retirement path for shader-related stubs. | ~~MEDIUM~~ | -- |
 | **FORK-29** | Slang cross-compilation unused in production | LOW | -- | Slang infrastructure is still in the tree but no production shaders use it. Decision: remove or commit to it (blocked on naga-wasm spike outcome). |
 | **FORK-30** | `@webgpu/types` pinned to `^0.1.69` | LOW | -- | Newer versions renamed `maxInterStageShaderComponents` → `maxInterStageShaderVariables` (handled in S26 with cast). Bump pin once we're confident in the new API surface. |
 
-### Resolved Items (34 of 46) — For Reference
+### Resolved Items (38 of 51) — For Reference
 
-FORK-1 (device loss), FORK-2 (unused imports), FORK-3 (redundant shader loading), FORK-5 (Phase D 28/28), FORK-6 (isWebGPU checks reduced), FORK-7 (depthRangeZeroToOne), **FORK-8 (zero `isWebGPUDrawCommand` references remain in `packages/engine/Source/Scene/` — verified 2026-04-09 audit follow-up; backlog entry was stale and referred to a line removed during S16 cleanup)**, FORK-10 (ts-expect-error), FORK-12 (context-aware logging), FORK-13 (no debug logging), FORK-14 (CameraUniforms drift), FORK-15 (transitive struct deps), FORK-17 (mipmap stub now dispatches `WebGPUMipmapGenerator`), FORK-18 (DepthPlane implemented), FORK-19 (10 spec files now exist — rescoped as FORK-19b above), FORK-24 (Primitive.js cleanup), FORK-25 (7 renderers wired), FORK-26 (COUNT auto-computed), FORK-27 (abstract methods verified), FORK-28 (25/25 materials), FORK-31 (sorting integration complete), FORK-32+33 (multi-light scene.lights), FORK-34 (pick scene depth blit complete), FORK-35 (pick ID consolidated), FORK-36 (convenience pick APIs), FORK-37 (WASM destroy+free_buffer), FORK-38 (WASM version check), FORK-39 (SIMD detection), FORK-40 (all bridges destroy), FORK-42 (compute try/catch), FORK-43 (workgroup validation), FORK-44 (CPU fallback sort/LOD), FORK-46 (Rust OOM handling), NEW-1 (DynamicEnvironmentMapManager sync readPixels — non-issue, FR intercepts).
+FORK-1 (device loss), FORK-2 (unused imports), FORK-3 (redundant shader loading), **FORK-4 (WebGLCompatibilityStub overhauled Session 27 — Proton-style texture/shader/stencil translation)**, FORK-5 (Phase D 28/28), FORK-6 (isWebGPU checks reduced), FORK-7 (depthRangeZeroToOne), **FORK-8 (zero `isWebGPUDrawCommand` references remain in `packages/engine/Source/Scene/` — verified 2026-04-09 audit follow-up; backlog entry was stale and referred to a line removed during S16 cleanup)**, FORK-10 (ts-expect-error), **FORK-11 (webgpuTypeHelpers limited adoption — superseded by `cesium-js-types.d.ts` ambient declarations, Session 27)**, FORK-12 (context-aware logging), FORK-13 (no debug logging), FORK-14 (CameraUniforms drift), FORK-15 (transitive struct deps), FORK-17 (mipmap stub now dispatches `WebGPUMipmapGenerator`; stub logs proper guidance), FORK-18 (DepthPlane implemented), FORK-19 (10+ spec files now exist: WebGPURingBufferAllocatorSpec, WebGPUShadowMapRendererSpec, WebGPUColorGradingSpec, etc. — rescoped as FORK-19b above), FORK-24 (Primitive.js cleanup), FORK-25 (7 renderers wired), FORK-26 (COUNT auto-computed), FORK-27 (abstract methods verified), FORK-28 (25/25 materials), FORK-31 (sorting integration complete), FORK-32+33 (multi-light scene.lights), FORK-34 (pick scene depth blit complete), FORK-35 (pick ID consolidated), FORK-36 (convenience pick APIs), FORK-37 (WASM destroy+free_buffer), FORK-38 (WASM version check), FORK-39 (SIMD detection), FORK-40 (all bridges destroy), FORK-42 (compute try/catch), FORK-43 (workgroup validation), FORK-44 (CPU fallback sort/LOD), FORK-46 (Rust OOM handling), NEW-1 (DynamicEnvironmentMapManager sync readPixels — non-issue, FR intercepts).
 
 ---
 
@@ -306,6 +386,34 @@ These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / B
 | **Command buffer reuse** | New encoder per frame | Double-buffer encoders | 1-2 days |
 | **Multi-draw indirect** | Individual `drawIndirect()` calls | Single `multiDrawIndirect()` (Chromium experimental) | 1-2 days |
 
+### Shipped Infrastructure (Session 27)
+
+| Item | Status | Integration |
+| ---- | ------ | ----------- |
+| **MaterialUniformBuffer** | Shipped — `MaterialUniformBuffer.js`, Float32Array backing, auto-layout, dirty tracking | Wired into `Material.js` via `MaterialHelpers.js`; WebGPU fast path in `WebGPUPrimitiveCommands.js` |
+
+### Material UBO Architecture (Option B) — IN PROGRESS
+
+**Status:** Shader split complete (49 files), renderer partially refactored, NOT yet functional end-to-end.
+
+| Sub-task | Status | Effort |
+| --- | --- | --- |
+| MaterialUniformBuffer.js (Float32Array + alignment + facade) | **Done** | — |
+| WGSL shader struct split (49 shaders) | **Done** | — |
+| Field name alignment (WGSL ↔ JS fabric) | **Partially done** | ~1 day |
+| WebGPUPrimitiveCommands.js renderer refactor | **Done** | — |
+| WebGPUPolylineRenderer.js renderer refactor | Not started | ~0.5 day |
+| WebGPUBillboardRenderer.js renderer refactor | Not started | ~0.5 day |
+| Texture binding group shift | Not started | ~0.5 day |
+| Effects bind group shift | Not started | ~0.5 day |
+| .js shader wrapper regeneration | Not started | 5 min (gulp build) |
+| Visual verification all 25 material types | Not started | ~1 day |
+| **Total remaining** | | **~3-4 days** |
+
+**Architecture reference:** WebGPUModelRenderer.js already uses separate material UBO (group 1, 320 bytes). The primitive/polyline/billboard refactor follows the same pattern.
+
+**Key risk:** Field name mismatches between WGSL MaterialUniforms and JS fabric templates cause silent data corruption. Each material type's shader struct must be verified against its Material.js fabric definition.
+
 ### New Compute Shader Opportunities
 
 | Target | Benefit | Workgroup Pattern | Effort |
@@ -320,9 +428,9 @@ These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / B
 
 ## 12. ES6 Modernization Backlog
 
-~432 files total need constructor-class conversion. ~75 completed so far.
+~595 files total in scope. ~499 completed (424 via jscodeshift codemod in Session 27 + prior ~75 manual). ~96 files remain.
 
-### Completed (~75 files)
+### Completed (~499 files)
 
 | Directory | Status |
 |-----------|--------|
@@ -330,21 +438,25 @@ These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / B
 | **Scene high-priority (24+)** | All WebGPU-blocking files converted |
 | **DataSources high-priority (8)** | All sorting-related files converted |
 | **Appearance classes (4)** | All appearance files converted |
+| **Bulk codemod (424 files — Session 27)** | jscodeshift codemod applied: `var`→`const`/`let`, prototype inheritance→ES6 class, `Object.defineProperties`→getters/setters, string concat→template literals |
 
-### Remaining (~380+ files)
+### Session 27 dependency cleanup (completed)
 
-- **Core — Performance-Critical Math** (16 files): Cartesian2/3/4, Matrix2/3/4, Quaternion, BoundingSphere, etc. **Note**: Some of these have already been ported upstream in v1.139 (Cartesian2/3/4 now ES6 classes). Audit before re-doing.
-- **Core — Terrain/Geography/Geometry** (~30+ files)
-- **Core — Utilities** (~40+ files)
-- **Scene — 3D Tiles** (~22 files)
-- **Scene — Imagery Providers** (~16 files)
-- **Scene — Model/glTF Pipeline** (~40+ files)
-- **Scene — Remaining** (~30+ files)
-- **DataSources** (~77 files)
-- **Widgets** (~22 files)
-- **Cross-Cutting Patterns** (~60+ files): `.indexOf()` → `.includes()`, `typeof x !== "undefined"` → optional chaining, etc.
+- **urijs removed** — replaced with native `URL` API across 12 files (0 urijs imports remaining in `packages/engine/Source/`)
+- **karma-ie-launcher removed** — IE-specific test runner dependency dropped from devDependencies
+- **.indexOf() → .includes()** — complete sweep, 0 remaining instances in engine source
+- **InfoBox.js XSS fix** — DOMPurify integration for user-supplied HTML content
 
-**Total estimated effort:** ~400-600 hours
+### Remaining (~96 files — complex patterns)
+
+These files were skipped by the codemod due to patterns requiring manual judgment:
+
+- **Method alias patterns** (~20 files): `Foo.prototype.bar = Foo.prototype.baz` aliases that become static methods or need refactoring
+- **Multi-class files** (~15 files): files exporting more than one constructor — need splitting or restructuring
+- **Partial conversions** (~30 files): files where the codemod detected ambiguous inheritance chains (mixins, dynamic prototype assignment)
+- **Performance-critical math** (~16 files): Cartesian2/3/4, Matrix2/3/4, Quaternion, BoundingSphere — audit against upstream v1.139 before re-doing; some already ported upstream
+- **urijs in Specs** (~8 files in `Specs/`): test files still importing urijs — low priority, does not affect production build
+
 **Rule:** Never modernize files you're not otherwise touching. Always modernize if making >10 lines of changes.
 
 ---

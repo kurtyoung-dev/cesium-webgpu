@@ -57,57 +57,133 @@ function createPolygonHierarchyProperty(value) {
  * @see Entity
  * @demo {@link https://sandcastle.cesium.com/index.html?id=polygon|Cesium Sandcastle Polygon Demo}
  */
-function PolygonGraphics(options) {
-  this._definitionChanged = new Event();
-  this._show = undefined;
-  this._showSubscription = undefined;
-  this._hierarchy = undefined;
-  this._hierarchySubscription = undefined;
-  this._height = undefined;
-  this._heightSubscription = undefined;
-  this._heightReference = undefined;
-  this._heightReferenceSubscription = undefined;
-  this._extrudedHeight = undefined;
-  this._extrudedHeightSubscription = undefined;
-  this._extrudedHeightReference = undefined;
-  this._extrudedHeightReferenceSubscription = undefined;
-  this._stRotation = undefined;
-  this._stRotationSubscription = undefined;
-  this._granularity = undefined;
-  this._granularitySubscription = undefined;
-  this._fill = undefined;
-  this._fillSubscription = undefined;
-  this._material = undefined;
-  this._materialSubscription = undefined;
-  this._outline = undefined;
-  this._outlineSubscription = undefined;
-  this._outlineColor = undefined;
-  this._outlineColorSubscription = undefined;
-  this._outlineWidth = undefined;
-  this._outlineWidthSubscription = undefined;
-  this._perPositionHeight = undefined;
-  this._perPositionHeightSubscription = undefined;
-  this._closeTop = undefined;
-  this._closeTopSubscription = undefined;
-  this._closeBottom = undefined;
-  this._closeBottomSubscription = undefined;
-  this._arcType = undefined;
-  this._arcTypeSubscription = undefined;
-  this._shadows = undefined;
-  this._shadowsSubscription = undefined;
-  this._distanceDisplayCondition = undefined;
-  this._distanceDisplayConditionSubscription = undefined;
-  this._classificationType = undefined;
-  this._classificationTypeSubscription = undefined;
-  this._zIndex = undefined;
-  this._zIndexSubscription = undefined;
-  this._textureCoordinates = undefined;
-  this._textureCoordinatesSubscription = undefined;
+class PolygonGraphics {
+  constructor(options) {
+    this._definitionChanged = new Event();
+    this._show = undefined;
+    this._showSubscription = undefined;
+    this._hierarchy = undefined;
+    this._hierarchySubscription = undefined;
+    this._height = undefined;
+    this._heightSubscription = undefined;
+    this._heightReference = undefined;
+    this._heightReferenceSubscription = undefined;
+    this._extrudedHeight = undefined;
+    this._extrudedHeightSubscription = undefined;
+    this._extrudedHeightReference = undefined;
+    this._extrudedHeightReferenceSubscription = undefined;
+    this._stRotation = undefined;
+    this._stRotationSubscription = undefined;
+    this._granularity = undefined;
+    this._granularitySubscription = undefined;
+    this._fill = undefined;
+    this._fillSubscription = undefined;
+    this._material = undefined;
+    this._materialSubscription = undefined;
+    this._outline = undefined;
+    this._outlineSubscription = undefined;
+    this._outlineColor = undefined;
+    this._outlineColorSubscription = undefined;
+    this._outlineWidth = undefined;
+    this._outlineWidthSubscription = undefined;
+    this._perPositionHeight = undefined;
+    this._perPositionHeightSubscription = undefined;
+    this._closeTop = undefined;
+    this._closeTopSubscription = undefined;
+    this._closeBottom = undefined;
+    this._closeBottomSubscription = undefined;
+    this._arcType = undefined;
+    this._arcTypeSubscription = undefined;
+    this._shadows = undefined;
+    this._shadowsSubscription = undefined;
+    this._distanceDisplayCondition = undefined;
+    this._distanceDisplayConditionSubscription = undefined;
+    this._classificationType = undefined;
+    this._classificationTypeSubscription = undefined;
+    this._zIndex = undefined;
+    this._zIndexSubscription = undefined;
+    this._textureCoordinates = undefined;
+    this._textureCoordinatesSubscription = undefined;
 
-  this.merge(options ?? Frozen.EMPTY_OBJECT);
-}
+    this.merge(options ?? Frozen.EMPTY_OBJECT);
+  }
 
-Object.defineProperties(PolygonGraphics.prototype, {
+  /**
+   * Duplicates this instance.
+   *
+   * @param {PolygonGraphics} [result] The object onto which to store the result.
+   * @returns {PolygonGraphics} The modified result parameter or a new instance if one was not provided.
+   */
+  clone(result) {
+    if (!defined(result)) {
+      return new PolygonGraphics(this);
+    }
+    result.show = this.show;
+    result.hierarchy = this.hierarchy;
+    result.height = this.height;
+    result.heightReference = this.heightReference;
+    result.extrudedHeight = this.extrudedHeight;
+    result.extrudedHeightReference = this.extrudedHeightReference;
+    result.stRotation = this.stRotation;
+    result.granularity = this.granularity;
+    result.fill = this.fill;
+    result.material = this.material;
+    result.outline = this.outline;
+    result.outlineColor = this.outlineColor;
+    result.outlineWidth = this.outlineWidth;
+    result.perPositionHeight = this.perPositionHeight;
+    result.closeTop = this.closeTop;
+    result.closeBottom = this.closeBottom;
+    result.arcType = this.arcType;
+    result.shadows = this.shadows;
+    result.distanceDisplayCondition = this.distanceDisplayCondition;
+    result.classificationType = this.classificationType;
+    result.zIndex = this.zIndex;
+    result.textureCoordinates = this.textureCoordinates;
+    return result;
+  }
+
+  /**
+   * Assigns each unassigned property on this object to the value
+   * of the same property on the provided source object.
+   *
+   * @param {PolygonGraphics} source The object to be merged into this object.
+   */
+  merge(source) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(source)) {
+      throw new DeveloperError("source is required.");
+    }
+    //>>includeEnd('debug');
+
+    this.show = this.show ?? source.show;
+    this.hierarchy = this.hierarchy ?? source.hierarchy;
+    this.height = this.height ?? source.height;
+    this.heightReference = this.heightReference ?? source.heightReference;
+    this.extrudedHeight = this.extrudedHeight ?? source.extrudedHeight;
+    this.extrudedHeightReference =
+      this.extrudedHeightReference ?? source.extrudedHeightReference;
+    this.stRotation = this.stRotation ?? source.stRotation;
+    this.granularity = this.granularity ?? source.granularity;
+    this.fill = this.fill ?? source.fill;
+    this.material = this.material ?? source.material;
+    this.outline = this.outline ?? source.outline;
+    this.outlineColor = this.outlineColor ?? source.outlineColor;
+    this.outlineWidth = this.outlineWidth ?? source.outlineWidth;
+    this.perPositionHeight = this.perPositionHeight ?? source.perPositionHeight;
+    this.closeTop = this.closeTop ?? source.closeTop;
+    this.closeBottom = this.closeBottom ?? source.closeBottom;
+    this.arcType = this.arcType ?? source.arcType;
+    this.shadows = this.shadows ?? source.shadows;
+    this.distanceDisplayCondition =
+      this.distanceDisplayCondition ?? source.distanceDisplayCondition;
+    this.classificationType =
+      this.classificationType ?? source.classificationType;
+    this.zIndex = this.zIndex ?? source.zIndex;
+    this.textureCoordinates =
+      this.textureCoordinates ?? source.textureCoordinates;
+  }
+
   /**
    * Gets the event that is raised whenever a property or sub-property is changed or modified.
    * @memberof PolygonGraphics.prototype
@@ -115,269 +191,9 @@ Object.defineProperties(PolygonGraphics.prototype, {
    * @type {Event}
    * @readonly
    */
-  definitionChanged: {
-    get: function () {
-      return this._definitionChanged;
-    },
-  },
-
-  /**
-   * Gets or sets the boolean Property specifying the visibility of the polygon.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default true
-   */
-  show: createPropertyDescriptor("show"),
-
-  /**
-   * Gets or sets the Property specifying the {@link PolygonHierarchy}.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  hierarchy: createPropertyDescriptor(
-    "hierarchy",
-    undefined,
-    createPolygonHierarchyProperty,
-  ),
-
-  /**
-   * Gets or sets the numeric Property specifying the constant altitude of the polygon.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default 0.0
-   */
-  height: createPropertyDescriptor("height"),
-
-  /**
-   * Gets or sets the Property specifying the {@link HeightReference}.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default HeightReference.NONE
-   */
-  heightReference: createPropertyDescriptor("heightReference"),
-
-  /**
-   * Gets or sets the numeric Property specifying the altitude of the polygon extrusion.
-   * If {@link PolygonGraphics#perPositionHeight} is false, the volume starts at {@link PolygonGraphics#height} and ends at this altitude.
-   * If {@link PolygonGraphics#perPositionHeight} is true, the volume starts at the height of each {@link PolygonGraphics#hierarchy} position and ends at this altitude.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  extrudedHeight: createPropertyDescriptor("extrudedHeight"),
-
-  /**
-   * Gets or sets the Property specifying the extruded {@link HeightReference}.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default HeightReference.NONE
-   */
-  extrudedHeightReference: createPropertyDescriptor("extrudedHeightReference"),
-
-  /**
-   * Gets or sets the numeric property specifying the rotation of the polygon texture counter-clockwise from north. Only has an effect if textureCoordinates is not defined.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default 0
-   */
-  stRotation: createPropertyDescriptor("stRotation"),
-
-  /**
-   * Gets or sets the numeric Property specifying the angular distance between points on the polygon.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default {CesiumMath.RADIANS_PER_DEGREE}
-   */
-  granularity: createPropertyDescriptor("granularity"),
-
-  /**
-   * Gets or sets the boolean Property specifying whether the polygon is filled with the provided material.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default true
-   */
-  fill: createPropertyDescriptor("fill"),
-
-  /**
-   * Gets or sets the Property specifying the material used to fill the polygon.
-   * @memberof PolygonGraphics.prototype
-   * @type {MaterialProperty}
-   * @default Color.WHITE
-   */
-  material: createMaterialPropertyDescriptor("material"),
-
-  /**
-   * Gets or sets the Property specifying whether the polygon is outlined.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default false
-   */
-  outline: createPropertyDescriptor("outline"),
-
-  /**
-   * Gets or sets the Property specifying the {@link Color} of the outline.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default Color.BLACK
-   */
-  outlineColor: createPropertyDescriptor("outlineColor"),
-
-  /**
-   * Gets or sets the numeric Property specifying the width of the outline.
-   * <p>
-   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
-   * </p>
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default 1.0
-   */
-  outlineWidth: createPropertyDescriptor("outlineWidth"),
-
-  /**
-   * Gets or sets the boolean specifying whether or not the the height of each position is used.
-   * If true, the shape will have non-uniform altitude defined by the height of each {@link PolygonGraphics#hierarchy} position.
-   * If false, the shape will have a constant altitude as specified by {@link PolygonGraphics#height}.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  perPositionHeight: createPropertyDescriptor("perPositionHeight"),
-
-  /**
-   * Gets or sets a boolean specifying whether or not the top of an extruded polygon is included.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  closeTop: createPropertyDescriptor("closeTop"),
-
-  /**
-   * Gets or sets a boolean specifying whether or not the bottom of an extruded polygon is included.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  closeBottom: createPropertyDescriptor("closeBottom"),
-
-  /**
-   * Gets or sets the {@link ArcType} Property specifying the type of lines the polygon edges use.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default ArcType.GEODESIC
-   */
-  arcType: createPropertyDescriptor("arcType"),
-
-  /**
-   * Get or sets the enum Property specifying whether the polygon
-   * casts or receives shadows from light sources.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default ShadowMode.DISABLED
-   */
-  shadows: createPropertyDescriptor("shadows"),
-
-  /**
-   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this polygon will be displayed.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  distanceDisplayCondition: createPropertyDescriptor(
-    "distanceDisplayCondition",
-  ),
-
-  /**
-   * Gets or sets the {@link ClassificationType} Property specifying whether this polygon will classify terrain, 3D Tiles, or both when on the ground.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   * @default ClassificationType.BOTH
-   */
-  classificationType: createPropertyDescriptor("classificationType"),
-
-  /**
-   * Gets or sets the zIndex Prperty specifying the ordering of ground geometry.  Only has an effect if the polygon is constant and neither height or extrudedHeight are specified.
-   * @memberof PolygonGraphics.prototype
-   * @type {ConstantProperty|undefined}
-   * @default 0
-   */
-  zIndex: createPropertyDescriptor("zIndex"),
-
-  /**
-   *  A Property specifying texture coordinates as a {@link PolygonHierarchy} of {@link Cartesian2} points. Has no effect for ground primitives.
-   * @memberof PolygonGraphics.prototype
-   * @type {Property|undefined}
-   */
-  textureCoordinates: createPropertyDescriptor("textureCoordinates"),
-});
-
-/**
- * Duplicates this instance.
- *
- * @param {PolygonGraphics} [result] The object onto which to store the result.
- * @returns {PolygonGraphics} The modified result parameter or a new instance if one was not provided.
- */
-PolygonGraphics.prototype.clone = function (result) {
-  if (!defined(result)) {
-    return new PolygonGraphics(this);
+  get definitionChanged() {
+    return this._definitionChanged;
   }
-  result.show = this.show;
-  result.hierarchy = this.hierarchy;
-  result.height = this.height;
-  result.heightReference = this.heightReference;
-  result.extrudedHeight = this.extrudedHeight;
-  result.extrudedHeightReference = this.extrudedHeightReference;
-  result.stRotation = this.stRotation;
-  result.granularity = this.granularity;
-  result.fill = this.fill;
-  result.material = this.material;
-  result.outline = this.outline;
-  result.outlineColor = this.outlineColor;
-  result.outlineWidth = this.outlineWidth;
-  result.perPositionHeight = this.perPositionHeight;
-  result.closeTop = this.closeTop;
-  result.closeBottom = this.closeBottom;
-  result.arcType = this.arcType;
-  result.shadows = this.shadows;
-  result.distanceDisplayCondition = this.distanceDisplayCondition;
-  result.classificationType = this.classificationType;
-  result.zIndex = this.zIndex;
-  result.textureCoordinates = this.textureCoordinates;
-  return result;
-};
+}
 
-/**
- * Assigns each unassigned property on this object to the value
- * of the same property on the provided source object.
- *
- * @param {PolygonGraphics} source The object to be merged into this object.
- */
-PolygonGraphics.prototype.merge = function (source) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(source)) {
-    throw new DeveloperError("source is required.");
-  }
-  //>>includeEnd('debug');
-
-  this.show = this.show ?? source.show;
-  this.hierarchy = this.hierarchy ?? source.hierarchy;
-  this.height = this.height ?? source.height;
-  this.heightReference = this.heightReference ?? source.heightReference;
-  this.extrudedHeight = this.extrudedHeight ?? source.extrudedHeight;
-  this.extrudedHeightReference =
-    this.extrudedHeightReference ?? source.extrudedHeightReference;
-  this.stRotation = this.stRotation ?? source.stRotation;
-  this.granularity = this.granularity ?? source.granularity;
-  this.fill = this.fill ?? source.fill;
-  this.material = this.material ?? source.material;
-  this.outline = this.outline ?? source.outline;
-  this.outlineColor = this.outlineColor ?? source.outlineColor;
-  this.outlineWidth = this.outlineWidth ?? source.outlineWidth;
-  this.perPositionHeight = this.perPositionHeight ?? source.perPositionHeight;
-  this.closeTop = this.closeTop ?? source.closeTop;
-  this.closeBottom = this.closeBottom ?? source.closeBottom;
-  this.arcType = this.arcType ?? source.arcType;
-  this.shadows = this.shadows ?? source.shadows;
-  this.distanceDisplayCondition =
-    this.distanceDisplayCondition ?? source.distanceDisplayCondition;
-  this.classificationType =
-    this.classificationType ?? source.classificationType;
-  this.zIndex = this.zIndex ?? source.zIndex;
-  this.textureCoordinates =
-    this.textureCoordinates ?? source.textureCoordinates;
-};
 export default PolygonGraphics;

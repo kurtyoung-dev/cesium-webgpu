@@ -255,7 +255,12 @@ function getPipeline(device, format) {
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: false,
-      depthCompare: "always",
+      // The vertex shader forces clip-space z/w to 1 (exactly the far
+      // plane), so `less-equal` lets the skybox fill only the pixels
+      // where no closer opaque geometry has already written a depth
+      // value < 1. This is draw-order agnostic — skybox can be issued
+      // before or after terrain and the result is the same.
+      depthCompare: "less-equal",
     },
   });
 
@@ -578,19 +583,63 @@ function loadCubeMap(device, sources, state, panorama) {
     "negativeZ",
   ];
 
+  //>>includeStart('debug', pragmas.debug);
+  // Log the actual source types/URLs so we can diagnose fetch failures.
+  for (const face of faceNames) {
+    const src = sources[face];
+    const srcType = typeof src;
+    const srcDesc =
+      srcType === "string"
+        ? src.substring(src.lastIndexOf("/") + 1)
+        : src?.constructor?.name ?? srcType;
+    console.log(`[WebGPU:SkyBox] face=${face} type=${srcType} src=${srcDesc}`);
+  }
+  //>>includeEnd('debug');
+
   const loadPromises = faceNames.map((face) => {
     const src = sources[face];
     if (typeof src === "string") {
       return fetch(src)
-        .then((r) => r.blob())
+        .then((r) => {
+          if (!r.ok) {
+            throw new Error(
+              `Fetch failed for ${face}: HTTP ${r.status} ${r.statusText} — ${src}`,
+            );
+          }
+          return r.blob();
+        })
         .then((b) => createImageBitmap(b));
     }
-    return Promise.resolve(src);
+    // Image / HTMLImageElement / ImageBitmap — need to ensure it's loaded.
+    // HTMLImageElement might not be decoded yet; wrap in createImageBitmap
+    // which handles decoding for all source types.
+    if (src && typeof src === "object") {
+      // HTMLImageElement: wait for it to finish loading if it hasn't yet.
+      if (src instanceof HTMLImageElement && !src.complete) {
+        return new Promise((resolve, reject) => {
+          src.onload = () =>
+            createImageBitmap(src).then(resolve).catch(reject);
+          src.onerror = () =>
+            reject(new Error(`Image load failed for ${face}: ${src.src}`));
+        });
+      }
+      // Already loaded image, ImageBitmap, canvas, etc. — createImageBitmap
+      // normalises to a transferable bitmap the GPU can consume.
+      return createImageBitmap(src);
+    }
+    return Promise.reject(
+      new Error(`Invalid source for ${face}: ${typeof src}`),
+    );
   });
 
   Promise.all(loadPromises)
     .then((images) => {
       const size = images[0].width;
+      if (size <= 0) {
+        throw new Error(
+          `Cubemap face 0 has zero width — image may not have loaded`,
+        );
+      }
       const texture = device.createTexture({
         label: "CubeMapPanorama-cubemap",
         size: [size, size, 6],
@@ -616,12 +665,17 @@ function loadCubeMap(device, sources, state, panorama) {
         format: "rgba8unorm",
       });
       state.cubeMapLoading = false;
+      //>>includeStart('debug', pragmas.debug);
       console.log(`[WebGPU:SkyBox] Cubemap loaded: ${size}x${size}, 6 faces`);
+      //>>includeEnd('debug');
     })
     .catch((error) => {
-      console.error("[WebGPU:SkyBox] Cubemap load FAILED:", error);
-      panorama._hasError = true;
-      panorama._error = error;
+      console.error(
+        "[WebGPU:SkyBox] Cubemap load FAILED:",
+        error?.message ?? error,
+      );
+      // Don't propagate as a scene-level error that would stop rendering.
+      // The skybox just won't render — globe and terrain continue fine.
       state.cubeMapLoading = false;
     });
 }
@@ -645,7 +699,9 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.sources = panorama.sources;
     state.cubeMapLoading = true;
     state.command = undefined;
+    //>>includeStart('debug', pragmas.debug);
     console.log("[WebGPU:SkyBox] Loading cubemap textures...");
+    //>>includeEnd('debug');
     loadCubeMap(device, state.sources, state, panorama);
   }
 
@@ -668,6 +724,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
 
   // --- Wait for cubemap texture to be ready ---
   if (!defined(state.cubeMapView)) {
+    //>>includeStart('debug', pragmas.debug);
     if (!state._waitLogged) {
       console.log(
         `[WebGPU:SkyBox] Waiting for cubemap: loading=${state.cubeMapLoading} ` +
@@ -675,6 +732,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
       );
       state._waitLogged = true;
     }
+    //>>includeEnd('debug');
     return undefined;
   }
 

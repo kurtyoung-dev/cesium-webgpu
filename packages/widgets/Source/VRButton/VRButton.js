@@ -24,57 +24,75 @@ const exitVRPath =
  *
  * @exception {DeveloperError} Element with id "container" does not exist in the document.
  */
-function VRButton(container, scene, vrElement) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(container)) {
-    throw new DeveloperError("container is required.");
+class VRButton {
+  constructor(container, scene, vrElement) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(container)) {
+      throw new DeveloperError("container is required.");
+    }
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
+    }
+    //>>includeEnd('debug');
+
+    container = getElement(container);
+
+    const viewModel = new VRButtonViewModel(scene, vrElement);
+
+    viewModel._exitVRPath = exitVRPath;
+    viewModel._enterVRPath = enterVRPath;
+
+    const element = document.createElement("button");
+    element.type = "button";
+    element.className = "cesium-button cesium-vrButton";
+    element.setAttribute(
+      "data-bind",
+      '\
+  css: { "cesium-button-disabled" : _isOrthographic }, \
+  attr: { title: tooltip },\
+  click: command,\
+  enable: isVREnabled,\
+  cesiumSvgPath: { path: isVRMode ? _exitVRPath : _enterVRPath, width: 32, height: 32 }',
+    );
+
+    container.appendChild(element);
+
+    knockout.applyBindings(viewModel, element);
+
+    this._container = container;
+    this._viewModel = viewModel;
+    this._element = element;
   }
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
+
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
   }
-  //>>includeEnd('debug');
 
-  container = getElement(container);
+  /**
+   * Destroys the widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    this._viewModel.destroy();
 
-  const viewModel = new VRButtonViewModel(scene, vrElement);
+    knockout.cleanNode(this._element);
+    this._container.removeChild(this._element);
 
-  viewModel._exitVRPath = exitVRPath;
-  viewModel._enterVRPath = enterVRPath;
+    return destroyObject(this);
+  }
 
-  const element = document.createElement("button");
-  element.type = "button";
-  element.className = "cesium-button cesium-vrButton";
-  element.setAttribute(
-    "data-bind",
-    '\
-css: { "cesium-button-disabled" : _isOrthographic }, \
-attr: { title: tooltip },\
-click: command,\
-enable: isVREnabled,\
-cesiumSvgPath: { path: isVRMode ? _exitVRPath : _enterVRPath, width: 32, height: 32 }',
-  );
-
-  container.appendChild(element);
-
-  knockout.applyBindings(viewModel, element);
-
-  this._container = container;
-  this._viewModel = viewModel;
-  this._element = element;
-}
-
-Object.defineProperties(VRButton.prototype, {
   /**
    * Gets the parent container.
    * @memberof VRButton.prototype
    *
    * @type {Element}
    */
-  container: {
-    get: function () {
-      return this._container;
-    },
-  },
+  get container() {
+    return this._container;
+  }
 
   /**
    * Gets the view model.
@@ -82,30 +100,9 @@ Object.defineProperties(VRButton.prototype, {
    *
    * @type {VRButtonViewModel}
    */
-  viewModel: {
-    get: function () {
-      return this._viewModel;
-    },
-  },
-});
+  get viewModel() {
+    return this._viewModel;
+  }
+}
 
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-VRButton.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-VRButton.prototype.destroy = function () {
-  this._viewModel.destroy();
-
-  knockout.cleanNode(this._element);
-  this._container.removeChild(this._element);
-
-  return destroyObject(this);
-};
 export default VRButton;

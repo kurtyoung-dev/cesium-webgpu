@@ -25,7 +25,7 @@ interface EllipsoidCache {
   bindGroup1: GPUBindGroup | null;
   vertexBuffer: GPUBuffer | null;
   indexBuffer: GPUBuffer | null;
-  command: any | null;
+  command: CesiumAnyDrawCommand | null;
   initialized: boolean;
 }
 
@@ -221,7 +221,8 @@ function createPipelineAndLayouts(
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
-      depthCompare: "less",
+      // less-equal for planetary-scale precision robustness.
+      depthCompare: "less-equal",
     },
   });
 
@@ -229,8 +230,8 @@ function createPipelineAndLayouts(
 }
 
 function packCameraUniforms(
-  uniformState: any,
-  modelMatrix: any,
+  uniformState: CesiumUniformState,
+  modelMatrix: CesiumMatrix4,
   viewportWidth: number,
   viewportHeight: number,
 ): Float32Array {
@@ -238,17 +239,18 @@ function packCameraUniforms(
   const data = new Float32Array(44);
   const view = uniformState.view;
   const projection = uniformState.projection;
-  const mvM4 = Matrix4.multiply(view, modelMatrix, scratchMV);
-  const mv = m4Values(mvM4);
-  const mvp = m4Values(Matrix4.multiply(projection, mvM4, scratchMVP));
 
-  // Zero translation for RTE
-  mvp[12] = 0;
-  mvp[13] = 0;
-  mvp[14] = 0;
-  mv[12] = 0;
-  mv[13] = 0;
-  mv[14] = 0;
+  // RTE: zero the translation column of MV *before* multiplying by
+  // projection. Zeroing after the multiply wipes out projection's P23
+  // depth-mapping term, producing incorrect NDC depth. See
+  // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
+  Matrix4.multiply(view, modelMatrix, scratchMV);
+  scratchMV[12] = 0;
+  scratchMV[13] = 0;
+  scratchMV[14] = 0;
+  Matrix4.multiply(projection, scratchMV, scratchMVP);
+  const mv = m4Values(scratchMV);
+  const mvp = m4Values(scratchMVP);
 
   // MVP relative to eye
   for (let i = 0; i < 16; i++) {
@@ -285,7 +287,7 @@ function packCameraUniforms(
   return data;
 }
 
-function packEllipsoidUniforms(primitive: any): Float32Array {
+function packEllipsoidUniforms(primitive: CesiumObjectWithWebGPUCache): Float32Array {
   // 96 bytes = 24 floats: radii(3+1) + oneOverRadiiSq(3+1) + color(4) + centerHigh(3+1) + centerLow(3+1)
   const data = new Float32Array(24);
   const radii = primitive.radii;
@@ -315,7 +317,7 @@ function packEllipsoidUniforms(primitive: any): Float32Array {
   }
 
   // Encode center position (from modelMatrix translation)
-  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
+  const modelMatrix = (primitive.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
   const center = Matrix4.getTranslation(modelMatrix, new Cartesian3());
   EncodedCartesian3.fromCartesian(center, scratchEncodedPosition);
   data[12] = scratchEncodedPosition.high.x;
@@ -333,7 +335,7 @@ function packEllipsoidUniforms(primitive: any): Float32Array {
 /**
  * Update WebGPU ellipsoid primitive resources and issue draw commands.
  */
-function updateWebGPUEllipsoidPrimitive(primitive: any, frameState: any): void {
+function updateWebGPUEllipsoidPrimitive(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -415,7 +417,7 @@ function updateWebGPUEllipsoidPrimitive(primitive: any, frameState: any): void {
 
   // Per-frame uniform updates
   const uniformState = context.uniformState;
-  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
+  const modelMatrix = (primitive.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
 
   const viewportWidth = context.drawingBufferWidth || 1;
   const viewportHeight = context.drawingBufferHeight || 1;
@@ -452,7 +454,7 @@ function updateWebGPUEllipsoidPrimitive(primitive: any, frameState: any): void {
 /**
  * Destroy WebGPU ellipsoid primitive resources.
  */
-function destroyWebGPUEllipsoidPrimitiveResources(primitive: any): void {
+function destroyWebGPUEllipsoidPrimitiveResources(primitive: CesiumObjectWithWebGPUCache): void {
   const cache = primitive._webgpuCache as EllipsoidCache | undefined;
   if (!cache) {
     return;

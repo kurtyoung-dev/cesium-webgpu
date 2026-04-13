@@ -11,25 +11,67 @@ import defined from "./defined.js";
  * @param {number} [cone=0.0] The angular coordinate measured from the positive z-axis and toward the negative z-axis.
  * @param {number} [magnitude=1.0] The linear coordinate measured from the origin.
  */
-function Spherical(clock, cone, magnitude) {
+class Spherical {
+  constructor(clock, cone, magnitude) {
+    /**
+     * The clock component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.clock = clock ?? 0.0;
+    /**
+     * The cone component.
+     * @type {number}
+     * @default 0.0
+     */
+    this.cone = cone ?? 0.0;
+    /**
+     * The magnitude component.
+     * @type {number}
+     * @default 1.0
+     */
+    this.magnitude = magnitude ?? 1.0;
+  }
+
   /**
-   * The clock component.
-   * @type {number}
-   * @default 0.0
+   * Returns true if this spherical is equal to the provided spherical, false otherwise.
+   *
+   * @param {Spherical} [other] The Spherical to be compared.
+   * @returns {boolean} true if this spherical is equal to the provided spherical, false otherwise.
    */
-  this.clock = clock ?? 0.0;
+  equals(other) {
+    return Spherical.equals(this, other);
+  }
+
   /**
-   * The cone component.
-   * @type {number}
-   * @default 0.0
+   * Creates a duplicate of this Spherical.
+   *
+   * @param {Spherical} [result] The object to store the result into, if undefined a new instance will be created.
+   * @returns {Spherical} The modified result parameter or a new instance if result was undefined.
    */
-  this.cone = cone ?? 0.0;
+  clone(result) {
+    return Spherical.clone(this, result);
+  }
+
   /**
-   * The magnitude component.
-   * @type {number}
-   * @default 1.0
+   * Returns true if this spherical is within the provided epsilon of the provided spherical, false otherwise.
+   *
+   * @param {Spherical} other The Spherical to be compared.
+   * @param {number} epsilon The epsilon to compare against.
+   * @returns {boolean} true if this spherical is within the provided epsilon of the provided spherical, false otherwise.
    */
-  this.magnitude = magnitude ?? 1.0;
+  equalsEpsilon(other, epsilon) {
+    return Spherical.equalsEpsilon(this, other, epsilon);
+  }
+
+  /**
+   * Returns a string representing this instance in the format (clock, cone, magnitude).
+   *
+   * @returns {string} A string representing this instance.
+   */
+  toString() {
+    return `(${this.clock}, ${this.cone}, ${this.magnitude})`;
+  }
 }
 
 /**
@@ -141,43 +183,4 @@ Spherical.equalsEpsilon = function (left, right, epsilon) {
   );
 };
 
-/**
- * Returns true if this spherical is equal to the provided spherical, false otherwise.
- *
- * @param {Spherical} [other] The Spherical to be compared.
- * @returns {boolean} true if this spherical is equal to the provided spherical, false otherwise.
- */
-Spherical.prototype.equals = function (other) {
-  return Spherical.equals(this, other);
-};
-
-/**
- * Creates a duplicate of this Spherical.
- *
- * @param {Spherical} [result] The object to store the result into, if undefined a new instance will be created.
- * @returns {Spherical} The modified result parameter or a new instance if result was undefined.
- */
-Spherical.prototype.clone = function (result) {
-  return Spherical.clone(this, result);
-};
-
-/**
- * Returns true if this spherical is within the provided epsilon of the provided spherical, false otherwise.
- *
- * @param {Spherical} other The Spherical to be compared.
- * @param {number} epsilon The epsilon to compare against.
- * @returns {boolean} true if this spherical is within the provided epsilon of the provided spherical, false otherwise.
- */
-Spherical.prototype.equalsEpsilon = function (other, epsilon) {
-  return Spherical.equalsEpsilon(this, other, epsilon);
-};
-
-/**
- * Returns a string representing this instance in the format (clock, cone, magnitude).
- *
- * @returns {string} A string representing this instance.
- */
-Spherical.prototype.toString = function () {
-  return `(${this.clock}, ${this.cone}, ${this.magnitude})`;
-};
 export default Spherical;

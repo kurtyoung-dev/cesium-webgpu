@@ -8,15 +8,18 @@
 // 32-bit float pairs and the encoded camera position is subtracted
 // on the GPU to produce a small eye-relative offset.
 
-struct Uniforms {
-    mvpRelativeToEye: mat4x4<f32>,           // model-view-projection (RTE, translation zeroed)
-    viewportSize: vec2<f32>,                  // width, height in pixels
-    splitPosition: f32,                       // for split-screen (0.0 = disabled)
+struct CameraUniforms {
+    mvpRelativeToEye: mat4x4<f32>,           // model-view-projection (RTE, translation zeroed),
     _pad0: f32,
-    encodedCameraPositionMCHigh: vec3<f32>,   // RTE: camera position high bits (model coords)
     _pad1: f32,
-    encodedCameraPositionMCLow: vec3<f32>,    // RTE: camera position low bits (model coords)
     _pad2: f32,
+}
+
+struct MaterialUniforms {
+    viewportSize: vec2<f32>,                  // width, height in pixels,
+    splitPosition: f32,                       // for split-screen (0.0 = disabled),
+    encodedCameraPositionMCHigh: vec3<f32>,   // RTE: camera position high bits (model coords),
+    encodedCameraPositionMCLow: vec3<f32>,    // RTE: camera position low bits (model coords),
 }
 
 struct VertexOutput {
@@ -28,7 +31,8 @@ struct VertexOutput {
     @location(4) pixelDistance: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 // Quad corners for 2 triangles (6 vertices per instance)
 const QUAD_CORNERS = array<vec2<f32>, 6>(
@@ -45,12 +49,12 @@ fn translateRelativeToEye(
     posHigh: vec3<f32>,
     posLow: vec3<f32>,
 ) -> vec4<f32> {
-    var highDiff = posHigh - uniforms.encodedCameraPositionMCHigh;
+    var highDiff = posHigh - material.encodedCameraPositionMCHigh;
     // NaN guard for devices where identical subtraction produces NaN (iOS)
     if (length(highDiff) == 0.0) {
         highDiff = vec3<f32>(0.0, 0.0, 0.0);
     }
-    let lowDiff = posLow - uniforms.encodedCameraPositionMCLow;
+    let lowDiff = posLow - material.encodedCameraPositionMCLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -90,12 +94,12 @@ fn vertexMain(
     // RTE: compute eye-relative position with emulated 64-bit precision
     // This eliminates jittering at planetary-scale coordinates
     let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
-    let clipPos = uniforms.mvpRelativeToEye * eyeRelativePos;
+    let clipPos = camera.mvpRelativeToEye * eyeRelativePos;
 
     // Screen-space offset: corner * totalSize pixels → NDC offset
     let ndcOffset = vec2<f32>(
-        corner.x * totalSize * 2.0 / uniforms.viewportSize.x,
-        corner.y * totalSize * 2.0 / uniforms.viewportSize.y,
+        corner.x * totalSize * 2.0 / material.viewportSize.x,
+        corner.y * totalSize * 2.0 / material.viewportSize.y,
     );
 
     // Apply offset in clip space (multiply by w to maintain after perspective divide)

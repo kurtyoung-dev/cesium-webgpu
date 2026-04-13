@@ -19,24 +19,437 @@
 10. [Session 14: WebMercatorT Shader Support & UV Stretching Fix](#session-14-webmercatort-shader-support--uv-stretching-fix)
 11. [Session 15: LOD Unlock & TexCoordsRect Alpha Masking](#session-15-lod-unlock--texcoordsrect-alpha-masking)
 12. [Session 16: Architecture Cleanup, Shadow Casting & Performance](#session-16-architecture-cleanup-shadow-casting--performance)
-13. [Files Modified Summary](#files-modified-summary)
+13. [Session 26: Pipeline Fixes — Black Canvas to Imagery Rendering](#session-26-pipeline-fixes--black-canvas-to-imagery-rendering)
+14. [Files Modified Summary](#files-modified-summary)
+
+---
+
+## Session 27b — Material UBO Split (2026-04-12)
+
+### MATERIAL-UBO-SPLIT: 49 WGSL shaders split to camera + material bind groups
+
+**What changed:** All primitive/polyline/billboard material shaders were migrated from a single monolithic `struct Uniforms` (carrying both camera and material data in group 0) to a two-group layout: `struct CameraUniforms` at `@group(0)` and `struct MaterialUniforms` at `@group(1)`. A codemod script processed all 49 affected `.wgsl` files.
+
+**Why:** The monolithic layout forced a full UBO rebuild + rebind on every draw even when only camera data changed (per-frame) or only material data changed (per-primitive). Splitting allows the camera bind group (expensive, shared across all primitives in a frame) to be set once per pass, while the material bind group (cheap, per-primitive) is set per draw. This matches the WebGPUModelRenderer.js pattern already in production.
+
+**Files affected:** All `PrimitiveMat*.wgsl`, `PolylineArrow/Dash/Glow/Outline.wgsl`, and related primitive shaders under `packages/engine/Source/Shaders/WebGPU/`.
+
+**Renderer side:** `WebGPUPrimitiveCommands.js` pipeline layout split into separate camera BGL (group 0) and material BGL (group 1). Approximately 295 lines of `packMaterialUniforms` translation code deleted. Material data now sourced directly from `MaterialUniformBuffer.gpuData`.
+
+**Status:** Not yet functional end-to-end. `.js` shader wrappers not regenerated, WebGPUPolylineRenderer.js and WebGPUBillboardRenderer.js not yet refactored, texture binding conflicts unresolved.
+
+### MATERIAL-NAME-MISMATCH: WGSL field names diverged from JS fabric uniform names
+
+**Root cause discovered:** The original shader port used GPU-efficient recomposed fields that differ from the semantic JS names in `Material.js` fabric templates. For example, `PrimitiveMatGridFlat.wgsl` used `gridColor: vec4<f32>` and `cellColor: vec4<f32>` — but the JS fabric template uses `color`, `cellAlpha`, `lineCount`, `lineThickness`, `lineOffset` as separate scalar/vector fields. Similarly, several shaders used `materialColor` where the JS fabric key is `color`.
+
+**Why this matters:** `MaterialUniformBuffer._buildLayout()` uses JS fabric uniform names as keys to map values into the Float32Array backing store. If the WGSL struct field names don't match, the GPU reads garbage data silently — no error, wrong output.
+
+**Fix applied:** The old `packMaterialUniforms` function was a translation layer that papered over these mismatches. With Option B, the translation layer is eliminated by renaming WGSL fields to match the JS fabric names directly. `materialColor` renamed to `color` in 6 shaders (PrimitiveMatColorFlat/Lit, PolylineArrow/Dash/Glow/Outline). Composite fields in GridFlat decomposed (see GRID-DECOMPOSITION below).
+
+**Remaining work:** Field name audit needed for all 25 material types — most already match (Checker, Dot, Stripe, BumpMap, etc. were ported with correct names), but each must be verified against its `Material.js` fabric definition before visual testing.
+
+### GRID-DECOMPOSITION: PrimitiveMatGridFlat.wgsl cellColor vec4 decomposed
+
+**Problem:** `PrimitiveMatGridFlat.wgsl` had `cellColor: vec4<f32>` where `.rgb` was the line color, `.a` was `cellAlpha`, and a separate `cellCount: vec2<f32>` packed `lineCount` in `.x` and `lineThickness` in `.y`. This recomposition was efficient for the GPU but had no correspondence to any JS fabric uniform name, making `MaterialUniformBuffer` unable to populate it.
+
+**Fix:** Decomposed into individual fields matching the JS fabric template exactly:
+
+- `color: vec4<f32>` (the grid line color, was `gridColor`)
+- `cellAlpha: f32` (opacity of the cell interior, was `cellColor.a`)
+- `lineCount: f32` (number of grid lines, was `cellCount.x`)
+- `lineThickness: f32` (line width in UV space, was `cellCount.y`)
+- `lineOffset: f32` (phase offset, new explicit field)
+
+Fragment shader updated to use the new field names. Same decomposition still needed for `PrimitiveMatGridLit.wgsl` (not yet done).
+
+---
+
+## Phase 5 Modern WebGPU Features + Bug Fixes (2026-04-12)
+
+### WGF-4: Camera UBO RTE Assertions
+
+Added `WebGPURTEAssertions.ts` with two debug-only validators:
+
+- `assertCameraRTERoundTrip(high, low, expected, label)` — catches off-by-one packer bugs that swap the hi/lo slots (~6 m drift at Earth radius)
+- `assertMVTranslationZeroed(mv, label)` — catches BUG-38 class (zeroing translation after projection multiply wipes P23 depth term)
+
+Wired into: `WebGPUBufferPrimitiveRenderer` (both assertions), `WebGPUGlobeSurfaceRenderer` (round-trip), `WebGPUUniformGroupManager` (round-trip). All pragma-guarded — zero production cost.
+
+**Relation to BUG-38:** the assertion directly catches the failure mode that cost 3 debugging sessions. The 6 renderers originally affected by BUG-38 (CloudRenderer, EllipsoidPrimitiveRenderer, GaussianSplatRenderer, PointCloudRenderer, VoxelRenderer, BufferPrimitiveRenderer) were fixed in session 27 — the assertion now prevents regressions. Coverage gap: assertions are on 3 of 8 camera packers; extending to all 8 is queued as incremental follow-up.
+
+### WGF-1: Hardware Clip Distances (Globe Terrain)
+
+- `WebGPUClipDistancePrecompute.ts` — FP64 dPrime precomputation, finite sentinel (`1e30` not `Infinity` — Metal UB on non-finite clip distances)
+- `EffectsUniforms` extended from 112→240 bytes with `clipPlaneEqHW: array<vec4<f32>, 8>`
+- All 5 inline EffectsUniforms definitions updated (chunk, GlobeTerrain, PrimitiveBasicColor, PrimitivePhongColor, PrimitivePhongTexturedColor)
+- Globe pipeline variant via string-injection: `enable clip_distances;` + `@builtin(clip_distances)` in VertexOutput + per-vertex loop + fragment discard neutralization
+- **Safety gates:** SCENE3D-only + union-mode-only + opt-in (`context.useHardwareClipDistances = true`)
+
+**Relation to BUG-6.1:** clip-distances retires the fragment discard path for union-mode SCENE3D clipping, eliminating the non-uniform control flow that blocked the globe terrain pipeline from compiling in session 6.
+
+### WGF-3: shader-f16 (Tonemapping)
+
+- `Tonemapping_f16.wgsl` — hand-tuned f16 variant of all 5 tonemapping operators
+- Exposure multiply stays in f32 to avoid intermediate overflow (65000 × large exposure > f16 max)
+- Opt-in: `context.useShaderF16 = true`
+- Pipeline variant selection in `WebGPUPostProcessPipeline.addTonemapping()`
+
+### HDR Pipeline Fix (Pre-Existing Bug) + Auto-Exposure Parity
+
+**Bug:** Post-process ping-pong textures were hardcoded to `canvasFormat` (bgra8unorm = SDR). All HDR data from the scene framebuffer (rgba16float) was silently clamped to [0,1], making tonemapping a no-op.
+
+**Fix 1 — HDR ping-pong:** `WebGPUPostProcessPipeline.initialize()` now accepts `highDynamicRange` flag; when true, ping-pong textures use `rgba16float`. All stage pipelines (tonemapping, color grading, FXAA, custom) now compile against `_intermediateFormat` (not `canvasFormat`) so their fragment target format matches the render attachment. Only the identity-blit pipeline targets `canvasFormat` (it writes to the canvas swap chain).
+
+**Fix 2 — Auto-Exposure (HDR parity with WebGL):** WebGL had `AutoExposure.js` (multi-pass framebuffer luminance reduction); WebGPU had no equivalent. Built a compute-shader replacement:
+
+- `AutoExposure.wgsl` — two-pass parallel reduction. Pass 1: 16×16 workgroups reduce tiles via shared-memory tree reduce. Pass 2: single workgroup reduces all tiles + temporal smoothing (`previous + (current - previous) × adaptationRate`)
+- `WebGPUAutoExposure.ts` — GPU resource management (pipelines, storage buffers, async readback for CPU-side `averageLuminance`)
+- `WebGPUPostProcessPipeline.ts` — `addAutoExposure()` method, dispatches before tonemapping in `execute()`, feeds `manualExposure × (1 / averageLuminance)` into tonemapping uniform
+- `WebGPUSceneRenderer.ts` — auto-adds auto-exposure when HDR is on, passes scene color texture to `execute()`
+
+**WebGL HDR:** already fully implemented upstream — `GlobeDepth.js` switches to `HALF_FLOAT` when `hdr=true`, `PostProcessStageCollection` enables tonemapping, `EXT_color_buffer_float` / `EXT_float_blend` detected. No new code needed.
+
+**WebGPU vs WebGL HDR parity (as of 2026-04-12):**
+
+| Feature | WebGL | WebGPU |
+|---|---|---|
+| Scene framebuffer HDR | `HALF_FLOAT` | `rgba16float` |
+| Post-process chain HDR | Float FBOs | `rgba16float` ping-pong |
+| Tonemapping (5 modes) | GLSL | WGSL (+ f16 variant) |
+| Auto-Exposure | Multi-pass FB reduction | Compute shader (2-pass, faster) |
+| Bloom / SSAO / DoF / FXAA | ✅ | ✅ |
+| Color Grading | N/A | 12-param stage (WebGPU-only) |
+
+### OPEN-1: Sky Atmosphere Pipeline Guard
+
+Root cause investigation: the `updateWebGPUSkyAtmosphere` function pushes to commandList correctly, but if `createPipeline()` throws (shader compile error, format mismatch), `cache.pipeline` stays undefined and subsequent frames retry indefinitely. Added try/catch with permanent `console.error` + `_pipelineFailed` latch. Actual shader/format issue requires browser debugging.
+
+### OPEN-5: Fog Formula Parity (FIXED)
+
+**Root cause:** WebGPU fog used the 2-parameter formula `1 - exp(-(scalar^2))` while WebGL uses a 4-parameter formula with `czm_fogVisualDensityScalar` (default 0.15). The modifier was never wired to the WebGPU shader, making WebGPU fog ~6.7x stronger at horizontal viewing angles.
+
+**Fix (3 files):**
+
+- `WebGPUAutoUniforms.js` — added `csm_fogVisualDensityScalar` auto-uniform
+- `GlobeTerrain.wgsl` — replaced `_pad4` with `fogVisualDensityScalar`, updated `computeFog` to match WebGL's modifier formula
+- `WebGPUGlobeSurfaceRenderer.ts` — packs scalar at tile UBO offset 79
+
+### WORKER-5: Feature Flag Replication
+
+`MSG_SET_FEATURE_FLAGS` added to `WorkerSceneProtocol.js`. `WorkerSceneHost.setFeatureFlags()` sends + replays via shadow state. `RendererWorker.js` handler applies to `scene.context`. Covers `useHardwareClipDistances` + `useShaderF16`.
+
+### BUG-39a-d: Orbital Depth (Confirmed Orthogonal)
+
+The existing fixes (clip-Z clamp `out.position.z = min(out.position.z, out.position.w)`, renderer-wide `less-equal` migration, skybox z=w pattern) remain correct and are not affected by any Phase 5 WGF changes. The clip-distances variant preserves the Z clamp — it's injected AFTER the clamp line, not before.
+
+---
+
+## Renderer Threading + Live FPS Tools (2026-04-11)
+
+**Why this section is at the top:** the 2026-04-11 sweep added the
+infrastructure that every future debugging session will use to
+*measure* what's happening. The FPS tools below replace the previous
+"recent average only" FPS counter and unlock per-renderer measurement
+across multiple workers, so any future bug investigation that touches
+performance should reach for these first instead of building ad-hoc
+timing.
+
+### What landed
+
+| Component | File | What it gives you |
+|---|---|---|
+| **Live FPS histogram** | [PerformanceTracker.js](packages/engine/Source/Services/PerformanceTracker.js) | `recordFrame()` is called automatically every Scene render. `getLiveStats()` returns avg fps + 1% lows + 1% highs over a rolling 60s window. `getLiveFrameTimeSnapshot(n)` returns the chronological frame-time tail for graph rendering. Buffer is preallocated (4096 slots), zero per-frame GC. |
+| **Canvas2D HUD overlay** | [FpsOverlay.js](packages/engine/Source/Services/FpsOverlay.js) | Drop-in DOM element with avg fps, 60s graph (red bars for >budget frames), 1% low / 1% high readouts. Polls at 6 Hz. Pluggable data source — works against `scene.performanceTracker` or a `WorkerSceneHost`. Multiple overlays per page. |
+| **Worker host** | [WorkerSceneHost.js](packages/engine/Source/Services/WorkerSceneHost.js) | Main-thread wrapper that owns a `<canvas>` inside a parent `<div>`, transfers the `OffscreenCanvas` to a worker, runs heartbeat ping/pong, drives 3-tier crash recovery, replays shadow state on restart. Implements the same `getLiveStats()` / `getLiveFrameTimeSnapshot()` contract as `PerformanceTracker` so the HUD overlay works against the host without any glue code. |
+| **Renderer worker** | [RendererWorker.js](packages/engine/Source/Workers/RendererWorker.js) | Bundled to `Build/CesiumUnminified/Workers/RendererWorker.js` (~11 KB bootstrap; engine code-split into a 7.9 MB chunk loaded on first message). Constructs an empty `Scene` against the OffscreenCanvas, runs its own render loop, posts FPS stats every 125 ms, echoes heartbeats. |
+| **Protocol** | [WorkerSceneProtocol.js](packages/engine/Source/Services/WorkerSceneProtocol.js) | All message-type strings + heartbeat / restart / burst-window constants in one place. |
+| **Scene/CreditDisplay headless mode** | [Scene.js:198-225](packages/engine/Source/Scene/Scene.js#L198-L225), [CreditDisplay.js:301-348](packages/engine/Source/Scene/CreditDisplay.js#L301-L348) | Detects `typeof document === "undefined"` and short-circuits all DOM construction. Required to construct a Scene inside a worker. Existing main-thread behavior unchanged. |
+| **Cross-browser RAF fallback** | [RendererWorker.js `_startRenderLoop`](packages/engine/Source/Workers/RendererWorker.js) | `requestAnimationFrame` is Chromium-only inside DedicatedWorker; falls back to `setTimeout(tick, 1000/60)` on Firefox/Safari workers. Documented as ~60 Hz approximation, not vsync-locked. |
+| **maxFps runtime cap** | `WorkerSceneHost.setMaxFps(value)` | Five modes: `null` = vsync (default), positive = cap, `0` = uncapped (bypass rAF, bench mode), negative = pause. Survives crash + restart via shadow state. Equivalent to upstream `CesiumWidget.targetFrameRate` for the in-thread case. |
+| **Test page** | [worker-renderers.html](Apps/WebGPUTest/worker-renderers.html) | Multi-pane grid (1-16 panes). Toolbar buttons to spawn WebGL / WebGPU panes, change FPS cap, manually crash a worker to test recovery. Each pane has its own FPS overlay reading from its host. |
+
+Full design + remaining gaps in [OPTION_B_SCENE_IN_WORKER.md](migration_doc/OPTION_B_SCENE_IN_WORKER.md).
+
+### How this changes debugging workflow
+
+**Before:** the only FPS surface was `scene.debugShowFramesPerSecond = true`,
+which displayed the recent average and was tied to the main thread's
+render loop. Multi-renderer scenes had no isolation; a stall in one
+renderer affected the FPS readout of all of them. Per-renderer perf
+comparison required the visual regression page or manual stopwatch
+work.
+
+**After:** every Scene records its own continuous frame-time history
+into a circular buffer. The HUD overlay reads it directly. Three new
+debugging patterns become trivial:
+
+#### Pattern 1 — In-thread perf overlay on any Viewer
+
+```js
+// Drop-in for any existing Cesium app, no other changes
+import { FpsOverlay } from "@cesium/engine";
+
+const overlay = new FpsOverlay({
+  parent: viewer.container,
+  dataSource: viewer.scene.performanceTracker,
+  label: "main",
+  position: "top-right",
+});
+// ... when done ...
+overlay.destroy();
+```
+
+This gives you 60s graph + avg + 1% low + 1% high without spinning up
+any worker. Use this first whenever investigating a perceived stutter
+— the 1% low number tells you immediately whether the problem is
+"average is fine but worst frames spike to 30 ms" vs "average is
+already 40 ms."
+
+#### Pattern 2 — Per-renderer comparison via worker isolation
+
+```js
+import { WorkerSceneHost, FpsOverlay } from "@cesium/engine";
+
+const webglHost = new WorkerSceneHost({
+  parent: leftPane, rendererType: "webgl",
+});
+const webgpuHost = new WorkerSceneHost({
+  parent: rightPane, rendererType: "webgpu",
+});
+
+new FpsOverlay({ parent: leftPane, dataSource: webglHost, label: "webgl" });
+new FpsOverlay({ parent: rightPane, dataSource: webgpuHost, label: "webgpu" });
+```
+
+Each host runs its own worker thread with its own RAF loop. A stall
+in one renderer no longer affects the other's FPS readout. This is
+the "is WebGPU actually faster than WebGL on this scene?" measurement
+that was previously impossible to run cleanly because both renderers
+shared the main-thread JS pump.
+
+The test page [worker-renderers.html](Apps/WebGPUTest/worker-renderers.html)
+demonstrates this with up to 16 panes.
+
+#### Pattern 3 — Benchmark mode via uncapped maxFps
+
+```js
+host.setMaxFps(0);   // bypass rAF, run as fast as possible
+// ... let it run for 5 seconds ...
+const stats = host.getLiveStats();
+console.log(`peak throughput: ${stats.avgFps.toFixed(1)} fps`);
+host.setMaxFps(null);   // back to vsync
+```
+
+The uncapped mode is the answer to "how many frames per second can
+the GPU sustain if vsync isn't getting in the way?" It's specifically
+the question that comes up when investigating why a scene feels
+slow despite the displayed FPS being 60. If uncapped runs at 120 fps,
+you have 50% headroom and the bottleneck is elsewhere. If uncapped
+runs at 65 fps, the renderer itself is the bottleneck and any vsync
+target above 60 is wasted effort.
+
+### Console commands (worker-renderers.html test page)
+
+When the test page is open, these helpers are exposed on `window` so
+you can drive the panes from dev tools without touching the toolbar:
+
+```js
+setMaxFps(60)              // cap all panes at 60 fps
+setMaxFps(null)            // back to vsync (default)
+setMaxFps(0)               // uncapped (benchmark mode)
+setMaxFps(-1)              // pause render loop (CPU/GPU idle)
+setPaneMaxFps(0, 120)      // cap pane index 0 only at 120
+listPanes()                // print { id, rendererType, maxFps, avgFps } per pane
+```
+
+### Crash recovery — what to expect when a worker dies
+
+The host runs three tiers of recovery automatically. When debugging,
+you'll see the following sequence in the console:
+
+1. **Tier 1 (in-thread, ~100-500 ms)** — `WebGPUDeviceLossRecovery`
+   catches a `device.lost` Promise and rebuilds the device internally.
+   Console: `[WebGPU] Recovery attempt 1/3...` followed by
+   `[WorkerSceneHost] GPU device lost (worker recovering)` and then
+   `[WorkerSceneHost] GPU device restored`. The canvas does not
+   change. The FPS overlay may show a brief gap.
+
+2. **Tier 2 (soft reset, reserved)** — currently no host trigger; the
+   protocol message exists for future use.
+
+3. **Tier 3 (hard restart, ~1-2 s)** — a `worker.error` event, a
+   `messageerror`, or 3 missed heartbeat pongs. Console:
+   `[WorkerSceneHost] worker spawned (session N) reason=restart:<cause>`.
+   The host destroys the dead `<canvas>` (because
+   `transferControlToOffscreen` is one-time), creates a fresh one
+   inside the parent `<div>`, spawns a new worker, and replays shadow
+   state (camera, requestRenderMode, maxFps). The FPS overlay's
+   data source is updated transparently — no overlay rebuild needed.
+
+4. **Circuit breaker** — more than 3 crashes within 60 seconds opens
+   the breaker. The host stops auto-restarting and fires the
+   `onFailure` callback. The pane stays in a `FAILED` state until
+   user code creates a new host. This prevents infinite-loop crashes
+   from burning CPU forever.
+
+To manually exercise recovery during debugging, the test page has a
+"Crash first worker" button that calls `worker.terminate()` directly.
+The next heartbeat sees no responses for 3 seconds and triggers the
+hard-restart path.
+
+### Where the FPS counter helps for *bug* investigation
+
+| Symptom | What to check first |
+|---|---|
+| "WebGPU feels slower than WebGL" | Open the worker test page with both backends side by side. The two FPS overlays update independently — direct apples-to-apples comparison without main-thread JS contention. |
+| "Random stutters but average looks fine" | Enable the FPS overlay on the production Viewer. The 1% low FPS reading exposes the worst-case frames; if `1%-low << avg`, you have spike-y frames that the average is hiding. |
+| "Dev tools profiler is too noisy" | Use `host.setMaxFps(0)` to run uncapped. If the GPU is the bottleneck, peak throughput stops climbing as you raise the cap. If the JS thread is the bottleneck, peak throughput keeps climbing past the display rate. |
+| "Worker is alive but stuck" | Check the host's heartbeat counters. If `_lastPingId - _lastAckedPingId >= 3`, the heartbeat watchdog will restart the worker within ~3 seconds. The worker's last `MSG_LOG` message before the restart is your best clue to what wedged it. |
+| "Scene state corruption after a crash" | Inspect `host._shadowState`. Anything NOT in there is missing from the replay path and is the gap to fix. Today the shadow state covers `lastView`, `requestRenderMode`, `maxFps`. Entity / imagery / terrain shadow recording is Phase 2 (see [OPTION_B_SCENE_IN_WORKER.md](migration_doc/OPTION_B_SCENE_IN_WORKER.md)). |
+| "Need timing for a one-shot operation, not a rolling window" | The existing `Scene.beginPerformanceTrace(label, {frames})` / `endPerformanceTrace()` API is unchanged. The trace API and the live API are independent — you can use both at once. |
+
+### Known limitations of the worker path (for debug context)
+
+1. **Worker can construct a Scene but most consumer features are gaps**
+   — adding entities, picking, DataSources, custom shaders, time-varying
+   properties etc. all require the Phase 2-7 work documented in
+   [OPTION_B_SCENE_IN_WORKER.md](migration_doc/OPTION_B_SCENE_IN_WORKER.md).
+   Today the worker path is best used as a measurement substrate
+   (FPS comparison, isolation testing) rather than as a production
+   replacement for the in-thread Viewer.
+
+2. **Firefox/Safari workers don't have `requestAnimationFrame`** —
+   the `setTimeout(1000/60)` fallback runs at ~60 Hz with some
+   sub-millisecond jitter. On a 144 Hz display these workers won't
+   ride the higher refresh rate. Documented as a known limitation;
+   the cross-browser fallback works for the common case.
+
+3. **`OffscreenCanvas.transferControlToOffscreen()` is one-time** —
+   the host has to destroy and recreate the `<canvas>` element on
+   every hard restart. The parent `<div>` is the stable identity.
+   Anything that holds a reference to the OLD canvas (e.g., a
+   `getBoundingClientRect()` cached on the application side) needs
+   to refresh after a recovery event.
+
+4. **Per-frame postMessage cost** — for every host→worker command, the
+   message is structured-cloned twice. For animation-heavy use this
+   could matter; for the FPS-counter use case it's negligible (one
+   stats post every 125 ms, ~600 bytes).
+
+5. **`SharedArrayBuffer` is unavailable in third-party-embedded apps**
+   — would let us do high-frequency host→worker communication
+   without postMessage overhead, but requires
+   `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`,
+   which breaks third-party embedding scenarios that Cesium apps
+   commonly use. So we deliberately don't rely on it.
 
 ---
 
 ## Current Status
 
-**What works:** Globe renders with satellite imagery at multiple LODs. WebMercatorT texture coordinate support matches WebGL. Higher LOD tiles load and render as camera zooms in. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system compiles WGSL shaders + TypeScript. Camera jitter significantly reduced via async staleness validation + distance ratio checks. Fill tile black lines eliminated by skip. Backend-agnostic architecture enforced: zero `isWebGPUDrawCommand` checks in Scene code. Shadow cast pipeline wired. Render bundles activated for terrain. Ring buffer allocator initialized.
+**What works (as of Session 26):** Globe renders with satellite imagery at LOD 2+ when zoomed in. Sun, moon, and skybox/stars all rendering via the post-process pipeline. WebMercatorT texture coordinate support matches WebGL. Higher LOD tiles load and render as camera zooms in. Environment injection wired. CubeMapPanorama pipeline fixed. Imagery reprojection crash fixed. Build system compiles WGSL shaders + TypeScript. Camera jitter significantly reduced via async staleness validation + distance ratio checks. Fill tile black lines eliminated by skip. Backend-agnostic architecture enforced: zero `isWebGPUDrawCommand` checks in Scene code. Shadow cast pipeline wired with per-layout variant registry (Session 26). Render bundles activated for terrain. Ring buffer allocator initialized. 2D/Columbus View projection added (Session 26). Buffer primitive renderers + label/SDF renderers confirmed fully implemented. Build variant infrastructure (WebGL-only / WebGPU-only / dual) with tree-shaking alias plugin (Session 26). WebGL compatibility stubs overhauled with real texture upload, format conversion, mipmap generation (Session 26). **Renderer threading scaffolding + per-renderer FPS counters + worker-Scene headless mode + maxFps runtime cap (2026-04-11 sweep — see top of doc).**
 
 **What needs visual verification:**
 
-- Stars/skybox rendering (panoramaCommandList clearing fixed, diagnostic logging improved)
-- Shadow casting end-to-end (pipeline wired, bias fixed, command collection fixed)
+- 2D/Columbus View mode (modifiedModelViewProjection matrix added Session 26)
+- Shadow casting end-to-end (per-layout pipeline registry added Session 26)
 
 **Known remaining issues:**
 
-- ⚠️ 2D/Columbus View mode implemented in WebGPU globe shader (Session 18) — needs visual verification
+- ⚠️ **BUG-15** — Fill tile index buffer overflow at default zoom (globe black until zoomed in). Clamped but root cause not fixed.
+- ⚠️ **BUG-11** — Imagery tile gaps (dark patches / missing tiles visible as black triangles at medium zoom)
+- ⚠️ Moon rendering appears distorted (shape/UV issue)
 - ⚠️ Advanced renderers (Cloud, Voxel, GaussianSplat, PointCloud, Ellipsoid) built but untested end-to-end
-- ⚠️ Buffer primitive collections (v1.140 vector tiles) are intentional stubs
+
+**Useful debug commands:**
+
+```bash
+# Build variants for size comparison
+npx gulp buildAllVariants         # All 3 variants side-by-side
+npx gulp buildCesiumWebGPUOnly    # WebGPU-only (smallest bundle)
+npx gulp buildCesiumWebGLOnly     # WebGL-only (no WebGPU chunks)
+npx gulp buildCesiumDual          # Both backends (default)
+
+# Visual regression
+node Tools/visual-regression/capture-and-diff.mjs --headed --scene globe-default
+
+# Type checking
+npx tsc --noEmit
+
+# Dev server
+npm run restart
+```
+
+**Runtime debug console commands** (available after `CesiumDebug` is installed on a viewer):
+
+```
+CesiumDebug.help()              — list all commands
+CesiumDebug.snapshot()          — full debug snapshot (scene + renderer + toggles)
+CesiumDebug.showDepth()         — depth buffer as grayscale
+CesiumDebug.hideDepth()         — restore normal
+CesiumDebug.showWireframe()     — globe wireframe overlay
+CesiumDebug.hideWireframe()     — hide wireframe
+CesiumDebug.showFrustums()      — colorize frustum splits
+CesiumDebug.showCommands()      — command count overlay
+CesiumDebug.toggleFPS()         — FPS counter
+CesiumDebug.pipelineStatus()    — shader/pipeline/device health check
+CesiumDebug.postProcess()       — post-process pipeline state table
+CesiumDebug.canvasPixels()      — sample canvas pixel data
+CesiumDebug.logImageryProbe()   — dump next 4 tile updates
+CesiumDebug.scene               — direct scene access
+CesiumDebug.context             — direct context access
+CesiumDebug.device              — direct GPUDevice access
+```
+
+---
+
+## Session 28: Build Variants, Stub Overhaul & Critical Fixes (2026-04-10)
+
+### BUG-12 — All-black WebGPU canvas (render target misdirection)
+
+**Severity:** CRITICAL  
+**Symptom:** WebGPU canvas is entirely `rgba(0,0,0,255)`. Tiles are processed (GlobeTile logs appear), post-process pipeline exists and is enabled, but nothing is visible.
+
+**Root cause (multi-layer):**
+
+1. **`usePostProcess` forced false:** `FramebufferOrchestrator.js` sets `usePostProcess` based on whether effects are enabled. WebGPU always needs it. Additionally, `postProcess.ready` overwrites the flag on line 114 even after the isWebGPU override. Both fixed by adding `context.isWebGPU` checks at both assignment sites.
+
+2. **Render target misdirection (the real fix):** `WebGPUContext.beginFrame()` opens a default render pass targeting the **canvas swap chain directly**. All draw commands execute against this pass. The post-process pipeline then reads from the **scene framebuffer** (which was never drawn to) and blits its empty content to the canvas — overwriting the actual rendered content with black.
+
+   The fix: `WebGPUSceneRenderer.executeCommands()` now ends the default canvas render pass and begins a new one targeting the scene framebuffer's color + depth textures BEFORE the frustum loop. Commands draw into the scene framebuffer. The post-process tonemapping pass reads from it and writes to the canvas.
+
+**Fix applied:**
+- `FramebufferOrchestrator.js` — `isWebGPU` override at both `usePostProcess` assignment sites
+- `WebGPUSceneRenderer.ts` — render pass redirect from canvas to scene framebuffer before frustum loop; uses `colorTarget.getColorAttachments()` + `getDepthStencilAttachment()` for proper pass descriptor construction
+
+**Error guards added (prevent future recurrence):**
+- CRITICAL error if scene framebuffer has no color attachments (commands draw to nothing)
+- Warning if scene framebuffer has no depth/stencil (depth testing disabled)
+- CRITICAL error if `usePostProcess=true` but no scene framebuffer color target exists (blit overwrites canvas with black)
+- CRITICAL error in `_runPostProcessing` if post-process pipeline is missing when WebGPU context is active
+
+**Files modified:**
+- `packages/engine/Source/Scene/FramebufferOrchestrator.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts`
+- `packages/engine/Source/Scene/Scene.js` — backend-aware `_alternateSceneRenderer` diagnostic
+
+### BUG-13 — `installCesiumDebug` export name mismatch
+
+**Severity:** LOW (CesiumViewer-only)  
+**Symptom:** `Uncaught SyntaxError: ... doesn't provide an export named: 'installCesiumDebug'`
+
+**Root cause:** `CesiumDebug.js` uses `export default installCesiumDebug` but the barrel renames it to `CesiumDebug`. CesiumViewer.js imported the old name.
+
+**Fix:** Changed import in `Apps/CesiumViewer/CesiumViewer.js` from `installCesiumDebug` to `CesiumDebug`.
+
+### BUG-14 — ESM chunk loading failure in dev builds
+
+**Severity:** HIGH (blocks all WebGPU dev testing)  
+**Symptom:** `NS_ERROR_CORRUPTED_CONTENT` / `Loading failed for module ... chunks/chunk-*.js`
+
+**Root cause:** `bundleCesiumJs` was changed to use `splitting: true` for ALL ESM outputs, including dev builds. The dev server doesn't serve the `chunks/` subdirectory correctly (MIME type / encoding issues on some setups).
+
+**Fix:** Made ESM code splitting opt-in via `options.splitting` (default false). Dev builds (`gulp build` / `npm run restart`) keep single-file output. Release and variant builds pass `splitting: true`.
 
 ---
 
@@ -1865,3 +2278,749 @@ C. **Stale view in `_imageryTextureCache`** — see point 6 above.
 Code audit complete; no defect identifiable without runtime inspection.
 Backlog item BUG-11 stays open as **Needs visual env** with the probe
 checklist above as the resumption point.
+
+---
+
+## Session 26: Pipeline Fixes — Black Canvas to Imagery Rendering
+
+**Date:** April 10, 2026
+**Goal:** Investigate and fix the all-black WebGPU canvas. Went from zero visible output to satellite imagery rendering with sun, moon, and stars.
+
+### Starting state
+
+- WebGPU canvas completely black — no sun, moon, globe, or stars visible
+- WebGL side worked correctly (split-screen comparison page confirmed)
+- From Session 25: BUG-9 ring buffer fix verified working (60 allocs/frame, 0 overflow), BUG-8 subgroups WGSL fix applied
+- Firefox release showed globe sphere + atmosphere + stars (screenshot from user) but Playwright Firefox Nightly couldn't reproduce
+
+### Debugging methodology
+
+All debugging was done via browser console monkey-patching (Edge/Chromium) since Playwright MCP wasn't configured for Edge yet. The approach:
+
+1. **Monkey-patch `context.clear()`** to log every clear call with pass label and framebuffer info
+2. **Monkey-patch `pp.execute()`** to log source/target texture validity during render frames
+3. **`CesiumDebug.snapshot()`** for full scene state dumps
+4. **`CesiumDebug.canvasPixels()`** to sample canvas output (all rgba(0,0,0,0) initially)
+5. **Direct property probing** via `scene._alternateSceneRenderer._postProcess` to check pipeline state between frames
+6. **Temporary shader modifications** (`return vec4(1,0,0,1)` flat red) to isolate fragment vs pipeline issues
+
+### BUG-12: Clear guard ordering (ROOT CAUSE #1)
+
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` lines 2219-2248
+
+**Discovery:** Monkey-patching `context.clear()` revealed an infinite loop of clear calls with truncated log output. The `clear()` method was called recursively because each clear destroyed the current render pass and opened a new one, which triggered more clears from `FramebufferOrchestrator.js` (lines 57, 70, 84, 109, 112, 127, 135, 161).
+
+**Root cause:** The "Scene Framebuffer" label guard that was supposed to prevent clearing the scene FB pass was checking `_currentRenderPassEncoder.label` AFTER the pass had already been `.end()`ed and the reference set to `null`:
+
+```typescript
+// BEFORE (broken):
+if (this._currentRenderPassEncoder) {
+  this._currentRenderPassEncoder.end();      // ← destroys the pass
+  this._currentRenderPassEncoder = null;     // ← clears the reference
+}
+// ... 25 lines later ...
+const activePassLabel = this._currentRenderPassEncoder?.label ?? "";  // ← ALWAYS ""
+if (activePassLabel.startsWith("Scene Framebuffer")) {
+  return;  // ← NEVER fires
+}
+```
+
+**Fix:** Moved the guard BEFORE the `.end()` call:
+
+```typescript
+// AFTER (fixed):
+const activePassLabel = this._currentRenderPassEncoder?.label ?? "";
+if (activePassLabel.startsWith("Scene")) {
+  return;  // Now correctly fires when scene pass is active
+}
+if (this._currentRenderPassEncoder) {
+  this._currentRenderPassEncoder.end();
+  this._currentRenderPassEncoder = null;
+}
+```
+
+**Impact:** This was the original cause of the all-black WebGPU output first reported as BUG-10. The clear command would open a canvas-targeting pass, globe tiles would draw into it, then the post-process blit would read the (empty) scene framebuffer and overwrite everything with black.
+
+### BUG-13: Missing identity blit (ROOT CAUSE #2)
+
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts` line 506
+
+**Discovery:** After fixing BUG-12, the canvas was still black. `CesiumDebug.canvasPixels()` showed all `rgba(0,0,0,0)` — completely transparent, not even cleared to black. Probing `pp.execute()` showed it was called with valid source+target views, but nothing reached the canvas.
+
+**Root cause:** The `execute()` method had an early return when no effects were enabled:
+
+```typescript
+execute(encoder, sourceView, destView, depthView) {
+  if (!this.hasActiveStages) return;  // ← returns without blitting to canvas!
+  ...
+}
+```
+
+WebGPU ALWAYS needs a blit from the scene framebuffer to the canvas swap chain, even when zero post-process effects are active. WebGL can render directly to the backbuffer, but WebGPU renders to an offscreen scene FB and the post-process pipeline is the ONLY path that copies it to the visible canvas.
+
+A second instance of the same bug existed at line 568:
+
+```typescript
+if (singlePassStages.length === 0) {
+  if (currentView !== sourceView) {
+    this._executeCopyStage(...);  // only copies if effects changed the view
+  }
+  return;  // ← if no effects ran, never copies to canvas!
+}
+```
+
+**Fix:** Both early-return paths now call `_executeCopyStage(encoder, sourceView, destView)`:
+
+```typescript
+if (!this.hasActiveStages) {
+  this._executeCopyStage(encoder, sourceView, destView);
+  return;
+}
+// ...
+if (singlePassStages.length === 0) {
+  this._executeCopyStage(encoder, currentView, destView);
+  return;
+}
+```
+
+### BUG-14: Copy pipeline depended on nullable tonemapStage (ROOT CAUSE #3)
+
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts` line 725
+
+**Discovery:** After fixing BUG-13, probing `pp._copyPipeline` / `pp._copySampler` / `pp._copyBindGroupLayout` all returned `false`. The copy stage had no GPU resources.
+
+**Root cause:** `_executeCopyStage()` reused `_tonemapStage` as a passthrough:
+
+```typescript
+private _executeCopyStage(encoder, sourceView, targetView) {
+  if (this._tonemapStage) {  // ← null if tonemap not compiled yet
+    this._executeSinglePassStage(encoder, this._tonemapStage, sourceView, targetView);
+  }
+  // ← silent no-op if _tonemapStage is null
+}
+```
+
+**Fix:** Built a dedicated identity-blit pipeline that always exists after `initialize()`:
+
+- Added `_identityPipeline` and `_identityBGL` fields to the class
+- Created `_createIdentityBlitPipeline()` — a minimal fullscreen-triangle shader that samples the source texture and writes it unmodified to the target
+- `_executeCopyStage()` now uses the identity pipeline instead of depending on `_tonemapStage`
+- The identity pipeline is created once per device in `initialize()` and has zero uniforms — cheaper than the tonemapping stage
+
+**Identity blit shader (inline WGSL):**
+
+```wgsl
+@vertex fn vertexMain(@builtin(vertex_index) vi: u32) -> VsOut {
+  let x = f32(i32(vi & 1u)) * 4.0 - 1.0;
+  let y = f32(i32(vi >> 1u)) * 4.0 - 1.0;
+  out.pos = vec4f(x, y, 0.0, 1.0);
+  out.uv  = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+  return out;
+}
+@fragment fn fragmentMain(@location(0) uv: vec2f) -> @location(0) vec4f {
+  return textureSample(srcTex, srcSamp, uv);
+}
+```
+
+**Result after BUG-12 + BUG-13 + BUG-14:** Sun and moon visible on canvas. Post-process pipeline confirmed working (scene FB → tonemap → canvas swap chain).
+
+### BUG-15: Index buffer overflow invalidates entire command buffer
+
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`
+
+**Discovery:** With sun and moon rendering, the globe was still invisible (black). Added `return vec4(1,0,0,1)` at the top of `fragmentMain` in GlobeTerrain.wgsl — globe turned bright red when zoomed in but stayed black at default zoom. GPU validation errors in the console revealed the cause:
+
+```
+Index range (first: 0, count: 39, format: IndexFormat::Uint16) does not fit in index buffer size (40).
+ - While encoding [RenderBundleEncoder "Globe terrain bundle"].DrawIndexed(39, 1, 0, 0, 0).
+```
+
+**Root cause:** Some terrain tiles (likely fill tiles) have an index buffer with only 20 Uint16 indices (40 bytes) but the stored `indexCount` says 39. When WebGPU's render bundle encoder encounters this, it invalidates the ENTIRE command buffer — meaning nothing renders for that frame. At default zoom, these fill tiles are always visible, so every frame's command buffer is rejected. At close zoom, the bad tiles are culled and the command buffer stays valid.
+
+Multiple occurrences observed with different sizes:
+- count=39, buffer=40 bytes (20 indices)
+- count=21, buffer=24 bytes (12 indices)
+- count=18, buffer=20 bytes (10 indices)
+- count=24, buffer=24 bytes (12 indices)
+- count=15, buffer=16 bytes (8 indices)
+
+**Likely cause:** Fill tile cache key collision or mesh data reuse — the `indexCount` from a real tile's mesh is stored but the `indexBuffer` is from a smaller fill tile mesh (or vice versa).
+
+**Fix (clamp — not root cause fix):** Added an overflow guard before the draw call that clamps `drawIndexCount` to the maximum the buffer can hold:
+
+```typescript
+const maxIndicesInBuffer = Math.floor(drawIndexBuffer.size / bytesPerIndex);
+if (drawIndexCount > maxIndicesInBuffer) {
+  console.warn(`[WebGPU:GlobeTile] INDEX OVERFLOW — tile=${tileKey} ...`);
+  drawIndexCount = maxIndicesInBuffer;
+}
+```
+
+**Result:** Globe no longer crashes the command buffer. Imagery tiles render at medium/close zoom with satellite imagery visible. At default zoom, the clamped fill tiles render with partial geometry (visible as black triangular gaps).
+
+**Status:** Clamped but root cause not fixed. See "Next Steps" below.
+
+### Diagnostic logging improvements
+
+**Problem:** Console was extremely spammy — every tile's center3D + uniform data logged every frame, making it impossible to read other messages.
+
+**Fix:** Added throttle infrastructure to `WebGPUGlobeSurfaceRenderer.ts`:
+
+```typescript
+private _diagLastLogTime = 0;
+private _diagShouldLog(): boolean {
+  if (this._diagTileCount !== 0) return false;
+  const now = performance.now();
+  if (now - this._diagLastLogTime < 3000) return false;
+  this._diagLastLogTime = now;
+  return true;
+}
+```
+
+All `console.log` guards changed from `this._diagTileCount <= N` (which logged N tiles per frame, every frame) to `this._diagShouldLog()` (logs one tile per 3 seconds max).
+
+Also throttled `[WebGPU:GlobePass]` count log in `WebGPUSceneRenderer.ts` to once per 3 seconds.
+
+### Other work in Session 26
+
+The debugging session was interleaved with feature work. Full list of Session 26 changes:
+
+**P1 Feature parity:**
+- BUG-3 / 2D+Columbus View: Added `modifiedModelViewProjection` mat4 to CameraUniforms struct in GlobeTerrain.wgsl + TS uniform writer. CAMERA_UNIFORM_FLOATS 80→96.
+- SHADOW-LAYOUT: Refactored WebGPUShadowMapRenderer.js to per-vertex-layout pipeline registry with `registerShadowCastVariant()` API.
+- Verified buffer primitive renderers + label/SDF renderer already fully implemented (backlog was stale).
+
+**P2 Quality:**
+- Added WebGPURingBufferAllocatorSpec.js (6 specs with mock device)
+- Added WebGPUShadowMapRendererSpec.js (variant registry tests)
+- Created Tools/visual-regression/ scaffold (Playwright + pixel diff, zero deps)
+
+**P3 Performance:**
+- WGF-2 Transient attachments: Feature-detect + OR bit into MSAA color + non-samplable depth textures
+- Subgroup variant added to PointCloudLOD.wgsl (subgroupBallot-collapsed compaction)
+- Indirect draw batch API: `submitBatch()` + `executeBatchIndexed()` on WebGPUIndirectDrawManager
+- AtmosphereLUT dispatch path: `ensureAtmosphereLUTResources()` + `dispatchAtmosphereLUT()` on PerformanceManager
+
+**P4 Tech debt:**
+- Removed unused DEFERRED_GBUFFER key from FeatureRendererKey.js (COUNT 38→37)
+- WebGL compatibility stubs overhauled: real texture upload via `texImage2D`, format conversion via `webglToWebGPUTextureFormat`, `getParameter` from `device.limits`, `getExtension` stubs for 15 WebGL extensions, stencil state tracking, `generateMipmap` via `WebGPUMipmapGenerator`
+
+**Build infrastructure:**
+- Production build baseline: Cesium.js 6.8 MB min / 1.89 MB gzip
+- `setGlobalDefaultRenderer()` API in RendererType.ts
+- `bundleVariantPlugin.js` esbuild plugin for aliasing backend-specific modules to empty stubs
+- Three gulp tasks: `buildCesiumWebGLOnly`, `buildCesiumWebGPUOnly`, `buildCesiumDual`
+- `buildAllVariants` with hoisted engine/widgets build (runs once, not 3x)
+
+### Files modified in Session 26
+
+| File | Change |
+|------|--------|
+| `WebGPUContext.ts` | Clear guard ordering fix (BUG-12), stub state fields for stencil/pixelStore/mipmapGenerator |
+| `WebGPUPostProcessPipeline.ts` | Identity blit pipeline (BUG-13/14), both early-return paths fixed |
+| `WebGPUGlobeSurfaceRenderer.ts` | Index overflow clamp (BUG-15), diagnostic throttling, CAMERA_UNIFORM_FLOATS 80→96 |
+| `GlobeTerrain.wgsl` | Added modifiedModelViewProjection mat4, used in 2D/CV/Morphing vertex paths |
+| `WebGPUShadowMapRenderer.js` | Per-layout pipeline registry, `registerShadowCastVariant()` |
+| `WebGPUFramebufferManager.ts` | Transient attachment bit for MSAA + non-samplable depth |
+| `WebGPUIndirectDrawManager.ts` | `submitBatch()` + `executeBatchIndexed()` |
+| `WebGPUPerformanceManager.ts` | AtmosphereLUT resources + dispatch path |
+| `WebGPURingBufferAllocator.ts` | (spec added) |
+| `PointCloudLOD.wgsl` | Subgroup-accelerated `computeMainSubgroups` variant |
+| `FeatureRendererKey.js` | DEFERRED_GBUFFER removed, keys renumbered |
+| `RendererType.ts` | `setGlobalDefaultRenderer()` + `getGlobalDefaultRenderer()` |
+| `WebGLStateConverters.ts` | `webglToWebGPUTextureFormat`, `bytesPerTexel`, filter/wrap/mipmap converters |
+| `WebGLStubTexture.ts` | Full rewrite: real texture allocation, upload, sampler tracking, mipmap dispatch |
+| `WebGLStubShader.ts` | `getParameter` from device.limits, `getExtension` stubs, naga transpile spike |
+| `WebGLStubPipelineState.ts` | Stencil state tracking (func/mask/op + separate variants) |
+| `WebGLStubTypes.ts` | pixelStore, stencil state, mipmapGenerator fields |
+| `WebGLCompatibilityStub.ts` | Pass state to shader stubs |
+| `WebGPUSceneRenderer.ts` | GlobePass log throttling |
+| `scripts/build.js` | Variant-aware `createCesiumJs`/`bundleCesiumJs`, splitting, plugin |
+| `scripts/bundleVariantPlugin.js` | NEW: esbuild alias plugin for variant tree-shaking |
+| `scripts/stubs/emptyShader.js` | NEW: `export default ""` stub for GLSL strings |
+| `scripts/stubs/emptyModule.js` | NEW: Proxy stub for WebGPU modules |
+| `gulpfile.js` | `buildCesiumWebGLOnly`/`buildCesiumWebGPUOnly`/`buildCesiumDual`/`buildAllVariants` |
+| `Tools/visual-regression/*` | NEW: capture-and-diff.mjs, scenes.json, README.md |
+| `Specs/WebGPURingBufferAllocatorSpec.js` | NEW: 6 specs with mock device |
+| `Specs/WebGPUShadowMapRendererSpec.js` | NEW: variant registry tests |
+
+---
+
+## Next Steps — Investigation Plan
+
+### BUG-15: Fill tile index buffer overflow (HIGHEST PRIORITY)
+
+**Symptom:** At default zoom (full globe view), the globe is black. GPU validation errors show index buffer overflows on small tiles. The clamp prevents command buffer invalidation but leaves visible gaps.
+
+**Investigation steps:**
+
+1. **Add tile key + LOD level to the overflow warning.** The current warning logs `tileKey` but we need to cross-reference with whether it's a fill tile or a real tile. Fill tiles have `surfaceTile.fill` set.
+
+2. **Check the cache key logic.** The tile buffer cache in `WebGPUGlobeSurfaceRenderer.ts` uses `tileKey` as the cache key. If a fill tile and a real tile at the same coordinates share the same key, the fill tile's small buffer might be stored under a key that a real tile's large `indexCount` later reads.
+
+3. **Check if `indices.length` vs `indices.byteLength / BYTES_PER_ELEMENT` ever disagree.** For TypedArray subarrays over a shared buffer, `length` reflects the subarray's element count, not the underlying buffer. Verify that `indices` is always a properly-sized TypedArray, not a view into a larger buffer.
+
+4. **Verify fill tile stride detection.** The existing fill tile skip logic (Session 15) uses stride checks. Fill tiles with unusual strides might slip through and create buffers with wrong sizes.
+
+5. **Quick fix attempt:** At the point where `TileGPUResources` is created (line 1248), add a validation:
+
+```typescript
+if (validIndexCount * (indexFormat === "uint32" ? 4 : 2) > ibAlignedSize) {
+  console.error(`[WebGPU:GlobeTile] IB SIZE MISMATCH: indexCount=${validIndexCount} ibSize=${ibAlignedSize}`);
+  validIndexCount = Math.floor(ibAlignedSize / (indexFormat === "uint32" ? 4 : 2));
+}
+```
+
+### BUG-11: Imagery tile gaps (dark patches)
+
+**Symptom:** At medium zoom, some tiles render with satellite imagery but others show as dark patches (the base color `vec3(0.04, 0.04, 0.06)` without any imagery composited).
+
+**Investigation steps:**
+
+1. **Add per-tile `texCoordsRect` + `translationAndScale` to the throttled diagnostic log.** These are the two values that control imagery UV mapping. If `texCoordsRect` is `(0,0,0,0)`, the `texCoordsAlpha` function returns 0 and imagery is invisible.
+
+2. **Check whether `tileImagery.textureCoordinateRectangle` is defined** for the tiles that show as dark. Add:
+
+```typescript
+if (!rect) {
+  console.warn(`[WebGPU:GlobeTile] tile=${tileKey} layer=${layerCount} — NO textureCoordinateRectangle`);
+}
+```
+
+3. **Verify the `dayNightAlpha` values.** If both `dayAlpha` and `nightAlpha` are 0, the `mix(nightAlpha, dayAlpha, dayFade)` term kills the alpha. Check that `layer.dayAlpha` and `layer.nightAlpha` are set correctly.
+
+4. **Test with the UV debug mode.** The shader already has: `if (tile.time > 99990.0) { return vec4(geoUV.x, geoUV.y, webMercT, 1.0); }`. Set the time to 99999 to see if UVs are correct.
+
+5. **Test with the debug imagery return.** Re-add the earlier diagnostic block that returns `vec4(texCoordsAlpha, tex.a, layer.alpha, 1.0)` to see which multiplicand is zero for the dark tiles.
+
+### Moon distortion
+
+**Symptom:** Moon appears with incorrect aspect ratio or UV mapping — visible as a squished/elongated sphere.
+
+**Investigation steps:**
+
+1. Check `WebGPUMoonRenderer` (or equivalent) for the mesh geometry. The moon uses a UV sphere — verify vertex positions and normals.
+2. Check if the moon's model matrix includes the correct scale for the moon's equatorial vs polar radius.
+3. Compare the moon's render pipeline vertex layout with the actual mesh data stride.
+
+### Remaining console noise
+
+The `[WebGPU:GlobePass]` log still fires every 3 seconds. Several other one-time logs fire on every page load. Consider:
+
+1. Moving all successful-init logs behind a `verbose` flag
+2. Using `console.debug` instead of `console.log` for routine diagnostics (filterable in DevTools)
+3. Adding a `CesiumDebug.setLogLevel('warn')` control that suppresses info-level WebGPU logs
+
+---
+
+## Session 27–30: Debug Overlays, Fog Staleness, RTE Completeness, Planetary-Scale Depth Precision
+
+**Dates:** 2026-04-09 → 2026-04-11
+**Scope:** Debug overlay tier, the black-globe-at-orbit saga, a complete RTE audit of every WGSL vertex shader and every TypeScript MVP packer, and a renderer-wide migration of `depthCompare` from `less` → `less-equal`.
+
+This was the biggest single debugging arc in the project so far. The root user complaint — **the globe is black when zoomed out to orbit** — took ~5 rounds of rebuild-and-test to isolate, and in the process we uncovered ~20 latent bugs that had been silently lurking in the WebGPU renderer. Every fix is documented below with the full **symptom → hypothesis → diagnostic → root cause → fix** chain so the reasoning is preserved if any of these regresses.
+
+### 27.1 Debug overlay tier — `CesiumDebug.showDepth` / `showFrustums` / `showCommands`
+
+#### BUG-30: `WebGPUDebugDepthOverlay` shader wouldn't compile
+
+**Symptom:** `showDepth` console command logged "Depth buffer visualization ON" but produced a WGSL compile error: `no matching call to 'textureSampleLevel(texture_depth_2d, sampler, vec2<f32>, abstract-float)'`.
+
+**Root cause:** WGSL requires the `level` parameter of `textureSampleLevel` on a **depth** texture to be `i32` / `u32`, not `f32`. Abstract-float literals like `0.0` are rejected. This is *different* from color textures (`texture_2d<f32>`) which accept f32 LODs. Naga silently accepted the literal at parse time but rejected it at validation.
+
+**Fix:** Use `0i` explicitly for depth texture sample LODs.
+- [`Source/Shaders/WebGPU/WebGPUDebugDepthOverlay.ts:115`](../packages/engine/Source/Renderer/WebGPU/WebGPUDebugDepthOverlay.ts#L115) (and also in `WebGPUDebugFrustumOverlay.ts`)
+
+#### BUG-31: Debug overlay modes conflicted — stuck in broken state
+
+**Symptom:** Calling `showDepth()` then `showFrustums()` would leave the viewer showing the first overlay's error. Toggling one flag didn't clear the others.
+
+**Root cause:** Depth / frustum / command overlays share a single dispatch slot in the WebGPU scene renderer (the first-enabled check returns early from `_runPostProcessing`). Any overlay that hit an error at init time would stay "latched" on the broken pipeline while the Scene flags for the other overlays silently piled up.
+
+**Fix:** Added `clearAllOverlays()` helper in [`CesiumDebug.js`](../packages/engine/Source/Scene/CesiumDebug.js) that every `show*` method calls first, making the three modes mutually exclusive at the JS level.
+
+#### BUG-32: `getDepthStencilAttachment()` hard-coded `depthLoadOp: "clear"`
+
+**Symptom:** Multi-frustum depth clears were working, but reopening the scene framebuffer pass from any *other* site (debug overlay, post-process, env effect) was silently wiping depth because every call to `getDepthStencilAttachment()` returned a descriptor with `depthLoadOp: "clear"`.
+
+**Root cause:** The helper in `WebGPURenderTarget.ts` took no load/store op parameters and unconditionally set clear. Any caller that wanted to reopen a pass preserving depth had to manually build the descriptor.
+
+**Fix:** Parameterized the helper with defaulted `depthLoadOp` / `depthStoreOp` / `stencilLoadOp` / `stencilStoreOp` arguments.
+- [`Source/Renderer/WebGPU/WebGPURenderTarget.ts:253-295`](../packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts#L253-L295)
+
+#### BUG-33: `showDepth` only saw one frustum's depth
+
+**Symptom:** `showDepth` at orbit showed a fully-cleared (magenta) screen. At close-in tilted views it showed a narrow grey band.
+
+**Root cause:** Cesium splits the view into N frustums and clears depth between them. After rendering completes, the only depth that survives is from the **last** frustum rendered (the nearest). Any geometry that lived in other frustums is invisible to the overlay. At orbit the globe lives in the *far* frustum; the near frustum is empty; the overlay samples cleared depth.
+
+**Fix:** Added a bypass — when `debugShowDepthAsColor` is on, skip the inter-frustum depth clear so all frustums accumulate into the same buffer. Depth-test correctness is compromised for that frame (far-frustum tiles may incorrectly occlude near-frustum tiles through stale depth), but the viz is the tool you reach for when something's wrong with depth anyway.
+- [`WebGPUSceneRenderer.ts:720-785`](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts#L720-L785)
+
+Also switched the shader from linear `(linear - near) / (far - near)` normalization to **log-scale** — Cesium's planetary camera runs `near ≈ 1m, far ≈ 1e10m` (ten decades) and linear normalization turns everything into near-zero grayscale. Log-scale spreads the useful range: 10 km at ~0.4, 100 km at ~0.5, 1000 km at ~0.6.
+
+#### Positive outcome
+
+`showDepth` now produces an actually useful visualization at any altitude. `showFrustums` and `showCommands` work through the same `WebGPUDebugFrustumOverlay` post-process path, both RTE-safe since they're fullscreen effects with no world-space positions.
+
+---
+
+### 27.2 The Fog Staleness Bug
+
+#### BUG-34: Globe rendering dark at moderate altitude
+
+**Symptom:** User reported "Turning off fog does make the globe usable at other angles." Toggling `scene.fog.enabled = false` in the console fixed the darkening — but `console.log(viewer.scene._frameState.fog)` showed `density: 0, enabled: false` already. So fog was "off" at CPU level but GPU was still applying it.
+
+**Diagnostic chain:**
+1. Added per-frame `console.log` of the fog state being packed into the tile uniform: `density`, `rawDensity`, `offset`, `enabled`, `cameraHeight`.
+2. Log showed `density=0.000e+0 enabled=false gated=false cameraHeight=12674km` — fog was genuinely zero when written to the GPU.
+3. Since CPU-side was 0 and GPU shader was getting 0, fog couldn't be the cause. This **ruled out** fog as the black-globe-at-orbit culprit.
+
+**What we fixed anyway:** While tracing this, found that `Fog.update()` early-returns when `this.enabled === false`, leaving `frameState.fog.density` stale from whatever the previous frame set. If the user flipped `enabled` off mid-session after a period at low altitude where density was large, that stale value would persist forever.
+
+**Fix:** Belt-and-suspenders — in [`WebGPUGlobeSurfaceRenderer._createTileUniformBuffer`](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts#L1681-L1720), gate density explicitly:
+```typescript
+const fogEnabled = frameState.fog.enabled !== false;
+let density = fogEnabled ? (frameState.fog.density ?? 0.0) : 0.0;
+```
+Now disabling fog always produces a 0 density on the GPU, regardless of whether `Fog.update()` refreshed the frameState.
+
+#### BUG-35: Fog path dropped alpha to zero when fog ≥ 0.98
+
+**Symptom:** "Zooming all the way in looks fine until I angle my camera and then fog occludes everything." Tilted close-up views showed the terrain disappearing entirely into the sky color.
+
+**Root cause:** Our `GlobeTerrain.wgsl` fog block had a WGSL-only addition:
+```wgsl
+if (fogAmount > 0.98) {
+  alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
+}
+```
+This dropped alpha to 0 at heavy fog, making the terrain **transparent** and exposing the black skybox behind it. Upstream WebGL's `czm_fog` does `mix(color, fogColor, fog)` and **never touches alpha**.
+
+**Fix:** Removed the alpha drop entirely at [`GlobeTerrain.wgsl:962`](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L962). Terrain stays opaque through fog; fog only tints color.
+
+---
+
+### 27.3 RTE Completeness Audit
+
+Prompted by the black-globe investigation, did a full audit of every WGSL vertex shader and every JS renderer that packs MVP uniforms. Context: CesiumJS WebGPU runs at planetary scale (positions up to ~6.4 Mm from origin), and naked `mvp * worldPos` loses precision catastrophically in FP32. The correct pattern is **Relative-To-Eye (RTE)**:
+- Vertex buffers store positions as `positionHigh` + `positionLow` FP32 pairs (FP64-equivalent precision)
+- Uniform buffers carry `encodedCameraPositionMCHigh/Low` + `mvpRelativeToEye` (MVP with translation column zeroed)
+- Vertex shader does `translateRelativeToEye(posHi, posLo, camHi, camLo) → small eye-relative vec3`, then `mvpRelativeToEye × that`
+
+See CLAUDE.md's RTE section for the full contract.
+
+#### Audit scope
+
+Scanned all ~80 WGSL vertex shaders under `Source/Shaders/WebGPU/` and all ~20 JS/TS WebGPU renderers. Looked for:
+- Single `position: vec3<f32>` vertex inputs (bad — should be `positionHigh` + `positionLow`)
+- Naked `viewProjectionMatrix * worldPos` or `modelViewProjection * vec4(position, 1.0)` in vertex shaders
+- JS renderers packing `viewProjection` instead of `mvpRelativeToEye` into camera uniforms
+- JS renderers zeroing the translation column of `mvp` *after* `proj × mv` (mathematically wrong — wipes P23 depth-mapping term)
+
+#### BUG-36: 7 WGSL shaders violated RTE
+
+| File | Fix |
+|---|---|
+| [`PhongLighting.wgsl`](../packages/engine/Source/Shaders/WebGPU/PhongLighting.wgsl) | Full rewrite: split position → hi/lo, added `translateRelativeToEye` helper + `mvpRelativeToEye` uniform. Fragment shader now uses `positionEC` instead of reconstructed world pos for view-vector math. |
+| [`PBRMetallicRoughness.wgsl`](../packages/engine/Source/Shaders/WebGPU/PBRMetallicRoughness.wgsl) | Same pattern. |
+| [`BasicColor.wgsl`](../packages/engine/Source/Shaders/WebGPU/BasicColor.wgsl) | Full rewrite to RTE. |
+| [`BasicTextured.wgsl`](../packages/engine/Source/Shaders/WebGPU/BasicTextured.wgsl) | Same. |
+| [`FlexibleGeometry.wgsl`](../packages/engine/Source/Shaders/WebGPU/FlexibleGeometry.wgsl) | Same. |
+| [`Classification/VectorTile.wgsl`](../packages/engine/Source/Shaders/WebGPU/Classification/VectorTile.wgsl) | Full rewrite to RTE. |
+| [`Classification/ShadowVolumeAppearance.wgsl`](../packages/engine/Source/Shaders/WebGPU/Classification/ShadowVolumeAppearance.wgsl) | Same, with `positionEC` via `modelViewRelativeToEye`. |
+
+**How we found them:** Cross-referenced three greps:
+1. WGSL files containing `positionHigh|positionLow|mvpRelativeToEye|translateRelativeToEye` (RTE markers — 77 files)
+2. WGSL files containing `position: vec3<f32>` (single-position = suspect — 12 files)
+3. WGSL files containing naked `viewProjection *` / `modelViewProjection *` (suspect — 3 files)
+
+The intersection of #2 and #3, minus #1, gave the violators.
+
+#### BUG-37: Weather particle compute system stored world-space positions
+
+**Symptom:** Weather particles (rain, snow) appeared to freeze or snap when viewed at planetary scale.
+
+**Root cause:** `Compute/WeatherParticles.wgsl` stored each particle's position in full world-space ECEF. At Earth radius (~6.4 Mm) FP32 precision is ~0.6 m/unit — **larger than a raindrop moves in one frame**. Particles would snap to a 0.6 m grid and visibly stutter.
+
+**Fix (three coordinated files):**
+1. **Compute shader** ([`WeatherParticles.wgsl`](../packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticles.wgsl)) — Particle positions are now **camera-relative**. Update pass subtracts a frame-to-frame `cameraDelta` so particles stay world-stationary while stored in a small local frame. Spawn: `p.position = offset` (no big-number add). Cull: `length(p.position)` (no subtraction). Ground: `worldGroundAlt - cameraY` precomputed CPU-side.
+2. **Render shader** ([`WeatherParticleRender.wgsl`](../packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticleRender.wgsl)) — Uses `mvpRelativeToEye` instead of raw `viewProjection`. Billboard corners are already eye-relative.
+3. **JS host** ([`WebGPUWeatherRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts)) — Tracks `prevCameraPosition` on the cache, computes `cameraDelta = curr - prev` in **FP64** on the CPU, and passes the small delta to the compute shader. Teleport guard: if delta > 4× spawn radius in one frame, delta is zeroed so existing particles age out instead of snapping.
+
+#### BUG-38: 6 JS renderers zeroed MVP translation *after* projection multiply
+
+**Symptom:** None immediately visible — this was a latent bug affecting primitives at planetary scale that would have caused incorrect depth values for any 3D Tiles / point clouds / voxels / Gaussian splats / ellipsoids / clouds / buffer polygons.
+
+**Root cause:** A common pattern propagated by a misleading docstring in [`webgpuTypeHelpers.ts`](../packages/engine/Source/Renderer/WebGPU/webgpuTypeHelpers.ts):
+```typescript
+// WRONG — example in the docstring
+const mvp = m4Values(Matrix4.multiply(proj, view, scratch));
+mvp[12] = 0; // zero translation for RTE
+```
+
+This is mathematically incorrect. When you compute `proj × mv`, the projection's **P23** term (the near/far depth-mapping constant) ends up in the **same column-3 slots** as the translation — because the multiply redistributes col3 as:
+```
+(proj × mv)_col3 = [P00*mv03+P02*mv23, P11*mv13+P12*mv23, P22*mv23+P23, -mv23]
+```
+Zeroing `[12,13,14]` wipes P23 along with the translation. The result is an MVP matrix with no depth mapping — every vertex produces incorrect NDC z, and at planetary scale where z is near-1 anyway, all fragments fail the depth test.
+
+**Correct pattern:** Zero the translation on `mv` **before** projecting:
+```typescript
+Matrix4.multiply(view, model, scratchMV);
+scratchMV[12] = 0; scratchMV[13] = 0; scratchMV[14] = 0;
+Matrix4.multiply(proj, scratchMV, scratchMVP);
+```
+Now `(proj × mv_rte)_col3 = proj × [0,0,0,1] = [0, 0, P23, 0]` — depth mapping preserved exactly. This matches `UniformStateComputations.cleanModelViewProjectionRelativeToEye` which has always been correct (and is the path used by auto-uniforms for the globe, which is why the globe was fine).
+
+**Files fixed (all with the same pattern):**
+- [`WebGPUBufferPrimitiveRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts#L201)
+- [`WebGPUCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts#L350)
+- [`WebGPUEllipsoidPrimitiveRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts#L237)
+- [`WebGPUGaussianSplatRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts#L376)
+- [`WebGPUPointCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts#L243)
+- [`WebGPUVoxelRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts#L346)
+- [`webgpuTypeHelpers.ts`](../packages/engine/Source/Renderer/WebGPU/webgpuTypeHelpers.ts) — docstring corrected to show the right pattern and prevent future propagation.
+
+**Renderers that were already correct (verified during audit):** `WebGPUBillboardRenderer`, `WebGPUEnvironmentRenderer` (both sites), `WebGPUGroundPrimitiveRenderer`, `WebGPULabelRenderer`, `WebGPUModelRenderer`, `WebGPUPolylineRenderer`, `WebGPUPointPrimitiveRenderer`, `WebGPUPrimitiveCommands`, `WebGPUSkyAtmosphereRenderer`.
+
+---
+
+### 27.4 The Black-Globe-at-Orbit Root Cause
+
+**Symptom (the headline bug of these sessions):** Globe visible at close range, globe completely black at orbital altitude (~10,000 km+). Wireframe overlay showed the globe's geometry was correctly rendered; depth overlay showed the globe's depth was being written; but the normal fragment output was all black.
+
+**Diagnostic chain (5 rounds of rebuild-and-test):**
+
+1. **Hypothesis 1: Fog darkening.** Ruled out — added per-frame fog diagnostic, confirmed `density=0 enabled=false` at orbit.
+2. **Hypothesis 2: Lighting night-ambient too dark.** Ruled out — `Globe.enableLighting` defaults to `false`, so the entire lighting block in the shader is skipped.
+3. **Hypothesis 3: `layerCount=0` → dark base color fallback.** Ruled out — added a **diagnostic orange fallback** in the shader for layerCount=0. Rebuild showed all tiles at orbit had `layerCount=2, readyInPass=2`. Imagery was definitely loaded.
+4. **Hypothesis 4: Imagery texture composite producing black.** Added **raw-imagery passthrough** diagnostic that bypassed the composite chain and returned `textureSampleLevel(dayTexture0)` directly. At close range this showed correct terrain color. **At orbit, still black.** This proved the fragment shader wasn't even running at orbit — the fragments were being discarded *before* the fragment stage.
+5. **Hypothesis 5: Depth precision discarding fragments.** Replaced the raw-sample diagnostic with **pure red**. If the globe showed red at orbit, the fragment shader was running and something downstream was overwriting; if black, fragments never reached the fragment stage. **Result: black.** Confirmed: fragments were being clipped or depth-tested away before ever running the fragment shader.
+
+**Root cause:** At orbital altitude, the globe surface projects to a clip-space Z extremely close to 1.0. **FP32 precision rounds it to exactly 1.0**, which the WebGPU rasterizer treats as "behind the far plane" and clips. Even surviving fragments would fail `depthCompare: "less"` against the cleared depth buffer (which is also 1.0).
+
+Compounding this: our skybox pipeline was using `depthCompare: "always"` + `depthWrite: false`. That meant the skybox painted every pixel but left the depth buffer at 1.0 everywhere, so every subsequent draw had to produce z < 1.0 strictly — which failed at orbit.
+
+**The fix — three-part coordinated change:**
+
+#### BUG-39a: Vertex-shader clip-Z clamp
+
+In `GlobeTerrain.wgsl`'s `processVertex()`, clamp the clip-space Z to never exceed W:
+```wgsl
+out.position.z = min(out.position.z, out.position.w);
+```
+This ensures NDC z ≤ 1 exactly. Rasterizer-clipped fragments become "at the far plane" instead of "behind it". Paired with the depth-compare change below, they now survive.
+- [`GlobeTerrain.wgsl:384-395`](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L384-L395)
+
+#### BUG-39b: Globe pipeline `less` → `less-equal`
+
+First-pass globe pipeline was using `depthCompare: isBlend ? "less-equal" : "less"`. Changed to **always** use `less-equal` so clamped z=1 fragments survive the depth test.
+- [`WebGPUGlobeSurfaceRenderer.ts:691`](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts#L691)
+
+#### BUG-39c: Skybox + Moon — proper far-plane pattern
+
+The skybox had `depthCompare: "always"` which is the "draw-order-dependent" anti-pattern. Rewrote it to use the standard WebGPU skybox pattern:
+
+**Shader** ([`CubeMapPanorama.wgsl`](../packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl#L75-L84)):
+```wgsl
+let clipPos = uniforms.projection * vec4<f32>(rotated, 1.0);
+// Force z/w = 1 (far plane)
+output.position = vec4<f32>(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
+```
+
+**Pipeline** ([`WebGPUCubeMapPanoramaRenderer.js:258`](../packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js#L258)):
+```js
+depthWriteEnabled: false,
+depthCompare: "less-equal",  // was "always"
+```
+
+The skybox is now parked exactly on the far plane. With `less-equal`, it fills only pixels where no closer geometry has drawn. **Draw order no longer matters** — the skybox can be issued before or after terrain and the result is identical.
+
+Applied the same pattern to the Moon pipeline and shader ([`Environment/Moon.wgsl`](../packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl) + [`WebGPUEnvironmentRenderer.js:465`](../packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js#L465)).
+
+#### BUG-39d: Renderer-wide `less` → `less-equal` migration
+
+During the audit we found that the `less` vs `less-equal` choice was the same latent bug class across every opaque pipeline. Any geometry at planetary scale would eventually project to z≈1 and fail `less`. Migrated all 14 sites:
+
+- `WebGPUBufferPrimitiveRenderer` (3 sites) — polygon / polyline / point buffer primitives
+- `WebGPUCloudRenderer`
+- `WebGPUDepthPlane`
+- `WebGPUEllipsoidPrimitiveRenderer`
+- `WebGPUGaussianSplatRenderer` (main + OIT variant)
+- `WebGPUPointCloudRenderer`
+- `WebGPUPrimitiveCommands` (4 sites — across color and pick variants)
+- `WebGPUVoxelRenderer`
+- `WebGPUShadowMapRenderer` — CSM cascade far planes have the same issue
+
+Plus framework defaults changed so future code inherits the correct choice:
+- [`WebGPUContext._depthCompare`](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L294) default: `less` → `less-equal`
+- [`WebGPUPipelineDescriptorBuilder.depthStencil()`](../packages/engine/Source/Renderer/WebGPU/WebGPUPipelineDescriptorBuilder.ts#L135) default param: `less` → `less-equal`
+- `WebGPUPipelineDescriptorBuilder._ensureDepthStencil()`
+- [`WebGPURenderPipelineCache`](../packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts#L347) fallback: `less` → `less-equal`
+- [`WebGPUShaderModule`](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderModule.ts#L224) auto-depth state: `less` → `less-equal`
+
+**Verification:** Final `rg "depthCompare\s*:\s*\"less\""` across active code returned zero results. Only hit is a documentation comment in `CubeMapPanorama.wgsl` explaining the prior pattern. Similarly no remaining `depthCompare: "always"` except the same historical comment.
+
+**Result:** Rebuild confirmed globe is visible at orbit. User's first screenshot after the rebuild: "I can see the globe again."
+
+---
+
+### 27.5 Known remaining issues (as of end of session 30)
+
+These are the follow-ups that arose once the black-globe root cause was fixed. They're queued but not yet addressed in code (except where noted). Each entry includes the current hypothesis and next steps.
+
+#### OPEN-1: Sky atmosphere not rendering (missing horizon glow)
+
+**Symptom:** Globe is visible at orbit but has no atmospheric glow around the limb, no blue Rayleigh tint, sharp terminator. WebGL shows a clear blue halo; our WebGPU path shows nothing.
+
+**Evidence:** `[WebGPU:EnvInject] ... skyBox=true skyAtmo=false sun=false moon=true` — the `isSkyAtmosphereVisible` flag is consistently `false` in the env-inject log.
+
+**Current hypothesis:** The `updateWebGPUSkyAtmosphere` feature renderer is either (a) not being invoked, (b) early-returning on `skyAtmosphere.show === false`, or (c) pushing the command but failing to have it captured by `SkyAtmosphere.update`'s return path.
+
+**Diagnostic in place:** Added three one-shot logs to `WebGPUSkyAtmosphereRenderer.updateWebGPUSkyAtmosphere`:
+1. Entry log showing `show`, `mode`, `renderPass`, `hasContext`, `hasDevice`
+2. Past-`show`-check log with pipeline cache state
+3. Post-push log with `indexCount` and command list length
+
+**Next steps:**
+1. Rebuild and collect the diagnostic output.
+2. Identify which path the code takes (early return vs full update).
+3. If `skyAtmosphere.show` is false, investigate why (default is `true` from `CesiumWidget.js:385-386`).
+4. If the command IS pushed but `envState.skyAtmosphereCommand` is still undefined, investigate the capture path in `SkyAtmosphere.update` (line 254-260 of `SkyAtmosphere.js`).
+5. If the FR isn't being called at all, verify `FeatureRendererKey.SKY_ATMOSPHERE` registration in `WebGPUFeatureRenderers.ts:287`.
+
+**Expected downstream impact:** Fixing this should also resolve OPEN-2 and OPEN-3 below. Sky atmosphere provides:
+- Blue limb glow around the globe silhouette
+- Subtle atmospheric tint that softens the day/night terminator
+- Ground atmosphere color that feeds the fog color computation
+
+Without it, the globe looks "stretched" and "see-through" at certain angles because the dark side is nearly pitch-black against the black sky and visually indistinguishable.
+
+#### OPEN-2: "Stretched / unnatural lighting"
+
+**Symptom:** At orbit the globe has a flat, uneven, unnatural appearance. Day side is visible; dark side fades to near-black with no atmospheric softening.
+
+**Current hypothesis:** Symptom of OPEN-1. With `Globe.enableLighting === false` (default) and no sky atmosphere glow, the terrain renders with only the imagery texture — no diffuse shading, no atmospheric tint. The sharp transition from lit imagery to unlit imagery creates an unnatural look.
+
+**Next steps:** Verify after OPEN-1 is resolved. If still problematic, investigate `computeDayNightFade` formula in `GlobeTerrain.wgsl:492-495`.
+
+#### OPEN-3: "See-through globe" at certain camera angles
+
+**Symptom:** At specific orbit angles, part of the globe appears to have a wedge-shaped cutout, as if you can see space through the earth.
+
+**Current hypothesis:** Also a symptom of OPEN-1. The dark side of the earth renders as nearly `(0.04, 0.04, 0.06)` (the dark base color fallback in the shader) which is visually indistinguishable from the black sky. The user perceives a "cutout" where the dark side actually exists but is invisible. A functioning sky atmosphere would fill in the limb with a faint blue glow, making the dark side visible.
+
+**If atmosphere doesn't resolve it:** Look for depth-test edge cases at the terminator or between LOD boundaries. Check if `_clearDepthStencil` is wiping globe depth between frustums at specific angles.
+
+**Next steps:** Verify after OPEN-1. If still problematic, add a fragment-shader diagnostic that tints the dark side with a bright color to confirm it's being rendered (just invisible).
+
+#### OPEN-4: Level-0 terrain tile center has bogus magnitude (~3 km instead of ~3186 km)
+
+**Symptom (hygiene issue, not actively breaking anything):** Diagnostic log shows:
+```
+center3D tile=0_0_0 meshCtor=TerrainMesh encCtor=TerrainEncoding
+  terrainDataCtor=? isFillByRef=false isCachedMesh=true
+  magKm=3.060 center.xyz=(832.3,-2848.0,-749.7) quantized=false
+```
+
+The level-0 tile has an ECEF center magnitude of **3.06 km** — impossible for a valid Earth-surface tile, which should be ~6378 km. `terrainDataCtor=?` is `undefined`, meaning the tile has no backing `TerrainData` instance.
+
+**Why it's not breaking things:** This tile renders briefly during the first frame and gets replaced by properly-loaded level-1+ tiles immediately. Wireframe shows a clean sphere, depth viz shows correct geometry.
+
+**Current hypothesis:** A placeholder `TerrainMesh` is being constructed somewhere during terrain bootstrap with a default-initialized scratch `Cartesian3` as its center. Possibly in `GlobeSurfaceTile` when creating a placeholder mesh for terrain tiles that haven't loaded yet, or in an `EllipsoidTerrainProvider`-style fallback.
+
+**Next steps:**
+1. Add `console.trace` inside `new TerrainMesh(...)` construction to catch the caller that passes a bad center.
+2. Check `Cesium3DTilesTerrainData.js:300`, `QuantizedMeshTerrainData.js:344`, `HeightmapTerrainData.js:278`, `TerrainFillMesh.js:1281` for the bootstrap path.
+3. Low priority — fix after visible issues are resolved.
+
+#### OPEN-5: Fog still might be too aggressive at tilted low altitude
+
+**Symptom:** "Zooming all the way in looks fine until I angle my camera and then fog occludes everything." **Partially fixed** by removing the alpha drop (BUG-35) but the color-mix fog may still be too strong.
+
+**Current hypothesis:** The upstream fog formula is correct (`fog = 1 - exp(-(dist * density)²)`) and matches our WGSL. But the density multiplier is unusually high at low altitude tilted views due to `density *= 1 - dot(viewDir, upDir)` in `Fog.update()`. When looking horizontally, dot → 0 and density is at max. Combined with our custom `atmosphereColor * nightFogDimming` fog color, the result may be too saturated.
+
+**Next steps:**
+1. Rebuild with the alpha-drop fix and see if the visible symptom is gone.
+2. If still too strong, compare `computeAtmosphereColor` output between WebGL and WebGPU at matching camera states.
+3. Investigate whether `fogMinimumBrightness` (default 0.03) should be lower for WebGPU since our atmosphere color is already darker than WebGL's.
+
+#### OPEN-6: `tile=5_19_15 layerCount=1` (some tiles have only 1 imagery layer)
+
+**Symptom:** A handful of tiles in the log show `layerCount=1` instead of `layerCount=2`. Not necessarily a bug — could be fill tiles or tiles whose secondary imagery hasn't loaded yet.
+
+**Next steps:** Low priority. Monitor. Investigate if imagery compositing looks wrong at those tile locations.
+
+---
+
+### 27.6 Lessons learned
+
+**1. Always bisect diagnostic-by-diagnostic, not hypothesis-by-hypothesis.**
+The black-globe investigation took 5 rounds because each hypothesis was tested by a full rebuild. Better workflow: use the shader to output synthetic data (orange for layerCount=0, pure red for "fragment ran at all", raw texture passthrough for "is the texture black") — each diagnostic *rules out* a category of bugs, even if it doesn't immediately localize the fix. The "pure red still black" result was the breakthrough — it told us fragments weren't reaching the fragment stage, which immediately ruled out everything *inside* the shader and pointed at vertex/depth/clip.
+
+**2. Renderer-level defaults matter more than individual pipeline choices.**
+The "less vs less-equal" choice was made by copy-paste from a docstring example at the start of the project. That one docstring propagated to 14 pipeline creation sites across 10+ files. Fixing the symptom required fixing all 14 sites *and* fixing the framework defaults so future code inherits the right answer. We updated the docstring in `webgpuTypeHelpers.ts` as part of the fix to prevent re-propagation.
+
+**3. The skybox `depthCompare: always` anti-pattern is widespread.**
+Googling "webgl skybox depth test" gives a lot of tutorials that recommend `GL_ALWAYS` + strict draw-order ("draw the skybox first"). That's a fragile pattern that breaks the moment anything reorders the env pass. The correct modern pattern is: force clip-space z=w in the vertex shader (so z/w=1 exactly), use `less-equal`, and let draw order be anything. This also works for the moon and anything else that lives "infinitely far away". We applied this pattern consistently during the skybox fix and it's now the project's standard.
+
+**4. FP32 precision at planetary scale manifests as "weird depth bugs", not "wrong positions".**
+The globe positions were visibly correct at close range (wireframe confirmed) but fragments at orbit were being clipped. The root cause was FP32 precision in the *projection multiply*, not in the positions themselves. The `out.position.z = min(out.position.z, out.position.w)` clamp is a surgical fix that ensures NDC z ≤ 1 exactly, surviving the rasterizer's far-plane clip. Without this clamp, even `less-equal` wouldn't save you because the fragment was clipped before depth testing ran.
+
+**5. RTE is layered — shader, uniform, and vertex buffer must all cooperate.**
+Three independent axes must be correct for RTE to work:
+- **Shader:** uses `mvpRelativeToEye × translateRelativeToEye(...)` pattern
+- **Uniform:** packs `encodedCameraPositionMCHigh/Low` + MV with translation zeroed *before* projection multiply
+- **Vertex buffer:** positions stored as `positionHigh` + `positionLow` split pairs from the CPU (via `EncodedCartesian3.fromCartesian`)
+
+A single wrong axis breaks the whole chain. The audit found shaders that had correct RTE but were fed by JS code that zeroed translation *after* projection (BUG-38) — technically the shader was right, but the uniform was wrong and the math broke. Fix-by-grep isn't enough; you have to verify the end-to-end chain.
+
+**6. `depthLoadOp: "clear"` is a dangerous default for a helper that reopens passes.**
+`getDepthStencilAttachment()` hard-coded clear because the first caller wanted clear. Every subsequent caller that wanted to preserve depth had to manually build the descriptor and either forgot or didn't realize. BUG-32 is a direct consequence of making "clear" the only behavior of a helper. Lesson: helpers that produce render pass descriptors should always take explicit load/store ops, never default to destructive operations.
+
+---
+
+### 27.7 Files modified in sessions 27-30
+
+**WGSL shaders (rewrites):**
+- `packages/engine/Source/Shaders/WebGPU/PhongLighting.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/PBRMetallicRoughness.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/BasicColor.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/BasicTextured.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/FlexibleGeometry.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Classification/VectorTile.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Classification/ShadowVolumeAppearance.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticles.wgsl` (refactored to camera-relative)
+- `packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticleRender.wgsl` (uses mvpRelativeToEye)
+- `packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl` (clip z=w)
+- `packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl` (clip z=w)
+
+**WGSL shaders (edits):**
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (clip-Z clamp, fog alpha drop removed)
+- `packages/engine/Source/Shaders/WebGPU/WebGPUDebugDepthOverlay.ts` (i32 LOD fix, log-scale norm)
+- `packages/engine/Source/Shaders/WebGPU/WebGPUDebugFrustumOverlay.ts` (i32 LOD fix)
+
+**JS/TS renderers:**
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` (fog gate, less-equal, diagnostics)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` (debug depth bypass, frustum range capture)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts` (MVP zero order, less-equal x3)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts` (MVP zero order, less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts` (MVP zero order, less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts` (MVP zero order, less-equal x2)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts` (MVP zero order, less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js` (less-equal x4)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts` (MVP zero order, less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts` (less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js` (less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` (less-equal, was always)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js` (less-equal for moon, was always)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts` (camera delta tracking, FP64 subtract)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` (diagnostics)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` (default less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPipelineDescriptorBuilder.ts` (default less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts` (fallback less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShaderModule.ts` (auto depth less-equal)
+- `packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts` (getDepthStencilAttachment parameterized)
+- `packages/engine/Source/Renderer/WebGPU/webgpuTypeHelpers.ts` (docstring corrected)
+- `packages/engine/Source/Scene/CesiumDebug.js` (clearAllOverlays helper)

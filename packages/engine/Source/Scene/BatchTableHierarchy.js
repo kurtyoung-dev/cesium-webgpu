@@ -20,35 +20,204 @@ import Cesium3DTileBatchTable from "./Cesium3DTileBatchTable.js";
  *
  * @private
  */
-function BatchTableHierarchy(options) {
-  this._classes = undefined;
-  this._classIds = undefined;
-  this._classIndexes = undefined;
-  this._parentCounts = undefined;
-  this._parentIndexes = undefined;
-  this._parentIds = undefined;
+class BatchTableHierarchy {
+  constructor(options) {
+    this._classes = undefined;
+    this._classIds = undefined;
+    this._classIndexes = undefined;
+    this._parentCounts = undefined;
+    this._parentIndexes = undefined;
+    this._parentIds = undefined;
 
-  // Total memory used by the typed arrays
-  this._byteLength = 0;
+    // Total memory used by the typed arrays
+    this._byteLength = 0;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.extension", options.extension);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.extension", options.extension);
+    //>>includeEnd('debug');
 
-  initialize(this, options.extension, options.binaryBody);
+    initialize(this, options.extension, options.binaryBody);
 
-  //>>includeStart('debug', pragmas.debug);
-  validateHierarchy(this);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    validateHierarchy(this);
+    //>>includeEnd('debug');
+  }
+
+  /**
+   * Returns whether the feature has this property.
+   *
+   * @param {number} batchId the batch ID of the feature
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {boolean} Whether the feature has this property.
+   * @private
+   */
+  hasProperty(batchId, propertyId) {
+    const result = traverseHierarchy(
+      this,
+      batchId,
+      function (hierarchy, instanceIndex) {
+        const classId = hierarchy._classIds[instanceIndex];
+        const instances = hierarchy._classes[classId].instances;
+        if (defined(instances[propertyId])) {
+          return true;
+        }
+      },
+    );
+    return defined(result);
+  }
+
+  /**
+   * Returns whether any feature has this property.
+   *
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {boolean} Whether any feature has this property.
+   * @private
+   */
+  propertyExists(propertyId) {
+    const classes = this._classes;
+    const classesLength = classes.length;
+    for (let i = 0; i < classesLength; ++i) {
+      const instances = classes[i].instances;
+      if (defined(instances[propertyId])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns an array of property IDs.
+   *
+   * @param {number} batchId the batch ID of the feature
+   * @param {number} index The index of the entity.
+   * @param {string[]} [results] An array into which to store the results.
+   * @returns {string[]} The property IDs.
+   * @private
+   */
+  getPropertyIds(batchId, results) {
+    results = defined(results) ? results : [];
+    results.length = 0;
+
+    traverseHierarchy(this, batchId, function (hierarchy, instanceIndex) {
+      const classId = hierarchy._classIds[instanceIndex];
+      const instances = hierarchy._classes[classId].instances;
+      for (const name in instances) {
+        if (instances.hasOwnProperty(name)) {
+          if (!results.includes(name)) {
+            results.push(name);
+          }
+        }
+      }
+    });
+
+    return results;
+  }
+
+  /**
+   * Returns a copy of the value of the property with the given ID.
+   *
+   * @param {number} batchId the batch ID of the feature
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this property.
+   * @private
+   */
+  getProperty(batchId, propertyId) {
+    return traverseHierarchy(this, batchId, function (hierarchy, instanceIndex) {
+      const classId = hierarchy._classIds[instanceIndex];
+      const instanceClass = hierarchy._classes[classId];
+      const indexInClass = hierarchy._classIndexes[instanceIndex];
+      const propertyValues = instanceClass.instances[propertyId];
+      if (defined(propertyValues)) {
+        if (defined(propertyValues.typedArray)) {
+          return getBinaryProperty(propertyValues, indexInClass);
+        }
+        return clone(propertyValues[indexInClass], true);
+      }
+    });
+  }
+
+  /**
+   * Sets the value of the property with the given ID. Only properties of the
+   * instance may be set; parent properties may not be set.
+   *
+   * @param {number} batchId The batchId of the feature
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @param {*} value The value of the property that will be copied.
+   * @returns {boolean} <code>true</code> if the property was set, <code>false</code> otherwise.
+   *
+   * @exception {DeveloperError} when setting an inherited property
+   * @private
+   */
+  setProperty(batchId, propertyId, value) {
+    const result = traverseHierarchy(
+      this,
+      batchId,
+      function (hierarchy, instanceIndex) {
+        const classId = hierarchy._classIds[instanceIndex];
+        const instanceClass = hierarchy._classes[classId];
+        const indexInClass = hierarchy._classIndexes[instanceIndex];
+        const propertyValues = instanceClass.instances[propertyId];
+        if (defined(propertyValues)) {
+          //>>includeStart('debug', pragmas.debug);
+          if (instanceIndex !== batchId) {
+            throw new DeveloperError(
+              `Inherited property "${propertyId}" is read-only.`,
+            );
+          }
+          //>>includeEnd('debug');
+          if (defined(propertyValues.typedArray)) {
+            setBinaryProperty(propertyValues, indexInClass, value);
+          } else {
+            propertyValues[indexInClass] = clone(value, true);
+          }
+          return true;
+        }
+      },
+    );
+    return defined(result);
+  }
+
+  /**
+   * Check if a feature belongs to a class with the given name
+   *
+   * @param {number} batchId The batch ID of the feature
+   * @param {string} className The name of the class
+   * @return {boolean} <code>true</code> if the feature belongs to the class given by className, or <code>false</code> otherwise
+   * @private
+   */
+  isClass(batchId, className) {
+    // PERFORMANCE_IDEA : cache results in the ancestor classes to speed up this check if this area becomes a hotspot
+    // PERFORMANCE_IDEA : treat class names as integers for faster comparisons
+    const result = traverseHierarchy(
+      this,
+      batchId,
+      function (hierarchy, instanceIndex) {
+        const classId = hierarchy._classIds[instanceIndex];
+        const instanceClass = hierarchy._classes[classId];
+        if (instanceClass.name === className) {
+          return true;
+        }
+      },
+    );
+    return defined(result);
+  }
+
+  /**
+   * Get the name of the class a given feature belongs to
+   *
+   * @param {number} batchId The batch ID of the feature
+   * @return {string} The name of the class this feature belongs to
+   */
+  getClassName(batchId) {
+    const classId = this._classIds[batchId];
+    const instanceClass = this._classes[classId];
+    return instanceClass.name;
+  }
+
+  get byteLength() {
+    return this._byteLength;
+  }
 }
-
-Object.defineProperties(BatchTableHierarchy.prototype, {
-  byteLength: {
-    get: function () {
-      return this._byteLength;
-    },
-  },
-});
 
 /**
  * Parse the batch table hierarchy from the
@@ -195,7 +364,7 @@ function validateInstance(hierarchy, instanceIndex, stack) {
       `Parent index ${instanceIndex} exceeds the total number of instances: ${instancesLength}`,
     );
   }
-  if (stack.indexOf(instanceIndex) > -1) {
+  if (stack.includes(instanceIndex)) {
     throw new DeveloperError(
       "Circular dependency detected in the batch table hierarchy.",
     );
@@ -307,99 +476,6 @@ function traverseHierarchy(hierarchy, instanceIndex, endConditionCallback) {
   );
 }
 
-/**
- * Returns whether the feature has this property.
- *
- * @param {number} batchId the batch ID of the feature
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {boolean} Whether the feature has this property.
- * @private
- */
-BatchTableHierarchy.prototype.hasProperty = function (batchId, propertyId) {
-  const result = traverseHierarchy(
-    this,
-    batchId,
-    function (hierarchy, instanceIndex) {
-      const classId = hierarchy._classIds[instanceIndex];
-      const instances = hierarchy._classes[classId].instances;
-      if (defined(instances[propertyId])) {
-        return true;
-      }
-    },
-  );
-  return defined(result);
-};
-
-/**
- * Returns whether any feature has this property.
- *
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {boolean} Whether any feature has this property.
- * @private
- */
-BatchTableHierarchy.prototype.propertyExists = function (propertyId) {
-  const classes = this._classes;
-  const classesLength = classes.length;
-  for (let i = 0; i < classesLength; ++i) {
-    const instances = classes[i].instances;
-    if (defined(instances[propertyId])) {
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
- * Returns an array of property IDs.
- *
- * @param {number} batchId the batch ID of the feature
- * @param {number} index The index of the entity.
- * @param {string[]} [results] An array into which to store the results.
- * @returns {string[]} The property IDs.
- * @private
- */
-BatchTableHierarchy.prototype.getPropertyIds = function (batchId, results) {
-  results = defined(results) ? results : [];
-  results.length = 0;
-
-  traverseHierarchy(this, batchId, function (hierarchy, instanceIndex) {
-    const classId = hierarchy._classIds[instanceIndex];
-    const instances = hierarchy._classes[classId].instances;
-    for (const name in instances) {
-      if (instances.hasOwnProperty(name)) {
-        if (results.indexOf(name) === -1) {
-          results.push(name);
-        }
-      }
-    }
-  });
-
-  return results;
-};
-
-/**
- * Returns a copy of the value of the property with the given ID.
- *
- * @param {number} batchId the batch ID of the feature
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this property.
- * @private
- */
-BatchTableHierarchy.prototype.getProperty = function (batchId, propertyId) {
-  return traverseHierarchy(this, batchId, function (hierarchy, instanceIndex) {
-    const classId = hierarchy._classIds[instanceIndex];
-    const instanceClass = hierarchy._classes[classId];
-    const indexInClass = hierarchy._classIndexes[instanceIndex];
-    const propertyValues = instanceClass.instances[propertyId];
-    if (defined(propertyValues)) {
-      if (defined(propertyValues.typedArray)) {
-        return getBinaryProperty(propertyValues, indexInClass);
-      }
-      return clone(propertyValues[indexInClass], true);
-    }
-  });
-};
-
 function getBinaryProperty(binaryProperty, index) {
   const typedArray = binaryProperty.typedArray;
   const componentCount = binaryProperty.componentCount;
@@ -408,51 +484,6 @@ function getBinaryProperty(binaryProperty, index) {
   }
   return binaryProperty.type.unpack(typedArray, index * componentCount);
 }
-
-/**
- * Sets the value of the property with the given ID. Only properties of the
- * instance may be set; parent properties may not be set.
- *
- * @param {number} batchId The batchId of the feature
- * @param {string} propertyId The case-sensitive ID of the property.
- * @param {*} value The value of the property that will be copied.
- * @returns {boolean} <code>true</code> if the property was set, <code>false</code> otherwise.
- *
- * @exception {DeveloperError} when setting an inherited property
- * @private
- */
-BatchTableHierarchy.prototype.setProperty = function (
-  batchId,
-  propertyId,
-  value,
-) {
-  const result = traverseHierarchy(
-    this,
-    batchId,
-    function (hierarchy, instanceIndex) {
-      const classId = hierarchy._classIds[instanceIndex];
-      const instanceClass = hierarchy._classes[classId];
-      const indexInClass = hierarchy._classIndexes[instanceIndex];
-      const propertyValues = instanceClass.instances[propertyId];
-      if (defined(propertyValues)) {
-        //>>includeStart('debug', pragmas.debug);
-        if (instanceIndex !== batchId) {
-          throw new DeveloperError(
-            `Inherited property "${propertyId}" is read-only.`,
-          );
-        }
-        //>>includeEnd('debug');
-        if (defined(propertyValues.typedArray)) {
-          setBinaryProperty(propertyValues, indexInClass, value);
-        } else {
-          propertyValues[indexInClass] = clone(value, true);
-        }
-        return true;
-      }
-    },
-  );
-  return defined(result);
-};
 
 function setBinaryProperty(binaryProperty, index, value) {
   const typedArray = binaryProperty.typedArray;
@@ -463,42 +494,5 @@ function setBinaryProperty(binaryProperty, index, value) {
     binaryProperty.type.pack(value, typedArray, index * componentCount);
   }
 }
-
-/**
- * Check if a feature belongs to a class with the given name
- *
- * @param {number} batchId The batch ID of the feature
- * @param {string} className The name of the class
- * @return {boolean} <code>true</code> if the feature belongs to the class given by className, or <code>false</code> otherwise
- * @private
- */
-BatchTableHierarchy.prototype.isClass = function (batchId, className) {
-  // PERFORMANCE_IDEA : cache results in the ancestor classes to speed up this check if this area becomes a hotspot
-  // PERFORMANCE_IDEA : treat class names as integers for faster comparisons
-  const result = traverseHierarchy(
-    this,
-    batchId,
-    function (hierarchy, instanceIndex) {
-      const classId = hierarchy._classIds[instanceIndex];
-      const instanceClass = hierarchy._classes[classId];
-      if (instanceClass.name === className) {
-        return true;
-      }
-    },
-  );
-  return defined(result);
-};
-
-/**
- * Get the name of the class a given feature belongs to
- *
- * @param {number} batchId The batch ID of the feature
- * @return {string} The name of the class this feature belongs to
- */
-BatchTableHierarchy.prototype.getClassName = function (batchId) {
-  const classId = this._classIds[batchId];
-  const instanceClass = this._classes[classId];
-  return instanceClass.name;
-};
 
 export default BatchTableHierarchy;

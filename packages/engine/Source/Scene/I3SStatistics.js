@@ -10,26 +10,52 @@ import Resource from "../Core/Resource.js";
  * @alias I3SStatistics
  * @internalConstructor
  */
-function I3SStatistics(dataProvider, uri) {
-  this._dataProvider = dataProvider;
+class I3SStatistics {
+  constructor(dataProvider, uri) {
+    this._dataProvider = dataProvider;
 
-  this._resource = new Resource({ url: uri });
-  this._resource.setQueryParameters(dataProvider.resource.queryParameters);
-  this._resource.appendForwardSlash();
-}
+    this._resource = new Resource({ url: uri });
+    this._resource.setQueryParameters(dataProvider.resource.queryParameters);
+    this._resource.appendForwardSlash();
+  }
 
-Object.defineProperties(I3SStatistics.prototype, {
+  /**
+   * Loads the content.
+   * @returns {Promise<object>} A promise that is resolved when the data of the I3S statistics is loaded
+   * @private
+   */
+  async load() {
+    this._data = await I3SDataProvider.loadJson(this._resource);
+    return this._data;
+  }
+
+  /**
+   * @private
+   */
+  _getValues(attributeName) {
+    const summary = this._data.summary;
+    if (defined(summary)) {
+      for (let i = 0; i < summary.length; ++i) {
+        const attribute = summary[i];
+        if (attribute.fieldName === attributeName) {
+          if (defined(attribute.mostFrequentValues)) {
+            return [...attribute.mostFrequentValues];
+          }
+          return [];
+        }
+      }
+    }
+  }
+
   /**
    * Gets the resource for the statistics
    * @memberof I3SStatistics.prototype
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
 
   /**
    * Gets the I3S data for this object.
@@ -37,11 +63,9 @@ Object.defineProperties(I3SStatistics.prototype, {
    * @type {object}
    * @readonly
    */
-  data: {
-    get: function () {
-      return this._data;
-    },
-  },
+  get data() {
+    return this._data;
+  }
 
   /**
    * Gets the collection of attribute names.
@@ -49,46 +73,16 @@ Object.defineProperties(I3SStatistics.prototype, {
    * @type {string[]}
    * @readonly
    */
-  names: {
-    get: function () {
-      const names = [];
-      const summary = this._data.summary;
-      if (defined(summary)) {
-        for (let i = 0; i < summary.length; ++i) {
-          names.push(summary[i].fieldName);
-        }
-      }
-      return names;
-    },
-  },
-});
-
-/**
- * Loads the content.
- * @returns {Promise<object>} A promise that is resolved when the data of the I3S statistics is loaded
- * @private
- */
-I3SStatistics.prototype.load = async function () {
-  this._data = await I3SDataProvider.loadJson(this._resource);
-  return this._data;
-};
-
-/**
- * @private
- */
-I3SStatistics.prototype._getValues = function (attributeName) {
-  const summary = this._data.summary;
-  if (defined(summary)) {
-    for (let i = 0; i < summary.length; ++i) {
-      const attribute = summary[i];
-      if (attribute.fieldName === attributeName) {
-        if (defined(attribute.mostFrequentValues)) {
-          return [...attribute.mostFrequentValues];
-        }
-        return [];
+  get names() {
+    const names = [];
+    const summary = this._data.summary;
+    if (defined(summary)) {
+      for (let i = 0; i < summary.length; ++i) {
+        names.push(summary[i].fieldName);
       }
     }
+    return names;
   }
-};
+}
 
 export default I3SStatistics;

@@ -399,9 +399,8 @@ function createMoonBoundingCube(device) {
  * @private
  */
 function createMoonPipeline(device, format, depthFormat) {
-  // Phase 1.2b: shader extracted to packages/engine/Source/Shaders/WebGPU/
-  // Environment/Moon.wgsl. The .js wrapper is hand-written until the next
-  // gulp build regenerates it via wgslToJavaScript.
+  // Shader validation is handled centrally by WebGPUContext's
+  // _installShaderValidation wrapper — no per-site validation needed.
   const mod = device.createShaderModule({
     label: "Moon shader",
     code: MoonShaderCode,
@@ -458,12 +457,13 @@ function createMoonPipeline(device, format, depthFormat) {
     primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: depthFormat,
-      // Phase 1.2b: depth test off for full parity with WebGL Moon, which
-      // sets `depthTestEnabled: false` on its EllipsoidPrimitive. Moon
-      // composes over the sky/scene without occluding or being occluded
-      // by terrain — the existing render order handles draw layering.
+      // Moon is rendered at the far plane (vertex shader forces z/w=1)
+      // and composited with `less-equal`, so it only draws in pixels
+      // not already occluded by closer geometry. This is draw-order
+      // agnostic — unlike the prior `depthCompare: always` path which
+      // relied on the moon being issued before terrain.
       depthWriteEnabled: false,
-      depthCompare: "always",
+      depthCompare: "less-equal",
     },
   });
 
@@ -637,11 +637,23 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.geometry = createMoonBoundingCube(device);
   }
 
-  // Pipeline + bind group layout
-  if (!defined(cache.pipeline)) {
+  // Pipeline + bind group layout. Guarded by pushErrorScope so a shader
+  // compilation failure doesn't poison the command encoder — the moon
+  // just silently doesn't render instead of killing the whole frame.
+  if (!defined(cache.pipeline) && !cache._pipelineFailed) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    device.pushErrorScope("validation");
     const result = createMoonPipeline(device, format, depthFmt);
+    device.popErrorScope().then((error) => {
+      if (error) {
+        console.error(
+          `[WebGPU:Moon] Pipeline creation failed: ${error.message}`,
+        );
+        cache._pipelineFailed = true;
+        cache.pipeline = undefined;
+      }
+    });
     cache.pipeline = result.pipeline;
     cache.bgl = result.bgl;
   }
@@ -731,8 +743,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   //   - explicit invalidation
   // Bundle key includes the surface format set so different render passes
   // (e.g. picking) get their own bundles.
+  // Skip bundle creation if the pipeline failed validation — prevents
+  // an invalid pipeline from producing an invalid bundle that would
+  // poison the entire command encoder on executeBundles.
   const bundleMgr = context.renderBundleManager;
-  if (defined(bundleMgr)) {
+  if (defined(bundleMgr) && defined(cache.pipeline) && !cache._pipelineFailed) {
     const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.presentationFormat}:${context.depthFormat}`;
     if (cache._bundleStale) {
       bundleMgr.invalidate(bundleKey);

@@ -55,148 +55,296 @@ const DecodingState = {
  *
  * @private
  */
-function PointCloud(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  Check.typeOf.object("options.arrayBuffer", options.arrayBuffer);
-  //>>includeEnd('debug');
+class PointCloud {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    Check.typeOf.object("options.arrayBuffer", options.arrayBuffer);
+    //>>includeEnd('debug');
 
-  // Hold onto the payload until the render resources are created
-  this._parsedContent = undefined;
+    // Hold onto the payload until the render resources are created
+    this._parsedContent = undefined;
 
-  this._drawCommand = undefined;
-  this._isTranslucent = false;
-  this._styleTranslucent = false;
-  this._constantColor = Color.clone(Color.DARKGRAY);
-  this._highlightColor = Color.clone(Color.WHITE);
-  this._pointSize = 1.0;
+    this._drawCommand = undefined;
+    this._isTranslucent = false;
+    this._styleTranslucent = false;
+    this._constantColor = Color.clone(Color.DARKGRAY);
+    this._highlightColor = Color.clone(Color.WHITE);
+    this._pointSize = 1.0;
 
-  this._rtcCenter = undefined;
-  this._quantizedVolumeScale = undefined;
-  this._quantizedVolumeOffset = undefined;
+    this._rtcCenter = undefined;
+    this._quantizedVolumeScale = undefined;
+    this._quantizedVolumeOffset = undefined;
 
-  // These values are used to regenerate the shader when the style changes
-  this._styleableShaderAttributes = undefined;
-  this._isQuantized = false;
-  this._isOctEncoded16P = false;
-  this._isRGB565 = false;
-  this._hasColors = false;
-  this._hasNormals = false;
-  this._hasBatchIds = false;
+    // These values are used to regenerate the shader when the style changes
+    this._styleableShaderAttributes = undefined;
+    this._isQuantized = false;
+    this._isOctEncoded16P = false;
+    this._isRGB565 = false;
+    this._hasColors = false;
+    this._hasNormals = false;
+    this._hasBatchIds = false;
 
-  // Draco
-  this._decodingState = DecodingState.READY;
-  this._dequantizeInShader = true;
-  this._isQuantizedDraco = false;
-  this._isOctEncodedDraco = false;
-  this._quantizedRange = 0.0;
-  this._octEncodedRange = 0.0;
+    // Draco
+    this._decodingState = DecodingState.READY;
+    this._dequantizeInShader = true;
+    this._isQuantizedDraco = false;
+    this._isOctEncodedDraco = false;
+    this._quantizedRange = 0.0;
+    this._octEncodedRange = 0.0;
 
-  // Use per-point normals to hide back-facing points.
-  this.backFaceCulling = false;
-  this._backFaceCulling = false;
+    // Use per-point normals to hide back-facing points.
+    this.backFaceCulling = false;
+    this._backFaceCulling = false;
 
-  // Whether to enable normal shading
-  this.normalShading = true;
-  this._normalShading = true;
+    // Whether to enable normal shading
+    this.normalShading = true;
+    this._normalShading = true;
 
-  this._opaqueRenderState = undefined;
-  this._translucentRenderState = undefined;
+    this._opaqueRenderState = undefined;
+    this._translucentRenderState = undefined;
 
-  this._mode = undefined;
+    this._mode = undefined;
 
-  this._ready = false;
-  this._pointsLength = 0;
-  this._geometryByteLength = 0;
+    this._ready = false;
+    this._pointsLength = 0;
+    this._geometryByteLength = 0;
 
-  this._vertexShaderLoaded = options.vertexShaderLoaded;
-  this._fragmentShaderLoaded = options.fragmentShaderLoaded;
-  this._uniformMapLoaded = options.uniformMapLoaded;
-  this._batchTableLoaded = options.batchTableLoaded;
-  this._pickIdLoaded = options.pickIdLoaded;
-  this._opaquePass = options.opaquePass ?? Pass.OPAQUE;
-  this._cull = options.cull ?? true;
+    this._vertexShaderLoaded = options.vertexShaderLoaded;
+    this._fragmentShaderLoaded = options.fragmentShaderLoaded;
+    this._uniformMapLoaded = options.uniformMapLoaded;
+    this._batchTableLoaded = options.batchTableLoaded;
+    this._pickIdLoaded = options.pickIdLoaded;
+    this._opaquePass = options.opaquePass ?? Pass.OPAQUE;
+    this._cull = options.cull ?? true;
 
-  this.style = undefined;
-  this._style = undefined;
-  this.styleDirty = false;
+    this.style = undefined;
+    this._style = undefined;
+    this.styleDirty = false;
 
-  this.modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
-  this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    this.modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    this._modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
 
-  this.time = 0.0; // For styling
-  this.shadows = ShadowMode.ENABLED;
-  this._boundingSphere = undefined;
+    this.time = 0.0; // For styling
+    this.shadows = ShadowMode.ENABLED;
+    this._boundingSphere = undefined;
 
-  this.clippingPlanes = undefined;
-  this.isClipped = false;
-  this.clippingPlanesDirty = false;
-  // If defined, use this matrix to position the clipping planes instead of the modelMatrix.
-  // This is so that when point clouds are part of a tileset they all get clipped relative
-  // to the root tile.
-  this.clippingPlanesOriginMatrix = undefined;
+    this.clippingPlanes = undefined;
+    this.isClipped = false;
+    this.clippingPlanesDirty = false;
+    // If defined, use this matrix to position the clipping planes instead of the modelMatrix.
+    // This is so that when point clouds are part of a tileset they all get clipped relative
+    // to the root tile.
+    this.clippingPlanesOriginMatrix = undefined;
 
-  this.attenuation = false;
-  this._attenuation = false;
+    this.attenuation = false;
+    this._attenuation = false;
 
-  // Options for geometric error based attenuation
-  this.geometricError = 0.0;
-  this.geometricErrorScale = 1.0;
-  this.maximumAttenuation = this._pointSize;
+    // Options for geometric error based attenuation
+    this.geometricError = 0.0;
+    this.geometricErrorScale = 1.0;
+    this.maximumAttenuation = this._pointSize;
 
-  /**
-   * The {@link SplitDirection} to apply to this point cloud.
-   *
-   * @type {SplitDirection}
-   * @default {@link SplitDirection.NONE}
-   */
-  this.splitDirection = options.splitDirection ?? SplitDirection.NONE;
-  this._splittingEnabled = false;
+    /**
+     * The {@link SplitDirection} to apply to this point cloud.
+     *
+     * @type {SplitDirection}
+     * @default {@link SplitDirection.NONE}
+     */
+    this.splitDirection = options.splitDirection ?? SplitDirection.NONE;
+    this._splittingEnabled = false;
 
-  this._error = undefined;
-  initialize(this, options);
-}
+    this._error = undefined;
+    initialize(this, options);
+  }
 
-Object.defineProperties(PointCloud.prototype, {
-  pointsLength: {
-    get: function () {
-      return this._pointsLength;
-    },
-  },
+  update(frameState) {
+    // Backend-specific rendering path — delegate to feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.POINT_CLOUD,
+    );
+    if (fr) {
+      this._featureRenderer = fr;
+      fr.update(this, frameState);
+      return;
+    }
 
-  geometryByteLength: {
-    get: function () {
-      return this._geometryByteLength;
-    },
-  },
+    const context = frameState.context;
 
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+    if (defined(this._error)) {
+      const error = this._error;
+      this._error = undefined;
+      throw error;
+    }
 
-  color: {
-    get: function () {
-      return Color.clone(this._highlightColor);
-    },
-    set: function (value) {
-      this._highlightColor = Color.clone(value, this._highlightColor);
-    },
-  },
+    const decoding = decodeDraco(this, context);
+    if (decoding) {
+      return;
+    }
 
-  boundingSphere: {
-    get: function () {
-      if (defined(this._drawCommand)) {
-        return this._drawCommand.boundingVolume;
+    let shadersDirty = false;
+    let modelMatrixDirty = !Matrix4.equals(this._modelMatrix, this.modelMatrix);
+
+    if (this._mode !== frameState.mode) {
+      this._mode = frameState.mode;
+      modelMatrixDirty = true;
+    }
+
+    if (!defined(this._drawCommand)) {
+      createResources(this, frameState);
+      modelMatrixDirty = true;
+      shadersDirty = true;
+      this._ready = true;
+      this._parsedContent = undefined; // Unload
+    }
+
+    if (modelMatrixDirty) {
+      Matrix4.clone(this.modelMatrix, this._modelMatrix);
+      const modelMatrix = this._drawCommand.modelMatrix;
+      Matrix4.clone(this._modelMatrix, modelMatrix);
+
+      if (defined(this._rtcCenter)) {
+        Matrix4.multiplyByTranslation(modelMatrix, this._rtcCenter, modelMatrix);
       }
-      return undefined;
-    },
-    set: function (value) {
-      this._boundingSphere = BoundingSphere.clone(value, this._boundingSphere);
-    },
-  },
-});
+      if (defined(this._quantizedVolumeOffset)) {
+        Matrix4.multiplyByTranslation(
+          modelMatrix,
+          this._quantizedVolumeOffset,
+          modelMatrix,
+        );
+      }
+
+      if (frameState.mode !== SceneMode.SCENE3D) {
+        const projection = frameState.mapProjection;
+        const translation = Matrix4.getColumn(
+          modelMatrix,
+          3,
+          scratchComputedTranslation,
+        );
+        if (!Cartesian4.equals(translation, Cartesian4.UNIT_W)) {
+          Transforms.basisTo2D(projection, modelMatrix, modelMatrix);
+        }
+      }
+
+      const boundingSphere = this._drawCommand.boundingVolume;
+      BoundingSphere.clone(this._boundingSphere, boundingSphere);
+
+      if (this._cull) {
+        const center = boundingSphere.center;
+        Matrix4.multiplyByPoint(modelMatrix, center, center);
+        const scale = Matrix4.getScale(modelMatrix, scratchScale);
+        boundingSphere.radius *= Cartesian3.maximumComponent(scale);
+      }
+    }
+
+    if (this.clippingPlanesDirty) {
+      this.clippingPlanesDirty = false;
+      shadersDirty = true;
+    }
+
+    if (this._attenuation !== this.attenuation) {
+      this._attenuation = this.attenuation;
+      shadersDirty = true;
+    }
+
+    if (this.backFaceCulling !== this._backFaceCulling) {
+      this._backFaceCulling = this.backFaceCulling;
+      shadersDirty = true;
+    }
+
+    if (this.normalShading !== this._normalShading) {
+      this._normalShading = this.normalShading;
+      shadersDirty = true;
+    }
+
+    if (this._style !== this.style || this.styleDirty) {
+      this._style = this.style;
+      this.styleDirty = false;
+      shadersDirty = true;
+    }
+
+    const splittingEnabled = this.splitDirection !== SplitDirection.NONE;
+    if (this._splittingEnabled !== splittingEnabled) {
+      this._splittingEnabled = splittingEnabled;
+      shadersDirty = true;
+    }
+
+    if (shadersDirty) {
+      createShaders(this, frameState, this._style);
+    }
+
+    this._drawCommand.castShadows = ShadowMode.castShadows(this.shadows);
+    this._drawCommand.receiveShadows = ShadowMode.receiveShadows(this.shadows);
+
+    // Update the render state
+    const isTranslucent =
+      this._highlightColor.alpha < 1.0 ||
+      this._constantColor.alpha < 1.0 ||
+      this._styleTranslucent;
+    this._drawCommand.renderState = isTranslucent
+      ? this._translucentRenderState
+      : this._opaqueRenderState;
+    this._drawCommand.pass = isTranslucent ? Pass.TRANSLUCENT : this._opaquePass;
+
+    const commandList = frameState.commandList;
+
+    const passes = frameState.passes;
+    if (passes.render || passes.pick) {
+      commandList.push(this._drawCommand);
+    }
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    const command = this._drawCommand;
+    if (defined(command)) {
+      command.vertexArray = command.vertexArray && command.vertexArray.destroy();
+      command.shaderProgram =
+        command.shaderProgram && command.shaderProgram.destroy();
+    }
+    if (
+      defined(this._featureRenderer) &&
+      defined(this._featureRenderer.destroy)
+    ) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
+
+  get pointsLength() {
+    return this._pointsLength;
+  }
+
+  get geometryByteLength() {
+    return this._geometryByteLength;
+  }
+
+  get ready() {
+    return this._ready;
+  }
+
+  get color() {
+    return Color.clone(this._highlightColor);
+  }
+
+  set color(value) {
+    this._highlightColor = Color.clone(value, this._highlightColor);
+  }
+
+  get boundingSphere() {
+    if (defined(this._drawCommand)) {
+      return this._drawCommand.boundingVolume;
+    }
+    return undefined;
+  }
+
+  set boundingSphere(value) {
+    this._boundingSphere = BoundingSphere.clone(value, this._boundingSphere);
+  }
+}
 
 function initialize(pointCloud, options) {
   const parsedContent = PntsParser.parse(
@@ -728,7 +876,7 @@ function getStyleablePropertyIds(source, propertyIds) {
   let matches = regex.exec(source);
   while (matches !== null) {
     const id = parseInt(matches[1]);
-    if (propertyIds.indexOf(id) === -1) {
+    if (!propertyIds.includes(id)) {
       propertyIds.push(id);
     }
     matches = regex.exec(source);
@@ -742,7 +890,7 @@ function getBuiltinPropertyNames(source, propertyNames) {
   let matches = regex.exec(source);
   while (matches !== null) {
     const name = matches[1];
-    if (propertyNames.indexOf(name) === -1) {
+    if (!propertyNames.includes(name)) {
       propertyNames.push(name);
     }
     matches = regex.exec(source);
@@ -860,8 +1008,8 @@ function createShaders(pointCloud, frameState, style) {
     getBuiltinPropertyNames(pointSizeStyleFunction, builtinPropertyNames);
   }
 
-  const usesColorSemantic = builtinPropertyNames.indexOf("COLOR") >= 0;
-  const usesNormalSemantic = builtinPropertyNames.indexOf("NORMAL") >= 0;
+  const usesColorSemantic = builtinPropertyNames.includes("COLOR");
+  const usesNormalSemantic = builtinPropertyNames.includes("NORMAL");
 
   if (usesNormalSemantic && !hasNormals) {
     throw new RuntimeError(
@@ -873,7 +1021,7 @@ function createShaders(pointCloud, frameState, style) {
   for (name in styleableShaderAttributes) {
     if (styleableShaderAttributes.hasOwnProperty(name)) {
       attribute = styleableShaderAttributes[name];
-      const enabled = styleablePropertyIds.indexOf(attribute.location) >= 0;
+      const enabled = styleablePropertyIds.includes(attribute.location);
       const vertexAttribute = getVertexAttribute(
         vertexArray,
         attribute.location,
@@ -1271,159 +1419,4 @@ function decodeDraco(pointCloud, context) {
 const scratchComputedTranslation = new Cartesian4();
 const scratchScale = new Cartesian3();
 
-PointCloud.prototype.update = function (frameState) {
-  // Backend-specific rendering path — delegate to feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.POINT_CLOUD,
-  );
-  if (fr) {
-    this._featureRenderer = fr;
-    fr.update(this, frameState);
-    return;
-  }
-
-  const context = frameState.context;
-
-  if (defined(this._error)) {
-    const error = this._error;
-    this._error = undefined;
-    throw error;
-  }
-
-  const decoding = decodeDraco(this, context);
-  if (decoding) {
-    return;
-  }
-
-  let shadersDirty = false;
-  let modelMatrixDirty = !Matrix4.equals(this._modelMatrix, this.modelMatrix);
-
-  if (this._mode !== frameState.mode) {
-    this._mode = frameState.mode;
-    modelMatrixDirty = true;
-  }
-
-  if (!defined(this._drawCommand)) {
-    createResources(this, frameState);
-    modelMatrixDirty = true;
-    shadersDirty = true;
-    this._ready = true;
-    this._parsedContent = undefined; // Unload
-  }
-
-  if (modelMatrixDirty) {
-    Matrix4.clone(this.modelMatrix, this._modelMatrix);
-    const modelMatrix = this._drawCommand.modelMatrix;
-    Matrix4.clone(this._modelMatrix, modelMatrix);
-
-    if (defined(this._rtcCenter)) {
-      Matrix4.multiplyByTranslation(modelMatrix, this._rtcCenter, modelMatrix);
-    }
-    if (defined(this._quantizedVolumeOffset)) {
-      Matrix4.multiplyByTranslation(
-        modelMatrix,
-        this._quantizedVolumeOffset,
-        modelMatrix,
-      );
-    }
-
-    if (frameState.mode !== SceneMode.SCENE3D) {
-      const projection = frameState.mapProjection;
-      const translation = Matrix4.getColumn(
-        modelMatrix,
-        3,
-        scratchComputedTranslation,
-      );
-      if (!Cartesian4.equals(translation, Cartesian4.UNIT_W)) {
-        Transforms.basisTo2D(projection, modelMatrix, modelMatrix);
-      }
-    }
-
-    const boundingSphere = this._drawCommand.boundingVolume;
-    BoundingSphere.clone(this._boundingSphere, boundingSphere);
-
-    if (this._cull) {
-      const center = boundingSphere.center;
-      Matrix4.multiplyByPoint(modelMatrix, center, center);
-      const scale = Matrix4.getScale(modelMatrix, scratchScale);
-      boundingSphere.radius *= Cartesian3.maximumComponent(scale);
-    }
-  }
-
-  if (this.clippingPlanesDirty) {
-    this.clippingPlanesDirty = false;
-    shadersDirty = true;
-  }
-
-  if (this._attenuation !== this.attenuation) {
-    this._attenuation = this.attenuation;
-    shadersDirty = true;
-  }
-
-  if (this.backFaceCulling !== this._backFaceCulling) {
-    this._backFaceCulling = this.backFaceCulling;
-    shadersDirty = true;
-  }
-
-  if (this.normalShading !== this._normalShading) {
-    this._normalShading = this.normalShading;
-    shadersDirty = true;
-  }
-
-  if (this._style !== this.style || this.styleDirty) {
-    this._style = this.style;
-    this.styleDirty = false;
-    shadersDirty = true;
-  }
-
-  const splittingEnabled = this.splitDirection !== SplitDirection.NONE;
-  if (this._splittingEnabled !== splittingEnabled) {
-    this._splittingEnabled = splittingEnabled;
-    shadersDirty = true;
-  }
-
-  if (shadersDirty) {
-    createShaders(this, frameState, this._style);
-  }
-
-  this._drawCommand.castShadows = ShadowMode.castShadows(this.shadows);
-  this._drawCommand.receiveShadows = ShadowMode.receiveShadows(this.shadows);
-
-  // Update the render state
-  const isTranslucent =
-    this._highlightColor.alpha < 1.0 ||
-    this._constantColor.alpha < 1.0 ||
-    this._styleTranslucent;
-  this._drawCommand.renderState = isTranslucent
-    ? this._translucentRenderState
-    : this._opaqueRenderState;
-  this._drawCommand.pass = isTranslucent ? Pass.TRANSLUCENT : this._opaquePass;
-
-  const commandList = frameState.commandList;
-
-  const passes = frameState.passes;
-  if (passes.render || passes.pick) {
-    commandList.push(this._drawCommand);
-  }
-};
-
-PointCloud.prototype.isDestroyed = function () {
-  return false;
-};
-
-PointCloud.prototype.destroy = function () {
-  const command = this._drawCommand;
-  if (defined(command)) {
-    command.vertexArray = command.vertexArray && command.vertexArray.destroy();
-    command.shaderProgram =
-      command.shaderProgram && command.shaderProgram.destroy();
-  }
-  if (
-    defined(this._featureRenderer) &&
-    defined(this._featureRenderer.destroy)
-  ) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
 export default PointCloud;

@@ -43,73 +43,220 @@ const defaultKey = stringToBuffer(
  * @see GoogleEarthEnterpriseTerrainProvider
  *
  */
-function GoogleEarthEnterpriseMetadata(resourceOrUrl) {
-  /**
-   * True if imagery is available.
-   * @type {boolean}
-   * @default true
-   */
-  this.imageryPresent = true;
+class GoogleEarthEnterpriseMetadata {
+  constructor(resourceOrUrl) {
+    /**
+     * True if imagery is available.
+     * @type {boolean}
+     * @default true
+     */
+    this.imageryPresent = true;
+
+    /**
+     * True if imagery is sent as a protocol buffer, false if sent as plain images. If undefined we will try both.
+     * @type {boolean|undefined}
+     * @default undefined
+     */
+    this.protoImagery = undefined;
+
+    /**
+     * True if terrain is available.
+     * @type {boolean}
+     * @default true
+     */
+    this.terrainPresent = true;
+
+    /**
+     * Exponent used to compute constant to calculate negative height values.
+     * @type {number}
+     * @default 32
+     */
+    this.negativeAltitudeExponentBias = 32;
+
+    /**
+     * Threshold where any numbers smaller are actually negative values. They are multiplied by -2^negativeAltitudeExponentBias.
+     * @type {number}
+     * @default EPSILON12
+     */
+    this.negativeAltitudeThreshold = CesiumMath.EPSILON12;
+
+    /**
+     * Dictionary of provider id to copyright strings.
+     * @type {object}
+     * @default {}
+     */
+    this.providers = {};
+
+    /**
+     * Key used to decode packets
+     * @type {ArrayBuffer}
+     */
+    this.key = undefined;
+
+    this._resource = undefined;
+    this._quadPacketVersion = 1;
+    this._tileInfo = {};
+    this._subtreePromises = {};
+  }
+
+  isValid(quadKey) {
+    let info = this.getTileInformationFromQuadKey(quadKey);
+    if (defined(info)) {
+      return info !== null;
+    }
+
+    let valid = true;
+    let q = quadKey;
+    let last;
+    while (q.length > 1) {
+      last = q.substring(q.length - 1);
+      q = q.substring(0, q.length - 1);
+      info = this.getTileInformationFromQuadKey(q);
+      if (defined(info)) {
+        if (!info.hasSubtree() && !info.hasChild(parseInt(last))) {
+          // We have no subtree or child available at some point in this node's ancestry
+          valid = false;
+        }
+
+        break;
+      } else if (info === null) {
+        // Some node in the ancestry was loaded and said there wasn't a subtree
+        valid = false;
+        break;
+      }
+    }
+
+    return valid;
+  }
 
   /**
-   * True if imagery is sent as a protocol buffer, false if sent as plain images. If undefined we will try both.
-   * @type {boolean|undefined}
-   * @default undefined
+   * Retrieves a Google Earth Enterprise quadtree packet.
+   *
+   * @param {string} [quadKey=''] The quadkey to retrieve the packet for.
+   * @param {number} [version=1] The cnode version to be used in the request.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   *
+   * @private
    */
-  this.protoImagery = undefined;
+  getQuadTreePacket(quadKey, version, request) {
+    version = version ?? 1;
+    quadKey = quadKey ?? "";
+    const resource = getMetadataResource(this, quadKey, version, request);
+
+    const promise = resource.fetchArrayBuffer();
+
+    if (!defined(promise)) {
+      return undefined; // Throttled
+    }
+
+    const tileInfo = this._tileInfo;
+    const key = this.key;
+    return promise.then(function (metadata) {
+      const decodePromise = taskProcessor.scheduleTask(
+        {
+          buffer: metadata,
+          quadKey: quadKey,
+          type: "Metadata",
+          key: key,
+        },
+        [metadata],
+      );
+
+      return decodePromise.then(function (result) {
+        let root;
+        let topLevelKeyLength = -1;
+        if (quadKey !== "") {
+          // Root tile has no data except children bits, so put them into the tile info
+          topLevelKeyLength = quadKey.length + 1;
+          const top = result[quadKey];
+          root = tileInfo[quadKey];
+          root._bits |= top._bits;
+
+          delete result[quadKey];
+        }
+
+        // Copy the resulting objects into tileInfo
+        // Make sure we start with shorter quadkeys first, so we know the parents have
+        //  already been processed. Otherwise we can lose ancestorHasTerrain along the way.
+        const keys = Object.keys(result);
+        keys.sort(function (a, b) {
+          return a.length - b.length;
+        });
+        const keysLength = keys.length;
+        for (let i = 0; i < keysLength; ++i) {
+          const key = keys[i];
+          const r = result[key];
+          if (r !== null) {
+            const info = GoogleEarthEnterpriseTileInformation.clone(result[key]);
+            const keyLength = key.length;
+            if (keyLength === topLevelKeyLength) {
+              info.setParent(root);
+            } else if (keyLength > 1) {
+              const parent = tileInfo[key.substring(0, key.length - 1)];
+              info.setParent(parent);
+            }
+            tileInfo[key] = info;
+          } else {
+            tileInfo[key] = null;
+          }
+        }
+      });
+    });
+  }
 
   /**
-   * True if terrain is available.
-   * @type {boolean}
-   * @default true
+   * Populates the metadata subtree down to the specified tile.
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   *
+   * @returns {Promise<GoogleEarthEnterpriseTileInformation>} A promise that resolves to the tile info for the requested quad key
+   *
+   * @private
    */
-  this.terrainPresent = true;
+  populateSubtree(x, y, level, request) {
+    const quadkey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
+    return populateSubtree(this, quadkey, request);
+  }
 
   /**
-   * Exponent used to compute constant to calculate negative height values.
-   * @type {number}
-   * @default 32
+   * Gets information about a tile
+   *
+   * @param {number} x The tile X coordinate.
+   * @param {number} y The tile Y coordinate.
+   * @param {number} level The tile level.
+   * @returns {GoogleEarthEnterpriseTileInformation|undefined} Information about the tile or undefined if it isn't loaded.
+   *
+   * @private
    */
-  this.negativeAltitudeExponentBias = 32;
+  getTileInformation(x, y, level) {
+    const quadkey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
+    return this._tileInfo[quadkey];
+  }
 
   /**
-   * Threshold where any numbers smaller are actually negative values. They are multiplied by -2^negativeAltitudeExponentBias.
-   * @type {number}
-   * @default EPSILON12
+   * Gets information about a tile from a quadKey
+   *
+   * @param {string} quadkey The quadkey for the tile
+   * @returns {GoogleEarthEnterpriseTileInformation|undefined} Information about the tile or undefined if it isn't loaded.
+   *
+   * @private
    */
-  this.negativeAltitudeThreshold = CesiumMath.EPSILON12;
+  getTileInformationFromQuadKey(quadkey) {
+    return this._tileInfo[quadkey];
+  }
 
-  /**
-   * Dictionary of provider id to copyright strings.
-   * @type {object}
-   * @default {}
-   */
-  this.providers = {};
-
-  /**
-   * Key used to decode packets
-   * @type {ArrayBuffer}
-   */
-  this.key = undefined;
-
-  this._resource = undefined;
-  this._quadPacketVersion = 1;
-  this._tileInfo = {};
-  this._subtreePromises = {};
-}
-
-Object.defineProperties(GoogleEarthEnterpriseMetadata.prototype, {
   /**
    * Gets the name of the Google Earth Enterprise server.
    * @memberof GoogleEarthEnterpriseMetadata.prototype
    * @type {string}
    * @readonly
    */
-  url: {
-    get: function () {
-      return this._resource.url;
-    },
-  },
+  get url() {
+    return this._resource.url;
+  }
 
   /**
    * Gets the proxy used for metadata requests.
@@ -117,11 +264,9 @@ Object.defineProperties(GoogleEarthEnterpriseMetadata.prototype, {
    * @type {Proxy}
    * @readonly
    */
-  proxy: {
-    get: function () {
-      return this._resource.proxy;
-    },
-  },
+  get proxy() {
+    return this._resource.proxy;
+  }
 
   /**
    * Gets the resource used for metadata requests.
@@ -129,12 +274,10 @@ Object.defineProperties(GoogleEarthEnterpriseMetadata.prototype, {
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
-});
+  get resource() {
+    return this._resource;
+  }
+}
 
 /**
  * Creates a metadata object using the Google Earth Enterprise REST API. This is used by the GoogleEarthEnterpriseImageryProvider
@@ -257,138 +400,7 @@ GoogleEarthEnterpriseMetadata.quadKeyToTileXY = function (quadkey) {
   };
 };
 
-GoogleEarthEnterpriseMetadata.prototype.isValid = function (quadKey) {
-  let info = this.getTileInformationFromQuadKey(quadKey);
-  if (defined(info)) {
-    return info !== null;
-  }
-
-  let valid = true;
-  let q = quadKey;
-  let last;
-  while (q.length > 1) {
-    last = q.substring(q.length - 1);
-    q = q.substring(0, q.length - 1);
-    info = this.getTileInformationFromQuadKey(q);
-    if (defined(info)) {
-      if (!info.hasSubtree() && !info.hasChild(parseInt(last))) {
-        // We have no subtree or child available at some point in this node's ancestry
-        valid = false;
-      }
-
-      break;
-    } else if (info === null) {
-      // Some node in the ancestry was loaded and said there wasn't a subtree
-      valid = false;
-      break;
-    }
-  }
-
-  return valid;
-};
-
 const taskProcessor = new TaskProcessor("decodeGoogleEarthEnterprisePacket");
-
-/**
- * Retrieves a Google Earth Enterprise quadtree packet.
- *
- * @param {string} [quadKey=''] The quadkey to retrieve the packet for.
- * @param {number} [version=1] The cnode version to be used in the request.
- * @param {Request} [request] The request object. Intended for internal use only.
- *
- * @private
- */
-GoogleEarthEnterpriseMetadata.prototype.getQuadTreePacket = function (
-  quadKey,
-  version,
-  request,
-) {
-  version = version ?? 1;
-  quadKey = quadKey ?? "";
-  const resource = getMetadataResource(this, quadKey, version, request);
-
-  const promise = resource.fetchArrayBuffer();
-
-  if (!defined(promise)) {
-    return undefined; // Throttled
-  }
-
-  const tileInfo = this._tileInfo;
-  const key = this.key;
-  return promise.then(function (metadata) {
-    const decodePromise = taskProcessor.scheduleTask(
-      {
-        buffer: metadata,
-        quadKey: quadKey,
-        type: "Metadata",
-        key: key,
-      },
-      [metadata],
-    );
-
-    return decodePromise.then(function (result) {
-      let root;
-      let topLevelKeyLength = -1;
-      if (quadKey !== "") {
-        // Root tile has no data except children bits, so put them into the tile info
-        topLevelKeyLength = quadKey.length + 1;
-        const top = result[quadKey];
-        root = tileInfo[quadKey];
-        root._bits |= top._bits;
-
-        delete result[quadKey];
-      }
-
-      // Copy the resulting objects into tileInfo
-      // Make sure we start with shorter quadkeys first, so we know the parents have
-      //  already been processed. Otherwise we can lose ancestorHasTerrain along the way.
-      const keys = Object.keys(result);
-      keys.sort(function (a, b) {
-        return a.length - b.length;
-      });
-      const keysLength = keys.length;
-      for (let i = 0; i < keysLength; ++i) {
-        const key = keys[i];
-        const r = result[key];
-        if (r !== null) {
-          const info = GoogleEarthEnterpriseTileInformation.clone(result[key]);
-          const keyLength = key.length;
-          if (keyLength === topLevelKeyLength) {
-            info.setParent(root);
-          } else if (keyLength > 1) {
-            const parent = tileInfo[key.substring(0, key.length - 1)];
-            info.setParent(parent);
-          }
-          tileInfo[key] = info;
-        } else {
-          tileInfo[key] = null;
-        }
-      }
-    });
-  });
-};
-
-/**
- * Populates the metadata subtree down to the specified tile.
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @param {Request} [request] The request object. Intended for internal use only.
- *
- * @returns {Promise<GoogleEarthEnterpriseTileInformation>} A promise that resolves to the tile info for the requested quad key
- *
- * @private
- */
-GoogleEarthEnterpriseMetadata.prototype.populateSubtree = function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const quadkey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
-  return populateSubtree(this, quadkey, request);
-};
 
 function populateSubtree(that, quadKey, request) {
   const tileInfo = that._tileInfo;
@@ -454,38 +466,6 @@ function populateSubtree(that, quadKey, request) {
       delete subtreePromises[q];
     });
 }
-
-/**
- * Gets information about a tile
- *
- * @param {number} x The tile X coordinate.
- * @param {number} y The tile Y coordinate.
- * @param {number} level The tile level.
- * @returns {GoogleEarthEnterpriseTileInformation|undefined} Information about the tile or undefined if it isn't loaded.
- *
- * @private
- */
-GoogleEarthEnterpriseMetadata.prototype.getTileInformation = function (
-  x,
-  y,
-  level,
-) {
-  const quadkey = GoogleEarthEnterpriseMetadata.tileXYToQuadKey(x, y, level);
-  return this._tileInfo[quadkey];
-};
-
-/**
- * Gets information about a tile from a quadKey
- *
- * @param {string} quadkey The quadkey for the tile
- * @returns {GoogleEarthEnterpriseTileInformation|undefined} Information about the tile or undefined if it isn't loaded.
- *
- * @private
- */
-GoogleEarthEnterpriseMetadata.prototype.getTileInformationFromQuadKey =
-  function (quadkey) {
-    return this._tileInfo[quadkey];
-  };
 
 function getMetadataResource(that, quadKey, version, request) {
   return that._resource.getDerivedResource({

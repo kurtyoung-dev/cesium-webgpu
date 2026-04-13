@@ -93,117 +93,344 @@ import StencilOperation from "./StencilOperation.js";
  *   appearance : new Cesium.PolylineColorAppearance()
  * }));
  */
-function GroundPolylinePrimitive(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class GroundPolylinePrimitive {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  /**
-   * The geometry instances rendered with this primitive. This may
-   * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
-   * is <code>true</code> when the primitive is constructed.
-   * <p>
-   * Changing this property after the primitive is rendered has no effect.
-   * </p>
-   *
-   * @readonly
-   * @type {Array|GeometryInstance}
-   *
-   * @default undefined
-   */
-  this.geometryInstances = options.geometryInstances;
-  this._hasPerInstanceColors = true;
+    /**
+     * The geometry instances rendered with this primitive. This may
+     * be <code>undefined</code> if <code>options.releaseGeometryInstances</code>
+     * is <code>true</code> when the primitive is constructed.
+     * <p>
+     * Changing this property after the primitive is rendered has no effect.
+     * </p>
+     *
+     * @readonly
+     * @type {Array|GeometryInstance}
+     *
+     * @default undefined
+     */
+    this.geometryInstances = options.geometryInstances;
+    this._hasPerInstanceColors = true;
 
-  let appearance = options.appearance;
-  if (!defined(appearance)) {
-    appearance = new PolylineMaterialAppearance();
+    let appearance = options.appearance;
+    if (!defined(appearance)) {
+      appearance = new PolylineMaterialAppearance();
+    }
+    /**
+     * The {@link Appearance} used to shade this primitive. Each geometry
+     * instance is shaded with the same appearance.  Some appearances, like
+     * {@link PolylineColorAppearance} allow giving each instance unique
+     * properties.
+     *
+     * @type Appearance
+     *
+     * @default undefined
+     */
+    this.appearance = appearance;
+
+    /**
+     * Determines if the primitive will be shown.  This affects all geometry
+     * instances in the primitive.
+     *
+     * @type {boolean}
+     *
+     * @default true
+     */
+    this.show = options.show ?? true;
+
+    /**
+     * Determines whether terrain, 3D Tiles or both will be classified.
+     *
+     * @type {ClassificationType}
+     *
+     * @default ClassificationType.BOTH
+     */
+    this.classificationType =
+      options.classificationType ?? ClassificationType.BOTH;
+
+    /**
+     * This property is for debugging only; it is not for production use nor is it optimized.
+     * <p>
+     * Draws the bounding sphere for each draw command in the primitive.
+     * </p>
+     *
+     * @type {boolean}
+     *
+     * @default false
+     */
+    this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+
+    // Shadow volume is shown by removing a discard in the shader, so this isn't toggleable.
+    this._debugShowShadowVolume = options.debugShowShadowVolume ?? false;
+
+    this._primitiveOptions = {
+      geometryInstances: undefined,
+      appearance: undefined,
+      vertexCacheOptimize: false,
+      interleave: options.interleave ?? false,
+      releaseGeometryInstances: options.releaseGeometryInstances ?? true,
+      allowPicking: options.allowPicking ?? true,
+      asynchronous: options.asynchronous ?? true,
+      compressVertices: false,
+      _createShaderProgramFunction: undefined,
+      _createCommandsFunction: undefined,
+      _updateAndQueueCommandsFunction: undefined,
+    };
+
+    // Used when inserting in an OrderedPrimitiveCollection
+    this._zIndex = undefined;
+
+    this._ready = false;
+    this._primitive = undefined;
+
+    this._sp = undefined;
+    this._sp2D = undefined;
+    this._spMorph = undefined;
+
+    this._renderState = getRenderState(false);
+    this._renderState3DTiles = getRenderState(true);
+
+    this._renderStateMorph = RenderState.fromCache({
+      cull: {
+        enabled: true,
+        face: CullFace.FRONT, // Geometry is "inverted," so cull front when materials on volume instead of on terrain (morph)
+      },
+      depthTest: {
+        enabled: true,
+      },
+      blending: BlendingState.PRE_MULTIPLIED_ALPHA_BLEND,
+      depthMask: false,
+    });
   }
-  /**
-   * The {@link Appearance} used to shade this primitive. Each geometry
-   * instance is shaded with the same appearance.  Some appearances, like
-   * {@link PolylineColorAppearance} allow giving each instance unique
-   * properties.
-   *
-   * @type Appearance
-   *
-   * @default undefined
-   */
-  this.appearance = appearance;
 
   /**
-   * Determines if the primitive will be shown.  This affects all geometry
-   * instances in the primitive.
-   *
-   * @type {boolean}
-   *
-   * @default true
-   */
-  this.show = options.show ?? true;
-
-  /**
-   * Determines whether terrain, 3D Tiles or both will be classified.
-   *
-   * @type {ClassificationType}
-   *
-   * @default ClassificationType.BOTH
-   */
-  this.classificationType =
-    options.classificationType ?? ClassificationType.BOTH;
-
-  /**
-   * This property is for debugging only; it is not for production use nor is it optimized.
+   * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
+   * get the draw commands needed to render this primitive.
    * <p>
-   * Draws the bounding sphere for each draw command in the primitive.
+   * Do not call this function directly.  This is documented just to
+   * list the exceptions that may be propagated when the scene is rendered:
    * </p>
    *
-   * @type {boolean}
-   *
-   * @default false
+   * @exception {DeveloperError} For synchronous GroundPolylinePrimitives, you must call GroundPolylinePrimitives.initializeTerrainHeights() and wait for the returned promise to resolve.
+   * @exception {DeveloperError} All GeometryInstances must have color attributes to use PolylineColorAppearance with GroundPolylinePrimitive.
    */
-  this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
+  update(frameState) {
+    if (!defined(this._primitive) && !defined(this.geometryInstances)) {
+      return;
+    }
 
-  // Shadow volume is shown by removing a discard in the shader, so this isn't toggleable.
-  this._debugShowShadowVolume = options.debugShowShadowVolume ?? false;
+    if (!ApproximateTerrainHeights.initialized) {
+      //>>includeStart('debug', pragmas.debug);
+      if (!this.asynchronous) {
+        throw new DeveloperError(
+          "For synchronous GroundPolylinePrimitives, you must call GroundPolylinePrimitives.initializeTerrainHeights() and wait for the returned promise to resolve.",
+        );
+      }
+      //>>includeEnd('debug');
 
-  this._primitiveOptions = {
-    geometryInstances: undefined,
-    appearance: undefined,
-    vertexCacheOptimize: false,
-    interleave: options.interleave ?? false,
-    releaseGeometryInstances: options.releaseGeometryInstances ?? true,
-    allowPicking: options.allowPicking ?? true,
-    asynchronous: options.asynchronous ?? true,
-    compressVertices: false,
-    _createShaderProgramFunction: undefined,
-    _createCommandsFunction: undefined,
-    _updateAndQueueCommandsFunction: undefined,
-  };
+      GroundPolylinePrimitive.initializeTerrainHeights();
+      return;
+    }
 
-  // Used when inserting in an OrderedPrimitiveCollection
-  this._zIndex = undefined;
+    let i;
 
-  this._ready = false;
-  this._primitive = undefined;
+    const that = this;
+    const primitiveOptions = this._primitiveOptions;
+    if (!defined(this._primitive)) {
+      const geometryInstances = Array.isArray(this.geometryInstances)
+        ? this.geometryInstances
+        : [this.geometryInstances];
+      const geometryInstancesLength = geometryInstances.length;
+      const groundInstances = new Array(geometryInstancesLength);
 
-  this._sp = undefined;
-  this._sp2D = undefined;
-  this._spMorph = undefined;
+      let attributes;
 
-  this._renderState = getRenderState(false);
-  this._renderState3DTiles = getRenderState(true);
+      // Check if each instance has a color attribute.
+      for (i = 0; i < geometryInstancesLength; ++i) {
+        attributes = geometryInstances[i].attributes;
+        if (!defined(attributes) || !defined(attributes.color)) {
+          this._hasPerInstanceColors = false;
+          break;
+        }
+      }
 
-  this._renderStateMorph = RenderState.fromCache({
-    cull: {
-      enabled: true,
-      face: CullFace.FRONT, // Geometry is "inverted," so cull front when materials on volume instead of on terrain (morph)
-    },
-    depthTest: {
-      enabled: true,
-    },
-    blending: BlendingState.PRE_MULTIPLIED_ALPHA_BLEND,
-    depthMask: false,
-  });
-}
+      for (i = 0; i < geometryInstancesLength; ++i) {
+        const geometryInstance = geometryInstances[i];
+        attributes = {};
+        const instanceAttributes = geometryInstance.attributes;
+        for (const attributeKey in instanceAttributes) {
+          if (instanceAttributes.hasOwnProperty(attributeKey)) {
+            attributes[attributeKey] = instanceAttributes[attributeKey];
+          }
+        }
 
-Object.defineProperties(GroundPolylinePrimitive.prototype, {
+        // Automatically create line width attribute if not already given
+        if (!defined(attributes.width)) {
+          attributes.width = new GeometryInstanceAttribute({
+            componentDatatype: ComponentDatatype.UNSIGNED_BYTE,
+            componentsPerAttribute: 1.0,
+            value: [geometryInstance.geometry.width],
+          });
+        }
+
+        // Update each geometry for framestate.scene3DOnly = true and projection
+        geometryInstance.geometry._scene3DOnly = frameState.scene3DOnly;
+        GroundPolylineGeometry.setProjectionAndEllipsoid(
+          geometryInstance.geometry,
+          frameState.mapProjection,
+        );
+
+        groundInstances[i] = new GeometryInstance({
+          geometry: geometryInstance.geometry,
+          attributes: attributes,
+          id: geometryInstance.id,
+          pickPrimitive: that,
+        });
+      }
+
+      primitiveOptions.geometryInstances = groundInstances;
+      primitiveOptions.appearance = this.appearance;
+
+      primitiveOptions._createShaderProgramFunction = function (
+        primitive,
+        frameState,
+        appearance,
+      ) {
+        createShaderProgram(that, frameState, appearance);
+      };
+      primitiveOptions._createCommandsFunction = function (
+        primitive,
+        appearance,
+        material,
+        translucent,
+        twoPasses,
+        colorCommands,
+        pickCommands,
+      ) {
+        createCommands(
+          that,
+          appearance,
+          material,
+          translucent,
+          colorCommands,
+          pickCommands,
+        );
+      };
+      primitiveOptions._updateAndQueueCommandsFunction = function (
+        primitive,
+        frameState,
+        colorCommands,
+        pickCommands,
+        modelMatrix,
+        cull,
+        debugShowBoundingVolume,
+        twoPasses,
+      ) {
+        updateAndQueueCommands(
+          that,
+          frameState,
+          colorCommands,
+          pickCommands,
+          modelMatrix,
+          cull,
+          debugShowBoundingVolume,
+        );
+      };
+
+      this._primitive = new Primitive(primitiveOptions);
+    }
+
+    if (
+      this.appearance instanceof PolylineColorAppearance &&
+      !this._hasPerInstanceColors
+    ) {
+      throw new DeveloperError(
+        "All GeometryInstances must have color attributes to use PolylineColorAppearance with GroundPolylinePrimitive.",
+      );
+    }
+
+    this._primitive.appearance = this.appearance;
+    this._primitive.show = this.show;
+    this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
+    this._primitive.update(frameState);
+    frameState.afterRender.push(() => {
+      if (!this._ready && defined(this._primitive) && this._primitive.ready) {
+        this._ready = true;
+
+        if (this.releaseGeometryInstances) {
+          this.geometryInstances = undefined;
+        }
+      }
+    });
+  }
+
+  /**
+   * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
+   *
+   * @param {*} id The id of the {@link GeometryInstance}.
+   * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
+   *
+   * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
+   *
+   * @example
+   * const attributes = primitive.getGeometryInstanceAttributes('an id');
+   * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
+   * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
+   */
+  getGeometryInstanceAttributes(id) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(this._primitive)) {
+      throw new DeveloperError(
+        "must call update before calling getGeometryInstanceAttributes",
+      );
+    }
+    //>>includeEnd('debug');
+    return this._primitive.getGeometryInstanceAttributes(id);
+  }
+
+  /**
+   * Returns true if this object was destroyed; otherwise, false.
+   * <p>
+   * If this object was destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
+   * </p>
+   *
+   * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
+   *
+   * @see GroundPolylinePrimitive#destroy
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
+   * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
+   * <p>
+   * Once an object is destroyed, it should not be used; calling any function other than
+   * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
+   * assign the return value (<code>undefined</code>) to the object as done in the example.
+   * </p>
+   *
+   * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
+   *
+   * @example
+   * e = e && e.destroy();
+   *
+   * @see GroundPolylinePrimitive#isDestroyed
+   */
+  destroy() {
+    this._primitive = this._primitive && this._primitive.destroy();
+    this._sp = this._sp && this._sp.destroy();
+
+    // Derived programs, destroyed above if they existed.
+    this._sp2D = undefined;
+    this._spMorph = undefined;
+
+    return destroyObject(this);
+  }
+
   /**
    * Determines if geometry vertex attributes are interleaved, which can slightly improve rendering performance.
    *
@@ -214,11 +441,9 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    *
    * @default false
    */
-  interleave: {
-    get: function () {
-      return this._primitiveOptions.interleave;
-    },
-  },
+  get interleave() {
+    return this._primitiveOptions.interleave;
+  }
 
   /**
    * When <code>true</code>, the primitive does not keep a reference to the input <code>geometryInstances</code> to save memory.
@@ -230,11 +455,9 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    *
    * @default true
    */
-  releaseGeometryInstances: {
-    get: function () {
-      return this._primitiveOptions.releaseGeometryInstances;
-    },
-  },
+  get releaseGeometryInstances() {
+    return this._primitiveOptions.releaseGeometryInstances;
+  }
 
   /**
    * When <code>true</code>, each geometry instance will only be pickable with {@link Scene#pick}.  When <code>false</code>, GPU memory is saved.
@@ -246,11 +469,9 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    *
    * @default true
    */
-  allowPicking: {
-    get: function () {
-      return this._primitiveOptions.allowPicking;
-    },
-  },
+  get allowPicking() {
+    return this._primitiveOptions.allowPicking;
+  }
 
   /**
    * Determines if the geometry instances will be created and batched on a web worker.
@@ -262,11 +483,9 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    *
    * @default true
    */
-  asynchronous: {
-    get: function () {
-      return this._primitiveOptions.asynchronous;
-    },
-  },
+  get asynchronous() {
+    return this._primitiveOptions.asynchronous;
+  }
 
   /**
    * Determines if the primitive is complete and ready to render.  If this property is
@@ -278,11 +497,9 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    * @type {boolean}
    * @readonly
    */
-  ready: {
-    get: function () {
-      return this._ready;
-    },
-  },
+  get ready() {
+    return this._ready;
+  }
 
   /**
    * This property is for debugging only; it is not for production use nor is it optimized.
@@ -297,12 +514,10 @@ Object.defineProperties(GroundPolylinePrimitive.prototype, {
    *
    * @default false
    */
-  debugShowShadowVolume: {
-    get: function () {
-      return this._debugShowShadowVolume;
-    },
-  },
-});
+  get debugShowShadowVolume() {
+    return this._debugShowShadowVolume;
+  }
+}
 
 /**
  * Initializes the minimum and maximum terrain heights. This only needs to be called if you are creating the
@@ -649,193 +864,6 @@ function updateAndQueueCommands(
 }
 
 /**
- * Called when {@link Viewer} or {@link CesiumWidget} render the scene to
- * get the draw commands needed to render this primitive.
- * <p>
- * Do not call this function directly.  This is documented just to
- * list the exceptions that may be propagated when the scene is rendered:
- * </p>
- *
- * @exception {DeveloperError} For synchronous GroundPolylinePrimitives, you must call GroundPolylinePrimitives.initializeTerrainHeights() and wait for the returned promise to resolve.
- * @exception {DeveloperError} All GeometryInstances must have color attributes to use PolylineColorAppearance with GroundPolylinePrimitive.
- */
-GroundPolylinePrimitive.prototype.update = function (frameState) {
-  if (!defined(this._primitive) && !defined(this.geometryInstances)) {
-    return;
-  }
-
-  if (!ApproximateTerrainHeights.initialized) {
-    //>>includeStart('debug', pragmas.debug);
-    if (!this.asynchronous) {
-      throw new DeveloperError(
-        "For synchronous GroundPolylinePrimitives, you must call GroundPolylinePrimitives.initializeTerrainHeights() and wait for the returned promise to resolve.",
-      );
-    }
-    //>>includeEnd('debug');
-
-    GroundPolylinePrimitive.initializeTerrainHeights();
-    return;
-  }
-
-  let i;
-
-  const that = this;
-  const primitiveOptions = this._primitiveOptions;
-  if (!defined(this._primitive)) {
-    const geometryInstances = Array.isArray(this.geometryInstances)
-      ? this.geometryInstances
-      : [this.geometryInstances];
-    const geometryInstancesLength = geometryInstances.length;
-    const groundInstances = new Array(geometryInstancesLength);
-
-    let attributes;
-
-    // Check if each instance has a color attribute.
-    for (i = 0; i < geometryInstancesLength; ++i) {
-      attributes = geometryInstances[i].attributes;
-      if (!defined(attributes) || !defined(attributes.color)) {
-        this._hasPerInstanceColors = false;
-        break;
-      }
-    }
-
-    for (i = 0; i < geometryInstancesLength; ++i) {
-      const geometryInstance = geometryInstances[i];
-      attributes = {};
-      const instanceAttributes = geometryInstance.attributes;
-      for (const attributeKey in instanceAttributes) {
-        if (instanceAttributes.hasOwnProperty(attributeKey)) {
-          attributes[attributeKey] = instanceAttributes[attributeKey];
-        }
-      }
-
-      // Automatically create line width attribute if not already given
-      if (!defined(attributes.width)) {
-        attributes.width = new GeometryInstanceAttribute({
-          componentDatatype: ComponentDatatype.UNSIGNED_BYTE,
-          componentsPerAttribute: 1.0,
-          value: [geometryInstance.geometry.width],
-        });
-      }
-
-      // Update each geometry for framestate.scene3DOnly = true and projection
-      geometryInstance.geometry._scene3DOnly = frameState.scene3DOnly;
-      GroundPolylineGeometry.setProjectionAndEllipsoid(
-        geometryInstance.geometry,
-        frameState.mapProjection,
-      );
-
-      groundInstances[i] = new GeometryInstance({
-        geometry: geometryInstance.geometry,
-        attributes: attributes,
-        id: geometryInstance.id,
-        pickPrimitive: that,
-      });
-    }
-
-    primitiveOptions.geometryInstances = groundInstances;
-    primitiveOptions.appearance = this.appearance;
-
-    primitiveOptions._createShaderProgramFunction = function (
-      primitive,
-      frameState,
-      appearance,
-    ) {
-      createShaderProgram(that, frameState, appearance);
-    };
-    primitiveOptions._createCommandsFunction = function (
-      primitive,
-      appearance,
-      material,
-      translucent,
-      twoPasses,
-      colorCommands,
-      pickCommands,
-    ) {
-      createCommands(
-        that,
-        appearance,
-        material,
-        translucent,
-        colorCommands,
-        pickCommands,
-      );
-    };
-    primitiveOptions._updateAndQueueCommandsFunction = function (
-      primitive,
-      frameState,
-      colorCommands,
-      pickCommands,
-      modelMatrix,
-      cull,
-      debugShowBoundingVolume,
-      twoPasses,
-    ) {
-      updateAndQueueCommands(
-        that,
-        frameState,
-        colorCommands,
-        pickCommands,
-        modelMatrix,
-        cull,
-        debugShowBoundingVolume,
-      );
-    };
-
-    this._primitive = new Primitive(primitiveOptions);
-  }
-
-  if (
-    this.appearance instanceof PolylineColorAppearance &&
-    !this._hasPerInstanceColors
-  ) {
-    throw new DeveloperError(
-      "All GeometryInstances must have color attributes to use PolylineColorAppearance with GroundPolylinePrimitive.",
-    );
-  }
-
-  this._primitive.appearance = this.appearance;
-  this._primitive.show = this.show;
-  this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
-  this._primitive.update(frameState);
-  frameState.afterRender.push(() => {
-    if (!this._ready && defined(this._primitive) && this._primitive.ready) {
-      this._ready = true;
-
-      if (this.releaseGeometryInstances) {
-        this.geometryInstances = undefined;
-      }
-    }
-  });
-};
-
-/**
- * Returns the modifiable per-instance attributes for a {@link GeometryInstance}.
- *
- * @param {*} id The id of the {@link GeometryInstance}.
- * @returns {object} The typed array in the attribute's format or undefined if the is no instance with id.
- *
- * @exception {DeveloperError} must call update before calling getGeometryInstanceAttributes.
- *
- * @example
- * const attributes = primitive.getGeometryInstanceAttributes('an id');
- * attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.AQUA);
- * attributes.show = Cesium.ShowGeometryInstanceAttribute.toValue(true);
- */
-GroundPolylinePrimitive.prototype.getGeometryInstanceAttributes = function (
-  id,
-) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(this._primitive)) {
-    throw new DeveloperError(
-      "must call update before calling getGeometryInstanceAttributes",
-    );
-  }
-  //>>includeEnd('debug');
-  return this._primitive.getGeometryInstanceAttributes(id);
-};
-
-/**
  * Checks if the given Scene supports GroundPolylinePrimitives.
  * GroundPolylinePrimitives require support for the WEBGL_depth_texture extension.
  *
@@ -846,45 +874,4 @@ GroundPolylinePrimitive.isSupported = function (scene) {
   return scene.frameState.context.depthTexture;
 };
 
-/**
- * Returns true if this object was destroyed; otherwise, false.
- * <p>
- * If this object was destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.
- * </p>
- *
- * @returns {boolean} <code>true</code> if this object was destroyed; otherwise, <code>false</code>.
- *
- * @see GroundPolylinePrimitive#destroy
- */
-GroundPolylinePrimitive.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the WebGL resources held by this object.  Destroying an object allows for deterministic
- * release of WebGL resources, instead of relying on the garbage collector to destroy this object.
- * <p>
- * Once an object is destroyed, it should not be used; calling any function other than
- * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
- * assign the return value (<code>undefined</code>) to the object as done in the example.
- * </p>
- *
- * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
- *
- * @example
- * e = e && e.destroy();
- *
- * @see GroundPolylinePrimitive#isDestroyed
- */
-GroundPolylinePrimitive.prototype.destroy = function () {
-  this._primitive = this._primitive && this._primitive.destroy();
-  this._sp = this._sp && this._sp.destroy();
-
-  // Derived programs, destroyed above if they existed.
-  this._sp2D = undefined;
-  this._spMorph = undefined;
-
-  return destroyObject(this);
-};
 export default GroundPolylinePrimitive;

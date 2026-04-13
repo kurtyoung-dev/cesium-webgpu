@@ -32,226 +32,241 @@ const DEFAULT_HEIGHT = 1000;
  * @param {number} [options.flightDuration] The duration of the camera flight to an entered location, in seconds.
  * @param {Geocoder.DestinationFoundFunction} [options.destinationFound=GeocoderViewModel.flyToDestination] A callback function that is called after a successful geocode.  If not supplied, the default behavior is to fly the camera to the result destination.
  */
-function GeocoderViewModel(options) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options) || !defined(options.scene)) {
-    throw new DeveloperError("options.scene is required.");
-  }
-  //>>includeEnd('debug');
-
-  if (defined(options.geocoderServices)) {
-    this._geocoderServices = options.geocoderServices;
-  } else {
-    this._geocoderServices = [new IonGeocoderService({ scene: options.scene })];
-  }
-
-  this._viewContainer = options.container;
-  this._scene = options.scene;
-  this._flightDuration = options.flightDuration;
-  this._searchText = "";
-  this._isSearchInProgress = false;
-  this._wasGeocodeCancelled = false;
-  this._previousCredits = [];
-  this._complete = new Event();
-  this._suggestions = [];
-  this._selectedSuggestion = undefined;
-  this._showSuggestions = true;
-
-  this._handleArrowDown = handleArrowDown;
-  this._handleArrowUp = handleArrowUp;
-
-  const that = this;
-
-  this._suggestionsVisible = knockout.pureComputed(function () {
-    const suggestions = knockout.getObservable(that, "_suggestions");
-    const suggestionsNotEmpty = suggestions().length > 0;
-    const showSuggestions = knockout.getObservable(that, "_showSuggestions")();
-    return suggestionsNotEmpty && showSuggestions;
-  });
-
-  this._searchCommand = createCommand(function (geocodeType) {
-    geocodeType = geocodeType ?? GeocodeType.SEARCH;
-    that._focusTextbox = false;
-    if (defined(that._selectedSuggestion)) {
-      that.activateSuggestion(that._selectedSuggestion);
-      return false;
+class GeocoderViewModel {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options) || !defined(options.scene)) {
+      throw new DeveloperError("options.scene is required.");
     }
-    that.hideSuggestions();
-    if (that.isSearchInProgress) {
-      cancelGeocode(that);
+    //>>includeEnd('debug');
+
+    if (defined(options.geocoderServices)) {
+      this._geocoderServices = options.geocoderServices;
     } else {
-      return geocode(that, that._geocoderServices, geocodeType);
-    }
-  });
-
-  this.deselectSuggestion = function () {
-    that._selectedSuggestion = undefined;
-  };
-
-  this.handleKeyDown = function (data, event) {
-    const downKey =
-      event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
-    const upKey =
-      event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
-    if (downKey || upKey) {
-      event.preventDefault();
+      this._geocoderServices = [new IonGeocoderService({ scene: options.scene })];
     }
 
-    return true;
-  };
+    this._viewContainer = options.container;
+    this._scene = options.scene;
+    this._flightDuration = options.flightDuration;
+    this._searchText = "";
+    this._isSearchInProgress = false;
+    this._wasGeocodeCancelled = false;
+    this._previousCredits = [];
+    this._complete = new Event();
+    this._suggestions = [];
+    this._selectedSuggestion = undefined;
+    this._showSuggestions = true;
 
-  this.handleKeyUp = function (data, event) {
-    const downKey =
-      event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
-    const upKey =
-      event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
-    const enterKey = event.key === "Enter" || event.keyCode === 13;
-    if (upKey) {
-      handleArrowUp(that);
-    } else if (downKey) {
-      handleArrowDown(that);
-    } else if (enterKey) {
-      that._searchCommand();
-    }
-    return true;
-  };
+    this._handleArrowDown = handleArrowDown;
+    this._handleArrowUp = handleArrowUp;
 
-  this.activateSuggestion = function (data) {
-    that.hideSuggestions();
-    that._searchText = data.displayName;
-    const destination = data.destination;
-    clearSuggestions(that);
-    that.destinationFound(that, destination);
-  };
+    const that = this;
 
-  this.hideSuggestions = function () {
-    that._showSuggestions = false;
-    that._selectedSuggestion = undefined;
-  };
+    this._suggestionsVisible = knockout.pureComputed(function () {
+      const suggestions = knockout.getObservable(that, "_suggestions");
+      const suggestionsNotEmpty = suggestions().length > 0;
+      const showSuggestions = knockout.getObservable(that, "_showSuggestions")();
+      return suggestionsNotEmpty && showSuggestions;
+    });
 
-  this.showSuggestions = function () {
-    that._showSuggestions = true;
-  };
+    this._searchCommand = createCommand(function (geocodeType) {
+      geocodeType = geocodeType ?? GeocodeType.SEARCH;
+      that._focusTextbox = false;
+      if (defined(that._selectedSuggestion)) {
+        that.activateSuggestion(that._selectedSuggestion);
+        return false;
+      }
+      that.hideSuggestions();
+      if (that.isSearchInProgress) {
+        cancelGeocode(that);
+      } else {
+        return geocode(that, that._geocoderServices, geocodeType);
+      }
+    });
 
-  this.handleMouseover = function (data, event) {
-    if (data !== that._selectedSuggestion) {
-      that._selectedSuggestion = data;
-    }
-  };
+    this.deselectSuggestion = function () {
+      that._selectedSuggestion = undefined;
+    };
 
-  /**
-   * Gets or sets a value indicating if this instance should always show its text input field.
-   *
-   * @type {boolean}
-   * @default false
-   */
-  this.keepExpanded = false;
-
-  /**
-   * True if the geocoder should query as the user types to autocomplete
-   * @type {boolean}
-   * @default true
-   */
-  this.autoComplete = options.autocomplete ?? true;
-
-  /**
-   * Gets and sets the command called when a geocode destination is found
-   * @type {Geocoder.DestinationFoundFunction}
-   */
-  this.destinationFound =
-    options.destinationFound ?? GeocoderViewModel.flyToDestination;
-
-  this._focusTextbox = false;
-
-  knockout.track(this, [
-    "_searchText",
-    "_isSearchInProgress",
-    "keepExpanded",
-    "_suggestions",
-    "_selectedSuggestion",
-    "_showSuggestions",
-    "_focusTextbox",
-  ]);
-
-  const searchTextObservable = knockout.getObservable(this, "_searchText");
-  searchTextObservable.extend({ rateLimit: { timeout: 500 } });
-  this._suggestionSubscription = searchTextObservable.subscribe(function () {
-    GeocoderViewModel._updateSearchSuggestions(that);
-  });
-  /**
-   * Gets a value indicating whether a search is currently in progress.  This property is observable.
-   *
-   * @type {boolean}
-   */
-  this.isSearchInProgress = undefined;
-  knockout.defineProperty(this, "isSearchInProgress", {
-    get: function () {
-      return this._isSearchInProgress;
-    },
-  });
-
-  /**
-   * Gets or sets the text to search for.  The text can be an address, or longitude, latitude,
-   * and optional height, where longitude and latitude are in degrees and height is in meters.
-   *
-   * @type {string}
-   */
-  this.searchText = undefined;
-  knockout.defineProperty(this, "searchText", {
-    get: function () {
-      if (this.isSearchInProgress) {
-        return "Searching...";
+    this.handleKeyDown = function (data, event) {
+      const downKey =
+        event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
+      const upKey =
+        event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
+      if (downKey || upKey) {
+        event.preventDefault();
       }
 
-      return this._searchText;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (typeof value !== "string") {
-        throw new DeveloperError("value must be a valid string.");
+      return true;
+    };
+
+    this.handleKeyUp = function (data, event) {
+      const downKey =
+        event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
+      const upKey =
+        event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
+      const enterKey = event.key === "Enter" || event.keyCode === 13;
+      if (upKey) {
+        handleArrowUp(that);
+      } else if (downKey) {
+        handleArrowDown(that);
+      } else if (enterKey) {
+        that._searchCommand();
       }
-      //>>includeEnd('debug');
-      this._searchText = value;
-    },
-  });
+      return true;
+    };
+
+    this.activateSuggestion = function (data) {
+      that.hideSuggestions();
+      that._searchText = data.displayName;
+      const destination = data.destination;
+      clearSuggestions(that);
+      that.destinationFound(that, destination);
+    };
+
+    this.hideSuggestions = function () {
+      that._showSuggestions = false;
+      that._selectedSuggestion = undefined;
+    };
+
+    this.showSuggestions = function () {
+      that._showSuggestions = true;
+    };
+
+    this.handleMouseover = function (data, event) {
+      if (data !== that._selectedSuggestion) {
+        that._selectedSuggestion = data;
+      }
+    };
+
+    /**
+     * Gets or sets a value indicating if this instance should always show its text input field.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.keepExpanded = false;
+
+    /**
+     * True if the geocoder should query as the user types to autocomplete
+     * @type {boolean}
+     * @default true
+     */
+    this.autoComplete = options.autocomplete ?? true;
+
+    /**
+     * Gets and sets the command called when a geocode destination is found
+     * @type {Geocoder.DestinationFoundFunction}
+     */
+    this.destinationFound =
+      options.destinationFound ?? GeocoderViewModel.flyToDestination;
+
+    this._focusTextbox = false;
+
+    knockout.track(this, [
+      "_searchText",
+      "_isSearchInProgress",
+      "keepExpanded",
+      "_suggestions",
+      "_selectedSuggestion",
+      "_showSuggestions",
+      "_focusTextbox",
+    ]);
+
+    const searchTextObservable = knockout.getObservable(this, "_searchText");
+    searchTextObservable.extend({ rateLimit: { timeout: 500 } });
+    this._suggestionSubscription = searchTextObservable.subscribe(function () {
+      GeocoderViewModel._updateSearchSuggestions(that);
+    });
+    /**
+     * Gets a value indicating whether a search is currently in progress.  This property is observable.
+     *
+     * @type {boolean}
+     */
+    this.isSearchInProgress = undefined;
+    knockout.defineProperty(this, "isSearchInProgress", {
+      get: function () {
+        return this._isSearchInProgress;
+      },
+    });
+
+    /**
+     * Gets or sets the text to search for.  The text can be an address, or longitude, latitude,
+     * and optional height, where longitude and latitude are in degrees and height is in meters.
+     *
+     * @type {string}
+     */
+    this.searchText = undefined;
+    knockout.defineProperty(this, "searchText", {
+      get: function () {
+        if (this.isSearchInProgress) {
+          return "Searching...";
+        }
+
+        return this._searchText;
+      },
+      set: function (value) {
+        //>>includeStart('debug', pragmas.debug);
+        if (typeof value !== "string") {
+          throw new DeveloperError("value must be a valid string.");
+        }
+        //>>includeEnd('debug');
+        this._searchText = value;
+      },
+    });
+
+    /**
+     * Gets or sets the the duration of the camera flight in seconds.
+     * A value of zero causes the camera to instantly switch to the geocoding location.
+     * The duration will be computed based on the distance when undefined.
+     *
+     * @type {number|undefined}
+     * @default undefined
+     */
+    this.flightDuration = undefined;
+    knockout.defineProperty(this, "flightDuration", {
+      get: function () {
+        return this._flightDuration;
+      },
+      set: function (value) {
+        //>>includeStart('debug', pragmas.debug);
+        if (defined(value) && value < 0) {
+          throw new DeveloperError("value must be positive.");
+        }
+        //>>includeEnd('debug');
+
+        this._flightDuration = value;
+      },
+    });
+  }
 
   /**
-   * Gets or sets the the duration of the camera flight in seconds.
-   * A value of zero causes the camera to instantly switch to the geocoding location.
-   * The duration will be computed based on the distance when undefined.
-   *
-   * @type {number|undefined}
-   * @default undefined
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
    */
-  this.flightDuration = undefined;
-  knockout.defineProperty(this, "flightDuration", {
-    get: function () {
-      return this._flightDuration;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      if (defined(value) && value < 0) {
-        throw new DeveloperError("value must be positive.");
-      }
-      //>>includeEnd('debug');
+  isDestroyed() {
+    return false;
+  }
 
-      this._flightDuration = value;
-    },
-  });
-}
+  /**
+   * Destroys the widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    this._suggestionSubscription.dispose();
+    clearCredits(this);
+    return destroyObject(this);
+  }
 
-Object.defineProperties(GeocoderViewModel.prototype, {
   /**
    * Gets the event triggered on flight completion.
    * @memberof GeocoderViewModel.prototype
    *
    * @type {Event}
    */
-  complete: {
-    get: function () {
-      return this._complete;
-    },
-  },
+  get complete() {
+    return this._complete;
+  }
 
   /**
    * Gets the scene to control.
@@ -259,11 +274,9 @@ Object.defineProperties(GeocoderViewModel.prototype, {
    *
    * @type {Scene}
    */
-  scene: {
-    get: function () {
-      return this._scene;
-    },
-  },
+  get scene() {
+    return this._scene;
+  }
 
   /**
    * Gets the Command that is executed when the button is clicked.
@@ -271,11 +284,9 @@ Object.defineProperties(GeocoderViewModel.prototype, {
    *
    * @type {Command}
    */
-  search: {
-    get: function () {
-      return this._searchCommand;
-    },
-  },
+  get search() {
+    return this._searchCommand;
+  }
 
   /**
    * Gets the currently selected geocoder search suggestion
@@ -283,11 +294,9 @@ Object.defineProperties(GeocoderViewModel.prototype, {
    *
    * @type {object}
    */
-  selectedSuggestion: {
-    get: function () {
-      return this._selectedSuggestion;
-    },
-  },
+  get selectedSuggestion() {
+    return this._selectedSuggestion;
+  }
 
   /**
    * Gets the list of geocoder search suggestions
@@ -295,20 +304,10 @@ Object.defineProperties(GeocoderViewModel.prototype, {
    *
    * @type {object[]}
    */
-  suggestions: {
-    get: function () {
-      return this._suggestions;
-    },
-  },
-});
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-GeocoderViewModel.prototype.destroy = function () {
-  this._suggestionSubscription.dispose();
-};
+  get suggestions() {
+    return this._suggestions;
+  }
+}
 
 function handleArrowUp(viewModel) {
   if (viewModel._suggestions.length === 0) {
@@ -596,19 +595,4 @@ GeocoderViewModel.flyToDestination = flyToDestination;
 GeocoderViewModel._updateSearchSuggestions = updateSearchSuggestions;
 GeocoderViewModel._adjustSuggestionsScroll = adjustSuggestionsScroll;
 
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-GeocoderViewModel.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-GeocoderViewModel.prototype.destroy = function () {
-  clearCredits(this);
-  return destroyObject(this);
-};
 export default GeocoderViewModel;

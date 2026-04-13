@@ -498,10 +498,12 @@ export function createTextureStubs(
       const tex = wrapper._webgpuTexture;
       const bpt = bytesPerTexel(tex.format);
       const bytesPerRow = width * bpt;
+      const view = pixels as ArrayBufferView;
+      const rawBuffer = view.buffer instanceof ArrayBuffer ? view.buffer : new Uint8Array(view.buffer).buffer;
       let data = new Uint8Array(
-        (pixels as any).buffer ?? pixels,
-        (pixels as any).byteOffset ?? 0,
-        (pixels as any).byteLength ?? (pixels as any).length ?? 0,
+        rawBuffer,
+        view.byteOffset ?? 0,
+        view.byteLength ?? 0,
       );
       if (state.pixelStore.unpackFlipY) {
         data = flipYBuffer(height, bytesPerRow, data);

@@ -132,7 +132,9 @@ export class WebGPUPipelineDescriptorBuilder {
    */
   enableDepthTest(
     format: GPUTextureFormat = "depth24plus",
-    compare: GPUCompareFunction = "less",
+    // Default depthCompare is `less-equal`, not `less`. See
+    // WebGPUContext._depthCompare for the planetary-scale rationale.
+    compare: GPUCompareFunction = "less-equal",
     write: boolean = true,
   ): this {
     if (!this.descriptor.depthStencil) {
@@ -168,7 +170,7 @@ export class WebGPUPipelineDescriptorBuilder {
       this.descriptor.depthStencil = {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       };
     }
     // Upgrade depth-only format to depth+stencil if needed

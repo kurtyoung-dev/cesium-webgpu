@@ -23,32 +23,113 @@ import MetadataClassProperty from "./MetadataClassProperty.js";
  * @constructor
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function MetadataClass(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const id = options.id;
+class MetadataClass {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const id = options.id;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("options.id", id);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("options.id", id);
+    //>>includeEnd('debug');
 
-  const properties = options.properties ?? {};
-  const propertiesBySemantic = {};
-  for (const propertyId in properties) {
-    if (properties.hasOwnProperty(propertyId)) {
-      const property = properties[propertyId];
-      if (defined(property.semantic)) {
-        propertiesBySemantic[property.semantic] = property;
+    const properties = options.properties ?? {};
+    const propertiesBySemantic = {};
+    for (const propertyId in properties) {
+      if (properties.hasOwnProperty(propertyId)) {
+        const property = properties[propertyId];
+        if (defined(property.semantic)) {
+          propertiesBySemantic[property.semantic] = property;
+        }
       }
     }
+
+    this._id = id;
+    this._name = options.name;
+    this._description = options.description;
+    this._properties = properties;
+    this._propertiesBySemantic = propertiesBySemantic;
+    this._extras = clone(options.extras, true);
+    this._extensions = clone(options.extensions, true);
   }
 
-  this._id = id;
-  this._name = options.name;
-  this._description = options.description;
-  this._properties = properties;
-  this._propertiesBySemantic = propertiesBySemantic;
-  this._extras = clone(options.extras, true);
-  this._extensions = clone(options.extensions, true);
+  /**
+   * The class properties.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {Object<string, MetadataClassProperty>}
+   * @readonly
+   */
+  get properties() {
+    return this._properties;
+  }
+
+  /**
+   * A dictionary mapping semantics to class properties.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {Object<string, MetadataClassProperty>}
+   * @readonly
+   *
+   * @private
+   */
+  get propertiesBySemantic() {
+    return this._propertiesBySemantic;
+  }
+
+  /**
+   * The ID of the class.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {string}
+   * @readonly
+   */
+  get id() {
+    return this._id;
+  }
+
+  /**
+   * The name of the class.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {string}
+   * @readonly
+   */
+  get name() {
+    return this._name;
+  }
+
+  /**
+   * The description of the class.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {string}
+   * @readonly
+   */
+  get description() {
+    return this._description;
+  }
+
+  /**
+   * Extra user-defined properties.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {*}
+   * @readonly
+   */
+  get extras() {
+    return this._extras;
+  }
+
+  /**
+   * An object containing extensions.
+   *
+   * @memberof MetadataClass.prototype
+   * @type {object}
+   * @readonly
+   */
+  get extensions() {
+    return this._extensions;
+  }
 }
 
 /**
@@ -95,101 +176,6 @@ MetadataClass.fromJson = function (options) {
     extensions: classDefinition.extensions,
   });
 };
-
-Object.defineProperties(MetadataClass.prototype, {
-  /**
-   * The class properties.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {Object<string, MetadataClassProperty>}
-   * @readonly
-   */
-  properties: {
-    get: function () {
-      return this._properties;
-    },
-  },
-
-  /**
-   * A dictionary mapping semantics to class properties.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {Object<string, MetadataClassProperty>}
-   * @readonly
-   *
-   * @private
-   */
-  propertiesBySemantic: {
-    get: function () {
-      return this._propertiesBySemantic;
-    },
-  },
-
-  /**
-   * The ID of the class.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {string}
-   * @readonly
-   */
-  id: {
-    get: function () {
-      return this._id;
-    },
-  },
-
-  /**
-   * The name of the class.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {string}
-   * @readonly
-   */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
-
-  /**
-   * The description of the class.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {string}
-   * @readonly
-   */
-  description: {
-    get: function () {
-      return this._description;
-    },
-  },
-
-  /**
-   * Extra user-defined properties.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {*}
-   * @readonly
-   */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
-
-  /**
-   * An object containing extensions.
-   *
-   * @memberof MetadataClass.prototype
-   * @type {object}
-   * @readonly
-   */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
-});
 
 /**
  * The class name given to the metadata class when a batch

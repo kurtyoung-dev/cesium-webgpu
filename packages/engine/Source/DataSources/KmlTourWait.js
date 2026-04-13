@@ -1,4 +1,5 @@
 import defined from "../Core/defined.js";
+
 /**
  * Pauses the KmlTour for a given number of seconds.
  *
@@ -10,37 +11,39 @@ import defined from "../Core/defined.js";
  * @see KmlTour
  * @see KmlTourFlyTo
  */
-function KmlTourWait(duration) {
-  this.type = "KmlTourWait";
-  this.blocking = true;
-  this.duration = duration;
+class KmlTourWait {
+  constructor(duration) {
+    this.type = "KmlTourWait";
+    this.blocking = true;
+    this.duration = duration;
 
-  this.timeout = null;
-}
-
-/**
- * Play this playlist entry
- *
- * @param {KmlTourWait.DoneCallback} done function which will be called when playback ends
- */
-KmlTourWait.prototype.play = function (done) {
-  const self = this;
-  this.activeCallback = done;
-  this.timeout = setTimeout(function () {
-    delete self.activeCallback;
-    done(false);
-  }, this.duration * 1000);
-};
-
-/**
- * Stop execution of curent entry, cancel curent timeout
- */
-KmlTourWait.prototype.stop = function () {
-  clearTimeout(this.timeout);
-  if (defined(this.activeCallback)) {
-    this.activeCallback(true);
+    this.timeout = null;
   }
-};
+
+  /**
+   * Play this playlist entry
+   *
+   * @param {KmlTourWait.DoneCallback} done function which will be called when playback ends
+   */
+  play(done) {
+    const self = this;
+    this.activeCallback = done;
+    this.timeout = setTimeout(function () {
+      delete self.activeCallback;
+      done(false);
+    }, this.duration * 1000);
+  }
+
+  /**
+   * Stop execution of curent entry, cancel curent timeout
+   */
+  stop() {
+    clearTimeout(this.timeout);
+    if (defined(this.activeCallback)) {
+      this.activeCallback(true);
+    }
+  }
+}
 
 /**
  * A function which will be called when playback ends.

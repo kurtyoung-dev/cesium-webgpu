@@ -96,12 +96,20 @@ export interface FeatureRenderer {
    * Destroy GPU resources owned by this renderer.
    * @param collection - The scene collection being destroyed
    */
-  destroy?(collection?: any): void;
+  destroy?(collection?: unknown): void;
 
   /**
    * Optional: name for debugging/diagnostics.
    */
   readonly name?: string;
+
+  // Common lifecycle methods — optional on the base interface because
+  // different renderer types implement different subsets. Callers check
+  // existence before calling (duck-typed dispatch).
+  update?(...args: unknown[]): void;
+  execute?(...args: unknown[]): void;
+  render?(...args: unknown[]): void;
+  composite?(...args: unknown[]): void;
 }
 
 /**
@@ -865,6 +873,25 @@ export abstract class GraphicsContext {
   // Default implementations are no-ops (WebGL doesn't have explicit passes).
   // WebGPU overrides these.
   // ═══════════════════════════════════════════════════════════
+
+  /**
+   * The active GPU command encoder, or null on backends without explicit
+   * encoders (WebGL). Scene code treats this as an opaque handle — it's
+   * only passed through to feature renderers that know the concrete type.
+   */
+  get currentCommandEncoder(): unknown {
+    return null;
+  }
+
+  /**
+   * A depth-only texture view suitable for sampling in compute shaders,
+   * or null on backends without explicit depth textures (WebGL).
+   * Scene code treats this as an opaque handle — only feature renderers
+   * (Hi-Z occlusion) use the concrete view.
+   */
+  get depthOnlyTextureView(): unknown {
+    return null;
+  }
 
   /**
    * End the currently active render pass.

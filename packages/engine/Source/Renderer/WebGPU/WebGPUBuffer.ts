@@ -116,7 +116,14 @@ export class WebGPUBuffer {
     // WebGPU requires buffer size > 0 and a valid unsigned integer.
     // Clamp to minimum 4 bytes for callers that pass size 0 or NaN
     // (common during initial frames before data is ready).
-    let bufferSize = Math.max(Number(options.size) || 4, 4);
+    const rawSize = Number(options.size) || 0;
+    if (rawSize <= 0) {
+      console.warn(
+        `[WebGPU:Buffer] size is zero — label="${options.label ?? "(unlabeled)"}" ` +
+          `rawSize=${options.size} usage=${options.usage}. Clamping to 4 bytes.`,
+      );
+    }
+    let bufferSize = Math.max(rawSize, 4);
     if (defined(options.data)) {
       const dataSize =
         options.data instanceof ArrayBuffer

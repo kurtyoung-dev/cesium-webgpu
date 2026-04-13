@@ -788,8 +788,10 @@ let debugDestroyPrimitive;
 // Per-device globe renderer cache (supports multi-context / split-screen)
 const _webgpuGlobeRenderers = new WeakMap();
 
+let _webgpuTileDiagCount = 0;
 function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   const surfaceTile = tile.data;
+  const shouldLog = _webgpuTileDiagCount < 5;
 
   // Create fill mesh for tiles without loaded terrain (mirrors WebGL path).
   // WebGPU reads fill.mesh.vertices/indices directly — no WebGL VA needed.
@@ -802,19 +804,55 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
 
   const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
   if (!mesh || !mesh.vertices || !mesh.indices) {
+    if (shouldLog) {
+      _webgpuTileDiagCount++;
+      console.warn(
+        `[WebGPU:TileDraw] SKIP — no mesh data. ` +
+          `hasSurfaceTile=${!!surfaceTile} ` +
+          `hasRenderedMesh=${!!surfaceTile.renderedMesh} ` +
+          `hasMesh=${!!surfaceTile.mesh} ` +
+          `hasVertexArray=${!!surfaceTile.vertexArray} ` +
+          `hasFill=${!!surfaceTile.fill} ` +
+          `fillMesh=${!!surfaceTile.fill?.mesh} ` +
+          `meshVertices=${!!mesh?.vertices} ` +
+          `meshIndices=${!!mesh?.indices} ` +
+          `level=${tile.level}`,
+      );
+    }
     return;
   }
 
   const context = frameState.context;
   const device = context.device;
   if (!device) {
+    if (shouldLog) {
+      _webgpuTileDiagCount++;
+      console.warn("[WebGPU:TileDraw] SKIP — no device");
+    }
     return;
   }
 
   // Get shader code from the feature renderer (avoids direct WebGPU imports)
   const shaderCode = fr.getShaderCode ? fr.getShaderCode() : undefined;
   if (!shaderCode || shaderCode.length === 0) {
+    if (shouldLog) {
+      _webgpuTileDiagCount++;
+      console.warn(
+        `[WebGPU:TileDraw] SKIP — no shader code. ` +
+          `hasGetShaderCode=${typeof fr.getShaderCode} code=${typeof shaderCode} ` +
+          `len=${shaderCode?.length}`,
+      );
+    }
     return;
+  }
+
+  if (shouldLog) {
+    _webgpuTileDiagCount++;
+    console.log(
+      `[WebGPU:TileDraw] PROCEEDING — level=${tile.level} ` +
+        `meshVerts=${mesh.vertices?.byteLength ?? "?"} ` +
+        `meshIdx=${mesh.indices?.length ?? "?"}`,
+    );
   }
 
   // Per-device renderer: avoids device mismatch in multi-context (split-screen)

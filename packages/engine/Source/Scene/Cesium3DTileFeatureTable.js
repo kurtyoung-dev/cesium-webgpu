@@ -4,11 +4,85 @@ import defined from "../Core/defined.js";
 /**
  * @private
  */
-function Cesium3DTileFeatureTable(featureTableJson, featureTableBinary) {
-  this.json = featureTableJson;
-  this.buffer = featureTableBinary;
-  this._cachedTypedArrays = {};
-  this.featuresLength = 0;
+class Cesium3DTileFeatureTable {
+  constructor(featureTableJson, featureTableBinary) {
+    this.json = featureTableJson;
+    this.buffer = featureTableBinary;
+    this._cachedTypedArrays = {};
+    this.featuresLength = 0;
+  }
+
+  getGlobalProperty(semantic, componentType, componentLength) {
+    const jsonValue = this.json[semantic];
+    if (!defined(jsonValue)) {
+      return undefined;
+    }
+
+    if (defined(jsonValue.byteOffset)) {
+      componentType = componentType ?? ComponentDatatype.UNSIGNED_INT;
+      componentLength = componentLength ?? 1;
+      return getTypedArrayFromBinary(
+        this,
+        semantic,
+        componentType,
+        componentLength,
+        1,
+        jsonValue.byteOffset,
+      );
+    }
+
+    return jsonValue;
+  }
+
+  hasProperty(semantic) {
+    return defined(this.json[semantic]);
+  }
+
+  getPropertyArray(semantic, componentType, componentLength) {
+    const jsonValue = this.json[semantic];
+    if (!defined(jsonValue)) {
+      return undefined;
+    }
+
+    if (defined(jsonValue.byteOffset)) {
+      if (defined(jsonValue.componentType)) {
+        componentType = ComponentDatatype.fromName(jsonValue.componentType);
+      }
+      return getTypedArrayFromBinary(
+        this,
+        semantic,
+        componentType,
+        componentLength,
+        this.featuresLength,
+        jsonValue.byteOffset,
+      );
+    }
+
+    return getTypedArrayFromArray(this, semantic, componentType, jsonValue);
+  }
+
+  getProperty(semantic, componentType, componentLength, featureId, result) {
+    const jsonValue = this.json[semantic];
+    if (!defined(jsonValue)) {
+      return undefined;
+    }
+
+    const typedArray = this.getPropertyArray(
+      semantic,
+      componentType,
+      componentLength,
+    );
+
+    if (componentLength === 1) {
+      return typedArray[featureId];
+    }
+
+    for (let i = 0; i < componentLength; ++i) {
+      result[i] = typedArray[componentLength * featureId + i];
+    }
+
+    return result;
+  }
 }
 
 function getTypedArrayFromBinary(
@@ -43,89 +117,4 @@ function getTypedArrayFromArray(featureTable, semantic, componentType, array) {
   return typedArray;
 }
 
-Cesium3DTileFeatureTable.prototype.getGlobalProperty = function (
-  semantic,
-  componentType,
-  componentLength,
-) {
-  const jsonValue = this.json[semantic];
-  if (!defined(jsonValue)) {
-    return undefined;
-  }
-
-  if (defined(jsonValue.byteOffset)) {
-    componentType = componentType ?? ComponentDatatype.UNSIGNED_INT;
-    componentLength = componentLength ?? 1;
-    return getTypedArrayFromBinary(
-      this,
-      semantic,
-      componentType,
-      componentLength,
-      1,
-      jsonValue.byteOffset,
-    );
-  }
-
-  return jsonValue;
-};
-
-Cesium3DTileFeatureTable.prototype.hasProperty = function (semantic) {
-  return defined(this.json[semantic]);
-};
-
-Cesium3DTileFeatureTable.prototype.getPropertyArray = function (
-  semantic,
-  componentType,
-  componentLength,
-) {
-  const jsonValue = this.json[semantic];
-  if (!defined(jsonValue)) {
-    return undefined;
-  }
-
-  if (defined(jsonValue.byteOffset)) {
-    if (defined(jsonValue.componentType)) {
-      componentType = ComponentDatatype.fromName(jsonValue.componentType);
-    }
-    return getTypedArrayFromBinary(
-      this,
-      semantic,
-      componentType,
-      componentLength,
-      this.featuresLength,
-      jsonValue.byteOffset,
-    );
-  }
-
-  return getTypedArrayFromArray(this, semantic, componentType, jsonValue);
-};
-
-Cesium3DTileFeatureTable.prototype.getProperty = function (
-  semantic,
-  componentType,
-  componentLength,
-  featureId,
-  result,
-) {
-  const jsonValue = this.json[semantic];
-  if (!defined(jsonValue)) {
-    return undefined;
-  }
-
-  const typedArray = this.getPropertyArray(
-    semantic,
-    componentType,
-    componentLength,
-  );
-
-  if (componentLength === 1) {
-    return typedArray[featureId];
-  }
-
-  for (let i = 0; i < componentLength; ++i) {
-    result[i] = typedArray[componentLength * featureId + i];
-  }
-
-  return result;
-};
 export default Cesium3DTileFeatureTable;

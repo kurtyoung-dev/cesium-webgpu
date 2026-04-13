@@ -15,6 +15,7 @@ import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
 import S2Cell from "../Core/S2Cell.js";
 let centerCartographicScratch = new Cartographic();
+
 /**
  * A tile bounding volume specified as an S2 cell token with minimum and maximum heights.
  * The bounding volume is a k DOP. A k-DOP is the Boolean intersection of extents along k directions.
@@ -32,91 +33,385 @@ let centerCartographicScratch = new Cartographic();
  *
  * @private
  */
-function TileBoundingS2Cell(options) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options", options);
-  Check.typeOf.string("options.token", options.token);
-  //>>includeEnd('debug');
+class TileBoundingS2Cell {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options", options);
+    Check.typeOf.string("options.token", options.token);
+    //>>includeEnd('debug');
 
-  const s2Cell = S2Cell.fromToken(options.token);
-  const minimumHeight = options.minimumHeight ?? 0.0;
-  const maximumHeight = options.maximumHeight ?? 0.0;
-  const ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+    const s2Cell = S2Cell.fromToken(options.token);
+    const minimumHeight = options.minimumHeight ?? 0.0;
+    const maximumHeight = options.maximumHeight ?? 0.0;
+    const ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
 
-  this.s2Cell = s2Cell;
-  this.minimumHeight = minimumHeight;
-  this.maximumHeight = maximumHeight;
-  this.ellipsoid = ellipsoid;
+    this.s2Cell = s2Cell;
+    this.minimumHeight = minimumHeight;
+    this.maximumHeight = maximumHeight;
+    this.ellipsoid = ellipsoid;
 
-  const boundingPlanes = computeBoundingPlanes(
-    s2Cell,
-    minimumHeight,
-    maximumHeight,
-    ellipsoid,
-  );
-  this._boundingPlanes = boundingPlanes;
+    const boundingPlanes = computeBoundingPlanes(
+      s2Cell,
+      minimumHeight,
+      maximumHeight,
+      ellipsoid,
+    );
+    this._boundingPlanes = boundingPlanes;
 
-  // Pre-compute vertices to speed up the plane intersection test.
-  const vertices = computeVertices(boundingPlanes);
-  this._vertices = vertices;
+    // Pre-compute vertices to speed up the plane intersection test.
+    const vertices = computeVertices(boundingPlanes);
+    this._vertices = vertices;
 
-  // Pre-compute edge normals to speed up the point-polygon distance check in distanceToCamera.
-  this._edgeNormals = new Array(6);
+    // Pre-compute edge normals to speed up the point-polygon distance check in distanceToCamera.
+    this._edgeNormals = new Array(6);
 
-  this._edgeNormals[0] = computeEdgeNormals(
-    boundingPlanes[0],
-    vertices.slice(0, 4),
-  );
-  let i;
-  // Based on the way the edge normals are computed, the edge normals all point away from the "face"
-  // of the polyhedron they surround, except the plane for the top plane. Therefore, we negate the normals
-  // for the top plane.
-  for (i = 0; i < 4; i++) {
-    this._edgeNormals[0][i] = Cartesian3.negate(
-      this._edgeNormals[0][i],
-      this._edgeNormals[0][i],
+    this._edgeNormals[0] = computeEdgeNormals(
+      boundingPlanes[0],
+      vertices.slice(0, 4),
+    );
+    let i;
+    // Based on the way the edge normals are computed, the edge normals all point away from the "face"
+    // of the polyhedron they surround, except the plane for the top plane. Therefore, we negate the normals
+    // for the top plane.
+    for (i = 0; i < 4; i++) {
+      this._edgeNormals[0][i] = Cartesian3.negate(
+        this._edgeNormals[0][i],
+        this._edgeNormals[0][i],
+      );
+    }
+
+    this._edgeNormals[1] = computeEdgeNormals(
+      boundingPlanes[1],
+      vertices.slice(4, 8),
+    );
+    for (i = 0; i < 4; i++) {
+      // For each plane, iterate through the vertices in CCW order.
+      this._edgeNormals[2 + i] = computeEdgeNormals(boundingPlanes[2 + i], [
+        vertices[i % 4],
+        vertices[(i + 1) % 4],
+        vertices[4 + ((i + 1) % 4)],
+        vertices[4 + i],
+      ]);
+    }
+
+    this._planeVertices = [
+      this._vertices.slice(0, 4),
+      this._vertices.slice(4, 8),
+    ];
+    for (i = 0; i < 4; i++) {
+      this._planeVertices.push([
+        this._vertices[i % 4],
+        this._vertices[(i + 1) % 4],
+        this._vertices[4 + ((i + 1) % 4)],
+        this._vertices[4 + i],
+      ]);
+    }
+
+    const center = s2Cell.getCenter();
+    centerCartographicScratch = ellipsoid.cartesianToCartographic(
+      center,
+      centerCartographicScratch,
+    );
+    centerCartographicScratch.height = (maximumHeight + minimumHeight) / 2;
+    this.center = ellipsoid.cartographicToCartesian(
+      centerCartographicScratch,
+      center,
+    );
+
+    this._boundingSphere = BoundingSphere.fromPoints(vertices);
+  }
+
+  /**
+   * The distance to point check for this kDOP involves checking the signed distance of the point to each bounding
+   * plane. A plane qualifies for a distance check if the point being tested against is in the half-space in the direction
+   * of the normal i.e. if the signed distance of the point from the plane is greater than 0.
+   *
+   * There are 4 possible cases for a point if it is outside the polyhedron:
+   *
+   *   \     X     /     X \           /       \           /       \           /
+   * ---\---------/---   ---\---------/---   ---X---------/---   ---\---------/---
+   *     \       /           \       /           \       /           \       /
+   *   ---\-----/---       ---\-----/---       ---\-----/---       ---\-----/---
+   *       \   /               \   /               \   /               \   /
+   *                                                                    \ /
+   *                                                                     \
+   *                                                                    / \
+   *                                                                   / X \
+   *
+   *         I                  II                  III                 IV
+   *
+   * Case I: There is only one plane selected.
+   * In this case, we project the point onto the plane and do a point polygon distance check to find the closest point on the polygon.
+   * The point may lie inside the "face" of the polygon or outside. If it is outside, we need to determine which edges to test against.
+   *
+   * Case II: There are two planes selected.
+   * In this case, the point will lie somewhere on the line created at the intersection of the selected planes or one of the planes.
+   *
+   * Case III: There are three planes selected.
+   * In this case, the point will lie on the vertex, at the intersection of the selected planes.
+   *
+   * Case IV: There are more than three planes selected.
+   * Since we are on an ellipsoid, this will only happen in the bottom plane, which is what we will use for the distance test.
+   */
+  distanceToCamera(frameState) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("frameState", frameState);
+    //>>includeEnd('debug');
+
+    const point = frameState.camera.positionWC;
+
+    const selectedPlaneIndices = [];
+    const vertices = [];
+    let edgeNormals;
+
+    if (Plane.getPointDistance(this._boundingPlanes[0], point) > 0) {
+      selectedPlaneIndices.push(0);
+      vertices.push(this._planeVertices[0]);
+      edgeNormals = this._edgeNormals[0];
+    } else if (Plane.getPointDistance(this._boundingPlanes[1], point) > 0) {
+      selectedPlaneIndices.push(1);
+      vertices.push(this._planeVertices[1]);
+      edgeNormals = this._edgeNormals[1];
+    }
+
+    let i;
+    let sidePlaneIndex;
+    for (i = 0; i < 4; i++) {
+      sidePlaneIndex = 2 + i;
+      if (
+        Plane.getPointDistance(this._boundingPlanes[sidePlaneIndex], point) > 0
+      ) {
+        selectedPlaneIndices.push(sidePlaneIndex);
+        // Store vertices in CCW order.
+        vertices.push(this._planeVertices[sidePlaneIndex]);
+        edgeNormals = this._edgeNormals[sidePlaneIndex];
+      }
+    }
+
+    // Check if inside all planes.
+    if (selectedPlaneIndices.length === 0) {
+      return 0.0;
+    }
+
+    // We use the skip variable when the side plane indices are non-consecutive.
+    let facePoint;
+    let selectedPlane;
+    if (selectedPlaneIndices.length === 1) {
+      // Handles Case I
+      selectedPlane = this._boundingPlanes[selectedPlaneIndices[0]];
+      facePoint = closestPointPolygon(
+        Plane.projectPointOntoPlane(selectedPlane, point, facePointScratch),
+        vertices[0],
+        selectedPlane,
+        edgeNormals,
+      );
+
+      return Cartesian3.distance(facePoint, point);
+    } else if (selectedPlaneIndices.length === 2) {
+      // Handles Case II
+      // Since we are on the ellipsoid, the dihedral angle between a top plane and a side plane
+      // will always be acute, so we can do a faster check there.
+      if (selectedPlaneIndices[0] === 0) {
+        const edge = [
+          this._vertices[
+            4 * selectedPlaneIndices[0] + (selectedPlaneIndices[1] - 2)
+          ],
+          this._vertices[
+            4 * selectedPlaneIndices[0] + ((selectedPlaneIndices[1] - 2 + 1) % 4)
+          ],
+        ];
+        facePoint = closestPointLineSegment(point, edge[0], edge[1]);
+        return Cartesian3.distance(facePoint, point);
+      }
+      let minimumDistance = Number.MAX_VALUE;
+      let distance;
+      for (i = 0; i < 2; i++) {
+        selectedPlane = this._boundingPlanes[selectedPlaneIndices[i]];
+        facePoint = closestPointPolygon(
+          Plane.projectPointOntoPlane(selectedPlane, point, facePointScratch),
+          vertices[i],
+          selectedPlane,
+          this._edgeNormals[selectedPlaneIndices[i]],
+        );
+
+        distance = Cartesian3.distanceSquared(facePoint, point);
+        if (distance < minimumDistance) {
+          minimumDistance = distance;
+        }
+      }
+      return Math.sqrt(minimumDistance);
+    } else if (selectedPlaneIndices.length > 3) {
+      // Handles Case IV
+      facePoint = closestPointPolygon(
+        Plane.projectPointOntoPlane(
+          this._boundingPlanes[1],
+          point,
+          facePointScratch,
+        ),
+        this._planeVertices[1],
+        this._boundingPlanes[1],
+        this._edgeNormals[1],
+      );
+      return Cartesian3.distance(facePoint, point);
+    }
+
+    // Handles Case III
+    const skip =
+      selectedPlaneIndices[1] === 2 && selectedPlaneIndices[2] === 5 ? 0 : 1;
+
+    // Vertex is on top plane.
+    if (selectedPlaneIndices[0] === 0) {
+      return Cartesian3.distance(
+        point,
+        this._vertices[(selectedPlaneIndices[1] - 2 + skip) % 4],
+      );
+    }
+
+    // Vertex is on bottom plane.
+    return Cartesian3.distance(
+      point,
+      this._vertices[4 + ((selectedPlaneIndices[1] - 2 + skip) % 4)],
     );
   }
 
-  this._edgeNormals[1] = computeEdgeNormals(
-    boundingPlanes[1],
-    vertices.slice(4, 8),
-  );
-  for (i = 0; i < 4; i++) {
-    // For each plane, iterate through the vertices in CCW order.
-    this._edgeNormals[2 + i] = computeEdgeNormals(boundingPlanes[2 + i], [
-      vertices[i % 4],
-      vertices[(i + 1) % 4],
-      vertices[4 + ((i + 1) % 4)],
-      vertices[4 + i],
-    ]);
+  /**
+   * Determines which side of a plane this volume is located.
+   *
+   * @param {Plane} plane The plane to test against.
+   * @returns {Intersect} {@link Intersect.INSIDE} if the entire volume is on the side of the plane
+   *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire volume is
+   *                      on the opposite side, and {@link Intersect.INTERSECTING} if the volume
+   *                      intersects the plane.
+   */
+  intersectPlane(plane) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("plane", plane);
+    //>>includeEnd('debug');
+
+    let plusCount = 0;
+    let negCount = 0;
+    for (let i = 0; i < this._vertices.length; i++) {
+      const distanceToPlane =
+        Cartesian3.dot(plane.normal, this._vertices[i]) + plane.distance;
+      if (distanceToPlane < 0) {
+        negCount++;
+      } else {
+        plusCount++;
+      }
+    }
+
+    if (plusCount === this._vertices.length) {
+      return Intersect.INSIDE;
+    } else if (negCount === this._vertices.length) {
+      return Intersect.OUTSIDE;
+    }
+    return Intersect.INTERSECTING;
   }
 
-  this._planeVertices = [
-    this._vertices.slice(0, 4),
-    this._vertices.slice(4, 8),
-  ];
-  for (i = 0; i < 4; i++) {
-    this._planeVertices.push([
-      this._vertices[i % 4],
-      this._vertices[(i + 1) % 4],
-      this._vertices[4 + ((i + 1) % 4)],
-      this._vertices[4 + i],
-    ]);
+  /**
+   * Creates a debug primitive that shows the outline of the tile bounding
+   * volume.
+   *
+   * @param {Color} color The desired color of the primitive's mesh
+   * @return {Primitive}
+   */
+  createDebugVolume(color) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("color", color);
+    //>>includeEnd('debug');
+
+    const modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+    const topPlanePolygon = new CoplanarPolygonOutlineGeometry({
+      polygonHierarchy: {
+        positions: this._planeVertices[0],
+      },
+    });
+    const topPlaneGeometry =
+      CoplanarPolygonOutlineGeometry.createGeometry(topPlanePolygon);
+    const topPlaneInstance = new GeometryInstance({
+      geometry: topPlaneGeometry,
+      id: "outline",
+      modelMatrix: modelMatrix,
+      attributes: {
+        color: ColorGeometryInstanceAttribute.fromColor(color),
+      },
+    });
+
+    const bottomPlanePolygon = new CoplanarPolygonOutlineGeometry({
+      polygonHierarchy: {
+        positions: this._planeVertices[1],
+      },
+    });
+    const bottomPlaneGeometry =
+      CoplanarPolygonOutlineGeometry.createGeometry(bottomPlanePolygon);
+    const bottomPlaneInstance = new GeometryInstance({
+      geometry: bottomPlaneGeometry,
+      id: "outline",
+      modelMatrix: modelMatrix,
+      attributes: {
+        color: ColorGeometryInstanceAttribute.fromColor(color),
+      },
+    });
+
+    const sideInstances = [];
+    for (let i = 0; i < 4; i++) {
+      const sidePlanePolygon = new CoplanarPolygonOutlineGeometry({
+        polygonHierarchy: {
+          positions: this._planeVertices[2 + i],
+        },
+      });
+      const sidePlaneGeometry =
+        CoplanarPolygonOutlineGeometry.createGeometry(sidePlanePolygon);
+      sideInstances[i] = new GeometryInstance({
+        geometry: sidePlaneGeometry,
+        id: "outline",
+        modelMatrix: modelMatrix,
+        attributes: {
+          color: ColorGeometryInstanceAttribute.fromColor(color),
+        },
+      });
+    }
+
+    return new Primitive({
+      geometryInstances: [
+        sideInstances[0],
+        sideInstances[1],
+        sideInstances[2],
+        sideInstances[3],
+        bottomPlaneInstance,
+        topPlaneInstance,
+      ],
+      appearance: new PerInstanceColorAppearance({
+        translucent: false,
+        flat: true,
+      }),
+      asynchronous: false,
+    });
   }
 
-  const center = s2Cell.getCenter();
-  centerCartographicScratch = ellipsoid.cartesianToCartographic(
-    center,
-    centerCartographicScratch,
-  );
-  centerCartographicScratch.height = (maximumHeight + minimumHeight) / 2;
-  this.center = ellipsoid.cartographicToCartesian(
-    centerCartographicScratch,
-    center,
-  );
+  /**
+   * The underlying bounding volume.
+   *
+   * @memberof TileBoundingS2Cell.prototype
+   *
+   * @type {object}
+   * @readonly
+   */
+  get boundingVolume() {
+    return this;
+  }
 
-  this._boundingSphere = BoundingSphere.fromPoints(vertices);
+  /**
+   * The underlying bounding sphere.
+   *
+   * @memberof TileBoundingS2Cell.prototype
+   *
+   * @type {BoundingSphere}
+   * @readonly
+   */
+  get boundingSphere() {
+    return this._boundingSphere;
+  }
 }
 
 const centerGeodeticNormalScratch = new Cartesian3();
@@ -325,188 +620,7 @@ function computeEdgeNormals(plane, vertices) {
   return edgeNormals;
 }
 
-Object.defineProperties(TileBoundingS2Cell.prototype, {
-  /**
-   * The underlying bounding volume.
-   *
-   * @memberof TileBoundingS2Cell.prototype
-   *
-   * @type {object}
-   * @readonly
-   */
-  boundingVolume: {
-    get: function () {
-      return this;
-    },
-  },
-  /**
-   * The underlying bounding sphere.
-   *
-   * @memberof TileBoundingS2Cell.prototype
-   *
-   * @type {BoundingSphere}
-   * @readonly
-   */
-  boundingSphere: {
-    get: function () {
-      return this._boundingSphere;
-    },
-  },
-});
-
 const facePointScratch = new Cartesian3();
-/**
- * The distance to point check for this kDOP involves checking the signed distance of the point to each bounding
- * plane. A plane qualifies for a distance check if the point being tested against is in the half-space in the direction
- * of the normal i.e. if the signed distance of the point from the plane is greater than 0.
- *
- * There are 4 possible cases for a point if it is outside the polyhedron:
- *
- *   \     X     /     X \           /       \           /       \           /
- * ---\---------/---   ---\---------/---   ---X---------/---   ---\---------/---
- *     \       /           \       /           \       /           \       /
- *   ---\-----/---       ---\-----/---       ---\-----/---       ---\-----/---
- *       \   /               \   /               \   /               \   /
- *                                                                    \ /
- *                                                                     \
- *                                                                    / \
- *                                                                   / X \
- *
- *         I                  II                  III                 IV
- *
- * Case I: There is only one plane selected.
- * In this case, we project the point onto the plane and do a point polygon distance check to find the closest point on the polygon.
- * The point may lie inside the "face" of the polygon or outside. If it is outside, we need to determine which edges to test against.
- *
- * Case II: There are two planes selected.
- * In this case, the point will lie somewhere on the line created at the intersection of the selected planes or one of the planes.
- *
- * Case III: There are three planes selected.
- * In this case, the point will lie on the vertex, at the intersection of the selected planes.
- *
- * Case IV: There are more than three planes selected.
- * Since we are on an ellipsoid, this will only happen in the bottom plane, which is what we will use for the distance test.
- */
-TileBoundingS2Cell.prototype.distanceToCamera = function (frameState) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("frameState", frameState);
-  //>>includeEnd('debug');
-
-  const point = frameState.camera.positionWC;
-
-  const selectedPlaneIndices = [];
-  const vertices = [];
-  let edgeNormals;
-
-  if (Plane.getPointDistance(this._boundingPlanes[0], point) > 0) {
-    selectedPlaneIndices.push(0);
-    vertices.push(this._planeVertices[0]);
-    edgeNormals = this._edgeNormals[0];
-  } else if (Plane.getPointDistance(this._boundingPlanes[1], point) > 0) {
-    selectedPlaneIndices.push(1);
-    vertices.push(this._planeVertices[1]);
-    edgeNormals = this._edgeNormals[1];
-  }
-
-  let i;
-  let sidePlaneIndex;
-  for (i = 0; i < 4; i++) {
-    sidePlaneIndex = 2 + i;
-    if (
-      Plane.getPointDistance(this._boundingPlanes[sidePlaneIndex], point) > 0
-    ) {
-      selectedPlaneIndices.push(sidePlaneIndex);
-      // Store vertices in CCW order.
-      vertices.push(this._planeVertices[sidePlaneIndex]);
-      edgeNormals = this._edgeNormals[sidePlaneIndex];
-    }
-  }
-
-  // Check if inside all planes.
-  if (selectedPlaneIndices.length === 0) {
-    return 0.0;
-  }
-
-  // We use the skip variable when the side plane indices are non-consecutive.
-  let facePoint;
-  let selectedPlane;
-  if (selectedPlaneIndices.length === 1) {
-    // Handles Case I
-    selectedPlane = this._boundingPlanes[selectedPlaneIndices[0]];
-    facePoint = closestPointPolygon(
-      Plane.projectPointOntoPlane(selectedPlane, point, facePointScratch),
-      vertices[0],
-      selectedPlane,
-      edgeNormals,
-    );
-
-    return Cartesian3.distance(facePoint, point);
-  } else if (selectedPlaneIndices.length === 2) {
-    // Handles Case II
-    // Since we are on the ellipsoid, the dihedral angle between a top plane and a side plane
-    // will always be acute, so we can do a faster check there.
-    if (selectedPlaneIndices[0] === 0) {
-      const edge = [
-        this._vertices[
-          4 * selectedPlaneIndices[0] + (selectedPlaneIndices[1] - 2)
-        ],
-        this._vertices[
-          4 * selectedPlaneIndices[0] + ((selectedPlaneIndices[1] - 2 + 1) % 4)
-        ],
-      ];
-      facePoint = closestPointLineSegment(point, edge[0], edge[1]);
-      return Cartesian3.distance(facePoint, point);
-    }
-    let minimumDistance = Number.MAX_VALUE;
-    let distance;
-    for (i = 0; i < 2; i++) {
-      selectedPlane = this._boundingPlanes[selectedPlaneIndices[i]];
-      facePoint = closestPointPolygon(
-        Plane.projectPointOntoPlane(selectedPlane, point, facePointScratch),
-        vertices[i],
-        selectedPlane,
-        this._edgeNormals[selectedPlaneIndices[i]],
-      );
-
-      distance = Cartesian3.distanceSquared(facePoint, point);
-      if (distance < minimumDistance) {
-        minimumDistance = distance;
-      }
-    }
-    return Math.sqrt(minimumDistance);
-  } else if (selectedPlaneIndices.length > 3) {
-    // Handles Case IV
-    facePoint = closestPointPolygon(
-      Plane.projectPointOntoPlane(
-        this._boundingPlanes[1],
-        point,
-        facePointScratch,
-      ),
-      this._planeVertices[1],
-      this._boundingPlanes[1],
-      this._edgeNormals[1],
-    );
-    return Cartesian3.distance(facePoint, point);
-  }
-
-  // Handles Case III
-  const skip =
-    selectedPlaneIndices[1] === 2 && selectedPlaneIndices[2] === 5 ? 0 : 1;
-
-  // Vertex is on top plane.
-  if (selectedPlaneIndices[0] === 0) {
-    return Cartesian3.distance(
-      point,
-      this._vertices[(selectedPlaneIndices[1] - 2 + skip) % 4],
-    );
-  }
-
-  // Vertex is on bottom plane.
-  return Cartesian3.distance(
-    point,
-    this._vertices[4 + ((selectedPlaneIndices[1] - 2 + skip) % 4)],
-  );
-};
 
 const dScratch = new Cartesian3();
 const pL0Scratch = new Cartesian3();
@@ -580,120 +694,5 @@ function closestPointPolygon(p, vertices, plane, edgeNormals) {
   }
   return closestPoint;
 }
-
-/**
- * Determines which side of a plane this volume is located.
- *
- * @param {Plane} plane The plane to test against.
- * @returns {Intersect} {@link Intersect.INSIDE} if the entire volume is on the side of the plane
- *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire volume is
- *                      on the opposite side, and {@link Intersect.INTERSECTING} if the volume
- *                      intersects the plane.
- */
-TileBoundingS2Cell.prototype.intersectPlane = function (plane) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("plane", plane);
-  //>>includeEnd('debug');
-
-  let plusCount = 0;
-  let negCount = 0;
-  for (let i = 0; i < this._vertices.length; i++) {
-    const distanceToPlane =
-      Cartesian3.dot(plane.normal, this._vertices[i]) + plane.distance;
-    if (distanceToPlane < 0) {
-      negCount++;
-    } else {
-      plusCount++;
-    }
-  }
-
-  if (plusCount === this._vertices.length) {
-    return Intersect.INSIDE;
-  } else if (negCount === this._vertices.length) {
-    return Intersect.OUTSIDE;
-  }
-  return Intersect.INTERSECTING;
-};
-
-/**
- * Creates a debug primitive that shows the outline of the tile bounding
- * volume.
- *
- * @param {Color} color The desired color of the primitive's mesh
- * @return {Primitive}
- */
-TileBoundingS2Cell.prototype.createDebugVolume = function (color) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("color", color);
-  //>>includeEnd('debug');
-
-  const modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
-  const topPlanePolygon = new CoplanarPolygonOutlineGeometry({
-    polygonHierarchy: {
-      positions: this._planeVertices[0],
-    },
-  });
-  const topPlaneGeometry =
-    CoplanarPolygonOutlineGeometry.createGeometry(topPlanePolygon);
-  const topPlaneInstance = new GeometryInstance({
-    geometry: topPlaneGeometry,
-    id: "outline",
-    modelMatrix: modelMatrix,
-    attributes: {
-      color: ColorGeometryInstanceAttribute.fromColor(color),
-    },
-  });
-
-  const bottomPlanePolygon = new CoplanarPolygonOutlineGeometry({
-    polygonHierarchy: {
-      positions: this._planeVertices[1],
-    },
-  });
-  const bottomPlaneGeometry =
-    CoplanarPolygonOutlineGeometry.createGeometry(bottomPlanePolygon);
-  const bottomPlaneInstance = new GeometryInstance({
-    geometry: bottomPlaneGeometry,
-    id: "outline",
-    modelMatrix: modelMatrix,
-    attributes: {
-      color: ColorGeometryInstanceAttribute.fromColor(color),
-    },
-  });
-
-  const sideInstances = [];
-  for (let i = 0; i < 4; i++) {
-    const sidePlanePolygon = new CoplanarPolygonOutlineGeometry({
-      polygonHierarchy: {
-        positions: this._planeVertices[2 + i],
-      },
-    });
-    const sidePlaneGeometry =
-      CoplanarPolygonOutlineGeometry.createGeometry(sidePlanePolygon);
-    sideInstances[i] = new GeometryInstance({
-      geometry: sidePlaneGeometry,
-      id: "outline",
-      modelMatrix: modelMatrix,
-      attributes: {
-        color: ColorGeometryInstanceAttribute.fromColor(color),
-      },
-    });
-  }
-
-  return new Primitive({
-    geometryInstances: [
-      sideInstances[0],
-      sideInstances[1],
-      sideInstances[2],
-      sideInstances[3],
-      bottomPlaneInstance,
-      topPlaneInstance,
-    ],
-    appearance: new PerInstanceColorAppearance({
-      translucent: false,
-      flat: true,
-    }),
-    asynchronous: false,
-  });
-};
 
 export default TileBoundingS2Cell;

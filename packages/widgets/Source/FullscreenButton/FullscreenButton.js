@@ -25,53 +25,71 @@ const exitFullScreenPath =
  *
  * @see Fullscreen
  */
-function FullscreenButton(container, fullscreenElement) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(container)) {
-    throw new DeveloperError("container is required.");
+class FullscreenButton {
+  constructor(container, fullscreenElement) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(container)) {
+      throw new DeveloperError("container is required.");
+    }
+    //>>includeEnd('debug');
+
+    container = getElement(container);
+
+    const viewModel = new FullscreenButtonViewModel(fullscreenElement, container);
+
+    viewModel._exitFullScreenPath = exitFullScreenPath;
+    viewModel._enterFullScreenPath = enterFullScreenPath;
+
+    const element = document.createElement("button");
+    element.type = "button";
+    element.className = "cesium-button cesium-fullscreenButton";
+    element.setAttribute(
+      "data-bind",
+      "\
+  attr: { title: tooltip },\
+  click: command,\
+  enable: isFullscreenEnabled,\
+  cesiumSvgPath: { path: isFullscreen ? _exitFullScreenPath : _enterFullScreenPath, width: 128, height: 128 }",
+    );
+
+    container.appendChild(element);
+
+    knockout.applyBindings(viewModel, element);
+
+    this._container = container;
+    this._viewModel = viewModel;
+    this._element = element;
   }
-  //>>includeEnd('debug');
 
-  container = getElement(container);
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
+  }
 
-  const viewModel = new FullscreenButtonViewModel(fullscreenElement, container);
+  /**
+   * Destroys the widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    this._viewModel.destroy();
 
-  viewModel._exitFullScreenPath = exitFullScreenPath;
-  viewModel._enterFullScreenPath = enterFullScreenPath;
+    knockout.cleanNode(this._element);
+    this._container.removeChild(this._element);
 
-  const element = document.createElement("button");
-  element.type = "button";
-  element.className = "cesium-button cesium-fullscreenButton";
-  element.setAttribute(
-    "data-bind",
-    "\
-attr: { title: tooltip },\
-click: command,\
-enable: isFullscreenEnabled,\
-cesiumSvgPath: { path: isFullscreen ? _exitFullScreenPath : _enterFullScreenPath, width: 128, height: 128 }",
-  );
+    return destroyObject(this);
+  }
 
-  container.appendChild(element);
-
-  knockout.applyBindings(viewModel, element);
-
-  this._container = container;
-  this._viewModel = viewModel;
-  this._element = element;
-}
-
-Object.defineProperties(FullscreenButton.prototype, {
   /**
    * Gets the parent container.
    * @memberof FullscreenButton.prototype
    *
    * @type {Element}
    */
-  container: {
-    get: function () {
-      return this._container;
-    },
-  },
+  get container() {
+    return this._container;
+  }
 
   /**
    * Gets the view model.
@@ -79,30 +97,9 @@ Object.defineProperties(FullscreenButton.prototype, {
    *
    * @type {FullscreenButtonViewModel}
    */
-  viewModel: {
-    get: function () {
-      return this._viewModel;
-    },
-  },
-});
+  get viewModel() {
+    return this._viewModel;
+  }
+}
 
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-FullscreenButton.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-FullscreenButton.prototype.destroy = function () {
-  this._viewModel.destroy();
-
-  knockout.cleanNode(this._element);
-  this._container.removeChild(this._element);
-
-  return destroyObject(this);
-};
 export default FullscreenButton;

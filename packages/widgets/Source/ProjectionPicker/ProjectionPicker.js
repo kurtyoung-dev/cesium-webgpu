@@ -31,109 +31,134 @@ const orthographicPath =
  *
  * const projectionPicker = new Cesium.ProjectionPicker('projectionPickerContainer', scene);
  */
-function ProjectionPicker(container, scene) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(container)) {
-    throw new DeveloperError("container is required.");
-  }
-  if (!defined(scene)) {
-    throw new DeveloperError("scene is required.");
-  }
-  //>>includeEnd('debug');
-
-  container = getElement(container);
-
-  const viewModel = new ProjectionPickerViewModel(scene);
-
-  viewModel._perspectivePath = perspectivePath;
-  viewModel._orthographicPath = orthographicPath;
-
-  const wrapper = document.createElement("span");
-  wrapper.className = "cesium-projectionPicker-wrapper cesium-toolbar-button";
-  container.appendChild(wrapper);
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "cesium-button cesium-toolbar-button";
-  button.setAttribute(
-    "data-bind",
-    '\
-css: { "cesium-projectionPicker-buttonPerspective": !_orthographic,\
-       "cesium-projectionPicker-buttonOrthographic": _orthographic,\
-       "cesium-button-disabled" : sceneMode === _sceneMode.SCENE2D || _flightInProgress, \
-       "cesium-projectionPicker-selected": dropDownVisible },\
-attr: { title: selectedTooltip },\
-click: toggleDropDown',
-  );
-  button.innerHTML =
-    '\
-<!-- ko cesiumSvgPath: { path: _perspectivePath, width: 64, height: 64, css: "cesium-projectionPicker-iconPerspective" } --><!-- /ko -->\
-<!-- ko cesiumSvgPath: { path: _orthographicPath, width: 64, height: 64, css: "cesium-projectionPicker-iconOrthographic" } --><!-- /ko -->';
-  wrapper.appendChild(button);
-
-  const perspectiveButton = document.createElement("button");
-  perspectiveButton.type = "button";
-  perspectiveButton.className =
-    "cesium-button cesium-toolbar-button cesium-projectionPicker-dropDown-icon";
-  perspectiveButton.setAttribute(
-    "data-bind",
-    '\
-css: { "cesium-projectionPicker-visible" : (dropDownVisible && _orthographic),\
-       "cesium-projectionPicker-none" : !_orthographic,\
-       "cesium-projectionPicker-hidden" : !dropDownVisible },\
-attr: { title: tooltipPerspective },\
-click: switchToPerspective,\
-cesiumSvgPath: { path: _perspectivePath, width: 64, height: 64 }',
-  );
-  wrapper.appendChild(perspectiveButton);
-
-  const orthographicButton = document.createElement("button");
-  orthographicButton.type = "button";
-  orthographicButton.className =
-    "cesium-button cesium-toolbar-button cesium-projectionPicker-dropDown-icon";
-  orthographicButton.setAttribute(
-    "data-bind",
-    '\
-css: { "cesium-projectionPicker-visible" : (dropDownVisible && !_orthographic),\
-       "cesium-projectionPicker-none" : _orthographic,\
-       "cesium-projectionPicker-hidden" : !dropDownVisible},\
-attr: { title: tooltipOrthographic },\
-click: switchToOrthographic,\
-cesiumSvgPath: { path: _orthographicPath, width: 64, height: 64 }',
-  );
-  wrapper.appendChild(orthographicButton);
-
-  knockout.applyBindings(viewModel, wrapper);
-
-  this._viewModel = viewModel;
-  this._container = container;
-  this._wrapper = wrapper;
-
-  this._closeDropDown = function (e) {
-    if (!wrapper.contains(e.target)) {
-      viewModel.dropDownVisible = false;
+class ProjectionPicker {
+  constructor(container, scene) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(container)) {
+      throw new DeveloperError("container is required.");
     }
-  };
-  if (FeatureDetection.supportsPointerEvents()) {
-    document.addEventListener("pointerdown", this._closeDropDown, true);
-  } else {
-    document.addEventListener("mousedown", this._closeDropDown, true);
-    document.addEventListener("touchstart", this._closeDropDown, true);
-  }
-}
+    if (!defined(scene)) {
+      throw new DeveloperError("scene is required.");
+    }
+    //>>includeEnd('debug');
 
-Object.defineProperties(ProjectionPicker.prototype, {
+    container = getElement(container);
+
+    const viewModel = new ProjectionPickerViewModel(scene);
+
+    viewModel._perspectivePath = perspectivePath;
+    viewModel._orthographicPath = orthographicPath;
+
+    const wrapper = document.createElement("span");
+    wrapper.className = "cesium-projectionPicker-wrapper cesium-toolbar-button";
+    container.appendChild(wrapper);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cesium-button cesium-toolbar-button";
+    button.setAttribute(
+      "data-bind",
+      '\
+  css: { "cesium-projectionPicker-buttonPerspective": !_orthographic,\
+         "cesium-projectionPicker-buttonOrthographic": _orthographic,\
+         "cesium-button-disabled" : sceneMode === _sceneMode.SCENE2D || _flightInProgress, \
+         "cesium-projectionPicker-selected": dropDownVisible },\
+  attr: { title: selectedTooltip },\
+  click: toggleDropDown',
+    );
+    button.innerHTML =
+      '\
+  <!-- ko cesiumSvgPath: { path: _perspectivePath, width: 64, height: 64, css: "cesium-projectionPicker-iconPerspective" } --><!-- /ko -->\
+  <!-- ko cesiumSvgPath: { path: _orthographicPath, width: 64, height: 64, css: "cesium-projectionPicker-iconOrthographic" } --><!-- /ko -->';
+    wrapper.appendChild(button);
+
+    const perspectiveButton = document.createElement("button");
+    perspectiveButton.type = "button";
+    perspectiveButton.className =
+      "cesium-button cesium-toolbar-button cesium-projectionPicker-dropDown-icon";
+    perspectiveButton.setAttribute(
+      "data-bind",
+      '\
+  css: { "cesium-projectionPicker-visible" : (dropDownVisible && _orthographic),\
+         "cesium-projectionPicker-none" : !_orthographic,\
+         "cesium-projectionPicker-hidden" : !dropDownVisible },\
+  attr: { title: tooltipPerspective },\
+  click: switchToPerspective,\
+  cesiumSvgPath: { path: _perspectivePath, width: 64, height: 64 }',
+    );
+    wrapper.appendChild(perspectiveButton);
+
+    const orthographicButton = document.createElement("button");
+    orthographicButton.type = "button";
+    orthographicButton.className =
+      "cesium-button cesium-toolbar-button cesium-projectionPicker-dropDown-icon";
+    orthographicButton.setAttribute(
+      "data-bind",
+      '\
+  css: { "cesium-projectionPicker-visible" : (dropDownVisible && !_orthographic),\
+         "cesium-projectionPicker-none" : _orthographic,\
+         "cesium-projectionPicker-hidden" : !dropDownVisible},\
+  attr: { title: tooltipOrthographic },\
+  click: switchToOrthographic,\
+  cesiumSvgPath: { path: _orthographicPath, width: 64, height: 64 }',
+    );
+    wrapper.appendChild(orthographicButton);
+
+    knockout.applyBindings(viewModel, wrapper);
+
+    this._viewModel = viewModel;
+    this._container = container;
+    this._wrapper = wrapper;
+
+    this._closeDropDown = function (e) {
+      if (!wrapper.contains(e.target)) {
+        viewModel.dropDownVisible = false;
+      }
+    };
+    if (FeatureDetection.supportsPointerEvents()) {
+      document.addEventListener("pointerdown", this._closeDropDown, true);
+    } else {
+      document.addEventListener("mousedown", this._closeDropDown, true);
+      document.addEventListener("touchstart", this._closeDropDown, true);
+    }
+  }
+
+  /**
+   * @returns {boolean} true if the object has been destroyed, false otherwise.
+   */
+  isDestroyed() {
+    return false;
+  }
+
+  /**
+   * Destroys the widget.  Should be called if permanently
+   * removing the widget from layout.
+   */
+  destroy() {
+    this._viewModel.destroy();
+
+    if (FeatureDetection.supportsPointerEvents()) {
+      document.removeEventListener("pointerdown", this._closeDropDown, true);
+    } else {
+      document.removeEventListener("mousedown", this._closeDropDown, true);
+      document.removeEventListener("touchstart", this._closeDropDown, true);
+    }
+
+    knockout.cleanNode(this._wrapper);
+    this._container.removeChild(this._wrapper);
+
+    return destroyObject(this);
+  }
+
   /**
    * Gets the parent container.
    * @memberof ProjectionPicker.prototype
    *
    * @type {Element}
    */
-  container: {
-    get: function () {
-      return this._container;
-    },
-  },
+  get container() {
+    return this._container;
+  }
 
   /**
    * Gets the view model.
@@ -141,37 +166,9 @@ Object.defineProperties(ProjectionPicker.prototype, {
    *
    * @type {ProjectionPickerViewModel}
    */
-  viewModel: {
-    get: function () {
-      return this._viewModel;
-    },
-  },
-});
-
-/**
- * @returns {boolean} true if the object has been destroyed, false otherwise.
- */
-ProjectionPicker.prototype.isDestroyed = function () {
-  return false;
-};
-
-/**
- * Destroys the widget.  Should be called if permanently
- * removing the widget from layout.
- */
-ProjectionPicker.prototype.destroy = function () {
-  this._viewModel.destroy();
-
-  if (FeatureDetection.supportsPointerEvents()) {
-    document.removeEventListener("pointerdown", this._closeDropDown, true);
-  } else {
-    document.removeEventListener("mousedown", this._closeDropDown, true);
-    document.removeEventListener("touchstart", this._closeDropDown, true);
+  get viewModel() {
+    return this._viewModel;
   }
+}
 
-  knockout.cleanNode(this._wrapper);
-  this._container.removeChild(this._wrapper);
-
-  return destroyObject(this);
-};
 export default ProjectionPicker;

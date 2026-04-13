@@ -28,7 +28,7 @@ export enum DerivedCommandType {
 
 /** A cached derived command with dirty tracking */
 export interface DerivedCommandResult {
-  command: any; // WebGPUDrawCommand
+  command: CesiumAnyDrawCommand | undefined;
   shaderModuleId?: number;
   pipelineKey?: string;
 }
@@ -59,14 +59,12 @@ export class WebGPUDerivedCommand {
    * - colorTargets[*].writeMask = 0 (no color writes)
    * - depthWriteEnabled = true
    *
-   * @param scene The scene
    * @param command The base WebGPU draw command
    * @param result Optional cached result to reuse
    * @returns The derived command result
    */
   static createDepthOnlyDerivedCommand(
-    scene: any,
-    command: any,
+    command: CesiumAnyDrawCommand,
     result?: DerivedCommandResult,
   ): DerivedCommandResult {
     if (!result) {
@@ -102,7 +100,7 @@ export class WebGPUDerivedCommand {
    * @returns The derived command result with log depth enabled
    */
   static createLogDepthCommand(
-    command: any,
+    command: CesiumAnyDrawCommand,
     result?: DerivedCommandResult,
   ): DerivedCommandResult {
     if (!result) {
@@ -132,7 +130,7 @@ export class WebGPUDerivedCommand {
    * @returns The derived command result
    */
   static createPickDerivedCommand(
-    command: any,
+    command: CesiumAnyDrawCommand,
     pickId: number[],
     result?: DerivedCommandResult,
   ): DerivedCommandResult {
@@ -162,7 +160,7 @@ export class WebGPUDerivedCommand {
    * @returns The derived command result
    */
   static createHDRDerivedCommand(
-    command: any,
+    command: CesiumAnyDrawCommand,
     result?: DerivedCommandResult,
   ): DerivedCommandResult {
     if (!result) {
@@ -191,7 +189,7 @@ export class WebGPUDerivedCommand {
    * @returns The derived command result
    */
   static createShadowDerivedCommand(
-    command: any,
+    command: CesiumAnyDrawCommand,
     result?: DerivedCommandResult,
   ): DerivedCommandResult {
     if (!result) {

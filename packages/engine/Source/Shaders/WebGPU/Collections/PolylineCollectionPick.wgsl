@@ -18,7 +18,7 @@ struct CameraUniforms {
   _pad2: vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> u: CameraUniforms;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -58,19 +58,19 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Compute clip positions for start and end
   let startRTE = translateRelativeToEye(
     input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
   let endRTE = translateRelativeToEye(
     input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
-    u.encodedCameraHigh, u.encodedCameraLow
+    camera.encodedCameraHigh, camera.encodedCameraLow
   );
 
-  let clipStart = u.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
-  let clipEnd = u.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+  let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
   // Convert to screen space
-  let screenStart = toScreenSpace(clipStart, u.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, u.viewportSize);
+  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
 
   // Line direction and normal
   let lineDir = normalize(screenEnd - screenStart);
@@ -98,7 +98,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
   // Convert back to clip space
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, u.viewportSize);
+  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
   output.pickColor = input.pickColor;
 
   return output;

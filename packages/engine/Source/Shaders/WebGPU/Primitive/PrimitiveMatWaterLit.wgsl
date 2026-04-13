@@ -20,7 +20,7 @@ struct VertexOutput {
     @location(2) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     modelViewRelativeToEye: mat4x4<f32>,
     normalMatrix: mat4x4<f32>,
@@ -29,7 +29,10 @@ struct Uniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // Material params (start at offset 60)
+    _pad2: vec2<f32>,
+}
+
+struct MaterialUniforms {
     baseWaterColor: vec4<f32>,
     blendColor: vec4<f32>,
     frequency: f32,
@@ -38,17 +41,17 @@ struct Uniforms {
     specularIntensity: f32,
     fadeFactor: f32,
     time: f32,
-    _pad2: vec2<f32>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var normalMapTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(2) @binding(0) var textureSampler: sampler;
+@group(2) @binding(1) var normalMapTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -56,21 +59,21 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.clipPosition = uniforms.mvpRelativeToEye * posRTE;
-    output.worldNormal = (uniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
-    output.viewPosition = (uniforms.modelViewRelativeToEye * posRTE).xyz;
+    output.clipPosition = camera.mvpRelativeToEye * posRTE;
+    output.worldNormal = (camera.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
+    output.viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
     output.texCoord = input.texCoord;
     return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let t = uniforms.time * uniforms.animationSpeed;
-    let freq = uniforms.frequency;
+    let t = material.time * material.animationSpeed;
+    let freq = material.frequency;
     let viewDist = length(input.viewPosition);
 
     // Distance-based fade: reduce wave perturbation at distance
-    let fade = max(1.0, (viewDist / 10000000000.0) * freq * uniforms.fadeFactor);
+    let fade = max(1.0, (viewDist / 10000000000.0) * freq * material.fadeFactor);
 
     // Sample normal map at two slightly offset animated UVs for wave effect
     let waveUV1 = fract(input.texCoord * freq + vec2<f32>(t * 0.3, t * 0.1));
@@ -82,8 +85,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let combinedNoise = (noise1.rgb + noise2.rgb) * 0.5;
     var waveNormal = combinedNoise * 2.0 - 1.0;
     waveNormal = vec3<f32>(
-        waveNormal.x / max(uniforms.amplitude, 0.001),
-        waveNormal.y / max(uniforms.amplitude, 0.001),
+        waveNormal.x / max(material.amplitude, 0.001),
+        waveNormal.y / max(material.amplitude, 0.001),
         waveNormal.z
     );
     // Fade out normal perturbation at distance
@@ -101,7 +104,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Lighting
     let V = normalize(-input.viewPosition);
-    let L = normalize(uniforms.lightDirection.xyz);
+    let L = normalize(camera.lightDirection.xyz);
 
     let NdotL = max(dot(perturbedNormal, L), 0.0);
     let H = normalize(L + V);
@@ -112,15 +115,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let fresnel = pow(1.0 - NdotV, 5.0);
 
     // Specular — enhanced by specularIntensity
-    let specular = pow(NdotH, 64.0) * uniforms.specularIntensity;
+    let specular = pow(NdotH, 64.0) * material.specularIntensity;
 
     let ambient = 0.15;
-    let diffuse = uniforms.baseWaterColor.rgb * (ambient + NdotL * 0.85);
+    let diffuse = material.baseWaterColor.rgb * (ambient + NdotL * 0.85);
     let spec = vec3<f32>(specular);
 
     // Blend with blendColor using fresnel
-    let waterColor = mix(diffuse, uniforms.blendColor.rgb, fresnel * 0.6);
+    let waterColor = mix(diffuse, material.blendColor.rgb, fresnel * 0.6);
     let finalColor = waterColor + spec;
 
-    return vec4<f32>(finalColor, uniforms.baseWaterColor.a);
+    return vec4<f32>(finalColor, material.baseWaterColor.a);
 }

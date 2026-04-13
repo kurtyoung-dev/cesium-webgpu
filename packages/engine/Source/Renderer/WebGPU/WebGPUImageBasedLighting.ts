@@ -147,7 +147,7 @@ function initCache(device: GPUDevice): IBLCache {
  * Update IBL resources for WebGPU rendering.
  * Called from ImageBasedLighting.update() when context.isWebGPU.
  */
-function updateWebGPUImageBasedLighting(ibl: any, frameState: any): void {
+function updateWebGPUImageBasedLighting(ibl: any, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 

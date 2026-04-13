@@ -321,46 +321,135 @@ function updateTransform(
  * @param {Scene} scene The scene to use.
  * @param {Ellipsoid} [ellipsoid=Ellipsoid.default] The ellipsoid to use for orienting the camera.
  */
-function EntityView(entity, scene, ellipsoid) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("entity", entity);
-  Check.defined("scene", scene);
-  //>>includeEnd('debug');
+class EntityView {
+  constructor(entity, scene, ellipsoid) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("entity", entity);
+    Check.defined("scene", scene);
+    //>>includeEnd('debug');
+
+    /**
+     * The entity to track with the camera.
+     * @type {Entity}
+     */
+    this.entity = entity;
+
+    /**
+     * The scene in which to track the object.
+     * @type {Scene}
+     */
+    this.scene = scene;
+
+    /**
+     * The ellipsoid to use for orienting the camera.
+     * @type {Ellipsoid}
+     */
+    this.ellipsoid = ellipsoid ?? Ellipsoid.default;
+
+    /**
+     * The bounding sphere of the object.
+     * @type {BoundingSphere}
+     */
+    this.boundingSphere = undefined;
+
+    // Shadow copies of the objects so we can detect changes.
+    this._lastEntity = undefined;
+    this._mode = undefined;
+
+    this._lastCartesian = new Cartesian3();
+    this._defaultOffset3D = undefined;
+
+    this._velocityProperty = new VelocityVectorProperty(entity.position, true);
+
+    this._offset3D = new Cartesian3();
+  }
 
   /**
-   * The entity to track with the camera.
-   * @type {Entity}
+   * Should be called each animation frame to update the camera
+   * to the latest settings.
+   * @param {JulianDate} time The current animation time.
+   * @param {BoundingSphere} [boundingSphere] bounding sphere of the object.
    */
-  this.entity = entity;
+  update(time, boundingSphere) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+    //>>includeEnd('debug');
 
-  /**
-   * The scene in which to track the object.
-   * @type {Scene}
-   */
-  this.scene = scene;
+    const scene = this.scene;
+    const ellipsoid = this.ellipsoid;
+    const sceneMode = scene.mode;
+    if (sceneMode === SceneMode.MORPHING) {
+      return;
+    }
 
-  /**
-   * The ellipsoid to use for orienting the camera.
-   * @type {Ellipsoid}
-   */
-  this.ellipsoid = ellipsoid ?? Ellipsoid.default;
+    const entity = this.entity;
+    const trackingReferenceFrame = entity.trackingReferenceFrame;
+    const positionProperty = entity.position;
+    if (!defined(positionProperty)) {
+      return;
+    }
+    const velocityProperty = this._velocityProperty;
+    const orientationProperty = entity.orientation;
+    const objectChanged = entity !== this._lastEntity;
+    const sceneModeChanged = sceneMode !== this._mode;
 
-  /**
-   * The bounding sphere of the object.
-   * @type {BoundingSphere}
-   */
-  this.boundingSphere = undefined;
+    const camera = scene.camera;
 
-  // Shadow copies of the objects so we can detect changes.
-  this._lastEntity = undefined;
-  this._mode = undefined;
+    let updateLookAt = objectChanged || sceneModeChanged;
+    let saveCamera = true;
 
-  this._lastCartesian = new Cartesian3();
-  this._defaultOffset3D = undefined;
+    if (objectChanged) {
+      const viewFromProperty = entity.viewFrom;
+      const hasViewFrom = defined(viewFromProperty);
 
-  this._velocityProperty = new VelocityVectorProperty(entity.position, true);
+      if (!hasViewFrom && defined(boundingSphere)) {
+        // The default HPR is not ideal for high altitude objects so
+        // we scale the pitch as we get further from the earth for a more
+        // downward view.
+        scratchHeadingPitchRange.pitch = -CesiumMath.PI_OVER_FOUR;
+        scratchHeadingPitchRange.range = 0;
+        const position = positionProperty.getValue(time, scratchCartesian);
+        if (defined(position)) {
+          const factor =
+            2 -
+            1 /
+              Math.max(
+                1,
+                Cartesian3.magnitude(position) / ellipsoid.maximumRadius,
+              );
+          scratchHeadingPitchRange.pitch *= factor;
+        }
 
-  this._offset3D = new Cartesian3();
+        camera.viewBoundingSphere(boundingSphere, scratchHeadingPitchRange);
+        this.boundingSphere = boundingSphere;
+        updateLookAt = false;
+        saveCamera = false;
+      } else if (
+        !hasViewFrom ||
+        !defined(viewFromProperty.getValue(time, this._offset3D))
+      ) {
+        Cartesian3.clone(EntityView._defaultOffset3D, this._offset3D);
+      }
+    } else if (!sceneModeChanged && this._mode !== SceneMode.SCENE2D) {
+      Cartesian3.clone(camera.position, this._offset3D);
+    }
+
+    this._lastEntity = entity;
+    this._mode = sceneMode;
+
+    updateTransform(
+      this,
+      camera,
+      updateLookAt,
+      saveCamera,
+      positionProperty,
+      velocityProperty,
+      orientationProperty,
+      trackingReferenceFrame,
+      time,
+      ellipsoid,
+    );
+  }
 }
 
 // STATIC properties defined here, not per-instance.
@@ -387,90 +476,4 @@ EntityView.defaultOffset3D = new Cartesian3(-14000, 3500, 3500);
 const scratchHeadingPitchRange = new HeadingPitchRange();
 const scratchCartesian = new Cartesian3();
 
-/**
- * Should be called each animation frame to update the camera
- * to the latest settings.
- * @param {JulianDate} time The current animation time.
- * @param {BoundingSphere} [boundingSphere] bounding sphere of the object.
- */
-EntityView.prototype.update = function (time, boundingSphere) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-  //>>includeEnd('debug');
-
-  const scene = this.scene;
-  const ellipsoid = this.ellipsoid;
-  const sceneMode = scene.mode;
-  if (sceneMode === SceneMode.MORPHING) {
-    return;
-  }
-
-  const entity = this.entity;
-  const trackingReferenceFrame = entity.trackingReferenceFrame;
-  const positionProperty = entity.position;
-  if (!defined(positionProperty)) {
-    return;
-  }
-  const velocityProperty = this._velocityProperty;
-  const orientationProperty = entity.orientation;
-  const objectChanged = entity !== this._lastEntity;
-  const sceneModeChanged = sceneMode !== this._mode;
-
-  const camera = scene.camera;
-
-  let updateLookAt = objectChanged || sceneModeChanged;
-  let saveCamera = true;
-
-  if (objectChanged) {
-    const viewFromProperty = entity.viewFrom;
-    const hasViewFrom = defined(viewFromProperty);
-
-    if (!hasViewFrom && defined(boundingSphere)) {
-      // The default HPR is not ideal for high altitude objects so
-      // we scale the pitch as we get further from the earth for a more
-      // downward view.
-      scratchHeadingPitchRange.pitch = -CesiumMath.PI_OVER_FOUR;
-      scratchHeadingPitchRange.range = 0;
-      const position = positionProperty.getValue(time, scratchCartesian);
-      if (defined(position)) {
-        const factor =
-          2 -
-          1 /
-            Math.max(
-              1,
-              Cartesian3.magnitude(position) / ellipsoid.maximumRadius,
-            );
-        scratchHeadingPitchRange.pitch *= factor;
-      }
-
-      camera.viewBoundingSphere(boundingSphere, scratchHeadingPitchRange);
-      this.boundingSphere = boundingSphere;
-      updateLookAt = false;
-      saveCamera = false;
-    } else if (
-      !hasViewFrom ||
-      !defined(viewFromProperty.getValue(time, this._offset3D))
-    ) {
-      Cartesian3.clone(EntityView._defaultOffset3D, this._offset3D);
-    }
-  } else if (!sceneModeChanged && this._mode !== SceneMode.SCENE2D) {
-    Cartesian3.clone(camera.position, this._offset3D);
-  }
-
-  this._lastEntity = entity;
-  this._mode = sceneMode;
-
-  updateTransform(
-    this,
-    camera,
-    updateLookAt,
-    saveCamera,
-    positionProperty,
-    velocityProperty,
-    orientationProperty,
-    trackingReferenceFrame,
-    time,
-    ellipsoid,
-  );
-};
 export default EntityView;

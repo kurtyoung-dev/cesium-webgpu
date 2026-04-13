@@ -15,7 +15,7 @@ import Matrix4 from "../Core/Matrix4.js";
 import SceneMode from "./SceneMode.js";
 import DebugCameraPrimitive from "./DebugCameraPrimitive.js";
 import DerivedCommand from "./DerivedCommand.js";
-import PerformanceDisplay from "./PerformanceDisplay.js";
+import FpsOverlay from "../Services/FpsOverlay.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
 
@@ -145,29 +145,64 @@ function updateDebugFrustumPlanes(scene) {
   }
 }
 
+/**
+ * `scene.debugShowFramesPerSecond = true` historically attached an
+ * upstream `PerformanceDisplay` widget that showed a recent-average
+ * FPS in a corner div. We've replaced that with `FpsOverlay`, which
+ * is the same component the worker test page uses — it draws a
+ * 60-second rolling graph + average + 1% lows + 1% highs by polling
+ * `scene.performanceTracker` (which is now always recording every
+ * rendered frame into a circular buffer at near-zero hot-path cost).
+ *
+ * The toggle field name (`scene.debugShowFramesPerSecond`) and the
+ * cached field on the scene (`scene._performanceDisplay`) are
+ * preserved for backwards compatibility — any user code that
+ * introspects `defined(scene._performanceDisplay)` continues to
+ * work; the held value is now an `FpsOverlay` instance instead of a
+ * `PerformanceDisplay`. Both expose `destroy()`.
+ *
+ * Headless safety: skipped entirely when there's no DOM (`document`
+ * undefined or canvas has no parentNode), which matches the worker
+ * Scene path. The host-side worker pane wires up its own FpsOverlay
+ * directly via `WorkerSceneHost`, so it doesn't need this code path.
+ */
 function updateDebugShowFramesPerSecond(scene, renderedThisFrame) {
   if (scene.debugShowFramesPerSecond) {
     if (!defined(scene._performanceDisplay)) {
-      const performanceContainer = document.createElement("div");
-      performanceContainer.className =
-        "cesium-performanceDisplay-defaultContainer";
-      const container = scene._canvas.parentNode;
-      container.appendChild(performanceContainer);
-      const performanceDisplay = new PerformanceDisplay({
-        container: performanceContainer,
-      });
-      scene._performanceDisplay = performanceDisplay;
-      scene._performanceContainer = performanceContainer;
-    }
+      // Headless / worker safety — skip overlay creation when there's
+      // no DOM. The worker test page wires its own FpsOverlay against
+      // the WorkerSceneHost on the main thread.
+      if (
+        typeof document === "undefined" ||
+        !scene._canvas ||
+        !scene._canvas.parentNode
+      ) {
+        return;
+      }
 
-    scene._performanceDisplay.throttled = scene.requestRenderMode;
-    scene._performanceDisplay.update(renderedThisFrame);
+      // The FpsOverlay attaches itself to the parent and manages its
+      // own DOM lifecycle. We don't need a separate
+      // `_performanceContainer` field anymore — the overlay's
+      // `destroy()` removes its container from the parent in one
+      // step.
+      const overlay = new FpsOverlay({
+        parent: scene._canvas.parentNode,
+        dataSource: scene.performanceTracker,
+        label: scene._context && scene._context.isWebGPU ? "webgpu" : "webgl",
+        position: "top-left",
+      });
+      scene._performanceDisplay = overlay;
+    }
+    // The overlay is self-driving (polls at 6 Hz via setInterval). We
+    // don't need a per-frame update call here; the legacy
+    // PerformanceDisplay required one because it computed FPS from
+    // its own internal frame counter, but FpsOverlay reads from
+    // `scene.performanceTracker` which `Scene.render()` already
+    // updates via `recordFrame()` after every rendered frame.
+    void renderedThisFrame;
   } else if (defined(scene._performanceDisplay)) {
-    scene._performanceDisplay =
-      scene._performanceDisplay && scene._performanceDisplay.destroy();
-    scene._performanceContainer.parentNode.removeChild(
-      scene._performanceContainer,
-    );
+    scene._performanceDisplay.destroy();
+    scene._performanceDisplay = undefined;
   }
 }
 

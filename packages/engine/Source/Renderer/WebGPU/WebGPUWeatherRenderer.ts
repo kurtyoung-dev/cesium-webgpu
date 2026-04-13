@@ -42,6 +42,12 @@ interface WeatherCache {
   uniformData: Float32Array;
   maxParticles: number;
   initialized: boolean;
+  // RTE: previous frame's camera position as a Float64 triple. We
+  // subtract on the CPU in FP64 to produce a small `cameraDelta` vec3
+  // that the compute shader applies to keep camera-relative particles
+  // world-stationary. Without this, particles would visibly snap to a
+  // ~0.6 m grid at Earth radius because FP32 precision is exhausted.
+  prevCameraPosition: { x: number; y: number; z: number } | null;
   // Render pass resources
   renderPipeline: GPURenderPipeline | null;
   renderBindGroupLayout: GPUBindGroupLayout | null;
@@ -65,6 +71,7 @@ function ensureWeatherCache(context: any): WeatherCache {
       uniformData: new Float32Array(WEATHER_PARAMS_FLOATS),
       maxParticles: 0,
       initialized: false,
+      prevCameraPosition: null,
       renderPipeline: null,
       renderBindGroupLayout: null,
       renderBindGroup: null,
@@ -177,7 +184,7 @@ function initializeWeatherPipelines(
  */
 export function updateWeatherParticles(
   context: any,
-  frameState: any,
+  frameState: CesiumFrameState,
   weatherConfig: any,
 ): void {
   const device = context._device;
@@ -191,11 +198,38 @@ export function updateWeatherParticles(
   const data = cache.uniformData;
   let offset = 0;
 
-  // cameraPosition (vec3) + deltaTime
+  // RTE: compute camera delta in FP64 on the CPU so the compute shader
+  // only ever sees small FP32-safe vectors. On the first frame and
+  // after large teleports, clamp the delta so existing particles get
+  // "released" (they'll drift offscreen naturally and be replaced).
   const camPos = frameState.camera?.positionWC;
-  data[offset++] = camPos?.x ?? 0;
-  data[offset++] = camPos?.y ?? 0;
-  data[offset++] = camPos?.z ?? 0;
+  const currX = camPos?.x ?? 0;
+  const currY = camPos?.y ?? 0;
+  const currZ = camPos?.z ?? 0;
+  let dx = 0;
+  let dy = 0;
+  let dz = 0;
+  if (cache.prevCameraPosition) {
+    dx = currX - cache.prevCameraPosition.x;
+    dy = currY - cache.prevCameraPosition.y;
+    dz = currZ - cache.prevCameraPosition.z;
+    // Teleport guard — if the camera moved more than the spawn
+    // volume's extent in one frame, don't try to track: snap prev
+    // to current, leaving delta=0. Stale particles will age out.
+    const spawnRadius = weatherConfig.spawnRadius ?? 500;
+    const teleportSq = (spawnRadius * 4) * (spawnRadius * 4);
+    if (dx * dx + dy * dy + dz * dz > teleportSq) {
+      dx = 0;
+      dy = 0;
+      dz = 0;
+    }
+  }
+  cache.prevCameraPosition = { x: currX, y: currY, z: currZ };
+
+  // cameraDelta (vec3) + deltaTime
+  data[offset++] = dx;
+  data[offset++] = dy;
+  data[offset++] = dz;
   data[offset++] = frameState.deltaTime ?? 0.016;
 
   // wind (vec4): xyz=direction, w=speed
@@ -226,8 +260,15 @@ export function updateWeatherParticles(
   data[offset++] = weatherConfig.particleLifetime ?? 5.0;
   data[offset++] = weatherConfig.particleSize ?? 1.0;
 
-  // groundParams (vec4): x=groundAlt, y=turbulence, z=fadeDistance, w=time
-  data[offset++] = weatherConfig.groundAltitude ?? 0;
+  // groundParams (vec4):
+  //   x = relativeGroundAltitude (camera-relative Y of the ground plane,
+  //       computed on the CPU as `worldGroundAlt - cameraY` so the
+  //       compute shader's camera-relative `p.position.y` check lines up)
+  //   y = turbulence
+  //   z = fadeDistance
+  //   w = time
+  const worldGroundAlt = weatherConfig.groundAltitude ?? 0;
+  data[offset++] = worldGroundAlt - currY;
   data[offset++] = weatherConfig.turbulence ?? 0.3;
   data[offset++] = spawnRadius * 2.0; // fade distance
   data[offset++] = performance.now() / 1000.0;
@@ -368,7 +409,7 @@ function initializeRenderPipeline(
  */
 export function renderWeatherParticles(
   context: any,
-  frameState: any,
+  frameState: CesiumFrameState,
   weatherConfig: any,
   renderPassEncoder: GPURenderPassEncoder,
 ): void {
@@ -389,11 +430,17 @@ export function renderWeatherParticles(
   const cam = frameState.camera;
   const uniformState = context.uniformState;
 
-  // viewProjection (mat4x4) — 16 floats
-  if (uniformState?.viewProjection) {
-    const vp = uniformState.viewProjection;
+  // mvpRelativeToEye (mat4x4) — 16 floats.
+  // Particles are stored in a camera-relative frame, so the projection
+  // matrix must be the view-projection with its translation column
+  // zeroed. `UniformState.modelViewProjectionRelativeToEye` gives us
+  // exactly that (identity model × translation-zeroed view × proj).
+  const mvpRte =
+    uniformState?.modelViewProjectionRelativeToEye ??
+    uniformState?.viewProjection;
+  if (mvpRte) {
     for (let i = 0; i < 16; i++) {
-      data[i] = vp[i];
+      data[i] = mvpRte[i];
     }
   }
 
@@ -411,11 +458,13 @@ export function renderWeatherParticles(
   data[22] = up?.z ?? 0;
   data[23] = 0;
 
-  // cameraPosition (vec3) + maxLifetime
-  const camPos = cam?.positionWC;
-  data[24] = camPos?.x ?? 0;
-  data[25] = camPos?.y ?? 0;
-  data[26] = camPos?.z ?? 0;
+  // Legacy cameraPosition slot — the shader no longer reads this (it
+  // operates entirely in camera-relative space via mvpRelativeToEye)
+  // but the binary layout is preserved so we don't need to reshape the
+  // uniform buffer. Keep maxLifetime in the same w slot.
+  data[24] = 0;
+  data[25] = 0;
+  data[26] = 0;
   data[27] = weatherConfig.particleLifetime ?? 5.0;
 
   // viewportSize (vec2) + weatherType (u32) + particleAlpha

@@ -1,0 +1,172 @@
+// Tonemapping post-process shader for WebGPU — f16 variant (Phase 5 WGF-3).
+//
+// Hand-tuned half-precision version of `Tonemapping.wgsl`. Used by the
+// post-process pipeline when `context.useShaderF16` is true (auto-set when
+// the device grants the `shader-f16` feature).
+//
+// Why a separate file: WGSL doesn't support conditional `enable` directives,
+// so the f16 path needs its own translation unit. The f32 reference at
+// `Tonemapping.wgsl` is the spec — keep both files in sync if you change
+// any of the operator implementations.
+//
+// HDR clamp policy: pre-tonemap input can exceed the f16 max (~65504) when
+// emissive surfaces, sun reflections, or other very-bright sources land in
+// the framebuffer. We clamp to `F16_MAX_HDR` immediately after the texture
+// fetch so every f16 multiply downstream is overflow-safe. The clamp loses
+// dynamic range on extreme highlights but is invisible after tonemapping
+// because every operator below already saturates to [0, 1] anyway. Anyone
+// running a scene with truly cinematic >65k luminance can disable the f16
+// variant via `context.useShaderF16 = false`.
+
+enable f16;
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+// Uniforms stay f32 — they're scalar runtime params and the conversion
+// cost is negligible. Keeping the layout binary-compatible with the f32
+// shader means the same TonemapUniforms packer in
+// WebGPUPostProcessPipeline.ts works for both variants.
+struct TonemapUniforms {
+  exposure: f32,
+  gamma: f32,
+  mode: f32,        // 0=Reinhard, 1=ACES, 2=Filmic, 3=ModifiedReinhard, 4=PBRNeutral
+  whitePoint: f32,  // Used by Modified Reinhard (default 4.0)
+};
+
+@group(0) @binding(0) var inputTexture: texture_2d<f32>;
+@group(0) @binding(1) var inputSampler: sampler;
+@group(0) @binding(2) var<uniform> params: TonemapUniforms;
+
+const F16_MAX_HDR: f16 = 65000.0h; // a hair below 65504 to leave headroom for adds
+
+// Fullscreen triangle — no vertex buffer needed. Vertex stage stays f32
+// (clip-space precision is non-negotiable).
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  var output: VertexOutput;
+  let x = f32(i32(vertexIndex & 1u) * 4 - 1);
+  let y = f32(i32(vertexIndex >> 1u) * 4 - 1);
+  output.position = vec4<f32>(x, y, 0.0, 1.0);
+  output.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+  return output;
+}
+
+// ----- Tonemapping operators (f16) -----
+
+fn reinhardTonemap(color: vec3<f16>) -> vec3<f16> {
+  return color / (color + vec3<f16>(1.0h));
+}
+
+// ACES Filmic (Stephen Hill's fit). The constants are tiny and easily
+// representable in f16. Output is clamped to [0,1] which is well inside
+// the f16 normal range.
+fn acesTonemap(color: vec3<f16>) -> vec3<f16> {
+  let a: f16 = 2.51h;
+  let b: f16 = 0.03h;
+  let c: f16 = 2.43h;
+  let d: f16 = 0.59h;
+  let e: f16 = 0.14h;
+  return clamp(
+    (color * (a * color + b)) / (color * (c * color + d) + e),
+    vec3<f16>(0.0h), vec3<f16>(1.0h)
+  );
+}
+
+fn uc2Curve(x: vec3<f16>) -> vec3<f16> {
+  let A: f16 = 0.15h;
+  let B: f16 = 0.50h;
+  let C: f16 = 0.10h;
+  let D: f16 = 0.20h;
+  let E: f16 = 0.02h;
+  let F: f16 = 0.30h;
+  return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
+// Uncharted 2 Filmic (John Hable). The white-scale denominator
+// `uc2Curve(11.2)` evaluates to ~0.84 — well inside f16 range. The
+// linear-white constant W=11.2 is unchanged from the f32 path because
+// the input is already clamped to F16_MAX_HDR.
+fn filmicTonemap(color: vec3<f16>) -> vec3<f16> {
+  let W: f16 = 11.2h;
+  let mapped = uc2Curve(color);
+  let whiteScale = vec3<f16>(1.0h) / uc2Curve(vec3<f16>(W));
+  return mapped * whiteScale;
+}
+
+// Modified Reinhard with white point. Note: `white * white` could
+// theoretically overflow f16 if `whitePoint` were huge, but the f32
+// uniform is clamped to a sane default (4.0) by the JS packer.
+fn modifiedReinhardTonemap(color: vec3<f16>, white: f16) -> vec3<f16> {
+  let whSq: f16 = white * white;
+  return (color * (vec3<f16>(1.0h) + color / whSq)) / (vec3<f16>(1.0h) + color);
+}
+
+// PBR Neutral tonemapping (Khronos reference). Identical structure to
+// the f32 version with f16 types swapped in.
+fn pbrNeutralTonemap(color: vec3<f16>) -> vec3<f16> {
+  let startCompression: f16 = 0.8h - 0.04h;
+  let desaturation: f16 = 0.15h;
+
+  var x = min(color, vec3<f16>(startCompression));
+  let overshoot = max(color - vec3<f16>(startCompression), vec3<f16>(0.0h));
+
+  // Soft-clamp overshoot region
+  x = x + overshoot / (vec3<f16>(1.0h) + overshoot);
+
+  // Desaturate towards white as value increases
+  let lum = dot(x, vec3<f16>(0.2126h, 0.7152h, 0.0722h));
+  let desat = clamp((lum - startCompression) / desaturation, 0.0h, 1.0h);
+  let result = mix(x, vec3<f16>(lum), desat);
+
+  return result;
+}
+
+// Gamma correction. `pow` on f16 is supported and the input/output range
+// is [0,1] so there's no overflow risk.
+fn inverseGamma(color: vec3<f16>, gamma: f16) -> vec3<f16> {
+  return pow(max(color, vec3<f16>(0.0h)), vec3<f16>(1.0h / gamma));
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  // Sample at f32 (textureSample always returns f32). The exposure
+  // multiply is done IN F32 — doing it in f16 first would overflow
+  // intermediates when the user sets a high exposure (e.g. 1000 ×
+  // 100 = 1e5, which exceeds f16's ~6.5e4 max and silently saturates
+  // every bright pixel to white before tonemapping). The clamp
+  // happens at the f32→f16 conversion boundary so no f16 multiply
+  // ever sees a value above F16_MAX_HDR.
+  let hdrF32 = textureSample(inputTexture, inputSampler, input.uv).rgb;
+  let exposed32 = clamp(
+    max(hdrF32, vec3<f32>(0.0)) * params.exposure,
+    vec3<f32>(0.0),
+    vec3<f32>(f32(F16_MAX_HDR)),
+  );
+  let exposed = vec3<f16>(exposed32);
+
+  let mode = i32(params.mode);
+
+  // Apply selected tonemapping operator
+  var mapped: vec3<f16>;
+  if (mode == 1) {
+    mapped = acesTonemap(exposed);
+  } else if (mode == 2) {
+    mapped = filmicTonemap(exposed);
+  } else if (mode == 3) {
+    mapped = modifiedReinhardTonemap(exposed, f16(params.whitePoint));
+  } else if (mode == 4) {
+    mapped = pbrNeutralTonemap(exposed);
+  } else {
+    mapped = reinhardTonemap(exposed);
+  }
+
+  // Apply gamma correction
+  let corrected = inverseGamma(mapped, f16(params.gamma));
+
+  // Convert back to f32 for the fragment output. The render target is
+  // a standard `@location(0) vec4<f32>` so the upcast is mandatory.
+  return vec4<f32>(vec3<f32>(corrected), 1.0);
+}

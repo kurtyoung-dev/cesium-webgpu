@@ -20,52 +20,84 @@ import Matrix4 from "./Matrix4.js";
  *
  * @see Packable
  */
-function Rectangle(west, south, east, north) {
-  /**
-   * The westernmost longitude in radians in the range [-Pi, Pi].
-   *
-   * @type {number}
-   * @default 0.0
-   */
-  this.west = west ?? 0.0;
+class Rectangle {
+  constructor(west, south, east, north) {
+    /**
+     * The westernmost longitude in radians in the range [-Pi, Pi].
+     *
+     * @type {number}
+     * @default 0.0
+     */
+    this.west = west ?? 0.0;
+
+    /**
+     * The southernmost latitude in radians in the range [-Pi/2, Pi/2].
+     *
+     * @type {number}
+     * @default 0.0
+     */
+    this.south = south ?? 0.0;
+
+    /**
+     * The easternmost longitude in radians in the range [-Pi, Pi].
+     *
+     * @type {number}
+     * @default 0.0
+     */
+    this.east = east ?? 0.0;
+
+    /**
+     * The northernmost latitude in radians in the range [-Pi/2, Pi/2].
+     *
+     * @type {number}
+     * @default 0.0
+     */
+    this.north = north ?? 0.0;
+  }
 
   /**
-   * The southernmost latitude in radians in the range [-Pi/2, Pi/2].
+   * Duplicates this Rectangle.
    *
-   * @type {number}
-   * @default 0.0
+   * @param {Rectangle} [result] The object onto which to store the result.
+   * @returns {Rectangle} The modified result parameter or a new Rectangle instance if none was provided.
    */
-  this.south = south ?? 0.0;
+  clone(result) {
+    return Rectangle.clone(this, result);
+  }
 
   /**
-   * The easternmost longitude in radians in the range [-Pi, Pi].
+   * Compares the provided Rectangle with this Rectangle componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
    *
-   * @type {number}
-   * @default 0.0
+   * @param {Rectangle} [other] The Rectangle to compare.
+   * @returns {boolean} <code>true</code> if the Rectangles are equal, <code>false</code> otherwise.
    */
-  this.east = east ?? 0.0;
+  equals(other) {
+    return Rectangle.equals(this, other);
+  }
 
   /**
-   * The northernmost latitude in radians in the range [-Pi/2, Pi/2].
+   * Compares the provided Rectangle with this Rectangle componentwise and returns
+   * <code>true</code> if they are within the provided epsilon,
+   * <code>false</code> otherwise.
    *
-   * @type {number}
-   * @default 0.0
+   * @param {Rectangle} [other] The Rectangle to compare.
+   * @param {number} [epsilon=0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if the Rectangles are within the provided epsilon, <code>false</code> otherwise.
    */
-  this.north = north ?? 0.0;
-}
+  equalsEpsilon(other, epsilon) {
+    return Rectangle.equalsEpsilon(this, other, epsilon);
+  }
 
-Object.defineProperties(Rectangle.prototype, {
   /**
    * Gets the width of the rectangle in radians.
    * @memberof Rectangle.prototype
    * @type {number}
    * @readonly
    */
-  width: {
-    get: function () {
-      return Rectangle.computeWidth(this);
-    },
-  },
+  get width() {
+    return Rectangle.computeWidth(this);
+  }
 
   /**
    * Gets the height of the rectangle in radians.
@@ -73,12 +105,10 @@ Object.defineProperties(Rectangle.prototype, {
    * @type {number}
    * @readonly
    */
-  height: {
-    get: function () {
-      return Rectangle.computeHeight(this);
-    },
-  },
-});
+  get height() {
+    return Rectangle.computeHeight(this);
+  }
+}
 
 /**
  * The number of elements used to pack the object into an array.
@@ -478,27 +508,6 @@ Rectangle.equalsEpsilon = function (left, right, absoluteEpsilon) {
 };
 
 /**
- * Duplicates this Rectangle.
- *
- * @param {Rectangle} [result] The object onto which to store the result.
- * @returns {Rectangle} The modified result parameter or a new Rectangle instance if none was provided.
- */
-Rectangle.prototype.clone = function (result) {
-  return Rectangle.clone(this, result);
-};
-
-/**
- * Compares the provided Rectangle with this Rectangle componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {Rectangle} [other] The Rectangle to compare.
- * @returns {boolean} <code>true</code> if the Rectangles are equal, <code>false</code> otherwise.
- */
-Rectangle.prototype.equals = function (other) {
-  return Rectangle.equals(this, other);
-};
-
-/**
  * Compares the provided rectangles and returns <code>true</code> if they are equal,
  * <code>false</code> otherwise.
  *
@@ -516,19 +525,6 @@ Rectangle.equals = function (left, right) {
       left.east === right.east &&
       left.north === right.north)
   );
-};
-
-/**
- * Compares the provided Rectangle with this Rectangle componentwise and returns
- * <code>true</code> if they are within the provided epsilon,
- * <code>false</code> otherwise.
- *
- * @param {Rectangle} [other] The Rectangle to compare.
- * @param {number} [epsilon=0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if the Rectangles are within the provided epsilon, <code>false</code> otherwise.
- */
-Rectangle.prototype.equalsEpsilon = function (other, epsilon) {
-  return Rectangle.equalsEpsilon(this, other, epsilon);
 };
 
 /**

@@ -15,33 +15,79 @@ import Intersect from "./Intersect.js";
  * @see BoundingSphere
  * @see BoundingRectangle
  */
-function AxisAlignedBoundingBox(minimum, maximum, center) {
-  /**
-   * The minimum point defining the bounding box.
-   * @type {Cartesian3}
-   * @default {@link Cartesian3.ZERO}
-   */
-  this.minimum = Cartesian3.clone(minimum ?? Cartesian3.ZERO);
+class AxisAlignedBoundingBox {
+  constructor(minimum, maximum, center) {
+    /**
+     * The minimum point defining the bounding box.
+     * @type {Cartesian3}
+     * @default {@link Cartesian3.ZERO}
+     */
+    this.minimum = Cartesian3.clone(minimum ?? Cartesian3.ZERO);
 
-  /**
-   * The maximum point defining the bounding box.
-   * @type {Cartesian3}
-   * @default {@link Cartesian3.ZERO}
-   */
-  this.maximum = Cartesian3.clone(maximum ?? Cartesian3.ZERO);
+    /**
+     * The maximum point defining the bounding box.
+     * @type {Cartesian3}
+     * @default {@link Cartesian3.ZERO}
+     */
+    this.maximum = Cartesian3.clone(maximum ?? Cartesian3.ZERO);
 
-  // If center was not defined, compute it.
-  if (!defined(center)) {
-    center = Cartesian3.midpoint(this.minimum, this.maximum, new Cartesian3());
-  } else {
-    center = Cartesian3.clone(center);
+    // If center was not defined, compute it.
+    if (!defined(center)) {
+      center = Cartesian3.midpoint(this.minimum, this.maximum, new Cartesian3());
+    } else {
+      center = Cartesian3.clone(center);
+    }
+
+    /**
+     * The center point of the bounding box.
+     * @type {Cartesian3}
+     */
+    this.center = center;
   }
 
   /**
-   * The center point of the bounding box.
-   * @type {Cartesian3}
+   * Duplicates this AxisAlignedBoundingBox instance.
+   *
+   * @param {AxisAlignedBoundingBox} [result] The object onto which to store the result.
+   * @returns {AxisAlignedBoundingBox} The modified result parameter or a new AxisAlignedBoundingBox instance if one was not provided.
    */
-  this.center = center;
+  clone(result) {
+    return AxisAlignedBoundingBox.clone(this, result);
+  }
+
+  /**
+   * Determines which side of a plane this box is located.
+   *
+   * @param {Plane} plane The plane to test against.
+   * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
+   *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
+   *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
+   *                      intersects the plane.
+   */
+  intersectPlane(plane) {
+    return AxisAlignedBoundingBox.intersectPlane(this, plane);
+  }
+
+  /**
+   * Determines whether some other axis aligned bounding box intersects this box.
+   *
+   * @param {AxisAlignedBoundingBox} other The other axis aligned bounding box.
+   * @returns {boolean} <code>true</code> if the boxes intersect; otherwise, <code>false</code>.
+   */
+  intersectAxisAlignedBoundingBox(other) {
+    return AxisAlignedBoundingBox.intersectAxisAlignedBoundingBox(this, other);
+  }
+
+  /**
+   * Compares this AxisAlignedBoundingBox against the provided AxisAlignedBoundingBox componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {AxisAlignedBoundingBox} [right] The right hand side AxisAlignedBoundingBox.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
+   */
+  equals(right) {
+    return AxisAlignedBoundingBox.equals(this, right);
+  }
 }
 
 /**
@@ -246,49 +292,4 @@ AxisAlignedBoundingBox.intersectAxisAlignedBoundingBox = function (box, other) {
   );
 };
 
-/**
- * Duplicates this AxisAlignedBoundingBox instance.
- *
- * @param {AxisAlignedBoundingBox} [result] The object onto which to store the result.
- * @returns {AxisAlignedBoundingBox} The modified result parameter or a new AxisAlignedBoundingBox instance if one was not provided.
- */
-AxisAlignedBoundingBox.prototype.clone = function (result) {
-  return AxisAlignedBoundingBox.clone(this, result);
-};
-
-/**
- * Determines which side of a plane this box is located.
- *
- * @param {Plane} plane The plane to test against.
- * @returns {Intersect} {@link Intersect.INSIDE} if the entire box is on the side of the plane
- *                      the normal is pointing, {@link Intersect.OUTSIDE} if the entire box is
- *                      on the opposite side, and {@link Intersect.INTERSECTING} if the box
- *                      intersects the plane.
- */
-AxisAlignedBoundingBox.prototype.intersectPlane = function (plane) {
-  return AxisAlignedBoundingBox.intersectPlane(this, plane);
-};
-
-/**
- * Determines whether some other axis aligned bounding box intersects this box.
- *
- * @param {AxisAlignedBoundingBox} other The other axis aligned bounding box.
- * @returns {boolean} <code>true</code> if the boxes intersect; otherwise, <code>false</code>.
- */
-AxisAlignedBoundingBox.prototype.intersectAxisAlignedBoundingBox = function (
-  other,
-) {
-  return AxisAlignedBoundingBox.intersectAxisAlignedBoundingBox(this, other);
-};
-
-/**
- * Compares this AxisAlignedBoundingBox against the provided AxisAlignedBoundingBox componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {AxisAlignedBoundingBox} [right] The right hand side AxisAlignedBoundingBox.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-AxisAlignedBoundingBox.prototype.equals = function (right) {
-  return AxisAlignedBoundingBox.equals(this, right);
-};
 export default AxisAlignedBoundingBox;

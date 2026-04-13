@@ -13,18 +13,64 @@ import BrdfLutGeneratorFS from "../Shaders/BrdfLutGeneratorFS.js";
 /**
  * @private
  */
-function BrdfLutGenerator() {
-  this._colorTexture = undefined;
-  this._drawCommand = undefined;
-}
+class BrdfLutGenerator {
+  constructor() {
+    this._colorTexture = undefined;
+    this._drawCommand = undefined;
+  }
 
-Object.defineProperties(BrdfLutGenerator.prototype, {
-  colorTexture: {
-    get: function () {
-      return this._colorTexture;
-    },
-  },
-});
+  update(frameState) {
+    // Route to WebGPU feature renderer if available
+    const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.BRDF_LUT);
+    if (fr) {
+      fr.update(this, frameState);
+      this._featureRenderer = fr;
+      return;
+    }
+
+    if (!defined(this._colorTexture)) {
+      const context = frameState.context;
+      const colorTexture = new Texture({
+        context: context,
+        width: 256,
+        height: 256,
+        pixelFormat: PixelFormat.RGBA,
+        pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
+        sampler: Sampler.NEAREST,
+      });
+
+      this._colorTexture = colorTexture;
+      const framebuffer = new Framebuffer({
+        context: context,
+        colorTextures: [colorTexture],
+        destroyAttachments: false,
+      });
+
+      createCommand(this, context, framebuffer);
+      this._drawCommand.execute(context);
+      framebuffer.destroy();
+      this._drawCommand.shaderProgram =
+        this._drawCommand.shaderProgram &&
+        this._drawCommand.shaderProgram.destroy();
+    }
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._colorTexture = this._colorTexture && this._colorTexture.destroy();
+    if (this._featureRenderer) {
+      this._featureRenderer.destroy(this);
+    }
+    return destroyObject(this);
+  }
+
+  get colorTexture() {
+    return this._colorTexture;
+  }
+}
 
 function createCommand(generator, context, framebuffer) {
   const drawCommand = context.createViewportQuadCommand(BrdfLutGeneratorFS, {
@@ -37,51 +83,4 @@ function createCommand(generator, context, framebuffer) {
   generator._drawCommand = drawCommand;
 }
 
-BrdfLutGenerator.prototype.update = function (frameState) {
-  // Route to WebGPU feature renderer if available
-  const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.BRDF_LUT);
-  if (fr) {
-    fr.update(this, frameState);
-    this._featureRenderer = fr;
-    return;
-  }
-
-  if (!defined(this._colorTexture)) {
-    const context = frameState.context;
-    const colorTexture = new Texture({
-      context: context,
-      width: 256,
-      height: 256,
-      pixelFormat: PixelFormat.RGBA,
-      pixelDatatype: PixelDatatype.UNSIGNED_BYTE,
-      sampler: Sampler.NEAREST,
-    });
-
-    this._colorTexture = colorTexture;
-    const framebuffer = new Framebuffer({
-      context: context,
-      colorTextures: [colorTexture],
-      destroyAttachments: false,
-    });
-
-    createCommand(this, context, framebuffer);
-    this._drawCommand.execute(context);
-    framebuffer.destroy();
-    this._drawCommand.shaderProgram =
-      this._drawCommand.shaderProgram &&
-      this._drawCommand.shaderProgram.destroy();
-  }
-};
-
-BrdfLutGenerator.prototype.isDestroyed = function () {
-  return false;
-};
-
-BrdfLutGenerator.prototype.destroy = function () {
-  this._colorTexture = this._colorTexture && this._colorTexture.destroy();
-  if (this._featureRenderer) {
-    this._featureRenderer.destroy(this);
-  }
-  return destroyObject(this);
-};
 export default BrdfLutGenerator;

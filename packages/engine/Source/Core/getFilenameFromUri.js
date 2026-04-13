@@ -1,4 +1,3 @@
-import Uri from "urijs";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 
@@ -20,12 +19,18 @@ function getFilenameFromUri(uri) {
   }
   //>>includeEnd('debug');
 
-  const uriObject = new Uri(uri);
-  uriObject.normalize();
-  let path = uriObject.path();
+  let path;
+  try {
+    path = new URL(uri, "https://placeholder.invalid/").pathname;
+  } catch {
+    path = uri;
+  }
+
+  // Normalize by decoding percent-encoded characters
+  path = decodeURIComponent(path);
   const index = path.lastIndexOf("/");
   if (index !== -1) {
-    path = path.substr(index + 1);
+    path = path.substring(index + 1);
   }
   return path;
 }

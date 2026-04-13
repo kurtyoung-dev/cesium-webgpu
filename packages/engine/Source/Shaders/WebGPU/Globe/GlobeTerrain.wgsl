@@ -99,7 +99,9 @@ struct TileUniforms {
   flags: vec4<f32>,
   verticalExaggeration: vec2<f32>,
   time: f32,
-  _pad4: f32,
+  // OPEN-5 fix: modulates the fog exponential to match WebGL's
+  // `czm_fog(dist, color, fogColor, scalar)`. Default 0.15.
+  fogVisualDensityScalar: f32,
   // === Night & Ocean Enhancement Parameters ===
   // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
   oceanParams: vec4<f32>,
@@ -133,6 +135,11 @@ struct TileUniforms {
 @group(2) @binding(3) var oceanNormalSampler: sampler;
 
 // ─── Effects bind group: shadow receive + clipping planes (Group 3) ───
+// Phase 5 WGF-1: trailing two vec4 slots hold the precomputed
+// `dPrime[i] = d + dot(n, camera)` values for the hardware clip-distances
+// pipeline variant. Slots beyond `clippingPlaneCount` (or beyond 8) carry
+// +Infinity so the rasterizer never clips against them. The legacy
+// fragment-discard path ignores these fields.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -143,6 +150,8 @@ struct EffectsUniforms {
     clippingEdgeWidth: f32,
     clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
+    // WGF-1: each entry is (n.xyz, dPrime); unused slots are (0,0,0,+inf).
+    clipPlaneEqHW: array<vec4<f32>, 8>,
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
@@ -373,6 +382,19 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     nm[0][1] * normalMC.x + nm[1][1] * normalMC.y + nm[2][1] * normalMC.z,
     nm[0][2] * normalMC.x + nm[1][2] * normalMC.y + nm[2][2] * normalMC.z
   ));
+
+  // ── Far-plane clip-space Z clamp (CRITICAL for orbit altitude) ──
+  // At planetary scale, FP32 rounding in `mvpRelativeToEye * rtePosition`
+  // can push clip-space z just over its w, producing an NDC z > 1 that
+  // the rasterizer clips as "behind the far plane". The fragments never
+  // reach the fragment shader and the globe disappears into whatever was
+  // drawn before it (the skybox, which paints everything with
+  // depthCompare=always). Clamping z ≤ w forces NDC z ≤ 1 exactly, so
+  // these borderline fragments survive rasterization. The paired fix is
+  // to use `depthCompare: less-equal` on the pipeline (not `less`) so
+  // that a fragment landing exactly on the far plane still passes the
+  // depth test against the cleared depth value.
+  out.position.z = min(out.position.z, out.position.w);
 
   return out;
 }
@@ -658,9 +680,14 @@ fn computeEnhancedOcean(
 // Fog & Atmosphere
 // ═══════════════════════════════════════════════════════════════════════
 
-fn computeFog(distance: f32, fogDensity: f32) -> f32 {
+// OPEN-5 fix: matches WebGL's `czm_fog(distance, color, fogColor, modifier)`
+// formula from `fog.glsl`. The modifier (fogVisualDensityScalar, default 0.15)
+// reduces the exponential so that horizontal viewing angles at low altitude
+// don't produce an opaque fog wall. Without the modifier the exponent is
+// `scalar^2`, which is ~6.7x stronger than the WebGL path at low density.
+fn computeFog(distance: f32, fogDensity: f32, modifier: f32) -> f32 {
   let scalar = distance * fogDensity;
-  return clamp(1.0 - exp(-(scalar * scalar)), 0.0, 1.0);
+  return clamp(1.0 - exp(-((modifier * scalar + modifier) * (scalar * (1.0 + modifier)))), 0.0, 1.0);
 }
 
 // Enhanced atmosphere color with Rayleigh phase and Mie forward scattering
@@ -692,17 +719,20 @@ fn computeAtmosphereColor(
 // ═══════════════════════════════════════════════════════════════════════
 
 fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0) {
-    return 1.0;
-  }
+  // Sample unconditionally (uniform control flow). Use
+  // textureSampleCompareLevel (explicit LOD) so it's valid even
+  // when called from non-uniform branches.
   var shadow: f32 = 0.0;
   for (var x: i32 = -1; x <= 1; x++) {
     for (var y: i32 = -1; y <= 1; y++) {
       let offset = vec2<f32>(f32(x), f32(y)) * texelSize;
-      shadow += textureSampleCompare(shadowDepthTex, shadowCompSampler, uv + offset, depth);
+      shadow += textureSampleCompareLevel(shadowDepthTex, shadowCompSampler, uv + offset, depth);
     }
   }
-  return shadow / 9.0;
+  let pcf = shadow / 9.0;
+  // Out-of-bounds → fully lit.
+  let outOfBounds = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0;
+  return select(pcf, 1.0, outOfBounds);
 }
 
 fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
@@ -711,15 +741,19 @@ fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   let coord = shadowPos.xyz / shadowPos.w;
   let uv = vec2<f32>(coord.x * 0.5 + 0.5, 1.0 - (coord.y * 0.5 + 0.5));
   let texelSize = 1.0 / effects.shadowMapSize;
+  // Sample shadow UNCONDITIONALLY to satisfy uniform control flow
+  // requirement. textureSampleCompareLevel uses explicit LOD 0 so it
+  // doesn't need implicit derivatives (safe from non-uniform flow).
+  let rawVisibility = textureSampleCompareLevel(
+    shadowDepthTex, shadowCompSampler, uv, coord.z,
+  );
+  // Bounds check: outside shadow map → fully lit (no shadow).
+  let outOfBounds = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || coord.z > 1.0;
   var visibility: f32;
   if (effects.shadowSoftShadows > 0.5) {
     visibility = globeShadowPCF(uv, coord.z, texelSize);
   } else {
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || coord.z > 1.0) {
-      visibility = 1.0;
-    } else {
-      visibility = textureSampleCompare(shadowDepthTex, shadowCompSampler, uv, coord.z);
-    }
+    visibility = select(rawVisibility, 1.0, outOfBounds);
   }
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
@@ -830,7 +864,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let isSubsequentPass = tile.flags.w > 0.5;
 
   // Base color: dark for first pass (night side will be very dark),
-  // transparent for subsequent multi-pass imagery
+  // transparent for subsequent multi-pass imagery.
   var color: vec3<f32>;
   var alpha: f32;
   if (isSubsequentPass) {
@@ -941,9 +975,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // ─── Fog blending ───
+  // Matches WebGL `czm_fog(distance, color, fogColor)` — mixes color
+  // toward fogColor by the fog amount, leaves alpha alone. Upstream
+  // does NOT drop alpha at high fog; a previous WGSL-only alpha drop
+  // turned distant terrain transparent and exposed the black skybox
+  // behind it whenever the camera was tilted toward the horizon, which
+  // is the opposite of what fog should do.
   let fogDensity = tile.fogDensity;
   if (fogDensity > 0.0) {
-    let fogAmount = computeFog(input.v_distance, fogDensity);
+    let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
 
     let atmosphereColor = computeAtmosphereColor(
       input.v_positionEC, normal, sunDir,
@@ -953,10 +993,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let nightFogDimming = mix(0.05, 1.0, dayFade);
     let fogColor = max(atmosphereColor * nightFogDimming, vec3<f32>(tile.fogMinimumBrightness));
     color = mix(color, fogColor, fogAmount);
-
-    if (fogAmount > 0.98) {
-      alpha = max(1.0 - (fogAmount - 0.98) * 50.0, 0.0);
-    }
+    // Alpha intentionally untouched — terrain stays opaque through fog.
   }
 
   return vec4<f32>(color, alpha);

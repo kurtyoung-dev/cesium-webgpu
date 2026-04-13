@@ -9,53 +9,50 @@ import I3SDataProvider from "./I3SDataProvider.js";
  * @alias I3SFeature
  * @internalConstructor
  */
-function I3SFeature(parent, uri) {
-  this._parent = parent;
-  this._dataProvider = parent._dataProvider;
-  this._layer = parent._layer;
+class I3SFeature {
+  constructor(parent, uri) {
+    this._parent = parent;
+    this._dataProvider = parent._dataProvider;
+    this._layer = parent._layer;
 
-  if (defined(this._parent._nodeIndex)) {
-    this._resource = this._parent._layer.resource.getDerivedResource({
-      url: `nodes/${this._parent._data.mesh.attribute.resource}/${uri}`,
-    });
-  } else {
-    this._resource = this._parent.resource.getDerivedResource({ url: uri });
+    if (defined(this._parent._nodeIndex)) {
+      this._resource = this._parent._layer.resource.getDerivedResource({
+        url: `nodes/${this._parent._data.mesh.attribute.resource}/${uri}`,
+      });
+    } else {
+      this._resource = this._parent.resource.getDerivedResource({ url: uri });
+    }
   }
-}
 
-Object.defineProperties(I3SFeature.prototype, {
+  /**
+   * Loads the content.
+   * @returns {Promise<object>} A promise that is resolved when the data of the I3S feature is loaded
+   * @private
+   */
+  async load() {
+    this._data = await I3SDataProvider.loadJson(this._resource);
+    return this._data;
+  }
+
   /**
    * Gets the resource for the feature
    * @memberof I3SFeature.prototype
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
+
   /**
    * Gets the I3S data for this object.
    * @memberof I3SFeature.prototype
    * @type {object}
    * @readonly
    */
-  data: {
-    get: function () {
-      return this._data;
-    },
-  },
-});
-
-/**
- * Loads the content.
- * @returns {Promise<object>} A promise that is resolved when the data of the I3S feature is loaded
- * @private
- */
-I3SFeature.prototype.load = async function () {
-  this._data = await I3SDataProvider.loadJson(this._resource);
-  return this._data;
-};
+  get data() {
+    return this._data;
+  }
+}
 
 export default I3SFeature;

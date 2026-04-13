@@ -39,25 +39,387 @@ import { destroyObject } from "@cesium/engine";
  * @private
  * @experimental This feature is using part of the 3D Tiles spec that is not final and is subject to change without Cesium's standard deprecation policy.
  */
-function PropertyTable(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class PropertyTable {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("options.count", options.count);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("options.count", options.count);
+    //>>includeEnd('debug');
 
-  this._name = options.name;
-  this._id = options.id;
-  this._count = options.count;
-  this._extras = options.extras;
-  this._extensions = options.extensions;
-  this._metadataTable = options.metadataTable;
-  this._jsonMetadataTable = options.jsonMetadataTable;
-  this._batchTableHierarchy = options.batchTableHierarchy;
-  this._texture = options.texture; // Property table buffer data packed into a GPU texture
-}
+    this._name = options.name;
+    this._id = options.id;
+    this._count = options.count;
+    this._extras = options.extras;
+    this._extensions = options.extensions;
+    this._metadataTable = options.metadataTable;
+    this._jsonMetadataTable = options.jsonMetadataTable;
+    this._batchTableHierarchy = options.batchTableHierarchy;
+    this._texture = options.texture; // Property table buffer data packed into a GPU texture
+  }
 
-Object.defineProperties(PropertyTable.prototype, {
+  /**
+   * Returns whether the feature has this property. For compatibility with the <code>3DTILES_batch_table_hierarchy</code> extension, this is computed for a specific feature.
+   *
+   * @param {number} index The index of the feature.
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {boolean} Whether the feature has this property.
+   * @private
+   */
+  hasProperty(index, propertyId) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("index", index);
+    Check.typeOf.string("propertyId", propertyId);
+    //>>includeEnd('debug');
+
+    if (
+      defined(this._metadataTable) &&
+      this._metadataTable.hasProperty(propertyId)
+    ) {
+      return true;
+    }
+
+    if (
+      defined(this._batchTableHierarchy) &&
+      this._batchTableHierarchy.hasProperty(index, propertyId)
+    ) {
+      return true;
+    }
+
+    if (
+      defined(this._jsonMetadataTable) &&
+      this._jsonMetadataTable.hasProperty(propertyId)
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns whether the feature has a property with the given semantic.
+   *
+   * @param {string} semantic The case-sensitive semantic of the property.
+   * @returns {boolean} Whether the feature has a property with the given semantic.
+   * @private
+   */
+  hasPropertyBySemantic(index, semantic) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("index", index);
+    Check.typeOf.string("semantic", semantic);
+    //>>includeEnd('debug');
+
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.hasPropertyBySemantic(semantic);
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns whether any feature has this property.
+   * This is mainly useful for checking whether a property exists in the class
+   * hierarchy when using the <code>3DTILES_batch_table_hierarchy</code> extension.
+   *
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {boolean} Whether any feature has this property.
+   * @private
+   */
+  propertyExists(propertyId) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("propertyId", propertyId);
+    //>>includeEnd('debug');
+
+    if (
+      defined(this._metadataTable) &&
+      this._metadataTable.hasProperty(propertyId)
+    ) {
+      return true;
+    }
+
+    if (
+      defined(this._batchTableHierarchy) &&
+      this._batchTableHierarchy.propertyExists(propertyId)
+    ) {
+      return true;
+    }
+
+    if (
+      defined(this._jsonMetadataTable) &&
+      this._jsonMetadataTable.hasProperty(propertyId)
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns whether any feature has a property with the given semantic.
+   *
+   * @param {string} semantic The case-sensitive semantic of the property.
+   * @returns {boolean} Whether any feature has a property with the given semantic.
+   * @private
+   */
+  propertyExistsBySemantic(semantic) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("semantic", semantic);
+    //>>includeEnd('debug');
+
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.hasPropertyBySemantic(semantic);
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns an array of property IDs. For compatibility with the <code>3DTILES_batch_table_hierarchy</code> extension, this is computed for a specific feature.
+   *
+   * @param {number} index The index of the feature.
+   * @param {string[]} [results] An array into which to store the results.
+   * @returns {string[]} The property IDs.
+   * @private
+   */
+  getPropertyIds(index, results) {
+    results = defined(results) ? results : [];
+    results.length = 0;
+
+    if (defined(this._metadataTable)) {
+      // concat in place to avoid unnecessary array allocation
+      const ids = this._metadataTable.getPropertyIds(scratchResults);
+      addAllToArray(results, ids);
+    }
+
+    if (defined(this._batchTableHierarchy)) {
+      const ids = this._batchTableHierarchy.getPropertyIds(index, scratchResults);
+      addAllToArray(results, ids);
+    }
+
+    if (defined(this._jsonMetadataTable)) {
+      const ids = this._jsonMetadataTable.getPropertyIds(scratchResults);
+      addAllToArray(results, ids);
+    }
+
+    return results;
+  }
+
+  /**
+   * Returns a copy of the value of the property with the given ID.
+   * <p>
+   * If the property is normalized the normalized value is returned.
+   * </p>
+   *
+   * @param {number} index The index of the feature.
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this property.
+   * @private
+   */
+  getProperty(index, propertyId) {
+    let result;
+    if (defined(this._metadataTable)) {
+      result = this._metadataTable.getProperty(index, propertyId);
+      if (defined(result)) {
+        return result;
+      }
+    }
+
+    if (defined(this._batchTableHierarchy)) {
+      result = this._batchTableHierarchy.getProperty(index, propertyId);
+      if (defined(result)) {
+        return result;
+      }
+    }
+
+    if (defined(this._jsonMetadataTable)) {
+      result = this._jsonMetadataTable.getProperty(index, propertyId);
+      if (defined(result)) {
+        return result;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Sets the value of the property with the given ID. If the property did not
+   * exist, it will be created as a JSON metadata property
+   *
+   * <p>
+   * If the property is normalized a normalized value must be provided to this function.
+   * </p>
+   *
+   * @param {number} index The index of the feature.
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @param {*} value The value of the property that will be copied.
+   * @private
+   */
+  setProperty(index, propertyId, value) {
+    if (
+      defined(this._metadataTable) &&
+      this._metadataTable.setProperty(index, propertyId, value)
+    ) {
+      return;
+    }
+
+    if (
+      defined(this._batchTableHierarchy) &&
+      this._batchTableHierarchy.setProperty(index, propertyId, value)
+    ) {
+      return;
+    }
+
+    // Ensure we have a table for JSON properties
+    if (!defined(this._jsonMetadataTable)) {
+      this._jsonMetadataTable = new JsonMetadataTable({
+        count: this._count,
+        properties: {},
+      });
+    }
+
+    // JsonMetadataTable will handle creating a new property at runtime.
+    this._jsonMetadataTable.setProperty(index, propertyId, value);
+  }
+
+  /**
+   * Returns a copy of the value of the property with the given semantic.
+   * <p>
+   * This only operates on the underlying {@link MetadataTable} (if present) as
+   * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
+   * semantics.
+   * </p>
+   *
+   * @param {number} index The index of the feature.
+   * @param {string} semantic The case-sensitive semantic of the property.
+   * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this semantic.
+   * @private
+   */
+  getPropertyBySemantic(index, semantic) {
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.getPropertyBySemantic(index, semantic);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Sets the value of the property with the given semantic.
+   * <p>
+   * This only operates on the underlying {@link MetadataTable} (if present) as
+   * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
+   * semantics.
+   * </p>
+   *
+   * @param {number} index The index of the feature.
+   * @param {string} semantic The case-sensitive semantic of the property.
+   * @param {*} value The value of the property that will be copied.
+   * @returns {boolean} <code>true</code> if the property was set, <code>false</code> otherwise.
+   * @private
+   */
+  setPropertyBySemantic(index, semantic, value) {
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.setPropertyBySemantic(index, semantic, value);
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns a typed array containing the property values for a given propertyId.
+   * <p>
+   * This only operates on the underlying {@link MetadataTable} (if present) as
+   * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not store
+   * values in typed arrays.
+   * </p>
+   *
+   * @param {string} propertyId The case-sensitive ID of the property.
+   * @returns {*} The typed array containing the property values or <code>undefined</code> if the property values are not stored in a typed array.
+   *
+   * @private
+   */
+  getPropertyTypedArray(propertyId) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("propertyId", propertyId);
+    //>>includeEnd('debug');
+
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.getPropertyTypedArray(propertyId);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Returns a typed array containing the property values for the property with the given semantic.
+   * <p>
+   * This only operates on the underlying {@link MetadataTable} (if present) as
+   * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
+   * semantics.
+   * </p>
+   *
+   * @param {string} semantic The case-sensitive semantic of the property.
+   * @returns {*} The typed array containing the property values or <code>undefined</code> if the property values are not stored in a typed array.
+   *
+   * @private
+   */
+  getPropertyTypedArrayBySemantic(semantic) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.string("semantic", semantic);
+    //>>includeEnd('debug');
+
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.getPropertyTypedArrayBySemantic(semantic);
+    }
+
+    return undefined;
+  }
+
+  isClass(featureId, className) {
+    //>>includeStart('debug', pragmas.debug);
+    checkFeatureId(featureId, this.count);
+    Check.typeOf.string("className", className);
+    //>>includeEnd('debug');
+
+    const hierarchy = this._batchTableHierarchy;
+    if (!defined(hierarchy)) {
+      return false;
+    }
+
+    return hierarchy.isClass(featureId, className);
+  }
+
+  isExactClass(featureId, className) {
+    //>>includeStart('debug', pragmas.debug);
+    checkFeatureId(featureId, this.count);
+    Check.typeOf.string("className", className);
+    //>>includeEnd('debug');
+
+    return this.getExactClassName(featureId) === className;
+  }
+
+  getExactClassName(featureId) {
+    //>>includeStart('debug', pragmas.debug);
+    checkFeatureId(featureId, this.count);
+    //>>includeEnd('debug');
+
+    const hierarchy = this._batchTableHierarchy;
+    if (!defined(hierarchy)) {
+      return undefined;
+    }
+
+    return hierarchy.getClassName(featureId);
+  }
+
+  /**
+   * Destroys any resources that need cleaning up in the property table.
+   *
+   * @private
+   */
+  destroy() {
+    this._texture = this._texture && this._texture.destroy();
+    return destroyObject(this);
+  }
+
   /**
    * A human-readable name for this table
    *
@@ -66,11 +428,10 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
+
   /**
    * An identifier for this table. Useful for debugging.
    *
@@ -79,11 +440,10 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  id: {
-    get: function () {
-      return this._id;
-    },
-  },
+  get id() {
+    return this._id;
+  }
+
   /**
    * The number of features in the table.
    *
@@ -92,11 +452,9 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  count: {
-    get: function () {
-      return this._count;
-    },
-  },
+  get count() {
+    return this._count;
+  }
 
   /**
    * The class that properties conform to.
@@ -105,15 +463,13 @@ Object.defineProperties(PropertyTable.prototype, {
    * @type {MetadataClass}
    * @readonly
    */
-  class: {
-    get: function () {
-      if (defined(this._metadataTable)) {
-        return this._metadataTable.class;
-      }
+  get class() {
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.class;
+    }
 
-      return undefined;
-    },
-  },
+    return undefined;
+  }
 
   /**
    * The properties stored in this table.
@@ -122,15 +478,13 @@ Object.defineProperties(PropertyTable.prototype, {
    * @type {Object<string, MetadataTableProperty>}
    * @readonly
    */
-  properties: {
-    get: function () {
-      if (defined(this._metadataTable)) {
-        return this._metadataTable.properties;
-      }
+  get properties() {
+    if (defined(this._metadataTable)) {
+      return this._metadataTable.properties;
+    }
 
-      return undefined;
-    },
-  },
+    return undefined;
+  }
 
   /**
    * Extra user-defined properties.
@@ -140,11 +494,9 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  extras: {
-    get: function () {
-      return this._extras;
-    },
-  },
+  get extras() {
+    return this._extras;
+  }
 
   /**
    * An object containing extensions.
@@ -154,11 +506,9 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  extensions: {
-    get: function () {
-      return this._extensions;
-    },
-  },
+  get extensions() {
+    return this._extensions;
+  }
 
   /**
    * Get the total amount of binary metadata stored in memory. This does
@@ -169,20 +519,18 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  byteLength: {
-    get: function () {
-      let totalByteLength = 0;
-      if (defined(this._metadataTable)) {
-        totalByteLength += this._metadataTable.byteLength;
-      }
+  get byteLength() {
+    let totalByteLength = 0;
+    if (defined(this._metadataTable)) {
+      totalByteLength += this._metadataTable.byteLength;
+    }
 
-      if (defined(this._batchTableHierarchy)) {
-        totalByteLength += this._batchTableHierarchy.byteLength;
-      }
+    if (defined(this._batchTableHierarchy)) {
+      totalByteLength += this._batchTableHierarchy.byteLength;
+    }
 
-      return totalByteLength;
-    },
-  },
+    return totalByteLength;
+  }
 
   /**
    * The texture containing the property table data, if any.
@@ -192,334 +540,12 @@ Object.defineProperties(PropertyTable.prototype, {
    * @readonly
    * @private
    */
-  texture: {
-    get: function () {
-      return this._texture;
-    },
-  },
-});
-
-/**
- * Returns whether the feature has this property. For compatibility with the <code>3DTILES_batch_table_hierarchy</code> extension, this is computed for a specific feature.
- *
- * @param {number} index The index of the feature.
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {boolean} Whether the feature has this property.
- * @private
- */
-PropertyTable.prototype.hasProperty = function (index, propertyId) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("index", index);
-  Check.typeOf.string("propertyId", propertyId);
-  //>>includeEnd('debug');
-
-  if (
-    defined(this._metadataTable) &&
-    this._metadataTable.hasProperty(propertyId)
-  ) {
-    return true;
+  get texture() {
+    return this._texture;
   }
-
-  if (
-    defined(this._batchTableHierarchy) &&
-    this._batchTableHierarchy.hasProperty(index, propertyId)
-  ) {
-    return true;
-  }
-
-  if (
-    defined(this._jsonMetadataTable) &&
-    this._jsonMetadataTable.hasProperty(propertyId)
-  ) {
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Returns whether the feature has a property with the given semantic.
- *
- * @param {string} semantic The case-sensitive semantic of the property.
- * @returns {boolean} Whether the feature has a property with the given semantic.
- * @private
- */
-PropertyTable.prototype.hasPropertyBySemantic = function (index, semantic) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("index", index);
-  Check.typeOf.string("semantic", semantic);
-  //>>includeEnd('debug');
-
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.hasPropertyBySemantic(semantic);
-  }
-
-  return false;
-};
-
-/**
- * Returns whether any feature has this property.
- * This is mainly useful for checking whether a property exists in the class
- * hierarchy when using the <code>3DTILES_batch_table_hierarchy</code> extension.
- *
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {boolean} Whether any feature has this property.
- * @private
- */
-PropertyTable.prototype.propertyExists = function (propertyId) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("propertyId", propertyId);
-  //>>includeEnd('debug');
-
-  if (
-    defined(this._metadataTable) &&
-    this._metadataTable.hasProperty(propertyId)
-  ) {
-    return true;
-  }
-
-  if (
-    defined(this._batchTableHierarchy) &&
-    this._batchTableHierarchy.propertyExists(propertyId)
-  ) {
-    return true;
-  }
-
-  if (
-    defined(this._jsonMetadataTable) &&
-    this._jsonMetadataTable.hasProperty(propertyId)
-  ) {
-    return true;
-  }
-
-  return false;
-};
-
-/**
- * Returns whether any feature has a property with the given semantic.
- *
- * @param {string} semantic The case-sensitive semantic of the property.
- * @returns {boolean} Whether any feature has a property with the given semantic.
- * @private
- */
-PropertyTable.prototype.propertyExistsBySemantic = function (semantic) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("semantic", semantic);
-  //>>includeEnd('debug');
-
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.hasPropertyBySemantic(semantic);
-  }
-
-  return false;
-};
+}
 
 const scratchResults = [];
-
-/**
- * Returns an array of property IDs. For compatibility with the <code>3DTILES_batch_table_hierarchy</code> extension, this is computed for a specific feature.
- *
- * @param {number} index The index of the feature.
- * @param {string[]} [results] An array into which to store the results.
- * @returns {string[]} The property IDs.
- * @private
- */
-PropertyTable.prototype.getPropertyIds = function (index, results) {
-  results = defined(results) ? results : [];
-  results.length = 0;
-
-  if (defined(this._metadataTable)) {
-    // concat in place to avoid unnecessary array allocation
-    const ids = this._metadataTable.getPropertyIds(scratchResults);
-    addAllToArray(results, ids);
-  }
-
-  if (defined(this._batchTableHierarchy)) {
-    const ids = this._batchTableHierarchy.getPropertyIds(index, scratchResults);
-    addAllToArray(results, ids);
-  }
-
-  if (defined(this._jsonMetadataTable)) {
-    const ids = this._jsonMetadataTable.getPropertyIds(scratchResults);
-    addAllToArray(results, ids);
-  }
-
-  return results;
-};
-
-/**
- * Returns a copy of the value of the property with the given ID.
- * <p>
- * If the property is normalized the normalized value is returned.
- * </p>
- *
- * @param {number} index The index of the feature.
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this property.
- * @private
- */
-PropertyTable.prototype.getProperty = function (index, propertyId) {
-  let result;
-  if (defined(this._metadataTable)) {
-    result = this._metadataTable.getProperty(index, propertyId);
-    if (defined(result)) {
-      return result;
-    }
-  }
-
-  if (defined(this._batchTableHierarchy)) {
-    result = this._batchTableHierarchy.getProperty(index, propertyId);
-    if (defined(result)) {
-      return result;
-    }
-  }
-
-  if (defined(this._jsonMetadataTable)) {
-    result = this._jsonMetadataTable.getProperty(index, propertyId);
-    if (defined(result)) {
-      return result;
-    }
-  }
-
-  return undefined;
-};
-
-/**
- * Sets the value of the property with the given ID. If the property did not
- * exist, it will be created as a JSON metadata property
- *
- * <p>
- * If the property is normalized a normalized value must be provided to this function.
- * </p>
- *
- * @param {number} index The index of the feature.
- * @param {string} propertyId The case-sensitive ID of the property.
- * @param {*} value The value of the property that will be copied.
- * @private
- */
-PropertyTable.prototype.setProperty = function (index, propertyId, value) {
-  if (
-    defined(this._metadataTable) &&
-    this._metadataTable.setProperty(index, propertyId, value)
-  ) {
-    return;
-  }
-
-  if (
-    defined(this._batchTableHierarchy) &&
-    this._batchTableHierarchy.setProperty(index, propertyId, value)
-  ) {
-    return;
-  }
-
-  // Ensure we have a table for JSON properties
-  if (!defined(this._jsonMetadataTable)) {
-    this._jsonMetadataTable = new JsonMetadataTable({
-      count: this._count,
-      properties: {},
-    });
-  }
-
-  // JsonMetadataTable will handle creating a new property at runtime.
-  this._jsonMetadataTable.setProperty(index, propertyId, value);
-};
-
-/**
- * Returns a copy of the value of the property with the given semantic.
- * <p>
- * This only operates on the underlying {@link MetadataTable} (if present) as
- * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
- * semantics.
- * </p>
- *
- * @param {number} index The index of the feature.
- * @param {string} semantic The case-sensitive semantic of the property.
- * @returns {*} The value of the property or <code>undefined</code> if the feature does not have this semantic.
- * @private
- */
-PropertyTable.prototype.getPropertyBySemantic = function (index, semantic) {
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.getPropertyBySemantic(index, semantic);
-  }
-
-  return undefined;
-};
-
-/**
- * Sets the value of the property with the given semantic.
- * <p>
- * This only operates on the underlying {@link MetadataTable} (if present) as
- * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
- * semantics.
- * </p>
- *
- * @param {number} index The index of the feature.
- * @param {string} semantic The case-sensitive semantic of the property.
- * @param {*} value The value of the property that will be copied.
- * @returns {boolean} <code>true</code> if the property was set, <code>false</code> otherwise.
- * @private
- */
-PropertyTable.prototype.setPropertyBySemantic = function (
-  index,
-  semantic,
-  value,
-) {
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.setPropertyBySemantic(index, semantic, value);
-  }
-
-  return false;
-};
-
-/**
- * Returns a typed array containing the property values for a given propertyId.
- * <p>
- * This only operates on the underlying {@link MetadataTable} (if present) as
- * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not store
- * values in typed arrays.
- * </p>
- *
- * @param {string} propertyId The case-sensitive ID of the property.
- * @returns {*} The typed array containing the property values or <code>undefined</code> if the property values are not stored in a typed array.
- *
- * @private
- */
-PropertyTable.prototype.getPropertyTypedArray = function (propertyId) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("propertyId", propertyId);
-  //>>includeEnd('debug');
-
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.getPropertyTypedArray(propertyId);
-  }
-
-  return undefined;
-};
-
-/**
- * Returns a typed array containing the property values for the property with the given semantic.
- * <p>
- * This only operates on the underlying {@link MetadataTable} (if present) as
- * {@link JsonMetadataTable} and {@link BatchTableHierarchy} do not have
- * semantics.
- * </p>
- *
- * @param {string} semantic The case-sensitive semantic of the property.
- * @returns {*} The typed array containing the property values or <code>undefined</code> if the property values are not stored in a typed array.
- *
- * @private
- */
-PropertyTable.prototype.getPropertyTypedArrayBySemantic = function (semantic) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("semantic", semantic);
-  //>>includeEnd('debug');
-
-  if (defined(this._metadataTable)) {
-    return this._metadataTable.getPropertyTypedArrayBySemantic(semantic);
-  }
-
-  return undefined;
-};
 
 function checkFeatureId(featureId, featuresLength) {
   if (!defined(featureId) || featureId < 0 || featureId >= featuresLength) {
@@ -529,51 +555,5 @@ function checkFeatureId(featureId, featuresLength) {
     );
   }
 }
-
-PropertyTable.prototype.isClass = function (featureId, className) {
-  //>>includeStart('debug', pragmas.debug);
-  checkFeatureId(featureId, this.count);
-  Check.typeOf.string("className", className);
-  //>>includeEnd('debug');
-
-  const hierarchy = this._batchTableHierarchy;
-  if (!defined(hierarchy)) {
-    return false;
-  }
-
-  return hierarchy.isClass(featureId, className);
-};
-
-PropertyTable.prototype.isExactClass = function (featureId, className) {
-  //>>includeStart('debug', pragmas.debug);
-  checkFeatureId(featureId, this.count);
-  Check.typeOf.string("className", className);
-  //>>includeEnd('debug');
-
-  return this.getExactClassName(featureId) === className;
-};
-
-PropertyTable.prototype.getExactClassName = function (featureId) {
-  //>>includeStart('debug', pragmas.debug);
-  checkFeatureId(featureId, this.count);
-  //>>includeEnd('debug');
-
-  const hierarchy = this._batchTableHierarchy;
-  if (!defined(hierarchy)) {
-    return undefined;
-  }
-
-  return hierarchy.getClassName(featureId);
-};
-
-/**
- * Destroys any resources that need cleaning up in the property table.
- *
- * @private
- */
-PropertyTable.prototype.destroy = function () {
-  this._texture = this._texture && this._texture.destroy();
-  return destroyObject(this);
-};
 
 export default PropertyTable;

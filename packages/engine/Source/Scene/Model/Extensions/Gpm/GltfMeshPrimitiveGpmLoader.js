@@ -38,50 +38,222 @@ import MeshPrimitiveGpmLocal from "./MeshPrimitiveGpmLocal.js";
  *
  * @private
  */
-function GltfMeshPrimitiveGpmLoader(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
-  const gltf = options.gltf;
-  const extension = options.extension;
-  const gltfResource = options.gltfResource;
-  const baseResource = options.baseResource;
-  const supportedImageFormats = options.supportedImageFormats;
-  const frameState = options.frameState;
-  const cacheKey = options.cacheKey;
-  const asynchronous = options.asynchronous ?? true;
+class GltfMeshPrimitiveGpmLoader {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
+    const gltf = options.gltf;
+    const extension = options.extension;
+    const gltfResource = options.gltfResource;
+    const baseResource = options.baseResource;
+    const supportedImageFormats = options.supportedImageFormats;
+    const frameState = options.frameState;
+    const cacheKey = options.cacheKey;
+    const asynchronous = options.asynchronous ?? true;
 
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.gltf", gltf);
-  Check.typeOf.object("options.extension", extension);
-  Check.typeOf.object("options.gltfResource", gltfResource);
-  Check.typeOf.object("options.baseResource", baseResource);
-  Check.typeOf.object("options.supportedImageFormats", supportedImageFormats);
-  Check.typeOf.object("options.frameState", frameState);
-  //>>includeEnd('debug');
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.gltf", gltf);
+    Check.typeOf.object("options.extension", extension);
+    Check.typeOf.object("options.gltfResource", gltfResource);
+    Check.typeOf.object("options.baseResource", baseResource);
+    Check.typeOf.object("options.supportedImageFormats", supportedImageFormats);
+    Check.typeOf.object("options.frameState", frameState);
+    //>>includeEnd('debug');
 
-  this._gltfResource = gltfResource;
-  this._baseResource = baseResource;
-  this._gltf = gltf;
-  this._extension = extension;
-  this._supportedImageFormats = supportedImageFormats;
-  this._frameState = frameState;
-  this._cacheKey = cacheKey;
-  this._asynchronous = asynchronous;
-  this._textureLoaders = [];
-  this._textureIds = [];
-  this._meshPrimitiveGpmLocal = undefined;
-  this._structuralMetadata = undefined;
-  this._state = ResourceLoaderState.UNLOADED;
-  this._promise = undefined;
-}
+    this._gltfResource = gltfResource;
+    this._baseResource = baseResource;
+    this._gltf = gltf;
+    this._extension = extension;
+    this._supportedImageFormats = supportedImageFormats;
+    this._frameState = frameState;
+    this._cacheKey = cacheKey;
+    this._asynchronous = asynchronous;
+    this._textureLoaders = [];
+    this._textureIds = [];
+    this._meshPrimitiveGpmLocal = undefined;
+    this._structuralMetadata = undefined;
+    this._state = ResourceLoaderState.UNLOADED;
+    this._promise = undefined;
+  }
 
-if (defined(Object.create)) {
-  GltfMeshPrimitiveGpmLoader.prototype = Object.create(
-    ResourceLoader.prototype,
-  );
-  GltfMeshPrimitiveGpmLoader.prototype.constructor = GltfMeshPrimitiveGpmLoader;
-}
+  async _loadResources() {
+    try {
+      const texturesPromise = this._loadTextures();
+      await texturesPromise;
 
-Object.defineProperties(GltfMeshPrimitiveGpmLoader.prototype, {
+      if (this.isDestroyed()) {
+        return;
+      }
+
+      this._gltf = undefined; // No longer need to hold onto the glTF
+
+      this._state = ResourceLoaderState.LOADED;
+      return this;
+    } catch (error) {
+      if (this.isDestroyed()) {
+        return;
+      }
+
+      this.unload();
+      this._state = ResourceLoaderState.FAILED;
+      const errorMessage = "Failed to load GPM data";
+      throw this.getError(errorMessage, error);
+    }
+  }
+
+  /**
+   * Loads the resource.
+   * @returns {Promise<GltfMeshPrimitiveGpmLoader>} A promise which resolves to the loader when the resource loading is completed.
+   * @private
+   */
+  load() {
+    if (defined(this._promise)) {
+      return this._promise;
+    }
+
+    this._state = ResourceLoaderState.LOADING;
+    this._promise = this._loadResources(this);
+    return this._promise;
+  }
+
+  _loadTextures() {
+    let textureIds;
+    if (defined(this._extension)) {
+      textureIds = gatherUsedTextureIds(this._extension);
+    }
+
+    const gltf = this._gltf;
+    const gltfResource = this._gltfResource;
+    const baseResource = this._baseResource;
+    const supportedImageFormats = this._supportedImageFormats;
+    const frameState = this._frameState;
+    const asynchronous = this._asynchronous;
+
+    // Load the textures
+    const texturePromises = [];
+    for (const textureId in textureIds) {
+      if (textureIds.hasOwnProperty(textureId)) {
+        const textureLoader = ResourceCache.getTextureLoader({
+          gltf: gltf,
+          textureInfo: textureIds[textureId],
+          gltfResource: gltfResource,
+          baseResource: baseResource,
+          supportedImageFormats: supportedImageFormats,
+          frameState: frameState,
+          asynchronous: asynchronous,
+        });
+        this._textureLoaders.push(textureLoader);
+        this._textureIds.push(textureId);
+        texturePromises.push(textureLoader.load());
+      }
+    }
+
+    return Promise.all(texturePromises);
+  }
+
+  /**
+   * Processes the resource until it becomes ready.
+   *
+   * @param {FrameState} frameState The frame state.
+   * @private
+   */
+  process(frameState) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("frameState", frameState);
+    //>>includeEnd('debug');
+
+    if (this._state === ResourceLoaderState.READY) {
+      return true;
+    }
+
+    if (this._state !== ResourceLoaderState.LOADED) {
+      return false;
+    }
+
+    // The standard process of loading textures
+    // (from GltfStructuralMetadataLoader)
+    const textureLoaders = this._textureLoaders;
+    const textureLoadersLength = textureLoaders.length;
+    let ready = true;
+    for (let i = 0; i < textureLoadersLength; ++i) {
+      const textureLoader = textureLoaders[i];
+      const textureReady = textureLoader.process(frameState);
+      ready = ready && textureReady;
+    }
+
+    if (!ready) {
+      return false;
+    }
+
+    // More of the standard process of loading textures
+    // (from GltfStructuralMetadataLoader)
+    const textures = {};
+    for (let i = 0; i < this._textureIds.length; ++i) {
+      const textureId = this._textureIds[i];
+      const textureLoader = textureLoaders[i];
+      if (!textureLoader.isDestroyed()) {
+        textures[textureId] = textureLoader.texture;
+      }
+    }
+
+    // Convert the JSON representation of the `ppeTextures` that
+    // are found in the extensjon JSON into `PpeTexture` objects
+    const ppeTextures = [];
+    const extension = this._extension;
+    if (defined(extension.ppeTextures)) {
+      const ppeTexturesJson = extension.ppeTextures;
+      for (const ppeTextureJson of ppeTexturesJson) {
+        const traitsJson = ppeTextureJson.traits;
+        const traits = new PpeMetadata({
+          min: traitsJson.min,
+          max: traitsJson.max,
+          source: traitsJson.source,
+        });
+        const ppeTexture = new PpeTexture({
+          traits: traits,
+          noData: ppeTextureJson.noData,
+          offset: ppeTextureJson.offset,
+          scale: ppeTextureJson.scale,
+          index: ppeTextureJson.index,
+          texCoord: ppeTextureJson.texCoord,
+        });
+        ppeTextures.push(ppeTexture);
+      }
+    }
+    const meshPrimitiveGpmLocal = new MeshPrimitiveGpmLocal(ppeTextures);
+    this._meshPrimitiveGpmLocal = meshPrimitiveGpmLocal;
+
+    const structuralMetadata =
+      GltfMeshPrimitiveGpmLoader._convertToStructuralMetadata(
+        meshPrimitiveGpmLocal,
+        textures,
+      );
+    this._structuralMetadata = structuralMetadata;
+
+    this._state = ResourceLoaderState.READY;
+    return true;
+  }
+
+  _unloadTextures() {
+    const textureLoaders = this._textureLoaders;
+    const textureLoadersLength = textureLoaders.length;
+    for (let i = 0; i < textureLoadersLength; ++i) {
+      ResourceCache.unload(textureLoaders[i]);
+    }
+    this._textureLoaders.length = 0;
+    this._textureIds.length = 0;
+  }
+
+  /**
+   * Unloads the resource.
+   * @private
+   */
+  unload() {
+    this._unloadTextures();
+    this._gltf = undefined;
+    this._extension = undefined;
+    this._structuralMetadata = undefined;
+  }
+
   /**
    * The cache key of the resource.
    *
@@ -91,11 +263,9 @@ Object.defineProperties(GltfMeshPrimitiveGpmLoader.prototype, {
    * @readonly
    * @private
    */
-  cacheKey: {
-    get: function () {
-      return this._cacheKey;
-    },
-  },
+  get cacheKey() {
+    return this._cacheKey;
+  }
 
   /**
    * The parsed GPM extension information from the mesh primitive
@@ -106,11 +276,9 @@ Object.defineProperties(GltfMeshPrimitiveGpmLoader.prototype, {
    * @readonly
    * @private
    */
-  meshPrimitiveGpmLocal: {
-    get: function () {
-      return this._meshPrimitiveGpmLocal;
-    },
-  },
+  get meshPrimitiveGpmLocal() {
+    return this._meshPrimitiveGpmLocal;
+  }
 
   /**
    * Returns the result of converting the parsed 'MeshPrimitiveGpmLocal'
@@ -124,52 +292,17 @@ Object.defineProperties(GltfMeshPrimitiveGpmLoader.prototype, {
    * @readonly
    * @private
    */
-  structuralMetadata: {
-    get: function () {
-      return this._structuralMetadata;
-    },
-  },
-});
-
-GltfMeshPrimitiveGpmLoader.prototype._loadResources = async function () {
-  try {
-    const texturesPromise = this._loadTextures();
-    await texturesPromise;
-
-    if (this.isDestroyed()) {
-      return;
-    }
-
-    this._gltf = undefined; // No longer need to hold onto the glTF
-
-    this._state = ResourceLoaderState.LOADED;
-    return this;
-  } catch (error) {
-    if (this.isDestroyed()) {
-      return;
-    }
-
-    this.unload();
-    this._state = ResourceLoaderState.FAILED;
-    const errorMessage = "Failed to load GPM data";
-    throw this.getError(errorMessage, error);
+  get structuralMetadata() {
+    return this._structuralMetadata;
   }
-};
+}
 
-/**
- * Loads the resource.
- * @returns {Promise<GltfMeshPrimitiveGpmLoader>} A promise which resolves to the loader when the resource loading is completed.
- * @private
- */
-GltfMeshPrimitiveGpmLoader.prototype.load = function () {
-  if (defined(this._promise)) {
-    return this._promise;
-  }
-
-  this._state = ResourceLoaderState.LOADING;
-  this._promise = this._loadResources(this);
-  return this._promise;
-};
+if (defined(Object.create)) {
+  GltfMeshPrimitiveGpmLoader.prototype = Object.create(
+    ResourceLoader.prototype,
+  );
+  GltfMeshPrimitiveGpmLoader.prototype.constructor = GltfMeshPrimitiveGpmLoader;
+}
 
 function gatherUsedTextureIds(gpmExtension) {
   // Gather the used textures
@@ -184,41 +317,6 @@ function gatherUsedTextureIds(gpmExtension) {
   }
   return textureIds;
 }
-
-GltfMeshPrimitiveGpmLoader.prototype._loadTextures = function () {
-  let textureIds;
-  if (defined(this._extension)) {
-    textureIds = gatherUsedTextureIds(this._extension);
-  }
-
-  const gltf = this._gltf;
-  const gltfResource = this._gltfResource;
-  const baseResource = this._baseResource;
-  const supportedImageFormats = this._supportedImageFormats;
-  const frameState = this._frameState;
-  const asynchronous = this._asynchronous;
-
-  // Load the textures
-  const texturePromises = [];
-  for (const textureId in textureIds) {
-    if (textureIds.hasOwnProperty(textureId)) {
-      const textureLoader = ResourceCache.getTextureLoader({
-        gltf: gltf,
-        textureInfo: textureIds[textureId],
-        gltfResource: gltfResource,
-        baseResource: baseResource,
-        supportedImageFormats: supportedImageFormats,
-        frameState: frameState,
-        asynchronous: asynchronous,
-      });
-      this._textureLoaders.push(textureLoader);
-      this._textureIds.push(textureId);
-      texturePromises.push(textureLoader.load());
-    }
-  }
-
-  return Promise.all(texturePromises);
-};
 
 /**
  * A static mapping from PPE texture property identifier keys
@@ -434,110 +532,6 @@ GltfMeshPrimitiveGpmLoader._convertToStructuralMetadata = function (
     propertyAttributes: [],
   });
   return structuralMetadata;
-};
-
-/**
- * Processes the resource until it becomes ready.
- *
- * @param {FrameState} frameState The frame state.
- * @private
- */
-GltfMeshPrimitiveGpmLoader.prototype.process = function (frameState) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("frameState", frameState);
-  //>>includeEnd('debug');
-
-  if (this._state === ResourceLoaderState.READY) {
-    return true;
-  }
-
-  if (this._state !== ResourceLoaderState.LOADED) {
-    return false;
-  }
-
-  // The standard process of loading textures
-  // (from GltfStructuralMetadataLoader)
-  const textureLoaders = this._textureLoaders;
-  const textureLoadersLength = textureLoaders.length;
-  let ready = true;
-  for (let i = 0; i < textureLoadersLength; ++i) {
-    const textureLoader = textureLoaders[i];
-    const textureReady = textureLoader.process(frameState);
-    ready = ready && textureReady;
-  }
-
-  if (!ready) {
-    return false;
-  }
-
-  // More of the standard process of loading textures
-  // (from GltfStructuralMetadataLoader)
-  const textures = {};
-  for (let i = 0; i < this._textureIds.length; ++i) {
-    const textureId = this._textureIds[i];
-    const textureLoader = textureLoaders[i];
-    if (!textureLoader.isDestroyed()) {
-      textures[textureId] = textureLoader.texture;
-    }
-  }
-
-  // Convert the JSON representation of the `ppeTextures` that
-  // are found in the extensjon JSON into `PpeTexture` objects
-  const ppeTextures = [];
-  const extension = this._extension;
-  if (defined(extension.ppeTextures)) {
-    const ppeTexturesJson = extension.ppeTextures;
-    for (const ppeTextureJson of ppeTexturesJson) {
-      const traitsJson = ppeTextureJson.traits;
-      const traits = new PpeMetadata({
-        min: traitsJson.min,
-        max: traitsJson.max,
-        source: traitsJson.source,
-      });
-      const ppeTexture = new PpeTexture({
-        traits: traits,
-        noData: ppeTextureJson.noData,
-        offset: ppeTextureJson.offset,
-        scale: ppeTextureJson.scale,
-        index: ppeTextureJson.index,
-        texCoord: ppeTextureJson.texCoord,
-      });
-      ppeTextures.push(ppeTexture);
-    }
-  }
-  const meshPrimitiveGpmLocal = new MeshPrimitiveGpmLocal(ppeTextures);
-  this._meshPrimitiveGpmLocal = meshPrimitiveGpmLocal;
-
-  const structuralMetadata =
-    GltfMeshPrimitiveGpmLoader._convertToStructuralMetadata(
-      meshPrimitiveGpmLocal,
-      textures,
-    );
-  this._structuralMetadata = structuralMetadata;
-
-  this._state = ResourceLoaderState.READY;
-  return true;
-};
-
-GltfMeshPrimitiveGpmLoader.prototype._unloadTextures = function () {
-  const textureLoaders = this._textureLoaders;
-  const textureLoadersLength = textureLoaders.length;
-  for (let i = 0; i < textureLoadersLength; ++i) {
-    ResourceCache.unload(textureLoaders[i]);
-  }
-  this._textureLoaders.length = 0;
-  this._textureIds.length = 0;
-};
-
-/**
- * Unloads the resource.
- * @private
- */
-GltfMeshPrimitiveGpmLoader.prototype.unload = function () {
-  this._unloadTextures();
-  this._gltf = undefined;
-  this._extension = undefined;
-  this._structuralMetadata = undefined;
 };
 
 export default GltfMeshPrimitiveGpmLoader;

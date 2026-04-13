@@ -20,34 +20,67 @@ import Rectangle from "./Rectangle.js";
  * @see BoundingSphere
  * @see Packable
  */
-function BoundingRectangle(x, y, width, height) {
-  /**
-   * The x coordinate of the rectangle.
-   * @type {number}
-   * @default 0.0
-   */
-  this.x = x ?? 0.0;
+class BoundingRectangle {
+  constructor(x, y, width, height) {
+    /**
+     * The x coordinate of the rectangle.
+     * @type {number}
+     * @default 0.0
+     */
+    this.x = x ?? 0.0;
+
+    /**
+     * The y coordinate of the rectangle.
+     * @type {number}
+     * @default 0.0
+     */
+    this.y = y ?? 0.0;
+
+    /**
+     * The width of the rectangle.
+     * @type {number}
+     * @default 0.0
+     */
+    this.width = width ?? 0.0;
+
+    /**
+     * The height of the rectangle.
+     * @type {number}
+     * @default 0.0
+     */
+    this.height = height ?? 0.0;
+  }
 
   /**
-   * The y coordinate of the rectangle.
-   * @type {number}
-   * @default 0.0
+   * Duplicates this BoundingRectangle instance.
+   *
+   * @param {BoundingRectangle} [result] The object onto which to store the result.
+   * @returns {BoundingRectangle} The modified result parameter or a new BoundingRectangle instance if one was not provided.
    */
-  this.y = y ?? 0.0;
+  clone(result) {
+    return BoundingRectangle.clone(this, result);
+  }
 
   /**
-   * The width of the rectangle.
-   * @type {number}
-   * @default 0.0
+   * Determines if this rectangle intersects with another.
+   *
+   * @param {BoundingRectangle} right A rectangle to check for intersection.
+   * @returns {Intersect} <code>Intersect.INTERSECTING</code> if the rectangles intersect, <code>Intersect.OUTSIDE</code> otherwise.
    */
-  this.width = width ?? 0.0;
+  intersect(right) {
+    return BoundingRectangle.intersect(this, right);
+  }
 
   /**
-   * The height of the rectangle.
-   * @type {number}
-   * @default 0.0
+   * Compares this BoundingRectangle against the provided BoundingRectangle componentwise and returns
+   * <code>true</code> if they are equal, <code>false</code> otherwise.
+   *
+   * @param {BoundingRectangle} [right] The right hand side BoundingRectangle.
+   * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
    */
-  this.height = height ?? 0.0;
+  equals(right) {
+    return BoundingRectangle.equals(this, right);
+  }
 }
 
 /**
@@ -341,34 +374,4 @@ BoundingRectangle.equals = function (left, right) {
   );
 };
 
-/**
- * Duplicates this BoundingRectangle instance.
- *
- * @param {BoundingRectangle} [result] The object onto which to store the result.
- * @returns {BoundingRectangle} The modified result parameter or a new BoundingRectangle instance if one was not provided.
- */
-BoundingRectangle.prototype.clone = function (result) {
-  return BoundingRectangle.clone(this, result);
-};
-
-/**
- * Determines if this rectangle intersects with another.
- *
- * @param {BoundingRectangle} right A rectangle to check for intersection.
- * @returns {Intersect} <code>Intersect.INTERSECTING</code> if the rectangles intersect, <code>Intersect.OUTSIDE</code> otherwise.
- */
-BoundingRectangle.prototype.intersect = function (right) {
-  return BoundingRectangle.intersect(this, right);
-};
-
-/**
- * Compares this BoundingRectangle against the provided BoundingRectangle componentwise and returns
- * <code>true</code> if they are equal, <code>false</code> otherwise.
- *
- * @param {BoundingRectangle} [right] The right hand side BoundingRectangle.
- * @returns {boolean} <code>true</code> if they are equal, <code>false</code> otherwise.
- */
-BoundingRectangle.prototype.equals = function (right) {
-  return BoundingRectangle.equals(this, right);
-};
 export default BoundingRectangle;

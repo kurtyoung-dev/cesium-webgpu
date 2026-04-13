@@ -19,72 +19,230 @@ import StencilOperation from "./StencilOperation.js";
  *
  * @private
  */
-function GlobeDepth() {
-  this._picking = false;
-  this._numSamples = 1;
-  this._tempCopyDepthTexture = undefined;
+class GlobeDepth {
+  constructor() {
+    this._picking = false;
+    this._numSamples = 1;
+    this._tempCopyDepthTexture = undefined;
 
-  this._pickColorFramebuffer = new FramebufferManager({
-    depthStencil: true,
-    supportsDepthTexture: true,
-  });
-  this._outputFramebuffer = new FramebufferManager({
-    depthStencil: true,
-    supportsDepthTexture: true,
-  });
-  this._copyDepthFramebuffer = new FramebufferManager();
-  this._tempCopyDepthFramebuffer = new FramebufferManager();
-  this._updateDepthFramebuffer = new FramebufferManager({
-    createColorAttachments: false,
-    createDepthAttachments: false,
-    depthStencil: true,
-  });
+    this._pickColorFramebuffer = new FramebufferManager({
+      depthStencil: true,
+      supportsDepthTexture: true,
+    });
+    this._outputFramebuffer = new FramebufferManager({
+      depthStencil: true,
+      supportsDepthTexture: true,
+    });
+    this._copyDepthFramebuffer = new FramebufferManager();
+    this._tempCopyDepthFramebuffer = new FramebufferManager();
+    this._updateDepthFramebuffer = new FramebufferManager({
+      createColorAttachments: false,
+      createDepthAttachments: false,
+      depthStencil: true,
+    });
 
-  this._clearGlobeColorCommand = undefined;
-  this._copyColorCommand = undefined;
-  this._copyDepthCommand = undefined;
-  this._tempCopyDepthCommand = undefined;
-  this._updateDepthCommand = undefined;
+    this._clearGlobeColorCommand = undefined;
+    this._copyColorCommand = undefined;
+    this._copyDepthCommand = undefined;
+    this._tempCopyDepthCommand = undefined;
+    this._updateDepthCommand = undefined;
 
-  this._viewport = new BoundingRectangle();
-  this._rs = undefined;
-  this._rsBlend = undefined;
-  this._rsUpdate = undefined;
+    this._viewport = new BoundingRectangle();
+    this._rs = undefined;
+    this._rsBlend = undefined;
+    this._rsUpdate = undefined;
 
-  this._useScissorTest = false;
-  this._scissorRectangle = undefined;
+    this._useScissorTest = false;
+    this._scissorRectangle = undefined;
 
-  this._useHdr = undefined;
-  this._clearGlobeDepth = undefined;
+    this._useHdr = undefined;
+    this._clearGlobeDepth = undefined;
+  }
+
+  /**
+   * Update framebuffers and render state.
+   *
+   * @param {Context} context The context used for rendering.
+   * @param {PassState} passState Rendering state for subsequent render passes.
+   * @param {BoundingRectangle} viewport The viewport for the rendering.
+   * @param {number} numSamples The number of samples for multi-sample anti-aliasing (MSAA).
+   * @param {boolean} hdr <code>true</code> if the color output needs to be floating point for HDR rendering.
+   * @param {boolean} clearGlobeDepth <code>true</code> if the depth buffer should be cleared before rendering 3D Tiles and opaque entities.
+   *
+   * @private
+   */
+  update(context, passState, viewport, numSamples, hdr, clearGlobeDepth) {
+    const { width, height } = viewport;
+
+    const pixelDatatype = hdr
+      ? context.halfFloatingPointTexture
+        ? PixelDatatype.HALF_FLOAT
+        : PixelDatatype.FLOAT
+      : PixelDatatype.UNSIGNED_BYTE;
+    this._numSamples = numSamples;
+    if (this.picking) {
+      this._pickColorFramebuffer.update(context, width, height);
+    } else {
+      this._outputFramebuffer.update(
+        context,
+        width,
+        height,
+        numSamples,
+        pixelDatatype,
+      );
+    }
+    this._copyDepthFramebuffer.update(context, width, height);
+    updateCopyCommands(this, context, width, height, passState);
+    context.uniformState.globeDepthTexture = undefined;
+
+    this._clearGlobeDepth = clearGlobeDepth;
+  }
+
+  /**
+   * If using MSAA, resolve the stencil.
+   *
+   * @param {Context} context
+   * @param {boolean} blitStencil <code>true</code> if the stencil has been set.
+   *
+   * @private
+   */
+  prepareColorTextures(context, blitStencil) {
+    if (!this.picking && this._numSamples > 1) {
+      this._outputFramebuffer.prepareTextures(context, blitStencil);
+    }
+  }
+
+  executeCopyDepth(context, passState) {
+    if (defined(this._copyDepthCommand)) {
+      this.prepareColorTextures(context);
+      this._copyDepthCommand.execute(context, passState);
+      context.uniformState.globeDepthTexture =
+        this._copyDepthFramebuffer.getColorTexture();
+    }
+  }
+
+  /**
+   * Update the existing depth texture using a stencil.
+   *
+   * @param {Context} context The context used for rendering.
+   * @param {PassState} passState Render state for subsequent rendering passes.
+   * @param {Texture} [depthTexture] The depth texture to copy.
+   */
+  executeUpdateDepth(context, passState, depthTexture) {
+    const depthTextureToCopy = defined(depthTexture)
+      ? depthTexture
+      : passState.framebuffer.depthStencilTexture;
+    if (
+      !this._clearGlobeDepth &&
+      depthTextureToCopy === this.colorFramebufferManager.getDepthStencilTexture()
+    ) {
+      // Fast path - the depth texture can be copied normally.
+      if (defined(this._copyDepthCommand)) {
+        this._copyDepthCommand.execute(context, passState);
+      }
+      return;
+    }
+    if (!defined(this._updateDepthCommand)) {
+      return;
+    }
+
+    // First copy the depth to a temporary globe depth texture, then update the
+    // main globe depth texture where the stencil bit for 3D Tiles is set.
+    // This preserves the original globe depth except where 3D Tiles is rendered.
+    // The additional texture and framebuffer resources are created on demand.
+    const updateDepthFramebuffer = this._updateDepthFramebuffer;
+    if (
+      !defined(updateDepthFramebuffer.framebuffer) ||
+      updateDepthFramebuffer.getDepthStencilTexture() !== depthTextureToCopy ||
+      updateDepthFramebuffer.getColorTexture() !==
+        this._copyDepthFramebuffer.getColorTexture()
+    ) {
+      const colorTexture = this._copyDepthFramebuffer.getColorTexture();
+      const { width, height } = colorTexture;
+      this._tempCopyDepthFramebuffer.destroy();
+      this._tempCopyDepthFramebuffer.update(context, width, height);
+
+      updateDepthFramebuffer.setColorTexture(colorTexture, 0);
+      updateDepthFramebuffer.setDepthStencilTexture(depthTextureToCopy);
+      updateDepthFramebuffer.update(context, width, height);
+
+      updateCopyCommands(this, context, width, height, passState);
+    }
+    this._tempCopyDepthTexture = depthTextureToCopy;
+    this._tempCopyDepthCommand.execute(context, passState);
+    this._updateDepthCommand.execute(context, passState);
+  }
+
+  executeCopyColor(context, passState) {
+    if (defined(this._copyColorCommand)) {
+      this._copyColorCommand.execute(context, passState);
+    }
+  }
+
+  clear(context, passState, clearColor) {
+    const clear = this._clearGlobeColorCommand;
+    if (defined(clear)) {
+      Color.clone(clearColor, clear.color);
+      this.colorFramebufferManager.clear(context, clear, passState);
+    }
+  }
+
+  isDestroyed() {
+    return false;
+  }
+
+  destroy() {
+    this._pickColorFramebuffer.destroy();
+    this._outputFramebuffer.destroy();
+    this._copyDepthFramebuffer.destroy();
+    this._tempCopyDepthFramebuffer.destroy();
+    this._updateDepthFramebuffer.destroy();
+
+    if (defined(this._copyColorCommand)) {
+      this._copyColorCommand.shaderProgram =
+        this._copyColorCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._copyDepthCommand)) {
+      this._copyDepthCommand.shaderProgram =
+        this._copyDepthCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._tempCopyDepthCommand)) {
+      this._tempCopyDepthCommand.shaderProgram =
+        this._tempCopyDepthCommand.shaderProgram.destroy();
+    }
+
+    if (defined(this._updateDepthCommand)) {
+      this._updateDepthCommand.shaderProgram =
+        this._updateDepthCommand.shaderProgram.destroy();
+    }
+
+    return destroyObject(this);
+  }
+
+  get colorFramebufferManager() {
+    return this._picking
+      ? this._pickColorFramebuffer
+      : this._outputFramebuffer;
+  }
+
+  get framebuffer() {
+    return this.colorFramebufferManager.framebuffer;
+  }
+
+  get depthStencilTexture() {
+    return this.colorFramebufferManager.getDepthStencilTexture();
+  }
+
+  get picking() {
+    return this._picking;
+  }
+
+  set picking(value) {
+    this._picking = value;
+  }
 }
-
-Object.defineProperties(GlobeDepth.prototype, {
-  colorFramebufferManager: {
-    get: function () {
-      return this._picking
-        ? this._pickColorFramebuffer
-        : this._outputFramebuffer;
-    },
-  },
-  framebuffer: {
-    get: function () {
-      return this.colorFramebufferManager.framebuffer;
-    },
-  },
-  depthStencilTexture: {
-    get: function () {
-      return this.colorFramebufferManager.getDepthStencilTexture();
-    },
-  },
-  picking: {
-    get: function () {
-      return this._picking;
-    },
-    set: function (value) {
-      this._picking = value;
-    },
-  },
-});
 
 function updateCopyCommands(globeDepth, context, width, height, passState) {
   const viewport = globeDepth._viewport;
@@ -232,176 +390,4 @@ function updateCopyCommands(globeDepth, context, width, height, passState) {
   globeDepth._clearGlobeColorCommand.framebuffer = globeDepth.framebuffer;
 }
 
-/**
- * Update framebuffers and render state.
- *
- * @param {Context} context The context used for rendering.
- * @param {PassState} passState Rendering state for subsequent render passes.
- * @param {BoundingRectangle} viewport The viewport for the rendering.
- * @param {number} numSamples The number of samples for multi-sample anti-aliasing (MSAA).
- * @param {boolean} hdr <code>true</code> if the color output needs to be floating point for HDR rendering.
- * @param {boolean} clearGlobeDepth <code>true</code> if the depth buffer should be cleared before rendering 3D Tiles and opaque entities.
- *
- * @private
- */
-GlobeDepth.prototype.update = function (
-  context,
-  passState,
-  viewport,
-  numSamples,
-  hdr,
-  clearGlobeDepth,
-) {
-  const { width, height } = viewport;
-
-  const pixelDatatype = hdr
-    ? context.halfFloatingPointTexture
-      ? PixelDatatype.HALF_FLOAT
-      : PixelDatatype.FLOAT
-    : PixelDatatype.UNSIGNED_BYTE;
-  this._numSamples = numSamples;
-  if (this.picking) {
-    this._pickColorFramebuffer.update(context, width, height);
-  } else {
-    this._outputFramebuffer.update(
-      context,
-      width,
-      height,
-      numSamples,
-      pixelDatatype,
-    );
-  }
-  this._copyDepthFramebuffer.update(context, width, height);
-  updateCopyCommands(this, context, width, height, passState);
-  context.uniformState.globeDepthTexture = undefined;
-
-  this._clearGlobeDepth = clearGlobeDepth;
-};
-
-/**
- * If using MSAA, resolve the stencil.
- *
- * @param {Context} context
- * @param {boolean} blitStencil <code>true</code> if the stencil has been set.
- *
- * @private
- */
-GlobeDepth.prototype.prepareColorTextures = function (context, blitStencil) {
-  if (!this.picking && this._numSamples > 1) {
-    this._outputFramebuffer.prepareTextures(context, blitStencil);
-  }
-};
-
-GlobeDepth.prototype.executeCopyDepth = function (context, passState) {
-  if (defined(this._copyDepthCommand)) {
-    this.prepareColorTextures(context);
-    this._copyDepthCommand.execute(context, passState);
-    context.uniformState.globeDepthTexture =
-      this._copyDepthFramebuffer.getColorTexture();
-  }
-};
-
-/**
- * Update the existing depth texture using a stencil.
- *
- * @param {Context} context The context used for rendering.
- * @param {PassState} passState Render state for subsequent rendering passes.
- * @param {Texture} [depthTexture] The depth texture to copy.
- */
-GlobeDepth.prototype.executeUpdateDepth = function (
-  context,
-  passState,
-  depthTexture,
-) {
-  const depthTextureToCopy = defined(depthTexture)
-    ? depthTexture
-    : passState.framebuffer.depthStencilTexture;
-  if (
-    !this._clearGlobeDepth &&
-    depthTextureToCopy === this.colorFramebufferManager.getDepthStencilTexture()
-  ) {
-    // Fast path - the depth texture can be copied normally.
-    if (defined(this._copyDepthCommand)) {
-      this._copyDepthCommand.execute(context, passState);
-    }
-    return;
-  }
-  if (!defined(this._updateDepthCommand)) {
-    return;
-  }
-
-  // First copy the depth to a temporary globe depth texture, then update the
-  // main globe depth texture where the stencil bit for 3D Tiles is set.
-  // This preserves the original globe depth except where 3D Tiles is rendered.
-  // The additional texture and framebuffer resources are created on demand.
-  const updateDepthFramebuffer = this._updateDepthFramebuffer;
-  if (
-    !defined(updateDepthFramebuffer.framebuffer) ||
-    updateDepthFramebuffer.getDepthStencilTexture() !== depthTextureToCopy ||
-    updateDepthFramebuffer.getColorTexture() !==
-      this._copyDepthFramebuffer.getColorTexture()
-  ) {
-    const colorTexture = this._copyDepthFramebuffer.getColorTexture();
-    const { width, height } = colorTexture;
-    this._tempCopyDepthFramebuffer.destroy();
-    this._tempCopyDepthFramebuffer.update(context, width, height);
-
-    updateDepthFramebuffer.setColorTexture(colorTexture, 0);
-    updateDepthFramebuffer.setDepthStencilTexture(depthTextureToCopy);
-    updateDepthFramebuffer.update(context, width, height);
-
-    updateCopyCommands(this, context, width, height, passState);
-  }
-  this._tempCopyDepthTexture = depthTextureToCopy;
-  this._tempCopyDepthCommand.execute(context, passState);
-  this._updateDepthCommand.execute(context, passState);
-};
-
-GlobeDepth.prototype.executeCopyColor = function (context, passState) {
-  if (defined(this._copyColorCommand)) {
-    this._copyColorCommand.execute(context, passState);
-  }
-};
-
-GlobeDepth.prototype.clear = function (context, passState, clearColor) {
-  const clear = this._clearGlobeColorCommand;
-  if (defined(clear)) {
-    Color.clone(clearColor, clear.color);
-    this.colorFramebufferManager.clear(context, clear, passState);
-  }
-};
-
-GlobeDepth.prototype.isDestroyed = function () {
-  return false;
-};
-
-GlobeDepth.prototype.destroy = function () {
-  this._pickColorFramebuffer.destroy();
-  this._outputFramebuffer.destroy();
-  this._copyDepthFramebuffer.destroy();
-  this._tempCopyDepthFramebuffer.destroy();
-  this._updateDepthFramebuffer.destroy();
-
-  if (defined(this._copyColorCommand)) {
-    this._copyColorCommand.shaderProgram =
-      this._copyColorCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._copyDepthCommand)) {
-    this._copyDepthCommand.shaderProgram =
-      this._copyDepthCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._tempCopyDepthCommand)) {
-    this._tempCopyDepthCommand.shaderProgram =
-      this._tempCopyDepthCommand.shaderProgram.destroy();
-  }
-
-  if (defined(this._updateDepthCommand)) {
-    this._updateDepthCommand.shaderProgram =
-      this._updateDepthCommand.shaderProgram.destroy();
-  }
-
-  return destroyObject(this);
-};
 export default GlobeDepth;

@@ -28,7 +28,7 @@ class WebGPUPassState {
   /**
    * The WebGPU context for this pass.
    */
-  context: any;
+  context: CesiumGraphicsContext;
 
   /**
    * The framebuffer (WebGPURenderTarget or WebGPUFramebufferManager) to render to.
@@ -110,7 +110,7 @@ class WebGPUPassState {
    */
   private _msaaSampleCount: number;
 
-  constructor(context: any) {
+  constructor(context: CesiumGraphicsContext) {
     this.context = context;
     this.framebuffer = undefined;
     this.blendingEnabled = undefined;

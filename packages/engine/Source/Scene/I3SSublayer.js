@@ -12,30 +12,28 @@ import Resource from "../Core/Resource.js";
  * @alias I3SSublayer
  * @internalConstructor
  */
-function I3SSublayer(dataProvider, parent, sublayerData) {
-  this._dataProvider = dataProvider;
-  this._parent = parent;
-  this._data = sublayerData;
-  this._name = sublayerData.name;
-  this._modelName = sublayerData.modelName;
-  this._visibility = sublayerData.visibility ?? true;
-  this._resource = undefined;
-  this._sublayers = [];
-  this._i3sLayers = [];
-}
+class I3SSublayer {
+  constructor(dataProvider, parent, sublayerData) {
+    this._dataProvider = dataProvider;
+    this._parent = parent;
+    this._data = sublayerData;
+    this._name = sublayerData.name;
+    this._modelName = sublayerData.modelName;
+    this._visibility = sublayerData.visibility ?? true;
+    this._resource = undefined;
+    this._sublayers = [];
+    this._i3sLayers = [];
+  }
 
-Object.defineProperties(I3SSublayer.prototype, {
   /**
    * Gets the resource for the sublayer
    * @memberof I3SSublayer.prototype
    * @type {Resource}
    * @readonly
    */
-  resource: {
-    get: function () {
-      return this._resource;
-    },
-  },
+  get resource() {
+    return this._resource;
+  }
 
   /**
    * Gets the I3S data for this object.
@@ -43,11 +41,9 @@ Object.defineProperties(I3SSublayer.prototype, {
    * @type {object}
    * @readonly
    */
-  data: {
-    get: function () {
-      return this._data;
-    },
-  },
+  get data() {
+    return this._data;
+  }
 
   /**
    * Gets the name for the sublayer.
@@ -55,11 +51,9 @@ Object.defineProperties(I3SSublayer.prototype, {
    * @type {string}
    * @readonly
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * Gets the model name for the sublayer.
@@ -67,11 +61,9 @@ Object.defineProperties(I3SSublayer.prototype, {
    * @type {string}
    * @readonly
    */
-  modelName: {
-    get: function () {
-      return this._modelName;
-    },
-  },
+  get modelName() {
+    return this._modelName;
+  }
 
   /**
    * Gets the collection of child sublayers.
@@ -79,34 +71,36 @@ Object.defineProperties(I3SSublayer.prototype, {
    * @type {I3SSublayer[]}
    * @readonly
    */
-  sublayers: {
-    get: function () {
-      return this._sublayers;
-    },
-  },
+  get sublayers() {
+    return this._sublayers;
+  }
 
   /**
    * Gets or sets the sublayer visibility.
    * @memberof I3SSublayer.prototype
    * @type {boolean}
    */
-  visibility: {
-    get: function () {
-      return this._visibility;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("value", value);
-      //>>includeEnd('debug');
+  get visibility() {
+    return this._visibility;
+  }
 
-      if (this._visibility !== value) {
-        this._visibility = value;
-        for (let i = 0; i < this._i3sLayers.length; i++) {
-          this._i3sLayers[i]._updateVisibility();
-        }
+  /**
+   * Gets or sets the sublayer visibility.
+   * @memberof I3SSublayer.prototype
+   * @type {boolean}
+   */
+  set visibility(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("value", value);
+    //>>includeEnd('debug');
+
+    if (this._visibility !== value) {
+      this._visibility = value;
+      for (let i = 0; i < this._i3sLayers.length; i++) {
+        this._i3sLayers[i]._updateVisibility();
       }
-    },
-  },
+    }
+  }
 
   /**
    * Determines if the sublayer will be shown.
@@ -114,12 +108,10 @@ Object.defineProperties(I3SSublayer.prototype, {
    * @type {boolean}
    * @readonly
    */
-  show: {
-    get: function () {
-      return this._visibility && this._parent.show;
-    },
-  },
-});
+  get show() {
+    return this._visibility && this._parent.show;
+  }
+}
 
 /**
  * @private

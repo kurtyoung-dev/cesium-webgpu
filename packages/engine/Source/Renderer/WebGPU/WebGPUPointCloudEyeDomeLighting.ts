@@ -22,7 +22,7 @@
 
 function updateWebGPUPointCloudEDL(
   _edl: any,
-  _frameState: any,
+  _frameState: CesiumFrameState,
   _commandsToHijack: unknown[],
 ): void {
   // Intentional no-op — see module header for full port requirements.

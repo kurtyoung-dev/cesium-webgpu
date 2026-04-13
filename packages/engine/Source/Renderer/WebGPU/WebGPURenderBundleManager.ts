@@ -388,20 +388,51 @@ export class WebGPURenderBundleManager {
    * It also doesn't go through the eviction path, so very large
    * one-frame additions can't push out useful cached entries.
    */
-  private _buildEphemeral(
-    key: BundleKey,
+  /**
+   * Record a bundle with validation error scoping. If the record
+   * callback uses an invalid pipeline (e.g., from a failed shader
+   * compilation), the error is caught and logged instead of
+   * propagating to `executeBundles` where it would poison the
+   * entire command encoder and kill the frame.
+   */
+  private _recordBundleWithValidation(
+    label: string,
     descriptor: BundleEncoderDescriptor,
     recordCallback: BundleRecordCallback,
-  ): GPURenderBundle {
-    const label = descriptor.label ?? `RenderBundleEphemeral_${key}`;
+  ): { bundle: GPURenderBundle; drawCallCount: number } {
+    this._device.pushErrorScope("validation");
     const encoder = this._device.createRenderBundleEncoder({
       colorFormats: descriptor.colorFormats,
       depthStencilFormat: descriptor.depthStencilFormat,
       sampleCount: descriptor.sampleCount ?? 1,
       label,
     });
-    recordCallback(encoder);
-    return encoder.finish({ label });
+    const drawCallCount = recordCallback(encoder);
+    const bundle = encoder.finish({ label });
+    this._device.popErrorScope().then((error: GPUError | null) => {
+      if (error) {
+        console.error(
+          `[WebGPU:RenderBundle] "${label}" recording failed: ${error.message}. ` +
+            `This bundle will produce invalid commands if executed.`,
+        );
+      }
+    });
+    return { bundle, drawCallCount };
+  }
+
+  private _buildEphemeral(
+    key: BundleKey,
+    descriptor: BundleEncoderDescriptor,
+    recordCallback: BundleRecordCallback,
+  ): GPURenderBundle {
+    const label = descriptor.label ?? `RenderBundleEphemeral_${key}`;
+    const { bundle } = this._recordBundleWithValidation(
+      label,
+      descriptor,
+      recordCallback,
+    );
+    this._statEphemeral++;
+    return bundle;
   }
 
   private _createBundle(
@@ -410,16 +441,11 @@ export class WebGPURenderBundleManager {
     recordCallback: BundleRecordCallback,
   ): GPURenderBundle {
     const label = descriptor.label ?? `RenderBundle_${key}`;
-
-    const encoder = this._device.createRenderBundleEncoder({
-      colorFormats: descriptor.colorFormats,
-      depthStencilFormat: descriptor.depthStencilFormat,
-      sampleCount: descriptor.sampleCount ?? 1,
+    const { bundle, drawCallCount } = this._recordBundleWithValidation(
       label,
-    });
-
-    const drawCallCount = recordCallback(encoder);
-    const bundle = encoder.finish({ label });
+      descriptor,
+      recordCallback,
+    );
 
     const entry: BundleEntry = {
       bundle,

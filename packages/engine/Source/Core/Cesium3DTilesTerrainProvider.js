@@ -65,54 +65,381 @@ import TerrainProvider from "./TerrainProvider.js";
  *   console.log(error);
  * }
  */
-function Cesium3DTilesTerrainProvider(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class Cesium3DTilesTerrainProvider {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  let credit = options.credit;
-  if (typeof credit === "string") {
-    credit = new Credit(credit);
+    let credit = options.credit;
+    if (typeof credit === "string") {
+      credit = new Credit(credit);
+    }
+    this._credit = credit;
+    this._tileCredits = undefined;
+    this._errorEvent = new Event();
+    this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
+
+    this._tilingScheme = new GeographicTilingScheme({
+      ellipsoid: this._ellipsoid,
+    });
+
+    this._subtreeCache = new ImplicitSubtreeCache({
+      provider: this,
+    });
+
+    /**
+     * @private
+     * @type {ImplicitTileset|undefined}
+     */
+    this._tileset0 = undefined;
+    /**
+     * @private
+     * @type {ImplicitTileset|undefined}
+     */
+    this._tileset1 = undefined;
+
+    this._resource = undefined;
+
+    /**
+     * Boolean flag that indicates if the client should request vertex normals from the server.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._requestVertexNormals = options.requestVertexNormals ?? false;
+
+    /**
+     * Boolean flag that indicates if the client should request tile watermasks from the server.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._requestWaterMask = options.requestWaterMask ?? false;
   }
-  this._credit = credit;
-  this._tileCredits = undefined;
-  this._errorEvent = new Event();
-  this._ellipsoid = options.ellipsoid ?? Ellipsoid.WGS84;
-
-  this._tilingScheme = new GeographicTilingScheme({
-    ellipsoid: this._ellipsoid,
-  });
-
-  this._subtreeCache = new ImplicitSubtreeCache({
-    provider: this,
-  });
 
   /**
-   * @private
-   * @type {ImplicitTileset|undefined}
+   * Requests the geometry for a given tile. This function should not be called before
+   * {@link Cesium3DTilesTerrainProvider#ready} returns true. The result must include terrain data and
+   * may optionally include a water mask and an indication of which child tiles are available.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @param {Request} [request] The request object. Intended for internal use only.
+   *
+   * @returns {Promise.<Cesium3DTilesTerrainData>|undefined} A promise for the requested geometry. If this method
+   *          returns undefined instead of a promise, it is an indication that too many requests are already
+   *          pending and the request will be retried later.
    */
-  this._tileset0 = undefined;
+  async requestTileGeometry(x, y, level, request) {
+    const rootId = getRootIdFromGeographic(level, x);
+    const implicitTileset = rootId === 0 ? this._tileset0 : this._tileset1;
+
+    const tileCoord = getImplicitTileCoordinatesFromGeographicCoordinates(
+      implicitTileset,
+      level,
+      x,
+      y,
+    );
+
+    const subtreeCoord = tileCoord.getSubtreeCoordinates();
+
+    const cache = this._subtreeCache;
+    let subtree = cache.find(rootId, subtreeCoord);
+
+    const requestWaterMask = this._requestWaterMask;
+    const that = this;
+
+    let subtreePromise;
+    if (subtree === undefined) {
+      const subtreeRelative =
+        implicitTileset.subtreeUriTemplate.getDerivedResource({
+          templateValues: subtreeCoord.getTemplateValues(),
+        });
+      const subtreeResource = implicitTileset.baseResource.getDerivedResource({
+        url: subtreeRelative.url,
+      });
+      subtreePromise = subtreeResource
+        .fetchArrayBuffer()
+        .then(async function (arrayBuffer) {
+          // Check if the subtree exists again in case multiple fetches for the same subtree went out at the same time. Don't want to double-add to the cache
+          subtree = cache.find(rootId, subtreeCoord);
+          if (subtree === undefined) {
+            const bufferU8 = new Uint8Array(arrayBuffer);
+            subtree = await ImplicitSubtree.fromSubtreeJson(
+              that._resource,
+              undefined,
+              bufferU8,
+              implicitTileset,
+              subtreeCoord,
+            );
+            cache.addSubtree(rootId, subtree);
+          }
+
+          return subtree;
+        });
+    } else {
+      subtreePromise = Promise.resolve(subtree);
+    }
+
+    // Note: only one content for terrain
+    const glbRelative = implicitTileset.contentUriTemplates[0].getDerivedResource(
+      {
+        templateValues: tileCoord.getTemplateValues(),
+      },
+    );
+    const glbResource = implicitTileset.baseResource.getDerivedResource({
+      url: glbRelative.url,
+    });
+
+    // Start fetching the glb right away -- possibly even before the subtree is loaded in some cases
+    const glbPromise = glbResource.fetchArrayBuffer();
+    if (glbPromise === undefined) {
+      return undefined;
+    }
+
+    const gltfPromise = glbPromise.then((glbBuffer) =>
+      parseGlb(new Uint8Array(glbBuffer)),
+    );
+
+    const promises = scratchPromises;
+    promises[0] = subtreePromise;
+    promises[1] = gltfPromise;
+    promises[2] = requestWaterMask
+      ? gltfPromise.then((gltf) => loadWaterMask(gltf, glbResource))
+      : undefined;
+
+    try {
+      const results = await Promise.all(promises);
+      const subtree = results[0];
+      const gltf = results[1];
+      const waterMask = results[2];
+
+      const metadataView = subtree.getTileMetadataView(tileCoord);
+
+      const minimumHeight = metadataView.getPropertyBySemantic(
+        MetadataSemantic.TILE_MINIMUM_HEIGHT,
+      );
+
+      const maximumHeight = metadataView.getPropertyBySemantic(
+        MetadataSemantic.TILE_MAXIMUM_HEIGHT,
+      );
+
+      const boundingSphereArray = metadataView.getPropertyBySemantic(
+        MetadataSemantic.TILE_BOUNDING_SPHERE,
+      );
+      const boundingSphere = BoundingSphere.unpack(
+        boundingSphereArray,
+        0,
+        new BoundingSphere(),
+      );
+
+      const horizonOcclusionPoint = metadataView.getPropertyBySemantic(
+        MetadataSemantic.TILE_HORIZON_OCCLUSION_POINT,
+      );
+
+      const tilingScheme = that._tilingScheme;
+
+      // The tiling scheme uses geographic coords, not implicit coords
+      const rectangle = tilingScheme.tileXYToRectangle(
+        x,
+        y,
+        level,
+        new Rectangle(),
+      );
+
+      const ellipsoid = that._ellipsoid;
+
+      const orientedBoundingBox = OrientedBoundingBox.fromRectangle(
+        rectangle,
+        minimumHeight,
+        maximumHeight,
+        ellipsoid,
+        new OrientedBoundingBox(),
+      );
+
+      const skirtHeight = that.getLevelMaximumGeometricError(level) * 5.0;
+
+      const hasSW = isChildAvailable(implicitTileset, subtree, tileCoord, 0, 0);
+      const hasSE = isChildAvailable(implicitTileset, subtree, tileCoord, 1, 0);
+      const hasNW = isChildAvailable(implicitTileset, subtree, tileCoord, 0, 1);
+      const hasNE = isChildAvailable(implicitTileset, subtree, tileCoord, 1, 1);
+      const childTileMask =
+        (hasSW ? 1 : 0) | (hasSE ? 2 : 0) | (hasNW ? 4 : 0) | (hasNE ? 8 : 0);
+
+      const terrainData = new Cesium3DTilesTerrainData({
+        gltf: gltf,
+        minimumHeight: minimumHeight,
+        maximumHeight: maximumHeight,
+        boundingSphere: boundingSphere,
+        orientedBoundingBox: orientedBoundingBox,
+        horizonOcclusionPoint: horizonOcclusionPoint,
+        skirtHeight: skirtHeight,
+        requestVertexNormals: that._requestVertexNormals,
+        childTileMask: childTileMask,
+        credits: that._tileCredits,
+        waterMask: waterMask,
+      });
+
+      return Promise.resolve(terrainData);
+    } catch (err) {
+      console.log(
+        `Could not load subtree: ${rootId} ${subtreeCoord.level} ${subtreeCoord.x} ${subtreeCoord.y}: ${err}`,
+      );
+
+      console.log(
+        `Could not load tile: ${rootId} ${tileCoord.level} ${tileCoord.x} ${tileCoord.y}: ${err}`,
+      );
+      return undefined;
+    }
+  }
+
   /**
-   * @private
-   * @type {ImplicitTileset|undefined}
+   * Determines whether data for a tile is available to be loaded.
+   *
+   * @param {number} x The X coordinate of the tile for which to request geometry.
+   * @param {number} y The Y coordinate of the tile for which to request geometry.
+   * @param {number} level The level of the tile for which to request geometry.
+   * @returns {boolean|undefined} Undefined if not supported or availability is unknown, otherwise true or false.
    */
-  this._tileset1 = undefined;
+  getTileDataAvailable(x, y, level) {
+    const cache = this._subtreeCache;
 
-  this._resource = undefined;
+    const rootId = getRootIdFromGeographic(level, x);
+    const implicitTileset = rootId === 0 ? this._tileset0 : this._tileset1;
+    const tileCoord = getImplicitTileCoordinatesFromGeographicCoordinates(
+      implicitTileset,
+      level,
+      x,
+      y,
+    );
+
+    const subtreeCoord = tileCoord.getSubtreeCoordinates();
+    const subtree = cache.find(rootId, subtreeCoord);
+
+    // If the subtree is loaded, return the tile's availability
+    if (subtree !== undefined) {
+      const available = subtree.tileIsAvailableAtCoordinates(tileCoord);
+      return available;
+    }
+
+    if (subtreeCoord.isImplicitTilesetRoot()) {
+      if (tileCoord.isSubtreeRoot()) {
+        // The subtree's root tile is always available
+        return true;
+      }
+      // Don't know if the tile is available because its subtree hasn't been loaded yet
+      return undefined;
+    }
+
+    const parentSubtreeCoord = subtreeCoord.getParentSubtreeCoordinates();
+
+    // Check the parent subtree's child subtree availability to know if this subtree is available.
+    const parentSubtree = cache.find(rootId, parentSubtreeCoord);
+    if (parentSubtree !== undefined) {
+      const isChildSubtreeAvailable =
+        parentSubtree.childSubtreeIsAvailableAtCoordinates(subtreeCoord);
+
+      if (isChildSubtreeAvailable) {
+        return tileCoord.isSubtreeRoot()
+          ? true // The root tile of the subtree is always available
+          : undefined; // Don't know if the tile is available because the subtree hasn't been loaded yet
+      }
+      // Child subtree not available, so this tile isn't either
+      return false;
+    }
+
+    // The parent subtree isn't loaded either, so we don't even know if the child subtree is available
+    return undefined;
+  }
 
   /**
-   * Boolean flag that indicates if the client should request vertex normals from the server.
+   * Make sure we load availability data for a tile
+   *
+   * @param {number} _x The X coordinate of the tile for which to request geometry.
+   * @param {number} _y The Y coordinate of the tile for which to request geometry.
+   * @param {number} _level The level of the tile for which to request geometry.
+   * @returns {Promise<void>|undefined} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
+   */
+  loadTileDataAvailability(_x, _y, _level) {
+    return undefined;
+  }
+
+  /**
+   * Get the maximum geometric error allowed in a tile at a given level.
+   *
+   * @param {number} level The tile level for which to get the maximum geometric error.
+   * @returns {number} The maximum geometric error.
+   */
+  getLevelMaximumGeometricError(level) {
+    const ellipsoid = this._ellipsoid;
+    const rootError =
+      TerrainProvider.getEstimatedLevelZeroGeometricErrorForAHeightmap(
+        ellipsoid,
+        64,
+        2,
+      );
+    return rootError / (1 << level);
+  }
+
+  /**
+   * Gets an event that is raised when the terrain provider encounters an asynchronous error. By subscribing
+   * to the event, you will be notified of the error and can potentially recover from it. Event listeners
+   * are passed an instance of {@link TileProviderError}.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
+   * @type {Event}
+   */
+  get errorEvent() {
+    return this._errorEvent;
+  }
+
+  /**
+   * Gets the credit to display when this terrain provider is active. Typically this is used to credit
+   * the source of the terrain.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
+   * @type {Credit}
+   */
+  get credit() {
+    return this._credit;
+  }
+
+  /**
+   * Gets the tiling scheme used by the provider.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
+   * @type {TilingScheme}
+   */
+  get tilingScheme() {
+    return this._tilingScheme;
+  }
+
+  /**
+   * Gets a value indicating whether or not the provider includes a water mask. The water mask
+   * indicates which areas of the globe are water rather than land, so they can be rendered
+   * as a reflective surface with animated waves.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
    * @type {boolean}
-   * @default false
-   * @private
    */
-  this._requestVertexNormals = options.requestVertexNormals ?? false;
+  get hasWaterMask() {
+    return this._requestWaterMask;
+  }
 
   /**
-   * Boolean flag that indicates if the client should request tile watermasks from the server.
+   * Gets a value indicating whether or not the requested tiles include vertex normals.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
    * @type {boolean}
-   * @default false
-   * @private
    */
-  this._requestWaterMask = options.requestWaterMask ?? false;
+  get hasVertexNormals() {
+    return this._requestVertexNormals;
+  }
+
+  /**
+   * Gets an object that can be used to determine availability of terrain from this provider, such as
+   * at points and in rectangles.
+   * @memberof Cesium3DTilesTerrainProvider.prototype
+   * @type {TileAvailability|undefined}
+   */
+  get availability() {
+    return this._subtreeCache;
+  }
 }
 
 /**
@@ -216,251 +543,6 @@ Cesium3DTilesTerrainProvider.fromIonAssetId = async function (
 };
 
 const scratchPromises = new Array(3);
-
-/**
- * Requests the geometry for a given tile. This function should not be called before
- * {@link Cesium3DTilesTerrainProvider#ready} returns true. The result must include terrain data and
- * may optionally include a water mask and an indication of which child tiles are available.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @param {Request} [request] The request object. Intended for internal use only.
- *
- * @returns {Promise.<Cesium3DTilesTerrainData>|undefined} A promise for the requested geometry. If this method
- *          returns undefined instead of a promise, it is an indication that too many requests are already
- *          pending and the request will be retried later.
- */
-Cesium3DTilesTerrainProvider.prototype.requestTileGeometry = async function (
-  x,
-  y,
-  level,
-  request,
-) {
-  const rootId = getRootIdFromGeographic(level, x);
-  const implicitTileset = rootId === 0 ? this._tileset0 : this._tileset1;
-
-  const tileCoord = getImplicitTileCoordinatesFromGeographicCoordinates(
-    implicitTileset,
-    level,
-    x,
-    y,
-  );
-
-  const subtreeCoord = tileCoord.getSubtreeCoordinates();
-
-  const cache = this._subtreeCache;
-  let subtree = cache.find(rootId, subtreeCoord);
-
-  const requestWaterMask = this._requestWaterMask;
-  const that = this;
-
-  let subtreePromise;
-  if (subtree === undefined) {
-    const subtreeRelative =
-      implicitTileset.subtreeUriTemplate.getDerivedResource({
-        templateValues: subtreeCoord.getTemplateValues(),
-      });
-    const subtreeResource = implicitTileset.baseResource.getDerivedResource({
-      url: subtreeRelative.url,
-    });
-    subtreePromise = subtreeResource
-      .fetchArrayBuffer()
-      .then(async function (arrayBuffer) {
-        // Check if the subtree exists again in case multiple fetches for the same subtree went out at the same time. Don't want to double-add to the cache
-        subtree = cache.find(rootId, subtreeCoord);
-        if (subtree === undefined) {
-          const bufferU8 = new Uint8Array(arrayBuffer);
-          subtree = await ImplicitSubtree.fromSubtreeJson(
-            that._resource,
-            undefined,
-            bufferU8,
-            implicitTileset,
-            subtreeCoord,
-          );
-          cache.addSubtree(rootId, subtree);
-        }
-
-        return subtree;
-      });
-  } else {
-    subtreePromise = Promise.resolve(subtree);
-  }
-
-  // Note: only one content for terrain
-  const glbRelative = implicitTileset.contentUriTemplates[0].getDerivedResource(
-    {
-      templateValues: tileCoord.getTemplateValues(),
-    },
-  );
-  const glbResource = implicitTileset.baseResource.getDerivedResource({
-    url: glbRelative.url,
-  });
-
-  // Start fetching the glb right away -- possibly even before the subtree is loaded in some cases
-  const glbPromise = glbResource.fetchArrayBuffer();
-  if (glbPromise === undefined) {
-    return undefined;
-  }
-
-  const gltfPromise = glbPromise.then((glbBuffer) =>
-    parseGlb(new Uint8Array(glbBuffer)),
-  );
-
-  const promises = scratchPromises;
-  promises[0] = subtreePromise;
-  promises[1] = gltfPromise;
-  promises[2] = requestWaterMask
-    ? gltfPromise.then((gltf) => loadWaterMask(gltf, glbResource))
-    : undefined;
-
-  try {
-    const results = await Promise.all(promises);
-    const subtree = results[0];
-    const gltf = results[1];
-    const waterMask = results[2];
-
-    const metadataView = subtree.getTileMetadataView(tileCoord);
-
-    const minimumHeight = metadataView.getPropertyBySemantic(
-      MetadataSemantic.TILE_MINIMUM_HEIGHT,
-    );
-
-    const maximumHeight = metadataView.getPropertyBySemantic(
-      MetadataSemantic.TILE_MAXIMUM_HEIGHT,
-    );
-
-    const boundingSphereArray = metadataView.getPropertyBySemantic(
-      MetadataSemantic.TILE_BOUNDING_SPHERE,
-    );
-    const boundingSphere = BoundingSphere.unpack(
-      boundingSphereArray,
-      0,
-      new BoundingSphere(),
-    );
-
-    const horizonOcclusionPoint = metadataView.getPropertyBySemantic(
-      MetadataSemantic.TILE_HORIZON_OCCLUSION_POINT,
-    );
-
-    const tilingScheme = that._tilingScheme;
-
-    // The tiling scheme uses geographic coords, not implicit coords
-    const rectangle = tilingScheme.tileXYToRectangle(
-      x,
-      y,
-      level,
-      new Rectangle(),
-    );
-
-    const ellipsoid = that._ellipsoid;
-
-    const orientedBoundingBox = OrientedBoundingBox.fromRectangle(
-      rectangle,
-      minimumHeight,
-      maximumHeight,
-      ellipsoid,
-      new OrientedBoundingBox(),
-    );
-
-    const skirtHeight = that.getLevelMaximumGeometricError(level) * 5.0;
-
-    const hasSW = isChildAvailable(implicitTileset, subtree, tileCoord, 0, 0);
-    const hasSE = isChildAvailable(implicitTileset, subtree, tileCoord, 1, 0);
-    const hasNW = isChildAvailable(implicitTileset, subtree, tileCoord, 0, 1);
-    const hasNE = isChildAvailable(implicitTileset, subtree, tileCoord, 1, 1);
-    const childTileMask =
-      (hasSW ? 1 : 0) | (hasSE ? 2 : 0) | (hasNW ? 4 : 0) | (hasNE ? 8 : 0);
-
-    const terrainData = new Cesium3DTilesTerrainData({
-      gltf: gltf,
-      minimumHeight: minimumHeight,
-      maximumHeight: maximumHeight,
-      boundingSphere: boundingSphere,
-      orientedBoundingBox: orientedBoundingBox,
-      horizonOcclusionPoint: horizonOcclusionPoint,
-      skirtHeight: skirtHeight,
-      requestVertexNormals: that._requestVertexNormals,
-      childTileMask: childTileMask,
-      credits: that._tileCredits,
-      waterMask: waterMask,
-    });
-
-    return Promise.resolve(terrainData);
-  } catch (err) {
-    console.log(
-      `Could not load subtree: ${rootId} ${subtreeCoord.level} ${subtreeCoord.x} ${subtreeCoord.y}: ${err}`,
-    );
-
-    console.log(
-      `Could not load tile: ${rootId} ${tileCoord.level} ${tileCoord.x} ${tileCoord.y}: ${err}`,
-    );
-    return undefined;
-  }
-};
-
-/**
- * Determines whether data for a tile is available to be loaded.
- *
- * @param {number} x The X coordinate of the tile for which to request geometry.
- * @param {number} y The Y coordinate of the tile for which to request geometry.
- * @param {number} level The level of the tile for which to request geometry.
- * @returns {boolean|undefined} Undefined if not supported or availability is unknown, otherwise true or false.
- */
-Cesium3DTilesTerrainProvider.prototype.getTileDataAvailable = function (
-  x,
-  y,
-  level,
-) {
-  const cache = this._subtreeCache;
-
-  const rootId = getRootIdFromGeographic(level, x);
-  const implicitTileset = rootId === 0 ? this._tileset0 : this._tileset1;
-  const tileCoord = getImplicitTileCoordinatesFromGeographicCoordinates(
-    implicitTileset,
-    level,
-    x,
-    y,
-  );
-
-  const subtreeCoord = tileCoord.getSubtreeCoordinates();
-  const subtree = cache.find(rootId, subtreeCoord);
-
-  // If the subtree is loaded, return the tile's availability
-  if (subtree !== undefined) {
-    const available = subtree.tileIsAvailableAtCoordinates(tileCoord);
-    return available;
-  }
-
-  if (subtreeCoord.isImplicitTilesetRoot()) {
-    if (tileCoord.isSubtreeRoot()) {
-      // The subtree's root tile is always available
-      return true;
-    }
-    // Don't know if the tile is available because its subtree hasn't been loaded yet
-    return undefined;
-  }
-
-  const parentSubtreeCoord = subtreeCoord.getParentSubtreeCoordinates();
-
-  // Check the parent subtree's child subtree availability to know if this subtree is available.
-  const parentSubtree = cache.find(rootId, parentSubtreeCoord);
-  if (parentSubtree !== undefined) {
-    const isChildSubtreeAvailable =
-      parentSubtree.childSubtreeIsAvailableAtCoordinates(subtreeCoord);
-
-    if (isChildSubtreeAvailable) {
-      return tileCoord.isSubtreeRoot()
-        ? true // The root tile of the subtree is always available
-        : undefined; // Don't know if the tile is available because the subtree hasn't been loaded yet
-    }
-    // Child subtree not available, so this tile isn't either
-    return false;
-  }
-
-  // The parent subtree isn't loaded either, so we don't even know if the child subtree is available
-  return undefined;
-};
 
 /**
  * Gets the root ID from geographic tile coordinates.
@@ -647,114 +729,6 @@ function getImplicitTileCoordinates(implicitTileset, level, x, y) {
     y: y,
   });
 }
-
-/**
- * Make sure we load availability data for a tile
- *
- * @param {number} _x The X coordinate of the tile for which to request geometry.
- * @param {number} _y The Y coordinate of the tile for which to request geometry.
- * @param {number} _level The level of the tile for which to request geometry.
- * @returns {Promise<void>|undefined} Undefined if nothing need to be loaded or a Promise that resolves when all required tiles are loaded
- */
-Cesium3DTilesTerrainProvider.prototype.loadTileDataAvailability = function (
-  _x,
-  _y,
-  _level,
-) {
-  return undefined;
-};
-
-/**
- * Get the maximum geometric error allowed in a tile at a given level.
- *
- * @param {number} level The tile level for which to get the maximum geometric error.
- * @returns {number} The maximum geometric error.
- */
-Cesium3DTilesTerrainProvider.prototype.getLevelMaximumGeometricError =
-  function (level) {
-    const ellipsoid = this._ellipsoid;
-    const rootError =
-      TerrainProvider.getEstimatedLevelZeroGeometricErrorForAHeightmap(
-        ellipsoid,
-        64,
-        2,
-      );
-    return rootError / (1 << level);
-  };
-
-Object.defineProperties(Cesium3DTilesTerrainProvider.prototype, {
-  /**
-   * Gets an event that is raised when the terrain provider encounters an asynchronous error. By subscribing
-   * to the event, you will be notified of the error and can potentially recover from it. Event listeners
-   * are passed an instance of {@link TileProviderError}.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {Event}
-   */
-  errorEvent: {
-    get: function () {
-      return this._errorEvent;
-    },
-  },
-
-  /**
-   * Gets the credit to display when this terrain provider is active. Typically this is used to credit
-   * the source of the terrain.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {Credit}
-   */
-  credit: {
-    get: function () {
-      return this._credit;
-    },
-  },
-
-  /**
-   * Gets the tiling scheme used by the provider.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {TilingScheme}
-   */
-  tilingScheme: {
-    get: function () {
-      return this._tilingScheme;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the provider includes a water mask. The water mask
-   * indicates which areas of the globe are water rather than land, so they can be rendered
-   * as a reflective surface with animated waves.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {boolean}
-   */
-  hasWaterMask: {
-    get: function () {
-      return this._requestWaterMask;
-    },
-  },
-
-  /**
-   * Gets a value indicating whether or not the requested tiles include vertex normals.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {boolean}
-   */
-  hasVertexNormals: {
-    get: function () {
-      return this._requestVertexNormals;
-    },
-  },
-
-  /**
-   * Gets an object that can be used to determine availability of terrain from this provider, such as
-   * at points and in rectangles.
-   * @memberof Cesium3DTilesTerrainProvider.prototype
-   * @type {TileAvailability|undefined}
-   */
-  availability: {
-    get: function () {
-      return this._subtreeCache;
-    },
-  },
-});
 
 /**
  * A node in the implicit subtree cache.

@@ -5,7 +5,7 @@
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
  * Bind group layout (7 bindings):
- *   0: EffectsUniforms  (uniform buffer, 112 bytes)
+ *   0: EffectsUniforms  (uniform buffer, 144 bytes)
  *   1: Shadow depth      (texture_depth_2d)
  *   2: Shadow sampler    (sampler_comparison)
  *   3: Clipping texture  (texture_2d<f32>, rgba32float)
@@ -17,16 +17,38 @@
  * are used (1×1 depth=1.0, planeCount=0) so the bind group is always
  * present — no pipeline-variant branching needed.
  *
+ * Phase 5 WGF-1: the UBO carries an additional 32-byte `clipPlaneDPrime`
+ * tail (two vec4 slots = 8 floats) holding the per-frame precomputed
+ * `d + dot(n, camera)` values for the hardware clip-distances pipeline
+ * variant. The legacy fragment-discard path ignores it; the new variant
+ * reads it via `effects.clipPlaneDPrime0/1`. Slots beyond the active
+ * plane count are filled with +Infinity (no clip).
+ *
  * @private
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import { getShadowMapResources } from "./WebGPUShadowMapRenderer.js";
+import {
+  computeClipPlaneDPrimes,
+  CLIP_DPRIME_FLOAT_COUNT,
+  CLIP_DISTANCE_INACTIVE_SENTINEL,
+} from "./WebGPUClipDistancePrecompute.js";
 
-// 112 bytes = 28 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
-// + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + pad(1) + edgeColor(4)
-const EFFECTS_UNIFORM_SIZE = 112;
+// 240 bytes = 60 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
+// + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + polyCount(1u)
+// + edgeColor(4) + clipPlaneEqHW[8](32)
+//
+// Phase 5 WGF-1: the trailing 128 bytes (32 floats, indices 28..59) hold
+// the precomputed `(plane.normal.xyz, dPrime)` quads — one vec4 per plane,
+// up to 8 planes. The vertex shader of the hardware-clip-distances variant
+// reads these and emits clip distances. The legacy fragment-discard path
+// ignores them. Slots beyond the active plane count carry
+// `(0,0,0,+Infinity)` so unused clip distances are always positive (no
+// clip).
+const EFFECTS_UNIFORM_SIZE = 240;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
+const CLIP_DPRIME_FLOAT_OFFSET = 28;
 
 // Cached per-device placeholder resources (shared across all primitives)
 const _placeholderCache = new WeakMap();
@@ -52,7 +74,12 @@ function getEffectsBindGroupLayout(device) {
     entries: [
       {
         binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
+        // Phase 5 WGF-1: vertex visibility added so the hardware
+        // clip-distances pipeline variant can read `clipPlaneEqHW`
+        // from the effects UBO and emit `@builtin(clip_distances)`.
+        // The fragment stage still reads shadow + edge highlight
+        // fields from the same UBO.
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
       {
@@ -203,6 +230,18 @@ function getPlaceholderEffects(device) {
   data[18] = 1.0; // shadowDarkness = 1.0 (fully lit = no shadow)
   data[19] = 0.0; // shadowSoftShadows
   // Clipping fields are all 0 (planeCount=0 → no clipping)
+  // Phase 5 WGF-1: fill the placeholder dPrime slots with the inactive
+  // sentinel (finite, large) so any pipeline that happens to bind the
+  // placeholder while the clip-distances variant is active still
+  // rasterizes correctly (no clip). MUST be finite — Metal's MSL backend
+  // produces undefined behavior on non-finite clip_distances.
+  // Layout per slot: (n.x=0, n.y=0, n.z=0, dPrime=sentinel).
+  for (let i = 0; i < CLIP_DPRIME_FLOAT_COUNT; i++) {
+    data[CLIP_DPRIME_FLOAT_OFFSET + i] = 0;
+  }
+  for (let i = 3; i < CLIP_DPRIME_FLOAT_COUNT; i += 4) {
+    data[CLIP_DPRIME_FLOAT_OFFSET + i] = CLIP_DISTANCE_INACTIVE_SENTINEL;
+  }
   device.queue.writeBuffer(ub, 0, data);
   cache.placeholderUniformBuffer = ub;
 
@@ -237,12 +276,18 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  * @param {object} [options.shadowMap] - CesiumJS ShadowMap object
  * @param {object} [options.clippingPlanes] - ClippingPlaneCollection with _webgpuCache
  * @param {object} [options.clippingPolygons] - ClippingPolygonCollection with _webgpuCache
+ * @param {object} [options.cameraInPlaneSpace] - Phase 5 WGF-1: unencoded
+ *   camera position in the same coordinate frame the clipping plane
+ *   equations were authored in (world-space for globe terrain, model-space
+ *   for primitives with non-identity modelMatrix). Required for the
+ *   hardware clip-distances variant; safe to omit if not in use.
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
   const shadowMap = options?.shadowMap;
   const clippingPlanes = options?.clippingPlanes;
   const clippingPolygons = options?.clippingPolygons;
+  const cameraInPlaneSpace = options?.cameraInPlaneSpace;
 
   const placeholder = getPlaceholderEffects(device);
   const bgl = getEffectsBindGroupLayout(device);
@@ -340,8 +385,25 @@ function createEffectsBindGroup(device, frameState, options) {
       ud[26] = 1.0;
       ud[27] = 1.0;
     }
+    // Phase 5 WGF-1: precompute dPrime for the hardware clip-distances
+    // variant. Falls back to +Infinity for every slot when the camera
+    // position isn't supplied (callers wired only for the legacy
+    // discard path) or when the collection has no planes — both states
+    // are correct because the discard path doesn't read these slots.
+    computeClipPlaneDPrimes(
+      clippingPlanes,
+      cameraInPlaneSpace,
+      ud.subarray(CLIP_DPRIME_FLOAT_OFFSET, CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT),
+    );
   } else {
     dv.setUint32(20 * 4, 0, true); // planeCount = 0
+    // Fill dPrime tail with +Infinity (no clip) — see WGF-1 above.
+    for (let i = 0; i < CLIP_DPRIME_FLOAT_COUNT; i++) {
+      ud[CLIP_DPRIME_FLOAT_OFFSET + i] = 0;
+    }
+    for (let i = 3; i < CLIP_DPRIME_FLOAT_COUNT; i += 4) {
+      ud[CLIP_DPRIME_FLOAT_OFFSET + i] = CLIP_DISTANCE_INACTIVE_SENTINEL;
+    }
   }
 
   // Create per-frame uniform buffer
@@ -397,6 +459,7 @@ function updateEffectsUniforms(
   uniformBuffer,
   shadowMap,
   clippingPlanes,
+  cameraInPlaneSpace,
 ) {
   const ud = _scratchEffectsData;
   ud.fill(0);
@@ -433,6 +496,18 @@ function updateEffectsUniforms(
       ud[25] = ec.green ?? 1.0;
       ud[26] = ec.blue ?? 1.0;
       ud[27] = ec.alpha ?? 1.0;
+    }
+    computeClipPlaneDPrimes(
+      clippingPlanes,
+      cameraInPlaneSpace,
+      ud.subarray(CLIP_DPRIME_FLOAT_OFFSET, CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT),
+    );
+  } else {
+    for (let i = 0; i < CLIP_DPRIME_FLOAT_COUNT; i++) {
+      ud[CLIP_DPRIME_FLOAT_OFFSET + i] = 0;
+    }
+    for (let i = 3; i < CLIP_DPRIME_FLOAT_COUNT; i += 4) {
+      ud[CLIP_DPRIME_FLOAT_OFFSET + i] = CLIP_DISTANCE_INACTIVE_SENTINEL;
     }
   }
 

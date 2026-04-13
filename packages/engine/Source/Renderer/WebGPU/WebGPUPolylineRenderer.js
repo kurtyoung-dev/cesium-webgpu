@@ -28,11 +28,13 @@ import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 const FLOATS_PER_SEGMENT = 20;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
-const UNIFORM_BUFFER_SIZE = 256;
 
-// Camera uniforms occupy floats [0..27] = 112 bytes.
-// Material uniforms start at float offset 28 = byte offset 112.
-const MATERIAL_UNIFORM_OFFSET = 28;
+// Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8) = 112 bytes
+const CAMERA_BUFFER_SIZE = 112;
+const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 28
+
+// Placeholder material UBO (16 bytes minimum for WebGPU)
+const PLACEHOLDER_MATERIAL_BYTES = 16;
 
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
@@ -332,8 +334,19 @@ function createPolylinePipeline(
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: `${label || "Polyline"} bind group layout`,
+  const cameraBindGroupLayout = device.createBindGroupLayout({
+    label: `${label || "Polyline"} camera BGL`,
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+
+  const materialBindGroupLayout = device.createBindGroupLayout({
+    label: `${label || "Polyline"} material BGL`,
     entries: [
       {
         binding: 0,
@@ -344,7 +357,7 @@ function createPolylinePipeline(
   });
 
   const pipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [bindGroupLayout],
+    bindGroupLayouts: [cameraBindGroupLayout, materialBindGroupLayout],
   });
 
   const pipeline = device.createRenderPipeline({
@@ -384,11 +397,12 @@ function createPolylinePipeline(
     },
   });
 
-  return { pipeline, bindGroupLayout };
+  return { pipeline, cameraBindGroupLayout, materialBindGroupLayout };
 }
 
 /**
  * Creates a pick pipeline for polylines — no blending, depth write enabled.
+ * Pick pass is camera-only (pick color from instance data, no material UBO).
  * @private
  */
 function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
@@ -397,8 +411,8 @@ function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "Polyline pick bind group layout",
+  const cameraBindGroupLayout = device.createBindGroupLayout({
+    label: "Polyline pick camera BGL",
     entries: [
       {
         binding: 0,
@@ -411,7 +425,7 @@ function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
   const pipeline = device.createRenderPipeline({
     label: "Polyline pick pipeline",
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
+      bindGroupLayouts: [cameraBindGroupLayout],
     }),
     vertex: {
       module: shaderModule,
@@ -431,15 +445,15 @@ function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
     },
   });
 
-  return { pipeline, bindGroupLayout };
+  return { pipeline, cameraBindGroupLayout };
 }
 
 // =========================================================================
-// Uniform packing — camera + material
+// Uniform packing — camera
 // =========================================================================
 
 /**
- * Packs camera/RTE uniforms into the first 28 floats of the uniform buffer.
+ * Packs camera/RTE uniforms into a 28-float (112-byte) buffer.
  * Uses RTE (Relative-To-Eye) encoding: the modelView matrix has its
  * translation column zeroed, and the camera position is split into
  * high/low components. This gives sub-meter precision at planetary scale.
@@ -480,84 +494,10 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   uniformData[27] = 0.0;
 }
 
-/**
- * Packs material-specific uniforms starting at float offset 28 (byte 112).
- * Each material type writes its own set of parameters.
- * @private
- */
-function packMaterialUniforms(uniformData, material, materialType) {
-  const o = MATERIAL_UNIFORM_OFFSET; // 28
-  const uniforms = material ? material.uniforms : {};
-
-  switch (materialType) {
-    case "PolylineArrow": {
-      const c = uniforms.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-      uniformData[o + 0] = c.red;
-      uniformData[o + 1] = c.green;
-      uniformData[o + 2] = c.blue;
-      uniformData[o + 3] = c.alpha;
-      break;
-    }
-
-    case "PolylineDash": {
-      const c = uniforms.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-      const gc = uniforms.gapColor || { red: 0, green: 0, blue: 0, alpha: 0 };
-      uniformData[o + 0] = c.red;
-      uniformData[o + 1] = c.green;
-      uniformData[o + 2] = c.blue;
-      uniformData[o + 3] = c.alpha;
-      uniformData[o + 4] = gc.red;
-      uniformData[o + 5] = gc.green;
-      uniformData[o + 6] = gc.blue;
-      uniformData[o + 7] = gc.alpha;
-      uniformData[o + 8] = uniforms.dashLength ?? 16.0;
-      uniformData[o + 9] = uniforms.dashPattern ?? 255.0;
-      uniformData[o + 10] = 0.0;
-      uniformData[o + 11] = 0.0;
-      break;
-    }
-
-    case "PolylineGlow": {
-      const c = uniforms.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-      uniformData[o + 0] = c.red;
-      uniformData[o + 1] = c.green;
-      uniformData[o + 2] = c.blue;
-      uniformData[o + 3] = c.alpha;
-      uniformData[o + 4] = uniforms.glowPower ?? 0.25;
-      uniformData[o + 5] = uniforms.taperPower ?? 1.0;
-      uniformData[o + 6] = 0.0;
-      uniformData[o + 7] = 0.0;
-      break;
-    }
-
-    case "PolylineOutline": {
-      const c = uniforms.color || { red: 1, green: 1, blue: 1, alpha: 1 };
-      const oc = uniforms.outlineColor || {
-        red: 0,
-        green: 0,
-        blue: 0,
-        alpha: 1,
-      };
-      uniformData[o + 0] = c.red;
-      uniformData[o + 1] = c.green;
-      uniformData[o + 2] = c.blue;
-      uniformData[o + 3] = c.alpha;
-      uniformData[o + 4] = oc.red;
-      uniformData[o + 5] = oc.green;
-      uniformData[o + 6] = oc.blue;
-      uniformData[o + 7] = oc.alpha;
-      uniformData[o + 8] = uniforms.outlineWidth ?? 1.0;
-      uniformData[o + 9] = 0.0;
-      uniformData[o + 10] = 0.0;
-      uniformData[o + 11] = 0.0;
-      break;
-    }
-
-    default:
-      // Color type — no material uniforms needed (color is per-instance)
-      break;
-  }
-}
+// packMaterialUniforms removed — material data now sourced from
+// MaterialUniformBuffer.gpuData via the Option B split. Camera UBO
+// is group(0), material UBO is group(1). For the base "Color" type,
+// a 16-byte placeholder is used (no material uniforms needed).
 
 // =========================================================================
 // Pipeline cache helpers
@@ -629,42 +569,82 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       materialType,
     );
 
-    // Uniform buffer (one per material type to avoid mid-pass updates)
-    const uniformKey = `uniformBuffer_${materialType}`;
-    if (!defined(cache[uniformKey])) {
-      cache[uniformKey] = WebGPUBuffer.createUniformBuffer(
+    // Camera uniform buffer (shared structure, per-material-type instance)
+    const camKey = `cameraBuffer_${materialType}`;
+    if (!defined(cache[camKey])) {
+      cache[camKey] = WebGPUBuffer.createUniformBuffer(
         device,
-        UNIFORM_BUFFER_SIZE,
-        `Polyline ${materialType} uniforms`,
+        CAMERA_BUFFER_SIZE,
+        `Polyline ${materialType} camera`,
       );
-      cache[`uniformData_${materialType}`] = new Float32Array(
-        UNIFORM_BUFFER_SIZE / 4,
+      cache[`cameraData_${materialType}`] = new Float32Array(CAMERA_FLOATS);
+    }
+
+    const cameraBuffer = cache[camKey];
+    const cameraData = cache[`cameraData_${materialType}`];
+
+    // Pack camera RTE uniforms
+    packCameraUniforms(cameraData, frameState, modelMatrix);
+    device.queue.writeBuffer(
+      cameraBuffer.buffer,
+      0,
+      cameraData.buffer,
+      0,
+      CAMERA_BUFFER_SIZE,
+    );
+
+    // Material uniform buffer — sourced from MaterialUniformBuffer.gpuData
+    const matKey = `materialBuffer_${materialType}`;
+    const material = group.material;
+    const matUB = defined(material) ? material._uniformBuffer : undefined;
+    const matGpuData = defined(matUB) ? matUB.gpuData : undefined;
+    const matByteSize = defined(matGpuData)
+      ? Math.max(matGpuData.byteLength, PLACEHOLDER_MATERIAL_BYTES)
+      : PLACEHOLDER_MATERIAL_BYTES;
+
+    if (!defined(cache[matKey]) || cache[`${matKey}_size`] !== matByteSize) {
+      if (defined(cache[matKey])) {
+        cache[matKey].destroy();
+      }
+      cache[matKey] = device.createBuffer({
+        size: matByteSize,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: `Polyline ${materialType} material`,
+      });
+      cache[`${matKey}_size`] = matByteSize;
+      cache[`matBindGroup_${materialType}`] = null; // force rebind
+    }
+
+    if (defined(matGpuData)) {
+      if (!defined(matUB) || matUB.isDirty || !defined(cache[`matBindGroup_${materialType}`])) {
+        device.queue.writeBuffer(cache[matKey], 0, matGpuData);
+        if (defined(matUB)) {
+          matUB.clearDirty();
+        }
+      }
+    } else {
+      device.queue.writeBuffer(
+        cache[matKey],
+        0,
+        new Float32Array(matByteSize / 4),
       );
     }
 
-    const uniformBuffer = cache[uniformKey];
-    const uniformData = cache[`uniformData_${materialType}`];
+    // Camera bind group
+    const camBgKey = `camBindGroup_${materialType}`;
+    if (!defined(cache[camBgKey])) {
+      cache[camBgKey] = device.createBindGroup({
+        layout: pipelineResult.cameraBindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: cameraBuffer.buffer } }],
+      });
+    }
 
-    // Pack camera RTE uniforms (shared across all material types)
-    packCameraUniforms(uniformData, frameState, modelMatrix);
-
-    // Pack material-specific uniforms at offset 28
-    packMaterialUniforms(uniformData, group.material, materialType);
-
-    device.queue.writeBuffer(
-      uniformBuffer.buffer,
-      0,
-      uniformData.buffer,
-      0,
-      UNIFORM_BUFFER_SIZE,
-    );
-
-    // Bind group
-    const bgKey = `bindGroup_${materialType}`;
-    if (!defined(cache[bgKey])) {
-      cache[bgKey] = device.createBindGroup({
-        layout: pipelineResult.bindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: uniformBuffer.buffer } }],
+    // Material bind group
+    const matBgKey = `matBindGroup_${materialType}`;
+    if (!defined(cache[matBgKey])) {
+      cache[matBgKey] = device.createBindGroup({
+        layout: pipelineResult.materialBindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: cache[matKey] } }],
       });
     }
 
@@ -691,11 +671,6 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
         true,
         `Polyline ${materialType} segments`,
       );
-      // Recreate bind group if buffer was replaced
-      cache[bgKey] = device.createBindGroup({
-        layout: pipelineResult.bindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: uniformBuffer.buffer } }],
-      });
     }
     device.queue.writeBuffer(
       cache[sbKey].buffer,
@@ -709,7 +684,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     if (frameState.passes.render) {
       const cmd = new WebGPUDrawCommand({
         pipeline: pipelineResult.pipeline,
-        bindGroups: [cache[bgKey]],
+        bindGroups: [cache[camBgKey], cache[matBgKey]],
         vertexBuffers: [cache[sbKey]],
         vertexCount: VERTICES_PER_SEGMENT,
         instanceCount: segmentCount,
@@ -763,36 +738,36 @@ function _pushPolylinePickCommand(
       depthFmt,
     );
     cache.pickPipeline = result.pipeline;
-    cache.pickBindGroupLayout = result.bindGroupLayout;
+    cache.pickCameraBindGroupLayout = result.cameraBindGroupLayout;
   }
 
-  // Ensure a uniform buffer exists for pick pass
-  if (!defined(cache.pickUniformBuffer)) {
-    cache.pickUniformBuffer = WebGPUBuffer.createUniformBuffer(
+  // Camera-only buffer for pick pass
+  if (!defined(cache.pickCameraBuffer)) {
+    cache.pickCameraBuffer = WebGPUBuffer.createUniformBuffer(
       device,
-      UNIFORM_BUFFER_SIZE,
-      "Polyline pick uniforms",
+      CAMERA_BUFFER_SIZE,
+      "Polyline pick camera",
     );
-    cache.pickUniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+    cache.pickCameraData = new Float32Array(CAMERA_FLOATS);
   }
 
   // Pick pass uses the same RTE camera transform as the render pass
-  packCameraUniforms(cache.pickUniformData, frameState, modelMatrix);
+  packCameraUniforms(cache.pickCameraData, frameState, modelMatrix);
   device.queue.writeBuffer(
-    cache.pickUniformBuffer.buffer,
+    cache.pickCameraBuffer.buffer,
     0,
-    cache.pickUniformData.buffer,
+    cache.pickCameraData.buffer,
     0,
-    UNIFORM_BUFFER_SIZE,
+    CAMERA_BUFFER_SIZE,
   );
 
-  if (!defined(cache.pickBindGroup)) {
-    cache.pickBindGroup = device.createBindGroup({
-      layout: cache.pickBindGroupLayout,
+  if (!defined(cache.pickCameraBindGroup)) {
+    cache.pickCameraBindGroup = device.createBindGroup({
+      layout: cache.pickCameraBindGroupLayout,
       entries: [
         {
           binding: 0,
-          resource: { buffer: cache.pickUniformBuffer.buffer },
+          resource: { buffer: cache.pickCameraBuffer.buffer },
         },
       ],
     });
@@ -828,7 +803,7 @@ function _pushPolylinePickCommand(
 
   cache.pickCommand = new WebGPUDrawCommand({
     pipeline: cache.pickPipeline,
-    bindGroups: [cache.pickBindGroup],
+    bindGroups: [cache.pickCameraBindGroup],
     vertexBuffers: [cache.pickSegmentBuffer],
     vertexCount: VERTICES_PER_SEGMENT,
     instanceCount: pickResult.segmentCount,
@@ -850,7 +825,7 @@ function destroyWebGPUPolylineResources(collection) {
 
   // Destroy all segment buffers (per-material and pick)
   for (const key of Object.keys(cache)) {
-    if (key.startsWith("segmentBuffer_") || key.startsWith("uniformBuffer_")) {
+    if (key.startsWith("segmentBuffer_") || key.startsWith("cameraBuffer_") || key.startsWith("materialBuffer_")) {
       if (defined(cache[key]) && typeof cache[key].destroy === "function") {
         cache[key].destroy();
       }

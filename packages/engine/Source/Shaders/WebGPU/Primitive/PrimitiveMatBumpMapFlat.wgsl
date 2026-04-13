@@ -17,26 +17,29 @@ struct VertexOutput {
     @location(0) texCoord: vec2<f32>,
 }
 
-struct Uniforms {
+struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    // Material params
+}
+
+struct MaterialUniforms {
     repeat: vec2<f32>,
-    channel: f32,  // 0=r, 1=g, 2=b, 3=a
+    channel: f32,  // 0=r, 1=g, 2=b, 3=a,
     strength: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var textureSampler: sampler;
-@group(1) @binding(1) var bumpTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> material: MaterialUniforms;
+@group(2) @binding(0) var textureSampler: sampler;
+@group(2) @binding(1) var bumpTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
-    var highDiff = high - uniforms.encodedCameraHigh;
+    var highDiff = high - camera.encodedCameraHigh;
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
-    let lowDiff = low - uniforms.encodedCameraLow;
+    let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -52,7 +55,7 @@ fn extractChannel(texColor: vec4<f32>, ch: f32) -> f32 {
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
-    output.position = uniforms.mvpRelativeToEye * posRTE;
+    output.position = camera.mvpRelativeToEye * posRTE;
     output.texCoord = input.texCoord;
     return output;
 }
@@ -61,9 +64,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Without lighting, bump mapping has no visible effect
     // Show a subtle height visualization as grayscale
-    let uv = fract(input.texCoord * uniforms.repeat);
+    let uv = fract(input.texCoord * material.repeat);
     let texColor = textureSample(bumpTexture, textureSampler, uv);
-    let h = extractChannel(texColor, uniforms.channel);
-    let gray = mix(0.5, h, uniforms.strength * 0.3);
+    let h = extractChannel(texColor, material.channel);
+    let gray = mix(0.5, h, material.strength * 0.3);
     return vec4<f32>(gray, gray, gray, 1.0);
 }

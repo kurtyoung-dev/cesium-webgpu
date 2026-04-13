@@ -371,7 +371,7 @@ function getGlslTextureSwizzle(type) {
  */
 function getGlslNumberAsFloat(number) {
   let numberString = number.toString();
-  if (numberString.indexOf(".") === -1) {
+  if (!numberString.includes(".")) {
     numberString = `${number}.0`;
   }
   return numberString;

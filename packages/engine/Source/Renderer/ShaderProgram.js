@@ -383,7 +383,7 @@ function findUniforms(gl, program) {
 
     // Ignore GLSL built-in uniforms returned in Firefox.
     if (uniformName.indexOf("gl_") !== 0) {
-      if (activeUniform.name.indexOf("[") < 0) {
+      if (!activeUniform.name.includes("[")) {
         // Single uniform
         const location = gl.getUniformLocation(program, uniformName);
 

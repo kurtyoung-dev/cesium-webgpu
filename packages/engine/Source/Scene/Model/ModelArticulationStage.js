@@ -21,27 +21,117 @@ const articulationEpsilon = CesiumMath.EPSILON16;
  *
  * @private
  */
-function ModelArticulationStage(options) {
-  options = options ?? Frozen.EMPTY_OBJECT;
+class ModelArticulationStage {
+  constructor(options) {
+    options = options ?? Frozen.EMPTY_OBJECT;
 
-  const stage = options.stage;
-  const runtimeArticulation = options.runtimeArticulation;
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("options.stage", stage);
-  Check.typeOf.object("options.runtimeArticulation", runtimeArticulation);
-  //>>includeEnd('debug');
+    const stage = options.stage;
+    const runtimeArticulation = options.runtimeArticulation;
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("options.stage", stage);
+    Check.typeOf.object("options.runtimeArticulation", runtimeArticulation);
+    //>>includeEnd('debug');
 
-  this._stage = stage;
-  this._runtimeArticulation = runtimeArticulation;
+    this._stage = stage;
+    this._runtimeArticulation = runtimeArticulation;
 
-  this._name = stage.name;
-  this._type = stage.type;
-  this._minimumValue = stage.minimumValue;
-  this._maximumValue = stage.maximumValue;
-  this._currentValue = stage.initialValue;
-}
+    this._name = stage.name;
+    this._type = stage.type;
+    this._minimumValue = stage.minimumValue;
+    this._maximumValue = stage.maximumValue;
+    this._currentValue = stage.initialValue;
+  }
 
-Object.defineProperties(ModelArticulationStage.prototype, {
+  /**
+   * Modifies a Matrix4 by applying a transformation for a given value of a stage.
+   * Note that the <code>result</code> parameter is not just a container for the
+   * returned value. The incoming value of <code>result</code> is part of the
+   * computation itself. Various stages of an articulation can be multiplied
+   * together, so their transformations are all merged into a composite Matrix4
+   * representing them all.
+   *
+   * @param {Matrix4} result The matrix to be modified.
+   * @returns {Matrix4} The transformed matrix as requested by the articulation stage.
+   *
+   * @private
+   */
+  applyStageToMatrix(result) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.object("result", result);
+    //>>includeEnd('debug');
+
+    const type = this.type;
+    const value = this.currentValue;
+    const cartesian = scratchArticulationCartesian;
+    let rotation;
+    switch (type) {
+      case ArticulationStageType.XROTATE:
+        rotation = Matrix3.fromRotationX(
+          CesiumMath.toRadians(value),
+          scratchArticulationRotation,
+        );
+        result = Matrix4.multiplyByMatrix3(result, rotation, result);
+        break;
+      case ArticulationStageType.YROTATE:
+        rotation = Matrix3.fromRotationY(
+          CesiumMath.toRadians(value),
+          scratchArticulationRotation,
+        );
+        result = Matrix4.multiplyByMatrix3(result, rotation, result);
+        break;
+      case ArticulationStageType.ZROTATE:
+        rotation = Matrix3.fromRotationZ(
+          CesiumMath.toRadians(value),
+          scratchArticulationRotation,
+        );
+        result = Matrix4.multiplyByMatrix3(result, rotation, result);
+        break;
+      case ArticulationStageType.XTRANSLATE:
+        cartesian.x = value;
+        cartesian.y = 0.0;
+        cartesian.z = 0.0;
+        result = Matrix4.multiplyByTranslation(result, cartesian, result);
+        break;
+      case ArticulationStageType.YTRANSLATE:
+        cartesian.x = 0.0;
+        cartesian.y = value;
+        cartesian.z = 0.0;
+        result = Matrix4.multiplyByTranslation(result, cartesian, result);
+        break;
+      case ArticulationStageType.ZTRANSLATE:
+        cartesian.x = 0.0;
+        cartesian.y = 0.0;
+        cartesian.z = value;
+        result = Matrix4.multiplyByTranslation(result, cartesian, result);
+        break;
+      case ArticulationStageType.XSCALE:
+        cartesian.x = value;
+        cartesian.y = 1.0;
+        cartesian.z = 1.0;
+        result = Matrix4.multiplyByScale(result, cartesian, result);
+        break;
+      case ArticulationStageType.YSCALE:
+        cartesian.x = 1.0;
+        cartesian.y = value;
+        cartesian.z = 1.0;
+        result = Matrix4.multiplyByScale(result, cartesian, result);
+        break;
+      case ArticulationStageType.ZSCALE:
+        cartesian.x = 1.0;
+        cartesian.y = 1.0;
+        cartesian.z = value;
+        result = Matrix4.multiplyByScale(result, cartesian, result);
+        break;
+      case ArticulationStageType.UNIFORMSCALE:
+        result = Matrix4.multiplyByUniformScale(result, value, result);
+        break;
+      default:
+        break;
+    }
+
+    return result;
+  }
+
   /**
    * The internal articulation stage that this runtime stage represents.
    *
@@ -51,11 +141,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  stage: {
-    get: function () {
-      return this._stage;
-    },
-  },
+  get stage() {
+    return this._stage;
+  }
 
   /**
    * The runtime articulation that this stage belongs to.
@@ -66,11 +154,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  runtimeArticulation: {
-    get: function () {
-      return this._runtimeArticulation;
-    },
-  },
+  get runtimeArticulation() {
+    return this._runtimeArticulation;
+  }
 
   /**
    * The name of this articulation stage.
@@ -81,11 +167,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  name: {
-    get: function () {
-      return this._name;
-    },
-  },
+  get name() {
+    return this._name;
+  }
 
   /**
    * The type of this articulation stage. This specifies which of the
@@ -97,11 +181,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  type: {
-    get: function () {
-      return this._type;
-    },
-  },
+  get type() {
+    return this._type;
+  }
 
   /**
    * The minimum value of this articulation stage.
@@ -112,11 +194,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  minimumValue: {
-    get: function () {
-      return this._minimumValue;
-    },
-  },
+  get minimumValue() {
+    return this._minimumValue;
+  }
 
   /**
    * The maximum value of this articulation stage.
@@ -127,11 +207,9 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  maximumValue: {
-    get: function () {
-      return this._maximumValue;
-    },
-  },
+  get maximumValue() {
+    return this._maximumValue;
+  }
 
   /**
    * The current value of this articulation stage.
@@ -141,121 +219,38 @@ Object.defineProperties(ModelArticulationStage.prototype, {
    *
    * @private
    */
-  currentValue: {
-    get: function () {
-      return this._currentValue;
-    },
-    set: function (value) {
-      //>>includeStart('debug', pragmas.debug);
-      Check.typeOf.number("value", value);
-      //>>includeEnd('debug');
+  get currentValue() {
+    return this._currentValue;
+  }
 
-      value = CesiumMath.clamp(value, this.minimumValue, this.maximumValue);
-      if (
-        !CesiumMath.equalsEpsilon(
-          this._currentValue,
-          value,
-          articulationEpsilon,
-        )
-      ) {
-        this._currentValue = value;
-        this.runtimeArticulation._dirty = true;
-      }
-    },
-  },
-});
+  /**
+   * The current value of this articulation stage.
+   *
+   * @memberof ModelArticulationStage.prototype
+   * @type {number}
+   *
+   * @private
+   */
+  set currentValue(value) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("value", value);
+    //>>includeEnd('debug');
+
+    value = CesiumMath.clamp(value, this.minimumValue, this.maximumValue);
+    if (
+      !CesiumMath.equalsEpsilon(
+        this._currentValue,
+        value,
+        articulationEpsilon,
+      )
+    ) {
+      this._currentValue = value;
+      this.runtimeArticulation._dirty = true;
+    }
+  }
+}
 
 const scratchArticulationCartesian = new Cartesian3();
 const scratchArticulationRotation = new Matrix3();
-
-/**
- * Modifies a Matrix4 by applying a transformation for a given value of a stage.
- * Note that the <code>result</code> parameter is not just a container for the
- * returned value. The incoming value of <code>result</code> is part of the
- * computation itself. Various stages of an articulation can be multiplied
- * together, so their transformations are all merged into a composite Matrix4
- * representing them all.
- *
- * @param {Matrix4} result The matrix to be modified.
- * @returns {Matrix4} The transformed matrix as requested by the articulation stage.
- *
- * @private
- */
-ModelArticulationStage.prototype.applyStageToMatrix = function (result) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.object("result", result);
-  //>>includeEnd('debug');
-
-  const type = this.type;
-  const value = this.currentValue;
-  const cartesian = scratchArticulationCartesian;
-  let rotation;
-  switch (type) {
-    case ArticulationStageType.XROTATE:
-      rotation = Matrix3.fromRotationX(
-        CesiumMath.toRadians(value),
-        scratchArticulationRotation,
-      );
-      result = Matrix4.multiplyByMatrix3(result, rotation, result);
-      break;
-    case ArticulationStageType.YROTATE:
-      rotation = Matrix3.fromRotationY(
-        CesiumMath.toRadians(value),
-        scratchArticulationRotation,
-      );
-      result = Matrix4.multiplyByMatrix3(result, rotation, result);
-      break;
-    case ArticulationStageType.ZROTATE:
-      rotation = Matrix3.fromRotationZ(
-        CesiumMath.toRadians(value),
-        scratchArticulationRotation,
-      );
-      result = Matrix4.multiplyByMatrix3(result, rotation, result);
-      break;
-    case ArticulationStageType.XTRANSLATE:
-      cartesian.x = value;
-      cartesian.y = 0.0;
-      cartesian.z = 0.0;
-      result = Matrix4.multiplyByTranslation(result, cartesian, result);
-      break;
-    case ArticulationStageType.YTRANSLATE:
-      cartesian.x = 0.0;
-      cartesian.y = value;
-      cartesian.z = 0.0;
-      result = Matrix4.multiplyByTranslation(result, cartesian, result);
-      break;
-    case ArticulationStageType.ZTRANSLATE:
-      cartesian.x = 0.0;
-      cartesian.y = 0.0;
-      cartesian.z = value;
-      result = Matrix4.multiplyByTranslation(result, cartesian, result);
-      break;
-    case ArticulationStageType.XSCALE:
-      cartesian.x = value;
-      cartesian.y = 1.0;
-      cartesian.z = 1.0;
-      result = Matrix4.multiplyByScale(result, cartesian, result);
-      break;
-    case ArticulationStageType.YSCALE:
-      cartesian.x = 1.0;
-      cartesian.y = value;
-      cartesian.z = 1.0;
-      result = Matrix4.multiplyByScale(result, cartesian, result);
-      break;
-    case ArticulationStageType.ZSCALE:
-      cartesian.x = 1.0;
-      cartesian.y = 1.0;
-      cartesian.z = value;
-      result = Matrix4.multiplyByScale(result, cartesian, result);
-      break;
-    case ArticulationStageType.UNIFORMSCALE:
-      result = Matrix4.multiplyByUniformScale(result, value, result);
-      break;
-    default:
-      break;
-  }
-
-  return result;
-};
 
 export default ModelArticulationStage;

@@ -18,60 +18,240 @@ import SortMode from "./SortMode.js";
  * @see RenderLayer
  * @see RenderScheduler
  */
-function RenderLayerCollection() {
+class RenderLayerCollection {
+  constructor() {
+    /**
+     * Sorted array of render layers (ascending order).
+     * @private
+     * @type {RenderLayer[]}
+     */
+    this._layers = [];
+
+    /**
+     * Fast lookup: order value → layer. Uses sparse array (not Map)
+     * because layer orders are small integers.
+     * @private
+     * @type {Object<number, RenderLayer>}
+     */
+    this._orderToLayer = {};
+
+    /**
+     * Fast lookup: name → layer.
+     * @private
+     * @type {Object<string, RenderLayer>}
+     */
+    this._nameToLayer = {};
+
+    /**
+     * Event raised when any layer is added, removed, or reordered.
+     * @type {Event}
+     * @readonly
+     */
+    this.layerChanged = new Event();
+
+    /**
+     * Whether the sorted layer list needs rebuilding.
+     * @private
+     * @type {boolean}
+     */
+    this._needsSort = false;
+
+    // Create default layers matching CesiumJS pass structure
+    _createDefaultLayers(this);
+  }
+
   /**
-   * Sorted array of render layers (ascending order).
+   * Retrieves a render layer by name.
+   *
+   * @param {string} name The layer name.
+   * @returns {RenderLayer|undefined} The matching layer, or undefined if not found.
+   */
+  getByName(name) {
+    return this._nameToLayer[name];
+  }
+
+  /**
+   * Retrieves a render layer by its order value.
+   *
+   * @param {number} order The layer order.
+   * @returns {RenderLayer|undefined} The matching layer, or undefined if not found.
+   */
+  getByOrder(order) {
+    return this._orderToLayer[order];
+  }
+
+  /**
+   * Retrieves a layer by index in the sorted array.
+   *
+   * @param {number} index Zero-based index.
+   * @returns {RenderLayer} The layer at that index.
+   */
+  get(index) {
+    //>>includeStart('debug', pragmas.debug);
+    if (index < 0 || index >= this._layers.length) {
+      throw new DeveloperError(
+        `index ${index} out of range [0, ${this._layers.length - 1}]`,
+      );
+    }
+    //>>includeEnd('debug');
+    return this._layers[index];
+  }
+
+  /**
+   * Adds a new render layer to the collection. The layer is inserted
+   * in sorted order by its {@link RenderLayer#order} value.
+   *
+   * @param {RenderLayer} layer The layer to add.
+   * @returns {RenderLayer} The added layer.
+   *
+   * @exception {DeveloperError} A layer with the same name already exists.
+   * @exception {DeveloperError} A layer with the same order already exists.
+   */
+  add(layer) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(this._nameToLayer[layer.name])) {
+      throw new DeveloperError(
+        `A layer named "${layer.name}" already exists. Use getByName() to reconfigure it.`,
+      );
+    }
+    if (defined(this._orderToLayer[layer.order])) {
+      throw new DeveloperError(
+        `A layer with order ${layer.order} already exists (name: "${this._orderToLayer[layer.order].name}").`,
+      );
+    }
+    //>>includeEnd('debug');
+
+    this._layers.push(layer);
+    this._orderToLayer[layer.order] = layer;
+    this._nameToLayer[layer.name] = layer;
+    this._needsSort = true;
+
+    this.layerChanged.raiseEvent(layer, "add");
+    return layer;
+  }
+
+  /**
+   * Creates and adds a new render layer with the given options.
+   *
+   * @param {object} options Options passed to the {@link RenderLayer} constructor.
+   * @returns {RenderLayer} The newly created layer.
+   */
+  create(options) {
+    return this.add(new RenderLayer(options));
+  }
+
+  /**
+   * Removes a user-created layer. Default layers cannot be removed.
+   *
+   * @param {RenderLayer|string} layerOrName The layer instance or name.
+   * @returns {boolean} True if the layer was found and removed.
+   *
+   * @exception {DeveloperError} Cannot remove a default layer.
+   */
+  remove(layerOrName) {
+    const layer =
+      typeof layerOrName === "string"
+        ? this._nameToLayer[layerOrName]
+        : layerOrName;
+
+    if (!defined(layer)) {
+      return false;
+    }
+
+    //>>includeStart('debug', pragmas.debug);
+    if (layer._isDefault) {
+      throw new DeveloperError(
+        `Cannot remove default layer "${layer.name}". Disable it instead.`,
+      );
+    }
+    //>>includeEnd('debug');
+
+    const idx = this._layers.indexOf(layer);
+    if (idx === -1) {
+      return false;
+    }
+
+    this._layers.splice(idx, 1);
+    delete this._orderToLayer[layer.order];
+    delete this._nameToLayer[layer.name];
+
+    this.layerChanged.raiseEvent(layer, "remove");
+    return true;
+  }
+
+  /**
+   * Ensures the layer array is sorted by order. Called lazily
+   * before rendering if any layer was added or reordered.
    * @private
-   * @type {RenderLayer[]}
    */
-  this._layers = [];
+  _ensureSorted() {
+    // Check if any layer's order changed (dirty flag)
+    let needsSort = this._needsSort;
+    if (!needsSort) {
+      const layers = this._layers;
+      for (let i = 0; i < layers.length; i++) {
+        if (layers[i]._dirty) {
+          needsSort = true;
+          layers[i]._dirty = false;
+        }
+      }
+    }
+
+    if (needsSort) {
+      this._layers.sort(compareLayerOrder);
+      // Rebuild order lookup
+      this._orderToLayer = {};
+      const layers = this._layers;
+      for (let i = 0; i < layers.length; i++) {
+        this._orderToLayer[layers[i].order] = layers[i];
+      }
+      this._needsSort = false;
+    }
+  }
 
   /**
-   * Fast lookup: order value → layer. Uses sparse array (not Map)
-   * because layer orders are small integers.
+   * Resets all layer command buckets for a new frame.
    * @private
-   * @type {Object<number, RenderLayer>}
    */
-  this._orderToLayer = {};
+  resetAllBuckets() {
+    const layers = this._layers;
+    for (let i = 0; i < layers.length; i++) {
+      layers[i].resetCommandBuckets();
+    }
+  }
 
   /**
-   * Fast lookup: name → layer.
-   * @private
-   * @type {Object<string, RenderLayer>}
+   * Returns a diagnostic summary of all layers and their command counts.
+   * Useful for debugging render order issues.
+   *
+   * @returns {string} Formatted diagnostic string.
    */
-  this._nameToLayer = {};
+  getDiagnostics() {
+    this._ensureSorted();
+    const lines = ["=== Render Layers ==="];
+    const layers = this._layers;
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i];
+      const status = layer.enabled ? "ON" : "OFF";
+      const depth = layer.clearDepth ? " [DEPTH CLEAR]" : "";
+      const cmds = `O:${layer._opaqueCount} T:${layer._transparentCount} X:${layer._transmissiveCount}`;
+      lines.push(
+        `  [${i}] ${layer.name} (order=${layer.order}, ${status}${depth}) — ${cmds}`,
+      );
+    }
+    return lines.join("\n");
+  }
 
-  /**
-   * Event raised when any layer is added, removed, or reordered.
-   * @type {Event}
-   * @readonly
-   */
-  this.layerChanged = new Event();
-
-  /**
-   * Whether the sorted layer list needs rebuilding.
-   * @private
-   * @type {boolean}
-   */
-  this._needsSort = false;
-
-  // Create default layers matching CesiumJS pass structure
-  _createDefaultLayers(this);
-}
-
-Object.defineProperties(RenderLayerCollection.prototype, {
   /**
    * The number of layers in this collection.
    * @memberof RenderLayerCollection.prototype
    * @type {number}
    * @readonly
    */
-  length: {
-    get: function () {
-      return this._layers.length;
-    },
-  },
-});
+  get length() {
+    return this._layers.length;
+  }
+}
 
 /**
  * Creates the built-in default layers that map to CesiumJS's existing pass structure.
@@ -134,188 +314,6 @@ function _createDefaultLayers(collection) {
     collection._nameToLayer[layer.name] = layer;
   }
 }
-
-/**
- * Retrieves a render layer by name.
- *
- * @param {string} name The layer name.
- * @returns {RenderLayer|undefined} The matching layer, or undefined if not found.
- */
-RenderLayerCollection.prototype.getByName = function (name) {
-  return this._nameToLayer[name];
-};
-
-/**
- * Retrieves a render layer by its order value.
- *
- * @param {number} order The layer order.
- * @returns {RenderLayer|undefined} The matching layer, or undefined if not found.
- */
-RenderLayerCollection.prototype.getByOrder = function (order) {
-  return this._orderToLayer[order];
-};
-
-/**
- * Retrieves a layer by index in the sorted array.
- *
- * @param {number} index Zero-based index.
- * @returns {RenderLayer} The layer at that index.
- */
-RenderLayerCollection.prototype.get = function (index) {
-  //>>includeStart('debug', pragmas.debug);
-  if (index < 0 || index >= this._layers.length) {
-    throw new DeveloperError(
-      `index ${index} out of range [0, ${this._layers.length - 1}]`,
-    );
-  }
-  //>>includeEnd('debug');
-  return this._layers[index];
-};
-
-/**
- * Adds a new render layer to the collection. The layer is inserted
- * in sorted order by its {@link RenderLayer#order} value.
- *
- * @param {RenderLayer} layer The layer to add.
- * @returns {RenderLayer} The added layer.
- *
- * @exception {DeveloperError} A layer with the same name already exists.
- * @exception {DeveloperError} A layer with the same order already exists.
- */
-RenderLayerCollection.prototype.add = function (layer) {
-  //>>includeStart('debug', pragmas.debug);
-  if (defined(this._nameToLayer[layer.name])) {
-    throw new DeveloperError(
-      `A layer named "${layer.name}" already exists. Use getByName() to reconfigure it.`,
-    );
-  }
-  if (defined(this._orderToLayer[layer.order])) {
-    throw new DeveloperError(
-      `A layer with order ${layer.order} already exists (name: "${this._orderToLayer[layer.order].name}").`,
-    );
-  }
-  //>>includeEnd('debug');
-
-  this._layers.push(layer);
-  this._orderToLayer[layer.order] = layer;
-  this._nameToLayer[layer.name] = layer;
-  this._needsSort = true;
-
-  this.layerChanged.raiseEvent(layer, "add");
-  return layer;
-};
-
-/**
- * Creates and adds a new render layer with the given options.
- *
- * @param {object} options Options passed to the {@link RenderLayer} constructor.
- * @returns {RenderLayer} The newly created layer.
- */
-RenderLayerCollection.prototype.create = function (options) {
-  return this.add(new RenderLayer(options));
-};
-
-/**
- * Removes a user-created layer. Default layers cannot be removed.
- *
- * @param {RenderLayer|string} layerOrName The layer instance or name.
- * @returns {boolean} True if the layer was found and removed.
- *
- * @exception {DeveloperError} Cannot remove a default layer.
- */
-RenderLayerCollection.prototype.remove = function (layerOrName) {
-  const layer =
-    typeof layerOrName === "string"
-      ? this._nameToLayer[layerOrName]
-      : layerOrName;
-
-  if (!defined(layer)) {
-    return false;
-  }
-
-  //>>includeStart('debug', pragmas.debug);
-  if (layer._isDefault) {
-    throw new DeveloperError(
-      `Cannot remove default layer "${layer.name}". Disable it instead.`,
-    );
-  }
-  //>>includeEnd('debug');
-
-  const idx = this._layers.indexOf(layer);
-  if (idx === -1) {
-    return false;
-  }
-
-  this._layers.splice(idx, 1);
-  delete this._orderToLayer[layer.order];
-  delete this._nameToLayer[layer.name];
-
-  this.layerChanged.raiseEvent(layer, "remove");
-  return true;
-};
-
-/**
- * Ensures the layer array is sorted by order. Called lazily
- * before rendering if any layer was added or reordered.
- * @private
- */
-RenderLayerCollection.prototype._ensureSorted = function () {
-  // Check if any layer's order changed (dirty flag)
-  let needsSort = this._needsSort;
-  if (!needsSort) {
-    const layers = this._layers;
-    for (let i = 0; i < layers.length; i++) {
-      if (layers[i]._dirty) {
-        needsSort = true;
-        layers[i]._dirty = false;
-      }
-    }
-  }
-
-  if (needsSort) {
-    this._layers.sort(compareLayerOrder);
-    // Rebuild order lookup
-    this._orderToLayer = {};
-    const layers = this._layers;
-    for (let i = 0; i < layers.length; i++) {
-      this._orderToLayer[layers[i].order] = layers[i];
-    }
-    this._needsSort = false;
-  }
-};
-
-/**
- * Resets all layer command buckets for a new frame.
- * @private
- */
-RenderLayerCollection.prototype.resetAllBuckets = function () {
-  const layers = this._layers;
-  for (let i = 0; i < layers.length; i++) {
-    layers[i].resetCommandBuckets();
-  }
-};
-
-/**
- * Returns a diagnostic summary of all layers and their command counts.
- * Useful for debugging render order issues.
- *
- * @returns {string} Formatted diagnostic string.
- */
-RenderLayerCollection.prototype.getDiagnostics = function () {
-  this._ensureSorted();
-  const lines = ["=== Render Layers ==="];
-  const layers = this._layers;
-  for (let i = 0; i < layers.length; i++) {
-    const layer = layers[i];
-    const status = layer.enabled ? "ON" : "OFF";
-    const depth = layer.clearDepth ? " [DEPTH CLEAR]" : "";
-    const cmds = `O:${layer._opaqueCount} T:${layer._transparentCount} X:${layer._transmissiveCount}`;
-    lines.push(
-      `  [${i}] ${layer.name} (order=${layer.order}, ${status}${depth}) — ${cmds}`,
-    );
-  }
-  return lines.join("\n");
-};
 
 /**
  * Sort comparator for layers by order.

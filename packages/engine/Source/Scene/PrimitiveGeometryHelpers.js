@@ -125,7 +125,7 @@ function createBatchTable(primitive, context) {
     });
   }
 
-  if (names.indexOf("distanceDisplayCondition") !== -1) {
+  if (names.includes("distanceDisplayCondition")) {
     attributes.push(
       {
         functionName: "czm_batchTable_boundingSphereCenter3DHigh",
@@ -160,7 +160,7 @@ function createBatchTable(primitive, context) {
     boundingSphereAttributeIndices.radius = attributes.length - 1;
   }
 
-  if (names.indexOf("offset") !== -1) {
+  if (names.includes("offset")) {
     attributes.push({
       functionName: "czm_batchTable_offset2D",
       componentDatatype: ComponentDatatype.FLOAT,

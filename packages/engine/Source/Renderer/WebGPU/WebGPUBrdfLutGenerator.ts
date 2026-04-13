@@ -215,7 +215,7 @@ interface BrdfLutCache {
  * @param generator - The BrdfLutGenerator instance
  * @param frameState - The current frame state
  */
-function updateWebGPUBrdfLut(generator: any, frameState: any): void {
+function updateWebGPUBrdfLut(generator: any, frameState: CesiumFrameState): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 

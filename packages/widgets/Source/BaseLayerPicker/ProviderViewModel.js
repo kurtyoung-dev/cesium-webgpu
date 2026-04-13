@@ -20,53 +20,53 @@ import createCommand from "../createCommand.js";
  * @see ImageryProvider
  * @see TerrainProvider
  */
-function ProviderViewModel(options) {
-  //>>includeStart('debug', pragmas.debug);
-  if (!defined(options.name)) {
-    throw new DeveloperError("options.name is required.");
+class ProviderViewModel {
+  constructor(options) {
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(options.name)) {
+      throw new DeveloperError("options.name is required.");
+    }
+    if (!defined(options.tooltip)) {
+      throw new DeveloperError("options.tooltip is required.");
+    }
+    if (!defined(options.iconUrl)) {
+      throw new DeveloperError("options.iconUrl is required.");
+    }
+    if (typeof options.creationFunction !== "function") {
+      throw new DeveloperError("options.creationFunction is required.");
+    }
+    //>>includeEnd('debug');
+
+    let creationCommand = options.creationFunction;
+    if (!defined(creationCommand.canExecute)) {
+      creationCommand = createCommand(creationCommand);
+    }
+
+    this._creationCommand = creationCommand;
+
+    /**
+     * Gets the display name.  This property is observable.
+     * @type {string}
+     */
+    this.name = options.name;
+
+    /**
+     * Gets the tooltip.  This property is observable.
+     * @type {string}
+     */
+    this.tooltip = options.tooltip;
+
+    /**
+     * Gets the icon.  This property is observable.
+     * @type {string}
+     */
+    this.iconUrl = options.iconUrl;
+
+    this._category = options.category ?? "";
+
+    knockout.track(this, ["name", "tooltip", "iconUrl"]);
   }
-  if (!defined(options.tooltip)) {
-    throw new DeveloperError("options.tooltip is required.");
-  }
-  if (!defined(options.iconUrl)) {
-    throw new DeveloperError("options.iconUrl is required.");
-  }
-  if (typeof options.creationFunction !== "function") {
-    throw new DeveloperError("options.creationFunction is required.");
-  }
-  //>>includeEnd('debug');
 
-  let creationCommand = options.creationFunction;
-  if (!defined(creationCommand.canExecute)) {
-    creationCommand = createCommand(creationCommand);
-  }
-
-  this._creationCommand = creationCommand;
-
-  /**
-   * Gets the display name.  This property is observable.
-   * @type {string}
-   */
-  this.name = options.name;
-
-  /**
-   * Gets the tooltip.  This property is observable.
-   * @type {string}
-   */
-  this.tooltip = options.tooltip;
-
-  /**
-   * Gets the icon.  This property is observable.
-   * @type {string}
-   */
-  this.iconUrl = options.iconUrl;
-
-  this._category = options.category ?? "";
-
-  knockout.track(this, ["name", "tooltip", "iconUrl"]);
-}
-
-Object.defineProperties(ProviderViewModel.prototype, {
   /**
    * Gets the Command that creates one or more providers which will be added to
    * the globe when this item is selected.
@@ -75,11 +75,9 @@ Object.defineProperties(ProviderViewModel.prototype, {
    * @type {Command}
    * @readonly
    */
-  creationCommand: {
-    get: function () {
-      return this._creationCommand;
-    },
-  },
+  get creationCommand() {
+    return this._creationCommand;
+  }
 
   /**
    * Gets the category
@@ -87,12 +85,10 @@ Object.defineProperties(ProviderViewModel.prototype, {
    * @memberof ProviderViewModel.prototype
    * @readonly
    */
-  category: {
-    get: function () {
-      return this._category;
-    },
-  },
-});
+  get category() {
+    return this._category;
+  }
+}
 
 /**
  * A function which creates one or more providers.

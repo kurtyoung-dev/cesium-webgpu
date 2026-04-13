@@ -38,31 +38,233 @@ function hue2rgb(m1, m2, h) {
  *
  * @see Packable
  */
-function Color(red, green, blue, alpha) {
+class Color {
+  constructor(red, green, blue, alpha) {
+    /**
+     * The red component.
+     * @type {number}
+     * @default 1.0
+     */
+    this.red = red ?? 1.0;
+    /**
+     * The green component.
+     * @type {number}
+     * @default 1.0
+     */
+    this.green = green ?? 1.0;
+    /**
+     * The blue component.
+     * @type {number}
+     * @default 1.0
+     */
+    this.blue = blue ?? 1.0;
+    /**
+     * The alpha component.
+     * @type {number}
+     * @default 1.0
+     */
+    this.alpha = alpha ?? 1.0;
+  }
+
   /**
-   * The red component.
-   * @type {number}
-   * @default 1.0
+   * Returns a duplicate of a Color instance.
+   *
+   * @param {Color} [result] The object to store the result in, if undefined a new instance will be created.
+   * @returns {Color} The modified result parameter or a new instance if result was undefined.
    */
-  this.red = red ?? 1.0;
+  clone(result) {
+    return Color.clone(this, result);
+  }
+
   /**
-   * The green component.
-   * @type {number}
-   * @default 1.0
+   * Returns true if this Color equals other.
+   *
+   * @param {Color} [other] The Color to compare for equality.
+   * @returns {boolean} <code>true</code> if the Colors are equal; otherwise, <code>false</code>.
    */
-  this.green = green ?? 1.0;
+  equals(other) {
+    return Color.equals(this, other);
+  }
+
   /**
-   * The blue component.
-   * @type {number}
-   * @default 1.0
+   * Returns <code>true</code> if this Color equals other componentwise within the specified epsilon.
+   *
+   * @param {Color} other The Color to compare for equality.
+   * @param {number} [epsilon=0.0] The epsilon to use for equality testing.
+   * @returns {boolean} <code>true</code> if the Colors are equal within the specified epsilon; otherwise, <code>false</code>.
    */
-  this.blue = blue ?? 1.0;
+  equalsEpsilon(other, epsilon) {
+    return (
+      this === other || //
+      (defined(other) && //
+        Math.abs(this.red - other.red) <= epsilon && //
+        Math.abs(this.green - other.green) <= epsilon && //
+        Math.abs(this.blue - other.blue) <= epsilon && //
+        Math.abs(this.alpha - other.alpha) <= epsilon)
+    );
+  }
+
   /**
-   * The alpha component.
-   * @type {number}
-   * @default 1.0
+   * Creates a string representing this Color in the format '(red, green, blue, alpha)'.
+   *
+   * @returns {string} A string representing this Color in the format '(red, green, blue, alpha)'.
    */
-  this.alpha = alpha ?? 1.0;
+  toString() {
+    return `(${this.red}, ${this.green}, ${this.blue}, ${this.alpha})`;
+  }
+
+  /**
+   * Creates a string containing the CSS color value for this color.
+   *
+   * @returns {string} The CSS equivalent of this color.
+   *
+   * @see {@link http://www.w3.org/TR/css3-color/#rgba-color|CSS RGB or RGBA color values}
+   */
+  toCssColorString() {
+    const red = Color.floatToByte(this.red);
+    const green = Color.floatToByte(this.green);
+    const blue = Color.floatToByte(this.blue);
+    if (this.alpha === 1) {
+      return `rgb(${red},${green},${blue})`;
+    }
+    return `rgba(${red},${green},${blue},${this.alpha})`;
+  }
+
+  /**
+   * Creates a string containing CSS hex string color value for this color.
+   *
+   * @returns {string} The CSS hex string equivalent of this color.
+   */
+  toCssHexString() {
+    let r = Color.floatToByte(this.red).toString(16);
+    if (r.length < 2) {
+      r = `0${r}`;
+    }
+    let g = Color.floatToByte(this.green).toString(16);
+    if (g.length < 2) {
+      g = `0${g}`;
+    }
+    let b = Color.floatToByte(this.blue).toString(16);
+    if (b.length < 2) {
+      b = `0${b}`;
+    }
+    if (this.alpha < 1) {
+      let hexAlpha = Color.floatToByte(this.alpha).toString(16);
+      if (hexAlpha.length < 2) {
+        hexAlpha = `0${hexAlpha}`;
+      }
+      return `#${r}${g}${b}${hexAlpha}`;
+    }
+    return `#${r}${g}${b}`;
+  }
+
+  /**
+   * Converts this color to an array of red, green, blue, and alpha values
+   * that are in the range of 0 to 255.
+   *
+   * @param {number[]} [result] The array to store the result in, if undefined a new instance will be created.
+   * @returns {number[]} The modified result parameter or a new instance if result was undefined.
+   */
+  toBytes(result) {
+    const red = Color.floatToByte(this.red);
+    const green = Color.floatToByte(this.green);
+    const blue = Color.floatToByte(this.blue);
+    const alpha = Color.floatToByte(this.alpha);
+
+    if (!defined(result)) {
+      return [red, green, blue, alpha];
+    }
+    result[0] = red;
+    result[1] = green;
+    result[2] = blue;
+    result[3] = alpha;
+    return result;
+  }
+
+  /**
+   * Converts this color to a single numeric unsigned 32-bit RGBA value, using the endianness
+   * of the system.
+   *
+   * @returns {number} A single numeric unsigned 32-bit RGBA value.
+   *
+   *
+   * @example
+   * const rgba = Cesium.Color.BLUE.toRgba();
+   *
+   * @see Color.fromRgba
+   */
+  toRgba() {
+    return Color.bytesToRgba(
+      Color.floatToByte(this.red),
+      Color.floatToByte(this.green),
+      Color.floatToByte(this.blue),
+      Color.floatToByte(this.alpha),
+    );
+  }
+
+  /**
+   * Brightens this color by the provided magnitude.
+   *
+   * @param {number} magnitude A positive number indicating the amount to brighten.
+   * @param {Color} result The object onto which to store the result.
+   * @returns {Color} The modified result parameter.
+   *
+   * @example
+   * const brightBlue = Cesium.Color.BLUE.brighten(0.5, new Cesium.Color());
+   */
+  brighten(magnitude, result) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("magnitude", magnitude);
+    Check.typeOf.number.greaterThanOrEquals("magnitude", magnitude, 0.0);
+    Check.typeOf.object("result", result);
+    //>>includeEnd('debug');
+
+    magnitude = 1.0 - magnitude;
+    result.red = 1.0 - (1.0 - this.red) * magnitude;
+    result.green = 1.0 - (1.0 - this.green) * magnitude;
+    result.blue = 1.0 - (1.0 - this.blue) * magnitude;
+    result.alpha = this.alpha;
+    return result;
+  }
+
+  /**
+   * Darkens this color by the provided magnitude.
+   *
+   * @param {number} magnitude A positive number indicating the amount to darken.
+   * @param {Color} result The object onto which to store the result.
+   * @returns {Color} The modified result parameter.
+   *
+   * @example
+   * const darkBlue = Cesium.Color.BLUE.darken(0.5, new Cesium.Color());
+   */
+  darken(magnitude, result) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.typeOf.number("magnitude", magnitude);
+    Check.typeOf.number.greaterThanOrEquals("magnitude", magnitude, 0.0);
+    Check.typeOf.object("result", result);
+    //>>includeEnd('debug');
+
+    magnitude = 1.0 - magnitude;
+    result.red = this.red * magnitude;
+    result.green = this.green * magnitude;
+    result.blue = this.blue * magnitude;
+    result.alpha = this.alpha;
+    return result;
+  }
+
+  /**
+   * Creates a new Color that has the same red, green, and blue components
+   * as this Color, but with the specified alpha value.
+   *
+   * @param {number} alpha The new alpha component.
+   * @param {Color} [result] The object onto which to store the result.
+   * @returns {Color} The modified result parameter or a new Color instance if one was not provided.
+   *
+   * @example const translucentRed = Cesium.Color.RED.withAlpha(0.9);
+   */
+  withAlpha(alpha, result) {
+    return Color.fromAlpha(this, alpha, result);
+  }
 }
 
 /**
@@ -567,121 +769,6 @@ Color.equalsArray = function (color, array, offset) {
 };
 
 /**
- * Returns a duplicate of a Color instance.
- *
- * @param {Color} [result] The object to store the result in, if undefined a new instance will be created.
- * @returns {Color} The modified result parameter or a new instance if result was undefined.
- */
-Color.prototype.clone = function (result) {
-  return Color.clone(this, result);
-};
-
-/**
- * Returns true if this Color equals other.
- *
- * @param {Color} [other] The Color to compare for equality.
- * @returns {boolean} <code>true</code> if the Colors are equal; otherwise, <code>false</code>.
- */
-Color.prototype.equals = function (other) {
-  return Color.equals(this, other);
-};
-
-/**
- * Returns <code>true</code> if this Color equals other componentwise within the specified epsilon.
- *
- * @param {Color} other The Color to compare for equality.
- * @param {number} [epsilon=0.0] The epsilon to use for equality testing.
- * @returns {boolean} <code>true</code> if the Colors are equal within the specified epsilon; otherwise, <code>false</code>.
- */
-Color.prototype.equalsEpsilon = function (other, epsilon) {
-  return (
-    this === other || //
-    (defined(other) && //
-      Math.abs(this.red - other.red) <= epsilon && //
-      Math.abs(this.green - other.green) <= epsilon && //
-      Math.abs(this.blue - other.blue) <= epsilon && //
-      Math.abs(this.alpha - other.alpha) <= epsilon)
-  );
-};
-
-/**
- * Creates a string representing this Color in the format '(red, green, blue, alpha)'.
- *
- * @returns {string} A string representing this Color in the format '(red, green, blue, alpha)'.
- */
-Color.prototype.toString = function () {
-  return `(${this.red}, ${this.green}, ${this.blue}, ${this.alpha})`;
-};
-
-/**
- * Creates a string containing the CSS color value for this color.
- *
- * @returns {string} The CSS equivalent of this color.
- *
- * @see {@link http://www.w3.org/TR/css3-color/#rgba-color|CSS RGB or RGBA color values}
- */
-Color.prototype.toCssColorString = function () {
-  const red = Color.floatToByte(this.red);
-  const green = Color.floatToByte(this.green);
-  const blue = Color.floatToByte(this.blue);
-  if (this.alpha === 1) {
-    return `rgb(${red},${green},${blue})`;
-  }
-  return `rgba(${red},${green},${blue},${this.alpha})`;
-};
-
-/**
- * Creates a string containing CSS hex string color value for this color.
- *
- * @returns {string} The CSS hex string equivalent of this color.
- */
-Color.prototype.toCssHexString = function () {
-  let r = Color.floatToByte(this.red).toString(16);
-  if (r.length < 2) {
-    r = `0${r}`;
-  }
-  let g = Color.floatToByte(this.green).toString(16);
-  if (g.length < 2) {
-    g = `0${g}`;
-  }
-  let b = Color.floatToByte(this.blue).toString(16);
-  if (b.length < 2) {
-    b = `0${b}`;
-  }
-  if (this.alpha < 1) {
-    let hexAlpha = Color.floatToByte(this.alpha).toString(16);
-    if (hexAlpha.length < 2) {
-      hexAlpha = `0${hexAlpha}`;
-    }
-    return `#${r}${g}${b}${hexAlpha}`;
-  }
-  return `#${r}${g}${b}`;
-};
-
-/**
- * Converts this color to an array of red, green, blue, and alpha values
- * that are in the range of 0 to 255.
- *
- * @param {number[]} [result] The array to store the result in, if undefined a new instance will be created.
- * @returns {number[]} The modified result parameter or a new instance if result was undefined.
- */
-Color.prototype.toBytes = function (result) {
-  const red = Color.floatToByte(this.red);
-  const green = Color.floatToByte(this.green);
-  const blue = Color.floatToByte(this.blue);
-  const alpha = Color.floatToByte(this.alpha);
-
-  if (!defined(result)) {
-    return [red, green, blue, alpha];
-  }
-  result[0] = red;
-  result[1] = green;
-  result[2] = blue;
-  result[3] = alpha;
-  return result;
-};
-
-/**
  * Converts RGBA values in bytes to a single numeric unsigned 32-bit RGBA value, using the endianness
  * of the system.
  *
@@ -696,91 +783,6 @@ Color.bytesToRgba = function (red, green, blue, alpha) {
   scratchUint8Array[2] = blue;
   scratchUint8Array[3] = alpha;
   return scratchUint32Array[0];
-};
-
-/**
- * Converts this color to a single numeric unsigned 32-bit RGBA value, using the endianness
- * of the system.
- *
- * @returns {number} A single numeric unsigned 32-bit RGBA value.
- *
- *
- * @example
- * const rgba = Cesium.Color.BLUE.toRgba();
- *
- * @see Color.fromRgba
- */
-Color.prototype.toRgba = function () {
-  return Color.bytesToRgba(
-    Color.floatToByte(this.red),
-    Color.floatToByte(this.green),
-    Color.floatToByte(this.blue),
-    Color.floatToByte(this.alpha),
-  );
-};
-
-/**
- * Brightens this color by the provided magnitude.
- *
- * @param {number} magnitude A positive number indicating the amount to brighten.
- * @param {Color} result The object onto which to store the result.
- * @returns {Color} The modified result parameter.
- *
- * @example
- * const brightBlue = Cesium.Color.BLUE.brighten(0.5, new Cesium.Color());
- */
-Color.prototype.brighten = function (magnitude, result) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("magnitude", magnitude);
-  Check.typeOf.number.greaterThanOrEquals("magnitude", magnitude, 0.0);
-  Check.typeOf.object("result", result);
-  //>>includeEnd('debug');
-
-  magnitude = 1.0 - magnitude;
-  result.red = 1.0 - (1.0 - this.red) * magnitude;
-  result.green = 1.0 - (1.0 - this.green) * magnitude;
-  result.blue = 1.0 - (1.0 - this.blue) * magnitude;
-  result.alpha = this.alpha;
-  return result;
-};
-
-/**
- * Darkens this color by the provided magnitude.
- *
- * @param {number} magnitude A positive number indicating the amount to darken.
- * @param {Color} result The object onto which to store the result.
- * @returns {Color} The modified result parameter.
- *
- * @example
- * const darkBlue = Cesium.Color.BLUE.darken(0.5, new Cesium.Color());
- */
-Color.prototype.darken = function (magnitude, result) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.number("magnitude", magnitude);
-  Check.typeOf.number.greaterThanOrEquals("magnitude", magnitude, 0.0);
-  Check.typeOf.object("result", result);
-  //>>includeEnd('debug');
-
-  magnitude = 1.0 - magnitude;
-  result.red = this.red * magnitude;
-  result.green = this.green * magnitude;
-  result.blue = this.blue * magnitude;
-  result.alpha = this.alpha;
-  return result;
-};
-
-/**
- * Creates a new Color that has the same red, green, and blue components
- * as this Color, but with the specified alpha value.
- *
- * @param {number} alpha The new alpha component.
- * @param {Color} [result] The object onto which to store the result.
- * @returns {Color} The modified result parameter or a new Color instance if one was not provided.
- *
- * @example const translucentRed = Cesium.Color.RED.withAlpha(0.9);
- */
-Color.prototype.withAlpha = function (alpha, result) {
-  return Color.fromAlpha(this, alpha, result);
 };
 
 /**
