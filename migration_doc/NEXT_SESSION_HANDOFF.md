@@ -8,7 +8,9 @@
 **`npx gulp build`:** clean (38s).
 **Pre-commit hook:** now running cleanly (lint-staged + eslint + prettier completed on the full commit).
 
-**Also in Session 29:** external engine feature survey (NullGraph, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion). Results landed in `WEBGPU_MIGRATION_BACKLOG.md` as **Phase 7 — External Engine Feature Survey**, with 48 items (FEAT-SURVEY-01 through FEAT-SURVEY-48) tiered by effort × ROI. Top 5 quick-wins called out for a 1-2 day micro-batch. See backlog § "Phase 7" for the full list.
+**Also in Session 29:** external engine feature survey (NullGraph, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion). Results landed in `WEBGPU_MIGRATION_BACKLOG.md` as **Phase 7 — External Engine Feature Survey**, with 48 items (FEAT-SURVEY-01 through FEAT-SURVEY-48) tiered by effort × ROI.
+
+**Architectural synthesis — most important Session 29 deliverable:** [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) unifies Phase 7 + a 3D Tiles implementation audit + 3D Tiles 2.0 spec research into a coherent architectural frame. Identifies the central insight (**"GPU-resident octree tile cache"**), the gating shader-variant architectural decision that blocks ~30% of Phase 7 items, the full dependency DAG across ~80 items, tech debt + perf + WASM + compute opportunities specific to 3D Tiles, and a recommended 5-phase roadmap (8a Foundation → 8b GPU-resident stack → 8c Visual quality → 8d Advanced → 8e Differentiators). **Read this before starting any rendering or 3D Tiles work.**
 
 ---
 

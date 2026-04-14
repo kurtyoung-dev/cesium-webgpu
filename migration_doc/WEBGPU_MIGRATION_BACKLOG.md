@@ -7,6 +7,55 @@
 
 ---
 
+## Phase 8 — GPU-Resident Tiles Design (2026-04-14)
+
+Architectural synthesis of Phase 7 findings + 3D Tiles implementation audit + 3D Tiles 2.0 spec research. Identifies the central insight ("GPU-resident octree tile cache"), the gating shader-variant architectural decision, the full dependency DAG across ~80 items, and a recommended 5-phase roadmap (8a Foundation → 8b GPU-resident stack → 8c Visual quality → 8d Advanced → 8e Differentiators).
+
+**Also covers** tech debt, performance fixes, GPU compute opportunities, WASM opportunities, memory/bandwidth, threading/parallelism, and structural architectural improvements specific to the 3D Tiles draw path — items that don't appear in any external engine survey.
+
+**See:** [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) for the full architectural design. This backlog section only lists the stable IDs so items can be cross-referenced in commits and handoffs.
+
+### Foundation items (FEAT-GAP-* — missing infra, not in engine AND not in Phase 7)
+
+- **FEAT-GAP-01** — Normal G-buffer + depth prepass. Single highest-leverage infra gap. Unblocks GTAO, SSR quality, contact shadows, planar reflections, bent-normal AO, motion blur, SSGI. Effort: M.
+- **FEAT-GAP-02** — Motion blur (camera + per-object). Reuses TAA motion vectors. Effort: M (post-TAA).
+- **FEAT-GAP-03** — Planar reflections. Water, wet tarmac, lakes near horizon. Effort: M.
+- **FEAT-GAP-04** — Refraction / caustics. Water + glass buildings. Effort: M.
+- **FEAT-GAP-05** — Terrain contact shadows / screen-space contact shadows. Mid-day urban improvement. Effort: S-M.
+- **FEAT-GAP-06** — Bent-normal ambient for terrain. Pre-baked or screen-space. Effort: M.
+- **FEAT-GAP-07** — Impostors for far-LOD 3D Tiles + vegetation. Fights distant popping. Effort: L.
+- **FEAT-GAP-08** — Decals projected onto terrain + 3D Tiles. Road markings, AOI overlays. Existing `GROUND_PRIMITIVE` is flat-plane. Effort: M-L.
+- **FEAT-GAP-09** — Aerial-perspective LUT consumer in all passes. `AtmosphereLUT.wgsl` exists; only ground atmosphere samples it. Effort: S-M. **Sneaky high-value visual win.**
+
+### 3D Tiles 2.0 WebGPU-specific gaps (FEAT-3DT2-*)
+
+Upstream Cesium parses all 8 canonical extensions; the rendering-side WebGPU gaps:
+
+- **FEAT-3DT2-01** — **Styling expression → WGSL compiler** (restricted subset first). Single biggest 3D Tiles performance lever. Effort: M (subset) → L-XL (full).
+- **FEAT-3DT2-02** — Property-texture + feature-ID WGSL sampling audit. Effort: M.
+- **FEAT-3DT2-03** — Ellipsoid-aware RTE (non-WGS84 tilesets). Correctness fix. Effort: M.
+- **FEAT-3DT2-04** — NGA_GPM point-cloud uncertainty visualization. Differentiating. Effort: L.
+- **FEAT-3DT2-05** — Draco / KTX2 / meshopt WebGPU end-to-end audit. Effort: M.
+
+### Tech debt / perf / WASM / arch items (TILE-DEBT-*, TILE-PERF-*, TILE-GPU-*, TILE-WASM-*, TILE-ARCH-*)
+
+See `PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` § 9 for the full list (40+ items across A-G categories). Top 8 by payoff-per-effort for 3D Tiles:
+
+- **TILE-DEBT-01** — Buffer pool / recycler (§9.A). Biggest cause of first-frame stutter. Effort: M.
+- **TILE-PERF-01** — Pipeline pre-warm on tileset load (§9.B). Eliminates compile stutter. Effort: S (after shader variant strategy).
+- **TILE-ARCH-01** — Cross-tile mesh dedup (§9.A + §9.G). Pairs with MegaBuffer FEAT-SURVEY-20. Effort: M.
+- **TILE-PERF-02** — KTX2 transcode on worker (§9.B). Eliminates frame stalls. Effort: M.
+- **TILE-WASM-01** — WASM SIMD tile traversal (§9.D). 3-4× traversal speedup on dense scenes. Effort: M.
+- **TILE-ARCH-02** — Tile-level render bundle cache (§9.G). Massive savings on static tile content. Effort: L.
+- **TILE-PERF-03** — Shared UBO for tile-invariant data (§9.E). Reduces BW + GC. Effort: S-M.
+- **TILE-PERF-04** — Early-out on static camera (§9.B). Enormous idle-frame win. Effort: S-M.
+
+### Architectural decision (Phase 8a gating)
+
+- **TILE-ARCH-SHADER-STRATEGY** — Decide between keep-monolithic / fine-grained variants / coarse-variants-with-prewarm for `ModelPBRComplete.wgsl`. Gates ~30% of Phase 7 items (all KHR BRDFs + clustered lighting). Recommended: coarse ~20-pipeline strategy with pre-warmed compile. See `PHASE_8_GPU_RESIDENT_TILES_DESIGN.md` § 2. Effort: M design + prototype.
+
+---
+
 ## Phase 7 — External Engine Feature Survey (2026-04-14)
 
 An eight-project survey of other WebGPU rendering / compute projects to identify transferable features. Each item below has been filtered for (a) genuine novelty vs our existing 36 feature renderers + 7 compute dispatchers, (b) compatibility with RTE 64-bit precision at planetary scale, (c) fit with the `FeatureRendererKey` backend-agnosticism contract.
