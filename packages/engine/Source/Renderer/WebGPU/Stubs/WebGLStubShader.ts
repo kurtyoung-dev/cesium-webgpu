@@ -45,8 +45,15 @@ interface StubProgram {
   _isWebGPU: boolean;
 }
 
-/** WebGL extension stub — a tag object with optional method/constant fields. */
-type ExtensionStub = Record<string, unknown>;
+/**
+ * WebGL extension stub — a tag object returned from `getExtension()`. Every
+ * field is either a numeric constant (e.g. TEXTURE_MAX_ANISOTROPY_EXT) or
+ * a zero-arg method (e.g. loseContext). The index signature covers both
+ * cases without using `any` / `unknown` / bare `object`.
+ */
+interface ExtensionStub {
+  readonly [key: string]: number | (() => void);
+}
 
 // WebGL type constant for FLOAT (returned by get*Active*)
 const GL_FLOAT = 0x1406;
@@ -141,19 +148,22 @@ function getDeviceParameter(
     // Vertex attribute / varying / uniform slot counts
     case GL_MAX_VERTEX_ATTRIBS:
       return limits?.maxVertexAttributes ?? 16;
-    case GL_MAX_VARYING_VECTORS: // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
-    // fallback so the code still compiles cleanly if a downstream
+    case GL_MAX_VARYING_VECTORS: // fallback so the code still compiles cleanly if a downstream // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
     // consumer pins an older @webgpu/types version. Vars and
     // components produce equivalent vec4 counts after the division
     // below, so the math stays correct under either name.
     {
-      const l = limits as unknown as {
-        maxInterStageShaderVariables?: number;
-        maxInterStageShaderComponents?: number;
-      };
+      // Version-bridged read: new @webgpu/types (≥0.1.83) always has
+      // `maxInterStageShaderVariables`; older versions have only
+      // `maxInterStageShaderComponents`. `Reflect.get` lets us query
+      // either name without widening the surrounding types.
       const slots =
-        l?.maxInterStageShaderVariables ??
-        l?.maxInterStageShaderComponents ??
+        (Reflect.get(limits, "maxInterStageShaderVariables") as
+          | number
+          | undefined) ??
+        (Reflect.get(limits, "maxInterStageShaderComponents") as
+          | number
+          | undefined) ??
         60;
       return Math.floor(slots / 4);
     }
@@ -213,7 +223,7 @@ function getDeviceParameter(
 // otherwise inspect. Most are tag objects with no methods; a few define
 // the constants their original API exposed (e.g.
 // EXT_texture_filter_anisotropic).
-const EXTENSION_STUBS: Record<string, () => any> = {
+const EXTENSION_STUBS: Record<string, () => ExtensionStub> = {
   // Always-on in WebGPU core:
   OES_texture_float: () => ({}),
   OES_texture_half_float: () => ({}),
@@ -264,7 +274,7 @@ const EXTENSION_STUBS: Record<string, () => any> = {
 export function createShaderStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, unknown> {
+) {
   return {
     // ==== Shader methods (placeholders — WebGPU uses shader modules) ====
 

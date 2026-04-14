@@ -1,4 +1,5 @@
 /// <reference types="@webgpu/types" />
+import type { WebGPUCommandOwner } from "./WebGPUDrawCommand.js";
 /**
  * WebGPU Viewport Quad Utility
  *
@@ -83,18 +84,92 @@ export interface ViewportQuadPipelineConfig {
   stencilWriteMask?: number;
 }
 
+/** A WebGPUTexture-wrapper surface (has a .view and optional .sampler). */
+export interface ViewportQuadTextureValue {
+  readonly view: GPUTextureView;
+  readonly sampler?: GPUSampler;
+}
+
+/** A CesiumJS Texture instance with an embedded WebGPU texture object. */
+export interface ViewportQuadCesiumTextureValue {
+  readonly _webgpuTexture: {
+    readonly view?: GPUTextureView;
+    readonly sampler?: GPUSampler;
+    readonly createView?: () => GPUTextureView;
+  };
+}
+
+/** A CesiumJS Color-shaped value packed as vec4. */
+export interface ViewportQuadColorValue {
+  readonly red: number;
+  readonly green: number;
+  readonly blue: number;
+  readonly alpha?: number;
+}
+
+/** A CesiumJS Cartesian2/3/4-shaped value packed to vec4 with zero padding. */
+export interface ViewportQuadVectorValue {
+  readonly x: number;
+  readonly y: number;
+  readonly z?: number;
+  readonly w?: number;
+}
+
+/**
+ * Every uniform value the viewport-quad command can consume. The resolver
+ * discriminates at runtime on shape presence (view, createView, red, etc.).
+ * Adding a new shape means adding a branch here AND in `_resolveBindGroupEntry`.
+ */
+export type ViewportQuadUniformValue =
+  | ViewportQuadTextureValue
+  | ViewportQuadCesiumTextureValue
+  | ViewportQuadColorValue
+  | ViewportQuadVectorValue
+  | GPUTexture
+  | ArrayBufferView
+  | number;
+
+/**
+ * Shape carried on the viewport-quad command's `shaderProgram` slot. Usually
+ * `null` (real WebGPU path; the shader lives on the cached pipeline). In the
+ * GLSL / missing-device noop path, callers stash the original shader arg
+ * here as a pass-through so downstream inspection still sees something.
+ */
+export type ViewportQuadShaderProgramSlot =
+  | null
+  | string
+  | CesiumOpaqueShaderSource
+  | { readonly _wgslCode?: string };
+
+/** The command object returned from {@link WebGPUViewportQuad.createCommand}. */
+export interface ViewportQuadCommand {
+  shaderProgram: ViewportQuadShaderProgramSlot;
+  uniformMap: Record<string, () => ViewportQuadUniformValue>;
+  framebuffer: CesiumOpaqueFramebuffer | null;
+  owner: WebGPUCommandOwner | undefined;
+  renderState: CesiumOpaqueRenderState | undefined;
+  pass: number | undefined;
+  _wgslCode?: string;
+  _isViewportQuadCommand: true;
+  execute(
+    renderPassEncoder?: GPURenderPassEncoder,
+    contextArg?: { _currentRenderPassEncoder?: GPURenderPassEncoder | null },
+  ): void;
+  destroy(): void;
+}
+
 /** Options for creating a viewport quad command */
 export interface ViewportQuadCommandOptions {
-  /** Map of uniform name → getter function. Values are auto-detected by type. */
-  uniformMap?: Record<string, () => any>;
+  /** Map of uniform name → getter function. Values are discriminated by shape. */
+  uniformMap?: Record<string, () => ViewportQuadUniformValue>;
   /** Explicit bind group entries (bypasses uniformMap auto-detection). */
   bindGroupEntries?: GPUBindGroupEntry[];
   /** Framebuffer to render into (metadata for Scene render loop) */
-  framebuffer?: any;
+  framebuffer?: CesiumOpaqueFramebuffer;
   /** Owner object (for debugging / error messages) */
-  owner?: any;
+  owner?: WebGPUCommandOwner;
   /** Render state (metadata for Scene compatibility) */
-  renderState?: any;
+  renderState?: CesiumOpaqueRenderState;
   /** Render pass (e.g., Pass.OVERLAY) */
   pass?: number;
   /** Pipeline config (blend, depth, stencil) */
@@ -418,26 +493,29 @@ export class WebGPUViewportQuad {
     wgslCode: string,
     targetFormat: GPUTextureFormat,
     options?: ViewportQuadCommandOptions,
-  ): any {
+  ): ViewportQuadCommand {
     const vq = this;
     let cached: CachedPipeline | null = null;
     let uniformBuffer: GPUBuffer | null = null;
 
-    const command: any = {
+    const command: ViewportQuadCommand = {
       shaderProgram: null,
-      uniformMap: options?.uniformMap || {},
-      framebuffer: options?.framebuffer || null,
+      uniformMap: options?.uniformMap ?? {},
+      framebuffer: options?.framebuffer ?? null,
       owner: options?.owner,
       renderState: options?.renderState,
       pass: options?.pass,
       _wgslCode: wgslCode,
       _isViewportQuadCommand: true,
 
-      execute: (renderPassEncoder?: GPURenderPassEncoder, contextArg?: any) => {
+      execute: (
+        renderPassEncoder?: GPURenderPassEncoder,
+        contextArg?: {
+          _currentRenderPassEncoder?: GPURenderPassEncoder | null;
+        },
+      ) => {
         const passEncoder =
-          renderPassEncoder ??
-          (contextArg as any)?._currentRenderPassEncoder ??
-          null;
+          renderPassEncoder ?? contextArg?._currentRenderPassEncoder ?? null;
         if (!passEncoder) return;
 
         // Lazily compile pipeline
@@ -508,7 +586,7 @@ export class WebGPUViewportQuad {
    * @private
    */
   private _resolveBindGroupEntry(
-    value: any,
+    value: ViewportQuadUniformValue,
     startBinding: number,
     existingUBO: GPUBuffer | null,
     label?: string,
@@ -518,64 +596,6 @@ export class WebGPUViewportQuad {
   } {
     const entries: GPUBindGroupEntry[] = [];
     let ubo = existingUBO;
-
-    // WebGPUTexture with view + sampler
-    if (value.view !== undefined && value.sampler !== undefined) {
-      entries.push({ binding: startBinding, resource: value.view });
-      entries.push({ binding: startBinding + 1, resource: value.sampler });
-      return { entries, uniformBuffer: ubo };
-    }
-
-    // Has view but no sampler (raw GPUTextureView or partial wrapper)
-    if (value.view !== undefined) {
-      entries.push({ binding: startBinding, resource: value.view });
-      entries.push({
-        binding: startBinding + 1,
-        resource: this._linearSampler,
-      });
-      return { entries, uniformBuffer: ubo };
-    }
-
-    // CesiumJS Texture wrapper with _webgpuTexture
-    if (value._webgpuTexture) {
-      const tex = value._webgpuTexture;
-      entries.push({
-        binding: startBinding,
-        resource: tex.view ?? tex.createView?.(),
-      });
-      entries.push({
-        binding: startBinding + 1,
-        resource: tex.sampler ?? this._linearSampler,
-      });
-      return { entries, uniformBuffer: ubo };
-    }
-
-    // GPUTexture (raw, create a view)
-    if (value.createView && value.format !== undefined) {
-      entries.push({ binding: startBinding, resource: value.createView() });
-      entries.push({
-        binding: startBinding + 1,
-        resource: this._linearSampler,
-      });
-      return { entries, uniformBuffer: ubo };
-    }
-
-    // TypedArray → uniform buffer
-    if (ArrayBuffer.isView(value)) {
-      const byteLen = (value as ArrayBufferView).byteLength;
-      const alignedSize = Math.max(Math.ceil(byteLen / 16) * 16, 16);
-      if (!ubo || ubo.size < alignedSize) {
-        ubo?.destroy();
-        ubo = this._device.createBuffer({
-          label: `ViewportQuad-UBO-${label || "cmd"}`,
-          size: alignedSize,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
-      this._device.queue.writeBuffer(ubo, 0, value as ArrayBufferView);
-      entries.push({ binding: startBinding, resource: { buffer: ubo } });
-      return { entries, uniformBuffer: ubo };
-    }
 
     // Single number → padded uniform buffer
     if (typeof value === "number") {
@@ -593,17 +613,72 @@ export class WebGPUViewportQuad {
       return { entries, uniformBuffer: ubo };
     }
 
-    // Color object → vec4 uniform buffer
+    // TypedArray → uniform buffer
+    if (ArrayBuffer.isView(value)) {
+      const byteLen = value.byteLength;
+      const alignedSize = Math.max(Math.ceil(byteLen / 16) * 16, 16);
+      if (!ubo || ubo.size < alignedSize) {
+        ubo?.destroy();
+        ubo = this._device.createBuffer({
+          label: `ViewportQuad-UBO-${label || "cmd"}`,
+          size: alignedSize,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      this._device.queue.writeBuffer(ubo, 0, value);
+      entries.push({ binding: startBinding, resource: { buffer: ubo } });
+      return { entries, uniformBuffer: ubo };
+    }
+
+    // WebGPUTexture wrapper with view (+ optional sampler)
+    if ("view" in value && value.view !== undefined) {
+      entries.push({ binding: startBinding, resource: value.view });
+      entries.push({
+        binding: startBinding + 1,
+        resource: value.sampler ?? this._linearSampler,
+      });
+      return { entries, uniformBuffer: ubo };
+    }
+
+    // CesiumJS Texture wrapper with _webgpuTexture
+    if ("_webgpuTexture" in value && value._webgpuTexture) {
+      const tex = value._webgpuTexture;
+      const viewResource = tex.view ?? tex.createView?.();
+      if (!viewResource) {
+        // Nothing we can bind — caller will get a mismatched bind group.
+        return { entries, uniformBuffer: ubo };
+      }
+      entries.push({ binding: startBinding, resource: viewResource });
+      entries.push({
+        binding: startBinding + 1,
+        resource: tex.sampler ?? this._linearSampler,
+      });
+      return { entries, uniformBuffer: ubo };
+    }
+
+    // GPUTexture (raw, create a view)
     if (
-      value.red !== undefined &&
-      value.green !== undefined &&
-      value.blue !== undefined
+      "createView" in value &&
+      typeof value.createView === "function" &&
+      "format" in value &&
+      value.format !== undefined
     ) {
+      entries.push({ binding: startBinding, resource: value.createView() });
+      entries.push({
+        binding: startBinding + 1,
+        resource: this._linearSampler,
+      });
+      return { entries, uniformBuffer: ubo };
+    }
+
+    // Color object → vec4 uniform buffer
+    if ("red" in value && "green" in value && "blue" in value) {
+      const color = value as ViewportQuadColorValue;
       const data = new Float32Array([
-        value.red,
-        value.green,
-        value.blue,
-        value.alpha ?? 1.0,
+        color.red,
+        color.green,
+        color.blue,
+        color.alpha ?? 1.0,
       ]);
       if (!ubo || ubo.size < 16) {
         ubo?.destroy();
@@ -619,10 +694,11 @@ export class WebGPUViewportQuad {
     }
 
     // Cartesian2 / Cartesian3 / Cartesian4 → uniform buffer
-    if (value.x !== undefined && value.y !== undefined) {
-      const components = [value.x, value.y];
-      if (value.z !== undefined) components.push(value.z);
-      if (value.w !== undefined) components.push(value.w);
+    if ("x" in value && "y" in value) {
+      const v = value as ViewportQuadVectorValue;
+      const components = [v.x, v.y];
+      if (v.z !== undefined) components.push(v.z);
+      if (v.w !== undefined) components.push(v.w);
       // Pad to 16 bytes
       while (components.length < 4) components.push(0);
       const data = new Float32Array(components);

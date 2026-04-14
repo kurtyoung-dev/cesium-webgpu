@@ -14,6 +14,7 @@
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 import Pass from "../Pass.js";
+import type { WebGPUCommandOwner } from "./WebGPUDrawCommand.js";
 
 export interface WebGPUComputeBindGroup {
   /** Bind group index (0, 1, 2, 3) */
@@ -55,8 +56,8 @@ export interface WebGPUComputeCommandOptions {
   canceled?: () => void;
   /** Whether to keep resources after execution */
   persists?: boolean;
-  /** Owner for debugging */
-  owner?: any;
+  /** Owner for debugging (accessed only for `.constructor.name`). */
+  owner?: WebGPUCommandOwner;
   /** Debug label */
   label?: string;
 }
@@ -94,8 +95,8 @@ class WebGPUComputeCommand {
   persists: boolean;
   /** The pass this command belongs to */
   pass: number;
-  /** Owner for debugging */
-  owner: any;
+  /** Owner for debugging (accessed only for `.constructor.name`). */
+  owner: WebGPUCommandOwner | undefined;
   /** Debug label */
   label: string;
 

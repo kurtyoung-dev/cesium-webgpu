@@ -14,7 +14,12 @@
 /// <reference types="@webgpu/types" />
 
 import RendererType from "../RendererType.js";
-import { GraphicsContext, GraphicsContextOptions } from "../GraphicsContext.js";
+import {
+  GraphicsContext,
+  GraphicsContextOptions,
+  DebugStatsObject,
+  DebugStatsValue,
+} from "../GraphicsContext.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
 import RuntimeError from "../../Core/RuntimeError.js";
@@ -33,7 +38,11 @@ import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
-import { WebGPUViewportQuad } from "./WebGPUViewportQuad.js";
+import {
+  WebGPUViewportQuad,
+  type ViewportQuadCommand,
+  type ViewportQuadCommandOptions,
+} from "./WebGPUViewportQuad.js";
 import {
   createWebGLCompatibilityStub,
   type WebGLStubState,
@@ -85,18 +94,9 @@ interface RenderStateStatics {
   fromCache: (renderState?: object) => CesiumOpaqueRenderState;
 }
 
-/** Return type for createViewportQuadCommand(). */
-interface ViewportQuadCommand {
-  execute: (...args: unknown[]) => void;
-  shaderProgram?: unknown;
-  uniformMap?: Record<string, (() => unknown) | unknown>;
-  framebuffer?: CesiumOpaqueFramebuffer | null;
-  owner?: object;
-  renderState?: CesiumOpaqueRenderState;
-  pass?: number;
-  _isViewportQuadCommand?: boolean;
-  destroy?: () => void;
-}
+// ViewportQuadCommand and ViewportQuadCommandOptions are imported from
+// WebGPUViewportQuad so the single source of truth lives next to the
+// implementation. See below.
 
 /** Return type for getPipelineState(). */
 interface WebGPUPipelineStateSnapshot {
@@ -145,24 +145,8 @@ interface WebGPUFrameStatistics {
   uniformBufferPoolSize: number;
 }
 
-/** Options parameter shape for createViewportQuadCommand(). */
-interface ViewportQuadCommandOptions {
-  uniformMap?: Record<string, (() => unknown) | unknown>;
-  framebuffer?: CesiumOpaqueFramebuffer;
-  owner?: object;
-  renderState?: CesiumOpaqueRenderState;
-  pass?: number;
-  pipelineConfig?: Record<
-    string,
-    | GPUBlendState
-    | GPUDepthStencilState
-    | GPUPrimitiveState
-    | boolean
-    | number
-    | string
-  >;
-  bindGroupEntries?: GPUBindGroupEntry[];
-}
+// (ViewportQuadCommandOptions shape lives in WebGPUViewportQuad.ts and is
+// imported at the top of the file.)
 
 /** Shader source that can be a string or an object with _wgslCode. */
 type ShaderSource =
@@ -282,9 +266,14 @@ export class WebGPUContext extends GraphicsContext {
   private _depthOnlyTextureView: GPUTextureView | null = null;
   private _uniformState: CesiumUniformState;
 
-  // WebGL compatibility - stub object with WebGL constants for backward compatibility
-  // This allows legacy Texture.js code to work without crashing
-  public _gl: Record<string, unknown>;
+  // WebGL compatibility — stub object that masquerades as a
+  // WebGLRenderingContext for legacy JS resources (Texture.js, CubeMap.js,
+  // Framebuffer.js, etc.) that read `context._gl.FLOAT`, `context._gl.RGBA`,
+  // etc. Typed via `ReturnType<typeof createWebGLCompatibilityStub>` so
+  // the shape is inferred from the stub builder instead of declared as
+  // `Record<string, unknown>`. TS callers get access to the full method
+  // and constant list; JS callers are unaffected.
+  public _gl!: ReturnType<typeof createWebGLCompatibilityStub>;
 
   // WGF-6: Cached reference to WebGPUPrimitiveIndexUtils so Scene.js can probe
   // `@builtin(primitive_index)` support without importing from Renderer/WebGPU.
@@ -365,7 +354,10 @@ export class WebGPUContext extends GraphicsContext {
   public _textureCache: CesiumOpaqueObject;
   public _stencilBits: number = 8;
   public _antialias: boolean = false;
-  public cache: Record<string, unknown> = {};
+  // Cross-subsystem cache (see SceneGlobalCache in cesium-js-types.d.ts).
+  // Known keys are typed; new keys land in the opaque-object index
+  // signature fallback. No `Record<string, unknown>` here.
+  public cache: SceneGlobalCache = {};
   public options: object;
   public validateFramebuffer: boolean = false;
   public validateShaderProgram: boolean = false;
@@ -1871,15 +1863,13 @@ export class WebGPUContext extends GraphicsContext {
       this._presentationFormat || "bgra8unorm";
 
     return this._viewportQuad.createCommand(wgslCode, targetFormat, {
-      uniformMap: opts.uniformMap as Record<string, () => unknown> | undefined,
+      uniformMap: opts.uniformMap,
       framebuffer: opts.framebuffer,
       owner: opts.owner,
       renderState: opts.renderState,
-      pass: opts.pass as number | undefined,
+      pass: opts.pass,
       pipelineConfig: opts.pipelineConfig,
-      bindGroupEntries: opts.bindGroupEntries as
-        | GPUBindGroupEntry[]
-        | undefined,
+      bindGroupEntries: opts.bindGroupEntries,
     });
   }
 
@@ -1944,9 +1934,9 @@ export class WebGPUContext extends GraphicsContext {
     // Check if this is a WebGPUDrawCommand
     if (drawCommand && typeof drawCommand.execute === "function") {
       // Execute WebGPU draw command — pass the render pass encoder directly
-      drawCommand.execute(
-        this._currentRenderPassEncoder as unknown as CesiumGraphicsContext,
-      );
+      // (CesiumDrawCommand.execute has a WebGPU overload accepting
+      // GPURenderPassEncoder; see cesium-js-types.d.ts).
+      drawCommand.execute(this._currentRenderPassEncoder);
 
       // Record statistics
       this._drawCallCount++;
@@ -2057,15 +2047,11 @@ export class WebGPUContext extends GraphicsContext {
 
     if (fb) {
       // WebGPU FramebufferManager / RenderTarget path
-      const fbObj = fb as unknown as WebGPURenderTargetLike;
-      if (typeof fbObj.getColorTexture === "function") {
-        sourceTexture = fbObj.getColorTexture(0) ?? null;
+      if (typeof fb.getColorTexture === "function") {
+        sourceTexture = fb.getColorTexture(0) ?? null;
       }
       // Legacy WebGL Framebuffer with _colorTextures array
-      const fbLegacy = fb as unknown as {
-        _colorTextures?: CesiumTextureWithSource[];
-      };
-      const colorTextures = fbLegacy._colorTextures;
+      const colorTextures = fb._colorTextures;
       if (!sourceTexture && colorTextures && colorTextures.length > 0) {
         const ct = colorTextures[0];
         sourceTexture = ct?.texture ?? ct?._texture ?? null;
@@ -2488,15 +2474,13 @@ export class WebGPUContext extends GraphicsContext {
     const fb = ps?.framebuffer ?? cmd.framebuffer;
     if (fb) {
       // Support WebGPURenderTarget / WebGPUFramebufferManager style objects
-      const fbObj = fb as unknown as WebGPURenderTargetLike;
-      if (typeof fbObj.getColorTextureView === "function") {
-        colorView = fbObj.getColorTextureView(0) ?? colorView;
+      if (typeof fb.getColorTextureView === "function") {
+        colorView = fb.getColorTextureView(0) ?? colorView;
       }
-      if (typeof fbObj.getDepthStencilTextureView === "function") {
-        depthStencilView =
-          fbObj.getDepthStencilTextureView() ?? depthStencilView;
-      } else if (typeof fbObj.getDepthTextureView === "function") {
-        depthStencilView = fbObj.getDepthTextureView() ?? depthStencilView;
+      if (typeof fb.getDepthStencilTextureView === "function") {
+        depthStencilView = fb.getDepthStencilTextureView() ?? depthStencilView;
+      } else if (typeof fb.getDepthTextureView === "function") {
+        depthStencilView = fb.getDepthTextureView() ?? depthStencilView;
       }
     }
 
@@ -3496,12 +3480,12 @@ export class WebGPUContext extends GraphicsContext {
    * once the corresponding subsystem has been touched at least once
    * during a frame. Callers should treat every field as optional.
    */
-  override getRendererStatistics(): Record<string, unknown> {
-    const stats: Record<string, unknown> = {
+  override getRendererStatistics(): DebugStatsObject {
+    const stats: { [k: string]: DebugStatsValue | undefined } = {
       backend: "webgpu",
       contextId: this._id,
       hasDevice: !!this._device,
-      isDestroyed: this.isDestroyed,
+      isDestroyed: this.isDestroyed(),
     };
     if (this._renderBundleManager) {
       try {
@@ -3516,7 +3500,7 @@ export class WebGPUContext extends GraphicsContext {
       // because it may not be wired in every code path.
       try {
         const pm = this._performanceManager as unknown as {
-          getFrameTimings?: () => object;
+          getFrameTimings?: () => DebugStatsObject;
         };
         if (typeof pm.getFrameTimings === "function") {
           stats.performance = pm.getFrameTimings();
@@ -3529,6 +3513,8 @@ export class WebGPUContext extends GraphicsContext {
       try {
         const tp = this._timestampProfiler;
         if (tp && typeof tp.getResults === "function") {
+          // ProfilingResults extends DebugStatsObject at source, so this
+          // assigns directly with no cast.
           stats.timestamps = tp.getResults();
         }
       } catch (e) {
@@ -3547,7 +3533,7 @@ export class WebGPUContext extends GraphicsContext {
       const fogFR = this.getFeatureRenderer(
         FeatureRendererKey.VOLUMETRIC_FOG,
       ) as
-        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | (CesiumFeatureRenderer & { getStatistics?: () => DebugStatsObject })
         | undefined;
       if (fogFR && typeof fogFR.getStatistics === "function") {
         stats.volumetricFog = fogFR.getStatistics();
@@ -3560,7 +3546,7 @@ export class WebGPUContext extends GraphicsContext {
       const hiZFR = this.getFeatureRenderer(
         FeatureRendererKey.HI_Z_OCCLUSION,
       ) as
-        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | (CesiumFeatureRenderer & { getStatistics?: () => DebugStatsObject })
         | undefined;
       if (hiZFR && typeof hiZFR.getStatistics === "function") {
         stats.hiZOcclusion = hiZFR.getStatistics();
@@ -3572,7 +3558,7 @@ export class WebGPUContext extends GraphicsContext {
       const sortFR = this.getFeatureRenderer(
         FeatureRendererKey.GPU_SORT_KEYS,
       ) as
-        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | (CesiumFeatureRenderer & { getStatistics?: () => DebugStatsObject })
         | undefined;
       if (sortFR && typeof sortFR.getStatistics === "function") {
         stats.gpuSortKeys = sortFR.getStatistics();
@@ -3585,7 +3571,7 @@ export class WebGPUContext extends GraphicsContext {
       const pcSortFR = this.getFeatureRenderer(
         FeatureRendererKey.POINT_CLOUD_SORT,
       ) as
-        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | (CesiumFeatureRenderer & { getStatistics?: () => DebugStatsObject })
         | undefined;
       if (pcSortFR && typeof pcSortFR.getStatistics === "function") {
         stats.pointCloudSort = pcSortFR.getStatistics();

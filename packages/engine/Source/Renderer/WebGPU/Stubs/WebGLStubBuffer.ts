@@ -45,7 +45,7 @@ export const BUFFER_CONSTANTS = Object.freeze({
 export function createBufferStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, unknown> {
+) {
   return {
     // ==== Buffer methods ====
 

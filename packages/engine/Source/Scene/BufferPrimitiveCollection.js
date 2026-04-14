@@ -202,8 +202,9 @@ class BufferPrimitiveCollection {
     this._dirtyBoundingVolume = false;
 
     this._allocatePrimitiveBuffer();
+    // Upstream PR #13203 context preserved for merge tracking; fork's
+    // ComponentDatatype sidecar provides the necessary types here too.
     this._allocatePositionBuffer(
-      // @ts-expect-error Requires https://github.com/CesiumGS/cesium/pull/13203.
       options.positionDatatype ?? ComponentDatatype.DOUBLE,
     );
     this._allocateMaterialBuffer();
@@ -263,7 +264,9 @@ class BufferPrimitiveCollection {
    * @ignore
    */
   _allocatePositionBuffer(datatype) {
-    // @ts-expect-error Requires https://github.com/CesiumGS/cesium/pull/13203.
+    // Upstream PR #13203 context preserved for merge tracking; fork's
+    // ComponentDatatype sidecar (Core/ComponentDatatype.d.ts) provides
+    // the necessary types so no suppression is needed here.
     this._positionView = ComponentDatatype.createTypedArray(
       datatype,
       this._positionCountMax * 3,

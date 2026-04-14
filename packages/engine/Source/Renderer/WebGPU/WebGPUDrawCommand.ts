@@ -9,6 +9,34 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 export type IndexFormat = "uint16" | "uint32";
 
 /**
+ * Back-reference to the scene object that created a draw command
+ * (e.g. Primitive, Billboard, PointPrimitive, Model). The renderer only
+ * reads `constructor.name` for debug labels; scene code reads it for
+ * picking and batching. Kept structural so owners from any collection
+ * (including future ones) assign without casts.
+ */
+export interface WebGPUCommandOwner {
+  readonly constructor?: { readonly name?: string };
+}
+
+/**
+ * Pipeline creation config retained on a draw command so OIT variants can
+ * be built lazily by WebGPUSceneRenderer / WebGPUOIT. Mirrors the subset of
+ * GPURenderPipelineDescriptor we need to rebuild the pipeline with a
+ * different fragment shader (for weighted-blended transparency).
+ */
+export interface WebGPUPipelineConfig {
+  label?: string;
+  layout: GPUPipelineLayout | "auto";
+  vertexBuffers?: GPUVertexBufferLayout[];
+  vertexEntryPoint?: string;
+  fragmentEntryPoint?: string;
+  primitive?: GPUPrimitiveState;
+  depthStencil?: GPUDepthStencilState;
+  multisample?: GPUMultisampleState;
+}
+
+/**
  * A vertex/index buffer can be either our WebGPUBuffer wrapper or a raw GPUBuffer.
  * WebGPUBuffer has a `.buffer` accessor; raw GPUBuffer is used directly.
  */
@@ -16,26 +44,15 @@ export type AnyGPUBuffer = WebGPUBuffer | GPUBuffer;
 
 /** Extracts the underlying GPUBuffer from either a WebGPUBuffer or raw GPUBuffer. */
 function resolveBuffer(buf: AnyGPUBuffer): GPUBuffer {
-  // Try public getter first (WebGPUBuffer.buffer)
-  const pub = (buf as any).buffer;
-  if (pub !== undefined && typeof pub === "object") {
-    return pub as GPUBuffer;
+  if (buf instanceof WebGPUBuffer) {
+    return buf.buffer;
   }
-  // Fallback: private field (esbuild may not preserve getter in some modes)
-  const priv = (buf as any)._buffer;
-  if (priv !== undefined && typeof priv === "object") {
-    return priv as GPUBuffer;
-  }
-  // Raw GPUBuffer — return as-is
-  return buf as GPUBuffer;
+  return buf;
 }
 
 /** Gets the size of an AnyGPUBuffer. */
 function resolveBufferSize(buf: AnyGPUBuffer): number {
-  if ((buf as WebGPUBuffer).size !== undefined) {
-    return (buf as WebGPUBuffer).size;
-  }
-  return (buf as GPUBuffer).size;
+  return buf.size;
 }
 
 /**
@@ -59,7 +76,7 @@ interface WebGPUDrawCommandOptions {
   firstIndex?: number;
   firstInstance?: number;
   pass?: number;
-  owner?: any;
+  owner?: WebGPUCommandOwner;
   boundingVolume?: CesiumBoundingSphere;
   modelMatrix?: CesiumMatrix4;
   cull?: boolean;
@@ -152,7 +169,7 @@ class WebGPUDrawCommand {
   visibilityMask: number;
   /** Whether this is transmissive geometry (glass, water). Default false. */
   isTransmissive: boolean;
-  owner?: any;
+  owner?: WebGPUCommandOwner;
   boundingVolume?: CesiumBoundingSphere;
   modelMatrix?: CesiumMatrix4;
   cull: boolean;
@@ -167,7 +184,7 @@ class WebGPUDrawCommand {
   // Original WGSL shader code for creating OIT variants at runtime
   _shaderCode?: string;
   // Pipeline config needed to recreate OIT variants
-  _pipelineConfig?: any;
+  _pipelineConfig?: WebGPUPipelineConfig;
 
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;

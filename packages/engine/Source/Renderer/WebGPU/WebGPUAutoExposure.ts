@@ -23,6 +23,13 @@
 /// <reference types="@webgpu/types" />
 
 import AutoExposureWGSL from "../../Shaders/WebGPU/Compute/AutoExposure.js";
+import {
+  makeBindGroupLayout,
+  storageBuffer,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 export interface AutoExposureConfig {
   minimumLuminance?: number;
@@ -224,31 +231,12 @@ export class WebGPUAutoExposure {
       code: AutoExposureWGSL,
     });
 
-    this._bindGroupLayout = device.createBindGroupLayout({
-      label: "AutoExposure BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" as GPUBufferBindingType },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" as GPUBufferBindingType },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" as GPUBufferBindingType },
-        },
-      ],
-    });
+    this._bindGroupLayout = makeBindGroupLayout(device, "AutoExposure BGL", [
+      texture(0, Stage.COMPUTE),
+      storageBuffer(1, Stage.COMPUTE),
+      storageBuffer(2, Stage.COMPUTE),
+      uniformBuffer(3, Stage.COMPUTE),
+    ]);
 
     const layout = device.createPipelineLayout({
       label: "AutoExposure PipelineLayout",

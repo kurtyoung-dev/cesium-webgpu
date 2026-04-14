@@ -69,7 +69,7 @@ declare class Context extends GraphicsContext {
   readonly shaderCache: CesiumShaderCache;
   readonly textureCache: object;
   readonly uniformState: CesiumUniformState;
-  readonly cache: Record<string, unknown>;
+  readonly cache: SceneGlobalCache;
 
   // Debug / validation flags that callers toggle at runtime.
   validateFramebuffer: boolean;

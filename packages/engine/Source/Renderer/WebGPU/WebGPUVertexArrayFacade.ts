@@ -19,37 +19,9 @@ import DeveloperError from "../../Core/DeveloperError.js";
 import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import CesiumMath from "../../Core/Math.js";
 
-/**
- * ComponentDatatype is exported as a frozen object from JS with both enum values
- * AND utility methods. TypeScript only infers the enum values, so we declare the
- * full type here to access getSizeInBytes() and createArrayBufferView().
- */
-interface ComponentDatatypeFull {
-  readonly BYTE: number;
-  readonly UNSIGNED_BYTE: number;
-  readonly SHORT: number;
-  readonly UNSIGNED_SHORT: number;
-  readonly INT: number;
-  readonly UNSIGNED_INT: number;
-  readonly FLOAT: number;
-  readonly DOUBLE: number;
-  getSizeInBytes(componentDatatype: number): number;
-  createArrayBufferView(
-    componentDatatype: number,
-    buffer: ArrayBuffer,
-    byteOffset?: number,
-    length?: number,
-  ): ArrayBufferView;
-  fromTypedArray(array: ArrayBufferView): number;
-  validate(componentDatatype: number): boolean;
-  createTypedArray(
-    componentDatatype: number,
-    valuesOrLength: number | number[],
-  ): ArrayBufferView;
-  fromName(name: string): number;
-}
-
-const CDT = ComponentDatatype as unknown as ComponentDatatypeFull;
+// ComponentDatatype's full shape (including utility methods) is declared in
+// the co-located sidecar ComponentDatatype.d.ts — no local cast needed.
+const CDT = ComponentDatatype;
 
 /**
  * WebGPU buffer usage hint (maps from WebGL BufferUsage).

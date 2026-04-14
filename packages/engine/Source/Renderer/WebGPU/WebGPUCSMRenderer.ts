@@ -17,6 +17,7 @@
 
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+import type { DebugStatsObject } from "../GraphicsContext.js";
 
 /** Default cascade count. */
 const DEFAULT_CASCADE_COUNT = 4;
@@ -285,7 +286,7 @@ export class WebGPUCSMRenderer {
   /**
    * Get the cascade data for the debug snapshot.
    */
-  getStatistics(): object {
+  getStatistics(): DebugStatsObject {
     return {
       enabled: this.enabled,
       cascadeCount: this._cascadeCount,

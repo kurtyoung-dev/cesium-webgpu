@@ -1,4 +1,5 @@
 /// <reference types="@webgpu/types" />
+import type { DebugStatsObject } from "../GraphicsContext.js";
 /**
  * @module WebGPUTimestampProfiler
  *
@@ -32,35 +33,38 @@
  */
 
 /**
- * Timing result for a single named pass.
+ * Timing result for a single named pass. All fields are JSON-safe so the
+ * interface is directly compatible with {@link DebugStatsObject} for
+ * assignment into scene debug snapshots.
  */
-export interface PassTimingResult {
+export interface PassTimingResult extends DebugStatsObject {
   /** Pass name */
-  name: string;
+  readonly name: string;
   /** Duration in milliseconds (most recent) */
-  lastMs: number;
+  readonly lastMs: number;
   /** Average duration in milliseconds (rolling window) */
-  avgMs: number;
+  readonly avgMs: number;
   /** Min duration in milliseconds (rolling window) */
-  minMs: number;
+  readonly minMs: number;
   /** Max duration in milliseconds (rolling window) */
-  maxMs: number;
+  readonly maxMs: number;
 }
 
 /**
- * Full frame profiling results.
+ * Full frame profiling results. Extends {@link DebugStatsObject} so the
+ * value assigns directly into `getRendererStatistics()` without a cast.
  */
-export interface ProfilingResults {
+export interface ProfilingResults extends DebugStatsObject {
   /** Whether profiling is active (timestamp-query feature enabled) */
-  enabled: boolean;
+  readonly enabled: boolean;
   /** Total frame GPU time in milliseconds (sum of all passes) */
-  frameMs: number;
+  readonly frameMs: number;
   /** Average frame GPU time (rolling window) */
-  frameAvgMs: number;
-  /** Per-pass timing results */
-  passes: Record<string, PassTimingResult>;
+  readonly frameAvgMs: number;
+  /** Per-pass timing results, keyed by pass name. */
+  readonly passes: { readonly [passName: string]: PassTimingResult };
   /** Number of frames profiled */
-  frameCount: number;
+  readonly frameCount: number;
 }
 
 /**

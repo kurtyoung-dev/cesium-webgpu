@@ -15,6 +15,13 @@
  */
 
 import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 import BrightPassWGSL from "../../Shaders/WebGPU/PostProcess/BrightPass.js";
 import BloomCompositeWGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite.js";
 import AmbientOcclusionGenerateWGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.js";
@@ -335,53 +342,19 @@ export class BloomEffect implements PostProcessEffect {
     hh: number,
   ): void {
     // Single-texture layout: texture + sampler + uniform
-    this._singleTexLayout = device.createBindGroupLayout({
-      label: "Bloom-SingleTex-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._singleTexLayout = makeBindGroupLayout(device, "Bloom-SingleTex-BGL", [
+      texture(0, Stage.FRAGMENT),
+      sampler(1, Stage.FRAGMENT),
+      uniformBuffer(2, Stage.FRAGMENT),
+    ]);
 
     // Composite layout: 2 textures + sampler + uniform
-    this._compositeLayout = device.createBindGroupLayout({
-      label: "Bloom-Composite-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._compositeLayout = makeBindGroupLayout(device, "Bloom-Composite-BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+      uniformBuffer(3, Stage.FRAGMENT),
+    ]);
 
     this._brightPassPipeline = createFullscreenPipeline(
       device,

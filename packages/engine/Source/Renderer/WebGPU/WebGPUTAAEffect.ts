@@ -17,6 +17,7 @@
  */
 
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
+import type { DebugStatsObject } from "../GraphicsContext.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import TAASource from "../../Shaders/WebGPU/PostProcess/TAA.js";
@@ -278,7 +279,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     return { x, y };
   }
 
-  getStatistics(): object {
+  getStatistics(): DebugStatsObject {
     return {
       enabled: this.enabled,
       frameCounter: this._frameCounter,

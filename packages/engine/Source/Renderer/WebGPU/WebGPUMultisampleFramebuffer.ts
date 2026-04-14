@@ -62,7 +62,7 @@ class WebGPUMultisampleFramebuffer {
       sampleCount: sampleCount,
       label: "WebGPUMultisampleFramebuffer",
     });
-    this._renderTarget = (renderTarget as WebGPURenderTargetLike) ?? null;
+    this._renderTarget = renderTarget ?? null;
 
     // Fallback: already null if context doesn't have createRenderTarget
   }

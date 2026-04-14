@@ -57,7 +57,7 @@ function resolveRenderbufferFormat(internalformat: number): GPUTextureFormat {
 export function createFramebufferStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, unknown> {
+) {
   return {
     // ==== Framebuffer methods ====
 

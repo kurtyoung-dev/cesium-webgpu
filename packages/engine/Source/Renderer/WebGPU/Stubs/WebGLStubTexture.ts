@@ -293,7 +293,7 @@ function ensureTextureAllocated(
 export function createTextureStubs(
   state: WebGLStubState,
   logUsage: LogUsageFn,
-): Record<string, unknown> {
+) {
   return {
     activeTexture: (unit: number) => {
       state.activeTextureUnit = unit - 0x84c0;
@@ -686,12 +686,12 @@ export function createTextureStubs(
 
       // Lazy-create the generator on the first call. Stored on `state` so
       // it's reused for the lifetime of the WebGPU device.
+      // WebGPUMipmapGenerator structurally satisfies StubMipmapGenerator
+      // (same `generateMipmaps` signature) so no cast is required.
       if (!state.mipmapGenerator) {
-        state.mipmapGenerator = new WebGPUMipmapGenerator(
-          state.device,
-        ) as unknown as import("./WebGLStubTypes.js").StubMipmapGenerator;
+        state.mipmapGenerator = new WebGPUMipmapGenerator(state.device);
       }
-      const gen = state.mipmapGenerator as unknown as WebGPUMipmapGenerator;
+      const gen = state.mipmapGenerator;
 
       // Reuse the active command encoder when one is open so the mipmap
       // blits are batched into the current frame; otherwise create a

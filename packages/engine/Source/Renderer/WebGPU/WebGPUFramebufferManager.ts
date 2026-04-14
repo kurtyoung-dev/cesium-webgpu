@@ -53,11 +53,13 @@ import DeveloperError from "../../Core/DeveloperError.js";
 // the Chrome rollout) and fall back to 0 — OR-ing 0 is a no-op so callers
 // don't need to branch.
 function getTransientAttachmentBit(device: GPUDevice): number {
-  // The texture-usage constant may not exist on older `@webgpu/types`. Read
-  // it dynamically so we don't pin a TypeScript build to a specific version.
+  // The texture-usage constant may not exist on older `@webgpu/types`.
+  // `Reflect.get` reads the potentially-missing property without pinning
+  // the TypeScript build to a specific @webgpu/types version.
   const bit =
-    (GPUTextureUsage as unknown as { TRANSIENT_ATTACHMENT?: number })
-      .TRANSIENT_ATTACHMENT ?? 0x10;
+    (Reflect.get(GPUTextureUsage, "TRANSIENT_ATTACHMENT") as
+      | number
+      | undefined) ?? 0x10;
   // Two possible feature names depending on spec snapshot — accept either.
   if (
     device.features.has("transient-attachments" as GPUFeatureName) ||

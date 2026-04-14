@@ -48,6 +48,27 @@
  */
 
 import RendererType from "./RendererType.js";
+
+/**
+ * JSON-safe value type used by {@link GraphicsContext.getRendererStatistics}
+ * and other debug surfaces. Each backend, feature renderer, or subsystem
+ * contributes a tree of these values, which downstream tooling logs,
+ * serializes, or diffs. Kept strictly structural (no `any` / `unknown` /
+ * `object`) so every reachable field is typechecked as either a primitive,
+ * another snapshot, or an ordered list of snapshots.
+ */
+export type DebugStatsValue =
+  | string
+  | number
+  | boolean
+  | null
+  | DebugStatsObject
+  | readonly DebugStatsValue[];
+
+/** Recursive record of {@link DebugStatsValue}s. */
+export interface DebugStatsObject {
+  readonly [key: string]: DebugStatsValue | undefined;
+}
 import { ContextRegistry } from "./ContextRegistry.js";
 import FeatureRendererKey from "./FeatureRendererKey.js";
 import Check from "../Core/Check.js";
@@ -629,7 +650,7 @@ export abstract class GraphicsContext {
   abstract get uniformState(): CesiumUniformState;
   abstract get shaderCache(): CesiumShaderCache;
   abstract get textureCache(): unknown;
-  abstract get cache(): Record<string, unknown>;
+  abstract get cache(): SceneGlobalCache;
   abstract get defaultTexture(): object;
 
   // ═══════════════════════════════════════════════════════════
@@ -1014,7 +1035,7 @@ export abstract class GraphicsContext {
    * optional (`stats.bundleManager?.cacheSize`) since the WebGL
    * backend will leave most fields unset.
    */
-  getRendererStatistics(): Record<string, unknown> {
+  getRendererStatistics(): DebugStatsObject {
     return {};
   }
 

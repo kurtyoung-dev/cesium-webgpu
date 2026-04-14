@@ -27,7 +27,26 @@
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 type CesiumOpaqueObject = object;
 type CesiumOpaqueTexture = CesiumOpaqueObject;
-type CesiumOpaqueFramebuffer = CesiumOpaqueObject;
+// Framebuffer is one of: WebGPU render-target wrapper (method-based),
+// legacy WebGL Framebuffer.js (field-based), WebGPU pick FBO (direct GPU
+// texture refs), or a raw GPUTexture. Every member is optional so the
+// type still accepts any pass-through JS object, but narrowing via
+// `typeof fb.getColorTexture === "function"`, `fb._colorTextures`, or
+// `fb._isWebGPUPickFBO` works directly without `as unknown as` casts.
+// When adding a fifth framebuffer shape, extend this intersection rather
+// than casting around it at the call site.
+type CesiumOpaqueFramebuffer = Partial<WebGPURenderTargetLike> & {
+  _colorTextures?: CesiumTextureWithSource[];
+  destroy?(): void;
+  // WebGPU pick FBO marker + fields (see WebGPUPickFramebuffer.ts)
+  _isWebGPUPickFBO?: boolean;
+  colorTexture?: GPUTexture | null;
+  depthTexture?: GPUTexture | null;
+  colorView?: GPUTextureView;
+  depthView?: GPUTextureView;
+  width?: number;
+  height?: number;
+};
 type CesiumOpaqueVertexArray = CesiumOpaqueObject;
 type CesiumOpaqueShaderProgram = CesiumOpaqueObject;
 type CesiumOpaqueShaderSource = CesiumOpaqueObject;
@@ -425,7 +444,7 @@ interface CesiumGraphicsContext {
   readonly rendererType: string;
   readonly isWebGPU: boolean;
   readonly uniformState: CesiumUniformState;
-  readonly cache: Record<string, unknown>;
+  readonly cache: SceneGlobalCache;
   readonly defaultTexture: CesiumOpaqueTexture;
   readonly stencilBuffer: boolean;
   readonly msaa: boolean;
@@ -461,7 +480,14 @@ interface CesiumGraphicsContext {
   _cloudCache?: import("./WebGPUProceduralCloudRenderer.js").CloudCache;
   _weatherCache?: import("./WebGPUWeatherRenderer.js").WeatherCache;
   getOrCreateSampler?(descriptor: GPUSamplerDescriptor): GPUSampler;
-  createRenderTarget?(options: Record<string, unknown>): unknown;
+  createRenderTarget?(options: {
+    width: number;
+    height: number;
+    colorFormats?: GPUTextureFormat[];
+    depthStencilFormat?: GPUTextureFormat;
+    sampleCount?: number;
+    label?: string;
+  }): WebGPURenderTargetLike | null;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(object: unknown): CesiumPickId;
@@ -523,8 +549,11 @@ interface CesiumDrawCommand {
   pickId: string | undefined;
   indexCount?: number;
   vertexCount?: number;
+  // WebGL path: (context, passState). WebGPU path: (passEncoder). The
+  // overload set covers both so WebGPUSceneRenderer / WebGPUContext can
+  // forward the current `GPURenderPassEncoder` without a cast.
   execute(context: CesiumGraphicsContext, passState?: CesiumPassState): void;
-  execute(...args: unknown[]): void;
+  execute(passEncoder: GPURenderPassEncoder): void;
 }
 
 // ─── PassState ───────────────────────────────────────────────────────────
@@ -960,7 +989,7 @@ interface CesiumAnyDrawCommand {
   _depthBias?: number;
   _depthBiasSlopeScale?: number;
   _shaderCode?: string;
-  _pipelineConfig?: Record<string, unknown>;
+  _pipelineConfig?: import("./WebGPUDrawCommand.js").WebGPUPipelineConfig;
   // Globe translucency derived command fields
   _webgpuTranslucencyDerived?: Array<{
     blendEnabled?: boolean;
@@ -974,6 +1003,64 @@ interface CesiumAnyDrawCommand {
   }>;
   _webgpuTranslucencyDerivedCount?: number;
   _webgpuDerivedTranslucent?: boolean;
+}
+
+// ─── SceneGlobalCache ─────────────────────────────────────────────────
+
+/**
+ * Entry stored by {@link ImageryLayerHelpers} under
+ * `cache.imageryLayer_reproject`. Pass-through from TS, the individual
+ * fields come from the JS-side legacy renderer.
+ */
+interface ImageryLayerReprojectCache {
+  framebuffer?: CesiumOpaqueFramebuffer;
+  vertexArray?: CesiumOpaqueVertexArray;
+  shaderProgram?: CesiumOpaqueShaderProgram;
+  sampler?: CesiumOpaqueSampler;
+  renderState?: CesiumOpaqueRenderState;
+  indicesBuffer?: CesiumOpaqueObject;
+}
+
+/**
+ * The cross-subsystem cache hung off every {@link CesiumGraphicsContext}.
+ * Keys are namespaced by Scene subsystem (e.g., `billboardCollection_*`,
+ * `cloudCollection_*`, `imageryLayer*`). Values are the derived GPU
+ * resource of that subsystem. Stable known keys are enumerated so callers
+ * get real types; the index-signature fallback keeps the bag extensible
+ * without touching this declaration whenever a subsystem adds a new key.
+ *
+ * Adoption rule: when a Scene file adds a new persistent cache entry,
+ * register it here with a precise value type. The fallback is for
+ * genuinely-dynamic keys (rare in practice).
+ */
+interface SceneGlobalCache {
+  // BillboardCollection
+  billboardCollection_indexBufferInstanced?: CesiumOpaqueObject;
+  billboardCollection_vertexBufferInstanced?: CesiumOpaqueObject;
+
+  // CloudCollection
+  cloudCollection_indexBufferBatched?: CesiumOpaqueObject;
+  cloudCollection_indexBufferInstanced?: CesiumOpaqueObject;
+  cloudCollection_vertexBufferInstanced?: CesiumOpaqueObject;
+
+  // EllipsoidPrimitive
+  ellipsoidPrimitive_vertexArray?: CesiumOpaqueVertexArray;
+
+  // GlobeSurfaceTile water mask
+  tile_waterMaskData?: CesiumOpaqueObject;
+
+  // ImageryLayer
+  imageryLayerMipmapSamplers?: CesiumOpaqueSampler[];
+  imageryLayerNonMipmapSamplers?: CesiumOpaqueSampler[];
+  imageryLayer_reproject?: ImageryLayerReprojectCache;
+
+  // Model outline generator (internal lookup map)
+  modelOutliningCache?: { [key: string]: CesiumOpaqueObject };
+
+  // Extensibility fallback — values are CesiumOpaqueObjects so callers get
+  // a non-primitive cache slot without using `unknown` / `any`. Narrowing
+  // to a specific subsystem type is done at the call site.
+  [key: string]: CesiumOpaqueObject | undefined;
 }
 
 // ─── WebGPURenderTarget (minimal) ────────────────────────────────────
