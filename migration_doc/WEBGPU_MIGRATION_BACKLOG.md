@@ -1,9 +1,78 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 14, 2026 (Session 29: Typing push — co-located .d.ts + cast cleanup)
+**Last Updated:** April 14, 2026 (Session 29: Typing push — co-located .d.ts + cast cleanup; External engine feature survey)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
 
 > **For architecture, completed work, bug fix history, current state, and the Phase 0 / Phase 1 / Renderer Threading / Phase 5 progress sections, see `WEBGPU_MIGRATION_STATUS.md`.**
+
+---
+
+## Phase 7 — External Engine Feature Survey (2026-04-14)
+
+An eight-project survey of other WebGPU rendering / compute projects to identify transferable features. Each item below has been filtered for (a) genuine novelty vs our existing 36 feature renderers + 7 compute dispatchers, (b) compatibility with RTE 64-bit precision at planetary scale, (c) fit with the `FeatureRendererKey` backend-agnosticism contract.
+
+**Sources surveyed:** NullGraph Engine, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity's WebGPU Export, Orillusion.
+
+**Rejected wholesale** (not listed below): ChartGPU (2D `f32`-only charting, domain mismatch), Taichi.js DSL (competes with our dispatcher stack), Vello renderer itself (2D vector, non-RTE), Orillusion "ray tracing" (is actually SSR), Zephyr3D shader builder (would replace ShaderBuilder wholesale), NullGraph "zero scene graph" DOD (incompatible with Scene/Primitive contract).
+
+**Deferred-but-tracked items** (listed in Tier 3 with explicit gating conditions): Unity STP upscaler (requires TAA motion vectors first), Unity Adaptive Probe Volumes (requires camera-anchored streaming redesign).
+
+**Convergent signals to weight most heavily:**
+
+- **Clustered Forward Lighting** appears in Zephyr3D + Orillusion + Unity URP (3 independent sources converged).
+- **Persistent GPU instance tables** appear in Unity (Resident Drawer) + NullGraph (MegaBuffer) + Hypercube (MasterBuffer).
+- **Decoupled-lookback prefix sums** in Vello + implied by Hypercube's parity+indirect orchestration.
+
+### Tier 1: High ROI, S effort (quick-win bundle)
+
+- **FEAT-SURVEY-01** — **GTAO post** (Ground-Truth Ambient Occlusion). Source: Orillusion `post/GTAOPost.ts`. Direct drop-in replacement for current AO. Modern standard over HBAO. No RTE impact (screen-space). **Effort: S**.
+- **FEAT-SURVEY-02** — **KHR_materials_clearcoat BRDF**. Source: Orillusion `LitMaterial.ts`. 3D Tiles with KHR extensions currently render as plain PBR in our fork — we silently drop clearcoat/IOR. Add 3 uniform fields + WGSL BRDF term. Must respect Option B material UBO split. **Effort: S**.
+- **FEAT-SURVEY-03** — **KHR_materials_sheen BRDF**. Same pattern as clearcoat. **Effort: S**.
+- **FEAT-SURVEY-04** — **KHR_materials_anisotropy BRDF**. Same pattern. **Effort: S**.
+- **FEAT-SURVEY-05** — **GodRay screen-space light shafts**. Source: Orillusion `post/GodRayPost.ts`. Sun-through-clouds atmospheric look. RTE-friendly (pure screen-space). Cheaper than full volumetric fog (dormant). **Effort: S**.
+- **FEAT-SURVEY-06** — **Decoupled-lookback prefix-sum WGSL** (`pathtag_scan` pattern). Source: Vello `vello_shaders/shader/pathtag_*.wgsl`. Port two shaders; replaces single-pass approaches in culling compaction + indirect-draw compaction with the textbook multi-level pattern. **Effort: S**.
+- **FEAT-SURVEY-07** — **ParityManager centralized ping-pong slot resolver**. Source: Hypercube-Compute. Unifies TAA history, Hi-Z previous-frame, auto-exposure luminance history — currently each dispatcher tracks parity inline. Eliminates a bug class. **Effort: S**.
+- **FEAT-SURVEY-08** — **ESM soft shadow filter**. Source: Zephyr3D `shadow/esm.ts`. Exponential shadow map, stacks onto dormant CSM when landed. **Effort: S** (after CSM lands).
+- **FEAT-SURVEY-09** — **VSM soft shadow filter with light-bleed clamping**. Source: Zephyr3D `shadow/vsm.ts`. Variance shadow maps for vegetation/foliage shadows. Planet-scale light-bleed needs the clamping trick. **Effort: S** (after CSM lands).
+- **FEAT-SURVEY-10** — **PCSS soft shadow filter**. Source: Zephyr3D `shadow/pcf_pd.ts`. Percentage-closer soft shadows for architecture. **Effort: S** (after CSM lands).
+- **FEAT-SURVEY-11** — **Draw Debugger** (per-draw visualization of bounding volumes, normals, tangents). Source: RedGPU `display/drawDebugger`. Augments `CesiumDebug` console. **Effort: S**.
+
+**Suggested first-pass micro-batch (1-2 days):** FEAT-SURVEY-01, -05, -02, -06, -07 — five unrelated quality / infra wins with zero RTE or architectural friction.
+
+### Tier 2: Valuable, M effort
+
+- **FEAT-SURVEY-20** — **MegaBuffer + `firstIndex`/`baseVertex` mesh atlas** for 3D Tiles heterogeneous glTF content. Source: NullGraph `MegabufferBuilder`. One vertex/index buffer for many meshes, compute shader emits `meshID` per visible instance, single indirect draw renders thousands of distinct shapes. **RTE caveat:** canonical stride must include `positionHigh`/`Low` (doubles per-vertex size). **Effort: M** for prototype `MegaMeshAtlasFeatureRenderer` keyed via new `FeatureRendererKey.MEGA_MESH_ATLAS`. Full glTF integration is L.
+- **FEAT-SURVEY-21** — **WBOIT (weighted-blended order-independent transparency)**. Source: Zephyr3D `render/weightedblended_oit.ts`. Fixes stacked polyline/billboard/glTF alpha sorting at horizon where depth-sort fails. Compute-cheap. A-buffer variant is L (memory-heavy, conflicts with Hi-Z + TAA budget). **Effort: M** (WBOIT) / L (A-buffer).
+- **FEAT-SURVEY-22** — **GPU Particle Emitter with ease curves + atlas sprites**. Source: RedGPU `display/paticle/ParticleEmitter.ts`. First-class GPU particles for smoke/fire/dust over terrain. Fills real gap — current clouds are volumetric-only. **RTE caveat:** particle positions as Low-delta around emitter High anchor. **Effort: M**.
+- **FEAT-SURVEY-23** — **Dynamic-offset uniform + indirect dispatch orchestration**. Source: Hypercube-Compute `GpuDispatcher` + manifest. Single uniform buffer with per-draw 256B-aligned offsets; exactly the pattern needed for upcoming multi-draw-indirect. Refactor one existing dispatcher (e.g., frustum cull) as template. **Effort: M**.
+- **FEAT-SURVEY-24** — **GPU Resident Drawer / persistent instance table**. Source: Unity 6 SRP batcher + BatchRendererGroup. Amortizes per-instance uniform upload across frames; pairs with our compute culler. **RTE caveat:** stride doubles (64B vs 32B per instance) for `positionHigh`/`Low`. **Effort: M**.
+- **FEAT-SURVEY-25** — **`sharedSourceBuffer` compute-cull fanout**. Source: NullGraph `BatchManager`. Multiple indirect batches read one producer storage buffer (one entity stream, many rendering variants: CSM cascades + TAA history + Hi-Z re-cull). Clean fit for dormant CSM 4-cascade design. **Effort: S-M**.
+- **FEAT-SURVEY-26** — **Box/Sphere environment probes with parallax correction**. Source: Orillusion `components/renderer/Reflection.ts`. Localized reflections for building interiors in 3D Tiles. Complements existing sky-only IBL. **RTE caveat:** capture camera must be RTE-aware. **Effort: M**.
+- **FEAT-SURVEY-27** — **RedGPU post-effect suite** (convolution, chromatic aberration, film grain, sharpen, lens distortion, hue/saturation/vibrance adjustments). Source: RedGPU `postEffect/effects/*`. Cinematic polish layer composed after tonemap. **Effort: S per filter, M as suite**.
+- **FEAT-SURVEY-28** — **Kawase dual-filter bloom** (lower-quality, lower-cost alternative to current mip-chain bloom). Source: RedGPU `postEffect/effects/oldBloom`. Mobile/low-power profile toggle. **Effort: S**.
+- **FEAT-SURVEY-29** — **Sprite3D / TextField batched sprite renderer** for HUD markers + debug overlays. Source: RedGPU `display/sprites`, `textFileds`. **Effort: M**. **Risk:** overlaps with Cesium's Label collection; scope carefully.
+- **FEAT-SURVEY-30** — **Raycaster3D GPU color-ID readback picking**. Source: RedGPU `picking/Raycaster3D.ts`. Faster than CPU BVH for thousands of entities. **Effort: M**. **Risk:** we already have pick framebuffer path; marginal win unless entity count >>>.
+- **FEAT-SURVEY-31** — **Jump-Flooding SDF in O(log N) passes**. Source: Hypercube-Compute `NeoSDFKernel.ts`. We already ship polygon SDF — worth a code diff to check propagation efficiency. **Effort: S** (code review only).
+
+### Tier 3: High effort, scene-dependent
+
+- **FEAT-SURVEY-40** — **Clustered Forward Lighting** (froxel light culling, 16×16×32 grid). Sources: Zephyr3D `render/cluster_light.ts` + Orillusion `passRenderer/cluster/`. Thousands of dynamic lights at city-scale (streetlights, vehicles, drones, signage). **Strong convergent signal — 3 sources use same pattern.** **RTE caveat:** cluster AABB math must use RTE deltas (cluster bounds relative to eye), not world-space. Log-Z slicing required for planetary far-planes (10⁷ m). **Effort: L**.
+- **FEAT-SURVEY-41** — **FFT + Gerstner + FBM ocean water**. Source: Zephyr3D `render/fft_wavegenerator.ts`, `gerstner_*`, `fbm_*`, `material/water.ts`. Three wave spectra cohabiting one material + compute FFT ocean. Planetary ocean fidelity upgrade beyond current water support. **Caveat:** FFT tile is flat-plane — needs patching to our spherical water primitive + RTE tangent frame. **Effort: L**.
+- **FEAT-SURVEY-42** — **Ghost-cell halo synchronizer pattern** for volumetric fog froxel borders. Source: Hypercube-Compute `GpuBoundarySynchronizer`. Their impl assumes flat Cartesian grid; our tile topology is cubed-sphere with LOD transitions — neighbor resolution differs. **Effort: L** (worth studying, not directly copying). Applies when dormant volumetric fog is wired.
+- **FEAT-SURVEY-43** — **Grass / foliage material** (wind animation + subsurface-scattering-lite). Source: Zephyr3D `material/grassmaterial.ts` + `mixins/foliage.ts`. Pairs with GPU instancing for planetary vegetation cover. **Effort: M** (material) + L (vegetation scattering system on top).
+- **FEAT-SURVEY-44** — **Virtual-Texture Clipmap Terrain research**. Source: Zephyr3D `render/clipmap.ts`, `scene/terrain-cm/`. Clipmaps outperform quadtrees at grazing angles. Research-only — conceptually collides with Cesium's authoritative quadtree terrain. **Effort: L (study only, do not integrate).**
+- **FEAT-SURVEY-45** — **Octree + CPU raycast visitor** inside tiles. Source: Zephyr3D `scene/octree.ts` + `raycast_visitor.ts`. Complements our GPU frustum cull for CPU picking / physics queries on dense scene entities inside a single tile. **Effort: M**. **Risk:** Cesium already does BVH at tile level — only useful for dense glTF interiors.
+- **FEAT-SURVEY-46** — **DDGI (Dynamic Diffuse Global Illumination, probe-based)**. Source: Orillusion `passRenderer/ddgi/`. Diffuse bounce for urban canyons / 3D Tiles interiors. Complements IBL+SH (sky-only today). **Caveat:** probe placement doesn't translate to planetary scale without per-tile-group cages. GPU readback conflicts with no-stall policy. **Effort: L**. Defer until bounded use case emerges.
+- **FEAT-SURVEY-47** — **Adaptive Probe Volumes (APV) streaming SH probe grid**. Source: Unity 6 URP/HDRP. Camera-anchored probe streaming. **Gating:** streaming cadence must be driven by camera anchor (not world origin) — needs RTE-aware probe index. Memory non-trivial at global scale (~100 MB+ for continent-scale coverage). **Blockers:** (1) design a per-tile-group probe cage that follows the eye rather than the globe origin; (2) solve probe-cache eviction across quadtree LOD transitions. **Revisit when:** a use case emerges that needs diffuse bounce GI beyond IBL+SH (e.g., 3D Tiles urban interior content where current sky-only IBL produces flat shading). **Effort: L**. Deferred.
+- **FEAT-SURVEY-48** — **STP (Spatial-Temporal Post-processing) upscaler**. Source: Unity 6 (DLSS-style web upscaler, reuses motion vectors + history, tied to their TAA). Massive win at 4K globe rendering — lets us render at 1080p/1440p and upscale. **Gating:** requires robust motion vectors we don't currently export from all feature renderers. RTE-specific issue: jitter must be reproducible frame-to-frame (deterministic Halton sequence in RTE eye-space, not world-space). **Blocker:** dormant TAA must land first — STP reuses TAA's motion-vector + history infrastructure. Once motion vectors ship, STP becomes a natural follow-on. **Revisit when:** TAA implementation completes (see `TAA_DESIGN.md`). **Effort: L**. Deferred — post-TAA.
+
+### Skipped features (already shipped or architecturally incompatible)
+
+For future session reference, don't waste cycles re-investigating: PBR-MR/SG, IBL+SH, TAA design, CSM 4-cascade design, SSR, SAO/HBAO baseline, Bloom, FXAA, 4-operator tonemap, Hi-Z occlusion, render bundles, indirect draw, shader-f16, hardware clip-distances, timestamp queries, quadtree terrain, point clouds, Gaussian splats, volumetric clouds, voxels, depth prepass, forward rendering, basic shadow maps.
+
+### Source pointer
+
+Full agent-generated survey reports (per-project pros/cons with file paths) are captured in the Session 29 conversation transcript — `C:\Users\Kurt\.claude\projects\f--Dev-GH-cesium-webgpu\a995f8ab-1f5c-4a94-99a4-16a7436c0a98.jsonl` for future reference. The critical signals were lifted into the items above.
 
 ---
 

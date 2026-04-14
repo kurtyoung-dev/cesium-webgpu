@@ -3,10 +3,12 @@
 **Purpose:** Self-contained context for the next session after a context compaction. Read this file first; it has every code pointer, design reference, and concrete next step needed to continue without re-discovering anything.
 
 **Current branch:** `main`
-**Last commit:** `1842043179` — Typing push: co-located .d.ts files for JS modules + cast cleanup
+**Last commit:** `82bc2c915c` — Session 29: typing follow-up + migration doc sweep
 **`tsc --project packages/engine/tsconfig.json --noEmit`:** clean (0 errors).
 **`npx gulp build`:** clean (38s).
 **Pre-commit hook:** now running cleanly (lint-staged + eslint + prettier completed on the full commit).
+
+**Also in Session 29:** external engine feature survey (NullGraph, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion). Results landed in `WEBGPU_MIGRATION_BACKLOG.md` as **Phase 7 — External Engine Feature Survey**, with 48 items (FEAT-SURVEY-01 through FEAT-SURVEY-48) tiered by effort × ROI. Top 5 quick-wins called out for a 1-2 day micro-batch. See backlog § "Phase 7" for the full list.
 
 ---
 
