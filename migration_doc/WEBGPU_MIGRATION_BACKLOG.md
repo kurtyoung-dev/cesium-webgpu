@@ -1,19 +1,41 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 14, 2026 (Session 29: Typing push — co-located .d.ts + cast cleanup; External engine feature survey)
+**Last Updated:** April 14, 2026 (Session 29: Typing push; Phase 7 external engine survey; **Phase 8 GPU-Resident Tiles architectural design**)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
 
-> **For architecture, completed work, bug fix history, current state, and the Phase 0 / Phase 1 / Renderer Threading / Phase 5 progress sections, see `WEBGPU_MIGRATION_STATUS.md`.**
+> **⚠️ READ FIRST — Current architectural frame:** The direction of travel is captured in **[PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md)**. It synthesizes Phase 7 (external engine features) + 3D Tiles implementation audit + 3D Tiles 2.0 spec research into a single architectural frame. **Do not start any rendering or 3D Tiles work without reading it** — it identifies the gating architectural decision (shader variant strategy), the central insight ("GPU-resident octree tile cache"), the full dependency DAG, and the recommended phased roadmap. All Phase 8 items in this backlog are shorthand pointers into that design.
+>
+> For architecture, completed work, bug fix history, current state, and the Phase 0 / Phase 1 / Renderer Threading / Phase 5 progress sections, see `WEBGPU_MIGRATION_STATUS.md`.
 
 ---
 
-## Phase 8 — GPU-Resident Tiles Design (2026-04-14)
+## Phase 8 — GPU-Resident Tiles (2026-04-14) — **CURRENT DIRECTION**
 
-Architectural synthesis of Phase 7 findings + 3D Tiles implementation audit + 3D Tiles 2.0 spec research. Identifies the central insight ("GPU-resident octree tile cache"), the gating shader-variant architectural decision, the full dependency DAG across ~80 items, and a recommended 5-phase roadmap (8a Foundation → 8b GPU-resident stack → 8c Visual quality → 8d Advanced → 8e Differentiators).
+> **📐 Design doc: [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md)** — 512 lines, the architectural source of truth. Read that first; this backlog section is the stable-ID index.
 
-**Also covers** tech debt, performance fixes, GPU compute opportunities, WASM opportunities, memory/bandwidth, threading/parallelism, and structural architectural improvements specific to the 3D Tiles draw path — items that don't appear in any external engine survey.
+### The headline
 
-**See:** [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) for the full architectural design. This backlog section only lists the stable IDs so items can be cross-referenced in commits and handoffs.
+**Central insight:** 3D Tiles content is mostly static across frames; the camera moves. The destination is a GPU-resident octree of tiles where per-frame CPU cost is O(camera-delta), not O(visible-tiles) — Unreal Nanite / Unity Resident Drawer paradigm adapted for planetary scale.
+
+Three independent Session 29 investigations (feature inventory, 3D Tiles implementation audit, 3D Tiles 2.0 spec) converged on this pattern. Detailed in design-doc §1.
+
+### The gating decision
+
+**TILE-ARCH-SHADER-STRATEGY** — `WebGPUModelPipelineCache` today keys pipelines on 3 bits (`alphaMode | doubleSided<<2`) → 6 pipelines for ALL glTF content in ALL tiles. This "monolithic `ModelPBRComplete.wgsl`" trade-off **silently drops** `KHR_materials_{clearcoat, sheen, anisotropy, iridescence, transmission, volume, variants, IOR}` + `KHR_lights_punctual`.
+
+**~30% of Phase 7 items cannot land cheaply until this is resolved.** Recommended: coarse ~20-pipeline variant strategy (material-family × alphaMode × doubleSided) with pre-warmed compile. See design-doc §2 for the trade-off matrix. **Effort: M** for design + prototype.
+
+### Recommended phased roadmap (from design-doc §5)
+
+| Phase | Theme | Duration | Gates |
+| --- | --- | --- | --- |
+| **8a Foundation** | Normal G-buffer, ParityManager, shader variant strategy, ellipsoid-aware RTE, tile↔Hi-Z wiring | 1-2 weeks | Unblocks ~60% of everything else |
+| **8b GPU-Resident Stack** | MegaBuffer + Resident Drawer + sharedSourceBuffer + dynamic-offset UBO + WGSL styling compiler + property-texture audit + WBOIT | 3-4 weeks | Collapses 1k-10k draw calls/frame to O(10) |
+| **8c Visual Quality** | KHR_lights_punctual → clearcoat/sheen/anisotropy/iridescence → GTAO → env probes → aerial-perspective LUT → decals → clustered lighting | 3-4 weeks | Depends on 8a shader strategy |
+| **8d Advanced** | TAA → CSM → ESM/VSM/PCSS → STP → planar reflections → FFT ocean → motion blur → impostors | 4-6 weeks | Some items dormant design-doc-ready |
+| **8e Differentiators** | NGA_GPM uncertainty, DDGI-per-tile, grass/foliage, refraction | Opportunistic | Bounded use cases |
+
+### Foundation items — FEAT-GAP-* (missing infra, not in engine AND not in Phase 7)
 
 ### Foundation items (FEAT-GAP-* — missing infra, not in engine AND not in Phase 7)
 
