@@ -451,13 +451,15 @@ interface CesiumGraphicsContext {
    *  Registered by WebGPUContext after PerformanceManager wires up
    *  compute dispatchers. Optional because WebGL has no analogue. */
   _computeCommandClass?: new (...args: unknown[]) => object;
-  // Dynamic sidecar caches attached by effect renderers. Typed as
-  // `unknown` because each effect defines its own cache shape and only
-  // its own module reads it — cross-module access is intentionally
-  // untyped so the cache owner stays the source of truth.
-  _ssrCache?: unknown;
-  _cloudCache?: unknown;
-  _weatherCache?: unknown;
+  // Dynamic sidecar caches attached by effect renderers. Each effect
+  // module defines and exports its own cache shape, and only its own
+  // module reads or writes its slot — the cache owner stays the source
+  // of truth. We reference the exported types via `import()` rather than
+  // a top-level import so this ambient declaration file stays a script
+  // (no `export` at top level) and its types remain globally visible.
+  _ssrCache?: import("./WebGPUSSREffect.js").SSRCache;
+  _cloudCache?: import("./WebGPUProceduralCloudRenderer.js").CloudCache;
+  _weatherCache?: import("./WebGPUWeatherRenderer.js").WeatherCache;
   getOrCreateSampler?(descriptor: GPUSamplerDescriptor): GPUSampler;
   createRenderTarget?(options: Record<string, unknown>): unknown;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
@@ -910,7 +912,18 @@ interface CesiumObjectWithWebGPUCache {
 // ─── Duck-typed command dispatch ─────────────────────────────────────────
 
 interface CesiumAnyDrawCommand {
-  boundingVolume?: CesiumBoundingSphere;
+  /** Bounding sphere — typed loosely because JS-sourced DrawCommand
+   *  instances have their `boundingVolume` inferred as `{}` from the
+   *  untyped `options.boundingVolume` field. All sphere fields are
+   *  optional here so both well-typed CesiumBoundingSphere values and
+   *  loosely-typed JS values assign without casts; WebGPU readers check
+   *  `bv.center` before dereferencing (see WebGPUSceneRenderer GPU
+   *  culling path). */
+  boundingVolume?: {
+    center?: CesiumCartesian3;
+    radius?: number;
+    boundingSphere?: { radius?: number };
+  };
   pass?: number;
   castShadows?: boolean;
   receiveShadows?: boolean;

@@ -19,7 +19,7 @@ import SSRShaderWGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflectio
 const SSR_UNIFORM_FLOATS = 44; // matches SSRUniforms struct
 const SSR_UNIFORM_BYTES = SSR_UNIFORM_FLOATS * 4;
 
-interface SSRCache {
+export interface SSRCache {
   pipeline: GPURenderPipeline | null;
   uniformBuffer: GPUBuffer | null;
   bindGroupLayout: GPUBindGroupLayout | null;
@@ -45,9 +45,9 @@ function ensureSSRCache(context: CesiumGraphicsContext): SSRCache {
       initialized: false,
       width: 0,
       height: 0,
-    } as SSRCache;
+    };
   }
-  return context._ssrCache as SSRCache;
+  return context._ssrCache;
 }
 
 function initializeSSRPipeline(
@@ -247,7 +247,7 @@ export function executeSSR(
 }
 
 export function destroySSRResources(context: CesiumGraphicsContext): void {
-  const cache = context._ssrCache as SSRCache | undefined;
+  const cache = context._ssrCache;
   if (cache) {
     cache.uniformBuffer?.destroy();
     cache.normalTexture?.destroy();

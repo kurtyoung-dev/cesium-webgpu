@@ -1,8 +1,37 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 13, 2026 Session 28 (Sessions 1-27b + Option B Material UBO Split completion + TypeScript clean build + esbuild async fixes)
+**Last Updated:** April 14, 2026 Session 29 (Sessions 1-28 + Typing Push: co-located .d.ts files + cast cleanup)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~92% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. **2026-04-12 Session 2: massive ES6 modernization (424 files via codemod), TypeScript type-safety sweep (34 fewer `as any` casts), XSS security fix in InfoBox.js, WebGL stub Proton-style overhaul, MaterialUniformBuffer architecture (~56% memory reduction per material), and build variant infrastructure (WebGL-only / WebGPU-only / dual tree-shaken bundles).**
+
+---
+
+## Recent Progress (2026-04-14 Session 29 — Typing Push: co-located .d.ts + cast cleanup)
+
+### JS↔TS boundary cast elimination
+
+- **13 new co-located `.d.ts` files** for CesiumJS JS classes that cross into WebGPU TypeScript code: `Matrix4`, `Cartesian3`, `Color`, `EncodedCartesian3`, `BoundingRectangle` (Core); `UniformState`, `PassState`, `ShaderCache`, `PickId`, `Context`, `Texture`, `CubeMap` (Renderer); `FrameState` (Scene).
+- **`as unknown as` in `Renderer/`: 57 → 19 (-67%)**. The 19 survivors are legitimate — centralized helpers in `webgpuTypeHelpers.ts`, a WIP PerformanceManager bridge, a WebGPU-specific `execute(renderPassEncoder)` protocol overload, a forward-compat probe for `GPUTextureUsage.TRANSIENT_ATTACHMENT`, and ~10 that can still be dropped in a follow-up (see `NEXT_SESSION_HANDOFF.md` § "Remaining work toward a fully well-typed codebase").
+- **8 stale `@ts-expect-error` directives removed** across 4 Scene `.js` files (they became TS2578 once the `.d.ts` files fixed the underlying errors).
+
+### Notable correctness fixes surfaced by typing work
+
+- **`CesiumMatrix4` ambient type was a lie.** Was declared as `Float64Array & { 0..15; clone; ... }` (intersection) — but `Matrix4` is a plain ES6 class, NOT a Float64Array subclass. The intersection required casts at every JS↔TS boundary. Fixed to structural interface; Matrix4 now flows through WebGPU without casts.
+- **`isDestroyed` getter-vs-method drift.** `GraphicsContext.isDestroyed` was declared as an abstract getter, but upstream `destroyObject.js` overwrites `.isDestroyed` with a `returnTrue` **function property** on destroyed objects — a getter can't be overwritten that way without a TypeError. Changed base class to `abstract isDestroyed(): boolean` and `WebGPUContext.isDestroyed` from getter → method. Latent bug fixed: any caller that routed WebGPUContext through `destroyObject()` would have crashed (no code does yet).
+- **`@private` JSDoc semantic clash.** CesiumJS uses `@private` to mean "not part of the published API" (upstream doc convention, predates TS tooling). TypeScript correctly interprets `@private` as class-scoped visibility, which **broke structural subtyping** between `Context` (has `@private readPixels`) and `GraphicsContext` (has `public abstract readPixels`). Forced `as unknown as GraphicsContext` at the `ContextFactory` boundary. Fixed via `Context.d.ts` declaring `readPixels`/`readPixelsToPBO` as public. Long-term fix: `@private` → `@internal` sweep on JS methods called cross-module (see backlog).
+
+### Accompanying narrowings
+
+- `GraphicsContextOptions.getWebGLStub` narrowed from the banned `Function` type to a concrete signature.
+- WebGPU dispatcher signatures (`WebGPUGPUSortKeysDispatcher`, `WebGPUHiZOcclusionDispatcher`) widened their `context: { device: GPUDevice }` param to match WebGPUContext's nullable `device` getter.
+- Sidecar cache types (`_ssrCache`, `_cloudCache`, `_weatherCache`, `_webgpuCache`) replaced `unknown` with real interfaces via `import("...").TypeName` pattern.
+- `CesiumGraphicsContext.uniformAllocator` + `_computeCommandClass` + `CesiumFeatureRenderer.RendererClass`/`_instance` typed at source, eliminating ad-hoc cast-narrowing at consumer sites.
+
+### Build / verification
+
+- `npx tsc --project packages/engine/tsconfig.json --noEmit`: clean (0 errors).
+- `npx gulp build`: 38s (-14% from 44s baseline).
+- All 272 modified files + 13 new files committed and pushed (`1842043179`).
 
 ---
 

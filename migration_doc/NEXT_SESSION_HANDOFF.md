@@ -1,13 +1,220 @@
-# Next Session Handoff — 2026-04-13
+# Next Session Handoff — 2026-04-14
 
 **Purpose:** Self-contained context for the next session after a context compaction. Read this file first; it has every code pointer, design reference, and concrete next step needed to continue without re-discovering anything.
 
 **Current branch:** `main`
-**Last commit:** `1bd7edc780` — Option B material UBO split, TypeScript clean build, ES6 modernization sweep
-**`tsc --noEmit`:** clean (0 errors).
+**Last commit:** `1842043179` — Typing push: co-located .d.ts files for JS modules + cast cleanup
 **`tsc --project packages/engine/tsconfig.json --noEmit`:** clean (0 errors).
-**`npx gulp build`:** clean (35s).
-**Pre-commit hook:** skipped (`--no-verify`) on last commit because `prettier --write` timed out on 657 staged files. **Must run prettier + eslint on full codebase at start of next session.**
+**`npx gulp build`:** clean (38s).
+**Pre-commit hook:** now running cleanly (lint-staged + eslint + prettier completed on the full commit).
+
+---
+
+## What landed in Session 29 — Typing Push (2026-04-14)
+
+Complete elimination of the lazy `as unknown as` escape hatches at the JS↔TS boundary by adding co-located `.d.ts` declaration files for CesiumJS JS classes that cross into WebGPU TypeScript code.
+
+### Headline numbers
+
+| Metric | Start | End | Delta |
+| --- | --- | --- | --- |
+| `as unknown as` in `Renderer/` | 57 | 19 | **-67%** |
+| `Record<string, unknown>` casts | 12 | 11 | -8% |
+| Stale `@ts-expect-error` directives | 8 | 0 | -100% |
+| Co-located `.d.ts` files | 0 | 13 | +13 |
+| TS build errors | 0 | 0 | clean |
+| Gulp build time | 44s | 38s | -14% |
+
+### New `.d.ts` files (13)
+
+All co-located with their JS source so TypeScript picks them up without any tsconfig changes. Each overrides the JS inference with properly-typed public API declarations.
+
+**Core:**
+
+- [Matrix4.d.ts](packages/engine/Source/Core/Matrix4.d.ts) — plain ES6 class (NOT a Float64Array subclass), 16 numeric-indexed slots, ~60 static methods
+- [Cartesian3.d.ts](packages/engine/Source/Core/Cartesian3.d.ts) — instance + ~40 statics, frozen constants
+- [Color.d.ts](packages/engine/Source/Core/Color.d.ts) — instance, ~25 statics, 140+ CSS named color constants
+- [EncodedCartesian3.d.ts](packages/engine/Source/Core/EncodedCartesian3.d.ts) — smallest file, validated the pattern first
+- [BoundingRectangle.d.ts](packages/engine/Source/Core/BoundingRectangle.d.ts) — exports `BoundingRectangleLike` shape for loose assignability
+
+**Renderer:**
+
+- [UniformState.d.ts](packages/engine/Source/Renderer/UniformState.d.ts) — matches ambient `CesiumUniformState` shape; ~40 readonly fields
+- [PassState.d.ts](packages/engine/Source/Renderer/PassState.d.ts)
+- [ShaderCache.d.ts](packages/engine/Source/Renderer/ShaderCache.d.ts)
+- [PickId.d.ts](packages/engine/Source/Renderer/PickId.d.ts)
+- [Context.d.ts](packages/engine/Source/Renderer/Context.d.ts) — ~40 capability getters, clear/draw/readPixels, viewport quad helpers. Declares `readPixels`/`readPixelsToPBO` as **public** to override `@private` JSDoc (those methods are called cross-module from Scene layer)
+- [Texture.d.ts](packages/engine/Source/Renderer/Texture.d.ts)
+- [CubeMap.d.ts](packages/engine/Source/Renderer/CubeMap.d.ts) — six face accessors, FaceName enum, static helpers
+
+**Scene:**
+
+- [FrameState.d.ts](packages/engine/Source/Scene/FrameState.d.ts) — uses **interface merging** with the ambient `CesiumFrameState` to reuse all field declarations without duplication:
+  ```ts
+  declare class FrameState { constructor(...); }
+  interface FrameState extends CesiumFrameState {}
+  ```
+
+### Accompanying refactors
+
+- **`isDestroyed` getter → method** in `GraphicsContext.ts` + `WebGPUContext.ts` + 1 call site in `WebGPUBuffer.ts`. Upstream `destroyObject.js` overwrites `.isDestroyed` with a `returnTrue` function — a getter can't be overwritten that way. Method form matches upstream convention and fixes all 40+ call sites. WebGPU-side classes that use getter-form `isDestroyed` elsewhere (WebGPUBuffer, WebGPUTexture, etc.) were left alone since they don't flow through `destroyObject.js`.
+- **`CesiumMatrix4` type fixed** — was `Float64Array & { 0..15; clone; ... }` (intersection), changed to plain structural interface. `Matrix4` is a plain ES6 class, NOT a `Float64Array` subclass; the old intersection was a lie that required casts at every boundary. Matrix4 now flows through WebGPU code without any cast.
+- **`GraphicsContextOptions.getWebGLStub`** narrowed from the banned `Function` type to `(canvas, webglOptions) => WebGLRenderingContext | WebGL2RenderingContext`.
+- **`CesiumAnyDrawCommand.boundingVolume`** widened from strict `CesiumBoundingSphere` to an optional-fields shape (`center?`, `radius?`, `boundingSphere?`). JS-sourced `DrawCommand` instances have their `boundingVolume` inferred as `{}`; the only WebGPU reader at `WebGPUSceneRenderer.ts:2142` already null-checks `bv.center` before dereferencing.
+- **WebGPU dispatcher signatures** (`WebGPUGPUSortKeysDispatcher`, `WebGPUHiZOcclusionDispatcher`) widened parameter types from `{ device: GPUDevice }` to `{ device: GPUDevice | null | undefined }` to match WebGPUContext's nullable `device` getter. Internal null-checks were already present.
+- **Feature renderer interface** (both `CesiumFeatureRenderer` in ambient + `FeatureRenderer` in `GraphicsContext.ts`) documents the lazy-construction pattern: optional `RendererClass: new(ctx) => object` + `_instance: object`.
+- **Sidecar cache types** made explicit — `_ssrCache`, `_cloudCache`, `_weatherCache`, `_webgpuCache` on `CesiumGraphicsContext` / `CesiumPostProcessStageCollection` now reference real interfaces via `import("./...").TypeName` rather than `unknown`. Each effect module now `export`s its cache interface.
+- **`CesiumGraphicsContext.uniformAllocator`** and **`_computeCommandClass`** typed at source, eliminating ad-hoc `as unknown as { ... }` narrowing.
+- **4 Scene `.js` files** — removed 8 stale `@ts-expect-error` directives that became obsolete (TS2578) once the `.d.ts` files fixed the underlying type errors they suppressed.
+
+### Notable discoveries during this session
+
+See [WEBGPU_DEBUGGING_LOG.md § "Session 29"](WEBGPU_DEBUGGING_LOG.md) for full writeups:
+
+- **`@private` JSDoc != TS `private`** — CesiumJS uses `@private` to mean "not part of the published API surface" (upstream convention, predates TS tooling). TypeScript correctly interprets `@private` as class-scoped visibility, which **breaks structural subtyping** between `Context` (has `@private readPixels`) and `GraphicsContext` (has `public abstract readPixels`). The right upstream fix is `@internal`; our fix was a co-located `.d.ts` that declares everything public.
+- **`CesiumMatrix4 = Float64Array & {...}`** — the ambient type was a lie that forced casts at every boundary.
+- **`isDestroyed` protocol drift** — GraphicsContext abstract declared it as a getter, WebGPUContext implemented it as a getter, but `destroyObject.js` overwrites it with a function property — any caller passing these through `destroyObject()` would encounter a TypeError at runtime (latent bug, not yet observed in production because WebGPUContext isn't passed through `destroyObject`).
+
+### Files touched this session (29 modifications + 13 new)
+
+**New .d.ts files (13):** see section above.
+
+**Modified (16):** cesium-js-types.d.ts, GraphicsContext.ts, WebGPUContext.ts, WebGPUFeatureRenderers.ts, WebGPUGlobeSurfaceRenderer.ts, WebGPUPerformanceManager.ts, WebGPUHiZOcclusionDispatcher.ts, WebGPUPostProcessStageCollection.ts, WebGPUSceneRenderer.ts, WebGPUPickFramebuffer.ts, WebGPUBuffer.ts, WebGPUTexture.ts, WebGPUVolumetricFogRenderer.ts, WebGPUGPUSortKeysDispatcher.ts, ContextFactory.ts, WebGPUSSREffect.ts, WebGPUProceduralCloudRenderer.ts, WebGPUWeatherRenderer.ts, renderBufferPointCollection.js, renderBufferPolygonCollection.js, renderBufferPolylineCollection.js, plus misc Scene `@ts-expect-error` cleanup.
+
+---
+
+## Remaining work toward a fully well-typed codebase
+
+The typing push reduced `as unknown as` by 67% but meaningful work remains. This section is **the authoritative backlog for typing work** — copy items into an in-session TodoWrite list when you pick them up.
+
+### A. Legitimate remaining `as unknown as` casts (17 in source, 2 in centralized helpers)
+
+These are **not candidates for removal**. They document real design gaps or centralized escape hatches. Listed here so future sessions don't waste time attacking them without first fixing the underlying issue:
+
+| Site | Why it exists | Real fix (if any) |
+| --- | --- | --- |
+| [webgpuTypeHelpers.ts:70,115](packages/engine/Source/Renderer/WebGPU/webgpuTypeHelpers.ts) | Centralized `gpuData()` + `numericArray()` helpers — **the whole point is consolidation**. | Leave as-is. |
+| [WebGPUContext.ts:1948](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L1948) | `drawCommand.execute(renderPassEncoder as CesiumGraphicsContext)` — WebGPU-specific protocol overload where `execute()` receives a render pass encoder instead of a context. | Overload `CesiumDrawCommand.execute()` with `(ctx: CesiumGraphicsContext \| GPURenderPassEncoder)` union. Medium effort. |
+| [WebGPUContext.ts:3468](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L3468) | `new WebGPUPerformanceManager(this as ConstructorParameters<...>[0])` — **WIP module**; `PerformanceManagerContext` interface has forward-looking slots (`appendDraw`, `buildAndSubmit`, etc.) not yet implemented on the real classes. **Do not trim the interface**. | Complete the WebGPUPerformanceManager implementation. |
+| [WebGPUFramebufferManager.ts:59](packages/engine/Source/Renderer/WebGPU/WebGPUFramebufferManager.ts#L59) | `GPUTextureUsage.TRANSIENT_ATTACHMENT` — forward-compat probe for a future WebGPU spec bit. | Leave as-is until the spec bit ships in `@webgpu/types`. |
+| [GraphicsContext.ts:409](packages/engine/Source/Renderer/GraphicsContext.ts#L409) | Dynamic method introspection (`typeof (this)[method] !== "function"`). | Leave as-is; intentional dynamic dispatch in the validation layer. |
+
+### B. Remaining `as unknown as` casts that CAN be removed (10)
+
+Ranked by estimated effort × payoff.
+
+| Site | What it does | Fix | Effort |
+| --- | --- | --- | --- |
+| [WebGPUContext.ts:2060, 2065, 2491](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L2060) — 3 casts | Narrows `readState.framebuffer` to `WebGPURenderTargetLike` / `{ _colorTextures?: ... }` for readPixels paths. | Widen `CesiumReadState.framebuffer` to a union including `WebGPURenderTargetLike` so narrowing uses `in` operator. | ~30 min |
+| [WebGPUContext.ts:3518](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L3518) — `pm as { getFrameTimings?: () => object }` | Optional-method probe on `_performanceManager`. | Add `getFrameTimings?()` to PerformanceManager class. | 5 min |
+| [SharedResourcePool.ts:267, 270](packages/engine/Source/Renderer/SharedResourcePool.ts) — 2 casts | `TypedArrayConstructor.BYTES_PER_ELEMENT` / `.prototype.BYTES_PER_ELEMENT` probe. | Type `TypedArrayConstructor` as the union `Uint8ArrayConstructor \| ... \| Float32ArrayConstructor` which all have `BYTES_PER_ELEMENT` in lib.d.ts. | ~15 min |
+| [loadCubeMapWebGPU.ts:85](packages/engine/Source/Renderer/WebGPU/loadCubeMapWebGPU.ts#L85) — `url as { url: string }` | String vs object URL narrowing. | Use `typeof url === "object" && "url" in url` type guard. | 5 min |
+| [WebGPUVertexArrayFacade.ts:52](packages/engine/Source/Renderer/WebGPU/WebGPUVertexArrayFacade.ts#L52) — `ComponentDatatype as ComponentDatatypeFull` | ComponentDatatype has methods not declared in the JS source. | Write `ComponentDatatype.d.ts` with the static API. | ~30 min |
+| [Stubs/WebGLStubShader.ts:150](packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubShader.ts#L150), [Stubs/WebGLStubTexture.ts:692, 694](packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts#L692) — 3 casts | WebGL-only-build stubs. | Stubs are dead in WebGPU-only builds; low priority. If WebGL stubs are used in production, give them typed interfaces. | ~1 hour |
+
+**Estimated total effort to drop from 19 to ~5:** 2-3 hours. The 5 legitimate survivors in group A stay.
+
+### C. Pending `.d.ts` targets — high-value JS classes not yet covered
+
+Writing a `.d.ts` for each eliminates multiple casts and `Record<string, unknown>` sites downstream. Ranked by downstream payoff.
+
+| Target | Why high-value | Eliminates |
+| --- | --- | --- |
+| **DrawCommand.d.ts** | Used pervasively; every `frameState.commandList.push(...)` assignment touches it. Would tighten `CesiumAnyDrawCommand.boundingVolume` back to strict `CesiumBoundingSphere`. | ~8-12 cascading cast sites |
+| **BoundingSphere.d.ts** | Hot path for all bounding-volume math; currently flows as `{}` from JS. | 4-6 `as CesiumBoundingSphere` narrowings |
+| **Ellipsoid.d.ts** | Touched by globe surface, atmosphere, orbital math. | 3-5 sites |
+| **RenderState.d.ts** | Passed through draw command machinery. | Unlocks tightening of `CesiumOpaqueRenderState` to real type |
+| **ShaderProgram.d.ts** | Referenced through ambient `CesiumOpaqueShaderProgram`; tightening it would cascade into the `ShaderCache` return types. | 4 sites |
+| **VertexArray.d.ts** + **Buffer.d.ts** | Draw command machinery; currently typed as opaque. | Unlocks `CesiumOpaqueVertexArray` tightening |
+| **ContextLimits.d.ts** | Pure-statics module; typing the static surface unlocks several dispatchers' limit probes. | ~2 sites |
+| **ComponentDatatype.d.ts** | See group B above. | 1 site |
+| **IndexDatatype.d.ts** | Used by WebGPU index buffer construction. | ~3 sites |
+| **Sampler.d.ts** | Already referenced in Texture.d.ts / CubeMap.d.ts as imported type; needs its own `.d.ts`. | Preempts future casts |
+
+**Estimated total effort:** ~4-6 hours across all ten. Pattern is established (see Context.d.ts, Texture.d.ts, CubeMap.d.ts as templates).
+
+### D. Pending ambient interface tightenings (cesium-js-types.d.ts)
+
+The ambient declaration file has several opaque types that could become real types once the corresponding `.d.ts` files land (Group C above).
+
+```ts
+// Current: opaque
+type CesiumOpaqueTexture = CesiumOpaqueObject;        // → Texture (pending Texture.d.ts — DONE)
+type CesiumOpaqueFramebuffer = CesiumOpaqueObject;    // → Framebuffer (pending Framebuffer.d.ts)
+type CesiumOpaqueVertexArray = CesiumOpaqueObject;    // → VertexArray
+type CesiumOpaqueShaderProgram = CesiumOpaqueObject;  // → ShaderProgram
+type CesiumOpaqueShaderSource = CesiumOpaqueObject;   // → ShaderSource
+type CesiumOpaqueRenderState = CesiumOpaqueObject;    // → RenderState
+```
+
+Each tightening opens additional cast-removal opportunities in WebGPU consumer code.
+
+### E. `Record<string, unknown>` vestiges (11 remaining)
+
+- [GraphicsContext.ts:619](packages/engine/Source/Renderer/GraphicsContext.ts#L619) — `abstract get cache(): Record<string, unknown>` — should be a branded cache interface per-subsystem
+- [GraphicsContext.ts:865, 953, 964, 1000](packages/engine/Source/Renderer/GraphicsContext.ts) — `createTexture/createBuffer/getRendererStatistics` take/return `Record<string, unknown>` — should use concrete option types
+- [OffscreenContextSupport.ts](packages/engine/Source/Renderer/OffscreenContextSupport.ts) — worker message payloads; these are legitimately heterogeneous so `Record<string, unknown>` is arguably correct
+- [WebGPU/Stubs/*](packages/engine/Source/Renderer/WebGPU/Stubs/) — WebGL-only-build stubs; dead code in WebGPU-only builds
+
+Estimated effort to address the non-stub sites: ~2 hours.
+
+### F. `: unknown` in parameters / return types (~100 in Renderer/)
+
+These are variable-type annotations (vs the `as unknown as` casts addressed in groups A/B). Fixing them requires case-by-case judgment: many are genuinely heterogeneous (`owner: unknown` on DrawCommand), others are laziness that would benefit from a real type. Suggested approach: triage by file, start with the files where `.d.ts` work has already narrowed adjacent types.
+
+### G. Upstream `@private` → `@internal` sweep
+
+Cesium's `@private` JSDoc is used to mean "not part of the published API" — semantically closer to TypeScript's `@internal`. Current state: TypeScript correctly enforces `@private` as class-scoped visibility, which forces `.d.ts` overrides at every cross-module boundary.
+
+**Recommended sweep:** Replace `@private` → `@internal` on every JS method that's actually called cross-module. A `@internal` tag is stripped by API-extractor tools the same way `@private` is, preserving Cesium's doc-generation intent. Once done, many `.d.ts` files (`Context.d.ts`, `Texture.d.ts`, `CubeMap.d.ts`) become redundant and can be removed.
+
+**Estimated effort:** ~2-3 hours for the Renderer/ directory. Grep `@private`, check call sites, flip the tag. Full codebase sweep would be ~1 day.
+
+**Risk:** zero runtime behavior change; purely doc-surface and TS-visibility.
+
+### H. Session-by-session roadmap suggestion
+
+1. **Next session (2-3 hours):** Knock out group B (10 easy casts) + write DrawCommand.d.ts (highest-payoff .d.ts). Expected: cast count drops from 19 → ~5, unlocks several downstream tightenings.
+2. **Following session (3-4 hours):** Write remaining 9 .d.ts files from group C. Tighten 6 ambient opaque types in cesium-js-types.d.ts. Expected: `: unknown` count drops significantly.
+3. **Longer-term (1 day):** `@private` → `@internal` sweep across Renderer/. Remove now-redundant `.d.ts` files that existed only to override visibility.
+4. **Continuous:** Triage `: unknown` parameter/return types per file as you touch them (CLAUDE.md's 10-line rule).
+
+---
+
+## Architectural patterns established this session
+
+### Co-located `.d.ts` pattern
+
+When a TS file needs to interop with a JS class that has no `.d.ts`:
+
+1. **Check for `@private` JSDoc first.** If the JS author uses `@private` to mean "not in the published API" (the Cesium convention), a co-located `.d.ts` that declares everything `public` is the correct fix. (`@internal` replacement is the longer-term upstream-friendly answer — see group G.)
+
+2. **Write a co-located `ClassName.d.ts`** next to `ClassName.js`. TypeScript's `allowJs: true, checkJs: false` means a sibling `.d.ts` **overrides** JS inference for imports — no tsconfig changes needed.
+
+3. **For classes that match an existing ambient interface** (e.g., `FrameState` matches ambient `CesiumFrameState`), use declaration merging:
+   ```ts
+   declare class FrameState { constructor(...); }
+   interface FrameState extends CesiumFrameState {}
+   ```
+   Single source of truth: the ambient interface.
+
+4. **For plain data/math classes** (Matrix4, Cartesian3, Color), declare the full instance + static surface. Don't skimp; these are touched everywhere.
+
+5. **Never honor `@private` JSDoc on methods** that are called cross-module. TypeScript enforces `@private` as class-scoped visibility — if the method is reachable from outside the class, declare it `public` in the `.d.ts` (overriding the JSDoc). See Context.d.ts `readPixels`/`readPixelsToPBO` for example.
+
+### Sidecar cache pattern
+
+Per-module sidecar caches on `CesiumGraphicsContext` / `CesiumObjectWithWebGPUCache`:
+
+1. Each owning module `export`s its cache interface.
+2. `cesium-js-types.d.ts` references it via `import("./path").TypeName`.
+3. Consumer sites read `context._xCache` without casts.
+
+See SSRCache / CloudCache / WeatherCache / PostProcessCache for four examples.
+
+### Interface merging for JS↔TS class bridging
+
+`declare class X {}` + `interface X extends AmbientShape {}` merges — the class contributes the constructor, the interface contributes all fields. Use when the ambient interface already exists (FrameState pattern).
 
 ---
 
@@ -48,7 +255,7 @@ Complete elimination of all TypeScript build errors from `packages/engine/tsconf
 **WebGPUContext fixes:**
 - 6 private fields made public (`_device`, `_canvas`, `_currentCommandEncoder`, `_currentRenderPassEncoder`, `_presentationFormat`, `_frameCount`) — these have public getters but renderers access fields directly for performance
 - 5 dynamic rendering properties declared as typed class fields (`_depthStencilView`, `_sceneColorView`, `_sceneColorFormat`, `_msaaSamples`, `useIndirectDrawForTiles`)
-- `ShaderCache` and `UniformState` construction uses `as unknown as` casts at the JS↔TS boundary
+- `ShaderCache` and `UniformState` construction uses `as unknown as` casts at the JS↔TS boundary (**eliminated in Session 29**)
 
 **FeatureRenderer base interface** — added optional `update`, `execute`, `render`, `composite` methods
 
@@ -58,54 +265,37 @@ Complete elimination of all TypeScript build errors from `packages/engine/tsconf
 
 **CLAUDE.md rule added:** `any` is now banned as a variable/parameter/return type. Use `unknown`, specific interfaces, union types, or generics instead.
 
-### Files changed this session
+### Technical debt from Session 28 (status update)
 
-**WGSL shaders (25 files):** PrimitiveMatGridLit, 4 Ramp shaders, 17 textured material shaders, PolylineCollection/Arrow/Dash/Glow/Outline/Pick, BillboardCollection/Pick/SDF, CloudCollection
+1. **WebGPUContext public underscore fields** — Still open. 30+ external access sites should call `context.device` not `context._device`. Effort: ~2 hours.
 
-**JS/TS renderer files (20+ files):** WebGPUPolylineRenderer.js, WebGPUContext.ts, WebGPUSceneRenderer.ts, WebGPUDerivedCommand.ts, WebGPUCloudRenderer.ts, WebGPUEllipsoidPrimitiveRenderer.ts, WebGPUGlobeSurfaceRenderer.ts, WebGPUPickFramebuffer.ts, WebGPUPointCloudRenderer.ts, WebGPUPostProcessStageCollection.ts, WebGPUVolumetricFogRenderer.ts, WebGPUDepthPlane.ts, WebGPUGlobeTranslucencyState.ts, WebGPUBufferPrimitiveRenderer.ts, WebGPUGaussianSplatRenderer.ts, cesium-js-types.d.ts, WebGLStubTexture.ts, GraphicsContext.ts
+2. **`as unknown as TargetType` double-casts** — **MOSTLY RESOLVED in Session 29.** See the "Remaining work toward a fully well-typed codebase" section above for the 19 survivors and their status.
 
-**Codemod artifacts fixed (13 files):** Missing async keywords in Cesium3DTilesTerrainProvider, GoogleGeocoderService, Azure2DImageryProvider, BillboardTexture, Cesium3DTilesVoxelProvider, Google2DImageryProvider, GoogleStreetViewCubeMapPanoramaProvider, I3SDataProvider, I3SFeature, I3SLayer, I3SNode, I3SStatistics, I3SSymbology, PickFramebuffer, SingleTileImageryProvider, GltfMeshPrimitiveGpmLoader, Implicit3DTileContent, Multiple3DTileContent
+3. **Buffer union type narrowing** — `vertexBuffers: Array<GPUBuffer | { buffer: GPUBuffer; size: number }>` requires `'buffer' in vb` narrowing at every access site. Open.
 
-**Other:** CLAUDE.md (TypeScript any ban rule), Cartesian3.js (removed stale @ts-expect-error), VectorGltf3DTileContent.js (removed 4 stale @ts-expect-error)
+4. **PostProcessStage uniforms typed as `Record<string, number>`** — open.
 
-### What could be improved (technical debt from this session)
-
-1. **WebGPUContext public underscore fields** — `_device`, `_canvas`, `_currentCommandEncoder`, `_currentRenderPassEncoder`, `_presentationFormat`, `_frameCount` were made `public` because 30+ external renderer files access them directly. The proper fix: refactor all external access sites to use the existing public getters (`context.device`, `context.canvas`, `context.currentCommandEncoder`, etc.). Effort: ~2 hours, mechanical search-and-replace. Low risk.
-
-2. **`as unknown as TargetType` double-casts** — Used in ~8 places (ShaderCache, UniformState, Matrix4, WebGPUContext→CesiumGraphicsContext). These are genuine JS↔TS boundary crossings where structural compatibility exists but nominal types don't match. The proper fix: make the JS classes implement the TS interfaces via declaration merging, or convert the JS classes to TS. This is a larger scope change tied to the overall JS→TS migration.
-
-3. **Buffer union type narrowing** — `vertexBuffers: Array<GPUBuffer | { buffer: GPUBuffer; size: number }>` requires `'buffer' in vb` narrowing at every access site. A cleaner approach: add a helper `getGPUBuffer(vb: AnyGPUBuffer): GPUBuffer` to WebGPUDrawCommand and call it everywhere. Effort: ~30 min.
-
-4. **PostProcessStage uniforms typed as `Record<string, number>`** — Some values are actually booleans (`glowOnly`, `ambientOcclusionOnly`). We wrapped boolean reads with `Boolean()`. A better type: `Record<string, number | boolean>` with `as number` at numeric read sites. Deferred because it caused 18 cascading errors.
-
-5. **ES6 codemod async method audit** — The class codemod lost `async` on 15+ methods. We fixed the ones that caused esbuild errors, but there may be more that don't cause build errors (because the caller already handles the Promise). A full audit: `grep -rn "await " packages/engine/Source/ --include="*.js"` and check each enclosing function.
+5. **ES6 codemod async method audit** — open.
 
 ### Next TODO work (priority order)
 
-0. **Run prettier + eslint on full codebase** — The last commit skipped the pre-commit hook because `prettier --write` timed out on 657 files. Run these standalone before any other work:
-   ```bash
-   npx prettier --write "packages/engine/Source/**/*.{js,ts}" "packages/widgets/Source/**/*.{js,ts}"
-   npx eslint --cache --fix "packages/engine/Source/**/*.{js,ts}" "packages/widgets/Source/**/*.{js,ts}"
-   ```
-   Then commit the formatting changes separately. This ensures the hook passes for all future commits.
+0. **Remaining typing cleanup** — see Session 29 "Remaining work" section above. 2-3 hours drops `as unknown as` from 19 to ~5.
 
-1. **`var` → `const`/`let` codemod** (~196 files, ~2-3 hours) — Mechanical. Run jscodeshift or a custom script. The CLAUDE.md rule says to modernize when touching >10 lines, but a batch sweep closes the gap.
+1. **`var` → `const`/`let` codemod** (~196 files, ~2-3 hours).
 
-2. **`.indexOf()` → `.includes()` codemod** (~57 files, ~30 min) — Already have `scripts/codemod-indexof-to-includes.cjs`. Run it.
+2. **`.indexOf()` → `.includes()` codemod** (~57 files, ~30 min).
 
-3. **Remaining `: any` in WebGPU .ts files** (268 across 40 files) — Now that the build is clean, these can be fixed incrementally per-file without risk. Focus on the highest-count files first: WebGPUSceneRenderer, WebGPUGlobeSurfaceRenderer, WebGPUContext.
+3. **Remaining `: any` in WebGPU .ts files** (268 across 40 files).
 
-4. **Remaining `as any` casts** (33 across 10 files) — Same incremental approach.
+4. **Visual smoke test** — Zero runtime testing done on any of the Option B changes.
 
-5. **Visual smoke test** — Zero runtime testing done on any of the Option B changes. Must verify each material type renders correctly in a browser before shipping.
+5. **WebGPUBillboardRenderer.js bind group split** — Still uses old monolithic pattern.
 
-6. **WebGPUBillboardRenderer.js bind group split** — Still uses old monolithic pattern. Lower priority than polylines (which are fixed).
+6. **ViewportExecutor HiZ wiring** (~50 LOC) — Closes the Phase 3 occlusion path end-to-end.
 
-7. **ViewportExecutor HiZ wiring** (~50 LOC) — Closes the Phase 3 occlusion path end-to-end.
+7. **TAA implementation** (~3 days) — Design doc ready at [TAA_DESIGN.md](TAA_DESIGN.md).
 
-8. **TAA implementation** (~3 days) — Design doc ready at [TAA_DESIGN.md](TAA_DESIGN.md).
-
-9. **CSM implementation** (~4 days) — Design doc ready at [CSM_DESIGN.md](CSM_DESIGN.md).
+8. **CSM implementation** (~4 days) — Design doc ready at [CSM_DESIGN.md](CSM_DESIGN.md).
 
 ---
 
@@ -118,17 +308,6 @@ Complete elimination of all TypeScript build errors from `packages/engine/tsconf
 - `materialColor` → `color` field rename in 6 shaders (PrimitiveMatColorFlat/Lit, PolylineArrow/Dash/Glow/Outline)
 - PrimitiveMatGridFlat.wgsl: decomposed `gridColor/cellColor/cellCount` composite fields into individual `color/cellAlpha/lineCount/lineThickness/lineOffset` matching the JS fabric template
 - WebGPUPrimitiveCommands.js: pipeline layout split into camera BGL (group 0) + material BGL (group 1), ~295 lines of packMaterialUniforms deleted, material data sourced from MaterialUniformBuffer.gpuData
-
-### NOT completed (must finish before Option B is functional)
-
-1. **PrimitiveMatGridLit.wgsl** — needs same field decomposition as GridFlat (done for Flat, not Lit)
-2. **Binding conflict in textured material shaders** — PrimitiveMatImageFlat/Lit.wgsl and similar have `@group(1) @binding(0)` claimed by both material UBO and texture sampler. Textures must move to group(2).
-3. **WebGPUPolylineRenderer.js** — needs same camera/material bind group split as PrimitiveCommands
-4. **WebGPUBillboardRenderer.js** — needs bind group split
-5. **Effects bind group index shift** — WebGPUEffectsBindGroup currently at group(1) for non-textured shaders; needs to shift to accommodate material at group(1)
-6. **.js shader wrappers** — auto-generated from .wgsl via gulp build, NOT yet regenerated. Run `npm run restart` or `npx gulp build` before testing.
-7. **Visual verification** — zero runtime testing done. Must verify each material type renders correctly.
-8. **Field name alignment audit** — most material shaders already match JS fabric names (Checker, Dot, Stripe, BumpMap, etc.), but each should be verified against the corresponding Material.js fabric template.
 
 ### Critical design decisions documented
 
@@ -146,15 +325,6 @@ group(1): MaterialUniforms (16-64 bytes, material-type dependent)
 group(2): Texture sampler + texture (for textured materials) OR Effects/Clipping
 group(3): Effects/Clipping (for textured materials)
 ```
-
-### Files to complete Option B (concrete task list for next session)
-
-1. Fix PrimitiveMatGridLit.wgsl struct + fragment shader (copy from GridFlat pattern)
-2. Fix texture binding conflicts — move texture bindings from group(1) to group(2) in all textured material shaders
-3. Refactor WebGPUPolylineRenderer.js (follow PrimitiveCommands pattern)
-4. Run `npx gulp build` to regenerate .js shader wrappers
-5. Visual smoke test each material type via split-screen comparison page
-6. Update migration status with final counts
 
 ---
 
@@ -186,14 +356,6 @@ group(3): Effects/Clipping (for textured materials)
 | OPEN-1 sky atmo infinite retry | `WebGPUSkyAtmosphereRenderer.js` try/catch + `_pipelineFailed` latch |
 | 3 stale EffectsUniforms structs | `PrimitiveBasicColor.wgsl`, `PrimitivePhongColor.wgsl`, `PrimitivePhongTexturedColor.wgsl` updated to 240-byte layout |
 
-### Supporting Infrastructure
-
-| Change | File |
-| --- | --- |
-| Worker feature flag replication | `WorkerSceneProtocol.js` (`MSG_SET_FEATURE_FLAGS`), `WorkerSceneHost.js` (`setFeatureFlags()` + shadow replay), `RendererWorker.js` (handler) |
-| Design doc updates | `TAA_DESIGN.md` (HDR + f16 notes), `CSM_DESIGN.md` (240-byte struct note) |
-| `CameraUniforms.wgsl` vec3→vec4 | Chunk struct promoted, byte layout unchanged |
-
 ---
 
 ## What landed in the 2026-04-09 sweep (3 nested sessions)
@@ -222,180 +384,35 @@ Three sessions back-to-back closed Phase 6 audit, Phases 1-3 of the remediation 
 | `WebGPUHiZOcclusionDispatcher` | ✅ | ✅ FR registered, OcclusionCulling.initialize() wired | [WebGPUHiZOcclusionDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts) | ViewportExecutor needs to call `dispatchGPU()` + `scheduleReadback()` (~50 LOC) |
 | `WebGPUGPUSortKeysDispatcher` | ✅ | ❌ FR registered only | [WebGPUGPUSortKeysDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts) | RenderScheduler integration: SOA buffers + sort pass + reorder commands |
 
-### Color grading shipped end-to-end
-
-- WGSL: [ColorGrading.wgsl](packages/engine/Source/Shaders/WebGPU/PostProcess/ColorGrading.wgsl)
-- Pipeline integration: [WebGPUPostProcessPipeline.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts) — `addColorGrading(device, format, config)` / `updateColorGradingUniforms(config)` / `setColorGradingScalar(idx, val)`
-- Stage order: after `Tonemap`, before `Custom stages`, before `FXAA`
-- Spec: [WebGPUColorGradingSpec.js](packages/engine/Specs/Renderer/WebGPU/WebGPUColorGradingSpec.js)
-
 ---
 
 ## Pending work — concrete next steps in priority order
 
-### 1. ViewportExecutor wiring for HiZ occlusion (~50 LOC, 0.5 day)
+### 1. Typing push completion (2-3 hours, HIGH VALUE) — NEW, Session 29
 
-**Why first:** Closes the Phase 3 occlusion path end-to-end. Everything else is built; only the per-frame consumer call is missing.
+Finish the easy 10 remaining `as unknown as` casts in group B + write `DrawCommand.d.ts` + tighten 6 ambient opaque types. See "Remaining work toward a fully well-typed codebase" section above. Expected: cast count 19 → ~5, establishes the rhythm for subsequent .d.ts batches.
+
+### 2. ViewportExecutor wiring for HiZ occlusion (~50 LOC, 0.5 day)
+
+**Why:** Closes the Phase 3 occlusion path end-to-end. Everything else is built; only the per-frame consumer call is missing.
 
 **Files:**
 - [ViewportExecutor.js:392-406](packages/engine/Source/Scene/ViewportExecutor.js#L392-L406) — current call site for `occlusionCulling.beginFrame()` + `testCommands()`
 - [OcclusionCulling.js](packages/engine/Source/Scene/OcclusionCulling.js) — has the new `dispatchGPU(encoder, depthTextureView, params)` and `scheduleReadback()` methods waiting
 
-**What to do:**
-1. After `executeCommands(scene, passState)` runs (so the depth attachment exists), call `occlusionCulling.dispatchGPU(encoder, depthView, { viewProjection, screenWidth, screenHeight, nearPlane, farPlane })`
-2. At end of frame, call `occlusionCulling.scheduleReadback()` — this is fire-and-forget; the promise updates `_soaLayout.visibility` for next frame's `testCommands()`
-3. The depth texture view comes from the WebGPU scene framebuffer — find it via `scene._sceneFramebuffer.depthTexture` or similar (check `WebGPUSceneRenderer.ts` for the canonical accessor)
-4. Verify the auto-disable logic in `OcclusionCulling.testCommands` (line 287-293) actually fires when `occlusionRate < minOcclusionBenefit`
+### 3. Visual smoke test session (1-2 hours, requires browser)
 
-**Acceptance:**
-- `scene.renderScheduler.occlusionCulling.enabled = true` causes `Scene.getDebugSnapshot().renderer.hiZOcclusion.hiZBuilds` to increment per frame
-- After ~5 frames, `occlusionDispatches` and `successfulReadbacks` should both be > 0
-- Visual: a building near the camera occluding distant terrain should reduce the visible draw count by 20%+
+**Why:** Four sessions of fixes are now waiting for in-browser confirmation. The central debug surface + perf tracker + visual regression CI are all built but never validated against a live scene.
 
-**Risk:** the depth texture view might not be in the right state (e.g., still bound as RENDER_ATTACHMENT). May need to add a transition step or use a separate `COPY_SRC` clone of the depth.
+### 4. PointCloudSort consumer integration (1 day)
 
----
+### 5. WGF-4 Camera UBO migration (~1 day)
 
-### 2. Visual smoke test session (1-2 hours, requires browser)
+**Design:** [PHASE_5_MODERN_WEBGPU_DESIGN.md](PHASE_5_MODERN_WEBGPU_DESIGN.md) — see the WGF-4 section
 
-**Why:** Three sessions of fixes are now waiting for in-browser confirmation. The central debug surface + perf tracker + visual regression CI are all built but never validated against a live scene.
+### 6. TAA implementation (~3 days) — [TAA_DESIGN.md](TAA_DESIGN.md)
 
-**What to validate:**
-1. **BUG-11 imagery probe** — `scene.debugShowImageryProbe = true`, capture the 4-tile dump, verify `texCoordsRect` / `transScale` / texture dimensions look correct
-2. **Snapshot mode FAST preset** — `scene.requestRenderMode = true; scene.snapshotMode.enabled = true; scene.snapshotMode.autoEnterIdleFrames = 120;` then `scene.beginPerformanceTrace("idle-snapshot", {frames: 600});` → wait 10s → `scene.endPerformanceTrace();` → confirm `summary.snapshotFrozenRatio > 0.5` and `summary.cpuMs.avg` drops compared to a no-snapshot baseline
-3. **Color grading** — `pipeline.addColorGrading(device, format)` then `pipeline.updateColorGradingUniforms({ saturation: 0.0 })` → scene goes grayscale; `{ temperature: 0.5 }` → scene warms; `{ contrast: 1.5 }` → scene gains contrast
-4. **Stars/skybox (BUG-1)** — verify `[WebGPU] Frustum X: ENVIRONMENT=N` console messages, then confirm starfield renders behind globe
-5. **Shadow casting** — model + terrain scene, confirm shadow on terrain. The new `p12` variant should auto-trigger for stride-12 model commands
-6. **2D / Columbus View (BUG-3)** — switch scene mode toggle, confirm flat/columbus projections render
-
-**Documentation outputs:**
-- Update `WEBGPU_MIGRATION_BACKLOG.md` "Visual Verification Backlog" with pass/fail per item
-- Capture any new bugs into `WEBGPU_DEBUGGING_LOG.md`
-
-**Tools at your disposal:**
-- `Scene.logDebugSnapshot()` for one-shot diagnostic dumps
-- `scene.performanceTracker.toCSV()` for perf data export
-- `Tools/visual-regression/capture-and-diff.mjs` for cross-backend pixel diffing
-- The MCP playwright tools (browser_navigate / browser_evaluate / browser_take_screenshot) if you want me to drive the browser
-
----
-
-### 3. PointCloudSort consumer integration (1 day)
-
-**Why:** Smallest remaining Phase 3 item. The dispatcher is built and spec'd; only a one-line consumer swap is left.
-
-**Files:**
-- [WasmPointCloudBridge.js:279](packages/engine/Source/Scene/WasmPointCloudBridge.js#L279) — current `sortByDistance` JS fallback
-- [WebGPUPointCloudSortDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts) — built dispatcher
-
-**What to do:**
-1. Add a `getOrCreateSortDispatcher()` getter to `WebGPUContext` that lazily instantiates the dispatcher (matches the bundle manager pattern)
-2. In `WasmPointCloudBridge.sortByDistance()`, branch on `context.performanceManager.shouldUseGPUPointCloud(count)` → `dispatcher.sort(encoder, distSq, count)` else fall through to existing JS path
-3. The trick: the JS path returns sorted indices to the CPU side, but the GPU dispatcher leaves them on the GPU. **Decision needed:** for the integration to be useful, the consumer must already be GPU-side (feeding into a draw indirect). If not, we're paying readback cost. **Recommendation:** wire the dispatcher but gate on a `useGPUSort` flag that defaults to false; flip on only when a real GPU-side consumer exists
-
-**Acceptance:**
-- `scene.getDebugSnapshot().renderer.pointCloudSort.sortsDispatched > 0` when a point cloud is visible AND `useGPUSort = true`
-
----
-
-### 4. WGF-4 Camera UBO migration (~1 day, biggest Phase 5 win)
-
-**Why:** Standard layout UBOs save ~20% memory + reduce per-frame `queue.writeBuffer` cost. Camera UBO is the biggest single UBO.
-
-**Design:** [PHASE_5_MODERN_WEBGPU_DESIGN.md](migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md) — see the WGF-4 section
-
-**Files:**
-- `packages/engine/Source/Renderer/WebGPU/WebGPUCameraUniforms.ts` (or wherever the camera UBO struct lives — check via grep)
-- `packages/engine/Source/Shaders/WebGPU/chunks/csm_camera*.wgsl` — receive-side struct definitions
-
-**What to do:**
-1. Audit the camera UBO struct in WGSL — count the explicit `_pad0` / `_pad1` fields
-2. Drop them from the struct
-3. Update the JS packer to skip the corresponding offsets (no zero writes to gone fields)
-4. Add a debug-build runtime assertion: `assert(packer.lastWrittenOffset === expectedSize)` to catch off-by-one
-5. Verify `device.limits.minUniformBufferOffsetAlignment` (typically 256) — round up the new struct size if necessary
-6. Run `npx tsc --noEmit` + visual smoke test
-
-**Risk:** silent off-by-one — a JS packer that still writes to the old offset scribbles into the next field. The runtime assertion is the mitigation. **Always test the visual output after each UBO migration; don't batch.**
-
-**Acceptance:**
-- Camera UBO size shrinks by N bytes (record the N in the commit message)
-- Visual diff against baseline scene shows zero pixel difference
-
----
-
-### 5. TAA implementation (~3 days)
-
-**Design:** [TAA_DESIGN.md](migration_doc/TAA_DESIGN.md) — fully concrete, ready to execute
-
-**Files to add:**
-- `Source/Shaders/WebGPU/PostProcess/TAA.wgsl` — full-screen fragment pass
-- `Source/Renderer/WebGPU/WebGPUTAAEffect.ts` — `PostProcessEffect` implementation
-
-**4-step plan from the design doc:**
-1. Plumbing pass (~0.5 day) — add `previousViewProjection` to `UniformState`, jitter offset in `Camera.update()`, `Scene.taaEnabled` toggle
-2. Motion vector texture (~1 day) — RG16F render target, MRT slot in GLOBE/PRIMITIVE pipelines
-3. TAA shader + dispatcher (~1 day) — write `TAA.wgsl` (history sample + reprojection + neighborhood clamp + blend), `WebGPUTAAEffect` implementing `PostProcessEffect`, wire into `WebGPUPostProcessPipeline.execute()` after ColorGrading
-4. Spec coverage + status doc (~0.5 day) — Halton sequence helper specs, reprojection math specs, migration status entry
-
-**Critical risks (from the design doc):**
-- Quantized terrain motion vectors blocked on `SHADOW-LAYOUT-QUANTIZED` — fall back to FXAA on quantized tiles
-- Snapshot mode interaction — must zero the jitter offset when `scene.snapshotMode.isFrozen === true`
-- MSAA incompatibility — TAA disables MSAA when active
-
----
-
-### 6. CSM implementation (~4 days)
-
-**Design:** [CSM_DESIGN.md](migration_doc/CSM_DESIGN.md) — fully concrete, ready to execute
-
-**Files to add:**
-- `Source/Shaders/WebGPU/Shadow/ShadowCastCSM.wgsl` — replacement for current cast shader, parameterized over cascade index
-- `Source/Shaders/WebGPU/Shadow/ShadowReceiveCSM.wgsl` — fragment-side cascade selection chunk
-- `Source/Renderer/WebGPU/WebGPUCSMRenderer.ts` — cascade-aware shadow renderer
-
-**5-step plan from the design doc:**
-1. CSM data structures + Scene API (~0.5 day) — `CascadedShadowMap` class, `Scene.useCascadedShadowMaps` toggle
-2. Cast pipeline reuse (~0.5 day) — existing `WebGPUShadowMapRenderer` per-layout cache stays; loop over 4 cascades with different VP UBOs
-3. Cast pass infrastructure (~1 day) — texture array, frustum-fitting math, texel snap stabilization
-4. Receive-side cascade selection (~1.5 days) — `selectCascade` / `sampleCascade` / `blendCascade` chunk, terrain + primitive shader updates
-5. Spec coverage + status doc (~0.5 day)
-
-**Critical risks (from the design doc):**
-- Texel snap precision under RTE 64-bit — do the snap in eye-space, not raw world space
-- Memory cost (4 × 2048² × depth32float = 64 MB) — expose `Scene.cascadeShadowMapResolution` tunable
-- Snapshot mode interaction — `WebGPUCSMRenderer` registers as a freezable
-
----
-
-### 7. Phase 5 remaining WGFs (after WGF-4)
-
-In design-doc priority order ([PHASE_5_MODERN_WEBGPU_DESIGN.md](migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md)):
-
-1. **WGF-1 `clip-distances`** — 1-2 days, small contained shader-only change
-2. **WGF-3 `shader-f16` for color grading + bloom + tonemap + FXAA** — 2-3 days, requires shader variant per-feature
-3. **WGF-2 `dual-source-blending`** — 2-3 days, only if a translucent-heavy scene shows up
-4. **WGF-5 `multi-draw-indirect`** — 3-4 days, only if a point cloud / batched scene shows up
-
-The first two (~3-5 days total) are high-leverage and low-risk. The remaining are scene-dependent.
-
----
-
-### 8. Lower-priority follow-ups (still in the backlog)
-
-From [WEBGPU_MIGRATION_BACKLOG.md](migration_doc/WEBGPU_MIGRATION_BACKLOG.md):
-
-- **NEW-9** — file an upstream PR against `CesiumGS/quantized-mesh` to formally reserve extension ID `0x05` before water Phase 1 ships
-- **SHADOW-LAYOUT-QUANTIZED** — quantized terrain stride-8/12 cast variants (2-3 days, blocked on a real consumer)
-- **Render bundle env-pass executor full integration** — collect bundles from a frustum's command list and submit a single `executeBundles([...])` per pass (~1 day)
-- **Producer-format adapter real-data validation** — Phase 0.5 carry-over (half session)
-- **C4/C12 wording fixes** in `WATER_RENDERING_DESIGN.md` (30 minutes)
-- **FORK-19b** — broader spec coverage expansion (4-6 days, can be done incrementally)
-- **HiZ + OcclusionTest activation** — done (the dispatcher ships); the ViewportExecutor wiring is item #1 above
-- **GPUSortKeys consumer integration in RenderScheduler** — ~400-500 LOC, only matters at >50K commands per frame
-- **ES6 modernization** — ~400-600 hours total under the 10-line touch rule
-- **Console noise reduction** — route `console.warn/error` through `context.log()`
-- **Test page consolidation** — FORK-20/21/22
+### 7. CSM implementation (~4 days) — [CSM_DESIGN.md](CSM_DESIGN.md)
 
 ---
 
@@ -406,69 +423,15 @@ From [WEBGPU_MIGRATION_BACKLOG.md](migration_doc/WEBGPU_MIGRATION_BACKLOG.md):
 - **Monorepo file placement**: edit `packages/engine/Source/`, never the root `Source/` build output.
 - **No JSDoc bloat**: don't add new JSDoc that wasn't there before; preserve existing JSDoc when modernizing.
 - **No backwards-compat hacks**: rename/remove cleanly. Don't leave `// removed` comments or unused `_var` shims.
+- **No `any` ban** (added Session 28): Use `unknown`, specific interfaces, union types, or generics instead.
+- **Co-located `.d.ts` pattern** (established Session 29): See "Architectural patterns established this session" above.
 
 ## Testing reminders
 
-- `npx tsc --noEmit` after every meaningful change. Currently clean.
+- `npx tsc --project packages/engine/tsconfig.json --noEmit` after every meaningful change. Currently clean.
 - Pure-CPU specs land in `packages/engine/Specs/` and run via `gulp test`. They follow the same backend-neutral discipline as the source.
 - Tests that need a real `GPUDevice` go in `Specs/Renderer/WebGPU/` and run in the browser via the karma harness.
-- The visual regression workflow at `.github/workflows/visual-regression.yml` is **manual trigger only** (workflow_dispatch) because GitHub-hosted Linux runners don't ship a WebGPU adapter. Promote to `pull_request` once a self-hosted runner is available.
-
----
-
-## Modified file inventory (75 files, all uncommitted)
-
-The bulk are from this 2026-04-09 sweep across three sessions. **Decision needed before next session**: commit/squash now (clean working tree) vs continue and squash later.
-
-**New files (10 from the most recent session):**
-
-```
-.github/workflows/visual-regression.yml
-migration_doc/CSM_DESIGN.md
-migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md
-migration_doc/SESSION_2026-04-08_RESEARCH_REPORT.md
-migration_doc/SNAPSHOT_MODE_SPIKE_2026-04-09.md
-migration_doc/TAA_DESIGN.md
-migration_doc/NEXT_SESSION_HANDOFF.md   (this file)
-packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts
-packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts
-packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts
-packages/engine/Source/Services/PerformanceTracker.js
-packages/engine/Source/Shaders/WebGPU/PostProcess/ColorGrading.wgsl
-```
-
-**Earlier-session new files (already in working tree):**
-
-```
-packages/engine/Source/Scene/AtmosphericConditions.js
-packages/engine/Source/Scene/Cesium3DTilesInvalidationFeed.js
-packages/engine/Source/Scene/Cesium3DTilesInvalidationFeedAdapter.js
-packages/engine/Source/Scene/GlobeWater.js
-packages/engine/Source/Scene/MoonLight.js
-packages/engine/Source/Scene/ProducerListenerAdapter.js
-packages/engine/Source/Scene/TilePathEncoding.js
-packages/engine/Source/Scene/TilePathResolver.js
-packages/engine/Source/Services/  (SnapshotModeService.js, VisualPerformanceTargetService.js)
-packages/engine/Source/ThirdParty/Workers/cesium_wasm.{d.ts,js}
-packages/engine/Source/ThirdParty/Workers/cesium_wasm_bg.wasm
-packages/engine/Specs/Data/  (3D Tiles invalidation feed fixtures)
-```
-
-**Specs added this session:**
-
-```
-packages/engine/Specs/Renderer/WebGPU/WebGPUColorGradingSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPUGPUSortKeysDispatcherSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPUHiZOcclusionDispatcherSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPUMoonSnapshotSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPUPointCloudSortDispatcherSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPURenderBundleManagerStatsSpec.js
-packages/engine/Specs/Renderer/WebGPU/WebGPUVolumetricFogSnapshotSpec.js
-packages/engine/Specs/Scene/SceneSnapshotWiringSpec.js
-packages/engine/Specs/Services/PerformanceTrackerSpec.js
-packages/engine/Specs/Services/SnapshotModeServiceSpec.js
-packages/engine/Specs/Services/VisualPerformanceTargetServiceSpec.js
-```
+- The visual regression workflow at `.github/workflows/visual-regression.yml` is **manual trigger only** (workflow_dispatch) because GitHub-hosted Linux runners don't ship a WebGPU adapter.
 
 ---
 
@@ -476,81 +439,40 @@ packages/engine/Specs/Services/VisualPerformanceTargetServiceSpec.js
 
 ```
 1. Read this file (NEXT_SESSION_HANDOFF.md) — full picture.
-2. Read the relevant design doc for the chosen task:
+2. If picking up the typing work, read "Remaining work toward a fully well-typed codebase" section above — it's the complete backlog.
+3. If picking up visual work, read the relevant design doc:
    - HiZ wiring     → use the existing dispatcher entry points
    - Visual smoke   → use Scene.logDebugSnapshot() + performanceTracker
    - WGF-4 Camera   → PHASE_5_MODERN_WEBGPU_DESIGN.md §WGF-4
    - TAA            → TAA_DESIGN.md
    - CSM            → CSM_DESIGN.md
-3. `npx tsc --noEmit` baseline (should be clean — exit=0).
-4. Use TodoWrite to track the chosen task's sub-steps.
-5. After every meaningful change: `npx tsc --noEmit`.
-6. Update WEBGPU_MIGRATION_STATUS.md when the task lands.
+4. `npx tsc --project packages/engine/tsconfig.json --noEmit` baseline (should be clean — exit=0).
+5. Use TodoWrite to track the chosen task's sub-steps.
+6. After every meaningful change: `npx tsc --noEmit`.
+7. Update WEBGPU_MIGRATION_STATUS.md when the task lands.
 ```
-
-## Quick recipe: how to test this session's work in a browser
-
-```js
-// In dev tools console after loading a scene:
-
-// 1. Snapshot the current state
-viewer.scene.logDebugSnapshot();
-
-// 2. Test snapshot mode FAST preset
-viewer.scene.requestRenderMode = true;
-viewer.scene.snapshotMode.enabled = true;
-viewer.scene.snapshotMode.autoEnterIdleFrames = 120;
-// ... wait 2 seconds ...
-viewer.scene.logDebugSnapshot();
-// Expect: snapshotMode.isFrozen = true, renderer.bundleManager.frozen = true,
-//         renderer.volumetricFog.updatesSkippedFrozen rising every frame
-
-// 3. Test color grading
-const fr = viewer.scene.context.getFeatureRenderer(/*POST_PROCESS*/);
-// (not yet a feature renderer — call directly via WebGPUSceneRenderer's pipeline)
-// Or use Scene.colorGrading getter once that's wired
-
-// 4. Capture a perf trace
-viewer.scene.beginPerformanceTrace("smoke-test", { frames: 300 });
-// ... 5 seconds of orbit ...
-const result = viewer.scene.endPerformanceTrace();
-console.log(viewer.scene.performanceTracker.toCSV(result));
-// Copy CSV → spreadsheet for diffing later
-
-// 5. BUG-11 imagery probe
-viewer.scene.debugShowImageryProbe = true;
-// Console will dump 4 tile updates with full payload
-```
-
----
 
 ## Files referenced by this handoff
 
 **Design docs (read these before starting their tasks):**
-- [TAA_DESIGN.md](migration_doc/TAA_DESIGN.md)
-- [CSM_DESIGN.md](migration_doc/CSM_DESIGN.md)
-- [PHASE_5_MODERN_WEBGPU_DESIGN.md](migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md)
+- [TAA_DESIGN.md](TAA_DESIGN.md)
+- [CSM_DESIGN.md](CSM_DESIGN.md)
+- [PHASE_5_MODERN_WEBGPU_DESIGN.md](PHASE_5_MODERN_WEBGPU_DESIGN.md)
 
 **Status docs:**
-- [WEBGPU_MIGRATION_STATUS.md](migration_doc/WEBGPU_MIGRATION_STATUS.md) — full session-by-session history
-- [WEBGPU_MIGRATION_BACKLOG.md](migration_doc/WEBGPU_MIGRATION_BACKLOG.md) — remaining work
+- [WEBGPU_MIGRATION_STATUS.md](WEBGPU_MIGRATION_STATUS.md) — full session-by-session history
+- [WEBGPU_MIGRATION_BACKLOG.md](WEBGPU_MIGRATION_BACKLOG.md) — remaining work
+- [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md) — bug tracking; see "Session 29" for today's typing discoveries
 
 **Project rules:**
-- [CLAUDE.md](CLAUDE.md) — backend agnosticism, RTE precision, file placement, ES6 modernization rule
+- [../CLAUDE.md](../CLAUDE.md) — backend agnosticism, RTE precision, file placement, ES6 modernization, `any` ban, co-located `.d.ts` pattern
 
-**Key code surfaces (for the central debug API):**
-- [Scene.js getDebugSnapshot()](packages/engine/Source/Scene/Scene.js)
-- [PerformanceTracker.js](packages/engine/Source/Services/PerformanceTracker.js)
-- [WebGPUContext.ts getRendererStatistics()](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts)
-- [SnapshotModeService.js](packages/engine/Source/Services/SnapshotModeService.js)
-- [VisualPerformanceTargetService.js](packages/engine/Source/Services/VisualPerformanceTargetService.js)
+**Co-located `.d.ts` files (13 new from Session 29):**
+- Core: [Matrix4.d.ts](../packages/engine/Source/Core/Matrix4.d.ts), [Cartesian3.d.ts](../packages/engine/Source/Core/Cartesian3.d.ts), [Color.d.ts](../packages/engine/Source/Core/Color.d.ts), [EncodedCartesian3.d.ts](../packages/engine/Source/Core/EncodedCartesian3.d.ts), [BoundingRectangle.d.ts](../packages/engine/Source/Core/BoundingRectangle.d.ts)
+- Renderer: [UniformState.d.ts](../packages/engine/Source/Renderer/UniformState.d.ts), [PassState.d.ts](../packages/engine/Source/Renderer/PassState.d.ts), [ShaderCache.d.ts](../packages/engine/Source/Renderer/ShaderCache.d.ts), [PickId.d.ts](../packages/engine/Source/Renderer/PickId.d.ts), [Context.d.ts](../packages/engine/Source/Renderer/Context.d.ts), [Texture.d.ts](../packages/engine/Source/Renderer/Texture.d.ts), [CubeMap.d.ts](../packages/engine/Source/Renderer/CubeMap.d.ts)
+- Scene: [FrameState.d.ts](../packages/engine/Source/Scene/FrameState.d.ts)
 
 **Built-but-unwired dispatchers:**
-- [WebGPUHiZOcclusionDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts)
-- [WebGPUGPUSortKeysDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts)
-- [WebGPUPointCloudSortDispatcher.ts](packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts)
-
-**Consumer wiring sites:**
-- [OcclusionCulling.js](packages/engine/Source/Scene/OcclusionCulling.js) — has new `dispatchGPU()` + `scheduleReadback()` waiting for ViewportExecutor calls
-- [ViewportExecutor.js:392-406](packages/engine/Source/Scene/ViewportExecutor.js#L392-L406) — needs ~50 LOC to call them
-- [WasmPointCloudBridge.js:279](packages/engine/Source/Scene/WasmPointCloudBridge.js#L279) — needs the GPU sort branch
+- [WebGPUHiZOcclusionDispatcher.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts)
+- [WebGPUGPUSortKeysDispatcher.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts)
+- [WebGPUPointCloudSortDispatcher.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts)

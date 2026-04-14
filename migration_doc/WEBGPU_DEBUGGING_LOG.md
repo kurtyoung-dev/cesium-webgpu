@@ -24,6 +24,92 @@
 
 ---
 
+## Session 29 — Typing Push Discoveries (2026-04-14)
+
+Not bugs in the traditional sense — three latent correctness/design drifts surfaced while adding co-located `.d.ts` files to drop `as unknown as` boundary casts. Each was hiding behind a cast; dropping the cast made TypeScript enforce reality.
+
+### TYPE-29-1: `CesiumMatrix4` ambient type was a lie (Float64Array intersection)
+
+**Symptom:** Every Matrix4 value crossing JS↔TS needed `as unknown as CesiumMatrix4` to compile.
+
+**Root cause:** `cesium-js-types.d.ts` declared:
+
+```ts
+type CesiumMatrix4 = Float64Array & { length: 16; 0: number; ... 15: number; clone(); ... };
+```
+
+This claimed `Matrix4` instances are `Float64Array` subclasses. They are not — `Matrix4` is a plain ES6 class with numeric-indexed own properties (`this[0] = ...`, etc.). The intersection required `Matrix4` instances to have `BYTES_PER_ELEMENT`, `buffer`, `byteLength`, and ~26 other Float64Array members they don't have, forcing casts at every boundary.
+
+**Fix:** Changed `CesiumMatrix4` to a structural interface (no Float64Array intersection). Matrix4 now assigns to CesiumMatrix4-typed parameters directly.
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts` (lines 113-135 before fix).
+
+**Latent bug concern:** None at runtime — the type lie was entirely compile-time. But `Float64Array.pack()` / `unpack()` call sites that expected real TypedArray methods would have failed if anyone had ever used them, which is why nobody did.
+
+### TYPE-29-2: `isDestroyed` getter/method drift (latent TypeError)
+
+**Symptom:** `GraphicsContext` declared `abstract get isDestroyed(): boolean`; `WebGPUContext` implemented as a getter too. Meanwhile, every upstream CesiumJS `isDestroyed()` call site uses method form (`obj.isDestroyed()`).
+
+**Root cause:** [destroyObject.js:49](packages/engine/Source/Core/destroyObject.js#L49) implements the standard destroy pattern:
+
+```js
+object.isDestroyed = returnTrue;  // overwrite the property with a function
+```
+
+This is how CesiumJS turns a destroyed object into "it will answer `true` to `isDestroyed()`". **A getter cannot be overwritten this way without a TypeError at the assignment site** — the property-descriptor is `{ get, set, configurable: false }` by default.
+
+**Why it hadn't crashed:** No code routes `WebGPUContext` or `GraphicsContext` through `destroyObject()`. The pattern is used on many other classes (Buffer, VertexArray, ShaderProgram, Scene, etc.) which all use method form. The mismatch on the context hierarchy was latent.
+
+**Fix:**
+
+- `GraphicsContext.isDestroyed` declared as abstract **method**: `abstract isDestroyed(): boolean;`
+- `WebGPUContext.isDestroyed` converted from getter → method.
+- One call site in `WebGPUBuffer.ts` updated: `if (source.isDestroyed)` → `if (source.isDestroyed())`. (Note: WebGPUBuffer itself still has `get isDestroyed()` getter form — that's fine because WebGPUBuffer isn't passed through `destroyObject()`; each WebGPU class may keep its own form.)
+
+**Files:**
+
+- `packages/engine/Source/Renderer/GraphicsContext.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUBuffer.ts`
+
+### TYPE-29-3: `@private` JSDoc ≠ TypeScript `private` — cross-module visibility clash
+
+**Symptom:** Removing the cast `new Context(canvas, options) as unknown as GraphicsContext` at [ContextFactory.ts:152](packages/engine/Source/Renderer/ContextFactory.ts#L152) produced:
+
+```text
+TS2322: Type 'Context' is not assignable to type 'GraphicsContext'.
+  Property 'readPixels' is private in type 'Context' but not in type 'GraphicsContext'.
+```
+
+**Root cause:** CesiumJS's JSDoc convention uses `@private` to mean "not part of the published API surface" — a **documentation marker** interpreted by API-extractor tools to keep methods out of generated `.d.ts` / reference docs. It predates TypeScript tooling integration.
+
+TypeScript, however, treats `@private` on JS members as TS-class-private (class-scoped visibility). Combined with:
+
+- `GraphicsContext` (TS) declares `abstract readPixels(...): unknown` — **public** (TS default).
+- `Context.js` (JS) has `/** @private */ readPixels(readState) { ... }` — **TS reads this as private**.
+
+TypeScript's visibility-compatibility rule says a subclass cannot make an inherited public method more restrictive. So `Context extends GraphicsContext` structurally fails. The cast was hiding this every time.
+
+But `readPixels` is called cross-module from `Scene/PickFramebuffer.js`, `Scene/PickDepth.js`, `Scene/DynamicEnvironmentMapManager.js`, and several specs. The `@private` tag is semantically wrong; the method is engine-internal but module-public.
+
+**Fix (tactical):** `Context.d.ts` declares `readPixels` and `readPixelsToPBO` as `public`, overriding the JSDoc-derived visibility. Cast at ContextFactory boundary retired.
+
+**Fix (strategic, backlog TS-DEBT-8):** Replace `@private` → `@internal` across JS methods called cross-module. `@internal` is the correct JSDoc tag for "engine-internal but cross-module" — API-extractor still strips it from published `.d.ts`, AND TypeScript doesn't interpret it as class-private. Once the sweep lands, several `.d.ts` files (`Context.d.ts`, `Texture.d.ts`, `CubeMap.d.ts` where they exist purely to override `@private`) become redundant.
+
+**Files:** `packages/engine/Source/Renderer/Context.d.ts` (new); `packages/engine/Source/Renderer/Context.js` (future: `@private` → `@internal`).
+
+### Lesson for future sessions
+
+When a cast exists at a JS↔TS boundary, **ask why before removing it**. The cast often documents a real design issue:
+
+- A lie in the ambient type (Matrix4).
+- A runtime-vs-declaration protocol drift (isDestroyed).
+- A semantic mismatch between JSDoc convention and TS interpretation (`@private`).
+
+Simply deleting the cast without fixing the underlying issue either (a) triggers a new TS error that a different cast then papers over, or (b) leaves a latent runtime bug unaddressed. See also `memory/feedback_interface_pruning.md` for a related failure mode — interfaces with WIP-module method slots should NOT be trimmed just because current implementation doesn't satisfy them.
+
+---
+
 ## Session 27b — Material UBO Split (2026-04-12)
 
 ### MATERIAL-UBO-SPLIT: 49 WGSL shaders split to camera + material bind groups

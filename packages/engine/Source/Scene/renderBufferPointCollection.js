@@ -111,14 +111,15 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
       }
 
       if (collection._allowPicking && point._pickId === 0) {
-        const pickId = context.createPickId({
+        const pickIdOwner = {
           collection,
           index: i,
           get primitive() {
             // Cannot reuse primitives; scene.drillPick() appends to a list.
             return collection.get(this.index, new BufferPoint());
           },
-        });
+        };
+        const pickId = context.createPickId(pickIdOwner);
         point._pickId = pickId.key;
         pickIds.push(pickId);
       }

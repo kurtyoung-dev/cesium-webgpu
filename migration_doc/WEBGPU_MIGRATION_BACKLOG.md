@@ -1,9 +1,48 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 13, 2026 (Session 28: Option B completion + TypeScript clean build)
+**Last Updated:** April 14, 2026 (Session 29: Typing push — co-located .d.ts + cast cleanup)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
 
 > **For architecture, completed work, bug fix history, current state, and the Phase 0 / Phase 1 / Renderer Threading / Phase 5 progress sections, see `WEBGPU_MIGRATION_STATUS.md`.**
+
+---
+
+## 2026-04-14 — Session 29 follow-ups (typing)
+
+Session 29 added 13 co-located `.d.ts` files for JS classes that cross into WebGPU TS code, dropping `as unknown as` in `Renderer/` from 57 to 19 (-67%). The 19 survivors are a mix of legitimate escape hatches and easy remaining targets.
+
+> **For the authoritative typing backlog (categorized by effort × payoff), see `NEXT_SESSION_HANDOFF.md` § "Remaining work toward a fully well-typed codebase".** The items below are the summary entries with stable IDs for cross-referencing.
+
+### Completed (moved to WEBGPU_MIGRATION_STATUS.md)
+
+- ~~TS-DEBT-4 partial resolution~~ — `as unknown as` casts dropped from 57 to 19 (Session 29 typing push)
+- ~~Sidecar cache types~~ — `_ssrCache`, `_cloudCache`, `_weatherCache`, `_webgpuCache` now typed via `import()` references
+- ~~`CesiumMatrix4` Float64Array lie~~ — replaced with structural interface
+- ~~`isDestroyed` getter/method drift~~ — GraphicsContext abstract + WebGPUContext both converted to method form (matches upstream `destroyObject.js`)
+
+### New follow-ups
+
+- **TS-DEBT-5** — **Remaining 10 low-effort `as unknown as` casts**. Narrow `CesiumReadState.framebuffer` union (3 casts in WebGPUContext.ts), add `getFrameTimings?()` to PerformanceManager (1 cast), type `TypedArrayConstructor` union in `SharedResourcePool.ts` (2 casts), use `in` type guard in `loadCubeMapWebGPU.ts` (1 cast), write `ComponentDatatype.d.ts` (1 cast), type the WebGL stub escape hatches (3 casts). Effort: **~2-3 hours**, drops cast count from 19 → ~5.
+- **TS-DEBT-6** — **Co-located `.d.ts` for high-value JS classes**: `DrawCommand`, `BoundingSphere`, `Ellipsoid`, `RenderState`, `ShaderProgram`, `VertexArray`, `Buffer`, `ContextLimits`, `ComponentDatatype`, `IndexDatatype`, `Sampler`. Highest payoff is `DrawCommand.d.ts` — unlocks tightening of `CesiumAnyDrawCommand` back to strict `CesiumBoundingSphere` for `boundingVolume`. Effort: **~4-6 hours across all ten**.
+- **TS-DEBT-7** — **Tighten ambient opaque types** in `cesium-js-types.d.ts`: `CesiumOpaqueFramebuffer` → `Framebuffer`, `CesiumOpaqueVertexArray` → `VertexArray`, `CesiumOpaqueShaderProgram` → `ShaderProgram`, `CesiumOpaqueShaderSource` → `ShaderSource`, `CesiumOpaqueRenderState` → `RenderState`. Each depends on TS-DEBT-6 landing the underlying `.d.ts`. Effort: **~15 min per tightening once the .d.ts exists**.
+- **TS-DEBT-8** — **Upstream `@private` → `@internal` sweep on cross-module JS methods**. CesiumJS uses `@private` to mean "not in the published API" — semantically TS-`@internal`. TypeScript correctly enforces `@private` as class-scoped, which currently requires co-located `.d.ts` overrides (`Context.d.ts` readPixels/readPixelsToPBO is the exemplar). A `@private` → `@internal` sweep makes several new `.d.ts` files redundant. Effort: **~2-3 hours for Renderer/, ~1 day for full engine**. Risk: zero runtime behavior change; purely doc-surface + TS-visibility.
+- **TS-DEBT-9** — **`Record<string, unknown>` cleanup (11 remaining)**. Biggest wins: `GraphicsContext.cache` → branded per-subsystem interface; `createTexture/createBuffer` options → concrete types; `getRendererStatistics()` return → typed interface matching what WebGPUContext actually returns. Excludes legitimate cases (worker message payloads, WebGL stub dead-code). Effort: **~2 hours**.
+- **TS-DEBT-10** — **`: unknown` parameter/return triage (~100 in Renderer/)**. Case-by-case. Many are genuinely heterogeneous (`DrawCommand.owner: unknown`), others are laziness. Suggested approach: triage per-file during other work (CLAUDE.md 10-line rule).
+- **TS-DEBT-11** — **Re-tighten `CesiumAnyDrawCommand.boundingVolume`** to strict `CesiumBoundingSphere` once TS-DEBT-6 lands `DrawCommand.d.ts`. The current optional-fields shape was a workaround for JS-sourced DrawCommand instances inferring `{}`. Effort: **5 min after DrawCommand.d.ts exists**.
+
+### Updates to existing backlog items
+
+- **TS-DEBT-1** (WebGPUContext public underscore fields) — still open; unchanged.
+- **TS-DEBT-2** (`getGPUBuffer()` helper) — still open; unchanged.
+- **TS-DEBT-3** (`: any` annotations, 268 sites) — still open; Session 29 did not touch `: any`, only `unknown`. Next pass candidate.
+- **TS-DEBT-4** (`as any` casts, 33 sites) — still open; Session 29 focused on `as unknown as` rather than `as any`. These are separate but related; same incremental approach applies.
+
+### Session 29 architectural patterns (propagate when writing new TS)
+
+- **Co-located `.d.ts`** — Preferred pattern when a TS file needs to interop with an untyped JS class. TypeScript's `allowJs: true, checkJs: false` means a sibling `.d.ts` overrides JS inference without tsconfig changes.
+- **Interface merging for ambient interop** — For classes that match an existing ambient interface (`FrameState` ↔ `CesiumFrameState`), use `declare class X {} interface X extends AmbientShape {}` — single source of truth.
+- **`@private` is a lie on cross-module JS methods** — if the method is called from outside the class, declare it `public` in the `.d.ts`. Long-term: convert JSDoc to `@internal`.
+- **Sidecar caches typed via `import()` references** — each effect module exports its cache interface; `cesium-js-types.d.ts` references it via `import("./path").TypeName` rather than `unknown`.
 
 ---
 

@@ -22,7 +22,7 @@ import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClo
 const CLOUD_UNIFORM_FLOATS = 64; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 
-interface CloudCache {
+export interface CloudCache {
   pipeline: GPURenderPipeline | null;
   uniformBuffer: GPUBuffer | null;
   bindGroupLayout: GPUBindGroupLayout | null;
@@ -40,9 +40,9 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       sampler: null,
       uniformData: new Float32Array(CLOUD_UNIFORM_FLOATS),
       initialized: false,
-    } as CloudCache;
+    };
   }
-  return context._cloudCache as CloudCache;
+  return context._cloudCache;
 }
 
 function initializeCloudPipeline(
@@ -240,7 +240,7 @@ export function executeProceduralClouds(
 export function destroyProceduralCloudResources(
   context: CesiumGraphicsContext,
 ): void {
-  const cache = context._cloudCache as CloudCache | undefined;
+  const cache = context._cloudCache;
   if (cache) {
     cache.uniformBuffer?.destroy();
     cache.pipeline = null;

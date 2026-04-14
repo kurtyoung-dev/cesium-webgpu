@@ -30,7 +30,7 @@ const WEATHER_PARAMS_FLOATS = 24; // matches WeatherParams struct
 const WEATHER_PARAMS_BYTES = WEATHER_PARAMS_FLOATS * 4;
 const RENDER_UNIFORM_SIZE = 128; // CameraUniforms for render pass
 
-interface WeatherCache {
+export interface WeatherCache {
   resetPipeline: GPUComputePipeline | null;
   updatePipeline: GPUComputePipeline | null;
   emitPipeline: GPUComputePipeline | null;
@@ -78,9 +78,9 @@ function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
       renderUniformBuffer: null,
       renderUniformData: new Float32Array(RENDER_UNIFORM_SIZE / 4),
       renderInitialized: false,
-    } as WeatherCache;
+    };
   }
-  return context._weatherCache as WeatherCache;
+  return context._weatherCache;
 }
 
 function initializeWeatherPipelines(
@@ -310,12 +310,12 @@ export function updateWeatherParticles(
 export function getWeatherParticleBuffer(
   context: CesiumGraphicsContext,
 ): GPUBuffer | null {
-  const cache = context._weatherCache as WeatherCache | undefined;
+  const cache = context._weatherCache;
   return cache?.particleBuffer ?? null;
 }
 
 export function getWeatherMaxParticles(context: CesiumGraphicsContext): number {
-  const cache = context._weatherCache as WeatherCache | undefined;
+  const cache = context._weatherCache;
   return cache?.maxParticles ?? 0;
 }
 
@@ -418,7 +418,7 @@ export function renderWeatherParticles(
   renderPassEncoder: GPURenderPassEncoder,
 ): void {
   const device: GPUDevice | undefined = context._device;
-  const cache = context._weatherCache as WeatherCache | undefined;
+  const cache = context._weatherCache;
   if (!device || !cache?.initialized || !cache.particleBuffer) return;
   if (!weatherConfig?.enabled) return;
 
@@ -500,7 +500,7 @@ export function renderWeatherParticles(
 }
 
 export function destroyWeatherResources(context: CesiumGraphicsContext): void {
-  const cache = context._weatherCache as WeatherCache | undefined;
+  const cache = context._weatherCache;
   if (cache) {
     cache.particleBuffer?.destroy();
     cache.counterBuffer?.destroy();
