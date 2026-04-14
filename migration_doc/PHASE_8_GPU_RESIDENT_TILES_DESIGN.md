@@ -112,6 +112,172 @@ Depends on shader-variant strategy being decided:
 
 ---
 
+## 3.5 The DOD Storage Layer — what Phase 8b actually is
+
+The six items listed in Phase 8b's "GPU-resident stack" (MegaBuffer, Resident Drawer, sharedSourceBuffer, dynamic-offset UBO, WGSL styling compiler, property-texture audit) are not independent features. **Assembled, they are a single data-oriented storage layer for 3D Tiles with Cesium API facades on top.** Treating them as six isolated items under-counts the compounding benefit and over-counts the per-item effort (much of the plumbing is shared).
+
+This section clarifies the architecture and explains why the earlier Phase 7 rejection of NullGraph's "zero scene graph" DOD was at the wrong layer.
+
+### 3.5.A Why 3D Tiles is unusually favorable to DOD
+
+Most game engines that adopt DOD (Unity Resident Drawer, Unreal Nanite) pay a complexity cost because game entities mutate arbitrarily per frame. 3D Tiles doesn't. Five properties make 3D Tiles *structurally* more favorable to DOD than most scenes:
+
+1. **Stable spatial keys.** Every tile has a deterministic octree ID (`level/x/y/z`). Natural SoA index; siblings in memory are siblings in space.
+2. **Rare mutation.** Geometry doesn't change per frame once loaded. The scene-graph walk is pure read.
+3. **Fixed schema per tile.** Bounding sphere, LOD error, transform, material ref, content ref. Columnar storage is natural.
+4. **Hot/cold property split.** SSE distance changes per frame; geometric error doesn't. Textbook layout opportunity.
+5. **Explicit streaming lifecycle.** Load / evict events are known write points. No mid-frame mutation.
+
+Games get none of these five reliably. 3D Tiles gets all five.
+
+### 3.5.B The three levels of "zero copy"
+
+"Zero-copy" is often used loosely. Three distinct levels:
+
+| Level | Where copies happen today | Cut by |
+| --- | --- | --- |
+| **CPU→CPU marshalling on load** | Network bytes → JS object tree → typed arrays | Already partly zero-copy via WASM decoders; TILE-PERF-02 (KTX2 on worker) + TILE-ARCH-01 (mesh dedup) close remaining gaps |
+| **CPU→GPU round-trip per frame** | Style evaluation walks features CPU-side, writes batch texture, uploads every style change | FEAT-3DT2-01 (WGSL styling compiler): compute shader evaluates against persistent feature-properties buffer; zero CPU round-trip per frame |
+| **Per-frame CPU hot-path work** | DrawCommand object allocation per-tile, per-tile uniform writes, CPU tree walk, `Array.prototype.sort` on command list | The DOD storage layer below collapses this entirely — per-frame CPU cost becomes O(camera-delta), not O(visible-tiles) |
+
+Level 3 is where DOD pays the largest dividend. It is also the level the Phase 8b items collectively address.
+
+### 3.5.C The TileStoreGPU layout
+
+The storage layer that falls out of assembling Phase 8b:
+
+```text
+TileStoreGPU:
+
+  # Hot per-frame (read-only during rendering)
+  tileTransforms:       GPUBuffer<mat4x4>[N]     # model matrix per tile
+  tileBoundingSpheres:  GPUBuffer<vec4>[N]       # BS per tile (for GPU cull)
+  tileLODErrors:        GPUBuffer<f32>[N]        # geometric error per tile
+  tileMaterialRefs:     GPUBuffer<u32>[N]        # index into material table
+  tileMeshRefs:         GPUBuffer<u32>[N]        # index into mesh atlas
+  tileFlagsLOD:         GPUBuffer<u32>[N]        # visible/culled/LOD bits
+
+  # Megabuffers (shared across tiles, content-addressable)
+  vertexMegaBuffer:     GPUBuffer                # all tile vertex data
+  indexMegaBuffer:      GPUBuffer                # all tile index data
+  textureAtlas:         GPUTexture (2D array)    # shared albedo/normal/MR
+  materialTable:        GPUBuffer<Material>[M]   # deduped by material hash
+
+  # Feature-level (style targets)
+  featureProperties:    GPUBuffer<Props>[F]      # per-feature data across all tiles
+  featureStyleOutput:   GPUBuffer<vec4>[F]       # color+show after style eval
+
+  # Lifecycle (CPU-side, not uploaded per frame)
+  freeTileSlots:        Uint32Array              # recycled IDs for evicted tiles
+  dirtyTileSlots:       Uint32Array              # slots to batch-upload next frame
+```
+
+Each Phase 8b item is one component of this store:
+
+| Phase 8b item | Role in TileStoreGPU |
+| --- | --- |
+| FEAT-SURVEY-20 MegaBuffer | `vertexMegaBuffer` + `indexMegaBuffer` + `tileMeshRefs` |
+| FEAT-SURVEY-24 Resident Drawer | The per-tile SoA arrays themselves (`tileTransforms`, etc.) |
+| FEAT-SURVEY-25 sharedSourceBuffer fanout | `tileFlagsLOD` as the shared visibility stream; compute passes fan out to color / shadow / depth-prepass from it |
+| FEAT-SURVEY-23 dynamic-offset UBO | Per-material-family UBO binding via one uniform buffer + offset |
+| FEAT-3DT2-01 WGSL styling compiler | Compute shader writing `featureStyleOutput` from compiled style expression against `featureProperties` |
+| FEAT-3DT2-02 Property-texture audit | Confirm WGSL model shader samples `featureProperties` / `featureStyleOutput` on the draw path |
+| TILE-ARCH-01 Cross-tile mesh dedup | `materialTable` + shared-mesh hashing feeds the mega-buffers |
+| TILE-PERF-03 Shared UBO | Per-frame camera/atmosphere/light UBO bound once per pass (not per tile) |
+
+### 3.5.D Per-frame CPU work after the collapse
+
+For rendering 10,000 tiles in a typical planetary view:
+
+**Today (Pre-Phase-8b):**
+
+- Walk the tile tree (O(visible-tiles) traversal).
+- For each visible tile: compute SSE, frustum test, fog test.
+- For each passing tile × each primitive: allocate `DrawCommand` object.
+- For each DrawCommand: write model matrix, material uniforms, per-instance data to a UBO slot.
+- Collect command list, `Array.prototype.sort` by eye distance.
+- Issue ~1k-10k draw calls.
+- On style change: walk every feature on CPU, evaluate JS expression, re-upload batch texture.
+
+**After Phase 8b (TileStoreGPU in place):**
+
+1. Camera update (one small UBO write).
+2. Traversal decides which slot IDs are at the right LOD for this camera → emit one `Uint32Array visibleTileIDs`.
+3. Dispatch compute pass: cull + build indirect draws for those IDs.
+4. Submit indirect draws.
+
+That's it. **No per-tile DrawCommand objects. No per-tile uniform writes per frame. No CPU sort on the command list. No CPU style re-evaluation.** Per-frame CPU cost is O(camera-delta), not O(visible-tiles).
+
+### 3.5.E Cesium API compatibility — the facade pattern
+
+The public API (`Cesium3DTileset`, `Cesium3DTile`, `tile.boundingSphere`, `tile.content`, `scene.pick()`) stays unchanged. Under the hood:
+
+```javascript
+// Today
+class Cesium3DTile {
+  constructor() {
+    this._boundingSphere = new BoundingSphere();   // heap object per tile
+    this._computedTransform = new Matrix4();       // heap object per tile
+    // ... ~20 more heap-allocated sub-objects
+  }
+  get boundingSphere() { return this._boundingSphere; }
+}
+
+// After Phase 8b (DOD backing, same API)
+class Cesium3DTile {
+  constructor(slotId) {
+    this._slotId = slotId;                         // just a uint32
+    this._bsScratch = new BoundingSphere();        // lazy scratch, reused
+  }
+  get boundingSphere() {
+    return TileStoreCPU.readBoundingSphere(this._slotId, this._bsScratch);
+  }
+}
+```
+
+Writes go through setters that mark slots dirty; a per-frame uploader flushes dirty slots as one batched `queue.writeBuffer`. This is precisely Unity's Resident Drawer pattern: public types (`GameObject`, `MeshRenderer`) don't change; the SRP batcher underneath stores per-instance data in a contiguous buffer.
+
+### 3.5.F The correction on NullGraph DOD
+
+Phase 7's "rejected wholesale" language about NullGraph's "zero scene graph" DOD was **too broad**. The correct framing:
+
+- **Rejected (correctly):** NullGraph's wholesale replacement of the scene-graph *public API*. We keep `Cesium3DTileset` / `Primitive` / `Entity` intact.
+- **Adopted (partially, via Phase 8b):** NullGraph's DOD *storage layer pattern*. MegaBuffer + per-material BatchManager + sharedSourceBuffer fanout + contiguous SoA storage. This is effectively what Phase 8b assembles for 3D Tiles.
+
+The overlap is significant — Phase 8b, when landed, *is* the DOD architecture, re-derived for 3D Tiles with Cesium API facades on top. The name was misleading (it's not zero-scene-graph, it's facade-over-DOD-storage), which is why the convergence wasn't obvious during the initial Phase 7 survey.
+
+### 3.5.G Gotchas specific to the DOD storage layer
+
+Six things that need explicit design work if/when Phase 8b is scoped:
+
+1. **Picking.** `scene.pick()` currently walks the tile tree CPU-side. DOD moves this to a GPU pick-framebuffer or compute pass over `TileStoreGPU`. Different code path but well-understood.
+2. **Morph targets / skinning.** Per-frame-mutating. DOD story: a small per-tile "dynamic slot" region (morph weights + joint matrices); vertex shader reads both the static mesh buffer and the dynamic slot. Zero-copy per frame after initial setup.
+3. **User-driven feature highlights.** Style changes dispatch a compute pass; per-feature highlights become one-word writes to `featureStyleOutput[featureId]`. Cheap.
+4. **Debugging / inspection.** `CesiumDebug.snapshot()` and per-tile visualization need to read state. DOD: one-time GPU→CPU readback on demand. Debugging isn't a hot path — acceptable cost.
+5. **Dynamic tileset.modelMatrix.** Animated root transform. DOD: one buffer write for the root per frame, not per-tile. Trivial.
+6. **Entity / DataSource paths.** These don't go through 3D Tiles directly. Cesium has multiple paths (Primitive, Entity, DataSource, 3DTileset). DOD is scoped to the 3D Tiles path specifically; the others stay object-oriented.
+
+### 3.5.H Effort-estimate correction
+
+The original Phase 8b duration estimate (3-4 weeks for six items) undersized the shared plumbing. A more honest split:
+
+- **Foundation plumbing** (TileStoreGPU schema + CPU mirror + slot lifecycle + upload batcher) — 1 week. Required for every Phase 8b item.
+- **MegaBuffer + Resident Drawer + material dedup** on that foundation — 1 week.
+- **sharedSourceBuffer + dynamic-offset UBO orchestration** — 0.5 week.
+- **WGSL styling compiler (restricted subset)** + property-texture audit — 1.5 weeks.
+- **Picking + API facade conversion** — 1 week.
+
+Revised: **~5 weeks for Phase 8b fully assembled**, with the foundation plumbing also serving as a prerequisite for Phase 8e items (DDGI per-tile probes, NGA_GPM uncertainty, grass/foliage instancing all consume TileStoreGPU slots).
+
+### 3.5.I What this section does NOT say
+
+- **It does NOT recommend doing all of Phase 8b as one giant PR.** Each step above is independently testable; the foundation plumbing alone delivers value (shared UBO, slot lifecycle) without the full draw-path collapse.
+- **It does NOT eliminate Cesium's object model.** `Cesium3DTile` and friends remain as lightweight handles; the API contract doesn't break.
+- **It does NOT apply to non-3D-Tiles paths** (Primitive, Entity, DataSource). Those stay object-oriented; the cost model is different (low tile count, mutable entity data).
+- **It does NOT commit to a specific slot-count cap.** `N`, `M`, `F` in the schema above are tunable; starting point would be something like N=65536 tiles, M=4096 materials, F=16M features — easy to grow.
+
+---
+
 ## 4. Three Hidden Gotchas Cutting Across Items
 
 ### A. "Cheap" BRDFs aren't cheap until shader strategy is settled

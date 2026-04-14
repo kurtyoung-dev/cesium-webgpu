@@ -30,7 +30,7 @@ Three independent Session 29 investigations (feature inventory, 3D Tiles impleme
 | Phase | Theme | Duration | Gates |
 | --- | --- | --- | --- |
 | **8a Foundation** | Normal G-buffer, ParityManager, shader variant strategy, ellipsoid-aware RTE, tile↔Hi-Z wiring | 1-2 weeks | Unblocks ~60% of everything else |
-| **8b GPU-Resident Stack** | MegaBuffer + Resident Drawer + sharedSourceBuffer + dynamic-offset UBO + WGSL styling compiler + property-texture audit + WBOIT | 3-4 weeks | Collapses 1k-10k draw calls/frame to O(10) |
+| **8b GPU-Resident Stack** (aka DOD Storage Layer) | MegaBuffer + Resident Drawer + sharedSourceBuffer + dynamic-offset UBO + WGSL styling compiler + property-texture audit + WBOIT — **assembled, this is one coherent data-oriented storage layer with Cesium API facades, not six independent features.** See design-doc §3.5. | ~5 weeks (revised from 3-4; original estimate undersized shared plumbing) | Collapses 1k-10k draw calls/frame to O(10); per-frame CPU becomes O(camera-delta) |
 | **8c Visual Quality** | KHR_lights_punctual → clearcoat/sheen/anisotropy/iridescence → GTAO → env probes → aerial-perspective LUT → decals → clustered lighting | 3-4 weeks | Depends on 8a shader strategy |
 | **8d Advanced** | TAA → CSM → ESM/VSM/PCSS → STP → planar reflections → FFT ocean → motion blur → impostors | 4-6 weeks | Some items dormant design-doc-ready |
 | **8e Differentiators** | NGA_GPM uncertainty, DDGI-per-tile, grass/foliage, refraction | Opportunistic | Bounded use cases |
@@ -84,7 +84,9 @@ An eight-project survey of other WebGPU rendering / compute projects to identify
 
 **Sources surveyed:** NullGraph Engine, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity's WebGPU Export, Orillusion.
 
-**Rejected wholesale** (not listed below): ChartGPU (2D `f32`-only charting, domain mismatch), Taichi.js DSL (competes with our dispatcher stack), Vello renderer itself (2D vector, non-RTE), Orillusion "ray tracing" (is actually SSR), Zephyr3D shader builder (would replace ShaderBuilder wholesale), NullGraph "zero scene graph" DOD (incompatible with Scene/Primitive contract).
+**Rejected wholesale** (not listed below): ChartGPU (2D `f32`-only charting, domain mismatch), Taichi.js DSL (competes with our dispatcher stack), Vello renderer itself (2D vector, non-RTE), Orillusion "ray tracing" (is actually SSR), Zephyr3D shader builder (would replace ShaderBuilder wholesale).
+
+**Partially adopted via Phase 8b** (correction from initial Phase 7 survey): NullGraph's "zero scene graph" DOD was originally flagged as "incompatible with Scene/Primitive contract." That rejection was **too broad** — it was right about the *public API* (we keep `Cesium3DTileset` / `Primitive` / `Entity` intact) but wrong about the *storage layer*. Phase 8b's assembled stack (MegaBuffer + Resident Drawer + sharedSourceBuffer + dynamic-offset UBO + WGSL styling compiler + property-texture audit) **is** a DOD storage layer with Cesium API facades on top, equivalent in architecture to Unity's Resident Drawer pattern. See [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) § 3.5 for the full analysis and architectural mapping of NullGraph patterns → Phase 8b items.
 
 **Deferred-but-tracked items** (listed in Tier 3 with explicit gating conditions): Unity STP upscaler (requires TAA motion vectors first), Unity Adaptive Probe Volumes (requires camera-anchored streaming redesign).
 
@@ -111,6 +113,8 @@ An eight-project survey of other WebGPU rendering / compute projects to identify
 **Suggested first-pass micro-batch (1-2 days):** FEAT-SURVEY-01, -05, -02, -06, -07 — five unrelated quality / infra wins with zero RTE or architectural friction.
 
 ### Tier 2: Valuable, M effort
+
+> **Note on FEAT-SURVEY-20 / -23 / -24 / -25 (+ FEAT-3DT2-01 / -02 in Phase 8):** These five items are **not independent features**. Assembled together with TILE-ARCH-01 (mesh dedup) and TILE-PERF-03 (shared UBO), they form the **DOD storage layer** that is Phase 8b in the design doc. Scoped in isolation each is M effort; landed together as one architecture they share plumbing and have compounding payoff. See [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) § 3.5 for the full architectural mapping.
 
 - **FEAT-SURVEY-20** — **MegaBuffer + `firstIndex`/`baseVertex` mesh atlas** for 3D Tiles heterogeneous glTF content. Source: NullGraph `MegabufferBuilder`. One vertex/index buffer for many meshes, compute shader emits `meshID` per visible instance, single indirect draw renders thousands of distinct shapes. **RTE caveat:** canonical stride must include `positionHigh`/`Low` (doubles per-vertex size). **Effort: M** for prototype `MegaMeshAtlasFeatureRenderer` keyed via new `FeatureRendererKey.MEGA_MESH_ATLAS`. Full glTF integration is L.
 - **FEAT-SURVEY-21** — **WBOIT (weighted-blended order-independent transparency)**. Source: Zephyr3D `render/weightedblended_oit.ts`. Fixes stacked polyline/billboard/glTF alpha sorting at horizon where depth-sort fails. Compute-cheap. A-buffer variant is L (memory-heavy, conflicts with Hi-Z + TAA budget). **Effort: M** (WBOIT) / L (A-buffer).
