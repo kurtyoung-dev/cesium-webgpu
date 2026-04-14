@@ -1,5 +1,9 @@
 /// <reference types="@webgpu/types" />
 import type { WebGPUCommandOwner } from "./WebGPUDrawCommand.js";
+import type {
+  ViewportQuadCommandHandle,
+  ViewportQuadCommandOptionsBase,
+} from "../GraphicsContext.js";
 /**
  * WebGPU Viewport Quad Utility
  *
@@ -141,8 +145,12 @@ export type ViewportQuadShaderProgramSlot =
   | CesiumOpaqueShaderSource
   | { readonly _wgslCode?: string };
 
-/** The command object returned from {@link WebGPUViewportQuad.createCommand}. */
-export interface ViewportQuadCommand {
+/**
+ * The command object returned from {@link WebGPUViewportQuad.createCommand}.
+ * Extends {@link ViewportQuadCommandHandle} so the WebGPU return assigns
+ * into the abstract `createViewportQuadCommand` return type.
+ */
+export interface ViewportQuadCommand extends ViewportQuadCommandHandle {
   shaderProgram: ViewportQuadShaderProgramSlot;
   uniformMap: Record<string, () => ViewportQuadUniformValue>;
   framebuffer: CesiumOpaqueFramebuffer | null;
@@ -151,6 +159,8 @@ export interface ViewportQuadCommand {
   pass: number | undefined;
   _wgslCode?: string;
   _isViewportQuadCommand: true;
+  // Override the base `execute(...args: never[])` with a real signature.
+  // Bivariant method syntax lets this override without variance errors.
   execute(
     renderPassEncoder?: GPURenderPassEncoder,
     contextArg?: { _currentRenderPassEncoder?: GPURenderPassEncoder | null },
@@ -158,22 +168,20 @@ export interface ViewportQuadCommand {
   destroy(): void;
 }
 
-/** Options for creating a viewport quad command */
-export interface ViewportQuadCommandOptions {
+/**
+ * Options for creating a viewport quad command. Extends the backend-agnostic
+ * base ({@link ViewportQuadCommandOptionsBase}) with WebGPU-specific fields
+ * so callers going through the concrete WebGPU method get the full surface.
+ */
+export interface ViewportQuadCommandOptions extends ViewportQuadCommandOptionsBase {
   /** Map of uniform name → getter function. Values are discriminated by shape. */
-  uniformMap?: Record<string, () => ViewportQuadUniformValue>;
+  readonly uniformMap?: Record<string, () => ViewportQuadUniformValue>;
   /** Explicit bind group entries (bypasses uniformMap auto-detection). */
-  bindGroupEntries?: GPUBindGroupEntry[];
-  /** Framebuffer to render into (metadata for Scene render loop) */
-  framebuffer?: CesiumOpaqueFramebuffer;
-  /** Owner object (for debugging / error messages) */
-  owner?: WebGPUCommandOwner;
-  /** Render state (metadata for Scene compatibility) */
-  renderState?: CesiumOpaqueRenderState;
-  /** Render pass (e.g., Pass.OVERLAY) */
-  pass?: number;
-  /** Pipeline config (blend, depth, stencil) */
-  pipelineConfig?: ViewportQuadPipelineConfig;
+  readonly bindGroupEntries?: GPUBindGroupEntry[];
+  /** Owner object (for debugging / error messages) — WebGPU-specific shape. */
+  readonly owner?: WebGPUCommandOwner;
+  /** Pipeline config (blend, depth, stencil) — WebGPU only. */
+  readonly pipelineConfig?: ViewportQuadPipelineConfig;
 }
 
 interface CachedPipeline {

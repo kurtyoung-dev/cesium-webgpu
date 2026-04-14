@@ -24,6 +24,13 @@ import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUShaderModule from "./WebGPUShaderModule.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
 import {
   selectWebGPUShader,
@@ -456,28 +463,16 @@ function createWebGPUCommands(
       ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
       : GPUShaderStage.VERTEX;
 
-    cache.cameraBindGroupLayout = device.createBindGroupLayout({
-      label: "Camera BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: cameraVisibility,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Camera BGL", [
+      uniformBuffer(0, cameraVisibility),
+    ]);
 
     // Material BGL — group(1): placeholder material uniforms
-    cache.materialBindGroupLayout = device.createBindGroupLayout({
-      label: "Material BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    cache.materialBindGroupLayout = makeBindGroupLayout(
+      device,
+      "Material BGL",
+      [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+    );
 
     const bindGroupLayouts = [
       cache.cameraBindGroupLayout,
@@ -485,21 +480,11 @@ function createWebGPUCommands(
     ];
 
     if (needsTexture) {
-      cache.textureBindGroupLayout = device.createBindGroupLayout({
-        label: "Texture BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.FRAGMENT,
-            sampler: { type: "filtering" },
-          },
-          {
-            binding: 1,
-            visibility: GPUShaderStage.FRAGMENT,
-            texture: { sampleType: "float", viewDimension: "2d" },
-          },
-        ],
-      });
+      cache.textureBindGroupLayout = makeBindGroupLayout(
+        device,
+        "Texture BGL",
+        [sampler(0, Stage.FRAGMENT), texture(1, Stage.FRAGMENT)],
+      );
       bindGroupLayouts.push(cache.textureBindGroupLayout);
     } else {
       cache.textureBindGroupLayout = null;
@@ -606,28 +591,18 @@ function createWebGPUCommands(
       });
 
       // Pick camera BGL — group(0)
-      cache.pickCameraBindGroupLayout = device.createBindGroupLayout({
-        label: "Pick Camera BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.VERTEX,
-            buffer: { type: "uniform" },
-          },
-        ],
-      });
+      cache.pickCameraBindGroupLayout = makeBindGroupLayout(
+        device,
+        "Pick Camera BGL",
+        [uniformBuffer(0, Stage.VERTEX)],
+      );
 
       // Pick material BGL — group(1): pickColor
-      cache.pickMaterialBindGroupLayout = device.createBindGroupLayout({
-        label: "Pick Material BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.FRAGMENT,
-            buffer: { type: "uniform" },
-          },
-        ],
-      });
+      cache.pickMaterialBindGroupLayout = makeBindGroupLayout(
+        device,
+        "Pick Material BGL",
+        [uniformBuffer(0, Stage.FRAGMENT)],
+      );
 
       cache.pickPipeline = device.createRenderPipeline({
         layout: device.createPipelineLayout({
@@ -1128,30 +1103,17 @@ function createMaterialPipelineAndCache(
   });
 
   // Camera BGL — group(0)
-  cache.cameraBindGroupLayout = device.createBindGroupLayout({
-    label: "Mat Camera BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: isLit
-          ? GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
-          : GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const matCameraVisibility = isLit ? Stage.VERTEX_FRAGMENT : Stage.VERTEX;
+  cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Mat Camera BGL", [
+    uniformBuffer(0, matCameraVisibility),
+  ]);
 
   // Material BGL — group(1): material uniforms from MaterialUniformBuffer
-  cache.materialBindGroupLayout = device.createBindGroupLayout({
-    label: "Mat Material BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  cache.materialBindGroupLayout = makeBindGroupLayout(
+    device,
+    "Mat Material BGL",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const bindGroupLayouts = [
     cache.cameraBindGroupLayout,
@@ -1159,21 +1121,11 @@ function createMaterialPipelineAndCache(
   ];
 
   if (shaderInfo.needsTexture) {
-    cache.textureBindGroupLayout = device.createBindGroupLayout({
-      label: "Material Texture BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
-      ],
-    });
+    cache.textureBindGroupLayout = makeBindGroupLayout(
+      device,
+      "Material Texture BGL",
+      [sampler(0, Stage.FRAGMENT), texture(1, Stage.FRAGMENT)],
+    );
     bindGroupLayouts.push(cache.textureBindGroupLayout);
   } else {
     cache.textureBindGroupLayout = null;
@@ -1385,28 +1337,18 @@ function createWebGPUMaterialCommands(
     });
 
     // Pick camera BGL — group(0)
-    cache.pickCameraBindGroupLayout = device.createBindGroupLayout({
-      label: "MatPick Camera BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    cache.pickCameraBindGroupLayout = makeBindGroupLayout(
+      device,
+      "MatPick Camera BGL",
+      [uniformBuffer(0, Stage.VERTEX)],
+    );
 
     // Pick material BGL — group(1): pickColor
-    cache.pickMaterialBindGroupLayout = device.createBindGroupLayout({
-      label: "MatPick Material BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    cache.pickMaterialBindGroupLayout = makeBindGroupLayout(
+      device,
+      "MatPick Material BGL",
+      [uniformBuffer(0, Stage.FRAGMENT)],
+    );
 
     const fmt =
       context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();

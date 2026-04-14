@@ -239,47 +239,40 @@ export class SharedResourcePool {
    * @returns A typed array view, or undefined if allocation not found
    */
   getView<
-    T extends
-      | Float32Array
-      | Float64Array
-      | Uint8Array
-      | Uint16Array
-      | Uint32Array
-      | Int16Array
-      | Int32Array,
+    Ctor extends
+      | Float32ArrayConstructor
+      | Float64ArrayConstructor
+      | Uint8ArrayConstructor
+      | Uint16ArrayConstructor
+      | Uint32ArrayConstructor
+      | Int16ArrayConstructor
+      | Int32ArrayConstructor,
   >(
     name: string,
-    TypedArrayConstructor: new (
-      buffer: ArrayBufferLike,
-      byteOffset: number,
-      length: number,
-    ) => T,
+    TypedArrayConstructor: Ctor,
     byteOffset?: number,
     length?: number,
-  ): T | undefined {
+  ): InstanceType<Ctor> | undefined {
     const alloc = this._allocations.get(name);
     if (!alloc) {
       return undefined;
     }
 
     const offset = alloc.byteOffset + (byteOffset ?? 0);
-    const bytesPerElement =
-      (TypedArrayConstructor as unknown as { BYTES_PER_ELEMENT?: number })
-        .BYTES_PER_ELEMENT ??
-      (
-        TypedArrayConstructor as unknown as {
-          prototype?: { BYTES_PER_ELEMENT?: number };
-        }
-      ).prototype?.BYTES_PER_ELEMENT ??
-      4;
+    // Every TypedArray constructor exposes BYTES_PER_ELEMENT as a static;
+    // the union type below carries that guarantee so no cast is needed.
+    const bytesPerElement = TypedArrayConstructor.BYTES_PER_ELEMENT;
     const elementCount =
       length ?? (alloc.byteLength - (byteOffset ?? 0)) / bytesPerElement;
 
+    // `new Ctor(...)` returns the union of InstanceTypes; narrow to the
+    // generic's InstanceType via a typed cast (safe because Ctor and
+    // InstanceType<Ctor> are linked by the generic).
     return new TypedArrayConstructor(
       alloc.buffer as ArrayBuffer,
       offset,
       elementCount,
-    );
+    ) as InstanceType<Ctor>;
   }
 
   /**

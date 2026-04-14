@@ -125,20 +125,66 @@ export type OffscreenState =
   | "destroyed";
 
 /**
- * Messages sent to the offscreen worker.
+ * Payload for the "init" message — transfers the OffscreenCanvas and
+ * rendering parameters to the worker.
  */
-export interface WorkerMessage {
-  type: "init" | "render" | "resize" | "destroy";
-  payload?: Record<string, unknown>;
+export interface WorkerInitPayload {
+  canvas: OffscreenCanvas;
+  rendererType: RendererType;
+  reducedLOD: boolean;
+  maxFPS: number;
 }
 
 /**
- * Messages received from the offscreen worker.
+ * Payload for the "resize" message.
  */
-export interface WorkerResponse {
-  type: "initialized" | "frame" | "error";
-  payload?: unknown;
+export interface WorkerResizePayload {
+  width: number;
+  height: number;
 }
+
+/**
+ * Serializable frame data forwarded to the worker on render. Callers
+ * decide the concrete shape — it just needs to round-trip through
+ * `postMessage` (JSON-safe + transferables).
+ */
+export type WorkerFramePayload = {
+  readonly [key: string]: WorkerFramePayloadValue;
+};
+type WorkerFramePayloadValue =
+  | string
+  | number
+  | boolean
+  | null
+  | WorkerFramePayload
+  | readonly WorkerFramePayloadValue[];
+
+/**
+ * Messages sent to the offscreen worker. Discriminated on `type` so each
+ * branch carries exactly the payload it needs.
+ */
+export type WorkerMessage =
+  | { type: "init"; payload: WorkerInitPayload }
+  | { type: "render"; payload: WorkerFramePayload }
+  | { type: "resize"; payload: WorkerResizePayload }
+  | { type: "destroy"; payload?: undefined };
+
+/**
+ * Payload shape for error responses from the worker. Structured as a
+ * minimal Error-like so callers can pull `.message` without casting.
+ */
+export interface WorkerErrorPayload {
+  message: string;
+  stack?: string;
+}
+
+/**
+ * Messages received from the offscreen worker. Discriminated on `type`.
+ */
+export type WorkerResponse =
+  | { type: "initialized"; payload?: undefined }
+  | { type: "frame"; payload: ImageBitmap }
+  | { type: "error"; payload: WorkerErrorPayload };
 
 /**
  * Manages an OffscreenCanvas rendering context in a WebWorker.
@@ -257,7 +303,7 @@ export class OffscreenContextSupport {
    * @param frameData - Serializable frame data (camera position, entities, etc.)
    * @returns Promise that resolves with the rendered ImageBitmap
    */
-  async renderFrame(frameData: Record<string, unknown>): Promise<ImageBitmap> {
+  async renderFrame(frameData: WorkerFramePayload): Promise<ImageBitmap> {
     if (this._state !== "ready") {
       throw new Error(
         `Cannot render: offscreen context is in '${this._state}' state.`,
@@ -424,9 +470,11 @@ export class OffscreenContextSupport {
     }
 
     this._worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
-      const { type, payload } = e.data;
-
-      switch (type) {
+      // Switch on e.data directly so TS narrows `payload` via the
+      // discriminated-union `type` tag (destructuring would strip the
+      // narrowing and force a cast).
+      const msg = e.data;
+      switch (msg.type) {
         case "initialized":
           // Worker is ready — initialization promise will resolve
           break;
@@ -434,16 +482,14 @@ export class OffscreenContextSupport {
         case "frame":
           if (this._pendingFrameResolve) {
             this._state = "ready";
-            this._pendingFrameResolve(payload as ImageBitmap);
+            this._pendingFrameResolve(msg.payload);
             this._pendingFrameResolve = null;
             this._pendingFrameReject = null;
           }
           break;
 
         case "error":
-          this._lastError =
-            ((payload as Record<string, unknown> | undefined)
-              ?.message as string) ?? "Unknown worker error";
+          this._lastError = msg.payload?.message ?? "Unknown worker error";
           if (this._pendingFrameReject) {
             this._state = "error";
             this._pendingFrameReject(new Error(this._lastError!));
@@ -488,12 +534,7 @@ export class OffscreenContextSupport {
             "message",
             handler as EventListener,
           );
-          reject(
-            new Error(
-              ((e.data.payload as Record<string, unknown> | undefined)
-                ?.message as string) ?? "Worker init failed",
-            ),
-          );
+          reject(new Error(e.data.payload?.message ?? "Worker init failed"));
         }
       };
 

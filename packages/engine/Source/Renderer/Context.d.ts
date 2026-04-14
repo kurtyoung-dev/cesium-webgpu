@@ -143,15 +143,13 @@ declare class Context extends GraphicsContext {
 
   // ─── Viewport quad helpers ───────────────────────────────────────────
   getViewportQuadVertexArray(): object;
+  // The WebGL path accepts the shared `ViewportQuadCommandOptionsBase`
+  // shape (framebuffer, owner, renderState, pass, uniformMap) and returns
+  // a CesiumDrawCommand which satisfies the ViewportQuadCommandHandle
+  // contract via its existing `execute` method.
   createViewportQuadCommand(
     fragmentShaderSource: string,
-    overrides?: {
-      renderState?: unknown;
-      uniformMap?: unknown;
-      owner?: unknown;
-      framebuffer?: unknown;
-      pass?: unknown;
-    },
+    overrides?: ViewportQuadCommandOptionsBase,
   ): CesiumDrawCommand;
 
   // ─── Lifecycle ───────────────────────────────────────────────────────

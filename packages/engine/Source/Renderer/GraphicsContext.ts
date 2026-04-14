@@ -69,6 +69,43 @@ export type DebugStatsValue =
 export interface DebugStatsObject {
   readonly [key: string]: DebugStatsValue | undefined;
 }
+
+// ═══════════════════════════════════════════════════════════
+// Shared viewport-quad types (see createViewportQuadCommand)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Fields accepted by every backend's `createViewportQuadCommand`. Backends
+ * extend this with their own additions (e.g., WebGPU adds
+ * `bindGroupEntries` / `pipelineConfig`). Keeping the shared fields here
+ * lets the abstract method declare a real parameter shape instead of
+ * `unknown`, and lets Scene-side JS consumers target the shared fields
+ * without a backend import.
+ */
+export interface ViewportQuadCommandOptionsBase {
+  /** Map of uniform name → getter. Each backend narrows the value type. */
+  readonly uniformMap?: { readonly [name: string]: (() => unknown) | unknown };
+  /** Optional framebuffer target (scene code passes JS-side Framebuffer). */
+  readonly framebuffer?: CesiumOpaqueFramebuffer;
+  /** Owner object — accessed only for `.constructor.name` debug labels. */
+  readonly owner?: { readonly constructor?: { readonly name?: string } };
+  /** Backend-agnostic render state handle (resolved in the override). */
+  readonly renderState?: CesiumOpaqueRenderState;
+  /** Cesium Pass enum value. */
+  readonly pass?: number;
+}
+
+/**
+ * Return contract for `createViewportQuadCommand`. Both backends produce
+ * objects with `execute` + optional `destroy` — the exact signature of
+ * `execute` is backend-specific (WebGL takes context+passState; WebGPU
+ * takes a GPURenderPassEncoder), so we use `never[]` args at this layer
+ * to enforce that abstract callers only go through backend-specific refs.
+ */
+export interface ViewportQuadCommandHandle {
+  execute(...args: never[]): void;
+  destroy?(): void;
+}
 import { ContextRegistry } from "./ContextRegistry.js";
 import FeatureRendererKey from "./FeatureRendererKey.js";
 import Check from "../Core/Check.js";
@@ -426,10 +463,8 @@ export abstract class GraphicsContext {
     const className = proto?.constructor?.name ?? "Unknown";
 
     for (const method of requiredMethods) {
-      if (
-        typeof (this as unknown as Record<string, unknown>)[method] !==
-        "function"
-      ) {
+      // Reflect.get reads a property by dynamic name without casting.
+      if (typeof Reflect.get(this, method) !== "function") {
         throw new Error(
           `${className} must implement abstract method '${method}' from GraphicsContext`,
         );
@@ -898,10 +933,24 @@ export abstract class GraphicsContext {
   // ABSTRACT: VIEWPORT COMMANDS
   // ═══════════════════════════════════════════════════════════
 
+  /**
+   * Build a viewport-quad draw command for screen-space effects. Each
+   * backend accepts a superset of {@link ViewportQuadCommandOptionsBase}
+   * (WebGPU adds bind-group entries / pipeline config) and returns a
+   * handle with `execute` + optional `destroy`. Callers that need
+   * backend-specific fields must go through the concrete subclass type.
+   *
+   * @param fragmentShader - GLSL source (WebGL) or WGSL source / descriptor
+   *   object with `_wgslCode` (WebGPU).
+   * @param options - Shared options; each backend extends with its own.
+   */
   abstract createViewportQuadCommand(
-    fragmentShader: unknown,
-    options?: Record<string, unknown>,
-  ): unknown;
+    fragmentShader:
+      | string
+      | CesiumOpaqueShaderSource
+      | { readonly _wgslCode?: string },
+    options?: ViewportQuadCommandOptionsBase,
+  ): ViewportQuadCommandHandle;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: DESTROYED STATE
@@ -985,21 +1034,26 @@ export abstract class GraphicsContext {
 
   /**
    * Create a texture using the context's native texture type.
+   * Each backend narrows `options` and the return type in its override;
+   * the base accepts `unknown` since callers always go through the
+   * concrete subclass.
    * @param options - Texture creation options
    * @returns A backend-native texture object
    */
-  createTexture(options: Record<string, unknown>): unknown {
+  createTexture(options: unknown): unknown {
     throw new Error(
       `${this._logPrefix()} createTexture not implemented for ${this.rendererType}`,
     );
   }
 
   /**
-   * Create a GPU buffer using the context's native buffer type.
+   * Create a GPU buffer using the context's native buffer type. See
+   * {@link createTexture} for the rationale on using `unknown` in the
+   * abstract signature.
    * @param options - Buffer creation options
    * @returns A backend-native buffer object
    */
-  createBuffer(options: Record<string, unknown>): unknown {
+  createBuffer(options: unknown): unknown {
     throw new Error(
       `${this._logPrefix()} createBuffer not implemented for ${this.rendererType}`,
     );

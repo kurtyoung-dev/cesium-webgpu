@@ -22,7 +22,7 @@ const Check: {
      * @param {*} test The value to test
      * @exception {DeveloperError} test must be typeof 'string'
      */
-    string(name: string, test: any): asserts test is string;
+    string(name: string, test: unknown): asserts test is string;
     /**
      * Throws if test is not typeof 'function'
      *
@@ -30,7 +30,7 @@ const Check: {
      * @param {*} test The value to test
      * @exception {DeveloperError} test must be typeof 'function'
      */
-    func(name: string, test: any): asserts test is Function;
+    func(name: string, test: unknown): asserts test is Function;
     /**
      * Throws if test is not typeof 'object'
      *
@@ -40,8 +40,8 @@ const Check: {
      */
     object(
       name: string,
-      test: any,
-    ): asserts test is Record<string | number | symbol, any>;
+      test: unknown,
+    ): asserts test is Record<string | number | symbol, unknown>;
     /**
      * Throws if test is not typeof 'boolean'
      *
@@ -49,7 +49,7 @@ const Check: {
      * @param {*} test The value to test
      * @exception {DeveloperError} test must be typeof 'boolean'
      */
-    bool(name: string, test: any): asserts test is boolean;
+    bool(name: string, test: unknown): asserts test is boolean;
     /**
      * Throws if test is not typeof 'bigint'
      *
@@ -57,7 +57,7 @@ const Check: {
      * @param {*} test The value to test
      * @exception {DeveloperError} test must be typeof 'bigint'
      */
-    bigint(name: string, test: any): asserts test is bigint;
+    bigint(name: string, test: unknown): asserts test is bigint;
     /**
      * Throws if test is not typeof 'number'
      *
@@ -66,7 +66,7 @@ const Check: {
      * @exception {DeveloperError} test must be typeof 'number'
      */
     number: {
-      (name: string, test: any): void;
+      (name: string, test: unknown): void;
       /**
        * Throws if test is not typeof 'number' and less than limit
        *
@@ -75,7 +75,11 @@ const Check: {
        * @param {number} limit The limit value to compare against
        * @exception {DeveloperError} test must be typeof 'number' and less than limit
        */
-      lessThan(name: string, test: any, limit: number): asserts test is number;
+      lessThan(
+        name: string,
+        test: unknown,
+        limit: number,
+      ): asserts test is number;
       /**
        * Throws if test is not typeof 'number' and less than or equal to limit
        *
@@ -86,7 +90,7 @@ const Check: {
        */
       lessThanOrEquals(
         name: string,
-        test: any,
+        test: unknown,
         limit: number,
       ): asserts test is number;
       /**
@@ -99,7 +103,7 @@ const Check: {
        */
       greaterThan(
         name: string,
-        test: any,
+        test: unknown,
         limit: number,
       ): asserts test is number;
       /**
@@ -112,7 +116,7 @@ const Check: {
        */
       greaterThanOrEquals(
         name: string,
-        test: any,
+        test: unknown,
         limit: number,
       ): asserts test is number;
       /**
@@ -124,7 +128,12 @@ const Check: {
        * @param {*} test2 The value to test against
        * @exception {DeveloperError} test1 and test2 should be type of 'number' and be equal in value
        */
-      equals(name1: string, name2: string, test1: any, test2: any): void;
+      equals(
+        name1: string,
+        name2: string,
+        test1: unknown,
+        test2: unknown,
+      ): void;
     };
   };
 };
