@@ -644,7 +644,11 @@ class Animation {
     ownerDocument.addEventListener("touchend", mouseCallback, true);
     ownerDocument.addEventListener("touchcancel", mouseCallback, true);
     this._shuttleRingPointer.addEventListener("mousedown", mouseCallback, true);
-    this._shuttleRingPointer.addEventListener("touchstart", mouseCallback, true);
+    this._shuttleRingPointer.addEventListener(
+      "touchstart",
+      mouseCallback,
+      true,
+    );
     this._knobOuter.addEventListener("mousedown", mouseCallback, true);
     this._knobOuter.addEventListener("touchstart", mouseCallback, true);
 
@@ -659,22 +663,26 @@ class Animation {
     let isPaused;
     this._subscriptions = [
       //
-      subscribeAndEvaluate(viewModel.pauseViewModel, "toggled", function (value) {
-        if (isPaused !== value) {
-          isPaused = value;
-          if (isPaused) {
-            that._shuttleRingPointer.setAttribute(
-              "class",
-              "cesium-animation-shuttleRingPausePointer",
-            );
-          } else {
-            that._shuttleRingPointer.setAttribute(
-              "class",
-              "cesium-animation-shuttleRingPointer",
-            );
+      subscribeAndEvaluate(
+        viewModel.pauseViewModel,
+        "toggled",
+        function (value) {
+          if (isPaused !== value) {
+            isPaused = value;
+            if (isPaused) {
+              that._shuttleRingPointer.setAttribute(
+                "class",
+                "cesium-animation-shuttleRingPausePointer",
+              );
+            } else {
+              that._shuttleRingPointer.setAttribute(
+                "class",
+                "cesium-animation-shuttleRingPointer",
+              );
+            }
           }
-        }
-      }),
+        },
+      ),
 
       subscribeAndEvaluate(viewModel, "shuttleRingAngle", function (value) {
         setShuttleRingPointer(that._shuttleRingPointer, that._knobOuter, value);
@@ -1164,7 +1172,10 @@ class Animation {
             {
               tagName: "stop",
               offset: "5%",
-              "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
+              "stop-color": makeColorString(
+                knobBackColor,
+                gradientEnabledColor0,
+              ),
             },
             {
               tagName: "stop",
@@ -1174,7 +1185,10 @@ class Animation {
             {
               tagName: "stop",
               offset: "85%",
-              "stop-color": makeColorString(knobBackColor, gradientEnabledColor1),
+              "stop-color": makeColorString(
+                knobBackColor,
+                gradientEnabledColor1,
+              ),
             },
           ],
         },
@@ -1194,12 +1208,18 @@ class Animation {
             {
               tagName: "stop",
               offset: "60%",
-              "stop-color": makeColorString(knobBackColor, gradientEnabledColor0),
+              "stop-color": makeColorString(
+                knobBackColor,
+                gradientEnabledColor0,
+              ),
             },
             {
               tagName: "stop",
               offset: "85%",
-              "stop-color": makeColorString(knobBackColor, gradientEnabledColor3),
+              "stop-color": makeColorString(
+                knobBackColor,
+                gradientEnabledColor3,
+              ),
             },
           ],
         },

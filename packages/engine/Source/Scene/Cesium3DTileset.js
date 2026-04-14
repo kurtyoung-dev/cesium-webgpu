@@ -439,7 +439,9 @@ class Cesium3DTileset {
     // Attach the imagery layers listener to all events of
     // the imagery layers collection
     this.imageryLayers.layerAdded.addEventListener(this._imageryLayersListener);
-    this.imageryLayers.layerRemoved.addEventListener(this._imageryLayersListener);
+    this.imageryLayers.layerRemoved.addEventListener(
+      this._imageryLayersListener,
+    );
     this.imageryLayers.layerMoved.addEventListener(this._imageryLayersListener);
     this.imageryLayers.layerShownOrHidden.addEventListener(
       this._imageryLayersListener,
@@ -454,7 +456,8 @@ class Cesium3DTileset {
      *
      * @private
      */
-    this._asynchronouslyLoadImagery = options.asynchronouslyLoadImagery ?? false;
+    this._asynchronouslyLoadImagery =
+      options.asynchronouslyLoadImagery ?? false;
 
     /**
      * Preload tiles when <code>tileset.show</code> is <code>false</code>. Loads tiles as if the tileset is visible but does not render them.
@@ -1452,7 +1455,8 @@ class Cesium3DTileset {
   destroy() {
     this._tileDebugLabels =
       this._tileDebugLabels && this._tileDebugLabels.destroy();
-    this._clippingPlanes = this._clippingPlanes && this._clippingPlanes.destroy();
+    this._clippingPlanes =
+      this._clippingPlanes && this._clippingPlanes.destroy();
     this._clippingPolygons =
       this._clippingPolygons && this._clippingPolygons.destroy();
 

@@ -950,7 +950,12 @@ class PathVisualizer {
     this._entityCollection = entityCollection;
     this._items = new AssociativeArray();
 
-    this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
+    this._onCollectionChanged(
+      entityCollection,
+      entityCollection.values,
+      [],
+      [],
+    );
   }
 
   /**

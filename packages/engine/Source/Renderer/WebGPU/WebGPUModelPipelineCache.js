@@ -206,7 +206,15 @@ function createBindGroupLayouts(device) {
     ],
   });
 
-  return { cameraBGL, materialBGL, textureBGL, skinningBGL, morphTargetBGL, instancingBGL, featureIdBGL };
+  return {
+    cameraBGL,
+    materialBGL,
+    textureBGL,
+    skinningBGL,
+    morphTargetBGL,
+    instancingBGL,
+    featureIdBGL,
+  };
 }
 
 /**
@@ -489,7 +497,9 @@ class WebGPUModelPipelineCache {
     device.queue.writeBuffer(this._defaultInstancingBuffer, 0, identityData);
     this._defaultInstancingBG = device.createBindGroup({
       layout: this._instancingBGL,
-      entries: [{ binding: 0, resource: { buffer: this._defaultInstancingBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: this._defaultInstancingBuffer } },
+      ],
     });
 
     // Default feature ID bind group: dummy textures + zero-length uniform

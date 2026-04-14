@@ -94,6 +94,16 @@ export const CLIP_DISTANCE_INACTIVE_SENTINEL = 1e30;
  */
 const DPRIME_ROUND_TRIP_TOLERANCE_METERS = 1e-2;
 
+/** Minimal interface for a ClippingPlaneCollection-like object. */
+interface ClipPlaneCollectionLike {
+  length: number;
+  get(
+    index: number,
+  ):
+    | { normal: { x: number; y: number; z: number }; distance: number }
+    | undefined;
+}
+
 /**
  * Compute the dPrime values for up to `MAX_HARDWARE_CLIP_PLANES` of
  * the supplied collection, given the unencoded camera position the
@@ -130,7 +140,7 @@ const DPRIME_ROUND_TRIP_TOLERANCE_METERS = 1e-2;
  * (no clip).
  */
 export function computeClipPlaneDPrimes(
-  collection: any,
+  collection: ClipPlaneCollectionLike | null | undefined,
   cameraInPlaneSpace: { x: number; y: number; z: number } | null | undefined,
   out: Float32Array,
 ): void {
@@ -215,7 +225,7 @@ export function computeClipPlaneDPrimes(
  * @param label  Identifier for the error message
  */
 export function assertClipPlaneDPrimeRoundTrip(
-  collection: any,
+  collection: ClipPlaneCollectionLike | null | undefined,
   cameraInPlaneSpace: { x: number; y: number; z: number } | null | undefined,
   packedQuads: Float32Array,
   testPositionMC: { x: number; y: number; z: number },

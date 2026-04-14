@@ -63,7 +63,11 @@ class TileAvailability {
     for (let i = 0; i < rootNodes.length; ++i) {
       const rootNode = rootNodes[i];
       if (rectanglesOverlap(rootNode.extent, rectangleWithLevel)) {
-        putRectangleInQuadtree(this._maximumLevel, rootNode, rectangleWithLevel);
+        putRectangleInQuadtree(
+          this._maximumLevel,
+          rootNode,
+          rectangleWithLevel,
+        );
       }
     }
   }

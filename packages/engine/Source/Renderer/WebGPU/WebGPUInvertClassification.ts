@@ -19,7 +19,7 @@ interface InvertClassificationCache {
   classifiedTexture: GPUTexture | null;
   classifiedTextureView: GPUTextureView | null;
   sampler: GPUSampler | null;
-  framebuffer: any | null;
+  framebuffer: CesiumOpaqueFramebuffer | null;
   command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   width: number;
@@ -70,7 +70,7 @@ function updateWebGPUInvertClassification(
   invertClass: CesiumObjectWithWebGPUCache,
   context: CesiumGraphicsContext,
   numSamples: number,
-  globeFramebuffer: any,
+  globeFramebuffer: CesiumOpaqueFramebuffer | undefined,
 ): void {
   const device: GPUDevice = context.device;
 
@@ -215,7 +215,9 @@ function updateWebGPUInvertClassification(
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 }
 
-function destroyWebGPUInvertClassificationResources(invertClass: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUInvertClassificationResources(
+  invertClass: CesiumObjectWithWebGPUCache,
+): void {
   const cache = invertClass._webgpuCache as
     | InvertClassificationCache
     | undefined;

@@ -729,9 +729,9 @@ function initializeMaterial(options, result, MaterialConstructor) {
   const uniformBuffer = new MaterialUniformBuffer(result.uniforms);
   result._uniformBuffer = uniformBuffer;
   const facade = uniformBuffer.createFacade();
-  // Migrate any texture references that createUniform stored in result.uniforms
-  // but that are also used by the _uniforms getter closures.
-  const oldUniforms = result.uniforms;
+  // Replace result.uniforms with the facade backed by the GPU buffer.
+  // The _uniforms getter closures close over `material.uniforms[id]` and
+  // continue to work through the facade's getter/setter proxying.
   result.uniforms = facade;
   // The _uniforms getter functions close over `material.uniforms[uniformId]`.
   // Since we replaced result.uniforms with a facade that has the same

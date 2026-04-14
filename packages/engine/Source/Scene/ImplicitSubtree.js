@@ -266,7 +266,11 @@ class ImplicitSubtree {
    * @private
    */
   getContentMetadataView(implicitCoordinates, contentIndex) {
-    const entityId = getContentEntityId(this, implicitCoordinates, contentIndex);
+    const entityId = getContentEntityId(
+      this,
+      implicitCoordinates,
+      contentIndex,
+    );
     if (!defined(entityId)) {
       return undefined;
     }

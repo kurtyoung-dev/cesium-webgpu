@@ -48,6 +48,14 @@ class WasmHeightmapBridge {
   }
 
   /**
+   * Whether the loaded WASM module has SIMD enabled.
+   * @type {boolean}
+   */
+  get simdActive() {
+    return _simdActive;
+  }
+
+  /**
    * Load the WASM module asynchronously. Safe to call multiple times.
    * @returns {Promise<boolean>} true if WASM loaded successfully
    */
@@ -66,7 +74,7 @@ class WasmHeightmapBridge {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          '../../ThirdParty/Workers/cesium_wasm.js'
+          "../../ThirdParty/Workers/cesium_wasm.js"
         );
         await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "heightmap");
@@ -75,7 +83,10 @@ class WasmHeightmapBridge {
         _wasmReady = true;
         return true;
       } catch (e) {
-        console.warn('[CesiumJS:WASM:heightmap] WASM load failed, using JS fallback:', e.message);
+        console.warn(
+          "[CesiumJS:WASM:heightmap] WASM load failed, using JS fallback:",
+          e.message,
+        );
         _wasmReady = false;
         return false;
       }
@@ -95,17 +106,38 @@ class WasmHeightmapBridge {
    * @param {Float32Array} outHeights - Pre-allocated output array
    * @returns {number} Number of samples decoded
    */
-  decodeHeightmap(rawBytes, bytesPerElement, isBigEndian, heightScale, heightOffset, outHeights) {
+  decodeHeightmap(
+    rawBytes,
+    bytesPerElement,
+    isBigEndian,
+    heightScale,
+    heightOffset,
+    outHeights,
+  ) {
     const sampleCount = rawBytes.byteLength / bytesPerElement;
     this._decodeCount++;
 
     if (_wasmReady && sampleCount >= this._threshold) {
       this._lastWasmUsed = true;
-      return this._decodeWasm(rawBytes, bytesPerElement, isBigEndian, heightScale, heightOffset, outHeights);
+      return this._decodeWasm(
+        rawBytes,
+        bytesPerElement,
+        isBigEndian,
+        heightScale,
+        heightOffset,
+        outHeights,
+      );
     }
 
     this._lastWasmUsed = false;
-    return this._decodeJS(rawBytes, bytesPerElement, isBigEndian, heightScale, heightOffset, outHeights);
+    return this._decodeJS(
+      rawBytes,
+      bytesPerElement,
+      isBigEndian,
+      heightScale,
+      heightOffset,
+      outHeights,
+    );
   }
 
   /** @private */
@@ -125,19 +157,34 @@ class WasmHeightmapBridge {
       new Uint8Array(memBuf, ptr, byteCount).set(rawBytes);
       const outPtr = ptr + byteCount;
 
-      _wasmModule.decode_heightmap(ptr, byteCount, bpe, bigEndian, scale, offset, outPtr);
+      _wasmModule.decode_heightmap(
+        ptr,
+        byteCount,
+        bpe,
+        bigEndian,
+        scale,
+        offset,
+        outPtr,
+      );
 
       out.set(new Float32Array(memBuf, outPtr, sampleCount));
       return sampleCount;
     } catch (e) {
-      console.warn('[CesiumJS:WASM:heightmap] decode failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:heightmap] decode failed, using JS fallback:",
+        e.message,
+      );
       return this._decodeJS(rawBytes, bpe, bigEndian, scale, offset, out);
     }
   }
 
   /** @private */
   _decodeJS(rawBytes, bpe, bigEndian, scale, offset, out) {
-    const view = new DataView(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength);
+    const view = new DataView(
+      rawBytes.buffer,
+      rawBytes.byteOffset,
+      rawBytes.byteLength,
+    );
     const count = rawBytes.byteLength / bpe;
 
     for (let i = 0; i < count; i++) {
@@ -146,9 +193,13 @@ class WasmHeightmapBridge {
       if (bpe === 1) {
         raw = rawBytes[byteOff];
       } else if (bpe === 2) {
-        raw = bigEndian ? view.getUint16(byteOff, false) : view.getUint16(byteOff, true);
+        raw = bigEndian
+          ? view.getUint16(byteOff, false)
+          : view.getUint16(byteOff, true);
       } else {
-        raw = bigEndian ? view.getFloat32(byteOff, false) : view.getFloat32(byteOff, true);
+        raw = bigEndian
+          ? view.getFloat32(byteOff, false)
+          : view.getFloat32(byteOff, true);
       }
       out[i] = raw * scale + offset;
     }

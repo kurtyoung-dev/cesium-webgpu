@@ -98,4 +98,41 @@ class PolylineArrowMaterialProperty {
 
 const timeScratch = new JulianDate();
 
+Object.defineProperties(PolylineArrowMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof PolylineArrowMaterialProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return Property.isConstant(this._color);
+    },
+  },
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof PolylineArrowMaterialProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+  /**
+   * Gets or sets the {@link Color} {@link Property}.
+   * @memberof PolylineArrowMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.WHITE
+   */
+  color: createPropertyDescriptor("color"),
+});
+
 export default PolylineArrowMaterialProperty;

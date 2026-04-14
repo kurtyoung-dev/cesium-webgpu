@@ -423,7 +423,9 @@ class TweenCollection {
       throw new DeveloperError("material is required.");
     }
     if (!defined(material.uniforms.offset)) {
-      throw new DeveloperError("material.uniforms must have an offset property.");
+      throw new DeveloperError(
+        "material.uniforms must have an offset property.",
+      );
     }
     //>>includeEnd('debug');
 

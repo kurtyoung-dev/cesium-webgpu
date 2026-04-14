@@ -552,9 +552,7 @@ function createWebGPUCommands(
     );
     cache.materialBindGroup = device.createBindGroup({
       layout: cache.materialBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.materialBuffer } },
-      ],
+      entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
     });
 
     // Default placeholder texture for textured shaders
@@ -863,9 +861,7 @@ function createWebGPUCommands(
     // ── Camera bind group — group(0) ──
     cache.cameraBindGroups[i] = device.createBindGroup({
       layout: cache.cameraBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.cameraBuffers[i] } },
-      ],
+      entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
     const pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE;
@@ -1492,9 +1488,7 @@ function createWebGPUMaterialCommands(
   if (!defined(cache.materialBindGroup)) {
     cache.materialBindGroup = device.createBindGroup({
       layout: cache.materialBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.materialBuffer } },
-      ],
+      entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
     });
   }
 
@@ -1566,9 +1560,7 @@ function createWebGPUMaterialCommands(
     // Camera bind group — group(0)
     cache.cameraBindGroups[i] = device.createBindGroup({
       layout: cache.cameraBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.cameraBuffers[i] } },
-      ],
+      entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
     // Build bind group array: [camera, material, texture?]

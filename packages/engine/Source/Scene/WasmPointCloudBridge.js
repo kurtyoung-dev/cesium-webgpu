@@ -43,28 +43,41 @@ class WasmPointCloudBridge {
     this._gpuSortFRChecked = false;
   }
 
-  get threshold() { return this._threshold; }
-  set threshold(value) { this._threshold = value; }
-  get wasmReady() { return _wasmReady; }
+  get threshold() {
+    return this._threshold;
+  }
+  set threshold(value) {
+    this._threshold = value;
+  }
+  get wasmReady() {
+    return _wasmReady;
+  }
 
   async loadWasm() {
-    if (_wasmReady) return true;
-    if (_wasmLoading) return _wasmLoading;
+    if (_wasmReady) {
+      return true;
+    }
+    if (_wasmLoading) {
+      return _wasmLoading;
+    }
     WasmFeatureDetection.checkSIMDSupport();
     _wasmLoading = (async () => {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          '../../ThirdParty/Workers/cesium_wasm.js'
+          "../../ThirdParty/Workers/cesium_wasm.js"
         );
         await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "pointcloud");
-        _simdActive = WasmFeatureDetection.checkModuleSIMD(module, "pointcloud");
+        _simdActive = WasmFeatureDetection.checkModuleSIMD(
+          module,
+          "pointcloud",
+        );
         _wasmModule = module;
         _wasmReady = true;
         return true;
       } catch (e) {
-        console.warn('[CesiumJS:WASM:pointcloud] Load failed:', e.message);
+        console.warn("[CesiumJS:WASM:pointcloud] Load failed:", e.message);
         return false;
       }
     })();
@@ -83,11 +96,29 @@ class WasmPointCloudBridge {
    * @param {number} count - Number of points
    * @param {Float32Array} outDistSq - Output squared distances
    */
-  batchDistanceSquared(pointsX, pointsY, pointsZ, camX, camY, camZ, count, outDistSq) {
+  batchDistanceSquared(
+    pointsX,
+    pointsY,
+    pointsZ,
+    camX,
+    camY,
+    camZ,
+    count,
+    outDistSq,
+  ) {
     this._processCount++;
     if (_wasmReady && count >= this._threshold) {
       this._lastWasmUsed = true;
-      this._distWasm(pointsX, pointsY, pointsZ, camX, camY, camZ, count, outDistSq);
+      this._distWasm(
+        pointsX,
+        pointsY,
+        pointsZ,
+        camX,
+        camY,
+        camZ,
+        count,
+        outDistSq,
+      );
       return;
     }
     this._lastWasmUsed = false;
@@ -110,13 +141,27 @@ class WasmPointCloudBridge {
 
       new Float32Array(buf, ptr, count).set(px.subarray(0, count));
       new Float32Array(buf, ptr + arrayBytes, count).set(py.subarray(0, count));
-      new Float32Array(buf, ptr + arrayBytes * 2, count).set(pz.subarray(0, count));
+      new Float32Array(buf, ptr + arrayBytes * 2, count).set(
+        pz.subarray(0, count),
+      );
       const outPtr = ptr + arrayBytes * 3;
 
-      _wasmModule.batch_distance_squared(ptr, ptr + arrayBytes, ptr + arrayBytes * 2, cx, cy, cz, count, outPtr);
+      _wasmModule.batch_distance_squared(
+        ptr,
+        ptr + arrayBytes,
+        ptr + arrayBytes * 2,
+        cx,
+        cy,
+        cz,
+        count,
+        outPtr,
+      );
       out.set(new Float32Array(buf, outPtr, count));
     } catch (e) {
-      console.warn('[CesiumJS:WASM:pointcloud] dist failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:pointcloud] dist failed, using JS fallback:",
+        e.message,
+      );
       this._distJS(px, py, pz, cx, cy, cz, count, out);
     }
   }
@@ -168,7 +213,10 @@ class WasmPointCloudBridge {
       visibility.set(new Uint8Array(buf, visPtr, count));
       return visCount;
     } catch (e) {
-      console.warn('[CesiumJS:WASM:pointcloud] lodFilter failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:pointcloud] lodFilter failed, using JS fallback:",
+        e.message,
+      );
       return this._lodFilterJS(distSq, thresholdSq, count, visibility);
     }
   }
@@ -212,11 +260,41 @@ class WasmPointCloudBridge {
    * @param {Uint8Array} visibility - Output visibility flags
    * @returns {number} Number of visible nodes
    */
-  batchAABBFrustumTest(centerX, centerY, centerZ, halfX, halfY, halfZ, planes, count, visibility) {
+  batchAABBFrustumTest(
+    centerX,
+    centerY,
+    centerZ,
+    halfX,
+    halfY,
+    halfZ,
+    planes,
+    count,
+    visibility,
+  ) {
     if (_wasmReady && count >= this._threshold) {
-      return this._aabbWasm(centerX, centerY, centerZ, halfX, halfY, halfZ, planes, count, visibility);
+      return this._aabbWasm(
+        centerX,
+        centerY,
+        centerZ,
+        halfX,
+        halfY,
+        halfZ,
+        planes,
+        count,
+        visibility,
+      );
     }
-    return this._aabbJS(centerX, centerY, centerZ, halfX, halfY, halfZ, planes, count, visibility);
+    return this._aabbJS(
+      centerX,
+      centerY,
+      centerZ,
+      halfX,
+      halfY,
+      halfZ,
+      planes,
+      count,
+      visibility,
+    );
   }
 
   /** @private */
@@ -235,25 +313,41 @@ class WasmPointCloudBridge {
       const buf = memory.buffer;
 
       let off = ptr;
-      new Float32Array(buf, off, count).set(cx.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, count).set(cy.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, count).set(cz.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, count).set(hx.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, count).set(hy.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, count).set(hz.subarray(0, count)); off += arrayBytes;
-      new Float32Array(buf, off, 24).set(planes); off += planeBytes;
+      new Float32Array(buf, off, count).set(cx.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, count).set(cy.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, count).set(cz.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, count).set(hx.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, count).set(hy.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, count).set(hz.subarray(0, count));
+      off += arrayBytes;
+      new Float32Array(buf, off, 24).set(planes);
+      off += planeBytes;
 
       const visPtr = off;
       const visCount = _wasmModule.batch_aabb_frustum_test(
-        ptr, ptr + arrayBytes, ptr + arrayBytes * 2,
-        ptr + arrayBytes * 3, ptr + arrayBytes * 4, ptr + arrayBytes * 5,
-        ptr + arrayBytes * 6, count, visPtr
+        ptr,
+        ptr + arrayBytes,
+        ptr + arrayBytes * 2,
+        ptr + arrayBytes * 3,
+        ptr + arrayBytes * 4,
+        ptr + arrayBytes * 5,
+        ptr + arrayBytes * 6,
+        count,
+        visPtr,
       );
 
       vis.set(new Uint8Array(buf, visPtr, count));
       return visCount;
     } catch (e) {
-      console.warn('[CesiumJS:WASM:pointcloud] aabb test failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:pointcloud] aabb test failed, using JS fallback:",
+        e.message,
+      );
       return this._aabbJS(cx, cy, cz, hx, hy, hz, planes, count, vis);
     }
   }
@@ -261,7 +355,10 @@ class WasmPointCloudBridge {
   /** @private */
   _aabbJS(cx, cy, cz, hx, hy, hz, planes, count, vis) {
     let visCount = 0;
-    const pnx = [], pny = [], pnz = [], pd = [];
+    const pnx = [],
+      pny = [],
+      pnz = [],
+      pd = [];
     for (let p = 0; p < 6; p++) {
       pnx[p] = planes[p * 4];
       pny[p] = planes[p * 4 + 1];
@@ -273,14 +370,19 @@ class WasmPointCloudBridge {
       let visible = true;
       for (let p = 0; p < 6; p++) {
         const dist = pnx[p] * cx[i] + pny[p] * cy[i] + pnz[p] * cz[i] + pd[p];
-        const effRadius = Math.abs(pnx[p]) * hx[i] + Math.abs(pny[p]) * hy[i] + Math.abs(pnz[p]) * hz[i];
+        const effRadius =
+          Math.abs(pnx[p]) * hx[i] +
+          Math.abs(pny[p]) * hy[i] +
+          Math.abs(pnz[p]) * hz[i];
         if (dist < -effRadius) {
           visible = false;
           break;
         }
       }
       vis[i] = visible ? 1 : 0;
-      if (visible) visCount++;
+      if (visible) {
+        visCount++;
+      }
     }
     return visCount;
   }

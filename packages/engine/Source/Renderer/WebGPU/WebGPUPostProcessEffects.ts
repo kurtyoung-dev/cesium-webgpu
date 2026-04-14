@@ -33,7 +33,10 @@ function createFullscreenPipeline(
   format: GPUTextureFormat,
   bindGroupLayout: GPUBindGroupLayout,
 ): GPURenderPipeline {
-  const module = device.createShaderModule({ label: `${label}-Shader`, code: wgsl });
+  const module = device.createShaderModule({
+    label: `${label}-Shader`,
+    code: wgsl,
+  });
   const pipelineLayout = device.createPipelineLayout({
     label: `${label}-PipelineLayout`,
     bindGroupLayouts: [bindGroupLayout],
@@ -62,7 +65,11 @@ function createTexture(
   });
 }
 
-function createUniformBuffer(device: GPUDevice, label: string, data: Float32Array): GPUBuffer {
+function createUniformBuffer(
+  device: GPUDevice,
+  label: string,
+  data: Float32Array,
+): GPUBuffer {
   const buf = device.createBuffer({
     label,
     size: Math.max(data.byteLength, 16),
@@ -81,12 +88,14 @@ function executePass(
 ): void {
   const pass = encoder.beginRenderPass({
     label,
-    colorAttachments: [{
-      view: targetView,
-      loadOp: "clear" as GPULoadOp,
-      storeOp: "store" as GPUStoreOp,
-      clearValue: { r: 0, g: 0, b: 0, a: 1 },
-    }],
+    colorAttachments: [
+      {
+        view: targetView,
+        loadOp: "clear" as GPULoadOp,
+        storeOp: "store" as GPUStoreOp,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      },
+    ],
   });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
@@ -101,7 +110,12 @@ function executePass(
 export interface PostProcessEffect {
   readonly name: string;
   enabled: boolean;
-  initialize(device: GPUDevice, width: number, height: number, format: GPUTextureFormat): void;
+  initialize(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    format: GPUTextureFormat,
+  ): void;
   resize(width: number, height: number): void;
   /**
    * Execute the effect. Returns the texture view containing the result.
@@ -124,10 +138,10 @@ export interface PostProcessEffect {
 // ======================================================================
 
 export interface BloomConfig {
-  threshold?: number;     // Luminance threshold for bright pass (default 0.8)
-  intensity?: number;     // Bloom glow intensity (default 0.5)
-  sigma?: number;         // Gaussian sigma for blur (default 3.5)
-  glowOnly?: boolean;     // Debug: show only the glow
+  threshold?: number; // Luminance threshold for bright pass (default 0.8)
+  intensity?: number; // Bloom glow intensity (default 0.5)
+  sigma?: number; // Gaussian sigma for blur (default 3.5)
+  glowOnly?: boolean; // Debug: show only the glow
 }
 
 export class BloomEffect implements PostProcessEffect {
@@ -176,7 +190,12 @@ export class BloomEffect implements PostProcessEffect {
     };
   }
 
-  initialize(device: GPUDevice, width: number, height: number, format: GPUTextureFormat): void {
+  initialize(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    format: GPUTextureFormat,
+  ): void {
     this._device = device;
     this._width = width;
     this._height = height;
@@ -191,7 +210,8 @@ export class BloomEffect implements PostProcessEffect {
   }
 
   resize(width: number, height: number): void {
-    if (!this._device || (width === this._width && height === this._height)) return;
+    if (!this._device || (width === this._width && height === this._height))
+      return;
     this._destroyTextures();
     this.initialize(this._device, width, height, this._format);
   }
@@ -214,7 +234,13 @@ export class BloomEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._brightUniforms! } },
       ],
     });
-    executePass(encoder, "Bloom-BrightPass", this._brightPassPipeline!, brightBG, this._brightView!);
+    executePass(
+      encoder,
+      "Bloom-BrightPass",
+      this._brightPassPipeline!,
+      brightBG,
+      this._brightView!,
+    );
 
     // Pass 2: Horizontal Gaussian blur
     const blurHBG = this._device.createBindGroup({
@@ -226,7 +252,13 @@ export class BloomEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
     });
-    executePass(encoder, "Bloom-BlurH", this._blurHPipeline!, blurHBG, this._blurTempView!);
+    executePass(
+      encoder,
+      "Bloom-BlurH",
+      this._blurHPipeline!,
+      blurHBG,
+      this._blurTempView!,
+    );
 
     // Pass 3: Vertical Gaussian blur
     const blurVBG = this._device.createBindGroup({
@@ -238,7 +270,13 @@ export class BloomEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
     });
-    executePass(encoder, "Bloom-BlurV", this._blurVPipeline!, blurVBG, this._blurResultView!);
+    executePass(
+      encoder,
+      "Bloom-BlurV",
+      this._blurVPipeline!,
+      blurVBG,
+      this._blurResultView!,
+    );
 
     // Pass 4: Composite bloom + original scene
     const compositeBG = this._device.createBindGroup({
@@ -251,30 +289,70 @@ export class BloomEffect implements PostProcessEffect {
         { binding: 3, resource: { buffer: this._compositeUniforms! } },
       ],
     });
-    executePass(encoder, "Bloom-Composite", this._compositePipeline!, compositeBG, this._compositeView!);
+    executePass(
+      encoder,
+      "Bloom-Composite",
+      this._compositePipeline!,
+      compositeBG,
+      this._compositeView!,
+    );
 
     return this._compositeView!;
   }
 
-  private _createTextures(device: GPUDevice, hw: number, hh: number, format: GPUTextureFormat): void {
+  private _createTextures(
+    device: GPUDevice,
+    hw: number,
+    hh: number,
+    format: GPUTextureFormat,
+  ): void {
     this._brightTex = createTexture(device, "Bloom-Bright", hw, hh, format);
     this._brightView = this._brightTex.createView();
     this._blurTempTex = createTexture(device, "Bloom-BlurTemp", hw, hh, format);
     this._blurTempView = this._blurTempTex.createView();
-    this._blurResultTex = createTexture(device, "Bloom-BlurResult", hw, hh, format);
+    this._blurResultTex = createTexture(
+      device,
+      "Bloom-BlurResult",
+      hw,
+      hh,
+      format,
+    );
     this._blurResultView = this._blurResultTex.createView();
-    this._compositeTex = createTexture(device, "Bloom-Composite", this._width, this._height, format);
+    this._compositeTex = createTexture(
+      device,
+      "Bloom-Composite",
+      this._width,
+      this._height,
+      format,
+    );
     this._compositeView = this._compositeTex.createView();
   }
 
-  private _createPipelines(device: GPUDevice, format: GPUTextureFormat, hw: number, hh: number): void {
+  private _createPipelines(
+    device: GPUDevice,
+    format: GPUTextureFormat,
+    hw: number,
+    hh: number,
+  ): void {
     // Single-texture layout: texture + sampler + uniform
     this._singleTexLayout = device.createBindGroupLayout({
       label: "Bloom-SingleTex-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -282,36 +360,106 @@ export class BloomEffect implements PostProcessEffect {
     this._compositeLayout = device.createBindGroupLayout({
       label: "Bloom-Composite-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
-    this._brightPassPipeline = createFullscreenPipeline(device, "Bloom-BrightPass", BrightPassWGSL, format, this._singleTexLayout);
-    this._blurHPipeline = createFullscreenPipeline(device, "Bloom-BlurH", GaussianBlur1DWGSL, format, this._singleTexLayout);
-    this._blurVPipeline = createFullscreenPipeline(device, "Bloom-BlurV", GaussianBlur1DWGSL, format, this._singleTexLayout);
-    this._compositePipeline = createFullscreenPipeline(device, "Bloom-Composite", BloomCompositeWGSL, format, this._compositeLayout);
+    this._brightPassPipeline = createFullscreenPipeline(
+      device,
+      "Bloom-BrightPass",
+      BrightPassWGSL,
+      format,
+      this._singleTexLayout,
+    );
+    this._blurHPipeline = createFullscreenPipeline(
+      device,
+      "Bloom-BlurH",
+      GaussianBlur1DWGSL,
+      format,
+      this._singleTexLayout,
+    );
+    this._blurVPipeline = createFullscreenPipeline(
+      device,
+      "Bloom-BlurV",
+      GaussianBlur1DWGSL,
+      format,
+      this._singleTexLayout,
+    );
+    this._compositePipeline = createFullscreenPipeline(
+      device,
+      "Bloom-Composite",
+      BloomCompositeWGSL,
+      format,
+      this._compositeLayout,
+    );
   }
 
   private _createUniforms(device: GPUDevice, hw: number, hh: number): void {
     const cfg = this._config;
     // BrightPass: threshold, contrast, bias, averageLuminance
-    this._brightUniforms = createUniformBuffer(device, "Bloom-BrightPass-UB",
-      new Float32Array([cfg.threshold, 1.0, 0.0, 0.5]));
+    this._brightUniforms = createUniformBuffer(
+      device,
+      "Bloom-BrightPass-UB",
+      new Float32Array([cfg.threshold, 1.0, 0.0, 0.5]),
+    );
 
     // BlurH: delta, sigma, direction=0, stepSize=1
-    this._blurHUniforms = createUniformBuffer(device, "Bloom-BlurH-UB",
-      new Float32Array([1.0, cfg.sigma, 0.0, 1.0, 1.0 / hw, 1.0 / hh, 1.0, 0.0]));
+    this._blurHUniforms = createUniformBuffer(
+      device,
+      "Bloom-BlurH-UB",
+      new Float32Array([
+        1.0,
+        cfg.sigma,
+        0.0,
+        1.0,
+        1.0 / hw,
+        1.0 / hh,
+        1.0,
+        0.0,
+      ]),
+    );
 
     // BlurV: delta, sigma, direction=1, stepSize=1
-    this._blurVUniforms = createUniformBuffer(device, "Bloom-BlurV-UB",
-      new Float32Array([1.0, cfg.sigma, 1.0, 1.0, 1.0 / hw, 1.0 / hh, 1.0, 0.0]));
+    this._blurVUniforms = createUniformBuffer(
+      device,
+      "Bloom-BlurV-UB",
+      new Float32Array([
+        1.0,
+        cfg.sigma,
+        1.0,
+        1.0,
+        1.0 / hw,
+        1.0 / hh,
+        1.0,
+        0.0,
+      ]),
+    );
 
     // Composite: glowOnly, intensity
-    this._compositeUniforms = createUniformBuffer(device, "Bloom-Composite-UB",
-      new Float32Array([cfg.glowOnly ? 1.0 : 0.0, cfg.intensity, 0.0, 0.0]));
+    this._compositeUniforms = createUniformBuffer(
+      device,
+      "Bloom-Composite-UB",
+      new Float32Array([cfg.glowOnly ? 1.0 : 0.0, cfg.intensity, 0.0, 0.0]),
+    );
   }
 
   /** Update bloom parameters at runtime. */
@@ -324,12 +472,28 @@ export class BloomEffect implements PostProcessEffect {
     if (config.glowOnly !== undefined) cfg.glowOnly = config.glowOnly;
 
     if (this._brightUniforms) {
-      this._device.queue.writeBuffer(this._brightUniforms, 0,
-        new Float32Array([cfg.threshold, 1.0, 0.0, 0.5]) as Float32Array<ArrayBuffer>);
+      this._device.queue.writeBuffer(
+        this._brightUniforms,
+        0,
+        new Float32Array([
+          cfg.threshold,
+          1.0,
+          0.0,
+          0.5,
+        ]) as Float32Array<ArrayBuffer>,
+      );
     }
     if (this._compositeUniforms) {
-      this._device.queue.writeBuffer(this._compositeUniforms, 0,
-        new Float32Array([cfg.glowOnly ? 1.0 : 0.0, cfg.intensity, 0.0, 0.0]) as Float32Array<ArrayBuffer>);
+      this._device.queue.writeBuffer(
+        this._compositeUniforms,
+        0,
+        new Float32Array([
+          cfg.glowOnly ? 1.0 : 0.0,
+          cfg.intensity,
+          0.0,
+          0.0,
+        ]) as Float32Array<ArrayBuffer>,
+      );
     }
   }
 
@@ -359,12 +523,12 @@ export class BloomEffect implements PostProcessEffect {
 // ======================================================================
 
 export interface AmbientOcclusionConfig {
-  intensity?: number;     // AO intensity (default 3.0)
-  bias?: number;          // Depth bias to avoid self-occlusion (default 0.1)
-  lengthCap?: number;     // Max sample radius in eye space (default 0.26)
-  stepCount?: number;     // Radial steps per direction (default 4)
+  intensity?: number; // AO intensity (default 3.0)
+  bias?: number; // Depth bias to avoid self-occlusion (default 0.1)
+  lengthCap?: number; // Max sample radius in eye space (default 0.26)
+  stepCount?: number; // Radial steps per direction (default 4)
   directionCount?: number; // Number of sample directions (default 4)
-  blurSigma?: number;     // Blur sigma (default 2.0)
+  blurSigma?: number; // Blur sigma (default 2.0)
   ambientOcclusionOnly?: boolean; // Debug: show AO only
 }
 
@@ -422,7 +586,12 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     };
   }
 
-  initialize(device: GPUDevice, width: number, height: number, format: GPUTextureFormat): void {
+  initialize(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    format: GPUTextureFormat,
+  ): void {
     this._device = device;
     this._width = width;
     this._height = height;
@@ -435,7 +604,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   }
 
   resize(width: number, height: number): void {
-    if (!this._device || (width === this._width && height === this._height)) return;
+    if (!this._device || (width === this._width && height === this._height))
+      return;
     this._destroyTextures();
     this.initialize(this._device, width, height, this._format);
   }
@@ -459,7 +629,13 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         { binding: 3, resource: { buffer: this._generateUniforms! } },
       ],
     });
-    executePass(encoder, "AO-Generate", this._generatePipeline!, genBG, this._aoRawView!);
+    executePass(
+      encoder,
+      "AO-Generate",
+      this._generatePipeline!,
+      genBG,
+      this._aoRawView!,
+    );
 
     // Pass 2: Horizontal blur on AO
     const blurHBG = this._device.createBindGroup({
@@ -471,7 +647,13 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
     });
-    executePass(encoder, "AO-BlurH", this._blurHPipeline!, blurHBG, this._aoBlurTempView!);
+    executePass(
+      encoder,
+      "AO-BlurH",
+      this._blurHPipeline!,
+      blurHBG,
+      this._aoBlurTempView!,
+    );
 
     // Pass 3: Vertical blur on AO
     const blurVBG = this._device.createBindGroup({
@@ -483,7 +665,13 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
     });
-    executePass(encoder, "AO-BlurV", this._blurVPipeline!, blurVBG, this._aoBlurredView!);
+    executePass(
+      encoder,
+      "AO-BlurV",
+      this._blurVPipeline!,
+      blurVBG,
+      this._aoBlurredView!,
+    );
 
     // Pass 4: Modulate scene color with blurred AO
     const modBG = this._device.createBindGroup({
@@ -496,12 +684,23 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         { binding: 3, resource: { buffer: this._modulateUniforms! } },
       ],
     });
-    executePass(encoder, "AO-Modulate", this._modulatePipeline!, modBG, this._outputView!);
+    executePass(
+      encoder,
+      "AO-Modulate",
+      this._modulatePipeline!,
+      modBG,
+      this._outputView!,
+    );
 
     return this._outputView!;
   }
 
-  private _createTextures(device: GPUDevice, w: number, h: number, format: GPUTextureFormat): void {
+  private _createTextures(
+    device: GPUDevice,
+    w: number,
+    h: number,
+    format: GPUTextureFormat,
+  ): void {
     this._aoRawTex = createTexture(device, "AO-Raw", w, h, format);
     this._aoRawView = this._aoRawTex.createView();
     this._aoBlurTempTex = createTexture(device, "AO-BlurTemp", w, h, format);
@@ -541,10 +740,26 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     this._generateLayout = device.createBindGroupLayout({
       label: "AO-Generate-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -552,9 +767,21 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     this._blurLayout = device.createBindGroupLayout({
       label: "AO-Blur-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -562,17 +789,57 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     this._modulateLayout = device.createBindGroupLayout({
       label: "AO-Modulate-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
-    this._generatePipeline = createFullscreenPipeline(device, "AO-Generate", AmbientOcclusionGenerateWGSL, format, this._generateLayout);
-    this._blurHPipeline = createFullscreenPipeline(device, "AO-BlurH", GaussianBlur1DWGSL, format, this._blurLayout);
-    this._blurVPipeline = createFullscreenPipeline(device, "AO-BlurV", GaussianBlur1DWGSL, format, this._blurLayout);
-    this._modulatePipeline = createFullscreenPipeline(device, "AO-Modulate", AmbientOcclusionModulateWGSL, format, this._modulateLayout);
+    this._generatePipeline = createFullscreenPipeline(
+      device,
+      "AO-Generate",
+      AmbientOcclusionGenerateWGSL,
+      format,
+      this._generateLayout,
+    );
+    this._blurHPipeline = createFullscreenPipeline(
+      device,
+      "AO-BlurH",
+      GaussianBlur1DWGSL,
+      format,
+      this._blurLayout,
+    );
+    this._blurVPipeline = createFullscreenPipeline(
+      device,
+      "AO-BlurV",
+      GaussianBlur1DWGSL,
+      format,
+      this._blurLayout,
+    );
+    this._modulatePipeline = createFullscreenPipeline(
+      device,
+      "AO-Modulate",
+      AmbientOcclusionModulateWGSL,
+      format,
+      this._modulateLayout,
+    );
   }
 
   private _createUniforms(device: GPUDevice): void {
@@ -581,22 +848,65 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     const h = this._height;
 
     // Generate: intensity, bias, lengthCap, stepCount | directionCount, 1/w, 1/h, randomTexSize | near, far, 0, 0 | pad
-    this._generateUniforms = createUniformBuffer(device, "AO-Generate-UB", new Float32Array([
-      cfg.intensity, cfg.bias, cfg.lengthCap, cfg.stepCount,
-      cfg.directionCount, 1.0 / w, 1.0 / h, 4.0,
-      0.1, 10000.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0,
-    ]));
+    this._generateUniforms = createUniformBuffer(
+      device,
+      "AO-Generate-UB",
+      new Float32Array([
+        cfg.intensity,
+        cfg.bias,
+        cfg.lengthCap,
+        cfg.stepCount,
+        cfg.directionCount,
+        1.0 / w,
+        1.0 / h,
+        4.0,
+        0.1,
+        10000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+      ]),
+    );
 
     // BlurH/V: same as bloom blur uniforms
-    this._blurHUniforms = createUniformBuffer(device, "AO-BlurH-UB",
-      new Float32Array([1.0, cfg.blurSigma, 0.0, 1.0, 1.0 / w, 1.0 / h, 1.0, 0.0]));
-    this._blurVUniforms = createUniformBuffer(device, "AO-BlurV-UB",
-      new Float32Array([1.0, cfg.blurSigma, 1.0, 1.0, 1.0 / w, 1.0 / h, 1.0, 0.0]));
+    this._blurHUniforms = createUniformBuffer(
+      device,
+      "AO-BlurH-UB",
+      new Float32Array([
+        1.0,
+        cfg.blurSigma,
+        0.0,
+        1.0,
+        1.0 / w,
+        1.0 / h,
+        1.0,
+        0.0,
+      ]),
+    );
+    this._blurVUniforms = createUniformBuffer(
+      device,
+      "AO-BlurV-UB",
+      new Float32Array([
+        1.0,
+        cfg.blurSigma,
+        1.0,
+        1.0,
+        1.0 / w,
+        1.0 / h,
+        1.0,
+        0.0,
+      ]),
+    );
 
     // Modulate: aoOnly
-    this._modulateUniforms = createUniformBuffer(device, "AO-Modulate-UB",
-      new Float32Array([cfg.ambientOcclusionOnly ? 1.0 : 0.0, 0.0, 0.0, 0.0]));
+    this._modulateUniforms = createUniformBuffer(
+      device,
+      "AO-Modulate-UB",
+      new Float32Array([cfg.ambientOcclusionOnly ? 1.0 : 0.0, 0.0, 0.0, 0.0]),
+    );
   }
 
   /** Update AO parameters at runtime. */
@@ -637,9 +947,9 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
 // ======================================================================
 
 export interface DepthOfFieldConfig {
-  focalDistance?: number;  // Distance to focal plane (default 50.0)
-  focalRange?: number;    // Width of in-focus zone (default 20.0)
-  blurSigma?: number;     // Gaussian sigma for blur (default 4.0)
+  focalDistance?: number; // Distance to focal plane (default 50.0)
+  focalRange?: number; // Width of in-focus zone (default 20.0)
+  blurSigma?: number; // Gaussian sigma for blur (default 4.0)
 }
 
 export class DepthOfFieldEffect implements PostProcessEffect {
@@ -683,7 +993,12 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     };
   }
 
-  initialize(device: GPUDevice, width: number, height: number, format: GPUTextureFormat): void {
+  initialize(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    format: GPUTextureFormat,
+  ): void {
     this._device = device;
     this._width = width;
     this._height = height;
@@ -695,7 +1010,8 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   }
 
   resize(width: number, height: number): void {
-    if (!this._device || (width === this._width && height === this._height)) return;
+    if (!this._device || (width === this._width && height === this._height))
+      return;
     this._destroyTextures();
     this.initialize(this._device, width, height, this._format);
   }
@@ -718,7 +1034,13 @@ export class DepthOfFieldEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
     });
-    executePass(encoder, "DoF-BlurH", this._blurHPipeline!, blurHBG, this._blurTempView!);
+    executePass(
+      encoder,
+      "DoF-BlurH",
+      this._blurHPipeline!,
+      blurHBG,
+      this._blurTempView!,
+    );
 
     // Pass 2: Vertical blur
     const blurVBG = this._device.createBindGroup({
@@ -730,7 +1052,13 @@ export class DepthOfFieldEffect implements PostProcessEffect {
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
     });
-    executePass(encoder, "DoF-BlurV", this._blurVPipeline!, blurVBG, this._blurredView!);
+    executePass(
+      encoder,
+      "DoF-BlurV",
+      this._blurVPipeline!,
+      blurVBG,
+      this._blurredView!,
+    );
 
     // Pass 3: DoF composite (sharp + blurred + depth → output)
     const dofBG = this._device.createBindGroup({
@@ -744,12 +1072,23 @@ export class DepthOfFieldEffect implements PostProcessEffect {
         { binding: 4, resource: { buffer: this._dofUniforms! } },
       ],
     });
-    executePass(encoder, "DoF-Composite", this._dofPipeline!, dofBG, this._outputView!);
+    executePass(
+      encoder,
+      "DoF-Composite",
+      this._dofPipeline!,
+      dofBG,
+      this._outputView!,
+    );
 
     return this._outputView!;
   }
 
-  private _createTextures(device: GPUDevice, w: number, h: number, format: GPUTextureFormat): void {
+  private _createTextures(
+    device: GPUDevice,
+    w: number,
+    h: number,
+    format: GPUTextureFormat,
+  ): void {
     this._blurTempTex = createTexture(device, "DoF-BlurTemp", w, h, format);
     this._blurTempView = this._blurTempTex.createView();
     this._blurredTex = createTexture(device, "DoF-Blurred", w, h, format);
@@ -762,9 +1101,21 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     this._blurLayout = device.createBindGroupLayout({
       label: "DoF-Blur-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
@@ -772,17 +1123,55 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     this._dofLayout = device.createBindGroupLayout({
       label: "DoF-Composite-BGL",
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: "float" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
       ],
     });
 
-    this._blurHPipeline = createFullscreenPipeline(device, "DoF-BlurH", GaussianBlur1DWGSL, format, this._blurLayout);
-    this._blurVPipeline = createFullscreenPipeline(device, "DoF-BlurV", GaussianBlur1DWGSL, format, this._blurLayout);
-    this._dofPipeline = createFullscreenPipeline(device, "DoF-Composite", DepthOfFieldWGSL, format, this._dofLayout);
+    this._blurHPipeline = createFullscreenPipeline(
+      device,
+      "DoF-BlurH",
+      GaussianBlur1DWGSL,
+      format,
+      this._blurLayout,
+    );
+    this._blurVPipeline = createFullscreenPipeline(
+      device,
+      "DoF-BlurV",
+      GaussianBlur1DWGSL,
+      format,
+      this._blurLayout,
+    );
+    this._dofPipeline = createFullscreenPipeline(
+      device,
+      "DoF-Composite",
+      DepthOfFieldWGSL,
+      format,
+      this._dofLayout,
+    );
   }
 
   private _createUniforms(device: GPUDevice): void {
@@ -790,14 +1179,41 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     const w = this._width;
     const h = this._height;
 
-    this._blurHUniforms = createUniformBuffer(device, "DoF-BlurH-UB",
-      new Float32Array([1.0, cfg.blurSigma, 0.0, 1.0, 1.0 / w, 1.0 / h, 1.0, 0.0]));
-    this._blurVUniforms = createUniformBuffer(device, "DoF-BlurV-UB",
-      new Float32Array([1.0, cfg.blurSigma, 1.0, 1.0, 1.0 / w, 1.0 / h, 1.0, 0.0]));
+    this._blurHUniforms = createUniformBuffer(
+      device,
+      "DoF-BlurH-UB",
+      new Float32Array([
+        1.0,
+        cfg.blurSigma,
+        0.0,
+        1.0,
+        1.0 / w,
+        1.0 / h,
+        1.0,
+        0.0,
+      ]),
+    );
+    this._blurVUniforms = createUniformBuffer(
+      device,
+      "DoF-BlurV-UB",
+      new Float32Array([
+        1.0,
+        cfg.blurSigma,
+        1.0,
+        1.0,
+        1.0 / w,
+        1.0 / h,
+        1.0,
+        0.0,
+      ]),
+    );
 
     // DoF: focalDistance, focalRange, near, far
-    this._dofUniforms = createUniformBuffer(device, "DoF-Composite-UB",
-      new Float32Array([cfg.focalDistance, cfg.focalRange, 0.1, 10000.0]));
+    this._dofUniforms = createUniformBuffer(
+      device,
+      "DoF-Composite-UB",
+      new Float32Array([cfg.focalDistance, cfg.focalRange, 0.1, 10000.0]),
+    );
   }
 
   /** Update DoF parameters at runtime. */

@@ -238,7 +238,11 @@ class Timeline {
    * @private
    */
   addHighlightRange(color, heightInPx, base) {
-    const newHighlightRange = new TimelineHighlightRange(color, heightInPx, base);
+    const newHighlightRange = new TimelineHighlightRange(
+      color,
+      heightInPx,
+      base,
+    );
     this._highlightRanges.push(newHighlightRange);
     this.resize();
     return newHighlightRange;
@@ -281,7 +285,10 @@ class Timeline {
 
     this._startJulian = startTime;
     this._endJulian = stopTime;
-    this._timeBarSecondsSpan = JulianDate.secondsDifference(stopTime, startTime);
+    this._timeBarSecondsSpan = JulianDate.secondsDifference(
+      stopTime,
+      startTime,
+    );
 
     // If clock is not unbounded, clamp timeline range to clock.
     if (this._clock && this._clock.clockRange !== ClockRange.UNBOUNDED) {
@@ -499,7 +506,11 @@ class Timeline {
 
     // Width in pixels of a typical label, plus padding
     this._rulerEle.innerHTML = this.makeLabel(
-      JulianDate.addSeconds(this._endJulian, -minimumDuration, new JulianDate()),
+      JulianDate.addSeconds(
+        this._endJulian,
+        -minimumDuration,
+        new JulianDate(),
+      ),
     );
     let sampleWidth = this._rulerEle.offsetWidth + 20;
     if (sampleWidth < 30) {
@@ -549,7 +560,8 @@ class Timeline {
       }
       if (
         smallestIndex < 0 &&
-        timeBarWidth * (sc / this._timeBarSecondsSpan) >= this.smallestTicInPixels
+        timeBarWidth * (sc / this._timeBarSecondsSpan) >=
+          this.smallestTicInPixels
       ) {
         smallestIndex = ticIndex;
       }
@@ -558,7 +570,9 @@ class Timeline {
       while (ticIndex > 0) {
         // Compute sub-tic size that evenly divides main tic.
         --ticIndex;
-        if (Math.abs(remainder(mainTic, timelineTicScales[ticIndex])) < 0.00001) {
+        if (
+          Math.abs(remainder(mainTic, timelineTicScales[ticIndex])) < 0.00001
+        ) {
           if (timelineTicScales[ticIndex] >= minSize) {
             subTic = timelineTicScales[ticIndex];
           }

@@ -445,7 +445,8 @@ class ClippingPolygonCollection {
       this._signedDistanceTexture = signedDistanceTexture;
     }
 
-    this._signedDistanceComputeCommand = createSignedDistanceTextureCommand(this);
+    this._signedDistanceComputeCommand =
+      createSignedDistanceTextureCommand(this);
   }
 
   /**
@@ -560,7 +561,8 @@ class ClippingPolygonCollection {
 
     this._polygonsTexture =
       this._polygonsTexture && this._polygonsTexture.destroy();
-    this._extentsTexture = this._extentsTexture && this._extentsTexture.destroy();
+    this._extentsTexture =
+      this._extentsTexture && this._extentsTexture.destroy();
     this._signedDistanceTexture =
       this._signedDistanceTexture && this._signedDistanceTexture.destroy();
     if (this._featureRenderer) {

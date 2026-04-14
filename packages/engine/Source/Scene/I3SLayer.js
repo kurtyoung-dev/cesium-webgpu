@@ -45,7 +45,8 @@ class I3SLayer {
     this._version = layerData.store.version;
     const splitVersion = this._version.split(".");
     this._majorVersion = parseInt(splitVersion[0]);
-    this._minorVersion = splitVersion.length > 1 ? parseInt(splitVersion[1]) : 0;
+    this._minorVersion =
+      splitVersion.length > 1 ? parseInt(splitVersion[1]) : 0;
 
     this._resource = new Resource({ url: tilesetUrl });
     this._resource.setQueryParameters(
@@ -290,7 +291,10 @@ class I3SLayer {
 
     const tilesetUrl = URL.createObjectURL(tilesetBlob);
     const outlineColor = this._symbology?.defaultSymbology?.edges?.color;
-    if (defined(outlineColor) && !defined(cesium3dTilesetOptions?.outlineColor)) {
+    if (
+      defined(outlineColor) &&
+      !defined(cesium3dTilesetOptions?.outlineColor)
+    ) {
       cesium3dTilesetOptions = defined(cesium3dTilesetOptions)
         ? clone(cesium3dTilesetOptions)
         : {};

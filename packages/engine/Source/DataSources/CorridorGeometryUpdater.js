@@ -58,7 +58,12 @@ class CorridorGeometryUpdater {
       observedPropertyNames: ["availability", "corridor"],
     });
 
-    this._onEntityPropertyChanged(entity, "corridor", entity.corridor, undefined);
+    this._onEntityPropertyChanged(
+      entity,
+      "corridor",
+      entity.corridor,
+      undefined,
+    );
   }
 
   /**
@@ -104,7 +109,10 @@ class CorridorGeometryUpdater {
         defined(this._materialProperty.color) &&
         (this._materialProperty.color.isConstant || isAvailable)
       ) {
-        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+        currentColor = this._materialProperty.color.getValue(
+          time,
+          scratchColor,
+        );
       }
       if (!defined(currentColor)) {
         currentColor = Color.WHITE;

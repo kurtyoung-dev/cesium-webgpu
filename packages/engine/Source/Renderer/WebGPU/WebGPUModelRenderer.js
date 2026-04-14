@@ -135,7 +135,13 @@ function packCameraUniforms(data, frameState, modelMatrix) {
 
 // ─── Material Uniform Packing ────────────────────────────────────────────────
 
-function packMaterialUniforms(data, modelMatrix, matInfo, hasSkinning, hasMorphTargets) {
+function packMaterialUniforms(
+  data,
+  modelMatrix,
+  matInfo,
+  hasSkinning,
+  hasMorphTargets,
+) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
   // baseColorFactor (vec4)
@@ -633,7 +639,8 @@ function updateWebGPUModel(model, frameState) {
 
     // GPU Instancing: detect from node.instances and create resources
     const nodeForInst = runtimeNode.node || runtimeNode._node;
-    const hasInstancing = defined(nodeForInst) && defined(nodeForInst.instances);
+    const hasInstancing =
+      defined(nodeForInst) && defined(nodeForInst.instances);
     let instancingBG = pipelineCache.defaultInstancingBindGroup;
     let instanceCount = 1;
 
@@ -653,7 +660,9 @@ function updateWebGPUModel(model, frameState) {
         if (!defined(nodeCache.instancingBG)) {
           nodeCache.instancingBG = device.createBindGroup({
             layout: pipelineCache.instancingBGL,
-            entries: [{ binding: 0, resource: { buffer: instRes.storageBuffer } }],
+            entries: [
+              { binding: 0, resource: { buffer: instRes.storageBuffer } },
+            ],
           });
         }
         instancingBG = nodeCache.instancingBG;
@@ -722,12 +731,21 @@ function updateWebGPUModel(model, frameState) {
       const primHasSkinning = hasSkinning && primCache.hasSkinningAttributes;
 
       // Morph targets: create/update GPU resources per-primitive
-      const morphWeights = runtimeNode.morphWeights ?? runtimeNode._morphWeights;
-      const primHasMorphTargets = geometry.morphTargetCount > 0 && defined(morphWeights) && morphWeights.length > 0;
+      const morphWeights =
+        runtimeNode.morphWeights ?? runtimeNode._morphWeights;
+      const primHasMorphTargets =
+        geometry.morphTargetCount > 0 &&
+        defined(morphWeights) &&
+        morphWeights.length > 0;
       let morphTargetBG = pipelineCache.defaultMorphTargetBindGroup;
 
       if (primHasMorphTargets) {
-        const morphRes = ensureMorphTargetResources(device, primCache, geometry, morphWeights);
+        const morphRes = ensureMorphTargetResources(
+          device,
+          primCache,
+          geometry,
+          morphWeights,
+        );
         if (defined(morphRes)) {
           // Create or update the morph target bind group
           if (!defined(primCache._morphTargetBG)) {
@@ -765,7 +783,10 @@ function updateWebGPUModel(model, frameState) {
 
       // Set instancing + feature ID flags AFTER packMaterialUniforms
       {
-        const flagsView = new DataView(primCache.materialData.buffer, primCache.materialData.byteOffset);
+        const flagsView = new DataView(
+          primCache.materialData.buffer,
+          primCache.materialData.byteOffset,
+        );
         let currentFlags = flagsView.getUint32(28 * 4, true);
         if (hasInstancing && instanceCount > 1) {
           currentFlags |= FLAG_HAS_INSTANCING;

@@ -44,14 +44,18 @@ class CumulusCloud {
       this._maximumSize = Cartesian3.clone(options.maximumSize);
       this._scale = new Cartesian2(this._maximumSize.x, this._maximumSize.y);
     } else {
-      this._scale = Cartesian2.clone(options.scale ?? new Cartesian2(20.0, 12.0));
+      this._scale = Cartesian2.clone(
+        options.scale ?? new Cartesian2(20.0, 12.0),
+      );
 
       const defaultMaxSize = new Cartesian3(
         this._scale.x,
         this._scale.y,
         Math.min(this._scale.x, this._scale.y) / 1.5,
       );
-      this._maximumSize = Cartesian3.clone(options.maximumSize ?? defaultMaxSize);
+      this._maximumSize = Cartesian3.clone(
+        options.maximumSize ?? defaultMaxSize,
+      );
     }
 
     this._slice = options.slice ?? -1.0;

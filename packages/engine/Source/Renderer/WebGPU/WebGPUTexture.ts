@@ -436,12 +436,8 @@ export class WebGPUTexture {
 
     const arrayData =
       data instanceof ArrayBuffer
-        ? (new Uint8Array(data) as unknown as BufferSource)
-        : (new Uint8Array(
-            data.buffer,
-            data.byteOffset,
-            data.byteLength,
-          ) as unknown as BufferSource);
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 
     // For cube maps, treat layerOrMipLevel as layer (face index)
     // For 2D/3D textures, treat it as mip level
@@ -507,12 +503,8 @@ export class WebGPUTexture {
 
     const arrayData =
       data instanceof ArrayBuffer
-        ? (new Uint8Array(data) as unknown as BufferSource)
-        : (new Uint8Array(
-            data.buffer,
-            data.byteOffset,
-            data.byteLength,
-          ) as unknown as BufferSource);
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 
     this._device.queue.writeTexture(
       {

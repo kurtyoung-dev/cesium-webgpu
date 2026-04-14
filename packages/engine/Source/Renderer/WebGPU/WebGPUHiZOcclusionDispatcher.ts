@@ -49,8 +49,9 @@ const OCCLUSION_PARAMS_BYTES = 96; // mat4 (64) + 4 floats + 4 u32 = 96
 
 /** Per-mip resources for the HiZ pyramid build. */
 interface HiZMipLevel {
-  /** Full-size bind group for this mip (depthInput view + hiZOutput view + params UBO). */
-  bindGroup: GPUBindGroup;
+  /** Full-size bind group for this mip (depthInput view + hiZOutput view + params UBO).
+   *  Null until `_getOrBuildMipBindGroup` lazily builds it for the current input view. */
+  bindGroup: GPUBindGroup | null;
   /** Storage texture view for this mip. */
   outputView: GPUTextureView;
   /** Per-mip params UBO. */
@@ -422,7 +423,7 @@ class WebGPUHiZOcclusionDispatcher {
       // `bindGroup` is built lazily per frame in `_getOrBuildMipBindGroup`
       // because it holds a reference to the input texture view.
       mipLevels.push({
-        bindGroup: null as unknown as GPUBindGroup,
+        bindGroup: null,
         outputView,
         paramsBuffer,
         width: outputWidth,
@@ -853,17 +854,15 @@ import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
 const _instances = new WeakMap<object, WebGPUHiZOcclusionDispatcher>();
 
 function getOrCreateDispatcher(context: {
-  device: GPUDevice;
+  device: GPUDevice | null | undefined;
 }): WebGPUHiZOcclusionDispatcher | null {
   if (!context || !context.device) return null;
   let inst = _instances.get(context);
   if (!inst) {
     inst = new WebGPUHiZOcclusionDispatcher(context.device);
-    inst.setHiZShaderSource(HiZPyramidSource as unknown as string);
-    inst.setHiZFromDepthShaderSource(
-      HiZPyramidFromDepthSource as unknown as string,
-    );
-    inst.setOcclusionShaderSource(OcclusionTestSource as unknown as string);
+    inst.setHiZShaderSource(HiZPyramidSource);
+    inst.setHiZFromDepthShaderSource(HiZPyramidFromDepthSource);
+    inst.setOcclusionShaderSource(OcclusionTestSource);
     _instances.set(context, inst);
   }
   return inst;
@@ -876,7 +875,7 @@ function getOrCreateDispatcher(context: {
  * renderer registry.
  */
 function initWebGPUHiZOcclusion(
-  context: { device: GPUDevice },
+  context: { device: GPUDevice | null | undefined },
   inputWidth: number,
   inputHeight: number,
   maxCommands: number,
@@ -898,7 +897,7 @@ function initWebGPUHiZOcclusion(
  *   - `params` — view-projection + screen dims + near/far
  */
 function dispatchWebGPUHiZOcclusion(
-  context: { device: GPUDevice },
+  context: { device: GPUDevice | null | undefined },
   encoder: GPUCommandEncoder,
   depthTextureView: GPUTextureView,
   soa: {
@@ -930,7 +929,7 @@ function dispatchWebGPUHiZOcclusion(
  * when the dispatcher isn't allocated or a readback is in flight.
  */
 function readbackWebGPUHiZOcclusion(
-  context: { device: GPUDevice },
+  context: { device: GPUDevice | null | undefined },
   count: number,
 ): Promise<Uint32Array | null> {
   const inst = _instances.get(context);
@@ -943,7 +942,7 @@ function readbackWebGPUHiZOcclusion(
  * snapshot. Null when no dispatcher is allocated for this context.
  */
 function getWebGPUHiZOcclusionStatistics(context: {
-  device: GPUDevice;
+  device: GPUDevice | null | undefined;
 }): object | null {
   const inst = _instances.get(context);
   return inst ? inst.getStatistics() : null;
@@ -953,7 +952,9 @@ function getWebGPUHiZOcclusionStatistics(context: {
  * Feature renderer destroy entry point. Releases all GPU resources
  * for the given context's dispatcher instance.
  */
-function destroyWebGPUHiZOcclusion(context: { device: GPUDevice }): void {
+function destroyWebGPUHiZOcclusion(context: {
+  device: GPUDevice | null | undefined;
+}): void {
   const inst = _instances.get(context);
   if (inst) {
     inst.destroy();

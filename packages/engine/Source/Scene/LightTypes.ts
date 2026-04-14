@@ -71,7 +71,7 @@ export class Light {
    * @type {Color}
    * @default Color.WHITE
    */
-  color: any;
+  color: CesiumColor;
 
   /**
    * The intensity multiplier for the light.
@@ -95,7 +95,7 @@ export class Light {
   readonly lightType: number;
 
   constructor(options: {
-    color?: any;
+    color?: CesiumColor;
     intensity?: number;
     enabled?: boolean;
     lightType: number;
@@ -127,11 +127,11 @@ export class DirectionalLight extends Light {
    * The direction the light is shining. Will be normalized.
    * @type {Cartesian3}
    */
-  direction: any;
+  direction: CesiumCartesian3;
 
   constructor(options?: {
-    direction?: any;
-    color?: any;
+    direction?: CesiumCartesian3;
+    color?: CesiumColor;
     intensity?: number;
     enabled?: boolean;
   }) {
@@ -171,7 +171,7 @@ export class PointLight extends Light {
    * The world-space position of the light.
    * @type {Cartesian3}
    */
-  position: any;
+  position: CesiumCartesian3;
 
   /**
    * Maximum range of the light in meters. Beyond this distance,
@@ -203,8 +203,8 @@ export class PointLight extends Light {
   quadraticAttenuation: number;
 
   constructor(options?: {
-    position?: any;
-    color?: any;
+    position?: CesiumCartesian3;
+    color?: CesiumColor;
     intensity?: number;
     range?: number;
     constantAttenuation?: number;
@@ -252,13 +252,13 @@ export class SpotLight extends Light {
    * The world-space position of the spot light.
    * @type {Cartesian3}
    */
-  position: any;
+  position: CesiumCartesian3;
 
   /**
    * The direction the spot light is pointing. Will be normalized.
    * @type {Cartesian3}
    */
-  direction: any;
+  direction: CesiumCartesian3;
 
   /**
    * Inner cone angle in radians (full-intensity cone).
@@ -282,9 +282,9 @@ export class SpotLight extends Light {
   range: number;
 
   constructor(options?: {
-    position?: any;
-    direction?: any;
-    color?: any;
+    position?: CesiumCartesian3;
+    direction?: CesiumCartesian3;
+    color?: CesiumColor;
     intensity?: number;
     innerConeAngle?: number;
     outerConeAngle?: number;

@@ -132,4 +132,118 @@ class PolylineVolumeGraphics {
   }
 }
 
+Object.defineProperties(PolylineVolumeGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof PolylineVolumeGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the volume.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the Property specifying the array of {@link Cartesian3} positions which define the line strip.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   */
+  positions: createPropertyDescriptor("positions"),
+
+  /**
+   * Gets or sets the Property specifying the array of {@link Cartesian2} positions which define the shape to be extruded.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   */
+  shape: createPropertyDescriptor("shape"),
+
+  /**
+   * Gets or sets the {@link CornerType} Property specifying the style of the corners.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default CornerType.ROUNDED
+   */
+  cornerType: createPropertyDescriptor("cornerType"),
+
+  /**
+   * Gets or sets the numeric Property specifying the angular distance between points on the volume.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default {CesiumMath.RADIANS_PER_DEGREE}
+   */
+  granularity: createPropertyDescriptor("granularity"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the volume is filled with the provided material.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the volume.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the volume is outlined.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Get or sets the enum Property specifying whether the volume
+   * casts or receives shadows from light sources.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this volume will be displayed.
+   * @memberof PolylineVolumeGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default PolylineVolumeGraphics;

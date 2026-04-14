@@ -214,7 +214,8 @@ class QuantizedMeshTerrainData {
     const y = options.y;
     const level = options.level;
     const exaggeration = options.exaggeration ?? 1.0;
-    const exaggerationRelativeHeight = options.exaggerationRelativeHeight ?? 0.0;
+    const exaggerationRelativeHeight =
+      options.exaggerationRelativeHeight ?? 0.0;
     const throttle = options.throttle ?? true;
 
     const ellipsoid = tilingScheme.ellipsoid;

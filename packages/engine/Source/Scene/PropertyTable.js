@@ -192,7 +192,10 @@ class PropertyTable {
     }
 
     if (defined(this._batchTableHierarchy)) {
-      const ids = this._batchTableHierarchy.getPropertyIds(index, scratchResults);
+      const ids = this._batchTableHierarchy.getPropertyIds(
+        index,
+        scratchResults,
+      );
       addAllToArray(results, ids);
     }
 

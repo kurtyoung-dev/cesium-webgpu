@@ -26,7 +26,7 @@ function pickObjectsFromPixels(
   width: number,
   height: number,
   limit: number = 1,
-): unknown[] {
+): object[] {
   const max = Math.max(width, height);
   const length = max * max;
   const halfWidth = Math.floor(width * 0.5);
@@ -37,7 +37,7 @@ function pickObjectsFromPixels(
   let dx = 0;
   let dy = -1;
 
-  const objects = new Set<unknown>();
+  const objects = new Set<object>();
   for (let i = 0; i < length; ++i) {
     if (
       -halfWidth <= x &&
@@ -116,7 +116,10 @@ export class WebGPUPickFramebuffer {
    * Begin a pick rendering pass.
    * Creates/resizes the offscreen render targets and returns a pass state.
    */
-  begin(screenSpaceRectangle: CesiumBoundingRectangle, viewport: CesiumBoundingRectangle): CesiumPassState {
+  begin(
+    screenSpaceRectangle: CesiumBoundingRectangle,
+    viewport: CesiumBoundingRectangle,
+  ): CesiumPassState {
     const device = this._context._device;
     if (!device) {
       return this._passState;
@@ -126,8 +129,8 @@ export class WebGPUPickFramebuffer {
     const { width, height } = viewport;
 
     BoundingRectangle.clone(
-      screenSpaceRectangle as unknown as BoundingRectangle,
-      this._passState.scissorTest.rectangle as unknown as BoundingRectangle,
+      screenSpaceRectangle,
+      this._passState.scissorTest.rectangle,
     );
 
     // Create or recreate render targets
@@ -205,7 +208,10 @@ export class WebGPUPickFramebuffer {
    * For practical use, this returns the result from the previous frame's readback
    * if available, while starting a new readback for the current frame.
    */
-  end(screenSpaceRectangle: CesiumBoundingRectangle, limit: number = 1): unknown[] {
+  end(
+    screenSpaceRectangle: CesiumBoundingRectangle,
+    limit: number = 1,
+  ): object[] {
     const context = this._context;
     const device = this._device;
 
@@ -241,7 +247,7 @@ export class WebGPUPickFramebuffer {
     screenSpaceRectangle: CesiumBoundingRectangle,
     frameState: CesiumFrameState,
     limit: number = 1,
-  ): Promise<unknown[]> {
+  ): Promise<object[]> {
     const context = this._context;
     const device = this._device;
 

@@ -511,7 +511,9 @@ class CreditDisplay {
    * @private
    */
   showLightbox() {
-    if (this._headless) return;
+    if (this._headless) {
+      return;
+    }
     this._lightbox.style.display = "block";
     this._expanded = true;
   }
@@ -520,7 +522,9 @@ class CreditDisplay {
    * @private
    */
   hideLightbox() {
-    if (this._headless) return;
+    if (this._headless) {
+      return;
+    }
     this._lightbox.style.display = "none";
     this._expanded = false;
   }
@@ -529,7 +533,9 @@ class CreditDisplay {
    * Updates the credit display before a new frame is rendered.
    */
   update() {
-    if (this._headless) return;
+    if (this._headless) {
+      return;
+    }
     if (this._expanded) {
       styleLightboxContainer(this);
     }

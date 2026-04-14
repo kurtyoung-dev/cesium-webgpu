@@ -231,7 +231,7 @@ function createPipelineAndLayouts(
 
 function packCameraUniforms(
   uniformState: CesiumUniformState,
-  modelMatrix: CesiumMatrix4,
+  modelMatrix: Matrix4 | CesiumMatrix4,
   viewportWidth: number,
   viewportHeight: number,
 ): Float32Array {
@@ -287,7 +287,9 @@ function packCameraUniforms(
   return data;
 }
 
-function packEllipsoidUniforms(primitive: CesiumObjectWithWebGPUCache): Float32Array {
+function packEllipsoidUniforms(
+  primitive: CesiumObjectWithWebGPUCache,
+): Float32Array {
   // 96 bytes = 24 floats: radii(3+1) + oneOverRadiiSq(3+1) + color(4) + centerHigh(3+1) + centerLow(3+1)
   const data = new Float32Array(24);
   const radii = primitive.radii;
@@ -316,8 +318,8 @@ function packEllipsoidUniforms(primitive: CesiumObjectWithWebGPUCache): Float32A
     data[11] = 1.0;
   }
 
-  // Encode center position (from modelMatrix translation)
-  const modelMatrix = (primitive.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
+  // Encode center position (from modelMatrix translation).
+  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
   const center = Matrix4.getTranslation(modelMatrix, new Cartesian3());
   EncodedCartesian3.fromCartesian(center, scratchEncodedPosition);
   data[12] = scratchEncodedPosition.high.x;
@@ -335,7 +337,10 @@ function packEllipsoidUniforms(primitive: CesiumObjectWithWebGPUCache): Float32A
 /**
  * Update WebGPU ellipsoid primitive resources and issue draw commands.
  */
-function updateWebGPUEllipsoidPrimitive(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUEllipsoidPrimitive(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -417,7 +422,7 @@ function updateWebGPUEllipsoidPrimitive(primitive: CesiumObjectWithWebGPUCache, 
 
   // Per-frame uniform updates
   const uniformState = context.uniformState;
-  const modelMatrix = (primitive.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
+  const modelMatrix = primitive.modelMatrix ?? Matrix4.IDENTITY;
 
   const viewportWidth = context.drawingBufferWidth || 1;
   const viewportHeight = context.drawingBufferHeight || 1;
@@ -454,7 +459,9 @@ function updateWebGPUEllipsoidPrimitive(primitive: CesiumObjectWithWebGPUCache, 
 /**
  * Destroy WebGPU ellipsoid primitive resources.
  */
-function destroyWebGPUEllipsoidPrimitiveResources(primitive: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUEllipsoidPrimitiveResources(
+  primitive: CesiumObjectWithWebGPUCache,
+): void {
   const cache = primitive._webgpuCache as EllipsoidCache | undefined;
   if (!cache) {
     return;

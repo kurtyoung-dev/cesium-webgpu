@@ -13,6 +13,13 @@
 
 import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
 
+/** Opaque handle returned by `gl.createBuffer()` in the stub layer. */
+interface StubBufferHandle {
+  _webgpuBuffer?: GPUBuffer;
+  _size?: number;
+  destroy?: () => void;
+}
+
 // WebGL buffer target constants
 const GL_ARRAY_BUFFER = 0x8892;
 const GL_ELEMENT_ARRAY_BUFFER = 0x8893;
@@ -38,7 +45,7 @@ export const BUFFER_CONSTANTS = Object.freeze({
 export function createBufferStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, any> {
+): Record<string, unknown> {
   return {
     // ==== Buffer methods ====
 
@@ -60,7 +67,7 @@ export function createBufferStubs(
       };
     },
 
-    bindBuffer: (target: number, buffer: any) => {
+    bindBuffer: (target: number, buffer: StubBufferHandle | null) => {
       if (target === GL_ARRAY_BUFFER) {
         state.boundVertexBuffer = buffer?._webgpuBuffer || null;
       } else if (target === GL_ELEMENT_ARRAY_BUFFER) {
@@ -68,7 +75,7 @@ export function createBufferStubs(
       }
     },
 
-    deleteBuffer: (buffer: any) => {
+    deleteBuffer: (buffer: StubBufferHandle | null) => {
       if (buffer?._webgpuBuffer) {
         buffer._webgpuBuffer.destroy();
       } else if (buffer?.destroy) {

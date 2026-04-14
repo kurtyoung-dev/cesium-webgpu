@@ -51,7 +51,10 @@ class ModelRuntimeNode {
 
     this._originalTransform = Matrix4.clone(transform, this._originalTransform);
     this._transform = Matrix4.clone(transform, this._transform);
-    this._transformToRoot = Matrix4.clone(transformToRoot, this._transformToRoot);
+    this._transformToRoot = Matrix4.clone(
+      transformToRoot,
+      this._transformToRoot,
+    );
 
     this._computedTransform = new Matrix4(); // Computed in initialize()
     this._transformDirty = false;

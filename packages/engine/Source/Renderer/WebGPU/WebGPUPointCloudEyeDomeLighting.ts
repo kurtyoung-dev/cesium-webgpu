@@ -21,14 +21,16 @@
  */
 
 function updateWebGPUPointCloudEDL(
-  _edl: any,
+  _edl: CesiumObjectWithWebGPUCache,
   _frameState: CesiumFrameState,
-  _commandsToHijack: unknown[],
+  _commandsToHijack: CesiumAnyDrawCommand[],
 ): void {
   // Intentional no-op — see module header for full port requirements.
 }
 
-function destroyWebGPUPointCloudEDLResources(_edl: any): void {
+function destroyWebGPUPointCloudEDLResources(
+  _edl: CesiumObjectWithWebGPUCache,
+): void {
   // No persistent resources to release in the stub.
 }
 

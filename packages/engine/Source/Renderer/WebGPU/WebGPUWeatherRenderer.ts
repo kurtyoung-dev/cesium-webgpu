@@ -57,7 +57,7 @@ interface WeatherCache {
   renderInitialized: boolean;
 }
 
-function ensureWeatherCache(context: any): WeatherCache {
+function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
   if (!context._weatherCache) {
     context._weatherCache = {
       resetPipeline: null,
@@ -80,7 +80,7 @@ function ensureWeatherCache(context: any): WeatherCache {
       renderInitialized: false,
     } as WeatherCache;
   }
-  return context._weatherCache;
+  return context._weatherCache as WeatherCache;
 }
 
 function initializeWeatherPipelines(
@@ -183,9 +183,9 @@ function initializeWeatherPipelines(
  * Should be called once per frame when weather is enabled.
  */
 export function updateWeatherParticles(
-  context: any,
+  context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
-  weatherConfig: any,
+  weatherConfig: CesiumWeatherConfig,
 ): void {
   const device = context._device;
   if (!device || !weatherConfig?.enabled) return;
@@ -217,7 +217,7 @@ export function updateWeatherParticles(
     // volume's extent in one frame, don't try to track: snap prev
     // to current, leaving delta=0. Stale particles will age out.
     const spawnRadius = weatherConfig.spawnRadius ?? 500;
-    const teleportSq = (spawnRadius * 4) * (spawnRadius * 4);
+    const teleportSq = spawnRadius * 4 * (spawnRadius * 4);
     if (dx * dx + dy * dy + dz * dz > teleportSq) {
       dx = 0;
       dy = 0;
@@ -307,12 +307,16 @@ export function updateWeatherParticles(
  * Get the particle storage buffer for rendering.
  * The render pass reads this buffer to draw particles as camera-facing quads.
  */
-export function getWeatherParticleBuffer(context: any): GPUBuffer | null {
-  return context._weatherCache?.particleBuffer ?? null;
+export function getWeatherParticleBuffer(
+  context: CesiumGraphicsContext,
+): GPUBuffer | null {
+  const cache = context._weatherCache as WeatherCache | undefined;
+  return cache?.particleBuffer ?? null;
 }
 
-export function getWeatherMaxParticles(context: any): number {
-  return context._weatherCache?.maxParticles ?? 0;
+export function getWeatherMaxParticles(context: CesiumGraphicsContext): number {
+  const cache = context._weatherCache as WeatherCache | undefined;
+  return cache?.maxParticles ?? 0;
 }
 
 /**
@@ -408,9 +412,9 @@ function initializeRenderPipeline(
  * @param renderPassEncoder - Active render pass encoder
  */
 export function renderWeatherParticles(
-  context: any,
+  context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
-  weatherConfig: any,
+  weatherConfig: CesiumWeatherConfig,
   renderPassEncoder: GPURenderPassEncoder,
 ): void {
   const device: GPUDevice | undefined = context._device;
@@ -495,7 +499,7 @@ export function renderWeatherParticles(
   renderPassEncoder.draw(6, cache.maxParticles);
 }
 
-export function destroyWeatherResources(context: any): void {
+export function destroyWeatherResources(context: CesiumGraphicsContext): void {
   const cache = context._weatherCache as WeatherCache | undefined;
   if (cache) {
     cache.particleBuffer?.destroy();

@@ -127,7 +127,10 @@ class DiscardMissingTileImagePolicy {
       return false;
     }
 
-    if (defined(image.blob) && image.blob.size !== this._missingImageByteLength) {
+    if (
+      defined(image.blob) &&
+      image.blob.size !== this._missingImageByteLength
+    ) {
       return false;
     }
 

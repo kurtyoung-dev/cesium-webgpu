@@ -200,18 +200,21 @@ export class WebGPUAutoExposure {
         4,
       );
       this._readbackPending = true;
-      this._readbackBuffer.mapAsync(GPUMapMode.READ).then(() => {
-        if (this._readbackBuffer) {
-          const data = new Float32Array(
-            this._readbackBuffer.getMappedRange(),
-          );
-          this._averageLuminance = data[0];
-          this._readbackBuffer.unmap();
-        }
-        this._readbackPending = false;
-      }).catch(() => {
-        this._readbackPending = false;
-      });
+      this._readbackBuffer
+        .mapAsync(GPUMapMode.READ)
+        .then(() => {
+          if (this._readbackBuffer) {
+            const data = new Float32Array(
+              this._readbackBuffer.getMappedRange(),
+            );
+            this._averageLuminance = data[0];
+            this._readbackBuffer.unmap();
+          }
+          this._readbackPending = false;
+        })
+        .catch(() => {
+          this._readbackPending = false;
+        });
     }
   }
 

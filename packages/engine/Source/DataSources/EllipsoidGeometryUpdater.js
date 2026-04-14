@@ -126,7 +126,10 @@ class EllipsoidGeometryUpdater {
         defined(this._materialProperty.color) &&
         (this._materialProperty.color.isConstant || isAvailable)
       ) {
-        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+        currentColor = this._materialProperty.color.getValue(
+          time,
+          scratchColor,
+        );
       }
       if (!defined(currentColor)) {
         currentColor = Color.WHITE;

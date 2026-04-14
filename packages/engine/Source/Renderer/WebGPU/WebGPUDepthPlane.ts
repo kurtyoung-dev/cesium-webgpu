@@ -102,25 +102,25 @@ const uniformScratch = new Float32Array(24);
  * Returns a Float32Array of 12 values: 4 corners × 3 components (x,y,z)
  */
 function computeDepthQuadCorners(
-  ellipsoid: any,
-  camera: any,
+  ellipsoid: CesiumEllipsoid,
+  camera: CesiumCamera,
   result: Cartesian3[],
 ): void {
-  const radii = ellipsoid.radii;
+  const radii = ellipsoid.radii as Cartesian3;
   let center: Cartesian3;
   let eastOffset: Cartesian3;
   let northOffset: Cartesian3;
 
   if (camera.frustum instanceof OrthographicFrustum) {
     center = Cartesian3.clone(Cartesian3.ZERO, scratchCartesian1)!;
-    eastOffset = camera.rightWC;
-    northOffset = camera.upWC;
+    eastOffset = camera.rightWC as Cartesian3;
+    northOffset = camera.upWC as Cartesian3;
   } else {
-    const p = camera.positionWC;
+    const p = camera.positionWC as Cartesian3;
 
     // Find the corresponding position in the scaled space of the ellipsoid.
     const q = Cartesian3.multiplyComponents(
-      ellipsoid.oneOverRadii,
+      ellipsoid.oneOverRadii as Cartesian3,
       p,
       scratchCartesian1,
     );
@@ -405,7 +405,9 @@ export class WebGPUDepthPlane {
 
     // Allow offsetting the ellipsoid radius to address rendering artifacts
     // below ellipsoid zero elevation (matches WebGL DepthPlane behavior)
-    const mapProj = frameState.mapProjection as { ellipsoid: { radii: CesiumCartesian3 } };
+    const mapProj = frameState.mapProjection as {
+      ellipsoid: { radii: CesiumCartesian3 };
+    };
     const baseRadii = mapProj.ellipsoid.radii;
     const ellipsoid = new Ellipsoid(
       baseRadii.x + this._ellipsoidOffset,

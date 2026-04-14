@@ -854,7 +854,8 @@ class Viewer {
     this._eventHelper = eventHelper;
     this._lastWidth = 0;
     this._lastHeight = 0;
-    this._enableInfoOrSelection = defined(infoBox) || defined(selectionIndicator);
+    this._enableInfoOrSelection =
+      defined(infoBox) || defined(selectionIndicator);
     this._selectedEntity = undefined;
     this._selectedEntityChanged = new Event();
 
@@ -1222,7 +1223,8 @@ class Viewer {
     let position;
     let enableCamera = false;
     const selectedEntity = this.selectedEntity;
-    const showSelection = defined(selectedEntity) && this._enableInfoOrSelection;
+    const showSelection =
+      defined(selectedEntity) && this._enableInfoOrSelection;
 
     if (
       showSelection &&

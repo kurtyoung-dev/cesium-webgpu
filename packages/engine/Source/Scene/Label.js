@@ -217,7 +217,9 @@ class Label {
     this._style = options.style ?? LabelStyle.FILL;
     this._verticalOrigin = options.verticalOrigin ?? VerticalOrigin.BASELINE;
     this._horizontalOrigin = options.horizontalOrigin ?? HorizontalOrigin.LEFT;
-    this._pixelOffset = Cartesian2.clone(options.pixelOffset ?? Cartesian2.ZERO);
+    this._pixelOffset = Cartesian2.clone(
+      options.pixelOffset ?? Cartesian2.ZERO,
+    );
     this._eyeOffset = Cartesian3.clone(options.eyeOffset ?? Cartesian3.ZERO);
     this._position = Cartesian3.clone(options.position ?? Cartesian3.ZERO);
     this._scale = options.scale ?? 1.0;

@@ -69,7 +69,9 @@ class JsonMetadataTable {
     Check.typeOf.string("propertyId", propertyId);
 
     if (index < 0 || index >= this._count) {
-      throw new DeveloperError(`index must be in the range [0, ${this._count})`);
+      throw new DeveloperError(
+        `index must be in the range [0, ${this._count})`,
+      );
     }
     //>>includeEnd('debug');
 
@@ -98,7 +100,9 @@ class JsonMetadataTable {
     Check.typeOf.string("propertyId", propertyId);
 
     if (index < 0 || index >= this._count) {
-      throw new DeveloperError(`index must be in the range [0, ${this._count})`);
+      throw new DeveloperError(
+        `index must be in the range [0, ${this._count})`,
+      );
     }
     //>>includeEnd('debug');
 

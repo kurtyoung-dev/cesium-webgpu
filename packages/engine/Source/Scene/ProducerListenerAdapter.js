@@ -117,7 +117,8 @@ class ProducerListenerAdapter {
         throw new DeveloperError(msg);
       }
 
-      const version = typeof json.version === "string" ? json.version : undefined;
+      const version =
+        typeof json.version === "string" ? json.version : undefined;
       if (!defined(version)) {
         const msg = `[ProducerListenerAdapter] Block ${b} missing version field.`;
         if (lenient) {

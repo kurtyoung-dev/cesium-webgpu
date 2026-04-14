@@ -393,7 +393,10 @@ function createEffectsBindGroup(device, frameState, options) {
     computeClipPlaneDPrimes(
       clippingPlanes,
       cameraInPlaneSpace,
-      ud.subarray(CLIP_DPRIME_FLOAT_OFFSET, CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT),
+      ud.subarray(
+        CLIP_DPRIME_FLOAT_OFFSET,
+        CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT,
+      ),
     );
   } else {
     dv.setUint32(20 * 4, 0, true); // planeCount = 0
@@ -500,7 +503,10 @@ function updateEffectsUniforms(
     computeClipPlaneDPrimes(
       clippingPlanes,
       cameraInPlaneSpace,
-      ud.subarray(CLIP_DPRIME_FLOAT_OFFSET, CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT),
+      ud.subarray(
+        CLIP_DPRIME_FLOAT_OFFSET,
+        CLIP_DPRIME_FLOAT_OFFSET + CLIP_DPRIME_FLOAT_COUNT,
+      ),
     );
   } else {
     for (let i = 0; i < CLIP_DPRIME_FLOAT_COUNT; i++) {

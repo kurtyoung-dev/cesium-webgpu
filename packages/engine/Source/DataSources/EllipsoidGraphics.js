@@ -160,4 +160,167 @@ class EllipsoidGraphics {
   }
 }
 
+Object.defineProperties(EllipsoidGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof EllipsoidGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the {@link Cartesian3} {@link Property} specifying the radii of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   */
+  radii: createPropertyDescriptor("radii"),
+
+  /**
+   * Gets or sets the {@link Cartesian3} {@link Property} specifying the inner radii of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default radii
+   */
+  innerRadii: createPropertyDescriptor("innerRadii"),
+
+  /**
+   * Gets or sets the Property specifying the minimum clock angle of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  minimumClock: createPropertyDescriptor("minimumClock"),
+
+  /**
+   * Gets or sets the Property specifying the maximum clock angle of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 2*PI
+   */
+  maximumClock: createPropertyDescriptor("maximumClock"),
+
+  /**
+   * Gets or sets the Property specifying the minimum cone angle of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  minimumCone: createPropertyDescriptor("minimumCone"),
+
+  /**
+   * Gets or sets the Property specifying the maximum cone angle of the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default PI
+   */
+  maximumCone: createPropertyDescriptor("maximumCone"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the ellipsoid is filled with the provided material.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the ellipsoid.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the ellipsoid is outlined.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Gets or sets the Property specifying the number of stacks.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 64
+   */
+  stackPartitions: createPropertyDescriptor("stackPartitions"),
+
+  /**
+   * Gets or sets the Property specifying the number of radial slices per 360 degrees.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 64
+   */
+  slicePartitions: createPropertyDescriptor("slicePartitions"),
+
+  /**
+   * Gets or sets the Property specifying the number of samples per outline ring, determining the granularity of the curvature.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default 128
+   */
+  subdivisions: createPropertyDescriptor("subdivisions"),
+
+  /**
+   * Get or sets the enum Property specifying whether the ellipsoid
+   * casts or receives shadows from light sources.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this ellipsoid will be displayed.
+   * @memberof EllipsoidGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default EllipsoidGraphics;

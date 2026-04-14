@@ -400,7 +400,10 @@ class PerformanceTracker {
         : Date.now();
     let dt = wallDtMs;
     if (!defined(dt)) {
-      dt = this._liveLastRecordTime === null ? 16.6 : now - this._liveLastRecordTime;
+      dt =
+        this._liveLastRecordTime === null
+          ? 16.6
+          : now - this._liveLastRecordTime;
     }
     this._liveLastRecordTime = now;
     // Drop pathological deltas (debugger paused, tab backgrounded for

@@ -120,4 +120,102 @@ class BoxGraphics {
   }
 }
 
+Object.defineProperties(BoxGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof BoxGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the box.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets {@link Cartesian3} Property property specifying the length, width, and height of the box.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   */
+  dimensions: createPropertyDescriptor("dimensions"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the box is filled with the provided material.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the material used to fill the box.
+   * @memberof BoxGraphics.prototype
+   * @type {MaterialProperty|undefined}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the box is outlined.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Get or sets the enum Property specifying whether the box
+   * casts or receives shadows from light sources.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this box will be displayed.
+   * @memberof BoxGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default BoxGraphics;

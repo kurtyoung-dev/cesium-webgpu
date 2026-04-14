@@ -107,4 +107,81 @@ class PathGraphics {
   }
 }
 
+Object.defineProperties(PathGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof PathGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the path.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the Property specifying the number of seconds in front of the object to show.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   */
+  leadTime: createPropertyDescriptor("leadTime"),
+
+  /**
+   * Gets or sets the Property specifying the number of seconds behind the object to show.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   */
+  trailTime: createPropertyDescriptor("trailTime"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width in pixels.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  width: createPropertyDescriptor("width"),
+
+  /**
+   * Gets or sets the Property specifying the maximum number of seconds to step when sampling the position.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   * @default 60
+   */
+  resolution: createPropertyDescriptor("resolution"),
+
+  /**
+   * Gets or sets the Property specifying the material used to draw the path.
+   * @memberof PathGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this path will be displayed.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the frame in which to visualize the path. Use another entity's id to visualize the path relative to that entity, or use the string values "FIXED" or "INERTIAL" to visualize the path in those reference frames.
+   * @memberof PathGraphics.prototype
+   * @type {Property|undefined}
+   * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  relativeTo: createPropertyDescriptor("relativeTo"),
+});
+
 export default PathGraphics;

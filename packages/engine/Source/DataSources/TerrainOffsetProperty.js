@@ -184,7 +184,10 @@ class TerrainOffsetProperty {
 
     this._updateClamping();
 
-    const normal = scene.ellipsoid.geodeticSurfaceNormal(position, this._normal);
+    const normal = scene.ellipsoid.geodeticSurfaceNormal(
+      position,
+      this._normal,
+    );
     return Cartesian3.multiplyByScalar(normal, this._terrainHeight, result);
   }
 

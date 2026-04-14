@@ -25,13 +25,26 @@ class WasmQuantizedMeshBridge {
     this._isDestroyed = false;
   }
 
-  get threshold() { return this._threshold; }
-  set threshold(value) { this._threshold = value; }
-  get wasmReady() { return _wasmReady; }
+  get threshold() {
+    return this._threshold;
+  }
+  set threshold(value) {
+    this._threshold = value;
+  }
+  get wasmReady() {
+    return _wasmReady;
+  }
+  get simdActive() {
+    return _simdActive;
+  }
 
   async loadWasm() {
-    if (_wasmReady) return true;
-    if (_wasmLoading) return _wasmLoading;
+    if (_wasmReady) {
+      return true;
+    }
+    if (_wasmLoading) {
+      return _wasmLoading;
+    }
 
     WasmFeatureDetection.checkSIMDSupport();
 
@@ -39,7 +52,7 @@ class WasmQuantizedMeshBridge {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          '../../ThirdParty/Workers/cesium_wasm.js'
+          "../../ThirdParty/Workers/cesium_wasm.js"
         );
         await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "qmesh");
@@ -48,7 +61,7 @@ class WasmQuantizedMeshBridge {
         _wasmReady = true;
         return true;
       } catch (e) {
-        console.warn('[CesiumJS:WASM:qmesh] Load failed:', e.message);
+        console.warn("[CesiumJS:WASM:qmesh] Load failed:", e.message);
         return false;
       }
     })();
@@ -72,11 +85,27 @@ class WasmQuantizedMeshBridge {
 
     if (_wasmReady && count >= this._threshold) {
       this._lastWasmUsed = true;
-      return this._decodeWasm(encodedU, encodedV, encodedH, count, outU, outV, outH);
+      return this._decodeWasm(
+        encodedU,
+        encodedV,
+        encodedH,
+        count,
+        outU,
+        outV,
+        outH,
+      );
     }
 
     this._lastWasmUsed = false;
-    return this._decodeJS(encodedU, encodedV, encodedH, count, outU, outV, outH);
+    return this._decodeJS(
+      encodedU,
+      encodedV,
+      encodedH,
+      count,
+      outU,
+      outV,
+      outH,
+    );
   }
 
   /** @private */
@@ -105,7 +134,15 @@ class WasmQuantizedMeshBridge {
       const ovPtr = outBase + count * 4;
       const ohPtr = outBase + count * 8;
 
-      _wasmModule.decode_quantized_mesh(euPtr, evPtr, ehPtr, count, ouPtr, ovPtr, ohPtr);
+      _wasmModule.decode_quantized_mesh(
+        euPtr,
+        evPtr,
+        ehPtr,
+        count,
+        ouPtr,
+        ovPtr,
+        ohPtr,
+      );
 
       outU.set(new Float32Array(buf, ouPtr, count));
       outV.set(new Float32Array(buf, ovPtr, count));
@@ -113,7 +150,10 @@ class WasmQuantizedMeshBridge {
 
       return count;
     } catch (e) {
-      console.warn('[CesiumJS:WASM:qmesh] decode failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:qmesh] decode failed, using JS fallback:",
+        e.message,
+      );
       return this._decodeJS(eu, ev, eh, count, outU, outV, outH);
     }
   }
@@ -121,7 +161,9 @@ class WasmQuantizedMeshBridge {
   /** @private */
   _decodeJS(eu, ev, eh, count, outU, outV, outH) {
     const norm = 1.0 / 32767.0;
-    let uAcc = 0, vAcc = 0, hAcc = 0;
+    let uAcc = 0,
+      vAcc = 0,
+      hAcc = 0;
 
     for (let i = 0; i < count; i++) {
       uAcc += zigzagDecode(eu[i]);
@@ -155,7 +197,7 @@ class WasmQuantizedMeshBridge {
 }
 
 function zigzagDecode(val) {
-  return (val >> 1) ^ (-(val & 1));
+  return (val >> 1) ^ -(val & 1);
 }
 
 export default WasmQuantizedMeshBridge;

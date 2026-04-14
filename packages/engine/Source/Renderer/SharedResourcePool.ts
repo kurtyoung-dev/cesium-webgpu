@@ -264,8 +264,13 @@ export class SharedResourcePool {
 
     const offset = alloc.byteOffset + (byteOffset ?? 0);
     const bytesPerElement =
-      (TypedArrayConstructor as any).BYTES_PER_ELEMENT ??
-      (TypedArrayConstructor as any).prototype?.BYTES_PER_ELEMENT ??
+      (TypedArrayConstructor as unknown as { BYTES_PER_ELEMENT?: number })
+        .BYTES_PER_ELEMENT ??
+      (
+        TypedArrayConstructor as unknown as {
+          prototype?: { BYTES_PER_ELEMENT?: number };
+        }
+      ).prototype?.BYTES_PER_ELEMENT ??
       4;
     const elementCount =
       length ?? (alloc.byteLength - (byteOffset ?? 0)) / bytesPerElement;

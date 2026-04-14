@@ -67,7 +67,11 @@ class MetadataTable {
    * @private
    */
   hasProperty(propertyId) {
-    return MetadataEntity.hasProperty(propertyId, this._properties, this._class);
+    return MetadataEntity.hasProperty(
+      propertyId,
+      this._properties,
+      this._class,
+    );
   }
 
   /**
@@ -93,7 +97,11 @@ class MetadataTable {
    * @private
    */
   getPropertyIds(results) {
-    return MetadataEntity.getPropertyIds(this._properties, this._class, results);
+    return MetadataEntity.getPropertyIds(
+      this._properties,
+      this._class,
+      results,
+    );
   }
 
   /**

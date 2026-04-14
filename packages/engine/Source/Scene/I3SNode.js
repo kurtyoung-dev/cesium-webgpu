@@ -285,7 +285,8 @@ class I3SNode {
       const geometryURI = `./geometries/${geometryDefinition.bufferIndex}/`;
       const newGeometryData = new I3SGeometry(this, geometryURI);
       newGeometryData._geometryDefinitions = geometryDefinition.definition;
-      newGeometryData._geometryBufferInfo = geometryDefinition.geometryBufferInfo;
+      newGeometryData._geometryBufferInfo =
+        geometryDefinition.geometryBufferInfo;
       this._geometryData.push(newGeometryData);
       geometryPromises.push(newGeometryData.load());
     }
@@ -361,7 +362,11 @@ class I3SNode {
           projectedPos.y > tile.nativeExtent.south &&
           projectedPos.y < tile.nativeExtent.north
         ) {
-          geoPosition.height += sampleGeoid(projectedPos.x, projectedPos.y, tile);
+          geoPosition.height += sampleGeoid(
+            projectedPos.x,
+            projectedPos.y,
+            tile,
+          );
           break;
         }
       }
@@ -458,7 +463,10 @@ class I3SNode {
     }
 
     const rotationMatrix = Matrix3.fromQuaternion(orientation);
-    const inverseRotationMatrix = Matrix3.inverse(rotationMatrix, new Matrix3());
+    const inverseRotationMatrix = Matrix3.inverse(
+      rotationMatrix,
+      new Matrix3(),
+    );
 
     const globalTransform = new Matrix4(
       rotationMatrix[0],
@@ -615,7 +623,8 @@ class I3SNode {
         result.meshData.extensionsUsed,
       );
 
-      this._geometryData[0]._customAttributes = result.meshData._customAttributes;
+      this._geometryData[0]._customAttributes =
+        result.meshData._customAttributes;
     }
 
     const binaryGltfData = this._dataProvider._binarizeGltf(rawGltf);

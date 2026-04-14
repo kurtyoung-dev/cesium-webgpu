@@ -216,7 +216,9 @@ function updateWebGPUGlobeTranslucencyDerivedCommands(
 /**
  * Destroy WebGPU globe translucency resources.
  */
-function destroyWebGPUGlobeTranslucencyResources(state: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUGlobeTranslucencyResources(
+  state: CesiumObjectWithWebGPUCache,
+): void {
   if (state._webgpuCache) {
     (state._webgpuCache as GlobeTranslucencyCache).derivedCommands.clear();
   }

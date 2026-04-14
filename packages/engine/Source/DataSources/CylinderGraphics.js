@@ -140,4 +140,133 @@ class CylinderGraphics {
   }
 }
 
+Object.defineProperties(CylinderGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof CylinderGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the numeric Property specifying the length of the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   */
+  length: createPropertyDescriptor("length"),
+
+  /**
+   * Gets or sets the numeric Property specifying the radius of the top of the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   */
+  topRadius: createPropertyDescriptor("topRadius"),
+
+  /**
+   * Gets or sets the numeric Property specifying the radius of the bottom of the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   */
+  bottomRadius: createPropertyDescriptor("bottomRadius"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the cylinder is filled with the provided material.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {MaterialProperty|undefined}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the cylinder is outlined.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Gets or sets the Property specifying the number of vertical lines to draw along the perimeter for the outline.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default 16
+   */
+  numberOfVerticalLines: createPropertyDescriptor("numberOfVerticalLines"),
+
+  /**
+   * Gets or sets the Property specifying the number of edges around the perimeter of the cylinder.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default 128
+   */
+  slices: createPropertyDescriptor("slices"),
+
+  /**
+   * Get or sets the enum Property specifying whether the cylinder
+   * casts or receives shadows from light sources.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this cylinder will be displayed.
+   * @memberof CylinderGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default CylinderGraphics;

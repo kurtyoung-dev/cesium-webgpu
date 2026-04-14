@@ -110,6 +110,12 @@ export interface FeatureRenderer {
   execute?(...args: unknown[]): void;
   render?(...args: unknown[]): void;
   composite?(...args: unknown[]): void;
+
+  /** Lazy-construction pattern: some feature renderers register a
+   *  `RendererClass` constructor that gets instantiated on first touch
+   *  (or via `_warmUpPipelines`) and cached on `_instance`. */
+  RendererClass?: new (ctx: unknown) => object;
+  _instance?: object;
 }
 
 /**
@@ -136,7 +142,7 @@ export interface CollectionRenderer extends FeatureRenderer {
    * @param frameState - Current frame state (or options object)
    * @param args - Additional arguments (commandList, etc.)
    */
-  update(collection: any, frameState: any, ...args: any[]): any;
+  update(collection: unknown, frameState: unknown, ...args: unknown[]): unknown;
 }
 
 /**
@@ -155,27 +161,27 @@ export interface PrimitiveCommandRenderer extends FeatureRenderer {
   /**
    * Create draw commands for a primitive with per-instance-color appearance.
    */
-  createCommands(...args: any[]): void;
+  createCommands(...args: unknown[]): void;
 
   /**
    * Update per-frame uniforms on existing commands.
    */
-  updateCommandUniforms(...args: any[]): void;
+  updateCommandUniforms(...args: unknown[]): void;
 
   /**
    * Create draw commands for a primitive with material appearance.
    */
-  createMaterialCommands?(...args: any[]): void;
+  createMaterialCommands?(...args: unknown[]): void;
 
   /**
    * Update per-frame uniforms on material commands.
    */
-  updateMaterialCommandUniforms?(...args: any[]): void;
+  updateMaterialCommandUniforms?(...args: unknown[]): void;
 
   /**
    * Update per-frame uniforms on pick commands.
    */
-  updatePickCommandUniforms?(...args: any[]): void;
+  updatePickCommandUniforms?(...args: unknown[]): void;
 }
 
 /**
@@ -191,8 +197,14 @@ export interface PrimitiveCommandRenderer extends FeatureRenderer {
  * The index signature allows type-safe access to specialized methods.
  */
 export interface SystemRenderer extends FeatureRenderer {
+  /** Initialize primitive shaders (async, called during context init) */
+  initPrimitiveShaders?(): Promise<void>;
+  /** Initialize collection shaders (async, called during context init) */
+  initCollectionShaders?(): Promise<void>;
+  /** Render shadow cast pass */
+  renderCastPass?(...args: unknown[]): void;
   /** Allow specialized entry points */
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -229,9 +241,13 @@ export interface GraphicsContextOptions {
   allowTextureFilterAnisotropic?: boolean;
 
   /**
-   * A function stub for testing purposes
+   * A function stub for testing purposes. WebGL-only — the WebGPU
+   * backend ignores this field.
    */
-  getWebGLStub?: Function;
+  getWebGLStub?: (
+    canvas: HTMLCanvasElement,
+    webglOptions: WebGLContextAttributes,
+  ) => WebGLRenderingContext | WebGL2RenderingContext;
 
   /**
    * Whether to use OffscreenCanvas in a WebWorker for this context.
@@ -389,7 +405,10 @@ export abstract class GraphicsContext {
     const className = proto?.constructor?.name ?? "Unknown";
 
     for (const method of requiredMethods) {
-      if (typeof (this as any)[method] !== "function") {
+      if (
+        typeof (this as unknown as Record<string, unknown>)[method] !==
+        "function"
+      ) {
         throw new Error(
           `${className} must implement abstract method '${method}' from GraphicsContext`,
         );
@@ -607,11 +626,11 @@ export abstract class GraphicsContext {
   // ABSTRACT: SHARED STATE & CACHES
   // ═══════════════════════════════════════════════════════════
 
-  abstract get uniformState(): any;
-  abstract get shaderCache(): any;
-  abstract get textureCache(): any;
-  abstract get cache(): any;
-  abstract get defaultTexture(): any;
+  abstract get uniformState(): CesiumUniformState;
+  abstract get shaderCache(): CesiumShaderCache;
+  abstract get textureCache(): unknown;
+  abstract get cache(): Record<string, unknown>;
+  abstract get defaultTexture(): object;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: FRAME LIFECYCLE
@@ -619,14 +638,14 @@ export abstract class GraphicsContext {
 
   abstract beginFrame(): void;
   abstract endFrame(): void;
-  abstract clear(clearCommand: any, passState?: any): void;
+  abstract clear(clearCommand: unknown, passState?: unknown): void;
   abstract resize(): void;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: DRAWING
   // ═══════════════════════════════════════════════════════════
 
-  abstract draw(drawCommand: any, passState?: any): void;
+  abstract draw(drawCommand: CesiumDrawCommand, passState?: unknown): void;
   abstract getRendererString(): string;
 
   // ═══════════════════════════════════════════════════════════
@@ -651,15 +670,15 @@ export abstract class GraphicsContext {
    * @param debugFramebuffer - Optional debug framebuffer
    */
   executeDrawCommand(
-    command: any,
-    scene: any,
-    passState: any,
-    debugFramebuffer?: any,
+    command: CesiumDrawCommand,
+    scene: unknown,
+    passState: unknown,
+    debugFramebuffer?: unknown,
   ): void {
     // Default (WebGL): simple pass-through dispatch.
     // Context.js inherits this; the full derived-command resolution
     // stays in Scene.js for now (WebGL path unchanged).
-    command.execute(this, passState);
+    command.execute(this, passState as CesiumPassState);
   }
 
   /**
@@ -675,16 +694,20 @@ export abstract class GraphicsContext {
    * @param computeEngine - The WebGL ComputeEngine
    */
   executeComputeCommands(
-    computeCommandList: any[],
-    sunComputeCommand: any,
-    computeEngine: any,
+    computeCommandList: unknown[],
+    sunComputeCommand: unknown,
+    computeEngine: unknown,
   ): void {
     // Default (WebGL): execute sun compute + all queued commands
     if (sunComputeCommand !== undefined && sunComputeCommand !== null) {
-      sunComputeCommand.execute(computeEngine);
+      (sunComputeCommand as { execute(engine: unknown): void }).execute(
+        computeEngine,
+      );
     }
     for (let i = 0; i < computeCommandList.length; ++i) {
-      computeCommandList[i].execute(computeEngine);
+      (computeCommandList[i] as { execute(engine: unknown): void }).execute(
+        computeEngine,
+      );
     }
   }
 
@@ -698,7 +721,7 @@ export abstract class GraphicsContext {
    * @param scene - The scene
    * @returns true if the context handled shadow casting, false to fall back
    */
-  executeShadowMapCastCommands(scene: any): boolean {
+  executeShadowMapCastCommands(scene: unknown): boolean {
     // Default: not handled by context, Scene.js runs WebGL path
     return false;
   }
@@ -716,9 +739,9 @@ export abstract class GraphicsContext {
    * @returns true if the context handled framebuffer setup, false to fall back
    */
   updateAndClearFramebuffers(
-    scene: any,
-    passState: any,
-    clearColor: any,
+    scene: unknown,
+    passState: unknown,
+    clearColor: CesiumColor | unknown,
   ): boolean {
     // Default: not handled by context, Scene.js runs WebGL path
     return false;
@@ -740,11 +763,11 @@ export abstract class GraphicsContext {
    * WebGPU: returns a WebGPUPickFramebuffer instance.
    * @returns A pick framebuffer or null if the default (WebGL) should be used.
    */
-  createPickFramebuffer(): any {
+  createPickFramebuffer(): unknown {
     return null;
   }
 
-  resolveFramebuffers(scene: any, passState: any): boolean {
+  resolveFramebuffers(scene: unknown, passState: unknown): boolean {
     // Default: not handled by context, Scene.js runs WebGL path
     return false;
   }
@@ -766,7 +789,7 @@ export abstract class GraphicsContext {
    * Shared across both WebGL and WebGPU backends.
    * @protected
    */
-  protected _pickObjects: Map<number, any> = new Map();
+  protected _pickObjects: Map<number, unknown> = new Map();
 
   /**
    * Monotonically incrementing counter for pick color allocation.
@@ -785,7 +808,7 @@ export abstract class GraphicsContext {
    * @param object - The object to associate with this pick ID
    * @returns A {@link PickId} with `key`, `color`, `normalizedRgba`, and `destroy()`
    */
-  createPickId(object: any): any {
+  createPickId(object: unknown): CesiumPickId {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("object", object);
     //>>includeEnd('debug');
@@ -793,10 +816,10 @@ export abstract class GraphicsContext {
     // Increment with overflow wrapping (Uint32Array handles this)
     this._nextPickColor[0]++;
     const key = this._nextPickColor[0];
-    const color = (Color as any).fromRgba(key);
+    const color = Color.fromRgba(key);
 
     this._pickObjects.set(key, object);
-    return new (PickId as any)(this._pickObjects, key, color);
+    return new PickId(this._pickObjects, key, color);
   }
 
   /**
@@ -810,7 +833,7 @@ export abstract class GraphicsContext {
    * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
    * @returns The object associated with the pick color, or undefined
    */
-  getObjectByPickColor(pickColor: any): any {
+  getObjectByPickColor(pickColor: CesiumColor | number): unknown {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("pickColor", pickColor);
     //>>includeEnd('debug');
@@ -824,7 +847,7 @@ export abstract class GraphicsContext {
       return this._pickObjects.get(key);
     }
     // WebGL path: pickColor is already the uint32 key
-    return this._pickObjects.get(pickColor);
+    return this._pickObjects.get(pickColor as number);
   }
 
   /**
@@ -848,19 +871,22 @@ export abstract class GraphicsContext {
   // ABSTRACT: PIXEL READBACK
   // ═══════════════════════════════════════════════════════════
 
-  abstract readPixels(readState: any): any;
+  abstract readPixels(readState: unknown): unknown;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: VIEWPORT COMMANDS
   // ═══════════════════════════════════════════════════════════
 
-  abstract createViewportQuadCommand(fragmentShader: any, options?: any): any;
+  abstract createViewportQuadCommand(
+    fragmentShader: unknown,
+    options?: Record<string, unknown>,
+  ): unknown;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: DESTROYED STATE
   // ═══════════════════════════════════════════════════════════
 
-  abstract get isDestroyed(): boolean;
+  abstract isDestroyed(): boolean;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: RESOURCE LIFECYCLE
@@ -907,7 +933,7 @@ export abstract class GraphicsContext {
    * WebGL: no-op
    * WebGPU: starts a new GPURenderPassEncoder
    */
-  beginRenderPass(descriptor?: any): any {
+  beginRenderPass(descriptor?: unknown): unknown {
     // No-op for WebGL. WebGPU overrides.
     return undefined;
   }
@@ -917,7 +943,7 @@ export abstract class GraphicsContext {
    * WebGL: no-op
    * WebGPU: starts a new render pass targeting the canvas with loadOp: "load"
    */
-  resumeDefaultRenderPass(): any {
+  resumeDefaultRenderPass(): unknown {
     // No-op for WebGL. WebGPU overrides.
     return undefined;
   }
@@ -941,7 +967,7 @@ export abstract class GraphicsContext {
    * @param options - Texture creation options
    * @returns A backend-native texture object
    */
-  createTexture(options: any): any {
+  createTexture(options: Record<string, unknown>): unknown {
     throw new Error(
       `${this._logPrefix()} createTexture not implemented for ${this.rendererType}`,
     );
@@ -952,7 +978,7 @@ export abstract class GraphicsContext {
    * @param options - Buffer creation options
    * @returns A backend-native buffer object
    */
-  createBuffer(options: any): any {
+  createBuffer(options: Record<string, unknown>): unknown {
     throw new Error(
       `${this._logPrefix()} createBuffer not implemented for ${this.rendererType}`,
     );
@@ -963,7 +989,7 @@ export abstract class GraphicsContext {
    * @param renderCommand - The abstract RenderCommand
    * @returns A backend-native draw command
    */
-  buildRenderCommand(renderCommand: any): any {
+  buildRenderCommand(renderCommand: unknown): unknown {
     throw new Error(
       `${this._logPrefix()} buildRenderCommand not implemented for ${this.rendererType}`,
     );
@@ -1266,7 +1292,7 @@ export function isSystemRenderer(
  * @param obj - Object to check
  * @returns True if the object is or behaves like a GraphicsContext
  */
-export function isGraphicsContext(obj: any): obj is GraphicsContext {
+export function isGraphicsContext(obj: unknown): obj is GraphicsContext {
   if (obj instanceof GraphicsContext) {
     return true;
   }

@@ -217,7 +217,8 @@ class TileBoundingS2Cell {
             4 * selectedPlaneIndices[0] + (selectedPlaneIndices[1] - 2)
           ],
           this._vertices[
-            4 * selectedPlaneIndices[0] + ((selectedPlaneIndices[1] - 2 + 1) % 4)
+            4 * selectedPlaneIndices[0] +
+              ((selectedPlaneIndices[1] - 2 + 1) % 4)
           ],
         ];
         facePoint = closestPointLineSegment(point, edge[0], edge[1]);

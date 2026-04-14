@@ -188,7 +188,7 @@ class WebGPUSampler {
    * Gets the GPUSampler from the context's sampler cache.
    * This is the preferred way to get a sampler — avoids duplicates.
    */
-  getOrCreateCached(context: any): GPUSampler | null {
+  getOrCreateCached(context: CesiumGraphicsContext): GPUSampler | null {
     if (typeof context.getOrCreateSampler === "function") {
       const sampler = context.getOrCreateSampler(this._descriptor);
       this._gpuSampler = sampler;
@@ -205,7 +205,14 @@ class WebGPUSampler {
   /**
    * Creates a WebGPUSampler from a CesiumJS Sampler.js instance.
    */
-  static fromCesiumSampler(cesiumSampler: any): WebGPUSampler {
+  static fromCesiumSampler(cesiumSampler: {
+    wrapS?: number;
+    wrapT?: number;
+    wrapR?: number;
+    minificationFilter?: number;
+    magnificationFilter?: number;
+    maximumAnisotropy?: number;
+  }): WebGPUSampler {
     return new WebGPUSampler({
       wrapS: cesiumSampler.wrapS,
       wrapT: cesiumSampler.wrapT,

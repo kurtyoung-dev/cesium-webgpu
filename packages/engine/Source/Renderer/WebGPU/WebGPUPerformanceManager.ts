@@ -30,6 +30,92 @@ import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
 
 /**
+ * Local interface for the context fields accessed by the performance manager.
+ * Avoids importing WebGPUContext (which would cause circular dependency).
+ */
+interface PerformanceManagerContext {
+  readonly device?: GPUDevice | null;
+  supportsComputeShaders: boolean;
+  computeEngine?: {
+    getOrCreatePipeline(
+      cacheKey: string,
+      source: string,
+      entryPoint: string,
+    ): GPUComputePipeline | null;
+    [key: string]: ((...args: unknown[]) => unknown) | null | string;
+  } | null;
+  renderBundleManager: {
+    invalidate(key: string): void;
+    invalidateByPrefix(prefix: string): void;
+    beginFrame(): void;
+    statistics?: { cacheSize: number; hitRate: number };
+  } | null;
+  indirectDrawManager: {
+    drawCount: number;
+    appendDraw(params: {
+      indexCount: number;
+      instanceCount: number;
+      firstIndex: number;
+      baseVertex: number;
+      firstInstance: number;
+    }): void;
+    buildAndSubmit(encoder: GPUCommandEncoder): void;
+    beginFrame(): void;
+    flush(): void;
+    addIndexedDrawCall(params: {
+      indexCount: number;
+      instanceCount: number;
+      firstIndex: number;
+      baseVertex: number;
+      firstInstance: number;
+    }): number;
+    executeDrawIndexedIndirect(renderPass: GPURenderPassEncoder): void;
+  } | null;
+  timestampProfiler: {
+    beginPass(encoder: GPUCommandEncoder, label: string): void;
+    endPass(encoder: GPUCommandEncoder, label: string): void;
+    resolveTimestamps(encoder: GPUCommandEncoder): void;
+    getResults(): Record<string, number>;
+    beginFrame(): void;
+    endFrame(): void;
+    getStatistics?(): { totalMs?: number; passes?: Record<string, number> };
+    getPassTimestampWrites?(
+      passName: string,
+    ): GPURenderPassTimestampWrites | undefined;
+    getComputePassTimestampWrites?(
+      passName: string,
+    ): GPUComputePassTimestampWrites | undefined;
+  } | null;
+  bufferMapper: {
+    scheduleUpload(
+      buffer: GPUBuffer,
+      offset: number,
+      data: ArrayBufferView,
+    ): Promise<void>;
+    scheduleReadback(
+      buffer: GPUBuffer,
+      offset: number,
+      size: number,
+    ): Promise<ArrayBuffer>;
+    flush(): Promise<void>;
+    uploadViaStagingBuffer(
+      buffer: GPUBuffer,
+      data: ArrayBufferView,
+      offset: number,
+    ): Promise<void>;
+    readbackViaStagingBuffer(
+      buffer: GPUBuffer,
+      size: number,
+      offset: number,
+    ): Promise<Uint8Array | null>;
+  } | null;
+  /** ComputeCommand class constructor registered by WebGPUContext after
+   *  the compute dispatchers are wired up. Optional — present only when
+   *  the compute pipeline is active. */
+  _computeCommandClass?: new (...args: unknown[]) => object;
+}
+
+/**
  * Compute task type identifiers for the dispatch orchestrator.
  */
 export const ComputeTaskType = Object.freeze({
@@ -126,7 +212,7 @@ export interface FrameTimings {
 }
 
 export class WebGPUPerformanceManager {
-  private _context: any;
+  private _context: PerformanceManagerContext;
   private _config: PerformanceConfig;
   private _frameTimings: FrameTimings;
   private _frameCount: number = 0;
@@ -197,7 +283,10 @@ export class WebGPUPerformanceManager {
     transmittanceHeight: number;
   } | null = null;
 
-  constructor(context: any, config?: Partial<PerformanceConfig>) {
+  constructor(
+    context: PerformanceManagerContext,
+    config?: Partial<PerformanceConfig>,
+  ) {
     this._context = context;
     this._config = { ...DEFAULT_CONFIG, ...config };
     this._frameTimings = this._createEmptyTimings();
@@ -275,7 +364,10 @@ export class WebGPUPerformanceManager {
         const stats = profiler.getStatistics?.();
         if (stats) {
           this._frameTimings.totalGpuMs = stats.totalMs ?? 0;
-          this._frameTimings.passes = stats.passes ?? {};
+          this._frameTimings.passes = (stats.passes ?? {}) as Record<
+            string,
+            number
+          >;
         }
       }
     }
@@ -393,7 +485,7 @@ export class WebGPUPerformanceManager {
    * Get the GPU culler instance for direct use by the scene renderer.
    * Returns null if GPU culling is disabled or unavailable.
    */
-  getGPUCuller(): any {
+  getGPUCuller(): object | null {
     if (!this._config.gpuCulling || !this._context.supportsComputeShaders) {
       return null;
     }
@@ -1376,7 +1468,7 @@ export class WebGPUPerformanceManager {
     const label = this._getTaskLabel(taskType);
     const timestampWrites = this.getComputePassTimestampWrites(label);
 
-    const WebGPUComputeCommand = (this._context as any)._computeCommandClass;
+    const WebGPUComputeCommand = this._context._computeCommandClass;
 
     // Use ComputeEngine's pipeline caching via getOrCreatePipeline
     const cacheKey = `perfmgr:${label}:${entryPoint}`;

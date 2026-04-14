@@ -58,7 +58,9 @@ class BatchTexture {
       // PERFORMANCE_IDEA: this can waste memory in the last row in the uncommon case
       // when more than one row is needed (e.g., > 16K features in one tile)
       const width = Math.min(featuresLength, ContextLimits.maximumTextureSize);
-      const height = Math.ceil(featuresLength / ContextLimits.maximumTextureSize);
+      const height = Math.ceil(
+        featuresLength / ContextLimits.maximumTextureSize,
+      );
       const stepX = 1.0 / width;
       const centerX = stepX * 0.5;
       const stepY = 1.0 / height;
@@ -302,7 +304,8 @@ class BatchTexture {
         // Make sure the tileset statistics are updated the frame when the
         // batch texture is created.
         if (defined(this._statistics)) {
-          this._statistics.batchTableByteLength += this._batchTexture.sizeInBytes;
+          this._statistics.batchTableByteLength +=
+            this._batchTexture.sizeInBytes;
         }
       }
 

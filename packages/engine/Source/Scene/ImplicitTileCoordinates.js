@@ -164,8 +164,10 @@ class ImplicitTileCoordinates {
     //>>includeEnd('debug');
 
     const descendantLevel = this.level + offsetCoordinates.level;
-    const descendantX = (this.x << offsetCoordinates.level) + offsetCoordinates.x;
-    const descendantY = (this.y << offsetCoordinates.level) + offsetCoordinates.y;
+    const descendantX =
+      (this.x << offsetCoordinates.level) + offsetCoordinates.x;
+    const descendantY =
+      (this.y << offsetCoordinates.level) + offsetCoordinates.y;
 
     if (this.subdivisionScheme === ImplicitSubdivisionScheme.OCTREE) {
       const descendantZ =

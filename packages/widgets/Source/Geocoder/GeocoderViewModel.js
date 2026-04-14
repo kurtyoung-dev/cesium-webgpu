@@ -43,7 +43,9 @@ class GeocoderViewModel {
     if (defined(options.geocoderServices)) {
       this._geocoderServices = options.geocoderServices;
     } else {
-      this._geocoderServices = [new IonGeocoderService({ scene: options.scene })];
+      this._geocoderServices = [
+        new IonGeocoderService({ scene: options.scene }),
+      ];
     }
 
     this._viewContainer = options.container;
@@ -66,7 +68,10 @@ class GeocoderViewModel {
     this._suggestionsVisible = knockout.pureComputed(function () {
       const suggestions = knockout.getObservable(that, "_suggestions");
       const suggestionsNotEmpty = suggestions().length > 0;
-      const showSuggestions = knockout.getObservable(that, "_showSuggestions")();
+      const showSuggestions = knockout.getObservable(
+        that,
+        "_showSuggestions",
+      )();
       return suggestionsNotEmpty && showSuggestions;
     });
 
@@ -91,7 +96,9 @@ class GeocoderViewModel {
 
     this.handleKeyDown = function (data, event) {
       const downKey =
-        event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
+        event.key === "ArrowDown" ||
+        event.key === "Down" ||
+        event.keyCode === 40;
       const upKey =
         event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
       if (downKey || upKey) {
@@ -103,7 +110,9 @@ class GeocoderViewModel {
 
     this.handleKeyUp = function (data, event) {
       const downKey =
-        event.key === "ArrowDown" || event.key === "Down" || event.keyCode === 40;
+        event.key === "ArrowDown" ||
+        event.key === "Down" ||
+        event.keyCode === 40;
       const upKey =
         event.key === "ArrowUp" || event.key === "Up" || event.keyCode === 38;
       const enterKey = event.key === "Enter" || event.keyCode === 13;

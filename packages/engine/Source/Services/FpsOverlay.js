@@ -246,9 +246,9 @@ class FpsOverlay {
     const padding = 6;
     const headerHeight = 14;
     const footerHeight = 14;
-    const graphHeight = this._height - headerHeight - footerHeight - padding * 2;
+    const graphHeight =
+      this._height - headerHeight - footerHeight - padding * 2;
     const graphTop = padding + headerHeight;
-    const graphBottom = graphTop + graphHeight;
     const graphLeft = padding;
     const graphRight = this._width - padding;
     const graphWidth = graphRight - graphLeft;
@@ -261,9 +261,10 @@ class FpsOverlay {
     ctx.fillText(this._label, padding, padding);
     ctx.fillStyle = COLOR_TEXT;
     ctx.textAlign = "right";
-    const avgFpsStr = stats.sampleCount > 0
-      ? `${stats.avgFps.toFixed(1)} fps  ${stats.avgFrameMs.toFixed(1)}ms`
-      : "— fps";
+    const avgFpsStr =
+      stats.sampleCount > 0
+        ? `${stats.avgFps.toFixed(1)} fps  ${stats.avgFrameMs.toFixed(1)}ms`
+        : "— fps";
     ctx.fillText(avgFpsStr, this._width - padding, padding);
 
     // ── Graph ──
@@ -300,11 +301,7 @@ class FpsOverlay {
       ctx.fillText(`${stats.sampleCount}f`, this._width - padding, footerY);
     } else {
       ctx.textAlign = "center";
-      ctx.fillText(
-        `0 samples`,
-        this._width / 2,
-        footerY,
-      );
+      ctx.fillText(`0 samples`, this._width / 2, footerY);
     }
   }
 

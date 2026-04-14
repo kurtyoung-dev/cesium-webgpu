@@ -53,7 +53,9 @@ class VoxelCylinderShape {
       new ClippingPlane(Cartesian3.UNIT_Z, -DefaultMaxBounds.z),
     ];
 
-    this._renderBoundPlanes = new VoxelBoundsCollection({ planes: boundPlanes });
+    this._renderBoundPlanes = new VoxelBoundsCollection({
+      planes: boundPlanes,
+    });
 
     this._shaderUniforms = {
       cameraShapePosition: new Cartesian3(),
@@ -223,7 +225,8 @@ class VoxelCylinderShape {
 
     if (renderMinBounds.x !== DefaultMinBounds.x) {
       shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_RADIUS_MIN"] = true;
-      shaderDefines["CYLINDER_INTERSECTION_INDEX_RADIUS_MIN"] = intersectionCount;
+      shaderDefines["CYLINDER_INTERSECTION_INDEX_RADIUS_MIN"] =
+        intersectionCount;
       intersectionCount += 1;
     }
     shaderUniforms.cylinderRenderRadiusMinMax = Cartesian2.fromElements(
@@ -267,13 +270,16 @@ class VoxelCylinderShape {
       shaderDefines["CYLINDER_INTERSECTION_INDEX_ANGLE"] = intersectionCount;
 
       if (renderIsAngleRegular) {
-        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_UNDER_HALF"] = true;
+        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_UNDER_HALF"] =
+          true;
         intersectionCount += 1;
       } else if (renderIsAngleFlipped) {
-        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_OVER_HALF"] = true;
+        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_OVER_HALF"] =
+          true;
         intersectionCount += 2;
       } else if (renderIsAngleRangeZero) {
-        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_EQUAL_ZERO"] = true;
+        shaderDefines["CYLINDER_HAS_RENDER_BOUNDS_ANGLE_RANGE_EQUAL_ZERO"] =
+          true;
         intersectionCount += 2;
       }
 
@@ -339,7 +345,10 @@ class VoxelCylinderShape {
     );
     // 2. Find radial, tangent, and up components at camera position
     const cameraRadialDirection = Cartesian2.normalize(
-      Cartesian2.fromCartesian3(cameraPositionLocal, scratchCameraRadialPosition),
+      Cartesian2.fromCartesian3(
+        cameraPositionLocal,
+        scratchCameraRadialPosition,
+      ),
       scratchCameraRadialPosition,
     );
     // As row vectors, the radial, tangent, and up vectors constitute a rotation matrix from local to RTU.
@@ -409,7 +418,8 @@ class VoxelCylinderShape {
     angle -= cylinderShapeUvAngleRangeOrigin;
     angle = angle - Math.floor(angle);
     // Scale and shift so [0,1] covers the occupied space.
-    angle = angle * cylinderLocalToShapeUvAngle.x + cylinderLocalToShapeUvAngle.y;
+    angle =
+      angle * cylinderLocalToShapeUvAngle.x + cylinderLocalToShapeUvAngle.y;
 
     height =
       height * cylinderLocalToShapeUvHeight.x + cylinderLocalToShapeUvHeight.y;
@@ -471,7 +481,12 @@ class VoxelCylinderShape {
    * @param {OrientedBoundingBox} result The oriented bounding box that will be set to enclose the specified sample
    * @returns {OrientedBoundingBox} The oriented bounding box.
    */
-  computeOrientedBoundingBoxForSample(spatialNode, tileDimensions, tileUv, result) {
+  computeOrientedBoundingBoxForSample(
+    spatialNode,
+    tileDimensions,
+    tileUv,
+    result,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("spatialNode", spatialNode);
     Check.typeOf.object("tileDimensions", tileDimensions);
@@ -501,7 +516,11 @@ class VoxelCylinderShape {
       tileSizeAtLevel,
       scratchMinBounds,
     );
-    const maxLerp = Cartesian3.add(minLerp, sampleSizeAtLevel, scratchMaxBounds);
+    const maxLerp = Cartesian3.add(
+      minLerp,
+      sampleSizeAtLevel,
+      scratchMaxBounds,
+    );
 
     const minBounds = this._minBounds;
     const maxBounds = this._maxBounds;

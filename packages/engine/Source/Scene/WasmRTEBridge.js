@@ -25,19 +25,29 @@ class WasmRTEBridge {
     this._isDestroyed = false;
   }
 
-  get threshold() { return this._threshold; }
-  set threshold(value) { this._threshold = value; }
-  get wasmReady() { return _wasmReady; }
+  get threshold() {
+    return this._threshold;
+  }
+  set threshold(value) {
+    this._threshold = value;
+  }
+  get wasmReady() {
+    return _wasmReady;
+  }
 
   async loadWasm() {
-    if (_wasmReady) return true;
-    if (_wasmLoading) return _wasmLoading;
+    if (_wasmReady) {
+      return true;
+    }
+    if (_wasmLoading) {
+      return _wasmLoading;
+    }
     WasmFeatureDetection.checkSIMDSupport();
     _wasmLoading = (async () => {
       try {
         const module = await import(
           /* webpackIgnore: true */
-          '../../ThirdParty/Workers/cesium_wasm.js'
+          "../../ThirdParty/Workers/cesium_wasm.js"
         );
         await module.default();
         WasmFeatureDetection.checkVersionMatch(module, "rte");
@@ -46,7 +56,7 @@ class WasmRTEBridge {
         _wasmReady = true;
         return true;
       } catch (e) {
-        console.warn('[CesiumJS:WASM:rte] Load failed:', e.message);
+        console.warn("[CesiumJS:WASM:rte] Load failed:", e.message);
         return false;
       }
     })();
@@ -96,7 +106,10 @@ class WasmRTEBridge {
       outHigh.set(new Float32Array(buf, highPtr, total));
       outLow.set(new Float32Array(buf, lowPtr, total));
     } catch (e) {
-      console.warn('[CesiumJS:WASM:rte] encode failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:rte] encode failed, using JS fallback:",
+        e.message,
+      );
       this._encodeJS(positions, count, outHigh, outLow);
     }
   }
@@ -134,9 +147,9 @@ class WasmRTEBridge {
   _toEyeJS(posHigh, posLow, camHigh, camLow, count, out) {
     for (let i = 0; i < count; i++) {
       const i3 = i * 3;
-      out[i3] = (posHigh[i3] - camHigh.x) + (posLow[i3] - camLow.x);
-      out[i3 + 1] = (posHigh[i3 + 1] - camHigh.y) + (posLow[i3 + 1] - camLow.y);
-      out[i3 + 2] = (posHigh[i3 + 2] - camHigh.z) + (posLow[i3 + 2] - camLow.z);
+      out[i3] = posHigh[i3] - camHigh.x + (posLow[i3] - camLow.x);
+      out[i3 + 1] = posHigh[i3 + 1] - camHigh.y + (posLow[i3 + 1] - camLow.y);
+      out[i3 + 2] = posHigh[i3 + 2] - camHigh.z + (posLow[i3 + 2] - camLow.z);
     }
   }
 
@@ -154,31 +167,46 @@ class WasmRTEBridge {
       const memory = _wasmModule.__wbindgen_export_0 ?? _wasmModule.memory;
       const buf = memory.buffer;
 
-    // Deinterleave to SOA for WASM
-    const hx = new Float32Array(buf, ptr, count);
-    const hy = new Float32Array(buf, ptr + arrayBytes, count);
-    const hz = new Float32Array(buf, ptr + arrayBytes * 2, count);
-    const lx = new Float32Array(buf, ptr + arrayBytes * 3, count);
-    const ly = new Float32Array(buf, ptr + arrayBytes * 4, count);
-    const lz = new Float32Array(buf, ptr + arrayBytes * 5, count);
+      // Deinterleave to SOA for WASM
+      const hx = new Float32Array(buf, ptr, count);
+      const hy = new Float32Array(buf, ptr + arrayBytes, count);
+      const hz = new Float32Array(buf, ptr + arrayBytes * 2, count);
+      const lx = new Float32Array(buf, ptr + arrayBytes * 3, count);
+      const ly = new Float32Array(buf, ptr + arrayBytes * 4, count);
+      const lz = new Float32Array(buf, ptr + arrayBytes * 5, count);
 
-    for (let i = 0; i < count; i++) {
-      const i3 = i * 3;
-      hx[i] = posHigh[i3]; hy[i] = posHigh[i3 + 1]; hz[i] = posHigh[i3 + 2];
-      lx[i] = posLow[i3]; ly[i] = posLow[i3 + 1]; lz[i] = posLow[i3 + 2];
-    }
+      for (let i = 0; i < count; i++) {
+        const i3 = i * 3;
+        hx[i] = posHigh[i3];
+        hy[i] = posHigh[i3 + 1];
+        hz[i] = posHigh[i3 + 2];
+        lx[i] = posLow[i3];
+        ly[i] = posLow[i3 + 1];
+        lz[i] = posLow[i3 + 2];
+      }
 
-    const oxPtr = ptr + arrayBytes * 6;
-    const oyPtr = ptr + arrayBytes * 7;
-    const ozPtr = ptr + arrayBytes * 8;
+      const oxPtr = ptr + arrayBytes * 6;
+      const oyPtr = ptr + arrayBytes * 7;
+      const ozPtr = ptr + arrayBytes * 8;
 
-    _wasmModule.batch_rte_to_eye(
-      ptr, ptr + arrayBytes, ptr + arrayBytes * 2,
-      ptr + arrayBytes * 3, ptr + arrayBytes * 4, ptr + arrayBytes * 5,
-      camHigh.x, camHigh.y, camHigh.z,
-      camLow.x, camLow.y, camLow.z,
-      count, oxPtr, oyPtr, ozPtr
-    );
+      _wasmModule.batch_rte_to_eye(
+        ptr,
+        ptr + arrayBytes,
+        ptr + arrayBytes * 2,
+        ptr + arrayBytes * 3,
+        ptr + arrayBytes * 4,
+        ptr + arrayBytes * 5,
+        camHigh.x,
+        camHigh.y,
+        camHigh.z,
+        camLow.x,
+        camLow.y,
+        camLow.z,
+        count,
+        oxPtr,
+        oyPtr,
+        ozPtr,
+      );
 
       // Re-interleave output
       const ox = new Float32Array(buf, oxPtr, count);
@@ -186,10 +214,15 @@ class WasmRTEBridge {
       const oz = new Float32Array(buf, ozPtr, count);
       for (let i = 0; i < count; i++) {
         const i3 = i * 3;
-        out[i3] = ox[i]; out[i3 + 1] = oy[i]; out[i3 + 2] = oz[i];
+        out[i3] = ox[i];
+        out[i3 + 1] = oy[i];
+        out[i3 + 2] = oz[i];
       }
     } catch (e) {
-      console.warn('[CesiumJS:WASM:rte] toEye failed, using JS fallback:', e.message);
+      console.warn(
+        "[CesiumJS:WASM:rte] toEye failed, using JS fallback:",
+        e.message,
+      );
       this._toEyeJS(posHigh, posLow, camHigh, camLow, count, out);
     }
   }

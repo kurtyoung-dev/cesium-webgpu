@@ -165,14 +165,20 @@ class MaterialUniformBuffer {
       // Object with x/y/z/w numeric fields — treat as vec
       const keys = Object.keys(value);
       if (keys.includes("x") && keys.includes("y")) {
-        if (keys.includes("w")) return { type: "vec4", size: 4, isTexture: false };
-        if (keys.includes("z")) return { type: "vec3", size: 3, isTexture: false };
+        if (keys.includes("w")) {
+          return { type: "vec4", size: 4, isTexture: false };
+        }
+        if (keys.includes("z")) {
+          return { type: "vec3", size: 3, isTexture: false };
+        }
         return { type: "vec2", size: 2, isTexture: false };
       }
       // Image element
       if (
-        (typeof HTMLImageElement !== "undefined" && value instanceof HTMLImageElement) ||
-        (typeof HTMLCanvasElement !== "undefined" && value instanceof HTMLCanvasElement) ||
+        (typeof HTMLImageElement !== "undefined" &&
+          value instanceof HTMLImageElement) ||
+        (typeof HTMLCanvasElement !== "undefined" &&
+          value instanceof HTMLCanvasElement) ||
         (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap)
       ) {
         return { type: "sampler2D", size: 0, isTexture: true };
@@ -190,7 +196,9 @@ class MaterialUniformBuffer {
    */
   _writeValue(name, value) {
     const entry = this._layout.get(name);
-    if (!entry) return;
+    if (!entry) {
+      return;
+    }
 
     if (entry.offset === -1) {
       // Texture reference — store separately
@@ -231,13 +239,23 @@ class MaterialUniformBuffer {
       // Boolean vec (fadeDirection: { x: true, y: true })
       if (typeof value.x === "boolean") {
         d[o] = value.x ? 1.0 : 0.0;
-        if (entry.size > 1) d[o + 1] = value.y ? 1.0 : 0.0;
+        if (entry.size > 1) {
+          d[o + 1] = value.y ? 1.0 : 0.0;
+        }
       } else {
         // Generic x/y/z/w object
-        if (defined(value.x)) d[o] = value.x;
-        if (defined(value.y) && entry.size > 1) d[o + 1] = value.y;
-        if (defined(value.z) && entry.size > 2) d[o + 2] = value.z;
-        if (defined(value.w) && entry.size > 3) d[o + 3] = value.w;
+        if (defined(value.x)) {
+          d[o] = value.x;
+        }
+        if (defined(value.y) && entry.size > 1) {
+          d[o + 1] = value.y;
+        }
+        if (defined(value.z) && entry.size > 2) {
+          d[o + 2] = value.z;
+        }
+        if (defined(value.w) && entry.size > 3) {
+          d[o + 3] = value.w;
+        }
       }
     }
 
@@ -253,7 +271,9 @@ class MaterialUniformBuffer {
    */
   _readValue(name) {
     const entry = this._layout.get(name);
-    if (!entry) return undefined;
+    if (!entry) {
+      return undefined;
+    }
 
     if (entry.offset === -1) {
       return this._textures[name];

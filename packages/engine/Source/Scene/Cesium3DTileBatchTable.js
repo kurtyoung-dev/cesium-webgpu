@@ -278,7 +278,11 @@ class Cesium3DTileBatchTable {
     propertyValues[batchId] = clone(value, true);
   }
 
-  getVertexShaderCallback(handleTranslucent, batchIdAttributeName, diffuseAttributeOrUniformName) {
+  getVertexShaderCallback(
+    handleTranslucent,
+    batchIdAttributeName,
+    diffuseAttributeOrUniformName,
+  ) {
     if (this.featuresLength === 0) {
       return;
     }
@@ -351,7 +355,11 @@ class Cesium3DTileBatchTable {
     };
   }
 
-  getFragmentShaderCallback(handleTranslucent, diffuseAttributeOrUniformName, hasPremultipliedAlpha) {
+  getFragmentShaderCallback(
+    handleTranslucent,
+    diffuseAttributeOrUniformName,
+    hasPremultipliedAlpha,
+  ) {
     if (this.featuresLength === 0) {
       return;
     }
@@ -486,7 +494,8 @@ class Cesium3DTileBatchTable {
         command.pass !== Pass.TRANSLUCENT
       ) {
         if (!defined(derivedCommands.translucent)) {
-          derivedCommands.translucent = deriveTranslucentCommand(originalCommand);
+          derivedCommands.translucent =
+            deriveTranslucentCommand(originalCommand);
         }
       }
 
@@ -545,7 +554,9 @@ class Cesium3DTileBatchTable {
         if (styleCommandsNeeded === StyleCommandsNeeded.ALL_TRANSLUCENT) {
           commandList[i] = translucentCommand;
         }
-        if (styleCommandsNeeded === StyleCommandsNeeded.OPAQUE_AND_TRANSLUCENT) {
+        if (
+          styleCommandsNeeded === StyleCommandsNeeded.OPAQUE_AND_TRANSLUCENT
+        ) {
           // PERFORMANCE_IDEA: if the tile has multiple commands, we do not know what features are in what
           // commands so this case may be overkill.
           commandList[i] = opaqueCommand;

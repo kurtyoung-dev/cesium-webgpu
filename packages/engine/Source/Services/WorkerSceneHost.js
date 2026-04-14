@@ -77,7 +77,6 @@ import {
   HEARTBEAT_MAX_MISSED,
   RESTART_BURST_MAX,
   RESTART_BURST_WINDOW_MS,
-  RESTART_SOFT_BACKOFF_MS,
   RESTART_HARD_BACKOFF_MS,
 } from "./WorkerSceneProtocol.js";
 
@@ -430,16 +429,11 @@ class WorkerSceneHost {
     let workerUrl = this._workerUrl;
     if (!workerUrl) {
       try {
-        workerUrl = new URL(
-          "./Workers/RendererWorker.js",
-          import.meta.url,
-        );
+        workerUrl = new URL("./Workers/RendererWorker.js", import.meta.url);
       } catch (e) {
         throw new Error(
-          "WorkerSceneHost cannot resolve a default worker URL — pass " +
-            "options.workerUrl explicitly. (cause: " +
-            e.message +
-            ")",
+          `WorkerSceneHost cannot resolve a default worker URL — pass ` +
+            `options.workerUrl explicitly. (cause: ${e.message})`,
         );
       }
     }
@@ -500,7 +494,6 @@ class WorkerSceneHost {
     // Diagnostic: print the spawn reason so a multi-restart sequence
     // is easy to read in the console.
     if (reason !== "initial-spawn") {
-      // eslint-disable-next-line no-console
       console.warn(
         `[WorkerSceneHost] worker spawned (session ${this._sessionId}) reason=${reason}`,
       );
@@ -519,7 +512,6 @@ class WorkerSceneHost {
   }
 
   _handleSpawnFailure(err) {
-    // eslint-disable-next-line no-console
     console.error("[WorkerSceneHost] worker spawn failed:", err);
     this._terminateWorker();
     if (this._onFailure) {
@@ -564,7 +556,9 @@ class WorkerSceneHost {
       return;
     }
     this._resizeObserver = new ResizeObserver(() => {
-      if (!this._canvas || !this._isReady) return;
+      if (!this._canvas || !this._isReady) {
+        return;
+      }
       const rect = this._parent.getBoundingClientRect();
       const w = Math.max(1, Math.round(rect.width));
       const h = Math.max(1, Math.round(rect.height));
@@ -601,7 +595,9 @@ class WorkerSceneHost {
   }
 
   _sendHeartbeat() {
-    if (this._isDestroyed || !this._worker) return;
+    if (this._isDestroyed || !this._worker) {
+      return;
+    }
     // Check that the previous N pings have all been acked. If too
     // many are outstanding, the worker is hung — escalate to Tier 3
     // restart.
@@ -621,7 +617,9 @@ class WorkerSceneHost {
   // ─── Crash handling ───────────────────────────────────────────
 
   _noteCrash(reason, detail) {
-    if (this._isDestroyed) return;
+    if (this._isDestroyed) {
+      return;
+    }
     const ts = Date.now();
     // Drop expired restart timestamps so the burst window is rolling.
     const cutoff = ts - RESTART_BURST_WINDOW_MS;
@@ -672,7 +670,9 @@ class WorkerSceneHost {
     this._terminateWorker();
     this._stopHeartbeat();
     setTimeout(() => {
-      if (this._isDestroyed) return;
+      if (this._isDestroyed) {
+        return;
+      }
       this._spawnFreshWorker(`restart:${reason}`);
     }, RESTART_HARD_BACKOFF_MS);
   }
@@ -695,7 +695,9 @@ class WorkerSceneHost {
   }
 
   _replayShadowState() {
-    if (!this._shadowState) return;
+    if (!this._shadowState) {
+      return;
+    }
     if (this._shadowState.lastView) {
       this._post(MSG_SET_VIEW, { view: this._shadowState.lastView });
     }
@@ -718,7 +720,9 @@ class WorkerSceneHost {
   // ─── Worker→Host messages ─────────────────────────────────────
 
   _handleWorkerMessage(data) {
-    if (!data || typeof data.type !== "string") return;
+    if (!data || typeof data.type !== "string") {
+      return;
+    }
     // Drop messages from a previous session — they crossed in flight
     // with our restart and would corrupt the state of the new worker.
     if (
@@ -758,10 +762,7 @@ class WorkerSceneHost {
         break;
       case MSG_HEARTBEAT_PONG:
         if (typeof data.pingId === "number") {
-          this._lastAckedPingId = Math.max(
-            this._lastAckedPingId,
-            data.pingId,
-          );
+          this._lastAckedPingId = Math.max(this._lastAckedPingId, data.pingId);
         }
         break;
       case MSG_REPLAY_REQUEST:
@@ -771,11 +772,9 @@ class WorkerSceneHost {
         this._replayShadowState();
         break;
       case MSG_DEVICE_LOST:
-        // eslint-disable-next-line no-console
         console.warn("[WorkerSceneHost] GPU device lost (worker recovering)");
         break;
       case MSG_DEVICE_RESTORED:
-        // eslint-disable-next-line no-console
         console.info("[WorkerSceneHost] GPU device restored");
         break;
       case MSG_REPLY:
@@ -793,7 +792,6 @@ class WorkerSceneHost {
         }
         break;
       case MSG_LOG:
-        // eslint-disable-next-line no-console
         console.log(`[Worker:${data.level ?? "log"}] ${data.message ?? ""}`);
         break;
       case MSG_ERROR:
@@ -801,7 +799,7 @@ class WorkerSceneHost {
         // restart on a single occurrence — the worker self-reported
         // and is presumably still alive. The heartbeat is the
         // ultimate authority on whether to escalate.
-        // eslint-disable-next-line no-console
+
         console.error(
           `[WorkerSceneHost] worker error (${data.phase ?? "?"}): ${
             data.message
@@ -810,7 +808,7 @@ class WorkerSceneHost {
         break;
       default:
         // unknown message type from the worker — log and ignore
-        // eslint-disable-next-line no-console
+
         console.warn(`[WorkerSceneHost] unknown worker msg: ${data.type}`);
     }
   }
@@ -818,7 +816,9 @@ class WorkerSceneHost {
   // ─── Internal post helper ─────────────────────────────────────
 
   _post(type, payload) {
-    if (!this._worker) return;
+    if (!this._worker) {
+      return;
+    }
     try {
       this._worker.postMessage({ type, ...(payload ?? {}) });
     } catch (e) {

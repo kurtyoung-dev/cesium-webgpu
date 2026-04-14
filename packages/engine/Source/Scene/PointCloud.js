@@ -204,7 +204,11 @@ class PointCloud {
       Matrix4.clone(this._modelMatrix, modelMatrix);
 
       if (defined(this._rtcCenter)) {
-        Matrix4.multiplyByTranslation(modelMatrix, this._rtcCenter, modelMatrix);
+        Matrix4.multiplyByTranslation(
+          modelMatrix,
+          this._rtcCenter,
+          modelMatrix,
+        );
       }
       if (defined(this._quantizedVolumeOffset)) {
         Matrix4.multiplyByTranslation(
@@ -284,7 +288,9 @@ class PointCloud {
     this._drawCommand.renderState = isTranslucent
       ? this._translucentRenderState
       : this._opaqueRenderState;
-    this._drawCommand.pass = isTranslucent ? Pass.TRANSLUCENT : this._opaquePass;
+    this._drawCommand.pass = isTranslucent
+      ? Pass.TRANSLUCENT
+      : this._opaquePass;
 
     const commandList = frameState.commandList;
 
@@ -301,7 +307,8 @@ class PointCloud {
   destroy() {
     const command = this._drawCommand;
     if (defined(command)) {
-      command.vertexArray = command.vertexArray && command.vertexArray.destroy();
+      command.vertexArray =
+        command.vertexArray && command.vertexArray.destroy();
       command.shaderProgram =
         command.shaderProgram && command.shaderProgram.destroy();
     }

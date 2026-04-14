@@ -43,7 +43,11 @@ class TileMetadata {
    * @private
    */
   hasProperty(propertyId) {
-    return MetadataEntity.hasProperty(propertyId, this._properties, this._class);
+    return MetadataEntity.hasProperty(
+      propertyId,
+      this._properties,
+      this._class,
+    );
   }
 
   /**
@@ -69,7 +73,11 @@ class TileMetadata {
    * @private
    */
   getPropertyIds(results) {
-    return MetadataEntity.getPropertyIds(this._properties, this._class, results);
+    return MetadataEntity.getPropertyIds(
+      this._properties,
+      this._class,
+      results,
+    );
   }
 
   /**
@@ -83,7 +91,11 @@ class TileMetadata {
    * @private
    */
   getProperty(propertyId) {
-    return MetadataEntity.getProperty(propertyId, this._properties, this._class);
+    return MetadataEntity.getProperty(
+      propertyId,
+      this._properties,
+      this._class,
+    );
   }
 
   /**

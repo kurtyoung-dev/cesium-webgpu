@@ -100,7 +100,9 @@ class PrimitiveCollection {
     }
     if (hasIndex) {
       if (index < 0) {
-        throw new DeveloperError("index must be greater than or equal to zero.");
+        throw new DeveloperError(
+          "index must be greater than or equal to zero.",
+        );
       } else if (index > this._primitives.length) {
         throw new DeveloperError(
           "index must be less than or equal to the number of primitives.",

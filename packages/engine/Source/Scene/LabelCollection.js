@@ -717,7 +717,8 @@ class LabelCollection {
      * @type {BlendOption}
      * @default BlendOption.OPAQUE_AND_TRANSLUCENT
      */
-    this.blendOption = options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
+    this.blendOption =
+      options.blendOption ?? BlendOption.OPAQUE_AND_TRANSLUCENT;
   }
 
   /**

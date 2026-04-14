@@ -31,7 +31,12 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
  * @private
  */
 class VoxelTraversal {
-  constructor(primitive, context, keyframeCount, maximumTextureMemoryByteLength) {
+  constructor(
+    primitive,
+    context,
+    keyframeCount,
+    maximumTextureMemoryByteLength,
+  ) {
     const { provider, dimensions, inputDimensions } = primitive;
     const { types, componentTypes } = provider;
 
@@ -403,7 +408,8 @@ class VoxelTraversal {
     this.internalNodeTexture =
       this.internalNodeTexture && this.internalNodeTexture.destroy();
 
-    this.leafNodeTexture = this.leafNodeTexture && this.leafNodeTexture.destroy();
+    this.leafNodeTexture =
+      this.leafNodeTexture && this.leafNodeTexture.destroy();
 
     return destroyObject(this);
   }

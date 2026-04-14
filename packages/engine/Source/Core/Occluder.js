@@ -138,7 +138,8 @@ class Occluder {
           tempVec,
         );
         const tempVecMagnitudeSquared = Cartesian3.magnitudeSquared(tempVec);
-        const occluderRadiusSquared = this._occluderRadius * this._occluderRadius;
+        const occluderRadiusSquared =
+          this._occluderRadius * this._occluderRadius;
         const occludeeRadiusSquared = occludeeRadius * occludeeRadius;
         if (
           (this._horizonDistance * this._horizonDistance +
@@ -240,7 +241,8 @@ class Occluder {
           this._horizonPlanePosition,
           tempVec,
         );
-        return Cartesian3.dot(tempVec, this._horizonPlaneNormal) > -occludeeRadius
+        return Cartesian3.dot(tempVec, this._horizonPlaneNormal) >
+          -occludeeRadius
           ? Visibility.PARTIAL
           : Visibility.FULL;
       }

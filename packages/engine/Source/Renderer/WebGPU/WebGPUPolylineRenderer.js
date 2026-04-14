@@ -616,7 +616,11 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     }
 
     if (defined(matGpuData)) {
-      if (!defined(matUB) || matUB.isDirty || !defined(cache[`matBindGroup_${materialType}`])) {
+      if (
+        !defined(matUB) ||
+        matUB.isDirty ||
+        !defined(cache[`matBindGroup_${materialType}`])
+      ) {
         device.queue.writeBuffer(cache[matKey], 0, matGpuData);
         if (defined(matUB)) {
           matUB.clearDirty();
@@ -825,7 +829,11 @@ function destroyWebGPUPolylineResources(collection) {
 
   // Destroy all segment buffers (per-material and pick)
   for (const key of Object.keys(cache)) {
-    if (key.startsWith("segmentBuffer_") || key.startsWith("cameraBuffer_") || key.startsWith("materialBuffer_")) {
+    if (
+      key.startsWith("segmentBuffer_") ||
+      key.startsWith("cameraBuffer_") ||
+      key.startsWith("materialBuffer_")
+    ) {
       if (defined(cache[key]) && typeof cache[key].destroy === "function") {
         cache[key].destroy();
       }

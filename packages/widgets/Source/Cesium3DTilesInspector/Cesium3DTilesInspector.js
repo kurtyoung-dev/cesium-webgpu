@@ -112,7 +112,9 @@ class Cesium3DTilesInspector {
     tilesetPanelContents.appendChild(
       createButton("Trim Tiles Cache", "trimTilesCache"),
     );
-    tilesetPanelContents.appendChild(createCheckbox("Enable Picking", "picking"));
+    tilesetPanelContents.appendChild(
+      createCheckbox("Enable Picking", "picking"),
+    );
 
     displayPanelContents.appendChild(createCheckbox("Colorize", "colorize"));
     const wireframeCheckbox = displayPanelContents.appendChild(
@@ -253,7 +255,10 @@ class Cesium3DTilesInspector {
     );
     loggingPanelContents.appendChild(pickStatistics);
     loggingPanelContents.appendChild(
-      createCheckbox("Resource Cache Statistics", "showResourceCacheStatistics"),
+      createCheckbox(
+        "Resource Cache Statistics",
+        "showResourceCacheStatistics",
+      ),
     );
     const resourceCacheStatistics = document.createElement("div");
     resourceCacheStatistics.className = "cesium-3dTilesInspector-statistics";
@@ -308,7 +313,13 @@ class Cesium3DTilesInspector {
     );
     const skipScreenSpaceErrorFactorContainer = document.createElement("div");
     skipScreenSpaceErrorFactorContainer.appendChild(
-      createRangeInput("Skip SSE Factor", "skipScreenSpaceErrorFactor", 1, 50, 1),
+      createRangeInput(
+        "Skip SSE Factor",
+        "skipScreenSpaceErrorFactor",
+        1,
+        50,
+        1,
+      ),
     );
     optimizationPanelContents.appendChild(skipScreenSpaceErrorFactorContainer);
     const baseScreenSpaceError = document.createElement("div");

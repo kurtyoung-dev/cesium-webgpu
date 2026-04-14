@@ -27,7 +27,10 @@
  * @module WebGPUPostProcessStageCollection
  */
 
-import { WebGPUPostProcessPipeline, TonemapMode } from "./WebGPUPostProcessPipeline.js";
+import {
+  WebGPUPostProcessPipeline,
+  TonemapMode,
+} from "./WebGPUPostProcessPipeline.js";
 
 export interface PostProcessCache {
   initialized: boolean;
@@ -74,12 +77,18 @@ function getDefaultCache(): PostProcessCache {
 function mapTonemapType(collection: CesiumObjectWithWebGPUCache): number {
   const type = collection._tonemapping?.type ?? collection._tonemappingType;
   switch (type) {
-    case 0: return TonemapMode.REINHARD;
-    case 1: return TonemapMode.MODIFIED_REINHARD;
-    case 2: return TonemapMode.FILMIC;
-    case 3: return TonemapMode.ACES;
-    case 4: return TonemapMode.PBR_NEUTRAL;
-    default: return TonemapMode.PBR_NEUTRAL; // CesiumJS default
+    case 0:
+      return TonemapMode.REINHARD;
+    case 1:
+      return TonemapMode.MODIFIED_REINHARD;
+    case 2:
+      return TonemapMode.FILMIC;
+    case 3:
+      return TonemapMode.ACES;
+    case 4:
+      return TonemapMode.PBR_NEUTRAL;
+    default:
+      return TonemapMode.PBR_NEUTRAL; // CesiumJS default
   }
 }
 
@@ -90,7 +99,10 @@ function mapTonemapType(collection: CesiumObjectWithWebGPUCache): number {
  * Caches the current enabled/disabled state of all post-processing stages.
  * Does NOT touch the WebGPU pipeline — that's configureWebGPUPostProcessPipeline's job.
  */
-function updateWebGPUPostProcessStages(collection: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUPostProcessStages(
+  collection: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   if (!collection._webgpuCache) {
     collection._webgpuCache = getDefaultCache();
   }
@@ -135,12 +147,13 @@ function updateWebGPUPostProcessStages(collection: CesiumObjectWithWebGPUCache, 
  */
 function configureWebGPUPostProcessPipeline(
   pipeline: WebGPUPostProcessPipeline,
-  collection: CesiumObjectWithWebGPUCache,
+  collection: CesiumPostProcessStageCollection,
   device: GPUDevice,
   canvasFormat: GPUTextureFormat,
   scene?: CesiumScene,
 ): void {
-  const cache = (collection._webgpuCache ?? getDefaultCache()) as PostProcessCache;
+  const cache = (collection._webgpuCache ??
+    getDefaultCache()) as PostProcessCache;
 
   // --- TAA (controlled by scene.taaEnabled, not the collection) ---
   const taaEnabled = scene?.taaEnabled === true;
@@ -173,7 +186,10 @@ function configureWebGPUPostProcessPipeline(
     const bloom = collection.bloom;
     const newThreshold = bloom?.uniforms?.brightness ?? 0.8;
     const newIntensity = bloom?.uniforms?.glowOnly ? 1.0 : 0.5;
-    if (newThreshold !== cache.bloomThreshold || newIntensity !== cache.bloomIntensity) {
+    if (
+      newThreshold !== cache.bloomThreshold ||
+      newIntensity !== cache.bloomIntensity
+    ) {
       pipeline.bloomEffect.updateConfig({
         threshold: newThreshold,
         intensity: newIntensity,
@@ -193,7 +209,9 @@ function configureWebGPUPostProcessPipeline(
       lengthCap: ao?.uniforms?.lengthCap ?? 0.26,
       stepCount: ao?.uniforms?.stepSize ?? 4,
       directionCount: ao?.uniforms?.directionCount ?? 4,
-      ambientOcclusionOnly: Boolean(ao?.uniforms?.ambientOcclusionOnly ?? false),
+      ambientOcclusionOnly: Boolean(
+        ao?.uniforms?.ambientOcclusionOnly ?? false,
+      ),
     });
     cache.aoInitialized = true;
   }
@@ -215,14 +233,18 @@ function configureWebGPUPostProcessPipeline(
 /**
  * Destroy WebGPU post-process resources.
  */
-function destroyWebGPUPostProcessResources(collection: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUPostProcessResources(
+  collection: CesiumObjectWithWebGPUCache,
+): void {
   collection._webgpuCache = undefined;
 }
 
 /**
  * Check if any post-process stages are active for WebGPU.
  */
-function hasActiveWebGPUPostProcessStages(collection: CesiumObjectWithWebGPUCache): boolean {
+function hasActiveWebGPUPostProcessStages(
+  collection: CesiumObjectWithWebGPUCache,
+): boolean {
   const cache = collection._webgpuCache as PostProcessCache | undefined;
   if (!cache || !cache.initialized) {
     return false;

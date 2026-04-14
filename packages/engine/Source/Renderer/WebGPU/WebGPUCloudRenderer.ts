@@ -154,11 +154,18 @@ function buildInstanceBuffer(
   // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16) = 56 bytes
   const data = new Float32Array(count * 14);
   for (let i = 0; i < count; i++) {
-    const rawCloud = clouds[i] || (collection.get ? collection.get(i) : undefined);
+    const rawCloud =
+      clouds[i] || (collection.get ? collection.get(i) : undefined);
     if (!rawCloud) {
       continue;
     }
-    const cloud = rawCloud as { position?: CesiumCartesian3; scale?: CesiumCartesian2; brightness?: number; slice?: number; color?: CesiumColor };
+    const cloud = rawCloud as {
+      position?: CesiumCartesian3;
+      scale?: CesiumCartesian2;
+      brightness?: number;
+      slice?: number;
+      color?: CesiumColor;
+    };
     const pos = cloud.position || new Cartesian3();
     EncodedCartesian3.fromCartesian(pos, scratchEncoded);
     const off = i * 14;
@@ -186,7 +193,10 @@ function buildInstanceBuffer(
   return { buffer, count };
 }
 
-function updateWebGPUCloudCollection(collection: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUCloudCollection(
+  collection: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -406,7 +416,9 @@ function updateWebGPUCloudCollection(collection: CesiumObjectWithWebGPUCache, fr
   commandList.push(cache.command);
 }
 
-function destroyWebGPUCloudResources(collection: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUCloudResources(
+  collection: CesiumObjectWithWebGPUCache,
+): void {
   const cache = collection._webgpuCache as CloudCache | undefined;
   if (!cache) {
     return;

@@ -614,7 +614,8 @@ class ModelSceneGraph {
     // Since this function is called each frame, the options object is
     // preallocated in a scratch variable
     const pushDrawCommandOptions = scratchPushDrawCommandOptions;
-    pushDrawCommandOptions.hasSilhouette = this._model.hasSilhouette(frameState);
+    pushDrawCommandOptions.hasSilhouette =
+      this._model.hasSilhouette(frameState);
     pushDrawCommandOptions.frameState = frameState;
 
     forEachRuntimePrimitive(

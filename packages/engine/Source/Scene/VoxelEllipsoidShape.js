@@ -307,7 +307,8 @@ class VoxelEllipsoidShape {
       shapeIsLongitudeRangeOverHalf;
 
     // Latitude
-    const renderIsLatitudeMaxUnderHalf = renderMaxBounds.y < -epsilonLatitudeFlat;
+    const renderIsLatitudeMaxUnderHalf =
+      renderMaxBounds.y < -epsilonLatitudeFlat;
     const renderIsLatitudeMaxHalf =
       renderMaxBounds.y >= -epsilonLatitudeFlat &&
       renderMaxBounds.y <= +epsilonLatitudeFlat;
@@ -324,7 +325,8 @@ class VoxelEllipsoidShape {
     const renderIsLatitudeMinHalf =
       renderMinBounds.y >= -epsilonLatitudeFlat &&
       renderMinBounds.y <= +epsilonLatitudeFlat;
-    const renderIsLatitudeMinOverHalf = renderMinBounds.y > +epsilonLatitudeFlat;
+    const renderIsLatitudeMinOverHalf =
+      renderMinBounds.y > +epsilonLatitudeFlat;
     const renderHasLatitudeMin =
       renderIsLatitudeMinUnderHalf ||
       renderIsLatitudeMinHalf ||
@@ -394,9 +396,11 @@ class VoxelEllipsoidShape {
     let intersectionCount = 0;
 
     // Intersects outer and inner ellipsoid for the max and min height.
-    shaderDefines["ELLIPSOID_INTERSECTION_INDEX_HEIGHT_MAX"] = intersectionCount;
+    shaderDefines["ELLIPSOID_INTERSECTION_INDEX_HEIGHT_MAX"] =
+      intersectionCount;
     intersectionCount += 1;
-    shaderDefines["ELLIPSOID_INTERSECTION_INDEX_HEIGHT_MIN"] = intersectionCount;
+    shaderDefines["ELLIPSOID_INTERSECTION_INDEX_HEIGHT_MIN"] =
+      intersectionCount;
     intersectionCount += 1;
 
     shaderUniforms.clipMinMaxHeight = Cartesian2.fromElements(
@@ -415,19 +419,22 @@ class VoxelEllipsoidShape {
     // Intersects a wedge for the min and max longitude.
     if (renderHasLongitude) {
       shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE"] = true;
-      shaderDefines["ELLIPSOID_INTERSECTION_INDEX_LONGITUDE"] = intersectionCount;
+      shaderDefines["ELLIPSOID_INTERSECTION_INDEX_LONGITUDE"] =
+        intersectionCount;
 
       if (renderIsLongitudeRangeUnderHalf) {
-        shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_RANGE_UNDER_HALF"] =
-          true;
+        shaderDefines[
+          "ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_RANGE_UNDER_HALF"
+        ] = true;
         intersectionCount += 1;
       } else if (renderIsLongitudeRangeOverHalf) {
         shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_RANGE_OVER_HALF"] =
           true;
         intersectionCount += 2;
       } else if (renderIsLongitudeRangeZero) {
-        shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_RANGE_EQUAL_ZERO"] =
-          true;
+        shaderDefines[
+          "ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_RANGE_EQUAL_ZERO"
+        ] = true;
         intersectionCount += 2;
       }
 
@@ -460,21 +467,24 @@ class VoxelEllipsoidShape {
       }
 
       if (shapeLongitudeRange <= epsilonLongitude) {
-        shaderUniforms.ellipsoidLocalToShapeUvLongitude = Cartesian2.fromElements(
-          0.0,
-          1.0,
-          shaderUniforms.ellipsoidLocalToShapeUvLongitude,
-        );
+        shaderUniforms.ellipsoidLocalToShapeUvLongitude =
+          Cartesian2.fromElements(
+            0.0,
+            1.0,
+            shaderUniforms.ellipsoidLocalToShapeUvLongitude,
+          );
       } else {
         const scale = defaultLongitudeRange / shapeLongitudeRange;
-        const shiftedMinLongitude = uvShapeMinLongitude - uvLongitudeRangeOrigin;
+        const shiftedMinLongitude =
+          uvShapeMinLongitude - uvLongitudeRangeOrigin;
         const offset =
           -scale * (shiftedMinLongitude - Math.floor(shiftedMinLongitude));
-        shaderUniforms.ellipsoidLocalToShapeUvLongitude = Cartesian2.fromElements(
-          scale,
-          offset,
-          shaderUniforms.ellipsoidLocalToShapeUvLongitude,
-        );
+        shaderUniforms.ellipsoidLocalToShapeUvLongitude =
+          Cartesian2.fromElements(
+            scale,
+            offset,
+            shaderUniforms.ellipsoidLocalToShapeUvLongitude,
+          );
       }
     }
 
@@ -493,12 +503,14 @@ class VoxelEllipsoidShape {
       );
 
       if (renderIsMinLongitudeDiscontinuity) {
-        shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_MIN_DISCONTINUITY"] =
-          true;
+        shaderDefines[
+          "ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_MIN_DISCONTINUITY"
+        ] = true;
       }
       if (renderIsMaxLongitudeDiscontinuity) {
-        shaderDefines["ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_MAX_DISCONTINUITY"] =
-          true;
+        shaderDefines[
+          "ELLIPSOID_HAS_RENDER_BOUNDS_LONGITUDE_MAX_DISCONTINUITY"
+        ] = true;
       }
       const uvShapeMinLongitude =
         (shapeMinBounds.x - DefaultMinBounds.x) / defaultLongitudeRange;
@@ -512,12 +524,13 @@ class VoxelEllipsoidShape {
       const uvRenderLongitudeRangeZeroMid =
         (uvRenderMaxLongitude + 0.5 * uvRenderLongitudeRangeZero) % 1.0;
 
-      shaderUniforms.ellipsoidShapeUvLongitudeMinMaxMid = Cartesian3.fromElements(
-        uvShapeMinLongitude,
-        uvShapeMaxLongitude,
-        uvRenderLongitudeRangeZeroMid,
-        shaderUniforms.ellipsoidShapeUvLongitudeMinMaxMid,
-      );
+      shaderUniforms.ellipsoidShapeUvLongitudeMinMaxMid =
+        Cartesian3.fromElements(
+          uvShapeMinLongitude,
+          uvShapeMaxLongitude,
+          uvRenderLongitudeRangeZeroMid,
+          shaderUniforms.ellipsoidShapeUvLongitudeMinMaxMid,
+        );
     }
 
     if (renderHasLatitude) {
@@ -574,21 +587,23 @@ class VoxelEllipsoidShape {
       shaderDefines["ELLIPSOID_HAS_SHAPE_BOUNDS_LATITUDE"] = true;
 
       if (shapeLatitudeRange < epsilonLatitude) {
-        shaderUniforms.ellipsoidLocalToShapeUvLatitude = Cartesian2.fromElements(
-          0.0,
-          1.0,
-          shaderUniforms.ellipsoidLocalToShapeUvLatitude,
-        );
+        shaderUniforms.ellipsoidLocalToShapeUvLatitude =
+          Cartesian2.fromElements(
+            0.0,
+            1.0,
+            shaderUniforms.ellipsoidLocalToShapeUvLatitude,
+          );
       } else {
         const defaultLatitudeRange = DefaultMaxBounds.y - DefaultMinBounds.y;
         const scale = defaultLatitudeRange / shapeLatitudeRange;
         const offset =
           (DefaultMinBounds.y - shapeMinBounds.y) / shapeLatitudeRange;
-        shaderUniforms.ellipsoidLocalToShapeUvLatitude = Cartesian2.fromElements(
-          scale,
-          offset,
-          shaderUniforms.ellipsoidLocalToShapeUvLatitude,
-        );
+        shaderUniforms.ellipsoidLocalToShapeUvLatitude =
+          Cartesian2.fromElements(
+            scale,
+            offset,
+            shaderUniforms.ellipsoidLocalToShapeUvLatitude,
+          );
       }
     }
 
@@ -637,7 +652,10 @@ class VoxelEllipsoidShape {
       ellipsoid,
       enuTransformScratch,
     );
-    const rotateEnuToWorld = Matrix4.getRotation(enuToWorld, enuRotationScratch);
+    const rotateEnuToWorld = Matrix4.getRotation(
+      enuToWorld,
+      enuRotationScratch,
+    );
     const rotateWorldToView = frameState.context.uniformState.viewRotation;
     const rotateEnuToView = Matrix3.multiply(
       rotateWorldToView,
@@ -811,7 +829,12 @@ class VoxelEllipsoidShape {
    * @param {OrientedBoundingBox} result The oriented bounding box that will be set to enclose the specified sample
    * @returns {OrientedBoundingBox} The oriented bounding box.
    */
-  computeOrientedBoundingBoxForSample(spatialNode, tileDimensions, tileUv, result) {
+  computeOrientedBoundingBoxForSample(
+    spatialNode,
+    tileDimensions,
+    tileUv,
+    result,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("spatialNode", spatialNode);
     Check.typeOf.object("tileDimensions", tileDimensions);

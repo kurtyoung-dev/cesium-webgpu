@@ -45,7 +45,9 @@ class GroundGeometryUpdater {
   _getIsClosed(options) {
     const height = options.height;
     const extrudedHeight = options.extrudedHeight;
-    return height === 0 || (defined(extrudedHeight) && extrudedHeight !== height);
+    return (
+      height === 0 || (defined(extrudedHeight) && extrudedHeight !== height)
+    );
   }
 
   _onEntityPropertyChanged(entity, propertyName, newValue, oldValue) {

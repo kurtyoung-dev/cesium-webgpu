@@ -51,7 +51,10 @@ interface AtmosphereCache {
  * Packs atmosphere parameters into a Float32Array matching the
  * AtmosphereParams struct in GroundAtmosphere.wgsl.
  */
-function packAtmosphereParams(globe: CesiumGlobe, ellipsoid: any): Float32Array {
+function packAtmosphereParams(
+  globe: CesiumGlobe,
+  ellipsoid: { maximumRadius?: number } | null | undefined,
+): Float32Array {
   const data = new Float32Array(16);
 
   // Determine inner/outer radius from ellipsoid
@@ -60,7 +63,8 @@ function packAtmosphereParams(globe: CesiumGlobe, ellipsoid: any): Float32Array 
 
   data[0] = innerRadius;
   data[1] = outerRadius;
-  data[2] = globe.atmosphereRayleighScaleHeight ?? DEFAULT_RAYLEIGH_SCALE_HEIGHT;
+  data[2] =
+    globe.atmosphereRayleighScaleHeight ?? DEFAULT_RAYLEIGH_SCALE_HEIGHT;
   data[3] = globe.atmosphereMieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
 
   // Rayleigh coefficient (vec3 + pad)
@@ -90,7 +94,10 @@ function packAtmosphereParams(globe: CesiumGlobe, ellipsoid: any): Float32Array 
  * Update ground atmosphere uniforms.
  * Called each frame from the globe surface renderer when showGroundAtmosphere is true.
  */
-function updateWebGPUGroundAtmosphere(globe: CesiumGlobe, frameState: CesiumFrameState): void {
+function updateWebGPUGroundAtmosphere(
+  globe: CesiumGlobe,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -163,10 +170,7 @@ function destroyWebGPUGroundAtmosphereResources(globe: CesiumGlobe): void {
   globe._webgpuAtmosphereEnabled = undefined;
 }
 
-export {
-  updateWebGPUGroundAtmosphere,
-  destroyWebGPUGroundAtmosphereResources,
-};
+export { updateWebGPUGroundAtmosphere, destroyWebGPUGroundAtmosphereResources };
 export default {
   updateWebGPUGroundAtmosphere,
   destroyWebGPUGroundAtmosphereResources,

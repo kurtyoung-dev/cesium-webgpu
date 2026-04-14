@@ -1,4 +1,11 @@
 #!/usr/bin/env sh
 
-# Run lint-staged directly from node_modules/.bin
+# Step 1: lint-staged handles eslint + prettier on staged files (fast, per-file)
 node_modules/.bin/lint-staged
+
+# Step 2: Run tsc ONCE after formatting is applied — catches type errors
+# before they land. Uses --noEmit so no output files are generated.
+# This replaces the per-file tsc that was in engine/lint-staged.config.js
+# (which caused timeouts on large changesets because tsc ignores file
+# arguments and always checks the whole project anyway).
+npx tsc --noEmit

@@ -55,8 +55,9 @@ class ShadowVolumeAppearance {
       colorShaderDependencies.normalEC =
         materialShaderSource.includes("materialInput.normalEC") ||
         materialShaderSource.includes("czm_getDefaultMaterial");
-      colorShaderDependencies.positionToEyeEC =
-        materialShaderSource.includes("materialInput.positionToEyeEC");
+      colorShaderDependencies.positionToEyeEC = materialShaderSource.includes(
+        "materialInput.positionToEyeEC",
+      );
       colorShaderDependencies.tangentToEyeMatrix =
         materialShaderSource.includes("materialInput.tangentToEyeMatrix");
       colorShaderDependencies.st =
@@ -177,7 +178,12 @@ class ShadowVolumeAppearance {
    * @param {MapProjection} mapProjection Current scene's map projection.
    * @returns {string} Shader source for the vertex shader.
    */
-  createVertexShader(defines, vertexShaderSource, columbusView2D, mapProjection) {
+  createVertexShader(
+    defines,
+    vertexShaderSource,
+    columbusView2D,
+    mapProjection,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("defines", defines);
     Check.typeOf.string("vertexShaderSource", vertexShaderSource);
@@ -205,7 +211,12 @@ class ShadowVolumeAppearance {
    * @param {MapProjection} mapProjection Current scene's map projection.
    * @returns {string} Shader source for the vertex shader.
    */
-  createPickVertexShader(defines, vertexShaderSource, columbusView2D, mapProjection) {
+  createPickVertexShader(
+    defines,
+    vertexShaderSource,
+    columbusView2D,
+    mapProjection,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("defines", defines);
     Check.typeOf.string("vertexShaderSource", vertexShaderSource);

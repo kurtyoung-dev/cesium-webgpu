@@ -176,4 +176,182 @@ class EllipseGraphics {
   }
 }
 
+Object.defineProperties(EllipseGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof EllipseGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the ellipse.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the numeric Property specifying the semi-major axis.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   */
+  semiMajorAxis: createPropertyDescriptor("semiMajorAxis"),
+
+  /**
+   * Gets or sets the numeric Property specifying the semi-minor axis.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   */
+  semiMinorAxis: createPropertyDescriptor("semiMinorAxis"),
+
+  /**
+   * Gets or sets the numeric Property specifying the altitude of the ellipse.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  height: createPropertyDescriptor("height"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the numeric Property specifying the altitude of the ellipse extrusion.
+   * Setting this property creates volume starting at height and ending at this altitude.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   */
+  extrudedHeight: createPropertyDescriptor("extrudedHeight"),
+
+  /**
+   * Gets or sets the Property specifying the extruded {@link HeightReference}.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  extrudedHeightReference: createPropertyDescriptor("extrudedHeightReference"),
+
+  /**
+   * Gets or sets the numeric property specifying the rotation of the ellipse counter-clockwise from north.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0
+   */
+  rotation: createPropertyDescriptor("rotation"),
+
+  /**
+   * Gets or sets the numeric property specifying the rotation of the ellipse texture counter-clockwise from north.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0
+   */
+  stRotation: createPropertyDescriptor("stRotation"),
+
+  /**
+   * Gets or sets the numeric Property specifying the angular distance between points on the ellipse.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default {CesiumMath.RADIANS_PER_DEGREE}
+   */
+  granularity: createPropertyDescriptor("granularity"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the ellipse is filled with the provided material.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the ellipse.
+   * @memberof EllipseGraphics.prototype
+   * @type {MaterialProperty|undefined}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the ellipse is outlined.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Gets or sets the numeric Property specifying the number of vertical lines to draw along the perimeter for the outline.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default 16
+   */
+  numberOfVerticalLines: createPropertyDescriptor("numberOfVerticalLines"),
+
+  /**
+   * Get or sets the enum Property specifying whether the ellipse
+   * casts or receives shadows from light sources.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this ellipse will be displayed.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the {@link ClassificationType} Property specifying whether this ellipse will classify terrain, 3D Tiles, or both when on the ground.
+   * @memberof EllipseGraphics.prototype
+   * @type {Property|undefined}
+   * @default ClassificationType.BOTH
+   */
+  classificationType: createPropertyDescriptor("classificationType"),
+
+  /**
+   * Gets or sets the zIndex Property specifying the ellipse ordering.  Only has an effect if the ellipse is constant and neither height or extrudedHeight are specified
+   * @memberof EllipseGraphics.prototype
+   * @type {ConstantProperty|undefined}
+   * @default 0
+   */
+  zIndex: createPropertyDescriptor("zIndex"),
+});
+
 export default EllipseGraphics;

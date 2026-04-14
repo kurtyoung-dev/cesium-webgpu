@@ -157,7 +157,9 @@ class CompositeEntityCollection {
     }
     if (hasIndex) {
       if (index < 0) {
-        throw new DeveloperError("index must be greater than or equal to zero.");
+        throw new DeveloperError(
+          "index must be greater than or equal to zero.",
+        );
       } else if (index > this._collections.length) {
         throw new DeveloperError(
           "index must be less than or equal to the number of collections.",
@@ -481,10 +483,7 @@ class CompositeEntityCollection {
       }
     }
 
-    if (
-      newProperty &&
-      !compositeEntity.propertyNames.includes(propertyName)
-    ) {
+    if (newProperty && !compositeEntity.propertyNames.includes(propertyName)) {
       compositeEntity.addProperty(propertyName);
     }
 

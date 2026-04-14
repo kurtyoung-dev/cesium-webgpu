@@ -8,6 +8,22 @@
  * @module WebGPUDynamicEnvironmentMapManager
  */
 
+/** Minimal interface for the upstream DynamicEnvironmentMapManager. */
+interface DynEnvMapManagerLike {
+  _mipmapLevels: number;
+  enabled: boolean;
+  shouldUpdate: boolean;
+  _position: CesiumCartesian3;
+  _shouldRegenerateShaders: boolean;
+  _webgpuCache?: DynEnvMapCache;
+  _cubemapSize?: number;
+  _radianceMap?: {
+    _webgpuTexture: GPUTexture | null;
+    _webgpuTextureView: GPUTextureView | null;
+    _webgpuSampler: GPUSampler | null;
+  } | null;
+}
+
 interface DynEnvMapCache {
   cubemapTexture: GPUTexture | null;
   cubemapTextureView: GPUTextureView | null;
@@ -24,7 +40,7 @@ interface DynEnvMapCache {
  * Creates cubemap textures and schedules re-rendering when needed.
  */
 function updateWebGPUDynamicEnvironmentMap(
-  manager: any,
+  manager: DynEnvMapManagerLike,
   frameState: CesiumFrameState,
 ): void {
   const context = frameState.context;
@@ -150,7 +166,9 @@ function updateWebGPUDynamicEnvironmentMap(
 /**
  * Destroy WebGPU dynamic environment map resources.
  */
-function destroyWebGPUDynamicEnvironmentMapResources(manager: any): void {
+function destroyWebGPUDynamicEnvironmentMapResources(
+  manager: DynEnvMapManagerLike,
+): void {
   const cache = manager._webgpuCache as DynEnvMapCache | undefined;
   if (!cache) {
     return;

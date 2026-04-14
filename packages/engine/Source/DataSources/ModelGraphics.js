@@ -237,4 +237,233 @@ class ModelGraphics {
   }
 }
 
+Object.defineProperties(ModelGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof ModelGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the model.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the string Property specifying the URI of the glTF asset.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  uri: createPropertyDescriptor("uri"),
+
+  /**
+   * Gets or sets the numeric Property specifying a uniform linear scale
+   * for this model. Values greater than 1.0 increase the size of the model while
+   * values less than 1.0 decrease it.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  scale: createPropertyDescriptor("scale"),
+
+  /**
+   * Gets or sets the boolean Property specifying if the model is exaggerated along the ellipsoid normal when {@link Scene.verticalExaggeration} is set to a value other than <code>1.0</code>.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  enableVerticalExaggeration: createPropertyDescriptor(
+    "enableVerticalExaggeration",
+  ),
+
+  /**
+   * Gets or sets the numeric Property specifying the approximate minimum
+   * pixel size of the model regardless of zoom. This can be used to ensure that
+   * a model is visible even when the viewer zooms out.  When <code>0.0</code>,
+   * no minimum size is enforced.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  minimumPixelSize: createPropertyDescriptor("minimumPixelSize"),
+
+  /**
+   * Gets or sets the numeric Property specifying the maximum scale
+   * size of a model. This property is used as an upper limit for
+   * {@link ModelGraphics#minimumPixelSize}.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  maximumScale: createPropertyDescriptor("maximumScale"),
+
+  /**
+   * Get or sets the boolean Property specifying whether textures
+   * may continue to stream in after the model is loaded.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  incrementallyLoadTextures: createPropertyDescriptor(
+    "incrementallyLoadTextures",
+  ),
+
+  /**
+   * Gets or sets the boolean Property specifying if glTF animations should be run.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  runAnimations: createPropertyDescriptor("runAnimations"),
+
+  /**
+   * Gets or sets the boolean Property specifying if glTF animations should hold the last pose for time durations with no keyframes.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  clampAnimations: createPropertyDescriptor("clampAnimations"),
+
+  /**
+   * Get or sets the enum Property specifying whether the model
+   * casts or receives shadows from light sources.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.ENABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the silhouette.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.RED
+   */
+  silhouetteColor: createPropertyDescriptor("silhouetteColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the size of the silhouette in pixels.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  silhouetteSize: createPropertyDescriptor("silhouetteSize"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} that blends with the model's rendered color.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.WHITE
+   */
+  color: createPropertyDescriptor("color"),
+
+  /**
+   * Gets or sets the enum Property specifying how the color blends with the model.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default ColorBlendMode.HIGHLIGHT
+   */
+  colorBlendMode: createPropertyDescriptor("colorBlendMode"),
+
+  /**
+   * A numeric Property specifying the color strength when the <code>colorBlendMode</code> is MIX.
+   * A value of 0.0 results in the model's rendered color while a value of 1.0 results in a solid color, with
+   * any value in-between resulting in a mix of the two.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.5
+   */
+  colorBlendAmount: createPropertyDescriptor("colorBlendAmount"),
+
+  /**
+   * A property specifying the {@link Cartesian2} used to scale the diffuse and specular image-based lighting contribution to the final color.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  imageBasedLightingFactor: createPropertyDescriptor(
+    "imageBasedLightingFactor",
+  ),
+
+  /**
+   * Gets or sets the {@link DynamicEnvironmentMapManager.ConstructorOptions} to apply to this model. This is represented as an {@link PropertyBag}.
+   * @memberof ModelGraphics.prototype
+   * @type {PropertyBag}
+   */
+  environmentMapOptions: createPropertyDescriptor(
+    "environmentMapOptions",
+    undefined,
+    createEnvironmentMapPropertyBag,
+  ),
+
+  /**
+   * A property specifying the {@link Cartesian3} light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
+   * @memberOf ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  lightColor: createPropertyDescriptor("lightColor"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this model will be displayed.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the set of node transformations to apply to this model.  This is represented as an {@link PropertyBag}, where keys are
+   * names of nodes, and values are {@link TranslationRotationScale} Properties describing the transformation to apply to that node.
+   * The transformation is applied after the node's existing transformation as specified in the glTF, and does not replace the node's existing transformation.
+   * @memberof ModelGraphics.prototype
+   * @type {PropertyBag}
+   */
+  nodeTransformations: createPropertyDescriptor(
+    "nodeTransformations",
+    undefined,
+    createNodeTransformationPropertyBag,
+  ),
+
+  /**
+   * Gets or sets the set of articulation values to apply to this model.  This is represented as an {@link PropertyBag}, where keys are
+   * composed as the name of the articulation, a single space, and the name of the stage.
+   * @memberof ModelGraphics.prototype
+   * @type {PropertyBag}
+   */
+  articulations: createPropertyDescriptor(
+    "articulations",
+    undefined,
+    createArticulationStagePropertyBag,
+  ),
+
+  /**
+   * A property specifying the {@link ClippingPlaneCollection} used to selectively disable rendering the model.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  clippingPlanes: createPropertyDescriptor("clippingPlanes"),
+
+  /**
+   * Gets or sets the {@link CustomShader} to apply to this model. When <code>undefined</code>, no custom shader code is used.
+   * @memberof ModelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  customShader: createPropertyDescriptor("customShader"),
+});
+
 export default ModelGraphics;

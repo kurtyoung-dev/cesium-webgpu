@@ -183,7 +183,7 @@ function buildPipeline(
 function buildInstanceBuffer(
   device: GPUDevice,
   pointCloud: CesiumObjectWithWebGPUCache,
-  modelMatrix: CesiumMatrix4,
+  modelMatrix: Matrix4 | CesiumMatrix4,
 ): { buffer: GPUBuffer; count: number } {
   // Read point positions, colors from pointCloud._drawCommand or _parsedContent
   const parsedContent =
@@ -244,7 +244,10 @@ function buildInstanceBuffer(
   return { buffer, count: pointCount };
 }
 
-function packUniforms(uniformState: CesiumUniformState, modelMatrix: CesiumMatrix4): Float32Array {
+function packUniforms(
+  uniformState: CesiumUniformState,
+  modelMatrix: Matrix4 | CesiumMatrix4,
+): Float32Array {
   const data = new Float32Array(28);
   const view = uniformState.view;
   const projection = uniformState.projection;
@@ -290,7 +293,10 @@ function packUniforms(uniformState: CesiumUniformState, modelMatrix: CesiumMatri
   return data;
 }
 
-function updateWebGPUPointCloud(pointCloud: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUPointCloud(
+  pointCloud: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -333,7 +339,7 @@ function updateWebGPUPointCloud(pointCloud: CesiumObjectWithWebGPUCache, frameSt
   }
 
   // Rebuild instance data when point data changes
-  const modelMatrix = (pointCloud.modelMatrix ?? Matrix4.IDENTITY) as unknown as CesiumMatrix4;
+  const modelMatrix = pointCloud.modelMatrix ?? Matrix4.IDENTITY;
   const revision = pointCloud._pointsLength ?? 0;
   if (revision !== cache.lastRevision || !cache.instanceBuffer) {
     if (cache.instanceBuffer) {
@@ -368,7 +374,9 @@ function updateWebGPUPointCloud(pointCloud: CesiumObjectWithWebGPUCache, frameSt
   commandList.push(cache.command);
 }
 
-function destroyWebGPUPointCloudResources(pointCloud: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUPointCloudResources(
+  pointCloud: CesiumObjectWithWebGPUCache,
+): void {
   const cache = pointCloud._webgpuCache as PointCloudCache | undefined;
   if (!cache) {
     return;

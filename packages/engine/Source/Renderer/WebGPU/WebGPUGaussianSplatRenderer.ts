@@ -284,7 +284,7 @@ function buildPipeline(
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
         // less-equal for planetary-scale precision robustness.
-      depthCompare: "less-equal",
+        depthCompare: "less-equal",
       },
     });
   } catch (e) {
@@ -294,7 +294,10 @@ function buildPipeline(
   return { pipeline, oitPipeline, bgl, layout };
 }
 
-function updateWebGPUGaussianSplats(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUGaussianSplats(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -449,7 +452,9 @@ function updateWebGPUGaussianSplats(primitive: CesiumObjectWithWebGPUCache, fram
   commandList.push(cache.command);
 }
 
-function destroyWebGPUGaussianSplatResources(primitive: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUGaussianSplatResources(
+  primitive: CesiumObjectWithWebGPUCache,
+): void {
   const cache = primitive._webgpuCache as GaussianSplatCache | undefined;
   if (!cache) {
     return;

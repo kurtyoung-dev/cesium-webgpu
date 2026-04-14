@@ -27,6 +27,27 @@
 
 import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
 
+/** Return type for WebGL's `gl.getParameter()` — varies by parameter. */
+type GLParameterValue = string | number | Int32Array | Float32Array | null;
+
+/** Stub shader object produced by `gl.createShader()`. */
+interface StubShader {
+  _type: number;
+  _isWebGPU: boolean;
+  _glslSource: string | null;
+  _wgsl: string | null;
+  _wgslReady: Promise<string | null> | null;
+  _wgslError: string | null;
+}
+
+/** Stub program object produced by `gl.createProgram()`. */
+interface StubProgram {
+  _isWebGPU: boolean;
+}
+
+/** WebGL extension stub — a tag object with optional method/constant fields. */
+type ExtensionStub = Record<string, unknown>;
+
 // WebGL type constant for FLOAT (returned by get*Active*)
 const GL_FLOAT = 0x1406;
 
@@ -77,7 +98,10 @@ const GL_UNPACK_ALIGNMENT = 0x0cf5;
  * return a plausible answer. Defaults to 0 for unknown parameters —
  * matching how WebGL implementations behave for unsupported queries.
  */
-function getDeviceParameter(state: WebGLStubState, param: number): any {
+function getDeviceParameter(
+  state: WebGLStubState,
+  param: number,
+): GLParameterValue {
   const limits = state.device?.limits;
 
   switch (param) {
@@ -117,10 +141,7 @@ function getDeviceParameter(state: WebGLStubState, param: number): any {
     // Vertex attribute / varying / uniform slot counts
     case GL_MAX_VERTEX_ATTRIBS:
       return limits?.maxVertexAttributes ?? 16;
-    case GL_MAX_VARYING_VECTORS: // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
-    // maxInterStageShaderVariables (one entry per vec4 slot rather
-    // than per scalar component). The package.json floor pins us to
-    // 0.1.83, so the new name is always present, but we keep the
+    case GL_MAX_VARYING_VECTORS: // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
     // fallback so the code still compiles cleanly if a downstream
     // consumer pins an older @webgpu/types version. Vars and
     // components produce equivalent vec4 counts after the division
@@ -243,7 +264,7 @@ const EXTENSION_STUBS: Record<string, () => any> = {
 export function createShaderStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, any> {
+): Record<string, unknown> {
   return {
     // ==== Shader methods (placeholders — WebGPU uses shader modules) ====
 
@@ -252,16 +273,16 @@ export function createShaderStubs(
     // resolved (asynchronously) by `WebGPUNagaTranspiler.transpileGLSL`.
     // Consumers that need the WGSL await `shader._wgslReady` before
     // creating a `GPUShaderModule`.
-    createShader: (type: number) => ({
+    createShader: (type: number): StubShader => ({
       _type: type,
       _isWebGPU: true,
-      _glslSource: null as string | null,
-      _wgsl: null as string | null,
-      _wgslReady: null as Promise<string | null> | null,
-      _wgslError: null as string | null,
+      _glslSource: null,
+      _wgsl: null,
+      _wgslReady: null,
+      _wgslError: null,
     }),
     deleteShader: () => {},
-    shaderSource: (shader: any, source: string) => {
+    shaderSource: (shader: StubShader | null, source: string) => {
       if (shader) shader._glslSource = source ?? null;
     },
     // Spike: kick off lazy GLSL→WGSL transpilation via naga-wasm. The
@@ -270,7 +291,7 @@ export function createShaderStubs(
     // `await shader._wgslReady` before passing it to a real WebGPU
     // shader module. When `naga-wasm` isn't installed the promise
     // resolves to `null` and the legacy placeholder path runs.
-    compileShader: (shader: any) => {
+    compileShader: (shader: StubShader | null) => {
       if (!shader || typeof shader._glslSource !== "string") return;
       // Late-bind the import so the stub module stays leaf-loaded — we
       // don't want WebGLStubShader to pull the transpiler chunk into
@@ -296,8 +317,8 @@ export function createShaderStubs(
       })();
     },
     getShaderParameter: () => true,
-    getShaderInfoLog: (shader: any) => shader?._wgslError ?? "",
-    createProgram: () => ({ _isWebGPU: true }),
+    getShaderInfoLog: (shader: StubShader | null) => shader?._wgslError ?? "",
+    createProgram: (): StubProgram => ({ _isWebGPU: true }),
     deleteProgram: () => {},
     attachShader: () => {},
     bindAttribLocation: () => {},
@@ -307,7 +328,7 @@ export function createShaderStubs(
     useProgram: () => {},
 
     getActiveUniform: (
-      _program: any,
+      _program: StubProgram | null,
       index: number,
     ): { name: string; size: number; type: number } => ({
       name: `uniform_${index}`,
@@ -316,7 +337,7 @@ export function createShaderStubs(
     }),
 
     getActiveAttrib: (
-      _program: any,
+      _program: StubProgram | null,
       index: number,
     ): { name: string; size: number; type: number } => ({
       name: `attrib_${index}`,
@@ -325,14 +346,14 @@ export function createShaderStubs(
     }),
 
     getUniformLocation: (
-      _program: any,
+      _program: StubProgram | null,
       name: string,
     ): { _name: string; _isWebGPU: boolean } => ({
       _name: name,
       _isWebGPU: true,
     }),
 
-    getAttribLocation: (_program: any, name: string): number => {
+    getAttribLocation: (_program: StubProgram | null, name: string): number => {
       const locationMap: Record<string, number> = {
         position: 0,
         normal: 1,
@@ -346,9 +367,10 @@ export function createShaderStubs(
 
     // ==== Parameter queries — answer from device.limits when possible ====
 
-    getParameter: (param: number): any => getDeviceParameter(state, param),
+    getParameter: (param: number): GLParameterValue =>
+      getDeviceParameter(state, param),
 
-    getExtension: (name: string): any | null => {
+    getExtension: (name: string): ExtensionStub | null => {
       const factory = EXTENSION_STUBS[name];
       return factory ? factory() : null;
     },

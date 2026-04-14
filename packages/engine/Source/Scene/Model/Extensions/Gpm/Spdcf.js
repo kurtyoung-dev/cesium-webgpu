@@ -34,7 +34,11 @@ class Spdcf {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThan("options.A", options.A, 0.0);
     Check.typeOf.number.lessThanOrEquals("options.A", options.A, 1.0);
-    Check.typeOf.number.greaterThanOrEquals("options.alpha", options.alpha, 0.0);
+    Check.typeOf.number.greaterThanOrEquals(
+      "options.alpha",
+      options.alpha,
+      0.0,
+    );
     Check.typeOf.number.lessThan("options.alpha", options.alpha, 1.0);
     Check.typeOf.number.greaterThanOrEquals("options.beta", options.beta, 0.0);
     Check.typeOf.number.lessThanOrEquals("options.beta", options.beta, 10.0);

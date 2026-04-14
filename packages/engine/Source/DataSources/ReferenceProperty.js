@@ -197,7 +197,10 @@ class ReferenceProperty {
   }
 
   _onTargetEntityDefinitionChanged(targetEntity, name, value, oldValue) {
-    if (defined(this._targetProperty) && this._targetPropertyNames[0] === name) {
+    if (
+      defined(this._targetProperty) &&
+      this._targetPropertyNames[0] === name
+    ) {
       this._targetProperty = undefined;
       this._definitionChanged.raiseEvent(this);
     }

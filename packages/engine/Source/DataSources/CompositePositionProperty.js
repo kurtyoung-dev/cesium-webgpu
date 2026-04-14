@@ -60,7 +60,11 @@ class CompositePositionProperty {
     const innerProperty =
       this._composite._intervals.findDataForIntervalContainingDate(time);
     if (defined(innerProperty)) {
-      return innerProperty.getValueInReferenceFrame(time, referenceFrame, result);
+      return innerProperty.getValueInReferenceFrame(
+        time,
+        referenceFrame,
+        result,
+      );
     }
     return undefined;
   }

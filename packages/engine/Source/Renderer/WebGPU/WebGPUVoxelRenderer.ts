@@ -218,7 +218,10 @@ function createPlaceholderVoxelTexture(device: GPUDevice): {
   return { texture, view: texture.createView() };
 }
 
-function updateWebGPUVoxelPrimitive(primitive: CesiumObjectWithWebGPUCache, frameState: CesiumFrameState): void {
+function updateWebGPUVoxelPrimitive(
+  primitive: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
@@ -416,7 +419,9 @@ function updateWebGPUVoxelPrimitive(primitive: CesiumObjectWithWebGPUCache, fram
   commandList.push(cache.command);
 }
 
-function destroyWebGPUVoxelResources(primitive: CesiumObjectWithWebGPUCache): void {
+function destroyWebGPUVoxelResources(
+  primitive: CesiumObjectWithWebGPUCache,
+): void {
   const cache = primitive._webgpuCache as VoxelCache | undefined;
   if (!cache) {
     return;

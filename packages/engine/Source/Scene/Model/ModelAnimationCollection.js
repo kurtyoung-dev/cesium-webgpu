@@ -159,7 +159,9 @@ class ModelAnimationCollection {
       defined(options.index) &&
       (options.index >= animations.length || options.index < 0)
     ) {
-      throw new DeveloperError("options.index must be a valid animation index.");
+      throw new DeveloperError(
+        "options.index must be a valid animation index.",
+      );
     }
     //>>includeEnd('debug');
 
@@ -446,7 +448,9 @@ class ModelAnimationCollection {
         // Truncate to [0.0, 1.0] for repeating animations
         if (runtimeAnimation.loop === ModelAnimationLoop.REPEAT) {
           delta = delta - Math.floor(delta);
-        } else if (runtimeAnimation.loop === ModelAnimationLoop.MIRRORED_REPEAT) {
+        } else if (
+          runtimeAnimation.loop === ModelAnimationLoop.MIRRORED_REPEAT
+        ) {
           const floor = Math.floor(delta);
           const fract = delta - floor;
           // When odd use (1.0 - fract) to mirror repeat

@@ -75,14 +75,12 @@ import {
 // module-level singleton is the cleanest model — no class instances,
 // no `this` confusion across postMessage handlers.
 let _scene = null;
-let _viewer = null; // optional, when the worker decides to host a full Viewer
 let _canvas = null;
 let _rendererType = null;
 let _initialized = false;
-let _rafId = 0;
 let _lastStatsTime = 0;
 let _sessionId = 0;
-let _shutdownRequested = false;
+const _shutdownRequested = false;
 
 /**
  * Post a structured message back to the host. Wraps `self.postMessage`
@@ -294,7 +292,6 @@ function _wireDeviceLossRecovery(scene) {
  */
 function handleReset() {
   _cancelRenderLoop();
-  _rafId = 0;
   if (_scene && typeof _scene.destroy === "function") {
     try {
       _scene.destroy();
@@ -303,7 +300,6 @@ function handleReset() {
     }
   }
   _scene = null;
-  _viewer = null;
   _initialized = false;
   requestReplay("post-reset");
 }
@@ -394,11 +390,7 @@ function _startRenderLoop() {
     // ones that fall inside the per-frame budget. Uncapped mode
     // (`_maxFps === 0`) and no-throttle mode (`_maxFps === null`)
     // skip this check entirely and render on every tick.
-    if (
-      typeof _maxFps === "number" &&
-      _maxFps > 0 &&
-      _renderLoopUsesRaf
-    ) {
+    if (typeof _maxFps === "number" && _maxFps > 0 && _renderLoopUsesRaf) {
       const minIntervalMs = 1000 / _maxFps;
       if (now - _lastRenderTime < minIntervalMs - 0.5) {
         // The -0.5 ms slop accounts for timer/jitter so a 60 fps cap
@@ -466,7 +458,9 @@ function _scheduleNextTick(tick) {
 }
 
 function _cancelRenderLoop() {
-  if (_renderLoopHandle === 0) return;
+  if (_renderLoopHandle === 0) {
+    return;
+  }
   if (_renderLoopUsesRaf) {
     if (typeof cancelAnimationFrame === "function") {
       cancelAnimationFrame(_renderLoopHandle);
@@ -523,7 +517,10 @@ function _setMaxFps(value) {
   // If the loop was paused (handle == 0 due to early return), kick
   // it back into action now that the cap allows rendering again.
   const isResuming =
-    wasPaused && (next === null || next >= 0) && _initialized && _renderLoopHandle === 0;
+    wasPaused &&
+    (next === null || next >= 0) &&
+    _initialized &&
+    _renderLoopHandle === 0;
   if (isResuming) {
     _startRenderLoop();
   }
@@ -577,7 +574,9 @@ function _postStats() {
 // ─── Command handlers ────────────────────────────────────────────
 
 function handleResize(payload) {
-  if (!_canvas || !_scene) return;
+  if (!_canvas || !_scene) {
+    return;
+  }
   // OffscreenCanvas is resizable; just write width/height. The Scene
   // picks this up on the next frame via its existing resize hook.
   _canvas.width = payload.width;
@@ -585,7 +584,9 @@ function handleResize(payload) {
 }
 
 function handleSetView(payload) {
-  if (!_scene) return;
+  if (!_scene) {
+    return;
+  }
   try {
     _scene.camera.setView(payload.view);
   } catch (e) {
@@ -594,11 +595,19 @@ function handleSetView(payload) {
 }
 
 function handleCameraUpdate(payload) {
-  if (!_scene) return;
+  if (!_scene) {
+    return;
+  }
   const cam = _scene.camera;
-  if (typeof payload.heading === "number") cam.setView({
-    orientation: { heading: payload.heading, pitch: cam.pitch, roll: cam.roll },
-  });
+  if (typeof payload.heading === "number") {
+    cam.setView({
+      orientation: {
+        heading: payload.heading,
+        pitch: cam.pitch,
+        roll: cam.roll,
+      },
+    });
+  }
   // Other modes (zoom, fly) are routed via setView with the same payload shape.
 }
 

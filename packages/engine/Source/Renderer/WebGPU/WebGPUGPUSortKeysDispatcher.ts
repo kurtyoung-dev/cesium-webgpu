@@ -363,20 +363,20 @@ import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
 const _instances = new WeakMap<object, WebGPUGPUSortKeysDispatcher>();
 
 function getOrCreateDispatcher(context: {
-  device: GPUDevice;
+  device: GPUDevice | null | undefined;
 }): WebGPUGPUSortKeysDispatcher | null {
   if (!context || !context.device) return null;
   let inst = _instances.get(context);
   if (!inst) {
     inst = new WebGPUGPUSortKeysDispatcher(context.device);
-    inst.setShaderSource(GPUSortKeysSource as unknown as string);
+    inst.setShaderSource(GPUSortKeysSource);
     _instances.set(context, inst);
   }
   return inst;
 }
 
 function initWebGPUGPUSortKeys(
-  context: { device: GPUDevice },
+  context: { device: GPUDevice | null | undefined },
   maxCommands: number,
 ): boolean {
   const inst = getOrCreateDispatcher(context);
@@ -385,7 +385,7 @@ function initWebGPUGPUSortKeys(
 }
 
 function dispatchWebGPUGPUSortKeys(
-  context: { device: GPUDevice },
+  context: { device: GPUDevice | null | undefined },
   encoder: GPUCommandEncoder,
   soa: {
     centerX: Float32Array;
@@ -413,7 +413,9 @@ function getWebGPUGPUSortKeysStatistics(context: {
   return inst ? inst.getStatistics() : null;
 }
 
-function destroyWebGPUGPUSortKeys(context: { device: GPUDevice }): void {
+function destroyWebGPUGPUSortKeys(context: {
+  device: GPUDevice | null | undefined;
+}): void {
   const inst = _instances.get(context);
   if (inst) {
     inst.destroy();

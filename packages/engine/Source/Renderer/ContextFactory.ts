@@ -145,11 +145,9 @@ export class ContextFactory {
     canvas: HTMLCanvasElement,
     options: GraphicsContextOptions,
   ): GraphicsContext {
-    // For now, wrap the existing Context.js implementation
-    // In a future phase, we'll refactor Context.js to be WebGLContext
-    // Context.js is plain JS — TypeScript can't verify it satisfies GraphicsContext.
-    // Runtime verification happens in _registerWithRegistry().
-    return new Context(canvas, options) as unknown as GraphicsContext;
+    // Context.d.ts declares the JS class's public surface; TypeScript
+    // infers the correct extends relationship without a cast.
+    return new Context(canvas, options);
   }
 
   /**

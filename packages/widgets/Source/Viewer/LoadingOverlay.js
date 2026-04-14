@@ -172,7 +172,8 @@ class LoadingOverlay {
     // Update title to indicate error
     this._overlay.querySelector(".cesium-loading-title").textContent =
       "Initialization Failed";
-    this._overlay.querySelector(".cesium-loading-title").style.color = "#ff6b6b";
+    this._overlay.querySelector(".cesium-loading-title").style.color =
+      "#ff6b6b";
 
     // Change progress bar to red
     this._progressBar.style.background = "#ff6b6b";

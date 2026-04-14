@@ -129,7 +129,7 @@ export type OffscreenState =
  */
 export interface WorkerMessage {
   type: "init" | "render" | "resize" | "destroy";
-  payload?: any;
+  payload?: Record<string, unknown>;
 }
 
 /**
@@ -137,7 +137,7 @@ export interface WorkerMessage {
  */
 export interface WorkerResponse {
   type: "initialized" | "frame" | "error";
-  payload?: any;
+  payload?: unknown;
 }
 
 /**
@@ -243,9 +243,10 @@ export class OffscreenContextSupport {
       await this._initializeWorker();
 
       this._state = "ready";
-    } catch (error: any) {
+    } catch (error: unknown) {
       this._state = "error";
-      this._lastError = error.message ?? String(error);
+      this._lastError =
+        (error instanceof Error ? error.message : undefined) ?? String(error);
       throw error;
     }
   }
@@ -256,7 +257,7 @@ export class OffscreenContextSupport {
    * @param frameData - Serializable frame data (camera position, entities, etc.)
    * @returns Promise that resolves with the rendered ImageBitmap
    */
-  async renderFrame(frameData: any): Promise<ImageBitmap> {
+  async renderFrame(frameData: Record<string, unknown>): Promise<ImageBitmap> {
     if (this._state !== "ready") {
       throw new Error(
         `Cannot render: offscreen context is in '${this._state}' state.`,
@@ -440,7 +441,9 @@ export class OffscreenContextSupport {
           break;
 
         case "error":
-          this._lastError = payload?.message ?? "Unknown worker error";
+          this._lastError =
+            ((payload as Record<string, unknown> | undefined)
+              ?.message as string) ?? "Unknown worker error";
           if (this._pendingFrameReject) {
             this._state = "error";
             this._pendingFrameReject(new Error(this._lastError!));
@@ -475,15 +478,26 @@ export class OffscreenContextSupport {
 
       const handler = (e: MessageEvent<WorkerResponse>) => {
         if (e.data.type === "initialized") {
-          this._worker!.removeEventListener("message", handler as any);
+          this._worker!.removeEventListener(
+            "message",
+            handler as EventListener,
+          );
           resolve();
         } else if (e.data.type === "error") {
-          this._worker!.removeEventListener("message", handler as any);
-          reject(new Error(e.data.payload?.message ?? "Worker init failed"));
+          this._worker!.removeEventListener(
+            "message",
+            handler as EventListener,
+          );
+          reject(
+            new Error(
+              ((e.data.payload as Record<string, unknown> | undefined)
+                ?.message as string) ?? "Worker init failed",
+            ),
+          );
         }
       };
 
-      this._worker.addEventListener("message", handler as any);
+      this._worker.addEventListener("message", handler as EventListener);
 
       // Transfer the canvas to the worker
       const message: WorkerMessage = {
@@ -496,7 +510,7 @@ export class OffscreenContextSupport {
         },
       };
 
-      this._worker.postMessage(message, [this._canvas as any]);
+      this._worker.postMessage(message, [this._canvas as Transferable]);
     });
   }
 

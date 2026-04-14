@@ -19,7 +19,7 @@
  */
 
 interface MultisampleFramebufferOptions {
-  context: any; // WebGPUContext
+  context: CesiumGraphicsContext;
   width: number;
   height: number;
   colorFormats?: GPUTextureFormat[];
@@ -29,8 +29,8 @@ interface MultisampleFramebufferOptions {
 }
 
 class WebGPUMultisampleFramebuffer {
-  private _context: any;
-  private _renderTarget: any; // WebGPURenderTarget
+  private _context: CesiumGraphicsContext | null;
+  private _renderTarget: WebGPURenderTargetLike | null; // WebGPURenderTarget
   private _width: number;
   private _height: number;
   private _sampleCount: number;
@@ -52,22 +52,19 @@ class WebGPUMultisampleFramebuffer {
     // - Creates multisampled color textures
     // - Creates single-sampled resolve targets
     // - Wires resolveTarget in GPURenderPassDescriptor
-    this._renderTarget = context.createRenderTarget?.({
+    const renderTarget = context.createRenderTarget?.({
       width: width,
       height: height,
       colorFormats: options.colorFormats ?? [
-        context.canvasFormat ?? "bgra8unorm",
+        context._canvasFormat ?? "bgra8unorm",
       ],
       depthStencilFormat: options.depthStencilFormat ?? "depth24plus-stencil8",
       sampleCount: sampleCount,
       label: "WebGPUMultisampleFramebuffer",
     });
+    this._renderTarget = (renderTarget as WebGPURenderTargetLike) ?? null;
 
-    // Fallback: if context doesn't have createRenderTarget, store config
-    // for lazy creation when the render target infrastructure is available
-    if (!this._renderTarget) {
-      this._renderTarget = null;
-    }
+    // Fallback: already null if context doesn't have createRenderTarget
   }
 
   /**
@@ -76,7 +73,7 @@ class WebGPUMultisampleFramebuffer {
    * In WebGPU this returns the render target whose pass descriptor
    * already includes the MSAA texture as the primary view.
    */
-  getRenderFramebuffer(): any {
+  getRenderFramebuffer(): WebGPURenderTargetLike | null {
     return this._renderTarget;
   }
 
@@ -86,7 +83,7 @@ class WebGPUMultisampleFramebuffer {
    * In WebGPU the resolve targets are inside the render target and
    * are automatically populated when the render pass ends.
    */
-  getColorFramebuffer(): any {
+  getColorFramebuffer(): WebGPURenderTargetLike | null {
     return this._renderTarget;
   }
 
@@ -95,10 +92,9 @@ class WebGPUMultisampleFramebuffer {
    * After the render pass ends, the resolved (single-sampled) texture
    * is available for sampling.
    */
-  getColorTexture(index: number = 0): any {
+  getColorTexture(index: number = 0): GPUTexture | undefined {
     if (this._renderTarget) {
-      // WebGPURenderTarget.getColorTexture returns resolve target when MSAA
-      return this._renderTarget.getColorTexture(index);
+      return this._renderTarget.getColorTexture?.(index);
     }
     return undefined;
   }
@@ -106,7 +102,7 @@ class WebGPUMultisampleFramebuffer {
   /**
    * Returns the depth-stencil texture.
    */
-  getDepthStencilTexture(): any {
+  getDepthStencilTexture(): GPUTexture | undefined {
     if (this._renderTarget) {
       return this._renderTarget.getDepthTexture?.();
     }
@@ -127,7 +123,10 @@ class WebGPUMultisampleFramebuffer {
    * @param context - The rendering context
    * @param blitStencil - Whether to also resolve stencil (ignored in WebGPU)
    */
-  blitFramebuffers(context?: any, blitStencil?: boolean): void {
+  blitFramebuffers(
+    context?: CesiumGraphicsContext,
+    blitStencil?: boolean,
+  ): void {
     // No-op in WebGPU — resolve happens automatically via resolveTarget
     // in the GPURenderPassDescriptor color attachments.
   }
@@ -142,8 +141,8 @@ class WebGPUMultisampleFramebuffer {
     this._width = width;
     this._height = height;
 
-    if (this._renderTarget && this._renderTarget.resize) {
-      this._renderTarget.resize(width, height);
+    if (this._renderTarget) {
+      this._renderTarget.resize?.(width, height);
     }
   }
 
@@ -164,8 +163,8 @@ class WebGPUMultisampleFramebuffer {
   }
 
   destroy(): void {
-    if (this._renderTarget && this._renderTarget.destroy) {
-      this._renderTarget.destroy();
+    if (this._renderTarget) {
+      this._renderTarget.destroy?.();
     }
     this._renderTarget = null;
     this._context = null;

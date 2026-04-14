@@ -75,7 +75,8 @@ class CompositeProperty {
       time = JulianDate.now(timeScratch);
     }
 
-    const innerProperty = this._intervals.findDataForIntervalContainingDate(time);
+    const innerProperty =
+      this._intervals.findDataForIntervalContainingDate(time);
     if (defined(innerProperty)) {
       return innerProperty.getValue(time, result);
     }

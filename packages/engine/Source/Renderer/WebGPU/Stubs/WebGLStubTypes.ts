@@ -15,6 +15,68 @@
 import type Color from "../../../Core/Color.js";
 
 /**
+ * A stub-managed texture wrapper produced by `gl.createTexture()`. Holds
+ * pending sampler state and (once allocated) the real GPU resources.
+ */
+export interface StubTextureWrapper {
+  _isPlaceholder: boolean;
+  _samplerDesc?: {
+    magFilter: GPUFilterMode;
+    minFilter: GPUFilterMode;
+    mipmapFilter: GPUMipmapFilterMode;
+    addressModeU: GPUAddressMode;
+    addressModeV: GPUAddressMode;
+    addressModeW: GPUAddressMode;
+    wantsMipmaps: boolean;
+  };
+  _webgpuTexture: {
+    texture: GPUTexture;
+    view: GPUTextureView;
+    sampler: GPUSampler;
+    width: number;
+    height: number;
+    format: GPUTextureFormat;
+    mipLevelCount: number;
+    destroy(): void;
+  } | null;
+  /** The underlying GPUTexture, if allocated. Mirrors StubRenderbuffer._texture for uniform access via StubAttachment. */
+  _texture?: GPUTexture | null;
+}
+
+/** A stub-managed framebuffer object. */
+export interface StubFramebuffer {
+  _id: string;
+  _colorAttachment: StubAttachment | null;
+  _depthAttachment: StubAttachment | null;
+  _isWebGPU: boolean;
+  /** Alias for _colorAttachment, used by some code paths. */
+  colorAttachment?: StubAttachment | null;
+}
+
+/** A stub-managed renderbuffer object. */
+export interface StubRenderbuffer {
+  _id: string;
+  _texture: GPUTexture | null;
+  _format: GPUTextureFormat | null;
+  _width: number;
+  _height: number;
+  _isWebGPU: boolean;
+}
+
+/** An attachment reference (texture or renderbuffer). */
+export type StubAttachment = StubTextureWrapper | StubRenderbuffer | null;
+
+/** Mipmap generator interface — avoids importing the real class here. */
+export interface StubMipmapGenerator {
+  generateMipmaps(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    commandEncoder?: GPUCommandEncoder,
+  ): GPUCommandEncoder;
+}
+
+/**
  * State holder that WebGPUContext provides for the stub to read/write.
  * This avoids circular dependencies — the stub doesn't import WebGPUContext.
  */
@@ -27,12 +89,18 @@ export interface WebGLStubState {
 
   // GL compatibility state
   activeTextureUnit: number;
-  textureBindings: Map<number, { target: number; texture: any }>;
+  textureBindings: Map<
+    number,
+    { target: number; texture: StubTextureWrapper | null }
+  >;
   boundVertexBuffer: GPUBuffer | null;
   boundIndexBuffer: GPUBuffer | null;
-  boundFramebuffer: any;
-  boundRenderbuffer: any;
-  framebuffers: Map<any, { colorAttachment: any; depthAttachment: any }>;
+  boundFramebuffer: StubFramebuffer | null;
+  boundRenderbuffer: StubRenderbuffer | null;
+  framebuffers: Map<
+    StubFramebuffer,
+    { colorAttachment: StubAttachment; depthAttachment: StubAttachment }
+  >;
 
   // Pipeline state
   clearColor: Color;
@@ -74,8 +142,7 @@ export interface WebGLStubState {
   stencilPassOp: GPUStencilOperation;
 
   // Lazy mipmap generator — set on first generateMipmap call.
-  // Boxed `any` to avoid a hard import dependency cycle in this types file.
-  mipmapGenerator: any;
+  mipmapGenerator: StubMipmapGenerator | null;
 
   // Methods provided by WebGPUContext
   setViewport(x: number, y: number, w: number, h: number): void;

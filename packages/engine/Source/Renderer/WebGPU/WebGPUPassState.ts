@@ -24,6 +24,18 @@ export interface WebGPUScissorRect {
   height: number;
 }
 
+/**
+ * Shape of a WebGPU render target / framebuffer as accessed by WebGPUPassState.
+ * Both WebGPURenderTarget and WebGPUFramebufferManager satisfy this interface.
+ */
+interface WebGPURenderTargetLike {
+  getColorTextureView?(): GPUTextureView;
+  colorTextureView?: GPUTextureView;
+  resolveTextureView?: GPUTextureView;
+  getDepthStencilTextureView?(): GPUTextureView;
+  depthStencilTextureView?: GPUTextureView;
+}
+
 class WebGPUPassState {
   /**
    * The WebGPU context for this pass.
@@ -35,7 +47,7 @@ class WebGPUPassState {
    * When undefined, renders to the default canvas framebuffer.
    * Commands can override this with their own framebuffer.
    */
-  framebuffer: any;
+  framebuffer: WebGPURenderTargetLike | undefined;
 
   /**
    * When defined, overrides the blending property of a DrawCommand's render state.
@@ -103,7 +115,7 @@ class WebGPUPassState {
    * The render target to use for this pass (WebGPURenderTarget).
    * This is the WebGPU-specific equivalent of framebuffer.
    */
-  renderTarget: any;
+  renderTarget: WebGPURenderTargetLike | undefined;
 
   /**
    * Whether this pass uses MSAA. Determined from the render target configuration.

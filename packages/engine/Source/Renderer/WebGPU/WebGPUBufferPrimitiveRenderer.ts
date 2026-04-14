@@ -59,6 +59,31 @@ import BufferPointMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPoin
 
 // ─── Shared types ────────────────────────────────────────────────────────────
 
+/** Minimal interface for the BufferPrimitive collection objects passed from
+ *  Scene JS code. Covers properties read by the renderer functions. */
+interface BufferPrimitiveCollection {
+  show: boolean;
+  primitiveCount: number;
+  triangleCount: number;
+  segmentCount: number;
+  pointCount: number;
+  vertexCountMax: number;
+  triangleCountMax: number;
+  vertexCount: number;
+  primitiveCountMax: number;
+  modelMatrix?: CesiumMatrix4;
+  _allowPicking: boolean;
+  _dirtyOffset: number;
+  _dirtyCount: number;
+  _webgpuCache?: PolygonCache | PolylineCache | PointCache;
+  get(index: number, result?: object): object;
+}
+
+/** A pick ID created by context.createPickId(). */
+interface CesiumPickIdRef {
+  destroy(): void;
+}
+
 /** CameraUniforms struct (368 bytes) — see Shaders/WebGPU/chunks/structs/CameraUniforms.wgsl */
 const CAMERA_UBO_BYTES = 368;
 const CAMERA_UBO_FLOATS = CAMERA_UBO_BYTES / 4;
@@ -87,7 +112,7 @@ interface PolygonCache extends SharedCache {
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
-  pickIds: any[];
+  pickIds: CesiumPickIdRef[];
 }
 
 interface PolylineCache extends SharedCache {
@@ -119,7 +144,7 @@ interface PolylineCache extends SharedCache {
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
-  pickIds: any[];
+  pickIds: CesiumPickIdRef[];
 }
 
 interface PointCache extends SharedCache {
@@ -143,7 +168,7 @@ interface PointCache extends SharedCache {
   bindGroup: GPUBindGroup;
   command: WebGPUDrawCommand | null;
   pickCommand: WebGPUDrawCommand | null;
-  pickIds: any[];
+  pickIds: CesiumPickIdRef[];
 }
 
 // ─── Scratch ─────────────────────────────────────────────────────────────────
@@ -167,8 +192,9 @@ const scratchNextEnc = { high: new Cartesian3(), low: new Cartesian3() };
 function packCameraUniforms(
   out: Float32Array,
   uniformState: CesiumUniformState,
-  modelMatrix: any,
+  modelMatrixRaw: CesiumMatrix4 | object,
 ): void {
+  const modelMatrix = modelMatrixRaw as Matrix4;
   const view = uniformState.view;
   const proj = uniformState.projection;
   const viewProj = uniformState.viewProjection;
@@ -234,12 +260,7 @@ function packCameraUniforms(
   scratchMV[14] = 0;
 
   //>>includeStart('debug', pragmas.debug);
-  // Cast to a numeric-indexable view; Matrix4 supports `mv[12..14]`
-  // but TS doesn't expose an index signature on the class.
-  assertMVTranslationZeroed(
-    scratchMV as unknown as { [index: number]: number },
-    "BufferPrimitive camera UB mv",
-  );
+  assertMVTranslationZeroed(scratchMV, "BufferPrimitive camera UB mv");
   //>>includeEnd('debug');
 
   // Project the already-zeroed MV. Result col3 = proj × [0,0,0,1] =
@@ -281,7 +302,11 @@ fn fragmentPickMain(input : VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-function preprocessShader(context: CesiumGraphicsContext, name: string, source: string): string {
+function preprocessShader(
+  context: CesiumGraphicsContext,
+  name: string,
+  source: string,
+): string {
   let processed = _processedShaderCache.get(name);
   if (processed) {
     return processed;
@@ -564,7 +589,7 @@ function createIB(
 // ─── BufferPolygonCollection ─────────────────────────────────────────────────
 
 function initPolygonCache(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PolygonCache {
@@ -633,7 +658,7 @@ function initPolygonCache(
 }
 
 function repackPolygonDirty(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   cache: PolygonCache,
   context: CesiumGraphicsContext,
 ): void {
@@ -721,7 +746,7 @@ function uploadPolygonBuffers(device: GPUDevice, cache: PolygonCache): void {
 }
 
 function updateWebGPUBufferPolygonCollection(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
@@ -731,7 +756,7 @@ function updateWebGPUBufferPolygonCollection(
   const device: GPUDevice = context.device;
   const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
 
-  let cache: PolygonCache | undefined = collection._webgpuCache;
+  let cache = collection._webgpuCache as PolygonCache | undefined;
   if (!cache) {
     cache = initPolygonCache(collection, context, format);
     collection._webgpuCache = cache;
@@ -808,7 +833,7 @@ function updateWebGPUBufferPolygonCollection(
   collection._dirtyOffset = 0;
 }
 
-function destroyPickIds(cache: { pickIds: any[] }): void {
+function destroyPickIds(cache: { pickIds: CesiumPickIdRef[] }): void {
   for (const id of cache.pickIds) {
     if (id && typeof id.destroy === "function") {
       id.destroy();
@@ -817,7 +842,9 @@ function destroyPickIds(cache: { pickIds: any[] }): void {
   cache.pickIds.length = 0;
 }
 
-function destroyWebGPUBufferPolygonCollection(collection: any): void {
+function destroyWebGPUBufferPolygonCollection(
+  collection: BufferPrimitiveCollection,
+): void {
   const cache = collection._webgpuCache as PolygonCache | undefined;
   if (!cache) {
     return;
@@ -835,7 +862,7 @@ function destroyWebGPUBufferPolygonCollection(collection: any): void {
 // ─── BufferPolylineCollection ────────────────────────────────────────────────
 
 function initPolylineCache(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PolylineCache {
@@ -949,7 +976,7 @@ function initPolylineCache(
 }
 
 function repackPolylineDirty(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   cache: PolylineCache,
   context: CesiumGraphicsContext,
 ): void {
@@ -1100,7 +1127,7 @@ function uploadPolylineBuffers(device: GPUDevice, cache: PolylineCache): void {
 const polylineParamsScratch = new Float32Array(8);
 
 function updateWebGPUBufferPolylineCollection(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
@@ -1110,7 +1137,7 @@ function updateWebGPUBufferPolylineCollection(
   const device: GPUDevice = context.device;
   const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
 
-  let cache: PolylineCache | undefined = collection._webgpuCache;
+  let cache = collection._webgpuCache as PolylineCache | undefined;
   if (!cache) {
     cache = initPolylineCache(collection, context, format);
     collection._webgpuCache = cache;
@@ -1205,7 +1232,9 @@ function updateWebGPUBufferPolylineCollection(
   collection._dirtyOffset = 0;
 }
 
-function destroyWebGPUBufferPolylineCollection(collection: any): void {
+function destroyWebGPUBufferPolylineCollection(
+  collection: BufferPrimitiveCollection,
+): void {
   const cache = collection._webgpuCache as PolylineCache | undefined;
   if (!cache) {
     return;
@@ -1228,7 +1257,7 @@ function destroyWebGPUBufferPolylineCollection(collection: any): void {
 // ─── BufferPointCollection ───────────────────────────────────────────────────
 
 function initPointCache(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
 ): PointCache {
@@ -1321,7 +1350,7 @@ function initPointCache(
 }
 
 function repackPointDirty(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   cache: PointCache,
   context: CesiumGraphicsContext,
 ): void {
@@ -1398,7 +1427,7 @@ function uploadPointBuffers(device: GPUDevice, cache: PointCache): void {
 const pointParamsScratch = new Float32Array(8);
 
 function updateWebGPUBufferPointCollection(
-  collection: any,
+  collection: BufferPrimitiveCollection,
   frameState: CesiumFrameState,
 ): void {
   if (!collection.show) {
@@ -1408,7 +1437,7 @@ function updateWebGPUBufferPointCollection(
   const device: GPUDevice = context.device;
   const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
 
-  let cache: PointCache | undefined = collection._webgpuCache;
+  let cache = collection._webgpuCache as PointCache | undefined;
   if (!cache) {
     cache = initPointCache(collection, context, format);
     collection._webgpuCache = cache;
@@ -1496,7 +1525,9 @@ function updateWebGPUBufferPointCollection(
   collection._dirtyOffset = 0;
 }
 
-function destroyWebGPUBufferPointCollection(collection: any): void {
+function destroyWebGPUBufferPointCollection(
+  collection: BufferPrimitiveCollection,
+): void {
   const cache = collection._webgpuCache as PointCache | undefined;
   if (!cache) {
     return;

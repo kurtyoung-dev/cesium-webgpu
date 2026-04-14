@@ -12,7 +12,10 @@ import EllipsoidalOccluder from "../Core/EllipsoidalOccluder.js";
  */
 class QuadtreeOccluders {
   constructor(options) {
-    this._ellipsoid = new EllipsoidalOccluder(options.ellipsoid, Cartesian3.ZERO);
+    this._ellipsoid = new EllipsoidalOccluder(
+      options.ellipsoid,
+      Cartesian3.ZERO,
+    );
   }
 
   /**

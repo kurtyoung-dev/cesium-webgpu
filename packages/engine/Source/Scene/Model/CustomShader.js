@@ -300,7 +300,8 @@ class CustomShader {
    * @see CustomShader#isDestroyed
    */
   destroy() {
-    this._textureManager = this._textureManager && this._textureManager.destroy();
+    this._textureManager =
+      this._textureManager && this._textureManager.destroy();
     destroyObject(this);
   }
 }

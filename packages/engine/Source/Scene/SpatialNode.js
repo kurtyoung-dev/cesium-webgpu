@@ -124,7 +124,10 @@ class SpatialNode {
   visibility(frameState, visibilityPlaneMask) {
     const obb = this.orientedBoundingBox;
     const cullingVolume = frameState.cullingVolume;
-    return cullingVolume.computeVisibilityWithPlaneMask(obb, visibilityPlaneMask);
+    return cullingVolume.computeVisibilityWithPlaneMask(
+      obb,
+      visibilityPlaneMask,
+    );
   }
 
   /**
@@ -138,7 +141,8 @@ class SpatialNode {
     // Avoid divide-by-zero when viewer is inside the tile.
     distance = Math.max(distance, CesiumMath.EPSILON7);
     const approximateVoxelSize = this.approximateVoxelSize;
-    const error = screenSpaceErrorMultiplier * (approximateVoxelSize / distance);
+    const error =
+      screenSpaceErrorMultiplier * (approximateVoxelSize / distance);
     this.screenSpaceError = error;
   }
 
@@ -304,7 +308,11 @@ class SpatialNode {
       throw new DeveloperError("Keyframe already renderable");
     }
     renderableKeyframeNodeIndex = ~renderableKeyframeNodeIndex;
-    renderableKeyframeNodes.splice(renderableKeyframeNodeIndex, 0, keyframeNode);
+    renderableKeyframeNodes.splice(
+      renderableKeyframeNodeIndex,
+      0,
+      keyframeNode,
+    );
   }
 
   /**

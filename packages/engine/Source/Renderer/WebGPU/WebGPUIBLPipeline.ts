@@ -46,10 +46,30 @@ function createIrradiancePipeline(device: GPUDevice): {
 } {
   const bgl = device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "cube" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d-array" } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "cube" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: {
+          access: "write-only",
+          format: "rgba16float",
+          viewDimension: "2d-array",
+        },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
     ],
   });
 
@@ -71,10 +91,30 @@ function createRadiancePipeline(device: GPUDevice): {
 } {
   const bgl = device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "cube" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d-array" } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "cube" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: {
+          access: "write-only",
+          format: "rgba16float",
+          viewDimension: "2d-array",
+        },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
     ],
   });
 
@@ -103,12 +143,18 @@ function dispatchIrradianceConvolution(
 
   // Create output irradiance cubemap
   cache.irradianceTexture = device.createTexture({
-    size: { width: IRRADIANCE_SIZE, height: IRRADIANCE_SIZE, depthOrArrayLayers: 6 },
+    size: {
+      width: IRRADIANCE_SIZE,
+      height: IRRADIANCE_SIZE,
+      depthOrArrayLayers: 6,
+    },
     format: "rgba16float",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     dimension: "2d",
   });
-  cache.irradianceView = cache.irradianceTexture.createView({ dimension: "cube" });
+  cache.irradianceView = cache.irradianceTexture.createView({
+    dimension: "cube",
+  });
 
   const outputArrayView = cache.irradianceTexture.createView({
     dimension: "2d-array",
@@ -165,7 +211,11 @@ function dispatchRadiancePrefilter(
 
   // Create output radiance cubemap with mip chain
   cache.radianceTexture = device.createTexture({
-    size: { width: RADIANCE_BASE_SIZE, height: RADIANCE_BASE_SIZE, depthOrArrayLayers: 6 },
+    size: {
+      width: RADIANCE_BASE_SIZE,
+      height: RADIANCE_BASE_SIZE,
+      depthOrArrayLayers: 6,
+    },
     format: "rgba16float",
     mipLevelCount: RADIANCE_MIP_LEVELS,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
@@ -189,7 +239,12 @@ function dispatchRadiancePrefilter(
     });
 
     for (let face = 0; face < 6; face++) {
-      const paramsData = new Uint32Array([face, mip, RADIANCE_MIP_LEVELS, mipSize]);
+      const paramsData = new Uint32Array([
+        face,
+        mip,
+        RADIANCE_MIP_LEVELS,
+        mipSize,
+      ]);
       const paramsBuffer = device.createBuffer({
         size: 16,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -209,10 +264,7 @@ function dispatchRadiancePrefilter(
       const pass = encoder.beginComputePass();
       pass.setPipeline(cache.radiancePipeline!);
       pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(
-        Math.ceil(mipSize / 8),
-        Math.ceil(mipSize / 8),
-      );
+      pass.dispatchWorkgroups(Math.ceil(mipSize / 8), Math.ceil(mipSize / 8));
       pass.end();
     }
   }
@@ -231,7 +283,7 @@ function dispatchRadiancePrefilter(
  */
 function packSphericalHarmonics(
   device: GPUDevice,
-  shCoefficients: any[] | undefined,
+  shCoefficients: { x: number; y: number; z: number }[] | undefined,
 ): GPUBuffer | null {
   if (!shCoefficients || shCoefficients.length < 9) {
     return null;

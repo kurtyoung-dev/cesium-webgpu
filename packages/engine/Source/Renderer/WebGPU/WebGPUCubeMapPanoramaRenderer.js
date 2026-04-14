@@ -591,7 +591,7 @@ function loadCubeMap(device, sources, state, panorama) {
     const srcDesc =
       srcType === "string"
         ? src.substring(src.lastIndexOf("/") + 1)
-        : src?.constructor?.name ?? srcType;
+        : (src?.constructor?.name ?? srcType);
     console.log(`[WebGPU:SkyBox] face=${face} type=${srcType} src=${srcDesc}`);
   }
   //>>includeEnd('debug');
@@ -617,8 +617,7 @@ function loadCubeMap(device, sources, state, panorama) {
       // HTMLImageElement: wait for it to finish loading if it hasn't yet.
       if (src instanceof HTMLImageElement && !src.complete) {
         return new Promise((resolve, reject) => {
-          src.onload = () =>
-            createImageBitmap(src).then(resolve).catch(reject);
+          src.onload = () => createImageBitmap(src).then(resolve).catch(reject);
           src.onerror = () =>
             reject(new Error(`Image load failed for ${face}: ${src.src}`));
         });

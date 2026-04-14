@@ -85,7 +85,8 @@ class CesiumInspector {
       createCheckbox("Performance Display", "performance"),
     );
 
-    performanceContainer.className = "cesium-cesiumInspector-performanceDisplay";
+    performanceContainer.className =
+      "cesium-cesiumInspector-performanceDisplay";
     generalSection.appendChild(performanceContainer);
 
     const shaderCacheDisplay = document.createElement("div");

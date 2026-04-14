@@ -9,6 +9,18 @@
  * @module WebGPUClippingPlaneCollection
  */
 
+/** Minimal interface for the upstream ClippingPlaneCollection. */
+interface ClippingPlaneCollectionLike {
+  length: number;
+  get(index: number): {
+    normal: { x: number; y: number; z: number };
+    distance: number;
+  };
+  _unionClippingRegions?: number | boolean;
+  _webgpuCache?: ClippingPlaneCache;
+  _clippingPlanesTexture?: CesiumOpaqueTexture;
+}
+
 interface ClippingPlaneCache {
   texture: GPUTexture | null;
   textureView: GPUTextureView | null;
@@ -22,7 +34,10 @@ interface ClippingPlaneCache {
  * Update WebGPU clipping plane resources.
  * Packs clipping plane data into a RGBA32Float texture.
  */
-function updateWebGPUClippingPlanes(collection: any, frameState: CesiumFrameState): void {
+function updateWebGPUClippingPlanes(
+  collection: ClippingPlaneCollectionLike,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -44,8 +59,8 @@ function updateWebGPUClippingPlanes(collection: any, frameState: CesiumFrameStat
   const cache = collection._webgpuCache as ClippingPlaneCache;
 
   // Check if we need to update
-  const currentRevision = collection._unionClippingRegions
-    ? collection._unionClippingRegions
+  const currentRevision: number = collection._unionClippingRegions
+    ? Number(collection._unionClippingRegions)
     : collection.length;
 
   if (cache.revision === currentRevision && cache.texture) {
@@ -118,7 +133,9 @@ function updateWebGPUClippingPlanes(collection: any, frameState: CesiumFrameStat
 /**
  * Destroy WebGPU clipping plane resources.
  */
-function destroyWebGPUClippingPlaneResources(collection: any): void {
+function destroyWebGPUClippingPlaneResources(
+  collection: CesiumObjectWithWebGPUCache,
+): void {
   const cache = collection._webgpuCache as ClippingPlaneCache | undefined;
   if (!cache) {
     return;

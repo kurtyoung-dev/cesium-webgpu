@@ -31,7 +31,7 @@ interface CloudCache {
   initialized: boolean;
 }
 
-function ensureCloudCache(context: any): CloudCache {
+function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
   if (!context._cloudCache) {
     context._cloudCache = {
       pipeline: null,
@@ -42,7 +42,7 @@ function ensureCloudCache(context: any): CloudCache {
       initialized: false,
     } as CloudCache;
   }
-  return context._cloudCache;
+  return context._cloudCache as CloudCache;
 }
 
 function initializeCloudPipeline(
@@ -60,10 +60,26 @@ function initializeCloudPipeline(
   cache.bindGroupLayout = device.createBindGroupLayout({
     label: "ProceduralClouds BGL",
     entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
     ],
   });
 
@@ -105,12 +121,12 @@ function initializeCloudPipeline(
  * Called after globe rendering, before post-processing.
  */
 export function executeProceduralClouds(
-  context: any,
+  context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
   outputView: GPUTextureView,
-  globe: any,
+  globe: CesiumGlobe,
 ): void {
   const device = context._device;
   if (!device) return;
@@ -127,13 +143,17 @@ export function executeProceduralClouds(
   const invProj = us?.inverseProjection;
   if (invProj) {
     for (let i = 0; i < 16; i++) data[offset++] = invProj[i];
-  } else { offset += 16; }
+  } else {
+    offset += 16;
+  }
 
   // inverseView (mat4, 16 floats)
   const invView = us?.inverseView;
   if (invView) {
     for (let i = 0; i < 16; i++) data[offset++] = invView[i];
-  } else { offset += 16; }
+  } else {
+    offset += 16;
+  }
 
   // cameraPosition (vec3 + time)
   const camPos = frameState.camera?.positionWC;
@@ -169,15 +189,22 @@ export function executeProceduralClouds(
   data[offset++] = 0.8; // silverLiningIntensity
 
   // cloudBaseColor (vec3 + pad)
-  data[offset++] = 0.65; data[offset++] = 0.68; data[offset++] = 0.72; data[offset++] = 0;
+  data[offset++] = 0.65;
+  data[offset++] = 0.68;
+  data[offset++] = 0.72;
+  data[offset++] = 0;
   // cloudTopColor (vec3 + pad)
-  data[offset++] = 0.95; data[offset++] = 0.95; data[offset++] = 0.97; data[offset++] = 0;
+  data[offset++] = 0.95;
+  data[offset++] = 0.95;
+  data[offset++] = 0.97;
+  data[offset++] = 0;
 
   // resolution + pad
   const canvas = context._canvas;
   data[offset++] = canvas?.width ?? 1920;
   data[offset++] = canvas?.height ?? 1080;
-  data[offset++] = 0; data[offset++] = 0;
+  data[offset++] = 0;
+  data[offset++] = 0;
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
@@ -195,11 +222,13 @@ export function executeProceduralClouds(
   // Render
   const encoder = device.createCommandEncoder({ label: "ProceduralClouds" });
   const pass = encoder.beginRenderPass({
-    colorAttachments: [{
-      view: outputView,
-      loadOp: "load",
-      storeOp: "store",
-    }],
+    colorAttachments: [
+      {
+        view: outputView,
+        loadOp: "load",
+        storeOp: "store",
+      },
+    ],
   });
   pass.setPipeline(cache.pipeline!);
   pass.setBindGroup(0, bindGroup);
@@ -208,7 +237,9 @@ export function executeProceduralClouds(
   device.queue.submit([encoder.finish()]);
 }
 
-export function destroyProceduralCloudResources(context: any): void {
+export function destroyProceduralCloudResources(
+  context: CesiumGraphicsContext,
+): void {
   const cache = context._cloudCache as CloudCache | undefined;
   if (cache) {
     cache.uniformBuffer?.destroy();

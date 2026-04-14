@@ -134,7 +134,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     // Render pipeline
     const shaderModule = device.createShaderModule({
       label: "TAA_Shader",
-      code: TAASource as unknown as string,
+      code: TAASource,
     });
 
     this._pipeline = device.createRenderPipeline({
@@ -269,8 +269,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     screenWidth: number,
     screenHeight: number,
   ): { x: number; y: number } {
-    const hx = halton(frameIndex % 16 + 1, 2);
-    const hy = halton(frameIndex % 16 + 1, 3);
+    const hx = halton((frameIndex % 16) + 1, 2);
+    const hy = halton((frameIndex % 16) + 1, 3);
     const x = ((hx - 0.5) * 2.0) / screenWidth;
     const y = ((hy - 0.5) * 2.0) / screenHeight;
     this.jitterX = (hx - 0.5) / screenWidth;
@@ -321,8 +321,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
         size: { width, height },
         format,
         usage:
-          GPUTextureUsage.RENDER_ATTACHMENT |
-          GPUTextureUsage.TEXTURE_BINDING,
+          GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
       this._historyViews[i] = this._historyTextures[i]!.createView({
         label: `TAA_History_${i}_View`,

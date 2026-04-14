@@ -113,7 +113,8 @@ class Cesium3DTilesetHeatmap {
     if (defined(tilePropertyName)) {
       const referenceMinimum = this._referenceMinimum[tilePropertyName];
       const referenceMaximum = this._referenceMaximum[tilePropertyName];
-      const useReference = defined(referenceMinimum) && defined(referenceMaximum);
+      const useReference =
+        defined(referenceMinimum) && defined(referenceMaximum);
       this._previousMinimum = useReference ? referenceMinimum : this._minimum;
       this._previousMaximum = useReference ? referenceMaximum : this._maximum;
       this._minimum = Number.MAX_VALUE;

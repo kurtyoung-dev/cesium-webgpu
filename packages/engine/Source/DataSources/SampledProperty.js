@@ -258,13 +258,18 @@ class SampledProperty {
         timeout = this._forwardExtrapolationDuration;
         if (
           this._forwardExtrapolationType === ExtrapolationType.NONE ||
-          (timeout !== 0 && JulianDate.secondsDifference(time, endTime) > timeout)
+          (timeout !== 0 &&
+            JulianDate.secondsDifference(time, endTime) > timeout)
         ) {
           return undefined;
         }
         if (this._forwardExtrapolationType === ExtrapolationType.HOLD) {
           index = timesLength - 1;
-          return innerType.unpack(values, index * innerType.packedLength, result);
+          return innerType.unpack(
+            values,
+            index * innerType.packedLength,
+            result,
+          );
         }
       }
 
@@ -358,7 +363,9 @@ class SampledProperty {
           this._interpolationResult,
         );
       } else {
-        const yStride = Math.floor(packedInterpolationLength / (inputOrder + 1));
+        const yStride = Math.floor(
+          packedInterpolationLength / (inputOrder + 1),
+        );
         interpolationResult = interpolationAlgorithm.interpolate(
           x,
           xTable,
@@ -597,7 +604,11 @@ class SampledProperty {
     //>>includeEnd('debug');
 
     const times = this._times;
-    let startIndex = binarySearch(times, timeInterval.start, JulianDate.compare);
+    let startIndex = binarySearch(
+      times,
+      timeInterval.start,
+      JulianDate.compare,
+    );
     if (startIndex < 0) {
       startIndex = ~startIndex;
     } else if (!timeInterval.isStartIncluded) {

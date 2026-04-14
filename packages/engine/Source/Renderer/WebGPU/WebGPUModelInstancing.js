@@ -132,14 +132,14 @@ function expandPackedTransforms(packed, count) {
     mat4Data[dst + 7] = 0.0;
 
     // Column 2
-    mat4Data[dst + 8] = packed[src + 2];  // col2.x
-    mat4Data[dst + 9] = packed[src + 6];  // col2.y
+    mat4Data[dst + 8] = packed[src + 2]; // col2.x
+    mat4Data[dst + 9] = packed[src + 6]; // col2.y
     mat4Data[dst + 10] = packed[src + 10]; // col2.z
     mat4Data[dst + 11] = 0.0;
 
     // Column 3 (translation)
-    mat4Data[dst + 12] = packed[src + 3];  // col3.x (tx)
-    mat4Data[dst + 13] = packed[src + 7];  // col3.y (ty)
+    mat4Data[dst + 12] = packed[src + 3]; // col3.x (tx)
+    mat4Data[dst + 13] = packed[src + 7]; // col3.y (ty)
     mat4Data[dst + 14] = packed[src + 11]; // col3.z (tz)
     mat4Data[dst + 15] = 1.0;
   }
@@ -174,7 +174,11 @@ function extractTransformsFromAttributes(instances, count) {
   }
 
   // Need at least translation (or all zero = identity position)
-  if (!defined(translationData) && !defined(rotationData) && !defined(scaleData)) {
+  if (
+    !defined(translationData) &&
+    !defined(rotationData) &&
+    !defined(scaleData)
+  ) {
     return null;
   }
 
@@ -197,10 +201,18 @@ function extractTransformsFromAttributes(instances, count) {
       const qw = rotationData[i * 4 + 3];
 
       // Rotation matrix from quaternion (column-major)
-      const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
-      const xx = qx * x2, xy = qx * y2, xz = qx * z2;
-      const yy = qy * y2, yz = qy * z2, zz = qz * z2;
-      const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+      const x2 = qx + qx,
+        y2 = qy + qy,
+        z2 = qz + qz;
+      const xx = qx * x2,
+        xy = qx * y2,
+        xz = qx * z2;
+      const yy = qy * y2,
+        yz = qy * z2,
+        zz = qz * z2;
+      const wx = qw * x2,
+        wy = qw * y2,
+        wz = qw * z2;
 
       mat4Data[dst + 0] = (1 - (yy + zz)) * sx;
       mat4Data[dst + 1] = (xy + wz) * sx;
@@ -252,10 +264,7 @@ function destroyInstancingResources(nodeCache) {
   nodeCache.instanceCount = undefined;
 }
 
-export {
-  ensureInstancingResources,
-  destroyInstancingResources,
-};
+export { ensureInstancingResources, destroyInstancingResources };
 export default {
   ensureInstancingResources,
   destroyInstancingResources,

@@ -86,7 +86,9 @@ class Google2DImageryProvider {
     const resource =
       options.url instanceof IonResource
         ? options.url
-        : Resource.createIfNeeded(options.url ?? GoogleMaps.mapTilesApiEndpoint);
+        : Resource.createIfNeeded(
+            options.url ?? GoogleMaps.mapTilesApiEndpoint,
+          );
 
     let templateUrl = resource.getUrlComponent();
     if (!trailingSlashRegex.test(templateUrl)) {

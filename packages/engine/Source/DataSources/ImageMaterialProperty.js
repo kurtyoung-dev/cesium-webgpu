@@ -81,7 +81,9 @@ class ImageMaterialProperty {
       defaultColor,
       result.color,
     );
-    if (Property.getValueOrDefault(this._transparent, time, defaultTransparent)) {
+    if (
+      Property.getValueOrDefault(this._transparent, time, defaultTransparent)
+    ) {
       result.color.alpha = Math.min(0.99, result.color.alpha);
     }
 
@@ -135,5 +137,69 @@ class ImageMaterialProperty {
 }
 
 const timeScratch = new JulianDate();
+
+Object.defineProperties(ImageMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof ImageMaterialProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._image) && Property.isConstant(this._repeat)
+      );
+    },
+  },
+
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof ImageMaterialProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the Property specifying Image, URL, Canvas, or Video to use.
+   * @memberof ImageMaterialProperty.prototype
+   * @type {Property|undefined}
+   */
+  image: createPropertyDescriptor("image"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the number of times the image repeats in each direction.
+   * @memberof ImageMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(1, 1)
+   */
+  repeat: createPropertyDescriptor("repeat"),
+
+  /**
+   * Gets or sets the Color Property specifying the desired color applied to the image.
+   * @memberof ImageMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  color: createPropertyDescriptor("color"),
+
+  /**
+   * Gets or sets the Boolean Property specifying whether the image has transparency
+   * @memberof ImageMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  transparent: createPropertyDescriptor("transparent"),
+});
 
 export default ImageMaterialProperty;

@@ -158,4 +158,81 @@ class GridMaterialProperty {
 
 const timeScratch = new JulianDate();
 
+Object.defineProperties(GridMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof GridMaterialProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._color) &&
+        Property.isConstant(this._cellAlpha) &&
+        Property.isConstant(this._lineCount) &&
+        Property.isConstant(this._lineThickness) &&
+        Property.isConstant(this._lineOffset)
+      );
+    },
+  },
+
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof GridMaterialProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the Property specifying the grid {@link Color}.
+   * @memberof GridMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.WHITE
+   */
+  color: createPropertyDescriptor("color"),
+
+  /**
+   * Gets or sets the numeric Property specifying cell alpha values.
+   * @memberof GridMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default 0.1
+   */
+  cellAlpha: createPropertyDescriptor("cellAlpha"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the number of grid lines along each axis.
+   * @memberof GridMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(8.0, 8.0)
+   */
+  lineCount: createPropertyDescriptor("lineCount"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the thickness of grid lines along each axis.
+   * @memberof GridMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(1.0, 1.0)
+   */
+  lineThickness: createPropertyDescriptor("lineThickness"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the starting offset of grid lines along each axis.
+   * @memberof GridMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(0.0, 0.0)
+   */
+  lineOffset: createPropertyDescriptor("lineOffset"),
+});
+
 export default GridMaterialProperty;

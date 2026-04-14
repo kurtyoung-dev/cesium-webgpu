@@ -130,4 +130,61 @@ class PolylineOutlineMaterialProperty {
 
 const timeScratch = new JulianDate();
 
+Object.defineProperties(PolylineOutlineMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof PolylineOutlineMaterialProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._color) &&
+        Property.isConstant(this._outlineColor) &&
+        Property.isConstant(this._outlineWidth)
+      );
+    },
+  },
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof PolylineOutlineMaterialProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the line.
+   * @memberof PolylineOutlineMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.WHITE
+   */
+  color: createPropertyDescriptor("color"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof PolylineOutlineMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * @memberof PolylineOutlineMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+});
+
 export default PolylineOutlineMaterialProperty;

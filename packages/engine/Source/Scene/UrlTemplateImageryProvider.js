@@ -197,7 +197,9 @@ class UrlTemplateImageryProvider {
     //>>includeEnd('debug');
 
     const resource = Resource.createIfNeeded(options.url);
-    const pickFeaturesResource = Resource.createIfNeeded(options.pickFeaturesUrl);
+    const pickFeaturesResource = Resource.createIfNeeded(
+      options.pickFeaturesUrl,
+    );
 
     this._resource = resource;
     this._urlSchemeZeroPadding = options.urlSchemeZeroPadding;

@@ -320,7 +320,9 @@ export function reprojectImageSourceWebGPU(
  * Initialize the reprojection feature renderer.
  * Called from WebGPUFeatureRenderers registration.
  */
-export function initWebGPUImageryReprojection(_context: any): void {
+export function initWebGPUImageryReprojection(
+  _context: CesiumGraphicsContext,
+): void {
   // Cache is lazily initialized on first use — nothing to do here
 }
 

@@ -166,7 +166,9 @@ class GaussianSplat3DTileContent {
         VertexAttributeSemantic.SCALE,
       ).typedArray.slice();
 
-      const { l, n } = degreeAndCoefFromAttributes(this.gltfPrimitive.attributes);
+      const { l, n } = degreeAndCoefFromAttributes(
+        this.gltfPrimitive.attributes,
+      );
       this._sphericalHarmonicsDegree = l;
       this._sphericalHarmonicsCoefficientCount = n;
 

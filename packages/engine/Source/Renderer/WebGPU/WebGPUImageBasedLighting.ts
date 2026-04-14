@@ -147,7 +147,10 @@ function initCache(device: GPUDevice): IBLCache {
  * Update IBL resources for WebGPU rendering.
  * Called from ImageBasedLighting.update() when context.isWebGPU.
  */
-function updateWebGPUImageBasedLighting(ibl: any, frameState: CesiumFrameState): void {
+function updateWebGPUImageBasedLighting(
+  ibl: CesiumImageBasedLighting,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -180,7 +183,10 @@ function updateWebGPUImageBasedLighting(ibl: any, frameState: CesiumFrameState):
 
   // Update spherical harmonics if provided
   if (ibl.sphericalHarmonicCoefficients) {
-    const newSH = packSphericalHarmonics(device, ibl.sphericalHarmonicCoefficients);
+    const newSH = packSphericalHarmonics(
+      device,
+      ibl.sphericalHarmonicCoefficients,
+    );
     if (newSH) {
       if (cache.shBuffer) {
         cache.shBuffer.destroy();
@@ -199,14 +205,15 @@ function updateWebGPUImageBasedLighting(ibl: any, frameState: CesiumFrameState):
 
   // Check if specular environment map has changed
   const specEnvMap = ibl._specularEnvironmentCubeMap;
-  if (specEnvMap && specEnvMap._ready) {
+  if (specEnvMap && specEnvMap.ready) {
     const version = specEnvMap._version ?? 0;
     if (version !== cache.sourceVersion) {
       cache.sourceVersion = version;
 
-      // Get the source cubemap texture view
-      const sourceView = specEnvMap._texture?._webgpuTextureView ??
-                         specEnvMap._texture?._textureView;
+      // Get the source cubemap texture view from the specular environment map's
+      // internal WebGPU texture. The _texture field wraps a WebGPUTexture which
+      // exposes a .view getter at ._webgpuTexture.view.
+      const sourceView = specEnvMap._texture?._webgpuTexture?.view;
 
       if (sourceView) {
         // Run the IBL pipeline: irradiance + radiance generation
@@ -229,7 +236,9 @@ function updateWebGPUImageBasedLighting(ibl: any, frameState: CesiumFrameState):
 /**
  * Destroy WebGPU IBL resources.
  */
-function destroyWebGPUImageBasedLightingResources(ibl: any): void {
+function destroyWebGPUImageBasedLightingResources(
+  ibl: CesiumImageBasedLighting,
+): void {
   const cache = ibl._webgpuCache as IBLCache | undefined;
   if (!cache) {
     return;

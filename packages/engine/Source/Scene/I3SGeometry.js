@@ -234,7 +234,8 @@ class I3SGeometry {
         materialIndex >= 0 &&
         materialIndex < this._layer._data.materialDefinitions.length
       ) {
-        materialDefinition = this._layer._data.materialDefinitions[materialIndex];
+        materialDefinition =
+          this._layer._data.materialDefinitions[materialIndex];
         gltfMaterial = materialDefinition;
 
         if (
@@ -284,9 +285,10 @@ class I3SGeometry {
           defined(gltfMaterial.pbrMetallicRoughness) &&
           defined(gltfMaterial.pbrMetallicRoughness.baseColorFactor)
         ) {
-          gltfMaterial.pbrMetallicRoughness.baseColorFactor = convertColorFactor(
-            gltfMaterial.pbrMetallicRoughness.baseColorFactor,
-          );
+          gltfMaterial.pbrMetallicRoughness.baseColorFactor =
+            convertColorFactor(
+              gltfMaterial.pbrMetallicRoughness.baseColorFactor,
+            );
         }
         if (defined(gltfMaterial.emissiveFactor)) {
           gltfMaterial.emissiveFactor = convertColorFactor(

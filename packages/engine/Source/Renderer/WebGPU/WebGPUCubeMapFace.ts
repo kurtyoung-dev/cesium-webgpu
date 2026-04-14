@@ -12,11 +12,12 @@
  * @private
  */
 
+import { WebGPUTexture } from "./WebGPUTexture.js";
 import { cesiumFormatToWebGPU, bytesPerPixel } from "./WebGPUTexture3D.js";
 
 class WebGPUCubeMapFace {
-  private _context: any;
-  private _parentTexture: any; // WebGPUTexture (cubemap)
+  private _context: CesiumGraphicsContext;
+  private _parentTexture: WebGPUTexture | null;
   private _faceIndex: number;
   private _pixelFormat: number;
   private _pixelDatatype: number;
@@ -27,8 +28,8 @@ class WebGPUCubeMapFace {
   private _layerView: GPUTextureView | null;
 
   constructor(
-    context: any,
-    parentTexture: any,
+    context: CesiumGraphicsContext,
+    parentTexture: WebGPUTexture | null,
     faceIndex: number,
     pixelFormat: number,
     pixelDatatype: number,
@@ -110,7 +111,7 @@ class WebGPUCubeMapFace {
     const device = this._context._device;
     if (!device || !this._parentTexture) return;
 
-    const gpuTexture = this._parentTexture.gpuTexture;
+    const gpuTexture = this._parentTexture.texture;
     if (!gpuTexture) return;
 
     // ImageBitmap / HTMLCanvasElement / HTMLImageElement path

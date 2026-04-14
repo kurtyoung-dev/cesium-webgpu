@@ -183,4 +183,233 @@ class LabelGraphics {
   }
 }
 
+Object.defineProperties(LabelGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof LabelGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the label.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the string Property specifying the text of the label.
+   * Explicit newlines '\n' are supported.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  text: createPropertyDescriptor("text"),
+
+  /**
+   * Gets or sets the string Property specifying the font in CSS syntax.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @see {@link https://developer.mozilla.org/en-US/docs/Web/CSS/font|CSS font on MDN}
+   */
+  font: createPropertyDescriptor("font"),
+
+  /**
+   * Gets or sets the Property specifying the {@link LabelStyle}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  style: createPropertyDescriptor("style"),
+
+  /**
+   * Gets or sets the numeric Property specifying the uniform scale to apply to the image.
+   * A scale greater than <code>1.0</code> enlarges the label while a scale less than <code>1.0</code> shrinks it.
+   * <p>
+   * <div align='center'>
+   * <img src='Images/Label.setScale.png' width='400' height='300' /><br/>
+   * From left to right in the above image, the scales are <code>0.5</code>, <code>1.0</code>,
+   * and <code>2.0</code>.
+   * </div>
+   * </p>
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  scale: createPropertyDescriptor("scale"),
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the background behind the label.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  showBackground: createPropertyDescriptor("showBackground"),
+
+  /**
+   * Gets or sets the Property specifying the background {@link Color}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default new Color(0.165, 0.165, 0.165, 0.8)
+   */
+  backgroundColor: createPropertyDescriptor("backgroundColor"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the label's horizontal and vertical
+   * background padding in pixels.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(7, 5)
+   */
+  backgroundPadding: createPropertyDescriptor("backgroundPadding"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the label's pixel offset in screen space
+   * from the origin of this label.  This is commonly used to align multiple labels and labels at
+   * the same position, e.g., an image and text.  The screen space origin is the top, left corner of the
+   * canvas; <code>x</code> increases from left to right, and <code>y</code> increases from top to bottom.
+   * <p>
+   * <div align='center'>
+   * <table border='0' cellpadding='5'><tr>
+   * <td align='center'><code>default</code><br/><img src='Images/Label.setPixelOffset.default.png' width='250' height='188' /></td>
+   * <td align='center'><code>l.pixeloffset = new Cartesian2(25, 75);</code><br/><img src='Images/Label.setPixelOffset.x50y-25.png' width='250' height='188' /></td>
+   * </tr></table>
+   * The label's origin is indicated by the yellow point.
+   * </div>
+   * </p>
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default Cartesian2.ZERO
+   */
+  pixelOffset: createPropertyDescriptor("pixelOffset"),
+
+  /**
+   * Gets or sets the {@link Cartesian3} Property specifying the label's offset in eye coordinates.
+   * Eye coordinates is a left-handed coordinate system, where <code>x</code> points towards the viewer's
+   * right, <code>y</code> points up, and <code>z</code> points into the screen.
+   * <p>
+   * An eye offset is commonly used to arrange multiple labels or objects at the same position, e.g., to
+   * arrange a label above its corresponding 3D model.
+   * </p>
+   * Below, the label is positioned at the center of the Earth but an eye offset makes it always
+   * appear on top of the Earth regardless of the viewer's or Earth's orientation.
+   * <p>
+   * <div align='center'>
+   * <table border='0' cellpadding='5'><tr>
+   * <td align='center'><img src='Images/Billboard.setEyeOffset.one.png' width='250' height='188' /></td>
+   * <td align='center'><img src='Images/Billboard.setEyeOffset.two.png' width='250' height='188' /></td>
+   * </tr></table>
+   * <code>l.eyeOffset = new Cartesian3(0.0, 8000000.0, 0.0);</code><br /><br />
+   * </div>
+   * </p>
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default Cartesian3.ZERO
+   */
+  eyeOffset: createPropertyDescriptor("eyeOffset"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HorizontalOrigin}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  horizontalOrigin: createPropertyDescriptor("horizontalOrigin"),
+
+  /**
+   * Gets or sets the Property specifying the {@link VerticalOrigin}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  verticalOrigin: createPropertyDescriptor("verticalOrigin"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the Property specifying the fill {@link Color}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  fillColor: createPropertyDescriptor("fillColor"),
+
+  /**
+   * Gets or sets the Property specifying the outline {@link Color}.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the outline width.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Gets or sets {@link NearFarScalar} Property specifying the translucency of the label based on the distance from the camera.
+   * A label's translucency will interpolate between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's translucency remains clamped to the nearest bound.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  translucencyByDistance: createPropertyDescriptor("translucencyByDistance"),
+
+  /**
+   * Gets or sets {@link NearFarScalar} Property specifying the pixel offset of the label based on the distance from the camera.
+   * A label's pixel offset will interpolate between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's pixel offset remains clamped to the nearest bound.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  pixelOffsetScaleByDistance: createPropertyDescriptor(
+    "pixelOffsetScaleByDistance",
+  ),
+
+  /**
+   * Gets or sets near and far scaling properties of a Label based on the label's distance from the camera.
+   * A label's scale will interpolate between the {@link NearFarScalar#nearValue} and
+   * {@link NearFarScalar#farValue} while the camera distance falls within the lower and upper bounds
+   * of the specified {@link NearFarScalar#near} and {@link NearFarScalar#far}.
+   * Outside of these ranges the label's scale remains clamped to the nearest bound.  If undefined,
+   * scaleByDistance will be disabled.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  scaleByDistance: createPropertyDescriptor("scaleByDistance"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this label will be displayed.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the distance from the camera at which to disable the depth test to, for example, prevent clipping against terrain.
+   * When set to zero, the depth test is always applied. When set to Number.POSITIVE_INFINITY, the depth test is never applied.
+   * @memberof LabelGraphics.prototype
+   * @type {Property|undefined}
+   */
+  disableDepthTestDistance: createPropertyDescriptor(
+    "disableDepthTestDistance",
+  ),
+});
+
 export default LabelGraphics;

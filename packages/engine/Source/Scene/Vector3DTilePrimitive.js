@@ -293,7 +293,9 @@ class Vector3DTilePrimitive {
           color: Color.clone(batchedIndices[i].color),
           offset: offset + count,
           count:
-            batchedIndices[i].offset + batchedIndices[i].count - (offset + count),
+            batchedIndices[i].offset +
+            batchedIndices[i].count -
+            (offset + count),
           batchIds: endIds,
         }),
       );
@@ -331,7 +333,12 @@ class Vector3DTilePrimitive {
       if (this._debugWireframe) {
         queueWireframeCommands(frameState, this._commands);
       } else {
-        queueCommands(this, frameState, this._commands, this._commandsIgnoreShow);
+        queueCommands(
+          this,
+          frameState,
+          this._commands,
+          this._commandsIgnoreShow,
+        );
       }
     }
 

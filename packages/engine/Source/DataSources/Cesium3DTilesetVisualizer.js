@@ -40,7 +40,12 @@ class Cesium3DTilesetVisualizer {
     this._entityCollection = entityCollection;
     this._tilesetHash = {};
     this._entitiesToVisualize = new AssociativeArray();
-    this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
+    this._onCollectionChanged(
+      entityCollection,
+      entityCollection.values,
+      [],
+      [],
+    );
   }
 
   /**

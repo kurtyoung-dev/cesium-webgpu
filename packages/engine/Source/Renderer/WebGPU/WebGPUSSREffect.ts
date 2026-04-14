@@ -32,7 +32,7 @@ interface SSRCache {
   height: number;
 }
 
-function ensureSSRCache(context: any): SSRCache {
+function ensureSSRCache(context: CesiumGraphicsContext): SSRCache {
   if (!context._ssrCache) {
     context._ssrCache = {
       pipeline: null,
@@ -47,7 +47,7 @@ function ensureSSRCache(context: any): SSRCache {
       height: 0,
     } as SSRCache;
   }
-  return context._ssrCache;
+  return context._ssrCache as SSRCache;
 }
 
 function initializeSSRPipeline(
@@ -65,11 +65,31 @@ function initializeSSRPipeline(
   cache.bindGroupLayout = device.createBindGroupLayout({
     label: "SSR BGL",
     entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-      { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
     ],
   });
 
@@ -112,7 +132,8 @@ function ensureNormalTexture(
   width: number,
   height: number,
 ): void {
-  if (cache.normalTexture && cache.width === width && cache.height === height) return;
+  if (cache.normalTexture && cache.width === width && cache.height === height)
+    return;
 
   cache.normalTexture?.destroy();
   cache.normalTexture = device.createTexture({
@@ -131,13 +152,13 @@ function ensureNormalTexture(
  * Inserted into post-process pipeline after AO, before bloom.
  */
 export function executeSSR(
-  context: any,
+  context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
   normalTextureView: GPUTextureView | null,
   outputView: GPUTextureView,
-  scene: any,
+  scene: CesiumScene,
 ): void {
   const device = context._device;
   if (!device) return;
@@ -163,13 +184,19 @@ export function executeSSR(
 
   // projection (mat4, 16 floats)
   const proj = us?.projection;
-  if (proj) { for (let i = 0; i < 16; i++) data[offset++] = proj[i]; }
-  else { offset += 16; }
+  if (proj) {
+    for (let i = 0; i < 16; i++) data[offset++] = proj[i];
+  } else {
+    offset += 16;
+  }
 
   // inverseProjection (mat4, 16 floats)
   const invProj = us?.inverseProjection;
-  if (invProj) { for (let i = 0; i < 16; i++) data[offset++] = invProj[i]; }
-  else { offset += 16; }
+  if (invProj) {
+    for (let i = 0; i < 16; i++) data[offset++] = invProj[i];
+  } else {
+    offset += 16;
+  }
 
   // resolution (vec4)
   data[offset++] = w;
@@ -204,11 +231,13 @@ export function executeSSR(
 
   const encoder = device.createCommandEncoder({ label: "SSR" });
   const pass = encoder.beginRenderPass({
-    colorAttachments: [{
-      view: outputView,
-      loadOp: "load",
-      storeOp: "store",
-    }],
+    colorAttachments: [
+      {
+        view: outputView,
+        loadOp: "load",
+        storeOp: "store",
+      },
+    ],
   });
   pass.setPipeline(cache.pipeline!);
   pass.setBindGroup(0, bindGroup);
@@ -217,7 +246,7 @@ export function executeSSR(
   device.queue.submit([encoder.finish()]);
 }
 
-export function destroySSRResources(context: any): void {
+export function destroySSRResources(context: CesiumGraphicsContext): void {
   const cache = context._ssrCache as SSRCache | undefined;
   if (cache) {
     cache.uniformBuffer?.destroy();

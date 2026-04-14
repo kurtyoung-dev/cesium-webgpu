@@ -368,7 +368,9 @@ class ClippingPlaneCollection {
       let offsetY = 0;
       if (useFloatTexture) {
         offsetY = Math.floor(dirtyIndex / clippingPlanesTexture.width);
-        offsetX = Math.floor(dirtyIndex - offsetY * clippingPlanesTexture.width);
+        offsetX = Math.floor(
+          dirtyIndex - offsetY * clippingPlanesTexture.width,
+        );
 
         packPlanesAsFloats(this, dirtyIndex, dirtyIndex + 1);
         clippingPlanesTexture.copyFrom({

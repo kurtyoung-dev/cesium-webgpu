@@ -97,7 +97,8 @@ class DynamicGeometryUpdater {
         appearance = new PerInstanceColorAppearance({
           closed: closed,
           flat:
-            onTerrain && !geometryUpdater._supportsMaterialsforEntitiesOnTerrain,
+            onTerrain &&
+            !geometryUpdater._supportsMaterialsforEntitiesOnTerrain,
         });
       } else {
         const material = MaterialProperty.getValue(
@@ -134,7 +135,8 @@ class DynamicGeometryUpdater {
           this._geometryUpdater.createFillGeometryInstance(time);
 
         if (isColorAppearance) {
-          appearance.translucent = fillInstance.attributes.color.value[3] !== 255;
+          appearance.translucent =
+            fillInstance.attributes.color.value[3] !== 255;
         }
 
         this._primitive = primitives.add(

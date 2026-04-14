@@ -75,7 +75,9 @@ class VoxelBoxShape {
       new ClippingPlane(Cartesian3.UNIT_Z, -DefaultMaxBounds.z),
     ];
 
-    this._renderBoundPlanes = new VoxelBoundsCollection({ planes: boundPlanes });
+    this._renderBoundPlanes = new VoxelBoundsCollection({
+      planes: boundPlanes,
+    });
 
     this._shaderUniforms = {
       boxEcToXyz: new Matrix3(),
@@ -231,7 +233,8 @@ class VoxelBoxShape {
       transformPositionWorldToLocal,
       shaderUniforms.boxEcToXyz,
     );
-    const rotateViewToWorld = frameState.context.uniformState.inverseViewRotation;
+    const rotateViewToWorld =
+      frameState.context.uniformState.inverseViewRotation;
     Matrix3.multiply(
       transformDirectionWorldToLocal,
       rotateViewToWorld,
@@ -320,7 +323,12 @@ class VoxelBoxShape {
    * @param {OrientedBoundingBox} result The oriented bounding box that will be set to enclose the specified sample
    * @returns {OrientedBoundingBox} The oriented bounding box.
    */
-  computeOrientedBoundingBoxForSample(spatialNode, tileDimensions, tileUv, result) {
+  computeOrientedBoundingBoxForSample(
+    spatialNode,
+    tileDimensions,
+    tileUv,
+    result,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.object("spatialNode", spatialNode);
     Check.typeOf.object("tileDimensions", tileDimensions);

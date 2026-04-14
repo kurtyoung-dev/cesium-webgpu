@@ -90,7 +90,7 @@ export const PIPELINE_STATE_CONSTANTS = Object.freeze({
 export function createPipelineStateStubs(
   state: WebGLStubState,
   logUsage: LogUsageFn,
-): Record<string, any> {
+): Record<string, unknown> {
   return {
     // ==== Clear methods (state tracked for render pass loadOp) ====
 

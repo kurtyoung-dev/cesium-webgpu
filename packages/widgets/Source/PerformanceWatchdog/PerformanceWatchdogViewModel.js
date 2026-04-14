@@ -72,11 +72,10 @@ class PerformanceWatchdogViewModel {
       },
     );
 
-    this._unsubscribeNominalFrameRate = monitor.nominalFrameRate.addEventListener(
-      function () {
+    this._unsubscribeNominalFrameRate =
+      monitor.nominalFrameRate.addEventListener(function () {
         that.showingLowFrameRateMessage = false;
-      },
-    );
+      });
   }
 
   destroy() {

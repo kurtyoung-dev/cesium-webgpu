@@ -77,7 +77,7 @@ export class WebGPUCSMRenderer {
   private static _scratchCorners = new Array(8)
     .fill(null)
     .map(() => new Cartesian3());
-  private static _scratchLightVP = new (Matrix4 as any)();
+  private static _scratchLightVP = new Matrix4();
 
   constructor(config?: CSMConfig) {
     this._cascadeCount = config?.cascadeCount ?? DEFAULT_CASCADE_COUNT;
@@ -121,8 +121,7 @@ export class WebGPUCSMRenderer {
       },
       format: "depth32float",
       usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.TEXTURE_BINDING,
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
 
     // Per-layer views for cast render passes.
@@ -154,7 +153,7 @@ export class WebGPUCSMRenderer {
 
     // Cascade params UBO.
     const paramsByteSize =
-      Math.ceil((this._cascadeParamsData.byteLength) / 256) * 256;
+      Math.ceil(this._cascadeParamsData.byteLength / 256) * 256;
     this._cascadeParamsBuffer = device.createBuffer({
       label: "CSM_Params",
       size: paramsByteSize,
@@ -177,7 +176,8 @@ export class WebGPUCSMRenderer {
       const logarithmic = cameraNear * Math.pow(far / cameraNear, p);
       const split = lambda * logarithmic + (1 - lambda) * uniform;
 
-      this._cascades[i].splitNear = i === 0 ? cameraNear : this._cascades[i - 1].splitFar;
+      this._cascades[i].splitNear =
+        i === 0 ? cameraNear : this._cascades[i - 1].splitFar;
       this._cascades[i].splitFar = split;
     }
   }

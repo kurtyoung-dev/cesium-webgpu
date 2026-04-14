@@ -134,7 +134,8 @@ class GlobeDepth {
       : passState.framebuffer.depthStencilTexture;
     if (
       !this._clearGlobeDepth &&
-      depthTextureToCopy === this.colorFramebufferManager.getDepthStencilTexture()
+      depthTextureToCopy ===
+        this.colorFramebufferManager.getDepthStencilTexture()
     ) {
       // Fast path - the depth texture can be copied normally.
       if (defined(this._copyDepthCommand)) {
@@ -222,9 +223,7 @@ class GlobeDepth {
   }
 
   get colorFramebufferManager() {
-    return this._picking
-      ? this._pickColorFramebuffer
-      : this._outputFramebuffer;
+    return this._picking ? this._pickColorFramebuffer : this._outputFramebuffer;
   }
 
   get framebuffer() {

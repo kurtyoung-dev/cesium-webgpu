@@ -552,10 +552,7 @@ function queryFirstNode(node, tagName, namespace) {
   const length = childNodes.length;
   for (let q = 0; q < length; q++) {
     const child = childNodes[q];
-    if (
-      child.localName === tagName &&
-      namespace.includes(child.namespaceURI)
-    ) {
+    if (child.localName === tagName && namespace.includes(child.namespaceURI)) {
       return child;
     }
   }
@@ -571,10 +568,7 @@ function queryNodes(node, tagName, namespace) {
   const length = childNodes.length;
   for (let q = 0; q < length; q++) {
     const child = childNodes[q];
-    if (
-      child.localName === tagName &&
-      namespace.includes(child.namespaceURI)
-    ) {
+    if (child.localName === tagName && namespace.includes(child.namespaceURI)) {
       result.push(child);
     }
   }
@@ -590,10 +584,7 @@ function queryChildNodes(node, tagName, namespace) {
   const length = childNodes.length;
   for (let q = 0; q < length; q++) {
     const child = childNodes[q];
-    if (
-      child.localName === tagName &&
-      namespace.includes(child.namespaceURI)
-    ) {
+    if (child.localName === tagName && namespace.includes(child.namespaceURI)) {
       result.push(child);
     }
   }
@@ -3576,7 +3567,9 @@ class KmlDataSource {
     this.camera = camera;
 
     this._lastCameraView = {
-      position: defined(camera) ? Cartesian3.clone(camera.positionWC) : undefined,
+      position: defined(camera)
+        ? Cartesian3.clone(camera.positionWC)
+        : undefined,
       direction: defined(camera)
         ? Cartesian3.clone(camera.directionWC)
         : undefined,

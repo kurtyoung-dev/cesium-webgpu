@@ -193,7 +193,6 @@ function appendPrimitiveToBuffers(content, primitive, collection) {
     for (let i = 0, il = indices ? indices.length : vertexCount; i < il; i++) {
       const vertexOffset = indices ? indices[i] : i;
       Cartesian3.fromArray(
-        // @ts-expect-error TODO(tsd-jsdoc): See https://github.com/CesiumGS/cesium/pull/13302.
         collectionPositions,
         vertexOffset * 3,
         scratchPosition,

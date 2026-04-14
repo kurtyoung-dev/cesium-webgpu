@@ -72,7 +72,13 @@ class TranslucentTileClassification {
     this._frustumsDrawn = 0;
   }
 
-  executeTranslucentCommands(scene, executeCommand, passState, commands, globeDepthStencilTexture) {
+  executeTranslucentCommands(
+    scene,
+    executeCommand,
+    passState,
+    commands,
+    globeDepthStencilTexture,
+  ) {
     // Check for translucent commands that should be classified
     const useLogDepth = scene.frameState.useLogDepth;
     const context = scene.context;
@@ -80,7 +86,9 @@ class TranslucentTileClassification {
 
     for (let i = 0; i < commands.length; ++i) {
       let command = commands[i];
-      command = useLogDepth ? command.derivedCommands.logDepth.command : command;
+      command = useLogDepth
+        ? command.derivedCommands.logDepth.command
+        : command;
 
       if (command.depthForTranslucentClassification) {
         this._hasTranslucentDepth = true;
@@ -102,7 +110,9 @@ class TranslucentTileClassification {
 
     for (let i = 0; i < commands.length; ++i) {
       let command = commands[i];
-      command = useLogDepth ? command.derivedCommands.logDepth.command : command;
+      command = useLogDepth
+        ? command.derivedCommands.logDepth.command
+        : command;
 
       if (!command.depthForTranslucentClassification) {
         continue;
@@ -124,7 +134,12 @@ class TranslucentTileClassification {
     passState.framebuffer = framebuffer;
   }
 
-  executeClassificationCommands(scene, executeCommand, passState, frustumCommands) {
+  executeClassificationCommands(
+    scene,
+    executeCommand,
+    passState,
+    frustumCommands,
+  ) {
     if (!this._hasTranslucentDepth) {
       return;
     }

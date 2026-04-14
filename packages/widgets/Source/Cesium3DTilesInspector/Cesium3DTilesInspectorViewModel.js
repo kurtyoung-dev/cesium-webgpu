@@ -1119,9 +1119,11 @@ class Cesium3DTilesInspectorViewModel {
       "eyeDomeLightingStrength",
       "eyeDomeLightingRadius",
     ];
-    this._removePostRenderEvent = scene.postRender.addEventListener(function () {
-      that._update();
-    });
+    this._removePostRenderEvent = scene.postRender.addEventListener(
+      function () {
+        that._update();
+      },
+    );
 
     if (!defined(this._tileset)) {
       selectTilesetOnHover(this, true);
@@ -1205,7 +1207,10 @@ class Cesium3DTilesInspectorViewModel {
    */
   compileStyle() {
     const tileset = this._tileset;
-    if (!defined(tileset) || this.styleString === JSON.stringify(tileset.style)) {
+    if (
+      !defined(tileset) ||
+      this.styleString === JSON.stringify(tileset.style)
+    ) {
       return;
     }
     this._editorError = "";
@@ -1263,7 +1268,10 @@ class Cesium3DTilesInspectorViewModel {
         textArea.value.slice(0, start) + newText + textArea.value.slice(end);
       textArea.selectionStart = start !== end ? start : newEnd;
       textArea.selectionEnd = newEnd;
-    } else if (event.ctrlKey && (event.keyCode === 10 || event.keyCode === 13)) {
+    } else if (
+      event.ctrlKey &&
+      (event.keyCode === 10 || event.keyCode === 13)
+    ) {
       //ctrl + enter
       this.compileStyle();
     }
@@ -1472,8 +1480,7 @@ class Cesium3DTilesInspectorViewModel {
         ? pointCloudShading.baseResolution
         : 0.0;
       this.eyeDomeLighting = pointCloudShading.eyeDomeLighting;
-      this.eyeDomeLightingStrength =
-        pointCloudShading.eyeDomeLightingStrength;
+      this.eyeDomeLightingStrength = pointCloudShading.eyeDomeLightingStrength;
       this.eyeDomeLightingRadius = pointCloudShading.eyeDomeLightingRadius;
 
       this._scene.requestRender();

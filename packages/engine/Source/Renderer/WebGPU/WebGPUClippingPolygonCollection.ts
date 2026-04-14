@@ -7,6 +7,15 @@
  * @module WebGPUClippingPolygonCollection
  */
 
+/** Minimal interface for the upstream ClippingPolygonCollection. */
+interface ClippingPolygonCollectionLike {
+  length: number;
+  get(index: number): { positions: { longitude: number; latitude: number }[] };
+  _webgpuCache?: ClippingPolygonCache;
+  _clippingPolygonsTexture?: CesiumOpaqueTexture;
+  _signedDistanceTexture?: CesiumOpaqueTexture;
+}
+
 interface ClippingPolygonCache {
   positionsTexture: GPUTexture | null;
   positionsTextureView: GPUTextureView | null;
@@ -22,7 +31,10 @@ interface ClippingPolygonCache {
  * Update WebGPU clipping polygon resources.
  * Packs polygon position and extent data into float textures.
  */
-function updateWebGPUClippingPolygons(collection: any, frameState: CesiumFrameState): void {
+function updateWebGPUClippingPolygons(
+  collection: ClippingPolygonCollectionLike,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -255,11 +267,7 @@ function computePolygonSDF(
   const pass = encoder.beginComputePass({ label: "PolygonSDF-Pass" });
   pass.setPipeline(_sdfComputePipeline);
   pass.setBindGroup(0, bindGroup);
-  pass.dispatchWorkgroups(
-    Math.ceil(sdfSize / 8),
-    Math.ceil(sdfSize / 8),
-    1,
-  );
+  pass.dispatchWorkgroups(Math.ceil(sdfSize / 8), Math.ceil(sdfSize / 8), 1);
   pass.end();
   device.queue.submit([encoder.finish()]);
 
@@ -345,7 +353,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /**
  * Destroy WebGPU clipping polygon resources.
  */
-function destroyWebGPUClippingPolygonResources(collection: any): void {
+function destroyWebGPUClippingPolygonResources(
+  collection: CesiumObjectWithWebGPUCache,
+): void {
   const cache = collection._webgpuCache as ClippingPolygonCache | undefined;
   if (!cache) {
     return;
@@ -361,7 +371,7 @@ function destroyWebGPUClippingPolygonResources(collection: any): void {
     cache.signedDistanceTexture.destroy();
   }
 
-  collection._webgpuCache = undefined;
+  (collection as CesiumObjectWithWebGPUCache)._webgpuCache = undefined;
 }
 
 export { updateWebGPUClippingPolygons, destroyWebGPUClippingPolygonResources };

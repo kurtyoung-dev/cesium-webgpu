@@ -60,10 +60,23 @@ export interface WebGPURenderFrameConfig {
   useInvertClassification: boolean;
   usePostProcess?: boolean;
   useHDR?: boolean;
-  shadowState?: any;
+  shadowState?: CesiumFrameState["shadowState"];
 }
 
 // --------------- Module-level helpers ---------------
+
+// Per-context once-per-key warning tracker. Replaces the old
+// `(context as any)._warnedCommands` monkey-patching pattern with a
+// module-level WeakMap so we don't need `as any` casts.
+const _warnedCommandsMap = new WeakMap<object, Set<string>>();
+function _getWarnedCommands(context: object): Set<string> {
+  let set = _warnedCommandsMap.get(context);
+  if (!set) {
+    set = new Set();
+    _warnedCommandsMap.set(context, set);
+  }
+  return set;
+}
 
 function executeWebGPUCommand(
   command: CesiumAnyDrawCommand,
@@ -113,17 +126,12 @@ function executeBatch(
       const cmd = commands[i];
       const label =
         cmd?.owner?.constructor?.name ?? cmd?.constructor?.name ?? "unknown";
-      if (!(context as any)._warnedCommands) {
-        (context as any)._warnedCommands = new Set();
-      }
+      const warned = _getWarnedCommands(context);
       const msg = (e as Error).message;
       const key = `${label}:${msg?.substring(0, 60)}`;
-      if (!(context as any)._warnedCommands.has(key)) {
-        (context as any)._warnedCommands.add(key);
-        context.log?.(
-          "warn",
-          `Command execution failed (${label}): ${msg}`,
-        );
+      if (!warned.has(key)) {
+        warned.add(key);
+        context.log?.("warn", `Command execution failed (${label}): ${msg}`);
       }
     }
   }
@@ -181,18 +189,15 @@ function executeBatchIndirect(
       try {
         executeWebGPUCommand(head, scene, context, passState);
       } catch (e: unknown) {
-        // matching the per-command logging in executeBatch
-        if (!(context as any)._warnedCommands) {
-          (context as any)._warnedCommands = new Set();
-        }
+        const warned = _getWarnedCommands(context);
         const label =
           head?.owner?.constructor?.name ??
           head?.constructor?.name ??
           "unknown";
         const msg = (e as Error).message;
         const key = `${label}:${msg?.substring(0, 60)}`;
-        if (!(context as any)._warnedCommands.has(key)) {
-          (context as any)._warnedCommands.add(key);
+        if (!warned.has(key)) {
+          warned.add(key);
           context.log?.(
             "warn",
             `Indirect path command failed (${label}): ${msg}`,
@@ -261,7 +266,10 @@ function executeBatchIndirect(
     }
     if (headVertexBuffers) {
       for (let v = 0; v < headVertexBuffers.length; v++) {
-        renderPass.setVertexBuffer(v, (headVertexBuffers[v] as { buffer: GPUBuffer }).buffer);
+        renderPass.setVertexBuffer(
+          v,
+          (headVertexBuffers[v] as { buffer: GPUBuffer }).buffer,
+        );
       }
     }
     renderPass.setIndexBuffer(
@@ -405,7 +413,7 @@ export class WebGPUSceneRenderer {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null = null;
-  private _lastCullResults: any = null;
+  private _lastCullResults: GPUCullResults | null = null;
 
   // --- Lazy initialization ---
 
@@ -504,7 +512,7 @@ export class WebGPUSceneRenderer {
         undefined,
         undefined,
         undefined,
-        !!(context && (context as any).useShaderF16),
+        !!(context && context.useShaderF16),
       );
       // TAA is added lazily when scene.taaEnabled = true (not default).
       this._postProcess.addFXAA(device, canvasFormat);
@@ -528,7 +536,7 @@ export class WebGPUSceneRenderer {
         context.presentationFormat ?? "bgra8unorm";
       configureWebGPUPostProcessPipeline(
         this._postProcess,
-        config.scene.postProcessStages as unknown as CesiumObjectWithWebGPUCache,
+        config.scene.postProcessStages,
         device,
         canvasFormat,
         config.scene,
@@ -666,8 +674,7 @@ export class WebGPUSceneRenderer {
           a: bg?.alpha ?? 0,
         },
       ]);
-      const depthStencilAttachment =
-        colorTarget.getDepthStencilAttachment?.();
+      const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
 
       if (!colorAttachments?.length) {
         context.log(
@@ -694,13 +701,18 @@ export class WebGPUSceneRenderer {
         context._currentRenderPassEncoder =
           context._currentCommandEncoder.beginRenderPass(passDesc);
         context._currentRenderPassEncoder.setViewport(
-          0, 0,
-          this._width, this._height,
-          0, 1,
+          0,
+          0,
+          this._width,
+          this._height,
+          0,
+          1,
         );
         context._currentRenderPassEncoder.setScissorRect(
-          0, 0,
-          this._width, this._height,
+          0,
+          0,
+          this._width,
+          this._height,
         );
         //>>includeStart('debug', pragmas.debug);
         if (!this._renderPassRedirectLogged) {
@@ -778,8 +790,7 @@ export class WebGPUSceneRenderer {
       // may incorrectly occlude near-frustum geometry through stale depth),
       // but the viz is THE tool you'd reach for when something's wrong with
       // depth anyway, so the tradeoff is intentional.
-      const debugDepthViz =
-        scene?._frameState?.debugShowDepthAsColor === true;
+      const debugDepthViz = scene?._frameState?.debugShowDepthAsColor === true;
       if (!debugDepthViz || i === 0) {
         this._clearDepthStencil(context);
       }
@@ -905,7 +916,7 @@ export class WebGPUSceneRenderer {
         // so PickDepth can read it via buffer copy + mapAsync
         const packedDepthTex = this._globeDepth.globeDepthTexture;
         if (pickDepth && packedDepthTex) {
-          pickDepth.update(context as unknown as CesiumGraphicsContext, packedDepthTex);
+          pickDepth.update(context, packedDepthTex);
         }
       }
     }
@@ -970,7 +981,14 @@ export class WebGPUSceneRenderer {
     }
 
     // Get pick framebuffer from passState (set by WebGPUPickFramebuffer.begin())
-    const pickFBO = passState?.framebuffer;
+    const pickFBORaw = passState?.framebuffer;
+    const pickFBO = pickFBORaw as
+      | (CesiumOpaqueFramebuffer & {
+          _isWebGPUPickFBO?: boolean;
+          colorView?: GPUTextureView;
+          depthView?: GPUTextureView;
+        })
+      | undefined;
     if (!pickFBO || !pickFBO._isWebGPUPickFBO) {
       // No WebGPU pick framebuffer — fall back to rendering normally
       // (this shouldn't happen, but be safe)
@@ -1264,10 +1282,7 @@ export class WebGPUSceneRenderer {
     ) {
       // Throttle GlobePass log to once per 3 seconds
       const _now = performance.now();
-      if (
-        !this._globePassLastLog ||
-        _now - this._globePassLastLog > 3000
-      ) {
+      if (!this._globePassLastLog || _now - this._globePassLastLog > 3000) {
         this._globePassLastLog = _now;
         const hasPass = !!context.currentRenderPassEncoder;
         console.log(
@@ -1423,16 +1438,18 @@ export class WebGPUSceneRenderer {
         if (cmd._oitPipeline) {
           hasOITPipelines = true;
         } else if (cmd._shaderCode && cmd.isWebGPUDrawCommand && this._oit) {
-          const pipelineConfig = cmd._pipelineConfig as {
-            label?: string;
-            layout: GPUPipelineLayout | "auto";
-            vertexBuffers?: GPUVertexBufferLayout[];
-            vertexEntryPoint?: string;
-            fragmentEntryPoint?: string;
-            primitive?: GPUPrimitiveState;
-            depthStencil?: GPUDepthStencilState;
-            multisample?: GPUMultisampleState;
-          } | undefined;
+          const pipelineConfig = cmd._pipelineConfig as
+            | {
+                label?: string;
+                layout: GPUPipelineLayout | "auto";
+                vertexBuffers?: GPUVertexBufferLayout[];
+                vertexEntryPoint?: string;
+                fragmentEntryPoint?: string;
+                primitive?: GPUPrimitiveState;
+                depthStencil?: GPUDepthStencilState;
+                multisample?: GPUMultisampleState;
+              }
+            | undefined;
           const oitPipeline = this._oit.createOITPipeline(
             context.device,
             cmd._shaderCode,
@@ -1458,7 +1475,8 @@ export class WebGPUSceneRenderer {
 
       if (hasOITPipelines) {
         // Full OIT path: end opaque render pass → accumulation → composite
-        const encoder: GPUCommandEncoder | undefined = context._currentCommandEncoder;
+        const encoder: GPUCommandEncoder | undefined =
+          context._currentCommandEncoder;
         const depthView = context._depthStencilView;
         if (encoder && depthView) {
           context.endCurrentRenderPass?.();
@@ -1585,7 +1603,10 @@ export class WebGPUSceneRenderer {
     } catch (e: unknown) {
       // Depth plane is non-essential — log warning but don't crash rendering
       if (!this._depthPlaneWarned) {
-        context.log("warn", `DepthPlane error (suppressed): ${(e as Error).message}`);
+        context.log(
+          "warn",
+          `DepthPlane error (suppressed): ${(e as Error).message}`,
+        );
         this._depthPlaneWarned = true;
       }
     }
@@ -1638,7 +1659,10 @@ export class WebGPUSceneRenderer {
           );
           context.resumeDefaultRenderPass?.();
         } catch (e: unknown) {
-          context.log?.("warn", `Procedural clouds failed: ${(e as Error).message}`);
+          context.log?.(
+            "warn",
+            `Procedural clouds failed: ${(e as Error).message}`,
+          );
           context.resumeDefaultRenderPass?.();
         }
       }
@@ -1687,7 +1711,10 @@ export class WebGPUSceneRenderer {
             }
           }
         } catch (e: unknown) {
-          context.log?.("warn", `Weather update failed: ${(e as Error).message}`);
+          context.log?.(
+            "warn",
+            `Weather update failed: ${(e as Error).message}`,
+          );
         }
       }
     }
@@ -1703,7 +1730,7 @@ export class WebGPUSceneRenderer {
     // Gated on `atmosphericConditions.volumetricFog.enabled` (B18:
     // default FALSE) — the entire path is skipped when the toggle is
     // off, so unsubscribed users pay zero cost.
-    const ac = (frameState as any).atmosphericConditions;
+    const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
     if (vf?.enabled === true) {
       const fogFR = context.getFeatureRenderer(
@@ -1727,7 +1754,10 @@ export class WebGPUSceneRenderer {
           }
           context.resumeDefaultRenderPass?.();
         } catch (e: unknown) {
-          context.log?.("warn", `Volumetric fog failed: ${(e as Error).message}`);
+          context.log?.(
+            "warn",
+            `Volumetric fog failed: ${(e as Error).message}`,
+          );
           context.resumeDefaultRenderPass?.();
         }
       }
@@ -1810,7 +1840,10 @@ export class WebGPUSceneRenderer {
         sceneColorTexture,
       );
     } else {
-      context.log("warn", `[PostProcess] MISSING: encoder=${!!encoder} sourceView=${!!sourceView} targetView=${!!targetView}`);
+      context.log(
+        "warn",
+        `[PostProcess] MISSING: encoder=${!!encoder} sourceView=${!!sourceView} targetView=${!!targetView}`,
+      );
     }
 
     // Resume the default render pass for any subsequent operations
@@ -2006,24 +2039,32 @@ export class WebGPUSceneRenderer {
   ): CesiumAnyDrawCommand {
     switch (type) {
       case "depthOnly":
-        return WebGPUDerivedCommand.createDepthOnlyDerivedCommand(
-          baseCommand,
-        ).command ?? baseCommand;
+        return (
+          WebGPUDerivedCommand.createDepthOnlyDerivedCommand(baseCommand)
+            .command ?? baseCommand
+        );
       case "logDepth":
-        return WebGPUDerivedCommand.createLogDepthCommand(baseCommand).command ?? baseCommand;
+        return (
+          WebGPUDerivedCommand.createLogDepthCommand(baseCommand).command ??
+          baseCommand
+        );
       case "pick":
-        return WebGPUDerivedCommand.createPickDerivedCommand(
-          baseCommand,
-          baseCommand._pickColor ?? [],
-        ).command ?? baseCommand;
+        return (
+          WebGPUDerivedCommand.createPickDerivedCommand(
+            baseCommand,
+            baseCommand._pickColor ?? [],
+          ).command ?? baseCommand
+        );
       case "hdr":
-        return WebGPUDerivedCommand.createHDRDerivedCommand(
-          baseCommand,
-        ).command ?? baseCommand;
+        return (
+          WebGPUDerivedCommand.createHDRDerivedCommand(baseCommand).command ??
+          baseCommand
+        );
       case "shadow":
-        return WebGPUDerivedCommand.createShadowDerivedCommand(
-          baseCommand,
-        ).command ?? baseCommand;
+        return (
+          WebGPUDerivedCommand.createShadowDerivedCommand(baseCommand)
+            .command ?? baseCommand
+        );
       default:
         return baseCommand;
     }
@@ -2076,7 +2117,13 @@ export class WebGPUSceneRenderer {
    * @param cullingVolume - Camera culling volume with planes[]
    * @returns Filtered command array (may be same reference if no culling done)
    */
-  gpuCullCommands(commands: CesiumAnyDrawCommand[], context: WebGPUContext, cullingVolume: any): CesiumAnyDrawCommand[] {
+  gpuCullCommands(
+    commands: CesiumAnyDrawCommand[],
+    context: WebGPUContext,
+    cullingVolume: {
+      planes: Array<{ x: number; y: number; z: number; w: number }>;
+    },
+  ): CesiumAnyDrawCommand[] {
     if (!commands || commands.length < WebGPUSceneRenderer.GPU_CULL_THRESHOLD) {
       return commands;
     }
@@ -2132,7 +2179,7 @@ export class WebGPUSceneRenderer {
     culler.prepareReadback(encoder, count);
     culler
       .readResults(count)
-      .then((results: unknown) => {
+      .then((results: GPUCullResults) => {
         // Cache results for next frame's filtering
         this._lastCullResults = results;
       })

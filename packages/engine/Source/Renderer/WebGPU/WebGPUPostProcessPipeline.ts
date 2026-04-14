@@ -584,10 +584,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    *
    * @param config Optional tuning parameters (min/max luminance, adaptation speed)
    */
-  addAutoExposure(
-    device: GPUDevice,
-    config?: AutoExposureConfig,
-  ): void {
+  addAutoExposure(device: GPUDevice, config?: AutoExposureConfig): void {
     if (this._autoExposure) return;
     this._autoExposure = new WebGPUAutoExposure(config);
     this._autoExposure.initialize(device, this._width, this._height);

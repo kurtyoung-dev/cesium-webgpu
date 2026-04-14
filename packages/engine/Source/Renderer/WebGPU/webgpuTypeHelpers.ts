@@ -44,7 +44,9 @@ export type IndexableMatrix = Record<number, number>;
  * const mvp = m4Values(Matrix4.multiply(proj, mv, scratchMVP));
  * for (let i = 0; i < 16; i++) data[i] = mvp[i];
  */
-export function m4Values(matrix: unknown): IndexableMatrix {
+export function m4Values(
+  matrix: CesiumMatrix4 | Float64Array | ArrayLike<number> | object,
+): IndexableMatrix {
   return matrix as IndexableMatrix;
 }
 
@@ -87,7 +89,7 @@ export function gpuData(
  *   createTypedArray: (max: number, count: number) => Uint16Array | Uint32Array;
  * }>(IndexDatatype).createTypedArray(vertexCountMax, indexCount);
  */
-export function jsModule<T>(mod: unknown): T {
+export function jsModule<T>(mod: object): T {
   return mod as T;
 }
 

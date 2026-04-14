@@ -58,10 +58,11 @@ class ModelFeatureTable {
     this._styleCommandsNeededDirty = false;
     this._batchTexture.update(undefined, frameState);
 
-    const currentStyleCommandsNeeded = StyleCommandsNeeded.getStyleCommandsNeeded(
-      this._featuresLength,
-      this._batchTexture.translucentFeaturesLength,
-    );
+    const currentStyleCommandsNeeded =
+      StyleCommandsNeeded.getStyleCommandsNeeded(
+        this._featuresLength,
+        this._batchTexture.translucentFeaturesLength,
+      );
 
     if (this._styleCommandsNeeded !== currentStyleCommandsNeeded) {
       this._styleCommandsNeededDirty = true;

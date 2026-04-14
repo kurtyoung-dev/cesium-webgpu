@@ -101,7 +101,11 @@ class Cesium3DTileStyle {
    *
    * @private
    */
-  getColorShaderFunction(functionSignature, variableSubstitutionMap, shaderState) {
+  getColorShaderFunction(
+    functionSignature,
+    variableSubstitutionMap,
+    shaderState,
+  ) {
     if (this._colorShaderFunctionReady) {
       shaderState.translucent = this._colorShaderTranslucent;
       // Return the cached result, may be undefined
@@ -135,7 +139,11 @@ class Cesium3DTileStyle {
    *
    * @private
    */
-  getShowShaderFunction(functionSignature, variableSubstitutionMap, shaderState) {
+  getShowShaderFunction(
+    functionSignature,
+    variableSubstitutionMap,
+    shaderState,
+  ) {
     if (this._showShaderFunctionReady) {
       // Return the cached result, may be undefined
       return this._showShaderFunction;
@@ -167,7 +175,11 @@ class Cesium3DTileStyle {
    *
    * @private
    */
-  getPointSizeShaderFunction(functionSignature, variableSubstitutionMap, shaderState) {
+  getPointSizeShaderFunction(
+    functionSignature,
+    variableSubstitutionMap,
+    shaderState,
+  ) {
     if (this._pointSizeShaderFunctionReady) {
       // Return the cached result, may be undefined
       return this._pointSizeShaderFunction;
@@ -1195,9 +1207,7 @@ class Cesium3DTileStyle {
    */
   set backgroundColor(value) {
     this._backgroundColor = getExpression(this, value);
-    this._style.backgroundColor = getJsonFromExpression(
-      this._backgroundColor,
-    );
+    this._style.backgroundColor = getJsonFromExpression(this._backgroundColor);
   }
 
   /**
@@ -1378,9 +1388,7 @@ class Cesium3DTileStyle {
    */
   set scaleByDistance(value) {
     this._scaleByDistance = getExpression(this, value);
-    this._style.scaleByDistance = getJsonFromExpression(
-      this._scaleByDistance,
-    );
+    this._style.scaleByDistance = getJsonFromExpression(this._scaleByDistance);
   }
 
   /**
@@ -1705,9 +1713,7 @@ class Cesium3DTileStyle {
    */
   set anchorLineColor(value) {
     this._anchorLineColor = getExpression(this, value);
-    this._style.anchorLineColor = getJsonFromExpression(
-      this._anchorLineColor,
-    );
+    this._style.anchorLineColor = getJsonFromExpression(this._anchorLineColor);
   }
 
   /**

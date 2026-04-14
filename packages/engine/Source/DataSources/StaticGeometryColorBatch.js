@@ -155,18 +155,20 @@ class Batch {
               this.depthFailMaterial,
             );
           }
-          depthFailAppearance = new this.depthFailAppearanceType({
+          const DepthFailAppearanceType = this.depthFailAppearanceType;
+          depthFailAppearance = new DepthFailAppearanceType({
             material: this.depthFailMaterial,
             translucent: this.translucent,
             closed: this.closed,
           });
         }
 
+        const AppearanceType = this.appearanceType;
         primitive = new Primitive({
           show: false,
           asynchronous: true,
           geometryInstances: geometries.slice(),
-          appearance: new this.appearanceType({
+          appearance: new AppearanceType({
             translucent: this.translucent,
             closed: this.closed,
           }),

@@ -84,4 +84,40 @@ class Cesium3DTilesetGraphics {
   }
 }
 
+Object.defineProperties(Cesium3DTilesetGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof Cesium3DTilesetGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the model.
+   * @memberof Cesium3DTilesetGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the string Property specifying the URI of the glTF asset.
+   * @memberof Cesium3DTilesetGraphics.prototype
+   * @type {Property|undefined}
+   */
+  uri: createPropertyDescriptor("uri"),
+
+  /**
+   * Gets or sets the maximum screen space error used to drive level of detail refinement.
+   * @memberof Cesium3DTilesetGraphics.prototype
+   * @type {Property|undefined}
+   */
+  maximumScreenSpaceError: createPropertyDescriptor("maximumScreenSpaceError"),
+});
+
 export default Cesium3DTilesetGraphics;

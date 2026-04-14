@@ -215,7 +215,9 @@ class WebMapTileServiceImageryProvider {
     this._getFeatureInfoUrl = options.getFeatureInfoUrl ?? options.url;
 
     const resource = Resource.createIfNeeded(options.url);
-    const pickFeatureResource = Resource.createIfNeeded(this._getFeatureInfoUrl);
+    const pickFeatureResource = Resource.createIfNeeded(
+      this._getFeatureInfoUrl,
+    );
 
     const style = options.style;
     const tileMatrixSetID = options.tileMatrixSetID;
@@ -406,7 +408,15 @@ class WebMapTileServiceImageryProvider {
       ? timeDynamicImagery.currentInterval
       : undefined;
 
-    return pickFeatures(this, x, y, level, longitude, latitude, currentInterval);
+    return pickFeatures(
+      this,
+      x,
+      y,
+      level,
+      longitude,
+      latitude,
+      currentInterval,
+    );
   }
 
   /**

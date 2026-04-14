@@ -158,7 +158,8 @@ class BatchTable {
 
     if (
       this._packFloats &&
-      attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
+      attributes[attributeIndex].componentDatatype !==
+        PixelDatatype.UNSIGNED_BYTE
     ) {
       value = getPackedFloat(
         this._batchValues,
@@ -236,7 +237,8 @@ class BatchTable {
 
     if (
       this._packFloats &&
-      attributes[attributeIndex].componentDatatype !== PixelDatatype.UNSIGNED_BYTE
+      attributes[attributeIndex].componentDatatype !==
+        PixelDatatype.UNSIGNED_BYTE
     ) {
       setPackedAttribute(attributeValue, this._batchValues, index);
     } else {

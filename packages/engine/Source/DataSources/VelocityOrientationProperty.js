@@ -38,9 +38,11 @@ class VelocityOrientationProperty {
     this.ellipsoid = ellipsoid ?? Ellipsoid.default;
 
     const that = this;
-    this._velocityVectorProperty.definitionChanged.addEventListener(function () {
-      that._definitionChanged.raiseEvent(that);
-    });
+    this._velocityVectorProperty.definitionChanged.addEventListener(
+      function () {
+        that._definitionChanged.raiseEvent(that);
+      },
+    );
   }
 
   /**

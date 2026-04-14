@@ -126,7 +126,7 @@ function bytesPerPixel(format: GPUTextureFormat): number {
 }
 
 interface WebGPUTexture3DOptions {
-  context: any; // WebGPUContext
+  context: CesiumGraphicsContext;
   source?: {
     width: number;
     height: number;
@@ -139,7 +139,7 @@ interface WebGPUTexture3DOptions {
   width?: number;
   height?: number;
   depth?: number;
-  sampler?: any;
+  sampler?: CesiumOpaqueSampler | null;
   flipY?: boolean;
   preMultiplyAlpha?: boolean;
   id?: string;
@@ -147,8 +147,8 @@ interface WebGPUTexture3DOptions {
 
 class WebGPUTexture3D {
   _id: string;
-  _context: any;
-  _gpuTexture: any; // WebGPUTexture instance
+  _context: CesiumGraphicsContext | null;
+  _gpuTexture: WebGPUTexture | null;
   _pixelFormat: number;
   _pixelDatatype: number;
   _width: number;
@@ -160,12 +160,13 @@ class WebGPUTexture3D {
   _preMultiplyAlpha: boolean;
   _flipY: boolean;
   _initialized: boolean;
-  _sampler: any;
+  _sampler: CesiumOpaqueSampler | null;
   _destroyed: boolean;
 
   constructor(options: WebGPUTexture3DOptions) {
     const context = options.context;
-    if (!context || !context._device) {
+    const device = context._device;
+    if (!device) {
       throw new Error("A WebGPU context with an active device is required.");
     }
 
@@ -195,7 +196,7 @@ class WebGPUTexture3D {
 
     // Create the WebGPU 3D texture
     const gpuTexture = WebGPUTexture.create3D(
-      context._device,
+      device,
       width,
       height,
       depth,
@@ -256,19 +257,21 @@ class WebGPUTexture3D {
     depth: number,
     mipLevel: number,
   ): void {
-    const device = this._context._device;
-    if (!device) return;
+    const device = this._context?._device;
+    if (!device || !this._gpuTexture) return;
 
     const bpp = bytesPerPixel(this._webgpuFormat);
     const bytesPerRow = width * bpp;
     // WebGPU requires bytesPerRow to be a multiple of 256
     const alignedBytesPerRow = Math.ceil(bytesPerRow / 256) * 256;
 
+    const gpuTex = this._gpuTexture.texture;
+
     // If bytesPerRow is already aligned or the data fits, write directly
     if (bytesPerRow === alignedBytesPerRow || width * bpp >= 256) {
       device.queue.writeTexture(
         {
-          texture: this._gpuTexture.gpuTexture,
+          texture: gpuTex,
           mipLevel: mipLevel,
           origin: { x: xOffset, y: yOffset, z: zOffset },
         },
@@ -304,7 +307,7 @@ class WebGPUTexture3D {
       }
       device.queue.writeTexture(
         {
-          texture: this._gpuTexture.gpuTexture,
+          texture: gpuTex,
           mipLevel: mipLevel,
           origin: { x: xOffset, y: yOffset, z: zOffset },
         },
@@ -394,20 +397,20 @@ class WebGPUTexture3D {
    * For now, delegate to WebGPUMipmapGenerator if available.
    */
   generateMipmap(hint?: number): void {
-    if (this._gpuTexture && this._gpuTexture.generateMipmaps) {
+    if (this._gpuTexture) {
       this._gpuTexture.generateMipmaps();
     }
     this._hasMipmap = true;
   }
 
   /** The underlying WebGPU texture view for binding. */
-  get textureView(): GPUTextureView {
+  get textureView(): GPUTextureView | null {
     return this._gpuTexture?.view ?? null;
   }
 
   /** The underlying GPUTexture for direct access. */
-  get gpuTexture(): GPUTexture {
-    return this._gpuTexture?.gpuTexture ?? null;
+  get gpuTexture(): GPUTexture | null {
+    return this._gpuTexture?.texture ?? null;
   }
 
   get id(): string {
@@ -434,10 +437,10 @@ class WebGPUTexture3D {
     }
     return this._sizeInBytes;
   }
-  get sampler(): any {
+  get sampler(): CesiumOpaqueSampler | null {
     return this._sampler;
   }
-  set sampler(value: any) {
+  set sampler(value: CesiumOpaqueSampler | null) {
     this._sampler = value;
   }
   get preMultiplyAlpha(): boolean {
@@ -452,7 +455,7 @@ class WebGPUTexture3D {
   }
 
   destroy(): void {
-    if (this._gpuTexture && this._gpuTexture.destroy) {
+    if (this._gpuTexture) {
       this._gpuTexture.destroy();
     }
     this._gpuTexture = null;

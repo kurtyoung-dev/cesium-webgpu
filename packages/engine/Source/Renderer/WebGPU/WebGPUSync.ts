@@ -24,7 +24,7 @@ const SyncStatus = Object.freeze({
 });
 
 interface WebGPUSyncOptions {
-  context: any; // WebGPUContext
+  context: CesiumGraphicsContext; // WebGPUContext
 }
 
 class WebGPUSync {

@@ -114,10 +114,7 @@ function queryFirstNode(node, tagName, namespace) {
   const length = childNodes.length;
   for (let q = 0; q < length; q++) {
     const child = childNodes[q];
-    if (
-      child.localName === tagName &&
-      namespace.includes(child.namespaceURI)
-    ) {
+    if (child.localName === tagName && namespace.includes(child.namespaceURI)) {
       return child;
     }
   }
@@ -133,10 +130,7 @@ function queryNodes(node, tagName, namespace) {
   const length = childNodes.length;
   for (let q = 0; q < length; q++) {
     const child = childNodes[q];
-    if (
-      child.localName === tagName &&
-      namespace.includes(child.namespaceURI)
-    ) {
+    if (child.localName === tagName && namespace.includes(child.namespaceURI)) {
       result.push(child);
     }
   }

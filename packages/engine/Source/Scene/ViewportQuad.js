@@ -105,7 +105,10 @@ class ViewportQuad {
     //>>includeEnd('debug');
 
     const rs = this._rs;
-    if (!defined(rs) || !BoundingRectangle.equals(rs.viewport, this.rectangle)) {
+    if (
+      !defined(rs) ||
+      !BoundingRectangle.equals(rs.viewport, this.rectangle)
+    ) {
       this._rs = RenderState.fromCache({
         blending: BlendingState.ALPHA_BLEND,
         viewport: this.rectangle,

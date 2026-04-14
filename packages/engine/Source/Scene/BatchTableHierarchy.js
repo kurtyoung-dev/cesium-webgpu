@@ -122,18 +122,22 @@ class BatchTableHierarchy {
    * @private
    */
   getProperty(batchId, propertyId) {
-    return traverseHierarchy(this, batchId, function (hierarchy, instanceIndex) {
-      const classId = hierarchy._classIds[instanceIndex];
-      const instanceClass = hierarchy._classes[classId];
-      const indexInClass = hierarchy._classIndexes[instanceIndex];
-      const propertyValues = instanceClass.instances[propertyId];
-      if (defined(propertyValues)) {
-        if (defined(propertyValues.typedArray)) {
-          return getBinaryProperty(propertyValues, indexInClass);
+    return traverseHierarchy(
+      this,
+      batchId,
+      function (hierarchy, instanceIndex) {
+        const classId = hierarchy._classIds[instanceIndex];
+        const instanceClass = hierarchy._classes[classId];
+        const indexInClass = hierarchy._classIndexes[instanceIndex];
+        const propertyValues = instanceClass.instances[propertyId];
+        if (defined(propertyValues)) {
+          if (defined(propertyValues.typedArray)) {
+            return getBinaryProperty(propertyValues, indexInClass);
+          }
+          return clone(propertyValues[indexInClass], true);
         }
-        return clone(propertyValues[indexInClass], true);
-      }
-    });
+      },
+    );
   }
 
   /**

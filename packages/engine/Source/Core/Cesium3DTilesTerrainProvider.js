@@ -182,11 +182,10 @@ class Cesium3DTilesTerrainProvider {
     }
 
     // Note: only one content for terrain
-    const glbRelative = implicitTileset.contentUriTemplates[0].getDerivedResource(
-      {
+    const glbRelative =
+      implicitTileset.contentUriTemplates[0].getDerivedResource({
         templateValues: tileCoord.getTemplateValues(),
-      },
-    );
+      });
     const glbResource = implicitTileset.baseResource.getDerivedResource({
       url: glbRelative.url,
     });

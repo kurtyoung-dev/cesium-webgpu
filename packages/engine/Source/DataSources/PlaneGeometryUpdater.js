@@ -46,7 +46,12 @@ class PlaneGeometryUpdater {
       scene: scene,
       geometryOptions: new PlaneGeometryOptions(entity),
       geometryPropertyName: "plane",
-      observedPropertyNames: ["availability", "position", "orientation", "plane"],
+      observedPropertyNames: [
+        "availability",
+        "position",
+        "orientation",
+        "plane",
+      ],
     });
 
     this._onEntityPropertyChanged(entity, "plane", entity.plane, undefined);
@@ -95,7 +100,10 @@ class PlaneGeometryUpdater {
         defined(this._materialProperty.color) &&
         (this._materialProperty.color.isConstant || isAvailable)
       ) {
-        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+        currentColor = this._materialProperty.color.getValue(
+          time,
+          scratchColor,
+        );
       }
       if (!defined(currentColor)) {
         currentColor = Color.WHITE;

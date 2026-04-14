@@ -119,7 +119,7 @@ export function assertCameraRTERoundTrip(
  * @param label  Matrix identifier for the error message
  */
 export function assertMVTranslationZeroed(
-  mv: { [index: number]: number },
+  mv: ArrayLike<number> | { [index: number]: number },
   label: string,
 ): void {
   const tx = Math.abs(mv[12]);

@@ -74,7 +74,11 @@ class CheckerboardMaterialProperty {
       defaultOddColor,
       result.darkColor,
     );
-    result.repeat = Property.getValueOrDefault(this._repeat, time, defaultRepeat);
+    result.repeat = Property.getValueOrDefault(
+      this._repeat,
+      time,
+      defaultRepeat,
+    );
     return result;
   }
 
@@ -126,5 +130,64 @@ class CheckerboardMaterialProperty {
 }
 
 const timeScratch = new JulianDate();
+
+Object.defineProperties(CheckerboardMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof CheckerboardMaterialProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._evenColor) && //
+        Property.isConstant(this._oddColor) && //
+        Property.isConstant(this._repeat)
+      );
+    },
+  },
+
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof CheckerboardMaterialProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the Property specifying the first {@link Color}.
+   * @memberof CheckerboardMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.WHITE
+   */
+  evenColor: createPropertyDescriptor("evenColor"),
+
+  /**
+   * Gets or sets the Property specifying the second {@link Color}.
+   * @memberof CheckerboardMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  oddColor: createPropertyDescriptor("oddColor"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying how many times the tiles repeat in each direction.
+   * @memberof CheckerboardMaterialProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian2(2.0, 2.0)
+   */
+  repeat: createPropertyDescriptor("repeat"),
+});
 
 export default CheckerboardMaterialProperty;

@@ -42,7 +42,8 @@ class NavigationHelpButton {
 
     const viewModel = new NavigationHelpButtonViewModel();
 
-    const showInsructionsDefault = options.instructionsInitiallyVisible ?? false;
+    const showInsructionsDefault =
+      options.instructionsInitiallyVisible ?? false;
     viewModel.showInstructions = showInsructionsDefault;
 
     viewModel._svgPath =
@@ -232,7 +233,11 @@ class NavigationHelpButton {
    */
   destroy() {
     if (FeatureDetection.supportsPointerEvents()) {
-      document.removeEventListener("pointerdown", this._closeInstructions, true);
+      document.removeEventListener(
+        "pointerdown",
+        this._closeInstructions,
+        true,
+      );
     } else {
       document.removeEventListener("mousedown", this._closeInstructions, true);
       document.removeEventListener("touchstart", this._closeInstructions, true);

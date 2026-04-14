@@ -151,10 +151,12 @@ class SceneTransitioner {
     if (this._morphToOrthographic) {
       frustum = scratchToCVFrustumOrthographic;
       frustum.width = scene.camera.frustum.right - scene.camera.frustum.left;
-      frustum.aspectRatio = scene.drawingBufferWidth / scene.drawingBufferHeight;
+      frustum.aspectRatio =
+        scene.drawingBufferWidth / scene.drawingBufferHeight;
     } else {
       frustum = scratchToCVFrustumPerspective;
-      frustum.aspectRatio = scene.drawingBufferWidth / scene.drawingBufferHeight;
+      frustum.aspectRatio =
+        scene.drawingBufferWidth / scene.drawingBufferHeight;
       frustum.fov = CesiumMath.toRadians(60.0);
     }
 

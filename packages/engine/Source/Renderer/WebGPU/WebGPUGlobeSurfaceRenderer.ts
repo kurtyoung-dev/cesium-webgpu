@@ -134,7 +134,7 @@ export interface TileDrawDescriptor {
   indexBuffer: GPUBuffer;
   indexCount: number;
   indexFormat: GPUIndexFormat;
-  boundingVolume: any;
+  boundingVolume: CesiumBoundingSphere | undefined;
   isSubsequentPass: boolean;
 }
 
@@ -484,8 +484,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // clip-distances output as the last member, right before the closing
     // brace. We match the precise existing v_distance line so the patch
     // can't drift onto an unrelated struct.
-    const vertexOutputAnchor =
-      "@location(4) v_distance: f32,\n};";
+    const vertexOutputAnchor = "@location(4) v_distance: f32,\n};";
     if (!source.includes(vertexOutputAnchor)) {
       return null;
     }
@@ -969,7 +968,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * Tiles with >4 imagery layers produce multiple passes.
    */
   createTileCommands(
-    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    tile: {
+      level: number;
+      x: number;
+      y: number;
+      rectangle: CesiumRectangle;
+      boundingVolume?: CesiumBoundingSphere;
+    },
     surfaceTile: CesiumGlobeSurfaceTile,
     tileProvider: CesiumGlobeTileProvider,
     frameState: CesiumFrameState,
@@ -982,7 +987,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // and `context.beginFrame()` only calls `beginFrame()` on the allocator
     // when it already exists. Without this touch the allocator would never
     // initialize and BUG-9's per-frame buffer leak would re-emerge.
-    void (frameState as any)?.context?.uniformAllocator;
+    void frameState.context?.uniformAllocator;
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -1311,7 +1316,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         indexBuffer: drawIndexBuffer,
         indexCount: drawIndexCount,
         indexFormat: drawIndexFormat,
-        boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
+        boundingVolume:
+          (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+          surfaceTile.boundingSphere3D,
         isSubsequentPass,
       });
     }
@@ -1324,7 +1331,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * @deprecated Use createTileCommands for multi-pass support.
    */
   createTileCommand(
-    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    tile: {
+      level: number;
+      x: number;
+      y: number;
+      rectangle: CesiumRectangle;
+      boundingVolume?: CesiumBoundingSphere;
+    },
     surfaceTile: CesiumGlobeSurfaceTile,
     tileProvider: CesiumGlobeTileProvider,
     frameState: CesiumFrameState,
@@ -1577,7 +1590,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     device: GPUDevice,
     uniformState: CesiumUniformState,
     surfaceTile: CesiumGlobeSurfaceTile,
-    tileProvider: any,
+    tileProvider: CesiumGlobeTileProvider,
     mesh: CesiumTerrainMesh,
     frameState?: CesiumFrameState,
     tile?: { level: number; x: number; y: number; rectangle: CesiumRectangle },
@@ -1664,7 +1677,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       );
       // isFill check: "fill" meshes are stored separately on
       // `surfaceTile.fill.mesh`, not on `surfaceTile.mesh`. Check both.
-      const fillMesh = (surfaceTile as any)?.fill?.mesh;
+      const fillMesh = surfaceTile.fill?.mesh;
       const isFillByRef = mesh === fillMesh;
       const isCachedMesh = mesh === surfaceTile.mesh;
       // Ctor name reveals which TerrainData class produced this mesh
@@ -1674,7 +1687,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       // fingerprint we need.
       const meshCtor = mesh?.constructor?.name ?? "?";
       const encCtor = mesh?.encoding?.constructor?.name ?? "?";
-      const tdCtor = (surfaceTile as any)?.data?.constructor?.name ?? "?";
+      const tdCtor =
+        (surfaceTile.data as { constructor?: { name?: string } } | undefined)
+          ?.constructor?.name ?? "?";
       console.log(
         `[WebGPU:GlobeTile] center3D tile=${tile?.level}_${tile?.x}_${tile?.y} ` +
           `meshCtor=${meshCtor} encCtor=${encCtor} terrainDataCtor=${tdCtor} ` +
@@ -1798,7 +1813,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     bufferSize: number,
     label: string,
   ): { buffer: GPUBuffer; offset: number; size: number } {
-    const ctx: any = frameState?.context;
+    const ctx = frameState?.context as
+      | (CesiumGraphicsContext & {
+          uniformAllocator?: {
+            allocate(size: number): { buffer: GPUBuffer; offset: number };
+          };
+        })
+      | undefined;
     const allocator = ctx?.uniformAllocator;
     const writeBytes = Math.min(data.byteLength, bufferSize);
 
@@ -1862,7 +1883,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   private _createTileUniformBuffer(
     device: GPUDevice,
     surfaceTile: CesiumGlobeSurfaceTile,
-    tileProvider: any,
+    tileProvider: CesiumGlobeTileProvider,
     frameState: CesiumFrameState,
     tile: { level: number; x: number; y: number; rectangle: CesiumRectangle },
     passLayers: CesiumTileImagery[],
@@ -1954,7 +1975,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         (l: CesiumTileImagery) => l?.readyImagery?.imageryLayer,
       ).length;
       const level = tile?.level ?? -1;
-      const tileImageryCount = (surfaceTile as any)?.imagery?.length ?? -1;
+      const tileImageryCount = surfaceTile.imagery?.length ?? -1;
       console.log(
         `[WebGPU:GlobeTile] LAYERS tile=${level}_${tile?.x}_${tile?.y} ` +
           `layerCount=${layerCount} passLayersLen=${passLayers.length} ` +
@@ -2005,7 +2026,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       ) {
         this._diagLastFogLogMs = nowMs;
         const cameraHeight =
-          (frameState as any)?.camera?.positionCartographic?.height ?? -1;
+          frameState.camera?.positionCartographic?.height ?? -1;
         console.log(
           `[WebGPU:GlobeTile] fog density=${density.toExponential(3)} ` +
             `rawDensity=${(frameState.fog.density ?? 0).toExponential(3)} ` +
@@ -2108,7 +2129,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // Matches WebGL's `czm_fogVisualDensityScalar` auto-uniform (default
     // 0.15 from UniformState). Without this the fog formula is ~6.7x
     // stronger than WebGL at horizontal viewing angles.
-    data[79] = frameState?.context?.uniformState?.fogVisualDensityScalar ?? 0.15;
+    data[79] =
+      frameState?.context?.uniformState?.fogVisualDensityScalar ?? 0.15;
 
     // ─── Ocean enhancement params (offsets 80-83, vec4) ───
     // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
@@ -2123,10 +2145,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // ─── Night & ocean secondary params (offsets 84-87, vec4) ───
     // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
-    data[84] = tileProvider?.nightIntensity ?? 0.0; // 0 = use shader default (2.5)
-    data[85] = tileProvider?.oceanReflectivity ?? 0.0; // 0 = use shader default (0.04)
-    data[86] = tileProvider?.oceanFoamThreshold ?? 0.0; // 0 = use shader default (0.35)
-    data[87] = tileProvider?.oceanDarkening ?? 0.0; // 0 = use shader default (0.6)
+    data[84] = (tileProvider?.nightIntensity as number | undefined) ?? 0.0; // 0 = use shader default (2.5)
+    data[85] = (tileProvider?.oceanReflectivity as number | undefined) ?? 0.0; // 0 = use shader default (0.04)
+    data[86] = (tileProvider?.oceanFoamThreshold as number | undefined) ?? 0.0; // 0 = use shader default (0.35)
+    data[87] = (tileProvider?.oceanDarkening as number | undefined) ?? 0.0; // 0 = use shader default (0.6)
 
     // ─── Per-tile debug fields (offsets 92-95, vec4) ───
     // Tier 2 debug: tile depth-level + imagery layer isolation. Both
@@ -2182,7 +2204,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
             hasImage: !!imagery?.image,
             hasTexture: !!imagery?.texture,
             hasWebGPUTex: !!imagery?._webgpuReprojectedTexture,
-            texSource: !!imagery?.texture?._source,
+            texSource: !!(
+              imagery?.texture as CesiumTextureWithSource | undefined
+            )?._source,
           },
         );
       }
@@ -2213,7 +2237,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   private _createWaterOceanBindGroup(
     device: GPUDevice,
     surfaceTile: CesiumGlobeSurfaceTile | null,
-    tileProvider: any,
+    tileProvider: CesiumGlobeTileProvider,
   ): GPUBindGroup {
     let waterMaskView = this._placeholderView!;
     let normalMapView = this._placeholderView!;
@@ -2230,8 +2254,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     const oceanNormalMap = tileProvider?.oceanNormalMap;
     if (oceanNormalMap) {
-      const source =
-        oceanNormalMap._source ?? oceanNormalMap.image ?? oceanNormalMap;
+      const onm = oceanNormalMap as CesiumTextureWithSource;
+      const source = onm._source ?? onm.image ?? oceanNormalMap;
       if (
         source instanceof HTMLImageElement ||
         source instanceof ImageBitmap ||
@@ -2259,18 +2283,21 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     });
   }
 
-  private _getOrCreateImageryTexture(imagery: any): GPUTextureView | null {
+  private _getOrCreateImageryTexture(
+    imagery: CesiumReadyImagery | null | undefined,
+  ): GPUTextureView | null {
     if (!imagery) return null;
 
     const cacheKey =
-      imagery.key || `${imagery.x}_${imagery.y}_${imagery.level}`;
+      imagery.key ||
+      `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
     const cached = this._imageryTextureCache.get(cacheKey);
     if (cached) return cached.view;
 
     // If imagery was reprojected by WebGPUImageryReprojection, use
     // the pre-reprojected GPUTexture directly instead of re-uploading.
     if (imagery._webgpuReprojectedTexture) {
-      const gpuTex = imagery._webgpuReprojectedTexture as GPUTexture;
+      const gpuTex = imagery._webgpuReprojectedTexture;
       const view = gpuTex.createView({ label: `imagery_reproj_${cacheKey}` });
       this._imageryTextureCache.set(cacheKey, {
         texture: gpuTex,
@@ -2281,13 +2308,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       return view;
     }
 
-    const source = imagery.image || imagery.texture?._source;
+    const source = imagery.image || imagery._source;
     if (!source) {
       if (this._diagShouldLog()) {
         console.warn(`[WebGPU:GlobeTile] No image source for ${cacheKey}`, {
           hasImage: !!imagery.image,
           hasTexture: !!imagery.texture,
-          texSource: !!imagery.texture?._source,
+          texSource: !!imagery._source,
         });
       }
       return null;
@@ -2295,20 +2322,25 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     if (this._diagShouldLog()) {
       console.log(
-        `[WebGPU:GlobeTile] Uploading image for ${cacheKey} type=${source.constructor?.name}`,
+        `[WebGPU:GlobeTile] Uploading image for ${cacheKey} type=${(source as object).constructor?.name}`,
       );
     }
-    return this._uploadImageSource(source, cacheKey, this._imageryTextureCache);
+    return this._uploadImageSource(
+      source as HTMLImageElement | HTMLCanvasElement | ImageBitmap,
+      cacheKey,
+      this._imageryTextureCache,
+    );
   }
 
   private _getOrCreateWaterMaskTexture(
-    waterMaskTex: any,
+    waterMaskTex: CesiumOpaqueTexture,
   ): GPUTextureView | null {
     // Water mask textures are WebGL Texture objects; extract the source image
-    const source = waterMaskTex._source || waterMaskTex.image;
+    const wm = waterMaskTex as CesiumTextureWithSource;
+    const source = wm._source || wm.image;
     if (!source) return null;
 
-    const cacheKey = `wm_${waterMaskTex._id || "default"}`;
+    const cacheKey = `wm_${wm._id || "default"}`;
     const cached = this._waterMaskTextureCache.get(cacheKey);
     if (cached) return cached.view;
 
@@ -2324,23 +2356,30 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * to a GPU texture.
    */
   private _uploadImageSource(
-    source: any,
+    source: ImageBitmap | HTMLImageElement | HTMLCanvasElement | unknown,
     cacheKey: string,
     cache: Map<string, ImageryGPUTexture>,
   ): GPUTextureView | null {
+    // `source` is declared wider than the WebGPU-supported types because
+    // the caller passes heterogeneous imagery payloads; the instanceof
+    // chain below narrows to the actual GPU-copyable variants.
     const device = this._device!;
 
     try {
       let width: number, height: number;
+      let gpuSource: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
       if (source instanceof ImageBitmap) {
         width = source.width;
         height = source.height;
+        gpuSource = source;
       } else if (source instanceof HTMLImageElement) {
         width = source.naturalWidth || source.width;
         height = source.naturalHeight || source.height;
+        gpuSource = source;
       } else if (source instanceof HTMLCanvasElement) {
         width = source.width;
         height = source.height;
+        gpuSource = source;
       } else {
         return null;
       }
@@ -2358,7 +2397,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       });
 
       device.queue.copyExternalImageToTexture(
-        { source: source as unknown as GPUCopyExternalImageSource },
+        { source: gpuSource },
         { texture },
         [width, height],
       );
@@ -2578,9 +2617,15 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * pipeline and triangle-to-line converted index buffer.
    */
   createWireframeTileCommands(
-    tile: { level: number; x: number; y: number; rectangle: CesiumRectangle; boundingVolume?: unknown },
+    tile: {
+      level: number;
+      x: number;
+      y: number;
+      rectangle: CesiumRectangle;
+      boundingVolume?: CesiumBoundingSphere;
+    },
     surfaceTile: CesiumGlobeSurfaceTile,
-    tileProvider: { clippingPlanes?: { length: number; unionClippingRegions?: boolean } },
+    tileProvider: CesiumGlobeTileProvider,
     frameState: CesiumFrameState,
     uniformState: CesiumUniformState,
   ): TileDrawDescriptor[] | null {
@@ -2667,7 +2712,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         indexBuffer: wireIB.buffer,
         indexCount: wireIB.count,
         indexFormat: wireIB.format,
-        boundingVolume: tile.boundingVolume || surfaceTile.boundingSphere3D,
+        boundingVolume:
+          (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
+          surfaceTile.boundingSphere3D,
         isSubsequentPass: false,
       },
     ];

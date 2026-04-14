@@ -65,11 +65,10 @@ class Implicit3DTileContent {
     this._group = undefined;
 
     const templateValues = implicitCoordinates.getTemplateValues();
-    const subtreeResource = implicitTileset.subtreeUriTemplate.getDerivedResource(
-      {
+    const subtreeResource =
+      implicitTileset.subtreeUriTemplate.getDerivedResource({
         templateValues: templateValues,
-      },
-    );
+      });
     this._url = subtreeResource.getUrlComponent(true);
 
     this._ready = false;

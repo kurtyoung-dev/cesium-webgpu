@@ -138,15 +138,13 @@ function createFeatureIdGPUTexture(device, textureReader) {
  */
 function createBatchGPUTexture(device, batchTexture) {
   // BatchTexture uses a CesiumJS Texture internally
-  const cesiumTex =
-    batchTexture.batchTexture || batchTexture.defaultTexture;
+  const cesiumTex = batchTexture.batchTexture || batchTexture.defaultTexture;
   if (!defined(cesiumTex)) {
     return null;
   }
 
   // Access internal pixel data or image source
-  const source =
-    cesiumTex._source || cesiumTex.source || cesiumTex._image;
+  const source = cesiumTex._source || cesiumTex.source || cesiumTex._image;
 
   // If we have an image source, use copyExternalImageToTexture
   if (defined(source) && (source.width > 0 || source.naturalWidth > 0)) {

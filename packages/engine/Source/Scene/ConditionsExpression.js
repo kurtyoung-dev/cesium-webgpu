@@ -102,7 +102,12 @@ class ConditionsExpression {
    *
    * @private
    */
-  getShaderFunction(functionSignature, variableSubstitutionMap, shaderState, returnType) {
+  getShaderFunction(
+    functionSignature,
+    variableSubstitutionMap,
+    shaderState,
+    returnType,
+  ) {
     const conditions = this._runtimeConditions;
     if (!defined(conditions) || conditions.length === 0) {
       return undefined;

@@ -296,10 +296,8 @@ class OIT {
         !defined(translucentShader) ||
         result.shaderProgramId !== command.shaderProgram.id
       ) {
-        result.translucentCommand.shaderProgram = getTranslucentMRTShaderProgram(
-          context,
-          command.shaderProgram,
-        );
+        result.translucentCommand.shaderProgram =
+          getTranslucentMRTShaderProgram(context, command.shaderProgram);
         result.translucentCommand.renderState = getTranslucentMRTRenderState(
           this,
           context,
@@ -328,16 +326,17 @@ class OIT {
       command,
       result.translucentCommand,
     );
-    result.alphaCommand = DrawCommand.shallowClone(command, result.alphaCommand);
+    result.alphaCommand = DrawCommand.shallowClone(
+      command,
+      result.alphaCommand,
+    );
 
     if (
       !defined(colorShader) ||
       result.shaderProgramId !== command.shaderProgram.id
     ) {
-      result.translucentCommand.shaderProgram = getTranslucentColorShaderProgram(
-        context,
-        command.shaderProgram,
-      );
+      result.translucentCommand.shaderProgram =
+        getTranslucentColorShaderProgram(context, command.shaderProgram);
       result.translucentCommand.renderState = getTranslucentColorRenderState(
         this,
         context,
@@ -371,7 +370,13 @@ class OIT {
    * @param {DrawCommand[]} commands
    * @param {InvertClassification} invertClassification
    */
-  executeCommands(scene, executeFunction, passState, commands, invertClassification) {
+  executeCommands(
+    scene,
+    executeFunction,
+    passState,
+    commands,
+    invertClassification,
+  ) {
     if (this._translucentMRTSupport) {
       executeTranslucentCommandsSortedMRT(
         this,

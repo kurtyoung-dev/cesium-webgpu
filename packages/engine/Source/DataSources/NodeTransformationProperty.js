@@ -120,4 +120,63 @@ class NodeTransformationProperty {
 
 const timeScratch = new JulianDate();
 
+Object.defineProperties(NodeTransformationProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof NodeTransformationProperty.prototype
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._translation) &&
+        Property.isConstant(this._rotation) &&
+        Property.isConstant(this._scale)
+      );
+    },
+  },
+
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof NodeTransformationProperty.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the {@link Cartesian3} Property specifying the (x, y, z) translation to apply to the node.
+   * @memberof NodeTransformationProperty.prototype
+   * @type {Property|undefined}
+   * @default Cartesian3.ZERO
+   */
+  translation: createPropertyDescriptor("translation"),
+
+  /**
+   * Gets or sets the {@link Quaternion} Property specifying the (x, y, z, w) rotation to apply to the node.
+   * @memberof NodeTransformationProperty.prototype
+   * @type {Property|undefined}
+   * @default Quaternion.IDENTITY
+   */
+  rotation: createPropertyDescriptor("rotation"),
+
+  /**
+   * Gets or sets the {@link Cartesian3} Property specifying the (x, y, z) scaling to apply to the node.
+   * @memberof NodeTransformationProperty.prototype
+   * @type {Property|undefined}
+   * @default new Cartesian3(1.0, 1.0, 1.0)
+   */
+  scale: createPropertyDescriptor("scale"),
+});
+
 export default NodeTransformationProperty;

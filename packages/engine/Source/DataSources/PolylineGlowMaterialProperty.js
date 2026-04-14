@@ -107,9 +107,7 @@ class PolylineGlowMaterialProperty {
    * @readonly
    */
   get isConstant() {
-    return (
-      Property.isConstant(this._color) && Property.isConstant(this._glow)
-    );
+    return Property.isConstant(this._color) && Property.isConstant(this._glow);
   }
 
   /**
@@ -126,5 +124,55 @@ class PolylineGlowMaterialProperty {
 }
 
 const timeScratch = new JulianDate();
+
+Object.defineProperties(PolylineGlowMaterialProperty.prototype, {
+  /**
+   * Gets a value indicating if this property is constant.  A property is considered
+   * constant if getValue always returns the same result for the current definition.
+   * @memberof PolylineGlowMaterialProperty.prototype
+   * @type {boolean}
+   * @readonly
+   */
+  isConstant: {
+    get: function () {
+      return (
+        Property.isConstant(this._color) && Property.isConstant(this._glow)
+      );
+    },
+  },
+  /**
+   * Gets the event that is raised whenever the definition of this property changes.
+   * The definition is considered to have changed if a call to getValue would return
+   * a different result for the same time.
+   * @memberof PolylineGlowMaterialProperty.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the line.
+   * @memberof PolylineGlowMaterialProperty.prototype
+   * @type {Property|undefined}
+   */
+  color: createPropertyDescriptor("color"),
+
+  /**
+   * Gets or sets the numeric Property specifying the strength of the glow, as a percentage of the total line width (less than 1.0).
+   * @memberof PolylineGlowMaterialProperty.prototype
+   * @type {Property|undefined}
+   */
+  glowPower: createPropertyDescriptor("glowPower"),
+
+  /**
+   * Gets or sets the numeric Property specifying the strength of the tapering effect, as a percentage of the total line length.  If 1.0 or higher, no taper effect is used.
+   * @memberof PolylineGlowMaterialProperty.prototype
+   * @type {Property|undefined}
+   */
+  taperPower: createPropertyDescriptor("taperPower"),
+});
 
 export default PolylineGlowMaterialProperty;

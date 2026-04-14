@@ -18,10 +18,14 @@
 // remaining assignable from the real JS classes.
 
 // Pass-through types: WebGPU code receives these from JS but doesn't
-// access their internals. Using Record<string, unknown> makes them
-// assignable from any JS class while preventing unchecked property access.
-// Individual properties can be added if the WebGPU code starts reading them.
-type CesiumOpaqueObject = Record<string, unknown>;
+// access their internals. We use `object` (not `Record<string, unknown>`)
+// because `Record` requires an explicit index signature that JS classes
+// don't have. `object` is assignable from any class instance while still
+// preventing primitive assignment. Property access requires explicit
+// narrowing via `as` casts, which is the correct behavior for opaque
+// cross-language boundaries.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+type CesiumOpaqueObject = object;
 type CesiumOpaqueTexture = CesiumOpaqueObject;
 type CesiumOpaqueFramebuffer = CesiumOpaqueObject;
 type CesiumOpaqueVertexArray = CesiumOpaqueObject;
@@ -32,6 +36,7 @@ type CesiumOpaqueCullingVolume = CesiumOpaqueObject;
 type CesiumOpaqueJulianDate = CesiumOpaqueObject;
 type CesiumOpaqueMapProjection = CesiumOpaqueObject;
 type CesiumOpaqueTerrainProvider = CesiumOpaqueObject;
+type CesiumOpaqueSampler = CesiumOpaqueObject;
 
 // ─── Math types (minimal) ────────────────────────────────────────────────
 
@@ -40,7 +45,11 @@ interface CesiumCartesian2 {
   y: number;
   clone(result?: CesiumCartesian2): CesiumCartesian2;
   equals(right?: CesiumCartesian2): boolean;
-  equalsEpsilon(right?: CesiumCartesian2, relativeEpsilon?: number, absoluteEpsilon?: number): boolean;
+  equalsEpsilon(
+    right?: CesiumCartesian2,
+    relativeEpsilon?: number,
+    absoluteEpsilon?: number,
+  ): boolean;
 }
 
 interface CesiumCartesian3 {
@@ -49,7 +58,11 @@ interface CesiumCartesian3 {
   z: number;
   clone(result?: CesiumCartesian3): CesiumCartesian3;
   equals(right?: CesiumCartesian3): boolean;
-  equalsEpsilon(right?: CesiumCartesian3, relativeEpsilon?: number, absoluteEpsilon?: number): boolean;
+  equalsEpsilon(
+    right?: CesiumCartesian3,
+    relativeEpsilon?: number,
+    absoluteEpsilon?: number,
+  ): boolean;
 }
 
 interface CesiumCartesian4 {
@@ -81,17 +94,64 @@ interface CesiumColor {
   darken(magnitude: number, result: CesiumColor): CesiumColor;
 }
 
-/** Column-major 16-element matrix — structurally compatible with Matrix4. */
-type CesiumMatrix4 = Float64Array & {
-  length: 16;
-  0: number; 1: number; 2: number; 3: number;
-  4: number; 5: number; 6: number; 7: number;
-  8: number; 9: number; 10: number; 11: number;
-  12: number; 13: number; 14: number; 15: number;
+// ─── Ellipsoid ──────────────────────────────────────────────────────────
+
+interface CesiumEllipsoid {
+  radii: CesiumCartesian3;
+  radiiSquared: CesiumCartesian3;
+  radiiToTheFourth: CesiumCartesian3;
+  oneOverRadii: CesiumCartesian3;
+  oneOverRadiiSquared: CesiumCartesian3;
+  minimumRadius: number;
+  maximumRadius: number;
+  geocentricSurfaceNormal(
+    cartesian: CesiumCartesian3,
+    result?: CesiumCartesian3,
+  ): CesiumCartesian3;
+  geodeticSurfaceNormal(
+    cartesian: CesiumCartesian3,
+    result?: CesiumCartesian3,
+  ): CesiumCartesian3;
+  cartographicToCartesian(
+    cartographic: { longitude: number; latitude: number; height: number },
+    result?: CesiumCartesian3,
+  ): CesiumCartesian3;
+  scaleToGeodeticSurface(
+    cartesian: CesiumCartesian3,
+    result?: CesiumCartesian3,
+  ): CesiumCartesian3 | undefined;
+}
+
+/**
+ * Column-major 16-element matrix — structurally compatible with the real
+ * `Matrix4` class (plain ES6 class with numeric-indexed 0..15 slots).
+ * NOTE: Matrix4 is NOT a Float64Array subclass; using an interface (not
+ * a Float64Array intersection) so assignments from real `Matrix4`
+ * instances type-check without casts.
+ */
+interface CesiumMatrix4 {
+  readonly length: 16;
+  [index: number]: number;
+  0: number;
+  1: number;
+  2: number;
+  3: number;
+  4: number;
+  5: number;
+  6: number;
+  7: number;
+  8: number;
+  9: number;
+  10: number;
+  11: number;
+  12: number;
+  13: number;
+  14: number;
+  15: number;
   clone(result?: CesiumMatrix4): CesiumMatrix4;
   equals(right?: CesiumMatrix4): boolean;
   equalsEpsilon(right?: CesiumMatrix4, epsilon?: number): boolean;
-};
+}
 
 interface CesiumBoundingRectangle {
   x: number;
@@ -132,6 +192,9 @@ interface CesiumPostProcessStageCollection {
   _depthOfField: CesiumPostProcessStage;
   _activeStagesChanged: boolean;
   length: number;
+  /** Sidecar WebGPU cache attached by WebGPUPostProcessStageCollection —
+   *  tracks which stages are enabled / initialized on the WebGPU pipeline. */
+  _webgpuCache?: import("./WebGPUPostProcessStageCollection.js").PostProcessCache;
   get(index: number): CesiumPostProcessStage;
 }
 
@@ -139,7 +202,7 @@ interface CesiumPostProcessStageCollection {
 
 interface CesiumWeatherConfig {
   enabled: boolean;
-  type: number;
+  type: string | number;
   intensity: number;
   windSpeed: number;
   windDirection: CesiumCartesian3;
@@ -215,26 +278,32 @@ interface CesiumFrameState {
   afterRender: Array<() => boolean | undefined>;
   scene3DOnly: boolean;
   fog: CesiumFrameStateFog;
-  atmosphere: { hueShift: number; saturationShift: number; brightnessShift: number } | undefined;
-  atmosphericConditions: {
-    fogDensity?: number;
-    volumetricFog?: {
-      enabled: boolean;
-      density?: number;
-      scatteringCoefficient?: number;
-      maxDistance?: number;
-      heightFalloff?: number;
-      falloff?: number;
-      quality?: string;
-      fogAlbedo?: { r: number; g: number; b: number };
-      fogAnisotropy?: number;
-      ambientStrength?: number;
-      enableScatteringOcclusion?: boolean;
-    };
-    lighting?: { enabled?: boolean; moonIntensity?: number };
-    varyingAtmosphereDensity?: number | { enabled?: boolean; noiseScale?: number; noiseStrength?: number };
-    weather?: CesiumWeatherConfig;
-  } | undefined;
+  atmosphere:
+    | { hueShift: number; saturationShift: number; brightnessShift: number }
+    | undefined;
+  atmosphericConditions:
+    | {
+        fogDensity?: number;
+        volumetricFog?: {
+          enabled: boolean;
+          density?: number;
+          scatteringCoefficient?: number;
+          maxDistance?: number;
+          heightFalloff?: number;
+          falloff?: number;
+          quality?: string;
+          fogAlbedo?: { r: number; g: number; b: number };
+          fogAnisotropy?: number;
+          ambientStrength?: number;
+          enableScatteringOcclusion?: boolean;
+        };
+        lighting?: { enabled?: boolean; moonIntensity?: number };
+        varyingAtmosphereDensity?:
+          | number
+          | { enabled?: boolean; noiseScale?: number; noiseStrength?: number };
+        weather?: CesiumWeatherConfig;
+      }
+    | undefined;
   verticalExaggeration: number;
   verticalExaggerationRelativeHeight: number;
   shadowState: {
@@ -246,8 +315,16 @@ interface CesiumFrameState {
   };
   splitPosition: number;
   backgroundColor: CesiumColor | undefined;
-  light: { direction?: CesiumCartesian3; color?: CesiumColor; intensity?: number } | undefined;
-  lights: Array<{ direction?: CesiumCartesian3; color?: CesiumColor; intensity?: number }> | undefined;
+  light:
+    | { direction?: CesiumCartesian3; color?: CesiumColor; intensity?: number }
+    | undefined;
+  lights:
+    | Array<{
+        direction?: CesiumCartesian3;
+        color?: CesiumColor;
+        intensity?: number;
+      }>
+    | undefined;
   useLogDepth: boolean;
   minimumTerrainHeight: number;
   invertClassification: boolean;
@@ -278,11 +355,20 @@ interface CesiumCamera {
   directionWC: CesiumCartesian3;
   upWC: CesiumCartesian3;
   rightWC: CesiumCartesian3;
-  frustum: { near: number; far: number; fov?: number; aspectRatio?: number; projectionMatrix?: CesiumMatrix4 };
+  frustum: {
+    near: number;
+    far: number;
+    fov?: number;
+    aspectRatio?: number;
+    projectionMatrix?: CesiumMatrix4;
+  };
   viewMatrix: CesiumMatrix4;
   inverseViewMatrix: CesiumMatrix4;
   inverseViewProjection: CesiumMatrix4;
-  setView(options: { destination?: CesiumCartesian3; orientation?: unknown }): void;
+  setView(options: {
+    destination?: CesiumCartesian3;
+    orientation?: unknown;
+  }): void;
 }
 
 // ─── UniformState ────────────────────────────────────────────────────────
@@ -291,6 +377,8 @@ interface CesiumUniformState {
   readonly frameState: CesiumFrameState | undefined;
   readonly view: CesiumMatrix4;
   readonly projection: CesiumMatrix4;
+  readonly inverseProjection: CesiumMatrix4;
+  readonly inverseView: CesiumMatrix4;
   readonly viewProjection: CesiumMatrix4;
   readonly normal: CesiumMatrix4;
   readonly modelView: CesiumMatrix4;
@@ -347,10 +435,31 @@ interface CesiumGraphicsContext {
   readonly canvas: { width: number; height: number };
   readonly _canvas?: { width: number; height: number } | null;
   readonly _device?: GPUDevice | null;
-  readonly shaderCache?: {
+  readonly shaderCache?: CesiumShaderCache & {
     preprocessOnly?: (source: string, options?: { label?: string }) => string;
   };
+  readonly _canvasFormat?: GPUTextureFormat;
+  readonly presentationFormat?: GPUTextureFormat;
+  readonly depthFormat?: GPUTextureFormat;
   useHardwareClipDistances?: boolean;
+  /** WebGPU-only: lazy-initialized ring buffer for per-frame uniform
+   *  uploads. Present as `object | null` on WebGPUContext; absent on
+   *  WebGL Context. Touched eagerly by GlobeSurfaceRenderer to force
+   *  construction (BUG-9 guard). */
+  readonly uniformAllocator?: object | null;
+  /** WebGPU-only: class constructor for compute command objects.
+   *  Registered by WebGPUContext after PerformanceManager wires up
+   *  compute dispatchers. Optional because WebGL has no analogue. */
+  _computeCommandClass?: new (...args: unknown[]) => object;
+  // Dynamic sidecar caches attached by effect renderers. Typed as
+  // `unknown` because each effect defines its own cache shape and only
+  // its own module reads it — cross-module access is intentionally
+  // untyped so the cache owner stays the source of truth.
+  _ssrCache?: unknown;
+  _cloudCache?: unknown;
+  _weatherCache?: unknown;
+  getOrCreateSampler?(descriptor: GPUSamplerDescriptor): GPUSampler;
+  createRenderTarget?(options: Record<string, unknown>): unknown;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(object: unknown): CesiumPickId;
@@ -367,6 +476,11 @@ interface CesiumFeatureRenderer {
   composite?(...args: unknown[]): void;
   destroy?(): void;
   isDestroyed?(): boolean;
+  /** Lazy-construction pattern: some feature renderers register a
+   *  `RendererClass` constructor that gets instantiated on first touch
+   *  (or via `_warmUpPipelines`) and cached on `_instance`. */
+  RendererClass?: new (ctx: unknown) => object;
+  _instance?: object;
 }
 
 // ─── PickId ─────────────────────────────────────────────────────────────
@@ -405,7 +519,10 @@ interface CesiumDrawCommand {
   dirty: boolean;
   derivedCommands: Record<string, CesiumDrawCommand>;
   pickId: string | undefined;
+  indexCount?: number;
+  vertexCount?: number;
   execute(context: CesiumGraphicsContext, passState?: CesiumPassState): void;
+  execute(...args: unknown[]): void;
 }
 
 // ─── PassState ───────────────────────────────────────────────────────────
@@ -414,7 +531,9 @@ interface CesiumPassState {
   context: CesiumGraphicsContext;
   framebuffer: CesiumOpaqueFramebuffer | undefined;
   blendingEnabled: boolean | undefined;
-  scissorTest: { enabled: boolean; rectangle: CesiumBoundingRectangle } | undefined;
+  scissorTest:
+    | { enabled: boolean; rectangle: CesiumBoundingRectangle }
+    | undefined;
   viewport: CesiumBoundingRectangle | undefined;
 }
 
@@ -447,7 +566,12 @@ interface CesiumGlobeSurfaceTile {
   waterMaskTranslationAndScale: CesiumCartesian4;
   terrainData: unknown;
   vertexArray: CesiumOpaqueVertexArray | undefined;
-  tileBoundingRegion: { boundingSphere?: CesiumBoundingSphere; boundingVolume?: CesiumBoundingSphere } | undefined;
+  tileBoundingRegion:
+    | {
+        boundingSphere?: CesiumBoundingSphere;
+        boundingVolume?: CesiumBoundingSphere;
+      }
+    | undefined;
   mesh: CesiumTerrainMesh | undefined;
   fill: { mesh: CesiumTerrainMesh | undefined } | undefined;
   center: CesiumCartesian3 | undefined;
@@ -458,41 +582,29 @@ interface CesiumGlobeSurfaceTile {
   data: unknown;
 }
 
-interface CesiumGlobeTileProvider {
-  clippingPlanes?: { length: number; unionClippingRegions?: boolean };
-  enableLighting?: boolean;
-  cartographicLimitRectangle?: { west: number; south: number; east: number; north: number; width: number };
-  nightFadeOutDistance?: number;
-  nightFadeInDistance?: number;
-  hasWaterMask?: boolean;
-  showWaterEffect?: boolean;
-  oceanNormalMap?: unknown;
-  oceanDeepColor?: { red: number; green: number; blue: number };
-  oceanFresnelPower?: number;
-  nightIntensity?: number;
-  oceanReflectivity?: number;
-  [key: string]: unknown;
-}
-
 interface CesiumTileImagery {
-  readyImagery: {
-    imageryLayer: {
-      alpha: number;
-      brightness: number;
-      contrast: number;
-      saturation: number;
-      split: number;
-      nightAlpha: number;
-      dayAlpha: number;
-      show: boolean;
-    } | undefined;
-    texture: CesiumOpaqueTexture | undefined;
-    textureWebGL: CesiumOpaqueTexture | undefined;
-    image: HTMLImageElement | HTMLCanvasElement | ImageBitmap | undefined;
-    rectangle: CesiumRectangle | undefined;
-    state: number;
-    _webgpuReprojectedTexture: GPUTexture | undefined;
-  } | undefined;
+  readyImagery:
+    | {
+        imageryLayer:
+          | {
+              alpha: number;
+              brightness: number;
+              contrast: number;
+              saturation: number;
+              split: number;
+              nightAlpha: number;
+              dayAlpha: number;
+              show: boolean;
+            }
+          | undefined;
+        texture: CesiumOpaqueTexture | undefined;
+        textureWebGL: CesiumOpaqueTexture | undefined;
+        image: HTMLImageElement | HTMLCanvasElement | ImageBitmap | undefined;
+        rectangle: CesiumRectangle | undefined;
+        state: number;
+        _webgpuReprojectedTexture: GPUTexture | undefined;
+      }
+    | undefined;
   textureTranslationAndScale: CesiumCartesian4 | undefined;
   textureCoordinateRectangle: CesiumCartesian4 | undefined;
   texCoordsRectangle: CesiumCartesian4 | undefined;
@@ -508,9 +620,13 @@ interface CesiumShadowMap {
   size: number;
   readonly isPointLight: boolean;
   readonly outOfView: boolean;
-  _shadowMapMatrix: CesiumMatrix4 | undefined;
+  /** Shadow map matrix — CesiumMatrix4 in the single-map case, Float32Array
+   *  for CSM cascade swapping (which stores cascade VPs as Float32Array). */
+  _shadowMapMatrix: CesiumMatrix4 | Float32Array | undefined;
   _textureSize: CesiumCartesian2 | undefined;
-  _primitiveBias: { depthBias: number; normalShadingSmooth: number } | undefined;
+  _primitiveBias:
+    | { depthBias: number; normalShadingSmooth: number }
+    | undefined;
   _terrainBias: { depthBias: number; normalShadingSmooth: number } | undefined;
   _isPointLight: boolean;
   _lightDirectionEC: CesiumCartesian3;
@@ -529,6 +645,68 @@ interface CesiumShadowMapWebGPUCache {
   [key: string]: unknown;
 }
 
+// ─── ImageBasedLighting ─────────────────────────────────────────────────
+
+interface CesiumImageBasedLighting {
+  imageBasedLightingFactor: CesiumCartesian2;
+  sphericalHarmonicCoefficients: CesiumCartesian3[] | undefined;
+  _specularEnvironmentCubeMap:
+    | {
+        ready: boolean;
+        texture: CesiumOpaqueTexture | undefined;
+        maximumMipmapLevel: number;
+        _texture?: { _webgpuTexture?: { view?: GPUTextureView } };
+        _version?: number;
+      }
+    | undefined;
+  _previousFrameNumber: number;
+  _previousFrameContext: CesiumGraphicsContext | undefined;
+  // WebGPU sidecar fields (set by WebGPUImageBasedLighting)
+  _webgpuCache?: unknown;
+  _webgpuSpecularView?: GPUTextureView;
+  _webgpuDiffuseView?: GPUTextureView;
+  _webgpuSampler?: GPUSampler;
+  _webgpuSHBuffer?: GPUBuffer;
+  _webgpuHasSH?: boolean;
+  _webgpuMaxMipLevel?: number;
+  _webgpuIBLFactor?: Float32Array | number;
+}
+
+// ─── Imagery (readyImagery sub-object) ──────────────────────────────────
+
+interface CesiumReadyImagery {
+  imageryLayer:
+    | {
+        alpha: number;
+        brightness: number;
+        contrast: number;
+        saturation: number;
+        split: number;
+        nightAlpha: number;
+        dayAlpha: number;
+        show: boolean;
+      }
+    | undefined;
+  texture: CesiumOpaqueTexture | undefined;
+  textureWebGL: CesiumOpaqueTexture | undefined;
+  image: HTMLImageElement | HTMLCanvasElement | ImageBitmap | undefined;
+  rectangle: CesiumRectangle | undefined;
+  state: number;
+  key?: string;
+  x?: number;
+  y?: number;
+  level?: number;
+  _webgpuReprojectedTexture?: GPUTexture;
+  _source?: unknown;
+}
+
+// ─── BrdfLutGenerator / DynamicEnvironmentMapManager ────────────────────
+
+interface CesiumObjectWithWebGPUCache {
+  _webgpuCache?: unknown;
+  [key: string]: unknown;
+}
+
 // ─── Scene ───────────────────────────────────────────────────────────────
 
 interface CesiumScene {
@@ -542,15 +720,39 @@ interface CesiumScene {
   readonly taaEnabled: boolean;
   readonly useCascadedShadowMaps: boolean;
   readonly weather: CesiumWeatherConfig | undefined;
-  readonly snapshotMode: { enabled: boolean; isFrozen: boolean; registerFreezable(name: string, freezable: { freeze(): void; thaw(): void }): void } | undefined;
-  readonly debugCommandFilter: ((cmd: CesiumDrawCommand | CesiumAnyDrawCommand) => boolean) | undefined;
+  readonly snapshotMode:
+    | {
+        enabled: boolean;
+        isFrozen: boolean;
+        registerFreezable(
+          name: string,
+          freezable: { freeze(): void; thaw(): void },
+        ): void;
+        unregisterFreezable(name: string): void;
+      }
+    | undefined;
+  readonly debugCommandFilter:
+    | ((cmd: CesiumDrawCommand | CesiumAnyDrawCommand) => boolean)
+    | undefined;
   _frameState: CesiumFrameState;
   _view: { frustumCommandsList?: CesiumFrustumCommands[] };
-  _picking: { pick?(scene: CesiumScene, windowPosition: CesiumCartesian2): unknown; getPickDepth?(scene: CesiumScene, index: number): { getDepth?(x: number, y: number): number; update?(context: CesiumGraphicsContext, texture: unknown): void } };
+  _picking: {
+    pick?(scene: CesiumScene, windowPosition: CesiumCartesian2): unknown;
+    getPickDepth?(
+      scene: CesiumScene,
+      index: number,
+    ): {
+      getDepth?(x: number, y: number): number;
+      update?(context: CesiumGraphicsContext, texture: unknown): void;
+    };
+  };
   _context: CesiumGraphicsContext;
   _globe: CesiumGlobe | undefined;
   _alternateSceneRenderer: CesiumFeatureRenderer | undefined;
-  _clearColorCommand: { color: CesiumColor; execute(context: CesiumGraphicsContext, passState: CesiumPassState): void };
+  _clearColorCommand: {
+    color: CesiumColor;
+    execute(context: CesiumGraphicsContext, passState: CesiumPassState): void;
+  };
   _useOIT: boolean;
   _useWebVR: boolean;
   _globeTranslucencyState: CesiumGlobeTranslucencyState;
@@ -579,9 +781,20 @@ interface CesiumGlobe {
   showProceduralClouds: boolean;
   oceanNormalMapUrl: string;
   terrainProvider: CesiumOpaqueTerrainProvider;
-  _surface: { _tileProvider?: CesiumGlobeTileProvider; _tilesToRender?: unknown[] };
-  _ellipsoid: { maximumRadius: number; oneOverRadii: CesiumCartesian3; radii: CesiumCartesian3 };
-  ellipsoid?: { maximumRadius: number; oneOverRadii: CesiumCartesian3; radii: CesiumCartesian3 };
+  _surface: {
+    _tileProvider?: CesiumGlobeTileProvider;
+    _tilesToRender?: unknown[];
+  };
+  _ellipsoid: {
+    maximumRadius: number;
+    oneOverRadii: CesiumCartesian3;
+    radii: CesiumCartesian3;
+  };
+  ellipsoid?: {
+    maximumRadius: number;
+    oneOverRadii: CesiumCartesian3;
+    radii: CesiumCartesian3;
+  };
   showGroundAtmosphere?: boolean;
   atmosphereRayleighScaleHeight?: number;
   atmosphereMieScaleHeight?: number;
@@ -592,7 +805,17 @@ interface CesiumGlobe {
   dynamicAtmosphereLighting?: boolean;
   cloudLayerBottom?: number;
   cloudLayerTop?: number;
-  _webgpuAtmosphereCache?: { uniformBuffer: GPUBuffer | null; data: Float32Array; enabled: boolean; dirty: boolean };
+  cloudCoverage?: number;
+  cloudQuality?: number;
+  cloudDensity?: number;
+  cloudWindSpeed?: number;
+  cloudWindDirection?: CesiumCartesian2;
+  _webgpuAtmosphereCache?: {
+    uniformBuffer: GPUBuffer | null;
+    data: Float32Array;
+    enabled: boolean;
+    dirty: boolean;
+  };
   _webgpuAtmosphereBuffer?: GPUBuffer | null;
   _webgpuAtmosphereEnabled?: boolean;
 }
@@ -610,16 +833,22 @@ interface CesiumFrustumCommands {
 
 interface CesiumGlobeTileProvider {
   cartographicLimitRectangle: CesiumRectangle;
-  clippingPlanes: { enabled: boolean; length: number } | undefined;
+  clippingPlanes:
+    | { enabled: boolean; length: number; unionClippingRegions?: boolean }
+    | undefined;
   clippingPolygons: { enabled: boolean; length: number } | undefined;
   showWaterEffect: boolean;
   oceanNormalMap: CesiumOpaqueTexture | undefined;
   oceanDeepColor: CesiumColor;
+  oceanFresnelPower?: number;
+  nightIntensity?: number;
+  oceanReflectivity?: number;
   nightFadeOutDistance: number;
   nightFadeInDistance: number;
   hasWaterMask: boolean;
   enableLighting: boolean;
   translucencyEnabled: boolean;
+  [key: string]: unknown;
 }
 
 // ─── ReadState (pick readback) ───────────────────────────────────────────
@@ -647,7 +876,9 @@ interface CesiumObjectWithWebGPUCache {
   _derivedCommandTypesToUpdateLength?: number;
   // PointCloud-specific fields
   _parsedContent?: { positions?: Float32Array; colors?: Float32Array } | null;
-  _pointCloud?: { _parsedContent?: { positions?: Float32Array; colors?: Float32Array } | null } | null;
+  _pointCloud?: {
+    _parsedContent?: { positions?: Float32Array; colors?: Float32Array } | null;
+  } | null;
   _pointsLength?: number;
   // GaussianSplat-specific fields
   _splatData?: ArrayBufferView | null;
@@ -718,10 +949,67 @@ interface CesiumAnyDrawCommand {
   _shaderCode?: string;
   _pipelineConfig?: Record<string, unknown>;
   // Globe translucency derived command fields
-  _webgpuTranslucencyDerived?: Array<{ blendEnabled?: boolean; depthWriteEnabled?: boolean; cullMode?: GPUCullMode; type?: number; depthTestEnabled?: boolean; cullFront?: boolean; cullBack?: boolean; colorWriteEnabled?: boolean }>;
+  _webgpuTranslucencyDerived?: Array<{
+    blendEnabled?: boolean;
+    depthWriteEnabled?: boolean;
+    cullMode?: GPUCullMode;
+    type?: number;
+    depthTestEnabled?: boolean;
+    cullFront?: boolean;
+    cullBack?: boolean;
+    colorWriteEnabled?: boolean;
+  }>;
   _webgpuTranslucencyDerivedCount?: number;
   _webgpuDerivedTranslucent?: boolean;
 }
+
+// ─── WebGPURenderTarget (minimal) ────────────────────────────────────
+
+/** Minimal interface for WebGPURenderTarget used across render passes. */
+interface WebGPURenderTargetLike {
+  getColorTexture?(index: number): GPUTexture | undefined;
+  getColorTextureView?(index: number): GPUTextureView | undefined;
+  getDepthTexture?(): GPUTexture | undefined;
+  getDepthTextureView?(): GPUTextureView | undefined;
+  getDepthStencilTextureView?(): GPUTextureView | undefined;
+  resize?(width: number, height: number): void;
+  destroy?(): void;
+}
+
+// ─── WebGPU Compute Command ─────────────────────────────────────────
+
+/** Minimal interface for compute commands dispatched by WebGPUContext. */
+interface CesiumComputeCommand {
+  isWebGPUComputeCommand?: boolean;
+  execute(ctx: object): void;
+  [key: string]: unknown;
+}
+
+// ─── GPU cull results ───────────────────────────────────────────────
+
+/** Shape of the cull results returned by GPUCuller.readResults(). */
+interface GPUCullResults {
+  visibilityFlags: Uint32Array;
+  visibleCount: number;
+  objectCount: number;
+}
+
+// ─── CesiumJS Texture with source ───────────────────────────────────
+
+/** CesiumJS Texture accessed to extract the underlying image source. */
+interface CesiumTextureWithSource extends CesiumOpaqueObject {
+  _source?: HTMLImageElement | HTMLCanvasElement | ImageBitmap;
+  image?: HTMLImageElement | HTMLCanvasElement | ImageBitmap;
+  _id?: string | number;
+  texture?: GPUTexture;
+  _texture?: GPUTexture;
+}
+
+// ─── Compressed texture extension stubs ─────────────────────────────
+
+/** Compressed texture extension type — WebGL: extension object or null;
+ *  WebGPU: boolean (true = supported via device features). */
+type CesiumCompressedTextureExtension = object | boolean | null;
 
 // ─── ShaderCache ─────────────────────────────────────────────────────────
 

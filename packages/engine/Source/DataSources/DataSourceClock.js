@@ -112,4 +112,67 @@ class DataSourceClock {
   }
 }
 
+Object.defineProperties(DataSourceClock.prototype, {
+  /**
+   * Gets the event that is raised whenever a new property is assigned.
+   * @memberof DataSourceClock.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the desired start time of the clock.
+   * See {@link Clock#startTime}.
+   * @memberof DataSourceClock.prototype
+   * @type {JulianDate}
+   */
+  startTime: createRawPropertyDescriptor("startTime"),
+
+  /**
+   * Gets or sets the desired stop time of the clock.
+   * See {@link Clock#stopTime}.
+   * @memberof DataSourceClock.prototype
+   * @type {JulianDate}
+   */
+  stopTime: createRawPropertyDescriptor("stopTime"),
+
+  /**
+   * Gets or sets the desired current time when this data source is loaded.
+   * See {@link Clock#currentTime}.
+   * @memberof DataSourceClock.prototype
+   * @type {JulianDate}
+   */
+  currentTime: createRawPropertyDescriptor("currentTime"),
+
+  /**
+   * Gets or sets the desired clock range setting.
+   * See {@link Clock#clockRange}.
+   * @memberof DataSourceClock.prototype
+   * @type {ClockRange}
+   */
+  clockRange: createRawPropertyDescriptor("clockRange"),
+
+  /**
+   * Gets or sets the desired clock step setting.
+   * See {@link Clock#clockStep}.
+   * @memberof DataSourceClock.prototype
+   * @type {ClockStep}
+   */
+  clockStep: createRawPropertyDescriptor("clockStep"),
+
+  /**
+   * Gets or sets the desired clock multiplier.
+   * See {@link Clock#multiplier}.
+   * @memberof DataSourceClock.prototype
+   * @type {number}
+   */
+  multiplier: createRawPropertyDescriptor("multiplier"),
+});
+
 export default DataSourceClock;

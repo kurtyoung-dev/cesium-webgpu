@@ -134,7 +134,9 @@ class WebMapServiceImageryProvider {
     this._getFeatureInfoUrl = options.getFeatureInfoUrl ?? options.url;
 
     const resource = Resource.createIfNeeded(options.url);
-    const pickFeatureResource = Resource.createIfNeeded(this._getFeatureInfoUrl);
+    const pickFeatureResource = Resource.createIfNeeded(
+      this._getFeatureInfoUrl,
+    );
 
     resource.setQueryParameters(
       WebMapServiceImageryProvider.DefaultParameters,
@@ -202,7 +204,9 @@ class WebMapServiceImageryProvider {
       if (parts[0] === "EPSG" && parts.length === 2) {
         const code = Number(parts[1]);
         if (
-          (code >= 4000 && code < 5000 && !excludesReverseAxis.includes(code)) ||
+          (code >= 4000 &&
+            code < 5000 &&
+            !excludesReverseAxis.includes(code)) ||
           includesReverseAxis.includes(code)
         ) {
           parameters.bbox =
@@ -327,7 +331,15 @@ class WebMapServiceImageryProvider {
       ? timeDynamicImagery.currentInterval
       : undefined;
 
-    return pickFeatures(this, x, y, level, longitude, latitude, currentInterval);
+    return pickFeatures(
+      this,
+      x,
+      y,
+      level,
+      longitude,
+      latitude,
+      currentInterval,
+    );
   }
 
   /**

@@ -38,6 +38,12 @@ import {
   createWebGLCompatibilityStub,
   type WebGLStubState,
 } from "./WebGLCompatibilityStub.js";
+import type {
+  StubTextureWrapper,
+  StubFramebuffer,
+  StubRenderbuffer,
+  StubAttachment,
+} from "./Stubs/WebGLStubTypes.js";
 import {
   webglToWebGPUBlendFactor,
   webglToWebGPUBlendOp,
@@ -76,7 +82,115 @@ import { jsModule } from "./webgpuTypeHelpers.js";
 
 /** Type-shape for the JS-only RenderState.fromCache() static. */
 interface RenderStateStatics {
-  fromCache: (renderState?: object) => unknown;
+  fromCache: (renderState?: object) => CesiumOpaqueRenderState;
+}
+
+/** Return type for createViewportQuadCommand(). */
+interface ViewportQuadCommand {
+  execute: (...args: unknown[]) => void;
+  shaderProgram?: unknown;
+  uniformMap?: Record<string, (() => unknown) | unknown>;
+  framebuffer?: CesiumOpaqueFramebuffer | null;
+  owner?: object;
+  renderState?: CesiumOpaqueRenderState;
+  pass?: number;
+  _isViewportQuadCommand?: boolean;
+  destroy?: () => void;
+}
+
+/** Return type for getPipelineState(). */
+interface WebGPUPipelineStateSnapshot {
+  depthStencil?: {
+    format: GPUTextureFormat;
+    depthWriteEnabled: boolean;
+    depthCompare: GPUCompareFunction;
+  };
+  blend?: {
+    color: {
+      srcFactor: GPUBlendFactor;
+      dstFactor: GPUBlendFactor;
+      operation: GPUBlendOperation;
+    };
+    alpha: {
+      srcFactor: GPUBlendFactor;
+      dstFactor: GPUBlendFactor;
+      operation: GPUBlendOperation;
+    };
+  };
+  primitive: {
+    cullMode: GPUCullMode;
+    frontFace: GPUFrontFace;
+  };
+  colorWriteMask: number;
+}
+
+/** Return type for readPixelsToPBO(). */
+interface PixelReadbackPBO {
+  buffer: GPUBuffer;
+  width: number;
+  height: number;
+  bytesPerRow: number;
+  mapAsync: () => Promise<Uint8Array>;
+  getBufferData: (dst: Uint8Array | Uint16Array | Float32Array) => void;
+  destroy: () => void;
+}
+
+/** Return type for getStatistics(). */
+interface WebGPUFrameStatistics {
+  frameCount: number;
+  drawCallCount: number;
+  triangleCount: number;
+  samplerCacheSize: number;
+  bindGroupLayoutCacheSize: number;
+  uniformBufferPoolSize: number;
+}
+
+/** Options parameter shape for createViewportQuadCommand(). */
+interface ViewportQuadCommandOptions {
+  uniformMap?: Record<string, (() => unknown) | unknown>;
+  framebuffer?: CesiumOpaqueFramebuffer;
+  owner?: object;
+  renderState?: CesiumOpaqueRenderState;
+  pass?: number;
+  pipelineConfig?: Record<
+    string,
+    | GPUBlendState
+    | GPUDepthStencilState
+    | GPUPrimitiveState
+    | boolean
+    | number
+    | string
+  >;
+  bindGroupEntries?: GPUBindGroupEntry[];
+}
+
+/** Shader source that can be a string or an object with _wgslCode. */
+type ShaderSource =
+  | string
+  | { _wgslCode?: string; sources?: string[]; defines?: string[] };
+
+/** Minimal interface for the GPU culler (lazy-loaded). */
+interface GPUCullerInstance {
+  initialized: boolean;
+  destroy(): void;
+  uploadBoundingSpheres(data: Float32Array): void;
+  uploadFrustumPlanes(data: Float32Array): void;
+  dispatch(encoder: GPUCommandEncoder, count: number, mode: number): void;
+  prepareReadback(encoder: GPUCommandEncoder, count: number): void;
+  readResults(count: number): Promise<GPUCullResults>;
+  initialize(code: string): Promise<void>;
+}
+
+/** Minimal ClearCommand shape accessed by the clear() method. */
+interface CesiumClearCommand {
+  color?: CesiumColor | false;
+  depth?: number | false;
+  stencil?: number | false;
+  framebuffer?: CesiumOpaqueFramebuffer;
+  execute?: (
+    context: CesiumGraphicsContext,
+    passState?: CesiumPassState,
+  ) => void;
 }
 
 /**
@@ -170,13 +284,13 @@ export class WebGPUContext extends GraphicsContext {
 
   // WebGL compatibility - stub object with WebGL constants for backward compatibility
   // This allows legacy Texture.js code to work without crashing
-  public _gl: any;
+  public _gl: Record<string, unknown>;
 
   // WGF-6: Cached reference to WebGPUPrimitiveIndexUtils so Scene.js can probe
   // `@builtin(primitive_index)` support without importing from Renderer/WebGPU.
   // Populated lazily by initialize() — Scene reads it via the public
   // `triangulationDebugSupported` getter.
-  public _primitiveIndexUtilsCache: any = null;
+  public _primitiveIndexUtilsCache: object | null = null;
 
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
@@ -236,39 +350,40 @@ export class WebGPUContext extends GraphicsContext {
    * RTE / depth / globe-UV math must always stay f32 (see CLAUDE.md).
    */
   public useShaderF16: boolean = false;
-  public s3tc: any = null;
-  public pvrtc: any = null;
-  public astc: any = null;
-  public etc: any = null;
-  public etc1: any = null;
-  public bc7: any = null;
+  public s3tc: CesiumCompressedTextureExtension = null;
+  public pvrtc: CesiumCompressedTextureExtension = null;
+  public astc: CesiumCompressedTextureExtension = null;
+  public etc: CesiumCompressedTextureExtension = null;
+  public etc1: CesiumCompressedTextureExtension = null;
+  public bc7: CesiumCompressedTextureExtension = null;
   public webgl2: boolean = false;
-  public _textureFilterAnisotropic: any = null;
+  public _textureFilterAnisotropic: CesiumCompressedTextureExtension = null;
 
   // Additional WebGL properties for full compatibility
   public _id: string;
   public _shaderCache: CesiumShaderCache;
-  public _textureCache: any;
+  public _textureCache: CesiumOpaqueObject;
   public _stencilBits: number = 8;
   public _antialias: boolean = false;
-  public cache: any = {};
-  public options: any;
+  public cache: Record<string, unknown> = {};
+  public options: object;
   public validateFramebuffer: boolean = false;
   public validateShaderProgram: boolean = false;
   public logShaderCompilation: boolean = false;
 
-  // Vertex array object methods
-  public glCreateVertexArray: any;
-  public glBindVertexArray: any;
-  public glDeleteVertexArray: any;
+  // Vertex array object methods (WebGL compat stubs — noop functions)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- WebGL compat noop stubs with varied signatures
+  public glCreateVertexArray: (() => object) | null = null;
+  public glBindVertexArray: ((...args: unknown[]) => void) | null = null;
+  public glDeleteVertexArray: ((...args: unknown[]) => void) | null = null;
 
-  // Instanced rendering methods
-  public glDrawElementsInstanced: any;
-  public glDrawArraysInstanced: any;
-  public glVertexAttribDivisor: any;
+  // Instanced rendering methods (WebGL compat stubs)
+  public glDrawElementsInstanced: ((...args: unknown[]) => void) | null = null;
+  public glDrawArraysInstanced: ((...args: unknown[]) => void) | null = null;
+  public glVertexAttribDivisor: ((...args: unknown[]) => void) | null = null;
 
-  // Draw buffers
-  public glDrawBuffers: any;
+  // Draw buffers (WebGL compat stubs)
+  public glDrawBuffers: ((...args: unknown[]) => void) | null = null;
 
   // Extension support flags
   private _standardDerivatives: boolean = true;
@@ -294,20 +409,20 @@ export class WebGPUContext extends GraphicsContext {
   private _drawBuffers: boolean = true;
 
   // Default textures
-  private _defaultTexture: any;
-  private _defaultEmissiveTexture: any;
-  private _defaultNormalTexture: any;
-  private _defaultCubeMap: any;
+  private _defaultTexture: CesiumOpaqueTexture | undefined;
+  private _defaultEmissiveTexture: CesiumOpaqueTexture | undefined;
+  private _defaultNormalTexture: CesiumOpaqueTexture | undefined;
+  private _defaultCubeMap: CesiumOpaqueTexture | undefined;
 
   // Render state
   private _clearColor: CesiumColor;
   private _clearDepth: number = 1.0;
   private _clearStencil: number = 0;
-  private _defaultPassState: any;
-  private _defaultRenderState: any;
-  private _currentRenderState: any;
-  private _currentPassState: any;
-  private _currentFramebuffer: any;
+  private _defaultPassState: CesiumPassState | undefined;
+  private _defaultRenderState: CesiumOpaqueRenderState | undefined;
+  private _currentRenderState: CesiumOpaqueRenderState | undefined;
+  private _currentPassState: CesiumPassState | undefined;
+  private _currentFramebuffer: CesiumOpaqueFramebuffer | undefined;
 
   // Viewport and scissor state
   private _viewport: { x: number; y: number; width: number; height: number } = {
@@ -359,13 +474,15 @@ export class WebGPUContext extends GraphicsContext {
   private _boundVertexBuffer: GPUBuffer | null = null;
   private _boundIndexBuffer: GPUBuffer | null = null;
   private _activeTextureUnit: number = 0;
-  private _textureBindings: Map<number, { target: number; texture: any }> =
-    new Map();
-  private _boundFramebuffer: any = null;
-  private _boundRenderbuffer: any = null;
+  private _textureBindings: Map<
+    number,
+    { target: number; texture: StubTextureWrapper | null }
+  > = new Map();
+  private _boundFramebuffer: StubFramebuffer | null = null;
+  private _boundRenderbuffer: StubRenderbuffer | null = null;
   private _framebuffers: Map<
-    any,
-    { colorAttachment: any; depthAttachment: any }
+    StubFramebuffer,
+    { colorAttachment: StubAttachment; depthAttachment: StubAttachment }
   > = new Map();
 
   /**
@@ -388,12 +505,12 @@ export class WebGPUContext extends GraphicsContext {
     this._id = createGuid();
 
     // Initialize caches
-    this._shaderCache = new ShaderCache(this as unknown as CesiumGraphicsContext) as unknown as CesiumShaderCache;
+    this._shaderCache = new ShaderCache(this);
     this._textureCache = new TextureCache();
 
     // Initialize uniform and pass state
-    this._uniformState = new UniformState() as unknown as CesiumUniformState;
-    this._defaultPassState = new PassState(this as any);
+    this._uniformState = new UniformState();
+    this._defaultPassState = new PassState(this);
     this._defaultRenderState =
       jsModule<RenderStateStatics>(RenderState).fromCache();
     this._currentRenderState = this._defaultRenderState;
@@ -478,7 +595,9 @@ export class WebGPUContext extends GraphicsContext {
         powerPreference: this._options.powerPreference ?? "high-performance",
       };
       if (this._options.featureLevel === "compatibility") {
-        (adapterOptions as any).featureLevel = "compatibility";
+        (
+          adapterOptions as GPURequestAdapterOptions & { featureLevel?: string }
+        ).featureLevel = "compatibility";
       }
       this._adapter = await navigator.gpu.requestAdapter(adapterOptions);
 
@@ -602,9 +721,7 @@ export class WebGPUContext extends GraphicsContext {
   private _warmUpPipelines(): void {
     // Touch the globe surface FR to trigger its RendererClass instantiation.
     // The constructor compiles the terrain shader module and creates pipeline layout.
-    const globeFR = this.getFeatureRenderer(
-      FeatureRendererKey.GLOBE_SURFACE,
-    ) as any;
+    const globeFR = this.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
     if (globeFR?.RendererClass && !globeFR._instance) {
       try {
         globeFR._instance = new globeFR.RendererClass(this);
@@ -628,7 +745,7 @@ export class WebGPUContext extends GraphicsContext {
 
     // Create 1x1 white texture (default texture)
     const whiteData = new Uint8Array([255, 255, 255, 255]);
-    this._defaultTexture = WebGPUTexture.create2D(
+    const whiteTex = WebGPUTexture.create2D(
       this._device,
       1,
       1,
@@ -636,11 +753,12 @@ export class WebGPUContext extends GraphicsContext {
       1,
       "Default White Texture",
     );
-    this._defaultTexture.write(whiteData, 1, 1);
+    whiteTex.write(whiteData, 1, 1);
+    this._defaultTexture = whiteTex;
 
     // Create 1x1 black texture (default emissive)
     const blackData = new Uint8Array([0, 0, 0, 255]);
-    this._defaultEmissiveTexture = WebGPUTexture.create2D(
+    const blackTex = WebGPUTexture.create2D(
       this._device,
       1,
       1,
@@ -648,12 +766,13 @@ export class WebGPUContext extends GraphicsContext {
       1,
       "Default Emissive Texture",
     );
-    this._defaultEmissiveTexture.write(blackData, 1, 1);
+    blackTex.write(blackData, 1, 1);
+    this._defaultEmissiveTexture = blackTex;
 
     // Create 1x1 normal texture (default normal - pointing up in tangent space)
     // Normal = (0.5, 0.5, 1.0) in RGB space = (128, 128, 255, 255)
     const normalData = new Uint8Array([128, 128, 255, 255]);
-    this._defaultNormalTexture = WebGPUTexture.create2D(
+    const normalTex = WebGPUTexture.create2D(
       this._device,
       1,
       1,
@@ -661,10 +780,11 @@ export class WebGPUContext extends GraphicsContext {
       1,
       "Default Normal Texture",
     );
-    this._defaultNormalTexture.write(normalData, 1, 1);
+    normalTex.write(normalData, 1, 1);
+    this._defaultNormalTexture = normalTex;
 
     // Create 1x1 cubemap (all faces white)
-    this._defaultCubeMap = WebGPUTexture.createCubeMap(
+    const cubeTex = WebGPUTexture.createCubeMap(
       this._device,
       1,
       "rgba8unorm",
@@ -673,8 +793,9 @@ export class WebGPUContext extends GraphicsContext {
     );
     // Write white to all 6 faces
     for (let face = 0; face < 6; face++) {
-      this._defaultCubeMap.write(whiteData, 1, 1, face);
+      cubeTex.write(whiteData, 1, 1, face);
     }
+    this._defaultCubeMap = cubeTex;
   }
 
   // GraphicsContext interface implementation
@@ -798,9 +919,12 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Whether the context has been destroyed
+   * Whether the context has been destroyed. Method (not getter) form to
+   * match the upstream CesiumJS convention used everywhere else — also
+   * compatible with `destroyObject.js`, which overwrites `.isDestroyed`
+   * with a `returnTrue` function on destroyed objects.
    */
-  get isDestroyed(): boolean {
+  isDestroyed(): boolean {
     return this._isDestroyed;
   }
 
@@ -1694,14 +1818,17 @@ export class WebGPUContext extends GraphicsContext {
    * creation, and fullscreen triangle rendering.
    *
    * @see WebGPUViewportQuad for shader conventions and binding layout
-   * @param {any} fragmentShader - WGSL shader code or GLSL source
-   * @param {any} [options] - uniformMap, framebuffer, owner, renderState, pass,
+   * @param {unknown} fragmentShader - WGSL shader code or GLSL source
+   * @param {ViewportQuadCommandOptions} [options] - uniformMap, framebuffer, owner, renderState, pass,
    *   pipelineConfig (blend/depth/stencil)
-   * @returns {any} A command object with execute(passEncoder?, context?)
+   * @returns {ViewportQuadCommand} A command object with execute(passEncoder?, context?)
    */
-  createViewportQuadCommand(fragmentShader: any, options?: any): any {
+  createViewportQuadCommand(
+    fragmentShader: string | CesiumOpaqueShaderSource | { _wgslCode?: string },
+    options?: ViewportQuadCommandOptions,
+  ): ViewportQuadCommand {
     const device = this._device;
-    options = options || {};
+    const opts = (options ?? {}) as ViewportQuadCommandOptions;
 
     // Determine WGSL code from various input types
     let wgslCode: string | null = null;
@@ -1712,8 +1839,12 @@ export class WebGPUContext extends GraphicsContext {
       ) {
         wgslCode = fragmentShader;
       }
-    } else if (fragmentShader?._wgslCode) {
-      wgslCode = fragmentShader._wgslCode;
+    } else if (
+      typeof fragmentShader === "object" &&
+      fragmentShader !== null &&
+      "_wgslCode" in fragmentShader
+    ) {
+      wgslCode = (fragmentShader as { _wgslCode?: string })._wgslCode as string;
     }
 
     if (!wgslCode || !device) {
@@ -1721,11 +1852,11 @@ export class WebGPUContext extends GraphicsContext {
       return {
         execute: () => {},
         shaderProgram: fragmentShader,
-        uniformMap: options.uniformMap || {},
-        framebuffer: options.framebuffer || null,
-        owner: options.owner,
-        renderState: options.renderState,
-        pass: options.pass,
+        uniformMap: opts.uniformMap || {},
+        framebuffer: opts.framebuffer || null,
+        owner: opts.owner,
+        renderState: opts.renderState,
+        pass: opts.pass,
         _isViewportQuadCommand: true,
         destroy: () => {},
       };
@@ -1740,13 +1871,15 @@ export class WebGPUContext extends GraphicsContext {
       this._presentationFormat || "bgra8unorm";
 
     return this._viewportQuad.createCommand(wgslCode, targetFormat, {
-      uniformMap: options.uniformMap,
-      framebuffer: options.framebuffer,
-      owner: options.owner,
-      renderState: options.renderState,
-      pass: options.pass,
-      pipelineConfig: options.pipelineConfig,
-      bindGroupEntries: options.bindGroupEntries,
+      uniformMap: opts.uniformMap as Record<string, () => unknown> | undefined,
+      framebuffer: opts.framebuffer,
+      owner: opts.owner,
+      renderState: opts.renderState,
+      pass: opts.pass as number | undefined,
+      pipelineConfig: opts.pipelineConfig,
+      bindGroupEntries: opts.bindGroupEntries as
+        | GPUBindGroupEntry[]
+        | undefined,
     });
   }
 
@@ -1763,9 +1896,9 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Gets a viewport quad vertex array (used for full-screen effects) - PRIORITY 2 IMPLEMENTED
-   * @returns {any} A vertex array containing the viewport quad data
+   * @returns {CesiumOpaqueVertexArray} A vertex array containing the viewport quad data
    */
-  getViewportQuadVertexArray(): any {
+  getViewportQuadVertexArray(): CesiumOpaqueVertexArray {
     // Ensure viewport quad is initialized
     if (!this._viewportQuadVertexBuffer) {
       this._initializeViewportQuad();
@@ -1793,10 +1926,10 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Draw command execution - PRIORITY 1 IMPLEMENTED
    * Executes WebGPU draw commands using the current render pass encoder
-   * @param {any} drawCommand - The draw command to execute (WebGPUDrawCommand)
-   * @param {any} passState - Pass state information
+   * @param {CesiumDrawCommand} drawCommand - The draw command to execute (WebGPUDrawCommand)
+   * @param {CesiumPassState} passState - Pass state information
    */
-  draw(drawCommand: any, passState?: CesiumPassState): void {
+  draw(drawCommand: CesiumDrawCommand, passState?: CesiumPassState): void {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
       throw new DeveloperError("Context has been destroyed.");
@@ -1810,15 +1943,18 @@ export class WebGPUContext extends GraphicsContext {
 
     // Check if this is a WebGPUDrawCommand
     if (drawCommand && typeof drawCommand.execute === "function") {
-      // Execute WebGPU draw command
-      drawCommand.execute(this._currentRenderPassEncoder);
+      // Execute WebGPU draw command — pass the render pass encoder directly
+      drawCommand.execute(
+        this._currentRenderPassEncoder as unknown as CesiumGraphicsContext,
+      );
 
       // Record statistics
       this._drawCallCount++;
-      if (drawCommand.indexCount) {
-        this._triangleCount += Math.floor(drawCommand.indexCount / 3);
-      } else if (drawCommand.vertexCount) {
-        this._triangleCount += Math.floor(drawCommand.vertexCount / 3);
+      const cmd = drawCommand as CesiumAnyDrawCommand;
+      if (cmd.indexCount) {
+        this._triangleCount += Math.floor(cmd.indexCount / 3);
+      } else if (cmd.vertexCount) {
+        this._triangleCount += Math.floor(cmd.vertexCount / 3);
       }
     } else {
       // Legacy draw command - log warning
@@ -1888,7 +2024,7 @@ export class WebGPUContext extends GraphicsContext {
    * @param {object} readState - `{ x, y, width, height, framebuffer }`
    * @returns {object|null} PBO handle with `mapAsync`, `getBufferData`, `destroy`
    */
-  readPixelsToPBO(readState: CesiumReadState): any {
+  readPixelsToPBO(readState: CesiumReadState): PixelReadbackPBO | null {
     if (!this._device || !this._currentCommandEncoder) {
       this.log("warn", "readPixelsToPBO: No active device or command encoder");
       return null;
@@ -1921,15 +2057,18 @@ export class WebGPUContext extends GraphicsContext {
 
     if (fb) {
       // WebGPU FramebufferManager / RenderTarget path
-      if (typeof fb.getColorTexture === "function") {
-        const colorTex = fb.getColorTexture(0);
-        sourceTexture = colorTex?.texture ?? colorTex ?? null;
+      const fbObj = fb as unknown as WebGPURenderTargetLike;
+      if (typeof fbObj.getColorTexture === "function") {
+        sourceTexture = fbObj.getColorTexture(0) ?? null;
       }
       // Legacy WebGL Framebuffer with _colorTextures array
-      const colorTextures = fb._colorTextures as Array<Record<string, unknown>> | undefined;
+      const fbLegacy = fb as unknown as {
+        _colorTextures?: CesiumTextureWithSource[];
+      };
+      const colorTextures = fbLegacy._colorTextures;
       if (!sourceTexture && colorTextures && colorTextures.length > 0) {
         const ct = colorTextures[0];
-        sourceTexture = (ct?.texture ?? ct?._texture ?? null) as GPUTexture | null;
+        sourceTexture = ct?.texture ?? ct?._texture ?? null;
       }
       // Fallback: object might directly be a GPUTexture
       if (!sourceTexture && fb instanceof GPUTexture) {
@@ -2015,7 +2154,9 @@ export class WebGPUContext extends GraphicsContext {
    * @param {object} readState - `{ x, y, width, height, framebuffer }`
    * @returns {Promise<Uint8Array|null>} RGBA pixel data or null on failure
    */
-  async readPixelsAsync(readState: CesiumReadState): Promise<Uint8Array | null> {
+  async readPixelsAsync(
+    readState: CesiumReadState,
+  ): Promise<Uint8Array | null> {
     const pbo = this.readPixelsToPBO(readState);
     if (!pbo) {
       return null;
@@ -2059,10 +2200,10 @@ export class WebGPUContext extends GraphicsContext {
    * `null` — callers should use `readPixelsToPBO()` + `mapAsync()` for the
    * async path (which is what `PickFramebuffer.endAsync` already does).
    *
-   * @param {any} readState - Read state configuration
-   * @returns {any} Always null in WebGPU
+   * @param {unknown} readState - Read state configuration
+   * @returns {unknown} Always null in WebGPU
    */
-  readPixels(readState: CesiumReadState): any {
+  readPixels(_readState: CesiumReadState): Uint8Array | null {
     // Suppress noisy warnings — picking code already has an async path
     return null;
   }
@@ -2075,7 +2216,7 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Default framebuffer for the context
    */
-  get defaultFramebuffer(): any {
+  get defaultFramebuffer(): CesiumOpaqueFramebuffer | null {
     return null; // WebGPU doesn't use framebuffer objects like WebGL
   }
 
@@ -2096,7 +2237,7 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Texture cache for the context
    */
-  get textureCache(): any {
+  get textureCache(): CesiumOpaqueObject {
     return this._textureCache;
   }
 
@@ -2222,28 +2363,28 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Default 1x1 white texture
    */
-  get defaultTexture(): any {
-    return this._defaultTexture;
+  get defaultTexture(): object {
+    return this._defaultTexture!;
   }
 
   /**
    * Default 1x1 black emissive texture
    */
-  get defaultEmissiveTexture(): any {
+  get defaultEmissiveTexture(): CesiumOpaqueTexture | undefined {
     return this._defaultEmissiveTexture;
   }
 
   /**
    * Default 1x1 normal texture
    */
-  get defaultNormalTexture(): any {
+  get defaultNormalTexture(): CesiumOpaqueTexture | undefined {
     return this._defaultNormalTexture;
   }
 
   /**
    * Default cube map
    */
-  get defaultCubeMap(): any {
+  get defaultCubeMap(): CesiumOpaqueTexture | undefined {
     return this._defaultCubeMap;
   }
 
@@ -2258,8 +2399,8 @@ export class WebGPUContext extends GraphicsContext {
    *      loadOp:"clear" with the supplied values and all other channels
    *      use loadOp:"load" to preserve existing content.
    *
-   * @param {any} clearCommand - ClearCommand with optional color, depth, stencil
-   * @param {any} passState - PassState (may contain a custom framebuffer)
+   * @param {unknown} clearCommand - ClearCommand with optional color, depth, stencil
+   * @param {CesiumPassState} passState - PassState (may contain a custom framebuffer)
    */
   // Tracks clear() calls per frame for infinite-loop detection.
   // Reset in beginFrame(). If this exceeds 50, something is re-entering
@@ -2267,7 +2408,7 @@ export class WebGPUContext extends GraphicsContext {
   private _clearCallsThisFrame: number = 0;
   private _clearOverflowWarned: boolean = false;
 
-  clear(clearCommand: any, passState?: CesiumPassState): void {
+  clear(clearCommand: CesiumClearCommand, passState?: CesiumPassState): void {
     //>>includeStart('debug', pragmas.debug);
     if (this._isDestroyed) {
       throw new DeveloperError("Context has been destroyed.");
@@ -2277,6 +2418,9 @@ export class WebGPUContext extends GraphicsContext {
     if (!this._device || !this._context || !this._currentCommandEncoder) {
       return;
     }
+
+    const cmd = clearCommand as CesiumClearCommand;
+    const ps = passState as CesiumPassState | undefined;
 
     // ── Infinite-loop guard (permanent, not debug-only) ──
     // BUG-12 proved that a mis-ordered guard can cause clear() to be
@@ -2299,12 +2443,9 @@ export class WebGPUContext extends GraphicsContext {
 
     // Nothing to clear
     // Guard against boolean `false` — callers pass { color: false } to mean "don't clear color"
-    const wantColor =
-      clearCommand.color !== undefined && clearCommand.color !== false;
-    const wantDepth =
-      clearCommand.depth !== undefined && clearCommand.depth !== false;
-    const wantStencil =
-      clearCommand.stencil !== undefined && clearCommand.stencil !== false;
+    const wantColor = cmd.color !== undefined && cmd.color !== false;
+    const wantDepth = cmd.depth !== undefined && cmd.depth !== false;
+    const wantStencil = cmd.stencil !== undefined && cmd.stencil !== false;
     if (!wantColor && !wantDepth && !wantStencil) {
       return;
     }
@@ -2344,16 +2485,18 @@ export class WebGPUContext extends GraphicsContext {
     let depthStencilView = this._depthTextureView;
 
     // If the passState or clearCommand specifies a framebuffer, use it
-    const fb = passState?.framebuffer ?? clearCommand.framebuffer;
+    const fb = ps?.framebuffer ?? cmd.framebuffer;
     if (fb) {
       // Support WebGPURenderTarget / WebGPUFramebufferManager style objects
-      if (typeof fb.getColorTextureView === "function") {
-        colorView = fb.getColorTextureView(0) ?? colorView;
+      const fbObj = fb as unknown as WebGPURenderTargetLike;
+      if (typeof fbObj.getColorTextureView === "function") {
+        colorView = fbObj.getColorTextureView(0) ?? colorView;
       }
-      if (typeof fb.getDepthStencilTextureView === "function") {
-        depthStencilView = fb.getDepthStencilTextureView() ?? depthStencilView;
-      } else if (typeof fb.getDepthTextureView === "function") {
-        depthStencilView = fb.getDepthTextureView() ?? depthStencilView;
+      if (typeof fbObj.getDepthStencilTextureView === "function") {
+        depthStencilView =
+          fbObj.getDepthStencilTextureView() ?? depthStencilView;
+      } else if (typeof fbObj.getDepthTextureView === "function") {
+        depthStencilView = fbObj.getDepthTextureView() ?? depthStencilView;
       }
     }
 
@@ -2361,14 +2504,16 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    const clearColor = wantColor
-      ? {
-          r: clearCommand.color.red ?? 0.0,
-          g: clearCommand.color.green ?? 0.0,
-          b: clearCommand.color.blue ?? 0.0,
-          a: clearCommand.color.alpha ?? 1.0,
-        }
-      : { r: 0, g: 0, b: 0, a: 0 };
+    const cc = cmd.color as CesiumColor | undefined;
+    const clearColor =
+      wantColor && cc
+        ? {
+            r: cc.red ?? 0.0,
+            g: cc.green ?? 0.0,
+            b: cc.blue ?? 0.0,
+            a: cc.alpha ?? 1.0,
+          }
+        : { r: 0, g: 0, b: 0, a: 0 };
 
     const renderPassDescriptor: GPURenderPassDescriptor = {
       label: "ClearCommand Render Pass",
@@ -2383,10 +2528,10 @@ export class WebGPUContext extends GraphicsContext {
       depthStencilAttachment: depthStencilView
         ? {
             view: depthStencilView,
-            depthClearValue: wantDepth ? clearCommand.depth : 1.0,
+            depthClearValue: wantDepth ? (cmd.depth as number) : 1.0,
             depthLoadOp: depthLoadOp,
             depthStoreOp: "store",
-            stencilClearValue: wantStencil ? clearCommand.stencil : 0,
+            stencilClearValue: wantStencil ? (cmd.stencil as number) : 0,
             stencilLoadOp: stencilLoadOp,
             stencilStoreOp: "store",
           }
@@ -2441,7 +2586,8 @@ export class WebGPUContext extends GraphicsContext {
       return "WebGPU (Not initialized)";
     }
 
-    const adapterName = (this._adapter as any).name ?? "Unknown GPU";
+    const adapterName =
+      (this._adapter as GPUAdapter & { name?: string }).name ?? "Unknown GPU";
     return `WebGPU - ${adapterName}`;
   }
 
@@ -2459,7 +2605,7 @@ export class WebGPUContext extends GraphicsContext {
     command: CesiumAnyDrawCommand,
     _scene: CesiumScene,
     _passState: CesiumPassState,
-    _debugFramebuffer?: any,
+    _debugFramebuffer?: CesiumOpaqueFramebuffer,
   ): void {
     const renderPass = this._currentRenderPassEncoder;
     if (!renderPass) {
@@ -2477,9 +2623,9 @@ export class WebGPUContext extends GraphicsContext {
    * sunComputeCommand is skipped.
    */
   override executeComputeCommands(
-    computeCommandList: any[],
-    _sunComputeCommand: any,
-    _computeEngine: any,
+    computeCommandList: CesiumComputeCommand[],
+    _sunComputeCommand: CesiumComputeCommand | undefined,
+    _computeEngine: object | undefined,
   ): void {
     for (let i = 0; i < computeCommandList.length; ++i) {
       const cmd = computeCommandList[i];
@@ -2555,7 +2701,7 @@ export class WebGPUContext extends GraphicsContext {
             // so we temporarily swap it for each cascade.
             const origMatrix = shadowMap._shadowMapMatrix;
             const cascadeVP = csm.cascades[c].viewProjection;
-            shadowMap._shadowMapMatrix = cascadeVP as unknown as CesiumMatrix4;
+            shadowMap._shadowMapMatrix = cascadeVP;
             // Point the shadow map's depth texture view to the cascade
             // layer for this pass.
             const origView = shadowMap._webgpuCache?.depthTextureView;
@@ -2641,7 +2787,7 @@ export class WebGPUContext extends GraphicsContext {
 
     const clear = scene._clearColorCommand;
     Color.clone(clearColor, clear.color);
-    clear.execute(this as unknown as CesiumGraphicsContext, passState);
+    clear.execute(this, passState);
     return true;
   }
 
@@ -2653,11 +2799,14 @@ export class WebGPUContext extends GraphicsContext {
    * WebGPU override: create a WebGPUPickFramebuffer for GPU-based picking.
    * View.js calls this factory instead of directly importing WebGPUPickFramebuffer.
    */
-  override createPickFramebuffer(): any {
-    return new WebGPUPickFramebuffer(this as unknown as CesiumGraphicsContext);
+  override createPickFramebuffer(): WebGPUPickFramebuffer {
+    return new WebGPUPickFramebuffer(this);
   }
 
-  override resolveFramebuffers(_scene: CesiumScene, _passState: CesiumPassState): boolean {
+  override resolveFramebuffers(
+    _scene: CesiumScene,
+    _passState: CesiumPassState,
+  ): boolean {
     return true;
   }
 
@@ -2756,7 +2905,7 @@ export class WebGPUContext extends GraphicsContext {
    * Get current pipeline state for pipeline creation
    * @returns {object} Current pipeline state
    */
-  getPipelineState(): any {
+  getPipelineState(): WebGPUPipelineStateSnapshot {
     return {
       depthStencil: this._depthTestEnabled
         ? {
@@ -3280,7 +3429,7 @@ export class WebGPUContext extends GraphicsContext {
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
-  private _gpuCuller: any | null = null;
+  private _gpuCuller: GPUCullerInstance | null = null;
   private _gpuCullerInitializing: boolean = false;
   private _csmRenderer: WebGPUCSMRenderer | null = null;
 
@@ -3309,7 +3458,17 @@ export class WebGPUContext extends GraphicsContext {
    */
   get performanceManager(): WebGPUPerformanceManager {
     if (!this._performanceManager) {
-      this._performanceManager = new WebGPUPerformanceManager(this);
+      // WebGPUPerformanceManager is partially implemented: its
+      // PerformanceManagerContext interface declares the full intended
+      // API (appendDraw, buildAndSubmit, beginPass/endPass, etc.) that
+      // WebGPUContext will satisfy once IndirectDrawManager and
+      // TimestampProfiler are completed. Until then, the structural
+      // mismatch is real and the cast bridges the in-progress gap.
+      this._performanceManager = new WebGPUPerformanceManager(
+        this as unknown as ConstructorParameters<
+          typeof WebGPUPerformanceManager
+        >[0],
+      );
     }
     return this._performanceManager;
   }
@@ -3356,7 +3515,9 @@ export class WebGPUContext extends GraphicsContext {
       // returns the per-pass GPU timing snapshot. Call it defensively
       // because it may not be wired in every code path.
       try {
-        const pm: any = this._performanceManager;
+        const pm = this._performanceManager as unknown as {
+          getFrameTimings?: () => object;
+        };
         if (typeof pm.getFrameTimings === "function") {
           stats.performance = pm.getFrameTimings();
         }
@@ -3366,8 +3527,8 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (this._timestampProfiler) {
       try {
-        const tp: any = this._timestampProfiler;
-        if (typeof tp.getResults === "function") {
+        const tp = this._timestampProfiler;
+        if (tp && typeof tp.getResults === "function") {
           stats.timestamps = tp.getResults();
         }
       } catch (e) {
@@ -3376,16 +3537,18 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (this._indirectDrawManager) {
       stats.indirectDraw = {
-        drawCount: (this._indirectDrawManager as any).drawCount ?? 0,
+        drawCount: this._indirectDrawManager.drawCount ?? 0,
       };
     }
     // Volumetric fog renderer is wired through the feature renderer
     // registry, not a direct context field. Pull it via the standard
     // dispatch path so the lookup respects the lazy load contract.
     try {
-      const fogFR: any = this.getFeatureRenderer(
+      const fogFR = this.getFeatureRenderer(
         FeatureRendererKey.VOLUMETRIC_FOG,
-      );
+      ) as
+        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | undefined;
       if (fogFR && typeof fogFR.getStatistics === "function") {
         stats.volumetricFog = fogFR.getStatistics();
       }
@@ -3394,9 +3557,11 @@ export class WebGPUContext extends GraphicsContext {
     }
     // Phase 3 — Hi-Z occlusion + GPU sort keys diagnostic snapshots.
     try {
-      const hiZFR: any = this.getFeatureRenderer(
+      const hiZFR = this.getFeatureRenderer(
         FeatureRendererKey.HI_Z_OCCLUSION,
-      );
+      ) as
+        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | undefined;
       if (hiZFR && typeof hiZFR.getStatistics === "function") {
         stats.hiZOcclusion = hiZFR.getStatistics();
       }
@@ -3404,9 +3569,11 @@ export class WebGPUContext extends GraphicsContext {
       stats.hiZOcclusion = { error: String((e as Error)?.message ?? e) };
     }
     try {
-      const sortFR: any = this.getFeatureRenderer(
+      const sortFR = this.getFeatureRenderer(
         FeatureRendererKey.GPU_SORT_KEYS,
-      );
+      ) as
+        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | undefined;
       if (sortFR && typeof sortFR.getStatistics === "function") {
         stats.gpuSortKeys = sortFR.getStatistics();
       }
@@ -3415,9 +3582,11 @@ export class WebGPUContext extends GraphicsContext {
     }
     // Point cloud sort dispatcher stats.
     try {
-      const pcSortFR: any = this.getFeatureRenderer(
+      const pcSortFR = this.getFeatureRenderer(
         FeatureRendererKey.POINT_CLOUD_SORT,
-      );
+      ) as
+        | (CesiumFeatureRenderer & { getStatistics?: () => unknown })
+        | undefined;
       if (pcSortFR && typeof pcSortFR.getStatistics === "function") {
         stats.pointCloudSort = pcSortFR.getStatistics();
       }
@@ -3505,7 +3674,7 @@ export class WebGPUContext extends GraphicsContext {
    * Lazy-initialized on first access. Async init loads the FrustumCull.wgsl shader.
    * @returns The culler instance (may not be initialized yet — check .initialized)
    */
-  get gpuCuller(): any | null {
+  get gpuCuller(): GPUCullerInstance | null {
     if (!this._gpuCuller && this._device && !this._gpuCullerInitializing) {
       this._gpuCullerInitializing = true;
       import("./WebGPUGPUCuller.js").then(({ WebGPUGPUCuller }) => {
@@ -3514,7 +3683,7 @@ export class WebGPUContext extends GraphicsContext {
           label: `ctx-${this._id}`,
         });
         import("../../Shaders/WebGPU/Compute/FrustumCull.js")
-          .then((mod: any) => {
+          .then((mod: { default?: string | object }) => {
             const code = mod.default || mod;
             return culler.initialize(typeof code === "string" ? code : "");
           })
@@ -3538,7 +3707,7 @@ export class WebGPUContext extends GraphicsContext {
    * Get frame statistics
    * @returns {object} Statistics object
    */
-  getStatistics(): any {
+  getStatistics(): WebGPUFrameStatistics {
     return {
       frameCount: this._frameCount,
       drawCallCount: this._drawCallCount,

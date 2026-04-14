@@ -56,7 +56,9 @@ class Azure2DImageryProvider {
     const resource =
       options.url instanceof IonResource
         ? options.url
-        : Resource.createIfNeeded(options.url ?? "https://atlas.microsoft.com/");
+        : Resource.createIfNeeded(
+            options.url ?? "https://atlas.microsoft.com/",
+          );
 
     let templateUrl = resource.getUrlComponent();
     if (!trailingSlashRegex.test(templateUrl)) {

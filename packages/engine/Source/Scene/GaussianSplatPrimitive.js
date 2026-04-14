@@ -1491,7 +1491,11 @@ class GaussianSplatPrimitive {
       if (defined(this._pendingSnapshot)) {
         const pending = this._pendingSnapshot;
         if (pending.state === SnapshotState.BUILDING) {
-          GaussianSplatPrimitive.generateSplatTexture(this, frameState, pending);
+          GaussianSplatPrimitive.generateSplatTexture(
+            this,
+            frameState,
+            pending,
+          );
           return;
         }
         if (pending.state === SnapshotState.TEXTURE_PENDING) {
@@ -1509,7 +1513,11 @@ class GaussianSplatPrimitive {
         }
 
         Matrix4.clone(camera.viewMatrix, this._prevViewMatrix);
-        Matrix4.multiply(camera.viewMatrix, this._rootTransform, scratchMatrix4A);
+        Matrix4.multiply(
+          camera.viewMatrix,
+          this._rootTransform,
+          scratchMatrix4A,
+        );
 
         if (
           pending.state === SnapshotState.TEXTURE_READY &&

@@ -67,7 +67,10 @@ TrustedServers.remove = function (host, port) {
 function getAuthority(url) {
   let parsed;
   try {
-    parsed = new URL(url, window?.location?.href ?? "https://placeholder.invalid/");
+    parsed = new URL(
+      url,
+      window?.location?.href ?? "https://placeholder.invalid/",
+    );
   } catch {
     return undefined;
   }

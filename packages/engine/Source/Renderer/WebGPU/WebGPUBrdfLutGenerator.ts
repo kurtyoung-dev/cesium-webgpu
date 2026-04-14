@@ -215,7 +215,10 @@ interface BrdfLutCache {
  * @param generator - The BrdfLutGenerator instance
  * @param frameState - The current frame state
  */
-function updateWebGPUBrdfLut(generator: any, frameState: CesiumFrameState): void {
+function updateWebGPUBrdfLut(
+  generator: CesiumObjectWithWebGPUCache,
+  frameState: CesiumFrameState,
+): void {
   const context = frameState.context;
   const device: GPUDevice = context.device;
 
@@ -362,7 +365,9 @@ function updateWebGPUBrdfLut(generator: any, frameState: CesiumFrameState): void
 /**
  * Destroy WebGPU BRDF LUT resources.
  */
-function destroyWebGPUBrdfLutResources(generator: any): void {
+function destroyWebGPUBrdfLutResources(
+  generator: CesiumObjectWithWebGPUCache,
+): void {
   const cache = generator._webgpuCache as BrdfLutCache | undefined;
   if (!cache) {
     return;

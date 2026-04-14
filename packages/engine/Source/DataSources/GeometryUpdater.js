@@ -44,7 +44,10 @@ class GeometryUpdater {
     Check.defined("options.scene", options.scene);
     Check.defined("options.geometryOptions", options.geometryOptions);
     Check.defined("options.geometryPropertyName", options.geometryPropertyName);
-    Check.defined("options.observedPropertyNames", options.observedPropertyNames);
+    Check.defined(
+      "options.observedPropertyNames",
+      options.observedPropertyNames,
+    );
     //>>includeEnd('debug');
 
     const entity = options.entity;

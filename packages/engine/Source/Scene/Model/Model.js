@@ -342,7 +342,8 @@ class Model {
     this._heightDirty = this._heightReference !== HeightReference.NONE;
     this._removeUpdateHeightCallback = undefined;
 
-    this._enableVerticalExaggeration = options.enableVerticalExaggeration ?? true;
+    this._enableVerticalExaggeration =
+      options.enableVerticalExaggeration ?? true;
     this._hasVerticalExaggeration = false;
 
     this._clampedModelMatrix = undefined; // For use with height reference
@@ -395,7 +396,9 @@ class Model {
     this._imageBasedLighting = defined(options.imageBasedLighting)
       ? options.imageBasedLighting
       : new ImageBasedLighting();
-    this._shouldDestroyImageBasedLighting = !defined(options.imageBasedLighting);
+    this._shouldDestroyImageBasedLighting = !defined(
+      options.imageBasedLighting,
+    );
 
     this._environmentMapManager = undefined;
     const environmentMapManager = new DynamicEnvironmentMapManager(

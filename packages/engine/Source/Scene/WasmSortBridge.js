@@ -245,7 +245,10 @@ class WasmSortBridge {
       const sortedView = new Uint32Array(wasm.memory.buffer, idxPtr, count);
       this._indices.set(sortedView);
     } catch (e) {
-      console.warn("[CesiumJS:WasmSortBridge] WASM sort failed, using JS fallback:", e.message);
+      console.warn(
+        "[CesiumJS:WasmSortBridge] WASM sort failed, using JS fallback:",
+        e.message,
+      );
       radixSortByKey(this._indices, this._keysHigh, this._keysLow, count);
     }
   }

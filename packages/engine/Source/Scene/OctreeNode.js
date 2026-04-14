@@ -364,7 +364,10 @@ class OctreeNode {
       const childDistances = _scratchChildDistances;
       let childCount = 0;
       for (let i = 0; i < 8; i++) {
-        if (this.children[i] !== null && this.children[i].totalCommandCount > 0) {
+        if (
+          this.children[i] !== null &&
+          this.children[i].totalCommandCount > 0
+        ) {
           childDistances[childCount] = {
             index: i,
             distance: Cartesian3.distanceSquared(

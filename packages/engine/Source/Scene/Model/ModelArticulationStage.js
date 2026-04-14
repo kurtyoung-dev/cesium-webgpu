@@ -238,11 +238,7 @@ class ModelArticulationStage {
 
     value = CesiumMath.clamp(value, this.minimumValue, this.maximumValue);
     if (
-      !CesiumMath.equalsEpsilon(
-        this._currentValue,
-        value,
-        articulationEpsilon,
-      )
+      !CesiumMath.equalsEpsilon(this._currentValue, value, articulationEpsilon)
     ) {
       this._currentValue = value;
       this.runtimeArticulation._dirty = true;

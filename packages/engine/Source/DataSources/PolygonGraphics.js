@@ -196,4 +196,202 @@ class PolygonGraphics {
   }
 }
 
+Object.defineProperties(PolygonGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof PolygonGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the polygon.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the Property specifying the {@link PolygonHierarchy}.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  hierarchy: createPropertyDescriptor(
+    "hierarchy",
+    undefined,
+    createPolygonHierarchyProperty,
+  ),
+
+  /**
+   * Gets or sets the numeric Property specifying the constant altitude of the polygon.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  height: createPropertyDescriptor("height"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the numeric Property specifying the altitude of the polygon extrusion.
+   * If {@link PolygonGraphics#perPositionHeight} is false, the volume starts at {@link PolygonGraphics#height} and ends at this altitude.
+   * If {@link PolygonGraphics#perPositionHeight} is true, the volume starts at the height of each {@link PolygonGraphics#hierarchy} position and ends at this altitude.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  extrudedHeight: createPropertyDescriptor("extrudedHeight"),
+
+  /**
+   * Gets or sets the Property specifying the extruded {@link HeightReference}.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  extrudedHeightReference: createPropertyDescriptor("extrudedHeightReference"),
+
+  /**
+   * Gets or sets the numeric property specifying the rotation of the polygon texture counter-clockwise from north. Only has an effect if textureCoordinates is not defined.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0
+   */
+  stRotation: createPropertyDescriptor("stRotation"),
+
+  /**
+   * Gets or sets the numeric Property specifying the angular distance between points on the polygon.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default {CesiumMath.RADIANS_PER_DEGREE}
+   */
+  granularity: createPropertyDescriptor("granularity"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the polygon is filled with the provided material.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the polygon.
+   * @memberof PolygonGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the polygon is outlined.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Gets or sets the boolean specifying whether or not the the height of each position is used.
+   * If true, the shape will have non-uniform altitude defined by the height of each {@link PolygonGraphics#hierarchy} position.
+   * If false, the shape will have a constant altitude as specified by {@link PolygonGraphics#height}.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  perPositionHeight: createPropertyDescriptor("perPositionHeight"),
+
+  /**
+   * Gets or sets a boolean specifying whether or not the top of an extruded polygon is included.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  closeTop: createPropertyDescriptor("closeTop"),
+
+  /**
+   * Gets or sets a boolean specifying whether or not the bottom of an extruded polygon is included.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  closeBottom: createPropertyDescriptor("closeBottom"),
+
+  /**
+   * Gets or sets the {@link ArcType} Property specifying the type of lines the polygon edges use.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default ArcType.GEODESIC
+   */
+  arcType: createPropertyDescriptor("arcType"),
+
+  /**
+   * Get or sets the enum Property specifying whether the polygon
+   * casts or receives shadows from light sources.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this polygon will be displayed.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the {@link ClassificationType} Property specifying whether this polygon will classify terrain, 3D Tiles, or both when on the ground.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   * @default ClassificationType.BOTH
+   */
+  classificationType: createPropertyDescriptor("classificationType"),
+
+  /**
+   * Gets or sets the zIndex Prperty specifying the ordering of ground geometry.  Only has an effect if the polygon is constant and neither height or extrudedHeight are specified.
+   * @memberof PolygonGraphics.prototype
+   * @type {ConstantProperty|undefined}
+   * @default 0
+   */
+  zIndex: createPropertyDescriptor("zIndex"),
+
+  /**
+   *  A Property specifying texture coordinates as a {@link PolygonHierarchy} of {@link Cartesian2} points. Has no effect for ground primitives.
+   * @memberof PolygonGraphics.prototype
+   * @type {Property|undefined}
+   */
+  textureCoordinates: createPropertyDescriptor("textureCoordinates"),
+});
+
 export default PolygonGraphics;

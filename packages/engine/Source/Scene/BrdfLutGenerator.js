@@ -21,7 +21,9 @@ class BrdfLutGenerator {
 
   update(frameState) {
     // Route to WebGPU feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.BRDF_LUT);
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.BRDF_LUT,
+    );
     if (fr) {
       fr.update(this, frameState);
       this._featureRenderer = fr;

@@ -544,7 +544,11 @@ class Cesium3DTile {
    * @param {boolean} useParentGeometricError
    * @param {number} progressiveResolutionHeightFraction
    */
-  getScreenSpaceError(frameState, useParentGeometricError, progressiveResolutionHeightFraction) {
+  getScreenSpaceError(
+    frameState,
+    useParentGeometricError,
+    progressiveResolutionHeightFraction,
+  ) {
     const tileset = this._tileset;
     const heightFraction = progressiveResolutionHeightFraction ?? 1.0;
     const parentGeometricError = defined(this.parent)
@@ -722,7 +726,8 @@ class Cesium3DTile {
       this._debugContentBoundingVolume &&
       this._debugContentBoundingVolume.destroy();
     this._debugViewerRequestVolume =
-      this._debugViewerRequestVolume && this._debugViewerRequestVolume.destroy();
+      this._debugViewerRequestVolume &&
+      this._debugViewerRequestVolume.destroy();
   }
 
   /**
@@ -886,7 +891,10 @@ class Cesium3DTile {
     let metadataBoundingVolumeHeader;
     if (defined(tileMetadata)) {
       metadataBoundingVolumeHeader =
-        BoundingVolumeSemantics.parseBoundingVolumeSemantic("TILE", tileMetadata);
+        BoundingVolumeSemantics.parseBoundingVolumeSemantic(
+          "TILE",
+          tileMetadata,
+        );
     }
     if (defined(metadataBoundingVolumeHeader)) {
       boundingVolumeHeader = metadataBoundingVolumeHeader;
@@ -1034,7 +1042,8 @@ class Cesium3DTile {
       this._debugContentBoundingVolume &&
       this._debugContentBoundingVolume.destroy();
     this._debugViewerRequestVolume =
-      this._debugViewerRequestVolume && this._debugViewerRequestVolume.destroy();
+      this._debugViewerRequestVolume &&
+      this._debugViewerRequestVolume.destroy();
   }
 
   updateGeometricErrorScale() {
@@ -1200,7 +1209,8 @@ class Cesium3DTile {
       preferredSortingLeftShift,
     );
 
-    const preloadProgressiveResolutionDigits = this._priorityProgressiveResolution
+    const preloadProgressiveResolutionDigits = this
+      ._priorityProgressiveResolution
       ? 0
       : preloadProgressiveResolutionScale;
 
@@ -1218,7 +1228,9 @@ class Cesium3DTile {
     const foveatedDeferDigits = this.priorityDeferred ? foveatedDeferScale : 0;
 
     const preloadFlightDigits =
-      tileset._pass === Cesium3DTilePass.PRELOAD_FLIGHT ? 0 : preloadFlightScale;
+      tileset._pass === Cesium3DTilePass.PRELOAD_FLIGHT
+        ? 0
+        : preloadFlightScale;
 
     // Get the final base 10 number
     this._priority =
@@ -1253,7 +1265,8 @@ class Cesium3DTile {
       this._debugContentBoundingVolume &&
       this._debugContentBoundingVolume.destroy();
     this._debugViewerRequestVolume =
-      this._debugViewerRequestVolume && this._debugViewerRequestVolume.destroy();
+      this._debugViewerRequestVolume &&
+      this._debugViewerRequestVolume.destroy();
     return destroyObject(this);
   }
 

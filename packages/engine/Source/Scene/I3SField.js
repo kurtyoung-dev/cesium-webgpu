@@ -173,7 +173,9 @@ class I3SField {
   _getBodyOffset(headerSize) {
     let valueSize = 0;
     if (defined(this._storageInfo.attributeValues)) {
-      valueSize = getNumericTypeSize(this._storageInfo.attributeValues.valueType);
+      valueSize = getNumericTypeSize(
+        this._storageInfo.attributeValues.valueType,
+      );
     } else if (defined(this._storageInfo.objectIds)) {
       valueSize = getNumericTypeSize(this._storageInfo.objectIds.valueType);
     }

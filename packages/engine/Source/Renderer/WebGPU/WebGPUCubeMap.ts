@@ -62,7 +62,7 @@ interface CubeMapSource {
 }
 
 interface WebGPUCubeMapOptions {
-  context: any;
+  context: CesiumGraphicsContext;
   source?: CubeMapSource;
   width?: number;
   height?: number;
@@ -70,12 +70,12 @@ interface WebGPUCubeMapOptions {
   pixelDatatype?: number;
   flipY?: boolean;
   preMultiplyAlpha?: boolean;
-  sampler?: any;
+  sampler?: CesiumOpaqueSampler | null;
 }
 
 class WebGPUCubeMap {
-  private _context: any;
-  private _gpuTexture: any; // WebGPUTexture instance (cubemap)
+  private _context: CesiumGraphicsContext | null;
+  private _gpuTexture: WebGPUTexture | null;
   private _size: number;
   private _pixelFormat: number;
   private _pixelDatatype: number;
@@ -84,7 +84,7 @@ class WebGPUCubeMap {
   private _sizeInBytes: number;
   private _preMultiplyAlpha: boolean;
   private _flipY: boolean;
-  private _sampler: any;
+  private _sampler: CesiumOpaqueSampler | null;
   private _destroyed: boolean;
 
   // Individual face accessors (matching CubeMap.js API)
@@ -97,7 +97,8 @@ class WebGPUCubeMap {
 
   constructor(options: WebGPUCubeMapOptions) {
     const context = options.context;
-    if (!context || !context._device) {
+    const device = context._device;
+    if (!device) {
       throw new Error("A WebGPU context with an active device is required.");
     }
 
@@ -132,7 +133,7 @@ class WebGPUCubeMap {
 
     // Create the cubemap texture (2D with 6 layers)
     const gpuTexture = WebGPUTexture.createCubeMap(
-      context._device,
+      device,
       size,
       webgpuFormat,
       1, // mipLevelCount — updated if generateMipmap is called
@@ -231,7 +232,8 @@ class WebGPUCubeMap {
    * Upload source images/data to all 6 cubemap faces.
    */
   private _uploadFaces(source: CubeMapSource): void {
-    const faces: [WebGPUCubeMapFace, any][] = [
+    type CubeMapFaceSource = CubeMapSource[keyof CubeMapSource];
+    const faces: [WebGPUCubeMapFace, CubeMapFaceSource][] = [
       [this._positiveX, source.positiveX],
       [this._negativeX, source.negativeX],
       [this._positiveY, source.positiveY],
@@ -315,22 +317,22 @@ class WebGPUCubeMap {
   // --- Texture properties ---
 
   /** The "cube" dimension texture view for shader sampling */
-  get textureView(): GPUTextureView {
+  get textureView(): GPUTextureView | null {
     return this._gpuTexture?.view ?? null;
   }
 
   /** The "2d-array" view for rendering to individual faces */
-  get arrayView(): GPUTextureView {
-    return this._gpuTexture?.createArrayView?.() ?? null;
+  get arrayView(): GPUTextureView | null {
+    return this._gpuTexture?.createArrayView() ?? null;
   }
 
   /** The underlying GPUTexture */
-  get gpuTexture(): GPUTexture {
-    return this._gpuTexture?.gpuTexture ?? null;
+  get gpuTexture(): GPUTexture | null {
+    return this._gpuTexture?.texture ?? null;
   }
 
   /** Alias for compatibility: the WebGL texture property */
-  get _texture(): any {
+  get _texture(): WebGPUTexture | null {
     return this._gpuTexture;
   }
 
@@ -362,10 +364,10 @@ class WebGPUCubeMap {
     return this._flipY;
   }
 
-  get sampler(): any {
+  get sampler(): CesiumOpaqueSampler | null {
     return this._sampler;
   }
-  set sampler(value: any) {
+  set sampler(value: CesiumOpaqueSampler | null) {
     this._sampler = value;
   }
 
@@ -374,7 +376,7 @@ class WebGPUCubeMap {
    * Delegates to WebGPUMipmapGenerator.
    */
   generateMipmap(hint?: number): void {
-    if (this._gpuTexture && this._gpuTexture.generateMipmaps) {
+    if (this._gpuTexture) {
       this._gpuTexture.generateMipmaps();
     }
     this._hasMipmap = true;
@@ -385,7 +387,7 @@ class WebGPUCubeMap {
   }
 
   destroy(): void {
-    if (this._gpuTexture && this._gpuTexture.destroy) {
+    if (this._gpuTexture) {
       this._gpuTexture.destroy();
     }
     this._gpuTexture = null;

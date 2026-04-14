@@ -576,9 +576,11 @@ class CesiumInspectorViewModel {
         }
       });
 
-    this._removePostRenderEvent = scene.postRender.addEventListener(function () {
-      that._update();
-    });
+    this._removePostRenderEvent = scene.postRender.addEventListener(
+      function () {
+        that._update();
+      },
+    );
   }
 
   /**
@@ -596,7 +598,11 @@ class CesiumInspectorViewModel {
     const numberOfFrustums = this._scene.numberOfFrustums;
     this._numberOfFrustums = numberOfFrustums;
     // Bound the frustum to be displayed.
-    this.depthFrustum = boundDepthFrustum(1, numberOfFrustums, this.depthFrustum);
+    this.depthFrustum = boundDepthFrustum(
+      1,
+      numberOfFrustums,
+      this.depthFrustum,
+    );
     // Update the displayed text.
     this.depthFrustumText = `${this.depthFrustum} of ${numberOfFrustums}`;
 

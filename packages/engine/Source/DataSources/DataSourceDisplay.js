@@ -69,7 +69,8 @@ class DataSourceDisplay {
     this._dataSourceCollection = dataSourceCollection;
     this._scene = scene;
     this._visualizersCallback =
-      options.visualizersCallback ?? DataSourceDisplay.defaultVisualizersCallback;
+      options.visualizersCallback ??
+      DataSourceDisplay.defaultVisualizersCallback;
 
     let primitivesAdded = false;
     const primitives = new PrimitiveCollection();
@@ -85,7 +86,10 @@ class DataSourceDisplay {
     this._groundPrimitives = groundPrimitives;
 
     for (let i = 0, len = dataSourceCollection.length; i < len; i++) {
-      this._onDataSourceAdded(dataSourceCollection, dataSourceCollection.get(i));
+      this._onDataSourceAdded(
+        dataSourceCollection,
+        dataSourceCollection.get(i),
+      );
     }
 
     const defaultDataSource = new CustomDataSource();
@@ -113,7 +117,8 @@ class DataSourceDisplay {
     }
 
     this._removeDefaultDataSourceListener = removeDefaultDataSourceListener;
-    this._removeDataSourceCollectionListener = removeDataSourceCollectionListener;
+    this._removeDataSourceCollectionListener =
+      removeDataSourceCollectionListener;
 
     this._ready = false;
   }

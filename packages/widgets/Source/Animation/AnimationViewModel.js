@@ -351,16 +351,19 @@ class AnimationViewModel {
       knockout.getObservable(this, "_isSystemTimeAvailable"),
     );
 
-    this._playRealtimeViewModel = new ToggleButtonViewModel(playRealtimeCommand, {
-      toggled: knockout.computed(function () {
-        return clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK;
-      }),
-      tooltip: knockout.computed(function () {
-        return that._isSystemTimeAvailable
-          ? "Today (real-time)"
-          : "Current time not in range";
-      }),
-    });
+    this._playRealtimeViewModel = new ToggleButtonViewModel(
+      playRealtimeCommand,
+      {
+        toggled: knockout.computed(function () {
+          return clockViewModel.clockStep === ClockStep.SYSTEM_CLOCK;
+        }),
+        tooltip: knockout.computed(function () {
+          return that._isSystemTimeAvailable
+            ? "Today (real-time)"
+            : "Current time not in range";
+        }),
+      },
+    );
 
     this._slower = createCommand(function () {
       const clockViewModel = that._clockViewModel;

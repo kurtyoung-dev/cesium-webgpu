@@ -650,12 +650,7 @@ function renderFrame(that, frame, updateState, frameState) {
     // The bridge.sortByDistance call is correct and will dispatch
     // to GPU when useGPUSort is true and context supports compute.
     const context = frameState.context;
-    bridge.sortByDistance(
-      that._sortDistSq,
-      count,
-      that._sortIndices,
-      context,
-    );
+    bridge.sortByDistance(that._sortDistSq, count, that._sortIndices, context);
   }
 
   try {

@@ -117,7 +117,12 @@ class Expression {
    *
    * @private
    */
-  getShaderFunction(functionSignature, variableSubstitutionMap, shaderState, returnType) {
+  getShaderFunction(
+    functionSignature,
+    variableSubstitutionMap,
+    shaderState,
+    returnType,
+  ) {
     let shaderExpression = this.getShaderExpression(
       variableSubstitutionMap,
       shaderState,

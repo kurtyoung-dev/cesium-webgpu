@@ -164,4 +164,166 @@ class CorridorGraphics {
   }
 }
 
+Object.defineProperties(CorridorGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof CorridorGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the corridor.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets a Property specifying the array of {@link Cartesian3} positions that define the centerline of the corridor.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   */
+  positions: createPropertyDescriptor("positions"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   */
+  width: createPropertyDescriptor("width"),
+
+  /**
+   * Gets or sets the numeric Property specifying the altitude of the corridor.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default 0.0
+   */
+  height: createPropertyDescriptor("height"),
+
+  /**
+   * Gets or sets the Property specifying the {@link HeightReference}.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  heightReference: createPropertyDescriptor("heightReference"),
+
+  /**
+   * Gets or sets the numeric Property specifying the altitude of the corridor extrusion.
+   * Setting this property creates a corridor shaped volume starting at height and ending
+   * at this altitude.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   */
+  extrudedHeight: createPropertyDescriptor("extrudedHeight"),
+
+  /**
+   * Gets or sets the Property specifying the extruded {@link HeightReference}.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default HeightReference.NONE
+   */
+  extrudedHeightReference: createPropertyDescriptor("extrudedHeightReference"),
+
+  /**
+   * Gets or sets the {@link CornerType} Property specifying how corners are styled.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default CornerType.ROUNDED
+   */
+  cornerType: createPropertyDescriptor("cornerType"),
+
+  /**
+   * Gets or sets the numeric Property specifying the sampling distance between each latitude and longitude point.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default {CesiumMath.RADIANS_PER_DEGREE}
+   */
+  granularity: createPropertyDescriptor("granularity"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the corridor is filled with the provided material.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the corridor.
+   * @memberof CorridorGraphics.prototype
+   * @type {MaterialProperty|undefined}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the corridor is outlined.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Get or sets the enum Property specifying whether the corridor
+   * casts or receives shadows from light sources.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this corridor will be displayed.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+
+  /**
+   * Gets or sets the {@link ClassificationType} Property specifying whether this corridor will classify terrain, 3D Tiles, or both when on the ground.
+   * @memberof CorridorGraphics.prototype
+   * @type {Property|undefined}
+   * @default ClassificationType.BOTH
+   */
+  classificationType: createPropertyDescriptor("classificationType"),
+
+  /**
+   * Gets or sets the zIndex Property specifying the ordering of the corridor.  Only has an effect if the coridor is static and neither height or exturdedHeight are specified.
+   * @memberof CorridorGraphics.prototype
+   * @type {ConstantProperty|undefined}
+   * @default 0
+   */
+  zIndex: createPropertyDescriptor("zIndex"),
+});
+
 export default CorridorGraphics;

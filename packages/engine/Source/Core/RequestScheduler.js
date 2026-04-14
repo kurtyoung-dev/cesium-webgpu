@@ -31,8 +31,7 @@ requestHeap.reserve(priorityHeapLength);
 const activeRequests = [];
 let numberOfActiveRequestsByServer = {};
 
-const pageUri =
-  typeof document !== "undefined" ? document.location.href : "";
+const pageUri = typeof document !== "undefined" ? document.location.href : "";
 
 const requestCompletedEvent = new Event();
 

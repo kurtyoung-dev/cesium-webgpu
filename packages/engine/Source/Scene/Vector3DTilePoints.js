@@ -222,9 +222,11 @@ class Vector3DTilePoints {
           style.translucencyByDistance.evaluate(feature);
         if (defined(translucencyByDistanceCart4)) {
           scratchTranslucencyByDistance.near = translucencyByDistanceCart4.x;
-          scratchTranslucencyByDistance.nearValue = translucencyByDistanceCart4.y;
+          scratchTranslucencyByDistance.nearValue =
+            translucencyByDistanceCart4.y;
           scratchTranslucencyByDistance.far = translucencyByDistanceCart4.z;
-          scratchTranslucencyByDistance.farValue = translucencyByDistanceCart4.w;
+          scratchTranslucencyByDistance.farValue =
+            translucencyByDistanceCart4.w;
           feature.translucencyByDistance = scratchTranslucencyByDistance;
         } else {
           feature.translucencyByDistance = undefined;
@@ -237,7 +239,8 @@ class Vector3DTilePoints {
         const distanceDisplayConditionCart2 =
           style.distanceDisplayCondition.evaluate(feature);
         if (defined(distanceDisplayConditionCart2)) {
-          scratchDistanceDisplayCondition.near = distanceDisplayConditionCart2.x;
+          scratchDistanceDisplayCondition.near =
+            distanceDisplayConditionCart2.x;
           scratchDistanceDisplayCondition.far = distanceDisplayConditionCart2.y;
           feature.distanceDisplayCondition = scratchDistanceDisplayCondition;
         } else {
@@ -287,7 +290,8 @@ class Vector3DTilePoints {
       }
 
       if (defined(style.labelVerticalOrigin)) {
-        feature.labelVerticalOrigin = style.labelVerticalOrigin.evaluate(feature);
+        feature.labelVerticalOrigin =
+          style.labelVerticalOrigin.evaluate(feature);
       }
     }
   }

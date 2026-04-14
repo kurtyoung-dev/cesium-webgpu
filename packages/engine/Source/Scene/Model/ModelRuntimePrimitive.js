@@ -204,7 +204,9 @@ class ModelRuntimePrimitive {
     const useWebgl2 = frameState.context.webgl2;
     const mode = frameState.mode;
     const use2D =
-      mode !== SceneMode.SCENE3D && !frameState.scene3DOnly && model._projectTo2D;
+      mode !== SceneMode.SCENE3D &&
+      !frameState.scene3DOnly &&
+      model._projectTo2D;
     const hasVerticalExaggeration =
       frameState.verticalExaggeration !== 1.0 && model.hasVerticalExaggeration;
 

@@ -82,7 +82,8 @@ class FullscreenButtonViewModel {
       knockout.getObservable(this, "isFullscreenEnabled"),
     );
 
-    this._fullscreenElement = getElement(fullscreenElement) ?? ownerDocument.body;
+    this._fullscreenElement =
+      getElement(fullscreenElement) ?? ownerDocument.body;
 
     this._callback = function () {
       tmpIsFullscreen(Fullscreen.fullscreen);

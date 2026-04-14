@@ -40,7 +40,7 @@ interface ComponentDatatypeFull {
     byteOffset?: number,
     length?: number,
   ): ArrayBufferView;
-  fromTypedArray(array: any): number;
+  fromTypedArray(array: ArrayBufferView): number;
   validate(componentDatatype: number): boolean;
   createTypedArray(
     componentDatatype: number,
@@ -106,7 +106,15 @@ interface ArrayView {
   normalize: boolean;
   offsetInBytes: number;
   vertexSizeInComponentType: number;
-  view: any; // Float32Array | Int16Array | Int8Array etc.
+  view:
+    | Float32Array
+    | Uint8Array
+    | Int8Array
+    | Uint16Array
+    | Int16Array
+    | Uint32Array
+    | Int32Array
+    | Float64Array;
 }
 
 /**
@@ -364,7 +372,15 @@ class WebGPUVertexArrayFacade {
         view.componentDatatype,
         newArrayBuffer,
         view.offsetInBytes,
-      );
+      ) as
+        | Float32Array
+        | Uint8Array
+        | Int8Array
+        | Uint16Array
+        | Int16Array
+        | Uint32Array
+        | Int32Array
+        | Float64Array;
     }
 
     buffer.arrayBuffer = newArrayBuffer;

@@ -248,10 +248,7 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     });
   }
 
-  const perfMgr =
-    typeof context.performanceManager !== "undefined"
-      ? context.performanceManager
-      : null;
+  const perfMgr = context.performanceManager ?? null;
   const computeOk = !!perfMgr && context.supportsComputeShaders === true;
 
   if (!computeOk) {

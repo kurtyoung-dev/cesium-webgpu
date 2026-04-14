@@ -11,7 +11,14 @@
 /// <reference types="@webgpu/types" />
 
 import createGuid from "../../../Core/createGuid.js";
-import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
+import type {
+  WebGLStubState,
+  LogUsageFn,
+  StubFramebuffer,
+  StubRenderbuffer,
+  StubAttachment,
+  StubTextureWrapper,
+} from "./WebGLStubTypes.js";
 
 // WebGL attachment constants
 const GL_COLOR_ATTACHMENT0 = 0x8ce0;
@@ -50,18 +57,13 @@ function resolveRenderbufferFormat(internalformat: number): GPUTextureFormat {
 export function createFramebufferStubs(
   state: WebGLStubState,
   _logUsage: LogUsageFn,
-): Record<string, any> {
+): Record<string, unknown> {
   return {
     // ==== Framebuffer methods ====
 
-    createFramebuffer: () => {
+    createFramebuffer: (): StubFramebuffer => {
       const fboId = createGuid();
-      const fbo: {
-        _id: string;
-        _colorAttachment: any;
-        _depthAttachment: any;
-        _isWebGPU: boolean;
-      } = {
+      const fbo: StubFramebuffer = {
         _id: fboId,
         _colorAttachment: null,
         _depthAttachment: null,
@@ -74,11 +76,11 @@ export function createFramebufferStubs(
       return fbo;
     },
 
-    bindFramebuffer: (_target: number, framebuffer: any) => {
+    bindFramebuffer: (_target: number, framebuffer: StubFramebuffer | null) => {
       state.boundFramebuffer = framebuffer;
     },
 
-    deleteFramebuffer: (framebuffer: any) => {
+    deleteFramebuffer: (framebuffer: StubFramebuffer | null) => {
       if (!framebuffer) return;
       const fboData = state.framebuffers.get(framebuffer);
       if (fboData) {
@@ -96,7 +98,7 @@ export function createFramebufferStubs(
       _target: number,
       attachment: number,
       _textarget: number,
-      texture: any,
+      texture: StubTextureWrapper | null,
       _level: number,
     ) => {
       if (!state.boundFramebuffer) return;
@@ -116,7 +118,7 @@ export function createFramebufferStubs(
       _target: number,
       attachment: number,
       _renderbuffertarget: number,
-      renderbuffer: any,
+      renderbuffer: StubRenderbuffer | null,
     ) => {
       if (!state.boundFramebuffer) return;
       const fboData = state.framebuffers.get(state.boundFramebuffer);
@@ -147,11 +149,14 @@ export function createFramebufferStubs(
       };
     },
 
-    bindRenderbuffer: (_target: number, renderbuffer: any) => {
+    bindRenderbuffer: (
+      _target: number,
+      renderbuffer: StubRenderbuffer | null,
+    ) => {
       state.boundRenderbuffer = renderbuffer;
     },
 
-    deleteRenderbuffer: (renderbuffer: any) => {
+    deleteRenderbuffer: (renderbuffer: StubRenderbuffer | null) => {
       if (renderbuffer?._texture) renderbuffer._texture.destroy();
     },
 

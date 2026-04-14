@@ -52,7 +52,9 @@ class Cesium3DTilesInvalidationFeed {
       throw new DeveloperError("options.adapter is required.");
     }
     if (!defined(options.layers) || !Array.isArray(options.layers)) {
-      throw new DeveloperError("options.layers must be an array of layer names.");
+      throw new DeveloperError(
+        "options.layers must be an array of layer names.",
+      );
     }
 
     this._tileset = tileset;
@@ -117,7 +119,8 @@ class Cesium3DTilesInvalidationFeed {
    */
   apply(set) {
     const t0 =
-      typeof performance !== "undefined" && typeof performance.now === "function"
+      typeof performance !== "undefined" &&
+      typeof performance.now === "function"
         ? performance.now()
         : 0;
 
@@ -198,7 +201,8 @@ class Cesium3DTilesInvalidationFeed {
     }
 
     this._lastApplyMs =
-      typeof performance !== "undefined" && typeof performance.now === "function"
+      typeof performance !== "undefined" &&
+      typeof performance.now === "function"
         ? performance.now() - t0
         : 0;
     return affected;

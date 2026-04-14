@@ -133,7 +133,12 @@ class EdgeFramebuffer {
    *
    * @returns {Framebuffer} The edge framebuffer.
    */
-  getFramebuffer(context, viewport, existingColorTexture, existingDepthTexture) {
+  getFramebuffer(
+    context,
+    viewport,
+    existingColorTexture,
+    existingDepthTexture,
+  ) {
     this.update(
       context,
       viewport,

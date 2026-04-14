@@ -113,9 +113,7 @@ class Empty3DTileContent {
 
   set metadata(value) {
     //>>includeStart('debug', pragmas.debug);
-    throw new DeveloperError(
-      "Empty3DTileContent cannot have content metadata",
-    );
+    throw new DeveloperError("Empty3DTileContent cannot have content metadata");
     //>>includeEnd('debug');
   }
 

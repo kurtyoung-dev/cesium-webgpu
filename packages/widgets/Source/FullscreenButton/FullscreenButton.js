@@ -35,7 +35,10 @@ class FullscreenButton {
 
     container = getElement(container);
 
-    const viewModel = new FullscreenButtonViewModel(fullscreenElement, container);
+    const viewModel = new FullscreenButtonViewModel(
+      fullscreenElement,
+      container,
+    );
 
     viewModel._exitFullScreenPath = exitFullScreenPath;
     viewModel._enterFullScreenPath = enterFullScreenPath;

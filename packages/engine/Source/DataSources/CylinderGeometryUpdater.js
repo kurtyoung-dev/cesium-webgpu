@@ -62,7 +62,12 @@ class CylinderGeometryUpdater {
       ],
     });
 
-    this._onEntityPropertyChanged(entity, "cylinder", entity.cylinder, undefined);
+    this._onEntityPropertyChanged(
+      entity,
+      "cylinder",
+      entity.cylinder,
+      undefined,
+    );
   }
 
   /**
@@ -112,7 +117,10 @@ class CylinderGeometryUpdater {
         defined(this._materialProperty.color) &&
         (this._materialProperty.color.isConstant || isAvailable)
       ) {
-        currentColor = this._materialProperty.color.getValue(time, scratchColor);
+        currentColor = this._materialProperty.color.getValue(
+          time,
+          scratchColor,
+        );
       }
       if (!defined(currentColor)) {
         currentColor = Color.WHITE;
@@ -252,7 +260,9 @@ class CylinderGeometryUpdater {
         : MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat;
     options.length = cylinder.length.getValue(Iso8601.MINIMUM_VALUE);
     options.topRadius = cylinder.topRadius.getValue(Iso8601.MINIMUM_VALUE);
-    options.bottomRadius = cylinder.bottomRadius.getValue(Iso8601.MINIMUM_VALUE);
+    options.bottomRadius = cylinder.bottomRadius.getValue(
+      Iso8601.MINIMUM_VALUE,
+    );
     options.slices = Property.getValueOrUndefined(
       cylinder.slices,
       Iso8601.MINIMUM_VALUE,

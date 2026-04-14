@@ -59,7 +59,8 @@ class ClassificationModelDrawCommand {
     this._classifiesTerrain = type !== ClassificationType.CESIUM_3D_TILE;
     this._classifies3DTiles = type !== ClassificationType.TERRAIN;
 
-    this._useDebugWireframe = model._enableDebugWireframe && model.debugWireframe;
+    this._useDebugWireframe =
+      model._enableDebugWireframe && model.debugWireframe;
     this._pickId = renderResources.pickId;
 
     this._commandListTerrain = [];

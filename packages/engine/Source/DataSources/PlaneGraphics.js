@@ -119,4 +119,103 @@ class PlaneGraphics {
   }
 }
 
+Object.defineProperties(PlaneGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof PlaneGraphics.prototype
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the plane.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the {@link Plane} Property specifying the normal and distance of the plane.
+   *
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   */
+  plane: createPropertyDescriptor("plane"),
+
+  /**
+   * Gets or sets the {@link Cartesian2} Property specifying the width and height of the plane.
+   *
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   */
+  dimensions: createPropertyDescriptor("dimensions"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the plane is filled with the provided material.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the material used to fill the plane.
+   * @memberof PlaneGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the plane is outlined.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Get or sets the enum Property specifying whether the plane
+   * casts or receives shadows from light sources.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this plane will be displayed.
+   * @memberof PlaneGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default PlaneGraphics;

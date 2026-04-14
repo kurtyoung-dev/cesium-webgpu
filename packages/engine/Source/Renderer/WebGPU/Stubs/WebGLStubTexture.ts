@@ -40,6 +40,21 @@ import {
 import { WebGPUMipmapGenerator } from "../WebGPUMipmapGenerator.js";
 
 /**
+ * Union of pixel source types that can be passed to `texImage2D` /
+ * `texSubImage2D`.  Covers raw byte views, image elements, canvas,
+ * video, and ImageBitmap.
+ */
+type TexImagePixelSource =
+  | ArrayBufferView
+  | ArrayBuffer
+  | ImageBitmap
+  | HTMLImageElement
+  | HTMLCanvasElement
+  | HTMLVideoElement
+  | OffscreenCanvas
+  | ImageData;
+
+/**
  * WebGL texture-related constants.
  */
 export const TEXTURE_CONSTANTS = Object.freeze({
@@ -81,8 +96,9 @@ interface StubTexture {
   _isPlaceholder: boolean;
   // Pending sampler descriptor — fields are populated as texParameteri
   // calls come in. Used to build the GPUSampler when the texture is first
-  // uploaded.
-  _samplerDesc: {
+  // uploaded. Optional because StubTextureWrapper (from which StubTexture
+  // is assigned) declares it as optional.
+  _samplerDesc?: {
     magFilter: GPUFilterMode;
     minFilter: GPUFilterMode;
     mipmapFilter: GPUMipmapFilterMode;
@@ -104,6 +120,7 @@ interface StubTexture {
     mipLevelCount: number;
     destroy(): void;
   } | null;
+  destroy?(): void;
 }
 
 function createPendingSamplerDesc() {
@@ -175,7 +192,9 @@ function flipYBuffer(
  * object — these go through `copyExternalImageToTexture` rather than
  * `writeTexture`, which expects raw bytes.
  */
-function isExternalImageSource(pixels: any): boolean {
+function isExternalImageSource(
+  pixels: TexImagePixelSource | null | undefined,
+): boolean {
   if (!pixels) return false;
   if (typeof ImageBitmap !== "undefined" && pixels instanceof ImageBitmap) {
     return true;
@@ -274,13 +293,13 @@ function ensureTextureAllocated(
 export function createTextureStubs(
   state: WebGLStubState,
   logUsage: LogUsageFn,
-): Record<string, any> {
+): Record<string, unknown> {
   return {
     activeTexture: (unit: number) => {
       state.activeTextureUnit = unit - 0x84c0;
     },
 
-    bindTexture: (target: number, texture: any) => {
+    bindTexture: (target: number, texture: StubTexture | null) => {
       state.textureBindings.set(state.activeTextureUnit, { target, texture });
     },
 
@@ -292,7 +311,7 @@ export function createTextureStubs(
       };
     },
 
-    deleteTexture: (texture: any) => {
+    deleteTexture: (texture: StubTexture | null) => {
       if (texture?._webgpuTexture?.destroy) {
         texture._webgpuTexture.destroy();
         texture._webgpuTexture = null;
@@ -377,10 +396,10 @@ export function createTextureStubs(
       internalformat: number,
       widthOrFormat: number,
       heightOrType: number,
-      borderOrSource: number | any,
+      borderOrSource: number | TexImagePixelSource,
       formatArg?: number,
       typeArg?: number,
-      pixelsArg?: ArrayBufferView | any,
+      pixelsArg?: TexImagePixelSource | null,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
       const wrapper: StubTexture | undefined = binding?.texture;
@@ -391,7 +410,7 @@ export function createTextureStubs(
       let height: number;
       let format: number;
       let type: number;
-      let pixels: any;
+      let pixels: TexImagePixelSource | null;
       if (typeof formatArg === "number" && typeof typeArg === "number") {
         // 9-arg form: (target, level, internalformat, width, height, border, format, type, pixels)
         width = widthOrFormat;
@@ -403,10 +422,16 @@ export function createTextureStubs(
         // 6-arg form: (target, level, internalformat, format, type, source)
         format = widthOrFormat;
         type = heightOrType;
-        pixels = borderOrSource;
+        pixels = borderOrSource as TexImagePixelSource;
         if (!pixels) return;
-        width = pixels.width ?? pixels.videoWidth ?? 0;
-        height = pixels.height ?? pixels.videoHeight ?? 0;
+        const imgSrc = pixels as {
+          width?: number;
+          height?: number;
+          videoWidth?: number;
+          videoHeight?: number;
+        };
+        width = imgSrc.width ?? imgSrc.videoWidth ?? 0;
+        height = imgSrc.height ?? imgSrc.videoHeight ?? 0;
       }
 
       if (width <= 0 || height <= 0) return;
@@ -430,7 +455,10 @@ export function createTextureStubs(
         // and the WebGPU equivalent of UNPACK_FLIP_Y via flipY.
         try {
           state.device.queue.copyExternalImageToTexture(
-            { source: pixels, flipY: state.pixelStore.unpackFlipY },
+            {
+              source: pixels as ImageBitmap,
+              flipY: state.pixelStore.unpackFlipY,
+            },
             {
               texture: tex.texture,
               mipLevel: level,
@@ -499,7 +527,10 @@ export function createTextureStubs(
       const bpt = bytesPerTexel(tex.format);
       const bytesPerRow = width * bpt;
       const view = pixels as ArrayBufferView;
-      const rawBuffer = view.buffer instanceof ArrayBuffer ? view.buffer : new Uint8Array(view.buffer).buffer;
+      const rawBuffer =
+        view.buffer instanceof ArrayBuffer
+          ? view.buffer
+          : new Uint8Array(view.buffer).buffer;
       let data = new Uint8Array(
         rawBuffer,
         view.byteOffset ?? 0,
@@ -656,9 +687,11 @@ export function createTextureStubs(
       // Lazy-create the generator on the first call. Stored on `state` so
       // it's reused for the lifetime of the WebGPU device.
       if (!state.mipmapGenerator) {
-        state.mipmapGenerator = new WebGPUMipmapGenerator(state.device);
+        state.mipmapGenerator = new WebGPUMipmapGenerator(
+          state.device,
+        ) as unknown as import("./WebGLStubTypes.js").StubMipmapGenerator;
       }
-      const gen: WebGPUMipmapGenerator = state.mipmapGenerator;
+      const gen = state.mipmapGenerator as unknown as WebGPUMipmapGenerator;
 
       // Reuse the active command encoder when one is open so the mipmap
       // blits are batched into the current frame; otherwise create a

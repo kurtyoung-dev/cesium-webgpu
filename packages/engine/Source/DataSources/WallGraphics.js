@@ -132,4 +132,119 @@ class WallGraphics {
   }
 }
 
+Object.defineProperties(WallGraphics.prototype, {
+  /**
+   * Gets the event that is raised whenever a property or sub-property is changed or modified.
+   * @memberof WallGraphics.prototype
+   *
+   * @type {Event}
+   * @readonly
+   */
+  definitionChanged: {
+    get: function () {
+      return this._definitionChanged;
+    },
+  },
+
+  /**
+   * Gets or sets the boolean Property specifying the visibility of the wall.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  show: createPropertyDescriptor("show"),
+
+  /**
+   * Gets or sets the Property specifying the array of {@link Cartesian3} positions which define the top of the wall.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   */
+  positions: createPropertyDescriptor("positions"),
+
+  /**
+   * Gets or sets the Property specifying an array of heights to be used for the bottom of the wall instead of the surface of the globe.
+   * If defined, the array must be the same length as {@link Wall#positions}.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   */
+  minimumHeights: createPropertyDescriptor("minimumHeights"),
+
+  /**
+   * Gets or sets the Property specifying an array of heights to be used for the top of the wall instead of the height of each position.
+   * If defined, the array must be the same length as {@link Wall#positions}.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   */
+  maximumHeights: createPropertyDescriptor("maximumHeights"),
+
+  /**
+   * Gets or sets the numeric Property specifying the angular distance between points on the wall.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default {CesiumMath.RADIANS_PER_DEGREE}
+   */
+  granularity: createPropertyDescriptor("granularity"),
+
+  /**
+   * Gets or sets the boolean Property specifying whether the wall is filled with the provided material.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default true
+   */
+  fill: createPropertyDescriptor("fill"),
+
+  /**
+   * Gets or sets the Property specifying the material used to fill the wall.
+   * @memberof WallGraphics.prototype
+   * @type {MaterialProperty}
+   * @default Color.WHITE
+   */
+  material: createMaterialPropertyDescriptor("material"),
+
+  /**
+   * Gets or sets the Property specifying whether the wall is outlined.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default false
+   */
+  outline: createPropertyDescriptor("outline"),
+
+  /**
+   * Gets or sets the Property specifying the {@link Color} of the outline.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default Color.BLACK
+   */
+  outlineColor: createPropertyDescriptor("outlineColor"),
+
+  /**
+   * Gets or sets the numeric Property specifying the width of the outline.
+   * <p>
+   * Note: This property will be ignored on all major browsers on Windows platforms. For details, see (@link https://github.com/CesiumGS/cesium/issues/40}.
+   * </p>
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default 1.0
+   */
+  outlineWidth: createPropertyDescriptor("outlineWidth"),
+
+  /**
+   * Get or sets the enum Property specifying whether the wall
+   * casts or receives shadows from light sources.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   * @default ShadowMode.DISABLED
+   */
+  shadows: createPropertyDescriptor("shadows"),
+
+  /**
+   * Gets or sets the {@link DistanceDisplayCondition} Property specifying at what distance from the camera that this wall will be displayed.
+   * @memberof WallGraphics.prototype
+   * @type {Property|undefined}
+   */
+  distanceDisplayCondition: createPropertyDescriptor(
+    "distanceDisplayCondition",
+  ),
+});
+
 export default WallGraphics;

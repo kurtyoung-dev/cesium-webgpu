@@ -190,7 +190,7 @@ import { WebGPUSceneRenderer } from "./WebGPUSceneRenderer.js";
 import { initPrimitiveShaders } from "./WebGPUPrimitiveShaders.js";
 import { initCollectionShaders } from "./WebGPUCollectionShaders.js";
 
-import type GraphicsContext from "../GraphicsContext.js";
+import type WebGPUContext from "./WebGPUContext.js";
 import type {
   CollectionRenderer,
   PrimitiveCommandRenderer,
@@ -206,7 +206,7 @@ import type {
  *
  * @param context - The WebGPU graphics context to register renderers on
  */
-export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
+export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   // ── Collections ──
   context.registerFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION, {
     update: updateWebGPUBillboards,
@@ -321,26 +321,25 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
   // can flip the switch without any renderer-layer changes.
   context.registerFeatureRenderer(FeatureRendererKey.GPU_SORT_KEYS, {
     init: function (maxCommands: number) {
-      return initWebGPUGPUSortKeys(
-        context as unknown as { device: GPUDevice },
-        maxCommands,
-      );
+      return initWebGPUGPUSortKeys(context, maxCommands);
     },
-    dispatch: function (encoder: GPUCommandEncoder, soa: any, params: any) {
+    dispatch: function (
+      encoder: GPUCommandEncoder,
+      soa: unknown,
+      params: unknown,
+    ) {
       return dispatchWebGPUGPUSortKeys(
-        context as unknown as { device: GPUDevice },
+        context,
         encoder,
-        soa,
-        params,
+        soa as Parameters<typeof dispatchWebGPUGPUSortKeys>[2],
+        params as Parameters<typeof dispatchWebGPUGPUSortKeys>[3],
       );
     },
     destroy: function () {
-      destroyWebGPUGPUSortKeys(context as unknown as { device: GPUDevice });
+      destroyWebGPUGPUSortKeys(context);
     },
     getStatistics: function () {
-      return getWebGPUGPUSortKeysStatistics(
-        context as unknown as { device: GPUDevice },
-      );
+      return getWebGPUGPUSortKeysStatistics(context);
     },
   });
 
@@ -354,12 +353,8 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
       count: number,
     ) {
       if (!_pcSortDispatcher) {
-        _pcSortDispatcher = new WebGPUPointCloudSortDispatcher(
-          (context as any).device,
-        );
-        _pcSortDispatcher.setShaderSource(
-          PointCloudSortSource as unknown as string,
-        );
+        _pcSortDispatcher = new WebGPUPointCloudSortDispatcher(context.device!);
+        _pcSortDispatcher.setShaderSource(PointCloudSortSource);
       }
       return _pcSortDispatcher.sort(encoder, distSq, count);
     },
@@ -370,9 +365,7 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
       }
     },
     getStatistics: function () {
-      return _pcSortDispatcher
-        ? _pcSortDispatcher.getStatistics()
-        : null;
+      return _pcSortDispatcher ? _pcSortDispatcher.getStatistics() : null;
     },
   });
 
@@ -389,7 +382,7 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
       maxCommands: number,
     ) {
       return initWebGPUHiZOcclusion(
-        context as unknown as { device: GPUDevice },
+        context,
         inputWidth,
         inputHeight,
         maxCommands,
@@ -398,30 +391,25 @@ export function registerWebGPUFeatureRenderers(context: GraphicsContext): void {
     dispatch: function (
       encoder: GPUCommandEncoder,
       depthTextureView: GPUTextureView,
-      soa: any,
-      params: any,
+      soa: unknown,
+      params: unknown,
     ) {
       return dispatchWebGPUHiZOcclusion(
-        context as unknown as { device: GPUDevice },
+        context,
         encoder,
         depthTextureView,
-        soa,
-        params,
+        soa as Parameters<typeof dispatchWebGPUHiZOcclusion>[3],
+        params as Parameters<typeof dispatchWebGPUHiZOcclusion>[4],
       );
     },
     readback: function (count: number) {
-      return readbackWebGPUHiZOcclusion(
-        context as unknown as { device: GPUDevice },
-        count,
-      );
+      return readbackWebGPUHiZOcclusion(context, count);
     },
     destroy: function () {
-      destroyWebGPUHiZOcclusion(context as unknown as { device: GPUDevice });
+      destroyWebGPUHiZOcclusion(context);
     },
     getStatistics: function () {
-      return getWebGPUHiZOcclusionStatistics(
-        context as unknown as { device: GPUDevice },
-      );
+      return getWebGPUHiZOcclusionStatistics(context);
     },
   });
 

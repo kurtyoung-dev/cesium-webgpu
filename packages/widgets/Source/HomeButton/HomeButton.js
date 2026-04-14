@@ -34,7 +34,8 @@ class HomeButton {
 
     const element = document.createElement("button");
     element.type = "button";
-    element.className = "cesium-button cesium-toolbar-button cesium-home-button";
+    element.className =
+      "cesium-button cesium-toolbar-button cesium-home-button";
     element.setAttribute(
       "data-bind",
       "\

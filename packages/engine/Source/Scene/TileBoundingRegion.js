@@ -141,7 +141,9 @@ class TileBoundingRegion {
       defined(this._orientedBoundingBox)
     ) {
       const obbResult = Math.sqrt(
-        this._orientedBoundingBox.distanceSquaredTo(frameState.camera.positionWC),
+        this._orientedBoundingBox.distanceSquaredTo(
+          frameState.camera.positionWC,
+        ),
       );
       return Math.max(regionResult, obbResult);
     }

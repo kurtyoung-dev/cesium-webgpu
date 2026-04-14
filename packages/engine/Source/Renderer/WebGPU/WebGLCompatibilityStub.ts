@@ -169,7 +169,9 @@ import type { WebGLStubState } from "./Stubs/WebGLStubTypes.js";
  * @param state - Shared mutable state from WebGPUContext
  * @returns A WebGL-shaped stub object
  */
-export function createWebGLCompatibilityStub(state: WebGLStubState): any {
+export function createWebGLCompatibilityStub(
+  state: WebGLStubState,
+): Record<string, unknown> {
   // Track which stub methods have been called (log once per method for noise reduction)
   const _loggedMethods = new Set<string>();
   const logUsage = (method: string, reason: string) => {
