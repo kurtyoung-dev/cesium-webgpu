@@ -1,8 +1,93 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 14, 2026 Session 29 (Sessions 1-28 + Typing Push: co-located .d.ts files + cast cleanup)
+**Last Updated:** April 15, 2026 Session 30 (Sessions 1-29 + Typing Completion + Discriminated Picking)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~92% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. **2026-04-12 Session 2: massive ES6 modernization (424 files via codemod), TypeScript type-safety sweep (34 fewer `as any` casts), XSS security fix in InfoBox.js, WebGL stub Proton-style overhaul, MaterialUniformBuffer architecture (~56% memory reduction per material), and build variant infrastructure (WebGL-only / WebGPU-only / dual tree-shaken bundles).**
+**Overall Progress:** ~92% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete.
+
+**Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
+
+---
+
+## Recent Progress (2026-04-15 Session 30 — Typing Completion + Discriminated Picking)
+
+### Typing sweep final state
+
+Renderer/WebGPU TypeScript is at its principled floor:
+
+- **`as unknown as` / `as any` in Renderer/WebGPU:** 19 → 13 (all documented intentional — 6 central helpers in `webgpuTypeHelpers.ts`, 2 WIP performance manager, 3 doc-comments in `WebGPUSceneRenderer.ts`, 2 doc-comments in `cesium-js-types.d.ts`).
+- **`Record<string, unknown>` in Renderer/WebGPU .ts:** 15 → 3 (all JS-interop boundaries with expanded block comments).
+- **Bare `: any` declarations (entire engine):** 0.
+- **`@ts-ignore` / `@ts-expect-error` (engine Renderer):** 0.
+- **Net LOC delta across 7 session commits:** −118 (1876 insertions / 1994 deletions).
+
+### New public shared types
+
+Introduced in `packages/engine/Source/Renderer/GraphicsContext.ts`:
+
+- **`DebugStatsValue`** / **`DebugStatsObject`** — recursive JSON-safe type for `getRendererStatistics()` and subsystem debug surfaces. `ProfilingResults` / `PassTimingResult` on `WebGPUTimestampProfiler` now extend `DebugStatsObject` directly — no cast at the Context assignment site.
+- **`PickTarget`** — heterogeneous pick-registry target with documented-intentional `PickTargetField = unknown` index-signature values. Named so greps don't flag the `unknown` as a mystery.
+- **`PickKind`** — closed 16-member string union (`"billboard"` | `"label"` | `"point"` | `"polyline"` | `"polygon"` | `"primitive"` | `"ground-primitive"` | `"model"` | `"model-instance"` | `"entity"` | `"tile-feature"` | `"voxel"` | `"cloud"` | `"particle"` | `"buffer-primitive"` | `"custom"`). Typos fail to typecheck.
+- **`PickResult = { target: PickTarget; kind: PickKind }`** — returned from the new `getPickResult(color)` method.
+- **`Renderable`** / **`RenderableWithPass`** — structural interface capturing the duck-typed `update(frameState)` contract shared by every scene primitive (no common base class in Cesium by design). Zero runtime cost — TS erases at compile time. First consumer: `CesiumFrameState.brdfLutGenerator` typed as `Renderable | undefined`.
+- **`ViewportQuadCommandOptionsBase`** / **`ViewportQuadCommandHandle`** — backend-agnostic shared base types. WebGL `Context.createViewportQuadCommand` options and WebGPU `ViewportQuadCommandOptions` both extend `ViewportQuadCommandOptionsBase`; WebGPU `ViewportQuadCommand` extends `ViewportQuadCommandHandle`. The abstract `createViewportQuadCommand` signature in `GraphicsContext.ts` now has a real typed shape instead of `(unknown, ..., unknown) => unknown`.
+- **`SceneGlobalCache`** — typed interface with per-subsystem known keys (`billboardCollection_indexBufferInstanced`, `cloudCollection_*`, `imageryLayer*`, `tile_waterMaskData`, etc.) plus `CesiumOpaqueObject` index-signature fallback. Replaces `Record<string, unknown>` on both `WebGPUContext.cache` and `Context.d.ts` cache getters.
+- **`OffscreenContextSupport.WorkerMessage`** / **`WorkerResponse`** — discriminated unions replacing the old `{ type, payload?: Record<string, unknown> }` bag. Each message branch carries exactly the payload it needs.
+
+### Sidecars added (2 new → 15 total)
+
+- **`Core/ComponentDatatype.d.ts`** — `declare enum + declare namespace` merge so Cesium JSDoc `@param {ComponentDatatype}` resolves to the numeric enum while runtime carries utility methods. Removed the local `ComponentDatatypeFull` interface + `as unknown as` cast in `WebGPUVertexArrayFacade.ts`; also cleaned 2 upstream `@ts-expect-error` directives in `BufferPrimitiveCollection.js`.
+- **`Core/Resource.d.ts`** — minimal sidecar covering `.url`, `.getUrlComponent()`, options, proxy, request shapes. Unlocks `loadCubeMapWebGPU.ts` URL narrow without a cast.
+
+### Non-breaking discriminated picking API
+
+Closes the "what was picked?" question at the type level without breaking existing code:
+
+```ts
+// New signature (kind defaults to "custom" for external callers):
+context.createPickId(object: PickTarget, kind?: PickKind): PickId
+
+// New companion method:
+context.getPickResult(color): PickResult | undefined
+
+// Unchanged:
+context.getObjectByPickColor(color): PickTarget | undefined
+
+// Consumer pattern at Scene pick code:
+const result = context.getPickResult(pickColor);
+if (!result) return;
+switch (result.kind) {
+  case "billboard":      return handleBillboard(result.target);
+  case "tile-feature":   return handleTileFeature(result.target);
+  case "model-instance": return handleModelInstance(result.target);
+  case "custom":         return fallbackInstanceofNarrow(result.target);
+}
+```
+
+**Wired 20 internal registrar call sites** across 14 files: Billboard, PointPrimitive, Polyline, EllipsoidPrimitive, BatchTexture, PrimitiveGeometryHelpers, TimeDynamicPointCloud, VoxelPrimitiveHelpers, Model/PickingPipelineStage (2 sites — `"model"` + `"model-instance"`), renderBufferPointCollection, renderBufferPolygonCollection, renderBufferPolylineCollection, WebGPUBillboardRenderer (`"billboard"`), WebGPUPointPrimitiveRenderer (`"point"`), WebGPUPolylineRenderer (`"polyline"`), WebGPUBufferPrimitiveRenderer (3 × `"buffer-primitive"`).
+
+**Parallel kind storage:** `_pickKinds: Map<number, PickKind>` shadows `_pickObjects` in lockstep. `PickId.destroy()` takes an optional `pickKinds` map and cleans both — no orphan entries.
+
+### BindGroupLayoutHelpers migration sweep
+
+New helper module `Renderer/WebGPU/WebGPUBindGroupLayoutHelpers.ts` with typed entry builders (`uniformBuffer`, `storageBuffer`, `texture`, `storageTexture`, `sampler`) and `makeBindGroupLayout(device, label, entries)` factory.
+
+**Adoption: 86 of 88 `device.createBindGroupLayout({...})` call sites migrated across 46 files.** Remaining 2 are the backing-cache layer in `WebGPUContext.ts` and `WebGPUResourceManager.ts` (the helper's own implementation — correctly not migrated). Net LOC reduction: −646 lines of boilerplate (757 insertions, 1403 deletions on the big sweep commit).
+
+### Additional narrowings
+
+- `Check.d.ts` — 11 `test: any` → `test: unknown` in assertion signatures. Cleaner narrowing at every `Check.defined()` caller across the engine.
+- `GraphicsContext.ts` abstract APIs — `createTexture`/`createBuffer` parameters: `Record<string, unknown>` → `unknown`; `createViewportQuadCommand` signature fully typed via the new shared viewport-quad bases; `_validateAbstractContract` dynamic method lookup uses `Reflect.get` instead of `as unknown as Record<string, unknown>`.
+- `WebGPUDrawCommand` — `(buf as any).buffer` → `instanceof WebGPUBuffer` narrow; `owner?: any` → `WebGPUCommandOwner` (structural `{ constructor?: { name?: string } }`); `_pipelineConfig?: any` → typed `WebGPUPipelineConfig`.
+- `WebGPUViewportQuad` — 7 `any`s removed via new exported types `ViewportQuadUniformValue` (discriminated union of 7 value shapes), `ViewportQuadCommand`, `ViewportQuadColorValue`, `ViewportQuadVectorValue`, `ViewportQuadShaderProgramSlot`.
+- `WebGPUSceneRenderer._warnedCommandsMap` — keyed on `WebGPUContext` directly instead of `object`.
+- `SharedResourcePool.getView` — 2 casts via `TypedArrayConstructor.BYTES_PER_ELEMENT` replaced with `InstanceType<Ctor>` generic linking parameter and return.
+- `WebGPUFeatureRenderers` — dispatcher registrations: `soa: unknown, params: unknown` → `Parameters<typeof dispatchX>[i]` directly, casts at call site removed.
+
+### Build / verification
+
+- `npx tsc --noEmit`: clean (0 errors).
+- `npx gulp build`: ~40s, clean.
+- 7 commits, all pre-commit-hook clean (lint-staged + eslint + prettier).
 
 ---
 

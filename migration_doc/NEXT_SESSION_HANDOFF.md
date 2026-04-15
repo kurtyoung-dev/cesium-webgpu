@@ -1,12 +1,95 @@
-# Next Session Handoff — 2026-04-14
+# Next Session Handoff — 2026-04-15
 
 **Purpose:** Self-contained context for the next session after a context compaction. Read this file first; it has every code pointer, design reference, and concrete next step needed to continue without re-discovering anything.
 
 **Current branch:** `main`
-**Last commit:** `82bc2c915c` — Session 29: typing follow-up + migration doc sweep
+**Last commit:** `20e3adbd32` — Picking: PickKind discriminator + getPickResult() (non-breaking)
 **`tsc --project packages/engine/tsconfig.json --noEmit`:** clean (0 errors).
-**`npx gulp build`:** clean (38s).
-**Pre-commit hook:** now running cleanly (lint-staged + eslint + prettier completed on the full commit).
+**`npx gulp build`:** clean (~40s).
+**Pre-commit hook:** running cleanly.
+
+---
+
+## What landed in Session 30 — Typing Completion + Discriminated Picking (2026-04-15)
+
+Closes the typing story opened in Session 29. Renderer/WebGPU is now at its principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary (JS-interop, catch-clauses, WIP modules). Two new public-surface additions: `Renderable` structural interface and `PickKind`/`getPickResult` discriminated-pick API.
+
+### Session 30 commits (top-to-bottom, most recent first)
+
+| Commit | Headline |
+| --- | --- |
+| `20e3adbd32` | Picking: PickKind discriminator + getPickResult() (non-breaking, 20 sites wired) |
+| `bdb9046cc3` | Renderable structural interface for scene-primitive contract |
+| `e82e48e295` | PickTarget: name the index-signature value type + expand rationale |
+| `62ece346a6` | Typing sweep round 3: eliminate remaining `object`/`unknown` + PickTarget |
+| `9f1eeb46c7` | BGL migration sweep: 73 createBindGroupLayout sites → helpers (−646 LOC) |
+| `668c73ecda` | Typing sweep round 2: abstract base tightening, discriminated unions |
+| `dcc3cafe0d` | Typing sweep round 1: DebugStats, SceneGlobalCache, ViewportQuad types |
+
+### Headline metrics
+
+| Metric | Session 29 end | Session 30 end | Delta |
+| --- | --- | --- | --- |
+| `as unknown as` / `as any` in Renderer/WebGPU .ts | 19 | 13 (all documented intentional) | **−32%** |
+| `Record<string, unknown>` in Renderer/WebGPU .ts | 11 | 3 (all JS-interop) | **−73%** |
+| Bare `: any` declarations (engine) | a handful | **0** | ✓ |
+| `@ts-ignore` / `@ts-expect-error` (Renderer) | 0 | 0 | ✓ |
+| BGL helper adoption (of ~88 sites) | 3 | 86 | **+83 sites** |
+| Net LOC change across 7 commits | — | **−118** | (1876 ins / 1994 del) |
+| Co-located `.d.ts` files | 13 | 15 | +2 (ComponentDatatype, Resource) |
+
+### New public shared types (in GraphicsContext.ts)
+
+- `DebugStatsValue` / `DebugStatsObject` — recursive JSON-safe type for `getRendererStatistics()` and subsystem debug snapshots.
+- `PickTarget` / `PickTargetField` — heterogeneous pick-registry target type with documented-intentional `unknown` field values.
+- `PickKind` — closed string union of pick categories (`"billboard"` | `"label"` | `"point"` | `"polyline"` | `"polygon"` | `"primitive"` | `"ground-primitive"` | `"model"` | `"model-instance"` | `"entity"` | `"tile-feature"` | `"voxel"` | `"cloud"` | `"particle"` | `"buffer-primitive"` | `"custom"`).
+- `PickResult = { target: PickTarget; kind: PickKind }` — returned from new `getPickResult(color)` method.
+- `Renderable` / `RenderableWithPass` — structural interface for scene-primitive `update(frameState)` contract. Zero runtime cost.
+- `ViewportQuadCommandOptionsBase` / `ViewportQuadCommandHandle` — shared base types that both WebGL `Context.createViewportQuadCommand` and WebGPU's extend.
+- `SceneGlobalCache` — typed interface replacing `Record<string, unknown>` for `context.cache`. Known subsystem keys typed; extensible via `CesiumOpaqueObject` index signature fallback.
+
+### New helpers / sidecars
+
+- `Core/ComponentDatatype.d.ts` — sidecar using `declare enum + declare namespace` merge so Cesium JSDoc `@param {ComponentDatatype}` resolves to numeric enum while runtime const carries utility methods.
+- `Core/Resource.d.ts` — minimal sidecar covering `.url`, `.getUrlComponent()`, options shape, proxy shape, request shape.
+- `Renderer/WebGPU/WebGPUBindGroupLayoutHelpers.ts` — typed entry builders (`uniformBuffer`, `storageBuffer`, `texture`, `storageTexture`, `sampler`) + `makeBindGroupLayout` factory. 86 of 88 call sites across 46 files now use it (remaining 2 are the backing cache layer).
+
+### New discriminated-picking API
+
+```ts
+// Non-breaking additions — old API unchanged.
+context.createPickId(object, kind?: PickKind): PickId  // kind defaults to "custom"
+context.getPickResult(color): PickResult | undefined   // NEW
+context.getObjectByPickColor(color)                    // unchanged
+
+// Consumer pattern:
+const result = context.getPickResult(pickColor);
+if (!result) return;
+switch (result.kind) {
+  case "billboard":      return handleBillboard(result.target);
+  case "tile-feature":   return handleTileFeature(result.target);
+  case "model-instance": return handleModelInstance(result.target);
+  case "custom":         return handleUserPick(result.target);  // instanceof narrow here
+  // TS exhaustiveness catches new kinds
+}
+```
+
+20 internal registrar call sites wired to pass their kind. External users keep working — they default to `"custom"` and can still `instanceof` narrow as today.
+
+### What's at the principled floor in Renderer/WebGPU
+
+Every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is one of:
+
+- `catch (e: unknown)` — TS's required catch binding (8 sites)
+- Open index signatures on explicitly-permissive interfaces (SceneGlobalCache fallback, CesiumComputeCommand, CesiumObjectWithWebGPUCache) — by-design
+- `jsModule<T>(mod: object)` — intentional type-eraser helper in `webgpuTypeHelpers.ts`
+- `_gl` / `cache` on `WebGPUContext` — WebGL-compat JS surfaces consumed by ~20 upstream JS files
+- `_performanceManager as unknown as {...}` — WIP per `feedback_interface_pruning.md` memory
+- `PickTarget` index signature value — principled opaque for "value in heterogeneous external registry"
+
+Further tightening requires (a) porting WebGL resource JS to TS, or (b) completing WIP modules — both are feature work, not typing work.
+
+---
 
 **Also in Session 29:** external engine feature survey (NullGraph, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion). Results landed in `WEBGPU_MIGRATION_BACKLOG.md` as **Phase 7 — External Engine Feature Survey**, with 48 items (FEAT-SURVEY-01 through FEAT-SURVEY-48) tiered by effort × ROI.
 
