@@ -68,8 +68,8 @@ export interface WebGPURenderFrameConfig {
 // Per-context once-per-key warning tracker. Replaces the old
 // `(context as any)._warnedCommands` monkey-patching pattern with a
 // module-level WeakMap so we don't need `as any` casts.
-const _warnedCommandsMap = new WeakMap<object, Set<string>>();
-function _getWarnedCommands(context: object): Set<string> {
+const _warnedCommandsMap = new WeakMap<WebGPUContext, Set<string>>();
+function _getWarnedCommands(context: WebGPUContext): Set<string> {
   let set = _warnedCommandsMap.get(context);
   if (!set) {
     set = new Set();

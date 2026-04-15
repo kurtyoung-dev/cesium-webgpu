@@ -81,7 +81,7 @@ interface BufferPrimitiveCollection {
   _dirtyOffset: number;
   _dirtyCount: number;
   _webgpuCache?: PolygonCache | PolylineCache | PointCache;
-  get(index: number, result?: object): object;
+  get(index: number, result?: CesiumOpaqueObject): CesiumOpaqueObject;
 }
 
 /** A pick ID created by context.createPickId(). */

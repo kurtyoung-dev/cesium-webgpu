@@ -491,7 +491,7 @@ export class WebGPUPerformanceManager {
    * Get the GPU culler instance for direct use by the scene renderer.
    * Returns null if GPU culling is disabled or unavailable.
    */
-  getGPUCuller(): object | null {
+  getGPUCuller(): CesiumOpaqueObject | null {
     if (!this._config.gpuCulling || !this._context.supportsComputeShaders) {
       return null;
     }

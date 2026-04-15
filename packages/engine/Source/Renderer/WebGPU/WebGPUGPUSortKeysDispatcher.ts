@@ -403,7 +403,7 @@ function dispatchWebGPUGPUSortKeys(
 
 function getWebGPUGPUSortKeysStatistics(context: {
   device: GPUDevice;
-}): object | null {
+}): ReturnType<WebGPUGPUSortKeysDispatcher["getStatistics"]> | null {
   const inst = _instances.get(context);
   return inst ? inst.getStatistics() : null;
 }

@@ -325,15 +325,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
     dispatch: function (
       encoder: GPUCommandEncoder,
-      soa: unknown,
-      params: unknown,
+      soa: Parameters<typeof dispatchWebGPUGPUSortKeys>[2],
+      params: Parameters<typeof dispatchWebGPUGPUSortKeys>[3],
     ) {
-      return dispatchWebGPUGPUSortKeys(
-        context,
-        encoder,
-        soa as Parameters<typeof dispatchWebGPUGPUSortKeys>[2],
-        params as Parameters<typeof dispatchWebGPUGPUSortKeys>[3],
-      );
+      return dispatchWebGPUGPUSortKeys(context, encoder, soa, params);
     },
     destroy: function () {
       destroyWebGPUGPUSortKeys(context);
@@ -391,15 +386,15 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     dispatch: function (
       encoder: GPUCommandEncoder,
       depthTextureView: GPUTextureView,
-      soa: unknown,
-      params: unknown,
+      soa: Parameters<typeof dispatchWebGPUHiZOcclusion>[3],
+      params: Parameters<typeof dispatchWebGPUHiZOcclusion>[4],
     ) {
       return dispatchWebGPUHiZOcclusion(
         context,
         encoder,
         depthTextureView,
-        soa as Parameters<typeof dispatchWebGPUHiZOcclusion>[3],
-        params as Parameters<typeof dispatchWebGPUHiZOcclusion>[4],
+        soa,
+        params,
       );
     },
     readback: function (count: number) {

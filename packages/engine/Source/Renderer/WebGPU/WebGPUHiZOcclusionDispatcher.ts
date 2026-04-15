@@ -887,7 +887,7 @@ function readbackWebGPUHiZOcclusion(
  */
 function getWebGPUHiZOcclusionStatistics(context: {
   device: GPUDevice | null | undefined;
-}): object | null {
+}): ReturnType<WebGPUHiZOcclusionDispatcher["getStatistics"]> | null {
   const inst = _instances.get(context);
   return inst ? inst.getStatistics() : null;
 }

@@ -70,6 +70,31 @@ export interface DebugStatsObject {
   readonly [key: string]: DebugStatsValue | undefined;
 }
 
+/**
+ * The "thing" associated with a pick ID. Concretely, callers register
+ * diverse types here: `Primitive`, `Billboard`, `Entity`, `Cesium3DTileFeature`,
+ * `Label`, per-feature wrapper object literals `{ primitive, collection,
+ * index }`, etc. There's no common base class in Cesium for these — the
+ * shared contract is "it's a class instance or plain object that the
+ * pick caller can later introspect via `instanceof` or property checks".
+ *
+ * We capture that structurally via `constructor` (which every JS object
+ * carries via `Object.prototype`) so pick code can read
+ * `.constructor.name` for debug labels without a cast. The open index
+ * signature lets callers pass object literals with arbitrary
+ * domain-specific fields without TS excess-property errors.
+ *
+ * When a caller needs a specific shape, they narrow at the call site
+ * with `instanceof` or a type guard — that's the idiom Cesium's pick
+ * API has always used, and it's still correct here.
+ */
+export interface PickTarget {
+  readonly constructor?: { readonly name?: string };
+  // Open index signature so caller-specific fields don't trigger excess
+  // property errors when assigning object literals to a PickTarget slot.
+  readonly [key: string]: unknown;
+}
+
 // ═══════════════════════════════════════════════════════════
 // Shared viewport-quad types (see createViewportQuadCommand)
 // ═══════════════════════════════════════════════════════════
@@ -686,7 +711,7 @@ export abstract class GraphicsContext {
   abstract get shaderCache(): CesiumShaderCache;
   abstract get textureCache(): unknown;
   abstract get cache(): SceneGlobalCache;
-  abstract get defaultTexture(): object;
+  abstract get defaultTexture(): CesiumOpaqueTexture;
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: FRAME LIFECYCLE
@@ -845,7 +870,9 @@ export abstract class GraphicsContext {
    * Shared across both WebGL and WebGPU backends.
    * @protected
    */
-  protected _pickObjects: Map<number, unknown> = new Map();
+  // Pick registry — stores whatever PickTarget the caller passes to
+  // createPickId. See {@link PickTarget} for the shape contract.
+  protected _pickObjects: Map<number, PickTarget> = new Map();
 
   /**
    * Monotonically incrementing counter for pick color allocation.
@@ -864,7 +891,7 @@ export abstract class GraphicsContext {
    * @param object - The object to associate with this pick ID
    * @returns A {@link PickId} with `key`, `color`, `normalizedRgba`, and `destroy()`
    */
-  createPickId(object: unknown): CesiumPickId {
+  createPickId(object: PickTarget): CesiumPickId {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("object", object);
     //>>includeEnd('debug');
@@ -889,7 +916,9 @@ export abstract class GraphicsContext {
    * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
    * @returns The object associated with the pick color, or undefined
    */
-  getObjectByPickColor(pickColor: CesiumColor | number): unknown {
+  getObjectByPickColor(
+    pickColor: CesiumColor | number,
+  ): PickTarget | undefined {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("pickColor", pickColor);
     //>>includeEnd('debug');

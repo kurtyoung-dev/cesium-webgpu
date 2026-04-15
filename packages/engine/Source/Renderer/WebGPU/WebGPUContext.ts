@@ -91,7 +91,7 @@ import { jsModule } from "./webgpuTypeHelpers.js";
 
 /** Type-shape for the JS-only RenderState.fromCache() static. */
 interface RenderStateStatics {
-  fromCache: (renderState?: object) => CesiumOpaqueRenderState;
+  fromCache: (renderState?: CesiumOpaqueObject) => CesiumOpaqueRenderState;
 }
 
 // ViewportQuadCommand and ViewportQuadCommandOptions are imported from
@@ -279,7 +279,7 @@ export class WebGPUContext extends GraphicsContext {
   // `@builtin(primitive_index)` support without importing from Renderer/WebGPU.
   // Populated lazily by initialize() — Scene reads it via the public
   // `triangulationDebugSupported` getter.
-  public _primitiveIndexUtilsCache: object | null = null;
+  public _primitiveIndexUtilsCache: CesiumOpaqueObject | null = null;
 
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
@@ -358,7 +358,7 @@ export class WebGPUContext extends GraphicsContext {
   // Known keys are typed; new keys land in the opaque-object index
   // signature fallback. No `Record<string, unknown>` here.
   public cache: SceneGlobalCache = {};
-  public options: object;
+  public options: WebGPUContextOptions;
   public validateFramebuffer: boolean = false;
   public validateShaderProgram: boolean = false;
   public logShaderCompilation: boolean = false;
@@ -2349,7 +2349,7 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Default 1x1 white texture
    */
-  get defaultTexture(): object {
+  get defaultTexture(): CesiumOpaqueTexture {
     return this._defaultTexture!;
   }
 
@@ -2609,7 +2609,7 @@ export class WebGPUContext extends GraphicsContext {
   override executeComputeCommands(
     computeCommandList: CesiumComputeCommand[],
     _sunComputeCommand: CesiumComputeCommand | undefined,
-    _computeEngine: object | undefined,
+    _computeEngine: CesiumOpaqueObject | undefined,
   ): void {
     for (let i = 0; i < computeCommandList.length; ++i) {
       const cmd = computeCommandList[i];

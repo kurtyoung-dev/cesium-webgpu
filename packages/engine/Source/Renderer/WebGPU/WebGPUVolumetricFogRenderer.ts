@@ -1130,7 +1130,7 @@ export function destroyWebGPUVolumetricFog(
  */
 export function getWebGPUVolumetricFogStatistics(
   context: CesiumGraphicsContext,
-): object | null {
+): ReturnType<WebGPUVolumetricFogRenderer["getStatistics"]> | null {
   const inst = _instances.get(context);
   return inst ? inst.getStatistics() : null;
 }

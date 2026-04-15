@@ -26,7 +26,7 @@ function pickObjectsFromPixels(
   width: number,
   height: number,
   limit: number = 1,
-): object[] {
+): CesiumOpaqueObject[] {
   const max = Math.max(width, height);
   const length = max * max;
   const halfWidth = Math.floor(width * 0.5);
@@ -37,7 +37,7 @@ function pickObjectsFromPixels(
   let dx = 0;
   let dy = -1;
 
-  const objects = new Set<object>();
+  const objects = new Set<CesiumOpaqueObject>();
   for (let i = 0; i < length; ++i) {
     if (
       -halfWidth <= x &&
@@ -211,7 +211,7 @@ export class WebGPUPickFramebuffer {
   end(
     screenSpaceRectangle: CesiumBoundingRectangle,
     limit: number = 1,
-  ): object[] {
+  ): CesiumOpaqueObject[] {
     const context = this._context;
     const device = this._device;
 

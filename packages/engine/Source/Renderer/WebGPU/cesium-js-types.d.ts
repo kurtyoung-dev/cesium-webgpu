@@ -386,7 +386,8 @@ interface CesiumCamera {
   inverseViewProjection: CesiumMatrix4;
   setView(options: {
     destination?: CesiumCartesian3;
-    orientation?: unknown;
+    // HeadingPitchRoll or Quaternion — pass-through to the JS side.
+    orientation?: CesiumOpaqueObject;
   }): void;
 }
 
@@ -490,8 +491,12 @@ interface CesiumGraphicsContext {
   }): WebGPURenderTargetLike | null;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
-  createPickId(object: unknown): CesiumPickId;
-  getObjectByPickColor(color: CesiumColor | number): unknown;
+  createPickId(
+    object: import("../GraphicsContext.js").PickTarget,
+  ): CesiumPickId;
+  getObjectByPickColor(
+    color: CesiumColor | number,
+  ): import("../GraphicsContext.js").PickTarget | undefined;
   log(level: string, message: string): void;
 }
 
@@ -507,14 +512,14 @@ interface CesiumFeatureRenderer {
   /** Lazy-construction pattern: some feature renderers register a
    *  `RendererClass` constructor that gets instantiated on first touch
    *  (or via `_warmUpPipelines`) and cached on `_instance`. */
-  RendererClass?: new (ctx: unknown) => object;
-  _instance?: object;
+  RendererClass?: new (ctx: CesiumGraphicsContext) => CesiumOpaqueObject;
+  _instance?: CesiumOpaqueObject;
 }
 
 // ─── PickId ─────────────────────────────────────────────────────────────
 
 interface CesiumPickId {
-  object: unknown;
+  object: import("../GraphicsContext.js").PickTarget;
   key: number;
   color: CesiumColor;
   destroy(): void;
@@ -536,7 +541,7 @@ interface CesiumDrawCommand {
   renderState: CesiumOpaqueRenderState | undefined;
   framebuffer: CesiumOpaqueFramebuffer | undefined;
   pass: number | undefined;
-  owner: unknown;
+  owner: import("./WebGPUDrawCommand.js").WebGPUCommandOwner | undefined;
   castShadows: boolean;
   receiveShadows: boolean;
   cull: boolean;
@@ -595,7 +600,7 @@ interface CesiumGlobeSurfaceTile {
   boundingSphere3D: CesiumBoundingSphere;
   waterMaskTexture: CesiumOpaqueTexture | undefined;
   waterMaskTranslationAndScale: CesiumCartesian4;
-  terrainData: unknown;
+  terrainData: CesiumOpaqueObject;
   vertexArray: CesiumOpaqueVertexArray | undefined;
   tileBoundingRegion:
     | {
@@ -610,7 +615,7 @@ interface CesiumGlobeSurfaceTile {
   surfaceShader: CesiumOpaqueShaderProgram | undefined;
   isClipped: boolean;
   clippedByBoundaries: boolean;
-  data: unknown;
+  data: CesiumOpaqueObject;
 }
 
 interface CesiumTileImagery {
@@ -693,7 +698,7 @@ interface CesiumImageBasedLighting {
   _previousFrameNumber: number;
   _previousFrameContext: CesiumGraphicsContext | undefined;
   // WebGPU sidecar fields (set by WebGPUImageBasedLighting)
-  _webgpuCache?: unknown;
+  _webgpuCache?: CesiumOpaqueObject;
   _webgpuSpecularView?: GPUTextureView;
   _webgpuDiffuseView?: GPUTextureView;
   _webgpuSampler?: GPUSampler;
@@ -728,13 +733,13 @@ interface CesiumReadyImagery {
   y?: number;
   level?: number;
   _webgpuReprojectedTexture?: GPUTexture;
-  _source?: unknown;
+  _source?: CesiumOpaqueObject;
 }
 
 // ─── BrdfLutGenerator / DynamicEnvironmentMapManager ────────────────────
 
 interface CesiumObjectWithWebGPUCache {
-  _webgpuCache?: unknown;
+  _webgpuCache?: CesiumOpaqueObject;
   [key: string]: unknown;
 }
 
@@ -768,13 +773,19 @@ interface CesiumScene {
   _frameState: CesiumFrameState;
   _view: { frustumCommandsList?: CesiumFrustumCommands[] };
   _picking: {
-    pick?(scene: CesiumScene, windowPosition: CesiumCartesian2): unknown;
+    pick?(
+      scene: CesiumScene,
+      windowPosition: CesiumCartesian2,
+    ): CesiumOpaqueObject | undefined;
     getPickDepth?(
       scene: CesiumScene,
       index: number,
     ): {
       getDepth?(x: number, y: number): number;
-      update?(context: CesiumGraphicsContext, texture: unknown): void;
+      update?(
+        context: CesiumGraphicsContext,
+        texture: CesiumOpaqueTexture,
+      ): void;
     };
   };
   _context: CesiumGraphicsContext;
@@ -895,7 +906,7 @@ interface CesiumReadState {
 // ─── Sidecar pattern ─────────────────────────────────────────────────────
 
 interface CesiumObjectWithWebGPUCache {
-  _webgpuCache?: unknown;
+  _webgpuCache?: CesiumOpaqueObject;
   show?: boolean;
   length?: number;
   modelMatrix?: CesiumMatrix4;
@@ -958,7 +969,7 @@ interface CesiumAnyDrawCommand {
   receiveShadows?: boolean;
   cull?: boolean;
   occlude?: boolean;
-  owner?: unknown;
+  owner?: import("./WebGPUDrawCommand.js").WebGPUCommandOwner;
   execute?(...args: unknown[]): void;
   // WebGPU-specific rendering fields
   pipeline?: GPURenderPipeline;
