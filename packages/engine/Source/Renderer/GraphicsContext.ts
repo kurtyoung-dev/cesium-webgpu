@@ -49,6 +49,61 @@
 
 import RendererType from "./RendererType.js";
 
+// ═══════════════════════════════════════════════════════════
+// Shared rendering contracts
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Structural contract for anything the scene graph can render.
+ *
+ * Cesium's scene graph has no common base class across Primitive,
+ * Billboard, Label, Entity, PointPrimitive, Polyline, Cloud, tileset
+ * content, etc. (each is a standalone `class X {}` by deliberate
+ * 11-year-old design choice — composition over inheritance). The one
+ * thing they all share is that `PrimitiveCollection.update()` and
+ * `Scene` invoke `update(frameState)` on every registered member
+ * each frame.
+ *
+ * This interface captures that duck-typed contract structurally.
+ * TypeScript erases it at compile time — zero runtime cost, zero
+ * bundle bytes, zero V8 hidden-class impact. Existing Cesium classes
+ * and user plain-object primitives (`{ update: (fs) => {...} }`)
+ * already satisfy it without code changes.
+ *
+ * Use this where scene code previously accepted `any` / `object` /
+ * `unknown` for a "primitive" slot — it documents intent, catches
+ * typos (`upate` vs `update`) at compile time, and gives TS consumers
+ * IntelliSense on what their custom primitive needs to implement.
+ */
+export interface Renderable {
+  /** Called once per frame to update state and enqueue draw commands. */
+  update(frameState: CesiumFrameState): void;
+
+  /**
+   * Optional visibility flag. When false, the scene skips `update()`.
+   * Most Cesium primitives expose this; not strictly required.
+   */
+  readonly show?: boolean;
+
+  /**
+   * Optional destroy-state guard. If present, the scene respects it
+   * and stops dispatching to destroyed primitives. Follows the
+   * destroyObject.js contract (method, not getter, so destroyObject
+   * can overwrite it).
+   */
+  isDestroyed?(): boolean;
+}
+
+/**
+ * A renderable that also accepts per-pass scene state — typically used
+ * by primitives that participate in multiple render passes (e.g.,
+ * ClassificationPrimitive, GroundPrimitive). Callers check for the
+ * method's presence via `"updateForPass" in primitive` narrowing.
+ */
+export interface RenderableWithPass extends Renderable {
+  updateForPass(frameState: CesiumFrameState, passState: CesiumPassState): void;
+}
+
 /**
  * JSON-safe value type used by {@link GraphicsContext.getRendererStatistics}
  * and other debug surfaces. Each backend, feature renderer, or subsystem

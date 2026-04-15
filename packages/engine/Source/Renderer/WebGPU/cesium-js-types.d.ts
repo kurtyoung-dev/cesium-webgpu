@@ -352,7 +352,7 @@ interface CesiumFrameState {
   moonDirectionWC: CesiumCartesian3;
   moonPhaseFraction: number;
   deltaTime: number;
-  brdfLutGenerator: { update(frameState: CesiumFrameState): void } | undefined;
+  brdfLutGenerator: import("../GraphicsContext.js").Renderable | undefined;
   // Debug flags
   debugShowFrustums: boolean;
   debugShowDepthAsColor: boolean;
