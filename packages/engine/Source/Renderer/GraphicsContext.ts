@@ -71,18 +71,45 @@ export interface DebugStatsObject {
 }
 
 /**
- * The "thing" associated with a pick ID. Concretely, callers register
- * diverse types here: `Primitive`, `Billboard`, `Entity`, `Cesium3DTileFeature`,
- * `Label`, per-feature wrapper object literals `{ primitive, collection,
- * index }`, etc. There's no common base class in Cesium for these — the
- * shared contract is "it's a class instance or plain object that the
- * pick caller can later introspect via `instanceof` or property checks".
+ * Type of a single field within a {@link PickTarget}.
  *
- * We capture that structurally via `constructor` (which every JS object
- * carries via `Object.prototype`) so pick code can read
- * `.constructor.name` for debug labels without a cast. The open index
- * signature lets callers pass object literals with arbitrary
- * domain-specific fields without TS excess-property errors.
+ * TypeScript's `unknown` is the principled answer here — not an escape
+ * hatch. A pick target's fields can be:
+ *   - primitives (e.g., `index: 5` on a collection-pick wrapper)
+ *   - class instances with methods (e.g., `primitive: Primitive`)
+ *   - nested plain objects or arrays
+ *   - user-defined types Cesium knows nothing about
+ *
+ * No narrower type describes all of these honestly. The point of
+ * `unknown` is exactly "no shape guarantees; narrow before use" —
+ * which is the safety contract we want at this JS↔TS boundary.
+ * Consumers of a `PickTarget` always `instanceof`-narrow or type-guard
+ * before reading fields; see Cesium's `Scene.pick`, `Cesium3DTileFeature`,
+ * and `Entity`-picking code for the pattern.
+ *
+ * Exporting this as a named type so greps for "unknown" don't flag it
+ * as a mystery; it's a deliberate, documented opaque.
+ */
+export type PickTargetField = unknown;
+
+/**
+ * The "thing" associated with a pick ID. Concretely, callers register
+ * diverse types here: `Primitive`, `Billboard`, `Entity`,
+ * `Cesium3DTileFeature`, `Label`, per-feature wrapper object literals
+ * `{ primitive, collection, index }`, user-defined types, etc. There's no
+ * common base class in Cesium for these — the shared contract is "it's a
+ * class instance or plain object that the pick caller can later introspect
+ * via `instanceof` or property checks".
+ *
+ * The type captures:
+ *   - `constructor?.name` — present on every JS object via
+ *     `Object.prototype`; picking code reads it for debug labels without
+ *     a cast.
+ *   - open index signature typed as {@link PickTargetField} — lets
+ *     callers pass object literals (like `{ primitive, collection,
+ *     index }` from the BufferPrimitive family) without TS
+ *     excess-property errors, while still forcing consumers to narrow
+ *     before reading unknown fields.
  *
  * When a caller needs a specific shape, they narrow at the call site
  * with `instanceof` or a type guard — that's the idiom Cesium's pick
@@ -90,9 +117,7 @@ export interface DebugStatsObject {
  */
 export interface PickTarget {
   readonly constructor?: { readonly name?: string };
-  // Open index signature so caller-specific fields don't trigger excess
-  // property errors when assigning object literals to a PickTarget slot.
-  readonly [key: string]: unknown;
+  readonly [key: string]: PickTargetField;
 }
 
 // ═══════════════════════════════════════════════════════════
