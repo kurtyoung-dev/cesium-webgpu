@@ -28,6 +28,12 @@ import PointCloudLODSource from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageTexture,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
  * Local interface for the context fields accessed by the performance manager.
@@ -907,34 +913,11 @@ export class WebGPUPerformanceManager {
     //   binding 1: texture_storage_2d<rgba16float, write> transmittance
     //   binding 2: texture_storage_2d<rgba16float, write> inscatter
     if (!lut.bindGroupLayout) {
-      lut.bindGroupLayout = device.createBindGroupLayout({
-        label: "AtmosphereLUT_BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.COMPUTE,
-            buffer: { type: "uniform" },
-          },
-          {
-            binding: 1,
-            visibility: GPUShaderStage.COMPUTE,
-            storageTexture: {
-              access: "write-only",
-              format: "rgba16float",
-              viewDimension: "2d",
-            },
-          },
-          {
-            binding: 2,
-            visibility: GPUShaderStage.COMPUTE,
-            storageTexture: {
-              access: "write-only",
-              format: "rgba16float",
-              viewDimension: "2d",
-            },
-          },
-        ],
-      });
+      lut.bindGroupLayout = makeBindGroupLayout(device, "AtmosphereLUT_BGL", [
+        uniformBuffer(0, Stage.COMPUTE),
+        storageTexture(1, Stage.COMPUTE, "rgba16float"),
+        storageTexture(2, Stage.COMPUTE, "rgba16float"),
+      ]);
     }
 
     // Build (or reuse) the per-target bind group. Cached separately for

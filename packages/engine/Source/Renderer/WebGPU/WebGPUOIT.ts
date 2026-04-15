@@ -20,6 +20,12 @@
  */
 
 import { WebGPURenderTarget } from "./WebGPURenderTarget.js";
+import {
+  makeBindGroupLayout,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // OIT composite shader: combines accumulation + revealage textures with opaque scene
 const OIT_COMPOSITE_WGSL = /* wgsl */ `
@@ -232,26 +238,15 @@ export class WebGPUOIT {
       code: OIT_COMPOSITE_WGSL,
     });
 
-    this._compositeBindGroupLayout = device.createBindGroupLayout({
-      label: "OIT-Composite-BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+    this._compositeBindGroupLayout = makeBindGroupLayout(
+      device,
+      "OIT-Composite-BindGroupLayout",
+      [
+        texture(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        sampler(2, Stage.FRAGMENT),
       ],
-    });
+    );
 
     this._compositeSampler = device.createSampler({
       label: "OIT-Composite-Sampler",

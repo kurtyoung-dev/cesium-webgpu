@@ -30,6 +30,13 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 
 // Import SDF shader source
 import BillboardCollectionSDFWGSL from "../../Shaders/WebGPU/Collections/BillboardCollectionSDF.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
@@ -202,26 +209,15 @@ function createSDFPipeline(device, format, depthFormat) {
     code: BillboardCollectionSDFWGSL,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "Label SDF bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "Label SDF bind group layout",
+    [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
     ],
-  });
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],

@@ -318,30 +318,11 @@ class WebGPUHiZOcclusionDispatcher {
     //   @binding(0) depthInput: texture_2d<f32>
     //   @binding(1) hiZOutput:  texture_storage_2d<r32float, write>
     //   @binding(2) params:     uniform HiZParams
-    const hiZBindGroupLayout = device.createBindGroupLayout({
-      label: "HiZ_BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: "write-only",
-            format: "r32float",
-            viewDimension: "2d",
-          },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    const hiZBindGroupLayout = makeBindGroupLayout(device, "HiZ_BGL", [
+      texture(0, Stage.COMPUTE, { sampleType: "unfilterable-float" }),
+      storageTexture(1, Stage.COMPUTE, "r32float"),
+      uniformBuffer(2, Stage.COMPUTE),
+    ]);
 
     const hiZPipeline = device.createComputePipeline({
       label: "HiZ_Pipeline",
@@ -363,30 +344,15 @@ class WebGPUHiZOcclusionDispatcher {
     let hiZFromDepthBindGroupLayout: GPUBindGroupLayout | null = null;
     let hiZFromDepthPipeline: GPUComputePipeline | null = null;
     if (this._hiZFromDepthShaderModule) {
-      hiZFromDepthBindGroupLayout = device.createBindGroupLayout({
-        label: "HiZ_FromDepth_BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.COMPUTE,
-            texture: { sampleType: "depth", viewDimension: "2d" },
-          },
-          {
-            binding: 1,
-            visibility: GPUShaderStage.COMPUTE,
-            storageTexture: {
-              access: "write-only",
-              format: "r32float",
-              viewDimension: "2d",
-            },
-          },
-          {
-            binding: 2,
-            visibility: GPUShaderStage.COMPUTE,
-            buffer: { type: "uniform" },
-          },
+      hiZFromDepthBindGroupLayout = makeBindGroupLayout(
+        device,
+        "HiZ_FromDepth_BGL",
+        [
+          texture(0, Stage.COMPUTE, { sampleType: "depth" }),
+          storageTexture(1, Stage.COMPUTE, "r32float"),
+          uniformBuffer(2, Stage.COMPUTE),
         ],
-      });
+      );
       hiZFromDepthPipeline = device.createComputePipeline({
         label: "HiZ_FromDepth_Pipeline",
         layout: device.createPipelineLayout({
@@ -438,51 +404,20 @@ class WebGPUHiZOcclusionDispatcher {
     //   @binding(2) hiZSampler: sampler
     //   @binding(3..6) sphereCenter[X/Y/Z]/Radius: storage<read>
     //   @binding(7) visibility: storage<read_write>
-    const occlusionBindGroupLayout = device.createBindGroupLayout({
-      label: "Occlusion_BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          sampler: { type: "non-filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 5,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 6,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 7,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
+    const occlusionBindGroupLayout = makeBindGroupLayout(
+      device,
+      "Occlusion_BGL",
+      [
+        uniformBuffer(0, Stage.COMPUTE),
+        texture(1, Stage.COMPUTE, { sampleType: "unfilterable-float" }),
+        sampler(2, Stage.COMPUTE, "non-filtering"),
+        storageBuffer(3, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(4, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(5, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(6, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(7, Stage.COMPUTE),
       ],
-    });
+    );
 
     const occlusionPipeline = device.createComputePipeline({
       label: "Occlusion_Pipeline",
@@ -850,6 +785,15 @@ import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import HiZPyramidFromDepthSource from "../../Shaders/WebGPU/Compute/HiZPyramidFromDepth.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  storageBuffer,
+  storageTexture,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const _instances = new WeakMap<object, WebGPUHiZOcclusionDispatcher>();
 

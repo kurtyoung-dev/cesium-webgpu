@@ -13,6 +13,11 @@ import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 
 interface PointCloudCache {
@@ -107,15 +112,9 @@ function buildPipeline(
   bgl: GPUBindGroupLayout;
 } {
   const shaderModule = device.createShaderModule({ code: POINT_CLOUD_WGSL });
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" as GPUBufferBindingType },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, "PointCloud BGL", [
+    uniformBuffer(0, Stage.VERTEX),
+  ]);
   const pipeline = device.createRenderPipeline({
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: {

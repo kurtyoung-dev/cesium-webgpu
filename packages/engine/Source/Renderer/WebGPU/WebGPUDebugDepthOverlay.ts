@@ -37,6 +37,14 @@
 
 /// <reference types="@webgpu/types" />
 
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 const DEPTH_OVERLAY_WGSL = /* wgsl */ `
 struct Uniforms {
   // x = near, y = far, z = mode (0 = linearized red, 1 = raw green, 2 = both),
@@ -168,32 +176,19 @@ export class WebGPUDebugDepthOverlay {
       code: DEPTH_OVERLAY_WGSL,
     });
 
-    this._bindGroupLayout = device.createBindGroupLayout({
-      label: "DebugDepthOverlay BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          // Depth textures require sampleType: "depth" — they are NOT
-          // compatible with the "float" sampleType used by the production
-          // post-process pipeline.
-          texture: { sampleType: "depth" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          // Depth textures use a non-filtering sampler. The
-          // "non-filtering" type pairs with "depth" sample type. Trying
-          // "filtering" here causes a validation error on every device.
-          sampler: { type: "non-filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
+    // Depth textures require sampleType: "depth" — they are NOT
+    // compatible with the "float" sampleType used by the production
+    // post-process pipeline. The "non-filtering" sampler type pairs with
+    // "depth" sample type; "filtering" causes a validation error.
+    this._bindGroupLayout = makeBindGroupLayout(
+      device,
+      "DebugDepthOverlay BGL",
+      [
+        texture(0, Stage.FRAGMENT, { sampleType: "depth" }),
+        sampler(1, Stage.FRAGMENT, "non-filtering"),
+        uniformBuffer(2, Stage.FRAGMENT),
       ],
-    });
+    );
 
     const pipelineLayout = device.createPipelineLayout({
       label: "DebugDepthOverlay PipelineLayout",

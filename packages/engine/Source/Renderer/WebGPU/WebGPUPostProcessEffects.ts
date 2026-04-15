@@ -710,80 +710,27 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
 
   private _createPipelines(device: GPUDevice, format: GPUTextureFormat): void {
     // SSAO Generate layout: depthTex + randomTex + sampler + uniforms
-    this._generateLayout = device.createBindGroupLayout({
-      label: "AO-Generate-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._generateLayout = makeBindGroupLayout(device, "AO-Generate-BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+      uniformBuffer(3, Stage.FRAGMENT),
+    ]);
 
     // Blur layout: single texture + sampler + uniforms
-    this._blurLayout = device.createBindGroupLayout({
-      label: "AO-Blur-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._blurLayout = makeBindGroupLayout(device, "AO-Blur-BGL", [
+      texture(0, Stage.FRAGMENT),
+      sampler(1, Stage.FRAGMENT),
+      uniformBuffer(2, Stage.FRAGMENT),
+    ]);
 
     // Modulate layout: scene + AO + sampler + uniforms
-    this._modulateLayout = device.createBindGroupLayout({
-      label: "AO-Modulate-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._modulateLayout = makeBindGroupLayout(device, "AO-Modulate-BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+      uniformBuffer(3, Stage.FRAGMENT),
+    ]);
 
     this._generatePipeline = createFullscreenPipeline(
       device,
@@ -1071,58 +1018,20 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   }
 
   private _createPipelines(device: GPUDevice, format: GPUTextureFormat): void {
-    this._blurLayout = device.createBindGroupLayout({
-      label: "DoF-Blur-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._blurLayout = makeBindGroupLayout(device, "DoF-Blur-BGL", [
+      texture(0, Stage.FRAGMENT),
+      sampler(1, Stage.FRAGMENT),
+      uniformBuffer(2, Stage.FRAGMENT),
+    ]);
 
     // DoF composite layout: scene + blur + depth + sampler + uniforms
-    this._dofLayout = device.createBindGroupLayout({
-      label: "DoF-Composite-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._dofLayout = makeBindGroupLayout(device, "DoF-Composite-BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      texture(2, Stage.FRAGMENT),
+      sampler(3, Stage.FRAGMENT),
+      uniformBuffer(4, Stage.FRAGMENT),
+    ]);
 
     this._blurHPipeline = createFullscreenPipeline(
       device,

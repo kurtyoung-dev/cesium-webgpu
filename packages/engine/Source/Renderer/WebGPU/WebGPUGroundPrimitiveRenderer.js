@@ -13,6 +13,11 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const UNIFORM_BUFFER_SIZE = 256;
 const scratchModelView = new Matrix4();
@@ -53,15 +58,9 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 `;
 
   const mod = device.createShaderModule({ label: "GroundPrimitive", code });
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, "GroundPrimitive BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
   const vertexBuffers = [

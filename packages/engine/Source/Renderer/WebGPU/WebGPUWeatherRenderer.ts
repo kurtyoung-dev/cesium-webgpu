@@ -23,6 +23,12 @@
  */
 import WeatherParticlesWGSL from "../../Shaders/WebGPU/Compute/WeatherParticles.js";
 import WeatherParticleRenderWGSL from "../../Shaders/WebGPU/Compute/WeatherParticleRender.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const WEATHER_TYPES = { rain: 0, snow: 1, fog: 2, hail: 3 } as const;
 const PARTICLE_SIZE_BYTES = 32; // 8 floats per particle
@@ -100,26 +106,11 @@ function initializeWeatherPipelines(
     code: WeatherParticlesWGSL,
   });
 
-  cache.bindGroupLayout = device.createBindGroupLayout({
-    label: "Weather BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "storage" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "storage" },
-      },
-    ],
-  });
+  cache.bindGroupLayout = makeBindGroupLayout(device, "Weather BGL", [
+    storageBuffer(0, Stage.COMPUTE),
+    uniformBuffer(1, Stage.COMPUTE),
+    storageBuffer(2, Stage.COMPUTE),
+  ]);
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [cache.bindGroupLayout],
@@ -337,21 +328,14 @@ function initializeRenderPipeline(
     code: WeatherParticleRenderWGSL,
   });
 
-  cache.renderBindGroupLayout = device.createBindGroupLayout({
-    label: "Weather render BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
+  cache.renderBindGroupLayout = makeBindGroupLayout(
+    device,
+    "Weather render BGL",
+    [
+      storageBuffer(0, Stage.VERTEX, { readOnly: true }),
+      uniformBuffer(1, Stage.VERTEX_FRAGMENT),
     ],
-  });
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [cache.renderBindGroupLayout],

@@ -15,6 +15,13 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture as textureEntry,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 interface VoxelCache {
   uniformBuffer: GPUBuffer | null;
@@ -266,25 +273,11 @@ function updateWebGPUVoxelPrimitive(
     const shaderModule = device.createShaderModule({ code: VOXEL_WGSL });
     cache.shaderModule = shaderModule;
 
-    const bgl = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" as GPUBufferBindingType },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float", viewDimension: "3d" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-      ],
-    });
+    const bgl = makeBindGroupLayout(device, "Voxel BGL", [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      textureEntry(1, Stage.FRAGMENT, { viewDimension: "3d" }),
+      sampler(2, Stage.FRAGMENT),
+    ]);
 
     cache.pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),

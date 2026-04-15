@@ -18,6 +18,13 @@
  * @private
  */
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const CLOUD_UNIFORM_FLOATS = 64; // must match CloudUniforms struct in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
@@ -57,31 +64,12 @@ function initializeCloudPipeline(
     code: ProceduralCloudsWGSL,
   });
 
-  cache.bindGroupLayout = device.createBindGroupLayout({
-    label: "ProceduralClouds BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  cache.bindGroupLayout = makeBindGroupLayout(device, "ProceduralClouds BGL", [
+    texture(0, Stage.FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    sampler(2, Stage.FRAGMENT),
+    uniformBuffer(3, Stage.FRAGMENT),
+  ]);
 
   const pipelineLayout = device.createPipelineLayout({
     label: "ProceduralClouds pipeline layout",

@@ -24,6 +24,11 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const FLOATS_PER_SEGMENT = 20;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
@@ -334,27 +339,17 @@ function createPolylinePipeline(
     code: shaderCode,
   });
 
-  const cameraBindGroupLayout = device.createBindGroupLayout({
-    label: `${label || "Polyline"} camera BGL`,
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const cameraBindGroupLayout = makeBindGroupLayout(
+    device,
+    `${label || "Polyline"} camera BGL`,
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
-  const materialBindGroupLayout = device.createBindGroupLayout({
-    label: `${label || "Polyline"} material BGL`,
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const materialBindGroupLayout = makeBindGroupLayout(
+    device,
+    `${label || "Polyline"} material BGL`,
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [cameraBindGroupLayout, materialBindGroupLayout],
@@ -411,16 +406,11 @@ function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
     code: shaderCode,
   });
 
-  const cameraBindGroupLayout = device.createBindGroupLayout({
-    label: "Polyline pick camera BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const cameraBindGroupLayout = makeBindGroupLayout(
+    device,
+    "Polyline pick camera BGL",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const pipeline = device.createRenderPipeline({
     label: "Polyline pick pipeline",

@@ -42,6 +42,14 @@
 
 /// <reference types="@webgpu/types" />
 
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 const MAX_FRUSTUMS = 4;
 
 const FRUSTUM_OVERLAY_WGSL = /* wgsl */ `
@@ -209,36 +217,17 @@ export class WebGPUDebugFrustumOverlay {
       code: FRUSTUM_OVERLAY_WGSL,
     });
 
-    this._bindGroupLayout = device.createBindGroupLayout({
-      label: "DebugFrustumOverlay BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "depth" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "non-filtering" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
+    this._bindGroupLayout = makeBindGroupLayout(
+      device,
+      "DebugFrustumOverlay BGL",
+      [
+        texture(0, Stage.FRAGMENT),
+        sampler(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT, { sampleType: "depth" }),
+        sampler(3, Stage.FRAGMENT, "non-filtering"),
+        uniformBuffer(4, Stage.FRAGMENT),
       ],
-    });
+    );
 
     const pipelineLayout = device.createPipelineLayout({
       label: "DebugFrustumOverlay PipelineLayout",

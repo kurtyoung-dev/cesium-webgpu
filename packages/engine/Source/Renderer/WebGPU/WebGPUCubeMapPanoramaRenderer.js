@@ -17,6 +17,13 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Embedded WGSL shader source (avoids async fetch dependency)
 const CUBEMAP_PANORAMA_WGSL = `
@@ -167,32 +174,20 @@ function ensureLayouts(device) {
   }
   _cachedDevice = device;
 
-  _cachedBindGroupLayout0 = device.createBindGroupLayout({
-    label: "CubeMapPanorama-uniforms",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  _cachedBindGroupLayout0 = makeBindGroupLayout(
+    device,
+    "CubeMapPanorama-uniforms",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
-  _cachedBindGroupLayout1 = device.createBindGroupLayout({
-    label: "CubeMapPanorama-textures",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "cube" },
-      },
+  _cachedBindGroupLayout1 = makeBindGroupLayout(
+    device,
+    "CubeMapPanorama-textures",
+    [
+      sampler(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT, { viewDimension: "cube" }),
     ],
-  });
+  );
 
   _cachedPipelineLayout = device.createPipelineLayout({
     label: "CubeMapPanorama-layout",

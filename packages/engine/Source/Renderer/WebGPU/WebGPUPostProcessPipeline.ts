@@ -47,6 +47,13 @@ import {
   WebGPUAutoExposure,
   type AutoExposureConfig,
 } from "./WebGPUAutoExposure.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer as uniformBuffer_,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Re-export effect configs for consumers
 export type {
@@ -362,21 +369,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       code,
     });
 
-    this._identityBGL = device.createBindGroupLayout({
-      label: "PostProcess-IdentityBlit-BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-      ],
-    });
+    this._identityBGL = makeBindGroupLayout(
+      device,
+      "PostProcess-IdentityBlit-BGL",
+      [texture(0, Stage.FRAGMENT), sampler(1, Stage.FRAGMENT)],
+    );
 
     this._identityPipeline = device.createRenderPipeline({
       label: "PostProcess-IdentityBlit-Pipeline",
@@ -1076,25 +1073,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     }
 
     const entries: GPUBindGroupLayoutEntry[] = [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
+      texture(0, Stage.FRAGMENT),
+      sampler(1, Stage.FRAGMENT),
     ];
 
     let uniformBuffer: GPUBuffer | null = null;
     if (uniforms) {
-      entries.push({
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      });
+      entries.push(uniformBuffer_(2, Stage.FRAGMENT));
       uniformBuffer = device.createBuffer({
         label: `PostProcess-${name}-Uniforms`,
         size: Math.max(uniforms.byteLength, 16),
@@ -1107,10 +1092,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    const bindGroupLayout = device.createBindGroupLayout({
-      label: `PostProcess-${name}-BindGroupLayout`,
+    const bindGroupLayout = makeBindGroupLayout(
+      device,
+      `PostProcess-${name}-BindGroupLayout`,
       entries,
-    });
+    );
 
     const pipelineLayout = device.createPipelineLayout({
       label: `PostProcess-${name}-PipelineLayout`,

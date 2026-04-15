@@ -22,6 +22,12 @@
 
 /// <reference types="@webgpu/types" />
 import { gpuData } from "./webgpuTypeHelpers.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
  * Culling mode determines what the compute shader writes.
@@ -140,47 +146,24 @@ export class WebGPUGPUCuller {
     });
 
     // Create bind group layout
-    this._bindGroupLayout = this._device.createBindGroupLayout({
-      label: `${this._label} Bind Group Layout`,
-      entries: [
+    this._bindGroupLayout = makeBindGroupLayout(
+      this._device,
+      `${this._label} Bind Group Layout`,
+      [
         // binding 0: frustum planes (uniform)
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
+        uniformBuffer(0, Stage.COMPUTE),
         // binding 1: params (uniform) - objectCount + mode
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
+        uniformBuffer(1, Stage.COMPUTE),
         // binding 2: bounding spheres (storage, read)
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
+        storageBuffer(2, Stage.COMPUTE, { readOnly: true }),
         // binding 3: visibility flags (storage, read-write)
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
+        storageBuffer(3, Stage.COMPUTE),
         // binding 4: indirect draw buffer (storage, read-write)
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
+        storageBuffer(4, Stage.COMPUTE),
         // binding 5: visible count (storage, read-write)
-        {
-          binding: 5,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
+        storageBuffer(5, Stage.COMPUTE),
       ],
-    });
+    );
 
     // Create pipeline layout
     const pipelineLayout = this._device.createPipelineLayout({

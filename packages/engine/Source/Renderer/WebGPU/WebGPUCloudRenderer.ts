@@ -14,6 +14,13 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 interface CloudCache {
   quadVertexBuffer: GPUBuffer | null;
@@ -243,25 +250,11 @@ function updateWebGPUCloudCollection(
     });
     cache.quadVertexBuffer = createQuadVB(device);
 
-    const bgl = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" as GPUBufferBindingType },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-      ],
-    });
+    const bgl = makeBindGroupLayout(device, "Cloud BGL", [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+    ]);
 
     cache.pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),

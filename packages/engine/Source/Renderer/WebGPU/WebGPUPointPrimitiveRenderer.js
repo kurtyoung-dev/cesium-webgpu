@@ -28,6 +28,11 @@ import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 
@@ -216,16 +221,11 @@ function createPointPipeline(
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "PointPrimitive bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "PointPrimitive bind group layout",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     label: "PointPrimitive pipeline layout",
@@ -289,16 +289,11 @@ function createPickPipeline(device, shaderCode, format, depthFormat) {
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "PointPrimitive pick bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "PointPrimitive pick bind group layout",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const pipeline = device.createRenderPipeline({
     label: "PointPrimitive pick pipeline",

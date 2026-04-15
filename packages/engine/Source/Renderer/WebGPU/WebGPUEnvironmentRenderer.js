@@ -18,6 +18,13 @@ import MoonShaderCode from "../../Shaders/WebGPU/Environment/Moon.js";
 import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 // Phase 1.x consolidation — shared bounding-cube + base uniform pack
 // for ellipsoid bodies. Moon is the first consumer; future Sun-as-
 // ellipsoid and custom planet renderers will share these helpers.
@@ -251,25 +258,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }`,
     });
 
-    const bgl = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-      ],
-    });
+    const bgl = makeBindGroupLayout(device, "Sun BGL", [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+    ]);
 
     cache.pipeline = device.createRenderPipeline({
       label: "Sun pipeline",

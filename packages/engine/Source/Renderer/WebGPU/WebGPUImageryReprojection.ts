@@ -1,4 +1,13 @@
 /// <reference types="@webgpu/types" />
+
+import {
+  makeBindGroupLayout,
+  uniformBuffer as uniformBufferEntry,
+  texture as textureEntry,
+  sampler as samplerEntry,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 /**
  * WebGPU imagery reprojection — converts Web Mercator imagery tiles to
  * Geographic (equirectangular) projection via a render-to-texture pass.
@@ -90,29 +99,15 @@ function ensureCache(device: GPUDevice): ReprojectCache {
     code: REPROJECT_WGSL,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "ReprojectWebMercator BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" as GPUBufferBindingType },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: {
-          sampleType: "float" as GPUTextureSampleType,
-          viewDimension: "2d",
-        },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" as GPUSamplerBindingType },
-      },
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "ReprojectWebMercator BGL",
+    [
+      uniformBufferEntry(0, Stage.FRAGMENT),
+      textureEntry(1, Stage.FRAGMENT),
+      samplerEntry(2, Stage.FRAGMENT),
     ],
-  });
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     label: "ReprojectWebMercator PipelineLayout",

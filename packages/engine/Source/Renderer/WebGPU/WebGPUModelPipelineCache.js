@@ -16,6 +16,14 @@
  */
 
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  storageBuffer,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Alpha mode constants matching glTF spec
 const ALPHA_OPAQUE = 0;
@@ -39,172 +47,58 @@ function computeKey(alphaMode, doubleSided) {
  */
 function createBindGroupLayouts(device) {
   // Group 0: Camera uniforms (per-frame, shared across all models)
-  const cameraBGL = device.createBindGroupLayout({
-    label: "Model Camera BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
 
   // Group 1: Material + Light uniforms (per-material)
-  const materialBGL = device.createBindGroupLayout({
-    label: "Model Material+Light BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const materialBGL = makeBindGroupLayout(device, "Model Material+Light BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    uniformBuffer(1, Stage.FRAGMENT),
+  ]);
 
   // Group 2: Textures (per-material) — 5 textures + 5 samplers
-  const textureBGL = device.createBindGroupLayout({
-    label: "Model Textures BGL",
-    entries: [
-      // baseColor
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // normal
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // metallicRoughness
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 5,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // emissive
-      {
-        binding: 6,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 7,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // occlusion
-      {
-        binding: 8,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 9,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-    ],
-  });
+  // Pairs: (binding N = texture, binding N+1 = sampler) for baseColor,
+  // normal, metallicRoughness, emissive, occlusion (bindings 0-9).
+  const textureBGL = makeBindGroupLayout(device, "Model Textures BGL", [
+    texture(0, Stage.FRAGMENT),
+    sampler(1, Stage.FRAGMENT),
+    texture(2, Stage.FRAGMENT),
+    sampler(3, Stage.FRAGMENT),
+    texture(4, Stage.FRAGMENT),
+    sampler(5, Stage.FRAGMENT),
+    texture(6, Stage.FRAGMENT),
+    sampler(7, Stage.FRAGMENT),
+    texture(8, Stage.FRAGMENT),
+    sampler(9, Stage.FRAGMENT),
+  ]);
 
   // Group 3: Joint matrices storage buffer (for skinning)
-  const skinningBGL = device.createBindGroupLayout({
-    label: "Model Skinning BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-    ],
-  });
+  const skinningBGL = makeBindGroupLayout(device, "Model Skinning BGL", [
+    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
+  ]);
 
   // Group 4: Morph targets (storage buffer for deltas + uniform for weights)
-  const morphTargetBGL = device.createBindGroupLayout({
-    label: "Model MorphTarget BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const morphTargetBGL = makeBindGroupLayout(device, "Model MorphTarget BGL", [
+    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
+    uniformBuffer(1, Stage.VERTEX),
+  ]);
 
   // Group 5: Instance transforms storage buffer (for GPU instancing)
-  const instancingBGL = device.createBindGroupLayout({
-    label: "Model Instancing BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-    ],
-  });
+  const instancingBGL = makeBindGroupLayout(device, "Model Instancing BGL", [
+    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
+  ]);
 
   // Group 6: Feature ID texture + batch texture for per-feature styling
-  // Used by EXT_mesh_features (feature ID textures) and 3D Tiles batch tables
-  const featureIdBGL = device.createBindGroupLayout({
-    label: "Model FeatureId BGL",
-    entries: [
-      // Feature ID texture (sampled in fragment shader)
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // Batch texture (maps feature ID → RGBA color)
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      // Feature uniforms (featuresLength, channelCount, texStep, etc.)
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  // Used by EXT_mesh_features (feature ID textures) and 3D Tiles batch tables.
+  // 0-1 = feature ID tex+sampler, 2-3 = batch tex+sampler, 4 = uniforms.
+  const featureIdBGL = makeBindGroupLayout(device, "Model FeatureId BGL", [
+    texture(0, Stage.FRAGMENT),
+    sampler(1, Stage.FRAGMENT),
+    texture(2, Stage.FRAGMENT),
+    sampler(3, Stage.FRAGMENT),
+    uniformBuffer(4, Stage.FRAGMENT),
+  ]);
 
   return {
     cameraBGL,

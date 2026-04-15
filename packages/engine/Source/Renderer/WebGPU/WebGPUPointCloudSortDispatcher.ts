@@ -1,4 +1,12 @@
 /// <reference types="@webgpu/types" />
+
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 /**
  * @module WebGPUPointCloudSortDispatcher
  *
@@ -238,26 +246,11 @@ class WebGPUPointCloudSortDispatcher {
         GPUBufferUsage.COPY_SRC,
     });
 
-    const bindGroupLayout = device.createBindGroupLayout({
-      label: "PointCloudSort_BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-      ],
-    });
+    const bindGroupLayout = makeBindGroupLayout(device, "PointCloudSort_BGL", [
+      uniformBuffer(0, Stage.COMPUTE),
+      storageBuffer(1, Stage.COMPUTE),
+      storageBuffer(2, Stage.COMPUTE),
+    ]);
 
     const bindGroup = device.createBindGroup({
       label: "PointCloudSort_BG",

@@ -14,6 +14,12 @@
  * @module WebGPUBrdfLutGenerator
  */
 
+import {
+  makeBindGroupLayout,
+  storageTexture,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 // Inline WGSL compute shader for BRDF LUT generation
 const BRDF_LUT_WGSL = /* wgsl */ `
 @group(0) @binding(0) var outputTex: texture_storage_2d<rg32float, write>;
@@ -263,19 +269,9 @@ function updateWebGPUBrdfLut(
   try {
     const computeModule = device.createShaderModule({ code: BRDF_LUT_WGSL });
 
-    const bindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: "write-only",
-            format: "rg32float",
-            viewDimension: "2d",
-          },
-        },
-      ],
-    });
+    const bindGroupLayout = makeBindGroupLayout(device, "BrdfLut-BGL", [
+      storageTexture(0, Stage.COMPUTE, "rg32float"),
+    ]);
 
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],

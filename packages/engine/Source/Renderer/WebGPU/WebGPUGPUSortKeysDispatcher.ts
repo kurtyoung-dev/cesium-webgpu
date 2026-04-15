@@ -1,4 +1,12 @@
 /// <reference types="@webgpu/types" />
+
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 /**
  * @module WebGPUGPUSortKeysDispatcher
  *
@@ -170,26 +178,13 @@ class WebGPUGPUSortKeysDispatcher {
     const sortKeysLowBuffer = makeStorageOut("GPUSortKeys_KeysLow");
     const commandIndicesBuffer = makeStorageOut("GPUSortKeys_Indices");
 
-    const bindGroupLayout = device.createBindGroupLayout({
-      label: "GPUSortKeys_BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        ...[1, 2, 3, 4, 5, 6].map((b) => ({
-          binding: b,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" as GPUBufferBindingType },
-        })),
-        ...[7, 8, 9].map((b) => ({
-          binding: b,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" as GPUBufferBindingType },
-        })),
-      ],
-    });
+    const bindGroupLayout = makeBindGroupLayout(device, "GPUSortKeys_BGL", [
+      uniformBuffer(0, Stage.COMPUTE),
+      ...[1, 2, 3, 4, 5, 6].map((b) =>
+        storageBuffer(b, Stage.COMPUTE, { readOnly: true }),
+      ),
+      ...[7, 8, 9].map((b) => storageBuffer(b, Stage.COMPUTE)),
+    ]);
 
     const bindGroup = device.createBindGroup({
       label: "GPUSortKeys_BG",

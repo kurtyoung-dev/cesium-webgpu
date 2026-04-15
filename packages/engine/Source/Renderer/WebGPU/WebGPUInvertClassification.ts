@@ -10,6 +10,13 @@
 
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 interface InvertClassificationCache {
   uniformBuffer: GPUBuffer | null;
@@ -133,30 +140,12 @@ function updateWebGPUInvertClassification(
 
   // Create pipeline if needed (depends on format)
   if (!cache.pipeline) {
-    const bgl = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" as GPUBufferBindingType },
-        },
-      ],
-    });
+    const bgl = makeBindGroupLayout(device, "InvertClassification BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
+      uniformBuffer(3, Stage.FRAGMENT),
+    ]);
 
     cache.pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),

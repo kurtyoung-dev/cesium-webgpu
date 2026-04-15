@@ -13,6 +13,11 @@ import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
 
@@ -132,15 +137,9 @@ function buildPipeline(
   layout: GPUPipelineLayout;
 } {
   const sm = device.createShaderModule({ code: SPLAT_WGSL });
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" as GPUBufferBindingType },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, "GaussianSplat BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
   // Instance stride: posHigh(12) + posLow(12) + covA(12) + covB(12) + color(16) = 64 bytes
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
   const pipeline = device.createRenderPipeline({

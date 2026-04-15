@@ -7,6 +7,14 @@
  * @module WebGPUClippingPolygonCollection
  */
 
+import {
+  makeBindGroupLayout,
+  uniformBuffer as uniformBufferEntry,
+  texture as textureEntry,
+  storageTexture,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 /** Minimal interface for the upstream ClippingPolygonCollection. */
 interface ClippingPolygonCollectionLike {
   length: number;
@@ -196,31 +204,16 @@ function computePolygonSDF(
   if (!_sdfComputePipeline || _sdfPipelineDevice !== device) {
     _sdfPipelineDevice = device;
 
-    _sdfBindGroupLayout = device.createBindGroupLayout({
-      label: "PolygonSDF-BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "unfilterable-float" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: "write-only", format: "r32float" },
-        },
+    _sdfBindGroupLayout = makeBindGroupLayout(
+      device,
+      "PolygonSDF-BindGroupLayout",
+      [
+        uniformBufferEntry(0, Stage.COMPUTE),
+        textureEntry(1, Stage.COMPUTE, { sampleType: "unfilterable-float" }),
+        textureEntry(2, Stage.COMPUTE, { sampleType: "unfilterable-float" }),
+        storageTexture(3, Stage.COMPUTE, "r32float"),
       ],
-    });
+    );
 
     // Inline the WGSL source (matches PolygonSignedDistance.wgsl)
     const shaderModule = device.createShaderModule({

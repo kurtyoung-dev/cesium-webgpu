@@ -34,6 +34,13 @@ import {
   CLIP_DPRIME_FLOAT_COUNT,
   CLIP_DISTANCE_INACTIVE_SENTINEL,
 } from "./WebGPUClipDistancePrecompute.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // 240 bytes = 60 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
 // + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + polyCount(1u)
@@ -69,51 +76,19 @@ function getEffectsBindGroupLayout(device) {
     _placeholderCache.set(device, cache);
   }
 
-  cache.bgl = device.createBindGroupLayout({
-    label: "Effects BGL (shadow + clipping)",
-    entries: [
-      {
-        binding: 0,
-        // Phase 5 WGF-1: vertex visibility added so the hardware
-        // clip-distances pipeline variant can read `clipPlaneEqHW`
-        // from the effects UBO and emit `@builtin(clip_distances)`.
-        // The fragment stage still reads shadow + edge highlight
-        // fields from the same UBO.
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "depth" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "comparison" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "unfilterable-float", viewDimension: "2d" },
-      },
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "non-filtering" },
-      },
-      {
-        binding: 5,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
-      {
-        binding: 6,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-    ],
-  });
+  // Phase 5 WGF-1: binding 0 has vertex visibility so the hardware
+  // clip-distances pipeline variant can read `clipPlaneEqHW` from the
+  // effects UBO and emit `@builtin(clip_distances)`. The fragment stage
+  // still reads shadow + edge highlight fields from the same UBO.
+  cache.bgl = makeBindGroupLayout(device, "Effects BGL (shadow + clipping)", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    texture(1, Stage.FRAGMENT, { sampleType: "depth" }),
+    sampler(2, Stage.FRAGMENT, "comparison"),
+    texture(3, Stage.FRAGMENT, { sampleType: "unfilterable-float" }),
+    sampler(4, Stage.FRAGMENT, "non-filtering"),
+    texture(5, Stage.FRAGMENT),
+    sampler(6, Stage.FRAGMENT),
+  ]);
 
   return cache.bgl;
 }

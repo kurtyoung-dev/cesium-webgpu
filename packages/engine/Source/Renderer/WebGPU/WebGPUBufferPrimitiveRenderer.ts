@@ -37,6 +37,11 @@ import {
   assertCameraRTERoundTrip,
   assertMVTranslationZeroed,
 } from "./WebGPURTEAssertions.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /** Type-shape we use to call the JS-only IndexDatatype.createTypedArray. */
 interface IndexDatatypeStatics {
@@ -331,29 +336,15 @@ function makeCameraBindGroupLayout(
   withParams: boolean,
 ): GPUBindGroupLayout[] {
   const layouts: GPUBindGroupLayout[] = [
-    device.createBindGroupLayout({
-      label: "BufferPrimitive camera BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" as GPUBufferBindingType },
-        },
-      ],
-    }),
+    makeBindGroupLayout(device, "BufferPrimitive camera BGL", [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    ]),
   ];
   if (withParams) {
     layouts.push(
-      device.createBindGroupLayout({
-        label: "BufferPrimitive params BGL",
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-            buffer: { type: "uniform" as GPUBufferBindingType },
-          },
-        ],
-      }),
+      makeBindGroupLayout(device, "BufferPrimitive params BGL", [
+        uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      ]),
     );
   }
   return layouts;

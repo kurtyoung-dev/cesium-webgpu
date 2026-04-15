@@ -54,6 +54,13 @@ import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
  * Number of float slots that the base uniform pack consumes (offsets
@@ -173,26 +180,11 @@ export function createEllipsoidBoundingCube(
 export function createEllipsoidBindGroupLayout(
   device: GPUDevice,
 ): GPUBindGroupLayout {
-  return device.createBindGroupLayout({
-    label: "Ellipsoid_BindGroupLayout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-    ],
-  });
+  return makeBindGroupLayout(device, "Ellipsoid_BindGroupLayout", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    sampler(2, Stage.FRAGMENT),
+  ]);
 }
 
 // ─── Base uniform pack ───────────────────────────────────────────────

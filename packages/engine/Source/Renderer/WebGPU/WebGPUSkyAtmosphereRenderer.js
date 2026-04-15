@@ -14,6 +14,13 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Uniform buffer: 256 bytes (aligned)
 const UNIFORM_BUFFER_SIZE = 256;
@@ -107,16 +114,11 @@ function createPipeline(device, shaderCode, format, depthFormat) {
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "SkyAtmosphere bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "SkyAtmosphere bind group layout",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   // Group 1 holds the precomputed atmosphere LUTs. Bound unconditionally so
   // the pipeline layout never changes — when the LUT compute path is
@@ -126,36 +128,17 @@ function createPipeline(device, shaderCode, format, depthFormat) {
   // Phase 1.3c — bindings 3 and 4 hold the moon LUT pair. They're bound
   // unconditionally too, falling back to the same placeholder when
   // dual-light scattering isn't active so the layout stays constant.
-  const lutBindGroupLayout = device.createBindGroupLayout({
-    label: "SkyAtmosphere LUT bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d" },
-      },
+  const lutBindGroupLayout = makeBindGroupLayout(
+    device,
+    "SkyAtmosphere LUT bind group layout",
+    [
+      sampler(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      texture(2, Stage.FRAGMENT),
+      texture(3, Stage.FRAGMENT),
+      texture(4, Stage.FRAGMENT),
     ],
-  });
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     label: "SkyAtmosphere pipeline layout",

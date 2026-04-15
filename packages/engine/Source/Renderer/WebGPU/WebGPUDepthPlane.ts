@@ -26,6 +26,11 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Ellipsoid from "../../Core/Ellipsoid.js";
 import OrthographicFrustum from "../../Core/OrthographicFrustum.js";
 import { jsModule, m4Values } from "./webgpuTypeHelpers.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /** Type-shape for the JS-only EncodedCartesian3.encode static. */
 interface EncodedCartesian3Statics {
@@ -263,16 +268,11 @@ export class WebGPUDepthPlane {
       code: DEPTH_PLANE_WGSL,
     });
 
-    this._bindGroupLayout = device.createBindGroupLayout({
-      label: "DepthPlane-BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._bindGroupLayout = makeBindGroupLayout(
+      device,
+      "DepthPlane-BindGroupLayout",
+      [uniformBuffer(0, Stage.VERTEX)],
+    );
 
     // 96 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16)
     this._uniformBuffer = device.createBuffer({

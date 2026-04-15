@@ -29,6 +29,8 @@
 
 /// <reference types="@webgpu/types" />
 
+import { makeBindGroupLayout, Stage } from "./WebGPUBindGroupLayoutHelpers.js";
+
 /**
  * Handle for a registered video source.
  */
@@ -230,21 +232,22 @@ export class WebGPUVideoTextureManager {
    * @returns GPUBindGroupLayout with external texture + sampler
    */
   createBindGroupLayout(): GPUBindGroupLayout {
-    return this._device.createBindGroupLayout({
-      label: "Video Texture Bind Group Layout",
-      entries: [
+    return makeBindGroupLayout(
+      this._device,
+      "Video Texture Bind Group Layout",
+      [
         {
           binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
+          visibility: Stage.FRAGMENT,
           externalTexture: {},
         },
         {
           binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
+          visibility: Stage.FRAGMENT,
           sampler: {},
         },
       ],
-    });
+    );
   }
 
   /**

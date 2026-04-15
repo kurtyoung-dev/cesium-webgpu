@@ -15,6 +15,13 @@
  * @private
  */
 import SSRShaderWGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const SSR_UNIFORM_FLOATS = 44; // matches SSRUniforms struct
 const SSR_UNIFORM_BYTES = SSR_UNIFORM_FLOATS * 4;
@@ -62,36 +69,13 @@ function initializeSSRPipeline(
     code: SSRShaderWGSL,
   });
 
-  cache.bindGroupLayout = device.createBindGroupLayout({
-    label: "SSR BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  cache.bindGroupLayout = makeBindGroupLayout(device, "SSR BGL", [
+    texture(0, Stage.FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    texture(2, Stage.FRAGMENT),
+    sampler(3, Stage.FRAGMENT),
+    uniformBuffer(4, Stage.FRAGMENT),
+  ]);
 
   const pipelineLayout = device.createPipelineLayout({
     label: "SSR pipeline layout",

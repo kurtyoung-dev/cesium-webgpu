@@ -21,6 +21,13 @@ import type { DebugStatsObject } from "../GraphicsContext.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import TAASource from "../../Shaders/WebGPU/PostProcess/TAA.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // TAA params UBO: texelSize(2) + blendWeight(1) + frameIndex(1) + jitterOffset(2) + pad(2) = 32 bytes
 const TAA_PARAMS_BYTES = 32;
@@ -101,36 +108,13 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     });
 
     // Bind group layout
-    this._bindGroupLayout = device.createBindGroupLayout({
-      label: "TAA_BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "depth" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._bindGroupLayout = makeBindGroupLayout(device, "TAA_BGL", [
+      texture(0, Stage.FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      texture(2, Stage.FRAGMENT, { sampleType: "depth" }),
+      sampler(3, Stage.FRAGMENT),
+      uniformBuffer(4, Stage.FRAGMENT),
+    ]);
 
     // Render pipeline
     const shaderModule = device.createShaderModule({

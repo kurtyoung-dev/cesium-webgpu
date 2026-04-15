@@ -17,6 +17,13 @@
 
 import DeveloperError from "../../Core/DeveloperError.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
  * Update frequency for uniform groups.
@@ -386,54 +393,31 @@ export class WebGPUUniformGroupManager {
   // ======================================================================
 
   private _createPerFrameLayout(): void {
-    this._perFrameLayout = this._device.createBindGroupLayout({
-      label: "PerFrame_BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._perFrameLayout = makeBindGroupLayout(
+      this._device,
+      "PerFrame_BindGroupLayout",
+      [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+    );
   }
 
   private _createMaterialLayout(): void {
-    this._materialLayout = this._device.createBindGroupLayout({
-      label: "PerMaterial_BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        // Binding 1: base color texture
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        // Binding 2: base color sampler
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+    this._materialLayout = makeBindGroupLayout(
+      this._device,
+      "PerMaterial_BindGroupLayout",
+      [
+        uniformBuffer(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        sampler(2, Stage.FRAGMENT),
       ],
-    });
+    );
   }
 
   private _createObjectLayout(): void {
-    this._objectLayout = this._device.createBindGroupLayout({
-      label: "PerObject_BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
+    this._objectLayout = makeBindGroupLayout(
+      this._device,
+      "PerObject_BindGroupLayout",
+      [uniformBuffer(0, Stage.VERTEX)],
+    );
   }
 
   private _createPerFrameBuffer(): void {

@@ -11,6 +11,11 @@ import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const SHADOW_MAP_SIZE = 2048;
 const SHADOW_UNIFORM_SIZE = 128;
@@ -168,15 +173,9 @@ function _getOrCreateCastPipeline(device, cache, layoutKey) {
     label: `Shadow cast (${layoutKey})`,
     code: SHADOW_CAST_BIND_GROUP_PREFIX + variant.vsCode,
   });
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, `Shadow cast BGL (${layoutKey})`, [
+    uniformBuffer(0, Stage.VERTEX),
+  ]);
   const pipeline = device.createRenderPipeline({
     label: `Shadow cast pipeline (${layoutKey})`,
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),

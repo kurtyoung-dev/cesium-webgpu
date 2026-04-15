@@ -18,6 +18,12 @@
  */
 
 import { WebGPURenderTarget } from "./WebGPURenderTarget.js";
+import {
+  makeBindGroupLayout,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 // Depth copy shader: reads depth and writes to a color texture as packed RGBA
 const DEPTH_COPY_WGSL = /* wgsl */ `
@@ -264,21 +270,14 @@ export class WebGPUGlobeDepth {
       code: DEPTH_COPY_WGSL,
     });
 
-    this._depthCopyBindGroupLayout = device.createBindGroupLayout({
-      label: "GlobeDepth-DepthCopy-BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "depth" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+    this._depthCopyBindGroupLayout = makeBindGroupLayout(
+      device,
+      "GlobeDepth-DepthCopy-BindGroupLayout",
+      [
+        texture(0, Stage.FRAGMENT, { sampleType: "depth" }),
+        sampler(1, Stage.FRAGMENT),
       ],
-    });
+    );
 
     this._depthCopySampler = device.createSampler({
       label: "GlobeDepth-DepthCopy-Sampler",

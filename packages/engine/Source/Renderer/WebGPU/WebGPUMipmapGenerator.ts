@@ -14,6 +14,13 @@
  * generator.destroy(); // when done
  */
 
+import {
+  makeBindGroupLayout,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
 /// <reference types="@webgpu/types" />
 
 // Inline the blit shader WGSL — avoids async fetch dependency for core infrastructure.
@@ -84,21 +91,11 @@ export class WebGPUMipmapGenerator {
       label: "MipmapBlit_Sampler",
     });
 
-    this._bindGroupLayout = this._device.createBindGroupLayout({
-      label: "MipmapBlit_BindGroupLayout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-      ],
-    });
+    this._bindGroupLayout = makeBindGroupLayout(
+      this._device,
+      "MipmapBlit_BindGroupLayout",
+      [sampler(0, Stage.FRAGMENT), texture(1, Stage.FRAGMENT)],
+    );
   }
 
   /**

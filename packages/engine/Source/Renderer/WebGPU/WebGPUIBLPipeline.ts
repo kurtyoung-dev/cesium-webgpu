@@ -19,6 +19,14 @@
 // Inline WGSL for irradiance convolution (matches Compute/IrradianceConvolution.wgsl)
 import IrradianceConvolutionWGSL from "../../Shaders/WebGPU/Compute/IrradianceConvolution.js";
 import RadiancePrefilterWGSL from "../../Shaders/WebGPU/Compute/RadiancePrefilter.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageTexture,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const IRRADIANCE_SIZE = 32;
 const RADIANCE_BASE_SIZE = 128;
@@ -44,34 +52,14 @@ function createIrradiancePipeline(device: GPUDevice): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.COMPUTE,
-        texture: { sampleType: "float", viewDimension: "cube" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.COMPUTE,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.COMPUTE,
-        storageTexture: {
-          access: "write-only",
-          format: "rgba16float",
-          viewDimension: "2d-array",
-        },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, "IBL-Irradiance-BGL", [
+    texture(0, Stage.COMPUTE, { viewDimension: "cube" }),
+    sampler(1, Stage.COMPUTE),
+    storageTexture(2, Stage.COMPUTE, "rgba16float", {
+      viewDimension: "2d-array",
+    }),
+    uniformBuffer(3, Stage.COMPUTE),
+  ]);
 
   const module = device.createShaderModule({ code: IrradianceConvolutionWGSL });
   const pipeline = device.createComputePipeline({
@@ -89,34 +77,14 @@ function createRadiancePipeline(device: GPUDevice): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.COMPUTE,
-        texture: { sampleType: "float", viewDimension: "cube" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.COMPUTE,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.COMPUTE,
-        storageTexture: {
-          access: "write-only",
-          format: "rgba16float",
-          viewDimension: "2d-array",
-        },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "uniform" },
-      },
-    ],
-  });
+  const bgl = makeBindGroupLayout(device, "IBL-Radiance-BGL", [
+    texture(0, Stage.COMPUTE, { viewDimension: "cube" }),
+    sampler(1, Stage.COMPUTE),
+    storageTexture(2, Stage.COMPUTE, "rgba16float", {
+      viewDimension: "2d-array",
+    }),
+    uniformBuffer(3, Stage.COMPUTE),
+  ]);
 
   const module = device.createShaderModule({ code: RadiancePrefilterWGSL });
   const pipeline = device.createComputePipeline({

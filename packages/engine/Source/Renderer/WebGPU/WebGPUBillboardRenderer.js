@@ -17,6 +17,13 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  texture,
+  sampler,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 const FLOATS_PER_INSTANCE = 24;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
@@ -205,26 +212,15 @@ function createBillboardPipeline(device, shaderCode, format, depthFormat) {
     code: shaderCode,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    label: "Billboard bind group layout",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
+  const bindGroupLayout = makeBindGroupLayout(
+    device,
+    "Billboard bind group layout",
+    [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      texture(1, Stage.FRAGMENT),
+      sampler(2, Stage.FRAGMENT),
     ],
-  });
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],

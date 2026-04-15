@@ -15,6 +15,11 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 
 interface EllipsoidCache {
   uniformBuffer: GPUBuffer | null;
@@ -162,25 +167,17 @@ function createPipelineAndLayouts(
 } {
   const shaderModule = device.createShaderModule({ code: ELLIPSOID_WGSL });
 
-  const bindGroupLayout0 = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" as GPUBufferBindingType },
-      },
-    ],
-  });
+  const bindGroupLayout0 = makeBindGroupLayout(
+    device,
+    "EllipsoidPrimitive BGL 0",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
-  const bindGroupLayout1 = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" as GPUBufferBindingType },
-      },
-    ],
-  });
+  const bindGroupLayout1 = makeBindGroupLayout(
+    device,
+    "EllipsoidPrimitive BGL 1",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
 
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],

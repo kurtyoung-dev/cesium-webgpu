@@ -6,6 +6,13 @@ import {
   createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
+import {
+  makeBindGroupLayout,
+  sampler,
+  texture,
+  uniformBuffer,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -557,80 +564,39 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     const device = this._device!;
 
     // Group 0: Camera + Tile uniform buffers
-    this._bindGroupLayout0 = device.createBindGroupLayout({
-      label: "Globe terrain uniforms layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
+    this._bindGroupLayout0 = makeBindGroupLayout(
+      device,
+      "Globe terrain uniforms layout",
+      [
+        uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+        uniformBuffer(1, Stage.VERTEX_FRAGMENT),
       ],
-    });
+    );
 
-    // Group 1: Day imagery textures (4) + sampler
-    this._bindGroupLayout1 = device.createBindGroupLayout({
-      label: "Globe terrain textures layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+    // Group 1: Day imagery textures (4) + shared sampler at binding 4
+    this._bindGroupLayout1 = makeBindGroupLayout(
+      device,
+      "Globe terrain textures layout",
+      [
+        texture(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT),
+        texture(3, Stage.FRAGMENT),
+        sampler(4, Stage.FRAGMENT),
       ],
-    });
+    );
 
     // Group 2: Water mask + Ocean normal map (merged to stay within 4 bind groups)
-    this._bindGroupLayout2 = device.createBindGroupLayout({
-      label: "Globe water mask + ocean normal layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: "float" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: "filtering" },
-        },
+    this._bindGroupLayout2 = makeBindGroupLayout(
+      device,
+      "Globe water mask + ocean normal layout",
+      [
+        texture(0, Stage.FRAGMENT),
+        sampler(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT),
+        sampler(3, Stage.FRAGMENT),
       ],
-    });
+    );
 
     // Group 3: Effects (shadow receive + clipping planes) — shared layout
     this._effectsBGL = getEffectsBindGroupLayout(device);
