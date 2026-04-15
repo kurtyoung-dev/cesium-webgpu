@@ -268,7 +268,7 @@ function buildPickSegmentData(collection, context) {
 
     // One pick ID per polyline (all segments share it)
     if (!defined(polyline._pickId)) {
-      polyline._pickId = context.createPickId(polyline);
+      polyline._pickId = context.createPickId(polyline, "polyline");
     }
     const pc = polyline._pickId.color;
 

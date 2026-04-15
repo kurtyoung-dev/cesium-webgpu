@@ -153,14 +153,17 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
       }
 
       if (collection._allowPicking && polyline._pickId === 0) {
-        const pickId = context.createPickId({
-          collection,
-          index: i,
-          get primitive() {
-            // Cannot reuse primitives; scene.drillPick() appends to a list.
-            return collection.get(i, new BufferPolyline());
+        const pickId = context.createPickId(
+          {
+            collection,
+            index: i,
+            get primitive() {
+              // Cannot reuse primitives; scene.drillPick() appends to a list.
+              return collection.get(i, new BufferPolyline());
+            },
           },
-        });
+          "buffer-primitive",
+        );
         polyline._pickId = pickId.key;
         pickIds.push(pickId);
       }

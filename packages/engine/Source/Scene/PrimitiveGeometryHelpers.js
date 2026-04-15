@@ -199,7 +199,7 @@ function createBatchTable(primitive, context) {
       pickObject.id = instance.id;
     }
 
-    const pickId = context.createPickId(pickObject);
+    const pickId = context.createPickId(pickObject, "primitive");
     primitive._pickIds.push(pickId);
 
     const pickColor = pickId.color;

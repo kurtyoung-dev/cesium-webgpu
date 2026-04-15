@@ -7,12 +7,18 @@
  */
 
 import Color from "../Core/Color.js";
-import type { PickTarget } from "./GraphicsContext.js";
+import type { PickKind, PickTarget } from "./GraphicsContext.js";
 
 declare class PickId {
-  constructor(pickObjects: Map<number, PickTarget>, key: number, color: Color);
+  constructor(
+    pickObjects: Map<number, PickTarget>,
+    key: number,
+    color: Color,
+    pickKinds?: Map<number, PickKind>,
+  );
 
   readonly _pickObjects: Map<number, PickTarget>;
+  readonly _pickKinds?: Map<number, PickKind>;
   key: number;
   color: Color;
   /** Pre-computed RGBA for WebGPU (little-endian RGB + alpha=1). */
@@ -21,7 +27,7 @@ declare class PickId {
   /** Object bound to this pick ID (get/set backed by _pickObjects map). */
   object: PickTarget;
 
-  /** Remove this pick ID from the shared map. */
+  /** Remove this pick ID from both the target map and the parallel kind map. */
   destroy(): undefined;
 }
 

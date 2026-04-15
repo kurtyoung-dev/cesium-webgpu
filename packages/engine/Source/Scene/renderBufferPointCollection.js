@@ -119,7 +119,7 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
             return collection.get(this.index, new BufferPoint());
           },
         };
-        const pickId = context.createPickId(pickIdOwner);
+        const pickId = context.createPickId(pickIdOwner, "buffer-primitive");
         point._pickId = pickId.key;
         pickIds.push(pickId);
       }

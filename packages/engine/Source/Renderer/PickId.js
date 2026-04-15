@@ -21,9 +21,13 @@ class PickId {
    * @param {Map<number, object>} pickObjects - The shared pick objects map
    * @param {number} key - The unique sequential integer key
    * @param {Color} color - The RGBA color for WebGL (via Color.fromRgba)
+   * @param {Map<number, string>} [pickKinds] - Optional parallel map
+   *   tracking the registered {@link PickKind}. Kept alongside
+   *   `pickObjects` so `destroy()` can clean both.
    */
-  constructor(pickObjects, key, color) {
+  constructor(pickObjects, key, color, pickKinds) {
     this._pickObjects = pickObjects;
+    this._pickKinds = pickKinds;
     this.key = key;
     this.color = color;
 
@@ -49,10 +53,13 @@ class PickId {
 
   /**
    * Remove this pick ID from the map, freeing the association.
+   * Deletes from both the target map and the parallel kind map so
+   * neither accumulates orphan entries across the scene's lifetime.
    * @returns {undefined}
    */
   destroy() {
     this._pickObjects.delete(this.key);
+    this._pickKinds?.delete(this.key);
     return undefined;
   }
 }

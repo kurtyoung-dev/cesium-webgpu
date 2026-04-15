@@ -118,14 +118,17 @@ function renderBufferPolygonCollection(collection, frameState, renderContext) {
       }
 
       if (collection._allowPicking && polygon._pickId === 0) {
-        const pickId = context.createPickId({
-          collection,
-          index: i,
-          get primitive() {
-            // Cannot reuse primitives; scene.drillPick() appends to a list.
-            return collection.get(i, new BufferPolygon());
+        const pickId = context.createPickId(
+          {
+            collection,
+            index: i,
+            get primitive() {
+              // Cannot reuse primitives; scene.drillPick() appends to a list.
+              return collection.get(i, new BufferPolygon());
+            },
           },
-        });
+          "buffer-primitive",
+        );
         polygon._pickId = pickId.key;
         pickIds.push(pickId);
       }

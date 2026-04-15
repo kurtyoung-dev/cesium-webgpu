@@ -174,7 +174,7 @@ function buildPickInstanceData(collection, context) {
 
     // @location(4): pick color instead of display color
     if (!defined(bb._pickId)) {
-      bb._pickId = context.createPickId(bb);
+      bb._pickId = context.createPickId(bb, "billboard");
     }
     const pc = bb._pickId.color;
     instanceData[offset + 16] = pc.red;

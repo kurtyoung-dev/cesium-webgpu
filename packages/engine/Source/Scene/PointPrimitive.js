@@ -453,11 +453,14 @@ class PointPrimitive {
 
   getPickId(context) {
     if (!defined(this._pickId)) {
-      this._pickId = context.createPickId({
-        primitive: this,
-        collection: this._collection,
-        id: this._id,
-      });
+      this._pickId = context.createPickId(
+        {
+          primitive: this,
+          collection: this._collection,
+          id: this._id,
+        },
+        "point",
+      );
     }
 
     return this._pickId;

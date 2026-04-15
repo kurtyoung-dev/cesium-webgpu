@@ -525,7 +525,7 @@ function createPickTexture(batchTexture, context) {
     // to RGBA in the shader.  The only consider is precision issues, which might
     // not be an issue in WebGL 2.
     for (let i = 0; i < featuresLength; ++i) {
-      const pickId = context.createPickId(owner.getFeature(i));
+      const pickId = context.createPickId(owner.getFeature(i), "tile-feature");
       pickIds.push(pickId);
 
       const pickColor = pickId.color;

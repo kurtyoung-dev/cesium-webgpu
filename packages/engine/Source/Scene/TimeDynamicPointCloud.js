@@ -242,9 +242,12 @@ class TimeDynamicPointCloud {
     }
 
     if (!defined(this._pickId)) {
-      this._pickId = frameState.context.createPickId({
-        primitive: this,
-      });
+      this._pickId = frameState.context.createPickId(
+        {
+          primitive: this,
+        },
+        "primitive",
+      );
     }
 
     if (!defined(this._loadTimestamp)) {

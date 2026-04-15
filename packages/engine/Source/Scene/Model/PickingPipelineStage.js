@@ -49,7 +49,7 @@ PickingPipelineStage.process = function (
     // For non-instanced meshes, a pick color uniform is used.
     const pickObject = buildPickObject(renderResources);
 
-    const pickId = context.createPickId(pickObject);
+    const pickId = context.createPickId(pickObject, "model");
     model._pipelineResources.push(pickId);
     model._pickIds.push(pickId);
 
@@ -170,7 +170,7 @@ function processInstancedPickIds(renderResources, context) {
   for (let i = 0; i < instanceCount; i++) {
     const pickObject = buildPickObject(renderResources, i);
 
-    const pickId = context.createPickId(pickObject);
+    const pickId = context.createPickId(pickObject, "model-instance");
     pipelineResources.push(pickId);
     pickIds[i] = pickId;
 

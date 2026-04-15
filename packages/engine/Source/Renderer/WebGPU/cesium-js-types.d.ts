@@ -493,10 +493,14 @@ interface CesiumGraphicsContext {
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(
     object: import("../GraphicsContext.js").PickTarget,
+    kind?: import("../GraphicsContext.js").PickKind,
   ): CesiumPickId;
   getObjectByPickColor(
     color: CesiumColor | number,
   ): import("../GraphicsContext.js").PickTarget | undefined;
+  getPickResult(
+    color: CesiumColor | number,
+  ): import("../GraphicsContext.js").PickResult | undefined;
   log(level: string, message: string): void;
 }
 

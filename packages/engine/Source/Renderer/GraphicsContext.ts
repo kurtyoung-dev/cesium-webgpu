@@ -175,6 +175,52 @@ export interface PickTarget {
   readonly [key: string]: PickTargetField;
 }
 
+/**
+ * Discriminator string for a pick registration. Each internal Cesium
+ * registrar passes the kind that best describes what was hit; external
+ * callers default to `"custom"` when they register their own types.
+ *
+ * This is the compile-time narrowing knob that replaces most
+ * `instanceof` chains in pick-consumer code. Downstream code does
+ * `switch (result.kind)` and TypeScript narrows per branch.
+ *
+ * The set is a closed union — typos fail to typecheck — but new kinds
+ * can be added as Cesium grows (breaking change for external TypeScript
+ * callers that enumerate the union). External JS callers are unaffected.
+ */
+export type PickKind =
+  | "billboard"
+  | "label"
+  | "point"
+  | "polyline"
+  | "polygon"
+  | "primitive"
+  | "ground-primitive"
+  | "model"
+  | "model-instance"
+  | "entity"
+  | "tile-feature"
+  | "voxel"
+  | "cloud"
+  | "particle"
+  | "buffer-primitive"
+  | "custom";
+
+/**
+ * The full pick record returned from
+ * {@link GraphicsContext.getPickResult}. Carries the original pick
+ * target plus its declared {@link PickKind} so consumers can branch
+ * on kind at compile time instead of walking `instanceof` chains.
+ *
+ * The `target` field is still {@link PickTarget} — narrowing its
+ * contents is still the caller's job, but knowing the kind
+ * up-front means the narrow is one line instead of ten.
+ */
+export interface PickResult {
+  readonly target: PickTarget;
+  readonly kind: PickKind;
+}
+
 // ═══════════════════════════════════════════════════════════
 // Shared viewport-quad types (see createViewportQuadCommand)
 // ═══════════════════════════════════════════════════════════
@@ -955,6 +1001,16 @@ export abstract class GraphicsContext {
   protected _pickObjects: Map<number, PickTarget> = new Map();
 
   /**
+   * Parallel map from pick color key → declared {@link PickKind} at
+   * registration. Entries added here are always in lockstep with
+   * `_pickObjects` — same key, cleared together. Stored as a parallel
+   * structure (rather than folding into `_pickObjects`) to preserve the
+   * `getObjectByPickColor` return type for existing callers.
+   * @protected
+   */
+  protected _pickKinds: Map<number, PickKind> = new Map();
+
+  /**
    * Monotonically incrementing counter for pick color allocation.
    * Uses Uint32Array for overflow-safe incrementing.
    * @protected
@@ -966,12 +1022,17 @@ export abstract class GraphicsContext {
    *
    * Allocates a unique 32-bit RGBA color and associates it with the given
    * object. During pick rendering, fragments output this color. Reading
-   * back the pixel and calling {@link getObjectByPickColor} returns the object.
+   * back the pixel and calling {@link getObjectByPickColor} returns the
+   * object, or {@link getPickResult} returns both object and kind.
    *
    * @param object - The object to associate with this pick ID
+   * @param kind - Optional discriminator for downstream branching. Defaults
+   *   to `"custom"` so external callers don't need to pass anything; internal
+   *   Cesium registrars pass their specific kind to enable typed
+   *   `switch (result.kind)` consumer code.
    * @returns A {@link PickId} with `key`, `color`, `normalizedRgba`, and `destroy()`
    */
-  createPickId(object: PickTarget): CesiumPickId {
+  createPickId(object: PickTarget, kind: PickKind = "custom"): CesiumPickId {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("object", object);
     //>>includeEnd('debug');
@@ -982,7 +1043,27 @@ export abstract class GraphicsContext {
     const color = Color.fromRgba(key);
 
     this._pickObjects.set(key, object);
-    return new PickId(this._pickObjects, key, color);
+    this._pickKinds.set(key, kind);
+    return new PickId(this._pickObjects, key, color, this._pickKinds);
+  }
+
+  /**
+   * Shared decode from the two pickColor calling conventions to the
+   * internal uint32 key. Extracted so `getObjectByPickColor` and
+   * `getPickResult` stay in sync.
+   * @private
+   */
+  private _pickColorToKey(pickColor: CesiumColor | number): number {
+    if (typeof pickColor === "object" && pickColor !== null) {
+      // WebGPU path: reconstruct key from RGB bytes (little-endian)
+      return (
+        (pickColor.red & 0xff) |
+        ((pickColor.green & 0xff) << 8) |
+        ((pickColor.blue & 0xff) << 16)
+      );
+    }
+    // WebGL path: pickColor is already the uint32 key
+    return pickColor as number;
   }
 
   /**
@@ -1002,17 +1083,44 @@ export abstract class GraphicsContext {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("pickColor", pickColor);
     //>>includeEnd('debug');
+    return this._pickObjects.get(this._pickColorToKey(pickColor));
+  }
 
-    if (typeof pickColor === "object" && pickColor !== null) {
-      // WebGPU path: reconstruct key from RGB bytes (little-endian)
-      const key =
-        (pickColor.red & 0xff) |
-        ((pickColor.green & 0xff) << 8) |
-        ((pickColor.blue & 0xff) << 16);
-      return this._pickObjects.get(key);
+  /**
+   * Get the full pick record (target + declared kind) for a pick color.
+   *
+   * Prefer this over {@link getObjectByPickColor} when downstream code
+   * wants to discriminate on {@link PickKind} instead of walking
+   * `instanceof` chains. The pattern is:
+   *
+   * ```ts
+   * const result = context.getPickResult(pickColor);
+   * if (!result) return;
+   * switch (result.kind) {
+   *   case "billboard":   return handleBillboard(result.target);
+   *   case "tile-feature": return handleTileFeature(result.target);
+   *   case "custom":      return handleUserPick(result.target);
+   *   // ... TS exhaustiveness catches missing cases
+   * }
+   * ```
+   *
+   * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
+   * @returns The {@link PickResult} if a target is registered for this
+   *   color, otherwise undefined.
+   */
+  getPickResult(pickColor: CesiumColor | number): PickResult | undefined {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("pickColor", pickColor);
+    //>>includeEnd('debug');
+    const key = this._pickColorToKey(pickColor);
+    const target = this._pickObjects.get(key);
+    if (target === undefined) {
+      return undefined;
     }
-    // WebGL path: pickColor is already the uint32 key
-    return this._pickObjects.get(pickColor as number);
+    // Missing kind should be impossible (set in lockstep with _pickObjects)
+    // but default to "custom" if something skipped the shared path.
+    const kind = this._pickKinds.get(key) ?? "custom";
+    return { target, kind };
   }
 
   /**
@@ -1029,6 +1137,7 @@ export abstract class GraphicsContext {
    */
   clearPickObjects(): void {
     this._pickObjects.clear();
+    this._pickKinds.clear();
     this._nextPickColor[0] = 0;
   }
 

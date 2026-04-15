@@ -119,7 +119,7 @@ export function initializeShape(primitive, provider) {
 export function initFromProvider(primitive, provider, context) {
   const uniforms = primitive._uniforms;
 
-  primitive._pickId = context.createPickId({ primitive });
+  primitive._pickId = context.createPickId({ primitive }, "voxel");
   uniforms.pickColor = Color.clone(primitive._pickId.color, uniforms.pickColor);
 
   const { shaderDefines, shaderUniforms: shapeUniforms } = primitive._shape;

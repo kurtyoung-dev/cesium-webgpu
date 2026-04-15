@@ -1008,11 +1008,14 @@ class Billboard {
 
   getPickId(context) {
     if (!defined(this._pickId)) {
-      this._pickId = context.createPickId({
-        primitive: this._pickPrimitive,
-        collection: this._collection,
-        id: this._id,
-      });
+      this._pickId = context.createPickId(
+        {
+          primitive: this._pickPrimitive,
+          collection: this._collection,
+          id: this._id,
+        },
+        "billboard",
+      );
     }
 
     return this._pickId;

@@ -666,13 +666,16 @@ function repackPolygonDirty(
     }
 
     if (allowPicking && scratchPolygon._pickId === 0) {
-      const pickId = context.createPickId({
-        collection,
-        index: i,
-        get primitive() {
-          return collection.get(i, new BufferPolygon());
+      const pickId = context.createPickId(
+        {
+          collection,
+          index: i,
+          get primitive() {
+            return collection.get(i, new BufferPolygon());
+          },
         },
-      });
+        "buffer-primitive",
+      );
       scratchPolygon._pickId = pickId.key;
       cache.pickIds.push(pickId);
     }
@@ -984,13 +987,16 @@ function repackPolylineDirty(
     }
 
     if (allowPicking && scratchPolyline._pickId === 0) {
-      const pickId = context.createPickId({
-        collection,
-        index: i,
-        get primitive() {
-          return collection.get(i, new BufferPolyline());
+      const pickId = context.createPickId(
+        {
+          collection,
+          index: i,
+          get primitive() {
+            return collection.get(i, new BufferPolyline());
+          },
         },
-      });
+        "buffer-primitive",
+      );
       scratchPolyline._pickId = pickId.key;
       cache.pickIds.push(pickId);
     }
@@ -1357,13 +1363,16 @@ function repackPointDirty(
       continue;
     }
     if (allowPicking && scratchPoint._pickId === 0) {
-      const pickId = context.createPickId({
-        collection,
-        index: i,
-        get primitive() {
-          return collection.get(i, new BufferPoint());
+      const pickId = context.createPickId(
+        {
+          collection,
+          index: i,
+          get primitive() {
+            return collection.get(i, new BufferPoint());
+          },
         },
-      });
+        "buffer-primitive",
+      );
       scratchPoint._pickId = pickId.key;
       cache.pickIds.push(pickId);
     }

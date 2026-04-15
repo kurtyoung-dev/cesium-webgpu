@@ -145,11 +145,14 @@ class Polyline {
    */
   getPickId(context) {
     if (!defined(this._pickId)) {
-      this._pickId = context.createPickId({
-        primitive: this,
-        collection: this._polylineCollection,
-        id: this._id,
-      });
+      this._pickId = context.createPickId(
+        {
+          primitive: this,
+          collection: this._polylineCollection,
+          id: this._id,
+        },
+        "polyline",
+      );
     }
     return this._pickId;
   }

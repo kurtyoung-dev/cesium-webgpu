@@ -159,7 +159,7 @@ function buildPickInstanceData(collection, context) {
 
     // Pick color from context pick ID
     if (!defined(point._pickId)) {
-      point._pickId = context.createPickId(point);
+      point._pickId = context.createPickId(point, "point");
     }
     const pc = point._pickId.color;
     instanceData[offset + 8] = pc.red;
