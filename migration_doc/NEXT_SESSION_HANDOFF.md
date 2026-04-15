@@ -91,6 +91,122 @@ Further tightening requires (a) porting WebGL resource JS to TS, or (b) completi
 
 ---
 
+## What's left — global picture
+
+Two tracks carry forward: typing (largely done, incremental only) and feature work (the big outstanding items). Use this as the authoritative "where are we" snapshot at the start of any session after compaction.
+
+### Typing — at the principled floor for Renderer/WebGPU
+
+Nothing is blocking at the "must do" level. Every remaining `any`/`unknown`/`object`/`Record<string, unknown>` in the WebGPU renderer is a documented intentional boundary. The list below is **incremental / when-you-touch-the-file**, not campaign work.
+
+| Item | Scope | Trigger |
+| --- | --- | --- |
+| Wire `Renderable` into additional `primitive: any` consumers | ~10–20 sites across PrimitiveCollection, Scene.js, feature renderers | When those files are touched |
+| Wire `PickKind` `switch` dispatch in upstream `Scene.pick` / `Scene.drillPick` | 2–3 pick-consumer sites | If upstream's `instanceof` chain becomes a merge hotspot |
+| Additional co-located `.d.ts` sidecars (DrawCommand, BoundingSphere, Ellipsoid, ShaderProgram, RenderState, VertexArray, Buffer, ContextLimits, IndexDatatype, Sampler) | Session 29 backlog — 10 candidates, ~4–6 h total | Only when TS callers surface a cast pain point |
+| Decompose `WebGPUContext.ts` (3849 LOC) into device/encoder/cache modules | One large refactor | Natural lead-in to Phase 8 |
+| `@private` → `@internal` upstream sweep | ~2–3 h for Renderer/, 1 day engine-wide | Would let us delete several sidecar `.d.ts` files that exist purely to override visibility |
+
+### Feature / architecture — the actual roadmap
+
+| Item | Status | Design doc |
+| --- | --- | --- |
+| **Phase 8** — GPU-Resident Tiles / DOD storage layer for 3D Tiles (the big one) | Design complete, implementation pending | [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) |
+| **Phase 5** — WGF-1 `clip-distances`, WGF-2 dual-source blending, WGF-3 shader-f16, WGF-5 multi-draw-indirect | Capability detection landed; per-feature implementations deferred | [PHASE_5_MODERN_WEBGPU_DESIGN.md](PHASE_5_MODERN_WEBGPU_DESIGN.md) |
+| **TAA** — temporal antialiasing | Design complete | [TAA_DESIGN.md](TAA_DESIGN.md) |
+| **CSM** — cascaded shadow maps | Design complete | [CSM_DESIGN.md](CSM_DESIGN.md) |
+| **Celestial atmosphere** — full-stack design | Design in backlog | [CELESTIAL_ATMOSPHERE_DESIGN.md](CELESTIAL_ATMOSPHERE_DESIGN.md) |
+| **Snapshot mode** — Phase A bundle-manager freeze flag + subsequent B/C/D | Design + registration skeleton complete; bundle freeze flag pending | [SNAPSHOT_MODE_SPIKE_2026-04-09.md](SNAPSHOT_MODE_SPIKE_2026-04-09.md) |
+| **Water rendering** | Design doc in backlog | [WATER_RENDERING_DESIGN.md](WATER_RENDERING_DESIGN.md) |
+| **Phase 7** — 48 items from external-engine feature survey (NullGraph, ChartGPU, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion) | Backlog tiered by effort × ROI | [WEBGPU_MIGRATION_BACKLOG.md](WEBGPU_MIGRATION_BACKLOG.md) |
+
+**Read [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) first if the next session involves rendering or 3D Tiles work.** It unifies Phase 7 + a 3D Tiles implementation audit + 3D Tiles 2.0 spec research; identifies the central "GPU-resident octree tile cache" insight and the gating shader-variant architectural decision that blocks ~30% of Phase 7 items.
+
+---
+
+## ES6 / ES2022 modernization — scope across the entire project
+
+The codebase is **already substantially modernized**. Zero `var` declarations, zero IIFE wrappers, zero `var self = this` closures. What remains is mechanical class-syntax migration of pre-ES6 prototype patterns.
+
+### Raw counts (engine + widgets, excluding ThirdParty + build outputs)
+
+| Marker | Count | Notes |
+| --- | --- | --- |
+| `var` declarations | **~0** | Already gone. Grep hits are WGSL/GLSL inside template literals (false positives). |
+| IIFE wrappers `(function(){})()` | **0** | ES6 modules throughout. |
+| `var self = this` / `var that = this` | **0** | Arrow functions adopted. |
+| `X.prototype.method = function()` | **293** | Pre-class syntax. Needs `class X { method() {} }`. |
+| `Object.defineProperties(X.prototype, {...})` | **105** | Pre-class getter/setter. Needs ES6 `get`/`set` accessors. |
+| `.apply(null, args)` / `.apply(this, args)` | **10** | Rest-spread candidates. |
+| `arguments` object reads | **25** | `...args` candidates. |
+
+**Total modernization markers: ~433.**
+
+### Distribution by directory
+
+| Directory | `.prototype=` | `defineProperties` | Combined |
+| --- | ---: | ---: | ---: |
+| `packages/engine/Source/Scene/` (top level) | 94 | 39 | **133** |
+| `packages/engine/Source/DataSources/` | 84 | 41 | **125** |
+| `packages/engine/Source/Renderer/WebGPU/` | 31 | 1 | **32** |
+| `packages/engine/Source/Renderer/` (non-WebGPU) | 27 | 2 | **29** |
+| `packages/engine/Source/Core/` | 23 | 15 | **38** |
+| `packages/engine/Source/Workers/` | 11 | 0 | **11** |
+| `packages/engine/Source/Widget/` | 17 | 1 | **18** |
+| `packages/widgets/Source/` | 5 | 6 | **11** |
+
+### Top 10 offender files
+
+| File | Markers | LOC | Owner |
+| --- | ---: | ---: | --- |
+| [Scene/Expression.js](../packages/engine/Source/Scene/Expression.js) | 42 | 2,228 | Fork-specific DSL (hand-written accessors) |
+| [Widget/CesiumWidget.js](../packages/engine/Source/Widget/CesiumWidget.js) | 28 | 1,725 | Upstream widget wrapper |
+| [Renderer/WebGPU/WGSLShaderBuilder.js](../packages/engine/Source/Renderer/WebGPU/WGSLShaderBuilder.js) | 25 | 696 | **Fork-specific WebGPU** |
+| [Scene/TilePathResolver.js](../packages/engine/Source/Scene/TilePathResolver.js) | 19 | 431 | Tileset handler |
+| [Renderer/createUniformArray.js](../packages/engine/Source/Renderer/createUniformArray.js) | 13 | 638 | Renderer utility |
+| [Renderer/createUniform.js](../packages/engine/Source/Renderer/createUniform.js) | 13 | 422 | Renderer utility |
+| [Scene/AtmosphericConditions.js](../packages/engine/Source/Scene/AtmosphericConditions.js) | 10 | 889 | Recent upstream |
+| [DataSources/KmlDataSource.js](../packages/engine/Source/DataSources/KmlDataSource.js) | 9 | 4,255 | Upstream |
+| [DataSources/StaticGroundGeometryPerMaterialBatch.js](../packages/engine/Source/DataSources/StaticGroundGeometryPerMaterialBatch.js) | 9 | ~600 | Upstream DataSource |
+| [Scene/PolylineCollection.js](../packages/engine/Source/Scene/PolylineCollection.js) | 9 | ~1,200 | Upstream |
+
+### Effort — three sizing options
+
+| Scope | Approach | Time |
+| --- | --- | --- |
+| **Full engine-wide** (all 433 markers) | Mechanical codemod per pattern + file-by-file review + full test pass per category | **2–4 weeks solo** or **3–5 developer-days in parallel** |
+| **Top 50 files** (~70% of markers) | Focused sweep on worst offenders | **~1 week solo** |
+| **Fork-owned files only** (~33 markers) | `WGSLShaderBuilder.js` (25) + `RenderCommand.js` (8) + any `Renderer/WebGPU/*.js` outliers | **~1–2 hours** |
+
+### The hidden cost — upstream merge friction
+
+Cesium's upstream is **still actively using** `Object.defineProperties` + `X.prototype.method = function()` patterns in the files we'd modernize. **Every upstream-pristine file we modernize becomes a merge conflict every upstream sync.** The conflicts are typically structural, not semantic — but still real ongoing cost.
+
+- **Unchanged-from-upstream files** (`KmlDataSource.js`, `AtmosphericConditions.js`, `PolylineCollection.js`, `CesiumWidget.js`, etc.) — modernizing is pure merge-surface expansion with little fork-specific benefit.
+- **Heavily fork-modified files** (`WGSLShaderBuilder.js`, `Expression.js` if we've changed it, any `Renderer/WebGPU/*.js`) — modernizing is nearly free because we resolve conflicts during every sync anyway.
+
+### Recommendation — two-track approach
+
+**Track 1: Opportunistic (already what CLAUDE.md mandates).** The project rule: *"When making >10 lines of changes to a file, modernize pre-ES6 patterns."* Every time a file is touched for other work, the modernization comes free.
+
+Over the next 6–12 months of active development this naturally covers the fork-specific + frequently-edited files without paying the merge cost for upstream-pristine ones.
+
+**Track 2: Targeted campaign for fork-owned files only.** Modernize now, ~1–2 h of focused work, hits the files most likely to be touched repeatedly:
+
+| File | Markers | Why now |
+| --- | ---: | --- |
+| `Renderer/WebGPU/WGSLShaderBuilder.js` | 25 | Touched for every new WGSL feature — modernize before it grows further |
+| `Renderer/WebGPU/RenderCommand.js` | 8 | Abstraction layer, touched during feature renderer work |
+| Any other fork-specific `Renderer/WebGPU/*.js` outliers | small | Sweep while we're there |
+
+**Defer** the ~400 markers in upstream-pristine files (KmlDataSource, PolylineCollection, CesiumWidget, AtmosphericConditions, etc.) until either (a) CesiumGS upstream modernizes them — then we just merge, or (b) we happen to touch them for feature work and CLAUDE.md's rule kicks in, or (c) we deliberately fork-diverge on a specific file for a specific reason.
+
+### Direct answer
+
+*How much work remains?* **For a complete engine-wide ES6 modernization to class syntax: 2–4 weeks solo, 3–5 developer-days parallelized.** But most of that work creates merge friction with upstream for minimal fork-specific benefit, so the principled answer is *"~1–2 hours for fork-owned files now, incremental via CLAUDE.md's rule for everything else, accept that 300+ upstream-pristine markers modernize only when CesiumGS modernizes them."*
+
+---
+
 **Also in Session 29:** external engine feature survey (NullGraph, ChartGPU, Hypercube-Compute, Taichi.js, Vello, Zephyr3D, RedGPU, Unity WebGPU, Orillusion). Results landed in `WEBGPU_MIGRATION_BACKLOG.md` as **Phase 7 — External Engine Feature Survey**, with 48 items (FEAT-SURVEY-01 through FEAT-SURVEY-48) tiered by effort × ROI.
 
 **Architectural synthesis — most important Session 29 deliverable:** [PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md) unifies Phase 7 + a 3D Tiles implementation audit + 3D Tiles 2.0 spec research into a coherent architectural frame. Identifies the central insight (**"GPU-resident octree tile cache"**), the gating shader-variant architectural decision that blocks ~30% of Phase 7 items, the full dependency DAG across ~80 items, tech debt + perf + WASM + compute opportunities specific to 3D Tiles, a recommended 5-phase roadmap (8a Foundation → 8b GPU-resident stack → 8c Visual quality → 8d Advanced → 8e Differentiators), and (§3.5) the **DOD Storage Layer** clarification — Phase 8b's six items aren't independent features but one coherent data-oriented storage architecture with Cesium API facades, equivalent in pattern to Unity's Resident Drawer. **Read this before starting any rendering or 3D Tiles work.**
