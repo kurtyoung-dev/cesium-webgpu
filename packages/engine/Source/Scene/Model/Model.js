@@ -401,6 +401,11 @@ class Model {
     );
 
     this._environmentMapManager = undefined;
+
+    // WebGPU feature-renderer handle; assigned on the first update() call so
+    // destroy() can release per-model GPU resources on tile eviction.
+    this._featureRenderer = undefined;
+
     const environmentMapManager = new DynamicEnvironmentMapManager(
       options.environmentMapOptions,
     );
@@ -1000,6 +1005,7 @@ class Model {
     const modelFr = this._featureRenderer;
     if (modelFr) {
       modelFr.destroy(this);
+      this._featureRenderer = undefined;
     }
     destroyObject(this);
   }
@@ -3119,14 +3125,23 @@ function submitDrawCommands(model, frameState) {
   if (showModel && !model._ignoreCommands && submitCommandsForPass) {
     addCreditsToCreditDisplay(model, frameState);
 
-    // WebGPU path: route to feature renderer for model draw commands
+    // WebGPU path: route to feature renderer for model draw commands.
+    // Cache the FR handle on the model so destroy() can release resources on
+    // tile eviction (without this, every evicted tile leaks its per-primitive
+    // vertex/index buffers, material UBOs, and textures).
     const context = frameState.context;
     const modelFr = context.getFeatureRenderer(FeatureRendererKey.MODEL);
     if (modelFr && defined(model._sceneGraph)) {
+      model._featureRenderer = modelFr;
       modelFr.update(model, frameState);
     }
 
-    model._sceneGraph.pushDrawCommands(frameState);
+    // On WebGPU the feature renderer has already produced WebGPUDrawCommands;
+    // running the legacy pipeline-stage chain here would both duplicate work
+    // and push WebGL-shape DrawCommands the WebGPU dispatch ignores.
+    if (!context.isWebGPU) {
+      model._sceneGraph.pushDrawCommands(frameState);
+    }
   }
 }
 

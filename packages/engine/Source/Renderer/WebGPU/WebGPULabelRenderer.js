@@ -316,48 +316,57 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Atlas texture — use the glyph collection's texture atlas
-  let atlasTextureView = cache.atlasTextureView;
-  let atlasSampler = cache.atlasSampler;
+  // Atlas texture \u2014 use the glyph collection's texture atlas. Re-resolve every
+  // frame against the atlas's `guid` so that when the atlas rasterizes new
+  // glyphs (or is resized) the bind group picks up the new GPU texture view.
+  // Previously the first-frame view (usually the placeholder) was cached
+  // forever and labels stayed blank for the lifetime of the collection.
+  const atlas = glyphCollection._textureAtlas;
+  const atlasGuid = atlas?.guid;
+
+  let atlasTextureView;
+  let atlasSampler;
+  let atlasSourceTag = "placeholder";
+
+  if (defined(atlas) && defined(atlas._webgpuTexture)) {
+    atlasTextureView = atlas._webgpuTexture.view;
+    atlasSampler = atlas._webgpuTexture.sampler;
+    atlasSourceTag = "glyph-atlas-direct";
+  } else if (defined(atlas?.texture)) {
+    // CesiumJS Texture wrapping the WebGL stub \u2014 dig down to the real WebGPU
+    // resource published by WebGLStubTexture.
+    const tex = atlas.texture;
+    const stub = tex?._texture?._webgpuTexture || tex?._webgpuTexture;
+    if (stub) {
+      atlasTextureView = stub.view;
+      atlasSampler =
+        stub.sampler ||
+        cache.defaultSampler ||
+        device.createSampler({ minFilter: "linear", magFilter: "linear" });
+      atlasSourceTag = "glyph-atlas-stub";
+    }
+  }
 
   if (!defined(atlasTextureView)) {
-    // Try to get the atlas from the glyph collection
-    const atlas = glyphCollection._textureAtlas;
-    if (defined(atlas) && defined(atlas._webgpuTexture)) {
-      atlasTextureView = atlas._webgpuTexture.view;
-      atlasSampler = atlas._webgpuTexture.sampler;
-    } else if (defined(atlas) && defined(atlas.texture)) {
-      // WebGL texture — check for WebGPU backing
-      const tex = atlas.texture;
-      if (tex._webgpuTexture) {
-        atlasTextureView = tex._webgpuTexture.view;
-        atlasSampler =
-          tex._webgpuTexture.sampler ||
-          device.createSampler({
-            minFilter: "linear",
-            magFilter: "linear",
-          });
-      }
-    }
-
-    // Fallback: create placeholder
-    if (!defined(atlasTextureView)) {
-      if (!defined(cache.placeholderTexture)) {
-        cache.placeholderTexture = createPlaceholderTexture(device);
-        cache.placeholderTextureView = cache.placeholderTexture.createView();
-      }
-      atlasTextureView = cache.placeholderTextureView;
-    }
-    if (!defined(atlasSampler)) {
-      atlasSampler = device.createSampler({
+    // Still waiting on the SDF rasterizer; bind the 1x1 placeholder.
+    if (!defined(cache.placeholderTexture)) {
+      cache.placeholderTexture = createPlaceholderTexture(device);
+      cache.placeholderTextureView = cache.placeholderTexture.createView();
+      cache.defaultSampler = device.createSampler({
         minFilter: "linear",
         magFilter: "linear",
       });
     }
-
-    cache.atlasTextureView = atlasTextureView;
-    cache.atlasSampler = atlasSampler;
+    atlasTextureView = cache.placeholderTextureView;
+    atlasSampler = cache.defaultSampler;
   }
+
+  // Cache the resolved view + guid so callers can detect when the bind group
+  // needs rebuilding. We always rebuild below since atlas view may rotate.
+  cache.atlasTextureView = atlasTextureView;
+  cache.atlasSampler = atlasSampler;
+  cache.atlasGuid = atlasGuid;
+  cache.atlasSourceTag = atlasSourceTag;
 
   // Bind group — recreate each frame to pick up atlas changes
   cache.sdfBindGroup = device.createBindGroup({
@@ -402,14 +411,20 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     requiredSize,
   );
 
-  // Create SDF draw command
+  // Create SDF draw command. Labels are alpha-blended via the SDF shader, so
+  // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
+  // on top of anything rendered earlier. Match upstream's treatment of labels
+  // as translucent geometry unless the collection explicitly asked for OPAQUE.
+  const labelBlendOpt = labelCollection?._blendOption;
+  const labelPass =
+    labelBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
   const sdfCommand = new WebGPUDrawCommand({
     pipeline: cache.sdfPipeline,
     bindGroups: [cache.sdfBindGroup],
     vertexBuffers: [cache.sdfInstanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: visibleCount,
-    pass: 8, // Pass.OPAQUE
+    pass: labelPass,
     owner: labelCollection,
     boundingVolume: glyphCollection._boundingVolume,
     modelMatrix: modelMatrix,

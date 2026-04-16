@@ -93,9 +93,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     u.encodedCameraHigh, u.encodedCameraLow
   );
   output.position = u.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
-  // Reconstruct approximate world position for atmosphere calculations
-  output.worldPosition = input.positionHigh + input.positionLow;
-  output.cameraToVertex = output.worldPosition - u.cameraPositionWC;
+  // Stay in the RTE / camera-local frame. positionRTE IS the camera-to-vertex
+  // delta at full emulated 64-bit precision, so using it directly avoids the
+  // `posHigh + posLow` rule violation and the subsequent catastrophic
+  // cancellation on `worldPos - cameraPositionWC`. worldPosition is not read
+  // by the fragment shader, so reconstructing it as `cameraPositionWC +
+  // positionRTE` is the cheapest safe placeholder.
+  output.cameraToVertex = positionRTE;
+  output.worldPosition = u.cameraPositionWC + positionRTE;
   return output;
 }
 
@@ -225,7 +230,15 @@ fn sampleScatteringLut(
   let s = textureSampleLevel(
     inscatterTex, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
   );
-  return s.rgb * u.intensity;
+  // Orbital falloff: the LUT was generated for camera positions in [0, thickness].
+  // Above the atmosphere (LEO/MEO/GEO) the clamp at vCoord saturates, which
+  // otherwise produces identical haze at every orbital altitude. Fade the
+  // inscatter contribution above the atmosphere with a scale-height equal
+  // to the atmosphere thickness (~100 km on Earth) \u2014 roughly matches how
+  // atmospheric airmass visibly decreases with distance.
+  let excessAltitude = max(0.0, altitude - thickness);
+  let orbitFalloff = exp(-excessAltitude / thickness);
+  return s.rgb * u.intensity * orbitFalloff;
 }
 
 // HSB shift for color correction

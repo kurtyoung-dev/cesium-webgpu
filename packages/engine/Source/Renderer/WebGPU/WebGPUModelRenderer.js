@@ -65,8 +65,10 @@ const CAMERA_UNIFORM_SIZE = 256;
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
 //   4f(diffuseRGBA) + 3f(padding) = 320 bytes (rounded to 16-byte alignment)
 const MATERIAL_UNIFORM_SIZE = 320;
-// Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient) = 48
-const LIGHT_UNIFORM_SIZE = 48;
+// Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
+//   + f(iblDiffuseFactor, iblSpecularFactor, iblMaxMipLevel, iblHasSH) = 64.
+// Keep in sync with struct LightUniforms in ModelPBRComplete.wgsl.
+const LIGHT_UNIFORM_SIZE = 64;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -199,21 +201,46 @@ function packMaterialUniforms(
 
 // ─── Light Uniform Packing ───────────────────────────────────────────────────
 
-function packLightUniforms(data, frameState) {
+function packLightUniforms(data, frameState, model) {
   const sunDir =
     frameState.context?.uniformState?.sunDirectionEC || new Cartesian3(0, 0, 1);
   data[0] = sunDir.x;
   data[1] = sunDir.y;
   data[2] = sunDir.z;
   data[3] = 0.0;
-  data[4] = 1.0;
-  data[5] = 1.0;
-  data[6] = 1.0;
-  data[7] = frameState.light?.intensity ?? 2.0;
+
+  // sunColor — honor scene.light.color (public API, defaults to white sunlight).
+  const light = frameState.light;
+  const lightColor = light?.color;
+  if (lightColor) {
+    data[4] = lightColor.red;
+    data[5] = lightColor.green;
+    data[6] = lightColor.blue;
+  } else {
+    data[4] = 1.0;
+    data[5] = 1.0;
+    data[6] = 1.0;
+  }
+  data[7] = light?.intensity ?? 2.0;
+
+  // ambientColor — small neutral floor so unlit faces aren't pitch black.
   data[8] = 0.2;
   data[9] = 0.2;
   data[10] = 0.2;
   data[11] = 0.0;
+
+  // IBL factors — consumed by ModelPBRComplete.wgsl for split-sum ambient.
+  // When the model's ImageBasedLighting is disabled or absent we still write a
+  // sensible default so the ambient term isn't silently zeroed (shader
+  // multiplies ambientColor * iblDiffuseFactor; a zero factor drops the term).
+  const ibl = model?._imageBasedLighting;
+  const iblFactor = ibl?._imageBasedLightingFactor; // Cartesian2 (x=diffuse, y=specular)
+  data[12] = iblFactor?.x ?? 1.0;
+  data[13] = iblFactor?.y ?? 1.0;
+  // Max mip level of the specular environment map. 8 is the typical prefilter
+  // chain depth (256² cubemap → 9 mips); used to drive roughness→mip mapping.
+  data[14] = ibl?._specularEnvironmentMapAtlas?._maximumMipmapLevel ?? 8.0;
+  data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
 }
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
@@ -807,7 +834,7 @@ function updateWebGPUModel(model, frameState) {
       );
 
       // Update light uniforms (per frame)
-      packLightUniforms(primCache.lightData, frameState);
+      packLightUniforms(primCache.lightData, frameState, model);
       device.queue.writeBuffer(
         primCache.lightBuffer.buffer,
         0,

@@ -1526,6 +1526,12 @@ function createWebGPUMaterialCommands(
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;
+    // Reference the shared material UBO + wrapper so per-frame updates can
+    // re-upload when the material is dirty. Previously the material UBO was
+    // only uploaded at command-creation time, so time-varying materials
+    // (animated water, flowing dash, glowing polyline) froze after frame 1.
+    cmd._webgpuMaterialBuffer = cache.materialBuffer;
+    cmd._webgpuMaterialUB = matUB;
     validCommands.push(cmd);
 
     // Pick command (split camera/material bind groups)
@@ -1661,6 +1667,22 @@ function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
       0,
       FLAT_CAMERA_BYTES,
     );
+  }
+
+  // Re-upload the material UBO if the Material's `_uniformBuffer` marked
+  // itself dirty since the last frame. MaterialUniformBuffer flips `isDirty`
+  // whenever a time-varying uniform (water clock, dash pattern, glow phase)
+  // gets recomputed in `Material.update()`. Previously the re-upload only
+  // happened at command-creation time \u2014 which only runs once per appearance
+  // change \u2014 so every time-varying material froze after frame 1.
+  const matUB = command._webgpuMaterialUB;
+  const matBuffer = command._webgpuMaterialBuffer;
+  if (defined(matUB) && defined(matBuffer) && matUB.isDirty) {
+    const matData = matUB.gpuData;
+    if (defined(matData)) {
+      device.queue.writeBuffer(matBuffer, 0, matData);
+    }
+    matUB.clearDirty();
   }
 }
 

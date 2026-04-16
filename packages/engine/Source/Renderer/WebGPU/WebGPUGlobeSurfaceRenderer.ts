@@ -36,13 +36,21 @@ import {
 
 // ─── Uniform buffer sizes (must match GlobeTerrain.wgsl CameraUniforms) ───
 // CameraUniforms: mvpRTE(16) + modifiedMV(16) + modifiedMVP(16) +
-//   camHigh(3+1) + camLow(3+1) + center3D(3+1) +
+//   camHigh(3+1) + camLow(3+1) +
+//   center3DHigh(3+1) + center3DLow(3+1) +
 //   sunDirEC(3)+enableLighting(1) + scaleAndBias(16) +
-//   minMaxHeight(2) + pad(2) = 84 floats (3D core)
+//   minMaxHeight(2) + pad(2) = 88 floats (3D core)
 //   + tileRectangle(4) + southAndNorthLatitude(2) + southMercY(2) +
 //   sceneMode(1) + morphTime(1) + useWebMercator(1) + pad(1) = 12 floats (2D/Columbus)
-//   = 96 floats total
-const CAMERA_UNIFORM_FLOATS = 96;
+//   = 100 floats total
+//
+// The center3D field is stored as a high/low f32 pair (emulated f64) so the
+// SCENE3D vertex shader can combine it with the tile-local vertex position
+// and the encoded camera pair without losing sub-meter precision. Previously
+// raw f32 `center3D` lost ~0.5 m of precision per component at Earth radius,
+// which defeated the RTE emulation and produced visible tile-seam jitter at
+// orbital altitudes.
+const CAMERA_UNIFORM_FLOATS = 100;
 const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
@@ -60,6 +68,52 @@ const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
 const MAX_IMAGERY_LAYERS = 4;
+
+/**
+ * Resolve an `ImageryLayer` property that the public API documents as either a
+ * scalar or a callback `(frameState, layer, x, y, level) => number`. Writing
+ * a Function into a Float32Array produces NaN which propagates through the
+ * shader's multiplicative blend and makes the layer disappear on WebGPU.
+ *
+ * The callback signature matches WebGL's `ImageryLayerFeatureGetter`
+ * convention: imagery layers that use it (hover-fade, time-of-day fade,
+ * elevation-based fade) rely on per-tile arguments, so we pass the tile
+ * rectangle's level/x/y when available.
+ *
+ * @private
+ */
+function resolveImageryLayerValue(
+  value: unknown,
+  defaultValue: number,
+  frameState: CesiumFrameState,
+  layer: unknown,
+  tile?: { level: number; x: number; y: number; rectangle: CesiumRectangle },
+): number {
+  if (typeof value === "function") {
+    try {
+      const fn = value as (
+        fs: CesiumFrameState,
+        l: unknown,
+        x: number,
+        y: number,
+        level: number,
+      ) => number;
+      const resolved = fn(
+        frameState,
+        layer,
+        tile?.x ?? 0,
+        tile?.y ?? 0,
+        tile?.level ?? 0,
+      );
+      return typeof resolved === "number" && isFinite(resolved)
+        ? resolved
+        : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  }
+  return typeof value === "number" && isFinite(value) ? value : defaultValue;
+}
 
 // Column-major 4×4 matrix multiply: result = a × b. All inputs and result
 // are stored as Float64Array of length 16 in column-major order (Cesium's
@@ -681,30 +735,49 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
 
     if (isQuantized) {
       // BITS12 quantized: compressed0 layout depends on encoding flags.
-      // When hasWebMercatorT=true: compressed0.w = compressed webMercatorT
-      //   (not encodedNormal), so we need float32x4 to read it.
-      // When hasWebMercatorT=false: compressed0.w = encodedNormal (if normals)
-      //   or not present (float32x3 with .w defaulting to 1.0).
+      // Three cases (see TerrainEncoding.getAttributes:680-691):
+      //   hasWebMercatorT && hasNormals: compressed0.w = compressed webMercT,
+      //     and the oct-encoded normal lives in a single-float compressed1
+      //     attribute at location 1 (extra 4 bytes of stride).
+      //   hasWebMercatorT (no normals): compressed0.w = compressed webMercT.
+      //   hasNormals (no webMercT):    compressed0.w = encodedNormal.
+      //   neither:                      compressed0 has only 3 components.
       let format: GPUVertexFormat;
-      if (hasWebMercatorT) {
-        // webMercatorT is in compressed0.w — always need vec4
+      const hasCompressed1 = hasWebMercatorT && hasNormals;
+      if (hasCompressed1) {
+        format = "float32x4";
+        entryPoint = "vertexMainQuantizedWebMercNormals";
+      } else if (hasWebMercatorT) {
         format = "float32x4";
         entryPoint = "vertexMainQuantizedWebMerc";
       } else if (hasNormals) {
-        // encodedNormal in compressed0.w
         format = "float32x4";
         entryPoint = "vertexMainQuantized";
       } else {
         format = "float32x3";
         entryPoint = "vertexMainQuantized";
       }
-      const minStride = hasWebMercatorT || hasNormals ? 16 : 12;
+      // Stride math: base compressed0 is 16 bytes (4 floats) or 12 bytes
+      // (3 floats, neither-case). Add 4 more bytes for compressed1 when
+      // both webMercT and normals are present.
+      const baseStride = hasWebMercatorT || hasNormals ? 16 : 12;
+      const minStride = baseStride + (hasCompressed1 ? 4 : 0);
       const actualStride = Math.max(strideBytes, minStride);
+      const attributes: GPUVertexAttribute[] = [
+        { shaderLocation: 0, offset: 0, format },
+      ];
+      if (hasCompressed1) {
+        attributes.push({
+          shaderLocation: 1,
+          offset: 16,
+          format: "float32",
+        });
+      }
       vertexBuffers = [
         {
           arrayStride: actualStride,
           stepMode: "vertex",
-          attributes: [{ shaderLocation: 0, offset: 0, format }],
+          attributes,
         },
       ];
     } else {
@@ -1666,9 +1739,35 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       );
     }
     //>>includeEnd('debug');
-    data[offset++] = center.x;
-    data[offset++] = center.y;
-    data[offset++] = center.z;
+    // Split center3D into high/low f32 so the SCENE3D RTE assembly in
+    // GlobeTerrain.wgsl can do `(centerH - camH) + (centerL + pos - camL)`
+    // without losing sub-meter precision. The encoding matches
+    // `EncodedCartesian3.fromCartesian`: for each component, high =
+    // reinterpret(f32(value & ~((1<<24)-1))), low = value - high. When the
+    // camera is close to the tile, both (centerH - camH) and
+    // (centerL - camL) are small, so the RTE sum keeps sub-meter precision.
+    const cxF32 = Math.fround(center.x);
+    const cyF32 = Math.fround(center.y);
+    const czF32 = Math.fround(center.z);
+    const splitShift = 65536.0; // 2^16
+    // Canonical EncodedCartesian3 split: mask off the low ~24 bits by
+    // multiplying by 2^-16, flooring, and multiplying back. This is what
+    // `EncodedCartesian3.fromCartesian` does.
+    const cxHigh = Math.fround(Math.floor(cxF32 / splitShift) * splitShift);
+    const cyHigh = Math.fround(Math.floor(cyF32 / splitShift) * splitShift);
+    const czHigh = Math.fround(Math.floor(czF32 / splitShift) * splitShift);
+    const cxLow = Math.fround(cxF32 - cxHigh);
+    const cyLow = Math.fround(cyF32 - cyHigh);
+    const czLow = Math.fround(czF32 - czHigh);
+    // center3DHigh (vec3 + pad)
+    data[offset++] = cxHigh;
+    data[offset++] = cyHigh;
+    data[offset++] = czHigh;
+    data[offset++] = 0;
+    // center3DLow (vec3 + pad)
+    data[offset++] = cxLow;
+    data[offset++] = cyLow;
+    data[offset++] = czLow;
     data[offset++] = 0;
 
     // sunDirectionEC (vec3) + enableLighting (f32)
@@ -1905,15 +2004,56 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       }
 
       const layer = imagery.imageryLayer;
-      data[baseOffset + 8] = layer.alpha ?? 1.0;
-      data[baseOffset + 9] = layer.brightness ?? 1.0;
-      data[baseOffset + 10] = layer.contrast ?? 1.0;
-      data[baseOffset + 11] = layer.saturation ?? 1.0;
+      // Several of these properties are documented as scalar-OR-callback
+      // (ImageryLayer JSDoc). Writing a Function into a Float32Array yields
+      // NaN, which propagates through the imagery blend and makes the entire
+      // layer disappear. Resolve callbacks against the tile rectangle so
+      // dynamic-alpha use cases (hover-fade, time-of-day fade) work on WebGPU.
+      data[baseOffset + 8] = resolveImageryLayerValue(
+        layer.alpha,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
+      data[baseOffset + 9] = resolveImageryLayerValue(
+        layer.brightness,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
+      data[baseOffset + 10] = resolveImageryLayerValue(
+        layer.contrast,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
+      data[baseOffset + 11] = resolveImageryLayerValue(
+        layer.saturation,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
 
       // Day/night alpha at offsets 62+ (packed per layer)
       const dnOffset = 62 + layerCount * 2;
-      data[dnOffset] = layer.dayAlpha ?? 1.0;
-      data[dnOffset + 1] = layer.nightAlpha ?? 1.0;
+      data[dnOffset] = resolveImageryLayerValue(
+        layer.dayAlpha,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
+      data[dnOffset + 1] = resolveImageryLayerValue(
+        layer.nightAlpha,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
 
       layerCount++;
     }
@@ -2442,8 +2582,14 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     let entryPoint: string;
 
     if (isQuantized) {
+      // See `_createPipelineVariant` for the full documentation of the
+      // compressed0 / compressed1 layout. This block must stay in sync.
       let format: GPUVertexFormat;
-      if (hasWebMercatorT) {
+      const hasCompressed1 = hasWebMercatorT && hasNormals;
+      if (hasCompressed1) {
+        format = "float32x4";
+        entryPoint = "vertexMainQuantizedWebMercNormals";
+      } else if (hasWebMercatorT) {
         format = "float32x4";
         entryPoint = "vertexMainQuantizedWebMerc";
       } else if (hasNormals) {
@@ -2453,13 +2599,24 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         format = "float32x3";
         entryPoint = "vertexMainQuantized";
       }
-      const minStride = hasWebMercatorT || hasNormals ? 16 : 12;
+      const baseStride = hasWebMercatorT || hasNormals ? 16 : 12;
+      const minStride = baseStride + (hasCompressed1 ? 4 : 0);
       const actualStride = Math.max(strideBytes, minStride);
+      const attributes: GPUVertexAttribute[] = [
+        { shaderLocation: 0, offset: 0, format },
+      ];
+      if (hasCompressed1) {
+        attributes.push({
+          shaderLocation: 1,
+          offset: 16,
+          format: "float32",
+        });
+      }
       vertexBuffers = [
         {
           arrayStride: actualStride,
           stepMode: "vertex",
-          attributes: [{ shaderLocation: 0, offset: 0, format }],
+          attributes,
         },
       ];
     } else {

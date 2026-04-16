@@ -247,7 +247,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   var cp = u.mvpRTE * vec4f(rte, 1.0);
   cp.x += dir.x * u.sunSize.x * cp.w;
   cp.y += dir.y * u.sunSize.y * cp.w;
-  o.pos = cp; o.uv = dir * 0.5 + 0.5; return o;
+  // Clamp the sun to the far plane. Without this the sun (world-space ~1.5e11 m)
+  // gets frustum-clipped at every camera altitude whose far plane is < 1.5e11 m
+  // \u2014 which is every multi-frustum slice except possibly the last.
+  // Setting clip-z = clip-w maps to NDC z = 1.0, i.e. the far plane, so the
+  // "less-equal" depth compare still allows the sun to render against any
+  // previously-cleared depth value.
+  o.pos = vec4f(cp.x, cp.y, cp.w, cp.w);
+  o.uv = dir * 0.5 + 0.5; return o;
 }
 
 @fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
@@ -312,7 +319,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     cache.bindGroupLayout = bgl;
   }
 
-  const sunPos = frameState.sunPositionWC || new Cartesian3(1.5e11, 0, 0);
+  // Prefer the live rotating sun position from UniformState. `frameState.sunPositionWC`
+  // is not populated anywhere in the engine today, so without this the quad
+  // used to snap back to a static axis-aligned position and never rotated with
+  // Earth's day/night cycle.
+  const sunPos =
+    frameState.context?.uniformState?.sunPositionWC ||
+    frameState.sunPositionWC ||
+    new Cartesian3(1.5e11, 0, 0);
   if (
     !defined(cache.vertexBuffer) ||
     !Cartesian3.equals(cache.lastSunPos, sunPos)

@@ -46,8 +46,16 @@ struct CameraUniforms {
   _pad0: f32,
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
-  center3D: vec3<f32>,
-  _pad2: f32,
+  // Tile encoding center in ECEF, emulated f64 via high/low split.
+  // Raw f32 center3D (up to ~6.4e6 m for Earth) loses ~0.5 m of precision
+  // per component, which defeats the RTE emulation when combined with
+  // tile-local positions. Keeping the split lets the SCENE3D branch do
+  // proper (center3DHigh - encodedCameraHigh) + (center3DLow - encodedCameraLow)
+  // subtraction and preserve sub-meter precision at orbital altitudes.
+  center3DHigh: vec3<f32>,
+  _pad2a: f32,
+  center3DLow: vec3<f32>,
+  _pad2b: f32,
   sunDirectionEC: vec3<f32>,
   enableLighting: f32,
   scaleAndBias: mat4x4<f32>,
@@ -170,6 +178,16 @@ struct VertexInput {
 
 struct VertexInputQuantized {
   @location(0) compressed0: vec4<f32>,
+};
+
+// Separate struct for the `hasWebMercatorT && hasNormals` quantized case.
+// When both are present, compressed0.w holds the compressed webMercatorT and
+// the oct-encoded normal spills into a separate single-component attribute
+// at location 1 \u2014 see TerrainEncoding.getAttributes:683-691. The WebGPU
+// pipeline must declare location 1 as float32 so the shader can read it.
+struct VertexInputQuantizedWebMercNormals {
+  @location(0) compressed0: vec4<f32>,
+  @location(1) compressed1: f32,
 };
 
 struct VertexOutput {
@@ -315,15 +333,32 @@ fn computePlanarPosition(height: f32, textureCoordinates: vec2<f32>) -> vec3<f32
 // data is present in the vertex buffer, callers pass textureCoordinates.y
 // (geographic V) as a fallback — the fragment shader's per-layer
 // useWebMercatorT flag selects which one to use for sampling.
+// `precomputedHeight` is the tile-local height above the ellipsoid in meters.
+// Uncompressed terrain carries it directly in `position3DAndHeight.w`;
+// quantized terrain reconstructs it as `zh.y * (maxH - minH) + minH` from
+// the stored minMaxHeight range. Using this precomputed height in the
+// Morph / Columbus branches avoids `length(position3DWC) - EARTH_RADIUS` at
+// f32 precision, which is a big-minus-big cancellation at Earth scale.
+// If the caller can't supply a height (mode-agnostic fallback), pass a
+// negative sentinel so processVertex knows to fall back to the length-based
+// computation instead of producing zero-height planar positions.
+const HEIGHT_SENTINEL_UNAVAILABLE: f32 = -999999.0;
+
 fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
-                 encodedNormal: f32, webMercatorT: f32) -> VertexOutput {
+                 encodedNormal: f32, webMercatorT: f32,
+                 precomputedHeight: f32) -> VertexOutput {
   var out: VertexOutput;
+
+  // Reconstruct full-precision center as f32 for uses that don't participate
+  // in RTE (exaggeration calc, fragment passthrough). The SCENE3D branch
+  // below consumes the split directly so it stays in the RTE domain.
+  let center3D = camera.center3DHigh + camera.center3DLow;
 
   // Vertical exaggeration (3D mode only — 2D/Columbus use raw height)
   var exaggeratedPosition = position;
   let exaggeration = tile.verticalExaggeration.x;
   if (exaggeration != 1.0 && camera.sceneMode > 2.5) {
-    let position3D = position + camera.center3D;
+    let position3D = position + center3D;
     let ellipsoidNormal = normalize(position3D);
     let surfaceHeight = length(position3D) - EARTH_RADIUS;
     let relativeHeight = tile.verticalExaggeration.y;
@@ -333,18 +368,29 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     exaggeratedPosition = position + offset;
   }
 
-  let position3DWC = exaggeratedPosition + camera.center3D;
+  let position3DWC = exaggeratedPosition + center3D;
 
   // Scene mode branching
   let mode = camera.sceneMode;
+
+  // Resolve the height used by Morph / Columbus planar projections. Prefer
+  // the caller-supplied precomputed height (exact when quantized decodes the
+  // [minH, maxH] range, or when uncompressed carries height in position.w);
+  // fall back to `length(position3DWC) - EARTH_RADIUS` only as a last resort
+  // since that subtraction loses sub-meter precision at Earth radius.
+  let useProvidedHeight = precomputedHeight > HEIGHT_SENTINEL_UNAVAILABLE + 1.0;
+  let resolvedHeight = select(
+    length(position3DWC) - EARTH_RADIUS,
+    precomputedHeight,
+    useProvidedHeight,
+  );
 
   if (mode < 0.5) {
     // ── MORPHING ── blend between 3D and 2D positions
     // Note: planar/3D positions are NOT relative-to-eye in this mode, so we
     // use modifiedModelViewProjection (matches WebGL czm_projection * modelView).
     let morphTime = camera.morphTime;
-    let height3D = length(position3DWC) - EARTH_RADIUS;
-    let planar = computePlanarPosition(height3D, textureCoordinates);
+    let planar = computePlanarPosition(resolvedHeight, textureCoordinates);
     let position2DWC = vec4<f32>(planar, 1.0);
     let position3DWC4 = vec4<f32>(position3DWC, 1.0);
     let morphPos = mix(position2DWC, position3DWC4, morphTime);
@@ -352,8 +398,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     out.v_positionEC = (camera.modifiedModelView * morphPos).xyz;
   } else if (mode < 1.5) {
     // ── COLUMBUS_VIEW ── planar with terrain height
-    let height = length(position3DWC) - EARTH_RADIUS;
-    let planarPos = computePlanarPosition(height, textureCoordinates);
+    let planarPos = computePlanarPosition(resolvedHeight, textureCoordinates);
     out.position = camera.modifiedModelViewProjection * vec4<f32>(planarPos, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else if (mode < 2.5) {
@@ -363,11 +408,26 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(planarPos, 1.0)).xyz;
   } else {
     // ── SCENE3D ── default RTE path
-    let rtePosition = translateRelativeToEye(
-      position3DWC, vec3<f32>(0.0),
-      camera.encodedCameraHigh, camera.encodedCameraLow
-    );
-    out.position = camera.mvpRelativeToEye * rtePosition;
+    //
+    // Previous implementation computed `position3DWC = exaggeratedPosition +
+    // center3D` at raw f32, which loses ~0.5 m of precision per component at
+    // Earth scale, and then fed that as `posHigh` to `translateRelativeToEye`
+    // with zero `posLow` — defeating the whole point of the split. The
+    // reconstructed-and-then-subtracted camera pair can't recover bits that
+    // were lost at the reconstruction step.
+    //
+    // Correct RTE assembly when the tile is encoded relative to a split
+    // `center3DHigh/Low` and vertex positions are tile-local:
+    //   rtePos = ((center3DHigh + center3DLow + exaggeratedPosition) - cameraWC)
+    //          = (center3DHigh - encodedCameraHigh) +
+    //            (center3DLow + exaggeratedPosition - encodedCameraLow)
+    // The second term stays small because both `center3DLow` and
+    // `encodedCameraLow` are small residuals and `exaggeratedPosition` is
+    // tile-relative (~100 m to ~50 km).
+    let rtePosition =
+      (camera.center3DHigh - camera.encodedCameraHigh) +
+      (camera.center3DLow + exaggeratedPosition - camera.encodedCameraLow);
+    out.position = camera.mvpRelativeToEye * vec4<f32>(rtePosition, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
   }
 
@@ -406,7 +466,9 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
-  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.z, tc.y);
+  // Uncompressed vertex carries the height directly in position.w.
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.z, tc.y,
+                       input.position3DAndHeight.w);
 }
 
 // ─── Vertex Shader: Uncompressed Terrain with WebMercatorT (no normals) ───
@@ -414,7 +476,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @vertex
 fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
-  return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, tc.z);
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, tc.z,
+                       input.position3DAndHeight.w);
 }
 
 // ─── Vertex Shader: Uncompressed Terrain with WebMercatorT + Normals ───
@@ -422,7 +485,17 @@ fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
 @vertex
 fn vertexMainWebMercNormals(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
-  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, tc.z);
+  return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, tc.z,
+                       input.position3DAndHeight.w);
+}
+
+// Decode the quantized-terrain normalized height (`zh.y` in [0, 1]) back
+// into meters using the tile's per-encoding minMaxHeight range. Matches
+// WebGL's `GlobeVS.glsl:135`: `height = height * (max - min) + min`.
+fn decodeQuantizedHeight(normalizedHeight: f32) -> f32 {
+  let minH = camera.minMaxHeight.x;
+  let maxH = camera.minMaxHeight.y;
+  return normalizedHeight * (maxH - minH) + minH;
 }
 
 // ─── Vertex Shader: Quantized Terrain (BITS12) ───
@@ -435,15 +508,13 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
   let scaledPos = vec3<f32>(xy.x, xy.y, zh.x);
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
-  return processVertex(position, uv, input.compressed0.w, uv.y);
+  return processVertex(position, uv, input.compressed0.w, uv.y,
+                       decodeQuantizedHeight(zh.y));
 }
 
-// ─── Vertex Shader: Quantized Terrain with WebMercatorT ───
-// When hasWebMercatorT=true, compressed0.w stores the COMPRESSED webMercatorT
-// (not the encodedNormal). Decompress it the same way as texture coordinates.
-// encodedNormal is not available in this layout (would need separate compressed1
-// attribute). We use a sentinel value (32768.0 = oct-encoded up vector) to
-// produce a reasonable default normal for lighting and face culling.
+// ─── Vertex Shader: Quantized Terrain with WebMercatorT (no normals) ───
+// When hasWebMercatorT=true but hasNormals=false, compressed0.w stores the
+// COMPRESSED webMercatorT. No normal available \u2014 use a hardcoded up vector.
 @vertex
 fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let xy = decompressTextureCoordinates(input.compressed0.x);
@@ -452,8 +523,29 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
-  // 32896.0 = oct-encoded (0,0,1) up vector — prevents back-face culling
-  return processVertex(position, uv, 32896.0, webMercT);
+  // 32896.0 = oct-encoded (0,0,1) up vector \u2014 prevents back-face culling
+  return processVertex(position, uv, 32896.0, webMercT,
+                       decodeQuantizedHeight(zh.y));
+}
+
+// ─── Vertex Shader: Quantized Terrain with WebMercatorT AND Normals ───
+// Both present: compressed0.w = compressed webMercatorT; oct-encoded normal
+// lives in a separate single-float attribute at location 1 (compressed1).
+// This is the common production configuration for Cesium ion + Bing: this
+// case previously hardcoded normal=32896.0 which flat-shaded the terrain
+// (wrong Lambert, wrong terminator, wrong water mask illumination).
+@vertex
+fn vertexMainQuantizedWebMercNormals(
+  input: VertexInputQuantizedWebMercNormals,
+) -> VertexOutput {
+  let xy = decompressTextureCoordinates(input.compressed0.x);
+  let zh = decompressTextureCoordinates(input.compressed0.y);
+  let scaledPos = vec3<f32>(xy.x, xy.y, zh.x);
+  let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
+  let uv = decompressTextureCoordinates(input.compressed0.z);
+  let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
+  return processVertex(position, uv, input.compressed1, webMercT,
+                       decodeQuantizedHeight(zh.y));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

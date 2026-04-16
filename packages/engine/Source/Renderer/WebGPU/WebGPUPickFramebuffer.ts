@@ -85,11 +85,27 @@ export class WebGPUPickFramebuffer {
   private _width: number = 0;
   private _height: number = 0;
   private _passState: CesiumPassState;
+  private _isDestroyed: boolean = false;
+
+  // Cached texture views — recreated only when textures are reallocated on
+  // resize. begin() used to call createView() on every frame which leaked
+  // ~60 view objects/sec under continuous picking.
+  private _colorView: GPUTextureView | null = null;
+  private _depthView: GPUTextureView | null = null;
 
   // Staging buffer for color readback
   private _stagingBuffer: GPUBuffer | null = null;
   private _stagingBufferSize: number = 0;
   private _lastReadPixels: Uint8Array | null = null;
+
+  // Origin of the current pick rectangle within the full-viewport color
+  // texture. Captured in begin() and consumed by the copyTextureToBuffer
+  // calls in end / endAsync / _startReadback so the copy reads the pixels
+  // the scene actually rendered into (the scissor region) rather than the
+  // top-left corner of the FBO. Without this, picking only returned results
+  // when clicks happened near (0, 0) on the canvas.
+  private _pickOriginX: number = 0;
+  private _pickOriginY: number = 0;
 
   // Depth readback resources (separate depth32float target for copyable depth)
   private _readableDepthTexture: GPUTexture | null = null;
@@ -133,6 +149,11 @@ export class WebGPUPickFramebuffer {
       this._passState.scissorTest.rectangle,
     );
 
+    // Record the scissor origin so readback paths copy from the right region
+    // of the full-viewport color texture (see _pickOriginX/Y field comment).
+    this._pickOriginX = Math.max(0, Math.floor(screenSpaceRectangle.x ?? 0));
+    this._pickOriginY = Math.max(0, Math.floor(screenSpaceRectangle.y ?? 0));
+
     // Create or recreate render targets
     if (width !== this._width || height !== this._height) {
       this._destroyTextures();
@@ -166,6 +187,10 @@ export class WebGPUPickFramebuffer {
       this._width = width;
       this._height = height;
 
+      // Cache texture views once per resize — see field comment above.
+      this._colorView = this._colorTexture.createView();
+      this._depthView = this._depthTexture.createView();
+
       // Create staging buffer for readback
       // Row alignment: WebGPU requires rows to be aligned to 256 bytes
       const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
@@ -188,8 +213,8 @@ export class WebGPUPickFramebuffer {
       _isWebGPUPickFBO: true,
       colorTexture: this._colorTexture,
       depthTexture: this._depthTexture,
-      colorView: this._colorTexture?.createView(),
-      depthView: this._depthTexture?.createView(),
+      colorView: this._colorView ?? undefined,
+      depthView: this._depthView ?? undefined,
       width: this._width,
       height: this._height,
     };
@@ -265,7 +290,14 @@ export class WebGPUPickFramebuffer {
     });
 
     encoder.copyTextureToBuffer(
-      { texture: this._colorTexture! },
+      {
+        texture: this._colorTexture!,
+        // Read from the scissor region, not the top-left corner. The scene
+        // was rendered with a scissor rectangle at (pickOriginX, pickOriginY)
+        // of the specified width × height; reading from (0, 0) returns the
+        // clear value for every click except ones landing near the origin.
+        origin: [this._pickOriginX, this._pickOriginY, 0],
+      },
       {
         buffer: this._stagingBuffer!,
         bytesPerRow,
@@ -276,9 +308,14 @@ export class WebGPUPickFramebuffer {
 
     device.queue.submit([encoder.finish()]);
 
-    // Wait for GPU to finish and map the buffer
-    await this._stagingBuffer!.mapAsync(GPUMapMode.READ);
-    const mappedData = new Uint8Array(this._stagingBuffer!.getMappedRange());
+    // Wait for GPU to finish and map the buffer. Guard against destruction
+    // during the await — viewer teardown can race here.
+    const stagingBuffer = this._stagingBuffer!;
+    await stagingBuffer.mapAsync(GPUMapMode.READ);
+    if (this._isDestroyed || this._stagingBuffer !== stagingBuffer) {
+      return [];
+    }
+    const mappedData = new Uint8Array(stagingBuffer.getMappedRange());
 
     // Copy data accounting for row padding
     const pixels = new Uint8Array(width * height * 4);
@@ -291,7 +328,7 @@ export class WebGPUPickFramebuffer {
       );
     }
 
-    this._stagingBuffer!.unmap();
+    stagingBuffer.unmap();
     this._lastReadPixels = pixels;
 
     return pickObjectsFromPixels(context, pixels, width, height, limit);
@@ -329,7 +366,13 @@ export class WebGPUPickFramebuffer {
     });
 
     encoder.copyTextureToBuffer(
-      { texture: this._colorTexture! },
+      {
+        texture: this._colorTexture!,
+        // Copy from the scissor region (see the paired comment on the sync
+        // readback path above). Previously (0, 0) was used, so every click
+        // that wasn't near the top-left corner returned undefined.
+        origin: [this._pickOriginX, this._pickOriginY, 0],
+      },
       {
         buffer: this._stagingBuffer!,
         bytesPerRow,
@@ -340,12 +383,22 @@ export class WebGPUPickFramebuffer {
 
     device.queue.submit([encoder.finish()]);
 
-    // Fire-and-forget async mapping — result will be used next frame
-    this._stagingBuffer!.mapAsync(GPUMapMode.READ)
+    // Fire-and-forget async mapping — result will be used next frame.
+    // The destroyed-guard catches the tab-close / viewer-teardown race
+    // where destroy() runs between mapAsync() initiation and resolution
+    // (would otherwise throw "cannot read getMappedRange of destroyed
+    // buffer" on the unmap path).
+    const stagingBuffer = this._stagingBuffer!;
+    stagingBuffer
+      .mapAsync(GPUMapMode.READ)
       .then(() => {
-        const mappedData = new Uint8Array(
-          this._stagingBuffer!.getMappedRange(),
-        );
+        if (this._isDestroyed || this._stagingBuffer !== stagingBuffer) {
+          // Either the framebuffer was destroyed or the staging buffer
+          // got swapped on resize. Either way, the buffer we mapped is
+          // either gone or no longer canonical — skip.
+          return;
+        }
+        const mappedData = new Uint8Array(stagingBuffer.getMappedRange());
 
         const pixels = new Uint8Array(width * height * 4);
         for (let row = 0; row < height; row++) {
@@ -357,7 +410,7 @@ export class WebGPUPickFramebuffer {
           );
         }
 
-        this._stagingBuffer!.unmap();
+        stagingBuffer.unmap();
         this._lastReadPixels = pixels;
       })
       .catch(() => {
@@ -416,12 +469,16 @@ export class WebGPUPickFramebuffer {
     device.queue.submit([encoder.finish()]);
 
     try {
-      await this._depthStagingBuffer.mapAsync(GPUMapMode.READ);
+      const depthStaging = this._depthStagingBuffer;
+      await depthStaging.mapAsync(GPUMapMode.READ);
+      if (this._isDestroyed || this._depthStagingBuffer !== depthStaging) {
+        return undefined;
+      }
       const mapped = new Float32Array(
-        this._depthStagingBuffer.getMappedRange(0, bytesPerPixel),
+        depthStaging.getMappedRange(0, bytesPerPixel),
       );
       const depth = mapped[0];
-      this._depthStagingBuffer.unmap();
+      depthStaging.unmap();
       return depth;
     } catch {
       // Buffer may already be mapped or destroyed
@@ -450,13 +507,16 @@ export class WebGPUPickFramebuffer {
       this._readableDepthTexture.destroy();
       this._readableDepthTexture = null;
     }
+    this._colorView = null;
+    this._depthView = null;
   }
 
   isDestroyed(): boolean {
-    return false;
+    return this._isDestroyed;
   }
 
   destroy(): void {
+    this._isDestroyed = true;
     this._destroyTextures();
     if (this._stagingBuffer) {
       this._stagingBuffer.destroy();

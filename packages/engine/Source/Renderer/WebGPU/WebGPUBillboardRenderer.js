@@ -60,7 +60,10 @@ function buildInstanceData(collection) {
 
   for (let i = 0; i < length; i++) {
     const bb = billboards[i];
-    if (!defined(bb) || !bb.show) {
+    // clusterShow is false when EntityCluster has folded this billboard into a
+    // cluster glyph. Skipping these prevents the stack of overlapping icons
+    // that WebGL already avoids via the same read.
+    if (!defined(bb) || !bb.show || bb._clusterShow === false) {
       continue;
     }
 
@@ -81,11 +84,17 @@ function buildInstanceData(collection) {
     instanceData[offset + 7] = bb.rotation || 0.0;
 
     // compressedAttr0: pixelOffset.xy, alignedAxis.xy
+    // alignedAxis is a Cartesian3 world-space axis; billboard shader supports
+    // 2D eye-space rotation, so we project to the screen-plane components
+    // (x = east-west, y = up-down). Non-(0,0,0) axes orient the billboard
+    // around that world axis (e.g. flagpole pointing up, road chevrons
+    // pointing along a road vector).
     const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
+    const alignedAxis = bb._alignedAxis;
     instanceData[offset + 8] = pixelOffset.x;
     instanceData[offset + 9] = pixelOffset.y;
-    instanceData[offset + 10] = 0.0; // alignedAxis.x
-    instanceData[offset + 11] = 0.0; // alignedAxis.y
+    instanceData[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
+    instanceData[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
 
     // compressedAttr1: imageRect (x,y,w,h in atlas, normalized)
     const imageRect =
@@ -134,7 +143,10 @@ function buildPickInstanceData(collection, context) {
 
   for (let i = 0; i < length; i++) {
     const bb = billboards[i];
-    if (!defined(bb) || !bb.show) {
+    // clusterShow is false when EntityCluster has folded this billboard into a
+    // cluster glyph. Skipping these prevents the stack of overlapping icons
+    // that WebGL already avoids via the same read.
+    if (!defined(bb) || !bb.show || bb._clusterShow === false) {
       continue;
     }
 
@@ -153,10 +165,11 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 7] = bb.rotation || 0.0;
 
     const pixelOffset = bb.pixelOffset || Cartesian2.ZERO;
+    const alignedAxis = bb._alignedAxis;
     instanceData[offset + 8] = pixelOffset.x;
     instanceData[offset + 9] = pixelOffset.y;
-    instanceData[offset + 10] = 0.0;
-    instanceData[offset + 11] = 0.0;
+    instanceData[offset + 10] = alignedAxis ? alignedAxis.x : 0.0;
+    instanceData[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
 
     const imageRect =
       bb._imageSubRegion || bb._textureCoordinateBoundsOrImageIndex;
@@ -419,10 +432,35 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Atlas texture
-  if (!defined(cache.atlasTexture)) {
-    cache.atlasTexture = createPlaceholderTexture(device);
-    cache.atlasTextureView = cache.atlasTexture.createView();
+  // Atlas texture. Two independent paths:
+  //   1. Collection has a real `textureAtlas` with a populated GPU texture \u2014
+  //      use the real view keyed by the atlas's `guid`. When the guid changes
+  //      (new image added, atlas resized) drop the bind group so a new one
+  //      binds the rotated texture view.
+  //   2. Atlas not yet ready \u2014 bind a 1x1 white placeholder so the pipeline
+  //      has a valid texture to sample. Any later frame with a ready atlas
+  //      will swap in the real view via the path above.
+  const atlas = collection._textureAtlas;
+  const atlasTex = atlas?.texture;
+  const atlasGpuTex = atlasTex?._texture?._webgpuTexture;
+  const atlasGuid = atlas?.guid;
+
+  if (defined(atlasGpuTex) && cache.atlasGuid !== atlasGuid) {
+    // Real atlas is ready (or updated). Bind its view; drop any cached bind
+    // group so it gets rebuilt with the new resource.
+    cache.atlasTextureView = atlasGpuTex.view;
+    cache.sampler = atlasGpuTex.sampler;
+    cache.atlasGuid = atlasGuid;
+    cache.bindGroup = undefined;
+    // The placeholder (if we previously allocated one) is no longer needed.
+    if (defined(cache.atlasPlaceholder)) {
+      cache.atlasPlaceholder.destroy();
+      cache.atlasPlaceholder = undefined;
+    }
+  } else if (!defined(cache.atlasTextureView)) {
+    // Still waiting on the atlas; bind a placeholder so the pipeline is valid.
+    cache.atlasPlaceholder = createPlaceholderTexture(device);
+    cache.atlasTextureView = cache.atlasPlaceholder.createView();
     cache.sampler = device.createSampler({
       minFilter: "linear",
       magFilter: "linear",
@@ -430,7 +468,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     });
   }
 
-  // Bind group
+  // Bind group \u2014 (re)created when the atlas view rotates.
   if (!defined(cache.bindGroup)) {
     cache.bindGroup = device.createBindGroup({
       layout: cache.bindGroupLayout,
@@ -471,13 +509,25 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     requiredSize,
   );
 
+  // Pick the command pass from the collection's blendOption so translucent
+  // billboards composite in the back-to-front translucent pass rather than
+  // painting on top of opaque geometry in unsorted order. BlendOption is:
+  //   OPAQUE = 0, TRANSLUCENT = 1, OPAQUE_AND_TRANSLUCENT = 2
+  // For OPAQUE_AND_TRANSLUCENT we emit the command in the TRANSLUCENT pass
+  // since billboard shaders use straight alpha blending; truly opaque glyphs
+  // still composite correctly in the translucent pass. A future refinement
+  // would emit two commands (one per pass) when the collection is mixed.
+  const blendOpt = collection._blendOption;
+  const billboardPass =
+    blendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
     vertexBuffers: [cache.instanceBuffer],
     vertexCount: VERTICES_PER_QUAD,
     instanceCount: visibleCount,
-    pass: 8, // Pass.OPAQUE
+    pass: billboardPass,
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
@@ -588,7 +638,13 @@ function destroyWebGPUBillboardResources(collection) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
+  // Only destroy the placeholder \u2014 the real atlas texture is owned by the
+  // collection's TextureAtlas and will be released by it.
+  if (defined(cache.atlasPlaceholder)) {
+    cache.atlasPlaceholder.destroy();
+  }
   if (defined(cache.atlasTexture)) {
+    // Legacy field from before atlas-invalidation landed; destroy if present.
     cache.atlasTexture.destroy();
   }
   collection._webgpuCache = undefined;
