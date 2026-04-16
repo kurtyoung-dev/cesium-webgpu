@@ -51,9 +51,9 @@ function EllipseGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class EllipseGeometryUpdater {
+class EllipseGeometryUpdater extends GroundGeometryUpdater {
   constructor(entity, scene) {
-    GroundGeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new EllipseGeometryOptions(entity),
@@ -313,13 +313,6 @@ class EllipseGeometryUpdater {
 
     options.extrudedHeight = extrudedHeightValue;
   }
-}
-
-if (defined(Object.create)) {
-  EllipseGeometryUpdater.prototype = Object.create(
-    GroundGeometryUpdater.prototype,
-  );
-  EllipseGeometryUpdater.prototype.constructor = EllipseGeometryUpdater;
 }
 
 EllipseGeometryUpdater.DynamicGeometryUpdater = DynamicEllipseGeometryUpdater;

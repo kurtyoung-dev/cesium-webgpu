@@ -39,9 +39,9 @@ function PlaneGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class PlaneGeometryUpdater {
+class PlaneGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new PlaneGeometryOptions(entity),
@@ -264,11 +264,6 @@ class PlaneGeometryUpdater {
       options.dimensions,
     );
   }
-}
-
-if (defined(Object.create)) {
-  PlaneGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  PlaneGeometryUpdater.prototype.constructor = PlaneGeometryUpdater;
 }
 
 PlaneGeometryUpdater.DynamicGeometryUpdater = DynamicPlaneGeometryUpdater;

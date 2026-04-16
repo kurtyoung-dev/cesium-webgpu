@@ -36,9 +36,9 @@ function PolylineVolumeGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class PolylineVolumeGeometryUpdater {
+class PolylineVolumeGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new PolylineVolumeGeometryOptions(entity),
@@ -217,14 +217,6 @@ class PolylineVolumeGeometryUpdater {
       ? cornerType.getValue(Iso8601.MINIMUM_VALUE)
       : undefined;
   }
-}
-
-if (defined(Object.create)) {
-  PolylineVolumeGeometryUpdater.prototype = Object.create(
-    GeometryUpdater.prototype,
-  );
-  PolylineVolumeGeometryUpdater.prototype.constructor =
-    PolylineVolumeGeometryUpdater;
 }
 
 PolylineVolumeGeometryUpdater.DynamicGeometryUpdater =

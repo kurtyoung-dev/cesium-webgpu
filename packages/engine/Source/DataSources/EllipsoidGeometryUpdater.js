@@ -58,9 +58,9 @@ function EllipsoidGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class EllipsoidGeometryUpdater {
+class EllipsoidGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new EllipsoidGeometryOptions(entity),
@@ -324,11 +324,6 @@ class EllipsoidGeometryUpdater {
   get terrainOffsetProperty() {
     return this._terrainOffsetProperty;
   }
-}
-
-if (defined(Object.create)) {
-  EllipsoidGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  EllipsoidGeometryUpdater.prototype.constructor = EllipsoidGeometryUpdater;
 }
 
 EllipsoidGeometryUpdater.prototype._onEntityPropertyChanged =

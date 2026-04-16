@@ -68,6 +68,7 @@ export class WebGPUShaderCache {
   private _pendingCompilations: Map<string, Promise<GPUShaderModule>>;
   private _preprocessor: WGSLShaderPreprocessor;
   private _library: WGSLShaderLibrary;
+  private _logPrefix: string;
 
   // Statistics
   private _stats = {
@@ -81,8 +82,13 @@ export class WebGPUShaderCache {
    * Creates a new shader cache
    * @param device - WebGPU device for shader compilation
    * @param library - Optional custom WGSL shader library (defaults to built-in library)
+   * @param contextId - Owning context's id for multi-context error attribution
    */
-  constructor(device: GPUDevice, library?: WGSLShaderLibrary) {
+  constructor(
+    device: GPUDevice,
+    library?: WGSLShaderLibrary,
+    contextId?: string,
+  ) {
     if (!defined(device)) {
       throw new DeveloperError("device is required");
     }
@@ -92,6 +98,9 @@ export class WebGPUShaderCache {
     this._pendingCompilations = new Map();
     this._library = library ?? createDefaultWGSLLibrary();
     this._preprocessor = new WGSLShaderPreprocessor(this._library);
+    this._logPrefix = contextId
+      ? `[CesiumJS:webgpu:${contextId}:shader-cache]`
+      : `[CesiumJS:webgpu:shader-cache]`;
   }
 
   /**
@@ -377,8 +386,22 @@ export class WebGPUShaderCache {
       return module;
     } catch (error) {
       this._stats.errors++;
-      console.error(`Failed to compile shader "${descriptor.name}":`, error);
-      throw error;
+      // Attach the WGSL source to the error so debugging doesn't require
+      // reproducing the failing module by hand. Truncate the inline log
+      // (full source is on the error object) so the console doesn't drown.
+      const code = descriptor.code ?? "";
+      const head = code.length > 800 ? code.slice(0, 800) + "\n..." : code;
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (wrapped as any).wgslSource = code;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (wrapped as any).shaderName = descriptor.name;
+      console.error(
+        `${this._logPrefix} Failed to compile shader "${descriptor.name}":`,
+        wrapped,
+        `\n--- WGSL (truncated) ---\n${head}`,
+      );
+      throw wrapped;
     }
   }
 

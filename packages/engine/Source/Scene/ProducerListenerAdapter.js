@@ -70,8 +70,9 @@ const SUPPORTED_VERSION = "2.0";
  * @extends Cesium3DTilesInvalidationFeedAdapter
  * @private
  */
-class ProducerListenerAdapter {
+class ProducerListenerAdapter extends Cesium3DTilesInvalidationFeedAdapter {
   constructor(options) {
+    super();
     options = options ?? {};
     this._lenient = options.lenient !== false; // default true
     this._sourceMtime = options.sourceMtime;
@@ -171,11 +172,6 @@ class ProducerListenerAdapter {
     return FORMAT_ID;
   }
 }
-
-ProducerListenerAdapter.prototype = Object.create(
-  Cesium3DTilesInvalidationFeedAdapter.prototype,
-);
-ProducerListenerAdapter.prototype.constructor = ProducerListenerAdapter;
 
 /**
  * Split the raw text on block boundaries. The separator is a line containing

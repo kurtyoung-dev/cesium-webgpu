@@ -300,6 +300,19 @@ import PickId from "./PickId.js";
  * - {@link PrimitiveCommandRenderer} for the PRIMITIVE command factory
  * - {@link SystemRenderer} for specialized entry points
  */
+/**
+ * Discriminated state of a lazy feature-renderer slot. The status drives
+ * `getFeatureRenderer(key)` (sync, returns undefined if not loaded yet),
+ * `getFeatureRendererAsync(key)` (awaits the in-flight promise), and
+ * `getFeatureRendererStatus(key)` (introspection — used by debug
+ * snapshots and the registry-audit gulp task).
+ */
+export type FeatureRendererLoadStatus =
+  | { kind: "registered" }
+  | { kind: "loading"; promise: Promise<void> }
+  | { kind: "loaded" }
+  | { kind: "failed"; error: unknown };
+
 export interface FeatureRenderer {
   /**
    * Destroy GPU resources owned by this renderer.
@@ -535,7 +548,25 @@ export abstract class GraphicsContext {
    */
   private _featureRendererLoaders: ((() => Promise<void>) | undefined)[] =
     new Array(0);
-  private _featureRendererLoadingFlags: (boolean | undefined)[] = new Array(0);
+  /**
+   * Per-key load status, one of:
+   *   undefined     — no loader registered (idle)
+   *   "registered"  — loader available, not yet started
+   *   "loading"     — loader in flight; .promise resolves when the FR
+   *                   has been registered (or the loader has rejected)
+   *   "loaded"      — FR is in `_featureRenderers[key]`
+   *   "failed"      — last attempt rejected; .error preserved for
+   *                   diagnostics; calling getFeatureRenderer again
+   *                   triggers a retry
+   *
+   * Storing the Promise (rather than a bare boolean) lets callers use
+   * `await getFeatureRendererAsync(key)` and get the freshly registered
+   * FR on the same frame the loader settles — fixing the "first frame
+   * falls back to WebGL, second frame flips" flicker that the old
+   * boolean-flag implementation caused.
+   */
+  private _featureRendererStatus: (FeatureRendererLoadStatus | undefined)[] =
+    new Array(0);
 
   private _featureRenderers: (FeatureRenderer | undefined)[] = new Array(
     FeatureRendererKey.COUNT,
@@ -1397,7 +1428,7 @@ export abstract class GraphicsContext {
     // Clear any pending lazy loader for this key — the renderer is
     // now available, no need to lazy-import.
     this._featureRendererLoaders[key] = undefined;
-    this._featureRendererLoadingFlags[key] = undefined;
+    this._featureRendererStatus[key] = { kind: "loaded" };
   }
 
   /**
@@ -1422,6 +1453,7 @@ export abstract class GraphicsContext {
     // Don't overwrite an already-resolved entry — the renderer wins.
     if (this._featureRenderers[key] !== undefined) return;
     this._featureRendererLoaders[key] = loader;
+    this._featureRendererStatus[key] = { kind: "registered" };
   }
 
   /**
@@ -1447,30 +1479,99 @@ export abstract class GraphicsContext {
     const existing = this._featureRenderers[key];
     if (existing !== undefined) return existing;
 
-    // No registered FR — check for a pending lazy loader. The first call
-    // for a lazy key fires the import (fire-and-forget); the call returns
-    // undefined so the caller falls back to its WebGL path. After the
-    // import settles and `registerFeatureRenderer` is called from the
-    // loader, subsequent `getFeatureRenderer` calls return the FR.
-    //
-    // The loading-flag guard coalesces concurrent calls so the same
-    // dynamic import isn't kicked off twice if multiple primitives ask
-    // on the same frame.
+    // No registered FR — kick the loader (fire-and-forget) if it's idle
+    // or if the previous attempt failed. The call still returns undefined
+    // so the caller's WebGL fallback runs this frame; once the import
+    // settles `registerFeatureRenderer` flips status to "loaded" and
+    // subsequent calls return the FR.
+    this._kickLazyLoader(key);
+    return undefined;
+  }
+
+  /**
+   * Async variant of {@link getFeatureRenderer}. Awaits any in-flight
+   * loader (or fires a fresh one) and returns the FR once it's been
+   * registered. Returns undefined if no loader exists, or if the loader
+   * failed and registerFeatureRenderer was never called.
+   *
+   * @param key - A {@link FeatureRendererKey} numeric enum value
+   */
+  async getFeatureRendererAsync(
+    key: number,
+  ): Promise<FeatureRenderer | undefined> {
+    const eager = this._featureRenderers[key];
+    if (eager) return eager;
+    const status = this._kickLazyLoader(key);
+    if (status?.kind === "loading") {
+      await status.promise;
+    }
+    return this._featureRenderers[key];
+  }
+
+  /**
+   * Introspect the load status for a feature-renderer key. Used by debug
+   * snapshots and the registry-audit tooling. Returns undefined when no
+   * loader and no registration exist for the key (the "idle" state).
+   *
+   * @param key - A {@link FeatureRendererKey} numeric enum value
+   */
+  getFeatureRendererStatus(key: number): FeatureRendererLoadStatus | undefined {
+    return this._featureRendererStatus[key];
+  }
+
+  /**
+   * True when a lazy loader is currently in flight for this key.
+   *
+   * @param key - A {@link FeatureRendererKey} numeric enum value
+   */
+  isFeatureRendererLoading(key: number): boolean {
+    return this._featureRendererStatus[key]?.kind === "loading";
+  }
+
+  /**
+   * True when the most recent load attempt for this key failed. A future
+   * `getFeatureRenderer(key)` call retries the loader.
+   *
+   * @param key - A {@link FeatureRendererKey} numeric enum value
+   */
+  hasFeatureRendererFailed(key: number): boolean {
+    return this._featureRendererStatus[key]?.kind === "failed";
+  }
+
+  /**
+   * Internal: kick the lazy loader for `key` if appropriate. Returns the
+   * resulting status so the async wrapper can await the in-flight
+   * promise without re-deriving it.
+   */
+  private _kickLazyLoader(key: number): FeatureRendererLoadStatus | undefined {
+    const status = this._featureRendererStatus[key];
+    if (status?.kind === "loading" || status?.kind === "loaded") {
+      return status;
+    }
     const loader = this._featureRendererLoaders[key];
-    if (loader && !this._featureRendererLoadingFlags[key]) {
-      this._featureRendererLoadingFlags[key] = true;
-      // Fire-and-forget — errors are swallowed but logged so the WebGL
-      // fallback can continue rendering. The loader is responsible for
-      // calling registerFeatureRenderer when done.
-      loader().catch((err) => {
-        this._featureRendererLoadingFlags[key] = false;
+    if (!loader) return status;
+
+    // "registered" or "failed" — fire (or retry) the loader
+    const promise = loader()
+      .then(() => {
+        // The loader is contracted to call registerFeatureRenderer, which
+        // flips status to "loaded". If it didn't, leave us in "loaded"
+        // anyway to avoid an infinite retry loop on a misbehaving loader.
+        if (this._featureRendererStatus[key]?.kind !== "loaded") {
+          this._featureRendererStatus[key] = { kind: "loaded" };
+        }
+      })
+      .catch((err) => {
+        this._featureRendererStatus[key] = { kind: "failed", error: err };
         this.log(
           "warn",
           `Lazy feature renderer load failed for key ${key}: ${err?.message ?? err}`,
         );
       });
-    }
-    return undefined;
+
+    const next: FeatureRendererLoadStatus = { kind: "loading", promise };
+    this._featureRendererStatus[key] = next;
+    return next;
   }
 
   /**

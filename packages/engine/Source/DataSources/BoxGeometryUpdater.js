@@ -43,9 +43,9 @@ function BoxGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class BoxGeometryUpdater {
+class BoxGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new BoxGeometryOptions(entity),
@@ -258,11 +258,6 @@ class BoxGeometryUpdater {
   get terrainOffsetProperty() {
     return this._terrainOffsetProperty;
   }
-}
-
-if (defined(Object.create)) {
-  BoxGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  BoxGeometryUpdater.prototype.constructor = BoxGeometryUpdater;
 }
 
 BoxGeometryUpdater.prototype._onEntityPropertyChanged =

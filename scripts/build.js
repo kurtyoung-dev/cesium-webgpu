@@ -137,6 +137,18 @@ export const defaultESBuildOptions = () => {
     legalComments: `inline`,
     logLimit: 0,
     target: `es2020`,
+    // Explicit loader map prevents the intermittent "Expected ')'" parse
+    // failure when a generated entry re-exports a `.js`-spelled specifier
+    // that resolves to a `.ts` file on disk. esbuild's extension inference
+    // can race with stale generated entries from a prior variant build.
+    loader: {
+      ".ts": "ts",
+      ".tsx": "tsx",
+      ".js": "js",
+      ".mjs": "js",
+      ".cjs": "js",
+      ".json": "json",
+    },
   };
 };
 

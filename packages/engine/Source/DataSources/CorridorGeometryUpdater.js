@@ -48,9 +48,9 @@ function CorridorGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class CorridorGeometryUpdater {
+class CorridorGeometryUpdater extends GroundGeometryUpdater {
   constructor(entity, scene) {
-    GroundGeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new CorridorGeometryOptions(entity),
@@ -302,13 +302,6 @@ class CorridorGeometryUpdater {
 
     options.extrudedHeight = extrudedHeightValue;
   }
-}
-
-if (defined(Object.create)) {
-  CorridorGeometryUpdater.prototype = Object.create(
-    GroundGeometryUpdater.prototype,
-  );
-  CorridorGeometryUpdater.prototype.constructor = CorridorGeometryUpdater;
 }
 
 CorridorGeometryUpdater.DynamicGeometryUpdater = DynamicCorridorGeometryUpdater;

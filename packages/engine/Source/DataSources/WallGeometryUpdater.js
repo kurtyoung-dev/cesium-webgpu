@@ -36,9 +36,9 @@ function WallGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class WallGeometryUpdater {
+class WallGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new WallGeometryOptions(entity),
@@ -215,11 +215,6 @@ class WallGeometryUpdater {
       ? granularity.getValue(Iso8601.MINIMUM_VALUE)
       : undefined;
   }
-}
-
-if (defined(Object.create)) {
-  WallGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  WallGeometryUpdater.prototype.constructor = WallGeometryUpdater;
 }
 
 WallGeometryUpdater.DynamicGeometryUpdater = DynamicWallGeometryUpdater;

@@ -2806,6 +2806,17 @@ export class WebGPUContext extends GraphicsContext {
     this._unregisterFromRegistry();
     this._destroyFeatureRenderers();
 
+    // Signal in-flight device-loss recovery to abort. We don't await here
+    // (destroy() is sync), but flipping the flag prevents the recovered
+    // device from being promoted into the host after we've started tearing
+    // down. _device.destroy() below is what actually fires the device.lost
+    // promise on the recovery path.
+    if (this._deviceLossRecovery) {
+      // Fire-and-forget — dispose() handles its own catch
+      void this._deviceLossRecovery.dispose();
+      this._deviceLossRecovery = null;
+    }
+
     // Destroy device
     if (this._device) {
       this._device.destroy();

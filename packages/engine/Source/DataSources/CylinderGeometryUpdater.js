@@ -47,9 +47,9 @@ function CylinderGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class CylinderGeometryUpdater {
+class CylinderGeometryUpdater extends GeometryUpdater {
   constructor(entity, scene) {
-    GeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new CylinderGeometryOptions(entity),
@@ -287,11 +287,6 @@ class CylinderGeometryUpdater {
   get terrainOffsetProperty() {
     return this._terrainOffsetProperty;
   }
-}
-
-if (defined(Object.create)) {
-  CylinderGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  CylinderGeometryUpdater.prototype.constructor = CylinderGeometryUpdater;
 }
 
 CylinderGeometryUpdater.prototype._onEntityPropertyChanged =

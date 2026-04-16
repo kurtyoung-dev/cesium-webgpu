@@ -25,9 +25,9 @@ const defaultZIndex = new ConstantProperty(0);
  * @param {string} options.geometryPropertyName The geometry property name
  * @param {string[]} options.observedPropertyNames The entity properties this geometry cares about
  */
-class GroundGeometryUpdater {
+class GroundGeometryUpdater extends GeometryUpdater {
   constructor(options) {
-    GeometryUpdater.call(this, options);
+    super(options);
 
     this._zIndex = 0;
     this._terrainOffsetProperty = undefined;
@@ -134,11 +134,6 @@ class GroundGeometryUpdater {
   get terrainOffsetProperty() {
     return this._terrainOffsetProperty;
   }
-}
-
-if (defined(Object.create)) {
-  GroundGeometryUpdater.prototype = Object.create(GeometryUpdater.prototype);
-  GroundGeometryUpdater.prototype.constructor = GroundGeometryUpdater;
 }
 
 GroundGeometryUpdater.prototype._computeCenter =

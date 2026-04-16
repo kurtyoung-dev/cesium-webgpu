@@ -38,8 +38,9 @@ import MeshPrimitiveGpmLocal from "./MeshPrimitiveGpmLocal.js";
  *
  * @private
  */
-class GltfMeshPrimitiveGpmLoader {
+class GltfMeshPrimitiveGpmLoader extends ResourceLoader {
   constructor(options) {
+    super();
     options = options ?? Frozen.EMPTY_OBJECT;
     const gltf = options.gltf;
     const extension = options.extension;
@@ -295,13 +296,6 @@ class GltfMeshPrimitiveGpmLoader {
   get structuralMetadata() {
     return this._structuralMetadata;
   }
-}
-
-if (defined(Object.create)) {
-  GltfMeshPrimitiveGpmLoader.prototype = Object.create(
-    ResourceLoader.prototype,
-  );
-  GltfMeshPrimitiveGpmLoader.prototype.constructor = GltfMeshPrimitiveGpmLoader;
 }
 
 function gatherUsedTextureIds(gpmExtension) {

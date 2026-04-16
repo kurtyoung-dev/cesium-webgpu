@@ -66,6 +66,15 @@ export class WebGPUMipmapGenerator {
   private _sampler: GPUSampler | null = null;
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
   private _pipelineCache: Map<GPUTextureFormat, GPURenderPipeline> = new Map();
+  /**
+   * Per-(texture, sourceMipLevel) bind-group cache. WeakMap entries auto-
+   * release when the wrapped GPUTexture is garbage-collected, so callers
+   * who repeatedly regenerate mipmaps for the same texture stop paying
+   * the bind-group allocation cost on subsequent calls. Each call used to
+   * create ~mipLevelCount-1 bind groups (11 for a 2048² texture); under
+   * continuous KTX2 streaming this leaked tens of bind groups per upload.
+   */
+  private _bindGroupCache: WeakMap<GPUTexture, GPUBindGroup[]> = new WeakMap();
   private _isDestroyed: boolean = false;
 
   constructor(device: GPUDevice) {
@@ -175,29 +184,39 @@ export class WebGPUMipmapGenerator {
         label: "MipmapGeneration",
       });
 
-    for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel++) {
-      // Create view of the source (previous) mip level
-      const srcView = texture.createView({
-        baseMipLevel: mipLevel - 1,
-        mipLevelCount: 1,
-        label: `Mipmap_Src_Level${mipLevel - 1}`,
-      });
+    let cachedBindGroups = this._bindGroupCache.get(texture);
+    if (!cachedBindGroups) {
+      cachedBindGroups = new Array(mipLevelCount);
+      this._bindGroupCache.set(texture, cachedBindGroups);
+    }
 
-      // Create view of the destination (current) mip level
+    for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel++) {
+      // Reuse the bind group for this (texture, srcMip) pair when available.
+      let bindGroup = cachedBindGroups[mipLevel];
+      if (!bindGroup) {
+        const srcView = texture.createView({
+          baseMipLevel: mipLevel - 1,
+          mipLevelCount: 1,
+          label: `Mipmap_Src_Level${mipLevel - 1}`,
+        });
+
+        bindGroup = this._device.createBindGroup({
+          layout: this._bindGroupLayout!,
+          entries: [
+            { binding: 0, resource: this._sampler! },
+            { binding: 1, resource: srcView },
+          ],
+          label: `Mipmap_BindGroup_Level${mipLevel}`,
+        });
+        cachedBindGroups[mipLevel] = bindGroup;
+      }
+
+      // Destination view changes contents per call but is cheap; not worth
+      // caching since it's the write target and only used once per pass.
       const dstView = texture.createView({
         baseMipLevel: mipLevel,
         mipLevelCount: 1,
         label: `Mipmap_Dst_Level${mipLevel}`,
-      });
-
-      // Create bind group: sampler + source texture view
-      const bindGroup = this._device.createBindGroup({
-        layout: this._bindGroupLayout!,
-        entries: [
-          { binding: 0, resource: this._sampler! },
-          { binding: 1, resource: srcView },
-        ],
-        label: `Mipmap_BindGroup_Level${mipLevel}`,
       });
 
       // Render pass targeting the destination mip level

@@ -472,15 +472,21 @@ class Animation {
 
     const themeEle = document.createElement("div");
     themeEle.className = "cesium-animation-theme";
+    // Continuation lines MUST stay flush-left: the `childNodes` indexing
+    // below assumes zero text nodes between the `<div>`s, so any
+    // whitespace inside this string breaks getComputedStyle (text nodes
+    // aren't Elements). A 2026-04 ES6 codemod indented the continuations
+    // and regressed this exact symptom.
+    // prettier-ignore
     themeEle.innerHTML =
       '<div class="cesium-animation-themeNormal"></div>\
-  <div class="cesium-animation-themeHover"></div>\
-  <div class="cesium-animation-themeSelect"></div>\
-  <div class="cesium-animation-themeDisabled"></div>\
-  <div class="cesium-animation-themeKnob"></div>\
-  <div class="cesium-animation-themePointer"></div>\
-  <div class="cesium-animation-themeSwoosh"></div>\
-  <div class="cesium-animation-themeSwooshHover"></div>';
+<div class="cesium-animation-themeHover"></div>\
+<div class="cesium-animation-themeSelect"></div>\
+<div class="cesium-animation-themeDisabled"></div>\
+<div class="cesium-animation-themeKnob"></div>\
+<div class="cesium-animation-themePointer"></div>\
+<div class="cesium-animation-themeSwoosh"></div>\
+<div class="cesium-animation-themeSwooshHover"></div>';
 
     this._theme = themeEle;
     this._themeNormal = themeEle.childNodes[0];

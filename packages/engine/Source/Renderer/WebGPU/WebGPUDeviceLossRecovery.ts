@@ -96,6 +96,14 @@ export class WebGPUDeviceLossRecovery {
   private _callbacks: DeviceLostCallback[] = [];
   private _maxAttempts: number;
   private _attempts: number = 0;
+  /**
+   * The currently-in-flight recovery promise, if any. Stored so destroy()
+   * can await or signal cancellation rather than detaching mid-recovery
+   * (which would leave the recovered device alive without an owner —
+   * latent memory + crash-on-write hazard).
+   */
+  private _activeRecovery: Promise<void> | null = null;
+  private _aborted: boolean = false;
 
   /**
    * @param host - The owning context that implements recovery hooks
@@ -129,7 +137,7 @@ export class WebGPUDeviceLossRecovery {
    * @param device - The GPU device to monitor
    */
   setupHandler(device: GPUDevice): void {
-    device.lost.then(async (info: GPUDeviceLostInfo) => {
+    device.lost.then((info: GPUDeviceLostInfo) => {
       const reason = (info.reason as string) ?? "unknown";
       const message = info.message ?? "Device lost";
 
@@ -143,11 +151,34 @@ export class WebGPUDeviceLossRecovery {
         return;
       }
 
-      // Attempt recovery
+      // Skip recovery if a destroy() has already been requested while we
+      // were waiting for the device-lost promise. Without this, recovery
+      // would resurrect a context the caller has already torn down.
+      if (this._aborted || this._host._isDestroyed) {
+        this._state = DeviceLossState.FATAL;
+        return;
+      }
+
+      // Attempt recovery — store the promise so destroy() can await it
       this._state = DeviceLossState.RECOVERING;
       this._notify(reason, message, DeviceLossState.RECOVERING, true);
+      this._activeRecovery = this._runRecovery(reason);
+    });
+  }
 
+  /**
+   * Internal recovery driver. Wraps _attemptRecovery so the in-flight
+   * promise can be tracked and awaited from destroy().
+   */
+  private async _runRecovery(reason: string): Promise<void> {
+    try {
       const recovered = await this._attemptRecovery();
+
+      if (this._aborted) {
+        // Caller torn down during recovery; do not promote new device
+        this._state = DeviceLossState.FATAL;
+        return;
+      }
 
       if (recovered) {
         this._state = DeviceLossState.HEALTHY;
@@ -174,7 +205,24 @@ export class WebGPUDeviceLossRecovery {
           false,
         );
       }
-    });
+    } finally {
+      this._activeRecovery = null;
+    }
+  }
+
+  /**
+   * Cancel any in-flight recovery and wait for it to settle. Called from
+   * the host's destroy() so we don't leak a half-recovered device.
+   */
+  async dispose(): Promise<void> {
+    this._aborted = true;
+    const active = this._activeRecovery;
+    if (active) {
+      await active.catch(() => {
+        /* swallow — we're being destroyed */
+      });
+    }
+    this._callbacks.length = 0;
   }
 
   /**

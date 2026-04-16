@@ -55,6 +55,17 @@ export interface RingBufferAllocatorOptions {
   minAlignment?: number;
   /** Label prefix for debug (default: 'RingBuffer') */
   label?: string;
+  /**
+   * Maximum total page count (steady + overflow) before allocation throws.
+   * Acts as a circuit breaker against runaway accretion. Default: 32.
+   */
+  maxPageCount?: number;
+  /**
+   * Auto-trim cadence: trim overflow pages every N successful frames.
+   * Set to 0 to disable auto-trim (caller must call trimOverflowPages
+   * manually). Default: 60.
+   */
+  autoTrimEveryFrames?: number;
 }
 
 /**
@@ -108,6 +119,10 @@ export class WebGPURingBufferAllocator {
   // Statistics
   private _peakFrameUsage: number = 0;
   private _overflowCount: number = 0;
+  private _frameCount: number = 0;
+  private _maxPageCount: number;
+  private _autoTrimEveryFrames: number;
+  private _hasWarnedOverflow: boolean = false;
 
   private _isDestroyed: boolean = false;
 
@@ -125,6 +140,8 @@ export class WebGPURingBufferAllocator {
       options.usage ?? GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     this._minAlignment = options.minAlignment ?? 256; // UBO alignment
     this._label = options.label ?? "RingBuffer";
+    this._maxPageCount = options.maxPageCount ?? 32;
+    this._autoTrimEveryFrames = options.autoTrimEveryFrames ?? 60;
 
     // Pre-create all pages
     for (let i = 0; i < this._pageCount; i++) {
@@ -164,10 +181,20 @@ export class WebGPURingBufferAllocator {
   }
 
   /**
-   * End the current frame. Finalizes allocations.
+   * End the current frame. Finalizes allocations and reclaims memory from
+   * any temporary overflow pages on a fixed cadence so the allocator
+   * does not silently drift into arena-allocator territory.
    */
   endFrame(): void {
     this._isInFrame = false;
+    this._frameCount++;
+    if (
+      this._autoTrimEveryFrames > 0 &&
+      this._pages.length > this._pageCount &&
+      this._frameCount % this._autoTrimEveryFrames === 0
+    ) {
+      this.trimOverflowPages();
+    }
   }
 
   /**
@@ -189,7 +216,23 @@ export class WebGPURingBufferAllocator {
     const currentPage = this._pages[this._currentPageIndex];
     if (alignedOffset + alignedSize > currentPage.size) {
       // Current page is full — create overflow page
+      if (this._pages.length >= this._maxPageCount) {
+        throw new Error(
+          `[CesiumJS:webgpu] Ring allocator "${this._label}" exceeded ` +
+            `maxPageCount=${this._maxPageCount} (${this._overflowCount} overflows). ` +
+            `Increase pageSize, reduce per-frame uniform writes, or raise maxPageCount.`,
+        );
+      }
       this._overflowCount++;
+      if (!this._hasWarnedOverflow) {
+        this._hasWarnedOverflow = true;
+        console.warn(
+          `[CesiumJS:webgpu] Ring allocator "${this._label}" overflowed its ` +
+            `${(this._pageSize / 1024 / 1024).toFixed(1)}MB page. ` +
+            `Consider raising pageSize. Overflow pages auto-trim every ` +
+            `${this._autoTrimEveryFrames} frames.`,
+        );
+      }
       const overflowSize = Math.max(this._pageSize, alignedSize);
       const overflowIndex = this._pages.length;
 

@@ -172,6 +172,7 @@ export class WebGPURenderPipelineCache {
   private device: GPUDevice;
   private cache: Map<string, PipelineCacheEntry>;
   private pendingPipelines: Map<string, Promise<GPURenderPipeline>>;
+  private logPrefix: string;
 
   // Statistics
   private stats = {
@@ -185,11 +186,15 @@ export class WebGPURenderPipelineCache {
    * Create a new pipeline cache
    *
    * @param device - GPUDevice for creating pipelines
+   * @param contextId - Owning context's id for multi-context error attribution
    */
-  constructor(device: GPUDevice) {
+  constructor(device: GPUDevice, contextId?: string) {
     this.device = device;
     this.cache = new Map();
     this.pendingPipelines = new Map();
+    this.logPrefix = contextId
+      ? `[CesiumJS:webgpu:${contextId}:pipeline-cache]`
+      : `[CesiumJS:webgpu:pipeline-cache]`;
   }
 
   /**
@@ -288,7 +293,10 @@ export class WebGPURenderPipelineCache {
         await this.device.createRenderPipelineAsync(pipelineDescriptor);
       return pipeline;
     } catch (error) {
-      console.error(`Failed to create pipeline "${descriptor.name}":`, error);
+      console.error(
+        `${this.logPrefix} Failed to create pipeline "${descriptor.name}":`,
+        error,
+      );
       throw error;
     }
   }

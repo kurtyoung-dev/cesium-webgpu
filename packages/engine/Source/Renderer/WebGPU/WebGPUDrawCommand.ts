@@ -80,10 +80,22 @@ interface WebGPUDrawCommandOptions {
   boundingVolume?: CesiumBoundingSphere;
   modelMatrix?: CesiumMatrix4;
   cull?: boolean;
+  /**
+   * When false, the command bypasses occlusion culling. Default true.
+   * Mirrors `DrawCommand.occlude` from the WebGL path so scene code that
+   * sets `command.occlude = false` (e.g. always-on-top overlays) honors
+   * the same semantics on both backends.
+   */
+  occlude?: boolean;
   debugShowBoundingVolume?: boolean;
   castShadows?: boolean;
   receiveShadows?: boolean;
   pickId?: string;
+  /**
+   * When true, the command is executed only during pick passes. Default
+   * false. Mirrors `DrawCommand.pickOnly`.
+   */
+  pickOnly?: boolean;
   executeInClosestFrustum?: boolean;
   sortKey?: number;
   /** Render layer order value. Default 50 (RenderLayer.Order.WORLD). */
@@ -173,10 +185,14 @@ class WebGPUDrawCommand {
   boundingVolume?: CesiumBoundingSphere;
   modelMatrix?: CesiumMatrix4;
   cull: boolean;
+  /** See WebGPUDrawCommandOptions.occlude. */
+  occlude: boolean;
   debugShowBoundingVolume: boolean;
   castShadows: boolean;
   receiveShadows: boolean;
   pickId?: string;
+  /** See WebGPUDrawCommandOptions.pickOnly. */
+  pickOnly: boolean;
   executeInClosestFrustum: boolean;
 
   // OIT pipeline variant for weighted blended transparency (MRT)
@@ -261,10 +277,12 @@ class WebGPUDrawCommand {
     this.boundingVolume = options.boundingVolume;
     this.modelMatrix = options.modelMatrix;
     this.cull = options.cull ?? true;
+    this.occlude = options.occlude ?? true;
     this.debugShowBoundingVolume = options.debugShowBoundingVolume ?? false;
     this.castShadows = options.castShadows ?? false;
     this.receiveShadows = options.receiveShadows ?? false;
     this.pickId = options.pickId;
+    this.pickOnly = options.pickOnly ?? false;
     this.executeInClosestFrustum = options.executeInClosestFrustum ?? false;
 
     // Structured sort properties (matching DrawCommand parity)
@@ -399,10 +417,12 @@ class WebGPUDrawCommand {
       boundingVolume: this.boundingVolume,
       modelMatrix: this.modelMatrix,
       cull: this.cull,
+      occlude: this.occlude,
       debugShowBoundingVolume: this.debugShowBoundingVolume,
       castShadows: this.castShadows,
       receiveShadows: this.receiveShadows,
       pickId: this.pickId,
+      pickOnly: this.pickOnly,
       executeInClosestFrustum: this.executeInClosestFrustum,
       sortKey: this.sortKey,
       sortLayer: this.sortLayer,

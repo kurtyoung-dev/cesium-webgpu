@@ -52,9 +52,9 @@ function RectangleGeometryOptions(entity) {
  * @param {Entity} entity The entity containing the geometry to be visualized.
  * @param {Scene} scene The scene where visualization is taking place.
  */
-class RectangleGeometryUpdater {
+class RectangleGeometryUpdater extends GroundGeometryUpdater {
   constructor(entity, scene) {
-    GroundGeometryUpdater.call(this, {
+    super({
       entity: entity,
       scene: scene,
       geometryOptions: new RectangleGeometryOptions(entity),
@@ -310,13 +310,6 @@ class RectangleGeometryUpdater {
 
     options.extrudedHeight = extrudedHeightValue;
   }
-}
-
-if (defined(Object.create)) {
-  RectangleGeometryUpdater.prototype = Object.create(
-    GroundGeometryUpdater.prototype,
-  );
-  RectangleGeometryUpdater.prototype.constructor = RectangleGeometryUpdater;
 }
 
 RectangleGeometryUpdater.DynamicGeometryUpdater =
