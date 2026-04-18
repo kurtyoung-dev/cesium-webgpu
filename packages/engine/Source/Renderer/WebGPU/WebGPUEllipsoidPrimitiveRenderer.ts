@@ -48,7 +48,7 @@ struct CameraUniforms {
   _pad3: f32,
   // DP-H41 (Batch 27) — previous frame's viewProjection for
   // TAA / motion-vector reprojection. Sourced from
-  // `UniformState._previousViewProjection` (f32 mat4).
+  // UniformState._previousViewProjection (f32 mat4).
   previousViewProjection: mat4x4<f32>,
 };
 
@@ -295,10 +295,22 @@ function packCameraUniforms(
     const prev = m4Values(prevVP);
     for (let i = 0; i < 16; i++) data[44 + i] = prev[i];
   } else {
-    data[44] = 1; data[45] = 0; data[46] = 0; data[47] = 0;
-    data[48] = 0; data[49] = 1; data[50] = 0; data[51] = 0;
-    data[52] = 0; data[53] = 0; data[54] = 1; data[55] = 0;
-    data[56] = 0; data[57] = 0; data[58] = 0; data[59] = 1;
+    data[44] = 1;
+    data[45] = 0;
+    data[46] = 0;
+    data[47] = 0;
+    data[48] = 0;
+    data[49] = 1;
+    data[50] = 0;
+    data[51] = 0;
+    data[52] = 0;
+    data[53] = 0;
+    data[54] = 1;
+    data[55] = 0;
+    data[56] = 0;
+    data[57] = 0;
+    data[58] = 0;
+    data[59] = 1;
   }
   return data;
 }
