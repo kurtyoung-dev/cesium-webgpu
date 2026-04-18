@@ -87,7 +87,11 @@ type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
  *                      shadowMapValid, shadowDarkness)
  *    60..63 noise (enableVaryingDensity, noiseScale, noiseStrength, _pad)
  */
-const VOLUMETRIC_FOG_PARAMS_FLOATS = 64;
+// 72 floats (288 bytes) after Batch 26 — added 8 floats at offsets 64–71
+// for the C-P7-RTE altitude reconstruction (cameraAltitudeRTE +
+// altitudeCurvature). See the WGSL `VolumetricFogParams` struct for
+// field layout.
+const VOLUMETRIC_FOG_PARAMS_FLOATS = 72;
 const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
 /** CompositeUniforms float count: mat4 (16) + 2 × vec4 (8) = 24 floats. */
@@ -787,23 +791,66 @@ class WebGPUVolumetricFogRenderer {
       }
     }
 
-    // Camera position WC + planet inner radius (offsets 44..47).
+    // C-P7 (Batch 2): pick `min(radii)` as the inner radius so a
+    // camera directly over a pole doesn't compute a negative altitude
+    // (WGS84 polar radius is ~21 km smaller than equatorial). The ~21 km
+    // equator undershoot is well inside the atmosphere's ~100 km
+    // thickness.
+    //
+    // C-P7-RTE (Batch 26): in-shader altitude reconstruction used to
+    // compute `length(worldPos) - innerRadius` in f32 — both terms are
+    // ~6.4e6 m at Earth radius, so the f32 difference had ~1 m ulp and
+    // produced visible fog-density banding at orbital altitudes. We now
+    // precompute `cameraAltitude = length(camPos) - innerRadius` in f64
+    // on the CPU, upload it alongside the unit-length `cameraUp`
+    // direction, and compute per-froxel altitude as a 2nd-order Taylor
+    // expansion around the camera. See `cameraAltitudeRTE` in
+    // VolumetricFog.wgsl for the math.
     const camPos = camera?.positionWC;
-    r.paramsData[44] = camPos?.x ?? 0;
-    r.paramsData[45] = camPos?.y ?? 0;
-    r.paramsData[46] = camPos?.z ?? 0;
-    // Planet inner radius — derive from the globe ellipsoid if attached.
+    const cx = camPos?.x ?? 0;
+    const cy = camPos?.y ?? 0;
+    const cz = camPos?.z ?? 0;
+    r.paramsData[44] = cx;
+    r.paramsData[45] = cy;
+    r.paramsData[46] = cz;
     const globeEllipsoid = _scene?.globe?._ellipsoid as
       | { radii: CesiumCartesian3 }
       | undefined;
     const innerRadius = globeEllipsoid
-      ? Math.max(
+      ? Math.min(
           globeEllipsoid.radii.x,
           globeEllipsoid.radii.y,
           globeEllipsoid.radii.z,
         )
-      : 6378137;
+      : 6356752; // WGS84 polar radius
     r.paramsData[47] = innerRadius;
+
+    // C-P7-RTE — compute altitude terms in f64 on the CPU so the
+    // shader can reconstruct altitude without f32 cancellation. At
+    // Earth scale, JS's native f64 (Math.sqrt, arithmetic) keeps the
+    // result precise to sub-millimeter; splitting the work between
+    // CPU-f64 and GPU-f32 is the standard RTE pattern.
+    const cMag = Math.sqrt(cx * cx + cy * cy + cz * cz);
+    const cameraAltitude = cMag - innerRadius;
+    const invMag = cMag > 0 ? 1.0 / cMag : 0.0;
+    // Unit vector from Earth center through the camera (well-conditioned
+    // even at orbital altitudes because cMag >> 0).
+    const upX = cx * invMag;
+    const upY = cy * invMag;
+    const upZ = cz * invMag;
+    // Slots 64–67: cameraAltitudeRTE (cameraUp.xyz + cameraAltitude)
+    r.paramsData[64] = upX;
+    r.paramsData[65] = upY;
+    r.paramsData[66] = upZ;
+    r.paramsData[67] = cameraAltitude;
+    // Slots 68–71: altitudeCurvature (oneOverDenom + pad).
+    // The denominator (2 * (innerRadius + cameraAltitude)) = 2 * cMag.
+    // Guard against cMag=0 (not physical, but keeps the shader's
+    // multiply well-behaved during teardown).
+    r.paramsData[68] = cMag > 0 ? 1.0 / (2.0 * cMag) : 0.0;
+    r.paramsData[69] = 0.0;
+    r.paramsData[70] = 0.0;
+    r.paramsData[71] = 0.0;
 
     // Sun direction + intensity (offsets 48..51).
     const sunDir = frameState.sunDirectionWC;

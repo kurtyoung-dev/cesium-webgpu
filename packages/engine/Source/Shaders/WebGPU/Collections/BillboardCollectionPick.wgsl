@@ -1,13 +1,20 @@
 // BillboardCollectionPick.wgsl — Pick shader for instanced billboard rendering
 // Same vertex logic as BillboardCollection.wgsl but outputs pick color instead of texture.
 //
-// Instance data layout (96 bytes per billboard, 6 x vec4):
+// Instance data layout (112 bytes per billboard, 7 x vec4):
 //   @location(0) posHighAndScale:    vec4<f32> — encodedPosition.high.xyz, uniformScale
 //   @location(1) posLowAndRotation:  vec4<f32> — encodedPosition.low.xyz, rotation
 //   @location(2) compressedAttr0:    vec4<f32> — pixelOffset.xy, alignedAxis.xy
 //   @location(3) compressedAttr1:    vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
 //   @location(4) pickColor:          vec4<f32> — pick ID rgba
 //   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
+//   @location(6) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
+//                                     splitDirection, _pad, _pad
+//
+// The pick path applies DP-H42 + DP-H40 the same way the color path does
+// so the picked region matches the visible one (can't pick a billboard
+// that isn't on-screen due to the split cutoff; CAN pick a billboard
+// that only renders because its depth test was suppressed).
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -19,6 +26,13 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
   _pad2: f32,
+  minimumDisableDepthTestDistance: f32,
+  splitPosition: f32,
+  _pad3: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -34,12 +48,16 @@ struct VertexInput {
   @location(3) compressedAttr1: vec4<f32>,
   @location(4) pickColor: vec4<f32>,
   @location(5) miscFlags: vec4<f32>,
+  @location(6) perInstanceFlags: vec4<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) texCoord: vec2<f32>,
   @location(1) pickColor: vec4<f32>,
+  //>>ifdef SPLIT_ENABLED
+  @location(2) splitDirection: f32,
+  //>>endif
 };
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -113,7 +131,26 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
 
+  //>>ifdef DISABLE_DEPTH_DISTANCE
+  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
+  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
+    disableDepthSq =
+      camera.minimumDisableDepthTestDistance *
+      camera.minimumDisableDepthTestDistance;
+  }
+  if (disableDepthSq != 0.0) {
+    let distSq = dot(positionRTE, positionRTE);
+    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+      clipPos.z = clipPos.w;
+    }
+  }
+  //>>endif
+
   output.position = clipPos;
+
+  //>>ifdef SPLIT_ENABLED
+  output.splitDirection = input.perInstanceFlags.y;
+  //>>endif
 
   // Texture coordinates from atlas rect (used for alpha discard)
   let baseUV = QUAD_UVS[cornerIndex];
@@ -128,6 +165,15 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  //>>ifdef SPLIT_ENABLED
+  if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
+    discard;
+  }
+  if (input.splitDirection > 0.0 && input.position.x < camera.splitPosition) {
+    discard;
+  }
+  //>>endif
+
   // Sample atlas texture for alpha — discard transparent pixels
   let texAlpha = textureSample(atlasTexture, atlasSampler, input.texCoord).a;
   if (texAlpha < 0.005) {

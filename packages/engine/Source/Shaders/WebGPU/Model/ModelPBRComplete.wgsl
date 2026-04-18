@@ -70,6 +70,10 @@ struct CameraUniforms {
   _pad1: f32,
   cameraPositionWC: vec3<f32>,
   _pad2: f32,
+  // DP-H41 (Batch 27) — previous frame's viewProjection for
+  // TAA / motion-vector reprojection. Sourced from
+  // `UniformState._previousViewProjection` (f32 mat4).
+  previousViewProjection: mat4x4<f32>,
 };
 
 struct MaterialUniforms {
@@ -90,7 +94,15 @@ struct MaterialUniforms {
   diffuseFactor_g: f32,
   diffuseFactor_b: f32,
   diffuseFactor_a: f32,
-  _pad_end: f32,
+  // Per-texture UV-set bitmask. One bit per texture slot: 0 = sample
+  // using TEXCOORD_0, 1 = sample using TEXCOORD_1. Maps to glTF
+  // textureInfo.texCoord for each slot. Bit layout:
+  //   bit 0: baseColor
+  //   bit 1: normal
+  //   bit 2: metallicRoughness
+  //   bit 3: emissive
+  //   bit 4: occlusion
+  texCoordFlags: u32,
   _pad_end2: f32,
   _pad_end3: f32,
 };
@@ -180,6 +192,12 @@ struct VertexInput {
   @location(4) color0: vec4<f32>,
   @location(5) joints0: vec4<u32>,
   @location(6) weights0: vec4<f32>,
+  // texCoord1 — glTF textures carry a per-texture `texCoord: 0|1` flag;
+  // occlusion and clearcoat-normal commonly use UV set 1. When the
+  // primitive has no TEXCOORD_1 accessor, the renderer binds uv0 data
+  // into this slot as a safe fallback so samplers whose texCoord flag
+  // is 1 degrade to "same UV as 0" rather than failing the bind.
+  @location(7) texCoord1: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -190,6 +208,7 @@ struct VertexOutput {
   @location(3) color0: vec4<f32>,
   @location(4) tangentEC: vec3<f32>,
   @location(5) bitangentEC: vec3<f32>,
+  @location(6) texCoord1: vec2<f32>,
 };
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -255,6 +274,7 @@ struct VertexOutput {
   output.positionEC = (camera.modelViewRelativeToEye * vec4<f32>(rte, 1.0)).xyz;
   output.normalEC = normalize((camera.normalMatrix * vec4<f32>(normalMC, 0.0)).xyz);
   output.texCoord0 = input.texCoord0;
+  output.texCoord1 = input.texCoord1;
   output.color0 = input.color0;
 
   // Tangent/Bitangent for normal mapping
@@ -366,8 +386,28 @@ struct FragmentInput {
   @location(3) color0: vec4<f32>,
   @location(4) tangentEC: vec3<f32>,
   @location(5) bitangentEC: vec3<f32>,
+  @location(6) texCoord1: vec2<f32>,
   @builtin(front_facing) frontFacing: bool,
 };
+
+// Per-texture UV-set bit indices in material.texCoordFlags. Keep in sync
+// with the WebGPUPrimitiveCommands.js material packer which writes this
+// uniform. Using explicit bit positions (rather than raw 1u, 2u, …)
+// keeps the sampling-site call sites self-documenting.
+const TEXCOORD_BIT_BASE_COLOR: u32           = 1u << 0u;
+const TEXCOORD_BIT_NORMAL: u32               = 1u << 1u;
+const TEXCOORD_BIT_METALLIC_ROUGHNESS: u32   = 1u << 2u;
+const TEXCOORD_BIT_EMISSIVE: u32             = 1u << 3u;
+const TEXCOORD_BIT_OCCLUSION: u32            = 1u << 4u;
+
+// Pick TEXCOORD_0 or TEXCOORD_1 for a given texture slot based on the
+// bitmask uploaded by the CPU (one bit per slot). glTF textureInfos
+// each carry a `texCoord: 0|1` flag; occlusion and clearcoat-normal
+// commonly want slot 1 while base color stays on slot 0.
+fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
+  let useUV1 = (material.texCoordFlags & slotBit) != 0u;
+  return select(input.texCoord0, input.texCoord1, useUV1);
+}
 
 @fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
@@ -375,17 +415,21 @@ struct FragmentInput {
   // ── Base color ────────────────────────────────────────────────────────────
   var baseColor = material.baseColorFactor;
 
+  // baseColor / diffuse textures are uploaded as `rgba8unorm-srgb`
+  // (WebGPUModelRenderer.js createGPUTextureFromReader), so
+  // textureSample() already returns linear values. In-shader srgbToLinear
+  // (pow(x, 2.2)) would apply the decode twice and darken mid-tones.
   if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, input.texCoord0);
-      baseColor = baseColor * vec4<f32>(srgbToLinear(tc.rgb), tc.a);
+      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      baseColor = baseColor * tc;
     }
   } else {
     if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, input.texCoord0);
-      baseColor = baseColor * vec4<f32>(srgbToLinear(tc.rgb), tc.a);
+      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      baseColor = baseColor * tc;
     }
   }
 
@@ -411,7 +455,7 @@ struct FragmentInput {
   var N = normalize(input.normalEC);
   if (hasFlag(flags, FLAG_IS_DOUBLE_SIDED) && !input.frontFacing) { N = -N; }
   if (hasFlag(flags, FLAG_HAS_NORMAL_TEXTURE)) {
-    let nm = textureSample(normalTexture, normalSampler, input.texCoord0).rgb;
+    let nm = textureSample(normalTexture, normalSampler, selectUV(input, TEXCOORD_BIT_NORMAL)).rgb;
     N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale);
   }
 
@@ -425,7 +469,7 @@ struct FragmentInput {
     var spec = vec3<f32>(material.specularFactor_r, material.specularFactor_g, material.specularFactor_b);
     var gloss = material.glossinessFactor;
     if (hasFlag(flags, FLAG_HAS_SPECGLOSS_TEXTURE)) {
-      let sg = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, input.texCoord0);
+      let sg = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, selectUV(input, TEXCOORD_BIT_METALLIC_ROUGHNESS));
       spec = spec * srgbToLinear(sg.rgb);
       gloss = gloss * sg.a;
     }
@@ -437,7 +481,7 @@ struct FragmentInput {
     metallic = material.metallicFactor;
     roughness = material.roughnessFactor;
     if (hasFlag(flags, FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE)) {
-      let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, input.texCoord0);
+      let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, selectUV(input, TEXCOORD_BIT_METALLIC_ROUGHNESS));
       roughness = roughness * mr.g;
       metallic = metallic * mr.b;
     }
@@ -484,15 +528,18 @@ struct FragmentInput {
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
-    let ao = textureSample(occlusionTexture, occlusionSampler, input.texCoord0).r;
+    let ao = textureSample(occlusionTexture, occlusionSampler, selectUV(input, TEXCOORD_BIT_OCCLUSION)).r;
     ambient = mix(ambient, ambient * ao, material.occlusionStrength);
   }
 
   // ── Emissive ──────────────────────────────────────────────────────────────
+  // Emissive texture is uploaded as `rgba8unorm-srgb`, so textureSample
+  // already returns linear values. See the base-color block above for the
+  // full rationale on sRGB format selection.
   var emissive = material.emissiveFactor;
   if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
-    let et = textureSample(emissiveTexture, emissiveSampler, input.texCoord0).rgb;
-    emissive = emissive * srgbToLinear(et);
+    let et = textureSample(emissiveTexture, emissiveSampler, selectUV(input, TEXCOORD_BIT_EMISSIVE)).rgb;
+    emissive = emissive * et;
   }
 
   // ── Per-feature styling (3D Tiles batch table) ────────────────────────────

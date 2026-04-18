@@ -29,6 +29,10 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -40,7 +44,12 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-@group(2) @binding(1) var bumpTexture: texture_2d<f32>;
+// DP-H20 (Batch 25) — BumpMap uses TWO textures:
+//   @binding(1) diffuseTexture → base color (material uniform `image`)
+//   @binding(2) bumpTexture    → height data for normal perturbation
+//                                (material uniform `bumpMap`)
+@group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
+@group(2) @binding(2) var bumpTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -114,8 +123,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let specular = pow(NdotH, 64.0);
 
     let ambient = 0.15;
-    // BumpMap only modifies normals — base diffuse is gray per GLSL (0.01)
-    let baseDiffuse = vec3<f32>(0.5);
+    // DP-H20 — read the actual diffuse texture instead of the
+    // hardcoded gray (pre-Batch 25 bug). Sampled at the same UV as the
+    // bump map so per-texel correspondence matches WebGL.
+    let baseDiffuse = textureSample(diffuseTexture, textureSampler, uv).rgb;
     let diffuse = baseDiffuse * (ambient + NdotL * 0.85);
     let spec = vec3<f32>(specular * 0.3);
 

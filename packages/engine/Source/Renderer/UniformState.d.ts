@@ -31,6 +31,12 @@ declare class UniformState {
   readonly inverseProjection: Matrix4;
   readonly viewProjection: Matrix4;
   readonly inverseViewProjection: Matrix4;
+  /**
+   * Last frame's `viewProjection`, cloned before the current-frame
+   * state is written — see `UniformState.update()`. Consumed by the
+   * TAA / motion-vector path (DP-H41, Batch 27).
+   */
+  readonly previousViewProjection: Matrix4;
   readonly modelView: Matrix4;
   readonly inverseModelView: Matrix4;
   readonly modelViewProjection: Matrix4;

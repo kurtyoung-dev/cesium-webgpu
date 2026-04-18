@@ -46,6 +46,10 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   _pad2: f32,
   _pad3: f32,
+  // DP-H41 (Batch 27) — previous frame's viewProjection for
+  // TAA / motion-vector reprojection. Sourced from
+  // `UniformState._previousViewProjection` (f32 mat4).
+  previousViewProjection: mat4x4<f32>,
 };
 
 struct EllipsoidUniforms {
@@ -232,8 +236,9 @@ function packCameraUniforms(
   viewportWidth: number,
   viewportHeight: number,
 ): Float32Array {
-  // 176 bytes = 44 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1) + viewport(2+2 pad)
-  const data = new Float32Array(44);
+  // 240 bytes = 60 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1)
+  //   + viewport(2+2 pad) + previousViewProjection(16) [DP-H41, Batch 27]
+  const data = new Float32Array(60);
   const view = uniformState.view;
   const projection = uniformState.projection;
 
@@ -281,6 +286,20 @@ function packCameraUniforms(
   data[41] = viewportHeight;
   data[42] = 0; // _pad2
   data[43] = 0; // _pad3
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 44..59 for
+  // TAA / motion-vector reprojection. `UniformState.update()` caches
+  // last frame's viewProjection before overwriting the current state.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    const prev = m4Values(prevVP);
+    for (let i = 0; i < 16; i++) data[44 + i] = prev[i];
+  } else {
+    data[44] = 1; data[45] = 0; data[46] = 0; data[47] = 0;
+    data[48] = 0; data[49] = 1; data[50] = 0; data[51] = 0;
+    data[52] = 0; data[53] = 0; data[54] = 1; data[55] = 0;
+    data[56] = 0; data[57] = 0; data[58] = 0; data[59] = 1;
+  }
   return data;
 }
 
@@ -379,9 +398,10 @@ function updateWebGPUEllipsoidPrimitive(
 
   // One-time initialization
   if (!cache.initialized) {
-    // Camera UBO: 44 floats × 4 = 176 bytes (mvpRTE + mvRTE + camHigh/Low + viewport)
+    // Camera UBO: 60 floats × 4 = 240 bytes (mvpRTE + mvRTE + camHigh/Low +
+    //   viewport + previousViewProjection [DP-H41, Batch 27])
     cache.uniformBuffer = device.createBuffer({
-      size: 176,
+      size: 240,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 

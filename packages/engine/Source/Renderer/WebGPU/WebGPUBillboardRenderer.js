@@ -4,13 +4,22 @@
  * Handles WebGPU rendering of BillboardCollection.
  * Billboards are rendered as instanced screen-aligned quads with texture atlas.
  *
- * Instance data layout (96 bytes per billboard, 6 x vec4):
+ * Instance data layout (112 bytes per billboard, 7 x vec4):
  *   posHighAndScale(4) + posLowAndRotation(4) + compressedAttr0(4) +
- *   compressedAttr1(4) + color(4) + miscFlags(4) = 24 floats
+ *   compressedAttr1(4) + color(4) + miscFlags(4) +
+ *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection, pad, pad)
+ *   = 28 floats
+ *
+ * The `perInstanceFlags` slot is always present (16-byte alignment +
+ * future-proofing for per-instance flags DP-H42/H40 consume). The shader
+ * only reads it inside `//>>ifdef DISABLE_DEPTH_DISTANCE` / `//>>ifdef
+ * SPLIT_ENABLED` blocks — when both features are off, the attribute is
+ * declared-unused and the rasterizer ignores the slot.
  *
  * @private
  */
 import Cartesian2 from "../../Core/Cartesian2.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -24,8 +33,13 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
-const FLOATS_PER_INSTANCE = 24;
+// Per-instance stride now carries a 7th vec4 for the DP-H42/H40 flags.
+// Bumping from 24 → 28 floats keeps the stride a multiple of 16 bytes
+// (WebGPU requirement for `arrayStride`).
+const FLOATS_PER_INSTANCE = 28;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
@@ -35,6 +49,8 @@ const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
+const scratchInverseModel = new Matrix4();
+const scratchCameraMC = new Cartesian3();
 
 let _cachedShaderSource = null;
 async function getShaderSource() {
@@ -124,6 +140,16 @@ function buildInstanceData(collection) {
     instanceData[offset + 22] = bb.width || 32.0;
     instanceData[offset + 23] = bb.height || 32.0;
 
+    // perInstanceFlags — DP-H42 / DP-H40 per-billboard state.
+    //   x: disableDepthTestDistance (raw meters; squared in shader)
+    //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
+    //   z, w: reserved for future per-instance flags
+    const d = bb._disableDepthTestDistance;
+    instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 25] = bb._splitDirection ?? 0.0;
+    instanceData[offset + 26] = 0.0;
+    instanceData[offset + 27] = 0.0;
+
     visibleCount++;
   }
 
@@ -200,6 +226,17 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 22] = bb.width || 32.0;
     instanceData[offset + 23] = bb.height || 32.0;
 
+    // Same perInstanceFlags as the color path — the pick pipeline obeys
+    // DP-H42 and DP-H40 too so the picked region matches what the user
+    // sees on screen (a clicked pixel below the camera's DepthDistance
+    // threshold should still pick the billboard above terrain; a pixel
+    // outside the split-cutoff should not pick a billboard it can't see).
+    const d = bb._disableDepthTestDistance;
+    instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 25] = bb._splitDirection ?? 0.0;
+    instanceData[offset + 26] = 0.0;
+    instanceData[offset + 27] = 0.0;
+
     visibleCount++;
   }
 
@@ -216,31 +253,34 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
     { shaderLocation: 5, offset: 80, format: "float32x4" },
+    // DP-H42 / DP-H40 — perInstanceFlags. Always declared in the layout;
+    // the shader only reads it inside the matching `//>>ifdef` blocks.
+    { shaderLocation: 6, offset: 96, format: "float32x4" },
   ],
 };
 
-function createBillboardPipeline(device, shaderCode, format, depthFormat) {
-  const shaderModule = device.createShaderModule({
-    label: "Billboard shader",
-    code: shaderCode,
-  });
+function createBillboardBindGroupLayout(device) {
+  return makeBindGroupLayout(device, "Billboard bind group layout", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    sampler(2, Stage.FRAGMENT),
+  ]);
+}
 
-  const bindGroupLayout = makeBindGroupLayout(
-    device,
-    "Billboard bind group layout",
-    [
-      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-      texture(1, Stage.FRAGMENT),
-      sampler(2, Stage.FRAGMENT),
-    ],
-  );
-
+function createBillboardPipeline(
+  device,
+  shaderModule,
+  format,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
-  const pipeline = device.createRenderPipeline({
-    label: "Billboard pipeline",
+  return device.createRenderPipeline({
+    label: `Billboard pipeline (defines=0x${defines.toString(16)})`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -275,8 +315,6 @@ function createBillboardPipeline(device, shaderCode, format, depthFormat) {
       depthCompare: "less-equal",
     },
   });
-
-  return { pipeline, bindGroupLayout };
 }
 
 /**
@@ -286,18 +324,14 @@ function createBillboardPipeline(device, shaderCode, format, depthFormat) {
  */
 function createBillboardPickPipeline(
   device,
-  shaderCode,
+  shaderModule,
   format,
   depthFormat,
   bindGroupLayout,
+  defines,
 ) {
-  const shaderModule = device.createShaderModule({
-    label: "Billboard pick shader",
-    code: shaderCode,
-  });
-
-  const pipeline = device.createRenderPipeline({
-    label: "Billboard pick pipeline",
+  return device.createRenderPipeline({
+    label: `Billboard pick pipeline (defines=0x${defines.toString(16)})`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
     }),
@@ -318,8 +352,57 @@ function createBillboardPickPipeline(
       depthCompare: "less-equal",
     },
   });
+}
 
-  return pipeline;
+// Module-level shader-module cache keyed by GPUDevice. Shared across every
+// BillboardCollection rendered on a given device so we don't recompile
+// the same (source, defines) tuple for each collection. Weak so a lost
+// device is GC'd along with its modules.
+const _shaderModuleCaches = new WeakMap();
+
+function getShaderModuleCache(device) {
+  let cache = _shaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _shaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
+/**
+ * Prewarm the most-likely define sets on first use per device. Called
+ * lazily from `updateWebGPUBillboards` the first time a collection renders
+ * so we don't pay for WebGPU device access at module load. Compiling the
+ * four common variants (none / DDD only / split only / both) up front
+ * moves the shader compile off the render path for any scene that uses
+ * these features.
+ * @private
+ */
+function prewarmBillboardShaders(device, colorSource, pickSource) {
+  const cache = getShaderModuleCache(device);
+  if (cache._billboardPrewarmed) {return;}
+  const D = ShaderDefine;
+  const defineSets = [
+    0,
+    D.DISABLE_DEPTH_DISTANCE,
+    D.SPLIT_ENABLED,
+    D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+  ];
+  cache.prewarm(
+    ShaderSourceId.BILLBOARD_COLLECTION,
+    colorSource,
+    defineSets,
+    "Billboard shader",
+  );
+  if (defined(pickSource)) {
+    cache.prewarm(
+      ShaderSourceId.BILLBOARD_COLLECTION_PICK,
+      pickSource,
+      defineSets,
+      "Billboard pick shader",
+    );
+  }
+  cache._billboardPrewarmed = true;
 }
 
 function packUniforms(uniformData, frameState, modelMatrix) {
@@ -339,10 +422,29 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   // viewRotation (identity for now — simplified)
   Matrix4.pack(Matrix4.IDENTITY, uniformData, 16);
 
-  EncodedCartesian3.fromCartesian(
+  // RTE encoding MUST be done in the same coordinate frame as the
+  // per-vertex positions. Billboard instance data encodes positions as
+  // `EncodedCartesian3.fromCartesian(worldPos)` in WORLD frame, so the
+  // camera must also be encoded in world frame — BUT the mvpRTE above
+  // uses `view * modelMatrix` with translation zeroed, which implicitly
+  // treats vertex input as MODEL-space. When modelMatrix ≠ identity
+  // (any entity cluster with a local frame, any BillboardCollection
+  // whose `modelMatrix` is set), the two frames disagree and the RTE
+  // cancellation fails at Earth scale — billboards drift by thousands
+  // of metres.
+  //
+  // Fix: encode the camera in the same frame the positions live in.
+  // `modelMatrix` is typically identity for billboard collections, in
+  // which case `inverse(modelMatrix) * positionWC === positionWC` and
+  // this is a no-op; when it's set, we get the correct local-frame
+  // camera.
+  Matrix4.inverse(modelMatrix, scratchInverseModel);
+  Matrix4.multiplyByPoint(
+    scratchInverseModel,
     frameState.camera.positionWC,
-    scratchEncodedCamera,
+    scratchCameraMC,
   );
+  EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
   uniformData[32] = scratchEncodedCamera.high.x;
   uniformData[33] = scratchEncodedCamera.high.y;
   uniformData[34] = scratchEncodedCamera.high.z;
@@ -356,6 +458,92 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[41] = canvas.height;
   uniformData[42] = 1.0; // highResMultiplier
   uniformData[43] = 0.0;
+
+  // DP-H42 — frame-wide minimum disable-depth-test distance in meters.
+  // `frameState.minimumDisableDepthTestDistance` is populated by Scene.js
+  // each frame from the `Scene.minimumDisableDepthTestDistance` setter.
+  uniformData[44] =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+
+  // DP-H40 — split cutoff in framebuffer pixels. WebGL keeps this in
+  // pixel space as `czm_splitPosition`, which is
+  // `frameState.splitPosition * drawingBufferWidth`. Mirror that here so
+  // the fragment-stage compare sits in the same coord system as
+  // `position.x` (which WebGPU defines as framebuffer pixels).
+  const splitFraction =
+    typeof frameState?.splitPosition === "number"
+      ? frameState.splitPosition
+      : 0.0;
+  const drawingBufferWidth =
+    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  uniformData[45] = splitFraction * drawingBufferWidth;
+  uniformData[46] = 0.0;
+  uniformData[47] = 0.0;
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,
+  // 64 bytes). Fits in the existing 256-byte uniform buffer — no resize.
+  // `UniformState.update()` caches last frame's viewProjection, so on frame
+  // N this slot holds frame N-1. TAA / motion-vector shaders read it via
+  // `camera.previousViewProjection`.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, uniformData, 48);
+  } else {
+    uniformData[48] = 1; uniformData[49] = 0; uniformData[50] = 0; uniformData[51] = 0;
+    uniformData[52] = 0; uniformData[53] = 1; uniformData[54] = 0; uniformData[55] = 0;
+    uniformData[56] = 0; uniformData[57] = 0; uniformData[58] = 1; uniformData[59] = 0;
+    uniformData[60] = 0; uniformData[61] = 0; uniformData[62] = 0; uniformData[63] = 1;
+  }
+}
+
+/**
+ * Scan the collection for the defines a billboard's active state requires.
+ * Called once per frame before shader module / pipeline lookup; keeps the
+ * cost to one pass over the billboards. We flag `DISABLE_DEPTH_DISTANCE`
+ * if ANY billboard has a per-instance override OR the frame-wide minimum
+ * is non-zero, and `SPLIT_ENABLED` if ANY billboard's `_splitDirection`
+ * is non-zero.
+ *
+ * Returning zero on both flags lets the baseline (no-features) pipeline
+ * stay the fast path — existing scenes pay no new shader cost.
+ * @private
+ */
+function computeDefinesForFrame(collection, frameState) {
+  let defines = 0;
+  const frameMin =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+  if (frameMin !== 0.0) {
+    defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+  }
+  const billboards = collection._billboards;
+  const length = collection.length;
+  // Short-circuit the scan once both flags are set.
+  const both =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  for (let i = 0; i < length; i++) {
+    if ((defines & both) === both) {break;}
+    const bb = billboards[i];
+    if (!defined(bb) || !bb.show || bb._clusterShow === false) {continue;}
+    if (
+      (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
+      typeof bb._disableDepthTestDistance === "number" &&
+      bb._disableDepthTestDistance !== 0.0
+    ) {
+      defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+    }
+    if (
+      (defines & ShaderDefine.SPLIT_ENABLED) === 0 &&
+      bb._splitDirection !== undefined &&
+      bb._splitDirection !== 0.0
+    ) {
+      defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+  }
+  return defines;
 }
 
 /**
@@ -396,20 +584,51 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
 
-  // Pipeline (once)
-  if (!defined(cache.pipeline)) {
-    const shaderCode = await getShaderSource();
+  // Shader source + prewarm (once per device; `prewarmBillboardShaders`
+  // is idempotent so repeated collections on the same device no-op).
+  const shaderCode = await getShaderSource();
+  const pickShaderCode = getCollectionShaderSource("billboardPick");
+  prewarmBillboardShaders(device, shaderCode, pickShaderCode);
+
+  // Bind-group layout is shared across every (defines-set) pipeline —
+  // only the pipeline + shader module vary per define set.
+  if (!defined(cache.bindGroupLayout)) {
+    cache.bindGroupLayout = createBillboardBindGroupLayout(device);
+  }
+
+  // DP-H42 / DP-H40 — pick the right shader module + pipeline for the
+  // current frame's billboard state. Unchanged billboard collections
+  // settle to the same `defines` value every frame, so the map lookup
+  // is the hot path and pipeline creation only fires on the first
+  // frame that exercises a new combination.
+  const defines = computeDefinesForFrame(collection, frameState);
+  if (!defined(cache.pipelines)) {
+    cache.pipelines = new Map();
+    cache.pickPipelines = new Map();
+  }
+  let pipeline = cache.pipelines.get(defines);
+  if (!defined(pipeline)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createBillboardPipeline(
-      device,
+    const moduleCache = getShaderModuleCache(device);
+    const shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.BILLBOARD_COLLECTION,
       shaderCode,
+      defines,
+      "Billboard shader",
+    );
+    pipeline = createBillboardPipeline(
+      device,
+      shaderModule,
       format,
       depthFmt,
+      cache.bindGroupLayout,
+      defines,
     );
-    cache.pipeline = result.pipeline;
-    cache.bindGroupLayout = result.bindGroupLayout;
+    cache.pipelines.set(defines, pipeline);
   }
+  cache.pipeline = pipeline;
+  cache.currentDefines = defines;
 
   // Uniform buffer (once)
   if (!defined(cache.uniformBuffer)) {
@@ -567,17 +786,39 @@ function _pushBillboardPickCommand(
   visibleCount,
   commandList,
 ) {
-  if (!defined(cache.pickPipeline)) {
+  // DP-H42 / DP-H40 — pick pipeline uses the same defines as the color
+  // pipeline for this frame so the pick region exactly matches the
+  // rendered region. Falls back to the baseline (0) when the color path
+  // hasn't set currentDefines yet (first-ever frame).
+  const pickDefines = cache.currentDefines ?? 0;
+  const pickPipeline = cache.pickPipelines?.get(pickDefines);
+  if (!defined(pickPipeline)) {
     const pickShader = getCollectionShaderSource("billboardPick");
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const moduleCache = getShaderModuleCache(device);
+    // Pick shader has its own source ID so its cache entries stay
+    // distinct from the color pipeline's at the same defines.
+    const pickModule = moduleCache.getOrCreate(
+      ShaderSourceId.BILLBOARD_COLLECTION_PICK,
+      pickShader,
+      pickDefines,
+      "Billboard pick shader",
+    );
+    if (!defined(cache.pickPipelines)) {
+      cache.pickPipelines = new Map();
+    }
     cache.pickPipeline = createBillboardPickPipeline(
       device,
-      pickShader,
+      pickModule,
       format,
       depthFmt,
       cache.bindGroupLayout,
+      pickDefines,
     );
+    cache.pickPipelines.set(pickDefines, cache.pickPipeline);
+  } else {
+    cache.pickPipeline = pickPipeline;
   }
 
   const pickResult = buildPickInstanceData(collection, context);

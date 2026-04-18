@@ -139,6 +139,98 @@
 // Re-export the shared types so consumers can import from this nexus
 export type { WebGLStubState, LogUsageFn } from "./Stubs/WebGLStubTypes.js";
 
+// Re-export the pipeline-state extractor so compat-path consumers can
+// convert accumulated gl.* state into a `PipelineVariant` that
+// `WebGPURenderPipelineCache` will honor. Closes the Proton-style
+// loop: tracking blend/depth/stencil/cull state is only useful when
+// something later reads it back out into a pipeline.
+export {
+  extractPipelineStateFromStub,
+  extractRenderPassStateFromStub,
+  applyStubVariantToBuilder,
+} from "./WebGLStubPipelineExtractor.js";
+export type { WebGLStubRenderPassState } from "./WebGLStubPipelineExtractor.js";
+
+// Re-export the shader translator registry so apps can plug in a
+// GLSL→WGSL translator (typically naga-wasm via
+// `NagaShaderTranslator`). See WebGPUShaderTranslator for the
+// interface and architectural context.
+export {
+  registerShaderTranslator,
+  getActiveShaderTranslator,
+  subscribeToShaderTranslatorChange,
+  WGSLPassthroughTranslator,
+  NotSupportedTranslator,
+} from "./WebGPUShaderTranslator.js";
+export type {
+  ShaderStage,
+  ShaderReflection,
+  TranslatedShader,
+  ShaderTranslator,
+} from "./WebGPUShaderTranslator.js";
+
+// Naga adapter. Users who run `npm install naga-wasm` call
+// `registerShaderTranslator(new NagaShaderTranslator())` at bootstrap
+// to enable runtime GLSL→WGSL translation for the WebGL compat stub.
+export {
+  NagaShaderTranslator,
+  transpileGLSL as nagaTranspileGLSL,
+  isNagaReady,
+  isNagaUnavailable,
+} from "./WebGPUNagaTranspiler.js";
+
+/**
+ * Vertex + fragment shader module pair returned from
+ * `getCompiledShaderForProgram`. Pipeline builders feed `vertex`
+ * into `vertex.module` + `vertexEntryPoint` into `vertex.entryPoint`,
+ * and similarly for fragment.
+ *
+ * Reflection is included so the builder can derive vertex-attribute
+ * locations and uniform-buffer layouts from the translator output —
+ * the current (naga) translator emits empty reflection, so builders
+ * that need real reflection should either use a richer translator
+ * (slang-wasm when its reflection API is wired) or author the
+ * pipeline descriptor by hand.
+ */
+export interface CompiledProgramModules {
+  vertex: GPUShaderModule;
+  vertexEntryPoint: string;
+  fragment: GPUShaderModule;
+  fragmentEntryPoint: string;
+  vertexReflection: import("./WebGPUShaderTranslator.js").ShaderReflection;
+  fragmentReflection: import("./WebGPUShaderTranslator.js").ShaderReflection;
+}
+
+/**
+ * Retrieve the compiled shader modules for a program returned from
+ * `gl.createProgram()` after `gl.linkProgram()` has run. Awaits the
+ * linker's async completion and returns null if the program didn't
+ * link (no translator registered, translator error, or device
+ * unavailable).
+ *
+ * Downstream pipeline builders combine this with
+ * `extractPipelineStateFromStub(state)` to produce a complete
+ * `WebGPURenderPipelineDescriptor` + `PipelineVariant` pair the cache
+ * can consume. WebGPU render pipelines take separate vertex + fragment
+ * modules, so we return the pair rather than a single concatenated
+ * module — concatenation would collide on both stages' `fn main`.
+ *
+ * @param program The stub program object
+ * @returns The compiled module pair, or null on any failure
+ */
+export async function getCompiledShaderForProgram(
+  program: unknown,
+): Promise<CompiledProgramModules | null> {
+  const p = program as {
+    _linkReady?: Promise<CompiledProgramModules | null>;
+    _programModules?: CompiledProgramModules | null;
+  } | null;
+  if (!p) return null;
+  if (p._programModules) return p._programModules;
+  if (p._linkReady) return await p._linkReady;
+  return null;
+}
+
 // Domain stub creators
 import {
   TEXTURE_CONSTANTS,

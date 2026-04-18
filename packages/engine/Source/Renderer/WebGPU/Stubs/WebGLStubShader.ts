@@ -38,11 +38,59 @@ interface StubShader {
   _wgsl: string | null;
   _wgslReady: Promise<string | null> | null;
   _wgslError: string | null;
+  /** Reflection metadata from the translator, when available. */
+  _reflection: import("../WebGPUShaderTranslator.js").ShaderReflection | null;
 }
 
-/** Stub program object produced by `gl.createProgram()`. */
+/**
+ * Stub program object produced by `gl.createProgram()`. Holds the
+ * attached shaders, the translated WGSL (once linkProgram runs and
+ * both shaders have resolved), and a lazily-created GPUShaderModule
+ * that downstream pipeline builders can bind. `linkProgram` is
+ * idempotent — calling it multiple times is a no-op after the first
+ * successful link.
+ */
 interface StubProgram {
   _isWebGPU: boolean;
+  /** Attached shaders, by stage. Set by `attachShader`. */
+  _attachedVertex: StubShader | null;
+  _attachedFragment: StubShader | null;
+  /**
+   * Promise that resolves when linkProgram has produced the pair of
+   * shader modules. Resolves to null when the translator isn't
+   * available OR one of the shaders failed to compile — callers bind
+   * the legacy placeholder path in that case.
+   *
+   * The pair is intentional: WebGPU render pipelines take a separate
+   * vertex + fragment module, and concatenating two naga-generated
+   * GLSL modules would collide on both having `fn main`. We keep
+   * them separate so pipeline builders can bind each to the
+   * corresponding pipeline stage.
+   */
+  _linkReady: Promise<WebGPUStubProgramModules | null> | null;
+  /** Resolved modules once linkReady completes. */
+  _programModules: WebGPUStubProgramModules | null;
+  /** Link status: true = successful, false = failed, null = not yet linked. */
+  _linkStatus: boolean | null;
+  /** Human-readable link error message for `gl.getProgramInfoLog`. */
+  _linkError: string | null;
+}
+
+/**
+ * Vertex + fragment module pair produced by `gl.linkProgram()`. Each
+ * module has its own entry point (the one naga wrote for that stage,
+ * conventionally "main"). Downstream pipeline builders feed one into
+ * `vertex.module` + `entryPoint` and the other into `fragment.module`
+ * + `entryPoint`.
+ */
+export interface WebGPUStubProgramModules {
+  vertex: GPUShaderModule;
+  vertexEntryPoint: string;
+  fragment: GPUShaderModule;
+  fragmentEntryPoint: string;
+  /** Reflection from each stage's translator run (may be empty). */
+  vertexReflection: import("../WebGPUShaderTranslator.js").ShaderReflection;
+  fragmentReflection: import("../WebGPUShaderTranslator.js").ShaderReflection;
 }
 
 /**
@@ -57,6 +105,24 @@ interface ExtensionStub {
 
 // WebGL type constant for FLOAT (returned by get*Active*)
 const GL_FLOAT = 0x1406;
+
+/**
+ * Fallback reflection for translators that don't produce one. Keeps
+ * downstream pipeline builders from branching on null and lets them
+ * use the entry-point name in a uniform way.
+ */
+function _emptyReflection(
+  stage: import("../WebGPUShaderTranslator.js").ShaderStage,
+): import("../WebGPUShaderTranslator.js").ShaderReflection {
+  return {
+    entryPoint: "main",
+    stage,
+    uniformBuffers: [],
+    textures: [],
+    samplers: [],
+    attributes: [],
+  };
+}
 
 // ============================================================================
 // WebGL parameter constants — values getParameter() can be asked about.
@@ -273,16 +339,24 @@ const EXTENSION_STUBS: Record<string, () => ExtensionStub> = {
  */
 export function createShaderStubs(
   state: WebGLStubState,
-  _logUsage: LogUsageFn,
+  logUsage: LogUsageFn,
 ) {
   return {
-    // ==== Shader methods (placeholders — WebGPU uses shader modules) ====
+    // ==== Shader methods ═══════════════════════════════════════════════
+    //
+    // Compilation goes through the pluggable translator registry
+    // (`getActiveShaderTranslator`). If a translator is registered —
+    // typically the NagaShaderTranslator after `naga-wasm` loads —
+    // GLSL compiles to real WGSL. If not, `compileShader` records a
+    // clear error that `getShaderInfoLog` returns. Either way the
+    // WebGL-shape contract is preserved: sync creation, async
+    // completion observable via `shader._wgslReady`.
+    //
+    // Linking combines attached shaders into a single WGSL module,
+    // creates a `GPUShaderModule`, and caches it on the program.
+    // Downstream pipeline builders read `program._shaderModule`
+    // (via `getCompiledShaderForProgram` below).
 
-    // Each stub shader carries its captured GLSL source + a pending
-    // transpile promise. The promise is created on `compileShader` and
-    // resolved (asynchronously) by `WebGPUNagaTranspiler.transpileGLSL`.
-    // Consumers that need the WGSL await `shader._wgslReady` before
-    // creating a `GPUShaderModule`.
     createShader: (type: number): StubShader => ({
       _type: type,
       _isWebGPU: true,
@@ -290,51 +364,170 @@ export function createShaderStubs(
       _wgsl: null,
       _wgslReady: null,
       _wgslError: null,
+      _reflection: null,
     }),
     deleteShader: () => {},
     shaderSource: (shader: StubShader | null, source: string) => {
       if (shader) shader._glslSource = source ?? null;
     },
-    // Spike: kick off lazy GLSL→WGSL transpilation via naga-wasm. The
-    // call is fire-and-forget — `compileShader` returns immediately to
-    // match the WebGL contract. Consumers that need the WGSL must
-    // `await shader._wgslReady` before passing it to a real WebGPU
-    // shader module. When `naga-wasm` isn't installed the promise
-    // resolves to `null` and the legacy placeholder path runs.
     compileShader: (shader: StubShader | null) => {
       if (!shader || typeof shader._glslSource !== "string") return;
-      // Late-bind the import so the stub module stays leaf-loaded — we
-      // don't want WebGLStubShader to pull the transpiler chunk into
-      // every WebGL build, only when compileShader actually fires.
+      // GL_VERTEX_SHADER = 0x8B31, GL_FRAGMENT_SHADER = 0x8B30
+      const stage =
+        shader._type === 0x8b31
+          ? "vertex"
+          : shader._type === 0x8b30
+            ? "fragment"
+            : "compute";
+
       shader._wgslReady = (async () => {
+        // Dynamic import to keep the translator registry out of the
+        // leaf stub dependency graph — the stub works with or
+        // without a translator registered.
+        const tmod = await import("../WebGPUShaderTranslator.js");
+        const translator = tmod.getActiveShaderTranslator();
+        if (!translator || !translator.supports.includes("glsl")) {
+          shader._wgslError =
+            "No GLSL translator registered. Register one via " +
+            "`registerShaderTranslator(new NagaShaderTranslator())` " +
+            "after `npm install naga-wasm`, or author shaders in WGSL " +
+            "via `RenderCommand` and bypass the compat stub.";
+          return null;
+        }
         try {
-          const mod = await import("../WebGPUNagaTranspiler.js");
-          // Stage detection: GL_VERTEX_SHADER = 0x8B31, GL_FRAGMENT_SHADER = 0x8B30
-          const stage =
-            shader._type === 0x8b31
-              ? "vertex"
-              : shader._type === 0x8b30
-                ? "fragment"
-                : "compute";
-          const result = await mod.transpileGLSL(shader._glslSource, stage);
+          const result = await translator.translate(
+            shader._glslSource!,
+            stage as import("../WebGPUShaderTranslator.js").ShaderStage,
+            "glsl",
+          );
           shader._wgsl = result.wgsl;
-          shader._wgslError = result.error ?? null;
+          shader._reflection = result.reflection;
+          shader._wgslError = null;
           return result.wgsl;
         } catch (e) {
-          shader._wgslError = (e as Error).message;
+          shader._wgslError = (e as Error).message ?? String(e);
           return null;
         }
       })();
     },
     getShaderParameter: () => true,
     getShaderInfoLog: (shader: StubShader | null) => shader?._wgslError ?? "",
-    createProgram: (): StubProgram => ({ _isWebGPU: true }),
+
+    createProgram: (): StubProgram => ({
+      _isWebGPU: true,
+      _attachedVertex: null,
+      _attachedFragment: null,
+      _linkReady: null,
+      _programModules: null,
+      _linkStatus: null,
+      _linkError: null,
+    }),
     deleteProgram: () => {},
-    attachShader: () => {},
+    attachShader: (program: StubProgram | null, shader: StubShader | null) => {
+      if (!program || !shader) return;
+      if (shader._type === 0x8b31) program._attachedVertex = shader;
+      else if (shader._type === 0x8b30) program._attachedFragment = shader;
+    },
     bindAttribLocation: () => {},
-    linkProgram: () => {},
-    getProgramParameter: () => true,
-    getProgramInfoLog: () => "",
+    /**
+     * Combine the two attached shaders into a single WGSL module.
+     * We await each shader's `_wgslReady` promise, splice the two
+     * sources into one (vertex + fragment entry points live in the
+     * same module), then `device.createShaderModule` if we have a
+     * GPUDevice on the state. Asynchronous — consumers poll via
+     * `getProgramParameter(GL_LINK_STATUS)` or await
+     * `program._linkReady`.
+     */
+    linkProgram: (program: StubProgram | null) => {
+      if (!program) return;
+      if (program._linkReady) return; // idempotent
+      const vs = program._attachedVertex;
+      const fs = program._attachedFragment;
+      if (!vs || !fs) {
+        program._linkError =
+          "linkProgram: vertex and fragment shader must both be attached before linking.";
+        program._linkStatus = false;
+        return;
+      }
+      program._linkReady = (async () => {
+        try {
+          // Kick off (or join) each shader's compile
+          if (!vs._wgslReady && typeof vs._glslSource === "string") {
+            // Caller forgot compileShader — let's not be strict; emit
+            // a link error that matches WebGL's diagnostic style.
+            program._linkError =
+              "linkProgram: vertex shader was not compiled.";
+            program._linkStatus = false;
+            return null;
+          }
+          if (!fs._wgslReady && typeof fs._glslSource === "string") {
+            program._linkError =
+              "linkProgram: fragment shader was not compiled.";
+            program._linkStatus = false;
+            return null;
+          }
+          const [vsWgsl, fsWgsl] = await Promise.all([
+            vs._wgslReady,
+            fs._wgslReady,
+          ]);
+          if (!vsWgsl || !fsWgsl) {
+            program._linkError =
+              "linkProgram: one of the attached shaders failed to translate. " +
+              `vertex: ${vs._wgslError || "ok"}; fragment: ${fs._wgslError || "ok"}`;
+            program._linkStatus = false;
+            return null;
+          }
+          if (!state.device) {
+            program._linkError =
+              "linkProgram: no GPUDevice available — cannot create shader module.";
+            program._linkStatus = false;
+            return null;
+          }
+          // Two separate shader modules — WebGPU render pipelines
+          // expect distinct vertex + fragment modules anyway, and
+          // concatenating naga-translated GLSL would produce two
+          // `fn main` functions which would conflict. Entry points
+          // come from the translator's reflection (naga emits the
+          // original GLSL function name, typically "main").
+          const vertexModule = state.device.createShaderModule({
+            label: "WebGL-compat program (vertex)",
+            code: vsWgsl,
+          });
+          const fragmentModule = state.device.createShaderModule({
+            label: "WebGL-compat program (fragment)",
+            code: fsWgsl,
+          });
+          const modules: WebGPUStubProgramModules = {
+            vertex: vertexModule,
+            vertexEntryPoint: vs._reflection?.entryPoint ?? "main",
+            fragment: fragmentModule,
+            fragmentEntryPoint: fs._reflection?.entryPoint ?? "main",
+            vertexReflection: vs._reflection ?? _emptyReflection("vertex"),
+            fragmentReflection:
+              fs._reflection ?? _emptyReflection("fragment"),
+          };
+          program._programModules = modules;
+          program._linkStatus = true;
+          return modules;
+        } catch (e) {
+          program._linkError = (e as Error).message ?? String(e);
+          program._linkStatus = false;
+          return null;
+        }
+      })();
+    },
+    getProgramParameter: (program: StubProgram | null, pname: number) => {
+      // GL_LINK_STATUS = 0x8B82
+      if (pname === 0x8b82) {
+        // WebGL semantics: returns false until link completes. We
+        // return the cached status (null → treat as "not linked yet",
+        // equivalent to false).
+        return program?._linkStatus === true;
+      }
+      return true;
+    },
+    getProgramInfoLog: (program: StubProgram | null) =>
+      program?._linkError ?? "",
     useProgram: () => {},
 
     getActiveUniform: (
@@ -388,17 +581,193 @@ export function createShaderStubs(
     getSupportedExtensions: (): string[] => Object.keys(EXTENSION_STUBS),
 
     // ==== Framebuffer blitting & read pixels ====
+    //
+    // Real implementations now:
+    //   blitFramebuffer → commandEncoder.copyTextureToTexture between
+    //     the bound READ + DRAW framebuffers' color attachments. Honors
+    //     the src/dst rectangles. Doesn't implement mask filtering
+    //     (GL_COLOR_BUFFER_BIT / DEPTH_BUFFER_BIT / STENCIL_BUFFER_BIT)
+    //     — we always copy color, skip depth/stencil because WebGPU
+    //     has no universal cross-format copy for depth attachments.
+    //
+    //   readPixels → still returns null (sync API can't work against
+    //     WebGPU's async mapAsync). Real readback goes through
+    //     `readPixelsAsync` which follows WebGL's shape but returns a
+    //     Promise — callers who care migrate one-by-one. The
+    //     WebGPUPickFramebuffer async API remains the blessed path for
+    //     picking.
+    blitFramebuffer: (
+      srcX0: number,
+      srcY0: number,
+      srcX1: number,
+      srcY1: number,
+      dstX0: number,
+      dstY0: number,
+      dstX1: number,
+      dstY1: number,
+      _mask: number,
+      _filter: number,
+    ) => {
+      if (!state.device || !state.currentCommandEncoder) return;
+      // copyTextureToTexture can only be recorded outside a render pass.
+      // If the stub consumer called blitFramebuffer while a render pass
+      // is open — unusual but legal in WebGL — skip with a one-time
+      // warning rather than corrupt the command stream.
+      if (state.currentRenderPassEncoder) {
+        logUsage(
+          "blitFramebuffer",
+          "called while a render pass is open; WebGPU requires encoder-level copies outside a pass — skipping",
+        );
+        return;
+      }
+      const srcFbo = state.boundReadFramebuffer;
+      const dstFbo = state.boundDrawFramebuffer;
+      if (!srcFbo || !dstFbo) return;
+      const srcAttachment = srcFbo._colorAttachment;
+      const dstAttachment = dstFbo._colorAttachment;
+      if (!srcAttachment || !dstAttachment) return;
+      const srcTex =
+        // StubTextureWrapper uses _webgpuTexture.texture; StubRenderbuffer uses _texture
+        (srcAttachment as { _webgpuTexture?: { texture: GPUTexture } })
+          ._webgpuTexture?.texture ||
+        (srcAttachment as { _texture?: GPUTexture })._texture;
+      const dstTex =
+        (dstAttachment as { _webgpuTexture?: { texture: GPUTexture } })
+          ._webgpuTexture?.texture ||
+        (dstAttachment as { _texture?: GPUTexture })._texture;
+      if (!srcTex || !dstTex) return;
 
-    // Real `gl.blitFramebuffer()` would translate into a WebGPU
-    // copyTextureToTexture between the bound source and destination
-    // framebuffers. We don't currently track which framebuffer is bound
-    // to READ vs DRAW separately — Cesium uses MSAA resolves via render
-    // passes, not blitFramebuffer — so this remains a no-op.
-    blitFramebuffer: () => {},
+      // WebGL's blit supports flipped axes when dst and src rectangles
+      // have inverted orientation. WebGPU's copyTextureToTexture does
+      // not — it always copies in +X/+Y direction. We only handle the
+      // canonical non-flipped case; a flipped blit gets clamped to the
+      // absolute extent and emits a diagnostic once.
+      const width = Math.abs(srcX1 - srcX0);
+      const height = Math.abs(srcY1 - srcY0);
+      if (width === 0 || height === 0) return;
+      if (
+        srcX0 > srcX1 ||
+        srcY0 > srcY1 ||
+        dstX0 > dstX1 ||
+        dstY0 > dstY1
+      ) {
+        logUsage(
+          "blitFramebuffer",
+          "flipped blit requested — WebGPU copyTextureToTexture can't flip; using unflipped extent",
+        );
+      }
 
-    // Synchronous readPixels has no WebGPU equivalent. Code that needs
-    // pixel readback should use the WebGPUPickFramebuffer async API.
-    // Returning null preserves the existing fallback behavior.
+      try {
+        state.currentCommandEncoder.copyTextureToTexture(
+          {
+            texture: srcTex,
+            origin: { x: Math.min(srcX0, srcX1), y: Math.min(srcY0, srcY1) },
+          },
+          {
+            texture: dstTex,
+            origin: { x: Math.min(dstX0, dstX1), y: Math.min(dstY0, dstY1) },
+          },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+      } catch (err) {
+        logUsage(
+          "blitFramebuffer",
+          `copyTextureToTexture failed: ${(err as Error).message}`,
+        );
+      }
+    },
+
     readPixels: (): null => null,
+
+    /**
+     * Async readback of a framebuffer's color attachment. Not part of
+     * the classic WebGL API (hence the distinct name) — callers that
+     * genuinely need pixel data migrate from `readPixels` to this.
+     *
+     * Mirrors WebGL's `readPixels(x, y, width, height, format, type,
+     * pixels)` shape so a migration is mostly mechanical: wrap the
+     * surrounding code in an async function and `await` the result.
+     * The output typed array is filled in place when the Promise
+     * resolves, matching the WebGL expectation that `pixels` is an
+     * out parameter.
+     *
+     * Only handles `format = GL_RGBA (0x1908)` + `type =
+     * GL_UNSIGNED_BYTE (0x1401)` today — the combination Cesium's
+     * pick framebuffer uses. Additional format/type combos are a
+     * one-line extension of the switch below if the need arises.
+     */
+    readPixelsAsync: async (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      format: number,
+      type: number,
+      pixels: Uint8Array | Uint8ClampedArray,
+    ): Promise<boolean> => {
+      if (!state.device) return false;
+      const srcFbo = state.boundReadFramebuffer || state.boundFramebuffer;
+      const srcAttachment = srcFbo?._colorAttachment;
+      if (!srcAttachment) return false;
+      const srcTex =
+        (srcAttachment as { _webgpuTexture?: { texture: GPUTexture } })
+          ._webgpuTexture?.texture ||
+        (srcAttachment as { _texture?: GPUTexture })._texture;
+      if (!srcTex) return false;
+      if (
+        format !== 0x1908 /* GL_RGBA */ ||
+        type !== 0x1401 /* UNSIGNED_BYTE */
+      ) {
+        logUsage(
+          "readPixelsAsync",
+          `unsupported format/type combo ${format.toString(16)}/${type.toString(16)} — only RGBA+UNSIGNED_BYTE today`,
+        );
+        return false;
+      }
+      const bytesPerPixel = 4;
+      // WebGPU requires bytesPerRow to be a multiple of 256 for
+      // buffer-texture copies. We pad the destination stride and
+      // compact back into the caller's tight array after map.
+      const bytesPerRow = Math.ceil((width * bytesPerPixel) / 256) * 256;
+      const totalBytes = bytesPerRow * height;
+
+      const readback = state.device.createBuffer({
+        label: "readPixelsAsync staging",
+        size: totalBytes,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      try {
+        // Dedicated encoder so we don't interact with any pending
+        // frame-level encoder the scene renderer owns. The readback
+        // buffer is only mapped after this submit completes.
+        const encoder = state.device.createCommandEncoder({
+          label: "readPixelsAsync dedicated",
+        });
+        encoder.copyTextureToBuffer(
+          { texture: srcTex, origin: { x, y } },
+          { buffer: readback, bytesPerRow, rowsPerImage: height },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+        state.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const mapped = new Uint8Array(readback.getMappedRange());
+        // Compact the 256-aligned rows back into the caller's tight
+        // output array at `width * bytesPerPixel` stride.
+        const tightRow = width * bytesPerPixel;
+        for (let row = 0; row < height; row++) {
+          pixels.set(
+            mapped.subarray(
+              row * bytesPerRow,
+              row * bytesPerRow + tightRow,
+            ),
+            row * tightRow,
+          );
+        }
+        readback.unmap();
+        return true;
+      } finally {
+        readback.destroy();
+      }
+    },
   };
 }

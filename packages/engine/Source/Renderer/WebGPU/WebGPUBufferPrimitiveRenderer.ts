@@ -357,6 +357,31 @@ function buildPolygonPipeline(
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
 ): GPURenderPipeline {
+  // Pick-path entry points emit opaque pick IDs and must NOT alpha-blend
+  // (blending pick IDs produces invalid intermediate values that map to
+  // wrong entity IDs at readback). Everything else is a color pipeline
+  // that needs standard src-alpha / one-minus-src-alpha blending so a
+  // polygon with a `color.alpha < 1` actually composites against the
+  // frame instead of overwriting it — the DP-H16 fix extended to the
+  // buffer-primitive polygon path (polyline / point already had blend).
+  const isPick = fragmentEntryPoint === "fragmentPickMain";
+  const colorTarget: GPUColorTargetState = isPick
+    ? { format }
+    : {
+        format,
+        blend: {
+          color: {
+            srcFactor: "src-alpha",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+          alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+          },
+        },
+      };
   return device.createRenderPipeline({
     label: `BufferPolygon pipeline (${fragmentEntryPoint})`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
@@ -385,12 +410,17 @@ function buildPolygonPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: fragmentEntryPoint,
-      targets: [{ format }],
+      targets: [colorTarget],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
+      // Pick path always writes depth so per-pixel pick IDs are
+      // deterministic. Color path keeps depth write off when blending
+      // translucent fragments — matches the WebGL convention and
+      // prevents alpha-blended polygons from occluding geometry
+      // behind them.
+      depthWriteEnabled: isPick,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
@@ -791,6 +821,11 @@ function updateWebGPUBufferPolygonCollection(
 
   if (frameState.passes.render) {
     if (!cache.command) {
+      // Buffer primitives carry per-vertex alpha in the `showAndColor`
+      // stream, so they're effectively always alpha-blended. Route to the
+      // TRANSLUCENT pass so they composite correctly against the rest of
+      // the scene (back-to-front order). Pick path stays OPAQUE because
+      // pick-ID color is discrete, not alpha-blended.
       cache.command = new WebGPUDrawCommand({
         pipeline: cache.pipeline,
         bindGroups: [cache.bindGroup],
@@ -798,7 +833,7 @@ function updateWebGPUBufferPolygonCollection(
         indexBuffer: cache.indexBuffer,
         indexFormat: cache.indexFormat,
         indexCount,
-        pass: Pass.OPAQUE,
+        pass: Pass.TRANSLUCENT,
       });
     } else {
       cache.command.indexCount = indexCount;

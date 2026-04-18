@@ -23,6 +23,10 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -34,7 +38,12 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-@group(2) @binding(1) var bumpTexture: texture_2d<f32>;
+// DP-H20 (Batch 25) — dual texture layout matching the Lit variant.
+// Flat BumpMap shows the height-derived normal as RGB so only the bump
+// texture (binding 2) is read; binding 1 stays declared for layout
+// symmetry with the Lit variant.
+@group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
+@group(2) @binding(2) var bumpTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;

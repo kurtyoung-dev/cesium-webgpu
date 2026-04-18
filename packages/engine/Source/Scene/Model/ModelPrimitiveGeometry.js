@@ -95,24 +95,26 @@ function extractPrimitiveGeometry(runtimePrimitive) {
 
     switch (semantic) {
       case AttributeSemantic.POSITION:
-        result.positionData = ensureFloat32(data);
-        result.vertexCount = Math.floor(data.length / 3);
+        result.positionData = ensureFloat32(data, attr, 3);
+        // Vertex count derives from the dequantized length so it stays
+        // correct even when the raw source is interleaved/strided.
+        result.vertexCount = Math.floor(result.positionData.length / 3);
         break;
       case AttributeSemantic.NORMAL:
-        result.normalData = ensureFloat32(data);
+        result.normalData = ensureFloat32(data, attr, 3);
         result.hasNormals = true;
         break;
       case AttributeSemantic.TANGENT:
-        result.tangentData = ensureFloat32(data);
+        result.tangentData = ensureFloat32(data, attr, 4);
         result.hasTangents = true;
         break;
       case AttributeSemantic.TEXCOORD_0:
       case "TEXCOORD":
-        result.texCoord0Data = ensureFloat32(data);
+        result.texCoord0Data = ensureFloat32(data, attr, 2);
         result.hasTexCoord0 = true;
         break;
       case AttributeSemantic.TEXCOORD_1:
-        result.texCoord1Data = ensureFloat32(data);
+        result.texCoord1Data = ensureFloat32(data, attr, 2);
         result.hasTexCoord1 = true;
         break;
       case AttributeSemantic.COLOR_0:
@@ -131,7 +133,7 @@ function extractPrimitiveGeometry(runtimePrimitive) {
         result.hasJoints = true;
         break;
       case AttributeSemantic.WEIGHTS_0:
-        result.weights0Data = ensureFloat32(data);
+        result.weights0Data = ensureFloat32(data, attr, 4);
         break;
     }
   }
@@ -161,10 +163,13 @@ function extractPrimitiveGeometry(runtimePrimitive) {
         if (!defined(tData)) {
           continue;
         }
+        // Morph target deltas also honor KHR_mesh_quantization when the
+        // source accessor carries quantization metadata; otherwise the
+        // deltas reconstruct exaggerated (scaled-up integer) values.
         if (tSemantic === "POSITION") {
-          morphTarget.positionData = ensureFloat32(tData);
+          morphTarget.positionData = ensureFloat32(tData, tAttr, 3);
         } else if (tSemantic === "NORMAL") {
-          morphTarget.normalData = ensureFloat32(tData);
+          morphTarget.normalData = ensureFloat32(tData, tAttr, 3);
         }
       }
       if (defined(morphTarget.positionData)) {
@@ -225,14 +230,132 @@ function normalizeColorData(data, componentType, normalized) {
 }
 
 /**
- * Ensures data is Float32Array.
+ * Divisor for converting normalized integer attribute values back to float.
+ * Keyed on the typed-array constructor. glTF's `accessor.normalized = true`
+ * means the integer value should be scaled by 1/max so e.g. `UNSIGNED_BYTE
+ * 255 → 1.0`. Signed types use 1/(2^N−1) per the glTF spec (so `BYTE -128`
+ * clamps to `-1.0` rather than overflowing to `-128/127`).
  * @private
  */
-function ensureFloat32(data) {
+function normalizedDivisor(data) {
+  if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) {
+    return 255.0;
+  }
+  if (data instanceof Int8Array) {
+    return 127.0;
+  }
+  if (data instanceof Uint16Array) {
+    return 65535.0;
+  }
+  if (data instanceof Int16Array) {
+    return 32767.0;
+  }
+  return 1.0;
+}
+
+/**
+ * Convert a glTF vertex attribute to Float32Array, honoring:
+ *
+ *   1. `attribute.quantization` (KHR_mesh_quantization) — applies
+ *      per-component `quantizedVolumeOffset + raw * quantizedVolumeStepSize`
+ *      to bring positions/normals/tangents back to their authored range.
+ *   2. `attribute.normalized` — applies `raw / typeMax` for integer
+ *      attributes (bytes/shorts) so the value lands in [-1, 1] or [0, 1]
+ *      as the accessor type requires.
+ *   3. Raw float data passthrough — returns the Float32Array directly.
+ *
+ * Without this, casts like `new Float32Array(int16Data)` reinterpret raw
+ * integer values as f32, which makes KHR_mesh_quantization assets
+ * (near-universal in production tilesets — Google Photorealistic, most
+ * commercial pipelines) render fundamentally wrong: positions collapse to
+ * the origin, normals light black, texcoords repeat thousands of times.
+ *
+ * @param {TypedArray} data Raw attribute data
+ * @param {object} [attr] The source attribute (optional; carries
+ *   `normalized` and `quantization` metadata when available)
+ * @param {number} [componentsPerAttribute=1] Element count per vertex
+ *   (3 for POSITION/NORMAL, 4 for TANGENT, 2 for TEXCOORD, etc.).
+ *   Only used when quantization offsets are per-component vectors.
+ * @returns {Float32Array}
+ * @private
+ */
+function ensureFloat32(data, attr, componentsPerAttribute) {
   if (data instanceof Float32Array) {
     return data;
   }
+
+  const quant = attr && attr.quantization;
+  const nc = componentsPerAttribute || 1;
+
+  // KHR_mesh_quantization — dequantize with per-component offset + step.
+  if (quant) {
+    // Quantization fields come through as Cartesian2/3/4 (x/y/z/w) on the
+    // Cesium loader path; flatten to a flat Float64 array so the
+    // per-component index works uniformly.
+    const offset = _flattenVector(quant.quantizedVolumeOffset, nc);
+    const step = _flattenVector(quant.quantizedVolumeStepSize, nc);
+    if (offset && step) {
+      const out = new Float32Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        const comp = i % nc;
+        out[i] = offset[comp] + data[i] * step[comp];
+      }
+      return out;
+    }
+    // Quantization object without the expected fields — fall through to
+    // the normalized / cast path.
+  }
+
+  // Normalized integer — spec-correct scale to [-1, 1] or [0, 1].
+  if (attr && attr.normalized === true) {
+    const divisor = normalizedDivisor(data);
+    if (divisor !== 1.0) {
+      const out = new Float32Array(data.length);
+      const invDiv = 1.0 / divisor;
+      // Signed normalized types clamp -N to -1 (i.e., the negative extreme
+      // equal to the divisor should become -1, not -divisor/divisor = -1
+      // — still correct because divisor for signed types is 2^N−1).
+      for (let i = 0; i < data.length; i++) {
+        out[i] = data[i] * invDiv;
+      }
+      return out;
+    }
+  }
+
+  // Raw cast — last resort. Correct for non-normalized integer attributes
+  // that the shader is expected to treat as integer-valued floats (rare
+  // for POSITION/NORMAL/TEXCOORD but legitimate for some custom semantics).
   return new Float32Array(data);
+}
+
+/**
+ * Flatten a Cartesian2/3/4 (or plain array) into a length-nc flat array.
+ * Returns null if the input is falsy.
+ * @private
+ */
+function _flattenVector(v, nc) {
+  if (!defined(v)) {
+    return null;
+  }
+  if (Array.isArray(v) || v instanceof Float32Array || v instanceof Float64Array) {
+    return v;
+  }
+  // Cartesian2 / Cartesian3 / Cartesian4 — read x, y, z, w as available
+  if (typeof v === "object" && typeof v.x === "number") {
+    const out = new Float64Array(nc);
+    out[0] = v.x;
+    if (nc >= 2) {
+      out[1] = v.y ?? 0;
+    }
+    if (nc >= 3) {
+      out[2] = v.z ?? 0;
+    }
+    if (nc >= 4) {
+      out[3] = v.w ?? 0;
+    }
+    return out;
+  }
+  return null;
 }
 
 /**

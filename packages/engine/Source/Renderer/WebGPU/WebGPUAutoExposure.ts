@@ -207,20 +207,34 @@ export class WebGPUAutoExposure {
         4,
       );
       this._readbackPending = true;
-      this._readbackBuffer
+      // Capture the buffer identity now so the callback can tell if the
+      // renderer was destroyed (or buffers rotated on resize) between
+      // mapAsync() and resolution. Without the identity guard, unmapping
+      // the wrong buffer leaves it permanently mapped-pending.
+      const readback = this._readbackBuffer;
+      readback
         .mapAsync(GPUMapMode.READ)
         .then(() => {
-          if (this._readbackBuffer) {
-            const data = new Float32Array(
-              this._readbackBuffer.getMappedRange(),
-            );
+          if (this._readbackBuffer === readback) {
+            const data = new Float32Array(readback.getMappedRange());
             this._averageLuminance = data[0];
-            this._readbackBuffer.unmap();
+            readback.unmap();
           }
           this._readbackPending = false;
         })
         .catch(() => {
           this._readbackPending = false;
+          // If mapAsync rejected after the buffer was already destroyed /
+          // swapped, no unmap is needed. If it rejected while the buffer is
+          // still ours (e.g. already-mapped), attempt to free the pending
+          // mapping so the next frame doesn't permanently wedge.
+          if (this._readbackBuffer === readback) {
+            try {
+              readback.unmap();
+            } catch {
+              /* already unmapped */
+            }
+          }
         });
     }
   }

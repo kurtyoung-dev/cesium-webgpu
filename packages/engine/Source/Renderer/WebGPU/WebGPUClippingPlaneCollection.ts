@@ -58,14 +58,14 @@ function updateWebGPUClippingPlanes(
 
   const cache = collection._webgpuCache as ClippingPlaneCache;
 
-  // Check if we need to update
+  // The revision cache is used ONLY to gate texture (re)allocation. The
+  // per-frame upload below always runs because the plane data is now
+  // eye-space — it depends on the view matrix which changes every frame
+  // with camera motion. See C-P6 fix rationale below.
   const currentRevision: number = collection._unionClippingRegions
     ? Number(collection._unionClippingRegions)
     : collection.length;
-
-  if (cache.revision === currentRevision && cache.texture) {
-    return;
-  }
+  // (no early-return; fall through to upload every frame)
 
   const planeCount = collection.length;
   // Pack planes into a Nx1 texture (each plane = 1 texel with RGBA = normal.xyz + distance)
@@ -100,15 +100,59 @@ function updateWebGPUClippingPlanes(
     });
   }
 
-  // Pack plane data: normal(xyz) + distance(w)
+  // Pack plane data transformed into EYE SPACE so the fragment test
+  // `dot(eyePos, plane.xyz) + plane.w` matches the frame of eyePos.
+  // Uploading raw world-space `(normal, distance)` while the shader
+  // samples eyePos in eye-space produces catastrophic cancellation at
+  // Earth ECEF scale — `distance` has components of order 1e7, eyePos
+  // is near 0, and the test collapses to `sign(distance)` (clips
+  // everything or nothing). See C-P6 in the 2026-04-16 per-feature review.
+  //
+  // Plane transform rule: a plane `(n, d)` in frame A becomes
+  // `(view^-T * (n, d))` in frame B where B = view * A. For the
+  // view matrix specifically, `view^-T * (n_world, d_world)` gives
+  // `(n_eye, d_eye)`. Cesium's `Matrix4.inverseTranspose()` does this.
+  //
+  // We upload EVERY frame because the view matrix changes with the
+  // camera; the revision check only bounds the texture-reallocation
+  // path. Uploads are tiny (≤8 planes × 16 bytes = 128 bytes) so this
+  // is negligible bandwidth.
+  const uniformState = (frameState as unknown as { context: { uniformState: { view: number[] | Float64Array; inverseViewTranspose?: number[] | Float64Array } } })
+    .context.uniformState;
+  const view = uniformState.view;
+  const invViewT = uniformState.inverseViewTranspose;
   const data = new Float32Array(planeCount * 4);
   for (let i = 0; i < planeCount; i++) {
     const plane = collection.get(i);
+    const nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+    const nw = plane.distance;
+    let ex: number, ey: number, ez: number, ew: number;
+    if (invViewT) {
+      // Column-major mat4: entries [col*4 + row]
+      ex = invViewT[0] * nx + invViewT[4] * ny + invViewT[8]  * nz + invViewT[12] * nw;
+      ey = invViewT[1] * nx + invViewT[5] * ny + invViewT[9]  * nz + invViewT[13] * nw;
+      ez = invViewT[2] * nx + invViewT[6] * ny + invViewT[10] * nz + invViewT[14] * nw;
+      ew = invViewT[3] * nx + invViewT[7] * ny + invViewT[11] * nz + invViewT[15] * nw;
+    } else if (view) {
+      // Fallback: rigid view matrix ⇒ view^-T of the normal is
+      // `view.xyz * (nx, ny, nz)` (rotation part), and the translated
+      // distance is `d - dot(n_eye, view.translation_eye)`.
+      // This path is rarely hit because CesiumJS always maintains
+      // inverseViewTranspose on the UniformState.
+      const rx = view[0] * nx + view[4] * ny + view[8]  * nz;
+      const ry = view[1] * nx + view[5] * ny + view[9]  * nz;
+      const rz = view[2] * nx + view[6] * ny + view[10] * nz;
+      const tx = view[12], ty = view[13], tz = view[14];
+      ex = rx; ey = ry; ez = rz;
+      ew = nw - (rx * tx + ry * ty + rz * tz);
+    } else {
+      ex = nx; ey = ny; ez = nz; ew = nw;
+    }
     const offset = i * 4;
-    data[offset] = plane.normal.x;
-    data[offset + 1] = plane.normal.y;
-    data[offset + 2] = plane.normal.z;
-    data[offset + 3] = plane.distance;
+    data[offset]     = ex;
+    data[offset + 1] = ey;
+    data[offset + 2] = ez;
+    data[offset + 3] = ew;
   }
 
   device.queue.writeTexture(

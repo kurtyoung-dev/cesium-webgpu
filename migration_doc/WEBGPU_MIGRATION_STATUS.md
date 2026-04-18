@@ -201,13 +201,17 @@ The tree-shaking build variant system is now wired end-to-end for all three outp
 
 - **NEW `scripts/bundleVariantPlugin.js`**: esbuild plugin that intercepts `onResolve` for `Renderer/WebGPU/*` imports (WebGL-only build) and `Renderer/Context.js` / `Renderer/WebGLStub*` imports (WebGPU-only build), replacing them with synthetic empty-stub modules. Decision cache avoids redundant resolution. Handles both absolute and package-relative import forms.
 - **`RendererType.ts`** extended: `setGlobalDefaultRenderer(type: RendererType)` / `getGlobalDefaultRenderer(): RendererType` static functions added. Each variant's entry barrel calls `setGlobalDefaultRenderer` at module init so the runtime default matches the build target. Users override per-Viewer via `contextOptions.renderer`.
-- **`gulpfile.js`** extended: Added `buildCesiumWebGLOnly`, `buildCesiumWebGPUOnly`, `buildCesiumDual`, and `buildAllVariants` tasks. Each wires through `createCesiumJs()` and `bundleCesiumJs()` with the appropriate variant parameter.
-- **`scripts/build.js`** extended: `createCesiumJs(options)` and `bundleCesiumJs(options)` now accept a `variant` parameter (`"webgl-only" | "webgpu-only" | "dual"`). The variant activates the `bundleVariantPlugin` with the correct alias set and sets `CESIUM_BUILD_VARIANT` define for downstream conditional code.
+- **`gulpfile.js`** extended: Added `buildCesiumWebGLOnly`, `buildCesiumWebGPUOnly`, `buildCesiumDual`, and `buildAllVariants` tasks. The combined task hoists `buildEngine` + `buildWidgets` so they run once across all three variants (~10s saved per extra variant).
+- **`scripts/build.js`** extended: `createCesiumJs(options)` and `bundleCesiumJs(options)` now accept a `variant` parameter (`"webgl-only" | "webgpu-only" | "dual"`). The variant activates the `bundleVariantPlugin` with the correct alias set and drives the entry barrel filename (`Source/Cesium.js`, `Source/CesiumWebGLOnly.js`, `Source/CesiumWebGPUOnly.js`).
+- **ESM code splitting enabled** on `bundleCesiumJs`: `splitting: true` with `chunkNames: "chunks/[name]-[hash]"`. The existing `await import("./WebGPU/WebGPUContext.js")` in `ContextFactory` now produces a real separate chunk — dual-variant ESM consumers who never select WebGPU skip the WebGPU chunk download entirely.
 
 **Output directories for variant builds:**
-- `Build/CesiumWebGPUUnminified/` — WebGPU-only (~32% smaller ESM, GLSL shaders aliased to empty stubs)
-- `Build/CesiumWebGLUnminified/` — WebGL-only (WebGPU renderer aliased to empty stubs)
+
 - `Build/CesiumUnminified/` — dual (default, backwards-compatible, ESM code-split)
+- `Build/CesiumWebGPUUnminified/` — WebGPU-only (GLSL shaders aliased to empty stubs)
+- `Build/CesiumWebGLUnminified/` — WebGL-only (WebGPU renderer + WGSL aliased to empty stubs)
+
+**Baseline measured (dual, minified):** `Cesium.js` = 6.8 MB / **1.89 MB gzipped** · `index.js` (ESM entry) = 5.6 MB / **1.48 MB gzipped**. Previous drafts of this doc cited a "~32% smaller ESM" figure for the WebGPU-only variant — that number was **provisional and is NOT yet measured**. The `buildAllVariants` run attempted on 2026-04-16 was interrupted before the webgl-only / webgpu-only bundles completed, so no variant-specific size delta is yet on record. See backlog item **BUILD-VAR-MEASURE** (2026-04-16 section) for the outstanding measurement + validation work and **BUILD-VAR-SCENE-AUDIT** for the runtime-correctness gate before the webgpu-only bundle can be recommended for production use.
 
 ---
 

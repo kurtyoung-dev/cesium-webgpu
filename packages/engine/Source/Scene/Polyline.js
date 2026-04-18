@@ -9,6 +9,7 @@ import DistanceDisplayCondition from "../Core/DistanceDisplayCondition.js";
 import Matrix4 from "../Core/Matrix4.js";
 import PolylinePipeline from "../Core/PolylinePipeline.js";
 import Material from "./Material.js";
+import SplitDirection from "./SplitDirection.js";
 
 /**
  * <div class="notice">
@@ -70,6 +71,22 @@ class Polyline {
 
     this._length = this._actualPositions.length;
     this._id = options.id;
+
+    // DP-H42 — per-polyline override of the scene-wide depth threshold.
+    // When a positive distance is set, the rasterizer's depth test is
+    // disabled for fragments closer than this distance so the polyline
+    // stays visible against occluding terrain / geometry. A value of 0
+    // (the default) falls through to `scene.minimumDisableDepthTestDistance`
+    // via the frame-wide uniform. Matches the Billboard contract.
+    this._disableDepthTestDistance = options.disableDepthTestDistance;
+
+    // DP-H40 — per-polyline split-screen direction:
+    //   `SplitDirection.NONE`  (0)  — render everywhere (default)
+    //   `SplitDirection.LEFT`  (-1) — render only left of `scene.splitPosition`
+    //   `SplitDirection.RIGHT` (+1) — render only right of `scene.splitPosition`
+    // Consumed by the `SPLIT_ENABLED` fragment-shader define; discards
+    // pixels on the wrong side of the cutoff.
+    this._splitDirection = options.splitDirection ?? SplitDirection.NONE;
 
     let modelMatrix;
     if (defined(polylineCollection)) {
@@ -445,6 +462,50 @@ class Polyline {
       makeDirty(this, DISTANCE_DISPLAY_CONDITION);
     }
   }
+
+  /**
+   * Gets or sets the distance from the camera at which to disable the depth
+   * test to prevent clipping against terrain, e.g., to prevent clipping
+   * against the edge of the Earth when looking at the horizon.
+   * @memberof Polyline.prototype
+   * @type {number}
+   * @default 0.0
+   */
+  get disableDepthTestDistance() {
+    return this._disableDepthTestDistance;
+  }
+
+  set disableDepthTestDistance(value) {
+    //>>includeStart('debug', pragmas.debug);
+    if (defined(value) && value < 0.0) {
+      throw new DeveloperError(
+        "disableDepthTestDistance must be greater than or equal to 0.0.",
+      );
+    }
+    //>>includeEnd('debug');
+    if (this._disableDepthTestDistance !== value) {
+      this._disableDepthTestDistance = value;
+      makeDirty(this, DISABLE_DEPTH_TEST_DISTANCE);
+    }
+  }
+
+  /**
+   * Gets or sets the {@link SplitDirection} of this polyline. Controls which
+   * side of `scene.splitPosition` the polyline is rendered on.
+   * @memberof Polyline.prototype
+   * @type {SplitDirection}
+   * @default SplitDirection.NONE
+   */
+  get splitDirection() {
+    return this._splitDirection;
+  }
+
+  set splitDirection(value) {
+    if (this._splitDirection !== value) {
+      this._splitDirection = value;
+      makeDirty(this, SPLIT_DIRECTION);
+    }
+  }
 }
 
 const POSITION_INDEX = (Polyline.POSITION_INDEX = 0);
@@ -453,7 +514,10 @@ const WIDTH_INDEX = (Polyline.WIDTH_INDEX = 2);
 const MATERIAL_INDEX = (Polyline.MATERIAL_INDEX = 3);
 const POSITION_SIZE_INDEX = (Polyline.POSITION_SIZE_INDEX = 4);
 const DISTANCE_DISPLAY_CONDITION = (Polyline.DISTANCE_DISPLAY_CONDITION = 5);
-const NUMBER_OF_PROPERTIES = (Polyline.NUMBER_OF_PROPERTIES = 6);
+const DISABLE_DEPTH_TEST_DISTANCE =
+  (Polyline.DISABLE_DEPTH_TEST_DISTANCE = 6);
+const SPLIT_DIRECTION = (Polyline.SPLIT_DIRECTION = 7);
+const NUMBER_OF_PROPERTIES = (Polyline.NUMBER_OF_PROPERTIES = 8);
 
 function makeDirty(polyline, propertyChanged) {
   ++polyline._propertiesChanged[propertyChanged];

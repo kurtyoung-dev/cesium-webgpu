@@ -132,21 +132,56 @@ function createFeatureIdGPUTexture(device, textureReader) {
 /**
  * Creates a GPU texture from the batch texture's CesiumJS Texture.
  * The batch texture maps feature ID → RGBA color for per-feature styling.
+ *
+ * PRIMARY PATH (Cesium3DTileStyle / batched tiles): reads
+ * `batchTexture._batchValues` — a Uint8Array of length
+ * `featuresLength * 4` laid out as per-feature RGBA. Dimensions come from
+ * `batchTexture._textureDimensions` (BatchTexture packs features into a
+ * 2D texture so wide feature counts don't blow past MAX_TEXTURE_SIZE).
+ * Uploaded via `queue.writeTexture` because the WebGL Texture wrapper
+ * never populates `_source` for these array-backed textures.
+ *
+ * Fallback: if an ImageBitmap / Image is attached (rare — some custom
+ * Cesium3DTileFeatureTable paths), use copyExternalImageToTexture.
+ *
  * @param {GPUDevice} device
  * @param {BatchTexture} batchTexture
- * @returns {GPUTexture|null}
+ * @returns {{texture: GPUTexture, width: number, height: number}|null}
  */
 function createBatchGPUTexture(device, batchTexture) {
-  // BatchTexture uses a CesiumJS Texture internally
   const cesiumTex = batchTexture.batchTexture || batchTexture.defaultTexture;
+
+  // PRIMARY PATH — per-feature RGBA byte array + declared dimensions.
+  // This is what populates on EVERY batched 3D Tile.
+  const batchValues = batchTexture._batchValues;
+  const dimensions = batchTexture._textureDimensions;
+  if (defined(batchValues) && defined(dimensions) && dimensions.x > 0) {
+    const width = dimensions.x;
+    const height = dimensions.y;
+    try {
+      const gpuTexture = device.createTexture({
+        label: `Batch texture ${width}x${height}`,
+        size: [width, height, 1],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      device.queue.writeTexture(
+        { texture: gpuTexture },
+        batchValues,
+        { bytesPerRow: width * 4, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 },
+      );
+      return { texture: gpuTexture, width, height };
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  // FALLBACK — ImageBitmap / Image source.
   if (!defined(cesiumTex)) {
     return null;
   }
-
-  // Access internal pixel data or image source
   const source = cesiumTex._source || cesiumTex.source || cesiumTex._image;
-
-  // If we have an image source, use copyExternalImageToTexture
   if (defined(source) && (source.width > 0 || source.naturalWidth > 0)) {
     const width = source.width || source.naturalWidth;
     const height = source.height || source.naturalHeight;
@@ -165,13 +200,41 @@ function createBatchGPUTexture(device, batchTexture) {
         { texture: gpuTexture },
         { width, height },
       );
-      return gpuTexture;
+      return { texture: gpuTexture, width, height };
     } catch (_e) {
       return null;
     }
   }
 
   return null;
+}
+
+/**
+ * Re-upload the per-feature RGBA bytes to an already-allocated batch
+ * GPUTexture. Called from `ensureFeatureIdResources` when
+ * `batchTexture._batchValuesDirty` is true — this is what makes runtime
+ * `setShow(id, false)` / `setColor(id, newColor)` actually propagate to
+ * the GPU on subsequent frames instead of freezing at tile-load state.
+ */
+function updateBatchGPUTexture(device, gpuTexture, batchTexture) {
+  const batchValues = batchTexture._batchValues;
+  const dimensions = batchTexture._textureDimensions;
+  if (!defined(batchValues) || !defined(dimensions) || dimensions.x <= 0) {
+    return;
+  }
+  const width = dimensions.x;
+  const height = dimensions.y;
+  try {
+    device.queue.writeTexture(
+      { texture: gpuTexture },
+      batchValues,
+      { bytesPerRow: width * 4, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+  } catch (_e) {
+    // Dimensions mismatched or device lost — next frame's ensureFeatureIdResources
+    // will rebuild from scratch when the cache is next probed.
+  }
 }
 
 /**
@@ -193,8 +256,34 @@ function ensureFeatureIdResources(
   runtimeNode,
   pipelineCache,
 ) {
-  // Already created
+  // Already created — but if the batch texture values changed since last
+  // frame (user called setShow / setColor on a Cesium3DTileFeature), the
+  // per-feature RGBA has to be re-uploaded. BatchTexture flips
+  // `_batchValuesDirty = true` on each such mutation; we mirror the
+  // WebGL updateBatchTexture() behaviour by re-uploading and clearing
+  // the flag here.
   if (defined(primCache._featureIdBG)) {
+    const featureTableId = model.featureTableId;
+    const featureTables = model.featureTables;
+    if (
+      defined(featureTableId) &&
+      defined(featureTables) &&
+      featureTables.length > featureTableId
+    ) {
+      const batchTexture = featureTables[featureTableId].batchTexture;
+      if (
+        defined(batchTexture) &&
+        batchTexture._batchValuesDirty &&
+        defined(primCache._batchGPUTexture)
+      ) {
+        updateBatchGPUTexture(
+          device,
+          primCache._batchGPUTexture,
+          batchTexture,
+        );
+        batchTexture._batchValuesDirty = false;
+      }
+    }
     return {
       featureIdBG: primCache._featureIdBG,
       flags: primCache._featureIdFlags || 0,
@@ -240,10 +329,20 @@ function ensureFeatureIdResources(
     }
   }
 
-  // Batch texture (for per-feature styling)
-  const batchGPUTex = createBatchGPUTexture(device, batchTexture);
+  // Batch texture (for per-feature styling). createBatchGPUTexture now
+  // returns { texture, width, height } or null. The first-upload consumes
+  // the authoritative `batchTexture._batchValues` bytes via
+  // queue.writeTexture — previously this path silently returned null for
+  // every Cesium3DTileFeatureTable (which uses arrayBufferView, not
+  // ImageBitmap, as its source), which is exactly why
+  // Cesium3DTileStyle.color / show was a no-op on WebGPU.
+  const batchGPUResult = createBatchGPUTexture(device, batchTexture);
+  const batchGPUTex = batchGPUResult ? batchGPUResult.texture : null;
   if (defined(batchGPUTex)) {
     flags |= 0x40000; // FLAG_HAS_BATCH_TABLE (bit 18)
+    // Mark the per-feature values as "synced with GPU" so the very next
+    // ensureFeatureIdResources() call doesn't re-upload unchanged data.
+    batchTexture._batchValuesDirty = false;
   }
 
   if (flags === 0) {

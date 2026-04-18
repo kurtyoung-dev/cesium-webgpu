@@ -2,12 +2,14 @@
 // Renders screen-space thick lines using instanced quads per segment.
 //
 // Each segment is two triangles forming a screen-space quad along the line.
-// Instance data per segment (80 bytes, 5 x vec4):
+// Instance data per segment (96 bytes, 6 x vec4):
 //   @location(0) startPosHighAndWidth:  vec4<f32> — start.high.xyz, lineWidth
 //   @location(1) startPosLow:           vec4<f32> — start.low.xyz, _pad
 //   @location(2) endPosHighAndMiter:    vec4<f32> — end.high.xyz, miterLimit
 //   @location(3) endPosLow:             vec4<f32> — end.low.xyz, _pad
 //   @location(4) color:                 vec4<f32> — rgba
+//   @location(5) perInstanceFlags:      vec4<f32> — disableDepthTestDistance,
+//                                        splitDirection, _pad, _pad (DP-H42/H40, Batch 22)
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -17,6 +19,16 @@ struct CameraUniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   _pad2: vec2<f32>,
+  // DP-H42 — frame-wide fallback threshold (meters). Squared in the shader.
+  minimumDisableDepthTestDistance: f32,
+  // DP-H40 — split cutoff in framebuffer pixels
+  // (`frameState.splitPosition * drawingBufferWidth`).
+  splitPosition: f32,
+  _pad3: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -28,12 +40,16 @@ struct VertexInput {
   @location(2) endPosHighAndMiter: vec4<f32>,
   @location(3) endPosLow: vec4<f32>,
   @location(4) color: vec4<f32>,
+  @location(5) perInstanceFlags: vec4<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
   @location(1) distFromCenter: f32,
+  //>>ifdef SPLIT_ENABLED
+  @location(2) splitDirection: f32,
+  //>>endif
 };
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -101,15 +117,63 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
   // Convert back to clip space
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
+  var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
+
+  //>>ifdef DISABLE_DEPTH_DISTANCE
+  // DP-H42 — override depth when the camera is within the configured
+  // per-instance `disableDepthTestDistance` (perInstanceFlags.x) or the
+  // frame-wide fallback. Uses the segment's base RTE position (midpoint
+  // between start / end endpoints, weighted by `isEnd`) for the distance
+  // compare — matches the semantics of treating the whole segment as a
+  // single logical primitive against the threshold. Forcing
+  // `finalPos.z = finalPos.w` maps to NDC z = 1 so the rasterizer's
+  // less-equal depth compare always passes. Mirrors BillboardCollection.wgsl.
+  let baseRTE = mix(startRTE, endRTE, isEnd);
+  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
+  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
+    disableDepthSq =
+      camera.minimumDisableDepthTestDistance *
+      camera.minimumDisableDepthTestDistance;
+  }
+  if (disableDepthSq != 0.0) {
+    let distSq = dot(baseRTE, baseRTE);
+    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+      finalPos.z = finalPos.w;
+    }
+  }
+  //>>endif
+
+  output.position = finalPos;
   output.color = input.color;
   output.distFromCenter = side; // For AA
+
+  //>>ifdef SPLIT_ENABLED
+  // DP-H40 — forward per-polyline split direction so the FS can discard
+  // pixels on the wrong side of `camera.splitPosition`. Both vertices of
+  // a segment carry the same splitDirection (per-instance), so the
+  // interpolated value on any fragment of that segment is exactly the
+  // authored sign.
+  output.splitDirection = input.perInstanceFlags.y;
+  //>>endif
 
   return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  //>>ifdef SPLIT_ENABLED
+  // DP-H40 — discard pixels on the wrong side of the split cutoff.
+  // `camera.splitPosition` is in framebuffer pixels (JS pre-multiplies
+  // `frameState.splitPosition` by `drawingBufferWidth`), same coord
+  // space as `position.x` — so the compare runs in pixel space.
+  if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
+    discard;
+  }
+  if (input.splitDirection > 0.0 && input.position.x < camera.splitPosition) {
+    discard;
+  }
+  //>>endif
+
   // Simple anti-aliasing at edges
   let dist = abs(input.distFromCenter);
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);

@@ -20,11 +20,26 @@
  * @module WebGPUPointCloudEyeDomeLighting
  */
 
+// One-shot warning flag — avoids spamming the console every frame when
+// an app has EDL enabled but hasn't noticed it's silently no-op on
+// WebGPU. The full port is tracked as a follow-up; this warning was
+// added to resolve C-P14 (2026-04-16 per-feature review).
+let _edlWarned = false;
+
 function updateWebGPUPointCloudEDL(
   _edl: CesiumObjectWithWebGPUCache,
   _frameState: CesiumFrameState,
   _commandsToHijack: CesiumAnyDrawCommand[],
 ): void {
+  if (!_edlWarned) {
+    _edlWarned = true;
+    console.warn(
+      "[CesiumJS:webgpu] PointCloudEyeDomeLighting (EDL) is not yet " +
+        "implemented on the WebGPU backend. Point clouds render without " +
+        "edge-darkening. Port tracked as C-P14 in the 2026-04-16 " +
+        "per-feature review (see migration_doc/).",
+    );
+  }
   // Intentional no-op — see module header for full port requirements.
 }
 

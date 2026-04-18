@@ -34,7 +34,10 @@ const WEATHER_TYPES = { rain: 0, snow: 1, fog: 2, hail: 3 } as const;
 const PARTICLE_SIZE_BYTES = 32; // 8 floats per particle
 const WEATHER_PARAMS_FLOATS = 24; // matches WeatherParams struct
 const WEATHER_PARAMS_BYTES = WEATHER_PARAMS_FLOATS * 4;
-const RENDER_UNIFORM_SIZE = 128; // CameraUniforms for render pass
+// DP-H41 (Batch 27) — render-pass CameraUniforms now carries
+// `previousViewProjection` (mat4x4, 64 bytes) at the tail for
+// TAA / motion-vector reprojection. Total = 128 + 64 = 192.
+const RENDER_UNIFORM_SIZE = 192;
 
 export interface WeatherCache {
   resetPipeline: GPUComputePipeline | null;
@@ -465,6 +468,18 @@ export function renderWeatherParticles(
   const u32View = new Uint32Array(data.buffer, 30 * 4, 1);
   u32View[0] = typeId;
   data[31] = weatherConfig.intensity ?? 0.5;
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 32..47 for
+  // TAA / motion-vector reprojection.
+  const prevVP = uniformState?.previousViewProjection;
+  if (prevVP) {
+    for (let i = 0; i < 16; i++) data[32 + i] = prevVP[i];
+  } else {
+    data[32] = 1; data[33] = 0; data[34] = 0; data[35] = 0;
+    data[36] = 0; data[37] = 1; data[38] = 0; data[39] = 0;
+    data[40] = 0; data[41] = 0; data[42] = 1; data[43] = 0;
+    data[44] = 0; data[45] = 0; data[46] = 0; data[47] = 1;
+  }
 
   device.queue.writeBuffer(cache.renderUniformBuffer, 0, data);
 

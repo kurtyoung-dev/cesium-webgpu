@@ -111,6 +111,58 @@ function createBindGroupLayouts(device) {
   };
 }
 
+// WebGL GL_* sampler-enum constants → GPU strings. Module-scope helpers
+// so `getSamplerForReader` (method on the pipeline cache class) can use
+// them without a per-call closure.
+const _GL_NEAREST = 9728;
+const _GL_LINEAR = 9729;
+const _GL_NEAREST_MIPMAP_NEAREST = 9984;
+const _GL_LINEAR_MIPMAP_NEAREST = 9985;
+const _GL_NEAREST_MIPMAP_LINEAR = 9986;
+const _GL_LINEAR_MIPMAP_LINEAR = 9987;
+const _GL_REPEAT = 10497;
+const _GL_CLAMP_TO_EDGE = 33071;
+const _GL_MIRRORED_REPEAT = 33648;
+
+function _mapGLFilter(glEnum, fallback) {
+  if (glEnum === _GL_NEAREST) {return "nearest";}
+  if (glEnum === _GL_LINEAR) {return "linear";}
+  return fallback;
+}
+
+function _mapGLMinFilter(glEnum) {
+  // Return { min, mip } because WebGPU splits filter + mipmap filter.
+  switch (glEnum) {
+    case _GL_NEAREST:
+      return { min: "nearest", mip: "nearest" };
+    case _GL_LINEAR:
+      return { min: "linear", mip: "nearest" };
+    case _GL_NEAREST_MIPMAP_NEAREST:
+      return { min: "nearest", mip: "nearest" };
+    case _GL_LINEAR_MIPMAP_NEAREST:
+      return { min: "linear", mip: "nearest" };
+    case _GL_NEAREST_MIPMAP_LINEAR:
+      return { min: "nearest", mip: "linear" };
+    case _GL_LINEAR_MIPMAP_LINEAR:
+    default:
+      // glTF spec default is LINEAR_MIPMAP_LINEAR — honor it explicitly.
+      return { min: "linear", mip: "linear" };
+  }
+}
+
+function _mapGLWrap(glEnum) {
+  if (glEnum === _GL_CLAMP_TO_EDGE) {
+    return "clamp-to-edge";
+  }
+  if (glEnum === _GL_MIRRORED_REPEAT) {
+    return "mirror-repeat";
+  }
+  if (glEnum === _GL_REPEAT) {
+    return "repeat";
+  }
+  return "repeat"; // glTF spec default when no match
+}
+
 /**
  * Creates the vertex buffer layout descriptor.
  * 7 separate buffer slots, one per attribute.
@@ -159,6 +211,17 @@ function createVertexBufferLayout() {
       arrayStride: 16,
       stepMode: "vertex",
       attributes: [{ shaderLocation: 6, offset: 0, format: "float32x4" }],
+    },
+    // Slot 7: texCoord1 (vec2<f32>) — used by textures whose
+    // glTF textureInfo.texCoord == 1 (occlusion + clearcoat-normal are
+    // the usual cases). May use default when the primitive has no
+    // TEXCOORD_1 accessor; `ModelPBRComplete.wgsl` picks between
+    // texCoord0 / texCoord1 per-slot via the uniform flag pushed into
+    // the material UBO, so the shader is safe against missing data.
+    {
+      arrayStride: 8,
+      stepMode: "vertex",
+      attributes: [{ shaderLocation: 7, offset: 0, format: "float32x2" }],
     },
   ];
 }
@@ -312,6 +375,15 @@ class WebGPUModelPipelineCache {
       addressModeU: "repeat",
       addressModeV: "repeat",
     });
+
+    // Per-textureInfo sampler cache. glTF textures each carry a
+    // `sampler` object with magFilter / minFilter / wrapS / wrapT values;
+    // creating a new GPUSampler per distinct combination and reusing it
+    // avoids thrashing the device with duplicate samplers when a tileset
+    // has thousands of glTF textures that share sampler state (common —
+    // glTF authoring pipelines usually emit one sampler per material
+    // repeated across all textures).
+    this._samplerCache = new Map();
 
     // Create default vertex buffers for missing attributes
     this._defaultNormalBuffer = this._createDefaultVertexBuffer(
@@ -494,6 +566,66 @@ class WebGPUModelPipelineCache {
   /** @returns {GPUSampler} Default linear-repeat sampler */
   get defaultSampler() {
     return this._defaultSampler;
+  }
+
+  /**
+   * Build (or retrieve from cache) a `GPUSampler` matching the glTF
+   * textureInfo's sampler block. Returns `defaultSampler` when the
+   * reader has no sampler metadata (non-glTF texture or legacy path).
+   *
+   * WebGL sampler enum → WebGPU string translation:
+   *   magFilter  NEAREST=9728, LINEAR=9729
+   *   minFilter  NEAREST=9728, LINEAR=9729,
+   *              NEAREST_MIPMAP_NEAREST=9984, LINEAR_MIPMAP_NEAREST=9985,
+   *              NEAREST_MIPMAP_LINEAR=9986, LINEAR_MIPMAP_LINEAR=9987
+   *   wrapS/T/R  REPEAT=10497, CLAMP_TO_EDGE=33071, MIRRORED_REPEAT=33648
+   *
+   * @param {object} textureReader glTF textureInfo; the `.texture._sampler`
+   *   field carries the sampler metadata as either a CesiumJS Sampler
+   *   instance or a plain object with the fields listed above.
+   * @returns {GPUSampler}
+   */
+  getSamplerForReader(textureReader) {
+    if (!textureReader || !textureReader.texture) {
+      return this._defaultSampler;
+    }
+    const glSampler =
+      textureReader.texture._sampler ||
+      textureReader.texture.sampler ||
+      textureReader.sampler;
+    if (!glSampler) {
+      return this._defaultSampler;
+    }
+
+    // Read fields — support both Cesium's Sampler class (minificationFilter
+    // / magnificationFilter / wrapS / wrapT) and raw glTF sampler objects
+    // (minFilter / magFilter / wrapS / wrapT).
+    const magEnum = glSampler.magnificationFilter ?? glSampler.magFilter;
+    const minEnum = glSampler.minificationFilter ?? glSampler.minFilter;
+    const wrapSEnum = glSampler.wrapS;
+    const wrapTEnum = glSampler.wrapT;
+
+    const magFilter = _mapGLFilter(magEnum, "linear");
+    const minFilterAndMip = _mapGLMinFilter(minEnum);
+    const addrU = _mapGLWrap(wrapSEnum);
+    const addrV = _mapGLWrap(wrapTEnum);
+
+    // Cache key packs all sampler state into a single string. Identical
+    // combinations across textures share a single GPUSampler.
+    const key = `${magFilter}|${minFilterAndMip.min}|${minFilterAndMip.mip}|${addrU}|${addrV}`;
+    let cached = this._samplerCache.get(key);
+    if (cached) {return cached;}
+
+    cached = this._device.createSampler({
+      label: `glTF sampler ${key}`,
+      magFilter,
+      minFilter: minFilterAndMip.min,
+      mipmapFilter: minFilterAndMip.mip,
+      addressModeU: addrU,
+      addressModeV: addrV,
+    });
+    this._samplerCache.set(key, cached);
+    return cached;
   }
 
   /** @returns {GPUBuffer} Default normal (0,1,0) as instance-step VB */

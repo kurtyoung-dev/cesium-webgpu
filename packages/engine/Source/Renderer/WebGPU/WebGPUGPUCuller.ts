@@ -397,31 +397,58 @@ export class WebGPUGPUCuller {
    * @returns Culling results
    */
   async readResults(objectCount: number): Promise<CullResults> {
+    const emptyResult: CullResults = {
+      visibilityFlags: new Uint32Array(0),
+      visibleCount: 0,
+      objectCount: 0,
+    };
     if (!this._readbackBuffer || !this._countReadbackBuffer) {
-      return {
-        visibilityFlags: new Uint32Array(0),
-        visibleCount: 0,
-        objectCount: 0,
-      };
+      return emptyResult;
     }
 
-    // Map visibility buffer
-    await this._readbackBuffer.mapAsync(GPUMapMode.READ);
-    const visData = new Uint32Array(
-      this._readbackBuffer.getMappedRange(0, objectCount * 4),
-    );
-    const visibilityFlags = new Uint32Array(visData);
-    this._readbackBuffer.unmap();
+    // H-P5 — both readback maps can reject if the device is lost or
+    // the buffer was destroyed while the submit was still in flight.
+    // Catch once around the whole readback so the caller sees a clean
+    // empty-result fallback instead of an unhandled promise rejection.
+    // `unmap()` is always called on success paths; on rejection the
+    // buffer is left mapped, so caller must re-init the culler before
+    // the next pass anyway.
+    try {
+      // Map visibility buffer
+      await this._readbackBuffer.mapAsync(GPUMapMode.READ);
+      const visData = new Uint32Array(
+        this._readbackBuffer.getMappedRange(0, objectCount * 4),
+      );
+      const visibilityFlags = new Uint32Array(visData);
+      this._readbackBuffer.unmap();
 
-    // Map count buffer
-    await this._countReadbackBuffer.mapAsync(GPUMapMode.READ);
-    const countData = new Uint32Array(
-      this._countReadbackBuffer.getMappedRange(0, 4),
-    );
-    const visibleCount = countData[0];
-    this._countReadbackBuffer.unmap();
+      // Map count buffer
+      await this._countReadbackBuffer.mapAsync(GPUMapMode.READ);
+      const countData = new Uint32Array(
+        this._countReadbackBuffer.getMappedRange(0, 4),
+      );
+      const visibleCount = countData[0];
+      this._countReadbackBuffer.unmap();
 
-    return { visibilityFlags, visibleCount, objectCount };
+      return { visibilityFlags, visibleCount, objectCount };
+    } catch (e) {
+      // Device lost or buffer destroyed. Attempt to release any map
+      // we may have acquired before rejection; ignore secondary
+      // throws. Return empty so the culler reports "nothing visible"
+      // (safe: caller falls back to CPU frustum culling on a zero
+      // visibility count).
+      try {
+        this._readbackBuffer.unmap();
+      } catch {
+        // ignore
+      }
+      try {
+        this._countReadbackBuffer.unmap();
+      } catch {
+        // ignore
+      }
+      return emptyResult;
+    }
   }
 
   /**

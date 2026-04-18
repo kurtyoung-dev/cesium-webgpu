@@ -29,6 +29,10 @@ struct CameraUniforms {
     _pad1: f32,
     lightDirection: vec4<f32>,
     _pad2: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {

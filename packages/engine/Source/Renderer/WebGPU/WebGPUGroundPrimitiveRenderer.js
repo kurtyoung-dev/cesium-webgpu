@@ -271,6 +271,18 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.indexCount = geomData.indexCount || ibData.byteLength / 2;
   }
 
+  // Pick the classification pass based on the primitive's classificationType.
+  // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
+  // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
+  // For BOTH we route the command into CESIUM_3D_TILE_CLASSIFICATION so it
+  // still projects onto 3D Tiles — terrain-only emission is a minor
+  // compromise (a second command per ground primitive would fix that).
+  // Without this, ground primitives with classificationType: CESIUM_3D_TILE
+  // silently degraded to terrain-only on WebGPU.
+  const classType = primitive?.classificationType ?? 0;
+  const groundPass =
+    classType === 0 ? 3 /* TERRAIN_CLASSIFICATION */ : 6; /* CESIUM_3D_TILE_CLASSIFICATION */
+
   // Stencil pass draw command (mark coverage, no color output)
   const stencilCommand = new WebGPUDrawCommand({
     pipeline: cache.stencilPipeline,
@@ -281,7 +293,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     indexFormat: "uint16",
     vertexCount: cache.vertexCount || 0,
     stencilReference: 1,
-    pass: 3, // Pass.TERRAIN_CLASSIFICATION
+    pass: groundPass,
     owner: primitive,
   });
 
@@ -295,7 +307,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     indexFormat: "uint16",
     vertexCount: cache.vertexCount || 0,
     stencilReference: 1,
-    pass: 3, // Pass.TERRAIN_CLASSIFICATION
+    pass: groundPass,
     owner: primitive,
   });
 

@@ -25,6 +25,10 @@ struct CameraUniforms {
     _pad1: f32,
     _pad2: f32,
     _pad3: f32,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -36,7 +40,12 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-@group(2) @binding(1) var normalTexture: texture_2d<f32>;
+// DP-H20 (Batch 25) — dual texture bind group matching the Lit variant.
+// Flat NormalMap uses only the normal map (binding 2) for its color
+// visualization — the diffuse texture at binding 1 is unused here but
+// the BGL is shared with other materials so the declaration stays.
+@group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
+@group(2) @binding(2) var normalMapTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;

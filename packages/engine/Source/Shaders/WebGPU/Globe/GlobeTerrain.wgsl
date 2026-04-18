@@ -60,7 +60,11 @@ struct CameraUniforms {
   enableLighting: f32,
   scaleAndBias: mat4x4<f32>,
   minMaxHeight: vec2<f32>,
-  _pad3: vec2<f32>,
+  // Ellipsoid mean radius (meters) — replaces the hardcoded EARTH_RADIUS
+  // constant so Mars / Moon / custom ellipsoids produce correct altitude
+  // calculations. `.y` stays reserved for a future oblate-ellipsoid pair.
+  ellipsoidRadius: f32,
+  _pad3: f32,
   // ─── 2D / Columbus View support ───
   // tileRectangle: west, south, east, north (radians)
   tileRectangle: vec4<f32>,
@@ -76,6 +80,15 @@ struct CameraUniforms {
   morphTime: f32,
   useWebMercator: f32,
   _pad4: f32,
+  // ─── DP-H41: TAA / motion-vector support ───
+  // Last frame's viewProjection, captured by `UniformState.update()` before
+  // it overwrites `_viewProjection` with the new camera state. Motion-vector
+  // passes read this as `camera.previousViewProjection` to reproject the
+  // current fragment into the previous frame's NDC. On the first frame it
+  // holds `Matrix4.IDENTITY` (`UniformState` ctor default) — downstream
+  // consumers should gate motion-vector output on a separate "valid
+  // history" flag, not on matrix contents.
+  previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -125,6 +138,15 @@ struct TileUniforms {
   //                              (read by fragmentMain when set)
   //   z, w = reserved for future debug toggles
   debugFields: vec4<f32>,
+  // DP-H24 — Globe hue/saturation/brightness shift. When any channel
+  // is non-zero (|shift| > 0.001) the final composite color is
+  // converted to HSB, shifted, and converted back. Matches the
+  // WebGL path's `u_hsbShift` in GlobeFS.glsl.
+  //   x = hueShift (-inf..+inf, wrapped via fract)
+  //   y = saturationShift (-1..+1, clamped)
+  //   z = brightnessShift (-1..+1, clamped)
+  //   w = padding
+  hsbShift: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -160,6 +182,16 @@ struct EffectsUniforms {
     clippingEdgeColor: vec4<f32>,
     // WGF-1: each entry is (n.xyz, dPrime); unused slots are (0,0,0,+inf).
     clipPlaneEqHW: array<vec4<f32>, 8>,
+    // Atmosphere LUT control:
+    //   .x = useAtmosphereLut flag (>0.5 → sample bindings 7/8 for
+    //        physically-accurate transmittance + inscatter; otherwise
+    //        fall back to inline Rayleigh/Mie approximation in
+    //        computeAtmosphereColor)
+    //   .y = innerRadius / planetRadius (meters) — used to recover
+    //        altitude for LUT U/V mapping
+    //   .z = atmosphere thickness (outer - inner, meters)
+    //   .w = reserved
+    atmosphereLutControl: vec4<f32>,
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
@@ -169,15 +201,42 @@ struct EffectsUniforms {
 @group(3) @binding(4) var clippingPlaneSampler: sampler;
 @group(3) @binding(5) var polygonSDFTex: texture_2d<f32>;
 @group(3) @binding(6) var polygonSDFSampler: sampler;
+// Phase 4 — AtmosphereLUT integration for fog color. The transmittance
+// LUT gives Beer-Lambert attenuation for a view ray's altitude + zenith
+// angle; the inscatter LUT gives the scattered sky color along that
+// ray, precomputed by the AtmosphereLUT compute pass using the same
+// scattering parameters the SkyAtmosphere shell uses — so terrain fog
+// now matches the visible atmosphere dome. Gated on
+// `effects.atmosphereLutControl.x > 0.5`; placeholder 1×1 float
+// textures bind here when the LUT isn't ready yet, producing a
+// transmittance of 0 that makes the LUT path a no-op (falls through
+// to the inline atmosphere color).
+@group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(3) @binding(9) var atmosphereLutSampler: sampler;
 
 // ─── Vertex Input / Output ───
+// DP-H25 — the `@location(2) geodeticSurfaceNormal` slot is conditionally
+// declared in all three input structs via the `GEODETIC_NORMAL` preprocessor
+// define. When active, the TS pipeline builder adds the matching
+// attribute over the trailing 12 bytes of each tile's vertex stride so
+// the exaggeration branch in `processVertex` can use the true WGS84
+// geodetic normal. When inactive, the attribute is absent and callers
+// pass `vec3<f32>(0.0)` as the sentinel — the exaggeration branch
+// falls back to `normalize(position3D)`.
 struct VertexInput {
   @location(0) position3DAndHeight: vec4<f32>,
   @location(1) textureCoordAndEncodedNormals: vec4<f32>,
+  //>>ifdef GEODETIC_NORMAL
+  @location(2) geodeticSurfaceNormal: vec3<f32>,
+  //>>endif
 };
 
 struct VertexInputQuantized {
   @location(0) compressed0: vec4<f32>,
+  //>>ifdef GEODETIC_NORMAL
+  @location(2) geodeticSurfaceNormal: vec3<f32>,
+  //>>endif
 };
 
 // Separate struct for the `hasWebMercatorT && hasNormals` quantized case.
@@ -188,6 +247,9 @@ struct VertexInputQuantized {
 struct VertexInputQuantizedWebMercNormals {
   @location(0) compressed0: vec4<f32>,
   @location(1) compressed1: f32,
+  //>>ifdef GEODETIC_NORMAL
+  @location(2) geodeticSurfaceNormal: vec3<f32>,
+  //>>endif
 };
 
 struct VertexOutput {
@@ -200,7 +262,9 @@ struct VertexOutput {
 };
 
 // ─── Constants ───
-const EARTH_RADIUS: f32 = 6378137.0;
+// Fallback used only if the CPU never uploads a real ellipsoid radius. WGS84
+// equatorial radius. Shader code should prefer `camera.ellipsoidRadius`.
+const EARTH_RADIUS_FALLBACK: f32 = 6378137.0;
 const PI: f32 = 3.14159265358979;
 
 // ─── Default ocean parameters (used when uniforms are zero/unset) ───
@@ -346,7 +410,8 @@ const HEIGHT_SENTINEL_UNAVAILABLE: f32 = -999999.0;
 
 fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
                  encodedNormal: f32, webMercatorT: f32,
-                 precomputedHeight: f32) -> VertexOutput {
+                 precomputedHeight: f32,
+                 geodeticSurfaceNormal: vec3<f32>) -> VertexOutput {
   var out: VertexOutput;
 
   // Reconstruct full-precision center as f32 for uses that don't participate
@@ -359,11 +424,28 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   let exaggeration = tile.verticalExaggeration.x;
   if (exaggeration != 1.0 && camera.sceneMode > 2.5) {
     let position3D = position + center3D;
-    let ellipsoidNormal = normalize(position3D);
-    let surfaceHeight = length(position3D) - EARTH_RADIUS;
+    // DP-H25 — prefer the true geodetic surface normal (from
+    // TerrainEncoding) over `normalize(position3D)` (the ellipsocentric
+    // normal). On WGS84 the two diverge by up to 0.2° at mid-latitudes,
+    // which drifts exaggerated terrain away from the ellipsoid surface.
+    // Callers that have no geodetic normal attribute pass vec3(0) as a
+    // sentinel; dot(n, n) > 0.25 rules out the zero vector AND any
+    // non-unit debug noise without paying for a `length()`.
+    let hasGeoNormal = dot(geodeticSurfaceNormal, geodeticSurfaceNormal) > 0.25;
+    let ellipsoidNormal = select(
+      normalize(position3D),
+      geodeticSurfaceNormal,
+      hasGeoNormal,
+    );
+    let ellipsoidR = select(
+      EARTH_RADIUS_FALLBACK,
+      camera.ellipsoidRadius,
+      camera.ellipsoidRadius > 1.0,
+    );
+    let surfaceHeight = length(position3D) - ellipsoidR;
     let relativeHeight = tile.verticalExaggeration.y;
     let newHeight = (surfaceHeight - relativeHeight) * exaggeration + relativeHeight;
-    let clampedHeight = max(newHeight, -EARTH_RADIUS * 0.5);
+    let clampedHeight = max(newHeight, -ellipsoidR * 0.5);
     let offset = ellipsoidNormal * (clampedHeight - surfaceHeight);
     exaggeratedPosition = position + offset;
   }
@@ -379,8 +461,13 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   // fall back to `length(position3DWC) - EARTH_RADIUS` only as a last resort
   // since that subtraction loses sub-meter precision at Earth radius.
   let useProvidedHeight = precomputedHeight > HEIGHT_SENTINEL_UNAVAILABLE + 1.0;
+  let fallbackEllipsoidR = select(
+    EARTH_RADIUS_FALLBACK,
+    camera.ellipsoidRadius,
+    camera.ellipsoidRadius > 1.0,
+  );
   let resolvedHeight = select(
-    length(position3DWC) - EARTH_RADIUS,
+    length(position3DWC) - fallbackEllipsoidR,
     precomputedHeight,
     useProvidedHeight,
   );
@@ -463,12 +550,25 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 // Used when hasWebMercatorT=false. Normal (if present) is in .z component.
 // When no normals, .z = 0 (default fill from float32x2 format).
 // webMercatorT defaults to geographic V (textureCoordinates.y).
+// DP-H25 — every entry point routes the geodetic normal into
+// `processVertex` through the same conditional expression. When
+// `GEODETIC_NORMAL` is active the real per-vertex attribute flows
+// through; otherwise the `vec3<f32>(0.0)` sentinel engages the
+// ellipsocentric fallback in the exaggeration branch. Keeping this
+// dispatch conditional inline removes the 6 parallel `*_Geo` entry
+// points that existed before Batch 20.
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
   // Uncompressed vertex carries the height directly in position.w.
   return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.z, tc.y,
-                       input.position3DAndHeight.w);
+                       input.position3DAndHeight.w,
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // ─── Vertex Shader: Uncompressed Terrain with WebMercatorT (no normals) ───
@@ -477,7 +577,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
   return processVertex(input.position3DAndHeight.xyz, tc.xy, 0.0, tc.z,
-                       input.position3DAndHeight.w);
+                       input.position3DAndHeight.w,
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // ─── Vertex Shader: Uncompressed Terrain with WebMercatorT + Normals ───
@@ -486,7 +591,12 @@ fn vertexMainWebMerc(input: VertexInput) -> VertexOutput {
 fn vertexMainWebMercNormals(input: VertexInput) -> VertexOutput {
   let tc = input.textureCoordAndEncodedNormals;
   return processVertex(input.position3DAndHeight.xyz, tc.xy, tc.w, tc.z,
-                       input.position3DAndHeight.w);
+                       input.position3DAndHeight.w,
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // Decode the quantized-terrain normalized height (`zh.y` in [0, 1]) back
@@ -509,7 +619,12 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
   let position = (camera.scaleAndBias * vec4<f32>(scaledPos, 1.0)).xyz;
   let uv = decompressTextureCoordinates(input.compressed0.z);
   return processVertex(position, uv, input.compressed0.w, uv.y,
-                       decodeQuantizedHeight(zh.y));
+                       decodeQuantizedHeight(zh.y),
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // ─── Vertex Shader: Quantized Terrain with WebMercatorT (no normals) ───
@@ -525,7 +640,12 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
   // 32896.0 = oct-encoded (0,0,1) up vector \u2014 prevents back-face culling
   return processVertex(position, uv, 32896.0, webMercT,
-                       decodeQuantizedHeight(zh.y));
+                       decodeQuantizedHeight(zh.y),
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // ─── Vertex Shader: Quantized Terrain with WebMercatorT AND Normals ───
@@ -545,7 +665,12 @@ fn vertexMainQuantizedWebMercNormals(
   let uv = decompressTextureCoordinates(input.compressed0.z);
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
   return processVertex(position, uv, input.compressed1, webMercT,
-                       decodeQuantizedHeight(zh.y));
+                       decodeQuantizedHeight(zh.y),
+                       //>>ifdef GEODETIC_NORMAL
+                       input.geodeticSurfaceNormal);
+                       //>>else
+                       vec3<f32>(0.0));
+                       //>>endif
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -780,6 +905,70 @@ fn computeEnhancedOcean(
 fn computeFog(distance: f32, fogDensity: f32, modifier: f32) -> f32 {
   let scalar = distance * fogDensity;
   return clamp(1.0 - exp(-((modifier * scalar + modifier) * (scalar * (1.0 + modifier)))), 0.0, 1.0);
+}
+
+// LUT-sampled atmosphere color for terrain fog. Uses the same
+// (cosViewZenith, altitude) U/V mapping as SkyAtmosphere.wgsl's
+// `sampleScatteringLut`, so ground fog and sky atmosphere share a
+// consistent color / transmittance per view direction + altitude.
+//
+// worldPos: fragment world-space position (tile center + relative)
+// cameraWC: camera world-space position (reconstructed from
+//           encodedCameraHigh + encodedCameraLow in the caller)
+//
+// Returns vec4(inscatterRGB, transmittanceScalar) where:
+//   .rgb = additive atmosphere color that should be added to or
+//          mixed-toward for fog
+//   .a   = approximate transmittance along the view ray (0 = fully
+//          absorbed, 1 = clear). The caller may use this to dim
+//          terrain contribution through thick fog.
+//
+// The caller is responsible for checking `effects.atmosphereLutControl.x
+// > 0.5` before consuming this result — when disabled the placeholder
+// textures produce zero inscatter and zero transmittance, which the
+// fog path treats as "no LUT info".
+fn sampleAtmosphereFogLut(
+  worldPos: vec3<f32>,
+  cameraWC: vec3<f32>,
+) -> vec4<f32> {
+  let innerRadius = effects.atmosphereLutControl.y;
+  let thickness = max(1.0, effects.atmosphereLutControl.z);
+  // Camera altitude + view direction drive the LUT lookup. We use the
+  // CAMERA's altitude + the camera-to-fragment view direction, which
+  // matches how SkyAtmosphere samples the same table for the visible
+  // shell. Ground fog then matches the sky color the user sees
+  // through the same pixel.
+  let viewVec = worldPos - cameraWC;
+  let viewDir = normalize(viewVec);
+  let upDir = normalize(cameraWC);
+  let cosViewZenith = clamp(dot(viewDir, upDir), -1.0, 1.0);
+  let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+  let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+  let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+  // Transmittance LUT: .rgb = attenuation along the ray. We take the
+  // average channel for a scalar extinction factor (most terrain fog
+  // blends monochromatically along the view ray).
+  let tSample = textureSampleLevel(
+    atmosphereTransmittanceLut, atmosphereLutSampler,
+    vec2<f32>(uCoord, vCoord), 0.0,
+  );
+  let transmittance = clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+  // Inscatter LUT: .rgb = sky color along the ray (Rayleigh + Mie
+  // pre-integrated with the current sun direction).
+  let iSample = textureSampleLevel(
+    atmosphereInscatterLut, atmosphereLutSampler,
+    vec2<f32>(uCoord, vCoord), 0.0,
+  );
+
+  // Orbital-falloff — atmosphere fog shouldn't apply when the camera
+  // is way above the atmosphere (the sky shell handles that). Mirrors
+  // the logic in SkyAtmosphere::sampleScatteringLut.
+  let excessAltitude = max(0.0, cameraAltitude - thickness);
+  let orbitFalloff = exp(-excessAltitude / thickness);
+
+  return vec4<f32>(iSample.rgb * orbitFalloff, transmittance);
 }
 
 // Enhanced atmosphere color with Rayleigh phase and Mie forward scattering
@@ -1073,13 +1262,43 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // turned distant terrain transparent and exposed the black skybox
   // behind it whenever the camera was tilted toward the horizon, which
   // is the opposite of what fog should do.
+  //
+  // Phase 4 integration: when the atmosphere LUT is available
+  // (compute supported AND the SkyAtmosphere feature renderer has
+  // dispatched the compute pass at least once), sample the inscatter
+  // LUT for a physically-accurate fog color that matches the visible
+  // sky dome exactly. Otherwise fall back to the inline
+  // Rayleigh/Mie approximation — both paths use the same `fogAmount`
+  // mix factor so switching between them at runtime doesn't pop.
   let fogDensity = tile.fogDensity;
   if (fogDensity > 0.0) {
     let fogAmount = computeFog(input.v_distance, fogDensity, tile.fogVisualDensityScalar);
 
-    let atmosphereColor = computeAtmosphereColor(
-      input.v_positionEC, normal, sunDir,
-    );
+    var atmosphereColor: vec3<f32>;
+    if (effects.atmosphereLutControl.x > 0.5) {
+      // Reconstruct camera world position from the RTE-encoded camera.
+      // Single-precision subtract is fine here — we're feeding it into
+      // a texture sample, not a transform.
+      let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+      // Reconstruct fragment world position via the tile-center + RTE.
+      let fragmentWorldPos = input.v_positionMC + cameraWC;
+      let lut = sampleAtmosphereFogLut(fragmentWorldPos, cameraWC);
+      // Use the LUT's inscatter directly when it returns meaningful
+      // magnitude; the placeholder texture produces zero so we fall
+      // back cleanly in that case.
+      let lutLuminance = max(lut.r, max(lut.g, lut.b));
+      if (lutLuminance > 0.001) {
+        atmosphereColor = lut.rgb;
+      } else {
+        atmosphereColor = computeAtmosphereColor(
+          input.v_positionEC, normal, sunDir,
+        );
+      }
+    } else {
+      atmosphereColor = computeAtmosphereColor(
+        input.v_positionEC, normal, sunDir,
+      );
+    }
 
     // Night-side fog is darker — don't brighten with atmosphere on dark side
     let nightFogDimming = mix(0.05, 1.0, dayFade);
@@ -1088,5 +1307,61 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Alpha intentionally untouched — terrain stays opaque through fog.
   }
 
+  // DP-H24 — Globe hue / saturation / brightness shift. Matches the
+  // WebGL GlobeFS.glsl `u_hsbShift` application. Applied AFTER fog so
+  // the user's tonal grading touches both imagery and atmospheric
+  // haze — same behavior as the reference WebGL path.
+  let hsbShift = tile.hsbShift.xyz;
+  if (abs(hsbShift.x) > 0.001 || abs(hsbShift.y) > 0.001 || abs(hsbShift.z) > 0.001) {
+    var hsb = globe_rgbToHsb(color);
+    hsb.x = fract(hsb.x + hsbShift.x);
+    hsb.y = clamp(hsb.y + hsbShift.y, 0.0, 1.0);
+    hsb.z = clamp(hsb.z + hsbShift.z, 0.0, 1.0);
+    color = globe_hsbToRgb(hsb);
+  }
+
   return vec4<f32>(color, alpha);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DP-H24 — RGB ↔ HSB conversion helpers for hue/saturation/brightness
+// globe-level tonal shift. Module-scoped and prefixed `globe_` so they
+// don't collide with the rgbToHsb/hsbToRgb pair in SkyAtmosphere.wgsl
+// (WGSL doesn't have namespaces — the globe + sky shaders can end up
+// in the same module graph via shared pipelines).
+// ═══════════════════════════════════════════════════════════════════════
+fn globe_rgbToHsb(c: vec3<f32>) -> vec3<f32> {
+  let maxC = max(c.r, max(c.g, c.b));
+  let minC = min(c.r, min(c.g, c.b));
+  let delta = maxC - minC;
+  var h: f32 = 0.0;
+  var s: f32 = 0.0;
+  let b = maxC;
+  if (delta > 0.001) {
+    s = delta / maxC;
+    if (c.r >= maxC) { h = (c.g - c.b) / delta; }
+    else if (c.g >= maxC) { h = 2.0 + (c.b - c.r) / delta; }
+    else { h = 4.0 + (c.r - c.g) / delta; }
+    h = h / 6.0;
+    if (h < 0.0) { h += 1.0; }
+  }
+  return vec3<f32>(h, s, b);
+}
+
+fn globe_hsbToRgb(hsb: vec3<f32>) -> vec3<f32> {
+  let h = fract(hsb.x) * 6.0;
+  let s = clamp(hsb.y, 0.0, 1.0);
+  let b = clamp(hsb.z, 0.0, 1.0);
+  let i = floor(h);
+  let f = h - i;
+  let p = b * (1.0 - s);
+  let q = b * (1.0 - s * f);
+  let t = b * (1.0 - s * (1.0 - f));
+  let ii = i32(i) % 6;
+  if (ii == 0) { return vec3<f32>(b, t, p); }
+  if (ii == 1) { return vec3<f32>(q, b, p); }
+  if (ii == 2) { return vec3<f32>(p, b, t); }
+  if (ii == 3) { return vec3<f32>(p, q, b); }
+  if (ii == 4) { return vec3<f32>(t, p, b); }
+  return vec3<f32>(b, p, q);
 }

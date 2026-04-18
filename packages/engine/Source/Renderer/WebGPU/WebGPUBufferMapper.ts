@@ -124,8 +124,19 @@ export class WebGPUBufferMapper {
     // Get or create staging buffer
     const staging = this._getStagingBuffer(alignedSize, GPUMapMode.WRITE);
 
-    // Map and write
+    // Map and write. Guard against destruction during the await (viewer
+    // teardown / device-loss race): calling getMappedRange on a destroyed
+    // staging buffer throws, and leaving it in the mapped-pending state
+    // permanently wedges the buffer pool entry.
     await staging.mapAsync(GPUMapMode.WRITE);
+    if (this._isDestroyed) {
+      try {
+        staging.unmap();
+      } catch {
+        /* already unmapped or destroyed */
+      }
+      return;
+    }
     const mappedRange = new Uint8Array(staging.getMappedRange(0, alignedSize));
 
     if (data instanceof ArrayBuffer) {
@@ -178,8 +189,16 @@ export class WebGPUBufferMapper {
     encoder.copyBufferToBuffer(srcBuffer, srcOffset, readback, 0, alignedSize);
     this._device.queue.submit([encoder.finish()]);
 
-    // Map and read
+    // Map and read. Same destroyed-guard pattern as the upload path above.
     await readback.mapAsync(GPUMapMode.READ);
+    if (this._isDestroyed) {
+      try {
+        readback.unmap();
+      } catch {
+        /* already unmapped or destroyed */
+      }
+      return new Uint8Array(byteLength);
+    }
     const mappedData = new Uint8Array(readback.getMappedRange(0, alignedSize));
     const result = new Uint8Array(byteLength);
     result.set(mappedData.subarray(0, byteLength));

@@ -165,6 +165,39 @@ interface GPUCullerInstance {
   initialize(code: string): Promise<void>;
 }
 
+/**
+ * Minimal interface for the point cloud LOD processor (lazy-loaded).
+ * Matches the public surface of `WebGPUPointCloudLODProcessor`. The
+ * import is dynamic to avoid eagerly pulling compute shader code +
+ * storage buffer plumbing into bundles that don't render point clouds.
+ */
+interface WebGPUPointCloudLODProcessorInstance {
+  isReady: boolean;
+  visibleCountBuffer: GPUBuffer | null;
+  visibleIndicesBuffer: GPUBuffer | null;
+  uploadPositions(
+    posX: Float32Array,
+    posY: Float32Array,
+    posZ: Float32Array,
+  ): void;
+  dispatch(
+    encoder: GPUCommandEncoder,
+    params: {
+      cameraPositionWC: [number, number, number];
+      lod3Distance2: number;
+      lod2Distance2: number;
+      lod1Distance2: number;
+      lod0Distance2: number;
+      frustumPlanes: Float32Array | number[];
+      pointCount: number;
+      maxVisiblePoints: number;
+      screenSpaceRadius?: number;
+      geometricError?: number;
+    },
+  ): void;
+  destroy(): void;
+}
+
 /** Minimal ClearCommand shape accessed by the clear() method. */
 interface CesiumClearCommand {
   color?: CesiumColor | false;
@@ -471,6 +504,8 @@ export class WebGPUContext extends GraphicsContext {
     { target: number; texture: StubTextureWrapper | null }
   > = new Map();
   private _boundFramebuffer: StubFramebuffer | null = null;
+  private _boundReadFramebuffer: StubFramebuffer | null = null;
+  private _boundDrawFramebuffer: StubFramebuffer | null = null;
   private _boundRenderbuffer: StubRenderbuffer | null = null;
   private _framebuffers: Map<
     StubFramebuffer,
@@ -1581,6 +1616,18 @@ export class WebGPUContext extends GraphicsContext {
       set boundFramebuffer(v) {
         ctx._boundFramebuffer = v;
       },
+      get boundReadFramebuffer() {
+        return ctx._boundReadFramebuffer;
+      },
+      set boundReadFramebuffer(v) {
+        ctx._boundReadFramebuffer = v;
+      },
+      get boundDrawFramebuffer() {
+        return ctx._boundDrawFramebuffer;
+      },
+      set boundDrawFramebuffer(v) {
+        ctx._boundDrawFramebuffer = v;
+      },
       get boundRenderbuffer() {
         return ctx._boundRenderbuffer;
       },
@@ -2091,14 +2138,27 @@ export class WebGPUContext extends GraphicsContext {
 
       /**
        * Async map — call after the command buffer has been submitted.
-       * Returns the raw pixel data as a Uint8Array (with row padding).
+       * Returns the raw pixel data as a Uint8Array (with row padding),
+       * or `null` if the device was lost / the buffer destroyed while
+       * the map was in flight (H-P5 hardening).
        */
-      mapAsync: async (): Promise<Uint8Array> => {
-        await readbackBuffer.mapAsync(GPUMapMode.READ);
-        const arrayBuffer = readbackBuffer.getMappedRange();
-        mappedData = new Uint8Array(arrayBuffer.slice(0));
-        readbackBuffer.unmap();
-        return mappedData;
+      mapAsync: async (): Promise<Uint8Array | null> => {
+        // H-P5 — guard mapAsync against device-loss / teardown races.
+        // Without this a lost device during a pending PBO read leaves
+        // the promise rejected unhandled, crashing the app. The outer
+        // `readPixelsAsync` already handles a null return; other
+        // callers (fire-and-forget paths) also benefit from the clean
+        // null instead of an unhandled rejection.
+        try {
+          await readbackBuffer.mapAsync(GPUMapMode.READ);
+          const arrayBuffer = readbackBuffer.getMappedRange();
+          mappedData = new Uint8Array(arrayBuffer.slice(0));
+          readbackBuffer.unmap();
+          return mappedData;
+        } catch (e) {
+          mappedData = null;
+          return null;
+        }
       },
 
       /**
@@ -2160,6 +2220,13 @@ export class WebGPUContext extends GraphicsContext {
 
     try {
       const rawData = await pbo.mapAsync();
+      if (!rawData) {
+        // H-P5 — mapAsync now returns null on device-loss / teardown.
+        // Return null so callers get a clean failure instead of a
+        // null-dereference on the row-copy loop below.
+        pbo.destroy();
+        return null;
+      }
       // Strip row-alignment padding into a tight RGBA array
       const width = pbo.width;
       const height = pbo.height;
@@ -2631,6 +2698,15 @@ export class WebGPUContext extends GraphicsContext {
       return true; // Handled (no-op if no shadow renderer registered)
     }
     const { shadowState } = scene.frameState;
+    // DP-H43 — honor `viewer.shadows = false` / scene-wide shadow gate.
+    // WebGL's Scene.js per-command check (`shadowsEnabled && command.castShadows`)
+    // skips the entire cast derivation when the flag is off. Mirror that
+    // here at the pass entry so we don't iterate shadowMaps for nothing
+    // (and so users don't pay the GPU cost of a depth-only pass when
+    // shadows are disabled globally).
+    if (!shadowState || shadowState.shadowsEnabled === false) {
+      return true;
+    }
     const { shadowMaps } = shadowState;
     const encoder = this._currentCommandEncoder;
     if (!encoder) {
@@ -2817,26 +2893,19 @@ export class WebGPUContext extends GraphicsContext {
       this._deviceLossRecovery = null;
     }
 
-    // Destroy device
-    if (this._device) {
-      this._device.destroy();
-      this._device = null;
-    }
-
-    // Clear caches
-    this._samplerCache.clear();
-    this._bindGroupLayoutCache.clear();
-    this._bindGroupCache.clear();
+    // C-R13 (2026-04-16 renderer-deep review): destroy all subsystems
+    // that own GPU resources BEFORE destroying the device. Each
+    // `destroy()` below calls `.destroy()` on its owned buffers /
+    // textures / query sets, and those calls require the device to
+    // still be alive. Previously this block ran after `_device.destroy()`
+    // which made the GPU validator flag teardown as an error and
+    // leaked transient buffer contents on long-lived multi-viewer apps.
 
     // Destroy viewport quad utility
     if (this._viewportQuad) {
       this._viewportQuad.destroy();
       this._viewportQuad = null;
     }
-
-    // Clear buffer pools
-    this._bufferPool.clear();
-    this._uniformBufferPool = [];
 
     // Destroy mipmap generator
     if (this._mipmapGenerator) {
@@ -2865,9 +2934,28 @@ export class WebGPUContext extends GraphicsContext {
       this._gpuCuller.destroy();
       this._gpuCuller = null;
     }
+    if (this._pointCloudLOD) {
+      this._pointCloudLOD.destroy();
+      this._pointCloudLOD = null;
+    }
     if (this._bufferMapper) {
       this._bufferMapper.destroy();
       this._bufferMapper = null;
+    }
+
+    // Clear buffer pools (drops device-owned buffers back for GC).
+    this._bufferPool.clear();
+    this._uniformBufferPool = [];
+
+    // Clear caches that reference device-owned handles.
+    this._samplerCache.clear();
+    this._bindGroupLayoutCache.clear();
+    this._bindGroupCache.clear();
+
+    // NOW destroy the device — everything that needed it has already run.
+    if (this._device) {
+      this._device.destroy();
+      this._device = null;
     }
 
     // Clear references
@@ -3426,6 +3514,8 @@ export class WebGPUContext extends GraphicsContext {
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
   private _gpuCuller: GPUCullerInstance | null = null;
   private _gpuCullerInitializing: boolean = false;
+  private _pointCloudLOD: WebGPUPointCloudLODProcessorInstance | null = null;
+  private _pointCloudLODInitializing: boolean = false;
   private _csmRenderer: WebGPUCSMRenderer | null = null;
 
   /**
@@ -3698,6 +3788,49 @@ export class WebGPUContext extends GraphicsContext {
       });
     }
     return this._gpuCuller;
+  }
+
+  /**
+   * Lazy-init point cloud LOD processor. Produces a compacted
+   * visible-indices buffer + atomic visible count via compute, so
+   * downstream point cloud renderers can use `drawIndirect` instead
+   * of iterating all points every frame.
+   *
+   * Mirrors `gpuCuller`: same lazy-import pattern, same per-context
+   * instance, same error-swallow-and-warn on init failure. Consumers
+   * must check `.isReady` before calling `dispatch` since init is
+   * async — the getter returns the instance as soon as one exists,
+   * even if the pipelines are still compiling.
+   *
+   * @returns The processor instance (may be mid-initialization — check .isReady)
+   */
+  get pointCloudLOD(): WebGPUPointCloudLODProcessorInstance | null {
+    if (
+      !this._pointCloudLOD &&
+      this._device &&
+      !this._pointCloudLODInitializing
+    ) {
+      this._pointCloudLODInitializing = true;
+      import("./WebGPUPointCloudLODProcessor.js")
+        .then(({ WebGPUPointCloudLODProcessor }) => {
+          const proc = new WebGPUPointCloudLODProcessor(this._device!, {
+            label: `ctx-${this._id}`,
+          });
+          return proc.initialize().then(() => {
+            this._pointCloudLOD =
+              proc as unknown as WebGPUPointCloudLODProcessorInstance;
+            this._pointCloudLODInitializing = false;
+          });
+        })
+        .catch((e: unknown) => {
+          console.warn(
+            `[CesiumJS:webgpu:ctx-${this._id}] Point cloud LOD init failed:`,
+            e,
+          );
+          this._pointCloudLODInitializing = false;
+        });
+    }
+    return this._pointCloudLOD;
   }
 
   /**

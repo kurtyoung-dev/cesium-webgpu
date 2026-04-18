@@ -46,7 +46,9 @@ The estimate now: **~14-18 weeks of focused engineering to reach a genuine drop-
 ## CRITICAL findings (wrong pixels on typical scenes)
 
 ### DP-C1. 3D Tiles styling is a no-op on WebGPU
-**Verified.** [BatchTexture.js:558](../packages/engine/Source/Scene/BatchTexture.js) creates `new Texture(context, { source: { arrayBufferView: batchTexture._batchValues } })`. The CesiumJS Texture wrapper stores the bytes but does NOT populate `_source` with an ImageBitmap. [WebGPUModelFeatureId.js:139-175](../packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js) `createBatchGPUTexture` only knows how to copy from `cesiumTex._source` — for every batched 3D Tile it returns `null`. `ensureFeatureIdResources` hits the `flags === 0` early-out (line 249-251), `FLAG_HAS_BATCH_TABLE` is never set, `ModelPBRComplete.wgsl` falls through the branch at line 509-513 (comment: *"use vertex color as proxy… fall through with featureColor = white"*).
+**FIXED 2026-04-16 (Batch 10).** `createBatchGPUTexture` now reads `batchTexture._batchValues` (Uint8Array, per-feature RGBA) and uploads via `device.queue.writeTexture` using `batchTexture._textureDimensions` for the 2D layout. The ImageBitmap path remains as a fallback. Return shape widened to `{ texture, width, height }`; `ensureFeatureIdResources` unpacks it and sets `FLAG_HAS_BATCH_TABLE`. Additionally, the cached path now checks `batchTexture._batchValuesDirty` and re-uploads via a new `updateBatchGPUTexture` helper so runtime `setShow` / `setColor` / `tileset.style = …` mutations propagate to subsequent frames instead of freezing at tile-load state. `Cesium3DTileStyle.color = "${height} > 100 ? 'red' : 'blue'"` now produces height-colored output on WebGPU; `show: "${type} === 'road'"` hides features as expected.
+
+**Original finding — Verified.** [BatchTexture.js:558](../packages/engine/Source/Scene/BatchTexture.js) creates `new Texture(context, { source: { arrayBufferView: batchTexture._batchValues } })`. The CesiumJS Texture wrapper stores the bytes but does NOT populate `_source` with an ImageBitmap. [WebGPUModelFeatureId.js:139-175](../packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js) `createBatchGPUTexture` only knows how to copy from `cesiumTex._source` — for every batched 3D Tile it returns `null`. `ensureFeatureIdResources` hits the `flags === 0` early-out (line 249-251), `FLAG_HAS_BATCH_TABLE` is never set, `ModelPBRComplete.wgsl` falls through the branch at line 509-513 (comment: *"use vertex color as proxy… fall through with featureColor = white"*).
 
 **User impact:** `Cesium3DTileStyle.color = "${height} > 100 ? 'red' : 'blue'"` produces uniform white rendering on WebGPU. Feature hiding (`show: false`), feature highlighting, height-based coloring — **none of it works.** This is the single most important gap for 3D Tiles applications.
 
@@ -123,7 +125,9 @@ WebGL's `GlobeVS.glsl:135` does `height = height * (u_minMaxHeight.y - u_minMaxH
 ---
 
 ### DP-C6. glTF normalized integer attributes cast without dequantize — cascades beyond positions
-**Verified.** [ModelPrimitiveGeometry.js:231-236](../packages/engine/Source/Scene/Model/ModelPrimitiveGeometry.js) `ensureFloat32()` does `new Float32Array(data)` — value cast, not dequantize. Applies to every attribute channel:
+**FIXED 2026-04-16 (Batch 11).** `ensureFloat32(data, attr, componentsPerAttribute)` now honors `attr.quantization` (KHR_mesh_quantization — applies per-component `quantizedVolumeOffset + raw * quantizedVolumeStepSize`) and `attr.normalized` (applies `raw / typeMax` for byte/short integer accessors). Call sites in `extractPrimitiveGeometry` (POSITION/NORMAL/TANGENT/TEXCOORD_0/TEXCOORD_1/WEIGHTS_0) and morph-target extraction (POSITION/NORMAL) now pass the source attribute + component count. Signed/unsigned integer divisors follow the glTF spec (UNSIGNED_BYTE → 255, BYTE → 127, UNSIGNED_SHORT → 65535, SHORT → 32767). Google Photorealistic + most commercial Draco-quantized tilesets now render with correct geometry scale and properly lit surfaces.
+
+**Original finding — Verified.** [ModelPrimitiveGeometry.js:231-236](../packages/engine/Source/Scene/Model/ModelPrimitiveGeometry.js) `ensureFloat32()` does `new Float32Array(data)` — value cast, not dequantize. Applies to every attribute channel:
 
 | Attribute | Common quantized type | Cast result | User visual |
 |---|---|---|---|
@@ -141,21 +145,27 @@ KHR_mesh_quantization is near-universal in production tilesets (Google Photoreal
 ---
 
 ### DP-C7. `TEXCOORD_1` and per-slot `texCoord` index all dropped
-**Verified by agent.** `ModelPBRComplete.wgsl` VertexInput declares a single `texCoord0: vec2<f32>`. glTF textureReaders each carry a `texCoord` int (0 or 1) — occlusion textures commonly use `TEXCOORD_1`, clearcoat normal maps frequently too. The WebGPU renderer does read `ensureFloat32(texCoord1Data)` but never uploads it; there's no slot in `primCache`. Every texture slot samples `texCoord0` regardless of the glTF's `texCoord` field.
+**FIXED 2026-04-16 (Batch 11).** Three-layer fix: (a) `WebGPUModelRenderer.js` uploads `geometry.texCoord1Data` into a new `primCache.uv1Buffer` and binds it as vertex slot 7 in the draw (with `uvBuffer` as fallback when the primitive has no TEXCOORD_1 accessor, so samplers whose `texCoord=1` flag is set degrade to uv0 rather than a zero buffer); (b) `WebGPUModelPipelineCache.js` extends the vertex layout with an 8th `arrayStride: 8` slot at `@location(7)`; (c) `ModelPBRComplete.wgsl` adds `texCoord1` to VertexInput / VertexOutput / FragmentInput, introduces a `selectUV(input, slotBit)` helper, and routes each of the 5 texture samples (baseColor, normal, metallicRoughness, emissive, occlusion) through it. A new `material.texCoordFlags: u32` field (reused from the previous `_pad_end` slot) carries one bit per slot, and `packMaterialUniforms` sets each bit from its textureReader's `texCoord` field. glTFs using TEXCOORD_1 for occlusion + TEXCOORD_0 for base color now land each map on the correct UV set.
+
+**Original finding — Verified.** `ModelPBRComplete.wgsl` VertexInput declares a single `texCoord0: vec2<f32>`. glTF textureReaders each carry a `texCoord` int (0 or 1) — occlusion textures commonly use `TEXCOORD_1`, clearcoat normal maps frequently too. The WebGPU renderer does read `ensureFloat32(texCoord1Data)` but never uploads it; there's no slot in `primCache`. Every texture slot samples `texCoord0` regardless of the glTF's `texCoord` field.
 
 **User impact:** occlusion blotches in the wrong places on every glTF with separate occlusion UVs (common). Normal maps smeared.
 
 ---
 
 ### DP-C8. glTF sampler properties (`magFilter`, `wrapS`, etc.) all ignored
-**Verified.** [WebGPUModelPipelineCache.js:307-314](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js) `_defaultSampler` hardcodes `linear/linear/linear` with `repeat`. All 5 texture slots reuse this sampler. glTF per-texture sampler settings (`magFilter=NEAREST`, `wrapS=CLAMP_TO_EDGE`, `wrapS=MIRRORED_REPEAT`, `anisotropy=16`) never propagate.
+**FIXED 2026-04-16 (Batch 11).** `WebGPUModelPipelineCache` now has a `getSamplerForReader(textureReader)` method that reads `texture._sampler` (or `texture.sampler` / `reader.sampler`) and builds a `GPUSampler` matching the WebGL enums: `magFilter` 9728/9729 → `nearest/linear`; `minFilter` handles the 6 filter-mode constants and splits into `{min, mip}` for WebGPU's split filter/mipmap model; `wrapS/wrapT` 10497/33071/33648 → `repeat/clamp-to-edge/mirror-repeat`. A per-combination cache (keyed on the concatenated sampler state string) keeps the device from re-creating duplicate samplers across thousands of glTF textures that share sampler state. Bind-group build in `WebGPUModelRenderer` now resolves five per-slot samplers (baseColor / normal / metallicRoughness / emissive / occlusion) from their respective readers and falls back to `defaultSampler` only when no reader or sampler is present. Pixel-art assets render crisp (NEAREST), clamp-sampled textures no longer wrap at edges, and the glTF spec-default (LINEAR_MIPMAP_LINEAR) is honored.
+
+**Original finding \u2014 Verified.** [WebGPUModelPipelineCache.js:307-314](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js) `_defaultSampler` hardcodes `linear/linear/linear` with `repeat`. All 5 texture slots reuse this sampler. glTF per-texture sampler settings (`magFilter=NEAREST`, `wrapS=CLAMP_TO_EDGE`, `wrapS=MIRRORED_REPEAT`, `anisotropy=16`) never propagate.
 
 **User impact:** pixel-art assets look blurry; clamp-sampled textures show seam artifacts at edges (e.g., UI-in-world projected textures); anisotropy missing means ground textures look smeared at grazing angles. Mipmaps never generated.
 
 ---
 
 ### DP-C9. sRGB decode is double-applied in the model shader
-**Verified by agent.** [ModelPBRComplete.wgsl:308, 311](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl) does `srgbToLinear(tc.rgb) = pow(rgb, 2.2)`. Meanwhile [WebGPUModelRenderer.js:250](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) creates base color textures as `rgba8unorm` (not `rgba8unorm-srgb`). The texture stores sRGB-encoded bytes sampled linearly; the shader's `pow(x, 2.2)` applies the wrong approximation (WebGL uses proper piecewise `czm_srgbToLinear`).
+**FIXED 2026-04-16 (Batch 8).** `createGPUTextureFromReader` now accepts a `colorSpace` parameter. `createMaterialTextures` classifies each slot: baseColor / diffuse / emissive \u2192 `"srgb"` \u2192 `rgba8unorm-srgb` (GPU auto-decodes on sample); normal / MR / specGloss-spec / occlusion \u2192 `"linear"` \u2192 `rgba8unorm`. The in-shader `srgbToLinear(tc.rgb)` calls for baseColor (3 sites) and emissive (1 site) are removed. SpecGloss-workflow texture slot keeps its in-shader `srgbToLinear(sg.rgb)` since that slot is uploaded as linear and the shader still needs to decode. WebGPU PBR now matches WebGL color brightness.
+
+**Original finding \u2014 Verified by agent.** [ModelPBRComplete.wgsl:308, 311](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl) does `srgbToLinear(tc.rgb) = pow(rgb, 2.2)`. Meanwhile [WebGPUModelRenderer.js:250](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) creates base color textures as `rgba8unorm` (not `rgba8unorm-srgb`). The texture stores sRGB-encoded bytes sampled linearly; the shader's `pow(x, 2.2)` applies the wrong approximation (WebGL uses proper piecewise `czm_srgbToLinear`).
 
 Net effect: WebGPU renderings of the same glTF look slightly dimmer and more saturated-in-dark-mids than WebGL. Worse: if someone "fixes" by switching to `rgba8unorm-srgb`, the same uniform path applies to normal/MR/occlusion textures — those MUST stay linear. Then normals go blackish and MR roughness channel shifts.
 
@@ -201,17 +211,17 @@ If the user clicks at (250, 300) in a 1920×1080 viewport, either (a) the pick F
 
 **DP-H5. Label `backgroundColor`/`backgroundPadding` dropped.** [WebGPULabelRenderer.js:424-429](../packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js) routes `_backgroundBillboardCollection` through the Billboard FR. Billboard FR has no per-billboard solid-color quad mechanism; background billboards render as white rectangles regardless of user `backgroundColor`.
 
-**DP-H6. Label has no pick path.** Entire renderer lacks pick command generation. `scene.pick()` on any label glyph returns `undefined`.
+**DP-H6. Label has no pick path.** **FIXED 2026-04-16 (Batch 7).** Label renderer now routes the glyph billboard collection through the standard billboard FR during pick frames (`frameState.passes.pick`). The billboard FR's pick path reads `bb._pickId` which the Label system already populates per-label, so every visible glyph pixel returns the label's pick ID via `scene.pick()`. Render frames are unaffected (SDF path still authoritative for color). Entire renderer lacks pick command generation. `scene.pick()` on any label glyph returns `undefined`.
 
 **DP-H7. Polyline `followSurface` / `arcType: GEODESIC` silently straight-lines.** [WebGPUPolylineRenderer.js:159-233](../packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js) emits one GPU segment per adjacent position pair. WebGL subdivides geodesics. A polyline from Pittsburgh to Tokyo on WebGPU is a straight chord through the Earth — crosses the surface underground.
 
-**DP-H8. Polyline `loop: true` doesn't close.** Segment loop runs `j < positions.length - 1`. Closing segment missing.
+**DP-H8. Polyline `loop: true` doesn't close.** **FIXED 2026-04-16 (Batch 9).** Both `buildSegmentDataForGroup` and `buildPickSegmentData` now emit one extra closing segment for loop polylines: segment count widens to `positions.length` when `loop === true`, end vertex indexes via `(j + 1) % positions.length` so the final segment wraps last→first. The distances array access is guarded since the closing segment has no `distances[positions.length]` entry (falls back to 1.0 = end-of-path for `sEnd`). Segment loop runs `j < positions.length - 1`. Closing segment missing.
 
 **DP-H9. Point `disableDepthTestDistance` dropped.** [WebGPUPointPrimitiveRenderer.js:190-199](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js) instance layout has 64 bytes: `posHighAndSize / posLowAndOutline / color / outColorAndShow`. No slot for `disableDepthTestDistance`. Pipeline always depth-tests. 3D pin stacks sink into terrain.
 
 **DP-H10. Point `heightReference` / clamp-to-ground not honored.** Relies on `_actualPosition` being set by the clamp system; WebGPU never wires this.
 
-**DP-H11. CloudCollection `cloud.show` not read.** [WebGPUCloudRenderer.ts:163-194](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts) — no per-cloud show gate. Setting `cloud.show = false` has zero effect on WebGPU.
+**DP-H11. CloudCollection `cloud.show` not read.** **FIXED 2026-04-16 (Batch 9).** `buildInstanceData` skips clouds whose `show === false` and returns `count = visibleCount`. Cloud instance buffer is still sized for the full collection (avoids reallocation on toggle), but the draw's instance count reflects only visible clouds. [WebGPUCloudRenderer.ts:163-194](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts) — no per-cloud show gate. Setting `cloud.show = false` has zero effect on WebGPU.
 
 **DP-H12. CloudCollection has no pick path, `cloud.maximumSize` dropped, `slice` packed but unused.** Full audit in agent's matrix.
 
@@ -229,19 +239,19 @@ If the user clicks at (250, 300) in a 1920×1080 viewport, either (a) the pick F
 
 ### Primitive / Material
 
-**DP-H16. Material BLEND pipelines have no blend state.** [WebGPUPrimitiveCommands.js:514-524, 1148-1157](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) builds pipelines with no `blend` descriptor regardless of `appearance.translucent`. Translucent primitives get queued into `Pass.TRANSLUCENT` (slot selection works) but the pipeline itself has blend DISABLED. The fragment overwrites the destination. Every translucent Primitive + PerInstanceColor + MaterialAppearance is wrong on WebGPU — alpha is baked into RGB but compositing never happens.
+**DP-H16. Material BLEND pipelines have no blend state.** [WebGPUPrimitiveCommands.js:514-524, 1148-1157](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) builds pipelines with no `blend` descriptor regardless of `appearance.translucent`. Translucent primitives get queued into `Pass.TRANSLUCENT` (slot selection works) but the pipeline itself has blend DISABLED. The fragment overwrites the destination. Every translucent Primitive + PerInstanceColor + MaterialAppearance is wrong on WebGPU — alpha is baked into RGB but compositing never happens. **FIXED 2026-04-16 (Batch 18)** — `buildPolygonPipeline` splits pick (opaque, depth write) vs color (src-alpha blend, depth write disabled).
 
-**DP-H17. `twoPasses` back-face-then-front-face collapsed into one.** WebGL's `closed && translucent` appearance emits two commands with opposite cull. WebGPU iterates `geometries.length` once and renders with `cullMode: "none"`. Closed translucent volumes (semi-transparent boxes, ellipsoids) composite in wrong Z order.
+**DP-H17. `twoPasses` back-face-then-front-face collapsed into one.** WebGL's `closed && translucent` appearance emits two commands with opposite cull. WebGPU iterates `geometries.length` once and renders with `cullMode: "none"`. Closed translucent volumes (semi-transparent boxes, ellipsoids) composite in wrong Z order. **FIXED 2026-04-16 (Batch 18)** — pipeline cache now builds `pipelineFrontCull` + `pipelineBackCull`; command emitter issues back-then-front pair when `appearance.closed && translucent`.
 
 **DP-H18. `depthFailAppearance` entirely unimplemented.** WebGL builds a twin shader + pipeline + uniforms. WebGPU has no grep hit for `depthFail`. See-through highlighting primitives broken.
 
-**DP-H19. `compressVertices: true` (default) produces garbage geometry.** [WebGPUPrimitiveCommands.js:94-147](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) `extractPositionData` assumes `Float32Array` but when `compressVertices` is on, the attribute is `UNSIGNED_SHORT normalized`. The encoder interprets raw u16 values as doubles. Default Primitive configuration (compress=true) breaks on WebGPU unless the app explicitly sets `compressVertices: false`.
+**DP-H19. `compressVertices: true` (default) produces garbage geometry.** [WebGPUPrimitiveCommands.js:94-147](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) `extractPositionData` assumes `Float32Array` but when `compressVertices` is on, the attribute is `UNSIGNED_SHORT normalized`. The encoder interprets raw u16 values as doubles. Default Primitive configuration (compress=true) breaks on WebGPU unless the app explicitly sets `compressVertices: false`. **FIXED 2026-04-17 (Batch 23)** — the original review framing was imprecise: `compressVertices` doesn't touch positions, it replaces `normal` / `st` with an oct-packed `compressedAttributes` stream and the WebGPU path was reading the deleted attributes (→ flat-shaded, untextured). Fix: `GeometryPipeline.compressVertices` now stashes a metadata snapshot, and `WebGPUPrimitiveCommands.ensureUncompressedAttributes` CPU-decodes `compressedAttributes` back into `normal` + `st` Float32Arrays before any downstream read. Shader-side decode (preserves VRAM savings) tracked as **FOLLOW-UP DP-H19-SHADER-DECODE**.
 
-**DP-H20. Material secondary textures (`normalMap`, `bumpMap`) dropped.** [WebGPUPrimitiveCommands.js:971-976](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) `getTextureUniformName` returns a single name. Bind group group(2) has exactly 1 sampler + 1 texture. Multi-texture materials (NormalMap + DiffuseMap, BumpMap + base) lose the secondary texture entirely — shader samples only `image`.
+**DP-H20. Material secondary textures (`normalMap`, `bumpMap`) dropped.** [WebGPUPrimitiveCommands.js:971-976](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) `getTextureUniformName` returns a single name. Bind group group(2) has exactly 1 sampler + 1 texture. Multi-texture materials (NormalMap + DiffuseMap, BumpMap + base) lose the secondary texture entirely — shader samples only `image`. **FIXED 2026-04-18 (Batch 25)** — material BGL expanded to `sampler(0) + texture(1) + texture(2)`; `getTextureUniformName` returns `{ primary, secondary? }` per material type; `ensureMaterialTextureBindGroup` uploads both slots; NormalMap / BumpMap / Water shaders updated to sample from the correct slots. Also corrected NormalMap / BumpMap's hardcoded-gray-diffuse bug and Water's mislabeled-normal-map routing.
 
-**DP-H21. Material texture wrap-mode always `"repeat"`.** [WebGPUPrimitiveCommands.js:1015-1021](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) hardcodes `addressModeU/V: "repeat"`. Material fabric can specify `{ repeat: { x: false, y: false } }` — silently overridden to repeat. Single-tile image materials wrap at edges when they should clamp.
+**DP-H21. Material texture wrap-mode always `"repeat"`.** [WebGPUPrimitiveCommands.js:1015-1021](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) hardcodes `addressModeU/V: "repeat"`. Material fabric can specify `{ repeat: { x: false, y: false } }` — silently overridden to repeat. Single-tile image materials wrap at edges when they should clamp. **FIXED 2026-04-16 (Batch 18)** — `ensureMaterialTextureBindGroup` reads `material.uniforms.repeat` (numeric Cartesian2 OR boolean {x, y}); sampler rebuild + bind-group invalidation when addressModeU/V changes.
 
-**DP-H22. Several materials fall through to Color default.** `selectMaterialShader` handles ~19 materials; missing: `ElevationBand`, `PolylineArrow`, `PolylineDash`, `PolylineGlow`, `PolylineOutline`. Users setting `material: Material.fromType("PolylineGlow", ...)` get a plain colored polyline. Not the claimed "25 materials" from WIRING_AUDIT.
+**DP-H22. Several materials fall through to Color default.** `selectMaterialShader` handles ~19 materials; missing: `ElevationBand`, `PolylineArrow`, `PolylineDash`, `PolylineGlow`, `PolylineOutline`. Users setting `material: Material.fromType("PolylineGlow", ...)` get a plain colored polyline. Not the claimed "25 materials" from WIRING_AUDIT. **PARTIALLY FIXED 2026-04-16 (Batch 18)** — one-time console warning fires for all 5 missing names. **ElevationBand FIXED 2026-04-18 (Batch 25)** — dedicated WGSL shaders (`PrimitiveMatElevBandFlat.wgsl` + `PrimitiveMatElevBandLit.wgsl`) implement the 16-step binary-search band lookup matching the WebGL semantics; routed through `selectMaterialShader`. **Polyline* materials stay collection-scoped** — their vertex layout is Polyline-specific and they can't be meaningfully applied to arbitrary primitives; the warning stays as-is for users who reach for the wrong integration point.
 
 **DP-H23. Fade / Grid / Checkerboard / Stripe / Dot WGSL implementations diverge from GLSL.** Different math produces different visuals. E.g., Fade in WGSL is a radial gradient from texture center; GLSL Fade is UV-anchor-driven with repeat. Grid WGSL uses `step`; GLSL uses `smoothstep` with derivative antialiasing. Visual mismatch.
 
@@ -249,21 +259,21 @@ If the user clicks at (250, 300) in a 1920×1080 viewport, either (a) the pick F
 
 ### Globe + Imagery data drops
 
-**DP-H24. Globe hue/saturation/brightness shift dropped.** [GlobeFS.glsl:98-100](../packages/engine/Source/Shaders/GlobeFS.glsl) uses `u_hsbShift`. WebGPU has zero grep hits. `globe.hueShift = 0.1` is a no-op.
+**DP-H24. Globe hue/saturation/brightness shift dropped.** [GlobeFS.glsl:98-100](../packages/engine/Source/Shaders/GlobeFS.glsl) uses `u_hsbShift`. WebGPU has zero grep hits. `globe.hueShift = 0.1` is a no-op. **FIXED 2026-04-16 (Batch 18)** — `GlobeTerrain.wgsl` gained `hsbShift: vec4<f32>` on `TileUniforms` plus `globe_rgbToHsb` / `globe_hsbToRgb` helpers; HSB round-trip is gated on `abs(shift) > 0.001` (default zeros are free). `WebGPUGlobeSurfaceRenderer.ts` expanded `TILE_UNIFORM_FLOATS` 96 → 100 and writes `tileProvider.hueShift / saturationShift / brightnessShift` into the new slots. Applied after fog to match WebGL's GlobeFS.glsl ordering.
 
-**DP-H25. Geodetic surface normal attribute never uploaded.** Stride allocates the 3 floats but the pipeline variant doesn't declare the attribute. Exaggeration math falls back to `normalize(position3D)` which drifts from the true geodetic normal by up to 0.2° at high latitudes on WGS84.
+**DP-H25. Geodetic surface normal attribute never uploaded.** Stride allocates the 3 floats but the pipeline variant doesn't declare the attribute. Exaggeration math falls back to `normalize(position3D)` which drifts from the true geodetic normal by up to 0.2° at high latitudes on WGS84. **FIXED 2026-04-16 (Batch 19)** — pipeline variants accept `hasGeodeticSurfaceNormals`, add `@location(2)` vec3 attribute, and route to `*_Geo` entry-point family. Shader `processVertex` takes the geodetic normal as 6th arg and uses it via `select()` gated on `dot(n,n) > 0.25`. Shadow cast for geodetic tiles explicitly skipped via sentinel layout; stride-aware shadow pipeline tracked as **FOLLOW-UP DP-H25-SHADOW-CAST**.
 
 **DP-H26. Atmosphere tuning knobs (Mie / Rayleigh / scaleHeights / intensity / dynamicAtmosphereLighting) all dropped.** [GlobeSurfaceTileProviderRendering.js:1160-1171](../packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js) writes all 8 to WebGL uniforms; WebGPU reads none. `computeAtmosphereColor` hardcodes sky-blue, Mie `g = 0.76`.
 
 **DP-H27. `showGroundAtmosphere` / `lightingFadeDistance` / `nightFadeDistance` / `lambertDiffuseMultiplier` / `vertexShadowDarkness` / `initialColor` / `fillHighlightColor` — all dropped.** Long tail of globe-level tuning uniforms silently zeroed.
 
-**DP-H28. Shadow matrix never populated unless clipping planes active.** [WebGPUGlobeSurfaceRenderer.ts:1218-1221](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) — `createEffectsBindGroup` only invoked when `tileProvider.clippingPlanes.length > 0`. Otherwise `placeholderEffectsBG` is bound with `shadowDarkness = 1.0` (fully lit, skip). Globe receives no shadows unless clipping planes happen to be active.
+**DP-H28. Shadow matrix never populated unless clipping planes active.** [WebGPUGlobeSurfaceRenderer.ts:1218-1221](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) — `createEffectsBindGroup` only invoked when `tileProvider.clippingPlanes.length > 0`. Otherwise `placeholderEffectsBG` is bound with `shadowDarkness = 1.0` (fully lit, skip). Globe receives no shadows unless clipping planes happen to be active. **FIXED 2026-04-16 (Batch 19)** — gate now includes `shadowState.lightShadowsEnabled && shadowState.lightShadowMaps[0]`; the `shadowMap` option is passed into `createEffectsBindGroup` so the real shadow matrix, shadowDarkness, and shadow depth texture flow through to the globe's binding group 3.
 
 **DP-H29. Clipping polygons on globe sample SDF via `atan2(posMC.y, posMC.x)` mid-triangle.** At antimeridian crossings atan2 jumps −π↔+π mid-triangle, SDF samples wrap-around texels. Clipping polygons straddling 180° render wrong.
 
-**DP-H30. Water mask sampler hardcoded to nearest + clamp.** WebGL uses linear for smooth coastlines. WebGPU `smoothstep(0.3, 0.7, waterMask)` can't smooth a binary sample. Jagged coastlines.
+**DP-H30. Water mask sampler hardcoded to nearest + clamp.** **FIXED 2026-04-16 (Batch 6).** Water mask sampler now `magFilter/minFilter: "linear"` (clamp-to-edge kept). The WGSL `smoothstep(0.3, 0.7, waterMask)` can now smooth the linearly-interpolated sample. Coastlines no longer stair-step. WebGL uses linear for smooth coastlines. WebGPU `smoothstep(0.3, 0.7, waterMask)` can't smooth a binary sample. Jagged coastlines.
 
-**DP-H31. Wave clock uses `performance.now()`, not `frameState.time`.** [WebGPUGlobeSurfaceRenderer.ts:2093](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) — multi-view renders desync; screenshots non-deterministic.
+**DP-H31. Wave clock uses `performance.now()`, not `frameState.time`.** **FIXED 2026-04-16 (Batch 6).** Wave clock now derives from `frameState.time` (JulianDate) as `dayNumber * 86400 + secondsOfDay`, mod 1e6 seconds (~11.6 days) to stay in f32 range. Multi-view renders share the same phase; screenshots are deterministic. [WebGPUGlobeSurfaceRenderer.ts:2093](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) — multi-view renders desync; screenshots non-deterministic.
 
 ---
 
@@ -293,13 +303,13 @@ If the user clicks at (250, 300) in a 1920×1080 viewport, either (a) the pick F
 
 **DP-H39. `UniformState._lightsData` packed but no WGSL binding consumes it.** Multi-light path (`scene.lights` array) reaches no renderer. Upstream KHR_lights_punctual chain dead at uniform layer too (even beyond the WGSL shader drop).
 
-**DP-H40. `frameState.splitPosition` only read by point renderer.** Split-screen imagery / billboard split / polyline split all ignore the user setting.
+**DP-H40. `frameState.splitPosition` only read by point renderer.** Split-screen imagery / billboard split / polyline split all ignore the user setting. **FIXED 2026-04-17 (Batches 21–22)** — all four collection renderer families now honor `scene.splitPosition`. Batch 21 shipped Billboard / Label / Point; Batch 22 shipped Polyline + its 4 material variants (Arrow / Dash / Glow / Outline). New `SPLIT_ENABLED` shader define (Batch 20 preprocessor) gates a per-instance `splitDirection` VS→FS passthrough and FS-side pixel-space discard against `camera.splitPosition`.
 
-**DP-H41. `previousViewProjection` not exposed to `csm_*` uniforms.** TAA motion vector pipeline blocked at the uniform layer before the algorithm begins. Composes with TAA_DESIGN.md being dormant.
+**DP-H41. `previousViewProjection` not exposed to `csm_*` uniforms.** TAA motion vector pipeline blocked at the uniform layer before the algorithm begins. Composes with TAA_DESIGN.md being dormant. **PARTIALLY FIXED 2026-04-16 (Batch 19)** — exposed on the globe terrain `CameraUniforms` at offsets 100–115, populated from `UniformState._previousViewProjection` (cloned each frame before the current viewProjection is overwritten). Per-renderer propagation to Primitive/Model/Collections camera UBs tracked as **FOLLOW-UP DP-H41-ALL-RENDERERS** (lands alongside the first TAA consumer).
 
-**DP-H42. `frameState.minimumDisableDepthTestDistance` unreachable by any WebGPU renderer.** Billboard/label depth override gone.
+**DP-H42. `frameState.minimumDisableDepthTestDistance` unreachable by any WebGPU renderer.** Billboard/label depth override gone. **FIXED 2026-04-17 (Batches 21–22)** — all four collection renderer families now honor the depth override. Batch 21 shipped Billboard / Label / Point; Batch 22 shipped Polyline + its 4 material variants (Arrow / Dash / Glow / Outline). New `DISABLE_DEPTH_DISTANCE` shader define (Batch 20 preprocessor) gates a per-instance `disableDepthTestDistance` VS check against `camera.minimumDisableDepthTestDistance`. When within range the VS forces `out.position.z = out.position.w` (far plane) so depth always passes. Applied to both color + pick pipelines for every family.
 
-**DP-H43. `frameState.shadowState.lightShadowsEnabled` ignored.** Shadow cast pass runs even when user disabled shadows (`viewer.shadows = false`).
+**DP-H43. `frameState.shadowState.lightShadowsEnabled` ignored.** Shadow cast pass runs even when user disabled shadows (`viewer.shadows = false`). **FIXED 2026-04-16 (Batch 19)** — `executeShadowMapCastCommands` now early-returns when `shadowState?.shadowsEnabled === false`, mirroring Scene.js:2587's per-command gate at the pass level.
 
 **DP-H44. Globe surface has no pick ID generation.** Terrain tiles are invisible to `scene.pick`. Only models/primitives/collections (the few with pick paths) return hits.
 
@@ -440,43 +450,44 @@ Most fixes are small and localized; the volume is the issue.
 12. **DP-H9/H10** Point `disableDepthTestDistance` + heightReference.
 13. **DP-H11/H12** Cloud show / pick / `maximumSize`.
 14. **DP-H13** Dirty-range precision sweep across all collection renderers.
-15. **DP-H16** Material blend state wired from `appearance.translucent`.
-16. **DP-H18** `depthFailAppearance` twin pipeline.
-17. **DP-H19** `compressVertices: true` dequantize (or update the default to `false` with a warning).
-18. **DP-H20/H21** Material secondary textures + per-channel wrap mode.
+15. **DP-H16** Material blend state wired from `appearance.translucent`. **FIXED 2026-04-16 (Batch 18)**.
+16. **DP-H17** twoPasses back-then-front for closed translucent volumes. **FIXED 2026-04-16 (Batch 18)**.
+17. **DP-H18** `depthFailAppearance` twin pipeline.
+18. **DP-H19** `compressVertices: true` dequantize (or update the default to `false` with a warning). **FIXED 2026-04-17 (Batch 23)** — CPU-decode `compressedAttributes` in the WebGPU path. Shader-side decode tracked as **FOLLOW-UP DP-H19-SHADER-DECODE**.
+19. **DP-H20/H21** Material secondary textures + per-channel wrap mode. **DP-H21 FIXED 2026-04-16 (Batch 18)**; **DP-H20 FIXED 2026-04-18 (Batch 25)** — material BGL v2 with 2 texture slots + per-material routing table + NormalMap / BumpMap / Water shader updates.
 
 ### Tier DP2 — Fix the globe/model/uniform long tail (2-3 weeks)
 
-19. **DP-C5** Quantized terrain `minMaxHeight` remap.
-20. **DP-C7** TEXCOORD_1 plus per-slot texCoord index.
-21. **DP-C8** glTF samplers + mipmap generation + anisotropy.
-22. **DP-C9** Per-slot sRGB texture format (base color / emissive vs normal / MR / occlusion).
-23. **DP-H24..H31** Globe tuning uniform sweep (hueShift, atmosphere knobs, initialColor, fillHighlightColor, shadowDarkness, lightingFadeDistance, clipping polygon antimeridian, water-mask filter, wave clock).
-24. **DP-H32/H33** Model light uniform pack: write IBL factors, use `scene.light.color`.
-25. **DP-H34** Model pick command emission.
-26. **DP-H35** Morph normal deltas upload.
-27. **DP-H36** Instance translation RTE split.
-28. **DP-H37** COLOR_0 vec3 path.
+20. **DP-C5** Quantized terrain `minMaxHeight` remap.
+21. **DP-C7** TEXCOORD_1 plus per-slot texCoord index.
+22. **DP-C8** glTF samplers + mipmap generation + anisotropy.
+23. **DP-C9** Per-slot sRGB texture format (base color / emissive vs normal / MR / occlusion).
+24. **DP-H24..H31** Globe tuning uniform sweep (hueShift, atmosphere knobs, initialColor, fillHighlightColor, shadowDarkness, lightingFadeDistance, clipping polygon antimeridian, water-mask filter, wave clock). **DP-H24 FIXED 2026-04-16 (Batch 18)**. **DP-H25 FIXED 2026-04-16 (Batch 19)**. **DP-H28 FIXED 2026-04-16 (Batch 19)**. **DP-H30/H31 FIXED 2026-04-16 (Batch 6)**.
+25. **DP-H32/H33** Model light uniform pack: write IBL factors, use `scene.light.color`.
+26. **DP-H34** Model pick command emission.
+27. **DP-H35** Morph normal deltas upload.
+28. **DP-H36** Instance translation RTE split.
+29. **DP-H37** COLOR_0 vec3 path.
 
 ### Tier DP3 — Picking + uniform coverage (2 weeks)
 
-29. **DP-H6** Label pick IDs.
-30. **DP-H44** Globe surface pick IDs.
-31. **DP-H45** `pickPosition` for non-globe content — route Model/Primitive/Tile depth through `PickDepth._asyncDepthTexture`.
-32. **DP-H46** `scene.pickMetadata` — add `pickMetadata` branch to pick dispatch.
-33. **DP-H38** `CAMERA_RTE_LIT` profile — add `csm_lightColor`.
-34. **DP-H39** Multi-light upload path.
-35. **DP-H40** `splitPosition` propagation to all primitive types.
-36. **DP-H41** `previousViewProjection` auto-uniform (unblocks TAA Phase 1).
-37. **DP-H42/H43** `minimumDisableDepthTestDistance` + `shadowState.lightShadowsEnabled` propagation.
-38. **DP-H47** `czm_atmosphere*` → `csm_*` mapping for consistency across renderers.
+30. **DP-H6** Label pick IDs.
+31. **DP-H44** Globe surface pick IDs.
+32. **DP-H45** `pickPosition` for non-globe content — route Model/Primitive/Tile depth through `PickDepth._asyncDepthTexture`.
+33. **DP-H46** `scene.pickMetadata` — add `pickMetadata` branch to pick dispatch.
+34. **DP-H38** `CAMERA_RTE_LIT` profile — add `csm_lightColor`.
+35. **DP-H39** Multi-light upload path.
+36. **DP-H40** `splitPosition` propagation to all primitive types. **FIXED 2026-04-17 (Batches 21–22)** — all four collection families shipped.
+37. **DP-H41** `previousViewProjection` auto-uniform (unblocks TAA Phase 1). **PARTIALLY FIXED 2026-04-16 (Batch 19)** — terrain camera UB wired; other renderers tracked as **FOLLOW-UP DP-H41-ALL-RENDERERS**.
+38. **DP-H42/H43** `minimumDisableDepthTestDistance` + `shadowState.lightShadowsEnabled` propagation. **DP-H43 FIXED 2026-04-16 (Batch 19)**; **DP-H42 FIXED 2026-04-17 (Batches 21–22)** — all four collection families shipped.
+39. **DP-H47** `czm_atmosphere*` → `csm_*` mapping for consistency across renderers.
 
 ### Tier DP4 — Polish (multi-session)
 
-39. **DP-H22/H23** Missing materials + WGSL-vs-GLSL material math parity.
-40. **DP-H14/H15** Collection-level dirty propagation across context-hot-swaps and BufferPrimitive vertex-offset invalidation.
-41. **DP-M1** WGSL struct alignment runtime assertion in debug builds.
-42. **DP-H48** TEME→pseudofixed to star-field shader.
+40. **DP-H22/H23** Missing materials + WGSL-vs-GLSL material math parity. **DP-H22 ElevationBand FIXED 2026-04-18 (Batch 25)**; **Polyline* materials stay collection-scoped** (diagnostic warning only — these can't meaningfully apply to arbitrary primitives). DP-H23 (WGSL-vs-GLSL math parity for Fade/Grid/Checkerboard/Stripe/Dot) not yet in scope.
+41. **DP-H14/H15** Collection-level dirty propagation across context-hot-swaps and BufferPrimitive vertex-offset invalidation.
+42. **DP-M1** WGSL struct alignment runtime assertion in debug builds.
+43. **DP-H48** TEME→pseudofixed to star-field shader.
 
 ---
 

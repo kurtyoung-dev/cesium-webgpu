@@ -16,9 +16,13 @@
  *
  * @private
  */
+import AttributeCompression from "../../Core/AttributeCompression.js";
+import Cartesian2 from "../../Core/Cartesian2.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import GeometryAttribute from "../../Core/GeometryAttribute.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -44,6 +48,7 @@ import {
   isMaterialLitShader,
   isPBRShader,
 } from "./WebGPUPrimitiveShaders.js";
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
@@ -61,19 +66,300 @@ const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 // Scratch for encoding a single vertex position
 const scratchEncodedPosition = new EncodedCartesian3();
-// RTE camera uniform scratch buffers (60 floats = 240 bytes max for lit)
-const scratchRTEUniformData = new Float32Array(64);
+// RTE camera uniform scratch buffers (76 floats = 304 bytes max for lit with prevVP)
+const scratchRTEUniformData = new Float32Array(80);
 
 // Camera-only UBO sizes (no material fields)
-const FLAT_CAMERA_BYTES = 96; // mvpRTE(64) + camHigh(16) + camLow(16)
-const LIT_CAMERA_BYTES = 240; // mvpRTE(64) + mvRTE(64) + normalMatrix(64) + camHigh(16) + camLow(16) + lightDir(16)
-const PICK_CAMERA_BYTES = 96; // same as flat
+// DP-H41 (Batch 27) — each variant now carries previousViewProjection (mat4x4,
+// 64 bytes) at the tail for TAA / motion-vector reprojection.
+const FLAT_CAMERA_BYTES = 160; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP(64)
+const LIT_CAMERA_BYTES = 304; // mvpRTE(64) + mvRTE(64) + normalMatrix(64) + camHigh(16) + camLow(16) + lightDir(16) + prevVP(64)
+const PICK_CAMERA_BYTES = 160; // same as flat
 
 // Placeholder material UBO for shaders that don't use material uniforms
 // Must be at least 16 bytes (vec4) for WebGPU minimum binding size
 const PLACEHOLDER_MATERIAL_BYTES = 16;
 // Pick material: pickColor(vec4) = 16 bytes
 const PICK_MATERIAL_BYTES = 16;
+
+// =========================================================================
+// DP-H19 — CPU decompression of `compressedAttributes`
+// =========================================================================
+//
+// `GeometryPipeline.compressVertices()` (invoked when the Primitive has
+// `compressVertices: true`, which is the DEFAULT) deletes the
+// `normal` / `st` / `tangent` / `bitangent` attributes and replaces them
+// with a single `compressedAttributes` Float32Array containing oct-packed
+// normals and bit-packed UVs. The WebGPU primitive rendering path reads
+// `geometry.attributes.normal` and `geometry.attributes.st` directly —
+// which are deleted — so every default-configured Primitive rendered
+// flat-shaded with black textures.
+//
+// The WebGL path handles this via `#ifdef COMPRESSED_VERTICES` in the
+// vertex shader, decoding `compressedAttributes` on the GPU. We could
+// mirror that in WGSL, but the shader-variant explosion across
+// material-type × compressed-input × pick is substantial. For a simpler
+// correctness fix we decode on the CPU here, reconstructing the original
+// `normal` / `st` attributes as Float32Arrays. This loses the VRAM /
+// bandwidth savings that compression is meant to provide, but makes
+// every `compressVertices: true` primitive render correctly on WebGPU.
+// Shader-side decode is tracked as **FOLLOW-UP DP-H19-SHADER-DECODE**.
+//
+// `compressVertices()` layout per-vertex (see `GeometryPipeline.js:1558-1615`):
+//
+//     components = (hasSt && hasNormal ? 2 : 1) + (hasTangent||hasBitangent ? 1 : 0)
+//     slot[0]: if hasSt           → packedST (via `compressTextureCoordinates`)
+//     slot[1]: if hasNormal AND hasTangent AND hasBitangent
+//              → octPack(normal, tangent, bitangent) occupies 2 slots
+//              else → one octEncodeFloat per (normal, tangent, bitangent)
+//                    independently, in that order
+//
+// We consult `geometry._compressedAttributesMeta` (written by
+// `GeometryPipeline.compressVertices` right before it starts encoding)
+// to know which attributes were present so the decode is unambiguous.
+// If the meta isn't attached (geometry came from a non-upstream code
+// path), we fall back to inferring from `componentsPerAttribute` and
+// log a one-time warning.
+//
+// Scratch Cartesians are reused across decode calls to avoid per-vertex
+// allocations.
+
+const scratchDecompressedNormal = new Cartesian3();
+const scratchDecompressedTangent = new Cartesian3();
+const scratchDecompressedBitangent = new Cartesian3();
+const scratchDecompressedPacked = new Cartesian2();
+const scratchDecompressedST = new Cartesian2();
+
+let _decompressMissingMetaWarned = false;
+
+/**
+ * Reconstruct `normal` + `st` attributes on a geometry whose
+ * `GeometryPipeline.compressVertices()` stripped them into
+ * `compressedAttributes`. Idempotent: if the geometry already has
+ * `normal` / `st` (or never had them), returns without side-effect.
+ *
+ * Writes the decoded attributes back onto `geometry.attributes` as
+ * Float32Arrays so the rest of the WebGPU primitive command path can
+ * read them through the normal `attrs.normal.values` / `attrs.st.values`
+ * route. The compression metadata on the geometry is left untouched —
+ * WebGL still sees it the same way.
+ *
+ * The one-time work per geometry is cached via the presence of the
+ * decoded attributes; subsequent calls short-circuit.
+ *
+ * @param {object} geometry The geometry to inspect.
+ * @private
+ */
+function ensureUncompressedAttributes(geometry) {
+  const attrs = geometry.attributes;
+  if (!defined(attrs)) {
+    return;
+  }
+
+  const compressed = attrs.compressedAttributes;
+  if (!defined(compressed) || !defined(compressed.values)) {
+    return;
+  }
+
+  // Idempotence guard — if the primary targets (normal / st) are
+  // already reconstructed, skip. Tangent / bitangent are write-once
+  // side-products of the same decode pass, so they're either all
+  // present together (post-Batch 27) or never attempted. The normal /
+  // st presence check is the source of truth for "have we decoded
+  // this geometry before."
+  if (defined(attrs.normal) || defined(attrs.st)) {
+    return;
+  }
+
+  const values = compressed.values;
+  const componentsPerAttribute = compressed.componentsPerAttribute || 1;
+  const numVertices = Math.floor(values.length / componentsPerAttribute);
+  if (numVertices === 0) {
+    return;
+  }
+
+  // Prefer the metadata snapshot written by `GeometryPipeline.compressVertices`
+  // (see Batch 23 edit in Core/GeometryPipeline.js) — it tells us exactly
+  // which source attributes were compressed. Falling back to inferring
+  // from `componentsPerAttribute` is ambiguous for some combinations, so
+  // we warn and skip to avoid producing wrong data.
+  const meta = geometry._compressedAttributesMeta;
+  let hasNormal;
+  let hasSt;
+  let hasTangent;
+  let hasBitangent;
+  if (defined(meta)) {
+    // Shadow-volume extrude compression: no normal / st to reconstruct.
+    if (meta.isExtrude === true) {
+      return;
+    }
+    hasNormal = meta.hasNormal === true;
+    hasSt = meta.hasSt === true;
+    hasTangent = meta.hasTangent === true;
+    hasBitangent = meta.hasBitangent === true;
+  } else {
+    // Fallback for geometries produced without the metadata stash.
+    // Best-effort inference: `componentsPerAttribute` tells us the
+    // per-vertex slot count; we assume `hasSt` first (matches the most
+    // common Primitive vertex format), then `hasNormal`.
+    hasNormal = componentsPerAttribute >= 1;
+    hasSt = componentsPerAttribute >= 2;
+    hasTangent = false;
+    hasBitangent = false;
+    if (!_decompressMissingMetaWarned) {
+      _decompressMissingMetaWarned = true;
+      console.warn(
+        "[WebGPUPrimitiveCommands] compressedAttributes without " +
+          "`_compressedAttributesMeta` — falling back to inference. " +
+          "Verify geometry source calls GeometryPipeline.compressVertices.",
+      );
+    }
+  }
+
+  // The octPack(normal, tangent, bitangent) special case squeezes all
+  // three into 2 slots; it only fires when ALL THREE are present.
+  const usesOctPack = hasNormal && hasTangent && hasBitangent;
+
+  const outNormal = hasNormal ? new Float32Array(numVertices * 3) : null;
+  const outST = hasSt ? new Float32Array(numVertices * 2) : null;
+  // DP-H19-TANGENT-DECODE (Batch 27) — also reconstruct tangent /
+  // bitangent when they were originally present. No current WebGPU
+  // material shader reads these, but having them on the geometry lets
+  // any future normal-mapping surface material (DP-H20 + Batch 25 BGL
+  // v2 is a ready consumer) light correctly without a second CPU pass.
+  // Cost per vertex: +3 floats for each of tangent / bitangent when
+  // present — ~24 extra bytes per vertex on fully-tangent-ed geometry.
+  const outTangent = hasTangent ? new Float32Array(numVertices * 3) : null;
+  const outBitangent = hasBitangent ? new Float32Array(numVertices * 3) : null;
+
+  for (let v = 0; v < numVertices; v++) {
+    let slot = v * componentsPerAttribute;
+    if (hasSt) {
+      const st = AttributeCompression.decompressTextureCoordinates(
+        values[slot++],
+        scratchDecompressedST,
+      );
+      outST[v * 2] = st.x;
+      outST[v * 2 + 1] = st.y;
+    }
+    if (usesOctPack) {
+      scratchDecompressedPacked.x = values[slot++];
+      scratchDecompressedPacked.y = values[slot++];
+      AttributeCompression.octUnpack(
+        scratchDecompressedPacked,
+        scratchDecompressedNormal,
+        scratchDecompressedTangent,
+        scratchDecompressedBitangent,
+      );
+      outNormal[v * 3] = scratchDecompressedNormal.x;
+      outNormal[v * 3 + 1] = scratchDecompressedNormal.y;
+      outNormal[v * 3 + 2] = scratchDecompressedNormal.z;
+      // DP-H19-TANGENT-DECODE — octUnpack already decoded tangent +
+      // bitangent into the scratch Cartesians; just write them out.
+      outTangent[v * 3] = scratchDecompressedTangent.x;
+      outTangent[v * 3 + 1] = scratchDecompressedTangent.y;
+      outTangent[v * 3 + 2] = scratchDecompressedTangent.z;
+      outBitangent[v * 3] = scratchDecompressedBitangent.x;
+      outBitangent[v * 3 + 1] = scratchDecompressedBitangent.y;
+      outBitangent[v * 3 + 2] = scratchDecompressedBitangent.z;
+    } else {
+      if (hasNormal) {
+        AttributeCompression.octDecodeFloat(
+          values[slot++],
+          scratchDecompressedNormal,
+        );
+        outNormal[v * 3] = scratchDecompressedNormal.x;
+        outNormal[v * 3 + 1] = scratchDecompressedNormal.y;
+        outNormal[v * 3 + 2] = scratchDecompressedNormal.z;
+      }
+      // DP-H19-TANGENT-DECODE — standalone tangent / bitangent slots
+      // are each a single packed float; decode independently.
+      if (hasTangent) {
+        AttributeCompression.octDecodeFloat(
+          values[slot++],
+          scratchDecompressedTangent,
+        );
+        outTangent[v * 3] = scratchDecompressedTangent.x;
+        outTangent[v * 3 + 1] = scratchDecompressedTangent.y;
+        outTangent[v * 3 + 2] = scratchDecompressedTangent.z;
+      }
+      if (hasBitangent) {
+        AttributeCompression.octDecodeFloat(
+          values[slot++],
+          scratchDecompressedBitangent,
+        );
+        outBitangent[v * 3] = scratchDecompressedBitangent.x;
+        outBitangent[v * 3 + 1] = scratchDecompressedBitangent.y;
+        outBitangent[v * 3 + 2] = scratchDecompressedBitangent.z;
+      }
+    }
+  }
+
+  if (outNormal) {
+    geometry.attributes.normal = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT,
+      componentsPerAttribute: 3,
+      values: outNormal,
+    });
+  }
+  if (outST) {
+    geometry.attributes.st = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT,
+      componentsPerAttribute: 2,
+      values: outST,
+    });
+  }
+  if (outTangent) {
+    geometry.attributes.tangent = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT,
+      componentsPerAttribute: 3,
+      values: outTangent,
+    });
+  }
+  if (outBitangent) {
+    geometry.attributes.bitangent = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT,
+      componentsPerAttribute: 3,
+      values: outBitangent,
+    });
+  }
+}
+
+// =========================================================================
+// Pipeline color-target builder — opaque vs translucent blend state
+// =========================================================================
+
+/**
+ * Builds a GPUColorTargetState descriptor for a render pipeline.
+ * Translucent primitives get standard pre-multiplied alpha blending
+ * (src = src.a, dst = 1 - src.a). Opaque primitives get no blend state
+ * so the fragment overwrites the destination.
+ *
+ * @param {GPUTextureFormat} format
+ * @param {boolean} translucent
+ * @returns {GPUColorTargetState}
+ * @private
+ */
+function makeFragmentTarget(format, translucent) {
+  if (!translucent) {
+    return { format: format };
+  }
+  return {
+    format: format,
+    blend: {
+      color: {
+        srcFactor: "src-alpha",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+      alpha: {
+        srcFactor: "one",
+        dstFactor: "one-minus-src-alpha",
+        operation: "add",
+      },
+    },
+  };
+}
 
 // =========================================================================
 // Shared Position Extraction — RTE (positionHigh + positionLow)
@@ -212,10 +498,11 @@ function computeRTEMatrices(uniformState, camera, modelMatrix) {
 
 /**
  * Writes RTE uniform data for a flat (unlit) shader.
- * Layout: mvpRTE(16) + camHigh(3+1pad) + camLow(3+1pad) = 24 floats = 96 bytes
+ * Layout: mvpRTE(16) + camHigh(3+1pad) + camLow(3+1pad) + prevVP(16)
+ *       = 40 floats = 160 bytes (DP-H41, Batch 27)
  * @private
  */
-function writeRTEUniformsFlat(ud, rte) {
+function writeRTEUniformsFlat(ud, rte, uniformState) {
   Matrix4.pack(rte.mvpRTE, ud, 0);
   ud[16] = rte.camHigh.x;
   ud[17] = rte.camHigh.y;
@@ -225,11 +512,13 @@ function writeRTEUniformsFlat(ud, rte) {
   ud[21] = rte.camLow.y;
   ud[22] = rte.camLow.z;
   ud[23] = 0.0;
+  writePreviousViewProjection(ud, 24, uniformState);
 }
 
 /**
  * Writes RTE uniform data for a lit (Phong/PBR) shader.
- * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4) + lightDir(4) = 60 floats = 240 bytes
+ * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4)
+ *       + lightDir(4) + prevVP(16) = 76 floats = 304 bytes (DP-H41, Batch 27)
  * @private
  */
 function writeRTEUniformsLit(ud, rte, uniformState) {
@@ -256,6 +545,40 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
     ud[58] = 0.5;
   }
   ud[59] = 0.0;
+  writePreviousViewProjection(ud, 60, uniformState);
+}
+
+/**
+ * DP-H41 (Batch 27) — writes 16 floats of `uniformState.previousViewProjection`
+ * starting at `offset`. Falls back to identity on the first frame before
+ * `UniformState.update()` has seeded the slot.
+ * @private
+ */
+function writePreviousViewProjection(ud, offset, uniformState) {
+  const prevVP = defined(uniformState)
+    ? uniformState.previousViewProjection
+    : undefined;
+  if (defined(prevVP)) {
+    Matrix4.pack(prevVP, ud, offset);
+    return;
+  }
+  // Column-major identity
+  ud[offset + 0] = 1;
+  ud[offset + 1] = 0;
+  ud[offset + 2] = 0;
+  ud[offset + 3] = 0;
+  ud[offset + 4] = 0;
+  ud[offset + 5] = 1;
+  ud[offset + 6] = 0;
+  ud[offset + 7] = 0;
+  ud[offset + 8] = 0;
+  ud[offset + 9] = 0;
+  ud[offset + 10] = 1;
+  ud[offset + 11] = 0;
+  ud[offset + 12] = 0;
+  ud[offset + 13] = 0;
+  ud[offset + 14] = 0;
+  ud[offset + 15] = 1;
 }
 
 // writeRTEUniformsPick removed — pick shaders now use split camera/material
@@ -304,7 +627,7 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
       LIT_CAMERA_BYTES,
     );
   } else {
-    writeRTEUniformsFlat(ud, rte);
+    writeRTEUniformsFlat(ud, rte, context.uniformState);
     device.queue.writeBuffer(
       command._webgpuCameraBuffer,
       0,
@@ -319,6 +642,8 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
 // Pick Uniform Update (per frame)
 // =========================================================================
 
+// DP-H41 (Batch 27) — pick buffer now carries previousViewProjection too
+// (40 floats = 160 bytes). Scratch kept at 64 floats for zero-risk headroom.
 const scratchPickUniformData = new Float32Array(64);
 
 /**
@@ -348,7 +673,7 @@ function updateWebGPUPickCommandUniforms(command, frameState, modelMatrix) {
 
   // Write camera uniforms (flat layout for pick shaders)
   const ud = scratchPickUniformData;
-  writeRTEUniformsFlat(ud, rte);
+  writeRTEUniformsFlat(ud, rte, context.uniformState);
   device.queue.writeBuffer(
     command._webgpuCameraBuffer,
     0,
@@ -445,16 +770,34 @@ function createWebGPUCommands(
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
+  const translucentChanged = cache.translucent !== translucent;
+  // DP-H17 — treat a twoPasses flip like a shader / translucent flip
+  // so the back-face + front-face pipeline variants get rebuilt.
+  const twoPassesChanged = cache.twoPasses !== twoPasses;
   const needsTexture = isTexturedShader(shaderInfo.type);
   const isLit = isPhongShader(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
-  if (shaderChanged) {
+  if (shaderChanged || translucentChanged || twoPassesChanged) {
     cache.shaderType = shaderInfo.type;
+    cache.translucent = translucent;
 
+    // DP-H19-SHADER-DECODE (Batch 27) — always route through the
+    // preprocessor so `//>>ifdef COMPRESSED_VERTICES` / `//>>else`
+    // blocks in material shaders resolve to concrete WGSL. `defines=0`
+    // produces the historical code path (the `//>>else` branch carries
+    // the original VertexInput + logic), so this is a no-op for
+    // uncompressed-path shaders. The compressed opt-in flips the bit
+    // in a follow-up wire-up step that also swaps the vertex buffer
+    // packer to emit `compressedAttributes` directly.
+    const shaderDefines = 0;
+    const processedCode = preprocessShaderSource(
+      shaderInfo.code,
+      shaderDefines,
+    );
     cache.shaderModule = WebGPUShaderModule.create({
       device: device,
-      code: shaderInfo.code,
+      code: processedCode,
       label: `${shaderInfo.type} Shader`,
     });
 
@@ -480,10 +823,20 @@ function createWebGPUCommands(
     ];
 
     if (needsTexture) {
+      // Batch 25 — material texture bind group v2: one shared sampler +
+      // TWO texture slots so multi-texture materials (NormalMap /
+      // BumpMap / Water / ElevationBand) can bind both at once. Single-
+      // texture shaders only declare @binding(1); the @binding(2) slot
+      // is filled with a 1×1 placeholder and the shader ignores it
+      // (WGSL allows bind group layouts to carry unused bindings).
       cache.textureBindGroupLayout = makeBindGroupLayout(
         device,
         "Texture BGL",
-        [sampler(0, Stage.FRAGMENT), texture(1, Stage.FRAGMENT)],
+        [
+          sampler(0, Stage.FRAGMENT),
+          texture(1, Stage.FRAGMENT),
+          texture(2, Stage.FRAGMENT),
+        ],
       );
       bindGroupLayouts.push(cache.textureBindGroupLayout);
     } else {
@@ -497,31 +850,57 @@ function createWebGPUCommands(
 
     const canvasFormat =
       context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
-    cache.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: bindGroupLayouts,
-      }),
-      vertex: {
-        module: cache.shaderModule.module,
-        entryPoint: "vertexMain",
-        buffers: [vertexLayout.layout],
-      },
-      fragment: {
-        module: cache.shaderModule.module,
-        entryPoint: "fragmentMain",
-        targets: [{ format: canvasFormat }],
-      },
-      primitive: {
-        topology: "triangle-list",
-        cullMode: "none",
-        frontFace: "ccw",
-      },
-      depthStencil: {
-        format: "depth24plus-stencil8",
-        depthWriteEnabled: true,
-        depthCompare: "less-equal",
-      },
-    });
+    // Build the primitive render pipeline for a given cull mode. Kept
+    // as a closure so the `twoPasses` path below can create two extra
+    // variants (cullMode: "front" for pass 1, cullMode: "back" for
+    // pass 2) without duplicating the full descriptor.
+    const makePipeline = (cullMode, label) =>
+      device.createRenderPipeline({
+        label,
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: bindGroupLayouts,
+        }),
+        vertex: {
+          module: cache.shaderModule.module,
+          entryPoint: "vertexMain",
+          buffers: [vertexLayout.layout],
+        },
+        fragment: {
+          module: cache.shaderModule.module,
+          entryPoint: "fragmentMain",
+          targets: [makeFragmentTarget(canvasFormat, translucent)],
+        },
+        primitive: {
+          topology: "triangle-list",
+          cullMode,
+          frontFace: "ccw",
+        },
+        depthStencil: {
+          format: "depth24plus-stencil8",
+          depthWriteEnabled: !translucent,
+          depthCompare: "less-equal",
+        },
+      });
+    cache.pipeline = makePipeline("none", "Primitive pipeline (noCull)");
+    // DP-H17 — closed translucent volumes need two draw calls with
+    // opposite cull modes so back faces composite before front faces.
+    // Build both variants up-front (they share everything except
+    // cullMode) so the draw-emit code can pick them per twoPasses
+    // pass. Non-twoPasses paths reuse the noCull pipeline as before.
+    if (twoPasses) {
+      cache.pipelineFrontCull = makePipeline(
+        "front",
+        "Primitive pipeline (cullFront → render back faces)",
+      );
+      cache.pipelineBackCull = makePipeline(
+        "back",
+        "Primitive pipeline (cullBack → render front faces)",
+      );
+    } else {
+      cache.pipelineFrontCull = null;
+      cache.pipelineBackCull = null;
+    }
+    cache.twoPasses = twoPasses;
 
     // Shared placeholder material buffer for per-instance-color shaders
     // (these shaders don't use material uniforms — just a placeholder vec4)
@@ -569,8 +948,12 @@ function createWebGPUCommands(
       cache.defaultSampler = device.createSampler({
         magFilter: "linear",
         minFilter: "linear",
-        addressModeU: "repeat",
-        addressModeV: "repeat",
+        // Match WebGL Sampler.js default (CLAMP_TO_EDGE). Materials that need
+        // tiling handle it in the shader via fract(repeat * st), so the sampler
+        // wrap mode is almost always moot — but clamp is a safer default for
+        // single-tile images (avoids edge bleeding between repeats).
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
       });
       cache.textureBindGroup = device.createBindGroup({
         layout: cache.textureBindGroupLayout,
@@ -586,7 +969,7 @@ function createWebGPUCommands(
       const pickShaderCode = getPickShaderForType(shaderInfo.type);
       cache.pickShaderModule = WebGPUShaderModule.create({
         device: device,
-        code: pickShaderCode,
+        code: preprocessShaderSource(pickShaderCode, 0),
         label: `${shaderInfo.type} Pick Shader`,
       });
 
@@ -649,6 +1032,11 @@ function createWebGPUCommands(
 
   for (let i = 0; i < geometries.length; i++) {
     const geometry = geometries[i];
+
+    // DP-H19 — reconstruct normal / st from `compressedAttributes` when
+    // the primitive was built with `compressVertices: true` (the
+    // default). Must run before any `geometry.attributes.*` reads below.
+    ensureUncompressedAttributes(geometry);
 
     // ── Extract RTE position data (positionHigh + positionLow) ──
     const posData = extractPositionData(geometry);
@@ -829,7 +1217,7 @@ function createWebGPUCommands(
     if (isLit) {
       writeRTEUniformsLit(cameraData, rte, context.uniformState);
     } else {
-      writeRTEUniformsFlat(cameraData, rte);
+      writeRTEUniformsFlat(cameraData, rte, context.uniformState);
     }
     device.queue.writeBuffer(cache.cameraBuffers[i], 0, cameraData);
 
@@ -853,25 +1241,50 @@ function createWebGPUCommands(
     const effectsPlaceholder = getPlaceholderEffects(device);
     commandBindGroups.push(effectsPlaceholder.bindGroup);
 
-    const command = new WebGPUDrawCommand({
-      pipeline: cache.pipeline,
-      bindGroups: commandBindGroups,
-      vertexBuffer: cache.vertexBuffers[i],
-      indexBuffer: cache.indexBuffers[i],
-      indexFormat: cache.indexFormats[i],
-      vertexCount: defined(cache.indexBuffers[i])
-        ? undefined
-        : cache.vertexCounts[i],
-      indexCount: defined(cache.indexBuffers[i])
-        ? cache.indexCounts[i]
-        : undefined,
-      pass: pass,
-      owner: primitive,
-    });
-
-    command._webgpuCameraBuffer = cache.cameraBuffers[i];
-    command._webgpuShaderType = shaderInfo.type;
-    validCommands.push(command);
+    // DP-H17 — closed translucent volumes: emit two draw commands per
+    // geometry, back faces first then front faces. Matches the
+    // canonical WebGL "twoPasses" behavior for semi-transparent boxes,
+    // ellipsoids, cones, etc. — ensures correct compositing of the
+    // volume's interior against its exterior.
+    //
+    // The back-face pipeline (cullMode: "front") runs first; the
+    // front-face pipeline (cullMode: "back") runs second. Scene pass
+    // ordering (both land in Pass.TRANSLUCENT) means they execute in
+    // emission order within the translucent queue.
+    //
+    // Non-twoPasses path keeps the single cullMode: "none" pipeline
+    // — unchanged from before DP-H17.
+    const makeCommand = (pipeline, label) => {
+      const cmd = new WebGPUDrawCommand({
+        pipeline,
+        bindGroups: commandBindGroups,
+        vertexBuffer: cache.vertexBuffers[i],
+        indexBuffer: cache.indexBuffers[i],
+        indexFormat: cache.indexFormats[i],
+        vertexCount: defined(cache.indexBuffers[i])
+          ? undefined
+          : cache.vertexCounts[i],
+        indexCount: defined(cache.indexBuffers[i])
+          ? cache.indexCounts[i]
+          : undefined,
+        pass: pass,
+        owner: primitive,
+      });
+      cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
+      cmd._webgpuShaderType = shaderInfo.type;
+      cmd._label = label;
+      return cmd;
+    };
+    if (twoPasses && cache.pipelineFrontCull && cache.pipelineBackCull) {
+      validCommands.push(
+        makeCommand(cache.pipelineFrontCull, "back-face pass"),
+      );
+      validCommands.push(
+        makeCommand(cache.pipelineBackCull, "front-face pass"),
+      );
+    } else {
+      validCommands.push(makeCommand(cache.pipeline, "single-pass"));
+    }
 
     // ── Pick command (split camera/material bind groups) ──
     if (hasPickIds && i < pickIds.length && defined(cache.pickPipeline)) {
@@ -887,7 +1300,7 @@ function createWebGPUCommands(
       }
 
       const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
-      writeRTEUniformsFlat(pickCameraData, rte);
+      writeRTEUniformsFlat(pickCameraData, rte, context.uniformState);
       device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
 
       cache.pickCameraBindGroups[i] = device.createBindGroup({
@@ -964,15 +1377,47 @@ function createWebGPUCommands(
 // =========================================================================
 
 /**
- * Returns the texture uniform name for a given material shader type.
- * Most materials use 'image'; Water uses 'specularMap'.
+ * Returns the texture-slot mapping for a material shader type.
+ *
+ * Batch 25 — DP-H20 multi-texture materials (NormalMap, BumpMap, Water,
+ * ElevationBand) need two textures bound at once. Each entry maps the
+ * material's shader-type string to the `material._imageSources` keys
+ * that feed the primary `@binding(1)` slot and the optional secondary
+ * `@binding(2)` slot.
+ *
+ * Single-texture materials return `{ primary: "image" }` — the
+ * secondary slot binds a placeholder at bind-group build time and the
+ * shader's lack of a `@binding(2)` declaration leaves it unused.
+ *
+ * The return type is deliberately a plain object (not a class) so the
+ * fast-path comparison in `ensureMaterialTextureBindGroup` is a pair of
+ * `===` checks on `_matPrimarySource` / `_matSecondarySource`.
+ *
+ * @param {string} shaderType
+ * @returns {{primary: string, secondary?: string}}
  * @private
  */
 function getTextureUniformName(shaderType) {
-  if (shaderType.includes("Water")) {
-    return "specularMap";
+  if (shaderType.includes("NormalMap")) {
+    return { primary: "image", secondary: "normalMap" };
   }
-  return "image";
+  if (shaderType.includes("BumpMap")) {
+    return { primary: "image", secondary: "bumpMap" };
+  }
+  if (shaderType.includes("Water")) {
+    // Water needs both the wave-normal perturbation texture and the
+    // "where water is" specular mask. Pre-Batch-25 WebGPU only bound
+    // `specularMap` at @binding(1) but the shader read it as if it
+    // were the normal map — a subtle mislabel that produced chaotic
+    // wave behavior on ocean tiles.
+    return { primary: "normalMap", secondary: "specularMap" };
+  }
+  if (shaderType.includes("ElevBand")) {
+    // ElevationBand — DP-H22 (Batch 25). Primary is the heights lookup
+    // texture; secondary is the color ramp.
+    return { primary: "heights", secondary: "colors" };
+  }
+  return { primary: "image" };
 }
 
 /**
@@ -995,80 +1440,159 @@ function ensureMaterialTextureBindGroup(
   shaderType,
   cache,
 ) {
-  const uniformName = getTextureUniformName(shaderType);
+  const slots = getTextureUniformName(shaderType);
   const imageSources = defined(material) ? material._imageSources : undefined;
-  const imageSource = defined(imageSources)
-    ? imageSources[uniformName]
+  const primarySource = defined(imageSources)
+    ? imageSources[slots.primary]
     : undefined;
+  const secondarySource =
+    defined(imageSources) && defined(slots.secondary)
+      ? imageSources[slots.secondary]
+      : undefined;
 
-  // Check if cached texture is still current (same image source)
+  // Check if cached texture is still current (both slots unchanged)
   if (
-    defined(cache._matTextureSource) &&
-    cache._matTextureSource === imageSource &&
-    defined(cache.textureBindGroup)
+    defined(cache.textureBindGroup) &&
+    cache._matPrimarySource === primarySource &&
+    cache._matSecondarySource === secondarySource
   ) {
     return true;
   }
 
-  // Ensure sampler exists (reused across texture changes)
-  if (!defined(cache._matSampler)) {
+  // DP-H21 — per-axis wrap mode from material fabric.
+  //
+  // Material fabrics expose tiling via `material.uniforms.repeat`,
+  // which may be:
+  //   - a Cartesian2 with numeric multipliers (common for Image,
+  //     Checkerboard, Stripe, Water): x/y values > 1 indicate tiling.
+  //     The fabric's fragment shader does
+  //     `fract(repeat * materialInput.st)` so the sampler wrap mode
+  //     only affects out-of-[0,1] UVs — repeat is still the correct
+  //     wrap because atlas'd fabrics sometimes feed raw non-fract UVs.
+  //   - a plain object `{ x: boolean, y: boolean }` — per-axis
+  //     "should this axis tile?" flags. Used by some fabric dialects.
+  //
+  // Both shapes are honored. When no hint exists we keep the historical
+  // `clamp-to-edge` default (safe for single-tile materials).
+  const repeat = material?.uniforms?.repeat;
+  let wantsRepeatU = false;
+  let wantsRepeatV = false;
+  if (defined(repeat)) {
+    const rx = repeat.x;
+    const ry = repeat.y;
+    // Numeric shape: > 1 means tile. === 1 means clamp. < 1 is exotic
+    // (under-sampling); caller's shader handles it via fract so we
+    // treat sub-1 as "no tiling at sampler level" too.
+    if (typeof rx === "number") {
+      wantsRepeatU = rx > 1;
+    } else if (typeof rx === "boolean") {
+      wantsRepeatU = rx;
+    }
+    if (typeof ry === "number") {
+      wantsRepeatV = ry > 1;
+    } else if (typeof ry === "boolean") {
+      wantsRepeatV = ry;
+    }
+  }
+  const addressModeU = wantsRepeatU ? "repeat" : "clamp-to-edge";
+  const addressModeV = wantsRepeatV ? "repeat" : "clamp-to-edge";
+
+  // Rebuild the sampler when its address-mode configuration changes
+  // (material fabric swapped, or repeat uniform mutated). Cheap —
+  // samplers are lightweight and we only rebuild on the actual
+  // change path.
+  if (
+    !defined(cache._matSampler) ||
+    cache._matSamplerAddressU !== addressModeU ||
+    cache._matSamplerAddressV !== addressModeV
+  ) {
     cache._matSampler = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
       mipmapFilter: "linear",
-      addressModeU: "repeat",
-      addressModeV: "repeat",
+      addressModeU,
+      addressModeV,
     });
+    cache._matSamplerAddressU = addressModeU;
+    cache._matSamplerAddressV = addressModeV;
+    // Invalidate the bind group so it picks up the new sampler on
+    // the next frame.
+    cache.textureBindGroup = undefined;
   }
 
-  let gpuTexView;
+  // Resolve the fallback 1×1 placeholder view once — used for either slot
+  // that doesn't have a real image. Single-texture materials always use
+  // it for slot 2; multi-texture materials use it when the secondary
+  // image hasn't loaded yet.
+  const getPlaceholderView = () => {
+    const defaultTex = context.defaultTexture;
+    if (defined(defaultTex) && defined(defaultTex.view)) {
+      return defaultTex.view;
+    }
+    if (!defined(cache.defaultTexture)) {
+      cache.defaultTexture = WebGPUTexture.create2D(
+        device,
+        1,
+        1,
+        "rgba8unorm",
+        1,
+        "FallbackWhite",
+      );
+      cache.defaultTexture.write(new Uint8Array([255, 255, 255, 255]));
+    }
+    return cache.defaultTexture.view;
+  };
 
-  if (defined(imageSource) && defined(context.createTextureFromImage)) {
-    // Create WebGPU texture from raw image (Image, ImageBitmap, Canvas)
+  // Build / rebuild slot 1 (primary)
+  let primaryView;
+  if (defined(primarySource) && defined(context.createTextureFromImage)) {
     const gpuTex = context.createTextureFromImage(
-      imageSource,
+      primarySource,
       "rgba8unorm",
       true,
     );
     if (defined(gpuTex)) {
-      // Destroy previous material-created GPU texture
-      if (defined(cache._matGpuTexture)) {
-        cache._matGpuTexture.destroy();
+      if (defined(cache._matGpuTexturePrimary)) {
+        cache._matGpuTexturePrimary.destroy();
       }
-      cache._matGpuTexture = gpuTex;
-      cache._matTextureSource = imageSource;
-      gpuTexView = gpuTex.view;
+      cache._matGpuTexturePrimary = gpuTex;
+      primaryView = gpuTex.view;
     }
   }
+  if (!defined(primaryView)) {
+    primaryView = getPlaceholderView();
+  }
+  cache._matPrimarySource = primarySource;
 
-  // Fall back to 1×1 white default texture
-  if (!defined(gpuTexView)) {
-    const defaultTex = context.defaultTexture;
-    if (defined(defaultTex) && defined(defaultTex.view)) {
-      gpuTexView = defaultTex.view;
-    } else {
-      // No default texture available yet — create minimal fallback
-      if (!defined(cache.defaultTexture)) {
-        cache.defaultTexture = WebGPUTexture.create2D(
-          device,
-          1,
-          1,
-          "rgba8unorm",
-          1,
-          "FallbackWhite",
-        );
-        cache.defaultTexture.write(new Uint8Array([255, 255, 255, 255]));
+  // Build / rebuild slot 2 (secondary). Always bind SOMETHING so the
+  // bind group layout stays satisfied; when the material has no
+  // secondary texture (single-texture material) we bind the placeholder.
+  let secondaryView;
+  if (defined(secondarySource) && defined(context.createTextureFromImage)) {
+    const gpuTex2 = context.createTextureFromImage(
+      secondarySource,
+      "rgba8unorm",
+      true,
+    );
+    if (defined(gpuTex2)) {
+      if (defined(cache._matGpuTextureSecondary)) {
+        cache._matGpuTextureSecondary.destroy();
       }
-      gpuTexView = cache.defaultTexture.view;
+      cache._matGpuTextureSecondary = gpuTex2;
+      secondaryView = gpuTex2.view;
     }
-    cache._matTextureSource = undefined;
   }
+  if (!defined(secondaryView)) {
+    secondaryView = getPlaceholderView();
+  }
+  cache._matSecondarySource = secondarySource;
 
   cache.textureBindGroup = device.createBindGroup({
     layout: cache.textureBindGroupLayout,
     entries: [
       { binding: 0, resource: cache._matSampler },
-      { binding: 1, resource: gpuTexView },
+      { binding: 1, resource: primaryView },
+      { binding: 2, resource: secondaryView },
     ],
   });
 
@@ -1090,15 +1614,20 @@ function createMaterialPipelineAndCache(
   vertexLayout,
   context,
   isLit,
+  translucent,
 ) {
-  if (cache.shaderType === shaderInfo.type) {
+  if (
+    cache.shaderType === shaderInfo.type &&
+    cache.translucent === translucent
+  ) {
     return false;
   }
   cache.shaderType = shaderInfo.type;
+  cache.translucent = translucent;
 
   cache.shaderModule = WebGPUShaderModule.create({
     device: device,
-    code: shaderInfo.code,
+    code: preprocessShaderSource(shaderInfo.code, 0),
     label: `${shaderInfo.type} Material Shader`,
   });
 
@@ -1121,10 +1650,16 @@ function createMaterialPipelineAndCache(
   ];
 
   if (shaderInfo.needsTexture) {
+    // Batch 25 — two texture slots (see the matching BGL in
+    // `createMaterialPipelineAndCache` ~line 720 for the rationale).
     cache.textureBindGroupLayout = makeBindGroupLayout(
       device,
       "Material Texture BGL",
-      [sampler(0, Stage.FRAGMENT), texture(1, Stage.FRAGMENT)],
+      [
+        sampler(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        texture(2, Stage.FRAGMENT),
+      ],
     );
     bindGroupLayouts.push(cache.textureBindGroupLayout);
   } else {
@@ -1143,7 +1678,7 @@ function createMaterialPipelineAndCache(
     fragment: {
       module: cache.shaderModule.module,
       entryPoint: "fragmentMain",
-      targets: [{ format: canvasFormat }],
+      targets: [makeFragmentTarget(canvasFormat, translucent)],
     },
     primitive: {
       topology: "triangle-list",
@@ -1152,7 +1687,7 @@ function createMaterialPipelineAndCache(
     },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
+      depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
   });
@@ -1289,6 +1824,17 @@ function createWebGPUMaterialCommands(
   }
   const cache = primitive._webgpuCache;
 
+  // DP-H19 — decompress every geometry's `compressedAttributes` back into
+  // `normal` / `st` before any downstream read. Doing this for all
+  // geometries up front (not just `firstGeom`) is important: the
+  // shader-variant-selection below inspects the first geometry's
+  // attribute presence, but later draw commands iterate the full set
+  // and must see the same shape. This helper is idempotent so it's
+  // cheap to call repeatedly (no double-decode on subsequent frames).
+  for (let i = 0; i < geometries.length; i++) {
+    ensureUncompressedAttributes(geometries[i]);
+  }
+
   const firstGeom = geometries[0];
   const attrs = firstGeom.attributes;
   const hasNormals = defined(attrs.normal) && defined(attrs.normal.values);
@@ -1308,6 +1854,7 @@ function createWebGPUMaterialCommands(
     vertexLayout,
     context,
     isLit,
+    translucent,
   );
 
   // Bind real material texture (from Material._imageSources) or fall back to
@@ -1332,7 +1879,7 @@ function createWebGPUMaterialCommands(
     const pickCode = getMaterialPickShaderForType(shaderInfo.type);
     cache.pickShaderModule = WebGPUShaderModule.create({
       device,
-      code: pickCode,
+      code: preprocessShaderSource(pickCode, 0),
       label: `${shaderInfo.type} MatPick`,
     });
 
@@ -1495,7 +2042,7 @@ function createWebGPUMaterialCommands(
     if (isLit) {
       writeRTEUniformsLit(cameraData, rte, context.uniformState);
     } else {
-      writeRTEUniformsFlat(cameraData, rte);
+      writeRTEUniformsFlat(cameraData, rte, context.uniformState);
     }
     device.queue.writeBuffer(cache.cameraBuffers[i], 0, cameraData);
 
@@ -1548,7 +2095,7 @@ function createWebGPUMaterialCommands(
       }
 
       const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
-      writeRTEUniformsFlat(pickCameraData, rte);
+      writeRTEUniformsFlat(pickCameraData, rte, context.uniformState);
       device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
 
       cache.pickCameraBindGroups[i] = device.createBindGroup({
@@ -1659,7 +2206,7 @@ function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
       LIT_CAMERA_BYTES,
     );
   } else {
-    writeRTEUniformsFlat(ud, rte);
+    writeRTEUniformsFlat(ud, rte, context.uniformState);
     device.queue.writeBuffer(
       command._webgpuCameraBuffer,
       0,

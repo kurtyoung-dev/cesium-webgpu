@@ -160,6 +160,7 @@ function buildInstanceBuffer(
   }
   // Per instance: posHigh(12) + posLow(12) + scaleAndBrightness(16) + color(16) = 56 bytes
   const data = new Float32Array(count * 14);
+  let visibleCount = 0;
   for (let i = 0; i < count; i++) {
     const rawCloud =
       clouds[i] || (collection.get ? collection.get(i) : undefined);
@@ -167,15 +168,21 @@ function buildInstanceBuffer(
       continue;
     }
     const cloud = rawCloud as {
+      show?: boolean;
       position?: CesiumCartesian3;
       scale?: CesiumCartesian2;
       brightness?: number;
       slice?: number;
       color?: CesiumColor;
     };
+    // Per-cloud show flag — WebGL reads it, we previously rendered every
+    // cloud regardless of show.
+    if (cloud.show === false) {
+      continue;
+    }
     const pos = cloud.position || new Cartesian3();
     EncodedCartesian3.fromCartesian(pos, scratchEncoded);
-    const off = i * 14;
+    const off = visibleCount * 14;
     data[off] = scratchEncoded.high.x;
     data[off + 1] = scratchEncoded.high.y;
     data[off + 2] = scratchEncoded.high.z;
@@ -191,13 +198,17 @@ function buildInstanceBuffer(
     data[off + 11] = c?.green ?? 1.0;
     data[off + 12] = c?.blue ?? 1.0;
     data[off + 13] = c?.alpha ?? 0.8;
+    visibleCount++;
   }
   const buffer = device.createBuffer({
     size: data.byteLength,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
   device.queue.writeBuffer(buffer, 0, data);
-  return { buffer, count };
+  // Return visibleCount (clouds with show:true) as the instance count.
+  // The buffer itself is still sized for the full collection slot count
+  // so the next frame's rewrite doesn't have to reallocate on toggle.
+  return { buffer, count: visibleCount };
 }
 
 function updateWebGPUCloudCollection(

@@ -116,6 +116,20 @@ export interface PipelineVariant {
    * Stencil write mask (0-255)
    */
   stencilWriteMask?: number;
+
+  /**
+   * Color write mask applied to every color target in the descriptor's
+   * `fragment.targets`. WebGPU places `writeMask` on each
+   * `GPUColorTargetState` (not on the overall pipeline), but most
+   * callers want the same mask across all targets — the WebGL
+   * `gl.colorMask(r,g,b,a)` convention that the Proton-style stub
+   * tracks. The cache applies this override at pipeline build time
+   * via `Object.assign` onto each target.
+   *
+   * Valid values are 0 (no writes) through 0xF (RGBA all on). Matches
+   * `GPUColorWriteFlags` (RED=0x1, GREEN=0x2, BLUE=0x4, ALPHA=0x8).
+   */
+  colorWriteMask?: GPUColorWriteFlags;
 }
 
 /**
@@ -322,12 +336,26 @@ export class WebGPURenderPipelineCache {
       },
     };
 
-    // Fragment shader (optional)
+    // Fragment shader (optional). When the variant specifies a
+    // colorWriteMask override (Proton-style WebGL stub path — it
+    // accumulates the current gl.colorMask into the state), apply it
+    // to each color target in a shallow-cloned targets array so the
+    // caller's descriptor isn't mutated. Targets that already have an
+    // explicit writeMask keep their own value since pipeline
+    // descriptors are the explicit contract — we only fill in targets
+    // that omitted the field.
     if (descriptor.fragment) {
+      let targets = descriptor.fragment.targets;
+      if (variant?.colorWriteMask !== undefined && targets) {
+        const mask = variant.colorWriteMask & 0xf;
+        targets = targets.map((t) =>
+          t && t.writeMask === undefined ? { ...t, writeMask: mask } : t,
+        );
+      }
       result.fragment = {
         module: descriptor.fragment.module,
         entryPoint: descriptor.fragment.entryPoint,
-        targets: descriptor.fragment.targets,
+        targets,
       };
     }
 
@@ -344,10 +372,27 @@ export class WebGPURenderPipelineCache {
       unclippedDepth: descriptor.primitive?.unclippedDepth,
     };
 
-    // Depth stencil state with variant overrides
+    // Depth stencil state with variant overrides. When the variant
+    // introduces stencil ops and the descriptor's format is
+    // depth-only, auto-upgrade to `depth24plus-stencil8` — otherwise
+    // WebGPU validation errors on "stencil ops present but format has
+    // no stencil aspect". Matches the behavior of
+    // WebGPUPipelineDescriptorBuilder._ensureDepthStencil.
     if (descriptor.depthStencil || variant?.depthTest !== undefined) {
+      const hasStencilOps =
+        (variant?.stencilFront ??
+          descriptor.depthStencil?.stencilFront) !== undefined ||
+        (variant?.stencilBack ??
+          descriptor.depthStencil?.stencilBack) !== undefined;
+      let format = descriptor.depthStencil?.format || "depth24plus";
+      if (
+        hasStencilOps &&
+        (format === "depth24plus" || format === "depth32float")
+      ) {
+        format = "depth24plus-stencil8";
+      }
       result.depthStencil = {
-        format: descriptor.depthStencil?.format || "depth24plus",
+        format,
         depthWriteEnabled:
           variant?.depthWrite !== undefined
             ? variant.depthWrite
@@ -413,6 +458,8 @@ export class WebGPURenderPipelineCache {
         parts.push(`srm:${variant.stencilReadMask}`);
       if (variant.stencilWriteMask !== undefined)
         parts.push(`swm:${variant.stencilWriteMask}`);
+      if (variant.colorWriteMask !== undefined)
+        parts.push(`cwm:${variant.colorWriteMask}`);
     }
 
     return parts.join("|");

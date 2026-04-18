@@ -276,12 +276,26 @@ export function createPixelReadbackPBO(
     height,
     bytesPerRow,
     mapAsync: async () => {
-      await readbackBuffer.mapAsync(GPUMapMode.READ);
-      const arrayBuffer = readbackBuffer.getMappedRange();
-      const data = new Uint8Array(arrayBuffer.slice(0));
-      readbackBuffer.unmap();
-      readbackBuffer.destroy();
-      return data;
+      // H-P5 — `mapAsync` can reject when the device is lost or the
+      // buffer was destroyed while the submit was still in flight.
+      // Catch the rejection so the async caller sees a clean `null`
+      // instead of an unhandled promise rejection, and always release
+      // the buffer so we don't leak GPU memory on the failure path.
+      try {
+        await readbackBuffer.mapAsync(GPUMapMode.READ);
+        const arrayBuffer = readbackBuffer.getMappedRange();
+        const data = new Uint8Array(arrayBuffer.slice(0));
+        readbackBuffer.unmap();
+        readbackBuffer.destroy();
+        return data;
+      } catch (e) {
+        try {
+          readbackBuffer.destroy();
+        } catch {
+          // Already destroyed or device lost — swallow.
+        }
+        return null;
+      }
     },
     destroy: () => {
       readbackBuffer.destroy();

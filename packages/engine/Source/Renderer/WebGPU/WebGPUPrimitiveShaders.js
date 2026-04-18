@@ -14,6 +14,27 @@
  */
 import defined from "../../Core/defined.js";
 
+// DP-H22 — dedupe warnings for material types that don't have a
+// material-pipeline-compatible WGSL shader. Set-of-type once-emitted
+// so long-running apps don't flood the console.
+const _warnedMissingMaterial = new Set();
+function _warnMissingMaterialOnce(materialType) {
+  if (_warnedMissingMaterial.has(materialType)) {
+    return;
+  }
+  _warnedMissingMaterial.add(materialType);
+  //>>includeStart('debug', pragmas.debug);
+  // Batch 25 — ElevationBand shipped with dedicated WGSL shaders, so
+  // it's no longer a fallback case. The remaining warned-about types
+  // are all Polyline* materials which only render through a
+  // PolylineCollection (their vertex layout is collection-specific).
+  console.warn(
+    `[WebGPU:Primitive] Material type "${materialType}" is not supported on this pipeline — falling back to Color. ` +
+      `${materialType} materials only render through PolylineCollection, not on arbitrary primitives — apply them to a PolylineCollection instead of setting Material.fromType("${materialType}") on a Box/Ellipsoid/etc.`,
+  );
+  //>>includeEnd('debug');
+}
+
 // =========================================================================
 // Static shader imports — bundled by esbuild, no runtime fetch needed
 // =========================================================================
@@ -53,6 +74,8 @@ import PrimitiveMatNormalMapFlat from "../../Shaders/WebGPU/Primitive/PrimitiveM
 import PrimitiveMatNormalMapLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatNormalMapLit.js";
 import PrimitiveMatWaterFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatWaterFlat.js";
 import PrimitiveMatWaterLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatWaterLit.js";
+import PrimitiveMatElevBandFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatElevBandFlat.js";
+import PrimitiveMatElevBandLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatElevBandLit.js";
 import PrimitiveMatElevContourFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatElevContourFlat.js";
 import PrimitiveMatElevContourLit from "../../Shaders/WebGPU/Primitive/PrimitiveMatElevContourLit.js";
 import PrimitiveMatElevRampFlat from "../../Shaders/WebGPU/Primitive/PrimitiveMatElevRampFlat.js";
@@ -110,6 +133,8 @@ const _shaderCache = {
   matNormalMapLit: PrimitiveMatNormalMapLit,
   matWaterFlat: PrimitiveMatWaterFlat,
   matWaterLit: PrimitiveMatWaterLit,
+  matElevBandFlat: PrimitiveMatElevBandFlat,
+  matElevBandLit: PrimitiveMatElevBandLit,
   matElevContourFlat: PrimitiveMatElevContourFlat,
   matElevContourLit: PrimitiveMatElevContourLit,
   matElevRampFlat: PrimitiveMatElevRampFlat,
@@ -224,7 +249,33 @@ function selectWebGPUShader(attributes) {
  * @returns {{ floatsPerVertex: number, stride: number, layout: GPUVertexBufferLayout }}
  * @private
  */
-function getVertexLayoutForShader(shaderType) {
+function getVertexLayoutForShader(shaderType, options) {
+  const compressed = defined(options) && options.compressedVertices === true;
+
+  // DP-H19-SHADER-DECODE (Batch 27) — compressed variant for `phong`.
+  // Consumes a single f32 at location 2 (oct-packed normal) instead of
+  // the plain `normal: vec3<f32>`. The compressed payload comes straight
+  // from `compressedAttributes` (normal-only slot) without the CPU-side
+  // octDecode expansion in `ensureUncompressedAttributes`. The material
+  // shader must carry the matching `//>>ifdef COMPRESSED_VERTICES` block.
+  if (compressed && shaderType === "phong") {
+    // posHigh(3) + posLow(3) + compressedAttributes(1 f32) + color(4) = 11 floats = 44 bytes
+    return {
+      floatsPerVertex: 11,
+      stride: 44,
+      compressed: true,
+      layout: {
+        arrayStride: 44,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // positionHigh
+          { shaderLocation: 1, offset: 12, format: "float32x3" }, // positionLow
+          { shaderLocation: 2, offset: 24, format: "float32" }, // compressedAttributes (packed normal)
+          { shaderLocation: 3, offset: 28, format: "float32x4" }, // color
+        ],
+      },
+    };
+  }
+
   // RTE: All layouts include positionHigh(3) + positionLow(3) at locations 0-1
   if (shaderType === "phongTextured") {
     // posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4) = 15 floats = 60 bytes
@@ -309,6 +360,59 @@ function getUniformSizeForShader(shaderType) {
  */
 function isPhongShader(shaderType) {
   return shaderType === "phong" || shaderType === "phongTextured";
+}
+
+// DP-H19-SHADER-DECODE (Batch 27) — set of shader types that advertise
+// support for GPU-side compressed-vertex decode. Consult this at pipeline
+// build time: if the geometry carries `compressedAttributes` AND the
+// shader is in this set, route through the compressed vertex layout +
+// set the `COMPRESSED_VERTICES` define on the shader module key. If the
+// shader isn't in the set, fall back to the CPU decompression path in
+// `ensureUncompressedAttributes`.
+//
+// Add-as-you-extend. Each addition requires:
+//   1. A `//>>ifdef COMPRESSED_VERTICES` / `//>>else` block in the
+//      shader's `struct VertexInput`.
+//   2. Inline decode helpers (mirror of `csm_decodeCompressedVertex.wgsl`)
+//      inside the same ifdef.
+//   3. A compressed branch in `getVertexLayoutForShader` that emits the
+//      narrower per-vertex stride.
+const _SHADERS_WITH_GPU_DECODE = new Set(["phong"]);
+
+/**
+ * @param {string} shaderType
+ * @returns {boolean} true when the shader declares `//>>ifdef COMPRESSED_VERTICES`
+ *   blocks and a matching compressed layout in `getVertexLayoutForShader`.
+ * @private
+ */
+function shaderSupportsCompressedVertices(shaderType) {
+  return _SHADERS_WITH_GPU_DECODE.has(shaderType);
+}
+
+// DP-H19-SHADER-DECODE (Batch 27) — global opt-in for the GPU decode
+// pipeline. Defaults to `false` so the CPU path in
+// `ensureUncompressedAttributes` stays authoritative while shader
+// coverage is limited to "phong". Flip via `setCompressedVertexDecodeEnabled(true)`
+// from app code (or from a renderer-init hook) once the pilot shader
+// has been validated end-to-end. Independent of the `COMPRESSED_VERTICES`
+// ShaderDefine bit — the flag gates *whether we try to use it*, the
+// per-shader `_SHADERS_WITH_GPU_DECODE` set gates *which shaders can*.
+let _compressedVertexDecodeEnabled = false;
+
+/**
+ * @param {boolean} enabled
+ * @private
+ */
+function setCompressedVertexDecodeEnabled(enabled) {
+  _compressedVertexDecodeEnabled = enabled === true;
+}
+
+/**
+ * @returns {boolean}
+ * @private
+ */
+function isCompressedVertexDecodeEnabled() {
+  return _compressedVertexDecodeEnabled;
 }
 
 /**
@@ -639,6 +743,51 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
     };
   }
 
+  // DP-H22 (Batch 25) — ElevationBand shipped with new WGSL shaders
+  // that do the 16-step binary search over a heights texture + color
+  // ramp (see PrimitiveMatElevBandFlat.wgsl / PrimitiveMatElevBandLit.wgsl).
+  // The Batch 25 material texture bind group v2 provides the two
+  // texture slots needed (heights + colors) via `_imageSources.heights`
+  // + `_imageSources.colors`.
+  if (materialType === "ElevationBand") {
+    if (useLighting && hasST) {
+      return {
+        type: "matElevBandLit",
+        code: getShaderSource("matElevBandLit"),
+        needsTexture: true,
+      };
+    }
+    return {
+      type: "matElevBandFlat",
+      code: getShaderSource("matElevBandFlat"),
+      needsTexture: true,
+    };
+  }
+
+  // DP-H22 — surface-level diagnostic for the remaining missing
+  // material families.
+  //
+  //   Polyline* materials (Arrow, Dash, Glow, Outline) have WGSL
+  //   implementations only for the Polyline COLLECTION renderer (see
+  //   Shaders/WebGPU/Collections/Polyline*.wgsl). Their vertex layout
+  //   is Polyline-specific — they can't be applied to arbitrary
+  //   primitives through Material.fromType("PolylineGlow", ...) on a
+  //   box or ellipsoid. WebGL silently fell through to the Color
+  //   default here too; we emit a one-time warning per material
+  //   type so users get feedback when they reach for the wrong
+  //   integration point.
+  if (
+    materialType === "PolylineArrow" ||
+    materialType === "PolylineDash" ||
+    materialType === "PolylineGlow" ||
+    materialType === "PolylineOutline"
+  ) {
+    _warnMissingMaterialOnce(materialType);
+    // Fall through to the Color default below. Single Color render
+    // preserves the primitive's visible shape even though the fancy
+    // material styling is lost.
+  }
+
   // Color material (default)
   if (useLighting && hasST) {
     return {
@@ -746,6 +895,8 @@ function isMaterialTexturedShader(shaderType) {
     shaderType === "matNormalMapLit" ||
     shaderType === "matWaterFlat" ||
     shaderType === "matWaterLit" ||
+    shaderType === "matElevBandFlat" ||
+    shaderType === "matElevBandLit" ||
     shaderType === "matElevRampFlat" ||
     shaderType === "matElevRampLit" ||
     shaderType === "matSlopeRampFlat" ||
@@ -815,6 +966,9 @@ const WebGPUPrimitiveShaders = {
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,
+  shaderSupportsCompressedVertices,
+  setCompressedVertexDecodeEnabled,
+  isCompressedVertexDecodeEnabled,
   // Pick
   getPickShaderForType,
   getMaterialPickShaderForType,
@@ -842,6 +996,9 @@ export {
   getUniformSizeForShader,
   isPhongShader,
   isTexturedShader,
+  shaderSupportsCompressedVertices,
+  setCompressedVertexDecodeEnabled,
+  isCompressedVertexDecodeEnabled,
   getPickShaderForType,
   getMaterialPickShaderForType,
   getPickUniformSize,

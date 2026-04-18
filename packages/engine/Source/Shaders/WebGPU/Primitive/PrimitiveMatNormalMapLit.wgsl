@@ -31,6 +31,10 @@ struct CameraUniforms {
     lightDirection: vec4<f32>,
     _pad2: f32,
     _pad3: f32,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -42,7 +46,15 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-@group(2) @binding(1) var normalTexture: texture_2d<f32>;
+// DP-H20 (Batch 25) — NormalMap uses TWO textures:
+//   @binding(1) diffuseTexture  → base color (material uniform `image`)
+//   @binding(2) normalMapTexture → tangent-space normal perturbation
+//                                  (material uniform `normalMap`)
+// Pre-Batch-25 only one slot was bound, so the normal-map effect
+// rendered as flat-shaded gray diffuse — the shader used a hardcoded
+// `vec3<f32>(0.5)` for diffuse instead of the user's actual image.
+@group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
+@group(2) @binding(2) var normalMapTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -72,12 +84,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = fract(input.texCoord * material.repeat);
-    let texColor = textureSample(normalTexture, textureSampler, uv);
 
-    // Read normal from texture using channel swizzle
-    let nx = swizzleChannel(texColor, material.channels.x);
-    let ny = swizzleChannel(texColor, material.channels.y);
-    let nz = swizzleChannel(texColor, material.channels.z);
+    // DP-H20 — read the actual diffuse texture (was a hardcoded 0.5
+    // gray before). Sampled at the same UV as the normal map so the
+    // per-texel correspondence matches the WebGL NormalMap material.
+    let baseDiffuse = textureSample(diffuseTexture, textureSampler, uv).rgb;
+
+    // DP-H20 — read the normal perturbation from the dedicated normal
+    // map texture (@binding(2)). `material.channels` lets the user
+    // swizzle which channels carry X/Y/Z (e.g., `(0,1,2)` for a
+    // classic RGB-encoded normal map, or `(1,2,0)` for drivers that
+    // pack differently).
+    let normalTexColor = textureSample(normalMapTexture, textureSampler, uv);
+    let nx = swizzleChannel(normalTexColor, material.channels.x);
+    let ny = swizzleChannel(normalTexColor, material.channels.y);
+    let nz = swizzleChannel(normalTexColor, material.channels.z);
 
     // Remap from [0,1] to [-1,1]
     var tangentNormal = vec3<f32>(nx, ny, nz) * 2.0 - 1.0;
@@ -108,7 +129,6 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let specular = pow(NdotH, 64.0);
 
     let ambient = 0.15;
-    let baseDiffuse = vec3<f32>(0.5);
     let diffuse = baseDiffuse * (ambient + NdotL * 0.85);
     let spec = vec3<f32>(specular * 0.3);
 

@@ -30,6 +30,10 @@ struct CameraUniforms {
     _pad1: f32,
     lightDirection: vec4<f32>,
     _pad2: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -46,7 +50,18 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
+// DP-H20 (Batch 25) — Water uses TWO textures:
+//   @binding(1) normalMapTexture  → wave-normal perturbation (fetched
+//                                   from `material._imageSources.normalMap`)
+//   @binding(2) specularMapTexture → "where water is" mask (fetched
+//                                    from `material._imageSources.specularMap`)
+// Pre-Batch 25 the WebGPU code uploaded `specularMap` to @binding(1)
+// but the shader read it AS IF it were the normal map — a subtle
+// mislabel that produced chaotic wave behavior (specular coverage
+// patterns treated as wave normals). Batch 25 routes the primary
+// uniform to `normalMap` and adds `specularMap` as the mask at slot 2.
 @group(2) @binding(1) var normalMapTexture: texture_2d<f32>;
+@group(2) @binding(2) var specularMapTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -125,5 +140,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let waterColor = mix(diffuse, material.blendColor.rgb, fresnel * 0.6);
     let finalColor = waterColor + spec;
 
-    return vec4<f32>(finalColor, material.baseWaterColor.a);
+    // DP-H20 — sample the specular mask to gate water extent. The mask
+    // is 1.0 where water exists and 0.0 for land; multiply into alpha
+    // so land tiles (with the same material applied) don't render
+    // water effects. Matches the WebGL Water material's `specularMap`
+    // semantics.
+    let waterMask = textureSample(
+        specularMapTexture,
+        textureSampler,
+        input.texCoord,
+    ).r;
+    return vec4<f32>(finalColor, material.baseWaterColor.a * waterMask);
 }

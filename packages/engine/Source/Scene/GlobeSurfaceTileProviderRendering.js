@@ -913,6 +913,44 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       _indexBuffer: cmdDesc.indexBuffer,
       _indexCount: cmdDesc.indexCount,
       _indexFormat: cmdDesc.indexFormat,
+      // Shadow-cast tags — routes the command through the right
+      // WebGPUShadowMapRenderer variant when the globe casts shadows.
+      //
+      // Batch 24 — every globe terrain tile now uses an explicit
+      // shadow-cast layout:
+      //   * quantized tiles (TerrainQuantization.BITS12) → `quantized12`
+      //     (BITS12 decode in the cast shader).
+      //   * uncompressed tiles, regardless of whether they carry vertex
+      //     normals / webMercT / geodetic surface normal (DP-H25) →
+      //     `terrainUncompressed` (reads `position3DAndHeight` as vec4
+      //     at location 0, stride-aware so the variable post-position
+      //     bytes don't misalign the GPU's per-vertex walk).
+      //
+      // Before Batch 24 uncompressed tiles fell through to the `rte24`
+      // variant via stride inference. `rte24` reads two vec3s at
+      // offsets 0 and 12 — the first hits `position.xyz` correctly but
+      // the second hits `(height, u, v)`, which is tex-coord garbage,
+      // not a positionLow. The resulting RTE math produced shadow
+      // coordinates unrelated to the actual terrain, so shadows
+      // visibly missed the surface. The new `terrainUncompressed`
+      // variant fixes that at the source.
+      //
+      // DP-H25 geodetic-terrain shadow cast — the `__skip_geodetic_terrain`
+      // sentinel from Batch 19 is removed: geodetic tiles have their
+      // stride reported correctly via `vertexStride` below, and the
+      // stride-aware pipeline registry (Batch 24) handles it.
+      _shadowCastLayout: cmdDesc.isQuantized
+        ? "quantized12"
+        : "terrainUncompressed",
+      _shadowCastTerrainUB: cmdDesc.shadowCastTerrainUB,
+      // Expose the ACTUAL vertex stride so
+      // `_getOrCreateCastPipeline(..., overrideStride)` builds a
+      // pipeline whose `arrayStride` matches the VB. Quantized tiles
+      // use stride 16 (a single compressed vec4); uncompressed tiles
+      // use 24 / 28 / 32 / 36 / 40 / 44 depending on hasVertexNormals /
+      // hasWebMercatorT / hasGeodeticSurfaceNormals — Batch 19's
+      // TileGPUResources.strideBytes already captures the right value.
+      vertexStride: cmdDesc.isQuantized ? 16 : cmdDesc.strideBytes ?? 24,
       execute: function (renderPass) {
         renderPass.setPipeline(this._pipeline);
         for (let i = 0; i < this._bindGroups.length; i++) {

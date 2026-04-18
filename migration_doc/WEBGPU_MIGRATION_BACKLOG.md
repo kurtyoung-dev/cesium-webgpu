@@ -151,6 +151,35 @@ Full agent-generated survey reports (per-project pros/cons with file paths) are 
 
 ---
 
+## 2026-04-16 — Bundle Variants & Size Optimization
+
+Opt-in tree-shaking variants for downstream consumers who only want one backend. Infrastructure is wired end-to-end; size measurement is pending a clean `buildAllVariants` run.
+
+### Completed — build-variant infrastructure
+
+- **BUILD-VAR-1** — `scripts/bundleVariantPlugin.js` added. esbuild `onResolve` plugin that intercepts import resolution and aliases backend-specific paths to empty stubs per variant. Uses a synthetic path-match (no `build.resolve` recursion) + a decision cache for O(1) repeat lookups — the codebase has ~3000 modules and plenty of import overlap.
+- **BUILD-VAR-2** — `scripts/stubs/emptyShader.js` + `scripts/stubs/emptyModule.js` added. The shader stub is `export default ""` (satisfies GLSL string consumers, compile failure surfaces only if the WebGL code path actually runs — which it doesn't when the WebGPU feature renderer intercepts). The module stub is a `Proxy` that throws an explicit diagnostic on any non-introspection access.
+- **BUILD-VAR-3** — `createCesiumJs(variant)`, `createIndexJs(workspace, variant)`, `bundleCesiumJs({variant, entryPoint, ...})`, `buildCesium({variant, ...})` all accept a variant param. Each variant writes its own entry barrel under `Source/` (`Cesium.js`, `CesiumWebGLOnly.js`, `CesiumWebGPUOnly.js`) and its own output dir under `Build/` (`Cesium{Unminified}`, `CesiumWebGL{Unminified}`, `CesiumWebGPU{Unminified}`).
+- **BUILD-VAR-4** — `setGlobalDefaultRenderer` / `getGlobalDefaultRenderer` added to `RendererType.ts`. Each variant's entry barrel calls this at module init so the AUTO renderer path picks the right backend by default.
+- **BUILD-VAR-5** — Gulp tasks: `buildCesiumDual`, `buildCesiumWebGLOnly`, `buildCesiumWebGPUOnly`, `buildAllVariants`. The combined task hoists `buildEngine` + `buildWidgets` so they run once across all three variants (~10s saved per extra variant).
+- **BUILD-VAR-6** — ESM code splitting enabled (`splitting: true`, `outdir`, `chunkNames: "chunks/[name]-[hash]"`). The existing `await import("./WebGPU/WebGPUContext.js")` in `ContextFactory` now produces a real separate chunk instead of inlining — dual-variant ESM consumers who never pick WebGPU skip the WebGPU chunk download entirely.
+
+### Pending — size measurement + validation
+
+- **BUILD-VAR-MEASURE** — Run `npx gulp buildAllVariants` to completion (the session-29 attempt was interrupted). Capture minified + gzipped sizes for `Cesium.js` (IIFE), `index.js` (ESM entry), and each of the split `chunks/*.js` files across all three variants. Update CLAUDE.md's "Baseline (dual minified)" line with the concrete deltas. **Effort: ~5 min once the build completes (~2 min per variant).**
+- **BUILD-VAR-RUNTIME-TEST** — Smoke-test each variant end-to-end in a browser: load `Build/CesiumWebGL/Cesium.js` and confirm a Viewer renders; do the same with `Build/CesiumWebGPU/Cesium.js`. The alias plugin's correctness depends on the feature-renderer pattern intercepting WebGL code paths before they touch the stubbed shader strings; if a missed code path reaches a stub, the failure mode is "empty shader compiles, black render" (webgpu-only) or the stub proxy throws (webgl-only). **Effort: ~30 min.**
+- **BUILD-VAR-SCENE-AUDIT** — Scan `Source/Scene/**/*.js` for places where the WebGL fallback path might run BEFORE the WebGPU feature renderer check — those sites would crash in a webgpu-only build. The current design assumes every WebGL code path is gated behind `if (fr) { fr.update(...); return; }` at the top of the scene file's update method. Enumerate counterexamples. **Effort: ~2 hours.**
+
+### Known limitation — WebGPU-only bundle shrinkage is gated on scene-file audit
+
+The webgpu-only variant aliases GLSL shader strings to `""`. In the common case this is fine because scene files early-return to the WebGPU feature renderer before touching those strings. But if any scene file path executes WebGL shader-compile code unconditionally (e.g., in constructor or `initialize`), the webgpu-only build would still crash at runtime. See **BUILD-VAR-SCENE-AUDIT** above. Until that audit is done, treat the webgpu-only bundle as **experimental** and recommend the dual bundle with runtime `renderer: 'webgpu'` for production use.
+
+### Followup — runtime shader compiler (not in this session)
+
+Per the Slang vs Naga discussion, if we ever want third-party WebGL extensions to ship GLSL that translates to WGSL at runtime, the right path is `naga-wasm` loaded on demand. This is a separate ~2-week spike and does NOT belong to the bundle-variant infrastructure. Tracked as **STUB-SHADER-NAGA-SPIKE** in the stub discussion.
+
+---
+
 ## 2026-04-14 — Session 29 follow-ups (typing)
 
 Session 29 added 13 co-located `.d.ts` files for JS classes that cross into WebGPU TS code, dropping `as unknown as` in `Renderer/` from 57 to 19 (-67%). The 19 survivors are a mix of legitimate escape hatches and easy remaining targets.

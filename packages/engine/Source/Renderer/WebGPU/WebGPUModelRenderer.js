@@ -59,8 +59,11 @@ import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 // Camera uniform buffer: mat4(mvpRTE) + mat4(mvRTE) + mat4(normal) +
-//   vec3+pad(camHighMC) + vec3+pad(camLowMC) + vec3+pad(camWC) = 256 bytes
-const CAMERA_UNIFORM_SIZE = 256;
+//   vec3+pad(camHighMC) + vec3+pad(camLowMC) + vec3+pad(camWC) +
+//   mat4(previousViewProjection)  = 320 bytes.
+// DP-H41 (Batch 27) — previousViewProjection added at the tail for TAA /
+// motion-vector reprojection. 16-byte alignment preserved (20 vec4s).
+const CAMERA_UNIFORM_SIZE = 320;
 // Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
 //   4f(diffuseRGBA) + 3f(padding) = 320 bytes (rounded to 16-byte alignment)
@@ -133,6 +136,22 @@ function packCameraUniforms(data, frameState, modelMatrix) {
   data[57] = camWC.y;
   data[58] = camWC.z;
   data[59] = 0.0;
+
+  // DP-H41 (Batch 27) — previousViewProjection at offset 60..75 (16 floats).
+  // `UniformState.update()` clones the current viewProjection into
+  // `_previousViewProjection` BEFORE overwriting it with the new camera
+  // state, so on frame N this slot holds frame N-1's viewProjection.
+  // TAA / motion-vector shaders consume it via `camera.previousViewProjection`.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 60);
+  } else {
+    // Column-major identity fallback (frame 0).
+    data[60] = 1; data[61] = 0; data[62] = 0; data[63] = 0;
+    data[64] = 0; data[65] = 1; data[66] = 0; data[67] = 0;
+    data[68] = 0; data[69] = 0; data[70] = 1; data[71] = 0;
+    data[72] = 0; data[73] = 0; data[74] = 0; data[75] = 1;
+  }
 }
 
 // ─── Material Uniform Packing ────────────────────────────────────────────────
@@ -193,8 +212,29 @@ function packMaterialUniforms(
   data[35] = df[2];
   data[36] = df[3];
 
+  // Per-texture UV-set bitmask (slot 37, u32). glTF textureInfos carry a
+  // per-texture `texCoord: 0|1` flag that selects which vertex UV set
+  // (TEXCOORD_0 or TEXCOORD_1) a given sampler reads. Occlusion maps
+  // commonly use TEXCOORD_1 while the base color stays on TEXCOORD_0;
+  // without honoring the flag, occlusion blotches land in the wrong place
+  // relative to the diffuse image. The shader reads this bitmask via
+  // `material.texCoordFlags` and branches the UV input per sampling site.
+  let tcFlags = 0;
+  const baseReader =
+    matInfo.baseColorTextureReader || matInfo.diffuseTextureReader;
+  const normalReader = matInfo.normalTextureReader;
+  const mrReader =
+    matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader;
+  const emissiveReader = matInfo.emissiveTextureReader;
+  const occlusionReader = matInfo.occlusionTextureReader;
+  if (baseReader && baseReader.texCoord === 1) {tcFlags |= 0x01;}
+  if (normalReader && normalReader.texCoord === 1) {tcFlags |= 0x02;}
+  if (mrReader && mrReader.texCoord === 1) {tcFlags |= 0x04;}
+  if (emissiveReader && emissiveReader.texCoord === 1) {tcFlags |= 0x08;}
+  if (occlusionReader && occlusionReader.texCoord === 1) {tcFlags |= 0x10;}
+  flagsView.setUint32(37 * 4, tcFlags, true);
+
   // Padding to 320 bytes (80 floats)
-  data[37] = 0;
   data[38] = 0;
   data[39] = 0;
 }
@@ -245,7 +285,7 @@ function packLightUniforms(data, frameState, model) {
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
-function createGPUTextureFromReader(device, textureReader) {
+function createGPUTextureFromReader(device, textureReader, colorSpace) {
   if (!defined(textureReader)) {
     return null;
   }
@@ -270,11 +310,19 @@ function createGPUTextureFromReader(device, textureReader) {
     return null;
   }
 
+  // Pick the texture format based on the semantic color space of the slot:
+  //   "srgb" → rgba8unorm-srgb: GPU sampler auto-decodes sRGB → linear, so
+  //            the shader doesn't need pow(x, 2.2) approximation, and
+  //            linear filtering is perceptually correct.
+  //   else   → rgba8unorm: stays in linear (correct for normal / MR /
+  //            occlusion / data textures that must not be gamma-corrected).
+  const format = colorSpace === "srgb" ? "rgba8unorm-srgb" : "rgba8unorm";
+
   try {
     const gpuTexture = device.createTexture({
-      label: `Model glTF texture ${width}x${height}`,
+      label: `Model glTF texture ${width}x${height} (${format})`,
       size: [width, height, 1],
-      format: "rgba8unorm",
+      format,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -416,6 +464,20 @@ function ensurePrimitiveCache(
     );
   }
 
+  // TexCoord1 buffer — glTF textureInfos carry a `texCoord: 0|1` flag,
+  // so occlusion + clearcoat-normal frequently want TEXCOORD_1 while the
+  // base color stays on TEXCOORD_0. Upload the slot whenever the primitive
+  // provided it; the pipeline layout + shader consumer wire it to the
+  // binding used by textures whose texCoord == 1 (see
+  // WebGPUModelPipelineCache.js vertex-layout slot 7 / TEXCOORD_1).
+  if (geometry.hasTexCoord1 && defined(geometry.texCoord1Data)) {
+    primCache.uv1Buffer = createVertexBuffer(
+      device,
+      geometry.texCoord1Data,
+      `Prim uv1`,
+    );
+  }
+
   // Color0 buffer (normalize to float32)
   if (geometry.hasColor0) {
     const colorFloat = normalizeColorData(
@@ -478,21 +540,39 @@ function ensurePrimitiveCache(
   const textures = createMaterialTextures(device, pipelineCache, matInfo);
   primCache.gpuTextures = textures.created;
 
-  // Texture bind group
+  // Texture bind group — one sampler per slot, resolved from the glTF
+  // textureInfo's sampler block so per-texture magFilter / wrapS / wrapT
+  // actually propagate. Missing samplers fall back to defaultSampler
+  // (linear / linear / repeat) which matches the glTF spec default.
   const defSampler = pipelineCache.defaultSampler;
+  const baseSampler = pipelineCache.getSamplerForReader(
+    matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
+  );
+  const normalSampler = pipelineCache.getSamplerForReader(
+    matInfo.normalTextureReader,
+  );
+  const mrSampler = pipelineCache.getSamplerForReader(
+    matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
+  );
+  const emissiveSampler = pipelineCache.getSamplerForReader(
+    matInfo.emissiveTextureReader,
+  );
+  const occlusionSampler = pipelineCache.getSamplerForReader(
+    matInfo.occlusionTextureReader,
+  );
   primCache.textureBindGroup = device.createBindGroup({
     layout: pipelineCache.textureBGL,
     entries: [
       { binding: 0, resource: textures.baseColor.createView() },
-      { binding: 1, resource: defSampler },
+      { binding: 1, resource: baseSampler || defSampler },
       { binding: 2, resource: textures.normal.createView() },
-      { binding: 3, resource: defSampler },
+      { binding: 3, resource: normalSampler || defSampler },
       { binding: 4, resource: textures.metallicRoughness.createView() },
-      { binding: 5, resource: defSampler },
+      { binding: 5, resource: mrSampler || defSampler },
       { binding: 6, resource: textures.emissive.createView() },
-      { binding: 7, resource: defSampler },
+      { binding: 7, resource: emissiveSampler || defSampler },
       { binding: 8, resource: textures.occlusion.createView() },
-      { binding: 9, resource: defSampler },
+      { binding: 9, resource: occlusionSampler || defSampler },
     ],
   });
 
@@ -510,11 +590,11 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
   const defNormal = pipelineCache.defaultNormalTexture;
   const defBlack = pipelineCache.defaultBlackTexture;
 
-  function tryCreate(reader, fallback) {
+  function tryCreate(reader, fallback, colorSpace) {
     if (!defined(reader)) {
       return fallback;
     }
-    const tex = createGPUTextureFromReader(device, reader);
+    const tex = createGPUTextureFromReader(device, reader, colorSpace);
     if (defined(tex)) {
       created.push(tex);
       return tex;
@@ -522,18 +602,26 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
     return fallback;
   }
 
+  // Slot color-space classification (per glTF spec):
+  //   srgb: baseColor (and specGloss diffuse), emissive.
+  //   linear: normal, metallic-roughness (and specGloss specular), occlusion.
+  // Storing sRGB slots as `rgba8unorm-srgb` makes the GPU sampler auto-decode
+  // gamma, which is both perceptually correct for linear filtering AND
+  // removes the need for in-shader pow(2.2) approximation.
   return {
     baseColor: tryCreate(
       matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
       defWhite,
+      "srgb",
     ),
-    normal: tryCreate(matInfo.normalTextureReader, defNormal),
+    normal: tryCreate(matInfo.normalTextureReader, defNormal, "linear"),
     metallicRoughness: tryCreate(
       matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
       defWhite,
+      "linear",
     ),
-    emissive: tryCreate(matInfo.emissiveTextureReader, defBlack),
-    occlusion: tryCreate(matInfo.occlusionTextureReader, defWhite),
+    emissive: tryCreate(matInfo.emissiveTextureReader, defBlack, "srgb"),
+    occlusion: tryCreate(matInfo.occlusionTextureReader, defWhite, "linear"),
     created,
   };
 }
@@ -606,6 +694,36 @@ function updateWebGPUModel(model, frameState) {
     0,
     CAMERA_UNIFORM_SIZE,
   );
+
+  // ── Shadow cast UB (shared across all primitives of this model) ──
+  //
+  // The WebGPUShadowMapRenderer's `modelP12` variant needs the model's
+  // world-space transform to project vertices into light-space. Every
+  // primitive in this model has the same modelMatrix, so we allocate
+  // one UB per model and share it across all the command tags below.
+  //
+  // The UB is written unconditionally each frame — the shadow cast
+  // pass is free to ignore it (if the model has castShadows=false)
+  // and the cost of a single 64-byte writeBuffer is negligible.
+  const castShadows = model.shadows !== undefined ? model.shadows >= 2 : true;
+  if (castShadows) {
+    if (!defined(cache.shadowCastUB)) {
+      cache.shadowCastUB = WebGPUBuffer.createUniformBuffer(
+        device,
+        64, // mat4x4<f32>
+        "Model shadow cast UB",
+      );
+      cache.shadowCastData = new Float32Array(16);
+    }
+    Matrix4.pack(modelMatrix, cache.shadowCastData, 0);
+    device.queue.writeBuffer(
+      cache.shadowCastUB.buffer,
+      0,
+      cache.shadowCastData.buffer,
+      0,
+      64,
+    );
+  }
 
   // Process model by iterating nodes → primitives
   // This is the correct traversal that gives us access to each node's
@@ -843,7 +961,11 @@ function updateWebGPUModel(model, frameState) {
         LIGHT_UNIFORM_SIZE,
       );
 
-      // Assemble vertex buffers: [pos, normal, tangent, uv, color, joints, weights]
+      // Assemble vertex buffers: [pos, normal, tangent, uv0, color, joints, weights, uv1]
+      // Slot 7 (uv1) falls back to the uv0 default when the primitive has
+      // no TEXCOORD_1 accessor — the shader is safe against that because
+      // the per-texture-slot `texCoord` flag in the material UBO steers
+      // sampling to uv0 unless the glTF explicitly asked for uv1.
       const vertexBuffers = [
         primCache.positionBuffer,
         primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
@@ -852,6 +974,7 @@ function updateWebGPUModel(model, frameState) {
         primCache.colorBuffer || pipelineCache.defaultColorBuffer,
         primCache.jointsBuffer || pipelineCache.defaultJointsBuffer,
         primCache.weightsBuffer || pipelineCache.defaultWeightsBuffer,
+        primCache.uv1Buffer || primCache.uvBuffer || pipelineCache.defaultUVBuffer,
       ];
 
       // Use model.opaquePass to get the correct pass:
@@ -887,6 +1010,50 @@ function updateWebGPUModel(model, frameState) {
         cull: model._cull ?? true,
       });
 
+      // ── Shadow cast tagging ──
+      //
+      // Three variants cover the model path:
+      //
+      //   primHasSkinning          → `modelSkinned`
+      //       Binding 1 = per-model modelMatrix UB
+      //       Binding 2 = joint matrices storage buffer (same buffer
+      //       the color pass binds at @group(3))
+      //       VBs pulled from slots 0/5/6 of the command's full
+      //       7-buffer layout (pos, joints0, weights0).
+      //
+      //   instanceCount === 1      → `modelP12`
+      //       Single-instance non-skinned case. Binding 1 = per-model UB.
+      //
+      //   instanceCount > 1        → `modelInstancedSB`
+      //       GPU-instanced non-skinned case. Binding 1 = per-model UB,
+      //       Binding 2 = per-instance transforms storage buffer
+      //       (same buffer the color pass binds at @group(5)).
+      //
+      // Skinning + instancing together is uncommon (animated crowds)
+      // and not covered by a variant yet — those commands currently
+      // fall through to modelInstancedSB without applying the skin
+      // transform. A `modelSkinnedInstanced` variant could be added
+      // following the same pattern if needed.
+      if (castShadows) {
+        const nodeCache = cache.nodes[nodeIdx];
+        if (primHasSkinning && nodeCache && nodeCache.jointBuffer) {
+          webgpuCmd._shadowCastLayout = "modelSkinned";
+          webgpuCmd._shadowCastModelUB = cache.shadowCastUB;
+          webgpuCmd._shadowCastJointMatricesSB = nodeCache.jointBuffer;
+        } else if (instanceCount === 1) {
+          webgpuCmd._shadowCastLayout = "modelP12";
+          webgpuCmd._shadowCastModelUB = cache.shadowCastUB;
+        } else if (
+          instanceCount > 1 &&
+          nodeCache &&
+          nodeCache.instancingBuffer
+        ) {
+          webgpuCmd._shadowCastLayout = "modelInstancedSB";
+          webgpuCmd._shadowCastModelUB = cache.shadowCastUB;
+          webgpuCmd._shadowCastInstancingSB = nodeCache.instancingBuffer;
+        }
+      }
+
       commandList.push(webgpuCmd);
     }
   }
@@ -904,6 +1071,10 @@ function destroyWebGPUModelResources(model) {
   if (defined(cache.cameraBuffer)) {
     cache.cameraBuffer.destroy();
   }
+  if (defined(cache.shadowCastUB)) {
+    cache.shadowCastUB.destroy();
+    cache.shadowCastUB = undefined;
+  }
 
   // Destroy per-primitive resources
   const primKeys = Object.keys(cache.primitives);
@@ -917,6 +1088,7 @@ function destroyWebGPUModelResources(model) {
     pc.normalBuffer?.destroy();
     pc.tangentBuffer?.destroy();
     pc.uvBuffer?.destroy();
+    pc.uv1Buffer?.destroy();
     pc.colorBuffer?.destroy();
     pc.jointsBuffer?.destroy();
     pc.weightsBuffer?.destroy();

@@ -96,6 +96,17 @@ export interface WebGLStubState {
   boundVertexBuffer: GPUBuffer | null;
   boundIndexBuffer: GPUBuffer | null;
   boundFramebuffer: StubFramebuffer | null;
+  /**
+   * WebGL2 split read/draw framebuffer targets. `bindFramebuffer` with
+   * `GL_FRAMEBUFFER` (0x8D40) sets both; `GL_READ_FRAMEBUFFER` (0x8CA8)
+   * sets only the read target; `GL_DRAW_FRAMEBUFFER` (0x8CA9) sets
+   * only the draw target. `blitFramebuffer` reads from
+   * `boundReadFramebuffer` and writes to `boundDrawFramebuffer`.
+   * Rarely diverge — default both to `boundFramebuffer` on legacy
+   * `bindFramebuffer(GL_FRAMEBUFFER)` calls.
+   */
+  boundReadFramebuffer: StubFramebuffer | null;
+  boundDrawFramebuffer: StubFramebuffer | null;
   boundRenderbuffer: StubRenderbuffer | null;
   framebuffers: Map<
     StubFramebuffer,

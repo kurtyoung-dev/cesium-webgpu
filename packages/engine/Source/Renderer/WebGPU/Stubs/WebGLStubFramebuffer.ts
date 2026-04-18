@@ -76,8 +76,22 @@ export function createFramebufferStubs(
       return fbo;
     },
 
-    bindFramebuffer: (_target: number, framebuffer: StubFramebuffer | null) => {
-      state.boundFramebuffer = framebuffer;
+    bindFramebuffer: (target: number, framebuffer: StubFramebuffer | null) => {
+      // WebGL2 targets:
+      //   GL_FRAMEBUFFER      = 0x8D40 → sets BOTH read and draw
+      //   GL_READ_FRAMEBUFFER = 0x8CA8 → read only (for blitFramebuffer src)
+      //   GL_DRAW_FRAMEBUFFER = 0x8CA9 → draw only (for blitFramebuffer dst)
+      // Pre-WebGL2 callers always pass GL_FRAMEBUFFER, so the legacy
+      // `boundFramebuffer` field stays in sync with both specific slots.
+      if (target === 0x8ca8) {
+        state.boundReadFramebuffer = framebuffer;
+      } else if (target === 0x8ca9) {
+        state.boundDrawFramebuffer = framebuffer;
+      } else {
+        state.boundFramebuffer = framebuffer;
+        state.boundReadFramebuffer = framebuffer;
+        state.boundDrawFramebuffer = framebuffer;
+      }
     },
 
     deleteFramebuffer: (framebuffer: StubFramebuffer | null) => {

@@ -32,6 +32,7 @@
  */
 
 import Pass from "../../Renderer/Pass.js";
+import mergeSort from "../../Core/mergeSort.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
@@ -107,6 +108,46 @@ function executeWebGPUCommand(
   if (command.execute) {
     command.execute(context, passState);
     return;
+  }
+}
+
+/**
+ * Back-to-front comparator matching Scene/CommandSorter.js semantics.
+ * Larger eye-distance-squared draws first so alpha compositing is correct.
+ */
+function _backToFrontComparator(
+  a: CesiumAnyDrawCommand,
+  b: CesiumAnyDrawCommand,
+  position: { x: number; y: number; z: number },
+): number {
+  const bvA = a?.boundingVolume;
+  const bvB = b?.boundingVolume;
+  if (!bvA || !bvB || !bvA.distanceSquaredTo || !bvB.distanceSquaredTo) {
+    return 0;
+  }
+  return bvB.distanceSquaredTo(position) - bvA.distanceSquaredTo(position);
+}
+
+/**
+ * Sort the first `count` entries of `commands` back-to-front by eye distance.
+ * Slots at [count, length) are preserved for next-frame command reuse.
+ * Without OIT, alpha compositing is order-dependent — overlapping translucent
+ * geometry renders wrong in command-push order.
+ */
+function sortCommandsBackToFront(
+  commands: CesiumAnyDrawCommand[],
+  count: number,
+  scene: CesiumScene,
+): void {
+  if (count <= 1 || !scene?.camera?.positionWC) {
+    return;
+  }
+  // Slice out the active range, sort it, copy back in place. mergeSort on the
+  // live backing array would scramble pooled slots past `count`.
+  const slice = commands.slice(0, count);
+  mergeSort(slice, _backToFrontComparator, scene.camera.positionWC);
+  for (let i = 0; i < count; i++) {
+    commands[i] = slice[i];
   }
 }
 
@@ -848,7 +889,18 @@ export class WebGPUSceneRenderer {
       // Pass 8: OPAQUE
       this._executeOpaquePass(frustumCommands, config);
 
-      // Pass 10: VOXELS
+      // Pass 10: VOXELS — media overlay, order-dependent. Sort back-to-front
+      // so volumetric media composites correctly over opaque geometry.
+      {
+        const voxCount: number = frustumCommands.indices[Pass.VOXELS];
+        if (voxCount > 0) {
+          sortCommandsBackToFront(
+            frustumCommands.commands[Pass.VOXELS],
+            voxCount,
+            scene,
+          );
+        }
+      }
       this._executePassCommands(
         frustumCommands,
         Pass.VOXELS,
@@ -881,6 +933,10 @@ export class WebGPUSceneRenderer {
             count: splatCount,
           };
         } else {
+          if (splatCount > 0) {
+            // GS uses alpha accumulation — non-OIT path must sort back-to-front
+            sortCommandsBackToFront(splatCommands, splatCount, scene);
+          }
           this._executePassCommands(
             frustumCommands,
             Pass.GAUSSIAN_SPLATS,
@@ -1361,21 +1417,27 @@ export class WebGPUSceneRenderer {
       Pass.CESIUM_3D_TILE_CLASSIFICATION,
       Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW,
     ];
-    // Indirect-draw fast path. Stays off until a tile renderer opts in
-    // by setting `context.useIndirectDrawForTiles = true` after verifying
-    // its commands hit the homogeneous-batch criteria in
-    // `executeBatchIndirect` (shared pipeline + bind groups + index
-    // buffer across runs of ≥2 commands). When the flag is off the loop
-    // below is byte-for-byte identical to the previous behavior.
-    const useIndirect =
-      context.useIndirectDrawForTiles === true &&
-      context.indirectDrawManager &&
-      context.currentRenderPassEncoder;
+    // Indirect-draw fast path. Activated automatically when a pass has
+    // enough tile commands for batching to pay off (INDIRECT_BATCH_MIN).
+    // Users can force on via `context.useIndirectDrawForTiles = true`
+    // for testing / profiling, or force off by leaving the flag at its
+    // default (auto mode still applies unless disabled explicitly).
+    //
+    // `executeBatchIndirect` falls back per-command for any run that
+    // doesn't satisfy its homogeneous-batch criteria, so enabling this
+    // on small counts is safe (just wasted overhead), which is why we
+    // gate on count rather than a hard opt-in.
+    const INDIRECT_BATCH_MIN = 32;
+    const hasIndirectInfra =
+      !!context.indirectDrawManager && !!context.currentRenderPassEncoder;
+    const explicitlyEnabled = context.useIndirectDrawForTiles === true;
     for (const passIndex of passes) {
       const cmds = frustumCommands.commands[passIndex];
       const cnt: number = frustumCommands.indices[passIndex];
       if (cnt > 0) {
         context.uniformState?.updatePass(passIndex);
+        const useIndirect =
+          hasIndirectInfra && (explicitlyEnabled || cnt >= INDIRECT_BATCH_MIN);
         if (useIndirect) {
           executeBatchIndirect(cmds, cnt, scene, context, passState);
         } else {
@@ -1549,11 +1611,15 @@ export class WebGPUSceneRenderer {
     }
 
     // Fallback: render translucent commands with standard alpha blending.
-    // This is correct for non-overlapping translucent geometry and has
-    // minor ordering artifacts for overlapping geometry. To enable full OIT,
-    // each feature renderer must create _oitPipeline variants with:
-    //   1. Fragment targets: [{format:"rgba16float", blend:additive}, {format:"r8unorm", blend:product}]
-    //   2. Fragment output: @location(0) weighted accumulation, @location(1) revealage
+    // Without OIT, alpha compositing is order-dependent — commands MUST be
+    // drawn back-to-front for correct results. Without this sort, overlapping
+    // translucent UI (labels through buildings, semi-transparent layers, etc.)
+    // composites in command-push order and shows visibly wrong occlusion.
+    //
+    // We sort a slice rather than the full backing array so pooled slots at
+    // [count, length) keep their last-frame contents for the next frame's
+    // reuse logic, and `frustumCommands.indices` stays authoritative.
+    sortCommandsBackToFront(commands, count, scene);
     executeBatch(commands, count, scene, context, passState);
   }
 

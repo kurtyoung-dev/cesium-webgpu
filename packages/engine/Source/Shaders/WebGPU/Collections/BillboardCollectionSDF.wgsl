@@ -2,7 +2,7 @@
 // Extends BillboardCollection.wgsl with signed distance field rendering
 // for antialiased text with outlines (used by LabelCollection).
 //
-// Instance data layout (128 bytes per billboard, 8 x vec4):
+// Instance data layout (144 bytes per billboard, 9 x vec4):
 //   @location(0) posHighAndScale:    vec4<f32>
 //   @location(1) posLowAndRotation:  vec4<f32>
 //   @location(2) compressedAttr0:    vec4<f32> — pixelOffset.xy, alignedAxis.xy
@@ -11,6 +11,13 @@
 //   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
 //   @location(6) outlineColor:       vec4<f32> — outline color rgba
 //   @location(7) sdfParams:          vec4<f32> — outlineWidth, sdfEdge, 0, 0
+//   @location(8) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
+//                                     splitDirection, _pad, _pad
+//
+// The `perInstanceFlags` slot mirrors the one on BillboardCollection.wgsl
+// but lives at @location(8) because the SDF layout already uses 6 & 7 for
+// outline/SDF params. Read only inside `//>>ifdef` blocks for DP-H42 and
+// DP-H40 so the SDF fast path pays nothing when those features are off.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -22,6 +29,13 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
   _pad2: f32,
+  minimumDisableDepthTestDistance: f32,
+  splitPosition: f32,
+  _pad3: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -38,6 +52,7 @@ struct VertexInput {
   @location(5) miscFlags: vec4<f32>,
   @location(6) outlineColor: vec4<f32>,
   @location(7) sdfParams: vec4<f32>,
+  @location(8) perInstanceFlags: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -46,6 +61,9 @@ struct VertexOutput {
   @location(1) fillColor: vec4<f32>,
   @location(2) outlineColor: vec4<f32>,
   @location(3) sdfParams: vec2<f32>, // outlineWidth, sdfEdge
+  //>>ifdef SPLIT_ENABLED
+  @location(4) splitDirection: f32,
+  //>>endif
 };
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -81,6 +99,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.fillColor = vec4<f32>(0.0);
     output.outlineColor = vec4<f32>(0.0);
     output.sdfParams = vec2<f32>(0.0);
+    //>>ifdef SPLIT_ENABLED
+    // Struct init guard so WGSL doesn't flag the hidden-branch return as
+    // leaving `splitDirection` uninitialised.
+    output.splitDirection = 0.0;
+    //>>endif
     return output;
   }
 
@@ -113,7 +136,27 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
 
+  //>>ifdef DISABLE_DEPTH_DISTANCE
+  // DP-H42 — same logic as BillboardCollection.wgsl.
+  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
+  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
+    disableDepthSq =
+      camera.minimumDisableDepthTestDistance *
+      camera.minimumDisableDepthTestDistance;
+  }
+  if (disableDepthSq != 0.0) {
+    let distSq = dot(positionRTE, positionRTE);
+    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+      clipPos.z = clipPos.w;
+    }
+  }
+  //>>endif
+
   output.position = clipPos;
+
+  //>>ifdef SPLIT_ENABLED
+  output.splitDirection = input.perInstanceFlags.y;
+  //>>endif
 
   let baseUV = QUAD_UVS[cornerIndex];
   output.texCoord = vec2<f32>(
@@ -157,6 +200,17 @@ fn getSDFColor(
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  //>>ifdef SPLIT_ENABLED
+  // DP-H40 — discard pixels on the wrong side of the split cutoff before
+  // doing any SDF math. Same convention as BillboardCollection.wgsl.
+  if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
+    discard;
+  }
+  if (input.splitDirection > 0.0 && input.position.x < camera.splitPosition) {
+    discard;
+  }
+  //>>endif
+
   let outlineWidth = input.sdfParams.x;
   let sdfEdge = input.sdfParams.y;
 

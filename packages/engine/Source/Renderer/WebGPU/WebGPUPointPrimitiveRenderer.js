@@ -35,14 +35,19 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 // =========================================================================
 // Constants
 // =========================================================================
 
-/** Floats per instance: 4 vec4 = 16 floats */
-const FLOATS_PER_INSTANCE = 16;
-/** Bytes per instance: 16 * 4 = 64 bytes */
+/**
+ * Floats per instance: 5 vec4 = 20 floats (Batch 21 extends from 4→5 for
+ * DP-H42 / DP-H40 `perInstanceFlags` at @location(4)).
+ */
+const FLOATS_PER_INSTANCE = 20;
+/** Bytes per instance: 20 * 4 = 80 bytes */
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 /** Vertices per quad: 6 (2 triangles, no index buffer needed) */
 const VERTICES_PER_QUAD = 6;
@@ -117,6 +122,16 @@ function buildInstanceData(collection) {
     instanceData[offset + 14] = outlineColor.blue;
     instanceData[offset + 15] = point._show ? 1.0 : 0.0;
 
+    // perInstanceFlags — DP-H42 / DP-H40.
+    //   x: disableDepthTestDistance (raw meters; squared in shader)
+    //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
+    //   z, w: reserved
+    const d = point._disableDepthTestDistance;
+    instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 17] = point._splitDirection ?? 0.0;
+    instanceData[offset + 18] = 0.0;
+    instanceData[offset + 19] = 0.0;
+
     visibleCount++;
   }
 
@@ -173,6 +188,13 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 14] = 0.0;
     instanceData[offset + 15] = 0.0;
 
+    // Same perInstanceFlags as the color path so pick obeys DP-H42/H40.
+    const d = point._disableDepthTestDistance;
+    instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 17] = point._splitDirection ?? 0.0;
+    instanceData[offset + 18] = 0.0;
+    instanceData[offset + 19] = 0.0;
+
     visibleCount++;
   }
 
@@ -195,6 +217,9 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 1, offset: 16, format: "float32x4" }, // posLowAndOutline
     { shaderLocation: 2, offset: 32, format: "float32x4" }, // color
     { shaderLocation: 3, offset: 48, format: "float32x4" }, // outColorAndShow
+    // DP-H42 / DP-H40 — perInstanceFlags (same contract as Billboard
+    // @location(6) / Label @location(8)).
+    { shaderLocation: 4, offset: 64, format: "float32x4" },
   ],
 };
 
@@ -209,24 +234,21 @@ const INSTANCE_BUFFER_LAYOUT = {
  * @returns {{ pipeline: GPURenderPipeline, bindGroupLayout: GPUBindGroupLayout }}
  * @private
  */
+function createPointBindGroupLayout(device) {
+  return makeBindGroupLayout(device, "PointPrimitive bind group layout", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
+}
+
 function createPointPipeline(
   device,
-  shaderCode,
+  shaderModule,
   format,
   depthFormat,
   translucent,
+  bindGroupLayout,
+  defines,
 ) {
-  const shaderModule = device.createShaderModule({
-    label: "PointPrimitive shader",
-    code: shaderCode,
-  });
-
-  const bindGroupLayout = makeBindGroupLayout(
-    device,
-    "PointPrimitive bind group layout",
-    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
-  );
-
   const pipelineLayout = device.createPipelineLayout({
     label: "PointPrimitive pipeline layout",
     bindGroupLayouts: [bindGroupLayout],
@@ -247,8 +269,8 @@ function createPointPipeline(
       }
     : undefined;
 
-  const pipeline = device.createRenderPipeline({
-    label: `PointPrimitive pipeline (${translucent ? "translucent" : "opaque"})`,
+  return device.createRenderPipeline({
+    label: `PointPrimitive pipeline (${translucent ? "translucent" : "opaque"}, defines=0x${defines.toString(16)})`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -275,28 +297,22 @@ function createPointPipeline(
       depthCompare: "less-equal",
     },
   });
-
-  return { pipeline, bindGroupLayout };
 }
 
 /**
  * Creates a pick-specific pipeline — no blending, depth write enabled.
  * @private
  */
-function createPickPipeline(device, shaderCode, format, depthFormat) {
-  const shaderModule = device.createShaderModule({
-    label: "PointPrimitive pick shader",
-    code: shaderCode,
-  });
-
-  const bindGroupLayout = makeBindGroupLayout(
-    device,
-    "PointPrimitive pick bind group layout",
-    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
-  );
-
-  const pipeline = device.createRenderPipeline({
-    label: "PointPrimitive pick pipeline",
+function createPickPipeline(
+  device,
+  shaderModule,
+  format,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
+  return device.createRenderPipeline({
+    label: `PointPrimitive pick pipeline (defines=0x${defines.toString(16)})`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
     }),
@@ -317,8 +333,89 @@ function createPickPipeline(device, shaderCode, format, depthFormat) {
       depthCompare: "less-equal",
     },
   });
+}
 
-  return { pipeline, bindGroupLayout };
+// Module-level shader-module cache keyed by GPUDevice. Shared across every
+// PointPrimitiveCollection rendered on a given device.
+const _pointShaderModuleCaches = new WeakMap();
+
+function getPointShaderModuleCache(device) {
+  let cache = _pointShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _pointShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
+/**
+ * Prewarm the color + pick modules for the common define sets. Idempotent
+ * per device. See `_initShaderCache` in `WebGPUGlobeSurfaceRenderer.ts`
+ * for the "move shader compile off the render path" rationale.
+ * @private
+ */
+function prewarmPointShaders(device, colorSource, pickSource) {
+  const cache = getPointShaderModuleCache(device);
+  if (cache._pointPrewarmed) {return;}
+  const D = ShaderDefine;
+  const defineSets = [
+    0,
+    D.DISABLE_DEPTH_DISTANCE,
+    D.SPLIT_ENABLED,
+    D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+  ];
+  cache.prewarm(
+    ShaderSourceId.POINT_PRIMITIVE_COLOR,
+    colorSource,
+    defineSets,
+    "PointPrimitive color shader",
+  );
+  cache.prewarm(
+    ShaderSourceId.POINT_PRIMITIVE_PICK,
+    pickSource,
+    defineSets,
+    "PointPrimitive pick shader",
+  );
+  cache._pointPrewarmed = true;
+}
+
+/**
+ * Per-frame scan for the active defines. Mirrors Billboard/Label.
+ * @private
+ */
+function computePointDefinesForFrame(collection, frameState) {
+  let defines = 0;
+  const frameMin =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+  if (frameMin !== 0.0) {
+    defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+  }
+  const points = collection._pointPrimitives;
+  const length = collection._pointPrimitivesLength;
+  const both =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  for (let i = 0; i < length; i++) {
+    if ((defines & both) === both) {break;}
+    const p = points[i];
+    if (!defined(p)) {continue;}
+    if (
+      (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
+      typeof p._disableDepthTestDistance === "number" &&
+      p._disableDepthTestDistance !== 0.0
+    ) {
+      defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+    }
+    if (
+      (defines & ShaderDefine.SPLIT_ENABLED) === 0 &&
+      p._splitDirection !== undefined &&
+      p._splitDirection !== 0.0
+    ) {
+      defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+  }
+  return defines;
 }
 
 // =========================================================================
@@ -328,15 +425,16 @@ function createPickPipeline(device, shaderCode, format, depthFormat) {
 /**
  * Packs RTE uniform data into a Float32Array.
  *
- * Layout (28 active floats, 256-byte buffer):
+ * Layout (28 active floats, 256-byte buffer) — matches the unified
+ * CameraUniforms struct in PointPrimitiveColor.wgsl / PointPrimitivePick.wgsl:
  *   [0-15]  mvpRelativeToEye (mat4x4) — MVP with translation zeroed
  *   [16-17] viewportSize (vec2)
- *   [18]    splitPosition (f32)
- *   [19]    _pad0 (f32)
+ *   [18]    splitPosition (f32) — DP-H40 (framebuffer pixels)
+ *   [19]    minimumDisableDepthTestDistance (f32) — DP-H42 (meters)
  *   [20-22] encodedCameraPositionMCHigh (vec3)
- *   [23]    _pad1 (f32)
+ *   [23]    _pad0 (f32)
  *   [24-26] encodedCameraPositionMCLow (vec3)
- *   [27]    _pad2 (f32)
+ *   [27]    _pad1 (f32)
  *
  * @param {Float32Array} uniformData - Target array (at least 28 floats)
  * @param {object} frameState - CesiumJS frame state
@@ -370,9 +468,20 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[16] = canvas.width;
   uniformData[17] = canvas.height;
 
-  // splitPosition + padding (offset 18-19)
-  uniformData[18] = 0.0;
-  uniformData[19] = 0.0;
+  // DP-H40 — split cutoff in framebuffer pixels (fraction × drawing width).
+  const splitFraction =
+    typeof frameState?.splitPosition === "number"
+      ? frameState.splitPosition
+      : 0.0;
+  const drawingBufferWidth =
+    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  uniformData[18] = splitFraction * drawingBufferWidth;
+
+  // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
+  uniformData[19] =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
 
   // Step 4: Compute encoded camera position in model coordinates
   // cameraPositionMC = inverseModel * cameraPositionWorld
@@ -402,6 +511,20 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[25] = camLow.y;
   uniformData[26] = camLow.z;
   uniformData[27] = 0.0; // _pad2
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 28..43 (16 floats,
+  // 64 bytes). Fits in the existing 256-byte buffer — no resize needed.
+  // `UniformState.update()` caches last frame's viewProjection for TAA /
+  // motion-vector reprojection before overwriting the current frame's state.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, uniformData, 28);
+  } else {
+    uniformData[28] = 1; uniformData[29] = 0; uniformData[30] = 0; uniformData[31] = 0;
+    uniformData[32] = 0; uniformData[33] = 1; uniformData[34] = 0; uniformData[35] = 0;
+    uniformData[36] = 0; uniformData[37] = 0; uniformData[38] = 1; uniformData[39] = 0;
+    uniformData[40] = 0; uniformData[41] = 0; uniformData[42] = 0; uniformData[43] = 1;
+  }
 }
 
 // =========================================================================
@@ -437,28 +560,59 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
 
-  // Determine if we need to rebuild instance data
+  // Prewarm shader modules (idempotent per device).
+  const colorShaderCode = getCollectionShaderSource("pointColor");
+  const pickShaderCode = getCollectionShaderSource("pointPick");
+  prewarmPointShaders(device, colorShaderCode, pickShaderCode);
+
+  // Shared bind-group layout; pipelines vary per defines + shader module.
+  if (!defined(cache.bindGroupLayout)) {
+    cache.bindGroupLayout = createPointBindGroupLayout(device);
+  }
+
+  // DP-H42 / DP-H40 — pick the right pipeline for this frame's point state.
+  const defines = computePointDefinesForFrame(collection, frameState);
+  if (!defined(cache.pipelines)) {
+    cache.pipelines = new Map();
+  }
+  let pipeline = cache.pipelines.get(defines);
+  if (!defined(pipeline)) {
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    const moduleCache = getPointShaderModuleCache(device);
+    const shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.POINT_PRIMITIVE_COLOR,
+      colorShaderCode,
+      defines,
+      "PointPrimitive color shader",
+    );
+    pipeline = createPointPipeline(
+      device,
+      shaderModule,
+      format,
+      depthFmt,
+      true,
+      cache.bindGroupLayout,
+      defines,
+    );
+    cache.pipelines.set(defines, pipeline);
+  }
+  cache.pipeline = pipeline;
+  cache.currentDefines = defines;
+
+  // Determine if we need to rebuild instance data. Also rebuild when the
+  // active-defines bitmask changes — the per-instance buffer layout is
+  // constant, but having distinct colorCommand pipelines means stale
+  // commands can reference a pipeline that doesn't match this frame's
+  // defines. Simplest fix: touch needsRebuild whenever defines rotate.
+  const definesChanged = cache.lastDefines !== defines;
   const needsRebuild =
     !defined(cache.instanceBuffer) ||
     !defined(cache.colorCommand) ||
     collection._pointPrimitivesToUpdate.length > 0 ||
-    cache.lastLength !== length;
-
-  // --- Pipeline (created once) ---
-  if (!defined(cache.pipeline)) {
-    const shaderCode = getCollectionShaderSource("pointColor");
-    const format = context.presentationFormat || "bgra8unorm";
-    const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createPointPipeline(
-      device,
-      shaderCode,
-      format,
-      depthFmt,
-      true,
-    );
-    cache.pipeline = result.pipeline;
-    cache.bindGroupLayout = result.bindGroupLayout;
-  }
+    cache.lastLength !== length ||
+    definesChanged;
+  cache.lastDefines = defines;
 
   // --- Uniform buffer (created once, updated every frame) ---
   if (!defined(cache.uniformBuffer)) {
@@ -537,7 +691,13 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       vertexBuffers: [cache.instanceBuffer],
       vertexCount: VERTICES_PER_QUAD,
       instanceCount: visibleCount,
-      pass: 0, // Pass.OPAQUE — adjusted below
+      // pass:0 was a real bug (that value is Pass.ENVIRONMENT, not OPAQUE),
+      // causing points to render before the globe surface and paint over
+      // the sky. OPAQUE=8 or TRANSLUCENT=9 are the valid pass values.
+      // Pick by collection.blendOption — point primitives use discard-based
+      // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
+      pass:
+        collection._blendOption === 0 ? 8 /* Pass.OPAQUE */ : 9 /* Pass.TRANSLUCENT */,
       owner: collection,
       boundingVolume: collection._boundingVolume,
       modelMatrix: modelMatrix,
@@ -582,20 +742,48 @@ function _pushPickCommand(
   modelMatrix,
   commandList,
 ) {
-  if (!defined(cache.pickPipeline)) {
+  // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
+  // so the pick region matches what's visible on screen.
+  const pickDefines = cache.currentDefines ?? 0;
+  if (!defined(cache.pickPipelines)) {
+    cache.pickPipelines = new Map();
+  }
+  let pickPipeline = cache.pickPipelines.get(pickDefines);
+  if (!defined(pickPipeline)) {
     const pickShader = getCollectionShaderSource("pointPick");
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createPickPipeline(device, pickShader, format, depthFmt);
-    cache.pickPipeline = result.pipeline;
-    cache.pickBindGroupLayout = result.bindGroupLayout;
-    cache.pickBindGroup = device.createBindGroup({
-      layout: result.bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      ],
-    });
+    const moduleCache = getPointShaderModuleCache(device);
+    const pickModule = moduleCache.getOrCreate(
+      ShaderSourceId.POINT_PRIMITIVE_PICK,
+      pickShader,
+      pickDefines,
+      "PointPrimitive pick shader",
+    );
+    if (!defined(cache.pickBindGroupLayout)) {
+      cache.pickBindGroupLayout = createPointBindGroupLayout(device);
+    }
+    pickPipeline = createPickPipeline(
+      device,
+      pickModule,
+      format,
+      depthFmt,
+      cache.pickBindGroupLayout,
+      pickDefines,
+    );
+    cache.pickPipelines.set(pickDefines, pickPipeline);
+    // Pick bind group also needs (re)building on first pick pipeline
+    // creation; reuses the shared uniform buffer.
+    if (!defined(cache.pickBindGroup)) {
+      cache.pickBindGroup = device.createBindGroup({
+        layout: cache.pickBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+        ],
+      });
+    }
   }
+  cache.pickPipeline = pickPipeline;
 
   const pickResult = buildPickInstanceData(collection, context);
   if (pickResult.visibleCount === 0) {

@@ -1515,6 +1515,17 @@ GeometryPipeline.compressVertices = function (geometry) {
       values: compressedDirections,
     });
     delete geometry.attributes.extrudeDirection;
+    // DP-H19 (Batch 23) — mark the extrudeDirection branch so the WebGPU
+    // decoder knows there's no normal / st to reconstruct here (shadow
+    // volumes route through a different renderer and don't care about
+    // these fields on the primitive path).
+    geometry._compressedAttributesMeta = {
+      hasNormal: false,
+      hasSt: false,
+      hasTangent: false,
+      hasBitangent: false,
+      isExtrude: true,
+    };
     return geometry;
   }
 
@@ -1532,6 +1543,23 @@ GeometryPipeline.compressVertices = function (geometry) {
 
   const hasTangent = defined(tangentAttribute);
   const hasBitangent = defined(bitangentAttribute);
+
+  // DP-H19 (Batch 23) — stash which source attributes fed the
+  // compression so consumers (notably `WebGPUPrimitiveCommands` in the
+  // WebGPU path) can unambiguously decode `compressedAttributes` back
+  // into `normal` / `st`. Without this snapshot, decoders would have
+  // to infer from `componentsPerAttribute` which is ambiguous for some
+  // combinations (e.g. `hasSt + hasTangent` and `hasNormal + hasBitangent`
+  // both produce 2-component compressed entries). The metadata is
+  // cheap (5 booleans on the geometry object) and has no effect on the
+  // WebGL code path.
+  geometry._compressedAttributesMeta = {
+    hasNormal: hasNormal,
+    hasSt: hasSt,
+    hasTangent: hasTangent,
+    hasBitangent: hasBitangent,
+    isExtrude: false,
+  };
 
   let normals;
   let st;

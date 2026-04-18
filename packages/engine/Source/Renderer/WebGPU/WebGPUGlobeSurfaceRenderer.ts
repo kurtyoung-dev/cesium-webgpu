@@ -13,6 +13,9 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -42,7 +45,8 @@ import {
 //   minMaxHeight(2) + pad(2) = 88 floats (3D core)
 //   + tileRectangle(4) + southAndNorthLatitude(2) + southMercY(2) +
 //   sceneMode(1) + morphTime(1) + useWebMercator(1) + pad(1) = 12 floats (2D/Columbus)
-//   = 100 floats total
+//   + previousViewProjection(16) = 16 floats (TAA/motion — DP-H41)
+//   = 116 floats total
 //
 // The center3D field is stored as a high/low f32 pair (emulated f64) so the
 // SCENE3D vertex shader can combine it with the tile-local vertex position
@@ -50,20 +54,30 @@ import {
 // raw f32 `center3D` lost ~0.5 m of precision per component at Earth radius,
 // which defeated the RTE emulation and produced visible tile-seam jitter at
 // orbital altitudes.
-const CAMERA_UNIFORM_FLOATS = 100;
+//
+// previousViewProjection (offsets 100–115): last frame's `viewProjection`
+// captured by `UniformState.update()`. Exposing it unblocks motion-vector
+// pipelines (TAA, motion blur) that need to reproject the current fragment
+// into the previous frame's NDC. Consumers read it via the shared
+// `camera.previousViewProjection` slot in `CameraUniforms`.
+const CAMERA_UNIFORM_FLOATS = 116;
 const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
 //   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
 //   dayNightAlpha0-3(4×2=8) + flags(4) + exaggeration(2) + time(1) + pad(1)
 //   + oceanParams(4) + nightOceanParams(4) + useWebMercatorTLayer(4)
-//   + debugFields(4) = 96 floats
+//   + debugFields(4) + hsbShift(4) = 100 floats
 //
 // debugFields layout (offsets 92-95):
 //   .x = tileLevel (LOD depth integer, read by fragmentDebugLod)
 //   .y = isolateImageryLayer (-1 or 0..3, read by fragmentMain)
 //   .z, .w = reserved
-const TILE_UNIFORM_FLOATS = 96;
+// hsbShift layout (offsets 96-99) — DP-H24, mirrors WebGL GlobeFS.glsl
+// `u_hsbShift`. Sourced from `tileProvider.hueShift / saturationShift /
+// brightnessShift`. Shader skips the HSB round-trip when all three are
+// within ±0.001 of zero, so the default case is free.
+const TILE_UNIFORM_FLOATS = 100;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Max imagery layers per tile in single draw call
@@ -176,7 +190,21 @@ interface TileGPUResources {
   hasNormals: boolean;
   hasWebMercatorT: boolean;
   isQuantized: boolean;
+  // DP-H25 — true when `TerrainEncoding.hasGeodeticSurfaceNormals` is set,
+  // meaning the last 3 floats of each vertex stride hold the WGS84 geodetic
+  // surface normal. The pipeline builder adds a `@location(2)` vec3 attribute
+  // and activates the `GEODETIC_NORMAL` shader define (Batch 20) so the
+  // exaggeration branch uses the true geodetic normal instead of
+  // `normalize(position3D)`. When false the shader define is off and the
+  // exaggeration branch falls back to the ellipsocentric normal (sub-meter
+  // accurate near the equator, drifts up to 0.2° at mid-latitudes on WGS84).
+  hasGeodeticSurfaceNormals: boolean;
   meshGeneration: number;
+  // Per-tile shadow cast uniform buffer for the `quantized12` variant.
+  // Holds scaleAndBias (mat4), center3D (vec3+pad), and minMaxHeight
+  // (vec2+pad). Only populated for quantized tiles; uncompressed tiles
+  // don't need the extra UB because the rte24 variant handles them.
+  shadowCastUB?: GPUBuffer;
 }
 
 /** Cached imagery texture */
@@ -197,6 +225,28 @@ export interface TileDrawDescriptor {
   indexFormat: GPUIndexFormat;
   boundingVolume: CesiumBoundingSphere | undefined;
   isSubsequentPass: boolean;
+  // Shadow cast hints (Batch 24) — consumed by
+  // `GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile` to
+  // tag the generated scene command with the correct shadow cast
+  // variant + per-command UB + effective VB stride. Every tile sets
+  // these three fields; quantized tiles route to `quantized12` and
+  // uncompressed tiles to `terrainUncompressed` (new in Batch 24).
+  isQuantized?: boolean;
+  shadowCastTerrainUB?: GPUBuffer;
+  // DP-H25 — flagged when the tile's VB includes the geodetic surface
+  // normal attribute (extra 12 bytes / 3 floats at the tail of each
+  // vertex stride). No longer affects shadow cast directly — Batch 24's
+  // stride-aware pipeline registry handles any stride correctly via
+  // `strideBytes` below — but consumers that need to know whether the
+  // attribute is present (e.g. the color pipeline) continue to check
+  // this flag.
+  hasGeodeticSurfaceNormals?: boolean;
+  // Batch 24 — the ACTUAL per-vertex byte stride of the tile's VB. The
+  // scene adapter forwards this as `cmd.vertexStride` so the shadow
+  // cast registry builds a pipeline whose `arrayStride` matches.
+  // Without this the GPU walks the buffer at the variant's declared
+  // default stride, silently misaligning every vertex.
+  strideBytes?: number;
 }
 
 /**
@@ -243,30 +293,35 @@ export class WebGPUGlobeSurfaceRenderer {
   // operator toggles the flag back on for a second sample.
   private _lastProbeFlag = false;
   private _pipelineCache: Map<string, GPURenderPipeline> = new Map();
-  private _shaderModule: GPUShaderModule | null = null;
+  // Batch 20 — the production shader module is now resolved through the
+  // `WebGPUShaderModuleCache` keyed by `(ShaderSourceId.GLOBE_TERRAIN, defines)`.
+  // The cache runs the `//>>ifdef` preprocessor against `_shaderCode` on
+  // first use per define-set and deduplicates repeat requests. Prewarmed at
+  // `initialize()` time with the common define sets so first-frame render
+  // pays no shader-compile cost.
+  private _shaderModuleCache: WebGPUShaderModuleCache | null = null;
   // Source preserved so we can lazily augment it with debug fragment
-  // entry points (triangulation / LOD overlay / normal-as-color).
+  // entry points (triangulation / LOD overlay / normal-as-color) and the
+  // hardware clip-distances variant. Consumers run the preprocessor on
+  // this raw source before creating derived modules.
   private _shaderCode: string = "";
-  // Single augmented shader module hosting all debug fragment entry
-  // points. Built once on first request, cached forever. Single-source
-  // module + multiple entry points avoids the duplication cost of
-  // separate modules per debug variant.
-  private _debugFragmentShaderModule: GPUShaderModule | null = null;
+  // Debug fragment augmented modules, keyed by active-defines bitmask. A
+  // `null` value means the device rejected the augmented source for that
+  // define-set during the one-shot validation probe — subsequent lookups
+  // return null and the caller falls back to the production fragment.
+  private _debugFragmentShaderModules = new Map<number, GPUShaderModule | null>();
   private _debugFragmentPipelineCache: Map<string, GPURenderPipeline> =
     new Map();
-  private _debugFragmentSupportProbed: boolean = false;
-  private _debugFragmentSupported: boolean = false;
   // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
-  // by string-augmenting `_shaderCode` to (a) declare the
+  // by string-augmenting a preprocessed `_shaderCode` to (a) declare the
   // `@builtin(clip_distances)` vertex output and (b) compute it from the
   // precomputed `effects.clipPlaneEqHW` values. The fragment-side
   // `globeClipByPlanes` discard is neutralized in the augmented source so
-  // the rasterizer is the sole authority. Probed once on first use; cached
-  // forever. `null` after probe means the device rejected the augmented
-  // source (driver bug or missing feature) and the production module is
-  // the fallback.
-  private _clipDistancesShaderModule: GPUShaderModule | null = null;
-  private _clipDistancesSupportProbed: boolean = false;
+  // the rasterizer is the sole authority. Probed once per active-defines
+  // set; cached forever. `null` value after probe means the device
+  // rejected the augmented source (driver bug or missing feature) and the
+  // production module is the fallback.
+  private _clipDistancesShaderModules = new Map<number, GPUShaderModule | null>();
   private _sampler: GPUSampler | null = null;
   private _waterMaskSampler: GPUSampler | null = null;
   private _bindGroupLayout0: GPUBindGroupLayout | null = null;
@@ -328,7 +383,7 @@ export class WebGPUGlobeSurfaceRenderer {
     this._device = device;
     this._canvasFormat = canvasFormat;
 
-    this._createShaderModule(shaderCode);
+    this._initShaderCache(shaderCode);
     this._createBindGroupLayouts();
     this._createPipelineLayout();
     this._createSamplers();
@@ -341,15 +396,45 @@ export class WebGPUGlobeSurfaceRenderer {
     return this._isInitialized;
   }
 
-  // ─── Shader Module ───
-  private _createShaderModule(code: string): void {
+  // ─── Shader Module Cache ─────────────────────────────────────────
+  // Batch 20 — the globe terrain shader flows through `WebGPUShaderModuleCache`
+  // which preprocesses `//>>ifdef` directives against an active-defines bitmask,
+  // deduplicates module compilation across wireframe/debug/production pipelines
+  // that share a source, and prewarms common variants so the first-frame
+  // render path has no shader-compile jank.
+  private _initShaderCache(code: string): void {
     this._shaderCode = code;
-    // Shader validation is handled centrally by WebGPUContext's
-    // _installShaderValidation wrapper — no per-site validation needed.
-    this._shaderModule = this._device!.createShaderModule({
-      label: "GlobeTerrain shader",
+    this._shaderModuleCache = new WebGPUShaderModuleCache(this._device!);
+
+    // Prewarm: the baseline module plus every variant we expect the first
+    // ~30 frames of rendering to touch. Compiling them up-front moves
+    // ~10–20 ms of shader-compile cost off the render path. The list is
+    // deliberately concrete rather than computed — it should match the
+    // call sites in `_createPipelineVariant` / `_createWireframePipelineVariant`.
+    const prewarmSets: readonly number[] = [
+      0, // production terrain without geodetic normals
+      ShaderDefine.GEODETIC_NORMAL, // DP-H25 path for exaggerated terrain
+    ];
+    this._shaderModuleCache.prewarm(
+      ShaderSourceId.GLOBE_TERRAIN,
       code,
-    });
+      prewarmSets,
+      "GlobeTerrain shader",
+    );
+  }
+
+  /**
+   * Resolve the production terrain shader module for a given active-defines
+   * bitmask. First call per define-set runs the `//>>ifdef` preprocessor and
+   * `createShaderModule`; later calls return the cached module directly.
+   */
+  private _getProductionShaderModule(defines: number): GPUShaderModule {
+    return this._shaderModuleCache!.getOrCreate(
+      ShaderSourceId.GLOBE_TERRAIN,
+      this._shaderCode,
+      defines,
+      "GlobeTerrain shader",
+    );
   }
 
   /**
@@ -370,15 +455,27 @@ export class WebGPUGlobeSurfaceRenderer {
    * Returns null if the device fails to compile the augmented module.
    * Result is cached forever.
    */
-  private _getDebugFragmentShaderModule(): GPUShaderModule | null {
-    if (this._debugFragmentSupportProbed) {
-      return this._debugFragmentShaderModule;
+  private _getDebugFragmentShaderModule(
+    defines: number,
+  ): GPUShaderModule | null {
+    // Probe-and-cache per active-defines set. A `null` value means the
+    // device rejected the augmented source for this define-set during
+    // the one-shot validation probe; don't retry.
+    if (this._debugFragmentShaderModules.has(defines)) {
+      return this._debugFragmentShaderModules.get(defines) ?? null;
     }
-    this._debugFragmentSupportProbed = true;
     const device = this._device;
     if (!device || !this._shaderCode) {
       return null;
     }
+
+    // Batch 20 — run the `//>>ifdef` preprocessor on the base source
+    // FIRST, then append the debug fragment entry points. If we skipped
+    // preprocessing, the raw directive lines between `//>>ifdef` /
+    // `//>>endif` would be comments but the body lines between them
+    // would accumulate (both branches of the if/else materialize),
+    // producing invalid WGSL like `f(a); g(b));`.
+    const preprocessedBase = preprocessShaderSource(this._shaderCode, defines);
 
     // The three debug fragment entry points share the same vertex outputs
     // as the production fragment, so they can be appended to the existing
@@ -390,7 +487,7 @@ export class WebGPUGlobeSurfaceRenderer {
     // - fragmentDebugNormal: emits the interpolated eye-space normal as
     //   RGB after a [-1,1]→[0,1] remap. Useful for verifying the
     //   normal-map shaders we modernized in WGF-5.
-    const augmented = `${this._shaderCode}
+    const augmented = `${preprocessedBase}
 
 @fragment
 fn fragmentDebugTri(@builtin(primitive_index) primIndex: u32)
@@ -439,28 +536,28 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     try {
       device.pushErrorScope("validation");
       const mod = device.createShaderModule({
-        label: "GlobeTerrain shader (debug variants)",
+        label: `GlobeTerrain shader (debug variants, defines=0x${defines.toString(16)})`,
         code: augmented,
       });
       // Drain the validation scope. If the driver rejected the builtin we
       // still hold the module reference, but the next pipeline build will
-      // fail noisily — flip _debugFragmentSupported off so we never try.
+      // fail noisily — replace the entry with `null` so we never retry
+      // for this define-set.
       device.popErrorScope().then((err) => {
         if (err) {
-          this._debugFragmentSupported = false;
-          this._debugFragmentShaderModule = null;
+          this._debugFragmentShaderModules.set(defines, null);
           console.warn(
-            `[WebGPUGlobeSurfaceRenderer] debug fragment variants disabled: ${err.message}`,
+            `[WebGPUGlobeSurfaceRenderer] debug fragment variants disabled ` +
+              `for defines=0x${defines.toString(16)}: ${err.message}`,
           );
         }
       });
-      this._debugFragmentShaderModule = mod;
-      this._debugFragmentSupported = true;
+      this._debugFragmentShaderModules.set(defines, mod);
+      return mod;
     } catch (e) {
-      this._debugFragmentShaderModule = null;
-      this._debugFragmentSupported = false;
+      this._debugFragmentShaderModules.set(defines, null);
+      return null;
     }
-    return this._debugFragmentShaderModule;
   }
 
   /**
@@ -490,45 +587,58 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * fall back to the production module + the legacy fragment-discard
    * path.
    */
-  private _getClipDistancesShaderModule(): GPUShaderModule | null {
-    if (this._clipDistancesSupportProbed) {
-      return this._clipDistancesShaderModule;
+  private _getClipDistancesShaderModule(
+    defines: number,
+  ): GPUShaderModule | null {
+    // Probe-and-cache per active-defines set; same pattern as the debug
+    // fragment module.
+    if (this._clipDistancesShaderModules.has(defines)) {
+      return this._clipDistancesShaderModules.get(defines) ?? null;
     }
-    this._clipDistancesSupportProbed = true;
     const device = this._device;
     if (!device || !this._shaderCode) {
       return null;
     }
 
-    const augmented = this._buildClipDistancesShaderSource(this._shaderCode);
+    // Batch 20 — preprocess first so the anchor-string search in
+    // `_buildClipDistancesShaderSource` sees a valid-WGSL base. Without
+    // preprocessing, the `//>>ifdef` body lines (e.g. the extra
+    // `input.geodeticSurfaceNormal` arg) would still be present and
+    // would match the anchor patterns but produce invalid output when
+    // combined with the `//>>else` branch.
+    const preprocessedBase = preprocessShaderSource(this._shaderCode, defines);
+    const augmented = this._buildClipDistancesShaderSource(preprocessedBase);
     if (augmented === null) {
       console.warn(
         "[WebGPUGlobeSurfaceRenderer] clip-distances shader augmentation " +
           "could not locate one of its anchor strings; falling back to the " +
           "fragment-discard path.",
       );
+      this._clipDistancesShaderModules.set(defines, null);
       return null;
     }
 
     try {
       device.pushErrorScope("validation");
       const mod = device.createShaderModule({
-        label: "GlobeTerrain shader (clip-distances variant)",
+        label: `GlobeTerrain shader (clip-distances variant, defines=0x${defines.toString(16)})`,
         code: augmented,
       });
       device.popErrorScope().then((err) => {
         if (err) {
-          this._clipDistancesShaderModule = null;
+          this._clipDistancesShaderModules.set(defines, null);
           console.warn(
-            `[WebGPUGlobeSurfaceRenderer] clip-distances variant disabled: ${err.message}`,
+            `[WebGPUGlobeSurfaceRenderer] clip-distances variant disabled ` +
+              `for defines=0x${defines.toString(16)}: ${err.message}`,
           );
         }
       });
-      this._clipDistancesShaderModule = mod;
+      this._clipDistancesShaderModules.set(defines, mod);
+      return mod;
     } catch (e) {
-      this._clipDistancesShaderModule = null;
+      this._clipDistancesShaderModules.set(defines, null);
+      return null;
     }
-    return this._clipDistancesShaderModule;
   }
 
   /**
@@ -681,11 +791,14 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
-    // Water mask uses nearest filtering (binary mask, no interpolation)
+    // Water mask uses linear filtering to match WebGL — matches the WGSL's
+    // `smoothstep(0.3, 0.7, waterMask)` transition, which can't smooth a
+    // purely binary (nearest-sampled) value. Nearest filtering produces
+    // jagged staircase coastlines at any zoom level.
     this._waterMaskSampler = this._device!.createSampler({
       label: "Globe water mask sampler",
-      magFilter: "nearest",
-      minFilter: "nearest",
+      magFilter: "linear",
+      minFilter: "linear",
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
@@ -727,12 +840,20 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     strideBytes: number,
     debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE,
     useClipDistances: boolean = false,
+    hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline {
     const device = this._device!;
 
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
 
+    // DP-H25 (Batch 19) — when the encoding includes geodetic surface
+    // normals they occupy the trailing 3 floats (12 bytes) of the stride
+    // and the shader's `GEODETIC_NORMAL` define (Batch 20) activates the
+    // `@location(2) geodeticSurfaceNormal` input + the exaggeration
+    // branch override. The entry-point NAMES are unqualified — the
+    // module compiled with `GEODETIC_NORMAL=on` contains the same entry
+    // point names, just with different struct membership.
     if (isQuantized) {
       // BITS12 quantized: compressed0 layout depends on encoding flags.
       // Three cases (see TerrainEncoding.getAttributes:680-691):
@@ -759,9 +880,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       }
       // Stride math: base compressed0 is 16 bytes (4 floats) or 12 bytes
       // (3 floats, neither-case). Add 4 more bytes for compressed1 when
-      // both webMercT and normals are present.
+      // both webMercT and normals are present. DP-H25 appends 12 bytes
+      // for the geodetic normal at the end of stride.
       const baseStride = hasWebMercatorT || hasNormals ? 16 : 12;
-      const minStride = baseStride + (hasCompressed1 ? 4 : 0);
+      const minStride =
+        baseStride +
+        (hasCompressed1 ? 4 : 0) +
+        (hasGeodeticSurfaceNormals ? 12 : 0);
       const actualStride = Math.max(strideBytes, minStride);
       const attributes: GPUVertexAttribute[] = [
         { shaderLocation: 0, offset: 0, format },
@@ -771,6 +896,17 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           shaderLocation: 1,
           offset: 16,
           format: "float32",
+        });
+      }
+      if (hasGeodeticSurfaceNormals) {
+        // Offset = (stride - 12) so the attribute points at the last 3
+        // floats of the stride. TerrainEncoding always appends geodetic
+        // normals after every other attribute (TerrainEncoding.js:625-628),
+        // so `actualStride - 12` is the canonical location.
+        attributes.push({
+          shaderLocation: 2,
+          offset: actualStride - 12,
+          format: "float32x3",
         });
       }
       vertexBuffers = [
@@ -806,15 +942,26 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         texCoordFormat = "float32x2";
         entryPoint = "vertexMain";
       }
-      const actualStride = Math.max(strideBytes, 24);
+      // Base uncompressed stride is 24 bytes (pos4 + tex2). DP-H25 adds
+      // 12 more bytes when geodetic normals are present.
+      const minUncompressedStride = 24 + (hasGeodeticSurfaceNormals ? 12 : 0);
+      const actualStride = Math.max(strideBytes, minUncompressedStride);
+      const attributes: GPUVertexAttribute[] = [
+        { shaderLocation: 0, offset: 0, format: "float32x4" },
+        { shaderLocation: 1, offset: 16, format: texCoordFormat },
+      ];
+      if (hasGeodeticSurfaceNormals) {
+        attributes.push({
+          shaderLocation: 2,
+          offset: actualStride - 12,
+          format: "float32x3",
+        });
+      }
       vertexBuffers = [
         {
           arrayStride: actualStride,
           stepMode: "vertex",
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x4" },
-            { shaderLocation: 1, offset: 16, format: texCoordFormat },
-          ],
+          attributes,
         },
       ];
     }
@@ -839,16 +986,24 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         }
       : undefined;
 
+    // Batch 20 — resolve the correct production shader module for the
+    // active-defines set. DP-H25's geodetic-normal path flips the
+    // `GEODETIC_NORMAL` define; the cache hands back the preprocessed
+    // module. Augmented variants (debug fragment / clip distances)
+    // inherit the same define set so their base source stays consistent
+    // with the pipeline's vertex buffer layout.
+    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const productionModule = this._getProductionShaderModule(defines);
     // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
     // both stages must come from the augmented module — the vertex stage
     // declares the `@builtin(clip_distances)` output, and the fragment
     // stage's `globeClipByPlanes` discard has been neutralized to avoid
     // double-clipping.
-    let vertexModule: GPUShaderModule = this._shaderModule!;
-    let fragmentModule: GPUShaderModule = this._shaderModule!;
+    let vertexModule: GPUShaderModule = productionModule;
+    let fragmentModule: GPUShaderModule = productionModule;
     let cdLabel: string = "";
     if (useClipDistances) {
-      const cdModule = this._getClipDistancesShaderModule();
+      const cdModule = this._getClipDistancesShaderModule(defines);
       if (cdModule) {
         vertexModule = cdModule;
         fragmentModule = cdModule;
@@ -861,11 +1016,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let fragmentEntry: string = "fragmentMain";
     let debugLabel: string = "";
-    if (
-      debugFragmentMode !== DebugFragmentMode.NONE &&
-      this._debugFragmentShaderModule
-    ) {
-      fragmentModule = this._debugFragmentShaderModule;
+    const debugFragModule =
+      debugFragmentMode !== DebugFragmentMode.NONE
+        ? this._getDebugFragmentShaderModule(defines)
+        : null;
+    if (debugFragmentMode !== DebugFragmentMode.NONE && debugFragModule) {
+      fragmentModule = debugFragModule;
       switch (debugFragmentMode) {
         case DebugFragmentMode.TRIANGULATION:
           fragmentEntry = "fragmentDebugTri";
@@ -931,12 +1087,17 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     isBlend: boolean,
     strideBytes: number,
     useClipDistances: boolean = false,
+    hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline {
     // Phase 5 WGF-1: cache key includes a `C` suffix for the
     // hardware clip-distances variant so it shares the production cache
     // map cleanly without colliding with the legacy variants.
+    // Batch 20: the active-defines bitmask (DP-H25's `GEODETIC_NORMAL`
+    // and any future flags) appears as a `|0xNN` hex suffix so the
+    // pipeline cache stays in sync with the shader module cache key.
     const cdSuffix = useClipDistances ? "_CD" : "";
-    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}`;
+    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}|${defines.toString(16)}`;
     let pipeline = this._pipelineCache.get(cacheKey);
     if (!pipeline) {
       pipeline = this._createPipelineVariant(
@@ -947,6 +1108,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         strideBytes,
         DebugFragmentMode.NONE,
         useClipDistances,
+        hasGeodeticSurfaceNormals,
       );
       this._pipelineCache.set(cacheKey, pipeline);
     }
@@ -974,6 +1136,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     hasWebMercatorT: boolean,
     isBlend: boolean,
     strideBytes: number,
+    hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline | null {
     if (mode === DebugFragmentMode.NONE) {
       return null;
@@ -981,7 +1144,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     if (!this._getDebugFragmentShaderModule()) {
       return null;
     }
-    const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}`;
+    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}|${defines.toString(16)}`;
     let pipeline = this._debugFragmentPipelineCache.get(cacheKey);
     if (!pipeline) {
       pipeline = this._createPipelineVariant(
@@ -991,6 +1155,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         isBlend,
         strideBytes,
         mode,
+        false,
+        hasGeodeticSurfaceNormals,
       );
       this._debugFragmentPipelineCache.set(cacheKey, pipeline);
     }
@@ -1190,6 +1356,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           gpuResources.hasNormals,
           gpuResources.hasWebMercatorT,
           gpuResources.strideBytes,
+          gpuResources.hasGeodeticSurfaceNormals,
         );
       } else if (debugFragmentMode !== DebugFragmentMode.NONE) {
         // Cold path: try the debug fragment variant; gracefully fall back
@@ -1206,6 +1373,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
             gpuResources.hasWebMercatorT,
             isSubsequentPass,
             gpuResources.strideBytes,
+            gpuResources.hasGeodeticSurfaceNormals,
           ) ??
           this._selectPipeline(
             gpuResources.isQuantized,
@@ -1213,6 +1381,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
             gpuResources.hasWebMercatorT,
             isSubsequentPass,
             gpuResources.strideBytes,
+            false,
+            gpuResources.hasGeodeticSurfaceNormals,
           );
       } else {
         pipeline = this._selectPipeline(
@@ -1222,6 +1392,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           isSubsequentPass,
           gpuResources.strideBytes,
           useClipDistances,
+          gpuResources.hasGeodeticSurfaceNormals,
         );
       }
 
@@ -1287,16 +1458,81 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       // When neither shadows nor clipping are active the placeholder is
       // returned (no per-frame allocation), preserving the existing
       // hot-path behavior for the common case.
+      //
+      // Phase 4 AtmosphereLUT integration: when the scene has an
+      // atmosphere LUT ready (compute supported + SkyAtmosphere has
+      // dispatched the LUT compute pass at least once), we route
+      // through the active bind group builder to pass the LUT views
+      // into bindings 7/8 of the effects BGL. The globe shader reads
+      // those to compute fog color that matches the visible sky dome.
+      // If neither clipping nor LUT is present we still take the
+      // placeholder fast-path.
+      const perfMgr = (frameState as { context?: { performanceManager?: { ensureAtmosphereLUTResources?: (d: GPUDevice) => { transmittanceView?: GPUTextureView; inscatterView?: GPUTextureView; } | null; } } }).context
+        ?.performanceManager;
+      let atmosphereLutViews:
+        | { transmittance: GPUTextureView; inscatter: GPUTextureView }
+        | null = null;
+      if (perfMgr?.ensureAtmosphereLUTResources) {
+        // Read the existing LUT views. We deliberately don't consult
+        // `shouldRecomputeAtmosphereLUT()` here because that method is
+        // side-effecting — it clears the dirty flag on read, and the
+        // flag belongs to SkyAtmosphere's dispatch lifecycle. Consuming
+        // it here would prevent SkyAtmosphere from seeing "needs
+        // recompute" on its next frame.
+        //
+        // Instead we bind whatever the texture currently contains and
+        // let the shader's `lutLuminance > 0.001` check in
+        // `sampleAtmosphereFogLut` decide whether the data is
+        // meaningful. Before SkyAtmosphere has dispatched (first frame)
+        // the textures are all-zero and the shader takes the inline
+        // Rayleigh/Mie fallback, which produces the same look as
+        // pre-LUT builds — no flash or pop.
+        const res = perfMgr.ensureAtmosphereLUTResources(device);
+        if (res && res.transmittanceView && res.inscatterView) {
+          atmosphereLutViews = {
+            transmittance: res.transmittanceView,
+            inscatter: res.inscatterView,
+          };
+        }
+      }
+      // DP-H28 — resolve the scene's receive shadow map so the globe
+      // actually gets shadow-darkening when `viewer.shadows = true`.
+      // WebGL routes through Scene.js per-command receive logic; in
+      // WebGPU the globe manages its own bind groups, so we inline the
+      // same lookup here. `lightShadowMaps[0]` is the canonical receive
+      // source (cascades, spot, directional all land there post-update).
+      // Gated on `lightShadowsEnabled` to match Scene.js:4389.
+      const shadowState = frameState?.shadowState;
+      const receiveShadowMap =
+        shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
+          ? shadowState.lightShadowMaps[0]
+          : undefined;
+
       let bindGroup3: GPUBindGroup;
       if (
         useClipDistances ||
-        (tileProvider?.clippingPlanes && tileProvider.clippingPlanes.length > 0)
+        (tileProvider?.clippingPlanes &&
+          tileProvider.clippingPlanes.length > 0) ||
+        atmosphereLutViews !== null ||
+        receiveShadowMap !== undefined
       ) {
         const fxRes = createEffectsBindGroup(device, frameState, {
           clippingPlanes: tileProvider.clippingPlanes,
+          shadowMap: receiveShadowMap,
           // Globe terrain model matrix is identity, so the camera in
           // plane-space is the same as the world camera position.
           cameraInPlaneSpace: uniformState.cameraPosition,
+          atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
+          atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
+          // Use the SkyAtmosphere convention — WGS84 + 2.5% atmosphere
+          // thickness matches the default the LUT compute dispatcher
+          // uses unless SkyAtmosphere.atmosphereLightIntensity has
+          // been customized. Full scene-specific radii plumbing is a
+          // small follow-on but the shader clamps altitudes anyway.
+          atmosphereLutPlanetRadii: {
+            inner: 6378137.0,
+            outer: 6378137.0 * 1.025,
+          },
         });
         bindGroup3 = fxRes.bindGroup;
       } else {
@@ -1359,6 +1595,17 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
           surfaceTile.boundingSphere3D,
         isSubsequentPass,
+        // Shadow cast wiring (Batch 24). Every tile — quantized or not —
+        // carries its shadow-cast UB and its true VB stride so the
+        // stride-aware pipeline registry in WebGPUShadowMapRenderer can
+        // build a pipeline whose `arrayStride` matches this tile's
+        // actual VB. The scene adapter translates these three fields
+        // into `_shadowCastLayout` + `_shadowCastTerrainUB` +
+        // `vertexStride` on the Cesium draw command.
+        isQuantized: gpuResources.isQuantized,
+        shadowCastTerrainUB: gpuResources.shadowCastUB,
+        hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
+        strideBytes: gpuResources.strideBytes,
       });
     }
 
@@ -1428,6 +1675,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     if (cached) {
       cached.vertexBuffer.destroy();
       cached.indexBuffer.destroy();
+      cached.shadowCastUB?.destroy();
     }
 
     const vertices: Float32Array = mesh.vertices;
@@ -1557,12 +1805,21 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         // If we can infer a valid stride, use it instead
         if (
           inferredStride >= 3 &&
-          inferredStride <= 8 &&
+          inferredStride <= 11 &&
           vertices.length >= actualVertCount * inferredStride
         ) {
           const correctedStrideBytes = inferredStride * 4;
           const correctedVertCount = Math.floor(vbSize / correctedStrideBytes);
           if (maxIdx < correctedVertCount) {
+            // DP-H25 — geodetic normals occupy the trailing 3 floats of the
+            // stride when `encoding.hasGeodeticSurfaceNormals` is set. The
+            // inferred-stride fallback only fires for fill tiles so we defer
+            // to the encoding flag here; downstream `_selectPipeline` handles
+            // the case where stride is too small to actually carry it.
+            const inferredHasGeoNormal =
+              encoding.hasGeodeticSurfaceNormals === true &&
+              inferredStride >=
+                (isQuantized ? 4 : hasWebMercatorT || hasNormals ? 7 : 6) + 3;
             const resources: TileGPUResources = {
               vertexBuffer,
               indexBuffer,
@@ -1574,6 +1831,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
                 inferredStride >= 7 || (isQuantized && inferredStride >= 4),
               hasWebMercatorT,
               isQuantized,
+              hasGeodeticSurfaceNormals: inferredHasGeoNormal,
               meshGeneration: generation,
             };
             this._tileBufferCache.set(tileKey, resources);
@@ -1614,11 +1872,78 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       hasNormals,
       hasWebMercatorT,
       isQuantized,
+      // DP-H25 — `TerrainEncoding` flips `hasGeodeticSurfaceNormals` on when
+      // the per-vertex stride is widened to include the normal (see
+      // TerrainEncoding.js:320). The pipeline builder uses this flag to
+      // add a `@location(2)` vec3 attribute over the trailing 12 bytes of
+      // the stride and enable the `GEODETIC_NORMAL` shader define.
+      hasGeodeticSurfaceNormals: encoding.hasGeodeticSurfaceNormals === true,
       meshGeneration: generation,
     };
 
+    // Allocate a shadow cast UB for every tile regardless of quantization.
+    // Before Batch 24 this was quantized-only, which meant uncompressed
+    // tiles fell through to the `rte24` variant via stride-inference —
+    // and `rte24` reads two vec3s (positionHigh + positionLow) where
+    // the uncompressed VB actually has `position3DAndHeight` + tex
+    // coords. The resulting RTE math produced shadow coordinates
+    // unrelated to the actual terrain. Batch 24's new
+    // `terrainUncompressed` shadow cast variant consumes the same UB
+    // layout as `quantized12` (scaleAndBias + center3D + minMaxHeight),
+    // so every tile — quantized or not — needs the buffer populated.
+    // The buffer is static for the tile's lifetime; when the tile's
+    // mesh is regenerated we rebuild it alongside the vertex buffer
+    // (next cache-miss path).
+    const shadowUB = device.createBuffer({
+      label: `Terrain shadow cast UB (${tileKey})`,
+      // 96 bytes: scaleAndBias(64) + center3D+pad(16) + minMaxHeight+pad(16)
+      size: 96,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this._writeTerrainShadowUB(device, shadowUB, mesh);
+    resources.shadowCastUB = shadowUB;
+
     this._tileBufferCache.set(tileKey, resources);
     return resources;
+  }
+
+  /**
+   * Writes the `quantized12` shadow-cast variant's uniform data for
+   * a tile. Layout (96 bytes, must match
+   * WebGPUShadowMapRenderer.js::SHADOW_CAST_VARIANTS.quantized12):
+   *
+   *   offset  0: scaleAndBias: mat4x4<f32>  (from mesh.encoding.matrix)
+   *   offset 64: center3D:     vec3<f32>    (from mesh.center)
+   *   offset 76: _pad0:        f32
+   *   offset 80: minMaxHeight: vec2<f32>
+   *   offset 88: _pad1:        vec2<f32>
+   *
+   * @private
+   */
+  private _writeTerrainShadowUB(
+    device: GPUDevice,
+    buffer: GPUBuffer,
+    mesh: CesiumTerrainMesh,
+  ): void {
+    const data = new Float32Array(24); // 96 bytes
+    const encoding = mesh.encoding;
+    if (encoding && encoding.matrix) {
+      const m = m4Values(encoding.matrix);
+      for (let i = 0; i < 16; i++) data[i] = m[i];
+    } else {
+      for (let i = 0; i < 16; i++) data[i] = i % 5 === 0 ? 1.0 : 0.0;
+    }
+    const center = mesh.center ||
+      (encoding && encoding.center) || { x: 0, y: 0, z: 0 };
+    data[16] = center.x;
+    data[17] = center.y;
+    data[18] = center.z;
+    data[19] = 0;
+    data[20] = encoding?.minimumHeight ?? 0;
+    data[21] = encoding?.maximumHeight ?? 0;
+    data[22] = 0;
+    data[23] = 0;
+    device.queue.writeBuffer(buffer, 0, data.buffer, 0, 96);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1787,11 +2112,18 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       for (let i = 0; i < 16; i++) data[offset++] = i % 5 === 0 ? 1.0 : 0.0;
     }
 
-    // minMaxHeight (vec2 + pad2)
+    // minMaxHeight (vec2) + ellipsoidRadius (f32) + pad (f32)
+    // ellipsoidRadius carries the tile provider's ellipsoid maximum radius
+    // so the shader's altitude calculations work for non-WGS84 ellipsoids
+    // (Mars, Moon, custom). Falls through to 0 when unavailable; the shader
+    // detects a zero and substitutes the WGS84 fallback constant.
     data[offset++] = encoding?.minimumHeight ?? 0.0;
     data[offset++] = encoding?.maximumHeight ?? 0.0;
-    data[offset++] = 0; // pad
-    data[offset++] = 0; // pad
+    const ell = (tileProvider?._ellipsoid ?? tileProvider?.ellipsoid) as
+      | { maximumRadius?: number }
+      | undefined;
+    data[offset++] = ell?.maximumRadius ?? 0.0;
+    data[offset++] = 0; // reserved (future minor-axis radius)
 
     // ─── 2D / Columbus View support ───
     // tileRectangle (vec4): west, south, east, north (radians)
@@ -1847,6 +2179,38 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       projection.constructor.name === "WebMercatorProjection";
     data[offset++] = isWebMercator ? 1.0 : 0.0;
     data[offset++] = 0; // pad
+
+    // ─── DP-H41: previousViewProjection (mat4x4, 16 floats, offsets 100–115)
+    // `UniformState.update()` clones the current viewProjection into
+    // `_previousViewProjection` before overwriting it with the new camera
+    // state, so on frame N this field is the viewProjection from frame N-1.
+    // TAA / motion-vector shaders consume it via `camera.previousViewProjection`.
+    // Writing zeros on the very first frame (when previousViewProjection is
+    // still Matrix4.IDENTITY) is fine — motion-vector consumers detect the
+    // first frame via a separate "valid history" flag on their own pass.
+    const prevVP = uniformState.previousViewProjection;
+    if (prevVP) {
+      const prev = m4Values(prevVP);
+      for (let i = 0; i < 16; i++) data[offset++] = prev[i];
+    } else {
+      // Identity fallback keeps the shader contract stable.
+      data[offset++] = 1;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 1;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 1;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 0;
+      data[offset++] = 1;
+    }
 
     const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);
     return this._writeUniformSlice(
@@ -2230,7 +2594,22 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     data[77] = frameState?.verticalExaggerationRelativeHeight ?? 0.0;
 
     // ─── Time for ocean wave animation (offset 78) ───
-    data[78] = frameState?.time ? performance.now() / 1000.0 : 0.0;
+    // Derive animation clock from `frameState.time` (a JulianDate) so every
+    // view in a multi-view render pass samples the same wave phase and
+    // screenshots are deterministic. Previously the renderer read
+    // `performance.now()` directly, which drifts per-view and breaks
+    // deterministic capture. Mod by 1e6 s (~11.6 days) to keep the
+    // monotonic counter within f32 precision for smooth `sin(k*t)` / `fract`
+    // kernels in the shader.
+    const t = frameState?.time as
+      | { dayNumber?: number; secondsOfDay?: number }
+      | undefined;
+    let waveTime = 0.0;
+    if (t) {
+      const secs = (t.dayNumber ?? 0) * 86400.0 + (t.secondsOfDay ?? 0);
+      waveTime = secs % 1000000.0;
+    }
+    data[78] = waveTime;
     // OPEN-5 fix: fogVisualDensityScalar (offset 79) — replaces the pad.
     // Matches WebGL's `czm_fogVisualDensityScalar` auto-uniform (default
     // 0.15 from UniformState). Without this the fog formula is ~6.7x
@@ -2271,6 +2650,24 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     data[93] = typeof isolate === "number" && isolate >= 0 ? isolate : -1;
     data[94] = 0;
     data[95] = 0;
+
+    // ─── DP-H24: HSB shift (offsets 96-99, vec4) ───
+    // Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
+    // `Globe.atmosphereHueShift/Saturation/Brightness` onto the tile
+    // provider each frame, so tileProvider is authoritative here.
+    // The shader gates the HSB round-trip on |any| > 0.001, so writing
+    // zeros (the default) carries no GPU cost.
+    const tpHsb = tileProvider as unknown as {
+      hueShift?: number;
+      saturationShift?: number;
+      brightnessShift?: number;
+    };
+    data[96] = typeof tpHsb.hueShift === "number" ? tpHsb.hueShift : 0;
+    data[97] =
+      typeof tpHsb.saturationShift === "number" ? tpHsb.saturationShift : 0;
+    data[98] =
+      typeof tpHsb.brightnessShift === "number" ? tpHsb.brightnessShift : 0;
+    data[99] = 0;
 
     return this._writeUniformSlice(
       device,
@@ -2479,6 +2876,16 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         height = source.height;
         gpuSource = source;
       } else if (source instanceof HTMLImageElement) {
+        // C-P18: reject not-yet-decoded images. Without this check,
+        // `copyExternalImageToTexture` throws "source is not in a valid
+        // state" for any HTMLImageElement whose load/decode hasn't
+        // completed — which happens unpredictably when imagery layers
+        // hand off `<img>` refs immediately after `src=` assignment.
+        // The uploader returns null; the caller's cache miss path
+        // retries on the next frame when `complete` flips to true.
+        if (!source.complete || source.naturalWidth === 0) {
+          return null;
+        }
         width = source.naturalWidth || source.width;
         height = source.naturalHeight || source.height;
         gpuSource = source;
@@ -2546,8 +2953,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     hasNormals: boolean,
     hasWebMercatorT: boolean,
     strideBytes: number,
+    hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline {
-    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}`;
+    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`;
     let pipeline = this._wireframePipelineCache.get(cacheKey);
     if (pipeline) {
       return pipeline;
@@ -2557,6 +2966,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       hasNormals,
       hasWebMercatorT,
       strideBytes,
+      hasGeodeticSurfaceNormals,
     );
     this._wireframePipelineCache.set(cacheKey, pipeline);
     return pipeline;
@@ -2575,11 +2985,18 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     hasNormals: boolean,
     hasWebMercatorT: boolean,
     strideBytes: number,
+    hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline {
     const device = this._device!;
 
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
+    // Batch 20 — the production shader module + our `GEODETIC_NORMAL`
+    // define keep the wireframe pipeline's vertex layout in sync with
+    // the colored pass automatically. Entry-point names are unqualified;
+    // the correct variant is selected via the active-defines bitmask
+    // passed to `_getProductionShaderModule`.
+    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
 
     if (isQuantized) {
       // See `_createPipelineVariant` for the full documentation of the
@@ -2600,7 +3017,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         entryPoint = "vertexMainQuantized";
       }
       const baseStride = hasWebMercatorT || hasNormals ? 16 : 12;
-      const minStride = baseStride + (hasCompressed1 ? 4 : 0);
+      const minStride =
+        baseStride +
+        (hasCompressed1 ? 4 : 0) +
+        (hasGeodeticSurfaceNormals ? 12 : 0);
       const actualStride = Math.max(strideBytes, minStride);
       const attributes: GPUVertexAttribute[] = [
         { shaderLocation: 0, offset: 0, format },
@@ -2610,6 +3030,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           shaderLocation: 1,
           offset: 16,
           format: "float32",
+        });
+      }
+      if (hasGeodeticSurfaceNormals) {
+        attributes.push({
+          shaderLocation: 2,
+          offset: actualStride - 12,
+          format: "float32x3",
         });
       }
       vertexBuffers = [
@@ -2634,15 +3061,24 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         texCoordFormat = "float32x2";
         entryPoint = "vertexMain";
       }
-      const actualStride = Math.max(strideBytes, 24);
+      const minUncompressedStride = 24 + (hasGeodeticSurfaceNormals ? 12 : 0);
+      const actualStride = Math.max(strideBytes, minUncompressedStride);
+      const attributes: GPUVertexAttribute[] = [
+        { shaderLocation: 0, offset: 0, format: "float32x4" },
+        { shaderLocation: 1, offset: 16, format: texCoordFormat },
+      ];
+      if (hasGeodeticSurfaceNormals) {
+        attributes.push({
+          shaderLocation: 2,
+          offset: actualStride - 12,
+          format: "float32x3",
+        });
+      }
       vertexBuffers = [
         {
           arrayStride: actualStride,
           stepMode: "vertex",
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x4" },
-            { shaderLocation: 1, offset: 16, format: texCoordFormat },
-          ],
+          attributes,
         },
       ];
     }
@@ -2651,16 +3087,20 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     const normLabel = hasNormals ? "normals" : "noNormals";
     const mercLabel = hasWebMercatorT ? "webMerc" : "geo";
 
+    // Batch 20 — wireframe fetches the module from the shader cache with
+    // the same `defines` used by the production pipeline for this tile,
+    // so the wireframe overlay always matches its colored counterpart.
+    const shaderModule = this._getProductionShaderModule(defines);
     return device.createRenderPipeline({
       label: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b)`,
       layout: this._pipelineLayout!,
       vertex: {
-        module: this._shaderModule!,
+        module: shaderModule,
         entryPoint,
         buffers: vertexBuffers,
       },
       fragment: {
-        module: this._shaderModule!,
+        module: shaderModule,
         entryPoint: "fragmentMain",
         targets: [{ format: this._canvasFormat }],
       },
@@ -2770,6 +3210,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       gpuResources.hasNormals,
       gpuResources.hasWebMercatorT,
       gpuResources.strideBytes,
+      gpuResources.hasGeodeticSurfaceNormals,
     );
 
     // Single pass for wireframe — no multi-pass imagery needed
@@ -2852,6 +3293,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       if (!activeTileKeys.has(key)) {
         resources.vertexBuffer.destroy();
         resources.indexBuffer.destroy();
+        resources.shadowCastUB?.destroy();
         this._tileBufferCache.delete(key);
       }
     }
@@ -2915,6 +3357,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     for (const [, resources] of this._tileBufferCache) {
       resources.vertexBuffer.destroy();
       resources.indexBuffer.destroy();
+      resources.shadowCastUB?.destroy();
     }
     this._tileBufferCache.clear();
 
@@ -2945,7 +3388,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     this._pipelineCache.clear();
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
-    this._shaderModule = null;
+    if (this._shaderModuleCache) {
+      this._shaderModuleCache.destroy();
+      this._shaderModuleCache = null;
+    }
+    this._debugFragmentShaderModules.clear();
+    this._clipDistancesShaderModules.clear();
     this._sampler = null;
     this._waterMaskSampler = null;
     this._oceanNormalSampler = null;

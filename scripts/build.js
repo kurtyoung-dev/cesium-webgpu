@@ -87,7 +87,24 @@ const stripPragmaPlugin = {
           }
         }
 
-        return { contents: source };
+        // Tell esbuild which loader to use. Without an explicit `loader`
+        // return value, esbuild *mostly* infers from `args.path`'s
+        // extension — but when a `.js` import path resolves to a `.ts`
+        // file via resolveExtensions, the path reported here is the
+        // resolved TS path but some edges of esbuild's inference have
+        // treated contents as JS and choked on `interface` / `enum`.
+        // Explicit mapping removes the ambiguity.
+        const ext = args.path.slice(args.path.lastIndexOf("."));
+        /** @type {esbuild.Loader} */
+        const loader =
+          ext === ".ts"
+            ? "ts"
+            : ext === ".tsx"
+              ? "tsx"
+              : ext === ".jsx"
+                ? "jsx"
+                : "js";
+        return { contents: source, loader };
       } catch (e) {
         return {
           errors: [{ text: /** @type {Error} */ (e).message }],
@@ -463,11 +480,23 @@ export async function createCesiumJs(variant = "dual") {
   // surface that the .js glob in workspaceSourceFiles can't pick up.
   // The webgpu-only and dual variants both need it; webgl-only does
   // not because the WGSL preprocessor is dead code in that build.
+  //
+  // We import from `@cesium/engine/index-wgsl.js` rather than the main
+  // `@cesium/engine` barrel so that the webgl-only bundle doesn't even
+  // see the WebGPU-source re-exports in its module graph. That avoids
+  // the esbuild "No matching export" error when the alias plugin
+  // rewrites those paths to the empty-module stub in webgl-only mode.
   if (variant !== "webgl-only") {
     contents +=
       `\n// TypeScript-only WGSL preprocessor exports — needed by wgsl-import-test.html\n` +
-      `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from '@${scope}/engine';\n` +
-      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from '@${scope}/engine';\n`;
+      `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from '@${scope}/engine/index-wgsl.js';\n` +
+      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from '@${scope}/engine/index-wgsl.js';\n` +
+      // WebGL compat stub helpers live on index-wgsl.js too so apps
+      // that register a shader translator or consume
+      // extractPipelineStateFromStub don't have to reach into
+      // private WebGPU/ paths. Same webgl-only gating as the WGSL
+      // preprocessor above — webgl-only doesn't need the stub.
+      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from '@${scope}/engine/index-wgsl.js';\n`;
   }
 
   // Append the runtime default-renderer hint so this entry's bundle picks
@@ -1353,18 +1382,48 @@ export async function createIndexJs(workspace) {
   // Append re-exports for TypeScript-only public API that the file glob
   // above can't pick up (it only matches `.js`). Without this the build
   // variants can't call `setGlobalDefaultRenderer` from the entry barrel.
+  //
+  // IMPORTANT: we split these into "always-safe" (renderer-type / factory /
+  // registry exports, which don't reach into WebGPU source) and "WebGPU-only"
+  // (WGSL preprocessor + library). The WebGPU-only re-exports would crash a
+  // webgl-only bundle because the alias plugin rewrites their source paths
+  // to `emptyModule.js`, which has only a default export — esbuild then
+  // can't find the NAMED exports referenced here. They're still safe for
+  // the dual and webgpu-only variants, which do include the real WebGPU
+  // modules in their graph.
   if (workspace === "engine") {
     contents +=
       `${EOL}// TypeScript-only re-exports — needed by build-variant entry points${EOL}` +
       `export { default as RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, isWebGPUSupported, isValidRendererType } from './Source/Renderer/RendererType.js';${EOL}` +
       `export { default as ContextFactory } from './Source/Renderer/ContextFactory.js';${EOL}` +
       `export { default as GraphicsContext } from './Source/Renderer/GraphicsContext.js';${EOL}` +
-      `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}` +
-      // FORK-16: WGSL preprocessor + library are needed by the
-      // wgsl-import-test.html page so it can validate the same
-      // module the runtime uses, instead of shipping its own copy.
+      `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}`;
+
+    // WGSL-adjacent re-exports live in a SEPARATE file (index-wgsl.js)
+    // that the webgl-only variant entry barrel deliberately does NOT
+    // import. Dual and webgpu-only variants import from here. This is
+    // the right home for the WebGL compatibility stub helpers too —
+    // they reference files under Source/Renderer/WebGPU/ (the
+    // WebGLCompatibilityStub nexus + its per-domain sub-modules)
+    // which the webgl-only variant's alias plugin strips to empty
+    // stubs. ESM's static named-re-export check would fail if this
+    // file were pulled into the webgl-only graph.
+    const wgslContents =
+      `${EOL}// TypeScript-only WGSL preprocessor exports — for wgsl-import-test.html${EOL}` +
       `export { WGSLShaderPreprocessor, WGSLShaderLibrary } from './Source/Renderer/WebGPU/WGSLShaderPreprocessor.js';${EOL}` +
-      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from './Source/Renderer/WebGPU/WGSLBuiltins.js';${EOL}`;
+      `export { createDefaultWGSLLibrary, WGSLBuiltinChunks } from './Source/Renderer/WebGPU/WGSLBuiltins.js';${EOL}` +
+      // WebGL compatibility stub helpers — apps on the dual or
+      // webgpu-only variant can register a shader translator
+      // (naga-wasm adapter, etc.) and build pipelines from tracked
+      // gl.* state without reaching into the WebGPU renderer's
+      // private directory structure.
+      `${EOL}// WebGL compatibility stub — translator registry + pipeline extractor${EOL}` +
+      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from './Source/Renderer/WebGPU/WebGLCompatibilityStub.js';${EOL}`;
+    await writeFile(
+      `packages/${workspace}/index-wgsl.js`,
+      wgslContents,
+      { encoding: "utf-8" },
+    );
   }
 
   await writeFile(`packages/${workspace}/index.js`, contents, {
@@ -1612,11 +1671,12 @@ export async function buildCesium(options) {
   /** @type {BundleVariant} */
   const variant = options.variant ?? "dual";
   // The non-dual variants exist to feed tree-shaking-aware bundlers
-  // (Vite/Webpack/Rollup). Skip the IIFE/global-namespace bundle for
-  // them by default — that bundle is only useful for direct
-  // `<script src="Cesium.js">` includes, which is a dual-build use case.
-  // Caller can still force iife=true on a variant explicitly.
-  const iife = options.iife ?? variant === "dual";
+  // IIFE / global-namespace bundle is built for every variant by
+  // default because CDN consumers that use `<script src=...>`
+  // benefit from the variant-specific tree-shaking (e.g.
+  // `CesiumWebGPU.js` skips GLSL shaders). Caller can still force
+  // it off explicitly if producing ESM-only distributions.
+  const iife = options.iife ?? true;
   const incremental = options.incremental ?? false;
   const minify = options.minify ?? false;
   const node = options.node ?? true;

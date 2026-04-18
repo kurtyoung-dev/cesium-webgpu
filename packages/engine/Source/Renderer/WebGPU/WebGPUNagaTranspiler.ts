@@ -211,6 +211,103 @@ export function isNagaReady(): boolean {
   return _nagaModule !== null;
 }
 
+// ─── WebGPUShaderTranslator adapter ────────────────────────────────────
+//
+// Wraps `transpileGLSL` as a `ShaderTranslator` implementation so the
+// WebGL compat stub can consume it through the pluggable registry.
+// Exported as `NagaShaderTranslator` — apps that want Naga-based GLSL
+// translation call:
+//
+//   import {
+//     NagaShaderTranslator,
+//     registerShaderTranslator,
+//   } from "@cesium/engine";
+//   registerShaderTranslator(new NagaShaderTranslator());
+//
+// The registration is explicit rather than automatic so apps that want
+// a different translator (Slang, custom, WGSL-only) aren't forced to
+// drag in naga-wasm. On first translate() call the naga-wasm module
+// is lazy-loaded; subsequent calls are fast-path via the cache.
+
+import type {
+  ShaderTranslator,
+  TranslatedShader,
+  ShaderReflection,
+  ShaderStage,
+} from "./WebGPUShaderTranslator.js";
+
+export class NagaShaderTranslator implements ShaderTranslator {
+  readonly name = "naga-wasm";
+  readonly supports: ReadonlyArray<"glsl" | "wgsl" | "slang"> = [
+    "glsl",
+    "wgsl",
+  ];
+
+  async translate(
+    source: string,
+    stage: ShaderStage,
+    language: "glsl" | "wgsl" | "slang",
+  ): Promise<TranslatedShader> {
+    if (language === "slang") {
+      throw new Error(
+        "NagaShaderTranslator does not support Slang input — use the Slang build-time pipeline (`scripts/compileSlang.js`) or register a slang-wasm adapter.",
+      );
+    }
+    if (language === "wgsl") {
+      // Passthrough WGSL with a thin reflection that captures the
+      // source length for diagnostics. We deliberately don't parse
+      // WGSL ourselves — a real reflection would need Naga's WGSL
+      // frontend which our optional import may or may not have.
+      return {
+        wgsl: source,
+        reflection: _emptyReflection(stage),
+        warnings: [],
+      };
+    }
+    const result = await transpileGLSL(source, stage as NagaShaderStage);
+    if (!result.wgsl) {
+      throw new Error(result.error || "GLSL→WGSL translation failed");
+    }
+    return {
+      wgsl: result.wgsl,
+      // TODO (next spike): parse `convert_shader` reflection output.
+      // naga-wasm exposes it via a separate API we haven't wrapped yet.
+      // For now we emit an empty reflection; pipeline builders that
+      // need binding info still work against descriptors they built
+      // themselves — they just can't auto-derive bind group layouts
+      // from the translated WGSL without a follow-on reflection pass.
+      reflection: _emptyReflection(stage),
+      warnings: [],
+    };
+  }
+
+  describe(): string {
+    if (_nagaUnavailable) {
+      return "NagaShaderTranslator — naga-wasm not installed (npm install naga-wasm to enable)";
+    }
+    if (_nagaModule) {
+      return "NagaShaderTranslator — naga-wasm loaded, GLSL→WGSL active";
+    }
+    return "NagaShaderTranslator — naga-wasm pending first translate()";
+  }
+}
+
+function _emptyReflection(stage: ShaderStage): ShaderReflection {
+  return {
+    entryPoint:
+      stage === "vertex"
+        ? "main"
+        : stage === "fragment"
+          ? "main"
+          : "computeMain",
+    stage,
+    uniformBuffers: [],
+    textures: [],
+    samplers: [],
+    attributes: [],
+  };
+}
+
 /**
  * Diagnostic: returns whether the loader has given up on `naga-wasm`
  * (package missing, init failure, etc.). Useful for the WebGPU stub to

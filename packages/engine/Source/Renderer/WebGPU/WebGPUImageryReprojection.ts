@@ -278,6 +278,24 @@ export function reprojectImageSourceWebGPU(
   southLatitude: number,
   northLatitude: number,
 ): GPUTexture {
+  // C-P18: HTMLImageElement sources must be fully decoded before WebGPU
+  // can copy them. Without this guard, `copyExternalImageToTexture`
+  // throws "source is not in a valid state" mid-reproject and the
+  // fresh `srcTexture` leaks. Callers that pass a potentially-decoding
+  // image should catch the error and retry on the next frame.
+  if (
+    typeof HTMLImageElement !== "undefined" &&
+    imageSource instanceof HTMLImageElement
+  ) {
+    if (!imageSource.complete || imageSource.naturalWidth === 0) {
+      throw new Error(
+        "[CesiumJS:webgpu] reprojectImageSourceWebGPU: HTMLImageElement " +
+          "is not fully decoded. Await img.decode() or img.complete === true " +
+          "before handing the image off to the reproject pipeline.",
+      );
+    }
+  }
+
   // Upload source image to a temporary GPUTexture
   const srcTexture = device.createTexture({
     label: "ReprojectWebMercator SrcUpload",

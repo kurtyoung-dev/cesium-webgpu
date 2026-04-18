@@ -23,6 +23,7 @@ import Cartesian2 from "../../Core/Cartesian2.js";
 import Color from "../../Core/Color.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import SDFSettings from "../../Scene/SDFSettings.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -37,11 +38,14 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
-// SDF instance data: 32 floats (128 bytes) — standard 24 floats + 8 for outline/SDF
-const FLOATS_PER_SDF_INSTANCE = 32;
+// SDF instance data: 36 floats (144 bytes) — standard 24 floats + 8 for
+// outline/SDF + 4 for perInstanceFlags (DP-H42 / DP-H40, Batch 21).
+const FLOATS_PER_SDF_INSTANCE = 36;
 const BYTES_PER_SDF_INSTANCE = FLOATS_PER_SDF_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
@@ -50,6 +54,8 @@ const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
+const scratchInverseModel = new Matrix4();
+const scratchCameraMC = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
 
 const SDF_INSTANCE_BUFFER_LAYOUT = {
@@ -64,6 +70,9 @@ const SDF_INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 5, offset: 80, format: "float32x4" }, // miscFlags
     { shaderLocation: 6, offset: 96, format: "float32x4" }, // outlineColor
     { shaderLocation: 7, offset: 112, format: "float32x4" }, // sdfParams
+    // DP-H42 / DP-H40 — perInstanceFlags. Same contract as Billboard's
+    // @location(6): x=disableDepthTestDistance, y=splitDirection, zw=pad.
+    { shaderLocation: 8, offset: 128, format: "float32x4" },
   ],
 };
 
@@ -148,10 +157,101 @@ function buildSDFInstanceData(collection, labelCollection) {
     instanceData[offset + 30] = 0.0;
     instanceData[offset + 31] = 0.0;
 
+    // DP-H42 / DP-H40 — perInstanceFlags. Labels inherit the
+    // `disableDepthTestDistance` and `splitDirection` from the parent
+    // Label; the glyph billboards have these fields propagated from the
+    // label via `Label._rebindAllGlyphs` → glyph.disableDepthTestDistance,
+    // glyph.splitDirection, so reading from the billboard object is
+    // equivalent to reading the parent label's property.
+    const d = bb._disableDepthTestDistance;
+    instanceData[offset + 32] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 33] = bb._splitDirection ?? 0.0;
+    instanceData[offset + 34] = 0.0;
+    instanceData[offset + 35] = 0.0;
+
     visibleCount++;
   }
 
   return { instanceData, visibleCount };
+}
+
+/**
+ * Walk the glyph collection and compute the active defines for this
+ * frame. Mirrors BillboardCollection's defines path — any glyph with a
+ * per-instance override or a non-zero split direction activates the
+ * matching feature. When all labels are default the baseline (0)
+ * pipeline stays the hot path.
+ * @private
+ */
+function computeLabelDefinesForFrame(glyphCollection, frameState) {
+  let defines = 0;
+  const frameMin =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+  if (frameMin !== 0.0) {
+    defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+  }
+  const billboards = glyphCollection._billboards;
+  const length = glyphCollection.length;
+  const both =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  for (let i = 0; i < length; i++) {
+    if ((defines & both) === both) {break;}
+    const bb = billboards[i];
+    if (!defined(bb) || !bb.show) {continue;}
+    if (
+      (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
+      typeof bb._disableDepthTestDistance === "number" &&
+      bb._disableDepthTestDistance !== 0.0
+    ) {
+      defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+    }
+    if (
+      (defines & ShaderDefine.SPLIT_ENABLED) === 0 &&
+      bb._splitDirection !== undefined &&
+      bb._splitDirection !== 0.0
+    ) {
+      defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+  }
+  return defines;
+}
+
+// Module-level shader-module cache keyed by GPUDevice (same pattern as
+// WebGPUBillboardRenderer). Shared across every LabelCollection.
+const _sdfShaderModuleCaches = new WeakMap();
+
+function getSDFShaderModuleCache(device) {
+  let cache = _sdfShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _sdfShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
+/**
+ * Prewarm the SDF shader module for every define set the first 30
+ * frames are likely to touch. Idempotent per device.
+ * @private
+ */
+function prewarmLabelShaders(device) {
+  const cache = getSDFShaderModuleCache(device);
+  if (cache._labelPrewarmed) {return;}
+  const D = ShaderDefine;
+  cache.prewarm(
+    ShaderSourceId.BILLBOARD_COLLECTION_SDF,
+    BillboardCollectionSDFWGSL,
+    [
+      0,
+      D.DISABLE_DEPTH_DISTANCE,
+      D.SPLIT_ENABLED,
+      D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+    ],
+    "Label SDF shader",
+  );
+  cache._labelPrewarmed = true;
 }
 
 function packUniforms(uniformData, frameState, modelMatrix) {
@@ -169,10 +269,14 @@ function packUniforms(uniformData, frameState, modelMatrix) {
 
   Matrix4.pack(Matrix4.IDENTITY, uniformData, 16);
 
-  EncodedCartesian3.fromCartesian(
+  // Encode camera in model frame to match per-vertex RTE encoding (C-P5).
+  Matrix4.inverse(modelMatrix, scratchInverseModel);
+  Matrix4.multiplyByPoint(
+    scratchInverseModel,
     frameState.camera.positionWC,
-    scratchEncodedCamera,
+    scratchCameraMC,
   );
+  EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
   uniformData[32] = scratchEncodedCamera.high.x;
   uniformData[33] = scratchEncodedCamera.high.y;
   uniformData[34] = scratchEncodedCamera.high.z;
@@ -186,6 +290,35 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[41] = canvas.height;
   uniformData[42] = 1.0;
   uniformData[43] = 0.0;
+
+  // DP-H42 — frame-wide fallback threshold (meters).
+  uniformData[44] =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+  // DP-H40 — split cutoff in framebuffer pixels.
+  const splitFraction =
+    typeof frameState?.splitPosition === "number"
+      ? frameState.splitPosition
+      : 0.0;
+  const drawingBufferWidth =
+    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  uniformData[45] = splitFraction * drawingBufferWidth;
+  uniformData[46] = 0.0;
+  uniformData[47] = 0.0;
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,
+  // 64 bytes). Fits in the existing 256-byte buffer — no resize.
+  // `UniformState.update()` caches last frame's viewProjection for TAA.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, uniformData, 48);
+  } else {
+    uniformData[48] = 1; uniformData[49] = 0; uniformData[50] = 0; uniformData[51] = 0;
+    uniformData[52] = 0; uniformData[53] = 1; uniformData[54] = 0; uniformData[55] = 0;
+    uniformData[56] = 0; uniformData[57] = 0; uniformData[58] = 1; uniformData[59] = 0;
+    uniformData[60] = 0; uniformData[61] = 0; uniformData[62] = 0; uniformData[63] = 1;
+  }
 }
 
 function createPlaceholderTexture(device) {
@@ -203,28 +336,28 @@ function createPlaceholderTexture(device) {
   return texture;
 }
 
-function createSDFPipeline(device, format, depthFormat) {
-  const shaderModule = device.createShaderModule({
-    label: "Label SDF shader",
-    code: BillboardCollectionSDFWGSL,
-  });
+function createSDFBindGroupLayout(device) {
+  return makeBindGroupLayout(device, "Label SDF bind group layout", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    texture(1, Stage.FRAGMENT),
+    sampler(2, Stage.FRAGMENT),
+  ]);
+}
 
-  const bindGroupLayout = makeBindGroupLayout(
-    device,
-    "Label SDF bind group layout",
-    [
-      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-      texture(1, Stage.FRAGMENT),
-      sampler(2, Stage.FRAGMENT),
-    ],
-  );
-
+function createSDFPipeline(
+  device,
+  shaderModule,
+  format,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
   });
 
-  const pipeline = device.createRenderPipeline({
-    label: "Label SDF pipeline",
+  return device.createRenderPipeline({
+    label: `Label SDF pipeline (defines=0x${defines.toString(16)})`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -259,8 +392,6 @@ function createSDFPipeline(device, format, depthFormat) {
       depthCompare: "less-equal",
     },
   });
-
-  return { pipeline, bindGroupLayout };
 }
 
 /**
@@ -286,14 +417,42 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   }
   const cache = labelCollection._webgpuLabelCache;
 
-  // SDF pipeline (once)
-  if (!defined(cache.sdfPipeline)) {
+  // Prewarm SDF shader module variants (idempotent per device).
+  prewarmLabelShaders(device);
+
+  // Shared bind-group layout across every (defines-set) pipeline.
+  if (!defined(cache.sdfBindGroupLayout)) {
+    cache.sdfBindGroupLayout = createSDFBindGroupLayout(device);
+  }
+
+  // DP-H42 / DP-H40 — pick the right SDF pipeline for this frame's
+  // glyph state. Pipeline + shader module cache by active defines.
+  const defines = computeLabelDefinesForFrame(glyphCollection, frameState);
+  if (!defined(cache.sdfPipelines)) {
+    cache.sdfPipelines = new Map();
+  }
+  let sdfPipeline = cache.sdfPipelines.get(defines);
+  if (!defined(sdfPipeline)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createSDFPipeline(device, format, depthFmt);
-    cache.sdfPipeline = result.pipeline;
-    cache.sdfBindGroupLayout = result.bindGroupLayout;
+    const moduleCache = getSDFShaderModuleCache(device);
+    const shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.BILLBOARD_COLLECTION_SDF,
+      BillboardCollectionSDFWGSL,
+      defines,
+      "Label SDF shader",
+    );
+    sdfPipeline = createSDFPipeline(
+      device,
+      shaderModule,
+      format,
+      depthFmt,
+      cache.sdfBindGroupLayout,
+      defines,
+    );
+    cache.sdfPipelines.set(defines, sdfPipeline);
   }
+  cache.sdfPipeline = sdfPipeline;
 
   // Uniform buffer (once)
   if (!defined(cache.uniformBuffer)) {
@@ -435,12 +594,27 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     commandList.push(sdfCommand);
   }
 
-  // Background billboards: route through standard billboard renderer
-  if (backgroundCollection && backgroundCollection.length > 0) {
-    const billboardFR = context.getFeatureRenderer(0); // BILLBOARD_COLLECTION
-    if (billboardFR) {
-      billboardFR.update(backgroundCollection, frameState, commandList);
-    }
+  // Background billboards: route through standard billboard renderer (used
+  // for label backgrounds; they're opaque quads the SDF pass doesn't draw).
+  const billboardFR = context.getFeatureRenderer(0); // BILLBOARD_COLLECTION
+  if (backgroundCollection && backgroundCollection.length > 0 && billboardFR) {
+    billboardFR.update(backgroundCollection, frameState, commandList);
+  }
+
+  // Label pick path: during pick frames, also route the glyph billboards
+  // through the standard billboard pipeline so it emits a pick command per
+  // glyph with the label's pick color. This produces correct `scene.pick()`
+  // hits on visible glyph pixels (the SDF pipeline has no pick variant, so
+  // without this `scene.pick()` on any label text returns undefined).
+  // The billboard FR's pick command reads `bb._pickId`, which the Label
+  // system already populates when it constructs the glyph billboards.
+  if (
+    frameState.passes.pick &&
+    glyphCollection &&
+    glyphCollection.length > 0 &&
+    billboardFR
+  ) {
+    billboardFR.update(glyphCollection, frameState, commandList);
   }
 }
 

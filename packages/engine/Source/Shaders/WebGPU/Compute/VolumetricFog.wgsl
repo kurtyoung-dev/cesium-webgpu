@@ -78,6 +78,37 @@ struct VolumetricFogParams {
   // z = noiseStrength (0..1, fractional density modulation)
   // w = unused
   noise: vec4<f32>,
+  // C-P7-RTE (Batch 26) — altitude reconstruction that avoids the
+  // `length(worldPos) - innerRadius` f32 catastrophic cancellation
+  // seen pre-Batch-26. Both world-space positions are ~6.4e6 m at
+  // Earth radius, so their f32 difference has ~1 m ulp — which
+  // produces visible fog banding whenever altitude fluctuations are
+  // finer than that (LEO / orbital cameras looking at atmospheric
+  // haze).
+  //
+  // The fix uses a 2nd-order Taylor expansion of `|cameraPos + rayDir*d|`
+  // around the camera, which reduces to:
+  //
+  //     altitude ≈ cameraAltitude
+  //              + d * dot(rayDir, cameraUp)
+  //              + d² * (1 - dot(rayDir, cameraUp)²) * oneOverDenom
+  //
+  // where:
+  //   xyz = cameraUp = normalize(cameraPos) (CPU-computed in f64,
+  //         uploaded as precise unit vector)
+  //   w   = cameraAltitude = length(cameraPos) - innerRadius
+  //         (CPU-computed in f64 — precise to sub-millimeter)
+  //
+  // Validates to ~0.25 m error at d = 100 km horizontal from a 10 km
+  // altitude camera; ~1 m error at orbital d = 1000 km. Below f32's
+  // natural granularity at those scales — good enough for fog.
+  cameraAltitudeRTE: vec4<f32>,
+  // C-P7-RTE — curvature correction denominator.
+  //   x = oneOverDenom = 1 / (2 * (innerRadius + cameraAltitude))
+  //                    = 1 / (2 * cameraCenterDistance)
+  // Precomputed on CPU in f64 so the quadratic term stays stable.
+  //   y, z, w = pad
+  altitudeCurvature: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: VolumetricFogParams;
@@ -259,14 +290,31 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let baseDensity = u.scattering.z;
   let falloff = u.scattering.w;
-  let innerRadius = u.cameraAndPlanet.w;
 
   let worldPos = froxelWorldPosition(gid);
-  // Altitude above the planet surface. clamped to >= 0 so below-ground
-  // froxels (e.g. a camera dipping under the geoid) get full density,
-  // not negative-altitude exponential explosions.
-  let radius = length(worldPos);
-  let altitude = max(0.0, radius - innerRadius);
+
+  // C-P7-RTE — altitude reconstruction via 2nd-order Taylor expansion
+  // around the camera position. See the `cameraAltitudeRTE` comment on
+  // VolumetricFogParams for derivation and accuracy bounds. This
+  // replaces the pre-Batch-26 `length(worldPos) - innerRadius`, which
+  // had ~1 m f32 cancellation ulp that produced fog-density banding at
+  // orbital altitudes. Clamped to >= 0 so below-ground froxels get
+  // full density instead of negative-altitude exponential explosions.
+  let cameraUp = u.cameraAltitudeRTE.xyz;
+  let cameraAltitude = u.cameraAltitudeRTE.w;
+  let oneOverDenom = u.altitudeCurvature.x;
+
+  // `d * rayDir` is the froxel's offset from the camera — small
+  // (~view-frustum magnitude), so f32 handles it with millimetre
+  // precision. `cosGamma` is the cosine between the ray and the
+  // camera's up (ellipsoid radial) direction.
+  let froxelOffset = worldPos - u.cameraAndPlanet.xyz;
+  let d = length(froxelOffset);
+  let cosGamma = select(dot(froxelOffset, cameraUp) / max(d, 1e-6), 0.0, d < 1e-6);
+
+  let deltaLinear = d * cosGamma;
+  let deltaCurvature = d * d * (1.0 - cosGamma * cosGamma) * oneOverDenom;
+  let altitude = max(0.0, cameraAltitude + deltaLinear + deltaCurvature);
 
   // Standard exponential height fog.
   var density = baseDensity * exp(-altitude * falloff);

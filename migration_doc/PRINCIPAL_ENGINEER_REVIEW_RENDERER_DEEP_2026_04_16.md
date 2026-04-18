@@ -27,6 +27,8 @@ A focused ~8-12 week cleanup cycle on the findings in this doc, **in addition to
 ## CRITICAL findings (visible rendering differences on typical scenes)
 
 ### C-R1. `command.renderState` is not consumed by the WebGPU renderer
+**DEFERRED 2026-04-16 (Batch 15).** Architectural: requires plumbing `command.renderState` through every feature renderer (~15 call sites) into a pipeline-variant key so polygonOffset, colorMask, stencilTest, custom blend modes, and blendConstant can drive pipeline selection. The pipeline cache's `variant` shape already supports stencil (line 362) but no feature renderer builds a variant from renderState. Tracked as **FOLLOW-UP C-R1-RENDERSTATE** — needs a dedicated "renderState flow" session + pipeline-cache key extension.
+
 **Verified.** `grep -r "command\.renderState" packages/engine/Source/Renderer/WebGPU/` returns zero hits. The canonical WebGL apply site ([RenderState.js:488-565](../packages/engine/Source/Renderer/RenderState.js)) drives `frontFace`, `cull`, `polygonOffset`, `scissor`, `depthRange`, `depthTest`, `depthMask`, `stencilMask`, `blending` (including `gl.blendColor`), `colorMask`, `stencilTest` (including `setStencilReference`-equivalent), `sampleCoverage`, and per-command viewport. On WebGPU, each feature renderer hardcodes its own pipeline state — `WebGPUModelPipelineCache.js:180-237` picks blend from `alphaMode` only, hardcodes `"less-equal"` depth compare and `"ccw"` front face; other renderers are similar.
 
 Consequences (each independently verifiable against specific scene features):
@@ -44,6 +46,8 @@ Consequences (each independently verifiable against specific scene features):
 ---
 
 ### C-R2. `derivedCommands.*` is never consulted on the WebGPU dispatch path
+**DEFERRED 2026-04-16 (Batch 15).** Architectural: needs a SceneRenderer-parallel polymorphic dispatcher in `WebGPUSceneRenderer` that selects among `command.derivedCommands.{logDepth, hdr, picking, pickingMetadata, shadows.receiveCommand, depth}` based on frameState flags. Each derived variant also needs its own pipeline variant. Tracked as **FOLLOW-UP C-R2-DERIVED-COMMANDS**.
+
 **Verified.** `grep -r "derivedCommands\.shadows|receiveCommand|derivedCommands\.logDepth|derivedCommands\.hdr|derivedCommands\.pickingMetadata|derivedCommands\.depth" packages/engine/Source/Renderer/WebGPU/` returns zero hits.
 
 [SceneRenderer.js:27-108](../packages/engine/Source/Scene/SceneRenderer.js) (`executeCommand`) is a polymorphic dispatcher that selects among:
@@ -68,6 +72,8 @@ Consequences (each independently verifiable against specific scene features):
 ---
 
 ### C-R3. Translucent commands are not sorted back-to-front on WebGPU
+**DEFERRED 2026-04-16 (Batch 15).** Bounded but needs integration with the existing `CommandSorter.mergeSort(list, back_to_front, center)` inside `WebGPUSceneRenderer.ts` before the TRANSLUCENT / VOXELS / GAUSSIAN_SPLATS pass loops. Camera center for the sort comes from `frameState.camera.positionWC`. Tracked as **FOLLOW-UP C-R3-TRANSLUCENT-SORT**.
+
 **Verified.** `grep -r "CommandSorter|backToFront|sortByEyeDistance" packages/engine/Source/Renderer/WebGPU/` returns zero hits. `CommandSorter.js` is imported by `SceneRenderer.js` (for `executeTranslucentCommandsBackToFront` and the voxel / Gaussian splat merge-sort paths), but `WebGPUSceneRenderer.ts` uses no sort.
 
 Call sites where WebGL sorts and WebGPU does not:
@@ -87,6 +93,8 @@ OIT (`WebGPUOIT.ts`) when active correctly uses MRT weighted-blended accumulatio
 ---
 
 ### C-R4. glTF model path silently drops multiple features
+**DEFERRED 2026-04-16 (Batch 15).** Major shader-family work: KHR_texture_transform alone touches ~10 sampling sites in `ModelPBRComplete.wgsl`; KHR_materials_clearcoat / anisotropy / specular / iridescence / sheen / volume each add their own textures + uniforms + BRDF branch. The 6 sibling WGSL files under `Shaders/WebGPU/Model/` need to be either imported by `ModelPBRComplete` via preprocessor includes (same pattern as the WebGL `*Stage` GLSL files) or folded inline. Tracked as **FOLLOW-UP C-R4-GLTF-KHR** — this is properly a multi-session workstream (per-KHR extension).
+
 **Verified.** `grep` for `ModelPBRComplete|ModelSilhouetteStage|ModelColorStage|ModelCPUStylingStage|ModelSplitterStage|ModelAtmosphereStage|ModelClippingPlanesStage|ModelClippingPolygonsStage` across `Renderer/WebGPU/` matches only `ModelPBRComplete` (in `WebGPUModelPipelineCache.js`). The six sibling WGSL stage files exist on disk in `Shaders/WebGPU/Model/` but are imported by nothing. **Orphaned dead code on disk gives a false impression of coverage.**
 
 ModelPBRComplete.wgsl (521 lines monolithic) lacks:
@@ -118,6 +126,8 @@ ModelPBRComplete.wgsl (521 lines monolithic) lacks:
 ---
 
 ### C-R5. Globe imagery layer count is compile-time fixed at 4
+**DEFERRED 2026-04-16 (Batch 15).** Bounded but invasive: widening `array<ImageryLayer, 4>` in `GlobeTerrain.wgsl` + the CPU packer's `MAX_IMAGERY_LAYERS` constant to a runtime-probed count requires (a) picking a safe upper bound (WebGPU minimum guarantees `maxSampledTexturesPerShaderStage = 16`, so 16 is the safe target), (b) either dynamic shader variants or a conservative 16-slot layout, and (c) per-layer hue/gamma/split/color-to-alpha/cutout plumbing that currently doesn't exist in the uniform struct. Multi-point change; tracked as **FOLLOW-UP C-R5-IMAGERY-16**.
+
 **Verified.** [GlobeTerrain.wgsl:86](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) declares `layers: array<ImageryLayer, 4>`. WebGL uses `TEXTURE_UNITS` which is computed dynamically from GPU capability (typically up to 31 on WebGL2).
 
 Additionally silent-dropped in the WebGPU `ImageryLayer` struct (`GlobeTerrain.wgsl:79-82` — has only alpha/brightness/contrast/saturation):
@@ -135,16 +145,16 @@ Additionally silent-dropped in the WebGPU `ImageryLayer` struct (`GlobeTerrain.w
 ---
 
 ### C-R6. Multiple WebGPU primitive renderers use incorrect `pass` values
-**PARTIALLY FIXED 2026-04-16 (Batch 3).** Billboard and Label color commands now pick pass based on `collection._blendOption`: `BlendOption.OPAQUE` → Pass.OPAQUE, otherwise Pass.TRANSLUCENT. Pick commands remain Pass.OPAQUE. Polyline / Point / BufferPrimitive / GroundPrimitive remain open.
+**FIXED 2026-04-16 (Batches 3 + 9).** Billboard and Label color commands now pick pass based on `collection._blendOption`: `BlendOption.OPAQUE` → Pass.OPAQUE, otherwise Pass.TRANSLUCENT. Pick commands remain Pass.OPAQUE. Polyline / Point / BufferPrimitive / GroundPrimitive remain open.
 
 **Original finding — Verified.** Grep shows:
 
 - `WebGPUBillboardRenderer.js:480,567` — `pass: 8` (OPAQUE) unconditionally, regardless of `blendOption`. WebGL emits two commands (OPAQUE + TRANSLUCENT) when `blendOption === OPAQUE_AND_TRANSLUCENT`. **(FIXED Batch 3 — now blendOption-driven.)**
-- `WebGPUPolylineRenderer.js:685,804` — `pass: 8` unconditionally.
-- `WebGPUPointPrimitiveRenderer.js:540` — `pass: 0` (ENVIRONMENT — this is a real bug: the enum value 0 is ENVIRONMENT, not OPAQUE). Line 540 comment says `// Pass.OPAQUE — adjusted below` but no adjustment occurs before the command is pushed.
+- `WebGPUPolylineRenderer.js:685,804` — `pass: 8` unconditionally. **(FIXED Batch 9 — color command pass now driven by `collection._blendOption`, defaults to TRANSLUCENT.)**
+- `WebGPUPointPrimitiveRenderer.js:540` — `pass: 0` (ENVIRONMENT — this is a real bug: the enum value 0 is ENVIRONMENT, not OPAQUE). Line 540 comment says `// Pass.OPAQUE — adjusted below` but no adjustment occurs before the command is pushed. **(FIXED Batch 9 — pass now driven by blendOption with correct 8/9 values.)**
 - `WebGPULabelRenderer.js:412` — `pass: 8` for alpha-blended text. **(FIXED Batch 3 — now blendOption-driven, defaults TRANSLUCENT.)**
-- `WebGPUBufferPrimitiveRenderer.ts:801,818` — `Pass.OPAQUE` regardless.
-- `WebGPUGroundPrimitiveRenderer.js:284,298` — `pass: 3` (TERRAIN_CLASSIFICATION) regardless of `classificationType`. Scene primitives with `classificationType: CESIUM_3D_TILE` or `BOTH` silently degrade to terrain-only.
+- `WebGPUBufferPrimitiveRenderer.ts:801,818` — `Pass.OPAQUE` regardless. **(FIXED Batch 9 — color path now `Pass.TRANSLUCENT` since the per-vertex `showAndColor` stream always carries alpha; pick path stays `Pass.OPAQUE`.)**
+- `WebGPUGroundPrimitiveRenderer.js:284,298` — `pass: 3` (TERRAIN_CLASSIFICATION) regardless of `classificationType`. Scene primitives with `classificationType: CESIUM_3D_TILE` or `BOTH` silently degrade to terrain-only. **(FIXED Batch 9 — pass is now `TERRAIN_CLASSIFICATION` when classificationType=TERRAIN, otherwise `CESIUM_3D_TILE_CLASSIFICATION`. BOTH routes to the 3D-tile classification pass; a dedicated two-command emit for true BOTH semantics is a follow-up.)**
 
 **Severity:** HIGH. Z-ordering of translucent UI elements is visibly wrong. The point-pass-0 bug means points render before the globe surface — they paint over the sky/atmosphere.
 
@@ -153,6 +163,8 @@ Additionally silent-dropped in the WebGPU `ImageryLayer` struct (`GlobeTerrain.w
 ---
 
 ### C-R7. `_webgpuPipelineCache` is declared but never instantiated
+**DEFERRED 2026-04-16 (Batch 16).** Requires (a) instantiating the cache in `WebGPUContext` construction, (b) extending its key-computation at `WebGPURenderPipelineCache.ts:392-419` to include `multisample.count`, `targets[N].format/writeMask`, `depthStencil.format`, and `vertex.buffers[]`, and (c) routing every feature renderer's ad-hoc pipeline creation through the shared cache. Tracked as **FOLLOW-UP C-R7-CENTRAL-PIPELINE-CACHE**.
+
 **Verified.** Declaration at `WebGPUContext.ts:286` (`_webgpuPipelineCache: WebGPURenderPipelineCache | null = null`). Reads are only the `clear()` call at `:3823`. `grep` for assignment returns zero hits.
 
 Consequences:
@@ -168,6 +180,8 @@ Consequences:
 ---
 
 ### C-R8. Scene→WebGPU: multiple invisible passes missing
+**DEFERRED 2026-04-16 (Batch 16).** Four sub-passes to add: `globeDepth.executeUpdateDepth` after 3D Tile pass, translucent 3D Tiles classification, invert-classification two-pass composition, and edge FBO + color/id/depth uniforms. Each is architectural scope. Tracked as **FOLLOW-UP C-R8-SCENE-PASSES**.
+
 **Verified where noted.**
 
 - **`globeDepth.executeUpdateDepth`** ([SceneRenderer.js:549-553, 573-578](../packages/engine/Source/Scene/SceneRenderer.js)) is called on WebGL after the 3D Tile and 3D Tile Classification passes to propagate 3D-tile depth into the shared globe depth texture (used by ground primitives, atmosphere, depth plane, picking). On WebGPU, only `executeCopyDepth` is called ([WebGPUSceneRenderer.ts:819](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)). **This means ground primitives/decals/clamp-to-3D-tile features that depend on the post-3D-tile depth buffer see an incomplete depth texture on WebGPU.** HIGH.
@@ -180,6 +194,8 @@ Consequences:
 ---
 
 ### C-R9. Model, GroundPrimitive, Ellipsoid, Voxel, GaussianSplat WebGPU renderers emit NO pick commands
+**DEFERRED 2026-04-16 (Batch 16).** Per-renderer work: each needs a pick-pass pipeline variant that writes `pickId` (as vec4 bytes) instead of color, plus a pick command emitted alongside the color command under `frameState.passes.pick`. Done for Billboard/Polyline/Point in earlier batches; Model needs feature-ID integration which lands on top of the just-fixed C-P16 (deferred). Tracked as **FOLLOW-UP C-R9-MODEL-PICK-FAMILY**.
+
 **Verified.** `grep` of `WebGPUModelRenderer.js`, `WebGPUEllipsoidPrimitiveRenderer.ts`, `WebGPUVoxelRenderer.ts`, `WebGPUGaussianSplatRenderer.ts`, `WebGPUGroundPrimitiveRenderer.js` for `pickId|allowPicking|castShadows|silhouetteSize` returns zero hits.
 
 Consequences:
@@ -197,6 +213,8 @@ Consequences:
 ---
 
 ### C-R10. Shadow maps skip point lights on WebGPU
+**DEFERRED 2026-04-16 (Batch 16).** Needs cube-depth target + 6-face cast loop matching WebGL's `ShadowMap.js:270-313, 487-511`. The finding itself flags this as MEDIUM ("point lights are niche for CesiumJS") and suggests deferring until the CSM cascade-shadow-map work since they share cast-pipeline variant machinery. Tracked as **FOLLOW-UP C-R10-POINT-LIGHT-SHADOWS**.
+
 **Verified.** [WebGPUShadowMapRenderer.js:230](../packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js) — `if (!shadowMap.enabled || shadowMap._isPointLight) { return; }`. WebGL ([ShadowMap.js:270-313, 487-511](../packages/engine/Source/Scene/ShadowMap.js)) draws 6 cube faces for point lights.
 
 **Severity:** MEDIUM (point lights are niche for CesiumJS but not zero; documented-but-silent feature drop).
@@ -206,6 +224,8 @@ Consequences:
 ---
 
 ### C-R11. Per-frame bind group + texture view allocation in hot post-process / effects path
+**DEFERRED 2026-04-16 (Batch 16).** Each hot-path allocation site needs a stable key (input texture generation + target size + format) and a small per-context cache; widespread refactor across `WebGPUPostProcessEffects.ts`, `WebGPUEffectsBindGroup.js`, and `WebGPUAutoExposure.ts`. Performance optimization, not correctness. Tracked as **FOLLOW-UP C-R11-BIND-GROUP-CACHING**.
+
 **Verified.** [WebGPUPostProcessEffects.ts:235, 253, 271, 289, 317, 614, 632, 650, 948, 966, 984](../packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessEffects.ts) — bloom alone creates 4 bind groups/frame; SSAO ~5; DoF ~3. At a 5-stage chain at 60Hz ≈ **720 bind groups/sec** allocated, never cached despite stable input textures.
 
 Also [WebGPUEffectsBindGroup.js:388-421](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js) — when clipping planes are active, per-tile per-frame allocates a 240-byte UB + GPUBindGroup + up to 3 transient texture views. For 200 globe tiles at 60Hz: **~12k bind groups/sec + 12k UBs/sec.**
@@ -219,6 +239,8 @@ And [WebGPUAutoExposure.ts:171-180](../packages/engine/Source/Renderer/WebGPU/We
 ---
 
 ### C-R12. Device-loss recovery leaves stale GPU handles across many caches
+**DEFERRED 2026-04-16 (Batch 16).** Requires extending `_clearAllCaches` to walk the full device-resource-owning subsystem list (including per-Model / per-Collection / per-Renderer object caches), which means either a context-level registry those subsystems announce themselves to, or a context-level "device version" that caches check against a monotonically-incrementing counter (simpler). Tracked as **FOLLOW-UP C-R12-DEVICE-LOSS-WALK**.
+
 **Verified.** [WebGPUContext.ts:3809-3826](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) (`_clearAllCaches`) clears `_webgpuShaderCache` and a few others, but NOT:
 
 - `_renderBundleManager._cache` — bundles hold destroyed pipelines/buffers
@@ -235,6 +257,8 @@ And [WebGPUAutoExposure.ts:171-180](../packages/engine/Source/Renderer/WebGPU/We
 ---
 
 ### C-R13. `WebGPUContext.destroy()` tears down the device before subsystems
+**FIXED 2026-04-16 (Batch 16).** Destroy order in `WebGPUContext.destroy()` rewritten: subsystems that own GPU resources (`_viewportQuad`, `_mipmapGenerator`, `_renderBundleManager`, `_timestampProfiler`, `_storageBufferPool`, `_indirectDrawManager`, `_gpuCuller`, `_bufferMapper`) are now destroyed BEFORE `_device.destroy()`. Buffer pools and cache maps are cleared just before the device teardown. Long-lived multi-viewer apps no longer trip the GPU validator on viewer close, and per-subsystem `.destroy()` calls safely release their owned buffers/textures/query sets while the device is still alive.
+
 **Verified.** [WebGPUContext.ts:2800-2877](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) — `_device.destroy()` runs at line 2822, BEFORE `_viewportQuad`, `_mipmapGenerator`, `_renderBundleManager`, `_timestampProfiler`, `_storageBufferPool`, `_indirectDrawManager`, `_gpuCuller`, `_bufferMapper` are destroyed. Their `destroy()` methods call `.destroy()` on their owned buffers/textures/querysets AFTER the device is gone. Modern GPU validators flag this as an error.
 
 Additionally, `_webgpuShaderCache` and (if it were ever wired) `_webgpuPipelineCache` are not destroyed in this path at all.

@@ -109,6 +109,15 @@ function dispatchIrradianceConvolution(
     cache.irradianceBGL = result.bgl;
   }
 
+  // C-P17: destroy any existing irradiance texture before replacing.
+  // Previously this path leaked one cube texture per env-map version
+  // rotation (each one 6 × 64×64 × rgba16float × mip count ≈ 500 KB);
+  // apps that animate time-of-day or toggle skyboxes leaked unbounded
+  // VRAM across the frame stream.
+  if (cache.irradianceTexture) {
+    cache.irradianceTexture.destroy();
+  }
+
   // Create output irradiance cubemap
   cache.irradianceTexture = device.createTexture({
     size: {
@@ -132,12 +141,19 @@ function dispatchIrradianceConvolution(
 
   const encoder = device.createCommandEncoder();
 
+  // C-P17: batch per-face param buffers so they can be destroyed in a
+  // single tight loop after queue.submit. Previously each of the 6
+  // faces created an un-tracked 16-byte UBO that leaked across IBL
+  // regenerations. Collect the handles and destroy them once the
+  // submit has queued the compute commands.
+  const leakedParamsBuffers: GPUBuffer[] = [];
   for (let face = 0; face < 6; face++) {
     const paramsData = new Uint32Array([face, IRRADIANCE_SIZE, 0, 0]);
     const paramsBuffer = device.createBuffer({
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    leakedParamsBuffers.push(paramsBuffer);
     device.queue.writeBuffer(paramsBuffer, 0, paramsData);
 
     const bindGroup = device.createBindGroup({
@@ -161,6 +177,11 @@ function dispatchIrradianceConvolution(
   }
 
   device.queue.submit([encoder.finish()]);
+  // After submit, the 6 params UBOs have been consumed by the GPU
+  // command stream. WebGPU guarantees the buffer contents outlive the
+  // submit; explicit destroy releases VRAM immediately instead of
+  // waiting for GC.
+  for (const b of leakedParamsBuffers) b.destroy();
 }
 
 /**
@@ -175,6 +196,13 @@ function dispatchRadiancePrefilter(
     const result = createRadiancePipeline(device);
     cache.radiancePipeline = result.pipeline;
     cache.radianceBGL = result.bgl;
+  }
+
+  // C-P17 (matching irradiance path): destroy existing radiance
+  // cubemap before replacing. Radiance is heavier (mipLevelCount = 6
+  // by default) so the per-regen leak is ~2 MB per rotation here.
+  if (cache.radianceTexture) {
+    cache.radianceTexture.destroy();
   }
 
   // Create output radiance cubemap with mip chain
@@ -195,6 +223,8 @@ function dispatchRadiancePrefilter(
   });
 
   const encoder = device.createCommandEncoder();
+  // See irradiance path for the rationale on batching destroys.
+  const leakedParamsBuffers: GPUBuffer[] = [];
 
   for (let mip = 0; mip < RADIANCE_MIP_LEVELS; mip++) {
     const mipSize = RADIANCE_BASE_SIZE >> mip;
@@ -217,6 +247,7 @@ function dispatchRadiancePrefilter(
         size: 16,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
+      leakedParamsBuffers.push(paramsBuffer);
       device.queue.writeBuffer(paramsBuffer, 0, paramsData);
 
       const bindGroup = device.createBindGroup({
@@ -238,6 +269,7 @@ function dispatchRadiancePrefilter(
   }
 
   device.queue.submit([encoder.finish()]);
+  for (const b of leakedParamsBuffers) b.destroy();
 }
 
 /**

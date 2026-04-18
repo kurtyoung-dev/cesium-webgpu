@@ -400,6 +400,11 @@ interface CesiumUniformState {
   readonly inverseProjection: CesiumMatrix4;
   readonly inverseView: CesiumMatrix4;
   readonly viewProjection: CesiumMatrix4;
+  /**
+   * Last frame's `viewProjection`, cloned before current-frame state is
+   * written. Consumed by the TAA / motion-vector path (DP-H41, Batch 27).
+   */
+  readonly previousViewProjection: CesiumMatrix4;
   readonly normal: CesiumMatrix4;
   readonly modelView: CesiumMatrix4;
   readonly modelViewProjection: CesiumMatrix4;

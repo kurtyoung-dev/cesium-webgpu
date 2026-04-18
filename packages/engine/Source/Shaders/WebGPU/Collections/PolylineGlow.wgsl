@@ -15,6 +15,13 @@ struct CameraUniforms {
     _pad1: f32,
     viewportSize: vec2<f32>,
     _pad2: vec2<f32>,
+    minimumDisableDepthTestDistance: f32,
+    splitPosition: f32,
+    _pad3: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -33,12 +40,16 @@ struct VertexInput {
   @location(2) endPosHighAndMiter: vec4<f32>,
   @location(3) endPosLow: vec4<f32>,
   @location(4) color: vec4<f32>,
+  @location(5) perInstanceFlags: vec4<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) v_st: vec2<f32>,
   @location(1) v_distFromCenter: f32,
+  //>>ifdef SPLIT_ENABLED
+  @location(2) splitDirection: f32,
+  //>>endif
 };
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
@@ -104,18 +115,49 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
-  output.position = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
+  var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
+
+  //>>ifdef DISABLE_DEPTH_DISTANCE
+  let baseRTE = mix(startRTE, endRTE, isEnd);
+  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
+  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
+    disableDepthSq =
+      camera.minimumDisableDepthTestDistance *
+      camera.minimumDisableDepthTestDistance;
+  }
+  if (disableDepthSq != 0.0) {
+    let distSq = dot(baseRTE, baseRTE);
+    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+      finalPos.z = finalPos.w;
+    }
+  }
+  //>>endif
+
+  output.position = finalPos;
 
   let s = mix(sStart, sEnd, isEnd);
   let t = side * 0.5 + 0.5;
   output.v_st = vec2<f32>(s, t);
   output.v_distFromCenter = side;
 
+  //>>ifdef SPLIT_ENABLED
+  output.splitDirection = input.perInstanceFlags.y;
+  //>>endif
+
   return output;
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  //>>ifdef SPLIT_ENABLED
+  if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
+    discard;
+  }
+  if (input.splitDirection > 0.0 && input.position.x < camera.splitPosition) {
+    discard;
+  }
+  //>>endif
+
   let st = input.v_st;
   let color = material.color;
   let glowPower = material.glowPower;

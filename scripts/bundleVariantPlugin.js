@@ -54,18 +54,60 @@ function isGLSLShaderFile(absPath) {
 }
 
 /**
+ * Files under `Source/Renderer/WebGPU/` that are backend-neutral
+ * compat surfaces and must remain available in webgl-only builds:
+ *
+ *   - WebGLCompatibilityStub — Proton-style translation layer that
+ *     by design works in ANY variant (its whole purpose is bridging
+ *     WebGL-shape calls to whatever backend is active).
+ *   - WebGPUShaderTranslator — pluggable translator registry; user
+ *     code registers/reads the active translator regardless of
+ *     backend choice.
+ *   - WebGLStubPipelineExtractor — pure utility that maps stub state
+ *     → PipelineVariant; no WebGPU-renderer dependency at runtime.
+ *   - WebGPUNagaTranspiler — lazy-loads naga-wasm only when a user
+ *     actually requests GLSL translation.
+ *
+ * These files import from WebGPU types and rendering APIs, but their
+ * exported surface is consumable without the WebGPU backend being
+ * active. Aliasing them to empty stubs breaks the engine barrel's
+ * named re-exports for variants that strip the WebGPU directory.
+ */
+const WEBGPU_COMPAT_EXEMPTIONS = [
+  "/Source/Renderer/WebGPU/WebGLCompatibilityStub",
+  "/Source/Renderer/WebGPU/WebGPUShaderTranslator",
+  "/Source/Renderer/WebGPU/WebGLStubPipelineExtractor",
+  "/Source/Renderer/WebGPU/WebGPUNagaTranspiler",
+];
+
+/**
  * Returns true if `absPath` is part of the WebGPU backend — either a TS
  * file under `Source/Renderer/WebGPU/` or a WGSL string module under
- * `Source/Shaders/WebGPU/`.
+ * `Source/Shaders/WebGPU/`. Backend-neutral compat files are excluded
+ * via `WEBGPU_COMPAT_EXEMPTIONS`.
  *
  * @param {string} absPath
  */
 function isWebGPUFile(absPath) {
   const p = absPath.replace(/\\/g, "/");
-  return (
-    p.includes("/Source/Renderer/WebGPU/") ||
-    p.includes("/Source/Shaders/WebGPU/")
-  );
+  if (
+    !p.includes("/Source/Renderer/WebGPU/") &&
+    !p.includes("/Source/Shaders/WebGPU/")
+  ) {
+    return false;
+  }
+  // Don't alias the compat-surface files — they must stay resolvable
+  // in webgl-only builds because the engine's index.js re-exports
+  // named symbols from them (registerShaderTranslator, etc.). The
+  // files themselves import WebGPU types, but the TYPES are erased
+  // at compile time and the RUNTIME code paths are either lazy or
+  // register-only.
+  for (const exempt of WEBGPU_COMPAT_EXEMPTIONS) {
+    if (p.includes(exempt)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

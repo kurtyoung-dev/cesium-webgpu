@@ -53,8 +53,17 @@ import {
 // ignores them. Slots beyond the active plane count carry
 // `(0,0,0,+Infinity)` so unused clip distances are always positive (no
 // clip).
-const EFFECTS_UNIFORM_SIZE = 240;
+// 240 → 256 bytes: added `atmosphereLutControl: vec4<f32>` at offset 240
+// to gate the LUT-sampled fog path in GlobeTerrain.wgsl (x=enable flag,
+// y=innerRadius, z=thickness, w=reserved). Landing on 256 also keeps us
+// at WebGPU's minUniformBufferBindingSize alignment boundary, which is
+// a nice-to-have for multi-bind-group layouts.
+const EFFECTS_UNIFORM_SIZE = 256;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
+// Offset (in floats) of the atmosphereLutControl vec4 in the UBO data
+// array. `createEffectsBindGroup` / the globe surface renderer writes
+// into this slot when it has LUT resources to share.
+const ATMOSPHERE_LUT_CONTROL_OFFSET = 60; // 240 bytes / 4
 const CLIP_DPRIME_FLOAT_OFFSET = 28;
 
 // Cached per-device placeholder resources (shared across all primitives)
@@ -88,6 +97,19 @@ function getEffectsBindGroupLayout(device) {
     sampler(4, Stage.FRAGMENT, "non-filtering"),
     texture(5, Stage.FRAGMENT),
     sampler(6, Stage.FRAGMENT),
+    // Atmosphere LUT bindings. The globe terrain shader samples these
+    // when `tile.useAtmosphereLut > 0.5` to get transmittance +
+    // inscatter values pre-integrated by the AtmosphereLUT compute
+    // pass, giving a physically accurate horizon/fog color that matches
+    // the sky shell. When compute isn't available OR the perf manager
+    // hasn't produced LUT textures yet, placeholder 1×1 float textures
+    // are bound here and the shader takes the inline-math fallback.
+    // Binding 7: transmittance LUT (256×64 rgba16float)
+    texture(7, Stage.FRAGMENT, { sampleType: "float" }),
+    // Binding 8: inscatter LUT (256×128 rgba16float)
+    texture(8, Stage.FRAGMENT, { sampleType: "float" }),
+    // Binding 9: shared filtering sampler for both LUT textures
+    sampler(9, Stage.FRAGMENT),
   ]);
 
   return cache.bgl;
@@ -191,6 +213,44 @@ function getPlaceholderEffects(device) {
   });
   cache.placeholderSDFSampler = sdfSampler;
 
+  // 1×1 rgba16float placeholder for the atmosphere LUTs. Contents:
+  //   transmittance = (1, 1, 1, 1) — fully transparent (no absorption)
+  //     so the LUT-sample path reduces to passing terrain color
+  //     through untouched when the globe shader's useAtmosphereLut
+  //     flag is on but the real LUT isn't available yet.
+  //   inscatter    = (0, 0, 0, 0) — no added sky contribution.
+  // Together these make the LUT sampling path a no-op that matches the
+  // pre-LUT appearance. The globe shader's useAtmosphereLut gate is
+  // still the primary correctness check; these placeholders just
+  // keep WebGPU's validation happy when the gate happens to be on.
+  const lutPlaceholderTex = (() => {
+    const tex = device.createTexture({
+      label: "Placeholder atmosphere LUT 1x1",
+      size: [1, 1, 1],
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // rgba16float is 8 bytes per texel. Packing (0,0,0,0) as 8 zero
+    // bytes is safe because f16 zero is all-zero bits, same as f32.
+    device.queue.writeTexture(
+      { texture: tex },
+      new Uint16Array([0, 0, 0, 0]),
+      { bytesPerRow: 8 },
+      { width: 1, height: 1 },
+    );
+    return tex;
+  })();
+  cache.placeholderLutTex = lutPlaceholderTex;
+
+  const lutSampler = device.createSampler({
+    label: "Placeholder atmosphere LUT sampler",
+    minFilter: "linear",
+    magFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+  cache.placeholderLutSampler = lutSampler;
+
   // Uniform buffer with shadows disabled (darkness=1.0) and 0 clipping planes
   const ub = device.createBuffer({
     size: EFFECTS_UNIFORM_SIZE,
@@ -230,6 +290,9 @@ function getPlaceholderEffects(device) {
       { binding: 4, resource: clipSampler },
       { binding: 5, resource: sdfTex.createView() },
       { binding: 6, resource: sdfSampler },
+      { binding: 7, resource: lutPlaceholderTex.createView() },
+      { binding: 8, resource: lutPlaceholderTex.createView() },
+      { binding: 9, resource: lutSampler },
     ],
   });
 
@@ -263,6 +326,14 @@ function createEffectsBindGroup(device, frameState, options) {
   const clippingPlanes = options?.clippingPlanes;
   const clippingPolygons = options?.clippingPolygons;
   const cameraInPlaneSpace = options?.cameraInPlaneSpace;
+  // Atmosphere LUT views (from WebGPUPerformanceManager after the
+  // compute dispatch has run). When null/undefined the globe shader
+  // takes the inline-math fallback by leaving `tile.useAtmosphereLut`
+  // at 0. The placeholder bindings below keep WebGPU validation happy
+  // either way (same 1×1 rgba16float textures as getPlaceholderEffects).
+  const atmosphereLutTransmittanceView =
+    options?.atmosphereLutTransmittanceView;
+  const atmosphereLutInscatterView = options?.atmosphereLutInscatterView;
 
   const placeholder = getPlaceholderEffects(device);
   const bgl = getEffectsBindGroupLayout(device);
@@ -311,8 +382,17 @@ function createEffectsBindGroup(device, frameState, options) {
     }
   }
 
+  // Atmosphere LUT — the globe shader needs the placeholder sampler
+  // + non-zero control fields even when no other effect is active
+  // (otherwise the fog code reads from a clean-zero UB and the LUT
+  // gate stays off). Having LUT views passed in is enough to count
+  // as an active feature.
+  const hasAtmosphereLut =
+    defined(atmosphereLutTransmittanceView) &&
+    defined(atmosphereLutInscatterView);
+
   // If no features are active, return the shared placeholder
-  if (!hasShadow && !hasClipping && !hasPolygonClipping) {
+  if (!hasShadow && !hasClipping && !hasPolygonClipping && !hasAtmosphereLut) {
     return placeholder;
   }
 
@@ -384,6 +464,24 @@ function createEffectsBindGroup(device, frameState, options) {
     }
   }
 
+  // Atmosphere LUT control block — enables the LUT-sampled fog path
+  // in GlobeTerrain.wgsl when views are available AND planet radii
+  // are supplied via options.atmosphereLutPlanetRadii.
+  if (hasAtmosphereLut) {
+    const radii = options?.atmosphereLutPlanetRadii;
+    const innerRadius = radii?.inner ?? 6378137.0;
+    const outerRadius = radii?.outer ?? innerRadius * 1.025;
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 0] = 1.0; // useAtmosphereLut
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 1] = innerRadius;
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 2] = Math.max(
+      1.0,
+      outerRadius - innerRadius,
+    );
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 3] = 0.0; // reserved
+  } else {
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 0] = 0.0;
+  }
+
   // Create per-frame uniform buffer
   const ub = device.createBuffer({
     size: EFFECTS_UNIFORM_SIZE,
@@ -417,6 +515,18 @@ function createEffectsBindGroup(device, frameState, options) {
         resource: sdfTexView ?? pCache.placeholderSDFTex.createView(),
       },
       { binding: 6, resource: sdfSampler ?? pCache.placeholderSDFSampler },
+      {
+        binding: 7,
+        resource:
+          atmosphereLutTransmittanceView ??
+          pCache.placeholderLutTex.createView(),
+      },
+      {
+        binding: 8,
+        resource:
+          atmosphereLutInscatterView ?? pCache.placeholderLutTex.createView(),
+      },
+      { binding: 9, resource: pCache.placeholderLutSampler },
     ],
   });
 
@@ -438,6 +548,7 @@ function updateEffectsUniforms(
   shadowMap,
   clippingPlanes,
   cameraInPlaneSpace,
+  atmosphereLutOptions,
 ) {
   const ud = _scratchEffectsData;
   ud.fill(0);
@@ -490,6 +601,21 @@ function updateEffectsUniforms(
     for (let i = 3; i < CLIP_DPRIME_FLOAT_COUNT; i += 4) {
       ud[CLIP_DPRIME_FLOAT_OFFSET + i] = CLIP_DISTANCE_INACTIVE_SENTINEL;
     }
+  }
+
+  // Atmosphere LUT control — parity with `createEffectsBindGroup` so
+  // incremental updates don't accidentally disable LUT fog. Caller
+  // passes { enable, innerRadius, outerRadius } — default disabled.
+  if (atmosphereLutOptions && atmosphereLutOptions.enable) {
+    const innerRadius = atmosphereLutOptions.innerRadius ?? 6378137.0;
+    const outerRadius = atmosphereLutOptions.outerRadius ?? innerRadius * 1.025;
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 0] = 1.0;
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 1] = innerRadius;
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 2] = Math.max(
+      1.0,
+      outerRadius - innerRadius,
+    );
+    ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 3] = 0.0;
   }
 
   device.queue.writeBuffer(uniformBuffer, 0, ud);

@@ -235,6 +235,8 @@ Moon.wgsl:229 and CubeMapPanorama.wgsl:84 DO use the clamp (`vec4<f32>(cp.x, cp.
 ---
 
 ### C-P5. Four of six collection renderers mis-encode the camera in model-space
+**FIXED 2026-04-16 (Batch 12).** `WebGPUBillboardRenderer.js`, `WebGPUPolylineRenderer.js`, and `WebGPULabelRenderer.js` now build an `inverse(modelMatrix)` scratch once per pack and transform `frameState.camera.positionWC` through it before `EncodedCartesian3.fromCartesian`. When a collection's `modelMatrix` is identity (the common case) this is a pass-through; when it's non-identity (entity clusters, explicit local frames) the camera lands in the same model-space frame as the per-vertex encoded positions, so the RTE `(posHigh − camHigh) + (posLow − camLow)` subtraction stays accurate instead of drifting by thousands of metres at Earth ECEF scale. Cloud renderer was already correct (no modelMatrix multiply; world-frame throughout); Point / Primitive follow the "correct pattern" cited in the original finding.
+
 **Verified (agent claim, high confidence from reading code patterns).** The correct pattern (used by [WebGPUPrimitiveCommands.js:180-210](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) and [WebGPUPointPrimitiveRenderer.js:56, 379-381](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js)):
 
 ```js
@@ -269,6 +271,8 @@ Additionally all four zero the translation column of `view × modelMatrix`, whic
 ---
 
 ### C-P6. Fragment-path clipping planes mix world + eye spaces
+**FIXED 2026-04-16 (Batch 12).** `WebGPUClippingPlaneCollection` now transforms each plane from world to eye space via `uniformState.inverseViewTranspose` before packing into the clip texture, with a view-rotation fallback if the UniformState hasn't published the inverse-transpose matrix. The revision cache now gates texture REALLOCATION only (not the upload) since plane data is view-dependent and must be re-uploaded every frame. Upload cost is negligible (≤8 planes × 16 bytes). The fragment test `dot(eyePos, plane.xyz) + plane.w` now matches frames, restoring clipping-plane behaviour on primitives at Earth ECEF scale.
+
 **Verified.** [WebGPUClippingPlaneCollection.ts:104-111](../packages/engine/Source/Renderer/WebGPU/WebGPUClippingPlaneCollection.ts) uploads plane data in world space (raw `normal.xyz, distance`). Fragment test in [Primitive/PrimitivePhongColor.wgsl:136, 161](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongColor.wgsl) computes `dot(eyePos, planeData.xyz) + planeData.w` — mixing eye-space position with world-space plane.
 
 At Earth ECEF scale, `planeData.w` has components of order ±10^7 and `eyePos` is near 0. The test collapses to `sign(distance)` → either clips everything or nothing.
@@ -282,6 +286,10 @@ Note: the hardware-clip-distance path ([WebGPUClipDistancePrecompute.ts](../pack
 ---
 
 ### C-P7. VolumetricFog violates RTE in CPU pack + WGSL consumption
+**FIXED 2026-04-18 (Batch 26).** Batch 12 closed the inner-radius pick (`max(radii)` → `min(radii)`) so cameras over the poles stopped clamping to zero altitude. Batch 26 closes the shader-side `length(worldPos) − innerRadius` f32 catastrophic cancellation. CPU now precomputes `cameraAltitude = length(cameraPos) - innerRadius` and `cameraUp = normalize(cameraPos)` in JS f64, uploads them alongside `oneOverDenom = 1 / (2·cameraCenterDistance)`; shader reconstructs per-froxel altitude via a 2nd-order Taylor expansion around the camera (`cameraAltitude + d·cosGamma + d²·(1-cosGamma²)·oneOverDenom`). Every arithmetic term stays in a well-conditioned range for f32 — no near-equal-Earth-radius subtractions. Accuracy: ~0.25 m at 100 km horizontal view from a 10 km-altitude camera; ~1 m at orbital 1000 km, below f32's natural altitude ulp at those scales.
+
+**Previous batch notes (for history):** Switched the inner-radius pick from `max(radii)` (WGS84 equatorial, 6378137 m) to `min(radii)` (WGS84 polar, 6356752 m) so cameras over the poles no longer produce negative altitudes that clamp to 0 and lose all height-fog response. The shader-side `length(worldPos) − innerRadius` catastrophic cancellation was tracked as **FOLLOW-UP C-P7-RTE** until Batch 26.
+
 **Verified.** [WebGPUVolumetricFogRenderer.ts:792-794](../packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts) packs raw `cameraPosWC.{x,y,z}` as f32 (~6.4e6). Shader at [VolumetricFog.wgsl:268-269](../packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl) does `altitude = length(worldPos) - innerRadius` → catastrophic cancellation of two ~6.4e6 f32 values.
 
 Additionally line 806 uses `max(radii.x, radii.y, radii.z)` (6378137 m) as `innerRadius` — wrong at the poles where ellipsoidal radius is 6356752 m; camera over a pole gets negative altitude clamped to 0, losing all height-fog response.
@@ -291,6 +299,8 @@ Additionally line 806 uses `max(radii.x, radii.y, radii.z)` (6378137 m) as `inne
 ---
 
 ### C-P8. Model path sync pipeline compile on tileset stream hot path
+**DEFERRED 2026-04-16 (Batch 12).** This is a multi-hour architectural change — the fix requires (a) hoisting the per-Model `WebGPUModelPipelineCache` to context scope so pipelines share across tiles, (b) switching `getPipeline` to return a `Promise<GPURenderPipeline>` (via `createRenderPipelineAsync`), (c) adding pending-pipeline state in `WebGPUModelRenderer`, and (d) "skip draw this frame" logic for primitives whose pipeline is still compiling. The infrastructure primitive already exists at `WebGPURenderPipelineCache.ts:293`. Out of scope for Batch 12 which is focused on self-contained pack/frame fixes; tracked as **FOLLOW-UP C-P8-ASYNC** for a dedicated session.
+
 **Verified.** [WebGPUModelPipelineCache.js:210](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js) uses synchronous `device.createRenderPipeline()`. Called on every cache miss during `updateWebGPUModelPrimitive`. For the ~520-line `ModelPBRComplete.wgsl`, driver compile is 5-50 ms per variant — stalls the main thread.
 
 Every Model builds its OWN `WebGPUModelPipelineCache` (line 553), so pipelines are NOT shared across tiles. Google Photorealistic streams hundreds of tiles/sec; up to 6 pipeline variants per tile.
@@ -306,6 +316,8 @@ Additionally — caller hazard: [WebGPUModelRenderer.js:445](../packages/engine/
 ---
 
 ### C-P9. DistanceDisplayCondition / NearFarScalar family entirely absent on WebGPU
+**DEFERRED 2026-04-16 (Batch 13).** Requires adding 5 per-instance attribute slots (eyeOffset vec3, pixelOffsetScaleByDistance vec4, translucencyByDistance vec4, scaleByDistance vec4, distanceDisplayCondition vec2) + shader logic in all 4 collection shaders + a `csm_nearFarScalar` helper. Multi-file, multi-shader scope — tracked as **FOLLOW-UP C-P9-COLLECTIONS** for a dedicated session.
+
 **Verified.** Grep for `distanceDisplayCondition|translucencyByDistance|pixelOffsetScaleByDistance|scaleByDistance|eyeOffset` in `Shaders/WebGPU/` and `Renderer/WebGPU/` returns no production hits. `csm_nearFarScalar.wgsl` exists as a helper but is imported by zero shaders.
 
 GLSL `BillboardCollectionVS.glsl` supports all of: `eyeOffset`, `pixelOffsetScaleByDistance`, `translucencyByDistance`, `scaleByDistance`, `distanceDisplayCondition`.
@@ -317,6 +329,8 @@ GLSL `BillboardCollectionVS.glsl` supports all of: `eyeOffset`, `pixelOffsetScal
 ---
 
 ### C-P10. Scene 2D / Columbus View unsupported on WebGPU collections
+**DEFERRED 2026-04-16 (Batch 13).** Globe terrain already has 2D/CV/Morphing support (GlobeTerrain.wgsl §4 2D/CV branch, added earlier); extending it to 6 collection shaders + primitive shaders is a substantial shader-family change. Tracked as **FOLLOW-UP C-P10-SCENE-MODES**.
+
 **Verified.** Grep for `morphTime|SCENE2D|computePosition2DIn|projectTo2D|czm_morphTime` in `Shaders/WebGPU/` finds only `Globe/GlobeTerrain.wgsl` and `CubeMapPanorama.wgsl`. None of the six collection shaders and none of the Primitive shaders support 2D/CV/Morph.
 
 **User-visible:** in 2D or Columbus View scene modes, WebGPU collections are placed as if in 3D ECEF then projected through the 2D matrix — catastrophically wrong geometry.
@@ -326,6 +340,8 @@ GLSL `BillboardCollectionVS.glsl` supports all of: `eyeOffset`, `pixelOffsetScal
 ---
 
 ### C-P11. Log depth absent from collections and model path
+**DEFERRED 2026-04-16 (Batch 13).** Log-depth output requires per-shader vertex+fragment logic and a `csm_logDepth` builtin helper. Out of scope for Batch 13. Tracked as **FOLLOW-UP C-P11-LOGDEPTH**.
+
 **Verified.** Grep for `log2|frag_depth|writeLogDepth|logDepth` across `Shaders/WebGPU/Collections/*` and `Shaders/WebGPU/Primitive/*` returns zero matches. Also none in `ModelPBRComplete.wgsl`.
 
 If Globe used log depth (prior review C-R2 — globe also lacks it), primitive/billboard/polyline/point/label geometry would Z-fight against terrain at > 10 km. Even without globe log depth, at orbital camera heights the linear depth is catastrophically imprecise (prior review's C-R2 cascades here).
@@ -335,6 +351,8 @@ If Globe used log depth (prior review C-R2 — globe also lacks it), primitive/b
 ---
 
 ### C-P12. glTF KHR_mesh_quantization silently broken
+**FIXED 2026-04-16 (Batch 11, dup of DP-C6).** Same root cause and same fix — `ensureFloat32` in `ModelPrimitiveGeometry.js` now honors `attr.quantization.quantizedVolumeOffset/StepSize` for positions, normals, tangents, texcoords, weights, and morph-target POSITION/NORMAL deltas. See DP-C6 in the data-pipeline review doc for the full fix description.
+
 **Verified by agent.** [Scene/Model/ModelPrimitiveGeometry.js:231-236](../packages/engine/Source/Scene/Model/ModelPrimitiveGeometry.js) `ensureFloat32()` does `new Float32Array(int16ArrayOrInt8Array)` which **copies values** verbatim, not dequantize. Per KHR_mesh_quantization, integer positions must be divided by `(2^bits - 1)` (or signed equivalent) and optionally combined with a node-scale. WebGPU gets raw integer values upcast to f32 — positions may be in `[-32768, 32767]` instead of `[-1, 1]`.
 
 **User-visible:** any tileset using KHR_mesh_quantization renders as wildly scaled meshes. This extension is common in Google Photorealistic and commercial 3D Tiles pipelines.
@@ -344,6 +362,8 @@ If Globe used log depth (prior review C-R2 — globe also lacks it), primitive/b
 ---
 
 ### C-P13. TimeDynamicPointCloud leaks + stales on frame swaps
+**DEFERRED 2026-04-16 (Batch 13).** Lifecycle fix requires restructuring the POINT_CLOUD feature renderer to store resources on the INNER `PointCloud` rather than the `TimeDynamicPointCloud` wrapper, with a per-frame eviction check when the wrapper swaps to a new inner frame. Related to C-P1 (Model eviction leak) which was fixed in Batch 1 via a different pattern (`_featureRenderer` handle). Tracked as **FOLLOW-UP C-P13-TDPC-LIFECYCLE**.
+
 **Verified.** `TimeDynamicPointCloud.update()` delegates to the POINT_CLOUD FR with `this` (the wrapper) as the target. FR stores resources on `this._webgpuCache` — the wrapper, not the inner per-frame PointCloud. As animation advances:
 - Old GPU buffers destroyed only if new frame's `_pointsLength` differs from old (not a real dirty check)
 - Old `PointCloud._webgpuCache` never destroyed on frame eviction
@@ -356,6 +376,8 @@ Additionally [WebGPUPointCloudRenderer.ts:343](../packages/engine/Source/Rendere
 ---
 
 ### C-P14. Point cloud EDL silent no-op
+**FIXED 2026-04-16 (Batch 13).** `updateWebGPUPointCloudEDL` in `WebGPUPointCloudEyeDomeLighting.ts` now emits a one-shot `console.warn` on the first frame an app requests EDL against a WebGPU context, so the silent-feature-loss degrades to a visible one. Full EDL port (offscreen FBO + depth attachment + fullscreen blend pass) remains tracked per the module header — that's the finding's "MEDIUM" fix; the warning is the "at minimum" recommendation.
+
 **Verified.** `WebGPUPointCloudEyeDomeLighting.ts` is a deliberate stub. Apps that set `pointCloudShading.attenuation + EDL` expect edge-darkened depth enhancement; on WebGPU they get flat quads. No warning emitted.
 
 **Severity:** MEDIUM (silent feature loss; non-blocking).
@@ -365,6 +387,8 @@ Additionally [WebGPUPointCloudRenderer.ts:343](../packages/engine/Source/Rendere
 ---
 
 ### C-P15. Gaussian splat covariance ignores modelMatrix rotation
+**DEFERRED 2026-04-16 (Batch 14).** Fix requires adding a `modelRotation: mat3x3<f32>` uniform to the Gaussian splat camera UBO + applying it to `(covA, covB)` in the WGSL shader before multiplying by the screen-space Jacobian. Bounded shader+uniform change. Tracked as **FOLLOW-UP C-P15-GS-ROTATION**.
+
 **Verified by agent.** `WebGPUGaussianSplatRenderer.ts` builds 2D Jacobian `J` from eye-space position (correct). But 3D covariance `(covA, covB)` is uploaded in glTF-authored MODEL space. Applying `J` (world→screen) directly to model-space covariance skips the MODEL→WORLD rotation in `modelMatrix`.
 
 **User-visible:** for a geo-located splat (any real tileset), splats rotate incorrectly around their own centers as camera moves.
@@ -372,6 +396,8 @@ Additionally [WebGPUPointCloudRenderer.ts:343](../packages/engine/Source/Rendere
 ---
 
 ### C-P16. Feature ID attribute path (b3dm/i3dm common case) unimplemented
+**DEFERRED 2026-04-16 (Batch 14).** Requires (a) adding a `@location(N) featureId0: f32` vertex-input slot, (b) plumbing it through to FragmentInput, (c) consuming it in the `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch of the shader's feature-ID lookup, and (d) uploading the per-vertex attribute buffer in `WebGPUModelRenderer`. Multi-file shader+renderer change. Tracked as **FOLLOW-UP C-P16-FEATURE-ID-ATTR**.
+
 **Verified by agent.** [WebGPUModelFeatureId.js:64-71](../packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js) classifies feature IDs into texture/attribute/implicit, but lines 229-251 only consume the texture path. `FLAG_HAS_FEATURE_ID_ATTRIBUTE = 131072u` is defined but never set, and no attribute slot in the vertex layout.
 
 **User-visible:** b3dm classic tiles with `_FEATURE_ID_0` as a per-vertex attribute render without per-feature styling; `Cesium3DTileStyle` expressions produce no color change on WebGPU.
@@ -379,6 +405,8 @@ Additionally [WebGPUPointCloudRenderer.ts:343](../packages/engine/Source/Rendere
 ---
 
 ### C-P17. IBL textures leaked on every env-map version change
+**FIXED 2026-04-16 (Batch 14).** `dispatchIrradianceConvolution` and `dispatchRadiancePrefilter` in `WebGPUIBLPipeline.ts` now call `.destroy()` on any existing `cache.irradianceTexture` / `cache.radianceTexture` before replacing them. Per-face (and per-mip for radiance) `paramsBuffer` allocations are collected into a `leakedParamsBuffers` array during the dispatch loop and explicitly destroyed after `queue.submit` — WebGPU guarantees the buffer contents outlive the submit, so explicit destroy releases VRAM immediately. Per regen that was ~2.5 MB of texture + ~28 × 16 bytes of UBO leaking; now zero leak per rotation.
+
 **Verified.** [WebGPUIBLPipeline.ts:113, 181](../packages/engine/Source/Renderer/WebGPU/WebGPUIBLPipeline.ts) replaces `cache.irradianceTexture` / `cache.radianceTexture` without calling `.destroy()` on the old one. Per-face per-mip `paramsBuffer` (lines 137-141, 216-220) allocated fresh per dispatch, never destroyed — ~28 leaked uniform buffers per IBL regen.
 
 Composes with B-3 (env map stub): if/when env map changes, regeneration leaks.
@@ -386,6 +414,8 @@ Composes with B-3 (env map stub): if/when env map changes, regeneration leaks.
 ---
 
 ### C-P18. Imagery HTMLImageElement upload without readiness check
+**FIXED 2026-04-16 (Batch 14).** `WebGPUGlobeSurfaceRenderer._uploadImageSource` now returns `null` for not-yet-decoded HTMLImageElements (checks `!source.complete || source.naturalWidth === 0`); the caller's cache-miss path naturally retries on the next frame when `complete` flips to true. `WebGPUImageryReprojection.reprojectImageSourceWebGPU` adds the same guard and throws a clear error message instead of the cryptic "source is not in a valid state" from `copyExternalImageToTexture`, letting callers catch + retry. `WebGPUImageUpload.ts` was already well-structured around `createImageBitmap` (which internally handles decode) and doesn't need the same guard — its HTMLImageElement branch routes through `createImageBitmap` which waits for decode.
+
 **Verified.** [WebGPUGlobeSurfaceRenderer.ts:2341-2344](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) uploads `HTMLImageElement` with no check for `img.complete` or `await img.decode()`. If an imagery layer hands off a not-yet-decoded `<img>`, `copyExternalImageToTexture` throws "source is not in a valid state." Same hazard in [WebGPUImageryReprojection.ts:292](../packages/engine/Source/Renderer/WebGPU/WebGPUImageryReprojection.ts) and [WebGPUImageUpload.ts:170](../packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts).
 
 `WebGPUCubeMapPanoramaRenderer.js:613` correctly awaits `img.complete` — contrast proves the pattern is known.
@@ -416,7 +446,11 @@ Same hazard at line 1355 when mesh generation changes. No reference counting any
 [WebGPUContext.ts:1227-1256](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) — if any prior malformed command marks the encoder invalid, `.finish()` throws before `_currentCommandEncoder` is nulled. Uniform allocator's `endFrame()` never runs; ring-buffer state drifts.
 
 ### H-P5. Multiple unfixed mapAsync destroyed-state hazards
-Beyond the Session 31 fix to PickFramebuffer:
+**FIXED 2026-04-18 (Batch 26).** Remaining 3 unguarded paths closed: `WebGPUTextureUtilities.createPixelReadbackPBO.mapAsync`, `WebGPUContext.readPixelsToPBO.mapAsync` closure, `WebGPUGPUCuller.readResults`. Each now wraps the `mapAsync` + `getMappedRange` + `unmap` sequence in try/catch that returns a clean fallback (null / empty CullResults) instead of surfacing an unhandled promise rejection. Scoping confirmed `WebGPUHiZOcclusionDispatcher`, `WebGPUPickFramebuffer`, and `WebGPUTimestampProfiler` were already guarded via prior work (Batches 7–9 era).
+
+**Earlier progress (for history) —** Batch 7 fixed WebGPUAutoExposure (captured buffer identity + unmap-on-reject + swap-out guard) and WebGPUBufferMapper upload + readback paths (added `_isDestroyed` check after await, unmap-on-destroy).
+
+**Original finding —** Beyond the Session 31 fix to PickFramebuffer:
 - [WebGPUBufferMapper.ts:128, 182](../packages/engine/Source/Renderer/WebGPU/WebGPUBufferMapper.ts) — no destroyed guard
 - [WebGPUHiZOcclusionDispatcher.ts:728](../packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts) — no destroyed guard
 - [WebGPUAutoExposure.ts:210-224](../packages/engine/Source/Renderer/WebGPU/WebGPUAutoExposure.ts) — no destroyed guard, also doesn't `unmap()` on rejection → permanent mapped state
@@ -439,7 +473,9 @@ Beyond the prior review's C-R12, missing from `_clearAllCaches`:
 After recovery, first frame dereferences destroyed-device textures → immediate OperationError.
 
 ### H-P7. Hardcoded Earth radius in multiple shaders breaks non-WGS84 ellipsoids
-[GlobeTerrain.wgsl:185, 328, 331, 346, 355](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl): `const EARTH_RADIUS: f32 = 6378137.0;`. Also `PrimitiveMatElev*.wgsl` uses `6371000.0` (different value — internal inconsistency). WebGL uses `czm_ellipsoidRadii` uniform.
+**FIXED 2026-04-16 (Batch 6) — partial.** CameraUniforms gained a new `ellipsoidRadius: f32` field (placed in the pre-existing `_pad3` slot after `minMaxHeight`). CPU packer reads `tileProvider._ellipsoid.maximumRadius` (or `.ellipsoid.maximumRadius`). All `GlobeTerrain.wgsl` call sites now use `camera.ellipsoidRadius` with a WGS84 fallback when the uniform isn't set. Mars/Moon/custom-ellipsoid terrains now do altitude math with the correct radius. `PrimitiveMatElev*.wgsl` hardcodes still remain for a later batch.
+
+**Original finding —** [GlobeTerrain.wgsl:185, 328, 331, 346, 355](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl): `const EARTH_RADIUS: f32 = 6378137.0;`. Also `PrimitiveMatElev*.wgsl` uses `6371000.0` (different value — internal inconsistency). WebGL uses `czm_ellipsoidRadii` uniform.
 
 For Mars / Moon / custom ellipsoids, vertical-exaggeration math and 2D/CV tile heights corrupted. Pertinent to Phase 8a foundation ellipsoid-aware audit but with specifics.
 

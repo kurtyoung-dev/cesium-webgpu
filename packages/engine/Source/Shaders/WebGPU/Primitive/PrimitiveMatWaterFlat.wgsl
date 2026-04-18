@@ -25,6 +25,10 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     _pad2: vec2<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -41,7 +45,9 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
+// DP-H20 (Batch 25) — dual texture layout matching the Lit variant.
 @group(2) @binding(1) var normalMapTexture: texture_2d<f32>;
+@group(2) @binding(2) var specularMapTexture: texture_2d<f32>;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -77,5 +83,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let blendFactor = clamp(0.5 + waveIntensity * 0.5, 0.0, 1.0);
     let waterColor = mix(material.baseWaterColor.rgb, material.blendColor.rgb, blendFactor);
 
-    return vec4<f32>(waterColor, material.baseWaterColor.a);
+    // DP-H20 — gate alpha by the specular mask (see Lit variant).
+    let waterMask = textureSample(
+        specularMapTexture,
+        textureSampler,
+        input.texCoord,
+    ).r;
+    return vec4<f32>(waterColor, material.baseWaterColor.a * waterMask);
 }

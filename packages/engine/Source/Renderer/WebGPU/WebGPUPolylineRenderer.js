@@ -7,17 +7,25 @@
  * Supports material types: Color (default), PolylineArrow, PolylineDash,
  * PolylineGlow, PolylineOutline.
  *
- * Instance data per segment (80 bytes, 5 x vec4):
+ * Instance data per segment (96 bytes, 6 x vec4):
  *   startPosHighAndWidth(4) + startPosLow(3)+sStart(1) +
- *   endPosHighAndMiter(4) + endPosLow(3)+sEnd(1) + color(4) = 20 floats
+ *   endPosHighAndMiter(4) + endPosLow(3)+sEnd(1) + color(4) +
+ *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection, pad, pad)
+ *   = 24 floats
  *
  * The .w padding slots of startPosLow and endPosLow carry normalized
  * texture coordinates (sStart/sEnd) along the polyline for material shaders.
  * The base PolylineCollection.wgsl ignores these via .xyz access, so RTE
  * precision is unaffected.
  *
+ * Batch 22 appended `perInstanceFlags` at @location(5) carrying DP-H42's
+ * per-polyline `disableDepthTestDistance` and DP-H40's `splitDirection`.
+ * All 6 polyline shaders (base color + pick + 4 material variants) read
+ * the same slot so switching materials doesn't require re-packing.
+ *
  * @private
  */
+import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
@@ -29,19 +37,28 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
-const FLOATS_PER_SEGMENT = 20;
+// Instance buffer: 6 × vec4 = 24 floats (96 bytes).
+const FLOATS_PER_SEGMENT = 24;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
 
-// Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8) = 112 bytes
-const CAMERA_BUFFER_SIZE = 112;
-const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 28
+// Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8)
+//   + minimumDisableDepthTestDistance(4) + splitPosition(4) + pad(8)
+//   + previousViewProjection(64)  = 192 bytes (48 floats).
+// DP-H41 (Batch 27) — previousViewProjection appended for TAA / motion
+// vectors. Offset 128..191 = slots 32..47.
+const CAMERA_BUFFER_SIZE = 192;
+const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 48
 
 // Placeholder material UBO (16 bytes minimum for WebGPU)
 const PLACEHOLDER_MATERIAL_BYTES = 16;
 
 const scratchModelView = new Matrix4();
+const scratchInverseModel = new Matrix4();
+const scratchCameraMC = new Cartesian3();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
@@ -159,10 +176,13 @@ function groupByMaterialType(collection) {
 function buildSegmentDataForGroup(polylineGroup, computeST) {
   const polylines = polylineGroup.polylines;
 
-  // Count total segments
+  // Count total segments. When a polyline has `loop: true`, it also emits
+  // one extra closing segment from positions[last] → positions[0].
   let totalSegments = 0;
   for (let i = 0; i < polylines.length; i++) {
-    totalSegments += polylines[i].positions.length - 1;
+    const pl = polylines[i];
+    const baseSegments = pl.positions.length - 1;
+    totalSegments += baseSegments + (pl.loop && pl.positions.length >= 2 ? 1 : 0);
   }
 
   const segmentData = new Float32Array(totalSegments * FLOATS_PER_SEGMENT);
@@ -172,6 +192,8 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
     const polyline = polylines[i];
     const positions = polyline.positions;
     const width = polyline.width || 1.0;
+    const loopClose =
+      polyline.loop === true && positions.length >= 2;
 
     // Extract color from polyline (used as instance attribute for Color shader,
     // ignored by material shaders which use uniform color instead)
@@ -187,10 +209,15 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       distances = computeNormalizedDistances(positions);
     }
 
-    for (let j = 0; j < positions.length - 1; j++) {
+    // Emit (positions.length - 1) base segments, plus one closing segment
+    // from last→first when `loop: true`. segLimit is positions.length - 1
+    // for open polylines and positions.length for loops.
+    const segLimit = loopClose ? positions.length : positions.length - 1;
+    for (let j = 0; j < segLimit; j++) {
       const offset = segmentCount * FLOATS_PER_SEGMENT;
       const start = positions[j];
-      const end = positions[j + 1];
+      // Wrap to positions[0] for the final closing segment of a loop.
+      const end = positions[(j + 1) % positions.length];
 
       EncodedCartesian3.fromCartesian(start, scratchEncodedStart);
       EncodedCartesian3.fromCartesian(end, scratchEncodedEnd);
@@ -213,17 +240,38 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       segmentData[offset + 10] = scratchEncodedEnd.high.z;
       segmentData[offset + 11] = 2.0; // miterLimit
 
-      // endPosLow — RTE low component + sEnd in .w padding
+      // endPosLow — RTE low component + sEnd in .w padding.
+      // For the loop-closing segment the "end distance" wraps to 1.0 (the
+      // final total length) rather than indexing past the distances array.
+      const endDistIdx = j + 1;
+      const endDist = distances
+        ? endDistIdx < distances.length
+          ? distances[endDistIdx]
+          : 1.0
+        : 0.0;
       segmentData[offset + 12] = scratchEncodedEnd.low.x;
       segmentData[offset + 13] = scratchEncodedEnd.low.y;
       segmentData[offset + 14] = scratchEncodedEnd.low.z;
-      segmentData[offset + 15] = distances ? distances[j + 1] : 0.0;
+      segmentData[offset + 15] = endDist;
 
       // color — per-instance RGBA
       segmentData[offset + 16] = r;
       segmentData[offset + 17] = g;
       segmentData[offset + 18] = b;
       segmentData[offset + 19] = a;
+
+      // perInstanceFlags — DP-H42 / DP-H40 per-polyline state, shared by
+      // every segment of that polyline so the depth override and the
+      // split direction are coherent across the line.
+      //   x: disableDepthTestDistance (raw meters; squared in shader)
+      //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
+      //   z, w: reserved
+      const d = polyline._disableDepthTestDistance;
+      segmentData[offset + 20] =
+        typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
+      segmentData[offset + 22] = 0.0;
+      segmentData[offset + 23] = 0.0;
 
       segmentCount++;
     }
@@ -251,6 +299,9 @@ function buildPickSegmentData(collection, context) {
     const positions = polyline.positions;
     if (positions.length >= 2) {
       totalSegments += positions.length - 1;
+      if (polyline.loop === true) {
+        totalSegments += 1; // Closing segment last→first for loop polylines.
+      }
     }
   }
 
@@ -265,6 +316,8 @@ function buildPickSegmentData(collection, context) {
 
     const positions = polyline.positions;
     const width = polyline.width || 1.0;
+    const loopClose =
+      polyline.loop === true && positions.length >= 2;
 
     // One pick ID per polyline (all segments share it)
     if (!defined(polyline._pickId)) {
@@ -272,10 +325,14 @@ function buildPickSegmentData(collection, context) {
     }
     const pc = polyline._pickId.color;
 
-    for (let j = 0; j < positions.length - 1; j++) {
+    const segLimit = loopClose ? positions.length : positions.length - 1;
+    for (let j = 0; j < segLimit; j++) {
       const offset = segmentCount * FLOATS_PER_SEGMENT;
       EncodedCartesian3.fromCartesian(positions[j], scratchEncodedStart);
-      EncodedCartesian3.fromCartesian(positions[j + 1], scratchEncodedEnd);
+      EncodedCartesian3.fromCartesian(
+        positions[(j + 1) % positions.length],
+        scratchEncodedEnd,
+      );
 
       segmentData[offset + 0] = scratchEncodedStart.high.x;
       segmentData[offset + 1] = scratchEncodedStart.high.y;
@@ -300,6 +357,15 @@ function buildPickSegmentData(collection, context) {
       segmentData[offset + 18] = pc.blue;
       segmentData[offset + 19] = pc.alpha;
 
+      // Pick path inherits DP-H42 / DP-H40 so the picked region matches
+      // what the user sees on screen. Same contract as the color path.
+      const d = polyline._disableDepthTestDistance;
+      segmentData[offset + 20] =
+        typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
+      segmentData[offset + 22] = 0.0;
+      segmentData[offset + 23] = 0.0;
+
       segmentCount++;
     }
   }
@@ -320,8 +386,130 @@ const SEGMENT_BUFFER_LAYOUT = {
     { shaderLocation: 2, offset: 32, format: "float32x4" },
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
+    // DP-H42 / DP-H40 perInstanceFlags (Batch 22). Same slot in every
+    // polyline shader variant so per-polyline state can flow through
+    // regardless of material type.
+    { shaderLocation: 5, offset: 80, format: "float32x4" },
   ],
 };
+
+/**
+ * Maps a material-type string to the `ShaderSourceId` it resolves to.
+ * Used so the shader-module cache key stays stable even when callers
+ * pass different source strings for the same material type.
+ * @private
+ */
+function sourceIdForMaterialType(materialType) {
+  switch (materialType) {
+    case "polylineArrow":
+      return ShaderSourceId.POLYLINE_ARROW;
+    case "polylineDash":
+      return ShaderSourceId.POLYLINE_DASH;
+    case "polylineGlow":
+      return ShaderSourceId.POLYLINE_GLOW;
+    case "polylineOutline":
+      return ShaderSourceId.POLYLINE_OUTLINE;
+    case "polylineColor":
+    default:
+      return ShaderSourceId.POLYLINE_COLLECTION;
+  }
+}
+
+// Module-level shader-module cache keyed by GPUDevice, shared across
+// every PolylineCollection on that device. Same pattern as Billboard /
+// Label / Point.
+const _polylineShaderModuleCaches = new WeakMap();
+
+function getPolylineShaderModuleCache(device) {
+  let cache = _polylineShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _polylineShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
+/**
+ * Scan the collection for the DP-H42 / DP-H40 defines that apply this
+ * frame. Short-circuits once both bits are set. Baseline (no features)
+ * stays the hot path.
+ * @private
+ */
+function computePolylineDefinesForFrame(collection, frameState) {
+  let defines = 0;
+  const frameMin =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+  if (frameMin !== 0.0) {
+    defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+  }
+  const polylines = collection._polylines;
+  const length = collection._polylinesLength;
+  const both =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  for (let i = 0; i < length; i++) {
+    if ((defines & both) === both) {break;}
+    const p = polylines[i];
+    if (!defined(p) || !p.show) {continue;}
+    if (
+      (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
+      typeof p._disableDepthTestDistance === "number" &&
+      p._disableDepthTestDistance !== 0.0
+    ) {
+      defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+    }
+    if (
+      (defines & ShaderDefine.SPLIT_ENABLED) === 0 &&
+      p._splitDirection !== undefined &&
+      p._splitDirection !== 0.0
+    ) {
+      defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+  }
+  return defines;
+}
+
+/**
+ * Prewarm all (material type × define) combinations likely to appear
+ * in the first 30 frames. Idempotent per device. 5 material types ×
+ * 4 define combos + pick = 24 modules; each `createShaderModule` is
+ * ~2–5 ms so the total startup cost stays well under 100 ms.
+ * @private
+ */
+function prewarmPolylineShaders(device) {
+  const cache = getPolylineShaderModuleCache(device);
+  if (cache._polylinePrewarmed) {return;}
+  const D = ShaderDefine;
+  const defineSets = [
+    0,
+    D.DISABLE_DEPTH_DISTANCE,
+    D.SPLIT_ENABLED,
+    D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+  ];
+  const sourceIdsAndKeys = [
+    [ShaderSourceId.POLYLINE_COLLECTION, "polylineColor"],
+    [ShaderSourceId.POLYLINE_ARROW, "polylineArrow"],
+    [ShaderSourceId.POLYLINE_DASH, "polylineDash"],
+    [ShaderSourceId.POLYLINE_GLOW, "polylineGlow"],
+    [ShaderSourceId.POLYLINE_OUTLINE, "polylineOutline"],
+  ];
+  for (const [sourceId, key] of sourceIdsAndKeys) {
+    const source = getCollectionShaderSource(key);
+    if (!source) {continue;}
+    cache.prewarm(sourceId, source, defineSets, `Polyline ${key} shader`);
+  }
+  const pickSource = getCollectionShaderSource("polylinePick");
+  if (pickSource) {
+    cache.prewarm(
+      ShaderSourceId.POLYLINE_COLLECTION_PICK,
+      pickSource,
+      defineSets,
+      "Polyline pick shader",
+    );
+  }
+  cache._polylinePrewarmed = true;
+}
 
 // =========================================================================
 // Pipeline creation
@@ -329,16 +517,12 @@ const SEGMENT_BUFFER_LAYOUT = {
 
 function createPolylinePipeline(
   device,
-  shaderCode,
+  shaderModule,
   format,
   depthFormat,
   label,
+  defines,
 ) {
-  const shaderModule = device.createShaderModule({
-    label: label || "Polyline shader",
-    code: shaderCode,
-  });
-
   const cameraBindGroupLayout = makeBindGroupLayout(
     device,
     `${label || "Polyline"} camera BGL`,
@@ -356,7 +540,7 @@ function createPolylinePipeline(
   });
 
   const pipeline = device.createRenderPipeline({
-    label: label || "Polyline pipeline",
+    label: `${label || "Polyline pipeline"} (defines=0x${defines.toString(16)})`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -400,12 +584,13 @@ function createPolylinePipeline(
  * Pick pass is camera-only (pick color from instance data, no material UBO).
  * @private
  */
-function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
-  const shaderModule = device.createShaderModule({
-    label: "Polyline pick shader",
-    code: shaderCode,
-  });
-
+function createPolylinePickPipeline(
+  device,
+  shaderModule,
+  format,
+  depthFormat,
+  defines,
+) {
   const cameraBindGroupLayout = makeBindGroupLayout(
     device,
     "Polyline pick camera BGL",
@@ -413,7 +598,7 @@ function createPolylinePickPipeline(device, shaderCode, format, depthFormat) {
   );
 
   const pipeline = device.createRenderPipeline({
-    label: "Polyline pick pipeline",
+    label: `Polyline pick pipeline (defines=0x${defines.toString(16)})`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [cameraBindGroupLayout],
     }),
@@ -463,11 +648,17 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
 
-  // Camera position split into high/low for RTE
-  EncodedCartesian3.fromCartesian(
+  // Camera position split into high/low for RTE. Encode in the SAME
+  // frame that the per-vertex positions live in (model-space when the
+  // collection's modelMatrix is non-identity); see C-P5 in the 2026-04-16
+  // per-feature review for the frame-mismatch rationale.
+  Matrix4.inverse(modelMatrix, scratchInverseModel);
+  Matrix4.multiplyByPoint(
+    scratchInverseModel,
     frameState.camera.positionWC,
-    scratchEncodedCamera,
+    scratchCameraMC,
   );
+  EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
   uniformData[16] = scratchEncodedCamera.high.x;
   uniformData[17] = scratchEncodedCamera.high.y;
   uniformData[18] = scratchEncodedCamera.high.z;
@@ -482,6 +673,40 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   uniformData[25] = canvas.height;
   uniformData[26] = 0.0;
   uniformData[27] = 0.0;
+
+  // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
+  uniformData[28] =
+    typeof frameState?.minimumDisableDepthTestDistance === "number"
+      ? frameState.minimumDisableDepthTestDistance
+      : 0.0;
+
+  // DP-H40 — split cutoff in framebuffer pixels. WebGL's `czm_splitPosition`
+  // convention: `frameState.splitPosition` is the fraction [0, 1] and we
+  // upload `fraction * drawingBufferWidth` so the fragment compare sits in
+  // the same pixel coord space as WGSL's `@builtin(position).x`.
+  const splitFraction =
+    typeof frameState?.splitPosition === "number"
+      ? frameState.splitPosition
+      : 0.0;
+  const drawingBufferWidth =
+    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  uniformData[29] = splitFraction * drawingBufferWidth;
+  uniformData[30] = 0.0;
+  uniformData[31] = 0.0;
+
+  // DP-H41 (Batch 27) — previousViewProjection at slots 32..47 (16 floats,
+  // 64 bytes). Cached by `UniformState.update()` BEFORE overwriting the
+  // current-frame state, so on frame N this slot holds frame N-1's VP.
+  // TAA / motion-vector shaders read it via `camera.previousViewProjection`.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, uniformData, 32);
+  } else {
+    uniformData[32] = 1; uniformData[33] = 0; uniformData[34] = 0; uniformData[35] = 0;
+    uniformData[36] = 0; uniformData[37] = 1; uniformData[38] = 0; uniformData[39] = 0;
+    uniformData[40] = 0; uniformData[41] = 0; uniformData[42] = 1; uniformData[43] = 0;
+    uniformData[44] = 0; uniformData[45] = 0; uniformData[46] = 0; uniformData[47] = 1;
+  }
 }
 
 // packMaterialUniforms removed — material data now sourced from
@@ -494,17 +719,24 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
 // =========================================================================
 
 /**
- * Gets or creates a pipeline for the given material type.
- * Pipelines are cached per collection per material type.
+ * Gets or creates a pipeline for the given (material type, defines)
+ * tuple. Pipelines are cached per collection; the first index is
+ * material type, the second is the active-defines bitmask so Batch 22's
+ * DP-H42 / DP-H40 variants don't collide with the baseline.
  * @private
  */
-function getOrCreatePipeline(cache, device, context, materialType) {
+function getOrCreatePipeline(cache, device, context, materialType, defines) {
   if (!defined(cache.pipelines)) {
     cache.pipelines = {};
   }
 
-  if (defined(cache.pipelines[materialType])) {
-    return cache.pipelines[materialType];
+  let byDefines = cache.pipelines[materialType];
+  if (!defined(byDefines)) {
+    byDefines = new Map();
+    cache.pipelines[materialType] = byDefines;
+  }
+  if (byDefines.has(defines)) {
+    return byDefines.get(defines);
   }
 
   const shaderKey = selectShaderKey(materialType);
@@ -512,15 +744,23 @@ function getOrCreatePipeline(cache, device, context, materialType) {
   const format = context.presentationFormat || "bgra8unorm";
   const depthFmt = context.depthFormat || "depth24plus-stencil8";
   const label = `Polyline ${materialType}`;
+  const moduleCache = getPolylineShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    sourceIdForMaterialType(materialType),
+    shaderCode,
+    defines,
+    label,
+  );
   const result = createPolylinePipeline(
     device,
-    shaderCode,
+    shaderModule,
     format,
     depthFmt,
     label,
+    defines,
   );
 
-  cache.pipelines[materialType] = result;
+  byDefines.set(defines, result);
   return result;
 }
 
@@ -547,16 +787,27 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   const cache = collection._webgpuCache;
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
 
+  // Prewarm all (material × defines) shader modules on first render per
+  // device so the hot path doesn't pay for `createShaderModule` cost.
+  prewarmPolylineShaders(device);
+
+  // Compute the DP-H42 / DP-H40 defines bitmask for this frame. One bit
+  // set per feature that ANY polyline in the collection activates (or
+  // the frame-wide `minimumDisableDepthTestDistance` is non-zero).
+  const defines = computePolylineDefinesForFrame(collection, frameState);
+  cache.currentDefines = defines;
+
   // Group polylines by material type
   const groups = groupByMaterialType(collection);
 
   for (const [materialType, group] of groups) {
-    // Get or create pipeline for this material type
+    // Get or create pipeline for this (materialType, defines) combo.
     const pipelineResult = getOrCreatePipeline(
       cache,
       device,
       context,
       materialType,
+      defines,
     );
 
     // Camera uniform buffer (shared structure, per-material-type instance)
@@ -674,15 +925,24 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       requiredSize,
     );
 
-    // Create draw command for render pass
+    // Create draw command for render pass. Pick the pass from the
+    // collection's blendOption so translucent polylines composite
+    // correctly against the rest of the translucent scene. Polyline
+    // materials default to alpha-blended (PolylineDash / PolylineGlow /
+    // PolylineArrow all render with alpha), so defaulting to TRANSLUCENT
+    // when the collection leaves blendOption unspecified is safer than
+    // the previous hardcoded OPAQUE.
     if (frameState.passes.render) {
+      const polylineBlendOpt = collection._blendOption;
+      const polylinePass =
+        polylineBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9 /* Pass.TRANSLUCENT */;
       const cmd = new WebGPUDrawCommand({
         pipeline: pipelineResult.pipeline,
         bindGroups: [cache[camBgKey], cache[matBgKey]],
         vertexBuffers: [cache[sbKey]],
         vertexCount: VERTICES_PER_SEGMENT,
         instanceCount: segmentCount,
-        pass: 8, // Pass.OPAQUE
+        pass: polylinePass,
         owner: collection,
         boundingVolume: collection._boundingVolume,
         modelMatrix: modelMatrix,
@@ -721,19 +981,38 @@ function _pushPolylinePickCommand(
 ) {
   const context = frameState.context;
 
-  if (!defined(cache.pickPipeline)) {
+  // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
+  // so picked regions match the visible ones.
+  const pickDefines = cache.currentDefines ?? 0;
+  if (!defined(cache.pickPipelines)) {
+    cache.pickPipelines = new Map();
+  }
+  let pickPipelineEntry = cache.pickPipelines.get(pickDefines);
+  if (!defined(pickPipelineEntry)) {
     const pickShader = getCollectionShaderSource("polylinePick");
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    const result = createPolylinePickPipeline(
-      device,
+    const moduleCache = getPolylineShaderModuleCache(device);
+    const pickModule = moduleCache.getOrCreate(
+      ShaderSourceId.POLYLINE_COLLECTION_PICK,
       pickShader,
+      pickDefines,
+      "Polyline pick shader",
+    );
+    pickPipelineEntry = createPolylinePickPipeline(
+      device,
+      pickModule,
       format,
       depthFmt,
+      pickDefines,
     );
-    cache.pickPipeline = result.pipeline;
-    cache.pickCameraBindGroupLayout = result.cameraBindGroupLayout;
+    cache.pickPipelines.set(pickDefines, pickPipelineEntry);
+    // When the defines rotate, the cameraBindGroupLayout is recreated —
+    // drop the cached bind group so it gets rebuilt next.
+    cache.pickCameraBindGroup = undefined;
   }
+  cache.pickPipeline = pickPipelineEntry.pipeline;
+  cache.pickCameraBindGroupLayout = pickPipelineEntry.cameraBindGroupLayout;
 
   // Camera-only buffer for pick pass
   if (!defined(cache.pickCameraBuffer)) {

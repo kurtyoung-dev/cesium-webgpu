@@ -1,14 +1,29 @@
 // PrimitivePhongColor.wgsl
 // Per-vertex color + Blinn-Phong lighting + shadow receive + clipping planes
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
-// Vertex: posHigh(3) + posLow(3) + normal(3) + color(4) = 13 floats = 52 bytes
+//
+// Two vertex layouts — selected at pipeline-build time via the
+// `COMPRESSED_VERTICES` define (DP-H19-SHADER-DECODE):
+//   default : posHigh(3) + posLow(3) + normal(3)  + color(4) = 13 floats
+//   compressed : posHigh(3) + posLow(3) + compressedAttributes(1 f32) + color(4)
+// When COMPRESSED_VERTICES is on, the vertex stage decodes the normal
+// via csm_octDecodeFloat_single (see csm_decodeCompressedVertex.wgsl).
 
+//>>ifdef COMPRESSED_VERTICES
+struct VertexInput {
+    @location(0) positionHigh: vec3<f32>,
+    @location(1) positionLow: vec3<f32>,
+    @location(2) compressedAttributes: f32,
+    @location(3) color: vec4<f32>,
+}
+//>>else
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
     @location(1) positionLow: vec3<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) color: vec4<f32>,
 }
+//>>endif
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4<f32>,
@@ -27,6 +42,10 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -63,6 +82,29 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
+//>>ifdef COMPRESSED_VERTICES
+// DP-H19-SHADER-DECODE (Batch 27) — inline oct-decode for a single
+// packed normal (PhongColor consumes only `normal`, no tangent/bitangent
+// or UVs). Mirror of csm_decodeCompressedVertex.wgsl — kept inline to
+// avoid pulling in the shared chunk until the #import pipeline covers
+// Primitive shaders. CPU reference: AttributeCompression.octDecodeFloat.
+fn csm_octDecodeFloat_single(value: f32) -> vec3<f32> {
+    let temp = value / 256.0;
+    let x = floor(temp);
+    let y = (temp - x) * 256.0;
+    let e = vec2<f32>(x, y) / 255.0 * 2.0 - 1.0;
+    var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) {
+        let s = vec2<f32>(
+            select(-1.0, 1.0, v.x >= 0.0),
+            select(-1.0, 1.0, v.y >= 0.0),
+        );
+        v = vec3<f32>((1.0 - abs(v.yx)) * s, v.z);
+    }
+    return normalize(v);
+}
+//>>endif
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -71,12 +113,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.color = input.color;
     output.eyePosition = eyePos.xyz;
 
+    //>>ifdef COMPRESSED_VERTICES
+    let decodedNormal = csm_octDecodeFloat_single(input.compressedAttributes);
+    //>>else
+    let decodedNormal = input.normal;
+    //>>endif
+
     let transformedNormal = normalize(
         mat3x3<f32>(
             camera.normalMatrix[0].xyz,
             camera.normalMatrix[1].xyz,
             camera.normalMatrix[2].xyz
-        ) * input.normal
+        ) * decodedNormal
     );
     output.worldNormal = transformedNormal;
     output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
