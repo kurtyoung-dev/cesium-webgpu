@@ -1,7 +1,21 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 14, 2026 (Session 29: Typing push; Phase 7 external engine survey; **Phase 8 GPU-Resident Tiles architectural design**)
+**Last Updated:** April 18, 2026 (Principal-engineer review Batches 6-27 shipped; TAA / motion-vector / shader-variant infrastructure now in place across every renderer)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
+
+## What landed in Batches 6-27 (2026-04-16 → 2026-04-18)
+
+- **TAA / motion-vector plumbing** (DP-H41 "ALL-RENDERERS"): `previousViewProjection: mat4x4<f32>` now in every renderer's `CameraUniforms`. TAA / CSM work no longer needs renderer-specific bind-group adjustments — read it via `camera.previousViewProjection` from any pipeline.
+- **WebGPU shader variant infrastructure**: `ShaderDefine` bitmask registry, `ShaderSourceId` registry, `//>>ifdef` preprocessor, per-device `GPUShaderModule` dedupe cache with prewarm API. See `CLAUDE.md` → "WGSL Shader Pipeline" for the usage contract.
+- **DP-H19 CPU compressed-vertex decode**: `normal` + `st` + `tangent` + `bitangent` all reconstructed from `compressedAttributes`. Scaffold for GPU-side decode in place behind a feature flag (runtime swap is the remaining work — see DP-H19-SHADER-DECODE-RUNTIME below).
+- **Principal-engineer review**: ~95% of the 2026-04-16 findings addressed (H-P5 mapAsync hazards, C-P7-RTE VolumetricFog altitude cancellation, DP-H40 split, DP-H42 depth-test distance, DP-H25 geodetic normal, and 80+ others). Full per-batch list in `REVIEW_FIX_PROGRESS.md`.
+
+### Remaining from the review set
+
+- **DP-H19-SHADER-DECODE-RUNTIME** — runtime flip of the vertex-buffer packer to emit `compressedAttributes` directly + skip `ensureUncompressedAttributes` when the feature flag is on. Expansion of `_SHADERS_WITH_GPU_DECODE` beyond `phong` is additive (one `//>>ifdef` block + one registry entry per shader). Effort: S-M per shader; scaffold is in place.
+- **STUB-NAGA** — lazy-load `naga-wasm` for GLSL→WGSL translation path. Infrastructure follow-up.
+- **BUILD-IIFE-INFLATION** — IIFE bundle size optimization (code-split support limited by format). Infrastructure follow-up.
+- **WeatherParticleRender + Generated/EllipsoidPrimitive** `previousViewProjection` buffer writes already landed in Batch 27; no further TAA plumbing pending.
 
 > **⚠️ READ FIRST — Current architectural frame:** The direction of travel is captured in **[PHASE_8_GPU_RESIDENT_TILES_DESIGN.md](PHASE_8_GPU_RESIDENT_TILES_DESIGN.md)**. It synthesizes Phase 7 (external engine features) + 3D Tiles implementation audit + 3D Tiles 2.0 spec research into a single architectural frame. **Do not start any rendering or 3D Tiles work without reading it** — it identifies the gating architectural decision (shader variant strategy), the central insight ("GPU-resident octree tile cache"), the full dependency DAG, and the recommended phased roadmap. All Phase 8 items in this backlog are shorthand pointers into that design.
 >

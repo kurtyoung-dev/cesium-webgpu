@@ -1,10 +1,66 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 15, 2026 Session 30 (Sessions 1-29 + Typing Completion + Discriminated Picking)
+**Last Updated:** April 18, 2026 (Sessions 1-30 + Principal-Engineer Review Batches 1-27 + WebGPU Infrastructure)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~92% of full WebGL feature parity. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, and clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete.
+**Overall Progress:** ~92% of full WebGL feature parity, plus the infrastructure for TAA / motion vectors / shader-variant pipelines now in place across **every** renderer (Batch 27). Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10 Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
+
+---
+
+## Recent Progress (2026-04-18 — Principal-Engineer Review Batches 6-27 + WebGPU Infrastructure)
+
+Two commits on main (`4e91c1238a`, `23cbf1121b`) closed out the 2026-04-16 principal-engineer review remediation and landed the shader-variant + TAA infrastructure that Phase 8c/d will consume. Full per-batch write-up is in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md).
+
+### New core infrastructure (Renderer/WebGPU/)
+
+- **`WebGPUShaderDefines.ts`** — `ShaderDefine` bitmask registry (`GEODETIC_NORMAL`, `DISABLE_DEPTH_DISTANCE`, `SPLIT_ENABLED`, `COMPRESSED_VERTICES`) + `ShaderSourceId` registry. Add-only invariant is documented and enforced at the code level; bits are packed into a Uint32 cache key as `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`.
+- **`WebGPUShaderModuleCache.ts`** — Tier 1 `GPUShaderModule` dedupe keyed on that Uint32. Prewarm API for per-renderer known-variant sets. Cleared on device loss.
+- **`WebGPUShaderPreprocessor.ts`** — `//>>ifdef` / `//>>else` / `//>>endif` directive processor, pure function over source strings. Unknown flag names produce actionable parser errors. Primitive shaders now always route through this (`defines=0` is byte-identical to pre-Batch-27 output for shaders without directives).
+- **`WebGPUShaderTranslator.ts`** — GLSL→WGSL transpile scaffolding. Used by the stub pipeline extractor.
+- **`WebGPUPointCloudLODProcessor.ts`** — extracted from the point cloud renderer for LOD handling independent of draw-command issuance.
+- **`WebGLStubPipelineExtractor.ts`** — extracts pipeline shape from the WebGL stub path so WebGPU can mirror it.
+
+### TAA / motion-vector plumbing complete (DP-H41-ALL-RENDERERS)
+
+`previousViewProjection: mat4x4<f32>` is now appended to **every** renderer's `CameraUniforms` struct — 63 WGSL shader files across Primitive/, Collections/, Model/, Compute/, Generated/. Every renderer's JS/TS pack function writes the previous frame's viewProjection from `UniformState.previousViewProjection` at the correct slot offset, with identity fallback for the first frame. 16-byte alignment verified on every variant; buffer size grew where needed (Primitive flat 96→160, lit 240→304; Model 256→320; Polyline 128→192; Weather 128→192; Ellipsoid 176→240). Billboard/Label/Point UBs unchanged (previously-unused tail slots now carry prevVP). `UniformState.d.ts` and `CesiumUniformState` ambient updated to expose the getter.
+
+**Consequence:** future TAA / motion-vector passes read `camera.previousViewProjection` from any pipeline without renderer-specific bind-group adjustments. CSM work can lean on this same slot for shadow-history reprojection.
+
+### CPU compressed-vertex decode covers all four slots (DP-H19-TANGENT-DECODE)
+
+`WebGPUPrimitiveCommands.ensureUncompressedAttributes` previously reconstructed only `normal` + `st` from the geometry's `compressedAttributes` payload. It now also reconstructs `tangent` + `bitangent` when they were originally present, emitting Float32Array `GeometryAttribute`s so any future normal-mapping material finds them in the expected slots. Uses the same `AttributeCompression.octDecodeFloat` / `octUnpack` JS path the CPU already used for normals. Idempotent for re-entry.
+
+### GPU compressed-vertex decode scaffold (DP-H19-SHADER-DECODE)
+
+Full pipeline scaffold in place behind a feature flag (default **off**). Runtime flip remains pending; scaffold components verified end-to-end:
+
+- `ShaderDefine.COMPRESSED_VERTICES` bit added (bit 3).
+- `chunks/functions/csm_decodeCompressedVertex.wgsl` — `csm_octDecodeFloat_single`, `csm_octUnpack`, `csm_decompressTextureCoordinates`. JS ↔ WGSL byte-identical decode invariant documented.
+- `PrimitivePhongColor.wgsl` is the pilot: `//>>ifdef COMPRESSED_VERTICES` / `//>>else` branches on `struct VertexInput` (swaps `normal: vec3<f32>` ↔ `compressedAttributes: f32`) and on the `vertexMain` decode call. Smoke-tested: `defines=0` emits CPU path, `defines=COMPRESSED_VERTICES` emits GPU path.
+- `getVertexLayoutForShader(type, { compressedVertices })` emits a narrower 44-byte stride for the compressed phong variant.
+- `shaderSupportsCompressedVertices` + `_SHADERS_WITH_GPU_DECODE` registry (currently `["phong"]`).
+- `setCompressedVertexDecodeEnabled` / `isCompressedVertexDecodeEnabled` feature flag.
+- All 4 Primitive `WebGPUShaderModule.create` sites now route through `preprocess(code, defines)`.
+
+Remaining work (tracked for a follow-up batch): the runtime swap of the vertex buffer packer to emit `compressedAttributes` directly + `ensureUncompressedAttributes` skip path when the flag is on; expanding `_SHADERS_WITH_GPU_DECODE` beyond `phong` (each addition = one `//>>ifdef` block + one registry entry).
+
+### Batch 26 — partial-fix closures
+
+- **H-P5** — every `mapAsync` site in the renderer now guarded with try/catch that returns a clean fallback (null / empty result) instead of leaking unhandled promise rejection. Affected: `WebGPUTextureUtilities.createPixelReadbackPBO`, `WebGPUContext.readPixelsToPBO`, `WebGPUGPUCuller.readResults` (in addition to prior-batch guards on `AutoExposure` + `BufferMapper`).
+- **C-P7-RTE** — `VolumetricFog.wgsl` altitude reconstruction refactored to a 2nd-order Taylor expansion around the camera to avoid the `length(worldPos) - innerRadius` f32 cancellation at Earth-radius magnitudes. CPU-precomputed `cameraAltitude` / `cameraUp` / `oneOverDenom` uploaded in the VolumetricFogParams buffer.
+
+### Batch 6-25 cumulative additions (abbreviated — see REVIEW_FIX_PROGRESS.md for per-batch detail)
+
+- **Globe**: DP-H40 split (`camera.splitPosition` in framebuffer pixels), DP-H41 prevVP, DP-H42 disable-depth-distance, DP-H25 geodetic normal in exaggeration math, Hi-Z occlusion wiring (+628 lines).
+- **Shadow mapping**: cascaded shadow maps with 4-cascade selection, PCF filtering, clipping integration (+737 lines).
+- **Primitive materials**: full material shader selection + BGL v2 layout + split pick UBOs, DP-H19 CPU decompression (+770 lines).
+- **Point cloud**: LOD processor extracted; EDL (Eye Dome Lighting) wired through the post-process stack (+484 lines).
+- **Polyline / Billboard / Label**: DP-H40 / DP-H42 plumbing, material UBO split, pick pipeline reaches WebGL parity.
+- **Model (glTF)**: IBL factor + SH uploads, scene `light.color` honored, KHR_mesh_quantization dequantize, skin weights, morph target weights, glTF sampler properties honored.
+- **Build**: `stripPragmaPlugin` now handles `.ts` too; bundle variant plugin cleanup; `wgslToJavaScript` output refinements.
+
+**Typecheck:** `npx tsc --noEmit` clean. **ESLint + prettier:** clean on all staged files. **WGSL `.js` companions** regenerated.
 
 ---
 

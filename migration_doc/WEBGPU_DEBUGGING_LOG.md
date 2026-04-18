@@ -24,6 +24,32 @@
 
 ---
 
+## Session 32 — Batch 27 Gotchas (2026-04-18)
+
+Two small gotchas surfaced while landing DP-H41-ALL-RENDERERS + DP-H19-SHADER-DECODE scaffold. Neither was a runtime bug; both were "why did the pre-commit hook fail on something I didn't obviously touch" moments worth documenting for future shader-variant work.
+
+### SHADER-32-1: Inline WGSL template literals can't contain backticks in JSDoc-style comments
+
+**Symptom:** Prettier parse error `SyntaxError: ',' expected` on `WebGPUEllipsoidPrimitiveRenderer.ts` line 51, which was inside a WGSL struct comment that referenced `` `UniformState._previousViewProjection` ``.
+
+**Root cause:** `WebGPUEllipsoidPrimitiveRenderer.ts` declares `const ELLIPSOID_WGSL = \`...\`` (tagged template-literal wrapper for inline WGSL). Any backtick inside that string closes the template prematurely. My DP-H41 edit wrote a comment `// \`UniformState._previousViewProjection\` (f32 mat4).` inside the struct, but because it's inside the outer backtick-delimited template literal, the nested backticks got interpreted as template boundaries by Prettier's TS parser. TypeScript's compiler didn't catch it (the rest of the file's structure remained valid), but Prettier rejected the file for malformed template syntax.
+
+**Fix:** Dropped the backticks from the comment — plain text `// UniformState._previousViewProjection (f32 mat4).`.
+
+**Lesson:** Any new inline-WGSL files (shader-as-template-literal in TS) need to treat backticks in doc-comments as forbidden. Prefer single-quotes, plain text, or move the comment outside the template literal. See `WebGPUEllipsoidPrimitiveRenderer.ts:49-51` for the working pattern.
+
+### SHADER-32-2: ESLint `curly` rule blocks landed code if you only touch "nearby"
+
+**Symptom:** Pre-commit `lint-staged` ESLint step flagged single-line `if (!defined(x)) return;` statements in `WebGPUPrimitiveCommands.js` and `ModelPrimitiveGeometry.js` even though those lines were not modified by Batch 27.
+
+**Root cause:** `.eslintrc` sets `curly: "all"` (every `if` needs braces). Historical code had lots of one-liners. The lint-staged config runs ESLint on staged FILES, not staged HUNKS — so any unrelated one-liner in a file I happened to modify failed the pre-commit.
+
+**Fix:** Added braces to all offending one-liners in the touched files (7 sites between `WebGPUPrimitiveCommands.js`, `WebGPUPrimitiveShaders.js`, `WebGPUModelPipelineCache.js`, `ModelPrimitiveGeometry.js`).
+
+**Lesson:** When making small edits to older files, budget a pass through ESLint to fix historical one-liners. `npx eslint --fix <file>` auto-fixes most of them. Doing it proactively avoids a late pre-commit surprise.
+
+---
+
 ## Session 29 — Typing Push Discoveries (2026-04-14)
 
 Not bugs in the traditional sense — three latent correctness/design drifts surfaced while adding co-located `.d.ts` files to drop `as unknown as` boundary casts. Each was hiding behind a cast; dropping the cast made TypeScript enforce reality.
