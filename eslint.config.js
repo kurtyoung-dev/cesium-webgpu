@@ -49,6 +49,7 @@ export default [
       ".github/**/*.js",
       "scripts/**/*.js",
       "packages/sandcastle/scripts/**/*.js",
+      "packages/wasm-naga/*.mjs",
       "gulpfile.js",
       "gulpfile.apps.js",
       "gulpfile.makezip.js",

@@ -27,6 +27,7 @@ import {
   cleanInverseModelView,
   cleanInverseModelView3D,
   cleanViewProjection,
+  cleanViewProjectionRelativeToEye,
   cleanInverseViewProjection,
   cleanModelViewProjection,
   cleanModelViewRelativeToEye,
@@ -122,8 +123,33 @@ class UniformState {
     this._viewProjectionDirty = true;
     this._viewProjection = new Matrix4();
 
+    // View-projection relative to eye: projection * (view with translation
+    // zeroed). Model-independent — used by post-process passes (TAA motion
+    // vectors) that feed it identity model matrices. Mirrors the upstream
+    // `_modelViewProjectionRelativeToEye` but without per-command model bias.
+    this._viewProjectionRelativeToEyeDirty = true;
+    this._viewProjectionRelativeToEye = new Matrix4();
+
     // TAA: previous frame's view-projection for reprojection.
     this._previousViewProjection = new Matrix4();
+
+    // TAA RTE motion vectors: previous frame's camera position (world-space)
+    // and previous frame's view-projection-relative-to-eye. Used by the TAA
+    // resolve pass to compute motion vectors via depth reprojection without
+    // reconstructing world-space positions at Earth scale (which loses ~1m
+    // to FP32). Snapshotted at the top of `update()` before the current
+    // frame overwrites them. The VP_RTE form is model-independent, so it's
+    // safe to snapshot regardless of what model the last draw command set.
+    //
+    // Motion-vector math in the TAA shader:
+    //   currentEyeRel = inverse(currentVP_RTE) * vec4(ndc, 1) / w
+    //   previousEyeRel = currentEyeRel + cameraDelta        // FP64 on CPU → vec3 on GPU
+    //   previousClip = previousVP_RTE * vec4(previousEyeRel, 1)
+    //   motion = currentUV - (previousClip.xy/w * 0.5 + 0.5)
+    //
+    // where cameraDelta = currentCameraWC - previousCameraWC.
+    this._previousCameraPosition = new Cartesian3();
+    this._previousViewProjectionRelativeToEye = new Matrix4();
 
     this._inverseViewProjectionDirty = true;
     this._inverseViewProjection = new Matrix4();
@@ -383,6 +409,42 @@ class UniformState {
 
   get previousViewProjection() {
     return this._previousViewProjection;
+  }
+
+  /**
+   * Previous frame's world-space camera position. Used with the current
+   * frame's camera position to derive `cameraDelta` for TAA motion vectors.
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get previousCameraPosition() {
+    return this._previousCameraPosition;
+  }
+
+  /**
+   * Model-independent view-projection relative to eye: projection × view
+   * with the view's translation column zeroed. Consumers like TAA's resolve
+   * pass need a matrix whose semantics don't depend on what model the last
+   * draw command bound to `_model`.
+   * @type {Matrix4}
+   * @readonly
+   */
+  get viewProjectionRelativeToEye() {
+    cleanViewProjectionRelativeToEye(this);
+    return this._viewProjectionRelativeToEye;
+  }
+
+  /**
+   * Previous frame's `viewProjectionRelativeToEye`. TAA's resolve pass
+   * uses this together with the current VP_RTE and `cameraDelta`
+   * (current - previous camera position) to compute motion vectors via
+   * depth reprojection without reconstructing world-space positions,
+   * which would lose ~1m FP32 precision at Earth radius.
+   * @type {Matrix4}
+   * @readonly
+   */
+  get previousViewProjectionRelativeToEye() {
+    return this._previousViewProjectionRelativeToEye;
   }
 
   get inverseViewProjection() {
@@ -697,6 +759,21 @@ class UniformState {
     // TAA: save current view-projection as "previous" for next frame's
     // reprojection before we overwrite it with the new camera state.
     Matrix4.clone(this._viewProjection, this._previousViewProjection);
+
+    // TAA RTE motion vectors: snapshot previous-frame camera position + VP_RTE.
+    // `_cameraPosition` still holds last frame's world-space position (it's
+    // about to be overwritten by updateCamera). `_viewProjectionRelativeToEye`
+    // is the model-independent VP_RTE; resolving it here forces the
+    // last-frame-consistent value regardless of what model the last draw
+    // command set. Capturing BEFORE `updateCamera` runs is the key — after
+    // that call, `_view` / `_projection` / derived fields reflect the new
+    // frame's state, which would pollute the "previous" snapshot.
+    Cartesian3.clone(this._cameraPosition, this._previousCameraPosition);
+    cleanViewProjectionRelativeToEye(this);
+    Matrix4.clone(
+      this._viewProjectionRelativeToEye,
+      this._previousViewProjectionRelativeToEye,
+    );
 
     this._mode = frameState.mode;
     this._mapProjection = frameState.mapProjection;

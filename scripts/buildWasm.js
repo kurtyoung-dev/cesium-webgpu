@@ -1,55 +1,63 @@
 /**
- * Build script for the cesium-wasm Rust → WASM module.
+ * Build script for all CesiumJS Rust → WASM modules.
+ *
+ * Builds two sibling crates:
+ *
+ *   1. `packages/wasm/`        — cesium-wasm (SIMD culling + radix sort +
+ *                                terrain tessellation + RTE + point-cloud).
+ *                                Vendored into
+ *                                `packages/engine/Source/ThirdParty/Workers/`.
+ *
+ *   2. `packages/wasm-naga/`   — cesium-naga-wasm (lazy GLSL / SPIR-V → WGSL
+ *                                translation for the WebGL compatibility stub).
+ *                                Runtime variant is vendored into
+ *                                `packages/engine/Source/ThirdParty/naga-wasm/`.
+ *                                An optional tooling variant (adds MSL / HLSL /
+ *                                SPIR-V backends) is vendored into
+ *                                `Tools/shader-pipeline/naga-wasm-tools/` when
+ *                                `--include-naga-tooling` is passed.
  *
  * Usage:
- *   node scripts/buildWasm.js              — build release + copy to engine
- *   node scripts/buildWasm.js --debug      — build debug (faster compile, bigger output)
- *   node scripts/buildWasm.js --check      — only verify toolchain, don't build
- *   node scripts/buildWasm.js --clean      — remove pkg/ output directory
+ *   node scripts/buildWasm.js                       — build both crates (release)
+ *   node scripts/buildWasm.js --debug                — build debug (faster compile, bigger output)
+ *   node scripts/buildWasm.js --check                — only verify toolchain, don't build
+ *   node scripts/buildWasm.js --clean                — remove all WASM output + vendored artifacts
+ *   node scripts/buildWasm.js --skip-cesium-wasm     — skip the cesium-wasm crate
+ *   node scripts/buildWasm.js --skip-naga            — skip the naga crate entirely
+ *   node scripts/buildWasm.js --only-naga            — build ONLY the naga crate
+ *   node scripts/buildWasm.js --include-naga-tooling — also build the naga tooling variant
+ *                                                       (adds MSL/HLSL/SPIR-V output exports)
  *
  * Prerequisites:
  *   - Rust toolchain (rustup, cargo): https://rustup.rs/
  *   - wasm-pack: cargo install wasm-pack  (or: npm i -g wasm-pack)
  *   - wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown
- *
- * Output:
- *   packages/wasm/pkg/
- *     cesium_wasm_bg.wasm   — WASM binary (~10-30 KB release)
- *     cesium_wasm.js        — JS glue (wasm-bindgen)
- *     cesium_wasm.d.ts      — TypeScript declarations
- *
- *   Copied to:
- *     packages/engine/Source/ThirdParty/Workers/cesium_wasm_bg.wasm
  */
 
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, copyFileSync, rmSync, statSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  rmSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+} from "fs";
 import { resolve, join } from "path";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 const ROOT = resolve(import.meta.dirname, "..");
-const CRATE_DIR = join(ROOT, "packages", "wasm");
-const PKG_DIR = join(CRATE_DIR, "pkg");
-const WASM_FILE = join(PKG_DIR, "cesium_wasm_bg.wasm");
-const JS_GLUE = join(PKG_DIR, "cesium_wasm.js");
-const DTS_FILE = join(PKG_DIR, "cesium_wasm.d.ts");
-const DEST_DIR = join(
-  ROOT,
-  "packages",
-  "engine",
-  "Source",
-  "ThirdParty",
-  "Workers",
-);
-const DEST_WASM = join(DEST_DIR, "cesium_wasm_bg.wasm");
-const DEST_JS = join(DEST_DIR, "cesium_wasm.js");
-const DEST_DTS = join(DEST_DIR, "cesium_wasm.d.ts");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const isDebug = args.includes("--debug");
 const isCheck = args.includes("--check");
 const isClean = args.includes("--clean");
+const skipCesium = args.includes("--skip-cesium-wasm");
+const skipNaga = args.includes("--skip-naga");
+const onlyNaga = args.includes("--only-naga");
+const includeNagaTooling = args.includes("--include-naga-tooling");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -114,25 +122,218 @@ function fileSize(path) {
   }
 }
 
+/**
+ * Copy a file if it exists, logging the source → dest mapping.
+ */
+function copyIfExists(src, dst, label) {
+  if (!existsSync(src)) {
+    return false;
+  }
+  copyFileSync(src, dst);
+  log(
+    `  ${label}: ${src} → ${dst}${existsSync(dst) ? ` (${fileSize(dst)})` : ""}`,
+  );
+  return true;
+}
+
+/**
+ * Rewrite the `new URL("…_bg.wasm", import.meta.url)` reference inside a
+ * wasm-pack JS glue file so it points at the vendored filename (which may
+ * differ from the crate's `cesium_<crate>_wasm_bg.wasm` pattern). Also
+ * rewrites the `@ts-self-types` header to match the renamed .d.ts.
+ */
+function renameWasmReferencesInGlue(glueFile, fromBase, toBase) {
+  if (!existsSync(glueFile)) {
+    return;
+  }
+  const original = readFileSync(glueFile, "utf8");
+  const replaced = original
+    .replaceAll(`${fromBase}_bg.wasm`, `${toBase}_bg.wasm`)
+    .replaceAll(`${fromBase}.d.ts`, `${toBase}.d.ts`);
+  if (replaced !== original) {
+    writeFileSync(glueFile, replaced);
+    log(`  patched: ${glueFile} (${fromBase} → ${toBase})`);
+  }
+}
+
+// ── Build a single crate + vendor its outputs ────────────────────────────────
+//
+// Factored out of the original cesium-wasm flow so both crates share the
+// same pipeline: (1) build via wasm-pack, (2) verify the expected artifacts
+// landed, (3) copy them to the vendored location, (4) optionally rename +
+// patch the JS glue's wasm URL reference.
+
+/**
+ * @typedef {object} CrateBuildSpec
+ * @property {string}   name            Human-readable label for log lines
+ * @property {string}   crateDir        Absolute path to the crate (has Cargo.toml)
+ * @property {string}   pkgDir          wasm-pack output directory (inside crateDir)
+ * @property {string}   artifactBase    Name of the crate's bindgen output files
+ *                                      (e.g., "cesium_wasm" → cesium_wasm_bg.wasm,
+ *                                      cesium_wasm.js, cesium_wasm.d.ts)
+ * @property {string}   destDir         Absolute path where artifacts land
+ * @property {string}   destBase        Name they get at the destination (may
+ *                                      differ from artifactBase; glue file's
+ *                                      internal WASM URL is patched to match)
+ * @property {string[]} features        Cargo features to pass to wasm-pack
+ * @property {boolean}  defaultFeatures Whether to keep Cargo's default features
+ */
+
+function buildAndVendorCrate(spec, mode) {
+  const {
+    name,
+    crateDir,
+    pkgDir,
+    artifactBase,
+    destDir,
+    destBase,
+    features,
+    defaultFeatures,
+  } = spec;
+
+  log(`Building ${name} (${mode})…`);
+  log(`  Crate: ${crateDir}`);
+
+  const modeFlag = mode === "dev" ? "--dev" : "--release";
+  const featuresFlag =
+    features.length > 0 ? `--features ${features.join(",")}` : "";
+  const defaultsFlag = defaultFeatures ? "" : "--no-default-features";
+  const outDirFlag = pkgDir === "pkg" ? "" : `-d ${pkgDir}`;
+  const cmd = [
+    "wasm-pack build --target web",
+    modeFlag,
+    outDirFlag,
+    defaultsFlag,
+    featuresFlag,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (!run(cmd, crateDir)) {
+    error(`${name}: wasm-pack build failed.`);
+    return false;
+  }
+
+  const pkgAbs = join(crateDir, pkgDir);
+  const srcWasm = join(pkgAbs, `${artifactBase}_bg.wasm`);
+  const srcJs = join(pkgAbs, `${artifactBase}.js`);
+  const srcDts = join(pkgAbs, `${artifactBase}.d.ts`);
+
+  if (!existsSync(srcWasm)) {
+    error(`${name}: expected output missing: ${srcWasm}`);
+    return false;
+  }
+
+  if (!existsSync(destDir)) {
+    mkdirSync(destDir, { recursive: true });
+  }
+
+  const dstWasm = join(destDir, `${destBase}_bg.wasm`);
+  const dstJs = join(destDir, `${destBase}.js`);
+  const dstDts = join(destDir, `${destBase}.d.ts`);
+
+  copyIfExists(srcWasm, dstWasm, "wasm");
+  copyIfExists(srcJs, dstJs, "js");
+  copyIfExists(srcDts, dstDts, "dts");
+
+  // If the destination base differs from the crate's artifact name, patch
+  // the vendored JS glue so its internal `new URL("<name>_bg.wasm", …)`
+  // reference points at the renamed file.
+  if (artifactBase !== destBase) {
+    renameWasmReferencesInGlue(dstJs, artifactBase, destBase);
+  }
+
+  // Drop an ESM-type marker so Node treats the vendored glue as an ES
+  // module. Most vendored destinations live under a tree whose nearest
+  // `package.json` already sets `"type": "module"` (e.g. `packages/
+  // engine/`), so the marker is redundant there. But the tooling
+  // artifacts live under `Tools/`, where the existing `package.json`
+  // declares `"type": "commonjs"` — and Node's ESM loader refuses to
+  // parse our glue without this override.  Writing it unconditionally
+  // is simpler than probing for the parent override + cheaper than
+  // the failure mode (which only surfaces at validation time).
+  const typeMarker = join(destDir, "package.json");
+  if (!existsSync(typeMarker)) {
+    writeFileSync(typeMarker, '{\n  "type": "module"\n}\n');
+    log(`  wrote ESM type marker: ${typeMarker}`);
+  }
+
+  success(`${name}: vendored to ${destDir} (wasm: ${fileSize(dstWasm)})`);
+  return true;
+}
+
+// ── Crate specs ──────────────────────────────────────────────────────────────
+
+/** @type {CrateBuildSpec} */
+const CESIUM_WASM_SPEC = {
+  name: "cesium-wasm",
+  crateDir: join(ROOT, "packages", "wasm"),
+  pkgDir: "pkg",
+  artifactBase: "cesium_wasm",
+  destDir: join(ROOT, "packages", "engine", "Source", "ThirdParty", "Workers"),
+  destBase: "cesium_wasm",
+  features: [],
+  defaultFeatures: true,
+};
+
+/** @type {CrateBuildSpec} */
+const NAGA_RUNTIME_SPEC = {
+  name: "cesium-naga-wasm (runtime)",
+  crateDir: join(ROOT, "packages", "wasm-naga"),
+  pkgDir: "pkg",
+  artifactBase: "cesium_naga_wasm",
+  destDir: join(
+    ROOT,
+    "packages",
+    "engine",
+    "Source",
+    "ThirdParty",
+    "naga-wasm",
+  ),
+  destBase: "naga_wasm",
+  features: ["runtime"],
+  defaultFeatures: false,
+};
+
+/** @type {CrateBuildSpec} */
+const NAGA_TOOLING_SPEC = {
+  name: "cesium-naga-wasm (tooling)",
+  crateDir: join(ROOT, "packages", "wasm-naga"),
+  pkgDir: "pkg-tooling",
+  artifactBase: "cesium_naga_wasm",
+  destDir: join(ROOT, "Tools", "shader-pipeline", "naga-wasm-tools"),
+  destBase: "naga_wasm_tools",
+  features: ["tooling"],
+  defaultFeatures: false,
+};
+
 // ── Clean ────────────────────────────────────────────────────────────────────
 
 if (isClean) {
-  log("Cleaning WASM build output...");
-  if (existsSync(PKG_DIR)) {
-    rmSync(PKG_DIR, { recursive: true, force: true });
-    log(`Removed ${PKG_DIR}`);
-  }
-  if (existsSync(DEST_WASM)) {
-    rmSync(DEST_WASM);
-    log(`Removed ${DEST_WASM}`);
-  }
-  if (existsSync(DEST_JS)) {
-    rmSync(DEST_JS);
-    log(`Removed ${DEST_JS}`);
-  }
-  if (existsSync(DEST_DTS)) {
-    rmSync(DEST_DTS);
-    log(`Removed ${DEST_DTS}`);
+  log("Cleaning all WASM build output + vendored artifacts…");
+  const paths = [
+    // pkg/ directories inside each crate
+    join(CESIUM_WASM_SPEC.crateDir, "pkg"),
+    join(NAGA_RUNTIME_SPEC.crateDir, "pkg"),
+    join(NAGA_RUNTIME_SPEC.crateDir, "pkg-tooling"),
+    // vendored destinations — remove the .wasm + .js + .d.ts triplets
+    // rather than the full directories so LICENSE files + README.md
+    // survive a clean. The build will re-populate the other three.
+    join(CESIUM_WASM_SPEC.destDir, `${CESIUM_WASM_SPEC.destBase}_bg.wasm`),
+    join(CESIUM_WASM_SPEC.destDir, `${CESIUM_WASM_SPEC.destBase}.js`),
+    join(CESIUM_WASM_SPEC.destDir, `${CESIUM_WASM_SPEC.destBase}.d.ts`),
+    join(NAGA_RUNTIME_SPEC.destDir, `${NAGA_RUNTIME_SPEC.destBase}_bg.wasm`),
+    join(NAGA_RUNTIME_SPEC.destDir, `${NAGA_RUNTIME_SPEC.destBase}.js`),
+    join(NAGA_RUNTIME_SPEC.destDir, `${NAGA_RUNTIME_SPEC.destBase}.d.ts`),
+    join(NAGA_TOOLING_SPEC.destDir, `${NAGA_TOOLING_SPEC.destBase}_bg.wasm`),
+    join(NAGA_TOOLING_SPEC.destDir, `${NAGA_TOOLING_SPEC.destBase}.js`),
+    join(NAGA_TOOLING_SPEC.destDir, `${NAGA_TOOLING_SPEC.destBase}.d.ts`),
+  ];
+  for (const p of paths) {
+    if (existsSync(p)) {
+      rmSync(p, { recursive: true, force: true });
+      log(`  removed ${p}`);
+    }
   }
   success("Clean complete.");
   process.exit(0);
@@ -140,7 +341,7 @@ if (isClean) {
 
 // ── Toolchain Check ──────────────────────────────────────────────────────────
 
-log("Checking build prerequisites...");
+log("Checking build prerequisites…");
 
 const checks = [];
 
@@ -162,11 +363,6 @@ if (!hasCommand("wasm-pack")) {
   checks.push("wasm-pack");
 }
 
-if (!existsSync(join(CRATE_DIR, "Cargo.toml"))) {
-  error(`Cargo.toml not found at ${CRATE_DIR}`);
-  checks.push("Cargo.toml");
-}
-
 if (checks.length > 0) {
   error(`Missing prerequisites: ${checks.join(", ")}`);
   process.exit(1);
@@ -178,7 +374,7 @@ try {
     stdio: "pipe",
   }).toString();
   if (!targets.includes("wasm32-unknown-unknown")) {
-    log("Installing wasm32-unknown-unknown target...");
+    log("Installing wasm32-unknown-unknown target…");
     if (!run("rustup target add wasm32-unknown-unknown")) {
       error("Failed to install wasm32-unknown-unknown target.");
       process.exit(1);
@@ -198,57 +394,50 @@ if (isCheck) {
 // ── Build ────────────────────────────────────────────────────────────────────
 
 const mode = isDebug ? "dev" : "release";
-const modeFlag = isDebug ? "--dev" : "--release";
+const buildCesium = !skipCesium && !onlyNaga;
+const buildNagaRuntime = !skipNaga;
+const buildNagaTooling = includeNagaTooling && !skipNaga;
 
-log(`Building cesium-wasm (${mode} mode)...`);
-log(`  Crate: ${CRATE_DIR}`);
-log(`  Target: wasm32-unknown-unknown (SIMD128 enabled)`);
+let anyFailure = false;
 
-const buildCmd = `wasm-pack build --target web ${modeFlag} --out-dir pkg`;
-if (!run(buildCmd, CRATE_DIR)) {
-  error("wasm-pack build failed!");
-  error("Common fixes:");
-  error("  1. rustup target add wasm32-unknown-unknown");
-  error("  2. cargo install wasm-pack");
-  error("  3. Check Cargo.toml for syntax errors");
+if (buildCesium) {
+  if (!buildAndVendorCrate(CESIUM_WASM_SPEC, mode)) {
+    anyFailure = true;
+  }
+}
+
+if (buildNagaRuntime) {
+  if (!buildAndVendorCrate(NAGA_RUNTIME_SPEC, mode)) {
+    anyFailure = true;
+  }
+}
+
+if (buildNagaTooling) {
+  if (!buildAndVendorCrate(NAGA_TOOLING_SPEC, mode)) {
+    anyFailure = true;
+  }
+}
+
+if (anyFailure) {
+  error("One or more WASM builds failed. See output above.");
   process.exit(1);
 }
 
-// ── Verify Output ────────────────────────────────────────────────────────────
-
-if (!existsSync(WASM_FILE)) {
-  error(`Build succeeded but WASM file not found: ${WASM_FILE}`);
-  process.exit(1);
-}
-if (!existsSync(JS_GLUE)) {
-  error(`Build succeeded but JS glue not found: ${JS_GLUE}`);
-  process.exit(1);
-}
-
-success(`Build complete. WASM size: ${fileSize(WASM_FILE)} (${mode})`);
-
-// ── Copy to Engine ───────────────────────────────────────────────────────────
-
-log("Copying build output to engine ThirdParty/Workers/...");
-
-if (!existsSync(DEST_DIR)) {
-  mkdirSync(DEST_DIR, { recursive: true });
-}
-
-copyFileSync(WASM_FILE, DEST_WASM);
-log(`  ${WASM_FILE} → ${DEST_WASM} (${fileSize(DEST_WASM)})`);
-
-copyFileSync(JS_GLUE, DEST_JS);
-log(`  ${JS_GLUE} → ${DEST_JS}`);
-
-if (existsSync(DTS_FILE)) {
-  copyFileSync(DTS_FILE, DEST_DTS);
-  log(`  ${DTS_FILE} → ${DEST_DTS}`);
-}
-
-success("WASM module built and deployed to engine.");
+success("All WASM modules built and deployed.");
 log("");
-log("To use in the application:");
-log('  import init from "../ThirdParty/Workers/cesium_wasm.js";');
-log("  const wasm = await init();");
-log('  console.log("WASM version:", wasm.version());');
+log("Usage hints:");
+if (buildCesium) {
+  log(
+    '  cesium-wasm:  import init from "../ThirdParty/Workers/cesium_wasm.js";',
+  );
+}
+if (buildNagaRuntime) {
+  log(
+    "  naga runtime: auto-loaded by WebGPUNagaTranspiler.ts on first compileShader(GLSL)",
+  );
+}
+if (buildNagaTooling) {
+  log(
+    `  naga tooling: see ${NAGA_TOOLING_SPEC.destDir}/naga_wasm_tools.d.ts for exports`,
+  );
+}

@@ -283,10 +283,7 @@ struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
         buffer: { type: "read-only-storage" },
       },
     ],
-    perCommandBindingFields: [
-      "_shadowCastModelUB",
-      "_shadowCastInstancingSB",
-    ],
+    perCommandBindingFields: ["_shadowCastModelUB", "_shadowCastInstancingSB"],
   },
   // Instanced model path (classic per-instance VB flavour). Kept for
   // code paths that use the canonical glTF EXT_mesh_gpu_instancing VB
@@ -662,9 +659,7 @@ function _getOrCreateCastPipeline(device, cache, layoutKey, overrideStride) {
   let buffers = variant.buffers;
   if (strideDiffers) {
     buffers = variant.buffers.map((buf, idx) =>
-      idx === 0
-        ? { ...buf, arrayStride: effectiveStride }
-        : buf,
+      idx === 0 ? { ...buf, arrayStride: effectiveStride } : buf,
     );
   }
 
@@ -710,6 +705,21 @@ function registerShadowCastVariant(key, variant) {
  */
 function getRegisteredShadowCastVariantKeys() {
   return Object.keys(SHADOW_CAST_VARIANTS);
+}
+
+/**
+ * Returns the registered variant descriptor for a given layout key, or
+ * undefined if no such variant is registered. Exported for
+ * `WebGPUCSMRenderer` so the CSM cast loop can read the same
+ * `extraBindings` / `perCommandBindingFields` / `vertexBufferSourceSlots`
+ * metadata as the single-shadow-map loop without duplicating the table.
+ * Changing the descriptor returned here would leak into BOTH paths —
+ * treat as read-only.
+ * @param {string} key
+ * @returns {ShadowCastVariant | undefined}
+ */
+function getShadowCastVariant(key) {
+  return SHADOW_CAST_VARIANTS[key];
 }
 
 /**
@@ -1164,8 +1174,16 @@ export {
   destroyWebGPUShadowMapResources,
   registerShadowCastVariant,
   getRegisteredShadowCastVariantKeys,
+  getShadowCastVariant,
   _inferShadowLayoutKey,
   _resetShadowLayoutWarningsForSpec,
+  // Exported for `WebGPUCSMRenderer` — the CSM cast loop needs the same
+  // per-vertex-layout pipeline factory as the single-shadow-map path so
+  // every registered variant (rte24, p12, quantized12, modelP12,
+  // modelInstancedSB, modelSkinned) works under CSM without duplicating
+  // the pipeline cache. Internal API — public consumers should not
+  // depend on this shape remaining stable.
+  _getOrCreateCastPipeline,
 };
 
 export default {

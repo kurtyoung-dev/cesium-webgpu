@@ -52,6 +52,7 @@ import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor
 import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
+  createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
 
 // =========================================================================
@@ -586,6 +587,124 @@ function writePreviousViewProjection(ud, offset, uniformState) {
 // a separate material UBO.
 
 // =========================================================================
+// Per-Frame Primitive Effects Bind Group (Slice 2d)
+// =========================================================================
+//
+// Primitive commands are built once and reused frame-to-frame. Before
+// Slice 2d they always bound the shared `getPlaceholderEffects` BG for
+// the effects slot — which zeroes `effects.csmControl.x` — so shadow
+// receive (single-map AND CSM) was effectively dead on the primitive
+// path. The globe terrain path builds a fresh effects BG per frame via
+// `createEffectsBindGroup`; primitives lagged.
+//
+// Fix: cache one shared effects BG per frame on the context, rebuild
+// when shadowState / csmRenderer toggles or a new frameNumber ticks,
+// and swap it into `command.bindGroups[last]` from the update hook.
+// Identity modelMatrix is assumed for primitives (true for all current
+// appearance primitives), so one shared BG covers every command.
+//
+// Clipping planes on primitives are a separate gap — the primitive
+// pipeline doesn't currently thread a ClippingPlaneCollection reference
+// through to the effects BG. Tracked as follow-up; this helper leaves
+// the clipping slots on the placeholder so clipping stays no-op.
+
+function _getOrCreateSharedPrimitiveEffectsBG(frameState) {
+  const context = frameState?.context;
+  const device = context?.device;
+  if (!defined(device)) {
+    return null;
+  }
+
+  const shadowState = frameState.shadowState;
+  const receiveShadowMap =
+    shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
+      ? shadowState.lightShadowMaps[0]
+      : undefined;
+
+  const csmCandidate = context.csmRenderer;
+  const hasCsm =
+    defined(csmCandidate) &&
+    csmCandidate.enabled === true &&
+    defined(csmCandidate.cascadeParamsBuffer) &&
+    defined(csmCandidate.cascadeArrayView);
+  const csmBinding = hasCsm
+    ? {
+        enabled: true,
+        paramsBuffer: csmCandidate.cascadeParamsBuffer,
+        cascadeArrayView: csmCandidate.cascadeArrayView,
+      }
+    : undefined;
+
+  const frameNumber = frameState.frameNumber;
+  const hasShadow = defined(receiveShadowMap);
+
+  // Invalidate cache when frame ticks OR when the (shadow, csm) pair
+  // toggles. We hash the toggle pair into a small int so a cheap
+  // compare catches on/off changes within the same frame (rare —
+  // frameState normally increments frameNumber every tick — but the
+  // guard is nearly free).
+  const toggleHash = (hasShadow ? 1 : 0) | (hasCsm ? 2 : 0);
+  if (
+    context._primitiveEffectsBGFrameNumber === frameNumber &&
+    context._primitiveEffectsBGToggleHash === toggleHash &&
+    defined(context._primitiveEffectsBG)
+  ) {
+    return context._primitiveEffectsBG;
+  }
+
+  // When neither feature is active we MUST return the placeholder
+  // explicitly (not null) so callers swap stale active-state BGs back
+  // to zero-filled placeholder data on toggle-off transitions. Example:
+  // CSM toggled ON at frame N plants a real BG in cmd.bindGroups[last];
+  // CSM toggled OFF at frame N+1 must overwrite that slot — otherwise
+  // the shader reads last frame's csmControl=1.0 and samples stale
+  // cascade VPs.
+  if (!hasShadow && !hasCsm) {
+    const placeholder = getPlaceholderEffects(device);
+    context._primitiveEffectsBG = placeholder.bindGroup;
+    context._primitiveEffectsBGFrameNumber = frameNumber;
+    context._primitiveEffectsBGToggleHash = toggleHash;
+    return placeholder.bindGroup;
+  }
+
+  const fxRes = createEffectsBindGroup(device, frameState, {
+    shadowMap: receiveShadowMap,
+    csm: csmBinding,
+    // Primitives have identity modelMatrix, so world camera == plane-space
+    // camera. Clipping wiring for primitives is a separate follow-up.
+    cameraInPlaneSpace: context.uniformState?.cameraPosition,
+  });
+  context._primitiveEffectsBG = fxRes.bindGroup;
+  context._primitiveEffectsBGFrameNumber = frameNumber;
+  context._primitiveEffectsBGToggleHash = toggleHash;
+  return fxRes.bindGroup;
+}
+
+function _refreshPrimitiveEffectsSlot(command, frameState) {
+  if (!command.isWebGPUDrawCommand) {
+    return;
+  }
+  const bgArray = command.bindGroups;
+  if (!defined(bgArray) || bgArray.length === 0) {
+    return;
+  }
+  // Pick commands don't receive shadows — skip to avoid needless BG churn
+  // and to leave their placeholder layout untouched.
+  if (command._isPickCommand === true) {
+    return;
+  }
+  const activeBG = _getOrCreateSharedPrimitiveEffectsBG(frameState);
+  if (!defined(activeBG)) {
+    // Keep whatever the command was built with (the shared placeholder).
+    return;
+  }
+  const idx = bgArray.length - 1;
+  if (bgArray[idx] !== activeBG) {
+    bgArray[idx] = activeBG;
+  }
+}
+
+// =========================================================================
 // Per-Frame Uniform Update
 // =========================================================================
 
@@ -636,6 +755,11 @@ function updateWebGPUCommandUniforms(command, frameState, modelMatrix) {
       FLAT_CAMERA_BYTES,
     );
   }
+
+  // Slice 2d — swap the effects bind group for this frame so shadow-
+  // receive / CSM bindings reach the primitive shader instead of the
+  // zero-filled placeholder the command was built with.
+  _refreshPrimitiveEffectsSlot(command, frameState);
 }
 
 // =========================================================================
@@ -1666,6 +1790,16 @@ function createMaterialPipelineAndCache(
     cache.textureBindGroupLayout = null;
   }
 
+  // Slice 2d — material + PBR pipelines gain the effects BGL as the
+  // last bind group so shaders that opt in to CSM receive (PBR simple/
+  // textured today; material Lit variants to follow) can declare
+  // `@group(N)` for effects at the trailing slot. Shaders that don't
+  // reference the effects bindings ignore the extra BG — WebGPU allows
+  // unused bind groups in a pipeline layout.
+  const matEffectsBGL = getEffectsBindGroupLayout(device);
+  bindGroupLayouts.push(matEffectsBGL);
+  cache.effectsBGL = matEffectsBGL;
+
   const canvasFormat =
     context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
   cache.pipeline = device.createRenderPipeline({
@@ -2052,11 +2186,17 @@ function createWebGPUMaterialCommands(
       entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
-    // Build bind group array: [camera, material, texture?]
+    // Build bind group array: [camera, material, texture?, effects]
     const cmdBGs = [cache.cameraBindGroups[i], cache.materialBindGroup];
     if (shaderInfo.needsTexture && defined(cache.textureBindGroup)) {
       cmdBGs.push(cache.textureBindGroup);
     }
+    // Slice 2d — trailing effects slot matches the pipeline layout
+    // added in `createMaterialPipelineAndCache`. Starts on the
+    // shared placeholder; `updateWebGPUMaterialCommandUniforms`
+    // swaps in the active BG per frame when shadow / CSM is on.
+    const matEffectsPlaceholder = getPlaceholderEffects(device);
+    cmdBGs.push(matEffectsPlaceholder.bindGroup);
 
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
@@ -2231,6 +2371,11 @@ function updateWebGPUMaterialCommandUniforms(command, frameState, modelMatrix) {
     }
     matUB.clearDirty();
   }
+
+  // Slice 2d — swap the effects bind group for this frame so shadow-
+  // receive / CSM bindings reach lit material + PBR shaders instead of
+  // the zero-filled placeholder the command was built with.
+  _refreshPrimitiveEffectsSlot(command, frameState);
 }
 
 const WebGPUPrimitiveCommands = {

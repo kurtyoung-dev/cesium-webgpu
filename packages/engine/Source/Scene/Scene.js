@@ -1008,6 +1008,26 @@ class Scene {
      */
     this.useCascadedShadowMaps = options.useCascadedShadowMaps ?? false;
 
+    /**
+     * Per-cascade texture resolution for the CSM path. Four layers of
+     * `depth32float` at this resolution are allocated when CSM first
+     * activates — 1024 (default) = 16 MB total, 512 = 4 MB, 2048 = 64 MB.
+     * Reducing is the cheapest way to fit CSM on integrated GPUs; the
+     * cascade texel density stays similar when the number of cascades
+     * stays the same.
+     *
+     * Change BEFORE enabling `useCascadedShadowMaps` — the texture is
+     * allocated on first CSM frame and will NOT re-allocate if the value
+     * changes later (future slice can add a re-allocation hook).
+     *
+     * Valid range: 256..4096. Values outside the range are clamped.
+     *
+     * @type {number}
+     * @default 1024
+     */
+    this.cascadedShadowMapResolution =
+      options.cascadedShadowMapResolution ?? 1024;
+
     // Bumped by subsystems that mutate scene-visible state in ways that
     // invalidate frozen render bundles. Used by the snapshot/locked-orbit
     // mode (future Phase 0.7) to know when to discard cached bundles.
@@ -4558,6 +4578,16 @@ function render(scene) {
   // The jitter is computed from a Halton(2,3) sequence and shifts the
   // projection by ±0.5 pixel in NDC. When snapshot mode is frozen, the
   // jitter is zeroed to prevent dither accumulation.
+  //
+  // Also pushes the motion-vector matrices + camera delta into the TAA
+  // effect. Matrices come from UniformState:
+  //   - current VP_RTE  : model-independent VP (proj × view-with-eye-at-origin)
+  //   - previous VP_RTE : snapshotted at the top of UniformState.update()
+  //   - camera delta     : FP64 subtraction of world-space camera positions
+  // The TAA shader uses these for depth-based reprojection without
+  // reconstructing world-space positions, which would lose ~1m FP32 at
+  // Earth scale and produce catastrophic motion-vector errors during
+  // orbital fly-to.
   if (scene.taaEnabled && scene._context?.isWebGPU) {
     const pipeline = scene._context?._alternateSceneRenderer?._postProcess;
     const taa = pipeline?.taaEffect;
@@ -4581,6 +4611,52 @@ function render(scene) {
           proj[9] += jitter.y;
         }
       }
+
+      const us = context.uniformState;
+      const currentVpRte = us.viewProjectionRelativeToEye;
+      const previousVpRte = us.previousViewProjectionRelativeToEye;
+      const currCam = us.cameraPosition;
+      const prevCam = us.previousCameraPosition;
+      // FP64 subtraction — both operands are JS `number` (FP64) so the
+      // 6.37M-magnitude positions cancel cleanly. The resulting delta is
+      // per-frame-small (meters during typical camera motion) and down-casts
+      // to FP32 without losing meaningful precision.
+      const deltaX = currCam.x - prevCam.x;
+      const deltaY = currCam.y - prevCam.y;
+      const deltaZ = currCam.z - prevCam.z;
+
+      // TAA Slice 2 — history invalidation on large camera deltas
+      // (teleport / `camera.flyTo` landing / viewer reset). The depth
+      // reprojection assumes the NDC-space motion between frames is
+      // bounded; when `|cameraDelta|` jumps by 10s of km in a single
+      // frame, almost every pixel's history sample is disoccluded and
+      // the neighborhood clamp can't recover in time — the user sees
+      // a 2–4 frame smear. Cheaper to invalidate history for one
+      // frame and let the blend restart clean.
+      //
+      // Threshold 50 km chosen to cover:
+      //   - Typical orbit motion: ≤ 10 m/frame  → never triggers
+      //   - Fast mouse-drag pan at 500 km alt: ~200 m/frame → never
+      //   - `flyTo` arrival that snaps 1000+ km: ~Infinity on landing
+      //     frame → triggers as expected
+      // Tunable; if a future animation regularly crosses 50 km/frame
+      // legitimately we'd want to scale by altitude.
+      const deltaLenSq = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+      const TELEPORT_THRESHOLD = 50000.0; // meters
+      const isTeleport = deltaLenSq > TELEPORT_THRESHOLD * TELEPORT_THRESHOLD;
+
+      // historyValid is false until we've seen at least one frame; the TAA
+      // effect's own frameCounter also gates the blend, but keeping the
+      // motion-vector flag independent lets the shader choose whether to
+      // reproject or fall back to UV-identity on its own terms.
+      taa.updateMotionVectorParams(
+        currentVpRte,
+        previousVpRte,
+        deltaX,
+        deltaY,
+        deltaZ,
+        frameState.frameNumber > 1 && !isTeleport,
+      );
     }
   }
 

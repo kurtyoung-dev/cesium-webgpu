@@ -647,12 +647,25 @@ function renderFrame(that, frame, updateState, frameState) {
       that._sortDistSq = new Float32Array(count);
       that._sortIndices = new Uint32Array(count);
     }
+    // P3.6 — opt the bridge into GPU sort when the context's performance
+    // manager says so. The manager's `shouldUseGPUPointCloud(count)` gates
+    // on (compute supported) + (count >= gpuPointCloudThreshold). We
+    // check every frame (cheap — one property compare + one boolean
+    // return) so the flag tracks the current point count dynamically.
+    const context = frameState.context;
+    const perfMgr = context?.performanceManager;
+    if (
+      perfMgr &&
+      typeof perfMgr.shouldUseGPUPointCloud === "function" &&
+      perfMgr.shouldUseGPUPointCloud(count)
+    ) {
+      bridge.useGPUSort = true;
+    }
     // Compute squared distances from camera to each point.
     // For now, this is a placeholder — actual position data access
     // depends on whether the parsed content has CPU-side positions.
     // The bridge.sortByDistance call is correct and will dispatch
     // to GPU when useGPUSort is true and context supports compute.
-    const context = frameState.context;
     bridge.sortByDistance(that._sortDistSq, count, that._sortIndices, context);
   }
 

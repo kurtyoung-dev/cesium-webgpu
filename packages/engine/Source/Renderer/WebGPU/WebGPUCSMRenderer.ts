@@ -17,19 +17,110 @@
 
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import defined from "../../Core/defined.js";
+import WebGPUBuffer from "./WebGPUBuffer.js";
+import {
+  _getOrCreateCastPipeline,
+  _inferShadowLayoutKey,
+  getShadowCastVariant,
+} from "./WebGPUShadowMapRenderer.js";
 import type { DebugStatsObject } from "../GraphicsContext.js";
+
+// Re-declare the Matrix4 / Cartesian3 shapes we actually touch so the
+// file doesn't depend on the ambient Cesium* globals (those aren't
+// defined in every consumer context). These match the fields of
+// Cesium's Core/Matrix4 and Core/Cartesian3.
+type CesiumMatrix4 = number[] | Float64Array | Float32Array;
+type CesiumCartesian3 = { x: number; y: number; z: number };
 
 /** Default cascade count. */
 const DEFAULT_CASCADE_COUNT = 4;
 
-/** Default resolution per cascade layer. */
-const DEFAULT_CASCADE_RESOLUTION = 2048;
+/**
+ * Default resolution per cascade layer. 1024 balances quality and VRAM:
+ * 1024² × 4 layers × 4B (depth32float) = 16 MB, vs 64 MB at 2048.
+ * Mobile / integrated-GPU users can drop to 512 (4 MB). High-end
+ * desktop setups can push to 2048 or 4096 when the artifact budget
+ * demands sharper cascade-3 shadows. Set via `scene.useCascadedShadowMaps`
+ * → constructed through `WebGPUContext._initCSMRenderer`, which passes
+ * through the `resolution` field from `scene.cascadedShadowMapResolution`
+ * when supplied.
+ */
+const DEFAULT_CASCADE_RESOLUTION = 1024;
+const MIN_CASCADE_RESOLUTION = 256;
+const MAX_CASCADE_RESOLUTION = 4096;
 
 /** Lambda blend factor for split distribution (0 = uniform, 1 = logarithmic). */
 const DEFAULT_LAMBDA = 0.7;
 
 /** Blend band as fraction of cascade width (for seam hiding). */
 const DEFAULT_BLEND_BAND = 0.05;
+
+/**
+ * Per-cascade cast UBO size. Matches `SHADOW_UNIFORM_SIZE` over in
+ * WebGPUShadowMapRenderer.js (same struct layout: VP + RTE camera +
+ * biases), but bumped to 128 bytes for alignment. Keeping the shape
+ * identical lets CSM reuse the existing per-vertex-layout cast
+ * pipelines without a second compile.
+ */
+export const CSM_CAST_UBO_SIZE = 128;
+
+/**
+ * Scratch EncodedCartesian3 reused across cast-pass invocations. Not
+ * thread-safe; this is fine for the single-threaded main-frame path
+ * but worth flagging if the renderer ever moves to a worker.
+ */
+// EncodedCartesian3's `.d.ts` declares `high: Cartesian3; low: Cartesian3;`
+// directly, so no cast is needed — this is just a scratch instance reused
+// across frames to avoid per-frame allocation in the RTE encode path.
+const _scratchEncodedCamera = new EncodedCartesian3();
+
+/**
+ * Scratch 3-vector reused across the cascade loop in `computeCascadeVPs`
+ * to avoid per-frame allocation of the snapped center. FP64 because the
+ * basis projection (center · side) at Earth scale involves 6.4M-scale
+ * dot products that need the full precision to keep the snap bit-stable.
+ */
+const _scratchSnappedCenter = new Float64Array(3);
+
+/**
+ * Duck-typed shape of a cast-compatible draw command. Mirrors the
+ * fields `WebGPUShadowMapRenderer.renderShadowCastPass` reads. We
+ * duck-type rather than import `WebGPUDrawCommand` here to avoid
+ * pulling the entire rendering-command type surface into the CSM
+ * module just for this one call site.
+ */
+interface CastCommandShape {
+  vertexBuffers?: ReadonlyArray<unknown>;
+  _vertexBuffer?: unknown;
+  vertexBuffer?: unknown;
+  vertexStride?: number;
+  _vertexStride?: number;
+  indexBuffer?: unknown;
+  _indexBuffer?: unknown;
+  indexFormat?: GPUIndexFormat;
+  _indexFormat?: GPUIndexFormat;
+  indexCount?: number;
+  _indexCount?: number;
+  vertexCount?: number;
+  _vertexCount?: number;
+  instanceCount?: number;
+  _shadowCastLayout?: string;
+  // Slice 2 — per-command extra bindings (populated by WebGPUModelRenderer
+  // when the command's variant declares `extraBindings`). The CSM cast
+  // loop reads these via the variant's `perCommandBindingFields` names.
+  _shadowCastModelUB?: unknown;
+  _shadowCastJointMatricesSB?: unknown;
+  _shadowCastInstancingSB?: unknown;
+  _shadowCastInstanceVB?: unknown;
+  // Per-cascade bind-group cache. Indexed by cascade; each entry is the
+  // GPUBindGroup binding this command's per-command extras to the
+  // matching cascade's shared cast UBO. Layout key is tracked in parallel
+  // so a variant change (unlikely but defensive) rebuilds the cache.
+  _shadowCastCSMBindGroups?: Array<GPUBindGroup | undefined>;
+  _shadowCastCSMBindGroupKeys?: Array<string | undefined>;
+}
 
 export interface CSMConfig {
   cascadeCount?: number;
@@ -43,10 +134,24 @@ export interface CSMConfig {
 interface CascadeData {
   splitNear: number;
   splitFar: number;
+  // World-space light VP. Kept for diagnostics/debug snapshots. NOT uploaded
+  // to the GPU — the RTE-aware form below is what cast + receive shaders consume.
   viewProjection: Float32Array;
+  // RTE-aware light VP = VP_world * T(+cameraWC). Applied on the GPU as
+  //   clipPos = VP_RTE * vec4<f32>(eyePos, 1.0)
+  // where eyePos = (positionHigh - camHigh) + (positionLow - camLow).
+  // This avoids the ~1m FP32 quantization that occurs when reconstructing
+  // worldPos = positionHigh + positionLow at Earth scale (6.37M m radius).
+  viewProjectionRTE: Float32Array;
   sphereCenter: Float32Array;
   sphereRadius: number;
 }
+
+// Base per-cascade depth-bias constants. Cascade 0 (tightest) gets the
+// smallest bias; larger cascades scale with sphere-radius ratio so the
+// NDC-depth bias tracks the cascade's world-space extent.
+export const BASE_MIN_BIAS = 0.00005;
+export const BASE_MAX_SLOPE_BIAS = 0.0005;
 
 export class WebGPUCSMRenderer {
   private _device: GPUDevice | null = null;
@@ -73,6 +178,25 @@ export class WebGPUCSMRenderer {
   // Diagnostic counters
   private _castDispatches = 0;
 
+  // Cast-pass-specific lazy resources. Allocated on first cast pass
+  // rather than in initialize() so scenes that toggle CSM on later
+  // don't pay upfront.
+  private _cascadeCastBuffers: GPUBuffer[] | null = null;
+  private _cascadeCastBufferData: Float32Array[] | null = null;
+  private _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null = null;
+  /**
+   * Shared pipeline cache passed to the cross-module cast-pipeline
+   * factory. Holds the compiled per-vertex-layout pipelines keyed by
+   * layout name. Separate from `shadowMap._webgpuCache` so CSM and
+   * single-shadow-map paths have independent caches.
+   */
+  private _sharedPipelineCache: {
+    castPipelines: Map<
+      string,
+      { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
+    >;
+  } | null = null;
+
   // Scratch objects
   private static _scratchCenter = new Cartesian3();
   private static _scratchCorners = new Array(8)
@@ -82,24 +206,36 @@ export class WebGPUCSMRenderer {
 
   constructor(config?: CSMConfig) {
     this._cascadeCount = config?.cascadeCount ?? DEFAULT_CASCADE_COUNT;
-    this._resolution = config?.resolution ?? DEFAULT_CASCADE_RESOLUTION;
+    // Clamp the requested resolution into [MIN, MAX]. Power-of-two
+    // isn't required by WebGPU for depth32float arrays, so we leave
+    // non-PoT values alone — callers can pass 1536 for a 9 MB variant
+    // if they want. Round any non-integer values down.
+    const requested = config?.resolution ?? DEFAULT_CASCADE_RESOLUTION;
+    this._resolution = Math.max(
+      MIN_CASCADE_RESOLUTION,
+      Math.min(MAX_CASCADE_RESOLUTION, Math.floor(requested)),
+    );
     this._lambda = config?.lambda ?? DEFAULT_LAMBDA;
     this._blendBand = config?.blendBand ?? DEFAULT_BLEND_BAND;
     this._maxShadowDistance = config?.maxShadowDistance ?? 100000;
     this.enabled = config?.enabled ?? false;
 
     // Cascade params UBO layout:
-    //   4 × mat4 (cascade VPs) = 256 floats
-    //   4 × f32  (split distances) = 4 floats
-    //   4 × f32  (blend params) = 4 floats
-    // Total: 264 floats = 1056 bytes → round to 1088 (256-aligned)
-    this._cascadeParamsData = new Float32Array(264);
+    //   4 × mat4 (cascade VP_RTE matrices)  = 256 floats   offset 0
+    //   vec4  cascadeSplits                 =   4 floats   offset 256
+    //   vec4  blendBands                    =   4 floats   offset 260
+    //   vec4  cascadeMinBias                =   4 floats   offset 264
+    //   vec4  cascadeMaxSlopeBias           =   4 floats   offset 268
+    // Total: 272 floats = 1088 bytes (256-aligned, matches
+    // CSM_PARAMS_PLACEHOLDER_BYTES in WebGPUEffectsBindGroup).
+    this._cascadeParamsData = new Float32Array(272);
 
     for (let i = 0; i < this._cascadeCount; i++) {
       this._cascades.push({
         splitNear: 0,
         splitFar: 0,
         viewProjection: new Float32Array(16),
+        viewProjectionRTE: new Float32Array(16),
         sphereCenter: new Float32Array(3),
         sphereRadius: 0,
       });
@@ -185,48 +321,104 @@ export class WebGPUCSMRenderer {
 
   /**
    * Fit a bounding sphere around each cascade's frustum slice and
-   * compute the orthographic light VP matrix.
+   * compute a proper light-space orthographic VP matrix.
    *
-   * @param cameraViewMatrix Camera's view matrix.
-   * @param cameraProjection Camera's projection matrix.
-   * @param lightDirection Normalized world-space light direction.
+   * The math (per cascade):
+   *
+   *   1. Extract the 8 world-space corners of the sub-frustum bounded
+   *      by `[splitNear, splitFar]` from the camera's position + basis
+   *      + frustum FOV.  We use the CAMERA BASIS directly rather than
+   *      inverse-projecting NDC corners; the basis form is more stable
+   *      under the wide near-far ratios Cesium uses (1 m → 100 km).
+   *   2. Fit a bounding sphere around those 8 corners (center-of-mass
+   *      + max distance). Sphere fit is rotation-invariant — a plain
+   *      AABB fit would make shadow texels swim when the camera
+   *      rotates.
+   *   3. Build a light-space view matrix: lookAt from
+   *      (center - lightDir * 2 * radius) toward center.
+   *   4. Build an ortho projection with left/right/bottom/top at
+   *      `±radius`, near/far at `0..3*radius`.  Result is an
+   *      axis-aligned box in light space that encloses the sphere.
+   *   5. VP = proj × view. Results stored column-major, matching
+   *      Cesium's Matrix4 convention.
+   *
+   * Slice 2 adds texel-snap stabilization (snap the sphere center to
+   * a shadow-map-texel grid in light space, eliminating the residual
+   * shimmer under slow camera motion).
+   *
+   * @param camera Camera shape — supplies position, basis vectors, fovy, aspect.
+   * @param lightDirection Unit vector FROM surface TOWARD light (matches
+   *                       `ShadowMap.lightDirectionEC`).
    */
   computeCascadeVPs(
-    cameraViewMatrix: CesiumMatrix4,
-    cameraProjection: CesiumMatrix4,
+    camera: {
+      positionWC: CesiumCartesian3;
+      directionWC: CesiumCartesian3;
+      upWC: CesiumCartesian3;
+      rightWC: CesiumCartesian3;
+      frustum: { fovy?: number; aspectRatio?: number };
+    },
     lightDirection: CesiumCartesian3,
   ): void {
-    // Pack cascade VP matrices + splits into the params buffer.
+    const camX = camera.positionWC.x;
+    const camY = camera.positionWC.y;
+    const camZ = camera.positionWC.z;
+
+    // First pass: compute world-space VPs + sphere radii so we can pick the
+    // reference cascade-0 radius for bias scaling below.
     for (let c = 0; c < this._cascadeCount; c++) {
       const cascade = this._cascades[c];
+      const corners = _computeFrustumCornersWorldSpace(
+        camera,
+        cascade.splitNear,
+        cascade.splitFar,
+      );
+      const { center, radius } = _fitBoundingSphere(corners);
 
-      // Compute bounding sphere radius from the split distances.
-      // This is a simplified fit — a real implementation would
-      // extract NDC frustum corners and compute a tight sphere.
-      const range = cascade.splitFar - cascade.splitNear;
-      cascade.sphereRadius = range * 0.5;
-      cascade.sphereCenter[0] = 0;
-      cascade.sphereCenter[1] = 0;
-      cascade.sphereCenter[2] = -(cascade.splitNear + cascade.sphereRadius);
+      // Texel-snap stabilization. Quantize the sphere center to the
+      // shadow-texel grid in light space so static edges don't crawl
+      // across sub-texel boundaries as the camera moves. See
+      // `snapToTexelGrid` for the math; basis is stable across camera
+      // motion so this is a world-grid-locked quantization, not a
+      // camera-relative one.
+      const snapped = _scratchSnappedCenter;
+      snapToTexelGrid(
+        center,
+        radius,
+        lightDirection,
+        this._resolution,
+        snapped,
+      );
+      cascade.sphereCenter[0] = snapped[0];
+      cascade.sphereCenter[1] = snapped[1];
+      cascade.sphereCenter[2] = snapped[2];
+      cascade.sphereRadius = radius;
 
-      // Build orthographic light VP matrix for this cascade.
-      // This is a simplified placeholder — production implementation
-      // needs proper frustum corner extraction + bounding sphere fit +
-      // texel snap stabilization.
-      const r = cascade.sphereRadius;
-      for (let i = 0; i < 16; i++) {
-        cascade.viewProjection[i] = i % 5 === 0 ? 1 : 0;
-      }
-      // Scale to [-r, r] orthographic range.
-      cascade.viewProjection[0] = 1 / r;
-      cascade.viewProjection[5] = 1 / r;
-      cascade.viewProjection[10] = -1 / (2 * r);
-      cascade.viewProjection[14] = -0.5;
+      _computeCascadeVPMatrix(
+        snapped,
+        radius,
+        lightDirection,
+        cascade.viewProjection,
+      );
 
-      // Pack into UBO: cascade VP at offset c*16, cascade split at 256+c
+      // Derive RTE-aware VP by pre-cancelling the camera translation:
+      //   VP_RTE = VP_world * T(+cameraWC)
+      // Columns 0..2 are unchanged; column 3 absorbs the camera.
+      // CameraWC is ~6.3M at Earth scale; the multiply uses JS `number`
+      // (FP64) so the 6.3M scale values cancel cleanly inside VP's
+      // translation before any FP32 storage.
+      _applyCameraTranslationToVP(
+        cascade.viewProjection,
+        camX,
+        camY,
+        camZ,
+        cascade.viewProjectionRTE,
+      );
+
+      // Pack VP_RTE into UBO at offset c*16.
       const vpOffset = c * 16;
       for (let i = 0; i < 16; i++) {
-        this._cascadeParamsData[vpOffset + i] = cascade.viewProjection[i];
+        this._cascadeParamsData[vpOffset + i] = cascade.viewProjectionRTE[i];
       }
     }
 
@@ -239,6 +431,17 @@ export class WebGPUCSMRenderer {
     for (let c = 0; c < this._cascadeCount; c++) {
       const range = this._cascades[c].splitFar - this._cascades[c].splitNear;
       this._cascadeParamsData[260 + c] = range * this._blendBand;
+    }
+
+    // Pack per-cascade depth-bias constants at offsets 264 (minBias) and
+    // 268 (maxSlopeBias). Both scale with sphere-radius ratio against
+    // cascade 0, so the NDC-depth bias stays proportional to the cascade's
+    // orthographic depth range (fn = 3 * r inside _computeCascadeVPMatrix).
+    const refRadius = Math.max(1.0, this._cascades[0].sphereRadius);
+    for (let c = 0; c < this._cascadeCount; c++) {
+      const scale = Math.max(1.0, this._cascades[c].sphereRadius / refRadius);
+      this._cascadeParamsData[264 + c] = BASE_MIN_BIAS * scale;
+      this._cascadeParamsData[268 + c] = BASE_MAX_SLOPE_BIAS * scale;
     }
 
     // Upload to GPU.
@@ -284,6 +487,370 @@ export class WebGPUCSMRenderer {
   }
 
   /**
+   * Number of cascades this renderer is configured for. Useful for
+   * shader-side branch tuning and debug snapshots.
+   */
+  get cascadeCount(): number {
+    return this._cascadeCount;
+  }
+
+  /**
+   * Resolution (pixels per side) of each cascade's depth texture layer.
+   * Used by the texel-snap stabilization math so specs + diagnostics can
+   * reason about the shadow-grid size without poking at private state.
+   */
+  get cascadeResolution(): number {
+    return this._resolution;
+  }
+
+  /**
+   * Run the cast pass for every cascade. Each cascade renders the
+   * shadow-casting commands into its own array-layer of the cascade
+   * depth texture, using a per-cascade uniform buffer that packs
+   * `{ lightVP, encodedCameraHigh/Low, biases }` — the same layout
+   * the single-shadow-map path uses, so every registered cast-variant
+   * pipeline (`rte24`, `p12`, `quantized12`, `modelP12`,
+   * `modelInstancedSB`, `modelSkinned`) works without modification.
+   *
+   * Slice 1 scope: only `rte24` commands are dispatched. Other
+   * variants hit the same `_inferShadowLayoutKey` logic as the
+   * single-shadow-map path and are silently skipped with a one-time
+   * warning — slice 2 wires them all up.
+   *
+   * @param encoder Active command encoder (one pass per cascade is
+   *                 recorded into it).
+   * @param castCommands Shadow-casting draw commands for this frame.
+   * @param cameraPositionWC Current camera world-space position; packed
+   *                         into the RTE camera fields of each cascade's UBO.
+   */
+  renderCastPass(
+    encoder: GPUCommandEncoder,
+    castCommands: ReadonlyArray<unknown>,
+    cameraPositionWC: CesiumCartesian3,
+  ): void {
+    if (
+      !this._device ||
+      !this.enabled ||
+      !this._cascadeTexture ||
+      this._cascadeViews.length !== this._cascadeCount ||
+      castCommands.length === 0
+    ) {
+      return;
+    }
+    this._castDispatches++;
+
+    // Lazy-allocate per-cascade cast UBOs the first time we cast.
+    // The layout matches WebGPUShadowMapRenderer's existing UBO
+    // (SHADOW_UNIFORM_SIZE = 128 bytes) so every registered cast
+    // pipeline's bind-group layout is compatible without a second
+    // pipeline build.
+    if (!this._cascadeCastBuffers) {
+      this._cascadeCastBuffers = [];
+      this._cascadeCastBufferData = [];
+      this._cascadeCastBindGroups = [];
+      for (let i = 0; i < this._cascadeCount; i++) {
+        const buf = WebGPUBuffer.createUniformBuffer(
+          this._device,
+          CSM_CAST_UBO_SIZE,
+          `CSM_Cascade_${i}_CastUBO`,
+        );
+        this._cascadeCastBuffers.push(buf.buffer);
+        this._cascadeCastBufferData.push(
+          new Float32Array(CSM_CAST_UBO_SIZE / 4),
+        );
+        this._cascadeCastBindGroups.push(new Map());
+      }
+    }
+
+    // A per-renderer cache object that the shared cast-pipeline factory
+    // stashes its compiled pipelines on. Using a fresh object (not
+    // `shadowMap._webgpuCache`) keeps CSM pipeline state separate from
+    // the single-shadow-map path, so flipping the scene toggle doesn't
+    // cross-contaminate caches.
+    if (!this._sharedPipelineCache) {
+      this._sharedPipelineCache = {
+        castPipelines: new Map<
+          string,
+          {
+            pipeline: GPURenderPipeline;
+            bgl: GPUBindGroupLayout;
+          }
+        >(),
+      };
+    }
+
+    // RTE-encoded camera (same as single-shadow-map path).
+    const enc = _scratchEncodedCamera;
+    enc.high = enc.high ?? new Cartesian3();
+    enc.low = enc.low ?? new Cartesian3();
+    EncodedCartesian3.fromCartesian(
+      new Cartesian3(
+        cameraPositionWC.x,
+        cameraPositionWC.y,
+        cameraPositionWC.z,
+      ),
+      enc,
+    );
+
+    const refRadius = Math.max(1.0, this._cascades[0].sphereRadius);
+    for (let ci = 0; ci < this._cascadeCount; ci++) {
+      const cascade = this._cascades[ci];
+      const data = this._cascadeCastBufferData![ci];
+      // Pack: lightVP_RTE (16) + camHigh+pad (4) + camLow+pad (4) + biases (4) = 28 floats.
+      // The cast shader multiplies this VP by the camera-relative position
+      // (posRTE = posHigh - camHigh + posLow - camLow), so the matrix MUST
+      // be the RTE-aware form, not the world-space one. See ShadowMap.wgsl.
+      for (let k = 0; k < 16; k++) {
+        data[k] = cascade.viewProjectionRTE[k];
+      }
+      data[16] = enc.high.x;
+      data[17] = enc.high.y;
+      data[18] = enc.high.z;
+      data[19] = 0;
+      data[20] = enc.low.x;
+      data[21] = enc.low.y;
+      data[22] = enc.low.z;
+      data[23] = 0;
+      // Per-cascade depth bias scales with cascade extent. Tight cascade
+      // 0 gets BASE_MIN_BIAS; larger cascades scale proportionally so the
+      // ortho-projected NDC bias tracks world-space distance uniformly.
+      const scale = Math.max(1.0, cascade.sphereRadius / refRadius);
+      data[24] = BASE_MIN_BIAS * scale;
+      data[25] = 0.0; // normalBias (reserved — slope bias lives receive-side)
+      data[26] = 0;
+      data[27] = 0;
+      this._device.queue.writeBuffer(
+        this._cascadeCastBuffers![ci],
+        0,
+        data.buffer,
+        data.byteOffset,
+        CSM_CAST_UBO_SIZE,
+      );
+
+      const pass = encoder.beginRenderPass({
+        label: `CSM_Cascade_${ci}_CastPass`,
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this._cascadeViews[ci],
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+
+      for (const rawCmd of castCommands) {
+        const cmd = rawCmd as CastCommandShape;
+        if (!cmd) continue;
+
+        // Resolve vertex buffer + stride, matching the single-shadow-
+        // map cast-pass resolution. Same shape + same fallbacks.
+        //
+        // `vertexBuffers[0]` is either a wrapper `{buffer, arrayStride}`
+        // or a bare `GPUBuffer`. Type it as the union up front so the
+        // branches narrow without repeated inline casts.
+        type VbSlot = GPUBuffer | { buffer?: GPUBuffer; arrayStride?: number };
+        let vb: GPUBuffer | undefined;
+        let vbStride: number | undefined;
+        if (cmd.vertexBuffers && cmd.vertexBuffers.length > 0) {
+          const first = cmd.vertexBuffers[0] as VbSlot;
+          if ("buffer" in first && first.buffer) {
+            vb = first.buffer;
+            vbStride = first.arrayStride ?? cmd.vertexStride;
+          } else {
+            vb = first as GPUBuffer;
+            vbStride = cmd.vertexStride;
+          }
+        } else if (cmd._vertexBuffer) {
+          const vbRef = cmd._vertexBuffer as { buffer?: GPUBuffer };
+          vb = defined(vbRef.buffer)
+            ? vbRef.buffer
+            : (cmd._vertexBuffer as GPUBuffer);
+          vbStride = cmd._vertexStride ?? cmd.vertexStride;
+        } else if (cmd.vertexBuffer) {
+          const vbRef = cmd.vertexBuffer as { buffer?: GPUBuffer };
+          vb = defined(vbRef.buffer)
+            ? vbRef.buffer
+            : (cmd.vertexBuffer as GPUBuffer);
+          vbStride = cmd.vertexStride;
+        } else {
+          continue;
+        }
+        if (!vb) continue;
+
+        // Slice 2 — accept every registered variant that the single-
+        // shadow-map path knows about. The pipeline factory (shared with
+        // WebGPUShadowMapRenderer via `_getOrCreateCastPipeline`) compiles
+        // at first use; subsequent frames hit the per-cascade bind-group
+        // cache. See SHADOW_CAST_VARIANTS in WebGPUShadowMapRenderer.js
+        // for the canonical list (rte24, p12, modelP12, modelInstanced,
+        // modelInstancedSB, quantized12, modelSkinned).
+        const layoutKey = _inferShadowLayoutKey(cmd, vbStride);
+        if (layoutKey === null) continue;
+
+        const variant = getShadowCastVariant(layoutKey);
+        if (!variant) continue;
+
+        const pipelineEntry = _getOrCreateCastPipeline(
+          this._device,
+          this._sharedPipelineCache,
+          layoutKey,
+          vbStride,
+        );
+        if (!pipelineEntry) continue;
+
+        const extraBindings = (
+          variant as {
+            extraBindings?: GPUBindGroupLayoutEntry[];
+          }
+        ).extraBindings;
+        const perCommandFields = (
+          variant as {
+            perCommandBindingFields?: string[];
+          }
+        ).perCommandBindingFields;
+        const hasExtraBindings =
+          Array.isArray(extraBindings) && extraBindings.length > 0;
+
+        // Binding 0 is always the per-cascade cast UBO. Variants with
+        // `extraBindings` add per-command buffers at bindings 1..n
+        // (modelP12: modelMatrix UB; modelInstancedSB: modelMatrix UB +
+        // instancing SB; modelSkinned: modelMatrix UB + joint-matrices
+        // SB). We cache shared bind groups on the CSM renderer and
+        // per-command bind groups on the command (indexed by cascade).
+        let bg: GPUBindGroup | undefined;
+        if (!hasExtraBindings) {
+          bg = this._cascadeCastBindGroups![ci].get(layoutKey);
+          if (!bg) {
+            bg = this._device.createBindGroup({
+              label: `CSM_Cascade_${ci}_CastBG_${layoutKey}`,
+              layout: pipelineEntry.bgl,
+              entries: [
+                {
+                  binding: 0,
+                  resource: { buffer: this._cascadeCastBuffers![ci] },
+                },
+              ],
+            });
+            this._cascadeCastBindGroups![ci].set(layoutKey, bg);
+          }
+        } else {
+          const fields = perCommandFields ?? [];
+          const extraEntries: GPUBindGroupEntry[] = [];
+          let missingBinding = false;
+          for (let fi = 0; fi < fields.length; fi++) {
+            const field = fields[fi];
+            // `field` is a runtime-provided property name from the variant's
+            // `vertexBufferSourceSlots` config; indexing by string requires
+            // a Record view but not the `unknown` intermediate.
+            const source = (cmd as Record<string, unknown>)[field];
+            const extraBinding = extraBindings![fi];
+            if (!defined(source)) {
+              missingBinding = true;
+              break;
+            }
+            const raw = defined((source as { buffer?: GPUBuffer }).buffer)
+              ? (source as { buffer: GPUBuffer }).buffer
+              : (source as GPUBuffer);
+            extraEntries.push({
+              binding: extraBinding.binding,
+              resource: { buffer: raw },
+            });
+          }
+          if (missingBinding) continue;
+
+          if (!cmd._shadowCastCSMBindGroups) {
+            cmd._shadowCastCSMBindGroups = new Array(this._cascadeCount);
+            cmd._shadowCastCSMBindGroupKeys = new Array(this._cascadeCount);
+          }
+          bg = cmd._shadowCastCSMBindGroups[ci];
+          if (!bg || cmd._shadowCastCSMBindGroupKeys![ci] !== layoutKey) {
+            bg = this._device.createBindGroup({
+              label: `CSM_Cascade_${ci}_CastBG_${layoutKey}_cmd`,
+              layout: pipelineEntry.bgl,
+              entries: [
+                {
+                  binding: 0,
+                  resource: { buffer: this._cascadeCastBuffers![ci] },
+                },
+                ...extraEntries,
+              ],
+            });
+            cmd._shadowCastCSMBindGroups[ci] = bg;
+            cmd._shadowCastCSMBindGroupKeys![ci] = layoutKey;
+          }
+        }
+
+        pass.setPipeline(pipelineEntry.pipeline);
+        pass.setBindGroup(0, bg);
+
+        // Multi-VB variants (modelSkinned pulls pos + joints + weights
+        // from slots 0/5/6 of the model's 7-buffer layout) declare
+        // `vertexBufferSourceSlots`; single-VB variants (rte24, p12,
+        // modelP12, modelInstancedSB, quantized12) fall through to the
+        // default slot-0 bind. The classic `modelInstanced` variant
+        // takes a secondary VB via `_shadowCastInstanceVB`.
+        const sourceSlots = (
+          variant as {
+            vertexBufferSourceSlots?: number[];
+          }
+        ).vertexBufferSourceSlots;
+        if (sourceSlots && sourceSlots.length > 1) {
+          let allResolved = true;
+          for (let slotIdx = 0; slotIdx < sourceSlots.length; slotIdx++) {
+            const src = sourceSlots[slotIdx];
+            const srcEntry = cmd.vertexBuffers?.[src] as
+              | { buffer?: GPUBuffer }
+              | GPUBuffer
+              | undefined;
+            if (!defined(srcEntry)) {
+              allResolved = false;
+              break;
+            }
+            const rawVb = defined((srcEntry as { buffer?: GPUBuffer }).buffer)
+              ? (srcEntry as { buffer: GPUBuffer }).buffer
+              : (srcEntry as GPUBuffer);
+            pass.setVertexBuffer(slotIdx, rawVb);
+          }
+          if (!allResolved) continue;
+        } else {
+          pass.setVertexBuffer(0, vb);
+          if (layoutKey === "modelInstanced") {
+            const instSrc =
+              cmd._shadowCastInstanceVB ??
+              (cmd.vertexBuffers && cmd.vertexBuffers[1]);
+            if (!defined(instSrc)) continue;
+            const rawInstVb = defined(
+              (instSrc as { buffer?: GPUBuffer }).buffer,
+            )
+              ? (instSrc as { buffer: GPUBuffer }).buffer
+              : (instSrc as GPUBuffer);
+            pass.setVertexBuffer(1, rawInstVb);
+          }
+        }
+
+        const ibRef = (cmd.indexBuffer ?? cmd._indexBuffer) as
+          | { buffer?: GPUBuffer }
+          | GPUBuffer
+          | undefined;
+        if (ibRef) {
+          const ib =
+            (ibRef as { buffer?: GPUBuffer }).buffer ?? (ibRef as GPUBuffer);
+          const fmt: GPUIndexFormat =
+            cmd.indexFormat ?? cmd._indexFormat ?? "uint16";
+          const count = cmd.indexCount ?? cmd._indexCount ?? 0;
+          pass.setIndexBuffer(ib, fmt);
+          pass.drawIndexed(count, cmd.instanceCount ?? 1);
+        } else {
+          const count = cmd.vertexCount ?? cmd._vertexCount ?? 0;
+          pass.draw(count, cmd.instanceCount ?? 1);
+        }
+      }
+
+      pass.end();
+    }
+  }
+
+  /**
    * Get the cascade data for the debug snapshot.
    */
   getStatistics(): DebugStatsObject {
@@ -317,6 +884,486 @@ export class WebGPUCSMRenderer {
     }
     this._cascadeViews = [];
     this._cascadeArrayView = null;
+    // Cast-pass resources: WebGPUBuffer.createUniformBuffer returns a
+    // wrapper whose underlying GPUBuffer is GC-safe once references
+    // drop. We null the arrays; the GPU buffers release on next GC.
+    this._cascadeCastBuffers = null;
+    this._cascadeCastBufferData = null;
+    this._cascadeCastBindGroups = null;
+    this._sharedPipelineCache = null;
     this._device = null;
   }
 }
+
+// ─── Helpers (exported for specs) ────────────────────────────────────
+
+/**
+ * Extract the 8 world-space corners of the camera sub-frustum between
+ * view-space depths `nearDist` and `farDist`. Uses the camera's basis
+ * vectors + FOV directly rather than an inverse-NDC walk — more
+ * numerically stable under the wide near/far ranges Cesium scenes use.
+ *
+ * @returns Flat Float64Array of 24 floats (8 corners × xyz).
+ */
+export function computeFrustumCornersWorldSpace(
+  camera: {
+    positionWC: CesiumCartesian3;
+    directionWC: CesiumCartesian3;
+    upWC: CesiumCartesian3;
+    rightWC: CesiumCartesian3;
+    frustum: { fovy?: number; aspectRatio?: number };
+  },
+  nearDist: number,
+  farDist: number,
+): Float64Array {
+  return _computeFrustumCornersWorldSpace(camera, nearDist, farDist);
+}
+
+function _computeFrustumCornersWorldSpace(
+  camera: {
+    positionWC: CesiumCartesian3;
+    directionWC: CesiumCartesian3;
+    upWC: CesiumCartesian3;
+    rightWC: CesiumCartesian3;
+    frustum: { fovy?: number; aspectRatio?: number };
+  },
+  nearDist: number,
+  farDist: number,
+): Float64Array {
+  const fovy = camera.frustum.fovy ?? Math.PI / 3;
+  const aspect = camera.frustum.aspectRatio ?? 1;
+  const tanHalfFovY = Math.tan(fovy * 0.5);
+  const nearH = tanHalfFovY * nearDist;
+  const nearW = nearH * aspect;
+  const farH = tanHalfFovY * farDist;
+  const farW = farH * aspect;
+
+  const pos = camera.positionWC;
+  const fwd = camera.directionWC;
+  const up = camera.upWC;
+  const rt = camera.rightWC;
+
+  const out = new Float64Array(24);
+  const write = (
+    i: number,
+    dist: number,
+    w: number,
+    h: number,
+    sW: number,
+    sH: number,
+  ) => {
+    out[i * 3 + 0] = pos.x + fwd.x * dist + rt.x * sW * w + up.x * sH * h;
+    out[i * 3 + 1] = pos.y + fwd.y * dist + rt.y * sW * w + up.y * sH * h;
+    out[i * 3 + 2] = pos.z + fwd.z * dist + rt.z * sW * w + up.z * sH * h;
+  };
+  // Near plane: TL, TR, BL, BR
+  write(0, nearDist, nearW, nearH, -1, +1);
+  write(1, nearDist, nearW, nearH, +1, +1);
+  write(2, nearDist, nearW, nearH, -1, -1);
+  write(3, nearDist, nearW, nearH, +1, -1);
+  // Far plane
+  write(4, farDist, farW, farH, -1, +1);
+  write(5, farDist, farW, farH, +1, +1);
+  write(6, farDist, farW, farH, -1, -1);
+  write(7, farDist, farW, farH, +1, -1);
+  return out;
+}
+
+/**
+ * Fit a bounding sphere around a flat array of world-space points
+ * (length % 3 === 0). Uses center-of-mass + max-distance — not the
+ * tightest possible sphere (Welzl's is), but close enough for CSM
+ * fitting and much cheaper. Rotation-invariant — key property for
+ * keeping shadow texels stable under camera rotation.
+ */
+export function fitBoundingSphere(points: Float64Array): {
+  center: [number, number, number];
+  radius: number;
+} {
+  return _fitBoundingSphere(points);
+}
+
+function _fitBoundingSphere(points: Float64Array): {
+  center: [number, number, number];
+  radius: number;
+} {
+  const count = points.length / 3;
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (let i = 0; i < count; i++) {
+    cx += points[i * 3 + 0];
+    cy += points[i * 3 + 1];
+    cz += points[i * 3 + 2];
+  }
+  cx /= count;
+  cy /= count;
+  cz /= count;
+
+  let maxSq = 0;
+  for (let i = 0; i < count; i++) {
+    const dx = points[i * 3 + 0] - cx;
+    const dy = points[i * 3 + 1] - cy;
+    const dz = points[i * 3 + 2] - cz;
+    const dSq = dx * dx + dy * dy + dz * dz;
+    if (dSq > maxSq) maxSq = dSq;
+  }
+  return { center: [cx, cy, cz], radius: Math.sqrt(maxSq) };
+}
+
+/**
+ * Build a light-space orthographic VP matrix for a cascade given its
+ * bounding sphere and the (normalized) light direction FROM surface
+ * TOWARD light. Writes the result into `result` (column-major 16
+ * entries, Cesium Matrix4 convention).
+ */
+export function computeCascadeVPMatrix(
+  sphereCenter: [number, number, number],
+  sphereRadius: number,
+  lightDirection: CesiumCartesian3,
+  result: Float64Array | Float32Array,
+): Float64Array | Float32Array {
+  return _computeCascadeVPMatrix(
+    sphereCenter,
+    sphereRadius,
+    lightDirection,
+    result,
+  );
+}
+
+function _computeCascadeVPMatrix(
+  center: [number, number, number] | Float32Array | Float64Array,
+  radius: number,
+  lightDir: CesiumCartesian3,
+  result: Float64Array | Float32Array,
+): Float64Array | Float32Array {
+  const cx = center[0];
+  const cy = center[1];
+  const cz = center[2];
+  const r = Math.max(radius, 1.0);
+
+  // Eye pulled back along the light direction by 2r. Near plane sits
+  // just outside the sphere, far plane at 3r.
+  const eyeX = cx - lightDir.x * 2 * r;
+  const eyeY = cy - lightDir.y * 2 * r;
+  const eyeZ = cz - lightDir.z * 2 * r;
+
+  // Pick world-up that isn't parallel to the light direction. For a
+  // zenith-sun (light ≈ -up) we want world-Z up. For a horizon-sun we
+  // want world-Y up. Test the dot to pick.
+  let upX = 0;
+  let upY = 1;
+  let upZ = 0;
+  if (Math.abs(lightDir.y) > 0.95) {
+    upX = 0;
+    upY = 0;
+    upZ = 1;
+  }
+
+  // forward = normalize(center - eye)
+  let fX = cx - eyeX;
+  let fY = cy - eyeY;
+  let fZ = cz - eyeZ;
+  const fLen = Math.sqrt(fX * fX + fY * fY + fZ * fZ) || 1;
+  fX /= fLen;
+  fY /= fLen;
+  fZ /= fLen;
+
+  // side = normalize(cross(forward, up))
+  let sX = fY * upZ - fZ * upY;
+  let sY = fZ * upX - fX * upZ;
+  let sZ = fX * upY - fY * upX;
+  const sLen = Math.sqrt(sX * sX + sY * sY + sZ * sZ) || 1;
+  sX /= sLen;
+  sY /= sLen;
+  sZ /= sLen;
+
+  // up = cross(side, forward)
+  const uX = sY * fZ - sZ * fY;
+  const uY = sZ * fX - sX * fZ;
+  const uZ = sX * fY - sY * fX;
+
+  // Column-major view matrix. Cesium's convention: column 0 = right,
+  // column 1 = up, column 2 = -forward, column 3 = translation.
+  const view = [
+    sX,
+    uX,
+    -fX,
+    0,
+    sY,
+    uY,
+    -fY,
+    0,
+    sZ,
+    uZ,
+    -fZ,
+    0,
+    -(sX * eyeX + sY * eyeY + sZ * eyeZ),
+    -(uX * eyeX + uY * eyeY + uZ * eyeZ),
+    -(-fX * eyeX - fY * eyeY - fZ * eyeZ),
+    1,
+  ];
+
+  // WebGPU uses 0..1 depth range. Orthographic projection: L/R/B/T at
+  // ±r, near at 0, far at 3r. Column-major:
+  //   m00 = 2/(R-L), m11 = 2/(T-B), m22 = -1/(F-N), m32 = -N/(F-N)
+  const left = -r;
+  const right = r;
+  const bottom = -r;
+  const top = r;
+  const nearZ = 0;
+  const farZ = 3 * r;
+  const rl = right - left;
+  const tb = top - bottom;
+  const fn = farZ - nearZ;
+  const proj = [
+    2 / rl,
+    0,
+    0,
+    0,
+    0,
+    2 / tb,
+    0,
+    0,
+    0,
+    0,
+    -1 / fn,
+    0,
+    -(right + left) / rl,
+    -(top + bottom) / tb,
+    -nearZ / fn,
+    1,
+  ];
+
+  // VP = proj * view, column-major. result[col * 4 + row]
+  for (let j = 0; j < 4; j++) {
+    const v0 = view[j * 4 + 0];
+    const v1 = view[j * 4 + 1];
+    const v2 = view[j * 4 + 2];
+    const v3 = view[j * 4 + 3];
+    result[j * 4 + 0] =
+      proj[0] * v0 + proj[4] * v1 + proj[8] * v2 + proj[12] * v3;
+    result[j * 4 + 1] =
+      proj[1] * v0 + proj[5] * v1 + proj[9] * v2 + proj[13] * v3;
+    result[j * 4 + 2] =
+      proj[2] * v0 + proj[6] * v1 + proj[10] * v2 + proj[14] * v3;
+    result[j * 4 + 3] =
+      proj[3] * v0 + proj[7] * v1 + proj[11] * v2 + proj[15] * v3;
+  }
+  return result;
+}
+
+/**
+ * Pre-multiply a column-major 4×4 VP by a translation T(+cameraWC),
+ * producing VP_RTE such that:
+ *   VP_RTE * vec4(eyePos, 1) == VP_world * vec4(eyePos + cameraWC, 1)
+ *                            == VP_world * vec4(worldPos, 1)
+ *
+ * Columns 0..2 (rotation/scale) are copied verbatim; only column 3 changes.
+ * All math is in FP64 (JS `number`), so the 6.3M-magnitude cameraWC values
+ * cancel cleanly inside the view matrix's translation column before we
+ * down-cast to FP32 storage. This is the CPU half of the RTE precision
+ * fix — the GPU half is shaders that feed `eyePos` (not `worldPos`) into
+ * this matrix.
+ */
+export function applyCameraTranslationToVP(
+  vpWorld: Float32Array | Float64Array,
+  camX: number,
+  camY: number,
+  camZ: number,
+  result: Float32Array | Float64Array,
+): Float32Array | Float64Array {
+  return _applyCameraTranslationToVP(vpWorld, camX, camY, camZ, result);
+}
+
+function _applyCameraTranslationToVP(
+  vp: Float32Array | Float64Array,
+  camX: number,
+  camY: number,
+  camZ: number,
+  result: Float32Array | Float64Array,
+): Float32Array | Float64Array {
+  // Columns 0..2 are identical (T's top-left 3×3 is identity).
+  for (let i = 0; i < 12; i++) {
+    result[i] = vp[i];
+  }
+  // New column 3 = VP * [camX, camY, camZ, 1]^T. Column-major indexing:
+  // vp[col*4 + row], so column k row r is vp[k*4 + r].
+  result[12] = vp[0] * camX + vp[4] * camY + vp[8] * camZ + vp[12];
+  result[13] = vp[1] * camX + vp[5] * camY + vp[9] * camZ + vp[13];
+  result[14] = vp[2] * camX + vp[6] * camY + vp[10] * camZ + vp[14];
+  result[15] = vp[3] * camX + vp[7] * camY + vp[11] * camZ + vp[15];
+  return result;
+}
+
+/**
+ * CPU reference for the `rte24` shadow cast vertex shader math. Mirrors
+ * the WGSL body in `WebGPUShadowMapRenderer.js` (SHADOW_CAST_VARIANTS.rte24):
+ *
+ *   let rte = (pH - u.camH) + (pL - u.camL);
+ *   var pos = u.lightVP * vec4f(rte, 1.0);
+ *   pos.z += u.depthBias;
+ *
+ * This is the contract every Slice 2 cast-variant (p12, quantized12,
+ * modelP12, modelInstancedSB, modelSkinned) must preserve: the RTE
+ * subtract + `lightVP_RTE` multiply are invariant. Variant-specific
+ * vertex decompression happens BEFORE this step.
+ *
+ * Arithmetic runs in FP64 (JS `number`). Callers who want FP32 behavior
+ * should pass Float32Array inputs — intermediate values still promote to
+ * FP64 then round back on store. Using this helper in specs keeps the
+ * lightVP_RTE identity (VP_RTE * rte ≡ VP_world * worldPos) explicit.
+ *
+ * @param pHigh 3-component split-position high bits (world-scale)
+ * @param pLow 3-component split-position low bits (sub-meter residual)
+ * @param camHigh 3-component encoded camera high bits
+ * @param camLow 3-component encoded camera low bits
+ * @param lightVpRte Column-major 4×4 VP_RTE (use `applyCameraTranslationToVP`)
+ * @param depthBias Per-cascade ortho-NDC depth offset added to clip.z (matches
+ *   the WGSL `pos.z += u.depthBias`). WebGPUCSMRenderer stores the positive
+ *   scaled value `BASE_MIN_BIAS * (sphereRadius / cascade0Radius)` at
+ *   UBO float slot 24; pass 0 for the raw untouched projection.
+ * @param result 4-component clip-space output (x, y, z, w)
+ */
+/**
+ * Quantize the cascade sphere center to the shadow-texel grid in light
+ * space. This eliminates slow-motion shimmer on static edges: without
+ * snapping, a cascade that moves by 0.5m as the camera moves will shift
+ * its shadow texels by ~half a world-space texel, and every static edge
+ * crawls across sub-texel boundaries. Snapping locks the texel grid to
+ * the world so edges stay put until the camera moves by a full texel.
+ *
+ * Math:
+ *   1. Build the light-space basis (side, up) the same way
+ *      `_computeCascadeVPMatrix` does — it depends ONLY on `lightDir`
+ *      and the world-up fallback, NOT on the camera, so the basis is
+ *      stable across camera moves.
+ *   2. Project the raw center onto (side, up) to get its light-space
+ *      XY coordinates relative to the world origin.
+ *   3. Round each coordinate to the nearest multiple of
+ *      `texelWorld = 2 * radius / resolution` (the world-space extent
+ *      of one shadow texel in the ortho-projected cascade).
+ *   4. Re-express the snapped (xLS, yLS) back in world space via
+ *      `snapped = raw + (xLS' - xLS)*side + (yLS' - yLS)*up`.
+ *
+ * The light-space Z coordinate is intentionally left unsnapped — the
+ * ortho projection places the sphere at a fixed near/far position
+ * regardless, and snapping Z would just shift the near/far cutoff
+ * without improving shimmer.
+ *
+ * All math in FP64 (JS `number`). Texel-snapping is a pure position
+ * adjustment — it changes `center` by at most ~texelWorld, so bounding
+ * coverage is preserved (the same sphere, recentered within a texel).
+ *
+ * @param center Raw cascade sphere center (e.g., from `fitBoundingSphere`)
+ * @param radius Sphere radius (world units)
+ * @param lightDirection Normalized light direction (surface → light)
+ * @param resolution Cascade texture resolution (pixels per side)
+ * @param result Output snapped center (3-component)
+ * @returns `result` (filled in place)
+ */
+export function snapToTexelGrid(
+  center: ArrayLike<number>,
+  radius: number,
+  lightDirection: CesiumCartesian3,
+  resolution: number,
+  result: Float64Array | Float32Array | number[],
+): Float64Array | Float32Array | number[] {
+  // Same world-up fallback as `_computeCascadeVPMatrix` so the basis
+  // we build here matches exactly. If those two ever diverge the snap
+  // would quantize along the wrong axis and the texels would still crawl.
+  let upX = 0;
+  let upY = 1;
+  let upZ = 0;
+  if (Math.abs(lightDirection.y) > 0.95) {
+    upX = 0;
+    upY = 0;
+    upZ = 1;
+  }
+
+  // forward = normalize(lightDirection). (computeCascadeVPMatrix builds
+  // forward from `center - eye`, but `eye = center - 2r * lightDir`, so
+  // `center - eye = 2r * lightDir` and normalizing gives `lightDir`
+  // directly. Matches the basis `_computeCascadeVPMatrix` produces.)
+  let fX = lightDirection.x;
+  let fY = lightDirection.y;
+  let fZ = lightDirection.z;
+  const fLen = Math.sqrt(fX * fX + fY * fY + fZ * fZ) || 1;
+  fX /= fLen;
+  fY /= fLen;
+  fZ /= fLen;
+
+  // side = normalize(cross(forward, up))
+  let sX = fY * upZ - fZ * upY;
+  let sY = fZ * upX - fX * upZ;
+  let sZ = fX * upY - fY * upX;
+  const sLen = Math.sqrt(sX * sX + sY * sY + sZ * sZ) || 1;
+  sX /= sLen;
+  sY /= sLen;
+  sZ /= sLen;
+
+  // up' = cross(side, forward) — orthonormalized
+  const uX = sY * fZ - sZ * fY;
+  const uY = sZ * fX - sX * fZ;
+  const uZ = sX * fY - sY * fX;
+
+  const cx = center[0];
+  const cy = center[1];
+  const cz = center[2];
+
+  // Light-space XY of the raw center (relative to the world origin —
+  // the origin of the basis is stable frame-to-frame so the quantized
+  // coordinates correspond to fixed world-space texel centers).
+  const xLS = cx * sX + cy * sY + cz * sZ;
+  const yLS = cx * uX + cy * uY + cz * uZ;
+
+  const texelWorld = (2.0 * Math.max(radius, 1.0)) / Math.max(resolution, 1);
+  const xSnap = Math.round(xLS / texelWorld) * texelWorld;
+  const ySnap = Math.round(yLS / texelWorld) * texelWorld;
+
+  const dX = xSnap - xLS;
+  const dY = ySnap - yLS;
+
+  result[0] = cx + dX * sX + dY * uX;
+  result[1] = cy + dX * sY + dY * uY;
+  result[2] = cz + dX * sZ + dY * uZ;
+  return result;
+}
+
+export function computeCastClipPosition(
+  pHigh: ArrayLike<number>,
+  pLow: ArrayLike<number>,
+  camHigh: ArrayLike<number>,
+  camLow: ArrayLike<number>,
+  lightVpRte: ArrayLike<number>,
+  depthBias: number,
+  result: Float32Array | Float64Array | number[],
+): Float32Array | Float64Array | number[] {
+  const rx = pHigh[0] - camHigh[0] + (pLow[0] - camLow[0]);
+  const ry = pHigh[1] - camHigh[1] + (pLow[1] - camLow[1]);
+  const rz = pHigh[2] - camHigh[2] + (pLow[2] - camLow[2]);
+  result[0] =
+    lightVpRte[0] * rx +
+    lightVpRte[4] * ry +
+    lightVpRte[8] * rz +
+    lightVpRte[12];
+  result[1] =
+    lightVpRte[1] * rx +
+    lightVpRte[5] * ry +
+    lightVpRte[9] * rz +
+    lightVpRte[13];
+  result[2] =
+    lightVpRte[2] * rx +
+    lightVpRte[6] * ry +
+    lightVpRte[10] * rz +
+    lightVpRte[14] +
+    depthBias;
+  result[3] =
+    lightVpRte[3] * rx +
+    lightVpRte[7] * ry +
+    lightVpRte[11] * rz +
+    lightVpRte[15];
+  return result;
+}
+
+export default WebGPUCSMRenderer;

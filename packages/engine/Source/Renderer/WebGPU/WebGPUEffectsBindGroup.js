@@ -4,14 +4,19 @@
  * Creates and manages the combined shadow-receive + clipping-planes bind group
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
- * Bind group layout (7 bindings):
- *   0: EffectsUniforms  (uniform buffer, 144 bytes)
- *   1: Shadow depth      (texture_depth_2d)
- *   2: Shadow sampler    (sampler_comparison)
- *   3: Clipping texture  (texture_2d<f32>, rgba32float)
- *   4: Clipping sampler  (sampler)
- *   5: Polygon SDF tex   (texture_2d<f32>, r32float)
- *   6: Polygon SDF samp  (sampler, filtering)
+ * Bind group layout (12 bindings):
+ *   0: EffectsUniforms       (uniform buffer, 272 bytes)
+ *   1: Shadow depth          (texture_depth_2d)
+ *   2: Shadow sampler        (sampler_comparison)
+ *   3: Clipping texture      (texture_2d<f32>, rgba32float)
+ *   4: Clipping sampler      (sampler)
+ *   5: Polygon SDF tex       (texture_2d<f32>, r32float)
+ *   6: Polygon SDF samp      (sampler, filtering)
+ *   7: Atmosphere transmittance LUT (texture_2d<f32>, float)
+ *   8: Atmosphere inscatter LUT     (texture_2d<f32>, float)
+ *   9: Atmosphere LUT sampler       (sampler, filtering)
+ *   10: CSM params UBO              (CSMParams, 1088 bytes)
+ *   11: Cascade depth array         (texture_depth_2d_array, 4 layers)
  *
  * When no shadow map or clipping planes are active, placeholder resources
  * are used (1×1 depth=1.0, planeCount=0) so the bind group is always
@@ -55,16 +60,30 @@ import {
 // clip).
 // 240 → 256 bytes: added `atmosphereLutControl: vec4<f32>` at offset 240
 // to gate the LUT-sampled fog path in GlobeTerrain.wgsl (x=enable flag,
-// y=innerRadius, z=thickness, w=reserved). Landing on 256 also keeps us
-// at WebGPU's minUniformBufferBindingSize alignment boundary, which is
-// a nice-to-have for multi-bind-group layouts.
-const EFFECTS_UNIFORM_SIZE = 256;
+// y=innerRadius, z=thickness, w=reserved).
+// 256 → 272 bytes (CSM Slice 1): added `csmControl: vec4<f32>` at offset
+// 256. x = CSM enabled flag (>0.5 → sample cascade depth array via
+// binding 11 / CSMParams via binding 10; otherwise use the single-map
+// path at bindings 1/2). y/z/w reserved. Keeping the vec4 shape lets
+// later slices pack cascade count / moon-light flag without another
+// UBO-size bump. Stays aligned on a vec4 boundary.
+const EFFECTS_UNIFORM_SIZE = 272;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
 // Offset (in floats) of the atmosphereLutControl vec4 in the UBO data
 // array. `createEffectsBindGroup` / the globe surface renderer writes
 // into this slot when it has LUT resources to share.
 const ATMOSPHERE_LUT_CONTROL_OFFSET = 60; // 240 bytes / 4
+const CSM_CONTROL_OFFSET = 64; // 256 bytes / 4
 const CLIP_DPRIME_FLOAT_OFFSET = 28;
+
+// CSM params UBO size. Must match `WebGPUCSMRenderer._cascadeParamsData`
+// (264 floats = 1056 bytes, rounded to 1088 for 256-byte alignment) —
+// we only use this number as a validation minBindingSize hint. If the
+// placeholder diverges from the real buffer layout in the future, the
+// BGL minBindingSize guard on binding 10 will catch it at pipeline
+// creation time. Keep this in sync with the CSM renderer.
+const CSM_PARAMS_PLACEHOLDER_FLOATS = 264;
+const CSM_PARAMS_PLACEHOLDER_BYTES = 1088;
 
 // Cached per-device placeholder resources (shared across all primitives)
 const _placeholderCache = new WeakMap();
@@ -110,6 +129,20 @@ function getEffectsBindGroupLayout(device) {
     texture(8, Stage.FRAGMENT, { sampleType: "float" }),
     // Binding 9: shared filtering sampler for both LUT textures
     sampler(9, Stage.FRAGMENT),
+    // CSM Slice 1: Cascaded Shadow Map resources. Always present in the
+    // layout (with zero-filled placeholders when CSM is disabled) so we
+    // don't need per-feature pipeline variants — the shader branches on
+    // `effects.csmControl.x > 0.5` to decide whether to sample them.
+    // Binding 10: CSMParams UBO — 4 RTE-aware mat4 cascade VPs + split
+    //             distances + blend bands + per-cascade bias (minBias
+    //             + maxSlopeBias vec4s). Lives on `WebGPUCSMRenderer`
+    //             when active. 272 floats / 1088 bytes.
+    uniformBuffer(10, Stage.FRAGMENT),
+    // Binding 11: cascade depth array (4 layers of depth32float).
+    texture(11, Stage.FRAGMENT, {
+      sampleType: "depth",
+      viewDimension: "2d-array",
+    }),
   ]);
 
   return cache.bgl;
@@ -251,6 +284,65 @@ function getPlaceholderEffects(device) {
   });
   cache.placeholderLutSampler = lutSampler;
 
+  // CSM Slice 1 placeholders — always bound (even when CSM disabled)
+  // so pipelines can share one BGL. The shader's
+  // `effects.csmControl.x > 0.5` gate keeps these from being sampled
+  // when CSM is off.
+  //
+  // Placeholder CSMParams: 1088 bytes (matches `WebGPUCSMRenderer`'s
+  // `_cascadeParamsBuffer` size), zero-filled. A zero cascade VP
+  // projects every fragment to the origin, but csmControl.x=0 keeps
+  // the shader on the single-map path so this is never sampled.
+  const csmParamsPlaceholder = device.createBuffer({
+    label: "Placeholder CSM params",
+    size: CSM_PARAMS_PLACEHOLDER_BYTES,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(
+    csmParamsPlaceholder,
+    0,
+    new Float32Array(CSM_PARAMS_PLACEHOLDER_FLOATS),
+  );
+  cache.placeholderCsmParamsBuffer = csmParamsPlaceholder;
+
+  // Placeholder cascade depth array: 1×1×4 depth32float, cleared to 1.0
+  // (fully lit). Use a 4-layer texture to match the real CSM renderer's
+  // layout (bindings across backends can't vary arrayLayerCount between
+  // the placeholder and the active resource without creating a second
+  // BGL — WebGPU validates the layer count at bind time).
+  const csmDepthArrayTex = device.createTexture({
+    label: "Placeholder CSM cascade array 1x1x4",
+    size: [1, 1, 4],
+    format: "depth32float",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  // Clear every layer to 1.0 so the comparison sampler returns "lit".
+  for (let layer = 0; layer < 4; layer++) {
+    const layerClearEncoder = device.createCommandEncoder();
+    layerClearEncoder
+      .beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: csmDepthArrayTex.createView({
+            dimension: "2d",
+            baseArrayLayer: layer,
+            arrayLayerCount: 1,
+          }),
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      })
+      .end();
+    device.queue.submit([layerClearEncoder.finish()]);
+  }
+  cache.placeholderCsmDepthArrayTex = csmDepthArrayTex;
+  cache.placeholderCsmDepthArrayView = csmDepthArrayTex.createView({
+    dimension: "2d-array",
+    baseArrayLayer: 0,
+    arrayLayerCount: 4,
+  });
+
   // Uniform buffer with shadows disabled (darkness=1.0) and 0 clipping planes
   const ub = device.createBuffer({
     size: EFFECTS_UNIFORM_SIZE,
@@ -293,6 +385,8 @@ function getPlaceholderEffects(device) {
       { binding: 7, resource: lutPlaceholderTex.createView() },
       { binding: 8, resource: lutPlaceholderTex.createView() },
       { binding: 9, resource: lutSampler },
+      { binding: 10, resource: { buffer: csmParamsPlaceholder } },
+      { binding: 11, resource: cache.placeholderCsmDepthArrayView },
     ],
   });
 
@@ -319,6 +413,21 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  *   equations were authored in (world-space for globe terrain, model-space
  *   for primitives with non-identity modelMatrix). Required for the
  *   hardware clip-distances variant; safe to omit if not in use.
+ * @param {GPUTextureView} [options.atmosphereLutTransmittanceView] - Atmosphere
+ *   transmittance LUT (256×64 rgba16float) from the performance manager.
+ *   When both this and inscatter view are defined, the globe shader's
+ *   LUT-sampled fog path activates.
+ * @param {GPUTextureView} [options.atmosphereLutInscatterView] - Atmosphere
+ *   inscatter LUT (256×128 rgba16float) from the performance manager.
+ * @param {{inner?: number, outer?: number}} [options.atmosphereLutPlanetRadii]
+ *   - Planet radii (meters) for LUT altitude mapping. Defaults to WGS84
+ *   + 2.5% atmosphere thickness.
+ * @param {{enabled: boolean, paramsBuffer: GPUBuffer, cascadeArrayView: GPUTextureView}} [options.csm]
+ *   - CSM Slice 1: when present with `enabled === true`, binds the cascade
+ *   params UBO at binding 10 and the cascade depth array at binding 11,
+ *   setting `effects.csmControl.x = 1.0` so the shader routes through
+ *   `sampleCascadeShadow` instead of the single-map path. Lives on
+ *   `WebGPUCSMRenderer` when active.
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
@@ -334,6 +443,18 @@ function createEffectsBindGroup(device, frameState, options) {
   const atmosphereLutTransmittanceView =
     options?.atmosphereLutTransmittanceView;
   const atmosphereLutInscatterView = options?.atmosphereLutInscatterView;
+  // CSM Slice 1: optional cascade resources. When `csm.enabled === true`
+  // AND both `paramsBuffer` + `cascadeArrayView` are present, the shader
+  // sees `effects.csmControl.x = 1.0` and samples the cascade array at
+  // binding 11 using the `CSMParams` UBO at binding 10. Otherwise the
+  // placeholder resources are bound and the shader stays on the
+  // single-shadow-map path.
+  const csm = options?.csm;
+  const hasCsm =
+    defined(csm) &&
+    csm.enabled === true &&
+    defined(csm.paramsBuffer) &&
+    defined(csm.cascadeArrayView);
 
   const placeholder = getPlaceholderEffects(device);
   const bgl = getEffectsBindGroupLayout(device);
@@ -392,7 +513,13 @@ function createEffectsBindGroup(device, frameState, options) {
     defined(atmosphereLutInscatterView);
 
   // If no features are active, return the shared placeholder
-  if (!hasShadow && !hasClipping && !hasPolygonClipping && !hasAtmosphereLut) {
+  if (
+    !hasShadow &&
+    !hasClipping &&
+    !hasPolygonClipping &&
+    !hasAtmosphereLut &&
+    !hasCsm
+  ) {
     return placeholder;
   }
 
@@ -407,6 +534,17 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[17] = res.size;
     ud[18] = res.darkness;
     ud[19] = res.softShadows ? 1.0 : 0.0;
+  } else if (hasCsm) {
+    // CSM active without a legacy shadow map: the shader's
+    // `shadowDarkness >= 1.0` early-out would block cascade sampling,
+    // so default to Cesium's `ShadowMap.darkness = 0.3` convention.
+    // Callers that want a different value can wire it through
+    // `options.csm.darkness` in a future slice.
+    Matrix4.pack(Matrix4.IDENTITY, ud, 0);
+    ud[16] = 1.0;
+    ud[17] = 1.0;
+    ud[18] = csm?.darkness ?? 0.3;
+    ud[19] = 0.0;
   } else {
     Matrix4.pack(Matrix4.IDENTITY, ud, 0);
     ud[16] = 1.0;
@@ -482,6 +620,16 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 0] = 0.0;
   }
 
+  // CSM control block — x=1.0 tells GlobeTerrain's shadow branch to
+  // route through `sampleCascadeShadow` (binding 10 UBO + binding 11
+  // depth array) instead of the single-map path at bindings 1/2.
+  // Future slices pack cascade count into .y and moon-light flag
+  // into .z.
+  ud[CSM_CONTROL_OFFSET + 0] = hasCsm ? 1.0 : 0.0;
+  ud[CSM_CONTROL_OFFSET + 1] = 0.0;
+  ud[CSM_CONTROL_OFFSET + 2] = 0.0;
+  ud[CSM_CONTROL_OFFSET + 3] = 0.0;
+
   // Create per-frame uniform buffer
   const ub = device.createBuffer({
     size: EFFECTS_UNIFORM_SIZE,
@@ -527,6 +675,18 @@ function createEffectsBindGroup(device, frameState, options) {
           atmosphereLutInscatterView ?? pCache.placeholderLutTex.createView(),
       },
       { binding: 9, resource: pCache.placeholderLutSampler },
+      {
+        binding: 10,
+        resource: {
+          buffer: hasCsm ? csm.paramsBuffer : pCache.placeholderCsmParamsBuffer,
+        },
+      },
+      {
+        binding: 11,
+        resource: hasCsm
+          ? csm.cascadeArrayView
+          : pCache.placeholderCsmDepthArrayView,
+      },
     ],
   });
 
@@ -618,6 +778,12 @@ function updateEffectsUniforms(
     ud[ATMOSPHERE_LUT_CONTROL_OFFSET + 3] = 0.0;
   }
 
+  // CSM control — zero unless the caller rewrites via a full
+  // `createEffectsBindGroup` call. Toggling CSM on requires a new
+  // bind group (different resource bindings) so we intentionally
+  // don't flip this flag from the in-place update path.
+  ud[CSM_CONTROL_OFFSET + 0] = 0.0;
+
   device.queue.writeBuffer(uniformBuffer, 0, ud);
 }
 
@@ -627,6 +793,9 @@ export {
   createEffectsBindGroup,
   updateEffectsUniforms,
   EFFECTS_UNIFORM_SIZE,
+  ATMOSPHERE_LUT_CONTROL_OFFSET,
+  CSM_CONTROL_OFFSET,
+  CSM_PARAMS_PLACEHOLDER_BYTES,
 };
 
 export default {
@@ -635,4 +804,7 @@ export default {
   createEffectsBindGroup,
   updateEffectsUniforms,
   EFFECTS_UNIFORM_SIZE,
+  ATMOSPHERE_LUT_CONTROL_OFFSET,
+  CSM_CONTROL_OFFSET,
+  CSM_PARAMS_PLACEHOLDER_BYTES,
 };

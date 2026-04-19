@@ -1,0 +1,12 @@
+# Rust build output — regenerable via `node scripts/buildWasm.js`.
+target/
+
+# wasm-pack output directories. The runtime variant's `pkg/` and the
+# tooling variant's `pkg-tooling/` are both reproducible from the
+# checked-in Cargo.toml + src/ tree, so keeping them in git would just
+# mean syncing a ~1.5 MB blob every time the Rust code changes. The
+# VENDORED copies under `packages/engine/Source/ThirdParty/naga-wasm/`
+# and `Tools/shader-pipeline/naga-wasm-tools/` ARE checked in, since
+# those are what downstream consumers actually ship.
+pkg/
+pkg-tooling/

@@ -159,6 +159,14 @@ export {
   registerShaderTranslator,
   getActiveShaderTranslator,
   subscribeToShaderTranslatorChange,
+  // Preprocessors run BEFORE the translator and transform GLSL source
+  // in-place. Typical use: an app registers a preprocessor backed by
+  // Cesium's `ShaderSource` so stub-input GLSL that references
+  // `czm_*` builtins is combined with the builtins (inline) before
+  // naga sees it. Registration is opt-in — the stub works without a
+  // preprocessor for self-contained user GLSL.
+  registerShaderPreprocessor,
+  getActiveShaderPreprocessor,
   WGSLPassthroughTranslator,
   NotSupportedTranslator,
 } from "./WebGPUShaderTranslator.js";
@@ -167,6 +175,7 @@ export type {
   ShaderReflection,
   TranslatedShader,
   ShaderTranslator,
+  ShaderPreprocessor,
 } from "./WebGPUShaderTranslator.js";
 
 // Naga adapter. Users who run `npm install naga-wasm` call
@@ -178,6 +187,28 @@ export {
   isNagaReady,
   isNagaUnavailable,
 } from "./WebGPUNagaTranspiler.js";
+
+// Naga reflection → WebGPU BGL auto-derive. Pairs with the
+// `validate_wgsl` export from the vendored naga-wasm: call it on
+// translated WGSL, feed the JSON through `parseNagaReflection`, then
+// hand the resulting `NagaReflection` to
+// `buildBindGroupLayoutDescriptors`. The output descriptors drop
+// straight into `device.createBindGroupLayout(…)`.
+export {
+  parseNagaReflection,
+  buildBindGroupLayoutDescriptors,
+  // Program-level convenience: takes the compiled program's stage
+  // reflections and returns materialized GPUBindGroupLayout objects
+  // on the supplied device. Stage visibility is merged (VERTEX |
+  // FRAGMENT) per-binding automatically — same binding declared in
+  // both vertex + fragment ends up with both bits set.
+  buildBindGroupLayoutsFromProgram,
+} from "./WebGPUBindGroupReflection.js";
+export type {
+  NagaReflection,
+  NagaBinding,
+  BuildBindGroupLayoutsFromProgramOptions,
+} from "./WebGPUBindGroupReflection.js";
 
 /**
  * Vertex + fragment shader module pair returned from

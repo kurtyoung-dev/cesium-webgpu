@@ -72,6 +72,44 @@ function isGLSLShaderFile(absPath) {
  * exported surface is consumable without the WebGPU backend being
  * active. Aliasing them to empty stubs breaks the engine barrel's
  * named re-exports for variants that strip the WebGPU directory.
+ *
+ * ── How to add a new compat-surface file ──
+ *
+ * When you add a new file under Source/Renderer/WebGPU/ that is meant
+ * to be consumable from webgl-only builds (e.g. an extended shader
+ * translator, a new backend-neutral registry, or a Session-29-style
+ * `.d.ts` interop surface), add its path here. The entry matches by
+ * `String.prototype.includes` on the path WITHOUT extension, so both
+ * `.ts` and `.js` and `.d.ts` sibling resolutions all hit the same
+ * rule — no need for extension variants.
+ *
+ * Checklist before adding:
+ *   1. The file's RUNTIME code paths (not just types) must be safe to
+ *      execute in a webgl-only bundle. If it lazily imports a webgpu
+ *      dependency, guard that with `isWebGPUSupported()` or similar.
+ *   2. The file's default export must not throw at module-load time
+ *      if the WebGPU backend is inactive (module-load side-effects
+ *      run regardless of whether anything calls the exported API).
+ *   3. If the file holds per-module state, confirm that state is
+ *      harmless when never read (e.g. a null-initialised registry).
+ *
+ * ── IIFE bundle trade-off ──
+ *
+ * esbuild's IIFE format does NOT support code splitting, so the
+ * dynamic `await import()` calls inside these exempt files get
+ * inlined into the single `Cesium.js` output rather than becoming
+ * separate chunks. Users who ship the IIFE bundle pay the cost of
+ * bundled (but unexecuted) code paths: naga-wasm glue, shader
+ * translator scaffolding, etc. — even if they never invoke them.
+ *
+ * If minimum bundle size matters:
+ *   - Prefer the ESM bundle (`index.js` + `chunks/*.js`), which does
+ *     real code splitting: WebGPU context, naga-wasm init, shader
+ *     translator, etc. all live in separately-fetched chunks that
+ *     load only on demand.
+ *   - The IIFE bundle is for consumers who want a single-file drop
+ *     in a `<script>` tag; they accept the size in exchange for
+ *     deployment simplicity.
  */
 const WEBGPU_COMPAT_EXEMPTIONS = [
   "/Source/Renderer/WebGPU/WebGLCompatibilityStub",

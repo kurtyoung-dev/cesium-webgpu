@@ -1,0 +1,89 @@
+[package]
+name = "cesium-naga-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WASM wrapper around gfx-rs/naga for runtime + offline shader translation in CesiumJS. Produces a lazy-loaded GLSL/SPIR-V/WGSL → WGSL translator for the WebGPU backend, plus an optional tooling build with MSL/HLSL/SPIR-V outputs for the asset pipeline."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# ─── Feature flag strategy ───────────────────────────────────────────────────
+#
+# The crate builds two artifacts from the same source, differing only in which
+# cargo features are enabled:
+#
+#   - `runtime` (default) — browser-side lazy WASM, minimum size
+#     Frontends: glsl-in, spv-in, wgsl-in
+#     Backend:   wgsl-out
+#
+#   - `tooling` — offline content pipeline, emits every platform format
+#     Everything in `runtime` plus: msl-out, hlsl-out, spv-out
+#
+# The Rust code uses `#[cfg(feature = "…")]` to gate each exported wrapper,
+# so the unused code + its naga dependency graph is eliminated by the
+# compiler. A runtime build that doesn't enable `msl-out` will NOT link
+# the Metal backend into the binary.
+
+[features]
+default = ["runtime"]
+
+# Runtime bundle — what ships to browsers via lazy import
+runtime = ["frontends", "wgsl-out"]
+
+# Full tooling bundle — what the asset pipeline uses offline
+tooling = ["frontends", "wgsl-out", "msl-out", "hlsl-out", "spv-out"]
+
+# Shared frontend set (both runtime and tooling read the same inputs)
+frontends = ["glsl-in", "spv-in", "wgsl-in"]
+
+# Individual naga features, proxied so Cargo.toml users can flip one
+glsl-in  = ["naga/glsl-in"]
+spv-in   = ["naga/spv-in"]
+wgsl-in  = ["naga/wgsl-in"]
+wgsl-out = ["naga/wgsl-out"]
+msl-out  = ["naga/msl-out"]
+hlsl-out = ["naga/hlsl-out"]
+spv-out  = ["naga/spv-out"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+# Naga is pinned to a specific version so behavior is reproducible across
+# builds. Bumping this version is a deliberate act — the WGSL emitter in
+# particular has evolved, and we want to know when output shape changes.
+#
+# naga 27 is the matching version for wgpu 29. If we ever pick up wgpu
+# itself (e.g., for a worker-based renderer) we'll want to bump both
+# together.
+[dependencies.naga]
+version = "27"
+default-features = false
+
+[profile.release]
+# `opt-level = "z"` wins over "s" or 3 for naga specifically — the
+# emitter is branchy code with many small helpers, so size-at-all-costs
+# strips more dead code than instruction-scheduling passes save. We
+# validated this with `wasm-pack build -- --features runtime` on naga 27:
+# z gave ~22% smaller wasm than "s" with no measurable runtime impact on
+# the typical CesiumJS shader (parse+validate+emit < 10ms either way).
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[package.metadata.wasm-pack.profile.release]
+# Mirror the `packages/wasm` flag set so binaryen doesn't reject
+# features rustc emits. Comments there explain each flag.
+wasm-opt = [
+    "-Oz",
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+]
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false

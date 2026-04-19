@@ -496,7 +496,7 @@ export async function createCesiumJs(variant = "dual") {
       // extractPipelineStateFromStub don't have to reach into
       // private WebGPU/ paths. Same webgl-only gating as the WGSL
       // preprocessor above — webgl-only doesn't need the stub.
-      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from '@${scope}/engine/index-wgsl.js';\n`;
+      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, registerShaderPreprocessor, getActiveShaderPreprocessor, parseNagaReflection, buildBindGroupLayoutDescriptors, buildBindGroupLayoutsFromProgram, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from '@${scope}/engine/index-wgsl.js';\n`;
   }
 
   // Append the runtime default-renderer hint so this entry's bundle picks
@@ -626,9 +626,28 @@ export async function bundleWorkers(options) {
   workerConfig.bundle = true;
   workerConfig.external = ["fs", "path"];
 
+  // ── IIFE-inline exclusion list ──────────────────────────────────────
+  // Workers that dynamically import `@cesium/engine` (scene-in-worker
+  // renderer threads) pull the ENTIRE engine into the worker bundle.
+  // Inlining that bundle into the IIFE Cesium.js via base64 injection
+  // doubled the main bundle's size in prior builds (6.8 MB → 13.3 MB
+  // minified). Such workers also require `import.meta.url` at the call
+  // site, which is undefined in IIFE context — so they aren't usable
+  // from IIFE consumers anyway. We keep them as separate files in
+  // `Build/<variant>/Workers/` (emitted by the non-IIFE pass) and
+  // skip them in the base64-inline pass.
+  const IIFE_WORKER_EXCLUDE_PATTERNS = [
+    /RendererWorker\.js$/, // Scene-in-worker renderer thread entry
+  ];
+  /** @param {string} file */
+  const isExcludedFromIIFE = (file) =>
+    IIFE_WORKER_EXCLUDE_PATTERNS.some((re) =>
+      re.test(file.replace(/\\/g, "/")),
+    );
+
   if (options.iife) {
     let contents = ``;
-    const files = await globby(workers);
+    const files = (await globby(workers)).filter((f) => !isExcludedFromIIFE(f));
     const declarations = files.map((file) => {
       let assignmentName = path.basename(file, path.extname(file));
       assignmentName = assignmentName.replace(/(\.|-)/g, "_");
@@ -648,9 +667,36 @@ export async function bundleWorkers(options) {
     workerConfig.logOverride = {
       "empty-import-meta": "silent",
     };
-    workerConfig.plugins = options.removePragmas
-      ? [stripPragmaPlugin]
-      : undefined;
+
+    // Plugin: redirect excluded workers (e.g. RendererWorker) to an
+    // empty stub in the IIFE worker bundle. The top-level exclusion
+    // above only removes them from the stdin wrappers; esbuild still
+    // pulls them in via `createGeometry`'s template-literal dynamic
+    // imports (`import('./${name}.js')`), which esbuild resolves by
+    // bundling every sibling. This plugin fires during resolve and
+    // sends any RendererWorker candidate to the empty-shader stub,
+    // dropping ~6 MB of transitively-pulled engine code.
+    //
+    // esbuild's template-literal dynamic import (e.g. `import(./${x}.js)`
+    // in `createGeometry.js`) walks the directory and bundles every
+    // matching sibling WITHOUT going through onResolve — so a filter on
+    // the import path string never fires for those. We have to intercept
+    // at `onLoad` instead, replacing the file contents with an empty
+    // export before esbuild parses it.
+    /** @type {esbuild.Plugin} */
+    const excludeWorkerStubPlugin = {
+      name: "cesium-exclude-iife-workers",
+      setup(build) {
+        build.onLoad({ filter: /RendererWorker\.js$/ }, () => ({
+          contents: "export default {};\n",
+          loader: "js",
+        }));
+      },
+    };
+    workerConfig.plugins = [excludeWorkerStubPlugin];
+    if (options.removePragmas) {
+      workerConfig.plugins.push(stripPragmaPlugin);
+    }
   } else {
     workerConfig.format = "esm";
     workerConfig.splitting = true;
@@ -1418,12 +1464,10 @@ export async function createIndexJs(workspace) {
       // gl.* state without reaching into the WebGPU renderer's
       // private directory structure.
       `${EOL}// WebGL compatibility stub — translator registry + pipeline extractor${EOL}` +
-      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from './Source/Renderer/WebGPU/WebGLCompatibilityStub.js';${EOL}`;
-    await writeFile(
-      `packages/${workspace}/index-wgsl.js`,
-      wgslContents,
-      { encoding: "utf-8" },
-    );
+      `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, registerShaderPreprocessor, getActiveShaderPreprocessor, parseNagaReflection, buildBindGroupLayoutDescriptors, buildBindGroupLayoutsFromProgram, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from './Source/Renderer/WebGPU/WebGLCompatibilityStub.js';${EOL}`;
+    await writeFile(`packages/${workspace}/index-wgsl.js`, wgslContents, {
+      encoding: "utf-8",
+    });
   }
 
   await writeFile(`packages/${workspace}/index.js`, contents, {

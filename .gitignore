@@ -68,3 +68,7 @@ GoogleConfig.json
 /verified-*.png
 /*.jpeg
 
+# Ad-hoc debug scratch dir. Contains decoded worker bundles and other
+# throwaway test scripts — do not commit.
+/tmp/
+

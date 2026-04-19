@@ -165,38 +165,12 @@ interface GPUCullerInstance {
   initialize(code: string): Promise<void>;
 }
 
-/**
- * Minimal interface for the point cloud LOD processor (lazy-loaded).
- * Matches the public surface of `WebGPUPointCloudLODProcessor`. The
- * import is dynamic to avoid eagerly pulling compute shader code +
- * storage buffer plumbing into bundles that don't render point clouds.
- */
-interface WebGPUPointCloudLODProcessorInstance {
-  isReady: boolean;
-  visibleCountBuffer: GPUBuffer | null;
-  visibleIndicesBuffer: GPUBuffer | null;
-  uploadPositions(
-    posX: Float32Array,
-    posY: Float32Array,
-    posZ: Float32Array,
-  ): void;
-  dispatch(
-    encoder: GPUCommandEncoder,
-    params: {
-      cameraPositionWC: [number, number, number];
-      lod3Distance2: number;
-      lod2Distance2: number;
-      lod1Distance2: number;
-      lod0Distance2: number;
-      frustumPlanes: Float32Array | number[];
-      pointCount: number;
-      maxVisiblePoints: number;
-      screenSpaceRadius?: number;
-      geometricError?: number;
-    },
-  ): void;
-  destroy(): void;
-}
+// Point cloud LOD processor contract — import the type-only reference
+// so TS knows the shape without eagerly pulling the 30KB compute-shader
+// module into the context's import graph. Consumers elsewhere can use
+// the same type re-exported from this file (see `export type` at the
+// bottom) without touching the processor module.
+import type { WebGPUPointCloudLODProcessorInstance } from "./WebGPUPointCloudLODProcessor.js";
 
 /** Minimal ClearCommand shape accessed by the clear() method. */
 interface CesiumClearCommand {
@@ -244,6 +218,10 @@ interface ContextLimitsInternals {
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
+// Re-export the LOD processor interface so consumers (e.g. the point
+// cloud renderer) can import it from the context barrel without
+// pulling in the compute pipeline class itself.
+export type { WebGPUPointCloudLODProcessorInstance };
 
 /**
  * WebGPU-specific context options
@@ -271,6 +249,20 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
    * Required limits for the device
    */
   requiredLimits?: Record<string, number>;
+
+  /**
+   * When true, the per-context point-cloud LOD processor compacts its
+   * visible-index buffer with a parallel prefix scan instead of the
+   * default per-workgroup atomicAdd. Output ordering becomes
+   * deterministic (visibleIndices sorted by original point index) —
+   * required for GPU-driven picking against a compacted list,
+   * persistent point-selection buffers across frames, and split-screen
+   * / multi-view passes that must produce identical index streams.
+   *
+   * Trade-off: one extra compute pass + two extra storage buffers per
+   * capacity unit. Default false — opt in per context.
+   */
+  useDeterministicPointCloudLOD?: boolean;
 }
 
 /**
@@ -1372,12 +1364,19 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * Lazy-initialize the cascaded shadow map renderer. Called on the
    * first frame where `scene.useCascadedShadowMaps` is true.
+   *
+   * @param resolution Per-cascade texture resolution (256..4096). Passed
+   *   through from `scene.cascadedShadowMapResolution`. The CSM renderer
+   *   clamps the value, so callers need not pre-clamp.
    */
-  private _initCSMRenderer(): void {
+  private _initCSMRenderer(resolution?: number): void {
     if (this._csmRenderer || !this._device) {
       return;
     }
-    this._csmRenderer = new WebGPUCSMRenderer({ enabled: true });
+    this._csmRenderer = new WebGPUCSMRenderer({
+      enabled: true,
+      resolution,
+    });
     this._csmRenderer.initialize(this._device);
   }
 
@@ -2713,23 +2712,44 @@ export class WebGPUContext extends GraphicsContext {
       return true;
     }
 
-    // CSM path: when cascaded shadow maps are enabled, compute splits
-    // and render each cascade layer. Lazy-init the CSM renderer.
-    const useCSM = scene.useCascadedShadowMaps === true;
+    // CSM path: when cascaded shadow maps are enabled, compute splits,
+    // fit cascades, and render every cast command once per cascade into
+    // the cascade array texture. The CSM renderer owns its own UBO
+    // (layout-compatible with the single-shadow-map path) and reuses
+    // the same cast pipelines via the shared factory. Slice 1 scope:
+    // `rte24` commands only; other vertex layouts are skipped.
+    //
+    // Gate on SCENE3D: the cascade frustum-corner math reads
+    // `camera.frustum.fovy` + `aspectRatio` (perspective-only). In 2D
+    // and Columbus View the camera uses OrthographicFrustum without
+    // fovy — the default fallback (π/3) would produce garbage cascade
+    // bounds. Morph mode is blended and unstable; skip too. Slice 3
+    // adds altitude-adaptive ortho-mode splits.
+    const isScene3D = scene.frameState?.mode === 3; /* SceneMode.SCENE3D */
+    const useCSM = scene.useCascadedShadowMaps === true && isScene3D;
     if (useCSM) {
       if (!this._csmRenderer) {
-        this._initCSMRenderer();
+        // Scene.cascadedShadowMapResolution is a user-tunable surface
+        // (scene property) — honor it at lazy-init time. Subsequent
+        // changes don't re-allocate; user must dispose + reinit for
+        // a different resolution to take effect.
+        this._initCSMRenderer(scene.cascadedShadowMapResolution);
       }
       const csm = this._csmRenderer;
-      const camera = scene.frameState.camera;
-      const frustum = camera.frustum;
-      csm.computeSplits(frustum.near, frustum.far);
-      csm.computeCascadeVPs(
-        camera.viewMatrix,
-        frustum.projectionMatrix,
-        scene.frameState.shadowState?.lightShadowMaps?.[0]?._lightDirectionEC ??
-          scene._context?.uniformState?.sunDirectionWC,
-      );
+      if (csm) {
+        const camera = scene.frameState.camera;
+        const frustum = camera.frustum;
+        // Light direction: prefer the shadow map's lightCamera direction
+        // (already set by Scene.js to face the light), negate to get
+        // surface-toward-light for the cascade VP math. Fall back to
+        // sunDirectionWC when no shadow map is active.
+        const sunDir = scene._context?.uniformState?.sunDirectionWC as
+          | { x: number; y: number; z: number }
+          | undefined;
+        const lightDir = sunDir ?? { x: 0, y: 1, z: 0 };
+        csm.computeSplits(frustum.near, frustum.far);
+        csm.computeCascadeVPs(camera, lightDir);
+      }
     }
 
     for (let i = 0; i < shadowMaps.length; ++i) {
@@ -2752,33 +2772,28 @@ export class WebGPUContext extends GraphicsContext {
         this.endCurrentRenderPass();
 
         if (useCSM && this._csmRenderer) {
-          // Render into each cascade layer with the cascade's VP matrix.
-          const csm = this._csmRenderer;
-          const cascadeViews = csm.cascadeViews;
-          for (let c = 0; c < cascadeViews.length; c++) {
-            // Override the shadow map's VP with the cascade's VP.
-            // The existing renderCastPass uses the shadow map's matrix,
-            // so we temporarily swap it for each cascade.
-            const origMatrix = shadowMap._shadowMapMatrix;
-            const cascadeVP = csm.cascades[c].viewProjection;
-            shadowMap._shadowMapMatrix = cascadeVP;
-            // Point the shadow map's depth texture view to the cascade
-            // layer for this pass.
-            const origView = shadowMap._webgpuCache?.depthTextureView;
-            if (shadowMap._webgpuCache) {
-              shadowMap._webgpuCache.depthTextureView = cascadeViews[c];
-            }
+          // CSM replaces the PRIMARY shadow map's cascade set. Render
+          // every cascade layer in one call — the renderer manages per-
+          // cascade UBOs + bind groups internally and picks up the
+          // compiled cast pipelines from a private cache so the single-
+          // shadow-map path's cache stays untouched. Slice 1 scope: only
+          // the first (primary, sun) shadow map drives CSM; additional
+          // shadow maps keep the single-map path (spot lights, manual
+          // secondary shadows). Slice 3 wires moon-light cascade pairs.
+          if (i === 0) {
+            const camera = scene.frameState.camera;
+            this._csmRenderer.renderCastPass(
+              encoder,
+              castCommands as ReadonlyArray<unknown>,
+              camera.positionWC,
+            );
+          } else {
             shadowFR.renderCastPass(
               encoder,
               shadowMap,
               scene._frameState,
               castCommands,
             );
-            // Restore originals.
-            shadowMap._shadowMapMatrix = origMatrix;
-            if (shadowMap._webgpuCache) {
-              shadowMap._webgpuCache.depthTextureView = origView;
-            }
           }
         } else {
           // Single shadow map path (default).
@@ -2937,6 +2952,10 @@ export class WebGPUContext extends GraphicsContext {
     if (this._pointCloudLOD) {
       this._pointCloudLOD.destroy();
       this._pointCloudLOD = null;
+    }
+    if (this._csmRenderer) {
+      this._csmRenderer.destroy();
+      this._csmRenderer = null;
     }
     if (this._bufferMapper) {
       this._bufferMapper.destroy();
@@ -3524,6 +3543,16 @@ export class WebGPUContext extends GraphicsContext {
    * instead of creating new buffers each frame. Triple-buffered (3 pages).
    * Lazy-initialized on first access.
    */
+  /**
+   * Cascaded shadow map renderer. Lazy-initialized the first frame
+   * `scene.useCascadedShadowMaps` is true. Exposed so the globe surface
+   * + primitive bind-group builders can read the cascade params UBO +
+   * depth array view without reaching into private state.
+   */
+  get csmRenderer(): WebGPUCSMRenderer | null {
+    return this._csmRenderer;
+  }
+
   get uniformAllocator(): WebGPURingBufferAllocator | null {
     if (!this._uniformAllocator && this._device) {
       this._uniformAllocator = new WebGPURingBufferAllocator(this._device, {
@@ -3596,16 +3625,12 @@ export class WebGPUContext extends GraphicsContext {
       }
     }
     if (this._performanceManager) {
-      // The perf manager exposes a `getFrameTimings()` method that
-      // returns the per-pass GPU timing snapshot. Call it defensively
-      // because it may not be wired in every code path.
+      // `frameTimings` is a getter on WebGPUPerformanceManager that returns
+      // the per-pass GPU timing snapshot. Every field is a number or a
+      // `Record<string, number>`, which DebugStatsObject accepts via its
+      // index-signature shape — no cast required.
       try {
-        const pm = this._performanceManager as unknown as {
-          getFrameTimings?: () => DebugStatsObject;
-        };
-        if (typeof pm.getFrameTimings === "function") {
-          stats.performance = pm.getFrameTimings();
-        }
+        stats.performance = this._performanceManager.frameTimings;
       } catch (e) {
         stats.performance = { error: String((e as Error)?.message ?? e) };
       }
@@ -3815,10 +3840,14 @@ export class WebGPUContext extends GraphicsContext {
         .then(({ WebGPUPointCloudLODProcessor }) => {
           const proc = new WebGPUPointCloudLODProcessor(this._device!, {
             label: `ctx-${this._id}`,
+            useDecoupledScan:
+              this._options.useDeterministicPointCloudLOD ?? false,
           });
           return proc.initialize().then(() => {
-            this._pointCloudLOD =
-              proc as unknown as WebGPUPointCloudLODProcessorInstance;
+            // WebGPUPointCloudLODProcessor explicitly
+            // `implements WebGPUPointCloudLODProcessorInstance` — no cast
+            // needed when assigning the instance to the typed field.
+            this._pointCloudLOD = proc;
             this._pointCloudLODInitializing = false;
           });
         })

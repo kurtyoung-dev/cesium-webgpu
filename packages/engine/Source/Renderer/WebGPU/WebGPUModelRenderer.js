@@ -55,6 +55,7 @@ import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
+import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -147,10 +148,22 @@ function packCameraUniforms(data, frameState, modelMatrix) {
     Matrix4.pack(prevVP, data, 60);
   } else {
     // Column-major identity fallback (frame 0).
-    data[60] = 1; data[61] = 0; data[62] = 0; data[63] = 0;
-    data[64] = 0; data[65] = 1; data[66] = 0; data[67] = 0;
-    data[68] = 0; data[69] = 0; data[70] = 1; data[71] = 0;
-    data[72] = 0; data[73] = 0; data[74] = 0; data[75] = 1;
+    data[60] = 1;
+    data[61] = 0;
+    data[62] = 0;
+    data[63] = 0;
+    data[64] = 0;
+    data[65] = 1;
+    data[66] = 0;
+    data[67] = 0;
+    data[68] = 0;
+    data[69] = 0;
+    data[70] = 1;
+    data[71] = 0;
+    data[72] = 0;
+    data[73] = 0;
+    data[74] = 0;
+    data[75] = 1;
   }
 }
 
@@ -227,11 +240,21 @@ function packMaterialUniforms(
     matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader;
   const emissiveReader = matInfo.emissiveTextureReader;
   const occlusionReader = matInfo.occlusionTextureReader;
-  if (baseReader && baseReader.texCoord === 1) {tcFlags |= 0x01;}
-  if (normalReader && normalReader.texCoord === 1) {tcFlags |= 0x02;}
-  if (mrReader && mrReader.texCoord === 1) {tcFlags |= 0x04;}
-  if (emissiveReader && emissiveReader.texCoord === 1) {tcFlags |= 0x08;}
-  if (occlusionReader && occlusionReader.texCoord === 1) {tcFlags |= 0x10;}
+  if (baseReader && baseReader.texCoord === 1) {
+    tcFlags |= 0x01;
+  }
+  if (normalReader && normalReader.texCoord === 1) {
+    tcFlags |= 0x02;
+  }
+  if (mrReader && mrReader.texCoord === 1) {
+    tcFlags |= 0x04;
+  }
+  if (emissiveReader && emissiveReader.texCoord === 1) {
+    tcFlags |= 0x08;
+  }
+  if (occlusionReader && occlusionReader.texCoord === 1) {
+    tcFlags |= 0x10;
+  }
   flagsView.setUint32(37 * 4, tcFlags, true);
 
   // Padding to 320 bytes (80 floats)
@@ -695,6 +718,48 @@ function updateWebGPUModel(model, frameState) {
     CAMERA_UNIFORM_SIZE,
   );
 
+  // ── Effects bind group (shadow receive + clipping + CSM) ──
+  //
+  // CSM Slice 2c — the model pipeline layout now includes the effects
+  // BGL at @group(7). Rebuild the bind group each frame so the effects
+  // UBO (shadow darkness, csmControl flag, clipping plane count,
+  // atmosphere LUT control, etc.) reflects the current scene state.
+  // Mirrors the pattern in WebGPUGlobeSurfaceRenderer ~line 1554.
+  //
+  // Scope note: called per-model per-frame. The UB write is 272 bytes
+  // and the bind group is a thin metadata wrapper, so the cost is
+  // linear in model count × 1 small write. If this becomes a hotspot
+  // with many models, cache a scene-wide effects bind group on the
+  // frame context and share across all models in the scene.
+  const shadowState = frameState.shadowState;
+  const receiveShadowMap =
+    shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
+      ? shadowState.lightShadowMaps[0]
+      : undefined;
+  const csmCandidate = frameState.context?.csmRenderer;
+  const csmBinding =
+    defined(csmCandidate) &&
+    csmCandidate.enabled === true &&
+    defined(csmCandidate.cascadeParamsBuffer) &&
+    defined(csmCandidate.cascadeArrayView)
+      ? {
+          enabled: true,
+          paramsBuffer: csmCandidate.cascadeParamsBuffer,
+          cascadeArrayView: csmCandidate.cascadeArrayView,
+        }
+      : undefined;
+  const fxRes = createEffectsBindGroup(device, frameState, {
+    shadowMap: receiveShadowMap,
+    csm: csmBinding,
+    // Models don't carry their own clipping-plane set — clipping in
+    // glTF flows through the scene-wide ClippingPlaneCollection if
+    // any. Use the scene's camera position for in-plane-space (the
+    // shader's clipping test is in eye space anyway; cameraInPlaneSpace
+    // is only consumed by the globe's plane-space transform).
+    cameraInPlaneSpace: frameState.context.uniformState.cameraPosition,
+  });
+  cache.effectsBG = fxRes.bindGroup;
+
   // ── Shadow cast UB (shared across all primitives of this model) ──
   //
   // The WebGPUShadowMapRenderer's `modelP12` variant needs the model's
@@ -974,7 +1039,9 @@ function updateWebGPUModel(model, frameState) {
         primCache.colorBuffer || pipelineCache.defaultColorBuffer,
         primCache.jointsBuffer || pipelineCache.defaultJointsBuffer,
         primCache.weightsBuffer || pipelineCache.defaultWeightsBuffer,
-        primCache.uv1Buffer || primCache.uvBuffer || pipelineCache.defaultUVBuffer,
+        primCache.uv1Buffer ||
+          primCache.uvBuffer ||
+          pipelineCache.defaultUVBuffer,
       ];
 
       // Use model.opaquePass to get the correct pass:
@@ -996,6 +1063,11 @@ function updateWebGPUModel(model, frameState) {
           morphTargetBG,
           instancingBG,
           featureIdBG,
+          // Group 7 — effects (shadow receive + clipping + CSM). Shared
+          // across all primitives of this model per the per-frame update
+          // above; rebuilt each frame so scene-toggle changes (shadow
+          // darkness, CSM enable) reach the pipeline without a recompile.
+          cache.effectsBG,
         ],
         vertexBuffers: vertexBuffers,
         indexBuffer: primCache.indexBuffer || undefined,

@@ -117,39 +117,63 @@ function updateWebGPUClippingPlanes(
   // camera; the revision check only bounds the texture-reallocation
   // path. Uploads are tiny (≤8 planes × 16 bytes = 128 bytes) so this
   // is negligible bandwidth.
-  const uniformState = (frameState as unknown as { context: { uniformState: { view: number[] | Float64Array; inverseViewTranspose?: number[] | Float64Array } } })
-    .context.uniformState;
+  const uniformState = frameState.context.uniformState;
   const view = uniformState.view;
   const invViewT = uniformState.inverseViewTranspose;
   const data = new Float32Array(planeCount * 4);
   for (let i = 0; i < planeCount; i++) {
     const plane = collection.get(i);
-    const nx = plane.normal.x, ny = plane.normal.y, nz = plane.normal.z;
+    const nx = plane.normal.x,
+      ny = plane.normal.y,
+      nz = plane.normal.z;
     const nw = plane.distance;
     let ex: number, ey: number, ez: number, ew: number;
     if (invViewT) {
       // Column-major mat4: entries [col*4 + row]
-      ex = invViewT[0] * nx + invViewT[4] * ny + invViewT[8]  * nz + invViewT[12] * nw;
-      ey = invViewT[1] * nx + invViewT[5] * ny + invViewT[9]  * nz + invViewT[13] * nw;
-      ez = invViewT[2] * nx + invViewT[6] * ny + invViewT[10] * nz + invViewT[14] * nw;
-      ew = invViewT[3] * nx + invViewT[7] * ny + invViewT[11] * nz + invViewT[15] * nw;
+      ex =
+        invViewT[0] * nx +
+        invViewT[4] * ny +
+        invViewT[8] * nz +
+        invViewT[12] * nw;
+      ey =
+        invViewT[1] * nx +
+        invViewT[5] * ny +
+        invViewT[9] * nz +
+        invViewT[13] * nw;
+      ez =
+        invViewT[2] * nx +
+        invViewT[6] * ny +
+        invViewT[10] * nz +
+        invViewT[14] * nw;
+      ew =
+        invViewT[3] * nx +
+        invViewT[7] * ny +
+        invViewT[11] * nz +
+        invViewT[15] * nw;
     } else if (view) {
       // Fallback: rigid view matrix ⇒ view^-T of the normal is
       // `view.xyz * (nx, ny, nz)` (rotation part), and the translated
       // distance is `d - dot(n_eye, view.translation_eye)`.
       // This path is rarely hit because CesiumJS always maintains
       // inverseViewTranspose on the UniformState.
-      const rx = view[0] * nx + view[4] * ny + view[8]  * nz;
-      const ry = view[1] * nx + view[5] * ny + view[9]  * nz;
+      const rx = view[0] * nx + view[4] * ny + view[8] * nz;
+      const ry = view[1] * nx + view[5] * ny + view[9] * nz;
       const rz = view[2] * nx + view[6] * ny + view[10] * nz;
-      const tx = view[12], ty = view[13], tz = view[14];
-      ex = rx; ey = ry; ez = rz;
+      const tx = view[12],
+        ty = view[13],
+        tz = view[14];
+      ex = rx;
+      ey = ry;
+      ez = rz;
       ew = nw - (rx * tx + ry * ty + rz * tz);
     } else {
-      ex = nx; ey = ny; ez = nz; ew = nw;
+      ex = nx;
+      ey = ny;
+      ez = nz;
+      ew = nw;
     }
     const offset = i * 4;
-    data[offset]     = ex;
+    data[offset] = ex;
     data[offset + 1] = ey;
     data[offset + 2] = ez;
     data[offset + 3] = ew;

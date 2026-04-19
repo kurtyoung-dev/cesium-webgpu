@@ -34,6 +34,7 @@ function setView(uniformState, matrix) {
   uniformState._inverseModelViewDirty = true;
   uniformState._inverseModelView3DDirty = true;
   uniformState._viewProjectionDirty = true;
+  uniformState._viewProjectionRelativeToEyeDirty = true;
   uniformState._inverseViewProjectionDirty = true;
   uniformState._modelViewProjectionDirty = true;
   uniformState._modelViewProjectionRelativeToEyeDirty = true;
@@ -54,6 +55,7 @@ function setProjection(uniformState, matrix) {
 
   uniformState._inverseProjectionDirty = true;
   uniformState._viewProjectionDirty = true;
+  uniformState._viewProjectionRelativeToEyeDirty = true;
   uniformState._inverseViewProjectionDirty = true;
   uniformState._modelViewProjectionDirty = true;
   uniformState._modelViewProjectionRelativeToEyeDirty = true;
@@ -302,6 +304,33 @@ function cleanModelViewProjection(uniformState) {
       uniformState._projection,
       uniformState.modelView,
       uniformState._modelViewProjection,
+    );
+  }
+}
+
+// Scratch for cleanViewProjectionRelativeToEye. Reused across calls to
+// avoid GC pressure; single-threaded so safe.
+const viewRteScratch = new Float64Array(16);
+
+function cleanViewProjectionRelativeToEye(uniformState) {
+  if (uniformState._viewProjectionRelativeToEyeDirty) {
+    uniformState._viewProjectionRelativeToEyeDirty = false;
+
+    // Build view-with-translation-zeroed (view RTE for identity model).
+    // Column-major: translation sits in elements 12..14.
+    const v = uniformState._view;
+    const vRte = viewRteScratch;
+    for (let i = 0; i < 16; i++) {
+      vRte[i] = v[i];
+    }
+    vRte[12] = 0.0;
+    vRte[13] = 0.0;
+    vRte[14] = 0.0;
+
+    Matrix4.multiply(
+      uniformState._projection,
+      vRte,
+      uniformState._viewProjectionRelativeToEye,
     );
   }
 }
@@ -560,6 +589,7 @@ export {
   cleanInverseModelView,
   cleanInverseModelView3D,
   cleanViewProjection,
+  cleanViewProjectionRelativeToEye,
   cleanInverseViewProjection,
   cleanModelViewProjection,
   cleanModelViewRelativeToEye,
@@ -590,6 +620,7 @@ const UniformStateComputations = {
   cleanInverseModelView,
   cleanInverseModelView3D,
   cleanViewProjection,
+  cleanViewProjectionRelativeToEye,
   cleanInverseViewProjection,
   cleanModelViewProjection,
   cleanModelViewRelativeToEye,

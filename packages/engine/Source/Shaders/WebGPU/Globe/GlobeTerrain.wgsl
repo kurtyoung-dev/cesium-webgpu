@@ -192,6 +192,35 @@ struct EffectsUniforms {
     //   .z = atmosphere thickness (outer - inner, meters)
     //   .w = reserved
     atmosphereLutControl: vec4<f32>,
+    // CSM Slice 1 — cascaded shadow map control:
+    //   .x = csmEnabled flag (>0.5 → sample cascade depth array at
+    //        bindings 10/11 via `sampleCascadeShadow`; otherwise use
+    //        the single shadow map at bindings 1/2)
+    //   .y/.z/.w reserved (cascade count, moon-light flag, etc).
+    // Matches `CSM_CONTROL_OFFSET` on the JS side.
+    csmControl: vec4<f32>,
+}
+
+// CSM Slice 1 — cascade parameters UBO. Layout matches
+// `WebGPUCSMRenderer._cascadeParamsData` (272 floats, 1088 bytes):
+//   offset   0: 4 × mat4<f32> cascade VP_RTE matrices (256 floats)
+//   offset 256: vec4<f32> cascadeSplits (view-space far depth per cascade)
+//   offset 260: vec4<f32> blendBands (blend-band width per cascade split)
+//   offset 264: vec4<f32> cascadeMinBias (per-cascade NDC minimum bias)
+//   offset 268: vec4<f32> cascadeMaxSlopeBias (per-cascade slope-bias ceiling)
+// The VP matrices are RTE-aware — multiply by `v_positionRTE` (NOT
+// reconstructed worldPos) to sample correctly at Earth scale. Placeholder
+// (zero-filled) when CSM is disabled; the `effects.csmControl.x > 0.5`
+// gate keeps this from being sampled in that case.
+struct CSMParams {
+    cascadeVP0: mat4x4<f32>,
+    cascadeVP1: mat4x4<f32>,
+    cascadeVP2: mat4x4<f32>,
+    cascadeVP3: mat4x4<f32>,
+    cascadeSplits: vec4<f32>,
+    blendBands: vec4<f32>,
+    cascadeMinBias: vec4<f32>,
+    cascadeMaxSlopeBias: vec4<f32>,
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
@@ -214,6 +243,12 @@ struct EffectsUniforms {
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
+// CSM Slice 1 — cascaded shadow map bindings. Always present in the
+// layout (zero-filled placeholders when CSM disabled) so we don't need
+// a second pipeline variant. Sampled only when
+// `effects.csmControl.x > 0.5` via `sampleCascadeShadow`.
+@group(3) @binding(10) var<uniform> csmParams: CSMParams;
+@group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 
 // ─── Vertex Input / Output ───
 // DP-H25 — the `@location(2) geodeticSurfaceNormal` slot is conditionally
@@ -259,6 +294,13 @@ struct VertexOutput {
   @location(2) v_normalEC: vec3<f32>,
   @location(3) v_positionMC: vec3<f32>,
   @location(4) v_distance: f32,
+  // RTE position (camera-relative, full RTE precision — not a lossy
+  // reconstruction of worldPos). Consumed by the CSM receive path to
+  // feed into the RTE-aware cascade VP matrices without the ~1m FP32
+  // quantization that would occur when reconstructing worldPos =
+  // positionHigh + positionLow at Earth scale. Zero in non-SCENE3D modes
+  // (the CSM branch is gated on SCENE3D in WebGPUContext).
+  @location(5) v_positionRTE: vec3<f32>,
 };
 
 // ─── Constants ───
@@ -516,6 +558,13 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
       (camera.center3DLow + exaggeratedPosition - camera.encodedCameraLow);
     out.position = camera.mvpRelativeToEye * vec4<f32>(rtePosition, 1.0);
     out.v_positionEC = (camera.modifiedModelView * vec4<f32>(position, 1.0)).xyz;
+    out.v_positionRTE = rtePosition;
+  }
+  // 2D / Columbus / Morph fall through without touching v_positionRTE;
+  // initialize it to zero so the shader stays deterministic. CSM is
+  // SCENE3D-only so this never participates in cascade sampling there.
+  if (mode < 2.5) {
+    out.v_positionRTE = vec3<f32>(0.0);
   }
 
   out.v_distance = length(out.v_positionEC);
@@ -1016,6 +1065,110 @@ fn globeShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
   return select(pcf, 1.0, outOfBounds);
 }
 
+// CSM Slice 1 — cascade sampling helpers. Duplicated inline from
+// ShadowReceiveCSM.wgsl (the WGSL preprocessor's include path isn't
+// wired for this shader yet; primitive-side receivers can share the
+// file via the #include path once Slice 2 lands). The logic is
+// identical: pick the smallest cascade whose far split covers the
+// fragment, sample its VP-reprojected position, blend across the
+// split boundary to hide seams.
+fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
+  if (viewDepth < splits.x) { return 0u; }
+  if (viewDepth < splits.y) { return 1u; }
+  if (viewDepth < splits.z) { return 2u; }
+  return 3u;
+}
+
+fn getCascadeVP(idx: u32) -> mat4x4<f32> {
+  switch (idx) {
+    case 0u: { return csmParams.cascadeVP0; }
+    case 1u: { return csmParams.cascadeVP1; }
+    case 2u: { return csmParams.cascadeVP2; }
+    default: { return csmParams.cascadeVP3; }
+  }
+}
+
+// Per-cascade slope-scaled depth bias. Scales with the angle between the
+// surface normal and the light direction (grazing surfaces need more
+// bias to prevent acne); floored by the per-cascade minimum bias.
+fn cascadeDepthBias(cascadeIdx: u32, normal: vec3<f32>, lightDir: vec3<f32>) -> f32 {
+  let nDotL = clamp(dot(normalize(normal), normalize(lightDir)), 0.0, 1.0);
+  let minBias = csmParams.cascadeMinBias[cascadeIdx];
+  let maxSlope = csmParams.cascadeMaxSlopeBias[cascadeIdx];
+  let slopeBias = maxSlope * (1.0 - nDotL);
+  return max(minBias, slopeBias);
+}
+
+// Sample one cascade. `eyePos` is the camera-relative RTE position (NOT
+// reconstructed worldPos); the cascade VP is RTE-aware.
+fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
+  let vp = getCascadeVP(cascadeIdx);
+  let clipPos = vp * vec4<f32>(eyePos, 1.0);
+  let ndc = clipPos.xyz / clipPos.w;
+  // WebGPU viewport Y-flip: during cast, a fragment at NDC +y lands at
+  // framebuffer y=0 (top). Texture coord UV.y = 0 is the top row, so
+  // receive-side sampling must flip: `uv.y = (1 - ndc.y) / 2`. The
+  // single-map path above (`globeComputeShadowFactor`) has the same
+  // flip — matching its convention keeps the cascade behavior
+  // consistent when a scene toggles between single-map and CSM.
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  let depth = ndc.z - depthBias;
+  // Fully lit if outside the cascade's XY footprint OR past the far
+  // plane (depth > 1) OR behind the light's near plane (depth < 0 —
+  // which can happen when the cascade eye sits deep in the terrain
+  // and a nearby fragment projects behind the ortho near clip).
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ||
+      depth > 1.0 || depth < 0.0) {
+    return 1.0;
+  }
+  return textureSampleCompareLevel(
+    cascadeDepthArray,
+    shadowCompSampler,
+    uv,
+    i32(cascadeIdx),
+    depth,
+  );
+}
+
+fn sampleCascadeShadow(
+  eyePos: vec3<f32>,
+  viewDepth: f32,
+  normal: vec3<f32>,
+  lightDir: vec3<f32>,
+) -> f32 {
+  let cascadeIdx = selectCascade(viewDepth, csmParams.cascadeSplits);
+  let bias0 = cascadeDepthBias(cascadeIdx, normal, lightDir);
+  let s0 = sampleOneCascade(eyePos, cascadeIdx, bias0);
+
+  // Blend with next cascade when inside the blend band near the split.
+  let splitDist = csmParams.cascadeSplits[cascadeIdx];
+  let blendBand = csmParams.blendBands[cascadeIdx];
+  let blendStart = splitDist - blendBand;
+  if (viewDepth > blendStart && cascadeIdx < 3u) {
+    let nextIdx = cascadeIdx + 1u;
+    let bias1 = cascadeDepthBias(nextIdx, normal, lightDir);
+    let s1 = sampleOneCascade(eyePos, nextIdx, bias1);
+    let blendT = smoothstep(blendStart, splitDist, viewDepth);
+    return mix(s0, s1, blendT);
+  }
+  return s0;
+}
+
+// CSM shadow factor, RTE precision path. `eyePos` is v_positionRTE from
+// the vertex stage — camera-relative, full RTE precision. `viewDepth` is
+// |v_positionEC.z|. Normal + light dir are eye-space (both live in the
+// same space, so nDotL is frame-invariant).
+fn globeComputeShadowFactorCSM(
+  eyePos: vec3<f32>,
+  viewDepth: f32,
+  normal: vec3<f32>,
+  lightDir: vec3<f32>,
+) -> f32 {
+  if (effects.shadowDarkness >= 1.0) { return 1.0; }
+  let visibility = sampleCascadeShadow(eyePos, viewDepth, normal, lightDir);
+  return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
@@ -1080,9 +1233,30 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Compute shadow factor early — textureSampleCompare must be called
   // from uniform control flow (before any non-uniform discard/return).
   // camera.enableLighting is a uniform value so this branch is uniform.
+  // CSM Slice 1: route through the cascaded-shadow path when enabled.
+  // Reconstruct world-space fragment position via the atmosphere LUT
+  // convention (`v_positionMC + cameraWC`); view-space depth is the
+  // magnitude of `v_positionEC.z` (right-handed view, camera at origin
+  // looking -Z).
   var shadowFactor: f32 = 1.0;
   if (camera.enableLighting > 0.5) {
-    shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+    if (effects.csmControl.x > 0.5) {
+      // RTE precision path — feed the camera-relative position straight
+      // into the RTE-aware cascade VP. No reconstruction of worldPos =
+      // positionHigh + positionLow (which would lose ~1m at Earth scale
+      // and cause acne on the tightest cascade). Normal + sun direction
+      // are both in eye space, which keeps nDotL frame-invariant for
+      // slope-bias calculation.
+      let viewDepth = abs(input.v_positionEC.z);
+      shadowFactor = globeComputeShadowFactorCSM(
+        input.v_positionRTE,
+        viewDepth,
+        input.v_normalEC,
+        camera.sunDirectionEC,
+      );
+    } else {
+      shadowFactor = globeComputeShadowFactor(input.v_positionEC);
+    }
   }
 
   // ─── Clipping planes discard ───

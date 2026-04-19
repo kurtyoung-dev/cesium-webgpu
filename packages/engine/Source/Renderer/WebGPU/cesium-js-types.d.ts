@@ -51,7 +51,17 @@ type CesiumOpaqueVertexArray = CesiumOpaqueObject;
 type CesiumOpaqueShaderProgram = CesiumOpaqueObject;
 type CesiumOpaqueShaderSource = CesiumOpaqueObject;
 type CesiumOpaqueRenderState = CesiumOpaqueObject;
-type CesiumOpaqueCullingVolume = CesiumOpaqueObject;
+// Frustum culling volume with the six world-space planes Cesium's
+// `CullingVolume` exposes. Previously typed as `CesiumOpaqueObject`
+// which made `.planes` a type error even though it's a well-known
+// public property. Typing it explicitly unblocks point-cloud + occlusion
+// culling paths without pulling in the full Core type.
+interface CesiumOpaqueCullingVolume {
+  // Six Cartesian4 planes: (n.xyz = outward-facing unit normal,
+  // w = -distance from world origin along the normal). Order is
+  // near, far, left, right, top, bottom per `CullingVolume.planes`.
+  planes: ReadonlyArray<CesiumCartesian4>;
+}
 type CesiumOpaqueJulianDate = CesiumOpaqueObject;
 type CesiumOpaqueMapProjection = CesiumOpaqueObject;
 type CesiumOpaqueTerrainProvider = CesiumOpaqueObject;
@@ -327,6 +337,12 @@ interface CesiumFrameState {
   verticalExaggerationRelativeHeight: number;
   shadowState: {
     shadowsEnabled: boolean;
+    // True when at least one shadow-casting LIGHT source is present
+    // (as opposed to analytical shadow passes). Gating receive-side
+    // logic on this flag matches Scene.js:4344 / OIT.js. Declared
+    // separately from `shadowsEnabled` because analytical shadows
+    // (e.g. debug picking) can be active without a light source.
+    lightShadowsEnabled: boolean;
     shadowMaps: CesiumShadowMap[];
     lightShadowMaps: CesiumShadowMap[];
     nearPlane: number;
@@ -399,6 +415,13 @@ interface CesiumUniformState {
   readonly projection: CesiumMatrix4;
   readonly inverseProjection: CesiumMatrix4;
   readonly inverseView: CesiumMatrix4;
+  /**
+   * Inverse-transpose of the view matrix, used to transform plane
+   * equations from world to eye space (plane `n_eye = view^-T · n_world`).
+   * Computed lazily by `UniformState` — may be undefined until first
+   * `update()`.
+   */
+  readonly inverseViewTranspose: CesiumMatrix4 | undefined;
   readonly viewProjection: CesiumMatrix4;
   /**
    * Last frame's `viewProjection`, cloned before current-frame state is
@@ -472,6 +495,19 @@ interface CesiumGraphicsContext {
    *  WebGL Context. Touched eagerly by GlobeSurfaceRenderer to force
    *  construction (BUG-9 guard). */
   readonly uniformAllocator?: object | null;
+  /** WebGPU-only: lazy-initialized GPU compute LOD processor for point
+   *  clouds. `null` until first point cloud dispatches; absent on
+   *  WebGL Context. Typed as `object | null` here (not
+   *  `WebGPUPointCloudLODProcessorInstance`) to keep this file free of
+   *  WebGPU-renderer imports — consumers cast to the real interface at
+   *  the call site via an explicit `import type`. */
+  readonly pointCloudLOD?: object | null;
+  /** WebGPU-only: lazy-initialized cascaded shadow map renderer.
+   *  `null` until `scene.useCascadedShadowMaps` activates it; absent
+   *  on WebGL Context. Same typing-boundary pattern as
+   *  `pointCloudLOD` — consumers cast to the real interface at the
+   *  call site. */
+  readonly csmRenderer?: object | null;
   /** WebGPU-only: class constructor for compute command objects.
    *  Registered by WebGPUContext after PerformanceManager wires up
    *  compute dispatchers. Optional because WebGL has no analogue. */
@@ -600,6 +636,13 @@ interface CesiumTerrainEncoding {
   maximumHeight: number;
   hasVertexNormals: boolean;
   hasWebMercatorT: boolean;
+  // DP-H25 — true when the terrain tile carries the true WGS84 geodetic
+  // surface normal as an extra per-vertex attribute. When set, the
+  // WebGPU pipeline adds the attribute at shaderLocation 2 with 12B
+  // trailing stride, and the vertex shader consumes it via the
+  // `GEODETIC_NORMAL` define. Source: `TerrainEncoding` in upstream
+  // Cesium + `createVerticesFromQuantizedTerrainMesh.js:512`.
+  hasGeodeticSurfaceNormals: boolean;
   quantization: number;
   stride: number;
 }
@@ -764,6 +807,12 @@ interface CesiumScene {
   readonly highDynamicRange: boolean;
   readonly taaEnabled: boolean;
   readonly useCascadedShadowMaps: boolean;
+  /**
+   * Optional user-tunable resolution (per side) for the cascaded shadow
+   * atlas. Read lazily at CSM init time; changes after init require a
+   * dispose + reinit to take effect.
+   */
+  readonly cascadedShadowMapResolution?: number;
   readonly weather: CesiumWeatherConfig | undefined;
   readonly snapshotMode:
     | {
@@ -899,6 +948,14 @@ interface CesiumGlobeTileProvider {
   hasWaterMask: boolean;
   enableLighting: boolean;
   translucencyEnabled: boolean;
+  /**
+   * HSB shift fields mirrored from `Globe.atmosphere{Hue,Saturation,
+   * Brightness}Shift`. `Globe.update()` copies these onto the tile
+   * provider each frame. Read by the terrain tile UB writer.
+   */
+  hueShift?: number;
+  saturationShift?: number;
+  brightnessShift?: number;
   [key: string]: unknown;
 }
 
@@ -967,11 +1024,22 @@ interface CesiumAnyDrawCommand {
    *  optional here so both well-typed CesiumBoundingSphere values and
    *  loosely-typed JS values assign without casts; WebGPU readers check
    *  `bv.center` before dereferencing (see WebGPUSceneRenderer GPU
-   *  culling path). */
+   *  culling path).
+   *
+   *  `distanceSquaredTo` is a method on Cesium's real `BoundingSphere`
+   *  class — declaring it here as optional lets the WebGPU sort path
+   *  call `bv.distanceSquaredTo(eye)` (with a null-guard first) without
+   *  needing a cast. JS-sourced values that happen not to carry the
+   *  method land in the null-guard branch. */
   boundingVolume?: {
     center?: CesiumCartesian3;
     radius?: number;
     boundingSphere?: { radius?: number };
+    distanceSquaredTo?: (cartesian: {
+      x: number;
+      y: number;
+      z: number;
+    }) => number;
   };
   pass?: number;
   castShadows?: boolean;

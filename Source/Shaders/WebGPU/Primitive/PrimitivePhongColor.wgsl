@@ -1,14 +1,29 @@
 // PrimitivePhongColor.wgsl
 // Per-vertex color + Blinn-Phong lighting + shadow receive + clipping planes
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
-// Vertex: posHigh(3) + posLow(3) + normal(3) + color(4) = 13 floats = 52 bytes
+//
+// Two vertex layouts — selected at pipeline-build time via the
+// `COMPRESSED_VERTICES` define (DP-H19-SHADER-DECODE):
+//   default : posHigh(3) + posLow(3) + normal(3)  + color(4) = 13 floats
+//   compressed : posHigh(3) + posLow(3) + compressedAttributes(1 f32) + color(4)
+// When COMPRESSED_VERTICES is on, the vertex stage decodes the normal
+// via csm_octDecodeFloat_single (see csm_decodeCompressedVertex.wgsl).
 
+//>>ifdef COMPRESSED_VERTICES
+struct VertexInput {
+    @location(0) positionHigh: vec3<f32>,
+    @location(1) positionLow: vec3<f32>,
+    @location(2) compressedAttributes: f32,
+    @location(3) color: vec4<f32>,
+}
+//>>else
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
     @location(1) positionLow: vec3<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) color: vec4<f32>,
 }
+//>>endif
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4<f32>,
@@ -27,6 +42,10 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
+    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // TAA / motion-vector reprojection. Sourced from
+    // `UniformState._previousViewProjection` (f32 mat4).
+    previousViewProjection: mat4x4<f32>,
 }
 
 struct MaterialUniforms {
@@ -36,7 +55,11 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (shadow receive + clipping) ───
+// ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
+// PhongColor has no texture group, so the effects group lands at
+// @group(2) (one slot earlier than PhongTexturedColor's @group(3)).
+// Struct layout MUST match the 272-byte EffectsUniforms in
+// WebGPUEffectsBindGroup.js.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -48,6 +71,31 @@ struct EffectsUniforms {
     clippingPolygonCount: u32,
     clippingEdgeColor: vec4<f32>,
     clipPlaneEqHW: array<vec4<f32>, 8>,
+    // Atmosphere LUT control — drives the fog-blend gate:
+    //   .x = enabled flag (> 0.5 enables fog)
+    //   .y = planet inner radius (m)
+    //   .z = atmosphere thickness (m)
+    //   .w = transmittance-attenuation flag (> 0.5 attenuates lit color)
+    atmosphereLutControl: vec4<f32>,
+    // CSM control: .x = csmEnabled flag. See ShadowReceiveCSM.wgsl.
+    csmControl: vec4<f32>,
+}
+
+// CSM cascade parameters (bindings 10/11). Layout matches
+// `WebGPUCSMRenderer._cascadeParamsData` (272 floats, 1088 bytes).
+// The VP matrices are RTE-aware — multiply by `eyePosition` directly so
+// the cascade sampling keeps full RTE precision at planetary scale.
+// Placeholder zero-filled when CSM is off; the shader gates on
+// `effects.csmControl.x > 0.5` before sampling.
+struct CSMParams {
+    cascadeVP0: mat4x4<f32>,
+    cascadeVP1: mat4x4<f32>,
+    cascadeVP2: mat4x4<f32>,
+    cascadeVP3: mat4x4<f32>,
+    cascadeSplits: vec4<f32>,
+    blendBands: vec4<f32>,
+    cascadeMinBias: vec4<f32>,
+    cascadeMaxSlopeBias: vec4<f32>,
 }
 
 @group(2) @binding(0) var<uniform> effects: EffectsUniforms;
@@ -55,6 +103,16 @@ struct EffectsUniforms {
 @group(2) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(2) @binding(3) var clippingPlaneTex: texture_2d<f32>;
 @group(2) @binding(4) var clippingPlaneSampler: sampler;
+// FEAT-GAP-09 — Aerial-perspective LUT. Bindings 7/8/9 are populated by
+// WebGPUEffectsBindGroup.js when the atmosphere LUT is active; otherwise
+// they resolve to 1×1 placeholder textures. The shader gates all LUT
+// sampling on `effects.atmosphereLutControl.x > 0.5` so the placeholder
+// case costs only one uniform compare per fragment.
+@group(2) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(2) @binding(9) var atmosphereLutSampler: sampler;
+@group(2) @binding(10) var<uniform> csmParams: CSMParams;
+@group(2) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;
@@ -62,6 +120,29 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
+
+//>>ifdef COMPRESSED_VERTICES
+// DP-H19-SHADER-DECODE (Batch 27) — inline oct-decode for a single
+// packed normal (PhongColor consumes only `normal`, no tangent/bitangent
+// or UVs). Mirror of csm_decodeCompressedVertex.wgsl — kept inline to
+// avoid pulling in the shared chunk until the #import pipeline covers
+// Primitive shaders. CPU reference: AttributeCompression.octDecodeFloat.
+fn csm_octDecodeFloat_single(value: f32) -> vec3<f32> {
+    let temp = value / 256.0;
+    let x = floor(temp);
+    let y = (temp - x) * 256.0;
+    let e = vec2<f32>(x, y) / 255.0 * 2.0 - 1.0;
+    var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) {
+        let s = vec2<f32>(
+            select(-1.0, 1.0, v.x >= 0.0),
+            select(-1.0, 1.0, v.y >= 0.0),
+        );
+        v = vec3<f32>((1.0 - abs(v.yx)) * s, v.z);
+    }
+    return normalize(v);
+}
+//>>endif
 
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -71,12 +152,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.color = input.color;
     output.eyePosition = eyePos.xyz;
 
+    //>>ifdef COMPRESSED_VERTICES
+    let decodedNormal = csm_octDecodeFloat_single(input.compressedAttributes);
+    //>>else
+    let decodedNormal = input.normal;
+    //>>endif
+
     let transformedNormal = normalize(
         mat3x3<f32>(
             camera.normalMatrix[0].xyz,
             camera.normalMatrix[1].xyz,
             camera.normalMatrix[2].xyz
-        ) * input.normal
+        ) * decodedNormal
     );
     output.worldNormal = transformedNormal;
     output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
@@ -97,6 +184,84 @@ fn sampleShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
         }
     }
     return shadow / 9.0;
+}
+
+// CSM — cascade selection + sampling. Inlined from ShadowReceiveCSM.wgsl
+// (same contract as PrimitivePhongTexturedColor's CSM block).
+fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
+    if (viewDepth < splits.x) { return 0u; }
+    if (viewDepth < splits.y) { return 1u; }
+    if (viewDepth < splits.z) { return 2u; }
+    return 3u;
+}
+
+fn getCascadeVP(idx: u32) -> mat4x4<f32> {
+    switch (idx) {
+        case 0u: { return csmParams.cascadeVP0; }
+        case 1u: { return csmParams.cascadeVP1; }
+        case 2u: { return csmParams.cascadeVP2; }
+        default: { return csmParams.cascadeVP3; }
+    }
+}
+
+fn cascadeDepthBias(cascadeIdx: u32, normal: vec3<f32>, lightDir: vec3<f32>) -> f32 {
+    let nDotL = clamp(dot(normalize(normal), normalize(lightDir)), 0.0, 1.0);
+    let minBias = csmParams.cascadeMinBias[cascadeIdx];
+    let maxSlope = csmParams.cascadeMaxSlopeBias[cascadeIdx];
+    let slopeBias = maxSlope * (1.0 - nDotL);
+    return max(minBias, slopeBias);
+}
+
+fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
+    let vp = getCascadeVP(cascadeIdx);
+    let clipPos = vp * vec4<f32>(eyePos, 1.0);
+    let ndc = clipPos.xyz / clipPos.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    let depth = ndc.z - depthBias;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ||
+        depth > 1.0 || depth < 0.0) {
+        return 1.0;
+    }
+    return textureSampleCompareLevel(
+        cascadeDepthArray,
+        shadowCompSampler,
+        uv,
+        i32(cascadeIdx),
+        depth,
+    );
+}
+
+fn sampleCascadeShadow(
+    eyePos: vec3<f32>,
+    viewDepth: f32,
+    normal: vec3<f32>,
+    lightDir: vec3<f32>,
+) -> f32 {
+    let cascadeIdx = selectCascade(viewDepth, csmParams.cascadeSplits);
+    let bias0 = cascadeDepthBias(cascadeIdx, normal, lightDir);
+    let s0 = sampleOneCascade(eyePos, cascadeIdx, bias0);
+    let splitDist = csmParams.cascadeSplits[cascadeIdx];
+    let blendBand = csmParams.blendBands[cascadeIdx];
+    let blendStart = splitDist - blendBand;
+    if (viewDepth > blendStart && cascadeIdx < 3u) {
+        let nextIdx = cascadeIdx + 1u;
+        let bias1 = cascadeDepthBias(nextIdx, normal, lightDir);
+        let s1 = sampleOneCascade(eyePos, nextIdx, bias1);
+        let blendT = smoothstep(blendStart, splitDist, viewDepth);
+        return mix(s0, s1, blendT);
+    }
+    return s0;
+}
+
+fn computeShadowFactorCSM(
+    eyePos: vec3<f32>,
+    viewDepth: f32,
+    normal: vec3<f32>,
+    lightDir: vec3<f32>,
+) -> f32 {
+    if (effects.shadowDarkness >= 1.0) { return 1.0; }
+    let visibility = sampleCascadeShadow(eyePos, viewDepth, normal, lightDir);
+    return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
 fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
@@ -178,7 +343,67 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let NdotH = max(dot(normal, halfDir), 0.0);
     let specular = pow(NdotH, 32.0) * 0.15;
 
-    let shadowFactor = computeShadowFactor(input.eyePosition);
+    // CSM Slice 2b — route through the cascaded path when
+    // `effects.csmControl.x > 0.5`. viewDepth = |eyePosition.z| since
+    // the eye-space convention puts in-front points at negative z.
+    // `input.eyePosition` is the RTE-precise camera-relative vector;
+    // feed it straight into the RTE-aware cascade VPs.
+    var shadowFactor: f32;
+    if (effects.csmControl.x > 0.5) {
+        let viewDepth = abs(input.eyePosition.z);
+        shadowFactor = computeShadowFactorCSM(
+            input.eyePosition,
+            viewDepth,
+            normal,
+            lightDir,
+        );
+    } else {
+        shadowFactor = computeShadowFactor(input.eyePosition);
+    }
     let lighting = ambient + (diffuse + specular) * shadowFactor;
-    return vec4<f32>(input.color.rgb * lighting, input.color.a);
+    var finalColor = vec4<f32>(input.color.rgb * lighting, input.color.a);
+
+    // FEAT-GAP-09 — Aerial-perspective fog blend. Same math as the
+    // PhongTexturedColor reference (Session 34): sample the pre-integrated
+    // LUT by (cos view-zenith, camera altitude) and lerp lit color toward
+    // inscatter by (1 - transmittance). See GlobeTerrain.wgsl::sampleAtmosphereFogLut.
+    if (effects.atmosphereLutControl.x > 0.5) {
+        let innerRadius = effects.atmosphereLutControl.y;
+        let thickness = max(1.0, effects.atmosphereLutControl.z);
+        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+        let viewDirWS = normalize(input.eyePosition);
+        let upDir = normalize(cameraWC);
+        let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
+        let cameraAltitude = max(0.0, length(cameraWC) - innerRadius);
+        let uCoord = clamp(cosViewZenith * 0.5 + 0.5, 0.0, 1.0);
+        let vCoord = clamp(cameraAltitude / thickness, 0.0, 1.0);
+
+        let tSample = textureSampleLevel(
+            atmosphereTransmittanceLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let iSample = textureSampleLevel(
+            atmosphereInscatterLut, atmosphereLutSampler,
+            vec2<f32>(uCoord, vCoord), 0.0,
+        );
+        let transmittance =
+            clamp((tSample.r + tSample.g + tSample.b) / 3.0, 0.0, 1.0);
+
+        let excessAltitude = max(0.0, cameraAltitude - thickness);
+        let orbitFalloff = exp(-excessAltitude / thickness);
+
+        let fogWeight = clamp(iSample.a, 0.0, 1.0) * orbitFalloff;
+        finalColor = vec4<f32>(
+            mix(finalColor.rgb, iSample.rgb, fogWeight),
+            finalColor.a,
+        );
+        if (effects.atmosphereLutControl.w > 0.5) {
+            finalColor = vec4<f32>(
+                finalColor.rgb * mix(1.0, transmittance, fogWeight),
+                finalColor.a,
+            );
+        }
+    }
+
+    return finalColor;
 }

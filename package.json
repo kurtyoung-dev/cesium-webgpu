@@ -45,6 +45,7 @@
   },
   "type": "module",
   "sideEffects": [
+    "./Source/Cesium*.js",
     "./Source/ThirdParty/**/*",
     "./Source/Widgets/**/*.css",
     "./Source/Workers/*",
@@ -121,6 +122,9 @@
     "build-wasm-debug": "node scripts/buildWasm.js --debug",
     "build-wasm-check": "node scripts/buildWasm.js --check",
     "build-wasm-clean": "node scripts/buildWasm.js --clean",
+    "build-wasm-naga": "node scripts/buildWasm.js --only-naga",
+    "build-wasm-naga-tooling": "node scripts/buildWasm.js --only-naga --include-naga-tooling",
+    "build-wasm-full": "node scripts/buildWasm.js --include-naga-tooling",
     "build-all": "gulp clean && node scripts/buildWasm.js && gulp build && gulp buildTs && gulp tsc && gulp -f gulpfile.apps.js buildApps",
     "build-apps": "gulp -f gulpfile.apps.js buildApps",
     "build-cesium-viewer": "gulp -f gulpfile.apps.js buildCesiumViewer",

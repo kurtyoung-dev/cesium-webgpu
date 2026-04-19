@@ -214,8 +214,7 @@ function getDeviceParameter(
     // Vertex attribute / varying / uniform slot counts
     case GL_MAX_VERTEX_ATTRIBS:
       return limits?.maxVertexAttributes ?? 16;
-    case GL_MAX_VARYING_VECTORS: // fallback so the code still compiles cleanly if a downstream // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
-    // consumer pins an older @webgpu/types version. Vars and
+    case GL_MAX_VARYING_VECTORS: // consumer pins an older @webgpu/types version. Vars and // fallback so the code still compiles cleanly if a downstream // 0.1.83, so the new name is always present, but we keep the // than per scalar component). The package.json floor pins us to // maxInterStageShaderVariables (one entry per vec4 slot rather // @webgpu/types ≥0.1.79 renamed maxInterStageShaderComponents →
     // components produce equivalent vec4 counts after the division
     // below, so the math stays correct under either name.
     {
@@ -337,10 +336,7 @@ const EXTENSION_STUBS: Record<string, () => ExtensionStub> = {
  * @param _logUsage - Debug logging function (unused — shader ops are silent)
  * @returns Object containing all shader/misc stub methods
  */
-export function createShaderStubs(
-  state: WebGLStubState,
-  logUsage: LogUsageFn,
-) {
+export function createShaderStubs(state: WebGLStubState, logUsage: LogUsageFn) {
   return {
     // ==== Shader methods ═══════════════════════════════════════════════
     //
@@ -390,13 +386,52 @@ export function createShaderStubs(
           shader._wgslError =
             "No GLSL translator registered. Register one via " +
             "`registerShaderTranslator(new NagaShaderTranslator())` " +
-            "after `npm install naga-wasm`, or author shaders in WGSL " +
-            "via `RenderCommand` and bypass the compat stub.";
+            "after building `packages/wasm-naga` (see that crate's README), " +
+            "or author shaders in WGSL via `RenderCommand` and bypass the " +
+            "compat stub.";
           return null;
         }
+
+        // ── Preprocessor pass (Cesium builtins, #include resolution, etc.) ──
+        //
+        // When a ShaderPreprocessor is registered — typically by the
+        // app at boot, wiring in Cesium's `ShaderSource` — we run the
+        // user's GLSL through it before handing it to the translator.
+        // This is how consumers bridge the gap between Cesium-style
+        // shader fragments (which reference `czm_*` builtins defined
+        // elsewhere) and what the translator actually needs: complete,
+        // self-contained source. Registration is opt-in; when nothing
+        // is registered we pass the source straight through.
+        const preprocessor = tmod.getActiveShaderPreprocessor();
+        let preparedSource = shader._glslSource!;
+        if (preprocessor && preprocessor.supports.includes("glsl")) {
+          try {
+            const result = preprocessor.preprocess(
+              preparedSource,
+              stage as import("../WebGPUShaderTranslator.js").ShaderStage,
+              "glsl",
+            );
+            if (typeof result === "string" && result.length > 0) {
+              preparedSource = result;
+            } else {
+              // A preprocessor that returns empty is considered a
+              // config error — rejecting here means the user gets a
+              // clear diagnostic instead of a silent empty-shader
+              // failure later.
+              shader._wgslError = `Shader preprocessor '${preprocessor.name}' returned empty output`;
+              return null;
+            }
+          } catch (e) {
+            shader._wgslError =
+              `Shader preprocessor '${preprocessor.name}' threw: ` +
+              `${(e as Error).message ?? String(e)}`;
+            return null;
+          }
+        }
+
         try {
           const result = await translator.translate(
-            shader._glslSource!,
+            preparedSource,
             stage as import("../WebGPUShaderTranslator.js").ShaderStage,
             "glsl",
           );
@@ -405,7 +440,20 @@ export function createShaderStubs(
           shader._wgslError = null;
           return result.wgsl;
         } catch (e) {
-          shader._wgslError = (e as Error).message ?? String(e);
+          let msg = (e as Error).message ?? String(e);
+          // Nudge: if the error mentions czm_* symbols, the user
+          // almost certainly needs to register a Cesium preprocessor.
+          // The translator error alone doesn't hint at this, so we
+          // surface the remediation.
+          if (/\bczm_[a-zA-Z0-9_]+/.test(msg) && !preprocessor) {
+            msg +=
+              "\n\nHint: the source references `czm_*` Cesium builtins but " +
+              "no preprocessor is registered. Register one that combines " +
+              "the source with Cesium's ShaderSource builtins via " +
+              "`registerShaderPreprocessor(…)` — see the docblock on " +
+              "WebGPUShaderTranslator.ts.";
+          }
+          shader._wgslError = msg;
           return null;
         }
       })();
@@ -455,8 +503,7 @@ export function createShaderStubs(
           if (!vs._wgslReady && typeof vs._glslSource === "string") {
             // Caller forgot compileShader — let's not be strict; emit
             // a link error that matches WebGL's diagnostic style.
-            program._linkError =
-              "linkProgram: vertex shader was not compiled.";
+            program._linkError = "linkProgram: vertex shader was not compiled.";
             program._linkStatus = false;
             return null;
           }
@@ -503,8 +550,7 @@ export function createShaderStubs(
             fragment: fragmentModule,
             fragmentEntryPoint: fs._reflection?.entryPoint ?? "main",
             vertexReflection: vs._reflection ?? _emptyReflection("vertex"),
-            fragmentReflection:
-              fs._reflection ?? _emptyReflection("fragment"),
+            fragmentReflection: fs._reflection ?? _emptyReflection("fragment"),
           };
           program._programModules = modules;
           program._linkStatus = true;
@@ -645,12 +691,7 @@ export function createShaderStubs(
       const width = Math.abs(srcX1 - srcX0);
       const height = Math.abs(srcY1 - srcY0);
       if (width === 0 || height === 0) return;
-      if (
-        srcX0 > srcX1 ||
-        srcY0 > srcY1 ||
-        dstX0 > dstX1 ||
-        dstY0 > dstY1
-      ) {
+      if (srcX0 > srcX1 || srcY0 > srcY1 || dstX0 > dstX1 || dstY0 > dstY1) {
         logUsage(
           "blitFramebuffer",
           "flipped blit requested — WebGPU copyTextureToTexture can't flip; using unflipped extent",
@@ -756,10 +797,7 @@ export function createShaderStubs(
         const tightRow = width * bytesPerPixel;
         for (let row = 0; row < height; row++) {
           pixels.set(
-            mapped.subarray(
-              row * bytesPerRow,
-              row * bytesPerRow + tightRow,
-            ),
+            mapped.subarray(row * bytesPerRow, row * bytesPerRow + tightRow),
             row * tightRow,
           );
         }

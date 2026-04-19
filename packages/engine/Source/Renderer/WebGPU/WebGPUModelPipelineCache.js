@@ -24,6 +24,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
 
 // Alpha mode constants matching glTF spec
 const ALPHA_OPAQUE = 0;
@@ -125,8 +126,12 @@ const _GL_CLAMP_TO_EDGE = 33071;
 const _GL_MIRRORED_REPEAT = 33648;
 
 function _mapGLFilter(glEnum, fallback) {
-  if (glEnum === _GL_NEAREST) {return "nearest";}
-  if (glEnum === _GL_LINEAR) {return "linear";}
+  if (glEnum === _GL_NEAREST) {
+    return "nearest";
+  }
+  if (glEnum === _GL_LINEAR) {
+    return "linear";
+  }
   return fallback;
 }
 
@@ -324,8 +329,14 @@ class WebGPUModelPipelineCache {
     this._morphTargetBGL = bgls.morphTargetBGL;
     this._instancingBGL = bgls.instancingBGL;
     this._featureIdBGL = bgls.featureIdBGL;
+    // CSM Slice 2c — effects group carries shadow receive, clipping,
+    // atmosphere LUT control, and cascaded-shadow-map bindings (10 +
+    // 11). Shared with the globe and primitive shaders via the
+    // `getEffectsBindGroupLayout` factory so the BGL layout stays in
+    // lockstep across every consumer.
+    this._effectsBGL = getEffectsBindGroupLayout(device);
 
-    // Create pipeline layout (shared by all variants, 7 bind groups)
+    // Create pipeline layout (shared by all variants, 8 bind groups)
     this._pipelineLayout = device.createPipelineLayout({
       label: "Model PBR PipelineLayout",
       bindGroupLayouts: [
@@ -336,6 +347,7 @@ class WebGPUModelPipelineCache {
         this._morphTargetBGL,
         this._instancingBGL,
         this._featureIdBGL,
+        this._effectsBGL,
       ],
     });
 
@@ -614,7 +626,9 @@ class WebGPUModelPipelineCache {
     // combinations across textures share a single GPUSampler.
     const key = `${magFilter}|${minFilterAndMip.min}|${minFilterAndMip.mip}|${addrU}|${addrV}`;
     let cached = this._samplerCache.get(key);
-    if (cached) {return cached;}
+    if (cached) {
+      return cached;
+    }
 
     cached = this._device.createSampler({
       label: `glTF sampler ${key}`,

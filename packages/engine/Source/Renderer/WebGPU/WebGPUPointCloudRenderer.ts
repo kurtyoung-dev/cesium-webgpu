@@ -19,6 +19,46 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
+import type { WebGPUPointCloudLODProcessorInstance } from "./WebGPUPointCloudLODProcessor.js";
+
+/**
+ * Narrowed view of the CesiumJS `PointCloud` shape that this renderer
+ * actually touches. The upstream type uses a generic index signature
+ * (`[key: string]: unknown`) which makes arithmetic + property access
+ * fail TypeScript's strict checks. Declaring the specific fields here
+ * keeps the strict index signature in place for any fields we DON'T
+ * reference while letting hot-path code compile without inline casts.
+ *
+ * Kept local to this file — callers elsewhere in the engine shouldn't
+ * need to know about LOD internals.
+ */
+/**
+ * Shape of the parsed-content blob produced by Cesium's point cloud
+ * loader (PntsParser / 3D Tiles Point Cloud). Both layouts — raw LAS
+ * and 3D Tiles tiles — populate the same fields, so this single shape
+ * covers both loader paths. Declared separately so the interleaved
+ * accesses in `buildInstanceBuffer` type-check as arrays of the right
+ * numeric shape.
+ */
+interface PointCloudParsedContent {
+  positions?: Float32Array;
+  colors?: Uint8Array | Float32Array;
+}
+
+interface PointCloudLike {
+  _webgpuCache?: CesiumOpaqueObject | PointCloudCache | undefined;
+  _parsedContent?: PointCloudParsedContent;
+  _pointCloud?: { _parsedContent?: PointCloudParsedContent };
+  _pointsLength?: number;
+  enableGPULOD?: boolean;
+  modelMatrix?: CesiumMatrix4;
+  lodFarDistance?: number;
+  geometricError?: number;
+  // Allow pass-through for anything else the buildInstanceBuffer /
+  // frustum extraction paths read — keeps the typed surface minimal
+  // while preserving the upstream escape hatch.
+  [key: string]: unknown;
+}
 
 interface PointCloudCache {
   uniformBuffer: GPUBuffer | null;
@@ -293,7 +333,7 @@ function buildPipeline(
 
 function buildInstanceBuffer(
   device: GPUDevice,
-  pointCloud: CesiumObjectWithWebGPUCache,
+  pointCloud: PointCloudLike,
   modelMatrix: Matrix4 | CesiumMatrix4,
   allowStorage: boolean,
 ): {
@@ -436,7 +476,7 @@ function packUniforms(
 }
 
 function updateWebGPUPointCloud(
-  pointCloud: CesiumObjectWithWebGPUCache,
+  pointCloud: PointCloudLike,
   frameState: CesiumFrameState,
 ): void {
   const context = frameState.context;
@@ -495,7 +535,14 @@ function updateWebGPUPointCloud(
   // them says no we stay on the existing VB-instanced path.
   const optIn = pointCloud.enableGPULOD === true;
   const pointCount = pointCloud._pointsLength ?? 0;
-  const lodProcessor = optIn ? context.pointCloudLOD : null;
+  // `context.pointCloudLOD` is typed as `object | null` on the
+  // backend-agnostic `CesiumGraphicsContext` surface — cast to the real
+  // processor interface at the boundary. Doing the cast here once
+  // avoids scattering `as unknown as …` through the hot path below.
+  const lodProcessor = optIn
+    ? ((context.pointCloudLOD as WebGPUPointCloudLODProcessorInstance | null) ??
+      null)
+    : null;
   const lodPossible =
     optIn && pointCount >= POINT_COUNT_LOD_THRESHOLD && lodProcessor !== null;
 
@@ -585,7 +632,7 @@ function _runGPULODPath(
   commandList: CesiumAnyDrawCommand[],
   cache: PointCloudCache,
   lodProcessor: WebGPUPointCloudLODProcessorInstance,
-  pointCloud: CesiumObjectWithWebGPUCache,
+  pointCloud: PointCloudLike,
   modelMatrix: Matrix4 | CesiumMatrix4,
   canvasFormat: GPUTextureFormat,
 ): void {
@@ -699,6 +746,11 @@ function _runGPULODPath(
   // recognizes `_drawIndirectBuffer` and routes through drawIndirect
   // instead of the default instanced draw.
   if (!cache.lodCommand) {
+    // Don't widen to `CesiumAnyDrawCommand` before the constructor —
+    // the upstream ambient types `pipeline` as optional (for WebGL's
+    // shaderProgram-shaped variant) but `WebGPUDrawCommandOptions`
+    // requires it, and widening trips the assignability check. Build
+    // the WebGPU-shape options object directly instead.
     cache.lodCommand = new WebGPUDrawCommand({
       pipeline: cache.lodPipeline,
       bindGroups: [cache.bindGroup, cache.lodStorageBindGroup],
@@ -707,7 +759,7 @@ function _runGPULODPath(
       instanceCount: 0, // filled by drawIndirect
       pass: Pass.OPAQUE,
       drawIndirectBuffer: cache.lodIndirectBuffer,
-    } as CesiumAnyDrawCommand);
+    });
   }
   commandList.push(cache.lodCommand);
 }
@@ -821,9 +873,7 @@ function _extractFrustumPlanes(
   void uniformState;
 }
 
-function destroyWebGPUPointCloudResources(
-  pointCloud: CesiumObjectWithWebGPUCache,
-): void {
+function destroyWebGPUPointCloudResources(pointCloud: PointCloudLike): void {
   const cache = pointCloud._webgpuCache as PointCloudCache | undefined;
   if (!cache) {
     return;

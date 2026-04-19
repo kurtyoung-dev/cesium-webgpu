@@ -98,12 +98,7 @@ export interface ShaderReflection {
     binding: number;
     name: string;
     viewDimension: GPUTextureViewDimension;
-    sampleType:
-      | "float"
-      | "unfilterable-float"
-      | "depth"
-      | "sint"
-      | "uint";
+    sampleType: "float" | "unfilterable-float" | "depth" | "sint" | "uint";
     multisampled: boolean;
   }>;
   samplers: Array<{
@@ -237,6 +232,102 @@ export function subscribeToShaderTranslatorChange(
   return () => {
     _registrationListeners.delete(listener);
   };
+}
+
+// ─── Preprocessor registry ──────────────────────────────────────────────
+//
+// Shader translators (naga, slang) only accept complete, self-contained
+// source. When a stub consumer passes GLSL that references Cesium's
+// `czm_*` builtins or project-specific macros, the translator will
+// reject it as "unknown function" / "unknown variable." The canonical
+// fix is to run the input through Cesium's `ShaderSource` before
+// handing it to the translator — but the stub can't hard-depend on
+// ShaderSource (it's a WebGL-specific class and doesn't live in the
+// stub's graph). The preprocessor registry is the clean shim: callers
+// that know their stub input references `czm_*` or custom includes
+// register a preprocessor function, and the stub invokes it before
+// the translator.
+//
+// Typical registration at app startup, once the renderer is up:
+//
+//   import {
+//     registerShaderPreprocessor,
+//     ShaderSource,
+//     CzmBuiltins,
+//   } from "@cesium/engine";
+//   registerShaderPreprocessor({
+//     name: "cesium-shader-source",
+//     preprocess: (source, stage) => {
+//       // Synthesize a ShaderSource that includes Cesium builtins,
+//       // stuff `source` in as a single source entry, then return the
+//       // combined output. `stage` selects the appropriate combine
+//       // method.
+//       const ss = new ShaderSource({ sources: [source], includeBuiltIns: true });
+//       return stage === "vertex"
+//         ? ss.createCombinedVertexShader()
+//         : ss.createCombinedFragmentShader();
+//     },
+//   });
+//
+// Registration is opt-in because 90% of stub consumers write self-
+// contained GLSL — running them through Cesium's combine path would
+// slow the common case and potentially introduce symbol collisions.
+// When nothing is registered the stub's compileShader hands the
+// source straight to the translator.
+
+/**
+ * Shape of a preprocessor entry. Preprocessors run synchronously
+ * before the translator and transform a GLSL (or other) source string
+ * into whatever the translator expects. Return value MUST be a
+ * non-empty string — returning empty disables the shader entirely
+ * and is surfaced as a compilation error.
+ */
+export interface ShaderPreprocessor {
+  /** Human-readable name for diagnostics. */
+  readonly name: string;
+  /**
+   * Source languages this preprocessor operates on. When the
+   * translator is given a language outside this list, the
+   * preprocessor is skipped (passthrough).
+   */
+  readonly supports: ReadonlyArray<"glsl" | "wgsl" | "slang">;
+  /**
+   * Transform the source. `stage` is the pipeline stage hint
+   * (vertex/fragment/compute) — same value that will be passed to
+   * the translator. The returned string is what the translator sees.
+   */
+  preprocess(
+    source: string,
+    stage: ShaderStage,
+    language: "glsl" | "wgsl" | "slang",
+  ): string;
+}
+
+let _activePreprocessor: ShaderPreprocessor | null = null;
+
+/**
+ * Register a shader preprocessor that runs BEFORE the active
+ * translator on every `compileShader` call. Passing `null` clears
+ * the registration (mostly for tests).
+ *
+ * Unlike the translator registry, preprocessors don't fire
+ * subscription events — they're static wrappers that either apply
+ * every time or not at all, so consumers don't need to observe
+ * registration changes.
+ */
+export function registerShaderPreprocessor(
+  preprocessor: ShaderPreprocessor | null,
+): void {
+  _activePreprocessor = preprocessor;
+}
+
+/**
+ * Read the currently-registered preprocessor, if any. Stubs call
+ * this on every `compileShader` to decide whether to transform the
+ * source.
+ */
+export function getActiveShaderPreprocessor(): ShaderPreprocessor | null {
+  return _activePreprocessor;
 }
 
 // ─── Built-in translators ────────────────────────────────────────────────

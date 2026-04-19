@@ -1,8 +1,201 @@
 # Cascaded Shadow Maps (CSM) — Design Document
 
-**Status:** Phase 4 visual quality closure — design only, implementation deferred to a focused 4-5 day session.
+**Status:** Slice 1 SHIPPED (Sessions 32-33). Slices 2-4 pending.
 **Created:** 2026-04-09
+**Last updated:** 2026-04-18 — Slice 1 shipped with RTE precision fix + per-cascade slope-scaled depth bias (both beyond the original Slice 1 plan — see "Slice 1 shipped additions" below).
 **Owner:** WebGPU migration
+
+## Implementation slices
+
+Full CSM integration with every Cesium feature (RTE, globe, 3D Tiles, models, orbital/space, moon dual-light, WebGL parity) is a 3–5 week effort. To deliver visible progress each session without half-finished code, the work is split into four vertical slices. Each slice ships a working CSM that can be visually verified; later slices add capabilities without breaking earlier ones.
+
+| Slice | Scope | Duration | Status |
+|---|---|---|---|
+| **Slice 1** | 4 cascades, sun-directional only, RTE stride-24 cast only, **globe terrain + phong primitive receivers**, ground-level viewing (no altitude-adaptive splits, no orbital regime). Scene toggle off by default. **SHIPPED** with two material upgrades over the original plan: **(a) RTE-aware cascade VPs** (cast + receive math both consume camera-relative position — no FP32 world-space reconstruction at Earth scale), **(b) per-cascade slope-scaled depth bias** (replaces hardcoded 0.005 with `max(minBias[i], maxSlopeBias[i] * (1 - dot(N, L)))` that scales with cascade sphere radius). | 2 sessions (32+33) | **SHIPPED 2026-04-18** |
+| **Slice 2** | Texel-snap stabilization, blend bands (already present from Slice 1), **all per-vertex-layout cast pipelines** (p12, quantized12, modelP12, modelInstancedSB, modelSkinned), **primitive lit receiver** (ModelPBRComplete.wgsl + lit-primitive shaders). | 1 session | 🟡 Mostly shipped — 2a (cast variants), 2b (texel-snap + PhongColor), 2c (ModelPBRComplete receive) all SHIPPED 2026-04-18; 2d (PBR simple/textured + 20 Mat-Lit variants) remains |
+| **Slice 3** | **Altitude-adaptive splits** (derive from camera altitude above ellipsoid; orbital regime collapses to a single large cascade when altitude > ~500 km), **moon dual-light cascades** (reuses existing moon LUT infrastructure), VSM-style soft shadows via rg32float variance texture. | 1 session | Pending |
+| **Slice 4** | **3D Tiles integration** (per-tile cascade culling, frustum-intersection gating), snapshot-mode freezable contract, **WebGL parity path**, full visual verification pass, spec coverage completion. | 1 session | Pending |
+
+## Slice 1 shipped additions (beyond original design)
+
+Two precision/correctness fixes were folded into Slice 1 once audit work surfaced them. Both are required for CSM to function correctly at Earth scale, not just stretch goals:
+
+### RTE-aware cascade VPs
+
+The original plan assumed feeding world-space fragment positions into world-space cascade VPs on the receive side. At Earth radius (6.37M m) FP32 has ~0.76m ULP, so `worldPos = positionHigh + positionLow` quantizes to sub-meter acne on cascade 0 (10m extent). The cast side had a matching but distinct bug: `ShadowMap.wgsl:35-39` multiplies its `lightViewProjection` UBO field by an **RTE-relative** vector, but our `WebGPUCSMRenderer.renderCastPass` was writing a world-space VP into that slot — producing empty cascade textures (masked in Slice 1 only by the `rte24`-only filter; Slice 2 cast-variant unlock would have surfaced this loudly).
+
+**Fix (Session 33, shipped):**
+
+- New `applyCameraTranslationToVP(vpWorld, cameraWC) → VP_RTE` helper in [WebGPUCSMRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts) composes `VP_RTE = VP_world * T(+cameraWC)` in FP64. The camera translation cancels into VP's translation column cleanly before any FP32 storage.
+- Every cascade now carries both `viewProjection` (world-space, for diagnostics) and `viewProjectionRTE` (what gets uploaded to both cast + receive UBOs).
+- Receive shaders feed the RTE-precise camera-relative position directly. [PrimitivePhongTexturedColor.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongTexturedColor.wgsl) uses the existing `eyePosition` varying; [GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) adds a new `v_positionRTE` varying populated in SCENE3D (zeroed elsewhere — CSM is SCENE3D-gated anyway).
+
+**Result:** precision drops from ~1m FP32 reconstruction error to sub-micrometer. Sanity-checked via Node script: `VP_RTE * eyePos ≡ VP_world * worldPos` bit-exact at camera position (6378137, 0, 0).
+
+### Per-cascade slope-scaled depth bias
+
+Original design deferred bias tuning to "Slice 2" with a hardcoded `0.005` placeholder. That constant only works at one cascade scale — cascade 3 (kilometer extent) peters-pan, cascade 0 (tens of meters) acnes. Slope-scaled + per-cascade bias is the principled formulation and it costs nothing to add at Slice 1 scope.
+
+**Fix (Session 33, shipped):**
+
+- `CSMParams` UBO gained `cascadeMinBias: vec4<f32>` and `cascadeMaxSlopeBias: vec4<f32>` at float offsets 264/268. Fits within the existing 1088B placeholder — no BGL churn.
+- Per-cascade constants scale linearly with `sphereRadius[i] / sphereRadius[0]`, so NDC bias tracks each cascade's orthographic depth range (`fn = 3*r` in the projection).
+- Base values `minBias = 5e-5`, `maxSlopeBias = 5e-4`; cascade 3 (km-scale) scales up proportionally.
+- Shader formula (inside `sampleOneCascade` for both primitive + globe paths):
+
+  ```wgsl
+  let nDotL = clamp(dot(normalize(N), normalize(L)), 0.0, 1.0);
+  let bias = max(cascadeMinBias[i], cascadeMaxSlopeBias[i] * (1.0 - nDotL));
+  let biasedDepth = ndc.z - bias;
+  ```
+
+- Cast UBO also carries a per-cascade-scaled depth bias (receive-side slope bias is additive on top).
+
+## Slice 2 progress (2026-04-18) — cast-variant unlock
+
+### Cast-variant pipeline unlock — SHIPPED
+
+Before this session, `WebGPUCSMRenderer.renderCastPass` filtered commands to `_shadowCastLayout === "rte24"` and bound only binding 0 (the per-cascade cast UBO). All model, quantized-terrain, and instanced commands were silently dropped. Single-shadow-map path already supported the full variant table (`rte24`, `p12`, `modelP12`, `modelInstanced`, `modelInstancedSB`, `modelSkinned`, `quantized12`); CSM lagged.
+
+**Fix:**
+
+- New `getShadowCastVariant(key)` export in [WebGPUShadowMapRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js) returns the variant descriptor. CSM imports it alongside the already-exported `_getOrCreateCastPipeline` and `_inferShadowLayoutKey` — single source of truth for variant metadata (`extraBindings`, `perCommandBindingFields`, `vertexBufferSourceSlots`).
+- [WebGPUCSMRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts) `renderCastPass` generalized:
+  - Removed `if (layoutKey !== "rte24") continue` filter.
+  - **No-extras path** (rte24, p12, modelInstanced): shared per-cascade bind group cached on the renderer at `_cascadeCastBindGroups[ci].get(layoutKey)` — one bind group per `(cascade, variant)` tuple, reused across all commands that hit that variant.
+  - **Extras path** (modelP12, modelInstancedSB, modelSkinned, quantized12): per-command bind group indexed by cascade via `cmd._shadowCastCSMBindGroups[ci]` + parallel `cmd._shadowCastCSMBindGroupKeys[ci]` for layout invalidation. Mirrors the single-shadow-map invalidation pattern but scoped to CSM (separate cache keys — no cross-contamination between the two paths).
+  - **Multi-VB variants** (modelSkinned): walks `vertexBufferSourceSlots` to bind slot 0/5/6 of the command's 7-buffer layout into the cast pipeline's compact 0/1/2 layout. Single-VB variants fall through to default slot-0 bind.
+  - Draw calls now forward `cmd.instanceCount` to `pass.drawIndexed(count, instanceCount)` so `modelInstancedSB` renders all instances (previously instancing was inherited only by the single-shadow-map path).
+- Pipeline compilation is shared through the already-wired `_getOrCreateCastPipeline` factory with a CSM-owned cache (`this._sharedPipelineCache`). Each variant compiles once per cascade-renderer lifetime. Pipeline's bind-group layout is identical to the single-shadow-map variant — the 128-byte cast UBO (Slice 1 `WebGPUCSMCastUBOLayoutSpec.js`) matches `SHADOW_UNIFORM_SIZE`, so the same WGSL `u` struct binds cleanly against either path's UBO.
+
+**Per-command UB ownership — safe for multi-cascade iteration.** Models allocate `cache.shadowCastUB` once per Model and write the model matrix once per frame before the cast pass ([WebGPUModelRenderer.js:710-725](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L710-L725)). CSM iterates the same command list four times (once per cascade), each reading the same stable UB — no race, no staleness. Bind-group caches stay valid frame-to-frame because the UB object identity never changes.
+
+**What's live:** models cast cascaded shadows on terrain and on each other. Quantized-mesh terrain casts on models. Skinned/instanced models cast. Any future variant registered via `registerShadowCastVariant` (third-party extensions) works automatically — the CSM loop is fully metadata-driven.
+
+## Slice 2b progress (2026-04-18) — texel-snap + PhongColor receive
+
+### Texel-snap stabilization — SHIPPED
+
+Shadow texels were drifting continuously against world-space as the camera moved, making static edges crawl. Fix: quantize the cascade sphere center to the shadow-texel grid in **world-grid-locked light space** so the center only moves in increments of one texel.
+
+- New exported `snapToTexelGrid(center, radius, lightDir, resolution, result)` helper in [WebGPUCSMRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts). Builds the same light-space basis as `_computeCascadeVPMatrix` (basis depends ONLY on `lightDir` + the world-up fallback, not on camera — this is what makes the grid stable across camera motion). Projects raw center onto the (side, up) axes, rounds each coordinate to the nearest multiple of `texelWorld = 2 * radius / resolution`, then re-expresses in world space.
+- Integrated in `computeCascadeVPs` between `_fitBoundingSphere` and `_computeCascadeVPMatrix`. Uses a per-call scratch `Float64Array(3)` so no per-frame allocation.
+- New `get cascadeResolution(): number` getter exposes the resolution for specs and diagnostics.
+- `WebGPUCSMRendererSpec.js` gained 5 specs: idempotence, displacement bounded by ~half-texel diagonal, zenith-light keeps Z unchanged, bounding coverage preserved (raw point stays inside sphere around snapped center), VP numerical stability (columns 0-2 identical, translation column differs only by a small texel-bounded amount).
+- **Earth-scale sanity run:** two raw centers offset by 0.1 and 0.2 texel both snap to the SAME world position (6378000.0) — verifies the shimmer-kill mechanism at planetary radius where it matters.
+
+### PrimitivePhongColor CSM receive — SHIPPED
+
+[PrimitivePhongColor.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongColor.wgsl) now consumes the CSM bindings at `@group(2) @binding(10)` and `@group(2) @binding(11)` (group 2, not 3, because PhongColor has no texture bind group in between — the primitive pipeline builds `[cameraBGL, materialBGL, effectsBGL]` for non-textured shaders). Struct additions and helper functions copied verbatim from `PrimitivePhongTexturedColor.wgsl` (the reference implementation) — EffectsUniforms now carries the required `atmosphereLutControl` + `csmControl` tail fields so byte offsets line up with the 272-byte UBO. Fragment shader routes through `computeShadowFactorCSM(eyePosition, viewDepth, normal, lightDir)` when `effects.csmControl.x > 0.5`, falls back to the single-map path otherwise. **No pipeline or JS changes needed** — the effects BGL already advertised bindings 10/11 from Slice 1, with placeholder buffers when CSM is off.
+
+## Slice 2c progress (2026-04-18) — ModelPBRComplete receive
+
+### ModelPBRComplete CSM receive — SHIPPED
+
+The glTF PBR shader now receives cascaded shadows. Scope was larger than the primitive receivers because the Model pipeline had 7 bind groups pre-CSM (camera, material, texture, skinning, morph, instancing, featureId); effects had to be added as a new `@group(7)` without disturbing the existing layout.
+
+**Pipeline layout extension** ([WebGPUModelPipelineCache.js:328-351](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js#L328-L351)):
+
+- Added `this._effectsBGL = getEffectsBindGroupLayout(device)` alongside the other BGLs. Same factory the globe + primitive paths use, so the 272-byte EffectsUniforms layout stays in lockstep across every consumer.
+- Extended `createPipelineLayout` bindGroupLayouts array from 7 to 8 slots: `[camera, material, texture, skinning, morph, instancing, featureId, effects]`. Existing pipelines don't break — no other model-rendering code binds group 7, so the addition is backward-compatible.
+
+**Per-frame effects bind group** ([WebGPUModelRenderer.js:698-733](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L698-L733)):
+
+- Per-model call to `createEffectsBindGroup(device, frameState, { shadowMap, csm, cameraInPlaneSpace })` inside `updateWebGPUModel`. Mirrors the pattern in `WebGPUGlobeSurfaceRenderer.ts:1554`. CSM binding resolved the same way: read `frameState.context.csmRenderer`, gate on `.enabled === true` plus valid `cascadeParamsBuffer` + `cascadeArrayView`.
+- Bind group stored on `cache.effectsBG` and pushed into each primitive's `WebGPUDrawCommand.bindGroups[]` at index 7.
+- **Scope note:** cost is one 272-byte UB write + one bind-group creation per model per frame. Acceptable for typical scenes (few models); if model count grows to hundreds, consider a scene-wide shared bind group cached on `frameState.context` per frame.
+
+**Shader changes** ([ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl)):
+
+- New `@group(7)` bindings: effects UBO + shadow depth texture + comparison sampler + clipping plane texture + clipping plane sampler + CSMParams UBO + cascade depth array.
+- New `@location(7) rteMC: vec3<f32>` varying on VertexOutput / FragmentInput. VS populates it from the existing `rte` local (line 270, the model-space RTE vector). FS rotates it to world-space RTE via `(material.modelMatrix * vec4(input.rteMC, 0.0)).xyz` before feeding into cascade VPs.
+- **Why model→world rotation works in FP32:** `modelMatrix * vec4(rteMC, 0.0)` applies only the rotation+scale components (w=0 drops translation). Mathematically: `modelMatrix_3x3 * (positionMC − camMC) = pWC − camWC` because `modelMatrix_3x3 * camMC = camWC - modelTranslation` and the `modelTranslation` terms cancel in `pWC - camWC`. Result is the world-space camera-relative vector with FP32 precision preserved (both inputs and output are bounded by model extent + camera distance, not Earth-scale).
+- CSM helpers (`selectCascade`, `getCascadeVP`, `cascadeDepthBias`, `sampleOneCascade`, `sampleCascadeShadow`, `computeShadowFactorCSM`) inlined from the primitive receivers — same math, just reading the model's EffectsUniforms / CSMParams at @group(7).
+- Fragment integration: `direct = direct * shadowFactor` immediately after the Cook-Torrance BRDF assembly, gated on `effects.csmControl.x > 0.5`. Ambient + emissive remain unshadowed per PBR convention. Unlit materials (`FLAG_IS_UNLIT`) early-exit well before the CSM path, so they're safe.
+
+### Still pending in Slice 2d
+
+- **Material Lit variants (18 remaining)** — 2/20 Mat-Lit variants now wired (see "Mat-Lit CSM recipe" below). The remaining 18 are mechanical applications of the same recipe; each ~15 minutes to port. Candidates for a single batch-edit session or a templated Node script.
+
+## Slice 2d progress (2026-04-18) — PBR receivers + primitive effects BG refresh
+
+### Primitive effects bind group per-frame refresh — SHIPPED
+
+Infrastructure gap discovered while shipping 2d: primitive commands were built once with the shared `getPlaceholderEffects` BG and never refreshed per-frame. Effect: `csmControl.x = 0` always reached the fragment shader, so **even the already-wired PhongColor and PhongTexturedColor CSM receivers from Slice 2b were dead code at runtime**. Globe terrain's per-frame `createEffectsBindGroup` call was the only path where CSM actually reached a receive shader.
+
+**Fix** ([WebGPUPrimitiveCommands.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)):
+
+- New `_getOrCreateSharedPrimitiveEffectsBG(frameState)` caches one effects BG per frame on `context._primitiveEffectsBG`, keyed by `(frameNumber, toggleHash)` where the hash covers `hasShadow | hasCsm << 1`. Rebuilds when any of those flip.
+- New `_refreshPrimitiveEffectsSlot(command, frameState)` swaps `command.bindGroups[last]` to the active BG. Skips pick commands (they don't receive shadows). Falls through to the cached placeholder when no feature is active, so the swap becomes a no-op.
+- Called from both `updateWebGPUCommandUniforms` (per-instance + phong path) and `updateWebGPUMaterialCommandUniforms` (material + PBR path) every frame.
+- Primitives have identity `modelMatrix` for current appearance primitives, so one shared BG across every primitive per frame is correct. If per-model-matrix primitives show up later, the cache key needs a modelMatrix hash.
+- **Cost**: one `createEffectsBindGroup` call + one 272-byte UB write per frame, reused across every primitive command. For N primitives, O(1) instead of O(N) — meaningful difference at scene scale.
+
+### Material + PBR pipeline layout forward-compat — SHIPPED
+
+Pre-2d, the material/PBR pipeline's bind-group layout was `[camera, material, (texture?)]` — no effects slot. PBR shaders declaring `@group(2)` or `@group(3)` for effects would have failed pipeline creation with a validation error.
+
+**Fix** ([WebGPUPrimitiveCommands.js#createMaterialPipelineAndCache](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)): append `getEffectsBindGroupLayout(device)` as the final BGL in every material + PBR pipeline layout. Command creation pushes `getPlaceholderEffects(device).bindGroup` as the matching bind group. Material Lit variants that don't declare `@group(N)` for effects ignore the extra BG — WebGPU allows unused bind groups in a pipeline layout. Pipeline layouts now align with what `_refreshPrimitiveEffectsSlot` expects.
+
+### PrimitivePBRSimple + PrimitivePBRTextured CSM receive — SHIPPED
+
+PBR primitives now receive cascaded shadows. Diffs:
+
+- [PrimitivePBRSimple.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRSimple.wgsl) — effects at `@group(2)` (no texture group). Adds `eyePosition: vec3<f32>` at `@location(3)` populated from the RTE-translated position in VS. Fragment gate: `if (effects.csmControl.x > 0.5) { direct = direct * computeShadowFactorCSM(...); }`. Ambient stays unshadowed per standard PBR convention (environment irradiance isn't occluded by a single directional light's shadow map).
+- [PrimitivePBRTextured.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRTextured.wgsl) — effects at `@group(3)` (texture group occupies `@group(2)`). Same eyePosition varying + gate as the simple variant.
+- Same CSM helper stack (`selectCascade`, `getCascadeVP`, `cascadeDepthBias`, `sampleOneCascade`, `sampleCascadeShadow`, `computeShadowFactorCSM`) inlined from the PhongColor reference.
+- **viewDepth sourcing**: uses `abs(input.worldPosition.z)` where `worldPosition` is legacy-named but actually view-space (multiplied by `modelViewRelativeToEye` in VS). Eye-space convention puts in-front points at negative z, so `abs(.z)` is the positive view-depth expected by `selectCascade`. Name is a vestige; kept to minimize diff.
+
+**Spec coverage**: [WebGPUPrimitivePBRCSMSpec.js](../packages/engine/Specs/Renderer/WebGPU/WebGPUPrimitivePBRCSMSpec.js) locks WGSL `@group` / `@binding` / `@location` values, EffectsUniforms + CSMParams struct field parity across all four receivers (PhongColor, PhongTexturedColor, PBRSimple, PBRTextured), shader-module minimum size, and the non-shadowed-ambient invariant.
+
+### Mat-Lit CSM recipe — 2/20 shipped as reference
+
+The 20 Mat-Lit variants share an identical receive pattern. [PrimitiveMatColorLit.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatColorLit.wgsl) is the non-textured reference; [PrimitiveMatImageLit.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatImageLit.wgsl) is the textured reference. Recipe for the remaining 18:
+
+1. **Decide effects group index.** No texture group → `@group(2)`. Texture group occupies `@group(2)` → effects goes at `@group(3)`. Consult the existing `@group(2) @binding(...)` declarations in the target shader — if they bind a sampler/texture, the shader is textured.
+2. **Add eyePosition varying** at `@location(3)` (or next free location) on VertexOutput: `@location(3) eyePosition: vec3<f32>`.
+3. **Copy the EffectsUniforms + CSMParams struct blocks** and the 5 `@group(N) @binding(...)` declarations from the chosen reference. N = 2 or 3 per step 1.
+4. **Copy the CSM helper stack** (selectCascade, getCascadeVP, cascadeDepthBias, sampleOneCascade, sampleCascadeShadow, computeShadowFactorCSM) verbatim. They reference module-scope names (`csmParams`, `cascadeDepthArray`, `shadowCompSampler`, `effects`) so no edits needed.
+5. **In VS, populate output.eyePosition** from the existing `eyePos: vec4<f32>` local: `output.eyePosition = eyePos.xyz;`.
+6. **In fragment, wrap the direct-lighting accumulation** with the gate:
+   ```wgsl
+   var direct = diffuse + specular;
+   if (effects.csmControl.x > 0.5) {
+     let viewDepth = abs(input.viewPosition.z);
+     let shadowFactor = computeShadowFactorCSM(
+       input.eyePosition, viewDepth, normal, lightDir);
+     direct = direct * shadowFactor;
+   }
+   let lighting = ambient + direct;
+   ```
+   Ambient must NOT be multiplied by shadowFactor (see PBR convention).
+7. **Regen the .js companion** via `node -e "import('./scripts/build.js').then(m => m.wgslToJavaScript(false, 'Build/minifyShaders.state', 'engine'))"` or let `gulp build` do it.
+
+Remaining shaders to port:
+
+- Non-textured (effects at `@group(2)`): `matCheckerLit`, `matGridLit`, `matStripeLit`, `matDotLit`, `matFadeLit`, `matRimLightingLit`, `matElevContourLit` (7)
+- Textured (effects at `@group(3)`): `matAlphaMapLit`, `matEmissionMapLit`, `matSpecularMapLit`, `matBumpMapLit`, `matNormalMapLit`, `matWaterLit`, `matElevBandLit`, `matElevRampLit`, `matSlopeRampLit`, `matAspectRampLit` (10)
+
+Flat variants (`matXxxFlat`) are unaffected — they don't have normals and don't compute lit direct radiance, so there's nothing to shadow.
+
+## Cesium feature integration — how each slice handles it
+
+This matrix tracks how every Cesium feature interacts with CSM as the slices land. Pending items are scope for later slices, not missing functionality.
+
+| Cesium feature | Slice 1 | Slice 2 | Slice 3 | Slice 4 |
+|---|---|---|---|---|
+| **RTE 64-bit precision** | Cast pass writes RTE positions (reuses existing `rte24` cast shader); receive shader transforms world-space pos back to each cascade's light-space view via light-space VP × world pos (no RTE in light space needed — shadow bias in light-space texels dominates precision). | ✓ all variants | ✓ moon-light VP uses same RTE pattern | — |
+| **Whole-earth globe terrain** | Receiver integration in `GlobeTerrain.wgsl` (behind `csmEnabled` gate). | Primitive lit receivers. | Altitude-adaptive splits fix horizon-depth waste. | Per-tile cascade culling. |
+| **Space / orbital camera** | No special handling — cascades use the camera's visible near/far. At orbital altitude this wastes cascade budget on empty space. | — | Altitude-adaptive regime switch: above ~500 km collapse to one "planet-scale" cascade covering the visible spherical cap; below resume 4-cascade split. | — |
+| **3D Tiles** | Works via existing cast-variant dispatch (3D Tiles use the model cast path once slice 2 lands). | ✓ modelP12 / modelInstancedSB variants render. | — | Per-tile cascade visibility culling: tile is skipped in cascades it doesn't intersect. |
+| **Sun / moon dual light** | Sun only. | — | Moon LUT pair already exists; CSM adds moon-cascade array + combined receive path. `shadow = shadowSun * sunWeight + shadowMoon * moonWeight`. | — |
+| **Vertex-layout variants (SHADOW-LAYOUT)** | `rte24` only. | `p12`, `quantized12`, `modelP12`, `modelInstancedSB`, `modelSkinned` all wire to per-cascade cast pipelines. Reuses existing per-layout pipeline cache. | — | — |
+| **WebGL backend parity** | — | — | — | CSM on WebGL via GL_DEPTH_COMPONENT array texture. Uses the existing `GLSL ES 3.00` receive path. |
+| **Snapshot / freeze mode** | Disabled during freeze (cascades derive from live camera). | — | — | `WebGPUCSMRenderer.isFreezable()` contract: returns true when snapshotVersion unchanged; freeze skips per-frame cast dispatch. |
+| **Verticals exaggeration** | Cast pass consumes existing `shadow terrain globals` UBO (exaggeration + sceneMode); unchanged. | ✓ | ✓ | ✓ |
+| **Clipping planes** | Cast pass doesn't clip; receive shader's existing clipping logic runs after cascade select. | ✓ | ✓ | ✓ |
+
+---
 
 ---
 

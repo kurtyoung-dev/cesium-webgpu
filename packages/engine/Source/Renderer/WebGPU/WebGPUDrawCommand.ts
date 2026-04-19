@@ -108,6 +108,22 @@ interface WebGPUDrawCommandOptions {
   visibilityMask?: number;
   /** Whether this is transmissive geometry (glass, water). Default false. */
   isTransmissive?: boolean;
+  /**
+   * Indirect draw args buffer. When set, `execute()` calls
+   * `passEncoder.drawIndirect(indirectBuffer, indirectOffset)` (or the
+   * indexed variant when `indexBuffer` is also set) instead of the
+   * CPU-specified vertex/instance count path. The buffer must match
+   * WebGPU's indirect layout:
+   *   - non-indexed: `(vertexCount, instanceCount, firstVertex, firstInstance)` × u32
+   *   - indexed:     `(indexCount, instanceCount, firstIndex, baseVertex, firstInstance)` × u32
+   *
+   * Consumed by the GPU-LOD point cloud renderer where a compute pass
+   * writes instanceCount into the buffer before the draw runs. CPU-side
+   * `instanceCount` is ignored when this is set.
+   */
+  drawIndirectBuffer?: AnyGPUBuffer;
+  /** Byte offset into `drawIndirectBuffer` for the draw args. Default 0. */
+  drawIndirectOffset?: number;
 }
 
 /**
@@ -194,6 +210,11 @@ class WebGPUDrawCommand {
   /** See WebGPUDrawCommandOptions.pickOnly. */
   pickOnly: boolean;
   executeInClosestFrustum: boolean;
+
+  // Indirect-draw support — see the matching fields on
+  // WebGPUDrawCommandOptions for the expected buffer layout.
+  drawIndirectBuffer?: AnyGPUBuffer;
+  drawIndirectOffset: number;
 
   // OIT pipeline variant for weighted blended transparency (MRT)
   _oitPipeline?: GPURenderPipeline;
@@ -291,6 +312,13 @@ class WebGPUDrawCommand {
     this.materialSortId = options.materialSortId ?? 0;
     this.visibilityMask = options.visibilityMask ?? 0xffffffff;
     this.isTransmissive = options.isTransmissive ?? false;
+
+    // Indirect draw — when the consumer sets this, `execute()` takes
+    // the drawIndirect / drawIndexedIndirect path and ignores CPU-side
+    // counts. Used by the GPU-LOD point cloud path where visibleCount
+    // is computed on the GPU.
+    this.drawIndirectBuffer = options.drawIndirectBuffer;
+    this.drawIndirectOffset = options.drawIndirectOffset ?? 0;
   }
 
   /**
@@ -363,8 +391,23 @@ class WebGPUDrawCommand {
       passEncoder.setVertexBuffer(i, resolveBuffer(this.vertexBuffers[i]));
     }
 
-    // Execute draw call - indexed or non-indexed
-    if (defined(this.indexBuffer) && defined(this.indexCount)) {
+    // Execute draw call — indirect takes priority over CPU-specified
+    // counts. The indirect buffer's layout is set by its producer (e.g.
+    // the WebGPU point cloud LOD compute pass writes visibleCount into
+    // the instanceCount slot). Both indexed and non-indexed variants
+    // are supported; index buffer presence picks the variant.
+    if (defined(this.drawIndirectBuffer)) {
+      const indirectBuf = resolveBuffer(this.drawIndirectBuffer!);
+      if (defined(this.indexBuffer)) {
+        passEncoder.setIndexBuffer(
+          resolveBuffer(this.indexBuffer!),
+          this.indexFormat,
+        );
+        passEncoder.drawIndexedIndirect(indirectBuf, this.drawIndirectOffset);
+      } else {
+        passEncoder.drawIndirect(indirectBuf, this.drawIndirectOffset);
+      }
+    } else if (defined(this.indexBuffer) && defined(this.indexCount)) {
       // Indexed draw - use detected/configured index format
       passEncoder.setIndexBuffer(
         resolveBuffer(this.indexBuffer!),

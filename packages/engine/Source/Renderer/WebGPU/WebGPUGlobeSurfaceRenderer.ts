@@ -309,7 +309,10 @@ export class WebGPUGlobeSurfaceRenderer {
   // `null` value means the device rejected the augmented source for that
   // define-set during the one-shot validation probe — subsequent lookups
   // return null and the caller falls back to the production fragment.
-  private _debugFragmentShaderModules = new Map<number, GPUShaderModule | null>();
+  private _debugFragmentShaderModules = new Map<
+    number,
+    GPUShaderModule | null
+  >();
   private _debugFragmentPipelineCache: Map<string, GPURenderPipeline> =
     new Map();
   // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
@@ -321,7 +324,10 @@ export class WebGPUGlobeSurfaceRenderer {
   // set; cached forever. `null` value after probe means the device
   // rejected the augmented source (driver bug or missing feature) and the
   // production module is the fallback.
-  private _clipDistancesShaderModules = new Map<number, GPUShaderModule | null>();
+  private _clipDistancesShaderModules = new Map<
+    number,
+    GPUShaderModule | null
+  >();
   private _sampler: GPUSampler | null = null;
   private _waterMaskSampler: GPUSampler | null = null;
   private _bindGroupLayout0: GPUBindGroupLayout | null = null;
@@ -992,7 +998,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // module. Augmented variants (debug fragment / clip distances)
     // inherit the same define set so their base source stays consistent
     // with the pipeline's vertex buffer layout.
-    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
     const productionModule = this._getProductionShaderModule(defines);
     // Phase 5 WGF-1: when the hardware clip-distances variant is requested,
     // both stages must come from the augmented module — the vertex stage
@@ -1096,7 +1104,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // and any future flags) appears as a `|0xNN` hex suffix so the
     // pipeline cache stays in sync with the shader module cache key.
     const cdSuffix = useClipDistances ? "_CD" : "";
-    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
     const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}|${defines.toString(16)}`;
     let pipeline = this._pipelineCache.get(cacheKey);
     if (!pipeline) {
@@ -1141,10 +1151,19 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     if (mode === DebugFragmentMode.NONE) {
       return null;
     }
-    if (!this._getDebugFragmentShaderModule()) {
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
+    // Probe the augmented shader module first; the probe is define-keyed
+    // and the `null` cache entry short-circuits pipeline builds when the
+    // device rejected the augmented source for this define-set. Passing
+    // the actual defines (instead of the pre-Batch 20 zero-arg call that
+    // sat here as a sentinel) gives the per-define cache the right key
+    // AND prevents an accidental compile probe with mismatched defines
+    // from blocking the cache of another set.
+    if (!this._getDebugFragmentShaderModule(defines)) {
       return null;
     }
-    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
     const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}|${defines.toString(16)}`;
     let pipeline = this._debugFragmentPipelineCache.get(cacheKey);
     if (!pipeline) {
@@ -1467,11 +1486,24 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       // those to compute fog color that matches the visible sky dome.
       // If neither clipping nor LUT is present we still take the
       // placeholder fast-path.
-      const perfMgr = (frameState as { context?: { performanceManager?: { ensureAtmosphereLUTResources?: (d: GPUDevice) => { transmittanceView?: GPUTextureView; inscatterView?: GPUTextureView; } | null; } } }).context
-        ?.performanceManager;
-      let atmosphereLutViews:
-        | { transmittance: GPUTextureView; inscatter: GPUTextureView }
-        | null = null;
+      const perfMgr = (
+        frameState as {
+          context?: {
+            performanceManager?: {
+              ensureAtmosphereLUTResources?: (
+                d: GPUDevice,
+              ) => {
+                transmittanceView?: GPUTextureView;
+                inscatterView?: GPUTextureView;
+              } | null;
+            };
+          };
+        }
+      ).context?.performanceManager;
+      let atmosphereLutViews: {
+        transmittance: GPUTextureView;
+        inscatter: GPUTextureView;
+      } | null = null;
       if (perfMgr?.ensureAtmosphereLUTResources) {
         // Read the existing LUT views. We deliberately don't consult
         // `shouldRecomputeAtmosphereLUT()` here because that method is
@@ -1508,17 +1540,51 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           ? shadowState.lightShadowMaps[0]
           : undefined;
 
+      // CSM Slice 1 — resolve the context's cascaded shadow map renderer
+      // when the scene has asked for cascades and the renderer has
+      // initialized a cascade texture array. We pass the params UBO +
+      // array view into the effects bind group so the shader's shadow
+      // branch can route through `sampleCascadeShadow` (binding 10/11)
+      // instead of the single-map path (binding 1/2).
+      //
+      // The ambient `csmRenderer: object | null` on the context is
+      // intentionally opaque (cesium-js-types.d.ts keeps this file free
+      // of WebGPU-renderer imports). Narrow it here to the local shape
+      // we actually consume.
+      type CSMRendererView = {
+        enabled?: boolean;
+        cascadeParamsBuffer?: GPUBuffer | null;
+        cascadeArrayView?: GPUTextureView | null;
+      };
+      const csmCandidate = frameState.context?.csmRenderer as
+        | CSMRendererView
+        | null
+        | undefined;
+      const csmBinding =
+        csmCandidate &&
+        csmCandidate.enabled === true &&
+        csmCandidate.cascadeParamsBuffer &&
+        csmCandidate.cascadeArrayView
+          ? {
+              enabled: true,
+              paramsBuffer: csmCandidate.cascadeParamsBuffer,
+              cascadeArrayView: csmCandidate.cascadeArrayView,
+            }
+          : undefined;
+
       let bindGroup3: GPUBindGroup;
       if (
         useClipDistances ||
         (tileProvider?.clippingPlanes &&
           tileProvider.clippingPlanes.length > 0) ||
         atmosphereLutViews !== null ||
-        receiveShadowMap !== undefined
+        receiveShadowMap !== undefined ||
+        csmBinding !== undefined
       ) {
         const fxRes = createEffectsBindGroup(device, frameState, {
           clippingPlanes: tileProvider.clippingPlanes,
           shadowMap: receiveShadowMap,
+          csm: csmBinding,
           // Globe terrain model matrix is identity, so the camera in
           // plane-space is the same as the world camera position.
           cameraInPlaneSpace: uniformState.cameraPosition,
@@ -2657,16 +2723,16 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // provider each frame, so tileProvider is authoritative here.
     // The shader gates the HSB round-trip on |any| > 0.001, so writing
     // zeros (the default) carries no GPU cost.
-    const tpHsb = tileProvider as unknown as {
-      hueShift?: number;
-      saturationShift?: number;
-      brightnessShift?: number;
-    };
-    data[96] = typeof tpHsb.hueShift === "number" ? tpHsb.hueShift : 0;
+    data[96] =
+      typeof tileProvider.hueShift === "number" ? tileProvider.hueShift : 0;
     data[97] =
-      typeof tpHsb.saturationShift === "number" ? tpHsb.saturationShift : 0;
+      typeof tileProvider.saturationShift === "number"
+        ? tileProvider.saturationShift
+        : 0;
     data[98] =
-      typeof tpHsb.brightnessShift === "number" ? tpHsb.brightnessShift : 0;
+      typeof tileProvider.brightnessShift === "number"
+        ? tileProvider.brightnessShift
+        : 0;
     data[99] = 0;
 
     return this._writeUniformSlice(
@@ -2955,7 +3021,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     strideBytes: number,
     hasGeodeticSurfaceNormals: boolean = false,
   ): GPURenderPipeline {
-    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
     const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`;
     let pipeline = this._wireframePipelineCache.get(cacheKey);
     if (pipeline) {
@@ -2996,7 +3064,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // the colored pass automatically. Entry-point names are unqualified;
     // the correct variant is selected via the active-defines bitmask
     // passed to `_getProductionShaderModule`.
-    const defines = hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0;
+    const defines = hasGeodeticSurfaceNormals
+      ? ShaderDefine.GEODETIC_NORMAL
+      : 0;
 
     if (isQuantized) {
       // See `_createPipelineVariant` for the full documentation of the
