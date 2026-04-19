@@ -1,11 +1,56 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 18, 2026 (Principal-engineer review Batches 6-27 shipped; TAA / motion-vector / shader-variant infrastructure now in place across every renderer)
+**Last Updated:** April 18, 2026 (Sessions 33 + 34 + CSM Slices 2a cast-variant unlock, 2b texel-snap + PhongColor receive, 2c ModelPBRComplete receive; Principal-engineer review Batches 6-27 landed)
 **Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
+
+## 2026-04-19 — Session 35 findings (stale specs + carry-overs)
+
+Captured during Session 35's variant smoke-test landing + Resource.js
+parseUrl regression repair. Each is small and isolated — take one
+opportunistically when touching the adjacent area.
+
+- **IonResourceSpec is stale after the ES6 modernization** — the
+  `"constructs with expected values"` test spies on `Resource.call` and
+  expects the prototype-style `Resource.call(this, {...})` invocation
+  which ES6 class inheritance doesn't produce. `IonResource` is
+  `class IonResource extends Resource` since commit `39f5341e64`
+  (Option B material UBO split / ES6 modernization sweep) but the spec
+  wasn't updated. Fix is a spec-only edit: replace the `spyOn(Resource,
+  "call")` assertion with a state assertion against the constructed
+  resource's `_url` / `_retryCallback` / `_retryAttempts`. No source
+  change needed. 25/26 IonResource tests already pass; only this one is
+  affected. Core/Resource: 119/119 pass — the parseUrl fix this session
+  doesn't regress anything. File:
+  `packages/engine/Specs/Core/IonResourceSpec.js:18-30`.
+- **ImageryProvider specs fail with "Class constructor X cannot be
+  invoked without 'new'"** — same root cause as IonResourceSpec. 5
+  specs flagged during this session's Resource.js verification run
+  (ArcGisMapServerImageryProvider, OpenStreetMapImageryProvider,
+  TileMapServiceImageryProvider — all extend `UrlTemplateImageryProvider`
+  via ES6 class). These are pre-existing failures from the earlier
+  modernization sweep; none are caused by Resource.parseUrl changes.
+  Fix pattern: either update the specs to use `new Subclass(...)` or
+  check if the upstream `UrlTemplateImageryProvider` modernization left
+  an in-use `XyzImageryProvider.call(this, ...)` pattern that needs a
+  `super(options)` rewrite. Triage before fixing — the production code
+  paths all route through `new`, so this is purely spec debt.
+
+## What landed in Sessions 33 + 34 (2026-04-18)
+
+- **CSM Slice 1 — cascaded shadow maps, RTE-precise.** Globe terrain + `PrimitivePhongTexturedColor` now sample a 4-cascade depth32float array. Cast + receive paths both carry RTE-aware cascade VPs (`VP_RTE = VP_world * T(+cameraWC)` composed in FP64 on CPU). Per-cascade slope-scaled depth bias (`bias = max(minBias[i], maxSlopeBias[i] * (1 - dot(N, L)))`) replaces the hardcoded 0.005 bias — scales with cascade extent so cascade 0 (10m) and cascade 3 (10km) both stay shimmer/peter-panning-free. Scene toggle `scene.useCascadedShadowMaps` (default off). `WebGPUCSMRendererSpec.js` covers the math + the new `applyCameraTranslationToVP` helper. See [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md) § Session 33 and [CSM_DESIGN.md](CSM_DESIGN.md) for detail.
+- **TAA Slice 1 — temporal AA with RTE motion vectors.** `WebGPUTAAEffect` now reprojects history via depth-based motion vectors reconstructed in **eye-relative space** — no world-space reconstruction at Earth scale, so FP32 stays exact at orbital altitudes. `UniformState` gained a model-independent `viewProjectionRelativeToEye` field plus `previousViewProjectionRelativeToEye` / `previousCameraPosition` snapshots. TAA params UBO grew 32 → 256 bytes to carry the 3 mat4 + vec3 delta + historyValid flag. Scene toggle `scene.taaEnabled` (default off). `TAA.wgsl` falls back to UV-identity on first frame / sky / behind-camera / disoccluded pixels. See [WEBGPU_DEBUGGING_LOG.md](WEBGPU_DEBUGGING_LOG.md) § Session 34 and [TAA_DESIGN.md](TAA_DESIGN.md) for detail.
+
+## What landed as Slice 1 follow-ons + CSM Slice 2a (2026-04-18, post-Session 34)
+
+- **Cast-output verification contract (CPU).** New exported `computeCastClipPosition(pHigh, pLow, camHigh, camLow, lightVpRte, depthBias, result)` helper in `WebGPUCSMRenderer.ts` — the CPU reference for the `rte24` cast VS math; the contract every Slice 2 variant must preserve. New `WebGPUCSMCastUBOLayoutSpec.js` locks the 128-byte cast UBO byte layout (lightVP_RTE @ float 0, camHigh @ 16, camLow @ 20, depthBias @ 24, normalBias @ 25) + `BASE_MIN_BIAS`/`BASE_MAX_SLOPE_BIAS` tuning constants. Extended `WebGPUCSMRendererSpec.js` with 4 Earth-scale identity specs: identity-at-origin, Earth-scale RTE subtract, `VP_RTE · rte ≡ VP_world · worldPos`, bias-only-touches-z. GPU-readback infrastructure not built — CPU contract specs catch the same class of regression.
+- **`worldPosition` varying removed from `PrimitivePhongTexturedColor.wgsl`.** Zero-filled after Session 33; no fragment code read it. VertexOutput struct shrunk from 6 to 5 varyings. Removal eliminates the attractive-nuisance of a varying named like a world-space position that had silently become bad-precision after Session 33.
+- **CSM Slice 2a — all cast variants unlocked.** `WebGPUCSMRenderer.renderCastPass` generalized to handle every `SHADOW_CAST_VARIANTS` entry: `rte24`, `p12`, `modelP12`, `modelInstanced`, `modelInstancedSB`, `modelSkinned`, `quantized12`. Models, skinned models, instanced models, and quantized-mesh terrain all now cast cascaded shadows. Pattern-matches the single-shadow-map loop (no-extras path → shared per-cascade bind group; extras path → per-command bind group indexed by cascade; multi-VB variants walk `vertexBufferSourceSlots`). New `getShadowCastVariant(key)` export in `WebGPUShadowMapRenderer.js` — single metadata source across both paths. See [CSM_DESIGN.md](CSM_DESIGN.md) § "Slice 2 progress" for detail.
+- **CSM Slice 2b — texel-snap stabilization + PrimitivePhongColor receive.** New exported `snapToTexelGrid(center, radius, lightDir, resolution, result)` helper in `WebGPUCSMRenderer.ts` quantizes the cascade sphere center to the shadow-texel grid in world-grid-locked light space (basis depends only on `lightDir`, not the camera — that's what makes it stable). Integrated in `computeCascadeVPs` so cascade 0 (tight) doesn't crawl as the camera moves. 5 new specs cover idempotence, bounded displacement, zenith-Z invariance, bounding coverage preservation, and VP numerical stability. `PrimitivePhongColor.wgsl` extended with the same CSM receive branch as `PrimitivePhongTexturedColor.wgsl` (gated on `effects.csmControl.x > 0.5`). CSM bindings land at `@group(2) @binding(10/11)` for PhongColor (no texture group in between) vs. `@group(3)` for the textured variant — no JS pipeline changes needed; the effects BGL already advertises bindings 10/11 with placeholders when CSM is off.
+- **CSM Slice 2c — ModelPBRComplete CSM receive.** glTF PBR models now receive cascaded shadows. Model pipeline layout extended from 7 to 8 bind groups — effects (shadow + clipping + atmosphere + CSM) added as `@group(7)` alongside the existing camera/material/texture/skinning/morph/instancing/featureId groups. Per-frame `createEffectsBindGroup` call in `WebGPUModelRenderer.updateWebGPUModel` mirrors the globe pattern. New `@location(7) rteMC` varying carries the existing model-space RTE vector (already computed in VS as `positionMC - encodedCameraPositionMC`); the fragment shader rotates it to world-space RTE via `(material.modelMatrix * vec4(rteMC, 0.0)).xyz` — w=0 drops translation so the rotation+scale part yields exactly `pWC − camWC` without FP32 reconstruction at Earth scale. CSM helpers inlined from the primitive receivers; fragment gate `effects.csmControl.x > 0.5` multiplies `direct` Cook-Torrance lighting by `shadowFactor`. Ambient + emissive remain unshadowed per PBR convention. Unlit materials (`FLAG_IS_UNLIT`) early-exit before the CSM path so they're naturally safe.
 
 ## What landed in Batches 6-27 (2026-04-16 → 2026-04-18)
 
-- **TAA / motion-vector plumbing** (DP-H41 "ALL-RENDERERS"): `previousViewProjection: mat4x4<f32>` now in every renderer's `CameraUniforms`. TAA / CSM work no longer needs renderer-specific bind-group adjustments — read it via `camera.previousViewProjection` from any pipeline.
+- **TAA / motion-vector plumbing** (DP-H41 "ALL-RENDERERS"): `previousViewProjection: mat4x4<f32>` now in every renderer's `CameraUniforms`. TAA / CSM work no longer needs renderer-specific bind-group adjustments — read it via `camera.previousViewProjection` from any pipeline. Session 34 built directly on top of this slot.
 - **WebGPU shader variant infrastructure**: `ShaderDefine` bitmask registry, `ShaderSourceId` registry, `//>>ifdef` preprocessor, per-device `GPUShaderModule` dedupe cache with prewarm API. See `CLAUDE.md` → "WGSL Shader Pipeline" for the usage contract.
 - **DP-H19 CPU compressed-vertex decode**: `normal` + `st` + `tangent` + `bitangent` all reconstructed from `compressedAttributes`. Scaffold for GPU-side decode in place behind a feature flag (runtime swap is the remaining work — see DP-H19-SHADER-DECODE-RUNTIME below).
 - **Principal-engineer review**: ~95% of the 2026-04-16 findings addressed (H-P5 mapAsync hazards, C-P7-RTE VolumetricFog altitude cancellation, DP-H40 split, DP-H42 depth-test distance, DP-H25 geodetic normal, and 80+ others). Full per-batch list in `REVIEW_FIX_PROGRESS.md`.
@@ -61,7 +106,7 @@ Three independent Session 29 investigations (feature inventory, 3D Tiles impleme
 - **FEAT-GAP-06** — Bent-normal ambient for terrain. Pre-baked or screen-space. Effort: M.
 - **FEAT-GAP-07** — Impostors for far-LOD 3D Tiles + vegetation. Fights distant popping. Effort: L.
 - **FEAT-GAP-08** — Decals projected onto terrain + 3D Tiles. Road markings, AOI overlays. Existing `GROUND_PRIMITIVE` is flat-plane. Effort: M-L.
-- **FEAT-GAP-09** — Aerial-perspective LUT consumer in all passes. `AtmosphereLUT.wgsl` exists; only ground atmosphere samples it. Effort: S-M. **Sneaky high-value visual win.**
+- **FEAT-GAP-09** — Aerial-perspective LUT consumer in all passes. `AtmosphereLUT.wgsl` exists; ground atmosphere samples it; sky atmosphere samples it (separate binding group); **primitive PhongTexturedColor now samples it (2026-04-19)** — proof-of-concept landed as a reference pattern. Remaining shader extensions (same pattern, ~20 lines each): `PrimitivePhongColor.wgsl`, `PrimitiveMatColorLit.wgsl`, `PrimitiveMatImageLit.wgsl`, `PrimitivePBRSimple.wgsl`, `PrimitivePBRTextured.wgsl`, `ModelPBRComplete.wgsl`. Each already has `atmosphereLutControl: vec4<f32>` in its effects UBO and the bind group already exposes the LUT textures at bindings 7/8/9 — just need to add the shader-side sampler/texture declarations + the fog blend at fragment output (mirror the PhongTexturedColor diff from Session 34 follow-on). Effort: S per shader, ~6 shader edits. **Sneaky high-value visual win.**
 
 ### 3D Tiles 2.0 WebGPU-specific gaps (FEAT-3DT2-*)
 
@@ -112,13 +157,13 @@ An eight-project survey of other WebGPU rendering / compute projects to identify
 
 ### Tier 1: High ROI, S effort (quick-win bundle)
 
-- **FEAT-SURVEY-01** — **GTAO post** (Ground-Truth Ambient Occlusion). Source: Orillusion `post/GTAOPost.ts`. Direct drop-in replacement for current AO. Modern standard over HBAO. No RTE impact (screen-space). **Effort: S**.
+- ~~**FEAT-SURVEY-01**~~ — **GTAO post** — **LANDED 2026-04-19**. New `GTAOGenerate.wgsl` shader implementing the Jimenez 2016 analytic cos-weighted horizon integral. `AmbientOcclusionConfig.algorithm: "hbao" | "gtao"` toggles between the legacy HBAO path and GTAO — both share the same bind group layout, uniform buffer, and output shape, so downstream blur + modulate passes don't need any changes. Default stays "hbao" for backwards compatibility; opt into GTAO via `new AmbientOcclusionEffect({ algorithm: "gtao" })`.
 - **FEAT-SURVEY-02** — **KHR_materials_clearcoat BRDF**. Source: Orillusion `LitMaterial.ts`. 3D Tiles with KHR extensions currently render as plain PBR in our fork — we silently drop clearcoat/IOR. Add 3 uniform fields + WGSL BRDF term. Must respect Option B material UBO split. **Effort: S**.
 - **FEAT-SURVEY-03** — **KHR_materials_sheen BRDF**. Same pattern as clearcoat. **Effort: S**.
 - **FEAT-SURVEY-04** — **KHR_materials_anisotropy BRDF**. Same pattern. **Effort: S**.
-- **FEAT-SURVEY-05** — **GodRay screen-space light shafts**. Source: Orillusion `post/GodRayPost.ts`. Sun-through-clouds atmospheric look. RTE-friendly (pure screen-space). Cheaper than full volumetric fog (dormant). **Effort: S**.
-- **FEAT-SURVEY-06** — **Decoupled-lookback prefix-sum WGSL** (`pathtag_scan` pattern). Source: Vello `vello_shaders/shader/pathtag_*.wgsl`. Port two shaders; replaces single-pass approaches in culling compaction + indirect-draw compaction with the textbook multi-level pattern. **Effort: S**.
-- **FEAT-SURVEY-07** — **ParityManager centralized ping-pong slot resolver**. Source: Hypercube-Compute. Unifies TAA history, Hi-Z previous-frame, auto-exposure luminance history — currently each dispatcher tracks parity inline. Eliminates a bug class. **Effort: S**.
+- ~~**FEAT-SURVEY-05**~~ — **GodRay screen-space light shafts** — **LANDED 2026-04-19**. Two-pass effect: `GodRayGenerate.wgsl` radial-blurs from a caller-provided sun screen UV (depth-gated so geometry cleanly blocks the shaft) at half-res; `GodRayComposite.wgsl` additively blends the ray buffer onto the scene color at full-res. New `GodRayEffect` class with `setSunScreenUV(u, v)` + `setFrustum(near, far)` for per-frame updates. Config: density/decay/weight/exposure/sampleCount/occlusionFarCutoff. Pure screen-space → RTE-safe by construction. Insertion point is caller's choice (before/after bloom).
+- ~~**FEAT-SURVEY-06**~~ — **Decoupled-lookback prefix-sum WGSL** — **LANDED 2026-04-19**. New `Compute/DecoupledLookbackScan.wgsl` implementing the Merrill & Garland single-pass parallel prefix-sum with per-workgroup aggregate publishing + lane-0 lookback loop. u32 inclusive scan; Brent-Kung sweep inside each 256-wide workgroup. Output + partition-state buffers; host zeros partitions before dispatch. **Consumer wiring pending**: culling compaction + indirect-draw compaction still use the legacy two-pass reduce+downsweep pattern — swap them over one at a time to minimize blast radius. Estimated S per consumer swap.
+- ~~**FEAT-SURVEY-07**~~ — **ParityManager centralized ping-pong slot resolver** — **LANDED 2026-04-19**. New `WebGPUParityManager.ts` — pure JS/TS, no GPU resources of its own. Consumers `register(name, [resourceA, resourceB])` to get a stable `HistorySlotId`, then call `parity.advanceFrame()` once per frame and `parity.read(id)` / `parity.write(id)` to resolve the correct slot. Supports per-slot `phaseOffset` for future multi-phase history. `rebind(id, [newA, newB])` preserves phase across resizes. 8-test spec coverage (`WebGPUParityManagerSpec.js`). **Remaining**: refactor `WebGPUTAAEffect._historyIndex` to delegate to the manager — mechanical change, one session. Future consumers (Hi-Z reprojection, auto-exposure histogram) start here instead of growing another inline parity field.
 - **FEAT-SURVEY-08** — **ESM soft shadow filter**. Source: Zephyr3D `shadow/esm.ts`. Exponential shadow map, stacks onto dormant CSM when landed. **Effort: S** (after CSM lands).
 - **FEAT-SURVEY-09** — **VSM soft shadow filter with light-bleed clamping**. Source: Zephyr3D `shadow/vsm.ts`. Variance shadow maps for vegetation/foliage shadows. Planet-scale light-bleed needs the clamping trick. **Effort: S** (after CSM lands).
 - **FEAT-SURVEY-10** — **PCSS soft shadow filter**. Source: Zephyr3D `shadow/pcf_pd.ts`. Percentage-closer soft shadows for architecture. **Effort: S** (after CSM lands).
@@ -182,7 +227,16 @@ Opt-in tree-shaking variants for downstream consumers who only want one backend.
 
 - **BUILD-VAR-MEASURE** — Run `npx gulp buildAllVariants` to completion (the session-29 attempt was interrupted). Capture minified + gzipped sizes for `Cesium.js` (IIFE), `index.js` (ESM entry), and each of the split `chunks/*.js` files across all three variants. Update CLAUDE.md's "Baseline (dual minified)" line with the concrete deltas. **Effort: ~5 min once the build completes (~2 min per variant).**
 - **BUILD-VAR-RUNTIME-TEST** — Smoke-test each variant end-to-end in a browser: load `Build/CesiumWebGL/Cesium.js` and confirm a Viewer renders; do the same with `Build/CesiumWebGPU/Cesium.js`. The alias plugin's correctness depends on the feature-renderer pattern intercepting WebGL code paths before they touch the stubbed shader strings; if a missed code path reaches a stub, the failure mode is "empty shader compiles, black render" (webgpu-only) or the stub proxy throws (webgl-only). **Effort: ~30 min.**
-- **BUILD-VAR-SCENE-AUDIT** — Scan `Source/Scene/**/*.js` for places where the WebGL fallback path might run BEFORE the WebGPU feature renderer check — those sites would crash in a webgpu-only build. The current design assumes every WebGL code path is gated behind `if (fr) { fr.update(...); return; }` at the top of the scene file's update method. Enumerate counterexamples. **Effort: ~2 hours.**
+- ~~**BUILD-VAR-SCENE-AUDIT**~~ — **COMPLETE 2026-04-19**. Full audit captured in [WEBGPU_DEBUGGING_LOG.md § BUILD-VAR-SCENE-AUDIT](WEBGPU_DEBUGGING_LOG.md). 19 files with `ShaderProgram.fromCache/replaceCache` sites classified: 13 safe (FR intercept gates them), 6 risky. The 6 risky files are tracked below as separate hazard items. **Staying on status quo:** webgpu-only variant remains experimental until either Option B (defensive guards, ~30 min) or Option A (real WebGPU FRs, L effort per family) lands.
+
+### webgpu-only bundle hazards (from scene audit)
+
+- **BUILD-VAR-HAZARD-VECTOR3DTILE** — `Vector3DTilePrimitive.js` (5 sites) + `Vector3DTilePolylines.js` (1) + `Vector3DTileClampedPolylines.js` (1) have unconditional `ShaderProgram.fromCache` calls. Webgpu-only bundle alias plugin redirects the GLSL strings to empty; WebGL would reject the empty shader at compile time → crash. Fix: per-family WebGPU feature renderer + FR intercept, or short-term `if (renderer === "webgpu") return` guard. **Affects only webgpu-only variant.**
+- **BUILD-VAR-HAZARD-CLASSIFICATION** — `ClassificationPrimitive.js` has 5 unguarded compile sites (lines 859, 880, 917, 931, 948). Same remediation options as vector tiles.
+- **BUILD-VAR-HAZARD-DEPTH-PLANE** — `DepthPlane.js:96` unguarded `ShaderProgram.replaceCache`. Used by translucent globe path.
+- **BUILD-VAR-HAZARD-GROUND-POLYLINE** — `GroundPolylinePrimitive.js:605` unguarded `ShaderProgram.replaceCache`. Used by ground-draped polylines (roads, borders).
+
+Recommended remediation order if webgpu-only is promoted to supported: Option B defensive guards first (~30 min, ships immediately), then Option A per-family FRs as Phase 8 feature work (these are also WebGL/WebGPU parity gaps that the current implementation silently no-ops on).
 
 ### Known limitation — WebGPU-only bundle shrinkage is gated on scene-file audit
 
@@ -478,8 +532,8 @@ Per the WIRING_AUDIT analysis, all dormant compute shaders have working fallback
 
 | Shader | Fallback | Activation Trigger | Effort | Status |
 |--------|----------|-------------------|--------|--------|
-| `HiZPyramid.wgsl` | Conservative "assume visible" stub in `OcclusionCulling.js` | Wire into `ViewportExecutor` with Hi-Z occlusion (Phase 3) | 3-4 days | **WGSL complete + dispatcher exists** in `WebGPUPerformanceManager.dispatchHiZPyramid()`. `OcclusionCulling.initialize()` is an API stub (deferred to "full WebGPU integration phase"). **Needs**: populate `OcclusionCulling.initialize()` to allocate the Hi-Z mip pyramid texture + wire `testCommands()` to call the dispatcher. ~200-300 LOC. |
-| `OcclusionTest.wgsl` | Same as HiZPyramid | Wire alongside HiZ | (combined with above) | **WGSL complete + dispatcher exists** in `WebGPUPerformanceManager.dispatchOcclusionTest()`. Shares the same `OcclusionCulling` shell — activates with HiZ. |
+| `HiZPyramid.wgsl` | Conservative "assume visible" stub in `OcclusionCulling.js` | Opt-in via `scheduler.occlusionCulling.enabled = true` | — | **ACTIVATED 2026-04-19 (audit fix)** — previous backlog entry was stale. Full end-to-end pipeline already wired: `ViewportExecutor.js` calls `beginFrame → testCommands → dispatchGPU → scheduleReadback` each frame; `OcclusionCulling.initialize(context, w, h)` delegates to the `HI_Z_OCCLUSION` feature renderer which allocates pyramid + SOA + visibility buffer. Remaining is opt-in + visual verification via a Sandcastle demo. |
+| `OcclusionTest.wgsl` | Same as HiZPyramid | Activated alongside HiZ | — | **ACTIVATED 2026-04-19** — shares the same dispatcher path; the occlusion-test compute pass runs from `OcclusionCulling.dispatchGPU` after Hi-Z builds. |
 | `PointCloudSort.wgsl` | Unsorted rendering works; `WasmPointCloudBridge.sortByDistance()` available | Wire when point cloud visible | ~~2-3 days~~ **Dispatcher landed 2026-04-09** | New `WebGPUPointCloudSortDispatcher` (`Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts`) self-contained sort wrapper: owns the SortParams UBO + sortKeys + indices buffers, handles power-of-two padding (sentinel keys sort to back), encodes the local phase (`localBitonicSort`) and the (k, j) global merge loop (`globalBitonicMerge`) into a single `sort(encoder, distSq, count)` call. Diagnostic counters via `getStatistics()`. Spec coverage of the pure-JS helpers (`nextPow2`, `floatToSortableUint`, ordering preservation) — 11 specs. **Remaining**: consumer integration in the point cloud collection path (one-line `if (perfMgr.shouldUseGPUPointCloud(N)) sortDispatcher.sort(...) else wasmBridge.sortByDistance(...)`). |
 | `GPUSortKeys.wgsl` | JS multi-level comparators in Scene.js (always active) | Wire when >50K commands per frame | 2-3 days | **WGSL complete + dispatcher exists** in `WebGPUPerformanceManager.dispatchGPUSortKeys()`. **Most incomplete**: needs SOA buffers for command metadata (centerX/Y/Z, layer, priority, materialId) allocated in Scene + a bind group factory + integration into RenderScheduler's sort pipeline. ~400-500 LOC. Lowest priority unless a real scene exceeds 50K commands. |
 
@@ -528,8 +582,8 @@ These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / B
 
 | Feature | Industry Status | Our Status | Impact | Effort |
 |---------|----------------|------------|--------|--------|
-| **Temporal Anti-Aliasing (TAA)** | All engines | ❌ Missing (FXAA only) | Far superior to FXAA for moving scenes | 3-4 days |
-| **Cascaded Shadow Maps (CSM)** | All engines | ❌ Missing | Efficient shadow rendering for large outdoor scenes | 4-5 days |
+| **Temporal Anti-Aliasing (TAA)** | All engines | 🟡 Slice 1 shipped (RTE motion vectors + depth reprojection; static terrain + static primitives). Slices 2-4 pending: per-model MRT motion, sky reprojection, CSM+TAA interaction verification, WebGL parity. | Far superior to FXAA for moving scenes | Slice 1 done; ~2-3 days remaining for 2-4 |
+| **Cascaded Shadow Maps (CSM)** | All engines | 🟡 Slices 1 + 2a + 2b + 2c shipped. Slice 1: 4 cascades, RTE-aware cast+receive VPs, per-cascade slope-scaled bias, globe terrain + phong primitive (textured) receivers. Slice 2a (2026-04-18): all cast-variant pipelines unlocked (rte24/p12/modelP12/modelInstanced/modelInstancedSB/modelSkinned/quantized12). Slice 2b (2026-04-18): texel-snap stabilization + PrimitivePhongColor CSM receive. Slice 2c (2026-04-18): **ModelPBRComplete CSM receive** — glTF models now receive cascaded shadows via a new `@group(7)` effects bind group. Remaining: PBR simple/textured receivers, 20 Material Lit receivers (Slice 2d mechanical), altitude-adaptive splits, moon dual-light, 3D Tiles per-tile culling, WebGL parity. | Efficient shadow rendering for large outdoor scenes | Slices 1 + 2a + 2b + 2c done; ~2 days remaining for rest |
 | **Motion Blur** | Babylon, Three.js, PlayCanvas | ❌ Missing | Cinematic quality for camera/object movement | 2-3 days |
 
 ### Important Missing — Available in Most WebGPU Engines
@@ -732,8 +786,8 @@ Memory Leaks (6), 2D/Columbus View (4), 3D Tiles (5), Terrain & Imagery (3), Mod
 
 ### Phase 4: Visual Quality Closure (4-6 weeks)
 
-13. **TAA** — Temporal anti-aliasing as WGSL post-process
-14. **CSM** — Cascaded shadow maps for outdoor scenes
+13. **TAA** — Temporal anti-aliasing as WGSL post-process. 🟡 Slice 1 shipped (Session 34 — RTE depth reprojection). Slices 2-4 remaining.
+14. **CSM** — Cascaded shadow maps for outdoor scenes. 🟡 Slice 1 shipped (Session 33 — RTE cascade VPs + per-cascade slope bias). Slices 2-4 remaining.
 15. **Volumetric fog/lighting** — God rays, scattering
 16. **Color grading** — LUT-based color correction
 17. **Subsurface scattering** — Skin/foliage rendering
