@@ -89,6 +89,9 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import PointCloudLODShader from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
+import PointCloudLODScanCompactShader from "../../Shaders/WebGPU/Compute/PointCloudLODScanCompact.js";
+import DecoupledLookbackScanShader from "../../Shaders/WebGPU/Compute/DecoupledLookbackScan.js";
+import { WebGPUDecoupledScan } from "./WebGPUDecoupledScan.js";
 
 /**
  * LOD band thresholds + budget. Distances are measured squared (matches
@@ -126,6 +129,50 @@ export interface PointCloudLODProcessorOptions {
    * debugging tools can tell per-context instances apart.
    */
   label?: string;
+  /**
+   * When true, compact visible points using a decoupled-lookback parallel
+   * prefix scan instead of the default per-workgroup atomicAdd path.
+   * Produces a DETERMINISTIC output ordering (visibleIndices is always
+   * sorted by original point index) at the cost of one extra compute
+   * pass and two extra storage buffers per capacity unit.
+   *
+   * Turn this on when the consumer depends on stable ordering — e.g.
+   * GPU-driven picking against a compacted list, persistent point
+   * selection buffers across frames, or split-screen / multi-view
+   * passes that must produce identical index streams.
+   *
+   * Default: false (keeps atomic-add path; lowest memory + overhead).
+   * See PointCloudLODScanCompact.wgsl for the shader side.
+   */
+  useDecoupledScan?: boolean;
+}
+
+/**
+ * Structural contract between the WebGPU context and whatever consumer
+ * wants to dispatch the LOD processor. Declared as an interface (not
+ * just `typeof WebGPUPointCloudLODProcessor`) so the context can stash
+ * an instance without importing the compute-heavy class — keeping the
+ * processor out of bundles that never render point clouds.
+ *
+ * The `WebGPUPointCloudLODProcessor` class below declares
+ * `implements WebGPUPointCloudLODProcessorInstance` so adding a new
+ * public method forces an update to the interface at the same time —
+ * consumers of the interface won't drift away from reality silently.
+ */
+export interface WebGPUPointCloudLODProcessorInstance {
+  readonly isReady: boolean;
+  readonly visibleCountBuffer: GPUBuffer | null;
+  readonly visibleIndicesBuffer: GPUBuffer | null;
+  uploadPositions(
+    posX: Float32Array,
+    posY: Float32Array,
+    posZ: Float32Array,
+  ): void;
+  dispatch(
+    encoder: GPUCommandEncoder,
+    params: PointCloudLODDispatchParams,
+  ): void;
+  destroy(): void;
 }
 
 // Note: storage buffers grow dynamically via `_ensurePositionBuffers`
@@ -150,9 +197,10 @@ interface CompiledPipelines {
   preferredEntryPoint: "computeMain" | "computeMainSubgroups";
 }
 
-export class WebGPUPointCloudLODProcessor {
+export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcessorInstance {
   private _device: GPUDevice;
   private _label: string;
+  private _useDecoupledScan: boolean;
 
   // GPU resources
   private _paramsBuffer: GPUBuffer | null = null;
@@ -167,6 +215,15 @@ export class WebGPUPointCloudLODProcessor {
   private _pipelines: CompiledPipelines | null = null;
   private _bindGroup: GPUBindGroup | null = null;
 
+  // Scan-path resources (null unless useDecoupledScan: true)
+  private _scanBindGroupLayout: GPUBindGroupLayout | null = null;
+  private _scanTagPipeline: GPUComputePipeline | null = null;
+  private _scanCompactPipeline: GPUComputePipeline | null = null;
+  private _scanBindGroup: GPUBindGroup | null = null;
+  private _flagsBuffer: GPUBuffer | null = null;
+  private _prefixBuffer: GPUBuffer | null = null;
+  private _scanner: WebGPUDecoupledScan | null = null;
+
   // Scratch arrays — reused every dispatch
   private _paramsScratch = new Float32Array(PARAMS_FLOATS);
   private _paramsScratchU32: Uint32Array;
@@ -177,6 +234,7 @@ export class WebGPUPointCloudLODProcessor {
   constructor(device: GPUDevice, options: PointCloudLODProcessorOptions = {}) {
     this._device = device;
     this._label = options.label ?? "PointCloudLOD";
+    this._useDecoupledScan = options.useDecoupledScan ?? false;
     this._paramsScratchU32 = new Uint32Array(
       this._paramsScratch.buffer,
       this._paramsScratch.byteOffset,
@@ -325,7 +383,63 @@ export class WebGPUPointCloudLODProcessor {
         GPUBufferUsage.INDIRECT,
     });
 
+    if (this._useDecoupledScan) {
+      await this._initializeScanPath();
+    }
+
     this._initialized = true;
+  }
+
+  /**
+   * Build the scan-based tag + compact pipelines and the shared
+   * DecoupledScan instance. Runs once at init when
+   * `useDecoupledScan: true`.
+   */
+  private async _initializeScanPath(): Promise<void> {
+    // Bind group for PointCloudLODScanCompact.wgsl (7 bindings — see the
+    // shader's @group(0) declarations).
+    this._scanBindGroupLayout = makeBindGroupLayout(
+      this._device,
+      `${this._label} Scan BGL`,
+      [
+        uniformBuffer(0, Stage.COMPUTE),
+        storageBuffer(1, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(2, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(3, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(4, Stage.COMPUTE),
+        storageBuffer(5, Stage.COMPUTE, { readOnly: true }),
+        storageBuffer(6, Stage.COMPUTE),
+      ],
+    );
+
+    const scanCompactModule = this._device.createShaderModule({
+      code: PointCloudLODScanCompactShader,
+      label: `${this._label} Scan Shader`,
+    });
+
+    const scanPipelineLayout = this._device.createPipelineLayout({
+      label: `${this._label} Scan Pipeline Layout`,
+      bindGroupLayouts: [this._scanBindGroupLayout],
+    });
+
+    this._scanTagPipeline = await this._device.createComputePipelineAsync({
+      label: `${this._label} Scan Pipeline (tagVisible)`,
+      layout: scanPipelineLayout,
+      compute: { module: scanCompactModule, entryPoint: "tagVisible" },
+    });
+
+    this._scanCompactPipeline = await this._device.createComputePipelineAsync({
+      label: `${this._label} Scan Pipeline (compactScanned)`,
+      layout: scanPipelineLayout,
+      compute: { module: scanCompactModule, entryPoint: "compactScanned" },
+    });
+
+    // DecoupledScan owns its own params UBO + partitions buffer; it only
+    // needs the caller-supplied input/output storage at dispatch time.
+    this._scanner = new WebGPUDecoupledScan(this._device, {
+      label: `${this._label} Scan`,
+    });
+    await this._scanner.initialize(DecoupledLookbackScanShader);
   }
 
   /**
@@ -363,6 +477,7 @@ export class WebGPUPointCloudLODProcessor {
 
     // Bind group is now stale — rebuild on next dispatch.
     this._bindGroup = null;
+    this._scanBindGroup = null;
   }
 
   /**
@@ -381,8 +496,7 @@ export class WebGPUPointCloudLODProcessor {
     this._positionsZ?.destroy();
     this._visibleIndices?.destroy();
 
-    const posUsage =
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const posUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     this._positionsX = this._device.createBuffer({
       label: `${this._label} positionsX`,
       size: Math.max(16, capacity * 4),
@@ -405,6 +519,30 @@ export class WebGPUPointCloudLODProcessor {
       size: Math.max(16, capacity * 4),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
+
+    if (this._useDecoupledScan) {
+      // Flags: one u32 per point (0 or 1). Partitions buffer inside the
+      // scanner is separate and self-managed via scanner.ensureCapacity.
+      this._flagsBuffer?.destroy();
+      this._prefixBuffer?.destroy();
+      this._flagsBuffer = this._device.createBuffer({
+        label: `${this._label} flags`,
+        size: Math.max(16, capacity * 4),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      // Prefix buffer: needs COPY_SRC so we can copy prefix[N-1] into
+      // visibleCount after the scan, letting downstream drawIndirect
+      // reads see the total visible count without a CPU round-trip.
+      this._prefixBuffer = this._device.createBuffer({
+        label: `${this._label} prefix`,
+        size: Math.max(16, capacity * 4),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      this._scanner?.ensureCapacity(capacity);
+      // Scan bind group is now stale — rebuild on next scan dispatch.
+      this._scanBindGroup = null;
+    }
+
     this._positionsCapacity = capacity;
   }
 
@@ -435,11 +573,17 @@ export class WebGPUPointCloudLODProcessor {
     }
 
     this._writeParams(params);
-    this._ensureBindGroup();
 
-    // Clear visibleCount to 0. WebGPU doesn't have a "fill with zero"
-    // primitive — `clearBuffer(buffer)` defaults to all zeros.
+    // Always clear visibleCount to 0 first — both paths end with it
+    // carrying the final visible count for drawIndirect consumers.
     encoder.clearBuffer(this._visibleCount!, 0, 16);
+
+    if (this._useDecoupledScan) {
+      this._dispatchScanPath(encoder, params);
+      return;
+    }
+
+    this._ensureBindGroup();
 
     const pipeline =
       this._pipelines.preferredEntryPoint === "computeMainSubgroups"
@@ -454,6 +598,62 @@ export class WebGPUPointCloudLODProcessor {
     const workgroups = Math.ceil(params.pointCount / WORKGROUP_SIZE);
     pass.dispatchWorkgroups(workgroups, 1, 1);
     pass.end();
+  }
+
+  /**
+   * Scan-based compaction path: tagVisible → DecoupledScan → compactScanned
+   * → copy prefix[N-1] into visibleCount[0]. Produces a deterministic
+   * output ordering (visibleIndices sorted by original point index).
+   *
+   * The tag and compact passes reuse the same bind group because they
+   * share the same buffers — only the pipeline differs. The scanner runs
+   * its own pass between them and is wired separately (its bind group
+   * layout comes from WebGPUDecoupledScan, not from us).
+   */
+  private _dispatchScanPath(
+    encoder: GPUCommandEncoder,
+    params: PointCloudLODDispatchParams,
+  ): void {
+    this._ensureScanBindGroup();
+
+    const workgroups = Math.ceil(params.pointCount / WORKGROUP_SIZE);
+
+    // Pass 1 — tag each point with 0/1 visibility.
+    const tagPass = encoder.beginComputePass({
+      label: `${this._label} scan dispatch (tagVisible)`,
+    });
+    tagPass.setPipeline(this._scanTagPipeline!);
+    tagPass.setBindGroup(0, this._scanBindGroup!);
+    tagPass.dispatchWorkgroups(workgroups, 1, 1);
+    tagPass.end();
+
+    // Pass 2 — inclusive prefix sum of flags → prefix.
+    this._scanner!.dispatch(
+      encoder,
+      this._flagsBuffer!,
+      this._prefixBuffer!,
+      params.pointCount,
+    );
+
+    // Pass 3 — compact visible points using prefix slot.
+    const compactPass = encoder.beginComputePass({
+      label: `${this._label} scan dispatch (compactScanned)`,
+    });
+    compactPass.setPipeline(this._scanCompactPipeline!);
+    compactPass.setBindGroup(0, this._scanBindGroup!);
+    compactPass.dispatchWorkgroups(workgroups, 1, 1);
+    compactPass.end();
+
+    // The inclusive prefix's last entry equals total visible count. Copy
+    // that single u32 into the visibleCount buffer so downstream
+    // drawIndirect consumers see the count without a CPU round-trip.
+    encoder.copyBufferToBuffer(
+      this._prefixBuffer!,
+      (params.pointCount - 1) * 4,
+      this._visibleCount!,
+      0,
+      4,
+    );
   }
 
   /**
@@ -514,6 +714,28 @@ export class WebGPUPointCloudLODProcessor {
     });
   }
 
+  /**
+   * Lazy bind group for the scan-path pipelines. Binds the SAME
+   * buffer resources to both tagVisible and compactScanned since they
+   * share the shader module and bind group layout.
+   */
+  private _ensureScanBindGroup(): void {
+    if (this._scanBindGroup) return;
+    this._scanBindGroup = this._device.createBindGroup({
+      label: `${this._label} Scan BG`,
+      layout: this._scanBindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: this._paramsBuffer! } },
+        { binding: 1, resource: { buffer: this._positionsX! } },
+        { binding: 2, resource: { buffer: this._positionsY! } },
+        { binding: 3, resource: { buffer: this._positionsZ! } },
+        { binding: 4, resource: { buffer: this._flagsBuffer! } },
+        { binding: 5, resource: { buffer: this._prefixBuffer! } },
+        { binding: 6, resource: { buffer: this._visibleIndices! } },
+      ],
+    });
+  }
+
   destroy(): void {
     if (this._isDestroyed) return;
     this._paramsBuffer?.destroy();
@@ -522,15 +744,25 @@ export class WebGPUPointCloudLODProcessor {
     this._positionsZ?.destroy();
     this._visibleIndices?.destroy();
     this._visibleCount?.destroy();
+    this._flagsBuffer?.destroy();
+    this._prefixBuffer?.destroy();
+    this._scanner?.destroy();
     this._paramsBuffer = null;
     this._positionsX = null;
     this._positionsY = null;
     this._positionsZ = null;
     this._visibleIndices = null;
     this._visibleCount = null;
+    this._flagsBuffer = null;
+    this._prefixBuffer = null;
+    this._scanner = null;
     this._bindGroup = null;
+    this._scanBindGroup = null;
     this._pipelines = null;
     this._bindGroupLayout = null;
+    this._scanTagPipeline = null;
+    this._scanCompactPipeline = null;
+    this._scanBindGroupLayout = null;
     this._isDestroyed = true;
     this._initialized = false;
   }

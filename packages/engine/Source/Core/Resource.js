@@ -173,10 +173,39 @@ class Resource {
    * @private
    */
   parseUrl(url, merge, preserveQuery, baseUrl) {
-    // Use native URL parsing. A placeholder base is needed for relative URLs.
+    // Data URIs are stored verbatim — they have their payload after the
+    // "data:" scheme, and URL().origin is "null" for them which would
+    // corrupt the URL if we tried to reconstruct it from origin+pathname.
+    if (/^data:/i.test(url)) {
+      this._url = url;
+      this._queryParameters = {};
+      return;
+    }
+    // Blob URIs are similarly opaque — preserve them as-is.
+    if (/^blob:/i.test(url)) {
+      this._url = url;
+      this._queryParameters = {};
+      return;
+    }
+    // Detect relative vs absolute input BEFORE parsing. The URL constructor
+    // forces every relative URL to resolve to a pathname starting with "/",
+    // which then behaves as a root-relative path during later base-URL
+    // resolution and DISCARDS the base's pathname — i.e. the derived
+    // resource for "Assets/foo" against base "http://host/Build/Cesium/"
+    // would resolve to "http://host/Assets/foo". Resolve relatives directly
+    // against baseUrl (when supplied) so the base's path is preserved.
+    const hadScheme = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url);
     let parsed;
     try {
-      parsed = new URL(url, "https://placeholder.invalid/");
+      // For relatives with a baseUrl, resolve against baseUrl directly so
+      // pathname preservation happens inside the URL constructor. For
+      // absolutes or relatives without a baseUrl, fall back to a placeholder
+      // root so we can still extract the query string.
+      if (!hadScheme && defined(baseUrl)) {
+        parsed = new URL(url, getAbsoluteUri(baseUrl));
+      } else {
+        parsed = new URL(url, "https://placeholder.invalid/");
+      }
     } catch {
       // Fallback for severely malformed URLs — just store as-is
       this._url = url;
@@ -192,14 +221,17 @@ class Resource {
       : query;
 
     // Reconstruct the URL without query or fragment.
-    // If the original URL was relative (had no scheme), resolve against baseUrl.
-    const hadScheme = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url);
-    let cleanUrl = hadScheme
-      ? `${parsed.origin}${parsed.pathname}`
-      : parsed.pathname;
-
-    if (defined(baseUrl) && !hadScheme) {
-      cleanUrl = getAbsoluteUri(cleanUrl, getAbsoluteUri(baseUrl));
+    let cleanUrl;
+    if (hadScheme) {
+      cleanUrl = `${parsed.origin}${parsed.pathname}`;
+    } else if (defined(baseUrl)) {
+      // Already resolved against the base — use the full absolute form so
+      // callers downstream see a stable, fully-qualified URL.
+      cleanUrl = `${parsed.origin}${parsed.pathname}`;
+    } else {
+      // No base — keep the path-only form that upstream Cesium historically
+      // produced for relative URLs without a base.
+      cleanUrl = parsed.pathname;
     }
 
     this._url = cleanUrl;
