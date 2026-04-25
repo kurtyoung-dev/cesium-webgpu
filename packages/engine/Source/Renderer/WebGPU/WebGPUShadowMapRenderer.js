@@ -44,6 +44,59 @@ function createShadowMapTexture(device, size) {
   return { texture, sampler };
 }
 
+/**
+ * C-R10 (Batch 34) — Creates a cube-depth shadow map for point lights.
+ *
+ * Point lights cast shadows omnidirectionally, so the cast pass draws
+ * the scene 6 times (one per cube face) into 6 depth layers. Sampling
+ * in the color pass uses the cube view, which picks the correct face
+ * by ray direction. The 6 per-face views are kept for the cast pass's
+ * `depthStencilAttachment.view`.
+ *
+ * Matches WebGL's `ShadowMap.js:487-498` numberOfPasses = 6 + the
+ * per-face camera / culling volume setup.
+ * @private
+ */
+function createPointLightCubeShadowMap(device, size) {
+  const texture = device.createTexture({
+    label: "Shadow map cube depth (point light)",
+    size: [size, size, 6],
+    format: "depth32float",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+
+  // Per-face views for cast-time depthStencilAttachment binding.
+  const faceViews = new Array(6);
+  for (let i = 0; i < 6; i++) {
+    faceViews[i] = texture.createView({
+      label: `Shadow cube face ${i} view`,
+      dimension: "2d",
+      baseArrayLayer: i,
+      arrayLayerCount: 1,
+      aspect: "depth-only",
+    });
+  }
+
+  // Cube view for the color pass's shadow-receive shader. Not consumed
+  // today (the receive shaders still declare `texture_depth_2d`); this
+  // is kept so future receive-side work can sample via direction
+  // without re-creating the view.
+  const cubeView = texture.createView({
+    label: "Shadow cube view (point light)",
+    dimension: "cube",
+    aspect: "depth-only",
+  });
+
+  const sampler = device.createSampler({
+    label: "Shadow cube comparison sampler",
+    compare: "less",
+    magFilter: "linear",
+    minFilter: "linear",
+  });
+
+  return { texture, faceViews, cubeView, sampler };
+}
+
 // ─── Shadow cast pipeline registry ───────────────────────────────────────
 //
 // Different vertex layouts (RTE primitives, single-position models, quantized
@@ -523,6 +576,14 @@ const EARTH_RADIUS: f32 = 6378137.0;
 
 const _shadowLayoutWarned = new Set();
 
+// Snapshot of the built-in shadow cast variant keys, captured at module
+// load before any `registerShadowCastVariant` call can add to the table.
+// Used by `_resetShadowCastVariantRegistryForSpec` so tests can strip
+// test-added entries without clobbering the built-ins renderers depend on.
+const _BUILTIN_SHADOW_CAST_VARIANT_KEYS = Object.freeze(
+  Object.keys(SHADOW_CAST_VARIANTS).slice(),
+);
+
 /**
  * Maps a command's vertex configuration to a registered shadow cast layout
  * key. Returns null when no compatible cast pipeline exists for the command.
@@ -571,6 +632,24 @@ function _inferShadowLayoutKey(cmd, vbStride) {
  */
 function _resetShadowLayoutWarningsForSpec() {
   _shadowLayoutWarned.clear();
+}
+
+/**
+ * Test-only hook — removes any test-added shadow cast variants so the
+ * registry returns to its module-load state. Mirrors
+ * `_resetShadowLayoutWarningsForSpec` so specs can isolate a fresh
+ * registry in `afterEach` without leaking test keys across Jasmine
+ * blocks. Built-in keys (rte24, p12, modelP12, ...) are preserved
+ * because renderers depend on them existing for the entire session.
+ * @private
+ */
+function _resetShadowCastVariantRegistryForSpec() {
+  const builtin = new Set(_BUILTIN_SHADOW_CAST_VARIANT_KEYS);
+  for (const key of Object.keys(SHADOW_CAST_VARIANTS)) {
+    if (!builtin.has(key)) {
+      delete SHADOW_CAST_VARIANTS[key];
+    }
+  }
 }
 
 const SHADOW_CAST_BIND_GROUP_PREFIX = `
@@ -728,8 +807,7 @@ function getShadowCastVariant(key) {
  * @param {FrameState} frameState
  */
 function initWebGPUShadowMap(shadowMap, frameState) {
-  // Only directional/spot lights for now (point light shadow maps need cube faces)
-  if (!shadowMap.enabled || shadowMap._isPointLight) {
+  if (!shadowMap.enabled) {
     return;
   }
 
@@ -740,14 +818,38 @@ function initWebGPUShadowMap(shadowMap, frameState) {
   }
   const cache = shadowMap._webgpuCache;
 
-  // Create shadow map texture once
+  // Create shadow map texture once. Directional / spot lights get a
+  // single 2D depth target; point lights get a cube (6 array layers)
+  // so the cast pass can render 6 faces in sequence and the receive
+  // pass can sample by ray direction. C-R10 (Batch 34) removed the
+  // early-return that previously stubbed point-light shadows out.
   if (!defined(cache.depthTexture)) {
     const size = shadowMap._textureSize?.x || SHADOW_MAP_SIZE;
-    const result = createShadowMapTexture(device, size);
-    cache.depthTexture = result.texture;
-    cache.depthTextureView = result.texture.createView();
-    cache.comparisonSampler = result.sampler;
-    cache.size = size;
+    if (shadowMap._isPointLight) {
+      const result = createPointLightCubeShadowMap(device, size);
+      cache.depthTexture = result.texture;
+      cache.cubeFaceViews = result.faceViews;
+      cache.cubeDepthView = result.cubeView;
+      // The 2D `depthTextureView` slot stays populated with the first
+      // face's view so legacy callers that read it directly (without
+      // checking `cache.isCube`) still observe a valid 2D depth view.
+      // The receive path in `WebGPUEffectsBindGroup.js` (Batch 53+)
+      // detects the cube case via `_isPointLight` + `cache.cubeDepthView`
+      // and binds the cube view at binding 17 — the model FS routes
+      // through `samplePointShadow` and the 2D view at binding 1 stays
+      // unread on the point-light path. C-R10-POINT-LIGHT-RECEIVE.
+      cache.depthTextureView = result.faceViews[0];
+      cache.comparisonSampler = result.sampler;
+      cache.size = size;
+      cache.isCube = true;
+    } else {
+      const result = createShadowMapTexture(device, size);
+      cache.depthTexture = result.texture;
+      cache.depthTextureView = result.texture.createView();
+      cache.comparisonSampler = result.sampler;
+      cache.size = size;
+      cache.isCube = false;
+    }
   }
 
   // Cast pipelines are now created lazily per vertex-layout variant
@@ -833,15 +935,72 @@ function getShadowPassDescriptor(shadowMap) {
 }
 
 /**
- * Gets the shadow map texture and sampler for use in color pass shaders.
+ * C-R10 (Batch 34) — Cube-face pass descriptor for point-light shadow
+ * casting. The depth attachment targets a single cube-face view so each
+ * of the 6 cast passes writes to a distinct layer of the cube texture.
+ *
  * @param {ShadowMap} shadowMap
- * @returns {{ texture: GPUTexture, view: GPUTextureView, sampler: GPUSampler, matrix: Matrix4 }|null}
+ * @param {number} faceIndex 0..5
+ * @returns {GPURenderPassDescriptor|null}
+ * @private
+ */
+function getPointLightFacePassDescriptor(shadowMap, faceIndex) {
+  const cache = shadowMap._webgpuCache;
+  if (!defined(cache) || !cache.isCube) {
+    return null;
+  }
+  const view = cache.cubeFaceViews?.[faceIndex];
+  if (!defined(view)) {
+    return null;
+  }
+  return {
+    label: `Shadow cube face ${faceIndex} pass`,
+    colorAttachments: [],
+    depthStencilAttachment: {
+      view,
+      depthClearValue: 1.0,
+      depthLoadOp: "clear",
+      depthStoreOp: "store",
+    },
+  };
+}
+
+/**
+ * Gets the shadow map texture and sampler for use in color pass shaders.
+ *
+ * Returns both the directional/spot 2D view fields AND, when the map is
+ * a point light (C-R10-POINT-LIGHT-RECEIVE, Batch 53+), the cube depth
+ * view + light position + far plane needed by the cube-receive shader
+ * variant. Callers that only handle the 2D path can ignore the cube
+ * fields; the auto-detect branch in `WebGPUEffectsBindGroup.js` reads
+ * the same cube fields from `shadowMap._webgpuCache` directly so this
+ * shape is purely additive to the public 2D contract.
+ *
+ * @param {ShadowMap} shadowMap
+ * @returns {{
+ *   texture: GPUTexture,
+ *   view: GPUTextureView,
+ *   sampler: GPUSampler,
+ *   matrix: Matrix4,
+ *   size: number,
+ *   darkness: number,
+ *   softShadows: boolean,
+ *   isPointLight: boolean,
+ *   cubeView: GPUTextureView | undefined,
+ *   lightPositionWC: object | undefined,
+ *   farPlane: number | undefined,
+ *   nearPlane: number | undefined,
+ *   pointDepthBias: number | undefined,
+ * } | null}
  */
 function getShadowMapResources(shadowMap) {
   const cache = shadowMap._webgpuCache;
   if (!defined(cache) || !defined(cache.depthTexture)) {
     return null;
   }
+
+  const isPointLight =
+    shadowMap._isPointLight === true && cache.isCube === true;
 
   return {
     texture: cache.depthTexture,
@@ -851,6 +1010,18 @@ function getShadowMapResources(shadowMap) {
     size: cache.size || SHADOW_MAP_SIZE,
     darkness: shadowMap.darkness || 0.3,
     softShadows: shadowMap.softShadows || false,
+    // C-R10-POINT-LIGHT-RECEIVE additions. Undefined for directional /
+    // spot shadow maps so existing callers can continue ignoring them.
+    isPointLight,
+    cubeView: isPointLight ? cache.cubeDepthView : undefined,
+    lightPositionWC: isPointLight
+      ? shadowMap._lightCamera?.positionWC
+      : undefined,
+    farPlane: isPointLight ? shadowMap._pointLightRadius : undefined,
+    nearPlane: isPointLight ? 1.0 : undefined,
+    pointDepthBias: isPointLight
+      ? (shadowMap._pointBias?.depthBias ?? 0.005)
+      : undefined,
   };
 }
 
@@ -927,13 +1098,87 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
     }
   }
 
-  // Begin shadow render pass (depth-only)
+  // Begin shadow render pass (depth-only). C-R10 (Batch 34): for point
+  // lights, `_renderCastPassForShadowMap` is invoked 6 times below with
+  // per-face VPs + per-face pass descriptors. Directional / spot lights
+  // take the single-pass flow here.
+  if (shadowMap._isPointLight) {
+    _renderPointLightCubeCastPasses(
+      encoder,
+      device,
+      cache,
+      shadowMap,
+      castCommands,
+    );
+    return;
+  }
+
   const passDesc = getShadowPassDescriptor(shadowMap);
   if (!passDesc) {
     return;
   }
   const pass = encoder.beginRenderPass(passDesc);
+  _drawCastCommandsToPass(pass, device, cache, castCommands);
+  pass.end();
+}
 
+/**
+ * C-R10 (Batch 34) — Runs the 6-face cast loop for a point-light
+ * shadow map. Reuses the same cast-pipeline factory + command-drawing
+ * body as the directional / spot path, swapping only the light VP in
+ * `cache.uniformData[0..15]` + the depth target view per face.
+ *
+ * WebGL parity: matches the 6-pass loop in `ShadowMap.js:270-313` that
+ * drives the cubemap face-by-face — the cube view is consumed in the
+ * receive shader via `textureSampleCompare` with a cube sampler (not
+ * wired on the receive side yet; tracked separately).
+ *
+ * @private
+ */
+function _renderPointLightCubeCastPasses(
+  encoder,
+  device,
+  cache,
+  shadowMap,
+  castCommands,
+) {
+  const passes = shadowMap._passes;
+  if (!defined(passes) || passes.length < 6) {
+    return;
+  }
+  for (let face = 0; face < 6; face++) {
+    const passDesc = getPointLightFacePassDescriptor(shadowMap, face);
+    if (!passDesc) {
+      continue;
+    }
+    // Overwrite just the lightVP (first 64 bytes of the UB). The
+    // RTE camera encoding + shadow bias below it stays constant
+    // across the 6 faces, so we don't need to re-pack the whole UB.
+    const faceVP = passes[face].camera.getViewProjection();
+    Matrix4.pack(faceVP, cache.uniformData, 0);
+    device.queue.writeBuffer(
+      cache.uniformBuffer.buffer,
+      0,
+      cache.uniformData.buffer,
+      0,
+      64,
+    );
+
+    const pass = encoder.beginRenderPass(passDesc);
+    _drawCastCommandsToPass(pass, device, cache, castCommands);
+    pass.end();
+  }
+}
+
+/**
+ * Shared cast-command drawing loop extracted from `renderShadowCastPass`
+ * so both the single-pass (directional / spot) path and the 6-face
+ * (point light) path can reuse the same pipeline + bind group +
+ * vertex buffer resolution logic without duplication.
+ *
+ * @private
+ */
+function _drawCastCommandsToPass(pass, device, cache, castCommands) {
   // Per-layout pipeline switching — track the currently-bound variant so we
   // only call setPipeline/setBindGroup when the layout actually changes.
   // Sorting commands by layout key upstream would amortize this further but
@@ -1137,7 +1382,9 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
     }
   }
 
-  pass.end();
+  // Caller owns pass.end() — kept out of the helper so the single-pass
+  // (directional/spot) and 6-face (point-light) callers can end their
+  // own passes with the right scoping.
 }
 
 function destroyWebGPUShadowMapResources(shadowMap) {
@@ -1177,6 +1424,7 @@ export {
   getShadowCastVariant,
   _inferShadowLayoutKey,
   _resetShadowLayoutWarningsForSpec,
+  _resetShadowCastVariantRegistryForSpec,
   // Exported for `WebGPUCSMRenderer` — the CSM cast loop needs the same
   // per-vertex-layout pipeline factory as the single-shadow-map path so
   // every registered variant (rte24, p12, quantized12, modelP12,

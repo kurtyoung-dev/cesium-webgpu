@@ -191,10 +191,10 @@ struct FeatureIdUniforms {
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
 // CSM Slice 2c — models now bind the effects group at @group(7) so the
 // fragment shader can sample cascaded shadows alongside PBR lighting.
-// Struct layout MUST match the 304-byte EffectsUniforms in
+// Struct layout MUST match the 336-byte EffectsUniforms in
 // WebGPUEffectsBindGroup.js. Every trailing field must be present
 // (even when not consumed here) so `csmControl` / `edgeControl` /
-// `edgeViewport` read from the right bytes.
+// `edgeViewport` / `pointLightControl` read from the right bytes.
 struct EffectsUniforms {
   shadowMatrix: mat4x4<f32>,
   shadowMapSize: vec2<f32>,
@@ -217,6 +217,24 @@ struct EffectsUniforms {
   // .xy = viewport (px), .z = relative depth tolerance, .w =
   // hasEdgeFeatureId flag.
   edgeViewport: vec4<f32>,
+  // C-R10-POINT-LIGHT-RECEIVE — point-light cube shadow control.
+  // .x = enabled flag (>0.5 routes the receive shader through the
+  //      cube path; checked BEFORE the CSM gate so it takes priority
+  //      when both happen to be set — only one shadow map is active
+  //      at a time in Cesium, so this only matters during transitions).
+  // .y = farPlane (`shadowMap._pointLightRadius`, meters).
+  // .z = nearPlane (=1.0 for `computeOmnidirectional`, kept explicit
+  //      so future tunable-near callers don't need a UBO bump).
+  // .w = depthBias (subtracted from refDepth before the comparison
+  //      sample to suppress shadow acne — same role as
+  //      `pointBias.depthBias` in the WebGL ShadowMap pipeline).
+  pointLightControl: vec4<f32>,
+  // .xyz = world-space light position (meters; absolute world coords,
+  // not camera-relative). The receive shader reconstructs `fragWC =
+  // cameraPositionWC + (modelMatrix * vec4(rteMC, 0)).xyz` and computes
+  // `direction = fragWC - lightWC`. .w reserved for future per-light
+  // metadata (soft-radius, tint).
+  pointLightPositionWC: vec4<f32>,
 };
 
 // CSM cascade parameters (bindings 10/11). Layout matches
@@ -264,6 +282,13 @@ struct CSMParams {
 @group(7) @binding(14) var edgeDepthTex: texture_2d<f32>;
 @group(7) @binding(15) var globeDepthTex: texture_2d<f32>;
 @group(7) @binding(16) var edgeSampler: sampler;
+// C-R10-POINT-LIGHT-RECEIVE — 6-face cube depth populated by
+// `_renderPointLightCubeCastPasses` in WebGPUShadowMapRenderer. Sampled
+// via `samplePointShadow` below when `effects.pointLightControl.x > 0.5`.
+// Reuses `shadowCompSampler` at binding 2 for the comparison sample.
+// Placeholder is a 1×1×6 cube cleared to 1.0 (depth = far plane → no
+// occluder closer than the light radius → fragment is lit by default).
+@group(7) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 // ─── Vertex Shader ───────────────────────────────────────────────────────────
 
@@ -572,6 +597,92 @@ fn computeShadowFactorCSM(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// ─── C-R10-POINT-LIGHT-RECEIVE — cube shadow sampling ───────────────────────
+//
+// Mirrors WebGL's USE_CUBE_MAP_SHADOW path (`shadowVisibility.glsl` +
+// `shadowDepthCompare.glsl`) but adapted to WebGPU's `texture_depth_cube`
+// + `textureSampleCompareLevel` semantics. The cast pipeline writes
+// standard window-space depth (after `_depthRangeType = "webgpu"` produces
+// a [0,1] z_ndc, the per-face camera's `getViewProjection()` further
+// applies a NDC→texture scaleBias that compresses to [0.5, 1] before
+// landing in the depth32float attachment) for each cube face using
+// `near=1.0`, `far=lightRadius`, FOV=π/2 (see `computeOmnidirectional`
+// in ShadowMapComputations.js). Receive math has to round-trip the
+// SAME perspective-Z formula and apply the SAME scaleBias remap, otherwise
+// every fragment compares unequal against the texel and the scene
+// renders fully shadowed or fully lit by accident.
+//
+// Reference depth derivation (matches the WebGPU-mode perspective in
+// `Matrix4.computePerspectiveFieldOfView` plus the trailing scaleBias
+// matrix in `ShadowMap.js`):
+//
+//   For a fragment at world-space distance `d` from the light along
+//   the dominant cube-face axis, z_eye = -d (looking down -Z in eye
+//   space; the dominant axis projects perpendicular to its face).
+//   The WebGPU-mode projection has:
+//     col2[2] =  far / (near - far)
+//     col3[2] =  near * far / (near - far)
+//   z_clip = z_eye * col2[2] + col3[2]   (with col2[3] = -1 → w_clip = -z_eye = d)
+//   z_ndc_webgpu = z_clip / w_clip
+//                = (-d * far/(near-far) + near*far/(near-far)) / d
+//                = far*(d - near) / (d * (far - near))            (after sign cleanup)
+//                = far/(far-near) - far*near / (d * (far-near))
+//   z_attached = z_ndc_webgpu * 0.5 + 0.5     (scaleBias remap)
+//
+// The cube sample direction must be in world space (NOT eye space) and
+// matches `direction = fragWC - lightWC`. Magnitude is irrelevant —
+// `textureSampleCompareLevel` normalizes internally for cube samplers.
+//
+// Per-fragment performance: one direction subtract, one max3 for the
+// dominant axis, one division for the perspective-Z, one cube sample.
+// Cheaper than CSM (no cascade loop, no eye-space → cascade-clip
+// transform).
+fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
+  let lightWC = effects.pointLightPositionWC.xyz;
+  let direction = fragWC - lightWC;
+  let absDir = abs(direction);
+  // Dominant cube-face axis distance. `axisDist` is what the per-face
+  // camera saw as |z_eye| for this fragment; the perspective-Z formula
+  // below converts it to the depth value the cast pipeline wrote.
+  let axisDist = max(absDir.x, max(absDir.y, absDir.z));
+  let nearPlane = effects.pointLightControl.z;
+  let farPlane = effects.pointLightControl.y;
+  let depthBias = effects.pointLightControl.w;
+  // Outside the cube's far plane → the cast pipeline never wrote a
+  // depth here (or wrote 1.0 = cleared). Treat as fully lit. Without
+  // this gate, a fragment beyond `farPlane` would compare its
+  // ref > 1.0 against the cleared texel (1.0) and `compare: less`
+  // would yield 0 (shadowed) — the wrong direction.
+  if (axisDist >= farPlane) { return 1.0; }
+  // Standard perspective-Z formula, WebGPU [0,1] convention. The
+  // cast pipeline output values in this range too because Cesium
+  // sets `Matrix4._depthRangeType = "webgpu"` at scene creation.
+  let depthRange = farPlane - nearPlane;
+  let zNdcWebGpu =
+    farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
+  // ShadowMap.js's `scaleBiasMatrix` post-multiplies the projection,
+  // remapping z_ndc [-1,1] → [0,1] for WebGL OR z_ndc [0,1] → [0.5,1]
+  // for WebGPU. Either way the cast path applied it, so the receive
+  // path has to apply the same remap before the comparison sample to
+  // round-trip correctly.
+  let zAttached = zNdcWebGpu * 0.5 + 0.5;
+  let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
+  // Cube sample direction is unnormalised — WGSL's
+  // `textureSampleCompareLevel` for cube depth normalises internally.
+  return textureSampleCompareLevel(
+    pointLightCubeDepth,
+    shadowCompSampler,
+    direction,
+    refDepth,
+  );
+}
+
+fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+  if (effects.shadowDarkness >= 1.0) { return 1.0; }
+  let visibility = samplePointShadow(fragWC);
+  return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 // ─── C-R8-EDGE-INLINE ─────────────────────────────────────────────────────
 //
 // Authoritative WGSL port of WebGL's `EdgeDetectionStageFS.glsl`. Runs
@@ -861,15 +972,38 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
 
-  // CSM Slice 2c — route direct sunlight through the cascaded shadow
-  // path when the scene has CSM enabled. Convention matches the primitive
-  // receivers: `viewDepth = |positionEC.z|` (eye-space Z in Cesium's
-  // looking -Z convention), eyePos = world-space camera-relative vector
-  // derived by rotating the model-space RTE through the model matrix (w=0
-  // treats it as a direction, so the model's translation doesn't apply —
-  // result is exactly `pWC - camWC` without FP32 reconstruction at Earth
-  // scale). Ambient / emissive remain unshadowed per PBR convention.
-  if (effects.csmControl.x > 0.5) {
+  // C-R10-POINT-LIGHT-RECEIVE — when a point-light shadow map is bound,
+  // route through cube sampling. Checked BEFORE the CSM gate (only one
+  // shadow map is active at a time in Cesium; if both flags ever fire
+  // the cube path takes precedence because point lights can't be
+  // expressed as cascades). `fragWC` reconstructs the absolute world
+  // position from the RTE-encoded model-space delta, in two steps that
+  // preserve f32 precision:
+  //   1. rotate `rteMC` (model-space RTE = positionMC - encodedCameraMC)
+  //      through `material.modelMatrix` with w=0 → world-space camera-
+  //      relative direction (rteWC). The matrix's translation column
+  //      doesn't contribute, so this is exactly `pWC - camWC`.
+  //   2. add `camera.cameraPositionWC` → absolute world position. The
+  //      receive math then takes `direction = fragWC - lightWC`, where
+  //      both summands are absolute world coords; the subtract collapses
+  //      back to a small relative vector well within f32 precision (any
+  //      fragment beyond `farPlane = lightRadius` early-outs as lit).
+  //
+  // Ambient / emissive remain unshadowed per PBR convention.
+  if (effects.pointLightControl.x > 0.5) {
+    let rteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+    let fragWC = camera.cameraPositionWC + rteWC;
+    let shadowFactor = computeShadowFactorPointLight(fragWC);
+    direct = direct * shadowFactor;
+  } else if (effects.csmControl.x > 0.5) {
+    // CSM Slice 2c — route direct sunlight through the cascaded shadow
+    // path when the scene has CSM enabled. Convention matches the
+    // primitive receivers: `viewDepth = |positionEC.z|` (eye-space Z in
+    // Cesium's looking -Z convention), eyePos = world-space camera-
+    // relative vector derived by rotating the model-space RTE through
+    // the model matrix (w=0 treats it as a direction, so the model's
+    // translation doesn't apply — result is exactly `pWC - camWC`
+    // without FP32 reconstruction at Earth scale).
     let rteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
     let viewDepth = abs(input.positionEC.z);
     let shadowFactor = computeShadowFactorCSM(

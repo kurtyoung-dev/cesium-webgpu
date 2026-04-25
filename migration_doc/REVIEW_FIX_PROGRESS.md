@@ -2594,6 +2594,60 @@ All three migrated renderers fall back to direct `device.createRenderPipeline()`
 
 ---
 
+## Batch 57 — C-R10-POINT-LIGHT-RECEIVE: cube depth sampling for point-light shadows (2026-04-25)
+
+The model fragment shader can now receive shadows from point-light cube shadow maps. Closes the receive-side half of C-R10 (cast path landed in Batch 34); only the globe-terrain receive remains, tracked separately.
+
+### What landed
+
+- **`WebGPUEffectsBindGroup.js`** — Bind group layout grew 17→18 bindings. Binding 17 is a `texture_depth_cube` (`viewDimension: "cube"`, `sampleType: "depth"`). Placeholder is a 1×1×6 `depth32float` cube cleared to 1.0 via per-face render passes (mirrors the CSM cascade-array placeholder pattern). EffectsUniforms UBO grew 304→336 bytes with two new vec4 control blocks at offsets 304 and 320:
+  - `pointLightControl: vec4<f32>` — `(enabled, farPlane, nearPlane, depthBias)`. The cast pipeline used `near=1.0`, `far=lightRadius`, FOV=π/2 (per `computeOmnidirectional` in `ShadowMapComputations.js`); the receive shader plugs the same values into the perspective-Z formula.
+  - `pointLightPositionWC: vec4<f32>` — `(lightWC.xyz, reserved)`. Absolute world coords, not camera-relative — the receive shader's `direction = fragWC - lightWC` subtract collapses back to a small relative vector well within f32 precision.
+- **Auto-detect path** — `createEffectsBindGroup()` checks `shadowMap._isPointLight === true` AND `shadowMap._webgpuCache.cubeDepthView` exists. Pulls `lightPositionWC` from `shadowMap._lightCamera.positionWC`, `farPlane` from `shadowMap._pointLightRadius`, `depthBias` from `shadowMap._pointBias.depthBias` (falls back to 0.005). Explicit `options.pointLight` override available for callers that want fine control. Suppresses the 2D shadow path when the cube is active so binding 1 stays on the placeholder (cube and 2D paths are mutually exclusive — only one shadow map active at a time in Cesium).
+- **`WebGPUShadowMapRenderer.js`** — `getShadowMapResources()` now returns `{ isPointLight, cubeView, lightPositionWC, farPlane, nearPlane, pointDepthBias }` alongside the existing 2D fields. Init-time comment in `initWebGPUShadowMap` updated to remove the now-stale "limited to face 0" claim.
+- **`ModelPBRComplete.wgsl`** — Added the matching `pointLightControl` + `pointLightPositionWC` fields to the `EffectsUniforms` struct, declared `@group(7) @binding(17) var pointLightCubeDepth: texture_depth_cube`, added `samplePointShadow(fragWC)` + `computeShadowFactorPointLight(fragWC)` helpers, and rewrote the fragment shadow branch to `if (pointLightControl.x > 0.5) { /* cube */ } else if (csmControl.x > 0.5) { /* CSM */ } else { /* 2D / unshadowed */ }`. Point-light path takes precedence over CSM when both flags fire (only matters during transitions). `fragWC` is reconstructed via `camera.cameraPositionWC + (modelMatrix * vec4(rteMC, 0.0)).xyz` — the same RTE-preserving rotation the CSM path uses to derive `rteWC`, just promoted to absolute world coords.
+
+### Math chosen for refDepth
+
+The cast pipeline writes standard window-space depth from the per-face perspective matrix (`Matrix4.computePerspectiveFieldOfView` in WebGPU mode produces `[0,1]` z_ndc; the trailing `scaleBiasMatrix` in `ShadowMap.js` further compresses to `[0.5, 1]`). The receive shader has to round-trip the SAME formula:
+
+```wgsl
+let axisDist = max(absDir.x, max(absDir.y, absDir.z));
+let depthRange = farPlane - nearPlane;
+let zNdcWebGpu = farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
+let zAttached = zNdcWebGpu * 0.5 + 0.5;
+let refDepth  = clamp(zAttached - depthBias, 0.0, 1.0);
+```
+
+Picked over the simpler `axisDist / farPlane` (linear distance) because the cast pipeline does NOT write linear depth — it writes the perspective-Z value the depth attachment received from `pos.z/pos.w`. WebGL's reference implementation writes linearized `distance/radius` via `czm_packDepth(distance)` to a color attachment, but our cast pipeline uses a depth-only target so we have to reproduce its perspective math instead. A separate `C-R10-CAST-LINEAR-DEPTH` follow-up could swap the cast to linear depth (writing through `@builtin(frag_depth)`), which would let the receive use the simpler formula — but the perspective-Z path correctly round-trips against the existing cast output and ships now.
+
+The dominant-axis distance `max(|dx|, |dy|, |dz|)` is what each per-face camera saw as `|z_eye|` for that fragment (each cube face's view direction projects perpendicular to one axis), so plugging it into the standard z-buffer formula reproduces what the cast wrote without needing six per-face VP matrices in the UBO.
+
+### Scope cuts
+
+- **Globe terrain receive** — `GlobeTerrain.wgsl` keeps using the 2D shadow path. Point-light shadows on terrain are uncommon in CesiumJS scenes and the inline-stage refactor cost (terrain shader is shared with the post-process / CSM hot path) doesn't pay off without a concrete user. Tracked as **FOLLOW-UP C-R10-GLOBE-POINT-LIGHT**.
+- **Primitive receivers** — `PrimitivePhongTexturedColor.wgsl` and the collection shaders also keep the 2D path. Same rationale; revisit if a CesiumJS sample needs point-lit primitives.
+- **Cast-pipeline linear depth** — kept as the existing perspective-Z path. Switching to `@builtin(frag_depth)` writing `axisDist / farPlane` would simplify the receive math but introduces a second z-test convention across the codebase. Tracked as **FOLLOW-UP C-R10-CAST-LINEAR-DEPTH** if performance profiling later shows the receive perspective math is a hot spot (it isn't — it's two divides and one cube sample per fragment).
+- **Soft point-light shadows** — `pointLightPositionWC.w` is reserved for a future soft-radius parameter. WebGL's USE_CUBE_MAP_SHADOW path doesn't soft-filter either; PCF over cube samples is a separate enhancement.
+
+### TSC status
+
+`npx tsc --project packages/engine/tsconfig.json --noEmit` runs clean for all files we touched. Pre-existing untracked `WebGPUEdgeVisibilityEmitter.ts` carries syntax errors unrelated to this work.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js)
+- [packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js)
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl)
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js) — auto-regenerated wrapper
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R10 status updated; appended `FOLLOW-UP C-R10-GLOBE-POINT-LIGHT` and `FOLLOW-UP C-R10-CAST-LINEAR-DEPTH`
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R10-POINT-LIGHT-RECEIVE | RENDERER_DEEP | Point-light shadow receive on WebGPU | **MODEL FS FIXED** — 18-binding effects BGL with cube depth at binding 17, 336-byte UBO with `pointLightControl` + `pointLightPositionWC` blocks, perspective-Z reference depth derivation matches cast pipeline output (1×1×6 cleared placeholder when no point light is bound, auto-detect via `shadowMap._isPointLight`). Globe terrain stays on the 2D path — tracked as `C-R10-GLOBE-POINT-LIGHT`. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.
