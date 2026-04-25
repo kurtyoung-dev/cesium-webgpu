@@ -1,0 +1,201 @@
+{
+  "runAt": "2026-04-25T18:19:25.451Z",
+  "total": 7,
+  "passed": 2,
+  "failed": 5,
+  "skipped": 0,
+  "results": [
+    {
+      "file": "WebGPU Edge Feature ID.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Edge%20Feature%20ID.html",
+      "status": "FAIL",
+      "errors": [
+        "[tryAndCatchError] ❌ ERROR CAUGHT: DeveloperError: The shader function must have at least one line.\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)",
+        "[tryAndCatchError] Stack trace: Error\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)",
+        "An error occurred while rendering.  Rendering has stopped.\nDeveloperError: The shader function must have at least one line.\nError\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)"
+      ],
+      "warnings": [
+        "Failed to create texture for property table \"undefined\": Property with ID: \"geometryClass\" has (4), which does not match number of features in the property table: (1)."
+      ],
+      "pageErrors": [],
+      "notes": [
+        "3 significant console errors (see errors[])"
+      ],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Edge Feature ID.png",
+        "pngBytes": 39100,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Edge Feature ID.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      }
+    },
+    {
+      "file": "WebGPU Edge Visibility.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Edge%20Visibility.html",
+      "status": "FAIL",
+      "errors": [
+        "[tryAndCatchError] ❌ ERROR CAUGHT: DeveloperError: The shader function must have at least one line.\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)",
+        "[tryAndCatchError] Stack trace: Error\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)",
+        "An error occurred while rendering.  Rendering has stopped.\nDeveloperError: The shader function must have at least one line.\nError\n    at new DeveloperError (http://localhost:8080/Build/CesiumUnminified/index.js:101:17)\n    at ShaderFunction.generateGlslLines (http://localhost:8080/Build/CesiumUnminified/index.js:168896:13)\n    at generateFunctionLines (http://localhost:8080/Build/CesiumUnminified/index.js:169336:26)\n    at ShaderBuilder.buildShaderProgram (http://localhost:8080/Build/CesiumUnminified/index.js:169253:27)\n    at createShaderProgram4 (http://localhost:8080/Build/CesiumUnminified/index.js:170744:39)\n    at ModelDrawCommands.buildModelDrawCommand (http://localhost:8080/Build/CesiumUnminified/index.js:170717:25)\n    at ModelSceneGraph.createDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:171057:55)\n    at ModelSceneGraph.buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:170872:10)\n    at buildDrawCommands (http://localhost:8080/Build/CesiumUnminified/index.js:175427:23)\n    at Model.update (http://localhost:8080/Build/CesiumUnminified/index.js:173686:5)"
+      ],
+      "warnings": [
+        "Failed to create texture for property table \"undefined\": Property with ID: \"geometryClass\" has (4), which does not match number of features in the property table: (1)."
+      ],
+      "pageErrors": [],
+      "notes": [
+        "3 significant console errors (see errors[])"
+      ],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Edge Visibility.png",
+        "pngBytes": 39584,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Edge Visibility.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      }
+    },
+    {
+      "file": "WebGPU Many Imagery Layers.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Many%20Imagery%20Layers.html",
+      "status": "FAIL",
+      "errors": [
+        "TypeError: Class constructor UrlTemplateImageryProvider cannot be invoked without 'new'\n    at new OpenStreetMapImageryProvider (http://localhost:8080/Build/CesiumUnminified/index.js:309457:38)\n    at makeLayers (http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Many%20Imagery%20Layers.html:142:17)\n    at window.startup (http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Many%20Imagery%20Layers.html:212:15)\n    at http://localhost:8080/Apps/Sandcastle/load-cesium-es6.js:10:10"
+      ],
+      "warnings": [],
+      "pageErrors": [
+        "TypeError: Class constructor UrlTemplateImageryProvider cannot be invoked without 'new'"
+      ],
+      "notes": [
+        "imagery layer count = -1, expected >=8",
+        "1 significant console errors (see errors[])",
+        "1 uncaught page errors"
+      ],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Many Imagery Layers.png",
+        "pngBytes": 667020,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Many Imagery Layers.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      },
+      "imageryLayerCount": -1
+    },
+    {
+      "file": "WebGPU Model Pick.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Model%20Pick.html",
+      "status": "FAIL",
+      "errors": [
+        "Failed to load resource: the server responded with a status of 404 (Not Found)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "warnings": [],
+      "pageErrors": [
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.",
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.",
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found."
+      ],
+      "notes": [
+        "3 uncaught page errors"
+      ],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Model Pick.png",
+        "pngBytes": 873975,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Model Pick.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      },
+      "pick": {
+        "clickedAt": {
+          "x": 640,
+          "y": 360
+        }
+      },
+      "pickScreenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Model Pick-after-click.png"
+    },
+    {
+      "file": "WebGPU Point Light Shadows.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Point%20Light%20Shadows.html",
+      "status": "PASS",
+      "errors": [
+        "An error occurred while rendering.  Rendering has stopped.\nTypeError: Class constructor DynamicGeometryUpdater cannot be invoked without 'new'\nTypeError: Class constructor DynamicGeometryUpdater cannot be invoked without 'new'\n    at new DynamicBoxGeometryUpdater (http://localhost:8080/Build/CesiumUnminified/index.js:112240:34)\n    at BoxGeometryUpdater.createDynamicUpdater (http://localhost:8080/Build/CesiumUnminified/index.js:111585:12)\n    at DynamicGeometryBatch.add (http://localhost:8080/Build/CesiumUnminified/index.js:225571:15)\n    at _GeometryVisualizer._insertUpdaterIntoBatch (http://localhost:8080/Build/CesiumUnminified/index.js:236368:26)\n    at http://localhost:8080/Build/CesiumUnminified/index.js:236250:14\n    at _GeometryUpdaterSet.forEach (http://localhost:8080/Build/CesiumUnminified/index.js:233560:7)\n    at _GeometryVisualizer.update (http://localhost:8080/Build/CesiumUnminified/index.js:236249:18)\n    at _DataSourceDisplay.update (http://localhost:8080/Build/CesiumUnminified/index.js:240376:31)\n    at CesiumWidget._onTick (http://localhost:8080/Build/CesiumUnminified/index.js:333485:45)\n    at Event.raiseEvent (http://localhost:8080/Build/CesiumUnminified/index.js:343:22)"
+      ],
+      "warnings": [],
+      "pageErrors": [],
+      "notes": [],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Point Light Shadows.png",
+        "pngBytes": 42604,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Point Light Shadows.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      },
+      "softShadowsScreenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Point Light Shadows-soft.png"
+    },
+    {
+      "file": "WebGPU Translucent Classification.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Translucent%20Classification.html",
+      "status": "PASS",
+      "errors": [],
+      "warnings": [],
+      "pageErrors": [],
+      "notes": [],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Translucent Classification.png",
+        "pngBytes": 662722,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Translucent Classification.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      }
+    },
+    {
+      "file": "WebGPU Voxel Pick.html",
+      "url": "http://localhost:8080/Apps/Sandcastle/gallery/WebGPU%20Voxel%20Pick.html",
+      "status": "FAIL",
+      "errors": [
+        "TypeError: Class constructor UrlTemplateImageryProvider cannot be invoked without 'new'\n    at new TileMapServiceImageryProvider (http://localhost:8080/Build/CesiumUnminified/index.js:158587:38)\n    at TileMapServiceImageryProvider.fromUrl (http://localhost:8080/Build/CesiumUnminified/index.js:158623:10)\n    at async handlePromise (http://localhost:8080/Build/CesiumUnminified/index.js:163178:16)"
+      ],
+      "warnings": [],
+      "pageErrors": [
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.",
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.",
+        "NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found."
+      ],
+      "notes": [
+        "3 uncaught page errors"
+      ],
+      "sample": {
+        "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Voxel Pick.png",
+        "pngBytes": 549708,
+        "likelyBlank": false
+      },
+      "screenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Voxel Pick.png",
+      "viewer": {
+        "via": "none",
+        "rendererType": null
+      },
+      "pick": {
+        "clickedAt": {
+          "x": 640,
+          "y": 360
+        }
+      },
+      "pickScreenshot": "F:\\Dev\\GH\\cesium-webgpu\\.claude\\worktrees\\agent-ad9c36320cd9fa634\\Tools\\visual-regression\\screenshots\\sandcastle-batch-65\\WebGPU Voxel Pick-after-click.png"
+    }
+  ]
+}
