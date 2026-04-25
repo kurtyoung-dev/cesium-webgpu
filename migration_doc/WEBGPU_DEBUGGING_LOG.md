@@ -3849,3 +3849,105 @@ if (defined(Object.create)) {
 ### NEW-2 (this session, fixed inline) — Demos converted to `Viewer.createAsync`
 
 **Files:** All 7 `Apps/Sandcastle/gallery/WebGPU *.html` demos. Single-line change per file — `const viewer = new Cesium.Viewer(...)` → `const viewer = await Cesium.Viewer.createAsync(...)`. Each demo's `window.startup` is already `async function`, so `await` is in scope. `contextOptions: { renderer: "webgpu" }` was already present and is preserved.
+
+---
+
+## Session 37: Sandcastle TRULY FINAL re-verification — NEW-3 closure + NEW-4 surfacing (2026-04-25)
+
+**Context:** Follow-up to Session 36. Three engine bugs (NEW-3-A/B/C) surfaced when the demos were first run on a true WebGPU context. This session lands the fixes for all three and re-runs the runner to confirm closure and to discover the next layer of WebGPU-only bugs.
+
+**Outcome:** All three NEW-3-* error signatures **gone** from the TRULY FINAL `report.json`. Six new findings (NEW-4-A through NEW-4-F) take their place — each strictly downstream of the bug it replaces. Per-pass detail in `migration_doc/SANDCASTLE_BATCH_66_TRULY_FINAL_REPORT.md`.
+
+### NEW-3-A — CLOSED
+
+**Fix:** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:651` — destructure `{ context, scene }` from `config` instead of `{ context }`.
+**Verification:** TRULY FINAL `report.json` contains zero occurrences of `scene is not defined`. Demos that were blocked on frame 1 now reach the model-pipeline / globe-depth stages before hitting NEW-4-A or NEW-4-B respectively.
+
+### NEW-3-B — CLOSED
+
+**Fix:** `packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js:809-823` (`initWebGPUShadowMap`) and `:1059-1063` (`renderShadowCastPass`) — both sites now `const context = frameState?.context` early-return guard, then `const device = context.device ?? context._device` early-return guard. Each guard is documented with a NEW-3-B (Batch 66) comment explaining the early-frame init paths that previously crashed.
+**Verification:** TRULY FINAL `report.json` contains zero occurrences of `Cannot read properties of undefined (reading 'device')`. Point Light Shadows demo now reaches the actual shadow render passes — the next blocker is the unrelated NEW-4-B globe-depth pipeline validation.
+
+### NEW-3-C — PARTIALLY CLOSED
+
+**Fix:** `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:1644-1645` — added `cl._maximum3DTextureSize = limits.maxTextureDimension3D ?? 2048` and `cl._maximumArrayTextureLayers = limits.maxTextureArrayLayers ?? 256` to the cap-publishing block. Corresponding entries added to the `ContextLimitsInternals` TS interface at line 195.
+**Verification:** `Megatexture.get3DTextureDimension` no longer throws "does not support a 3D texture large enough" — but Voxel Pick still fails because `Texture3D` constructor itself has a second WebGL-only guard. Remaining work tracked as **NEW-4-D**.
+
+### NEW-4-A — `EdgeVisibilityPipelineStage` calls WebGL-only `Buffer.getBufferData`
+
+**Severity:** High (blocks Edge Visibility + Edge Feature ID; affects any model with edge visibility on WebGPU)
+**Files:**
+- `packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js`
+- `packages/engine/Source/Scene/Model/ModelReader.js` — `readAttributeAsRawCompactTypedArray`, `readAttributeAsTypedArray`
+- `packages/engine/Source/Renderer/Buffer.js:189` — `getBufferData` is the WebGL2-only `gl.getBufferSubData` wrapper
+**Symptom:** `DeveloperError: A WebGL 2 context is required.` thrown from `_Buffer.getBufferData` during `EdgeVisibilityPipelineStage.process` → `buildTriangleAdjacency` → `ModelReader.readAttributeAsTypedArray`. Render loop crashes with the rendering-stopped modal.
+**Root cause:** The model edge-visibility pipeline stage performs a CPU-side readback of vertex/index data to compute per-triangle adjacency (used for silhouette + crease edges). The readback path goes through `Buffer.getBufferData` which is the synchronous `gl.getBufferSubData` WebGL2-only wrapper.
+**Fix sketch:** Either (a) cache vertex/index data on the CPU at upload time so the readback isn't needed at all (preferred — also benefits WebGL by avoiding a GPU→CPU stall during model preparation), or (b) add a WebGPU-aware `Buffer.getBufferDataAsync()` that uses `device.queue.readBuffer` / `mapAsync` and refactor `EdgeVisibilityPipelineStage.process` + `buildTriangleAdjacency` to await the async preparation.
+**Status:** Logged for follow-up.
+
+### NEW-4-B — `GlobeDepth-DepthCopy` pipeline rejected: depth-texture sampler binding type mismatch
+
+**Severity:** Critical (blocks 5 of 7 demos: Many Imagery Layers, Model Pick, Point Light Shadows, Translucent Classification, plus latently any demo with picking / DOF / FXAA)
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts:387-388`
+**Symptom:** GPU validation error
+```
+Texture binding (group:0, binding:0) is TextureSampleType::Depth but used statically with
+a sampler (group:0, binding:1) that's SamplerBindingType::Filtering
+    - While validating fragment stage ([ShaderModule "GlobeDepth-DepthCopy-Shader"], entryPoint: "fragmentMain")
+    - While calling [Device].CreateRenderPipeline([RenderPipelineDescriptor ""GlobeDepth-DepthCopy-Pipeline""])
+```
+The pipeline is invalidated; subsequent `[Invalid RenderPipeline "GlobeDepth-DepthCopy-Pipeline"] is invalid due to a previous error` cascades follow on every frame.
+**Root cause:** The bind group layout declares `texture(0, ..., { sampleType: "depth" })` and `sampler(1, Stage.FRAGMENT)` — the latter defaults to `filtering` binding type. WebGPU spec requires depth-texture bindings to be paired with a `non-filtering` or `comparison` sampler binding type. The actual sampler is created with `magFilter: "nearest" / minFilter: "nearest"` (line 394-395) so the intent is already non-filtering — only the binding-type declaration needs to match.
+**Fix sketch:** Change [`WebGPUGlobeDepth.ts:388`](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts) from `sampler(1, Stage.FRAGMENT)` to `sampler(1, Stage.FRAGMENT, { type: "non-filtering" })`. If the `sampler` helper doesn't accept a binding-type override, expand to the raw descriptor `{ binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "non-filtering" } }`. Apply the same fix to the MSAA depth-copy pipeline if it has the same shape.
+**Status:** Logged for follow-up — single-line fix, highest-ROI next-session action.
+
+### NEW-4-C — `getLogDepthShaderProgram` reads `fragmentShaderSource` from undefined `shaderProgram`
+
+**Severity:** Medium (blocks Translucent Classification demo)
+**File:** `packages/engine/Source/Scene/DerivedCommand.js:139` (`getLogDepthShaderProgram`) and `:230` (`createLogDepthCommand`)
+**Symptom:** `TypeError: Cannot read properties of undefined (reading 'fragmentShaderSource')` thrown from `getLogDepthShaderProgram` during `_Scene.updateDerivedCommands` → `insertIntoBin` → `View.createPotentiallyVisibleSet`.
+**Root cause:** `DerivedCommand.createLogDepthCommand` is the WebGL log-depth derivation pass that wraps `command.shaderProgram` to inject the log-z fragment output. Classification primitives enqueue commands through the WebGL command path because no WebGPU classification feature renderer exists yet (see `BUILD-VAR-HAZARD-CLASSIFICATION` in this log). When the source command is a `WebGPUDrawCommand`, `command.shaderProgram` is undefined → the wrap throws.
+**Fix sketch:** Two options:
+  - **Tactical:** Add early-return at the top of `createLogDepthCommand` when `command.shaderProgram` is missing — derived command silently no-ops, matching the "no WebGPU classification renderer" status quo.
+  - **Strategic:** Build a `CLASSIFICATION_PRIMITIVE` feature renderer that intercepts the WebGL classification path entirely (already on backlog as `BUILD-VAR-HAZARD-CLASSIFICATION`).
+**Status:** Logged for follow-up.
+
+### NEW-4-D — `Texture3D` constructor still has WebGL-only guard
+
+**Severity:** High (blocks Voxel Pick demo; affects any WebGPU code path that allocates a `Texture3D`)
+**File:** `packages/engine/Source/Renderer/Texture3D.js:74`
+**Symptom:** `DeveloperError: WebGL1 does not support texture3D. Please use a WebGL2 context.` thrown during `_VoxelPrimitive.update` → `initFromProvider` → `new VoxelTraversal` → `new _Megatexture` → `new _Texture3D`.
+**Root cause:** Successor to NEW-3-C. The cap-query (`_maximum3DTextureSize`) is now correct, but the `Texture3D` constructor itself has an unconditional WebGL2 guard. The WebGL stub on `WebGPUContext` doesn't (and shouldn't) claim to be WebGL2, so the guard fires.
+**Fix sketch:** `Texture3D.js` needs a WebGPU-aware path (or a `Texture3D` feature renderer) that allocates a `GPUTexture` with `dimension: "3d"` instead of calling `gl.texImage3D`. Non-trivial port — all `Texture3D` consumers (`Megatexture`, `VoxelTraversal`) call into WebGL-style API surfaces and need parallel migration.
+**Status:** Logged for follow-up — voxel-feature port task; recommend deferring until the full `Megatexture` / `VoxelTraversal` WebGPU port is scheduled.
+
+### NEW-4-E — `Voxel color pipeline` WGSL: missing return at end of function
+
+**Severity:** High (blocks Voxel Pick rendering even after NEW-4-D is fixed)
+**File:** Unknown WGSL source. Pipeline label `"Voxel color pipeline"` indicates the source is somewhere under `packages/engine/Source/Shaders/WebGPU/Voxel*.wgsl` (or assembled by the voxel feature renderer).
+**Symptom:**
+```
+Error while parsing WGSL: :113:1 error: missing return at end of function
+}
+^
+    - While calling [Device].CreateShaderModule([ShaderModuleDescriptor])
+```
+Subsequent `[Invalid ShaderModule (unlabeled)] is invalid due to a previous error - While validating vertex stage ... entryPoint: "vertexMain" - While calling CreateRenderPipeline("Voxel color pipeline")` cascades.
+**Root cause:** Vertex-stage entry function (or a helper) ends without a `return` on at least one code path. WGSL requires every non-void function to end with a `return` on every path.
+**Fix sketch:** Locate the source via `grep "Voxel color pipeline"` in `packages/engine/Source/Renderer/WebGPU/`. Inspect the assembled WGSL around line 113 — likely an `else` branch missing a `return`. Add the missing return with the correct struct/value.
+**Status:** Logged for follow-up — paired with NEW-4-D as a voxel-feature task.
+
+### NEW-4-F — Globe terrain pipeline exceeds default `maxSampledTexturesPerShaderStage` (advisory)
+
+**Severity:** Low (advisory — runs anyway on this adapter because 16 is a soft default; would hard-fail on adapters where 16 is the actual hardware limit)
+**File:** `WebGPUContext.ts` device-init (`requestDevice` call) and `Source/Renderer/WebGPU/WebGPUGlobeRenderer*.ts` (or wherever the Globe terrain pipeline layout is assembled)
+**Warning:**
+```
+The number of sampled textures (29) in the Fragment stage exceeds the maximum per-stage
+limit (16). This adapter supports a higher maxSampledTexturesPerShaderStage of 48, which
+can be specified in requiredLimits when calling requestDevice().
+    - While calling [Device].CreatePipelineLayout([PipelineLayoutDescriptor ""Globe terrain pipeline layout""])
+```
+**Root cause:** `WebGPUContext._initializeDevice` (or wherever `adapter.requestDevice` runs) doesn't pass `requiredLimits.maxSampledTexturesPerShaderStage = 48`.
+**Fix sketch:** Add `maxSampledTexturesPerShaderStage: Math.min(48, adapter.limits.maxSampledTexturesPerShaderStage)` to the `requiredLimits` object on `requestDevice`. Cap it to the adapter's reported limit so the call doesn't fail on adapters that can't go above 16 — those adapters then need a separate "fewer-sampled-textures" pipeline-layout variant, but that's a downstream concern.
+**Status:** Logged advisory — fold into the next renderer-init sweep.

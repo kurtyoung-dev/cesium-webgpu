@@ -648,7 +648,7 @@ export class WebGPUSceneRenderer {
    * Called once per frame before the frustum loop.
    */
   private _ensureResources(config: WebGPURenderFrameConfig): void {
-    const { context } = config;
+    const { context, scene } = config;
     const device: GPUDevice | undefined = context._device;
     if (!device) {
       return;

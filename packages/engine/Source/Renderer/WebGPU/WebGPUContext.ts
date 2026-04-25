@@ -73,6 +73,7 @@ import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
 import { WebGPUCSMRenderer } from "./WebGPUCSMRenderer.js";
 import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
+import { clearEffectsPlaceholderCacheForDevice } from "./WebGPUEffectsBindGroup.js";
 import {
   createDefaultTextures,
   copyTexture as copyTextureUtil,
@@ -214,6 +215,8 @@ interface ContextLimitsInternals {
   _maximumSamples: number;
   _highpFloatSupported: boolean;
   _highpIntSupported: boolean;
+  _maximum3DTextureSize: number;
+  _maximumArrayTextureLayers: number;
 }
 
 // Re-export types that external code may depend on
@@ -332,6 +335,23 @@ export class WebGPUContext extends GraphicsContext {
   public _sceneColorFormat: GPUTextureFormat = "bgra8unorm";
   public _msaaSamples: number = 1;
   public useIndirectDrawForTiles: boolean = false;
+
+  // C-R8-EDGE-FBO (Batch 44) — edge-framebuffer texture views, set by
+  // `WebGPUSceneRenderer._execute3DTilePasses` after the edges pass
+  // resolves its MRT attachments. Consumers (edge composite stage,
+  // future per-fragment edge detection in model shaders) read these
+  // as the WebGPU equivalent of WebGL's
+  // `uniformState.edge{Color,Id,Depth}Texture`. `null` when no edge
+  // commands ran this frame, signalling downstream consumers to skip.
+  public _edgeColorView: GPUTextureView | null = null;
+  public _edgeIdView: GPUTextureView | null = null;
+  public _edgeDepthView: GPUTextureView | null = null;
+  // C-R8-EDGE-INLINE — packed globe depth view from
+  // `WebGPUGlobeDepth.executeCopyDepth`. Published each frame after
+  // `executeCopyDepth` runs so downstream effects (the inline edge
+  // detection stage in Model FS) have a single, stable place to read
+  // it from. `null` when globe depth wasn't computed this frame.
+  public _globeDepthView: GPUTextureView | null = null;
 
   // WebGL extension properties (WebGPU natively supports these as core features)
   public floatingPointTexture: boolean = true; // WebGPU always supports float textures
@@ -878,6 +898,29 @@ export class WebGPUContext extends GraphicsContext {
     return true;
   }
 
+  /**
+   * WebGPU needs the `SCENE_RENDERER` FR to be registered — it owns the
+   * offscreen framebuffer + post-process composite that blits the scene
+   * to the canvas surface texture. Without the FR the canvas is black.
+   */
+  override get requiresSceneRenderer(): boolean {
+    return true;
+  }
+
+  /**
+   * WebGPU exposes the primitive index-utils compute module that drives
+   * `scene.triangulationDebug`. True when both the device and the utils
+   * module are ready; false during the pre-init window.
+   */
+  override get supportsTriangulationDebug(): boolean {
+    const utils = this._primitiveIndexUtilsCache as
+      | { isSupported?: (device: GPUDevice) => boolean }
+      | undefined;
+    return (
+      this._device !== null && utils !== undefined && !!utils.isSupported
+    );
+  }
+
   // ═══════════════════════════════════════════════════════════
   // COMPUTE SHADER CAPABILITY OVERRIDES
   //
@@ -1042,6 +1085,26 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
+    // A pass must never be re-opened on top of an already-active pass. The
+    // browser validation layer raises "cannot begin a render pass while
+    // another is encoding" asynchronously, which is hard to trace back to
+    // the JS caller. In debug builds we throw synchronously with the stack
+    // pointing at whoever called us; in release we defensively end the
+    // orphan pass so production keeps rendering.
+    //>>includeStart('debug', pragmas.debug);
+    if (this._currentRenderPassEncoder) {
+      throw new DeveloperError(
+        `[CesiumJS:webgpu:${this._id}] _beginDefaultRenderPass() called ` +
+          `with an active render pass (label='${this._currentRenderPassEncoder.label ?? ""}'). ` +
+          `Call endCurrentRenderPass() before opening a new one.`,
+      );
+    }
+    //>>includeEnd('debug');
+    if (this._currentRenderPassEncoder) {
+      this._currentRenderPassEncoder.end();
+      this._currentRenderPassEncoder = null;
+    }
+
     const renderPassDescriptor: GPURenderPassDescriptor = {
       label: "Scene Main Render Pass",
       colorAttachments: [
@@ -1131,6 +1194,21 @@ export class WebGPUContext extends GraphicsContext {
       );
       return null;
     }
+
+    // Same invariant as `_beginDefaultRenderPass`: opening a pass while
+    // another is encoding is a JS-side bug that the browser surfaces only
+    // as an async validation error. Throw loudly in debug so the stack
+    // points at the caller; fall through to the silent defensive end in
+    // release so production keeps rendering.
+    //>>includeStart('debug', pragmas.debug);
+    if (this._currentRenderPassEncoder) {
+      throw new DeveloperError(
+        `[CesiumJS:webgpu:${this._id}] beginRenderPass() called with an ` +
+          `active render pass (label='${this._currentRenderPassEncoder.label ?? ""}'). ` +
+          `Call endCurrentRenderPass() before opening a new one.`,
+      );
+    }
+    //>>includeEnd('debug');
 
     // End current render pass if one is active
     if (this._currentRenderPassEncoder) {
@@ -1558,6 +1636,13 @@ export class WebGPUContext extends GraphicsContext {
     cl._maximumDrawBuffers = limits.maxColorAttachments ?? 8;
     cl._maximumColorAttachments = limits.maxColorAttachments ?? 8;
     cl._maximumSamples = 4;
+    // NEW-3-C (Batch 66) — Voxel Megatexture path reads
+    // ContextLimits.maximum3DTextureSize via `Megatexture.get3DTextureDimension`.
+    // WebGPU exposes this as `maxTextureDimension3D` (default 2048 per spec).
+    // Without this write the limit stays at 0 and Megatexture allocation
+    // fails the size check before it even attempts a texture allocation.
+    cl._maximum3DTextureSize = limits.maxTextureDimension3D ?? 2048;
+    cl._maximumArrayTextureLayers = limits.maxTextureArrayLayers ?? 256;
     cl._highpFloatSupported = true;
     cl._highpIntSupported = true;
   }
@@ -2837,7 +2922,20 @@ export class WebGPUContext extends GraphicsContext {
       environmentState.clearGlobeDepth &&
       scene.mode === 3 /* SceneMode.SCENE3D */ &&
       scene._globeTranslucencyState.useDepthPlane;
-    environmentState.useGlobeDepthFramebuffer = false;
+
+    // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) + C-R8-GLOBE-DEPTH-MSAA (Batch
+    // 43) — flip the flag on for WebGPU so the globe-depth-framebuffer
+    // path runs (matches WebGL's `FramebufferOrchestrator.js:59-60`
+    // which sets this to `defined(view.globeDepth)`, i.e., always on
+    // when not picking). Concrete user-visible effect:
+    // `WebGPUSceneRenderer` instantiates `_globeDepth`, the post-tile
+    // depth-copy hook fires (writing a sampleable packed depth
+    // texture), and `pickPosition` reads that texture to translate
+    // screen-space picks into world coordinates. Batch 43 added the
+    // MSAA depth-sampling variant (`texture_depth_multisampled_2d` +
+    // `textureLoad` sample-index-0) so the flag no longer needs an
+    // MSAA gate — both sample counts are wired.
+    environmentState.useGlobeDepthFramebuffer = !picking;
 
     environmentState.useOIT =
       !picking && scene._useOIT && defined(scene._alternateSceneRenderer);
@@ -3515,6 +3613,13 @@ export class WebGPUContext extends GraphicsContext {
   get mipmapGenerator(): WebGPUMipmapGenerator {
     if (!this._mipmapGenerator && this._device) {
       this._mipmapGenerator = new WebGPUMipmapGenerator(this._device);
+      // C-R12 (Batch 33) — on device-loss, drop the reference so the
+      // next access rebuilds against the recovered device. Calling
+      // `destroy()` on the stale instance is pointless — its internal
+      // GPUBuffer.destroy() calls fail against the dead device anyway.
+      this.onDeviceInvalidated(() => {
+        this._mipmapGenerator = null;
+      });
     }
     return this._mipmapGenerator!;
   }
@@ -3591,10 +3696,20 @@ export class WebGPUContext extends GraphicsContext {
    * Render bundle manager for caching static geometry draw calls.
    * Pre-encodes draw commands for terrain tiles, buildings, etc.
    * Gives 50-80% CPU reduction for static geometry.
+   *
+   * Overrides `GraphicsContext.renderBundleManager` (default `null`),
+   * so Scene code can `ctx.renderBundleManager` without branching on
+   * backend — WebGL will silently see `null` and skip the snapshot
+   * freezable registration.
    */
-  get renderBundleManager(): WebGPURenderBundleManager | null {
+  override get renderBundleManager(): WebGPURenderBundleManager | null {
     if (!this._renderBundleManager && this._device) {
       this._renderBundleManager = new WebGPURenderBundleManager(this._device);
+      // C-R12 (Batch 33) — bundles hold references to pipelines /
+      // buffers that are invalid after device loss. Drop them.
+      this.onDeviceInvalidated(() => {
+        this._renderBundleManager = null;
+      });
     }
     return this._renderBundleManager;
   }
@@ -3744,6 +3859,10 @@ export class WebGPUContext extends GraphicsContext {
       this.hasFeature("timestamp-query")
     ) {
       this._timestampProfiler = new WebGPUTimestampProfiler(this._device);
+      // C-R12 (Batch 33) — query sets are device-scoped; drop on loss.
+      this.onDeviceInvalidated(() => {
+        this._timestampProfiler = null;
+      });
     }
     return this._timestampProfiler;
   }
@@ -3755,6 +3874,10 @@ export class WebGPUContext extends GraphicsContext {
   get storageBufferPool(): WebGPUStorageBufferPool | null {
     if (!this._storageBufferPool && this._device) {
       this._storageBufferPool = new WebGPUStorageBufferPool(this._device);
+      // C-R12 (Batch 33) — pooled buffers are bound to the dead device.
+      this.onDeviceInvalidated(() => {
+        this._storageBufferPool = null;
+      });
     }
     return this._storageBufferPool;
   }
@@ -3766,6 +3889,10 @@ export class WebGPUContext extends GraphicsContext {
   get indirectDrawManager(): WebGPUIndirectDrawManager | null {
     if (!this._indirectDrawManager && this._device) {
       this._indirectDrawManager = new WebGPUIndirectDrawManager(this._device);
+      // C-R12 (Batch 33) — indirect args staging buffer is device-scoped.
+      this.onDeviceInvalidated(() => {
+        this._indirectDrawManager = null;
+      });
     }
     return this._indirectDrawManager;
   }
@@ -3777,8 +3904,45 @@ export class WebGPUContext extends GraphicsContext {
   get bufferMapper(): WebGPUBufferMapper | null {
     if (!this._bufferMapper && this._device) {
       this._bufferMapper = new WebGPUBufferMapper(this._device);
+      // C-R12 (Batch 33) — staging + readback caches hold device buffers.
+      this.onDeviceInvalidated(() => {
+        this._bufferMapper = null;
+      });
     }
     return this._bufferMapper;
+  }
+
+  /**
+   * Central render-pipeline cache — the single `WebGPURenderPipelineCache`
+   * instance callers should route through when they want pipeline
+   * creation to dedupe across renderers. Lazy-initialized on first
+   * access so the cache isn't built until someone needs it.
+   *
+   * C-R7 (Batch 34). Previously the field was declared but never
+   * instantiated, so every feature renderer built and cached its own
+   * pipelines in its own local Map. Centralising the cache lets
+   * cross-renderer variants (e.g. the same depth-cast layout used by
+   * both CSM and point-light shadows) share a single pipeline.
+   *
+   * The cache key already covers depth/blend/stencil/cull/polygonOffset
+   * (Batch 30) and was extended in Batch 34 to include multisample
+   * count, per-target color format + writeMask, depth format, and
+   * vertex buffer layout signature. Two pipelines that differ in any
+   * of those fields now materialize as distinct pipeline objects.
+   */
+  get webgpuPipelineCache(): WebGPURenderPipelineCache | null {
+    if (!this._webgpuPipelineCache && this._device) {
+      this._webgpuPipelineCache = new WebGPURenderPipelineCache(
+        this._device,
+        this._id,
+      );
+      // C-R12 — drop the pipeline cache on device loss so the next
+      // access rebuilds against the recovered device.
+      this.onDeviceInvalidated(() => {
+        this._webgpuPipelineCache = null;
+      });
+    }
+    return this._webgpuPipelineCache;
   }
 
   /**
@@ -3984,6 +4148,58 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (this._webgpuPipelineCache) {
       this._webgpuPipelineCache.clear();
+    }
+
+    // C-R12 (Batch 33) — drop the module-level placeholder cache for
+    // the dead device. The WeakMap would self-heal once the device
+    // object becomes unreachable, but we can't rely on other holders
+    // (cached shader modules, long-lived closures) releasing it fast
+    // enough. Explicit delete returns the resources to GC immediately.
+    if (this._device) {
+      clearEffectsPlaceholderCacheForDevice(this._device);
+    }
+
+    // C-R12 (Batch 33) — fire the invalidation event so every
+    // subscribed subsystem / feature renderer / per-object cache
+    // drops its stale GPU handles. The context-level caches above
+    // cover the `WebGPUContext`-owned set; subscribers cover
+    // subsystem-owned (`_renderBundleManager`, `_timestampProfiler`,
+    // `_storageBufferPool`, `_mipmapGenerator`) and external
+    // (effect bind-group caches, module-level WeakMaps) state that
+    // the context can't reach directly.
+    this._fireDeviceInvalidated();
+  }
+
+  // C-R12 (Batch 33) — Device-invalidation subscriber registry.
+  private _deviceInvalidatedListeners = new Set<() => void>();
+
+  /**
+   * Subscribe to device-invalidation events.
+   * @see GraphicsContext.onDeviceInvalidated
+   */
+  onDeviceInvalidated(callback: () => void): () => void {
+    this._deviceInvalidatedListeners.add(callback);
+    return () => {
+      this._deviceInvalidatedListeners.delete(callback);
+    };
+  }
+
+  /**
+   * Dispatch the invalidation event to every subscriber. Individual
+   * subscriber errors are caught + logged so one failing subsystem
+   * doesn't block the rest from cleaning up.
+   * @private
+   */
+  private _fireDeviceInvalidated(): void {
+    for (const cb of this._deviceInvalidatedListeners) {
+      try {
+        cb();
+      } catch (e) {
+        console.error(
+          `[WebGPU:ctx-${this.id ?? "?"}] Device-invalidation subscriber threw:`,
+          e,
+        );
+      }
     }
   }
 

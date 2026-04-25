@@ -811,7 +811,20 @@ function initWebGPUShadowMap(shadowMap, frameState) {
     return;
   }
 
-  const device = frameState.context.device;
+  // NEW-3-B (Batch 66) — earlier code read `frameState.context.device`
+  // but some early-frame init paths (entity-driven shadow allocation
+  // before the first scene render) pass through with `frameState.context`
+  // either undefined or pointing at a transient placeholder. Guard
+  // against missing context/device — the next frame's shadow update
+  // will retry once the WebGPU context is fully wired.
+  const context = frameState?.context;
+  if (!context) {
+    return;
+  }
+  const device = context.device ?? context._device;
+  if (!device) {
+    return;
+  }
 
   if (!defined(shadowMap._webgpuCache)) {
     shadowMap._webgpuCache = {};
@@ -1045,7 +1058,9 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
 
   // Update shadow uniforms
   packShadowCastUniforms(cache.uniformData, shadowMap, frameState);
-  const device = frameState.context.device;
+  const context = frameState?.context;
+  const device = context?.device ?? context?._device;
+  if (!device) return;
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
