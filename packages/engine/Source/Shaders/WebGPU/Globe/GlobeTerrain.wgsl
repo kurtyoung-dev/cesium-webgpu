@@ -94,47 +94,80 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // ─── Tile Imagery Uniforms (Group 0, Binding 1) ───
+//
+// Batch 58 — C-R5 imagery layer expansion. Per-layer struct now carries
+// the 5 fields previously WebGL-only: hue, oneOverGamma, split, colorToAlpha
+// (vec4 = rgb + threshold; threshold < 0 disables), cutoutRectangle (vec4 in
+// tile-UV space; zero-area disables). Layout below is alignment-driven:
+// vec4 fields first, then a 4-scalar slot, then a second 4-scalar slot for
+// the new per-layer scalars. 24 floats / 96 bytes per layer × 16 = 1536 B.
 struct ImageryLayer {
   translationAndScale: vec4<f32>,
   texCoordsRect: vec4<f32>,
+  // colorToAlpha.rgb = key color, .a = threshold (< 0 disables — matches
+  // WebGL convention from GlobeSurfaceTileProviderRendering.js)
+  colorToAlpha: vec4<f32>,
+  // cutoutRectangle in tile-UV space (west, south, east, north). When any
+  // component is non-zero AND the rectangle has positive area, fragments
+  // INSIDE this rectangle have the layer's contribution skipped. Zero-area
+  // disables the cutout (matches WebGL `u_dayTextureCutoutRectangles`).
+  cutoutRectangle: vec4<f32>,
   alpha: f32,
   brightness: f32,
   contrast: f32,
   saturation: f32,
+  // Per-layer hue rotation in radians (0 = no change).
+  hue: f32,
+  // 1.0 / layer.gamma — pre-divided on CPU. 1.0 = no change.
+  oneOverGamma: f32,
+  // SplitDirection: -1 = LEFT (only show when fragX < splitPosition),
+  // 0 = NONE (always show), +1 = RIGHT (only show when fragX > splitPosition).
+  split: f32,
+  _layerPad: f32,
 };
 
+// Maximum imagery layers per draw call. WebGPU minimum guarantee for
+// `maxSampledTexturesPerShaderStage` is 16, so 16 is the safe upper bound
+// without device-limit probing. Tiles with >16 layers fall back to multi-pass
+// rendering (handled CPU-side by WebGPUGlobeSurfaceRenderer.createTileCommands).
 struct TileUniforms {
-  layers: array<ImageryLayer, 4>,
+  layers: array<ImageryLayer, 16>,
+  // Per-layer day/night alpha pairs (dayAlpha, nightAlpha) packed two layers
+  // per vec4: dayNightAlpha[i/2].xy = layer (2i)'s pair, .zw = layer (2i+1)'s
+  // pair. Array stride forced to 16 by uniform-address-space rules.
+  dayNightAlpha: array<vec4<f32>, 8>,
+  // Per-layer useWebMercatorT flag (>0.5 → use webMercatorT, otherwise geo V).
+  // Packed 4 layers per vec4: useWebMercatorTLayer[i/4][i%4].
+  useWebMercatorTLayer: array<vec4<f32>, 4>,
   layerCount: f32,
   fogDensity: f32,
   fogOffset: f32,
   fogMinimumBrightness: f32,
   waterMaskTranslationAndScale: vec4<f32>,
   cartographicLimitRect: vec4<f32>,
-  nightFadeDistance: vec2<f32>,
-  dayNightAlpha0: vec2<f32>,
-  dayNightAlpha1: vec2<f32>,
-  dayNightAlpha2: vec2<f32>,
-  dayNightAlpha3: vec2<f32>,
+  nightFadeOutDistance: f32,
+  nightFadeInDistance: f32,
+  verticalExaggeration: f32,
+  verticalExaggerationRelativeHeight: f32,
   // Flags: x=hasWaterMask, y=enableClipping, z=showOceanWaves, w=isSubsequentPass
   flags: vec4<f32>,
-  verticalExaggeration: vec2<f32>,
-  time: f32,
-  // OPEN-5 fix: modulates the fog exponential to match WebGL's
-  // `czm_fog(dist, color, fogColor, scalar)`. Default 0.15.
-  fogVisualDensityScalar: f32,
   // === Night & Ocean Enhancement Parameters ===
   // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
   oceanParams: vec4<f32>,
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
   nightOceanParams: vec4<f32>,
-  // Per-layer flag: >0.5 means use webMercatorT (.z of v_textureCoordinates)
-  // instead of geographic V (.y) for imagery sampling. Matches WebGL's
-  // u_dayTextureUseWebMercatorT. x=layer0, y=layer1, z=layer2, w=layer3.
-  useWebMercatorTLayer: vec4<f32>,
+  time: f32,
+  // OPEN-5 fix: modulates the fog exponential to match WebGL's
+  // `czm_fog(dist, color, fogColor, scalar)`. Default 0.15.
+  fogVisualDensityScalar: f32,
+  // splitPosition in framebuffer pixels (matches @builtin(position).x).
+  // CPU side multiplies `frameState.splitPosition` (a 0..1 fraction) by
+  // `drawingBufferWidth`, mirroring WebGL's `czm_splitPosition` auto-uniform.
+  splitPosition: f32,
+  _tilePad0: f32,
   // Per-tile debug fields (Tier 2 debug). All zero in production:
   //   x = tileLevel — LOD depth integer (read by fragmentDebugLod)
-  //   y = isolateImageryLayer — index 0..3 to render alone, or -1 for all
+  //   y = isolateImageryLayer — index 0..15 to render alone, or -1 for all
   //                              (read by fragmentMain when set)
   //   z, w = reserved for future debug toggles
   debugFields: vec4<f32>,
@@ -151,12 +184,27 @@ struct TileUniforms {
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
 
-// ─── Textures (Group 1): Day imagery ───
-@group(1) @binding(0) var dayTexture0: texture_2d<f32>;
-@group(1) @binding(1) var dayTexture1: texture_2d<f32>;
-@group(1) @binding(2) var dayTexture2: texture_2d<f32>;
-@group(1) @binding(3) var dayTexture3: texture_2d<f32>;
-@group(1) @binding(4) var texSampler: sampler;
+// ─── Textures (Group 1): Day imagery (16 slots — Batch 58, C-R5) ───
+// WebGPU minimum guarantee for `maxSampledTexturesPerShaderStage` is 16, so
+// 16 is the safe ceiling without device-limit probing. Tiles with >16 layers
+// fall back to multi-pass rendering (CPU-side, see createTileCommands).
+@group(1) @binding(0)  var dayTexture0:  texture_2d<f32>;
+@group(1) @binding(1)  var dayTexture1:  texture_2d<f32>;
+@group(1) @binding(2)  var dayTexture2:  texture_2d<f32>;
+@group(1) @binding(3)  var dayTexture3:  texture_2d<f32>;
+@group(1) @binding(4)  var dayTexture4:  texture_2d<f32>;
+@group(1) @binding(5)  var dayTexture5:  texture_2d<f32>;
+@group(1) @binding(6)  var dayTexture6:  texture_2d<f32>;
+@group(1) @binding(7)  var dayTexture7:  texture_2d<f32>;
+@group(1) @binding(8)  var dayTexture8:  texture_2d<f32>;
+@group(1) @binding(9)  var dayTexture9:  texture_2d<f32>;
+@group(1) @binding(10) var dayTexture10: texture_2d<f32>;
+@group(1) @binding(11) var dayTexture11: texture_2d<f32>;
+@group(1) @binding(12) var dayTexture12: texture_2d<f32>;
+@group(1) @binding(13) var dayTexture13: texture_2d<f32>;
+@group(1) @binding(14) var dayTexture14: texture_2d<f32>;
+@group(1) @binding(15) var dayTexture15: texture_2d<f32>;
+@group(1) @binding(16) var texSampler: sampler;
 
 // ─── Water mask + Ocean normal map (Group 2, merged) ───
 @group(2) @binding(0) var waterMaskTexture: texture_2d<f32>;
@@ -463,7 +511,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
 
   // Vertical exaggeration (3D mode only — 2D/Columbus use raw height)
   var exaggeratedPosition = position;
-  let exaggeration = tile.verticalExaggeration.x;
+  let exaggeration = tile.verticalExaggeration;
   if (exaggeration != 1.0 && camera.sceneMode > 2.5) {
     let position3D = position + center3D;
     // DP-H25 — prefer the true geodetic surface normal (from
@@ -485,7 +533,7 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
       camera.ellipsoidRadius > 1.0,
     );
     let surfaceHeight = length(position3D) - ellipsoidR;
-    let relativeHeight = tile.verticalExaggeration.y;
+    let relativeHeight = tile.verticalExaggerationRelativeHeight;
     let newHeight = (surfaceHeight - relativeHeight) * exaggeration + relativeHeight;
     let clampedHeight = max(newHeight, -ellipsoidR * 0.5);
     let offset = ellipsoidNormal * (clampedHeight - surfaceHeight);
@@ -763,6 +811,151 @@ fn adjustColor(color: vec3<f32>, brightness: f32, contrast: f32, saturation: f32
   let gray = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
   c = mix(vec3<f32>(gray), c, saturation);
   return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Batch 58 — per-layer hue rotation in YIQ space. Mirrors `czm_hue` from
+// the WebGL builtin functions (`Source/Shaders/Builtin/Functions/hue.glsl`)
+// — same matrices, same atan2 + chroma decomposition. `adjustment` is in
+// radians; 0 returns the input unchanged.
+fn applyHueShift(rgb: vec3<f32>, adjustment: f32) -> vec3<f32> {
+  let toYIQ = mat3x3<f32>(
+    vec3<f32>(0.299,    0.595716,  0.211456),
+    vec3<f32>(0.587,   -0.274453, -0.522591),
+    vec3<f32>(0.114,   -0.321263,  0.311135),
+  );
+  let toRGB = mat3x3<f32>(
+    vec3<f32>(1.0,  1.0,    1.0),
+    vec3<f32>(0.9563, -0.2721, -1.107),
+    vec3<f32>(0.6210, -0.6474,  1.7046),
+  );
+  let yiq = toYIQ * rgb;
+  let h = atan2(yiq.z, yiq.y) + adjustment;
+  let chroma = sqrt(yiq.z * yiq.z + yiq.y * yiq.y);
+  let outYIQ = vec3<f32>(yiq.x, chroma * cos(h), chroma * sin(h));
+  return toRGB * outYIQ;
+}
+
+// Batch 58 — color-to-alpha keying. Matches WebGL GlobeFS.glsl:
+//   colorDiff = abs(color.rgb - colorToAlpha.rgb);
+//   colorDiff.r = max-component(colorDiff);
+//   alpha = (colorDiff.r < threshold) ? 0 : alpha
+// `colorToAlpha.a` carries the threshold; threshold < 0 (CPU-side default)
+// disables the effect cleanly (no negative threshold can mask anything since
+// `colorDiff.r >= 0`).
+fn applyColorToAlphaKey(texColor: vec4<f32>, colorToAlpha: vec4<f32>) -> f32 {
+  let diff = abs(texColor.rgb - colorToAlpha.rgb);
+  let maxComp = max(diff.r, max(diff.g, diff.b));
+  return select(texColor.a, 0.0, maxComp < colorToAlpha.a);
+}
+
+// Batch 58 — cutout rectangle test in tile-UV space. Returns 1.0 (keep) when
+// the texel is OUTSIDE the cutout rectangle, 0.0 (drop) when inside.
+// Disabled (returns 1.0) when the rectangle has zero area — matches the WebGL
+// CPU-side default of `Cartesian4.ZERO` for unset cutouts.
+fn applyCutoutMask(tileUV: vec2<f32>, cutout: vec4<f32>) -> f32 {
+  let hasCutout = (cutout.z - cutout.x) > 0.0 && (cutout.w - cutout.y) > 0.0;
+  let inside = tileUV.x >= cutout.x && tileUV.x <= cutout.z &&
+               tileUV.y >= cutout.y && tileUV.y <= cutout.w;
+  return select(1.0, 0.0, hasCutout && inside);
+}
+
+// Batch 58 — split-direction screen-space mask. Mirrors WebGL GlobeFS.glsl:
+//   if (split < 0 && fragX > splitPos) alpha = 0;
+//   else if (split > 0 && fragX < splitPos) alpha = 0;
+// Both `fragX` and `splitPositionPx` are framebuffer pixel coords. The CPU
+// packer writes `frameState.splitPosition * drawingBufferWidth` into
+// `tile.splitPosition` so it matches `@builtin(position).x` (gl_FragCoord).
+fn applySplitMask(splitDir: f32, fragX: f32, splitPositionPx: f32) -> f32 {
+  // splitDir == 0 → no split, always show.
+  if (splitDir == 0.0) {
+    return 1.0;
+  }
+  // splitDir < 0 (LEFT): keep when fragX <= splitPositionPx.
+  // splitDir > 0 (RIGHT): keep when fragX >= splitPositionPx.
+  if (splitDir < 0.0) {
+    return select(0.0, 1.0, fragX <= splitPositionPx);
+  }
+  return select(0.0, 1.0, fragX >= splitPositionPx);
+}
+
+// Batch 58 — composite ONE imagery layer onto the running color/alpha pair.
+// Effect application order matches WebGL `sampleAndBlend` in GlobeFS.glsl:
+//   1. colorToAlpha          (key-color → alpha=0)
+//   2. gamma                 (color = pow(color, 1/gamma))
+//   3. split                 (alpha=0 outside the active half)
+//   4. cutout                (alpha=0 inside cutout rectangle — applied as
+//                             an alpha mask here vs WebGL's branchFreeTernary
+//                             at the call site; effect is identical)
+//   5. brightness → contrast → hue → saturation (WebGL sequence)
+// Returns updated (color, alpha) and the post-effects "adjusted" color so
+// callers can route it through `applyNightLightsEmission` for emission.
+struct LayerComposite {
+  color: vec3<f32>,
+  alpha: f32,
+  adjustedColor: vec3<f32>,  // post-effects, used for night-lights emission
+};
+
+fn applyImageryLayer(
+  prevColor: vec3<f32>,
+  prevAlpha: f32,
+  texSample: vec4<f32>,
+  tileUV: vec2<f32>,
+  layer: ImageryLayer,
+  layerMask: f32,
+  fragX: f32,
+  splitPositionPx: f32,
+  dayNightAlpha: vec2<f32>,
+  dayFade: f32,
+) -> LayerComposite {
+  // 1. colorToAlpha — drop alpha to 0 where the texel matches the key color.
+  var sampleAlpha = texSample.a;
+  // colorToAlpha.a < 0 disables (default sentinel from CPU packer).
+  if (layer.colorToAlpha.a >= 0.0) {
+    sampleAlpha = applyColorToAlphaKey(texSample, layer.colorToAlpha);
+  }
+
+  // 2. gamma correction (WebGL applies pow before split + brightness/contrast).
+  var color = texSample.rgb;
+  if (abs(layer.oneOverGamma - 1.0) > 0.0001) {
+    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(layer.oneOverGamma));
+  }
+
+  // 3. split — mask the layer's contribution to one half of the screen.
+  let splitMask = applySplitMask(layer.split, fragX, splitPositionPx);
+
+  // 4. cutout — drop the layer inside its cutoutRectangle.
+  let cutoutMask = applyCutoutMask(tileUV, layer.cutoutRectangle);
+
+  // 5. brightness → contrast → hue → saturation. Matches WebGL ordering in
+  // GlobeFS.glsl `sampleAndBlend` (which applies the four shifts in that
+  // exact sequence). Brightness and contrast match `adjustColor` semantics
+  // but we inline them here so the hue rotation slots between contrast and
+  // saturation (rather than at the very end as in `adjustColor`).
+  var adjusted = color * layer.brightness;
+  adjusted = (adjusted - 0.5) * layer.contrast + 0.5;
+  if (abs(layer.hue) > 0.0001) {
+    adjusted = applyHueShift(adjusted, layer.hue);
+  }
+  let gray = dot(adjusted, vec3<f32>(0.2126, 0.7152, 0.0722));
+  adjusted = mix(vec3<f32>(gray), adjusted, layer.saturation);
+  adjusted = clamp(adjusted, vec3<f32>(0.0), vec3<f32>(1.0));
+
+  // Compose final alpha contribution: layer alpha × tex alpha × tile-coord
+  // mask × day/night mix × isolate mask × split mask × cutout mask.
+  let texCoordsMask = texCoordsAlpha(tileUV, layer.texCoordsRect);
+  let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
+  let effectiveAlpha = layerMask
+                       * layer.alpha
+                       * sampleAlpha
+                       * texCoordsMask
+                       * dayNightAlphaValue
+                       * splitMask
+                       * cutoutMask;
+
+  let outColor = mix(prevColor, adjusted, effectiveAlpha);
+  let outAlpha = max(prevAlpha, effectiveAlpha);
+
+  return LayerComposite(outColor, outAlpha, adjusted);
 }
 
 // ─── Perceptual luminance ───
@@ -1220,12 +1413,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let geoUV = input.v_textureCoordinates.xy;
   let webMercT = input.v_textureCoordinates.z;
 
-  // Helper: select geographic V or webMercatorT per layer
-  // Matches WebGL's u_dayTextureUseWebMercatorT behavior
-  let useWebMerc = tile.useWebMercatorTLayer;
+  // Helper: select geographic V or webMercatorT per layer.
+  // Matches WebGL's u_dayTextureUseWebMercatorT. Batch 58 — packed 4 layers
+  // per vec4 (`useWebMercatorTLayer[i/4][i%4]`); read all 16 here so the
+  // per-layer blocks below stay branch-light.
 
   // UV debug visualization: Red=U, Green=V, Blue=webMercT
-  // Triggered via tile._pad4 > 99990.0
+  // Triggered via tile.time > 99990.0 (debug sentinel)
   if (tile.time > 99990.0) {
     return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
   }
@@ -1338,62 +1532,191 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Inverse for night-side effects
   let nightBlend = 1.0 - dayFade;
 
-  // ─── Composite imagery layers (per-layer webMercator UV selection) ───
+  // ─── Composite imagery layers ───
+  // Batch 58 (C-R5): widened from 4 to 16 layer slots. Each layer block
+  // applies the same effect chain via `applyImageryLayer`:
+  //   colorToAlpha → gamma → split → cutout → brightness/contrast/saturation/hue
+  // The 16 blocks are unrolled because WGSL forbids dynamic indexing of
+  // texture bindings; the per-pass `count` gate skips inactive slots so
+  // the cost of the unused branches is one comparison + a structurally-zero
+  // mask in the helper.
   let count = u32(tile.layerCount);
 
   // Tier 2 debug: imagery layer isolation. Negative => all layers render
-  // (production). 0..3 => only that layer's slot in the current pass
-  // contributes to the composite. Implemented as a per-layer alpha mask
-  // so the loop structure and lighting math stay untouched.
+  // (production). 0..15 => only that layer's slot in the current pass
+  // contributes to the composite.
   let isolate = i32(tile.debugFields.y);
-  let mask0 = select(0.0, 1.0, isolate < 0 || isolate == 0);
-  let mask1 = select(0.0, 1.0, isolate < 0 || isolate == 1);
-  let mask2 = select(0.0, 1.0, isolate < 0 || isolate == 2);
-  let mask3 = select(0.0, 1.0, isolate < 0 || isolate == 3);
 
+  // Pixel-space split position (in framebuffer coords, matches @builtin(position).x).
+  let splitPositionPx = tile.splitPosition;
+  let fragX = input.position.x;
+
+  // Per-layer composite block — one per binding because WGSL can't index
+  // textures dynamically. The dayNightAlpha pairs are packed two per vec4:
+  //   layers 0..1 → tile.dayNightAlpha[0].(xy, zw)
+  //   layers 2..3 → tile.dayNightAlpha[1].(xy, zw)
+  //   …
+  //   layers 14..15 → tile.dayNightAlpha[7].(xy, zw)
+  // useWebMercatorT packed 4-per-vec4: tile.useWebMercatorTLayer[i/4][i%4].
   if (count >= 1u) {
-    let layer0 = tile.layers[0];
-    let uv0 = selectLayerUV(geoUV, webMercT, useWebMerc.x);
-    let tex0 = sampleImagery(dayTexture0, texSampler, uv0, layer0);
-    let adj0 = adjustColor(tex0.rgb, layer0.brightness, layer0.contrast, layer0.saturation);
-    let dna0 = tile.dayNightAlpha0;
-    let effectiveAlpha0 = mask0 * layer0.alpha * tex0.a * texCoordsAlpha(uv0, layer0.texCoordsRect) * mix(dna0.y, dna0.x, dayFade);
-    color = mix(color, adj0, effectiveAlpha0);
-    alpha = max(alpha, effectiveAlpha0);
-    color = applyNightLightsEmission(color, adj0, nightBlend, dna0.y, dna0.x);
+    let layer = tile.layers[0];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].x);
+    let tex = sampleImagery(dayTexture0, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[0].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 0);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
   if (count >= 2u) {
-    let layer1 = tile.layers[1];
-    let uv1 = selectLayerUV(geoUV, webMercT, useWebMerc.y);
-    let tex1 = sampleImagery(dayTexture1, texSampler, uv1, layer1);
-    let adj1 = adjustColor(tex1.rgb, layer1.brightness, layer1.contrast, layer1.saturation);
-    let dna1 = tile.dayNightAlpha1;
-    let effectiveAlpha1 = mask1 * layer1.alpha * tex1.a * texCoordsAlpha(uv1, layer1.texCoordsRect) * mix(dna1.y, dna1.x, dayFade);
-    color = mix(color, adj1, effectiveAlpha1);
-    alpha = max(alpha, effectiveAlpha1);
-    color = applyNightLightsEmission(color, adj1, nightBlend, dna1.y, dna1.x);
+    let layer = tile.layers[1];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].y);
+    let tex = sampleImagery(dayTexture1, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[0].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 1);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
   if (count >= 3u) {
-    let layer2 = tile.layers[2];
-    let uv2 = selectLayerUV(geoUV, webMercT, useWebMerc.z);
-    let tex2 = sampleImagery(dayTexture2, texSampler, uv2, layer2);
-    let adj2 = adjustColor(tex2.rgb, layer2.brightness, layer2.contrast, layer2.saturation);
-    let dna2 = tile.dayNightAlpha2;
-    let effectiveAlpha2 = mask2 * layer2.alpha * tex2.a * texCoordsAlpha(uv2, layer2.texCoordsRect) * mix(dna2.y, dna2.x, dayFade);
-    color = mix(color, adj2, effectiveAlpha2);
-    alpha = max(alpha, effectiveAlpha2);
-    color = applyNightLightsEmission(color, adj2, nightBlend, dna2.y, dna2.x);
+    let layer = tile.layers[2];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].z);
+    let tex = sampleImagery(dayTexture2, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[1].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 2);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
   if (count >= 4u) {
-    let layer3 = tile.layers[3];
-    let uv3 = selectLayerUV(geoUV, webMercT, useWebMerc.w);
-    let tex3 = sampleImagery(dayTexture3, texSampler, uv3, layer3);
-    let adj3 = adjustColor(tex3.rgb, layer3.brightness, layer3.contrast, layer3.saturation);
-    let dna3 = tile.dayNightAlpha3;
-    let effectiveAlpha3 = mask3 * layer3.alpha * tex3.a * texCoordsAlpha(uv3, layer3.texCoordsRect) * mix(dna3.y, dna3.x, dayFade);
-    color = mix(color, adj3, effectiveAlpha3);
-    alpha = max(alpha, effectiveAlpha3);
-    color = applyNightLightsEmission(color, adj3, nightBlend, dna3.y, dna3.x);
+    let layer = tile.layers[3];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[0].w);
+    let tex = sampleImagery(dayTexture3, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[1].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 3);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 5u) {
+    let layer = tile.layers[4];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].x);
+    let tex = sampleImagery(dayTexture4, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[2].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 4);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 6u) {
+    let layer = tile.layers[5];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].y);
+    let tex = sampleImagery(dayTexture5, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[2].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 5);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 7u) {
+    let layer = tile.layers[6];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].z);
+    let tex = sampleImagery(dayTexture6, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[3].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 6);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 8u) {
+    let layer = tile.layers[7];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[1].w);
+    let tex = sampleImagery(dayTexture7, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[3].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 7);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 9u) {
+    let layer = tile.layers[8];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].x);
+    let tex = sampleImagery(dayTexture8, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[4].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 8);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 10u) {
+    let layer = tile.layers[9];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].y);
+    let tex = sampleImagery(dayTexture9, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[4].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 9);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 11u) {
+    let layer = tile.layers[10];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].z);
+    let tex = sampleImagery(dayTexture10, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[5].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 10);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 12u) {
+    let layer = tile.layers[11];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[2].w);
+    let tex = sampleImagery(dayTexture11, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[5].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 11);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 13u) {
+    let layer = tile.layers[12];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].x);
+    let tex = sampleImagery(dayTexture12, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[6].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 12);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 14u) {
+    let layer = tile.layers[13];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].y);
+    let tex = sampleImagery(dayTexture13, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[6].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 13);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 15u) {
+    let layer = tile.layers[14];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].z);
+    let tex = sampleImagery(dayTexture14, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[7].xy;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 14);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+  }
+  if (count >= 16u) {
+    let layer = tile.layers[15];
+    let uv = selectLayerUV(geoUV, webMercT, tile.useWebMercatorTLayer[3].w);
+    let tex = sampleImagery(dayTexture15, texSampler, uv, layer);
+    let dna = tile.dayNightAlpha[7].zw;
+    let mask = select(0.0, 1.0, isolate < 0 || isolate == 15);
+    let r = applyImageryLayer(color, alpha, tex, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    color = r.color; alpha = r.alpha;
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
 
   // Subsequent passes only apply imagery — skip all effects

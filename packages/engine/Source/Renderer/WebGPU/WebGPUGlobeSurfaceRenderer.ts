@@ -63,25 +63,75 @@ import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor
 const CAMERA_UNIFORM_FLOATS = 116;
 const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
-// TileUniforms: layers(4×12=48) + layerCount(1) + fog(3) +
-//   waterMaskTS(4) + cartLimitRect(4) + nightFade(2) +
-//   dayNightAlpha0-3(4×2=8) + flags(4) + exaggeration(2) + time(1) + pad(1)
-//   + oceanParams(4) + nightOceanParams(4) + useWebMercatorTLayer(4)
-//   + debugFields(4) + hsbShift(4) = 100 floats
+// TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
 //
-// debugFields layout (offsets 92-95):
-//   .x = tileLevel (LOD depth integer, read by fragmentDebugLod)
-//   .y = isolateImageryLayer (-1 or 0..3, read by fragmentMain)
-//   .z, .w = reserved
-// hsbShift layout (offsets 96-99) — DP-H24, mirrors WebGL GlobeFS.glsl
-// `u_hsbShift`. Sourced from `tileProvider.hueShift / saturationShift /
-// brightnessShift`. Shader skips the HSB round-trip when all three are
-// within ±0.001 of zero, so the default case is free.
-const TILE_UNIFORM_FLOATS = 100;
+// Per-layer struct widened from 12 to 24 floats (96 bytes) to carry the 5
+// new effect fields previously WebGL-only: hue, oneOverGamma, split,
+// colorToAlpha (vec4), cutoutRectangle (vec4). Layer cap raised from 4 to
+// 16 to hit WebGPU's `maxSampledTexturesPerShaderStage` floor without
+// device-limit probing. Tiles with >16 imagery layers continue to fall
+// back to multi-pass rendering (createTileCommands handles the slicing).
+//
+// Float offsets (each row in this table is 4 bytes × stated count):
+//   0   - 383  layers[16]                (16 × 24 = 384)
+//   384 - 415  dayNightAlpha[8]<vec4>     (32; packed two layers per vec4 — see WGSL note)
+//   416 - 431  useWebMercatorTLayer[4]<vec4> (16; 4 layers per vec4)
+//   432        layerCount
+//   433        fogDensity
+//   434        fogOffset
+//   435        fogMinimumBrightness
+//   436 - 439  waterMaskTranslationAndScale (vec4)
+//   440 - 443  cartographicLimitRect (vec4)
+//   444        nightFadeOutDistance
+//   445        nightFadeInDistance
+//   446        verticalExaggeration
+//   447        verticalExaggerationRelativeHeight
+//   448 - 451  flags (vec4: hasWaterMask, enableClipping, showOceanWaves, isSubsequentPass)
+//   452 - 455  oceanParams (vec4)
+//   456 - 459  nightOceanParams (vec4)
+//   460        time
+//   461        fogVisualDensityScalar
+//   462        splitPosition (in framebuffer pixels — frameState.splitPosition × drawingBufferWidth)
+//   463        _pad
+//   464 - 467  debugFields (vec4)
+//   468 - 471  hsbShift (vec4)
+//
+// Total = 472 floats = 1888 bytes. Well under WebGPU's
+// `maxUniformBufferBindingSize` floor (16 KiB).
+const TILE_UNIFORM_FLOATS = 472;
 const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
-// Max imagery layers per tile in single draw call
-const MAX_IMAGERY_LAYERS = 4;
+// Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
+// vec4 colorToAlpha + vec4 cutoutRectangle + (alpha,brightness,contrast,saturation)
+// + (hue, oneOverGamma, split, _pad). 4×4 + 4 + 4 = 24 floats.
+const LAYER_FLOATS = 24;
+
+// Float offsets within TileUniforms — keep in sync with the WGSL struct.
+const LAYERS_OFFSET = 0;
+const DAY_NIGHT_ALPHA_OFFSET = 384; // 16 × 24
+const USE_WEB_MERC_OFFSET = 416; // + 8 vec4 packed pairs
+const LAYER_COUNT_OFFSET = 432;
+const FOG_DENSITY_OFFSET = 433;
+const FOG_OFFSET_OFFSET = 434;
+const FOG_MIN_BRIGHTNESS_OFFSET = 435;
+const WATER_MASK_TS_OFFSET = 436;
+const CART_LIMIT_RECT_OFFSET = 440;
+const NIGHT_FADE_OUT_OFFSET = 444;
+const NIGHT_FADE_IN_OFFSET = 445;
+const VERT_EXAG_OFFSET = 446;
+const VERT_EXAG_REL_HEIGHT_OFFSET = 447;
+const FLAGS_OFFSET = 448;
+const OCEAN_PARAMS_OFFSET = 452;
+const NIGHT_OCEAN_PARAMS_OFFSET = 456;
+const TIME_OFFSET = 460;
+const FOG_VIS_DENSITY_OFFSET = 461;
+const SPLIT_POSITION_OFFSET = 462;
+const DEBUG_FIELDS_OFFSET = 464;
+const HSB_SHIFT_OFFSET = 468;
+
+// Max imagery layers per tile in a single draw call (16 — WebGPU minimum
+// `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.
+const MAX_IMAGERY_LAYERS = 16;
 
 /**
  * Resolve an `ImageryLayer` property that the public API documents as either a
@@ -743,7 +793,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       ],
     );
 
-    // Group 1: Day imagery textures (4) + shared sampler at binding 4
+    // Group 1: Day imagery textures (16) + shared sampler at binding 16.
+    // Batch 58 (C-R5): bumped from 4 to 16 — WebGPU's minimum-guaranteed
+    // `maxSampledTexturesPerShaderStage` is 16 so this is safe across all
+    // compliant devices without probing limits.
     this._bindGroupLayout1 = makeBindGroupLayout(
       device,
       "Globe terrain textures layout",
@@ -752,7 +805,19 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         texture(1, Stage.FRAGMENT),
         texture(2, Stage.FRAGMENT),
         texture(3, Stage.FRAGMENT),
-        sampler(4, Stage.FRAGMENT),
+        texture(4, Stage.FRAGMENT),
+        texture(5, Stage.FRAGMENT),
+        texture(6, Stage.FRAGMENT),
+        texture(7, Stage.FRAGMENT),
+        texture(8, Stage.FRAGMENT),
+        texture(9, Stage.FRAGMENT),
+        texture(10, Stage.FRAGMENT),
+        texture(11, Stage.FRAGMENT),
+        texture(12, Stage.FRAGMENT),
+        texture(13, Stage.FRAGMENT),
+        texture(14, Stage.FRAGMENT),
+        texture(15, Stage.FRAGMENT),
+        sampler(16, Stage.FRAGMENT),
       ],
     );
 
@@ -1256,6 +1321,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     if (probeOn) {
       this._diagTileCount++;
     }
+    //>>includeStart('debug', pragmas.debug);
     if (probeOn && this._diagTileCount <= 4) {
       const imgLen = imageryCollection ? imageryCollection.length : 0;
       const rect = tile.rectangle;
@@ -1310,6 +1376,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         );
       }
     }
+    //>>includeEnd('debug');
 
     // Hot-path discipline: read all per-frame debug flags once *outside*
     // the per-pass loop. The four fragment debug modes are mutually
@@ -2388,7 +2455,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     const u32 = this._tileUniformU32View;
     data.fill(0);
 
-    // ─── Imagery layers (offsets 0-47) ───
+    // ─── Imagery layers (Batch 58, C-R5) ───
+    // Per-layer struct = 24 floats / 96 bytes. Slots 4-15 are filled with
+    // sensible defaults (alpha=0 below) so the shader's `count` gate is
+    // the only thing keeping unused slots from contributing.
     let layerCount = 0;
 
     for (
@@ -2402,7 +2472,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       const imagery = tileImagery.readyImagery;
       if (!imagery.imageryLayer) continue;
 
-      const baseOffset = layerCount * 12;
+      const baseOffset = LAYERS_OFFSET + layerCount * LAYER_FLOATS;
 
       // translationAndScale (vec4) — uses the cached value directly.
       // When useWebMercatorT=true, the cached values are in Mercator-native
@@ -2418,9 +2488,6 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         data[baseOffset + 3] = 1;
       }
 
-      // useWebMercatorT per layer (offsets 88-91)
-      data[88 + layerCount] = tileImagery.useWebMercatorT ? 1.0 : 0.0;
-
       // texCoordsRectangle (vec4)
       const rect = tileImagery.textureCoordinateRectangle;
       if (rect) {
@@ -2434,33 +2501,97 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       }
 
       const layer = imagery.imageryLayer;
+
+      // colorToAlpha (vec4: rgb + threshold). Default sentinel (.a < 0)
+      // disables the effect — the shader skips the key-color compare for
+      // layers with `colorToAlpha.a < 0`. Mirrors WebGL's CPU-side default
+      // in GlobeSurfaceTileProviderRendering.js where `colorToAlpha.w = -1`
+      // when `imageryLayer.colorToAlpha` is undefined.
+      const cta = (
+        layer as unknown as {
+          colorToAlpha?: { red: number; green: number; blue: number };
+          colorToAlphaThreshold?: number;
+        }
+      ).colorToAlpha;
+      const ctaThreshold = (
+        layer as unknown as { colorToAlphaThreshold?: number }
+      ).colorToAlphaThreshold;
+      if (cta && typeof ctaThreshold === "number" && ctaThreshold > 0.0) {
+        data[baseOffset + 8] = cta.red ?? 0;
+        data[baseOffset + 9] = cta.green ?? 0;
+        data[baseOffset + 10] = cta.blue ?? 0;
+        data[baseOffset + 11] = ctaThreshold;
+      } else {
+        // Disable: threshold < 0 is the WebGL convention.
+        data[baseOffset + 8] = 0;
+        data[baseOffset + 9] = 0;
+        data[baseOffset + 10] = 0;
+        data[baseOffset + 11] = -1.0;
+      }
+
+      // cutoutRectangle (vec4 in tile-UV space). Packed as
+      // (west_uv, south_uv, east_uv, north_uv) — see WebGL CPU code in
+      // GlobeSurfaceTileProviderRendering.js. When `imageryLayer.cutoutRectangle`
+      // is undefined the WebGL path writes Cartesian4.ZERO which the shader
+      // detects as "zero area → disabled".
+      const cutoutRect = (
+        layer as unknown as {
+          cutoutRectangle?: {
+            west: number;
+            south: number;
+            east: number;
+            north: number;
+          };
+        }
+      ).cutoutRectangle;
+      if (cutoutRect && tile.rectangle) {
+        const tw = tile.rectangle.width || 1.0;
+        const th = tile.rectangle.height || 1.0;
+        const invW = 1.0 / tw;
+        const invH = 1.0 / th;
+        // Convert from cartographic radians to tile-UV [0..1].
+        data[baseOffset + 12] =
+          (cutoutRect.west - tile.rectangle.west) * invW;
+        data[baseOffset + 13] =
+          (cutoutRect.south - tile.rectangle.south) * invH;
+        data[baseOffset + 14] =
+          (cutoutRect.east - tile.rectangle.west) * invW;
+        data[baseOffset + 15] =
+          (cutoutRect.north - tile.rectangle.south) * invH;
+      } else {
+        data[baseOffset + 12] = 0;
+        data[baseOffset + 13] = 0;
+        data[baseOffset + 14] = 0;
+        data[baseOffset + 15] = 0;
+      }
+
       // Several of these properties are documented as scalar-OR-callback
       // (ImageryLayer JSDoc). Writing a Function into a Float32Array yields
       // NaN, which propagates through the imagery blend and makes the entire
       // layer disappear. Resolve callbacks against the tile rectangle so
       // dynamic-alpha use cases (hover-fade, time-of-day fade) work on WebGPU.
-      data[baseOffset + 8] = resolveImageryLayerValue(
+      data[baseOffset + 16] = resolveImageryLayerValue(
         layer.alpha,
         1.0,
         frameState,
         layer,
         tile,
       );
-      data[baseOffset + 9] = resolveImageryLayerValue(
+      data[baseOffset + 17] = resolveImageryLayerValue(
         layer.brightness,
         1.0,
         frameState,
         layer,
         tile,
       );
-      data[baseOffset + 10] = resolveImageryLayerValue(
+      data[baseOffset + 18] = resolveImageryLayerValue(
         layer.contrast,
         1.0,
         frameState,
         layer,
         tile,
       );
-      data[baseOffset + 11] = resolveImageryLayerValue(
+      data[baseOffset + 19] = resolveImageryLayerValue(
         layer.saturation,
         1.0,
         frameState,
@@ -2468,16 +2599,60 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         tile,
       );
 
-      // Day/night alpha at offsets 62+ (packed per layer)
-      const dnOffset = 62 + layerCount * 2;
-      data[dnOffset] = resolveImageryLayerValue(
+      // Batch 58 — new per-layer scalars: hue (radians), oneOverGamma
+      // (pre-divided so shader avoids a divide), split (-1/0/+1 from
+      // SplitDirection enum), and a trailing pad to keep the layer struct
+      // 16-byte aligned for WGSL uniform-address-space rules.
+      const hueResolved = resolveImageryLayerValue(
+        (layer as unknown as { hue?: unknown }).hue,
+        0.0,
+        frameState,
+        layer,
+        tile,
+      );
+      const gammaResolved = resolveImageryLayerValue(
+        (layer as unknown as { gamma?: unknown }).gamma,
+        1.0,
+        frameState,
+        layer,
+        tile,
+      );
+      const splitResolved = resolveImageryLayerValue(
+        (layer as unknown as { splitDirection?: unknown }).splitDirection,
+        0.0,
+        frameState,
+        layer,
+        tile,
+      );
+      data[baseOffset + 20] = hueResolved;
+      // Guard against 1/0 if a caller sets gamma=0; the shader skips the
+      // pow when |oneOverGamma - 1| < 1e-4 so default fast-path is free.
+      data[baseOffset + 21] = gammaResolved !== 0 ? 1.0 / gammaResolved : 1.0;
+      data[baseOffset + 22] = splitResolved;
+      data[baseOffset + 23] = 0;
+
+      // useWebMercatorT (packed 4 layers per vec4). Bit i in the layer
+      // sequence maps to component (i % 4) of vec4 (i / 4).
+      const useWMVecIndex = layerCount >> 2;
+      const useWMComp = layerCount & 3;
+      data[USE_WEB_MERC_OFFSET + useWMVecIndex * 4 + useWMComp] =
+        tileImagery.useWebMercatorT ? 1.0 : 0.0;
+
+      // dayNightAlpha (packed 2 layers per vec4): pair (i*2..i*2+1) lives
+      // in dayNightAlpha[i/2].xy / .zw → vec4 index = layerCount/2,
+      // half = layerCount%2 (0 → xy, 1 → zw).
+      const dnVecIndex = layerCount >> 1;
+      const dnHalf = layerCount & 1;
+      const dnFloatBase =
+        DAY_NIGHT_ALPHA_OFFSET + dnVecIndex * 4 + dnHalf * 2;
+      data[dnFloatBase + 0] = resolveImageryLayerValue(
         layer.dayAlpha,
         1.0,
         frameState,
         layer,
         tile,
       );
-      data[dnOffset + 1] = resolveImageryLayerValue(
+      data[dnFloatBase + 1] = resolveImageryLayerValue(
         layer.nightAlpha,
         1.0,
         frameState,
@@ -2488,11 +2663,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       layerCount++;
     }
 
-    // ─── layerCount (f32 at float offset 48) ───
-    // Changed from u32 to f32 to diagnose uniform buffer data transfer issue.
-    // If the globe turns yellow with this change, the data IS reaching the
-    // shader but the u32 interpretation was wrong.
-    data[48] = layerCount;
+    // ─── layerCount (f32 at LAYER_COUNT_OFFSET) ───
+    // Stored as f32 (read in WGSL via `u32(tile.layerCount)`) — matches the
+    // historical convention used to diagnose past UB transfer issues.
+    data[LAYER_COUNT_OFFSET] = layerCount;
 
     //>>includeStart('debug', pragmas.debug);
     // Dedicated diagnostic — logs EVERY frame (throttled to 1/sec) even
@@ -2546,9 +2720,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           density = density * (0.5 + weather.humidity);
         }
       }
-      data[49] = density;
-      data[50] = fogEnabled ? (frameState.fog.offset ?? 0.0) : 0.0;
-      data[51] = frameState.fog.minimumBrightness ?? 0.03;
+      data[FOG_DENSITY_OFFSET] = density;
+      data[FOG_OFFSET_OFFSET] = fogEnabled
+        ? (frameState.fog.offset ?? 0.0)
+        : 0.0;
+      data[FOG_MIN_BRIGHTNESS_OFFSET] =
+        frameState.fog.minimumBrightness ?? 0.03;
       //>>includeStart('debug', pragmas.debug);
       // Dedicated throttle (independent of the tile-center3D log) so we
       // always see fog state at camera altitude transitions. Logs once
@@ -2566,7 +2743,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         console.log(
           `[WebGPU:GlobeTile] fog density=${density.toExponential(3)} ` +
             `rawDensity=${(frameState.fog.density ?? 0).toExponential(3)} ` +
-            `offset=${(data[50] ?? 0).toExponential(3)} ` +
+            `offset=${(data[FOG_OFFSET_OFFSET] ?? 0).toExponential(3)} ` +
             `minBrightness=${(frameState.fog.minimumBrightness ?? 0.03).toFixed(3)} ` +
             `enabled=${frameState.fog.enabled} gated=${fogEnabled} ` +
             `cameraHeight=${(cameraHeight / 1000).toFixed(0)}km`,
@@ -2574,7 +2751,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       }
       //>>includeEnd('debug');
     } else {
-      data[51] = 0.03;
+      data[FOG_MIN_BRIGHTNESS_OFFSET] = 0.03;
       //>>includeStart('debug', pragmas.debug);
       // Called once — frameState.fog is missing entirely. That means
       // Scene.fog.update() never ran for this frame, which would fully
@@ -2592,50 +2769,59 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       //>>includeEnd('debug');
     }
 
-    // ─── Water mask translation and scale (offsets 52-55, vec4) ───
+    // ─── Water mask translation and scale (vec4) ───
     if (!isSubsequentPass) {
       const wmTS = surfaceTile.waterMaskTranslationAndScale;
       if (wmTS) {
-        data[52] = wmTS.x;
-        data[53] = wmTS.y;
-        data[54] = wmTS.z;
-        data[55] = wmTS.w;
+        data[WATER_MASK_TS_OFFSET + 0] = wmTS.x;
+        data[WATER_MASK_TS_OFFSET + 1] = wmTS.y;
+        data[WATER_MASK_TS_OFFSET + 2] = wmTS.z;
+        data[WATER_MASK_TS_OFFSET + 3] = wmTS.w;
       }
     }
 
-    // ─── Cartographic limit rectangle (offsets 56-59, vec4) ───
+    // ─── Cartographic limit rectangle (vec4) ───
     if (tileProvider && tileProvider.cartographicLimitRectangle) {
       const limitRect = tileProvider.cartographicLimitRectangle;
       const tileRect = tile.rectangle;
       if (tileRect) {
         const invW = 1.0 / tileRect.width;
         const invH = 1.0 / tileRect.height;
-        data[56] = (limitRect.west - tileRect.west) * invW;
-        data[57] = (limitRect.south - tileRect.south) * invH;
-        data[58] = (limitRect.east - tileRect.west) * invW;
-        data[59] = (limitRect.north - tileRect.south) * invH;
+        data[CART_LIMIT_RECT_OFFSET + 0] =
+          (limitRect.west - tileRect.west) * invW;
+        data[CART_LIMIT_RECT_OFFSET + 1] =
+          (limitRect.south - tileRect.south) * invH;
+        data[CART_LIMIT_RECT_OFFSET + 2] =
+          (limitRect.east - tileRect.west) * invW;
+        data[CART_LIMIT_RECT_OFFSET + 3] =
+          (limitRect.north - tileRect.south) * invH;
       }
     } else {
       // No clipping — full tile visible
-      data[58] = 1.0;
-      data[59] = 1.0;
+      data[CART_LIMIT_RECT_OFFSET + 2] = 1.0;
+      data[CART_LIMIT_RECT_OFFSET + 3] = 1.0;
     }
 
-    // ─── Night fade distance (offsets 60-61, vec2) ───
+    // ─── Night fade distances (two scalars) ───
     if (tileProvider) {
-      data[60] = tileProvider.nightFadeOutDistance ?? 10000000.0;
-      data[61] = tileProvider.nightFadeInDistance ?? 50000000.0;
+      data[NIGHT_FADE_OUT_OFFSET] =
+        tileProvider.nightFadeOutDistance ?? 10000000.0;
+      data[NIGHT_FADE_IN_OFFSET] =
+        tileProvider.nightFadeInDistance ?? 50000000.0;
     } else {
-      data[60] = 10000000.0;
-      data[61] = 50000000.0;
+      data[NIGHT_FADE_OUT_OFFSET] = 10000000.0;
+      data[NIGHT_FADE_IN_OFFSET] = 50000000.0;
     }
 
-    // dayNightAlpha0-3 already set above during layer iteration (offsets 62-69)
+    // ─── Vertical exaggeration (two scalars) ───
+    data[VERT_EXAG_OFFSET] = frameState?.verticalExaggeration ?? 1.0;
+    data[VERT_EXAG_REL_HEIGHT_OFFSET] =
+      frameState?.verticalExaggerationRelativeHeight ?? 0.0;
 
-    // ─── Padding (offsets 70-71) ───
-    // Required for vec4 alignment of flags
+    // dayNightAlpha[8] vec4 array already set above during layer iteration.
+    // useWebMercatorTLayer[4] vec4 array also set during layer iteration.
 
-    // ─── Flags (offsets 72-75, vec4) ───
+    // ─── Flags (vec4) ───
     const hasWaterMask =
       !isSubsequentPass &&
       tileProvider &&
@@ -2650,16 +2836,23 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       tileProvider.showWaterEffect &&
       tileProvider.oceanNormalMap !== undefined;
 
-    data[72] = hasWaterMask ? 1.0 : 0.0;
-    data[73] = enableClipping ? 1.0 : 0.0;
-    data[74] = showOceanWaves ? 1.0 : 0.0;
-    data[75] = isSubsequentPass ? 1.0 : 0.0;
+    data[FLAGS_OFFSET + 0] = hasWaterMask ? 1.0 : 0.0;
+    data[FLAGS_OFFSET + 1] = enableClipping ? 1.0 : 0.0;
+    data[FLAGS_OFFSET + 2] = showOceanWaves ? 1.0 : 0.0;
+    data[FLAGS_OFFSET + 3] = isSubsequentPass ? 1.0 : 0.0;
 
-    // ─── Vertical exaggeration (offsets 76-77, vec2) ───
-    data[76] = frameState?.verticalExaggeration ?? 1.0;
-    data[77] = frameState?.verticalExaggerationRelativeHeight ?? 0.0;
+    // ─── Ocean enhancement params (vec4) ───
+    // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
+    // Defaults applied in shader when all zero (no tileProvider config needed)
+    if (tileProvider?.oceanDeepColor) {
+      const c = tileProvider.oceanDeepColor;
+      data[OCEAN_PARAMS_OFFSET + 0] = c.red ?? c.x ?? 0.008;
+      data[OCEAN_PARAMS_OFFSET + 1] = c.green ?? c.y ?? 0.045;
+      data[OCEAN_PARAMS_OFFSET + 2] = c.blue ?? c.z ?? 0.12;
+    }
+    data[OCEAN_PARAMS_OFFSET + 3] = tileProvider?.oceanFresnelPower ?? 0.0; // 0 = use shader default
 
-    // ─── Time for ocean wave animation (offset 78) ───
+    // ─── Time for ocean wave animation ───
     // Derive animation clock from `frameState.time` (a JulianDate) so every
     // view in a multi-view render pass samples the same wave phase and
     // screenshots are deterministic. Previously the renderer read
@@ -2675,65 +2868,70 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       const secs = (t.dayNumber ?? 0) * 86400.0 + (t.secondsOfDay ?? 0);
       waveTime = secs % 1000000.0;
     }
-    data[78] = waveTime;
-    // OPEN-5 fix: fogVisualDensityScalar (offset 79) — replaces the pad.
-    // Matches WebGL's `czm_fogVisualDensityScalar` auto-uniform (default
-    // 0.15 from UniformState). Without this the fog formula is ~6.7x
-    // stronger than WebGL at horizontal viewing angles.
-    data[79] =
+    data[TIME_OFFSET] = waveTime;
+    // OPEN-5 fix: fogVisualDensityScalar — matches WebGL's
+    // `czm_fogVisualDensityScalar` auto-uniform (default 0.15 from
+    // UniformState). Without this the fog formula is ~6.7x stronger than
+    // WebGL at horizontal viewing angles.
+    data[FOG_VIS_DENSITY_OFFSET] =
       frameState?.context?.uniformState?.fogVisualDensityScalar ?? 0.15;
+    // Batch 58 — splitPosition in framebuffer pixels (matches gl_FragCoord
+    // and `czm_splitPosition`). Sourced via `frameState.splitPosition` (a
+    // 0..1 fraction; 0.5 = canvas centre) × drawing buffer width.
+    const splitFrac =
+      typeof frameState?.splitPosition === "number"
+        ? frameState.splitPosition
+        : 0.5;
+    const drawWidth =
+      (frameState?.context as { drawingBufferWidth?: number } | undefined)
+        ?.drawingBufferWidth ?? 0;
+    data[SPLIT_POSITION_OFFSET] = splitFrac * drawWidth;
 
-    // ─── Ocean enhancement params (offsets 80-83, vec4) ───
-    // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
-    // Defaults applied in shader when all zero (no tileProvider config needed)
-    if (tileProvider?.oceanDeepColor) {
-      const c = tileProvider.oceanDeepColor;
-      data[80] = c.red ?? c.x ?? 0.008;
-      data[81] = c.green ?? c.y ?? 0.045;
-      data[82] = c.blue ?? c.z ?? 0.12;
-    }
-    data[83] = tileProvider?.oceanFresnelPower ?? 0.0; // 0 = use shader default
-
-    // ─── Night & ocean secondary params (offsets 84-87, vec4) ───
+    // ─── Night & ocean secondary params (vec4) ───
     // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
-    data[84] = (tileProvider?.nightIntensity as number | undefined) ?? 0.0; // 0 = use shader default (2.5)
-    data[85] = (tileProvider?.oceanReflectivity as number | undefined) ?? 0.0; // 0 = use shader default (0.04)
-    data[86] = (tileProvider?.oceanFoamThreshold as number | undefined) ?? 0.0; // 0 = use shader default (0.35)
-    data[87] = (tileProvider?.oceanDarkening as number | undefined) ?? 0.0; // 0 = use shader default (0.6)
+    data[NIGHT_OCEAN_PARAMS_OFFSET + 0] =
+      (tileProvider?.nightIntensity as number | undefined) ?? 0.0; // 0 = use shader default (2.5)
+    data[NIGHT_OCEAN_PARAMS_OFFSET + 1] =
+      (tileProvider?.oceanReflectivity as number | undefined) ?? 0.0; // 0 = use shader default (0.04)
+    data[NIGHT_OCEAN_PARAMS_OFFSET + 2] =
+      (tileProvider?.oceanFoamThreshold as number | undefined) ?? 0.0; // 0 = use shader default (0.35)
+    data[NIGHT_OCEAN_PARAMS_OFFSET + 3] =
+      (tileProvider?.oceanDarkening as number | undefined) ?? 0.0; // 0 = use shader default (0.6)
 
-    // ─── Per-tile debug fields (offsets 92-95, vec4) ───
+    // ─── Per-tile debug fields (vec4) ───
     // Tier 2 debug: tile depth-level + imagery layer isolation. Both
     // sourced from frameState so a single Scene property toggle flips
     // them on for every tile uniformly. Production cost is two property
     // reads + two array writes per tile, sub-noise-floor.
     //   .x = tileLevel — read by fragmentDebugLod for the LOD overlay
     //   .y = isolateImageryLayer — when >= 0, fragmentMain renders only
-    //        that layer index (0..3 within the current pass) and skips
+    //        that layer index (0..15 within the current pass) and skips
     //        the rest of the imagery composite. -1 = production behavior.
     //   .z, .w = reserved for future per-tile debug toggles
-    data[92] = tile?.level ?? 0;
+    data[DEBUG_FIELDS_OFFSET + 0] = tile?.level ?? 0;
     const isolate = frameState.debugShowImageryLayer;
-    data[93] = typeof isolate === "number" && isolate >= 0 ? isolate : -1;
-    data[94] = 0;
-    data[95] = 0;
+    data[DEBUG_FIELDS_OFFSET + 1] =
+      typeof isolate === "number" && isolate >= 0 ? isolate : -1;
+    data[DEBUG_FIELDS_OFFSET + 2] = 0;
+    data[DEBUG_FIELDS_OFFSET + 3] = 0;
 
-    // ─── DP-H24: HSB shift (offsets 96-99, vec4) ───
+    // ─── DP-H24: HSB shift (vec4) ───
     // Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
     // `Globe.atmosphereHueShift/Saturation/Brightness` onto the tile
     // provider each frame, so tileProvider is authoritative here.
     // The shader gates the HSB round-trip on |any| > 0.001, so writing
     // zeros (the default) carries no GPU cost.
-    data[96] =
+    data[HSB_SHIFT_OFFSET + 0] =
       typeof tileProvider.hueShift === "number" ? tileProvider.hueShift : 0;
-    data[97] =
+    data[HSB_SHIFT_OFFSET + 1] =
       typeof tileProvider.saturationShift === "number"
         ? tileProvider.saturationShift
         : 0;
-    data[98] =
+    data[HSB_SHIFT_OFFSET + 2] =
       typeof tileProvider.brightnessShift === "number"
         ? tileProvider.brightnessShift
         : 0;
-    data[99] = 0;
+    data[HSB_SHIFT_OFFSET + 3] = 0;
 
     return this._writeUniformSlice(
       device,
@@ -2785,6 +2983,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       textureViews.push(this._placeholderView!);
     }
 
+    // Batch 58 (C-R5): 16 texture bindings + sampler at binding 16. Each
+    // entry pulls from `textureViews[i]` which is padded with placeholder
+    // views above so unused slots still bind a valid resource.
     return device.createBindGroup({
       layout: this._bindGroupLayout1!,
       entries: [
@@ -2792,7 +2993,19 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         { binding: 1, resource: textureViews[1] },
         { binding: 2, resource: textureViews[2] },
         { binding: 3, resource: textureViews[3] },
-        { binding: 4, resource: this._sampler! },
+        { binding: 4, resource: textureViews[4] },
+        { binding: 5, resource: textureViews[5] },
+        { binding: 6, resource: textureViews[6] },
+        { binding: 7, resource: textureViews[7] },
+        { binding: 8, resource: textureViews[8] },
+        { binding: 9, resource: textureViews[9] },
+        { binding: 10, resource: textureViews[10] },
+        { binding: 11, resource: textureViews[11] },
+        { binding: 12, resource: textureViews[12] },
+        { binding: 13, resource: textureViews[13] },
+        { binding: 14, resource: textureViews[14] },
+        { binding: 15, resource: textureViews[15] },
+        { binding: 16, resource: this._sampler! },
       ],
     });
   }

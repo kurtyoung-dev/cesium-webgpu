@@ -2648,6 +2648,79 @@ The dominant-axis distance `max(|dx|, |dy|, |dz|)` is what each per-face camera 
 
 ---
 
+## Batch 58 — C-R5 imagery layer expansion (2026-04-25)
+
+Highest-impact unfixed correctness gap from the [2026-04-25 oversight audit](OVERSIGHT_AUDIT_2026_04_25.md) §2: globe imagery layer cap was hard-coded at 4, and five per-layer effects (hue / gamma / split / cutout / colorToAlpha) the WebGL path supports were silently dropped on WebGPU. Apps with 5+ layers (Bing + labels + weather + political-boundary overlays) lost layer #5 entirely; apps relying on per-layer hue / gamma / split / cutout / colorToAlpha got stripped imagery on WebGPU.
+
+### What landed
+
+- **`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`** —
+  - `ImageryLayer` struct widened from 12 → 24 floats (96 B per layer). New fields `colorToAlpha: vec4` (rgb + threshold; threshold < 0 disables), `cutoutRectangle: vec4` (tile-UV space; zero-area disables), and per-layer scalars `hue`, `oneOverGamma`, `split` plus a trailing `_layerPad` to keep the struct 16-byte aligned.
+  - `array<ImageryLayer, 4>` → `array<ImageryLayer, 16>`. WebGPU's minimum-guaranteed `maxSampledTexturesPerShaderStage = 16` makes 16 the safe ceiling without device-limit probing.
+  - Per-layer arrays packed to dodge WGSL's 16-byte uniform-array stride: `dayNightAlpha: array<vec4<f32>, 8>` (two layers per vec4) and `useWebMercatorTLayer: array<vec4<f32>, 4>` (four per vec4).
+  - New `splitPosition: f32` carries the WebGL-equivalent `frameState.splitPosition × drawingBufferWidth` so `applySplitMask` compares directly against `@builtin(position).x`.
+  - Bind group 1 expanded from 4 textures + sampler to 16 textures + sampler at binding 16.
+  - New WGSL helpers: `applyHueShift` (czm_hue port — same YIQ matrices, atan2 + chroma decomposition), `applyColorToAlphaKey`, `applyCutoutMask`, `applySplitMask`, and a unified `applyImageryLayer` that runs the full effect chain in WebGL `sampleAndBlend` order:
+    1. `colorToAlpha` (key-color → alpha = 0)
+    2. `gamma` (`pow(color, 1/gamma)`)
+    3. `split` (alpha = 0 outside the active half)
+    4. `cutout` (alpha = 0 inside the cutout rectangle — applied as alpha mask vs WebGL's `czm_branchFreeTernary` at the call site; effect identical)
+    5. `brightness → contrast → hue → saturation` (WebGL ordering)
+  - Fragment-shader compositing block unrolled to 16 per-layer composite blocks (WGSL forbids dynamic indexing of texture bindings); per-pass `count >= Nu` gate keeps inactive slots branch-light. Each block hands off to `applyImageryLayer` so the effect-chain logic is single-source.
+  - `tile.verticalExaggeration` repacked from `vec2<f32>` to two scalars (`verticalExaggeration` + `verticalExaggerationRelativeHeight`), matching the new TileUniforms layout. Legacy `dayNightAlpha0..3` (4 vec2) replaced with the packed `array<vec4<f32>, 8>` form. `nightFadeDistance` split into `nightFadeOutDistance` + `nightFadeInDistance` scalars.
+
+- **`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`** —
+  - `MAX_IMAGERY_LAYERS = 16` (was 4); `TILE_UNIFORM_FLOATS = 472` / 1888 B (was 100 / 400 B). Stays well under the WebGPU 16 KiB `maxUniformBufferBindingSize` floor.
+  - Float offset constants (`LAYERS_OFFSET`, `DAY_NIGHT_ALPHA_OFFSET`, `USE_WEB_MERC_OFFSET`, …, `HSB_SHIFT_OFFSET`) replace the hard-coded numeric offsets so the 472-float layout maps cleanly to WGSL's struct.
+  - Per-tile UB packer writes the 5 new per-layer fields with the WebGL conventions: `colorToAlpha.a = -1` disables (matches `GlobeSurfaceTileProviderRendering.js`); `cutoutRectangle = ZERO` disables (zero-area); `oneOverGamma = 1.0 / layer.gamma` pre-divides on CPU; `split = layer.splitDirection` (-1 / 0 / +1 from `SplitDirection` enum); `hue = layer.hue` in radians. All resolved through `resolveImageryLayerValue` so callback-style ImageryLayer properties don't NaN through to the shader.
+  - Bind-group layout 1 grew to 16 `texture` + 1 `sampler` entries. `_createTextureBindGroup` binds 16 placeholder-padded `GPUTextureView`s + the sampler at binding 16.
+  - `splitPosition` written as `frameState.splitPosition × drawingBufferWidth` (mirrors WebGL `czm_splitPosition` auto-uniform).
+
+- **`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js`** — auto-regenerated wrapper via `migration_doc/_regen_wgsl_js.py`.
+
+### Per-layer struct layout (24 floats / 96 B)
+
+| Float offset | Field | Notes |
+|---|---|---|
+| 0 - 3   | `translationAndScale: vec4`        | unchanged |
+| 4 - 7   | `texCoordsRect: vec4`              | unchanged |
+| 8 - 11  | `colorToAlpha: vec4`               | rgb + threshold; threshold < 0 disables |
+| 12 - 15 | `cutoutRectangle: vec4`            | tile-UV space; zero-area disables |
+| 16      | `alpha`                            | unchanged |
+| 17      | `brightness`                       | unchanged |
+| 18      | `contrast`                         | unchanged |
+| 19      | `saturation`                       | unchanged |
+| 20      | `hue`                              | radians; abs(hue) < 1e-4 → fast path |
+| 21      | `oneOverGamma`                     | 1.0 / layer.gamma; abs(x-1) < 1e-4 → fast path |
+| 22      | `split`                            | -1 = LEFT, 0 = NONE, +1 = RIGHT (`SplitDirection`) |
+| 23      | `_layerPad`                        | alignment |
+
+### UBO size growth
+
+- Per-layer struct: **48 B → 96 B** (slightly above the ~80 B target — WGSL alignment forces the two trailing scalar slots to 16 B each; can't be tightened without folding fields across vec4 boundaries that would lose the natural 1-property-per-name mapping).
+- Total `TileUniforms`: **400 B → 1888 B** (16 layers × 96 B + 352 B of tile-level fields). Negligible vs `maxUniformBufferBindingSize` 16 KiB minimum.
+
+### Backwards compatibility
+
+Scenes with 1-4 imagery layers continue to work — slots 4-15 are zero-filled by `data.fill(0)` and gated behind `tile.layerCount`. Multi-pass logic in `createTileCommands` (`ceil(totalLayers / MAX_IMAGERY_LAYERS)`) now ships up to 16 layers per pass instead of 4, dropping the pass count for typical 5-8 layer apps from 2 to 1.
+
+### TSC status
+
+`npx tsc --noEmit` clean (full repo).
+
+### Files modified
+
+- [packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl)
+- [packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.js) — regenerated wrapper
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts)
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R5 status updated to FIXED
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R5-IMAGERY-16 | RENDERER_DEEP | Globe imagery layer cap widen + 5 missing per-layer uniforms | **FIXED** — Layer cap 4 → 16, struct widened to 24 floats with `colorToAlpha`, `cutoutRectangle`, `hue`, `oneOverGamma`, `split` fields. Effect chain matches WebGL `sampleAndBlend` order. Bind group 1 declares 16 texture bindings + sampler at binding 16. CPU packer writes the new fields with WebGL-convention defaults (threshold = -1 disables colorToAlpha, zero-area disables cutout). |
+
+---
+
 ## Batch 59 — Extract WebGPUPickCommandHelpers (2026-04-25)
 
 Per the [2026-04-25 oversight audit](OVERSIGHT_AUDIT_2026_04_25.md) §6 ("Discoveries"), five renderers had converged on the same pick-command recipe (Ellipsoid B30, Ground B31, GaussianSplat B31, Voxel B53, Model B54). Five copies past the dedup threshold; this batch extracts the shared lifecycle + descriptor-derivation boilerplate into a single helper module so future pick consumers don't re-implement it.
@@ -2767,6 +2840,61 @@ All three migrated renderers fall back to direct `device.createRenderPipeline()`
 | ID | Source doc | Title | Fix summary |
 | --- | --- | --- | --- |
 | C-R7-RENDERER-MIGRATION (PARTIAL, 6/15) | RENDERER_DEEP | Per-renderer routing through central pipeline cache | Three more renderers (Ground, Point, Polyline) migrated to `context.webgpuPipelineCache`. Total migrated: 6 of ~15 (Ellipsoid, GaussianSplat, DepthPlane, GroundPrimitive, PointPrimitive, Polyline). 9 remaining renderers still maintain local pipeline maps; `WebGPUModelPipelineCache` blocked on `C-R7-SHADER-MODULE-DEDUP`. |
+
+---
+
+## Batch 63 — Soft point-light shadows via 5-tap PCF (2026-04-25)
+
+Closes the soft-shadow follow-up that Batch 57 explicitly carved out (`pointLightPositionWC.w` was reserved-for-soft-radius from the moment Batch 57 landed). 5-tap cross-pattern PCF kernel in `samplePointShadow` of `ModelPBRComplete.wgsl`. UBO size unchanged (336 bytes — repurposed the reserved `.w` slot rather than growing for `pointLightExtras`).
+
+### What landed
+
+- **`ModelPBRComplete.wgsl` `samplePointShadow(fragWC)`** — Reads `effects.pointLightPositionWC.w` as `pcfRadius` in cube-face texels. `pcfRadius <= 0.0` falls through to the single-tap path bit-exact to Batch 57 (back-compat). For `pcfRadius > 0`, picks the two minor cube-face axes (the axes that AREN'T the dominant face axis) by inspecting `abs(direction)` per-component, perturbs the cube sample direction along ±minorA and ±minorB by `pcfRadius / shadowMapSize.x` (texels → unit-direction offset on the unit cube), and averages 5 comparison samples. Cross-pattern is intentional over diagonal because diagonals would land on neighboring cube faces in the corner regions and compare against perspective-Z values written by a different per-face camera.
+- **Why 5 taps not 9** — The 9-tap kernel (center + 4 axial + 4 diagonal) is materially more expensive on cube samplers because every comparison sample touches the cube TLB. The 5-tap version captures most of the visual smoothing for ~half the cost. Not visible at typical viewing distances.
+- **Why minor-axis tangents not arbitrary rotation** — Axis-aligned tangents keep the kernel shape constant regardless of where on the face the ray lands. A view-aligned rotated kernel would shift apparent shadow softness with viewing angle and produce visible swimming during camera moves.
+- **`WebGPUEffectsBindGroup.js`** — `pointLightPositionWC[3]` now writes `pointLightConfig.pcfRadius ?? 0.0` (was always 0.0). Auto-detect path resolves `shadowMap.softShadows ? 1.5 : 0.0` so existing `softShadows = true` consumers get a noticeable softening for free; explicit `options.pointLight.pcfRadius` overrides for fine control. The point-light branch of the UBO writer also now packs the cube-face edge length into `effects.shadowMapSize.x` (sourced from `shadowMap._webgpuCache.size` or `shadowMap._textureSize.x`) so the kernel can scale texel offsets correctly. Pre-Batch-63 the UBO writer set `shadowMapSize` to `(1.0, 1.0)` on the point-light path; the kernel needs a real value to convert pcfRadius from texels to unit-direction offsets.
+- **JSDoc** — `options.pointLight.pcfRadius` documented; the WGSL `pointLightPositionWC.w` comment block updated to reflect the new role (was "reserved for future per-light metadata").
+
+### Why the UBO didn't grow
+
+Batch 57 explicitly reserved `.w` "for future per-light metadata (soft-radius, tint)" — exactly the use case here. Growing to 352 bytes via a `pointLightExtras: vec4<f32>` block would have been cleaner-looking but breaks zero existing callers either way; using the reserved slot avoids a BGL minBindingSize bump and keeps the diff small. The "darkness override" comment was a stale-rationale artifact in the JS doc-block — `effects.shadowDarkness` already drives the visibility-→-RGB mix at the `computeShadowFactorPointLight` call site, so `.w` was never actually doing darkness work.
+
+### TSC status
+
+`npx tsc --project packages/engine/tsconfig.json --noEmit` clean for all files we touched. Pre-existing untracked `WebGPUEdgeVisibilityEmitter.ts` carries syntax errors unrelated to this work (same as Batches 57, 61).
+
+### Files modified
+
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl)
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js) — auto-regenerated wrapper
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js)
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R10-POINT-LIGHT-PCF | RENDERER_DEEP (Batch 57 follow-up) | Soft point-light shadows | **FIXED** — 5-tap cross PCF in `samplePointShadow`. Activated via `pointLightPositionWC.w` (radius in cube-face texels). `radius=0` keeps Batch 57 hard-edge bit-exact; `softShadows = true` auto-resolves to 1.5 texels. UBO size unchanged at 336 bytes. |
+
+---
+
+## Batch 64 — Doc rollup + DEFERRED_WORK.md inventory (2026-04-25)
+
+Pure-documentation batch closing the doc-drift gap that the 2026-04-25 oversight audit (`OVERSIGHT_AUDIT_2026_04_25.md` §4) called out. No source changes.
+
+### What landed
+
+- **New canonical inventory at [DEFERRED_WORK.md](DEFERRED_WORK.md)** — 14 named C-R follow-ups (`C-R1-CLASSIFICATION`, `C-R1-COLLECTIONS-PER-ENCODER`, `C-R1-GLOBE-RENDERSTATE`, `C-R1-PRIMITIVE-DERIVED`, `C-R1-TILE-BATCH`, `C-R4-GLTF-KHR`, `C-R7-RENDERER-MIGRATION-REMAINING`, `C-R7-SHADER-MODULE-DEDUP`, `C-R8-TRANSLUCENT-DEPTH-ONLY`, `C-R8-TRANSLUCENT-MULTI-FRUSTUM`, `C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH`, `C-R9-MODEL-FEATURE-PICK`, `C-R9-MODEL-PICK-TRANSLUCENT`, `C-R9-VOXEL-CELL-PICK`, `C-R10-GLOBE-POINT-LIGHT`, `C-R10-CAST-LINEAR-DEPTH`, `C-R12-PER-OBJECT-CACHES`) grouped by parent C-R finding. Each entry has six fields (What / Why deferred / Prerequisites / Estimated effort / Impact / Trace) and a stable identifier that survives renumbering.
+- **`WEBGPU_MIGRATION_BACKLOG.md`** — "Last Updated" header refreshed to 2026-04-25; new "Recent activity Batches 28-64" section summarizes the 36-batch burst with cross-links to `DEFERRED_WORK.md` for follow-up tracking.
+- **`NEXT_SESSION_HANDOFF.md`** — refreshed to 2026-04-25; old 2026-04-20 content preserved below the new header as historical context. Added recommended next-session pick-list pulled from `DEFERRED_WORK.md`'s priority guide.
+
+### Why a flat inventory not severity-grouped
+
+The C-R sub-IDs already encode parent-finding affinity (`C-R8-*` are all translucent classification follow-ups, `C-R9-*` are pick follow-ups). Grouping by severity would have lost that affinity for no gain — every item in this list is "Critical-tier follow-up" by construction (they're the carved-out remainders of Critical-tier parent findings). Grouping by parent C-R makes "what's left in this subsystem" a single-section read, which is the question future sessions actually ask.
+
+### Files modified
+
+- [migration_doc/DEFERRED_WORK.md](DEFERRED_WORK.md) — new file
+- [migration_doc/WEBGPU_MIGRATION_BACKLOG.md](WEBGPU_MIGRATION_BACKLOG.md) — header + recent activity section
+- [migration_doc/NEXT_SESSION_HANDOFF.md](NEXT_SESSION_HANDOFF.md) — refreshed for 2026-04-25
+- [migration_doc/REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md) — Batches 63 + 64 entries (this addition)
 
 ---
 

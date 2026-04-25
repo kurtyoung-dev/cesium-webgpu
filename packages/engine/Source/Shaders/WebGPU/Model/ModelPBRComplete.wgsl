@@ -232,8 +232,14 @@ struct EffectsUniforms {
   // .xyz = world-space light position (meters; absolute world coords,
   // not camera-relative). The receive shader reconstructs `fragWC =
   // cameraPositionWC + (modelMatrix * vec4(rteMC, 0)).xyz` and computes
-  // `direction = fragWC - lightWC`. .w reserved for future per-light
-  // metadata (soft-radius, tint).
+  // `direction = fragWC - lightWC`.
+  // .w = PCF radius (Batch 63). Units are cube-face texels — the
+  //      receive shader scales the perturbation by `1.0 / shadowMapSize.x`
+  //      to convert texels → unit-direction offsets. 0.0 means hard
+  //      sampling (single tap, identical to Batch 57's behavior); >0
+  //      activates the 5-tap cross PCF kernel. Not the same role as
+  //      `effects.shadowDarkness` — darkness drives `mix()` in the
+  //      caller; pcfRadius drives kernel width here.
   pointLightPositionWC: vec4<f32>,
 };
 
@@ -667,14 +673,110 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   // round-trip correctly.
   let zAttached = zNdcWebGpu * 0.5 + 0.5;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
-  // Cube sample direction is unnormalised — WGSL's
-  // `textureSampleCompareLevel` for cube depth normalises internally.
-  return textureSampleCompareLevel(
+  // Batch 63 — Soft point-light shadows via 5-tap cross PCF.
+  //
+  // `effects.pointLightPositionWC.w` carries the PCF radius in
+  // cube-face texels (0 → hard sampling; the typical soft setting is
+  // 1.0–2.0 texels). When the radius is zero we drop straight through
+  // to the single comparison sample — identical performance + output
+  // to Batch 57's hard-edge path.
+  //
+  // For radius > 0 we perturb the cube direction along the two MINOR
+  // axes (the axes that AREN'T the dominant face axis). This keeps
+  // the perturbation tangent to the cube face the dominant ray hits,
+  // so all 5 samples sit on the same face's depth texels rather than
+  // spilling into a neighboring face (which would compare against a
+  // perspective-Z written by a different per-face camera and produce
+  // banding at face seams).
+  //
+  // Perturbation magnitude: `radiusTexels * texelStep` where
+  // `texelStep = 1.0 / shadowMapSize.x` — this converts a "1 texel"
+  // request into a unit-direction offset on the unit cube. The cube
+  // face is unit-sized in clip space so 1 texel = 1/N of a face.
+  // The cube sampler normalizes the direction internally, so the
+  // small perturbation cleanly biases which texel is sampled without
+  // affecting which face is hit (radius is bounded well below the
+  // dominant axis magnitude in any reasonable scene — even radius=4
+  // texels at shadowMapSize=512 = 0.0078 unit-direction offset, vs
+  // the dominant axis being normalized to ≥0.577).
+  let pcfRadius = effects.pointLightPositionWC.w;
+  if (pcfRadius <= 0.0) {
+    return textureSampleCompareLevel(
+      pointLightCubeDepth,
+      shadowCompSampler,
+      direction,
+      refDepth,
+    );
+  }
+  // Pick the two minor axes by checking which component is the
+  // dominant. Each branch returns a pair of unit vectors tangent to
+  // the dominant axis. Using axis-aligned tangents keeps the kernel
+  // shape the same regardless of where on the face the ray lands —
+  // a rotated kernel would shift the apparent shadow softness with
+  // viewing angle.
+  var minorA: vec3<f32>;
+  var minorB: vec3<f32>;
+  if (absDir.x >= absDir.y && absDir.x >= absDir.z) {
+    // Dominant X face → tangent axes are Y and Z.
+    minorA = vec3<f32>(0.0, 1.0, 0.0);
+    minorB = vec3<f32>(0.0, 0.0, 1.0);
+  } else if (absDir.y >= absDir.z) {
+    // Dominant Y face → tangent axes are X and Z.
+    minorA = vec3<f32>(1.0, 0.0, 0.0);
+    minorB = vec3<f32>(0.0, 0.0, 1.0);
+  } else {
+    // Dominant Z face → tangent axes are X and Y.
+    minorA = vec3<f32>(1.0, 0.0, 0.0);
+    minorB = vec3<f32>(0.0, 1.0, 0.0);
+  }
+  // `shadowMapSize.x` carries the cube-face edge length (cast pipeline
+  // sets it to the same value as the 2D path; for point lights this is
+  // the per-face render-target size — typically 1024 or 2048). Falling
+  // back to 1.0 / 1024.0 if shadowMapSize.x is zero (placeholder UB)
+  // keeps the kernel scaled sensibly even before resources are wired.
+  let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
+  let offset = pcfRadius * texelStep;
+  // 5-tap cross kernel — center + 4 perturbed taps along ±minorA / ±minorB.
+  // The 9-tap version (center + 4 axial + 4 diagonal) is materially more
+  // expensive on cube samplers because every comparison sample touches
+  // the cube TLB; the 5-tap version captures most of the visual smoothing
+  // for ~half the cost. Each comparison sample returns 0 or 1 (or a
+  // PCF-filtered intermediate when the sampler is configured with
+  // `comparison: less` and bilinear filtering — our `shadowCompSampler`
+  // IS so configured); averaging the 5 results gives the visibility
+  // factor.
+  var sum = 0.0;
+  sum = sum + textureSampleCompareLevel(
     pointLightCubeDepth,
     shadowCompSampler,
     direction,
     refDepth,
   );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth,
+    shadowCompSampler,
+    direction + minorA * offset,
+    refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth,
+    shadowCompSampler,
+    direction - minorA * offset,
+    refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth,
+    shadowCompSampler,
+    direction + minorB * offset,
+    refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth,
+    shadowCompSampler,
+    direction - minorB * offset,
+    refDepth,
+  );
+  return sum * 0.2; // average of 5 taps
 }
 
 fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {

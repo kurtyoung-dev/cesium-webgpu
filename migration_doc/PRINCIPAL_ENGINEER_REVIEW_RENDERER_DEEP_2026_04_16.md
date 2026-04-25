@@ -132,21 +132,20 @@ ModelPBRComplete.wgsl (521 lines monolithic) lacks:
 ---
 
 ### C-R5. Globe imagery layer count is compile-time fixed at 4
-**DEFERRED 2026-04-16 (Batch 15).** Bounded but invasive: widening `array<ImageryLayer, 4>` in `GlobeTerrain.wgsl` + the CPU packer's `MAX_IMAGERY_LAYERS` constant to a runtime-probed count requires (a) picking a safe upper bound (WebGPU minimum guarantees `maxSampledTexturesPerShaderStage = 16`, so 16 is the safe target), (b) either dynamic shader variants or a conservative 16-slot layout, and (c) per-layer hue/gamma/split/color-to-alpha/cutout plumbing that currently doesn't exist in the uniform struct. Multi-point change; tracked as **FOLLOW-UP C-R5-IMAGERY-16**.
+**FIXED 2026-04-25 (Batch 58 — C-R5-IMAGERY-16).** Layer cap raised 4 → 16 (WebGPU minimum-guaranteed `maxSampledTexturesPerShaderStage`); all five missing per-layer uniforms plumbed end-to-end.
 
-**Verified.** [GlobeTerrain.wgsl:86](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) declares `layers: array<ImageryLayer, 4>`. WebGL uses `TEXTURE_UNITS` which is computed dynamically from GPU capability (typically up to 31 on WebGL2).
+**Changes:**
 
-Additionally silent-dropped in the WebGPU `ImageryLayer` struct (`GlobeTerrain.wgsl:79-82` — has only alpha/brightness/contrast/saturation):
+- `Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`: `ImageryLayer` struct widened from 12 → 24 floats (96 B). New fields `colorToAlpha: vec4`, `cutoutRectangle: vec4`, `hue`, `oneOverGamma`, `split`, `_layerPad` slot in alongside the existing alpha/brightness/contrast/saturation. Bind group 1 now declares `dayTexture0`..`dayTexture15` plus `texSampler` at binding 16. `TileUniforms` carries packed `dayNightAlpha: array<vec4<f32>, 8>` (two layers per vec4) and `useWebMercatorTLayer: array<vec4<f32>, 4>` (four layers per vec4) so the per-layer arrays don't pay the 16-byte uniform-array stride 16× over. New `splitPosition: f32` field carries `frameState.splitPosition × drawingBufferWidth` so `applySplitMask` can compare directly against `@builtin(position).x` (mirrors `czm_splitPosition`).
+- New WGSL helpers: `applyHueShift` (czm_hue port — same YIQ matrices, atan2 + chroma decomposition); `applyColorToAlphaKey` (max-component diff vs threshold); `applyCutoutMask` (UV-space rectangle test, zero-area disables); `applySplitMask` (LEFT/NONE/RIGHT screen-space gate); `applyImageryLayer` composing the per-layer effect chain in WebGL `sampleAndBlend` order: colorToAlpha → gamma → split → cutout → brightness → contrast → hue → saturation.
+- `Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`: `MAX_IMAGERY_LAYERS = 16`, `TILE_UNIFORM_FLOATS = 472` (1888 B). Bind-group layout 1 expanded to 16 textures + sampler; bind-group construction binds 16 placeholder-padded `GPUTextureView`s. Per-tile UB packer writes the new fields with the WebGL conventions (colorToAlpha threshold = -1 disables, cutoutRectangle zero-area disables, gamma pre-divided to oneOverGamma).
+- 16 unrolled per-layer composite blocks in `fragmentMain` (WGSL forbids dynamic indexing of texture bindings); the per-pass `count >= Nu` gate keeps inactive slots branch-light.
 
-- `u_dayTextureHue[TEXTURE_UNITS]` + `czm_hue` — per-layer hue shift
-- `u_dayTextureOneOverGamma[TEXTURE_UNITS]` — per-layer gamma
-- `u_dayTextureSplit[TEXTURE_UNITS]` — per-layer split-direction (split-screen imagery layers)
-- `u_colorsToAlpha[TEXTURE_UNITS]` — per-layer color-to-alpha keying
-- `u_dayTextureCutoutRectangles[TEXTURE_UNITS]` — per-layer cutout
+**UBO size growth:** 100 → 472 floats (400 B → 1888 B). Per-layer struct: 48 B → 96 B (16-byte aligned — slightly above the ~80 B target, driven by WGSL alignment rules forcing two trailing scalar slots to 16 B each). Total stays well under WebGPU's 16 KiB `maxUniformBufferBindingSize` floor.
 
-**Severity:** HIGH (not CRITICAL because many apps use 1-4 layers). But any app with Bing + labels + weather + political boundaries overlays (5 layers) silently loses layer #5.
+**Backwards compatibility:** scenes with 1-4 imagery layers continue to work — slots 4-15 are zero-filled and gated behind `tile.layerCount`. Multi-pass logic (`createTileCommands`) now ships up to 16 layers per pass instead of 4, dropping the pass count for typical 5-8 layer apps from 2 to 1.
 
-**Fix sketch:** two parts. (1) Parameterize `MAX_IMAGERY_LAYERS` in the shader-builder preprocessor and emit dynamic-sized storage buffer instead of fixed array. (2) Add the five missing per-layer uniforms (hue/gamma/split/cutout/colorToAlpha).
+**Verified.** [GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) now declares `layers: array<ImageryLayer, 16>` with the full effect chain; WebGL parity gap closed.
 
 ---
 

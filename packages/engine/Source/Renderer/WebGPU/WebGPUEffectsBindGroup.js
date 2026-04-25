@@ -122,17 +122,26 @@ import {
 //         before the comparison sample to suppress shadow acne — same
 //         role as `pointBias.depthBias` in WebGL).
 //   offset 320 — `pointLightPositionWC: vec4<f32>` —
-//     xyz = world-space light position (meters); w = darkness override
-//     (matches `effects.shadowDarkness`'s convention — 0=fully shadowed,
-//     1=no shadow). The receive shader reconstructs `fragWC = cameraWC +
-//     rotated-rteMC` and computes `direction = fragWC - lightWC` for
-//     both the cube sample direction AND the dominant-axis distance
-//     fed into the perspective-Z formula. xyz is in absolute world
-//     coordinates, NOT camera-relative — this is fine for shadow casting
-//     where the relative magnitudes are bounded by `farPlane` (sub-radius
-//     scale, well within f32 precision after the `fragWC - lightWC`
-//     subtract). Holding the absolute vector lets the receive math
-//     stay agnostic to which camera frame the cast was done in.
+//     xyz = world-space light position (meters);
+//     w   = pcfRadius (Batch 63 — soft point-light shadows). Units are
+//           cube-face texels; 0 = hard sampling (single tap, identical
+//           to Batch 57's behavior). Typical soft values are 1.0–2.0
+//           texels; the receive shader scales by `1.0 / shadowMapSize.x`
+//           to convert to a unit-direction offset on the unit cube,
+//           then runs a 5-tap cross PCF kernel along the two minor
+//           cube-face axes. NOT the same role as `effects.shadowDarkness`
+//           (that drives the visibility-→-RGB mix at the call site;
+//           pcfRadius drives kernel width here). Defaults to 0 so the
+//           hard path stays the default for back-compat.
+//     The receive shader reconstructs `fragWC = cameraWC + rotated-rteMC`
+//     and computes `direction = fragWC - lightWC` for both the cube
+//     sample direction AND the dominant-axis distance fed into the
+//     perspective-Z formula. xyz is in absolute world coordinates, NOT
+//     camera-relative — this is fine for shadow casting where the
+//     relative magnitudes are bounded by `farPlane` (sub-radius scale,
+//     well within f32 precision after the `fragWC - lightWC` subtract).
+//     Holding the absolute vector lets the receive math stay agnostic
+//     to which camera frame the cast was done in.
 const EFFECTS_UNIFORM_SIZE = 336;
 const EFFECTS_UNIFORM_FLOATS = EFFECTS_UNIFORM_SIZE / 4;
 // Offset (in floats) of the atmosphereLutControl vec4 in the UBO data
@@ -733,6 +742,12 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  * @param {number} [options.pointLight.darkness] - 0..1; defaults to
  *   the active shadow map's `darkness` field, or 0.3 when no map is
  *   bound (matches Cesium `ShadowMap` defaults).
+ * @param {number} [options.pointLight.pcfRadius] - Batch 63 soft point-
+ *   light shadow radius in cube-face texels. 0 (default) preserves the
+ *   Batch 57 hard-edge behavior — single comparison sample. >0 enables
+ *   the 5-tap cross PCF kernel in `samplePointShadow`. Auto-populated
+ *   from `shadowMap._softShadows ? 1.5 : 0.0` when sourced from a
+ *   ShadowMap; explicit overrides allow per-call control.
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
@@ -818,6 +833,21 @@ function createEffectsBindGroup(device, frameState, options) {
         nearPlane: 1.0,
         depthBias: shadowMap._pointBias?.depthBias ?? 0.005,
         darkness: shadowMap.darkness ?? 0.3,
+        // Batch 63 — soft point-light shadows. ShadowMap.softShadows is
+        // the canonical opt-in flag (mirrors the WebGL `softShadows`
+        // path); when set we hand the model FS a 1.5-texel PCF radius,
+        // which gives a noticeably softer edge without dropping below
+        // ~120fps on the 5-tap kernel. Hard sampling stays the default
+        // when softShadows is false so existing demos render bit-exact
+        // to Batch 57.
+        pcfRadius: shadowMap.softShadows ? 1.5 : 0.0,
+        // Cube-face edge length in texels — the receive shader scales
+        // pcfRadius by `1.0 / cubeFaceSize` to convert texels to a unit-
+        // direction perturbation. We piggyback on `effects.shadowMapSize.x`
+        // (which is the natural carrier and unused by the point-light path
+        // otherwise) so this value drives both the kernel scaling and any
+        // future debug overlay that wants to read the cube size.
+        cubeFaceSize: cache.size ?? shadowMap._textureSize?.x ?? 1024,
       };
     }
   }
@@ -926,10 +956,16 @@ function createEffectsBindGroup(device, frameState, options) {
     // Point-light receive — same `shadowDarkness >= 1.0` early-out
     // concern as CSM. Pull the override from the resolved point-light
     // config (auto-populated from `shadowMap.darkness` when the path
-    // came from the auto-detect branch).
+    // came from the auto-detect branch). Batch 63: shadowMapSize.x
+    // carries the cube-face edge length so the model FS's PCF kernel
+    // can scale `pcfRadius` (texels) by `1.0 / shadowMapSize.x` →
+    // unit-direction perturbation. .y is unused on this path; we
+    // mirror .x to keep the field square (no shader currently reads
+    // .y but a future round-cube probe might).
+    const cubeFaceSize = pointLightConfig.cubeFaceSize ?? 1024;
     Matrix4.pack(Matrix4.IDENTITY, ud, 0);
-    ud[16] = 1.0;
-    ud[17] = 1.0;
+    ud[16] = cubeFaceSize;
+    ud[17] = cubeFaceSize;
     ud[18] = pointLightConfig.darkness ?? 0.3;
     ud[19] = 0.0;
   } else {
@@ -1069,6 +1105,12 @@ function createEffectsBindGroup(device, frameState, options) {
     const farPlane = pointLightConfig.farPlane;
     const nearPlane = pointLightConfig.nearPlane ?? 1.0;
     const depthBias = pointLightConfig.depthBias ?? 0.005;
+    // Batch 63 — PCF radius defaults to 0 (hard sampling). When the
+    // caller wires `pcfRadius > 0` (or the auto-detect branch above
+    // resolved a soft-shadows-enabled ShadowMap to 1.5 texels) the
+    // model FS runs a 5-tap cross kernel on the cube depth instead
+    // of the single-tap hard sample.
+    const pcfRadius = pointLightConfig.pcfRadius ?? 0.0;
     ud[POINT_LIGHT_CONTROL_OFFSET + 0] = 1.0;
     ud[POINT_LIGHT_CONTROL_OFFSET + 1] = farPlane;
     ud[POINT_LIGHT_CONTROL_OFFSET + 2] = nearPlane;
@@ -1076,7 +1118,7 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[POINT_LIGHT_POSITION_OFFSET + 0] = lightPos.x;
     ud[POINT_LIGHT_POSITION_OFFSET + 1] = lightPos.y;
     ud[POINT_LIGHT_POSITION_OFFSET + 2] = lightPos.z;
-    ud[POINT_LIGHT_POSITION_OFFSET + 3] = 0.0;
+    ud[POINT_LIGHT_POSITION_OFFSET + 3] = pcfRadius;
   } else {
     ud[POINT_LIGHT_CONTROL_OFFSET + 0] = 0.0;
     ud[POINT_LIGHT_CONTROL_OFFSET + 1] = 0.0;
