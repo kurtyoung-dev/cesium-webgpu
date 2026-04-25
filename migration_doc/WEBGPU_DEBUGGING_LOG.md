@@ -24,6 +24,141 @@
 
 ---
 
+## Session 38 — Sandcastle NEW-4 closures (NEW-4-B / NEW-4-C / NEW-4-F) (2026-04-25)
+
+Session 37's TRULY FINAL Sandcastle pass landed all three NEW-3-* fixes and surfaced six second-layer engine bugs (NEW-4-A through NEW-4-F). Session 38 closes three of them inline; the END OF SESSION pass empirically verifies each closure and pushes the demo score from 0/7 → 3/7 PASS.
+
+### NEW-4-B: GlobeDepth depth-copy sampler binding type
+
+**Symptom:** Every demo with a globe + depth pipeline (Many Imagery Layers, Model Pick, Point Light Shadows, Translucent Classification, plus Edge demos as a co-issue) hit per-frame WebGPU validation:
+```
+Texture binding (group:0, binding:0) is TextureSampleType::Depth but used statically with
+a sampler (group:0, binding:1) that's SamplerBindingType::Filtering
+    - While validating fragment stage ([ShaderModule "GlobeDepth-DepthCopy-Shader"], entryPoint: "fragmentMain")
+    - While calling [Device].CreateRenderPipeline([RenderPipelineDescriptor "GlobeDepth-DepthCopy-Pipeline"])
+```
+
+**Root cause:** WebGPU spec requires that a texture binding declared `sampleType: "depth"` be paired with a sampler binding of type `non-filtering` or `comparison`. Our depth-copy bind-group layout left the sampler binding-type implicit, which the WebGPU runtime defaulted to `filtering`. The sampler descriptor itself already uses `magFilter: "nearest"` / `minFilter: "nearest"` — non-filtering matches actual intent.
+
+**Fix:** [WebGPUGlobeDepth.ts:387-393](packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts#L387) — added explicit `"non-filtering"` argument to the `sampler()` helper:
+```ts
+this._depthCopyBindGroupLayout = makeBindGroupLayout(
+  device,
+  "GlobeDepth-DepthCopy-BindGroupLayout",
+  [
+    texture(0, Stage.FRAGMENT, { sampleType: "depth" }),
+    // NEW-4-B (Batch 66) — depth textures expose a "non-filtering"
+    // sampler type only; pairing with a default "filtering" sampler
+    // throws WebGPU validation: "depth-only texture must be paired
+    // with non-filtering sampler". The depth-copy fragment uses
+    // textureLoad-style nearest reads, so non-filtering is correct.
+    sampler(1, Stage.FRAGMENT, "non-filtering"),
+  ],
+);
+```
+
+**Verification:** Empirically — zero `GlobeDepth-DepthCopy-Pipeline` / `TextureSampleType::Depth` / `SamplerBindingType::Filtering` occurrences in `Tools/visual-regression/screenshots/sandcastle-batch-66-end-of-session/report.json`. Three demos (Many Imagery Layers, Model Pick, Point Light Shadows) flipped from FAIL → PASS as a direct consequence (combined with NEW-4-F for Many Imagery Layers).
+
+### NEW-4-C: getLogDepthShaderProgram dereferenced fragmentShaderSource on undefined
+
+**Symptom:** Translucent Classification (and any future demo whose render loop derives a log-depth command for a `WebGPUDrawCommand`) hit:
+```
+TypeError: Cannot read properties of undefined (reading 'fragmentShaderSource')
+    at getLogDepthShaderProgram (.../DerivedCommand.js:139)
+    at DerivedCommand.createLogDepthCommand (.../DerivedCommand.js:230)
+    at _Scene.updateDerivedCommands (...)
+```
+
+**Root cause:** `getLogDepthShaderProgram` is the WebGL log-depth derivation: it rewrites the GLSL fragment-shader source to inject `czm_writeLogDepth` calls. WebGPU draw commands carry `GPUShaderModule` pipelines — there's no `shaderProgram.fragmentShaderSource` to rewrite. The Batch 29 dispatcher already routes WebGPU log-depth via `derivedCommands.logDepth.command` with a pre-built WGSL pipeline; the WebGL derivation pass should short-circuit when the source isn't a WebGL `ShaderProgram`.
+
+**Fix:** [DerivedCommand.js:139-149](packages/engine/Source/Scene/DerivedCommand.js#L139) — early-return `shaderProgram` unchanged when `shaderProgram?.fragmentShaderSource?.defines` is missing:
+```js
+function getLogDepthShaderProgram(context, shaderProgram) {
+  // NEW-4-C (Batch 66) — WebGPU draw commands carry GPUShaderModule
+  // pipelines that don't have a WebGL-style `fragmentShaderSource`.
+  // The log-depth wrapper is a WebGL-only transformation (it rewrites
+  // GLSL source); for WebGPU the dispatcher (`selectCommandVariant`)
+  // already routes log-depth via `derivedCommands.logDepth.command`
+  // which carries its own pre-built WGSL pipeline. Skip the wrapper
+  // when the shader program isn't a WebGL ShaderProgram.
+  if (!defined(shaderProgram?.fragmentShaderSource?.defines)) {
+    return shaderProgram;
+  }
+  ...
+}
+```
+
+**Verification:** Empirically — zero `getLogDepthShaderProgram` stack frames in the END OF SESSION report. Closure is **partial**: a sibling defect remains in the caller (`createLogDepthCommand`, line 254) which still dereferences `command.shaderProgram.id` for cache-keying before `getLogDepthShaderProgram` is even called. Logged as **NEW-5-A** in `SANDCASTLE_BATCH_66_END_OF_SESSION_REPORT.md` for the next session — same single-line tactical guard, one frame up the stack. With NEW-5-A also fixed, Translucent Classification should flip to PASS.
+
+### NEW-4-F: WebGPUContext device-init missed adapter-supported limit headroom
+
+**Symptom (advisory in Session 37; latent in Session 38):** Many Imagery Layers logged:
+```
+The number of sampled textures (29) in the Fragment stage exceeds the maximum per-stage
+limit (16). This adapter supports a higher maxSampledTexturesPerShaderStage of 48, which
+can be specified in requiredLimits when calling requestDevice().
+    - While calling [Device].CreatePipelineLayout([PipelineLayoutDescriptor "Globe terrain pipeline layout"])
+```
+On adapters where 16 IS the hardware ceiling, this would have hard-failed pipeline creation. Even on this Intel adapter (which exposes 48) the warning indicated we were exposed to per-adapter brittleness.
+
+**Root cause:** `WebGPUContext._initializeDevice` requested `requestDevice({ requiredFeatures: ..., requiredLimits: this._options.requiredLimits ?? {} })` — never propagating the adapter's actual ceiling for sampled-texture or per-bind-group-binding limits. The Globe terrain pipeline layout requests 29 sampled-texture bindings (16 imagery layers × ~1.8 average per layer + clipping + atmosphere); the default WebGPU minimum is 16.
+
+**Fix:** [WebGPUContext.ts:652-684](packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L652) — opportunistically request higher `maxSampledTexturesPerShaderStage` (capped at 64) and `maxBindingsPerBindGroup` (capped at 1000) when the adapter exposes them. Caller-supplied `requiredLimits` overrides take precedence — only auto-fill when undefined. If the adapter genuinely doesn't support a higher limit, `requestDevice` rejects with an explicit error rather than silently failing later at pipeline creation.
+
+```ts
+const adapterMaxSampled =
+  this._adapter.limits?.maxSampledTexturesPerShaderStage ?? 16;
+if (
+  requiredLimits.maxSampledTexturesPerShaderStage === undefined &&
+  adapterMaxSampled > 16
+) {
+  requiredLimits.maxSampledTexturesPerShaderStage = Math.min(
+    adapterMaxSampled,
+    64,
+  );
+}
+const adapterMaxBindings =
+  this._adapter.limits?.maxBindingsPerBindGroup ?? 640;
+if (
+  requiredLimits.maxBindingsPerBindGroup === undefined &&
+  adapterMaxBindings > 640
+) {
+  requiredLimits.maxBindingsPerBindGroup = Math.min(
+    adapterMaxBindings,
+    1000,
+  );
+}
+```
+
+**Verification:** Empirically — zero `maxSampledTexturesPerShaderStage` advisory or `exceeds the maximum per-stage limit` warning in the END OF SESSION report. Many Imagery Layers loaded all 8 imagery layers and renders cleanly on the WebGPU backend (PASS).
+
+### Sanity check
+
+- `npx tsc --noEmit`: clean (per task brief).
+- `node scripts/run-build-no-tsc.mjs`: clean rebuild — `Build/CesiumUnminified/index.js` 14.0 MB, `Build/CesiumUnminified/Cesium.js` 18.3 MB. Verified each fix lands in the bundle by string-grep:
+  - `non-filtering`: 12 occurrences (was 0 before fix).
+  - `fragmentShaderSource?.defines`: 1 occurrence (was 0 before fix).
+  - `maxSampledTexturesPerShaderStage`: 9 occurrences (was 4 before fix; +5 from the new auto-bump block).
+- `Tools/visual-regression/sandcastle-batch-66-end-of-session-runner.mjs`: 3 PASS / 4 FAIL on 7 demos; first non-zero PASS count on the WebGPU backend.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts` — NEW-4-B sampler binding-type fix.
+- `packages/engine/Source/Scene/DerivedCommand.js` — NEW-4-C `getLogDepthShaderProgram` early-return guard.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` — NEW-4-F device-init opportunistic limit headroom.
+- `migration_doc/SANDCASTLE_BATCH_66_END_OF_SESSION_REPORT.md` — END OF SESSION verification report (new file).
+- `Tools/visual-regression/sandcastle-batch-66-end-of-session-runner.mjs` — runner clone with renamed output dir to preserve DEFINITIVE backup (new file).
+- `migration_doc/WEBGPU_DEBUGGING_LOG.md` — this entry.
+
+### Deferred / new findings
+
+- **NEW-4-A** (`EdgeVisibilityPipelineStage` calls WebGL-only `Buffer.getBufferData`) — multi-session, tracked in `DEFERRED_WORK.md`. Blocks Edge Visibility + Edge Feature ID.
+- **NEW-4-D** (`Texture3D` ctor WebGL-only guard) — multi-session, tracked in `DEFERRED_WORK.md`. Blocks Voxel Pick.
+- **NEW-4-E** (Voxel color pipeline WGSL parse error) — tracked in `DEFERRED_WORK.md`; reachable only after NEW-4-D unblocks the texture allocation.
+- **NEW-5-A (NEW)** — `DerivedCommand.createLogDepthCommand:254` dereferences `command.shaderProgram.id` without a guard; sibling of NEW-4-C, surfaced once NEW-4-C cleared the `getLogDepthShaderProgram`-line-139 crash. Single-line tactical fix; logged for the next session per the Session 38 task constraint ("don't fix engine bugs that surface during verification — log them as `NEW-5-XXX`").
+
+---
+
 ## BUILD-VAR-SCENE-AUDIT — WebGPU-only bundle safety audit (2026-04-19)
 
 Follow-up to the Session 27 build-variant infrastructure. The webgpu-only bundle aliases every GLSL shader string module (`Source/Shaders/*.js`) to an empty `export default ""`. Scene code that statically imports those strings still resolves at module load time (the import evaluates to `""`, no crash), but any site that actually *compiles* the GLSL string at runtime will fail because WebGL rejects an empty shader source.
