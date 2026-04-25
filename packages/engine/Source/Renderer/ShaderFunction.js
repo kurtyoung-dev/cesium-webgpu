@@ -1,4 +1,3 @@
-import DeveloperError from "../Core/DeveloperError.js";
 
 /**
  * A utility for dynamically-generating a GLSL function
@@ -50,14 +49,15 @@ class ShaderFunction {
    * @return {string[]} The generated GLSL lines
    */
   generateGlslLines() {
-    //>>includeStart('debug', pragmas.debug);
-    if (this.body.length === 0) {
-      throw new DeveloperError(
-        "The shader function must have at least one line.",
-      );
-    }
-    //>>includeEnd('debug');
-
+    // GLSL allows empty function bodies (`void foo() {}` is valid). The
+    // March 2026 ES6 modernization commit added a debug-throw here for
+    // empty-body cases, but `MetadataPipelineStage` legitimately registers
+    // `initializeMetadata` / `setMetadataVaryings` unconditionally and
+    // only fills bodies when the model has metadata properties. Models
+    // without metadata (the common case — Milk Truck, EdgeVisibility
+    // assets, etc.) hit the empty-body path and crash at render time.
+    // Silently emitting `signature { }` is correct GLSL and matches the
+    // pre-modernization behaviour. See BUG-F2 closure (Batch 66).
     const lines = [];
     lines.push(this.signature);
     lines.push("{");
