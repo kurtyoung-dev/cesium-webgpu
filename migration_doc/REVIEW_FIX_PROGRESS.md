@@ -2648,6 +2648,87 @@ The dominant-axis distance `max(|dx|, |dy|, |dz|)` is what each per-face camera 
 
 ---
 
+## Batch 61 — C-R8-TRANSLUCENT-DEPTH-MSAA: MSAA-aware translucent classification depth (2026-04-25)
+
+Closes the MSAA scope cut left over from Batch 47. Default 4×MSAA scenes now produce translucent tile classification depth instead of silently skipping the capture. The architecture replicates the Batch 43 globe-depth MSAA pattern — separate WGSL variant + bind-group layout that declares the source as `texture_depth_multisampled_2d`, sample-0 read via `textureLoad` — applied to the compare-and-pack pipeline.
+
+### Background
+
+Batch 47 shipped translucent classification with an honest scope cut: `executeTranslucentDepthPass` performs `copyTextureToTexture` from the scene framebuffer's depth into `_translucentDepthTexture`, and the WebGPU spec doesn't allow that copy when the source is multisampled (`sampleCount > 1` requires matching destination sample count, but our destination is single-sample so the pack pipeline can sample as `texture_depth_2d`). The Batch 47 path bailed early with `_hasTranslucentDepth = false` for MSAA scenes, leaving the default 4×MSAA configuration with no classification at all.
+
+### What landed
+
+- **`COMPARE_AND_PACK_MSAA_WGSL`** — new shader variant in `WebGPUTranslucentTileClassification.ts`. Both depth slots are `texture_depth_multisampled_2d`; reads use `textureLoad(coord, 0)` with `coord` derived from `@builtin(position)`. No sampler binding (textureLoad is unsampled). The `if (translucentDepth > opaqueDepth) translucent = 1.0` branch + `packDepth` helper are byte-identical to the single-sample shader so downstream consumers see equivalent packed output.
+- **MSAA pack pipeline + bind group layout** — `_packMSAAPipeline`, `_packMSAABGL`, `_packMSAABindGroup`, `_packMSAAShaderModule` fields + `_ensurePackMSAAPipeline()` builder. BGL declares `multisampled: true` on both depth texture entries, no sampler entry. Pipeline is single-sample on the output (the `_packedDepthTexture` is RGBA8 single-sample); only the source bindings are multisampled.
+- **Routing logic** — `executeTranslucentDepthPass` checks the scene depth's `sampleCount`. If `> 1`, instead of attempting the (illegal) copy, it records the source texture in `_msaaSourceDepthTexture` and sets `_hasTranslucentDepth = true`. `executePackDepth` now branches on `_msaaSourceDepthTexture` first; when set, it dispatches `_executePackDepthMSAA(encoder, msaaTexture)` which builds the MSAA bind group with two `aspect: "depth-only"` views over the scene depth texture and runs the MSAA pipeline. Single-sample path is unchanged.
+- **Per-frame state lifecycle** — `prepareForFrame` now clears `_msaaSourceDepthTexture` alongside `_hasTranslucentDepth`. `update()` clears the MSAA pipeline + bind group on resize. `destroy()` clears the new fields.
+
+### Why sample 0 is correct here
+
+The Batch 43 globe-depth MSAA path picked sample 0 with the rationale that per-sample depth differences are immaterial for clamp-to-surface use cases. The same applies to translucent classification: the WGSL `if (translucent > opaque) → 1.0` test is binary, so a single representative sample produces the same accept/reject outcome as the average for any geometry where the front-most fragment dominates the pixel (the typical translucent-tile case). Per-sample averaging would introduce a packed-format rounding question (the per-byte `floor` chain in `packDepth` doesn't compose cleanly over averages) and dominate the cost, with no measurable correctness gain for classification.
+
+For the Batch 47 first-cut MSAA path, opaque AND translucent depth are the same scene-framebuffer texture (the over-broad capture that the single-sample path also does — captures all translucent contributors, not just 3D-tile content). Both shader inputs read sample 0 of the same texture, so `translucent == opaque`, the `>` test is always false, and the packed output is the scene depth — identical end-state to what the single-sample copy + pack would produce on the same scene.
+
+### Single-sample path preserved
+
+The original `_packPipeline` / `_packBGL` / `_packBindGroup` + `COMPARE_AND_PACK_WGSL` path is untouched. `executeTranslucentDepthPass` still performs the copy when `sampleCount === 1`, and `executePackDepth` falls through to the single-sample bind-group construction + pipeline dispatch when `_msaaSourceDepthTexture` is null. No behavior change for single-sample scenes.
+
+### Scope cuts preserved
+
+This batch ONLY closes the MSAA gate. The other Batch 47 follow-ups remain: `C-R8-TRANSLUCENT-DEPTH-ONLY` (selective `_depthOnlyCommand` derivation), `C-R8-TRANSLUCENT-MULTI-FRUSTUM` (last-frustum-wins), `C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH` (binding `packedTranslucentDepthView` into classification pipelines).
+
+### TSC status
+
+`npx tsc --project packages/engine/tsconfig.json --noEmit` runs clean for both modified files. Pre-existing untracked `WebGPUEdgeVisibilityEmitter.ts` syntax errors (noted in Batch 57) are unchanged.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) — `COMPARE_AND_PACK_MSAA_WGSL`, MSAA pipeline fields + builder, `_msaaSourceDepthTexture` per-frame state, MSAA branches in `executeTranslucentDepthPass` and `executePackDepth`, `_executePackDepthMSAA` helper, lifecycle wiring in `prepareForFrame` / `update` / `destroy`, header docstring updated.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — call-site comment updated to reflect MSAA support; no logic changes (the existing call passes the scene depth + sampleable view as before, and the renderer routes internally).
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — `C-R8-TRANSLUCENT-DEPTH-MSAA` removed from open follow-ups; Batch 61 summary appended to the C-R8 entry.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-TRANSLUCENT-DEPTH-MSAA | RENDERER_DEEP | Translucent classification on MSAA scenes | **FIXED** — `COMPARE_AND_PACK_MSAA_WGSL` variant + MSAA pack pipeline (`texture_depth_multisampled_2d` + `textureLoad(coord, 0)`) routed via `_msaaSourceDepthTexture` set in `executeTranslucentDepthPass`. Output byte-equivalent to single-sample copy + pack; downstream composite + classification consumers unchanged. |
+
+---
+
+## Batch 62 — C-R7-RENDERER-MIGRATION continued (2026-04-25)
+
+Second-cut migration of three more feature renderers off their per-renderer pipeline maps and onto the central `context.webgpuPipelineCache`. Same pattern as Batch 56: build descriptor + BGLs + pipeline-layout once, route the actual `GPURenderPipeline` through `WebGPURenderPipelineCache.getPipeline()`, check `getPipelineSync()` per frame, skip the draw on frames where the pipelines aren't materialized yet, fall back to direct synchronous creation when the cache is unavailable.
+
+### What landed
+
+- **`WebGPUGroundPrimitiveRenderer.js`** — Stencil + color + pick pipelines. The old `createGroundPipelines` was renamed to `buildGroundPipelineResources` and now emits three `WebGPURenderPipelineDescriptor` objects + the shared shader module / BGL / pipeline layout. New `tryResolveGroundPrimitivePipelines` resolves all three through the central cache; on the first frame the resolver returns false and `createWebGPUGroundPrimitiveCommands` returns null commands so the scene-side caller skips the GroundPrimitive. Subsequent frames pick up the cached `GPURenderPipeline` synchronously. Two ground primitives with identical (format, depth format, classification type) descriptors now share one set of three pipelines instead of materializing three each. New `pipelineRequestPending` flag on the cache prevents duplicate in-flight requests.
+- **`WebGPUPointPrimitiveRenderer.js`** — Color + pick pipelines, both keyed by the active DP-H42/DP-H40 `defines` bitmask. The per-`defines` `cache.pipelines` and `cache.pickPipelines` Maps now hold `{ descriptor, pipeline, pending }` slots instead of bare `GPURenderPipeline` objects; new `tryResolvePointPipeline` resolves each slot through the central cache. Two PointPrimitiveCollections rendering with the same (defines, format, blend) now share one color pipeline. The renderer skips its color/pick draws on frames where the pipeline is still pending.
+- **`WebGPUPolylineRenderer.js`** — Color + pick pipelines for each (materialType × defines) combo (5 material types × 4 define combos × 2 passes = up to 40 slots per device, in practice 2-4 slots active per scene). Renamed `getOrCreatePipeline` → `getOrCreatePolylinePipelineEntry` (returns slot with descriptor + null pipeline + BGLs); the resolver `tryResolvePolylinePipeline` handles both color and pick paths via a shared shape. The `for (const [materialType, group] of groups)` loop now `continue`s past material groups whose pipeline is still pending, and the pick path returns early. Two PolylineCollections with the same materialType + defines now share their pipelines.
+
+### Scope cuts
+
+- **`WebGPUModelPipelineCache`** still not migrated — same rationale as Batch 56 (needs `C-R7-SHADER-MODULE-DEDUP` first; routing without shader-module sharing across model instances doesn't actually dedupe anything).
+- **`WebGPUAutoExposure`, `WebGPUPostProcessEffects`** still not migrated — compute pipelines, central cache only handles render pipelines.
+- **The remaining 9 feature renderers** (`WebGPUBillboardRenderer`, `WebGPULabelRenderer`, `WebGPUCloudRenderer`, `WebGPUEnvironmentRenderer`, `WebGPUVolumetricFogRenderer`, `WebGPUWeatherRenderer`, `WebGPUVoxelRenderer`, `WebGPUPointCloudRenderer`, `WebGPUGlobeSurfaceRenderer`) still keep their local pipeline maps. Tracked under continuing `C-R7-RENDERER-MIGRATION`.
+- **No shader changes, no behavior changes.** Same WGSL, same descriptors, same draw calls, same rendering output. Migration is purely pipeline routing.
+
+### Backwards-compat behavior
+
+All three migrated renderers fall back to direct `device.createRenderPipeline()` via a per-renderer `descriptorToGPU()` helper when `context.webgpuPipelineCache` is null (legacy callers, WebGL contexts where the field doesn't exist). Behavior is identical to pre-migration in that path. The new `pipelineRequestPending` / `pending` flags only matter on the cache path; they're set to `false` from the start so the fallback path never inspects them.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) — `buildGroundPipelineResources` + `tryResolveGroundPrimitivePipelines` + `descriptorToGPU` fallback; updated `createWebGPUGroundPrimitiveCommands` to use the resolver and skip draws when not ready
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js) — `buildPointColorDescriptor` + `buildPointPickDescriptor` + `tryResolvePointPipeline` + `descriptorToGPU` fallback; updated `updateWebGPUPointPrimitives` and `_pushPickCommand` to skip draws when not ready
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js) — `buildPolylineColorDescriptor` + `buildPolylinePickDescriptor` + `tryResolvePolylinePipeline` + `descriptorToGPU` fallback; renamed `getOrCreatePipeline` → `getOrCreatePolylinePipelineEntry`; updated `updateWebGPUPolylines` and `_pushPolylinePickCommand` to skip draws when not ready
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R7 entry updated to reflect 6 renderers migrated (was 3)
+
+`npx tsc --noEmit` runs clean.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R7-RENDERER-MIGRATION (PARTIAL, 6/15) | RENDERER_DEEP | Per-renderer routing through central pipeline cache | Three more renderers (Ground, Point, Polyline) migrated to `context.webgpuPipelineCache`. Total migrated: 6 of ~15 (Ellipsoid, GaussianSplat, DepthPlane, GroundPrimitive, PointPrimitive, Polyline). 9 remaining renderers still maintain local pipeline maps; `WebGPUModelPipelineCache` blocked on `C-R7-SHADER-MODULE-DEDUP`. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.

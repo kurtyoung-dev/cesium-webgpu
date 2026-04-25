@@ -33,9 +33,24 @@
 
 import Pass from "../../Renderer/Pass.js";
 import mergeSort from "../../Core/mergeSort.js";
+import {
+  backToFront as _commandSorterBackToFront,
+  backToFrontSplats as _commandSorterBackToFrontSplats,
+} from "../../Scene/CommandSorter.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
+import { WebGPUEdgeFramebuffer } from "./WebGPUEdgeFramebuffer.js";
+import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClassification.js";
+// C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — `WebGPUEdgeComposite` retired.
+// Model edges now composite inline inside `ModelPBRComplete.wgsl` via
+// `applyEdgeOverlay()` (Batch 48), with full per-feature gating that
+// the post-process consumer couldn't see. Primitive shaders don't
+// emit edge commands, so no consumer is missing — the file was the
+// only path the post-process overlay served. If a future emitter
+// (decals, ground primitives) adds a `Pass.CESIUM_3D_TILE_EDGES`
+// command path, restore the composite OR ride C-R8-EDGE-INLINE-PRIMITIVES
+// to extend the inline stage to that shader family.
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
@@ -44,6 +59,14 @@ import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
 import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
+import {
+  buildInvertClassificationColorAttachment,
+  buildInvertClassificationDepthStencilAttachment,
+  isInvertClassificationReady,
+  executeInvertClassificationComposite,
+  getInvertClassificationSampleCount,
+  getInvertClassificationDepthTexture,
+} from "./WebGPUInvertClassification.js";
 
 /**
  * Configuration for a single frame's rendering.
@@ -79,6 +102,88 @@ function _getWarnedCommands(context: WebGPUContext): Set<string> {
   return set;
 }
 
+/**
+ * Backend-agnostic derived-command dispatcher (C-R2) — mirrors the
+ * polymorphic selection in {@link Scene/SceneRenderer.js#executeCommand}
+ * so WebGPU honours `logDepth` / `hdr` / `picking` / `pickingMetadata` /
+ * `depth-only` / `shadows.receive` variants when a feature renderer has
+ * populated them on the command.
+ *
+ * Empty `derivedCommands` (the common case for WebGPU-native feature
+ * renderers that handle variants internally) falls through to the base
+ * command, so wiring this dispatcher on top of the existing execute path
+ * is byte-identical for those renderers.
+ *
+ * `isPickPass = true` is how `_executePickBatch` signals that it is
+ * rendering to the pick FBO; the WebGL path infers this from
+ * `frameState.passes.pick`, but the WebGPU pick pass runs as a separate
+ * branch so we pass the signal explicitly to keep the dispatcher a pure
+ * function.
+ */
+function selectCommandVariant(
+  command: CesiumAnyDrawCommand,
+  scene: CesiumScene,
+  isPickPass: boolean,
+): CesiumAnyDrawCommand {
+  const derived = command.derivedCommands;
+  if (!derived) {
+    return command;
+  }
+
+  const frameState = scene.frameState;
+  let cmd: CesiumAnyDrawCommand = command;
+
+  // Log depth applies to every pass — it's a depth-write variant, not a
+  // color-path variant. Swap before every other gate so downstream reads
+  // see the log-depth command's own `derivedCommands` chain (matching
+  // SceneRenderer.executeCommand line 49-51).
+  if (frameState.useLogDepth && derived.logDepth?.command) {
+    cmd = derived.logDepth.command;
+  }
+
+  const passes = frameState.passes;
+  const isPicking = isPickPass || passes.pick || passes.pickVoxel;
+  const isDepth = passes.depth;
+
+  // HDR variant — only swap when rendering to an HDR framebuffer, which
+  // never happens during pick/depth/pickVoxel passes.
+  const hdrVariant = cmd.derivedCommands?.hdr?.command;
+  if (!isPicking && !isDepth && scene.highDynamicRange && hdrVariant) {
+    cmd = hdrVariant;
+  }
+
+  // Pick / depth passes short-circuit: if the command has the right
+  // variant, use it; otherwise fall through to the base command so the
+  // dispatcher never silently drops a command (same as WebGL).
+  if (isPicking || isDepth) {
+    const d = cmd.derivedCommands;
+    if (isPicking && !isDepth) {
+      if (
+        frameState.pickingMetadata &&
+        d?.pickingMetadata?.pickMetadataCommand
+      ) {
+        return d.pickingMetadata.pickMetadataCommand;
+      }
+      if (!frameState.pickingMetadata && d?.picking?.pickCommand) {
+        return d.picking.pickCommand;
+      }
+    } else if (d?.depth?.depthOnlyCommand) {
+      return d.depth.depthOnlyCommand;
+    }
+    return cmd;
+  }
+
+  // Shadow receive variant — only on render passes when shadows are
+  // enabled and the command opts in via `receiveShadows`.
+  const shadowState = frameState.shadowState;
+  const shadowReceive = cmd.derivedCommands?.shadows?.receiveCommand;
+  if (shadowState?.lightShadowsEnabled && cmd.receiveShadows && shadowReceive) {
+    return shadowReceive;
+  }
+
+  return cmd;
+}
+
 function executeWebGPUCommand(
   command: CesiumAnyDrawCommand,
   scene: CesiumScene,
@@ -89,31 +194,38 @@ function executeWebGPUCommand(
     return;
   }
 
+  // C-R2: run the base command through the derived-command dispatcher so
+  // WebGPU inherits WebGL's logDepth/hdr/shadows-receive variant selection.
+  const dispatched = selectCommandVariant(command, scene, false);
+
   // Detect command type via duck-typing:
   // - WebGPU commands have `pipeline` or `_pipeline` -> execute(renderPass, context)
   // - WebGL commands have `shaderProgram` -> execute(context, passState)
   // - isWebGPUDrawCommand also supported for backwards compat
   const isGPU =
-    command.isWebGPUDrawCommand === true ||
-    command.pipeline !== undefined ||
-    command._pipeline !== undefined;
+    dispatched.isWebGPUDrawCommand === true ||
+    dispatched.pipeline !== undefined ||
+    dispatched._pipeline !== undefined;
 
   if (isGPU) {
     const renderPass = context.currentRenderPassEncoder;
     if (renderPass) {
-      command.execute(renderPass, context);
+      dispatched.execute(renderPass, context);
     }
     return;
   }
-  if (command.execute) {
-    command.execute(context, passState);
+  if (dispatched.execute) {
+    dispatched.execute(context, passState);
     return;
   }
 }
 
 /**
- * Back-to-front comparator matching Scene/CommandSorter.js semantics.
- * Larger eye-distance-squared draws first so alpha compositing is correct.
+ * Back-to-front comparator delegating to `Scene/CommandSorter.js#backToFront`
+ * for WebGL-parity semantics: sortKey → sortPriority → eye-distance-squared.
+ * The guard short-circuits when WebGPU commands lack a sphere (some OIT
+ * auto-create paths), which WebGL doesn't produce but the WebGPU pipeline
+ * occasionally does.
  */
 function _backToFrontComparator(
   a: CesiumAnyDrawCommand,
@@ -125,7 +237,27 @@ function _backToFrontComparator(
   if (!bvA || !bvB || !bvA.distanceSquaredTo || !bvB.distanceSquaredTo) {
     return 0;
   }
-  return bvB.distanceSquaredTo(position) - bvA.distanceSquaredTo(position);
+  return _commandSorterBackToFront(a, b, position);
+}
+
+/**
+ * Gaussian splat comparator delegating to
+ * `Scene/CommandSorter.js#backToFrontSplats`. Splats sort on raw center
+ * rather than `distanceSquaredTo(sphere)` because their bounding volume
+ * is usually an oriented box whose center better reflects draw depth
+ * than a conservative sphere radius would.
+ */
+function _backToFrontSplatsComparator(
+  a: CesiumAnyDrawCommand,
+  b: CesiumAnyDrawCommand,
+  position: { x: number; y: number; z: number },
+): number {
+  const bvA = a?.boundingVolume;
+  const bvB = b?.boundingVolume;
+  if (!bvA?.center || !bvB?.center) {
+    return 0;
+  }
+  return _commandSorterBackToFrontSplats(a, b, position);
 }
 
 /**
@@ -146,6 +278,26 @@ function sortCommandsBackToFront(
   // live backing array would scramble pooled slots past `count`.
   const slice = commands.slice(0, count);
   mergeSort(slice, _backToFrontComparator, scene.camera.positionWC);
+  for (let i = 0; i < count; i++) {
+    commands[i] = slice[i];
+  }
+}
+
+/**
+ * Gaussian-splat-specific back-to-front sort — uses `backToFrontSplats` so
+ * the camera-distance metric comes from the box center, not the sphere's
+ * conservative `distanceSquaredTo`.
+ */
+function sortGaussianSplatsBackToFront(
+  commands: CesiumAnyDrawCommand[],
+  count: number,
+  scene: CesiumScene,
+): void {
+  if (count <= 1 || !scene?.camera?.positionWC) {
+    return;
+  }
+  const slice = commands.slice(0, count);
+  mergeSort(slice, _backToFrontSplatsComparator, scene.camera.positionWC);
   for (let i = 0; i < count; i++) {
     commands[i] = slice[i];
   }
@@ -415,6 +567,20 @@ export class WebGPUSceneRenderer {
 
   // Scene-level rendering resources (lazy-initialized)
   private _sceneFramebuffer: WebGPUSceneFramebuffer | null = null;
+  // C-R8-EDGE-FBO (Batch 44) — MRT framebuffer for the
+  // CESIUM_3D_TILE_EDGES pass (edge color + id + packed depth + depth-
+  // stencil). Lazily allocated on first frame where
+  // `scene._enableEdgeVisibility` is true; stays null otherwise to
+  // avoid paying the allocation cost for scenes that don't use edges.
+  private _edgeFramebuffer: WebGPUEdgeFramebuffer | null = null;
+  // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent tile
+  // classification. Allocated when a frame produces classification
+  // commands AND has translucent geometry that needs depth capture.
+  // Currently allocates eagerly when scene-init runs because the
+  // first-cut depth-capture path uses `copyTextureToTexture` from the
+  // scene framebuffer — cheap to keep allocated.
+  private _translucentTileClassification: WebGPUTranslucentTileClassification | null =
+    null;
   private _oit: WebGPUOIT | null = null;
   private _globeDepth: WebGPUGlobeDepth | null = null;
   private _depthPlane: WebGPUDepthPlane | null = null;
@@ -429,6 +595,21 @@ export class WebGPUSceneRenderer {
   // Captured during the frustum loop so the post-process debug overlay
   // can tint pixels by which frustum drew them. Reset each frame.
   private _capturedFrustumRanges: { near: number; far: number }[] = [];
+
+  // C-R8-INVERT-CLASS-STENCIL (Batch 40) — set by `_execute3DTilePasses`
+  // when it successfully runs the CLASSIFICATION_IGNORE_SHOW pass into
+  // the invert FBO, meaning the depth-stencil view carries stencil
+  // bits the final composite can use to split classified vs
+  // unclassified tile pixels. Reset per-frame at the start of the
+  // scene render loop; consumed by `_runInvertClassificationComposite`.
+  private _invertClassStencilReady: boolean = false;
+
+  // C-R8-EDGE-FBO (Batch 44) — set by `_execute3DTilePasses` when the
+  // CESIUM_3D_TILE_EDGES pass actually ran into the edge MRT
+  // framebuffer AND produced content. Reset per-frame; the model FS
+  // inline edge stage (Batch 48) reads it via `context._edge*View` to
+  // decide whether to gate the overlay or skip.
+  private _edgeTexturesPopulated: boolean = false;
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
@@ -456,6 +637,10 @@ export class WebGPUSceneRenderer {
   } | null = null;
   private _lastCullResults: GPUCullResults | null = null;
 
+  // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
+  // re-calls to `_ensureResources` don't stack duplicate subscribers.
+  private _deviceInvalidationUnsub: (() => void) | null = null;
+
   // --- Lazy initialization ---
 
   /**
@@ -467,6 +652,26 @@ export class WebGPUSceneRenderer {
     const device: GPUDevice | undefined = context._device;
     if (!device) {
       return;
+    }
+
+    // C-R12 (Batch 33) — subscribe once to device-invalidation events
+    // so SceneRenderer-owned resources (scene framebuffer, OIT,
+    // globeDepth, depth plane, post-process pipeline, debug overlays)
+    // are dropped during recovery. Next frame's `_ensureResources`
+    // rebuilds them against the new device.
+    if (!this._deviceInvalidationUnsub) {
+      this._deviceInvalidationUnsub = context.onDeviceInvalidated(() => {
+        this._sceneFramebuffer = null;
+        this._edgeFramebuffer = null;
+        this._translucentTileClassification = null;
+        this._oit = null;
+        this._globeDepth = null;
+        this._depthPlane = null;
+        this._postProcess = null;
+        this._debugDepthOverlay = null;
+        this._debugFrustumOverlay = null;
+        this._initialized = false;
+      });
     }
 
     const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
@@ -493,6 +698,16 @@ export class WebGPUSceneRenderer {
         canvasFormat,
       );
     }
+    // C-R8-INVERT-HDR (Batch 41) — keep `context._sceneColorFormat`
+    // in sync with the scene framebuffer's actual color format. Feature
+    // renderers (InvertClassification, OIT) read this so their own
+    // texture allocations pick `rgba16float` when the scene is HDR and
+    // the canvas format otherwise. Previously this field was declared
+    // on the context but never assigned, leaving it stuck at the
+    // default `"bgra8unorm"` and producing format mismatches when
+    // scene-facing pipelines composited against HDR targets.
+    context._sceneColorFormat =
+      this._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
 
     // OIT (order-independent transparency)
     if (config.useOIT && !this._oit) {
@@ -500,6 +715,49 @@ export class WebGPUSceneRenderer {
     }
     if (this._oit && (!this._initialized || needsResize)) {
       this._oit.update(device, width, height);
+    }
+
+    // C-R8-EDGE-FBO (Batch 44) — edge MRT framebuffer. Allocated only
+    // when the scene opts in via `_enableEdgeVisibility`; nothing
+    // downstream looks at it otherwise, so idle scenes don't pay for
+    // 3 color textures + depth-stencil. Lazy = first-touch, so if the
+    // flag toggles on mid-session the next update() call allocates.
+    const enableEdgeVisibility = !!(
+      scene as unknown as { _enableEdgeVisibility?: boolean }
+    )._enableEdgeVisibility;
+    if (enableEdgeVisibility && !this._edgeFramebuffer) {
+      this._edgeFramebuffer = new WebGPUEdgeFramebuffer();
+    }
+    if (this._edgeFramebuffer && (!this._initialized || needsResize)) {
+      const numSamples: number = context._msaaSamples ?? 1;
+      this._edgeFramebuffer.update(
+        device,
+        width,
+        height,
+        numSamples,
+        this._sceneFramebuffer.colorFormat ?? "bgra8unorm",
+      );
+    }
+
+    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent classification
+    // framebuffer. Allocated lazily on first scene-init; resources are
+    // small (one depth, one packed-depth, one color — all single-sample)
+    // and the per-frame dispatch is gated on `hasTranslucentDepth` so
+    // idle scenes pay only the allocation, not the per-frame work.
+    if (!this._translucentTileClassification) {
+      this._translucentTileClassification =
+        new WebGPUTranslucentTileClassification();
+    }
+    if (
+      this._translucentTileClassification &&
+      (!this._initialized || needsResize)
+    ) {
+      this._translucentTileClassification.update(
+        device,
+        width,
+        height,
+        this._sceneFramebuffer.colorFormat ?? "bgra8unorm",
+      );
     }
 
     // Globe depth framebuffer
@@ -527,7 +785,16 @@ export class WebGPUSceneRenderer {
         context.depthFormat ?? "depth24plus-stencil8";
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
-      this._depthPlane.initialize(device, depthFormat, canvasFormat);
+      // C-R7-RENDERER-MIGRATION (Batch 56) — route the depth-plane
+      // pipeline through the central cache so split-screen / multi-canvas
+      // setups dedupe identical descriptors instead of materializing
+      // separate `GPURenderPipeline` objects per scene.
+      this._depthPlane.initialize(
+        device,
+        depthFormat,
+        canvasFormat,
+        context.webgpuPipelineCache ?? null,
+      );
     }
 
     // Post-processing pipeline
@@ -793,6 +1060,40 @@ export class WebGPUSceneRenderer {
     // Reset captured ranges — the debug frustum overlay reads this list
     // in `_runPostProcessing` to tint pixels by which frustum drew them.
     this._capturedFrustumRanges.length = 0;
+    // Reset per-frame stencil-ready flag. `_execute3DTilePasses` flips
+    // it to true when the CLASSIFICATION_IGNORE_SHOW pass runs inside
+    // the invert FBO. `_runInvertClassificationComposite` reads it to
+    // decide whether to use the stencil-gated two-pass composite or
+    // the single-pass fallback.
+    this._invertClassStencilReady = false;
+    // C-R8-EDGE-FBO (Batch 44) — reset per-frame edge-populated flag
+    // so `_runEdgeComposite` skips the overlay on frames where no
+    // edge commands ran (typical frame for scenes without model edge
+    // geometry).
+    this._edgeTexturesPopulated = false;
+    // C-R8-EDGE-INLINE — clear per-frame globe-depth view publication
+    // so a stale view from the previous frame doesn't bleed into the
+    // model effects bind group on frames that skip the globe-depth
+    // copy (e.g., picking, debug paths, useGlobeDepthFramebuffer off).
+    context._globeDepthView = null;
+    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — clear per-frame
+    // translucent-depth flag; set when the post-translucent depth
+    // capture succeeds (single-sample scenes).
+    this._translucentTileClassification?.prepareForFrame();
+
+    // C-R8-SCENE2D-JITTER (Batch 36) — capture the initial 2D camera
+    // altitude before the frustum loop so we can offset per-frustum
+    // inside 2D mode. WebGL's `SceneRenderer.js:419,444-449` does this
+    // to compress the 2D near/far range into [1, far-near+1] so the
+    // ortho depth buffer has uniform precision across frustums instead
+    // of banding where tiles intersect a frustum boundary. `.position`
+    // lives on the real `Camera.js` instance (line 175) but isn't
+    // declared on the ambient `CesiumCamera` shape — cast to read.
+    const scene2DCamera = scene.camera as unknown as {
+      position: { z: number };
+    };
+    const initialHeight2D =
+      scene.mode === 2 /* SceneMode.SCENE2D */ ? scene2DCamera.position.z : 0;
 
     // --- Multi-frustum loop: iterate from FAR to NEAR ---
     // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
@@ -800,13 +1101,25 @@ export class WebGPUSceneRenderer {
       const index = numFrustums - i - 1;
       const frustumCommands = frustumCommandsList[index];
 
-      // Apply opaque near offset to avoid tearing artifacts between adjacent frustums
-      // (except for the nearest frustum which uses the actual near value)
-      const near =
-        index !== 0
-          ? frustumCommands.near * opaqueFrustumNearOffset
-          : frustumCommands.near;
-      const far = frustumCommands.far;
+      // C-R8-SCENE2D-JITTER (Batch 36) — 2D-mode per-frustum offset.
+      // Mirrors `SceneRenderer.js:444-449`: compress far-near to [1,
+      // far-near+1] and shift camera.z to keep ortho depth precision
+      // consistent across frustum boundaries.
+      let near;
+      let far;
+      if (scene.mode === 2 /* SceneMode.SCENE2D */) {
+        scene2DCamera.position.z = initialHeight2D - frustumCommands.near + 1.0;
+        far = Math.max(1.0, frustumCommands.far - frustumCommands.near);
+        near = 1.0;
+      } else {
+        // Apply opaque near offset to avoid tearing artifacts between adjacent frustums
+        // (except for the nearest frustum which uses the actual near value)
+        near =
+          index !== 0
+            ? frustumCommands.near * opaqueFrustumNearOffset
+            : frustumCommands.near;
+        far = frustumCommands.far;
+      }
 
       // Store the range indexed by the ORIGINAL frustum index (0 = nearest)
       // so `WebGPUDebugFrustumOverlay` can match the WebGL DebugInspector
@@ -850,16 +1163,31 @@ export class WebGPUSceneRenderer {
       // Pass 2: GLOBE
       this._executeGlobePass(frustumCommands, config);
 
-      // Copy globe depth for terrain clamping and picking
+      // Copy globe depth for terrain clamping and picking.
+      // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — pass the scene framebuffer
+      // depth explicitly (that's where globe actually wrote). The
+      // internal `_outputTarget` fallback inside GlobeDepth is never
+      // written to by WebGPU scene code.
       if (this._globeDepth && config.useGlobeDepthFramebuffer) {
         const encoder: GPUCommandEncoder | undefined =
           context._currentCommandEncoder;
         if (encoder) {
+          const depthSource: GPUTexture | undefined =
+            this._sceneFramebuffer?.colorTarget?.getDepthTexture();
           // End current render pass so the depth texture is available for reading
           context.endCurrentRenderPass?.();
-          this._globeDepth.executeCopyDepth(encoder);
+          this._globeDepth.executeCopyDepth(encoder, depthSource);
           // Resume default render pass for subsequent commands
           context.resumeDefaultRenderPass?.();
+          // C-R8-EDGE-INLINE — publish the packed-depth view on the
+          // context so model FS bind-group construction can sample
+          // globe depth without reaching back through the renderer
+          // hierarchy. View is recreated each frame because the
+          // underlying texture can change on resize.
+          const packedDepth = this._globeDepth.globeDepthTexture;
+          context._globeDepthView = packedDepth
+            ? packedDepth.createView()
+            : null;
         }
       }
 
@@ -883,14 +1211,58 @@ export class WebGPUSceneRenderer {
         }
       }
 
-      // Pass 4-7: 3D Tiles passes
-      this._execute3DTilePasses(frustumCommands, config);
+      // Pass 4-7: 3D Tiles passes. C-R8 (Batch 35): pass a depth-update
+      // hook so `globeDepth.executeUpdateDepth` fires between the main
+      // `CESIUM_3D_TILE` pass and the classification passes — otherwise
+      // classification reads pre-tile terrain-only depth and Z-fights
+      // against 3D-tile surfaces.
+      //
+      // C-R8-INVERT-DEPTH-SOURCE (Batch 41): when invert classification
+      // is active, tile geometry wrote to the invert FBO's own depth
+      // (not scene depth), so the post-tile depth copy must sample
+      // THAT depth texture or downstream consumers see globe-only
+      // depth and Z-fight tiles. Mirrors the WebGL `depthStencilTexture`
+      // argument at `SceneRenderer.js:576`.
+      this._execute3DTilePasses(frustumCommands, config, () => {
+        if (this._globeDepth && config.useGlobeDepthFramebuffer) {
+          const enc: GPUCommandEncoder | undefined =
+            context._currentCommandEncoder;
+          if (enc) {
+            // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — default depth source
+            // is the scene framebuffer's depth (that's where scene
+            // commands actually wrote depth). When invert is on, tile
+            // depth went into the invert FBO instead, so override
+            // with the invert depth texture. Mirrors WebGL's explicit
+            // `depthStencilTexture` argument at
+            // `SceneRenderer.js:549-553` (default) and `:576` (invert).
+            let depthSource: GPUTexture | undefined =
+              this._sceneFramebuffer?.colorTarget?.getDepthTexture();
+            if (config.useInvertClassification) {
+              const invertOwner = (
+                scene as unknown as {
+                  _invertClassification?: CesiumObjectWithWebGPUCache;
+                }
+              )._invertClassification;
+              if (invertOwner) {
+                const invertDepth =
+                  getInvertClassificationDepthTexture(invertOwner);
+                if (invertDepth) {
+                  depthSource = invertDepth;
+                }
+              }
+            }
+            context.endCurrentRenderPass?.();
+            this._globeDepth.executeUpdateDepth(enc, depthSource);
+            context.resumeDefaultRenderPass?.();
+          }
+        }
+      });
 
-      // Pass 8: OPAQUE
-      this._executeOpaquePass(frustumCommands, config);
-
-      // Pass 10: VOXELS — media overlay, order-dependent. Sort back-to-front
-      // so volumetric media composites correctly over opaque geometry.
+      // C-R8 (Batch 35) — VOXELS moved before OPAQUE to match WebGL.
+      // `SceneRenderer.js:606` runs `performVoxelsPass` BEFORE
+      // `performPass(Pass.OPAQUE)`; previous WebGPU ordering ran voxels
+      // after OPAQUE which mis-ordered volumetric media against opaque
+      // depth. Back-to-front sort still applies.
       {
         const voxCount: number = frustumCommands.indices[Pass.VOXELS];
         if (voxCount > 0) {
@@ -908,6 +1280,9 @@ export class WebGPUSceneRenderer {
         context,
         passState,
       );
+
+      // Pass 8: OPAQUE
+      this._executeOpaquePass(frustumCommands, config);
 
       // Pass 11: GAUSSIAN_SPLATS
       // GS-WSR: If OIT is available and splat commands have OIT variants,
@@ -934,8 +1309,11 @@ export class WebGPUSceneRenderer {
           };
         } else {
           if (splatCount > 0) {
-            // GS uses alpha accumulation — non-OIT path must sort back-to-front
-            sortCommandsBackToFront(splatCommands, splatCount, scene);
+            // GS uses alpha accumulation — non-OIT path must sort back-to-front.
+            // Splats use a box-center distance metric (see
+            // `backToFrontSplats` in Scene/CommandSorter.js) rather than the
+            // sphere `distanceSquaredTo` used by generic translucent geometry.
+            sortGaussianSplatsBackToFront(splatCommands, splatCount, scene);
           }
           this._executePassCommands(
             frustumCommands,
@@ -959,6 +1337,48 @@ export class WebGPUSceneRenderer {
 
       // Pass 9: TRANSLUCENT (with OIT if enabled)
       this._executeTranslucentPass(frustumCommands, config);
+
+      // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — capture translucent
+      // depth into the dedicated depth target so classification
+      // primitives running in the next pass can clamp to the
+      // translucent surface. First-cut implementation: copy from the
+      // scene framebuffer's depth (over-broad — captures all
+      // translucent contributors, not just 3D-tile content).
+      // C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA scenes now
+      // packed via the multisampled-depth pack pipeline (sample 0
+      // resolve), no longer skipped. Runs every frustum so the
+      // classification reads the right per-frustum depth, but only
+      // the last frustum's depth survives into the composite
+      // (multi-frustum accumulation is `C-R8-TRANSLUCENT-MULTI-FRUSTUM`).
+      const tcc = this._translucentTileClassification;
+      const has3DTileClassification =
+        (frustumCommands.indices[Pass.CESIUM_3D_TILE_CLASSIFICATION] ?? 0) > 0;
+      if (
+        !picking &&
+        tcc &&
+        has3DTileClassification &&
+        tcc.isSupported() &&
+        this._sceneFramebuffer?.colorTarget
+      ) {
+        // The scene depth texture is sampleable when single-sample.
+        // Capture happens via copyTextureToTexture so we need an
+        // active command encoder; end any current render pass first.
+        const enc: GPUCommandEncoder | undefined =
+          context._currentCommandEncoder;
+        if (enc) {
+          context.endCurrentRenderPass?.();
+          const sceneDepthTex =
+            this._sceneFramebuffer.colorTarget.getDepthTexture?.() ?? null;
+          tcc.executeTranslucentDepthPass(enc, sceneDepthTex);
+          // Pack the captured depth so classification pipelines can
+          // sample it as a regular texture.
+          const opaqueSampleableView =
+            this._sceneFramebuffer.colorTarget.getDepthSampleableView?.() ??
+            null;
+          tcc.executePackDepth(enc, opaqueSampleableView);
+          context.resumeDefaultRenderPass?.();
+        }
+      }
 
       // Pick depth copy per frustum (for pickPosition support)
       if (
@@ -989,6 +1409,26 @@ export class WebGPUSceneRenderer {
     // These are full-screen composite passes that run after all geometry
     // but before post-processing (tonemapping, bloom, FXAA, etc.)
     this._executeEnvironmentalEffects(config);
+
+    // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — post-process edge composite
+    // retired. Model edges now composite inline inside Model FS via
+    // `applyEdgeOverlay()` (Batch 48); primitive shaders don't currently
+    // emit edges. The edge MRT views are still produced (model emitter
+    // runs into the edge FBO) and remain readable from
+    // `context._edge*View` for the inline stage. No call here.
+
+    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — composite translucent
+    // classification accumulation onto scene color. No-op when no
+    // translucent depth was captured this frame.
+    this._runTranslucentTileClassificationComposite(config);
+
+    // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Composite the
+    // InvertClassification classified texture back onto scene color.
+    // Runs AFTER the main scene pass ends + resolves (so the target
+    // is the single-sample resolved view the composite pipeline is
+    // built for) and BEFORE post-processing (so the tonemap/FXAA
+    // chain sees the composited scene).
+    this._runInvertClassificationComposite(config);
 
     // Post-processing (tonemapping, FXAA, etc.)
     // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
@@ -1146,6 +1586,29 @@ export class WebGPUSceneRenderer {
         passState,
         pickRenderPass,
       );
+
+      // H-R3 (Batch 35) — VOXELS and GAUSSIAN_SPLATS pick passes. WebGL
+      // includes them in the pick-pass command list via
+      // `performIdPass`; WebGPU previously skipped them so voxel media
+      // and Gaussian splat primitives were unpickable. Commands without
+      // a pick variant fall through to the base command via
+      // `selectCommandVariant` (Batch 29), same as other passes.
+      this._executePickBatch(
+        frustumCommands,
+        Pass.VOXELS,
+        scene,
+        context,
+        passState,
+        pickRenderPass,
+      );
+      this._executePickBatch(
+        frustumCommands,
+        Pass.GAUSSIAN_SPLATS,
+        scene,
+        context,
+        passState,
+        pickRenderPass,
+      );
     }
 
     pickRenderPass.end();
@@ -1187,10 +1650,19 @@ export class WebGPUSceneRenderer {
         continue;
       }
 
-      if (command.isWebGPUDrawCommand === true) {
-        command.execute(pickRenderPass, context);
-      } else if (command.execute) {
-        command.execute(context, passState);
+      // C-R2: pick pass consults derivedCommands.picking/pickingMetadata
+      // so commands that pre-built pick variants render those (pick color
+      // output, not base-material output) into the pick FBO. Commands
+      // without a pick variant fall through to the base command — same
+      // as WebGL. WebGPU-native feature renderers (Globe, GltfModel,
+      // GroundPrimitive) typically emit pick commands through their own
+      // path and don't populate derivedCommands.picking; those still
+      // take the fallback branch.
+      const dispatched = selectCommandVariant(command, scene, true);
+      if (dispatched.isWebGPUDrawCommand === true) {
+        dispatched.execute(pickRenderPass, context);
+      } else if (dispatched.execute) {
+        dispatched.execute(context, passState);
       }
     }
   }
@@ -1409,14 +1881,52 @@ export class WebGPUSceneRenderer {
   private _execute3DTilePasses(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
+    onAfterTileMainPass?: () => void,
   ): void {
     const { scene, context, passState } = config;
-    const passes = [
-      Pass.CESIUM_3D_TILE_EDGES,
-      Pass.CESIUM_3D_TILE,
+    // C-R8 (Batch 35) — passes are split so `onAfterTileMainPass` can
+    // run between `CESIUM_3D_TILE` and `CESIUM_3D_TILE_CLASSIFICATION`.
+    // WebGL's `SceneRenderer.js:544-560` calls `globeDepth.executeUpdateDepth`
+    // at that hook so tile classification reads the updated globe depth
+    // (now including 3D-tile contributions), not the pre-tile terrain-only
+    // depth. Without it, overlay / decal / classification primitives
+    // Z-fight against 3D tile surfaces.
+    // C-R8-EDGE-FBO (Batch 44) — CESIUM_3D_TILE_EDGES is pulled out of
+    // `firstPasses` so it can route to the dedicated edge MRT
+    // framebuffer (separate color format, separate stencil reset,
+    // separate clear semantics). The main-tile pass (CESIUM_3D_TILE)
+    // continues in `firstPasses`. Edges run FIRST (matching WebGL's
+    // `SceneRenderer.js:506` which calls `performCesium3DTileEdgesPass`
+    // before OPAQUE — the edge textures are sampled by later passes).
+    const firstPasses = [Pass.CESIUM_3D_TILE];
+    const classificationPasses = [
       Pass.CESIUM_3D_TILE_CLASSIFICATION,
       Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW,
     ];
+
+    // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — When the scene has
+    // invert-classification enabled, `firstPasses` must write tile
+    // color into `InvertClassification.classifiedTexture` instead of
+    // the scene color attachment. The final composite (dispatched
+    // after the scene pass ends in `_runInvertClassificationComposite`)
+    // pulls those tile pixels back onto scene color, optionally tinted
+    // by `invertClassificationColor`. Mirrors WebGL's
+    // `SceneRenderer.js:563-600`.
+    //
+    // Falls back to the default path when:
+    //  - `useInvertClassification` is false (most frames)
+    //  - `scene._invertClassification` isn't initialized
+    //  - The invert feature-renderer cache isn't ready (first frame
+    //    after enable, pre-`FramebufferOrchestrator.update`)
+    const invertOwner = (
+      scene as unknown as {
+        _invertClassification?: CesiumObjectWithWebGPUCache;
+      }
+    )._invertClassification;
+    const redirectToInvertFBO =
+      !!config.useInvertClassification &&
+      !!invertOwner &&
+      isInvertClassificationReady(invertOwner);
     // Indirect-draw fast path. Activated automatically when a pass has
     // enough tile commands for batching to pay off (INDIRECT_BATCH_MIN).
     // Users can force on via `context.useIndirectDrawForTiles = true`
@@ -1431,7 +1941,7 @@ export class WebGPUSceneRenderer {
     const hasIndirectInfra =
       !!context.indirectDrawManager && !!context.currentRenderPassEncoder;
     const explicitlyEnabled = context.useIndirectDrawForTiles === true;
-    for (const passIndex of passes) {
+    const runPass = (passIndex: number): void => {
       const cmds = frustumCommands.commands[passIndex];
       const cnt: number = frustumCommands.indices[passIndex];
       if (cnt > 0) {
@@ -1444,6 +1954,205 @@ export class WebGPUSceneRenderer {
           executeBatch(cmds, cnt, scene, context, passState);
         }
       }
+    };
+    // C-R8-EDGE-FBO (Batch 44) — Edges pass. Redirects
+    // `Pass.CESIUM_3D_TILE_EDGES` into the dedicated edge MRT
+    // framebuffer when the scene has edge visibility enabled. Mirrors
+    // WebGL's `SceneRenderer.js:242-278 performCesium3DTileEdgesPass`.
+    // When the FBO isn't allocated (no `_enableEdgeVisibility`) or
+    // there are no edge commands, this runs as a plain pass on the
+    // scene framebuffer — matches the WebGL path which also only
+    // redirects when `_enableEdgeVisibility && view.edgeFramebuffer`.
+    const edgeCommandCount = frustumCommands.indices[Pass.CESIUM_3D_TILE_EDGES];
+    const edgeFB = this._edgeFramebuffer;
+    const redirectEdgesToFBO =
+      edgeCommandCount > 0 && !!edgeFB && edgeFB.isReady;
+    if (redirectEdgesToFBO && edgeFB) {
+      context.endCurrentRenderPass?.();
+      const encoder: GPUCommandEncoder | undefined =
+        context._currentCommandEncoder;
+      if (encoder) {
+        const edgePass = context.beginRenderPass?.({
+          label: `EdgeFramebuffer tile-edges pass (${edgeFB.sampleCount}x)`,
+          colorAttachments: edgeFB.buildColorAttachments(),
+          depthStencilAttachment: edgeFB.buildDepthStencilAttachment(),
+        });
+        if (edgePass) {
+          edgePass.setViewport(0, 0, this._width, this._height, 0, 1);
+          edgePass.setScissorRect(0, 0, this._width, this._height);
+          runPass(Pass.CESIUM_3D_TILE_EDGES);
+          context.endCurrentRenderPass?.();
+        }
+      }
+      context.resumeDefaultRenderPass?.();
+
+      // Expose the resolved edge textures on the context for the
+      // composite consumer (`_runEdgeComposite`) to pick up. Matches
+      // WebGL's `uniformState.edgeColorTexture = ...` assignment at
+      // `SceneRenderer.js:513-533`.
+      context._edgeColorView = edgeFB.colorSampleableView ?? null;
+      context._edgeIdView = edgeFB.idSampleableView ?? null;
+      context._edgeDepthView = edgeFB.depthSampleableView ?? null;
+      this._edgeTexturesPopulated = true;
+    } else if (edgeCommandCount > 0) {
+      // Edges present but FBO isn't ready (scene just enabled
+      // `_enableEdgeVisibility` this frame, or allocation raced with
+      // resize). Run on the current scene target — visually equivalent
+      // to the pre-Batch-44 path; no edge textures are populated.
+      runPass(Pass.CESIUM_3D_TILE_EDGES);
+      context._edgeColorView = null;
+      context._edgeIdView = null;
+      context._edgeDepthView = null;
+      this._edgeTexturesPopulated = false;
+    } else {
+      // No edge commands this frame — clear the context slots so a
+      // stale view from a previous frame doesn't leak into the
+      // composite (which gates on `_edgeTexturesPopulated`).
+      context._edgeColorView = null;
+      context._edgeIdView = null;
+      context._edgeDepthView = null;
+      this._edgeTexturesPopulated = false;
+    }
+
+    // Track whether the stencil-gated composite can run. Set to true
+    // once the CLASSIFICATION_IGNORE_SHOW pass actually ran inside the
+    // invert FBO (writing stencil bits). If false, the composite falls
+    // back to the single-pass tint (Batch 39 behavior).
+    let invertHasStencilData = false;
+
+    if (redirectToInvertFBO && invertOwner) {
+      // End the default scene render pass so the invert pass can open.
+      context.endCurrentRenderPass?.();
+
+      const colorAttachment =
+        buildInvertClassificationColorAttachment(invertOwner);
+      // C-R8-INVERT-CLASS-STENCIL (Batch 40) — use the invert FBO's own
+      // depth-stencil texture (not scene depth). Tile depth writes now
+      // land in the invert FBO; the classification-ignore-show pass
+      // tests against that depth and writes stencil bits. This matches
+      // WebGL's `SceneRenderer.js:567` which sets
+      // `passState.framebuffer = scene._invertClassification._fbo.framebuffer`
+      // whose attached depth-stencil texture is distinct from the
+      // scene's depth.
+      const depthAttachment = buildInvertClassificationDepthStencilAttachment(
+        invertOwner,
+        "clear",
+        "clear",
+      );
+      const encoder: GPUCommandEncoder | undefined =
+        context._currentCommandEncoder;
+
+      if (encoder && colorAttachment && depthAttachment) {
+        const invertSamples = getInvertClassificationSampleCount(invertOwner);
+
+        // Pass 1: tile main passes (EDGES + CESIUM_3D_TILE) into invert
+        // FBO (color + depth + stencil all clear).
+        const tilePassDesc: GPURenderPassDescriptor = {
+          label: `InvertClassification tile pass (${invertSamples}x)`,
+          colorAttachments: [colorAttachment],
+          depthStencilAttachment: depthAttachment,
+        };
+        const tilePass = context.beginRenderPass?.(tilePassDesc);
+        if (tilePass) {
+          tilePass.setViewport(0, 0, this._width, this._height, 0, 1);
+          tilePass.setScissorRect(0, 0, this._width, this._height);
+          for (const passIndex of firstPasses) {
+            runPass(passIndex);
+          }
+          context.endCurrentRenderPass?.();
+        }
+
+        // C-R8 (Batch 35) — depth update hook runs BETWEEN the tile
+        // main pass and the classification passes. It reads depth from
+        // the scene framebuffer currently, not the invert FBO's depth;
+        // tracked as `C-R8-INVERT-DEPTH-SOURCE` that for invert-on,
+        // globe-depth should sample the invert FBO's depth instead.
+        // Until that's wired, downstream ground/overlay primitives
+        // may still Z-fight against tiles when invert is on.
+        if (onAfterTileMainPass) {
+          onAfterTileMainPass();
+        }
+
+        // Pass 2: CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW redirected
+        // into invert FBO (loadOp=load for both color and depth so tile
+        // contributions are preserved; stencil is loaded too — starts
+        // at 0 from Pass 1's clear, classification primitives will write
+        // stencil bits here). The regular CESIUM_3D_TILE_CLASSIFICATION
+        // pass continues to run on the scene FB (below).
+        const ignoreShowColor =
+          buildInvertClassificationColorAttachment(invertOwner);
+        const ignoreShowDepth = buildInvertClassificationDepthStencilAttachment(
+          invertOwner,
+          "load",
+          "load",
+        );
+        // Override loadOp on the color — we want to preserve tile color
+        // (not clear it) so the composite still sees the tiles.
+        if (ignoreShowColor) {
+          ignoreShowColor.loadOp = "load";
+        }
+        if (ignoreShowColor && ignoreShowDepth) {
+          const ignoreShowDesc: GPURenderPassDescriptor = {
+            label: `InvertClassification ignore-show pass (${invertSamples}x)`,
+            colorAttachments: [ignoreShowColor],
+            depthStencilAttachment: ignoreShowDepth,
+          };
+          const ignoreShowPass = context.beginRenderPass?.(ignoreShowDesc);
+          if (ignoreShowPass) {
+            ignoreShowPass.setViewport(0, 0, this._width, this._height, 0, 1);
+            ignoreShowPass.setScissorRect(0, 0, this._width, this._height);
+            runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW);
+            context.endCurrentRenderPass?.();
+            invertHasStencilData = true;
+          }
+        }
+
+        // Resume scene pass for the normal CLASSIFICATION pass which
+        // runs on scene color (regular behavior, not redirected).
+        context.resumeDefaultRenderPass?.();
+        runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION);
+      } else {
+        //>>includeStart('debug', pragmas.debug);
+        console.warn(
+          `[WebGPU:SceneRenderer] InvertClassification FBO redirect ` +
+            `missing resources — encoder=${!!encoder} ` +
+            `colorAttachment=${!!colorAttachment} ` +
+            `depthAttachment=${!!depthAttachment}. Falling back to ` +
+            `default tile pass.`,
+        );
+        //>>includeEnd('debug');
+        context.resumeDefaultRenderPass?.();
+        for (const passIndex of firstPasses) {
+          runPass(passIndex);
+        }
+        if (onAfterTileMainPass) {
+          onAfterTileMainPass();
+        }
+        for (const passIndex of classificationPasses) {
+          runPass(passIndex);
+        }
+      }
+    } else {
+      for (const passIndex of firstPasses) {
+        runPass(passIndex);
+      }
+      // C-R8 (Batch 35) — depth update hook. Fires after the main 3D tile
+      // pass so classification can read tile-augmented depth.
+      if (onAfterTileMainPass) {
+        onAfterTileMainPass();
+      }
+      for (const passIndex of classificationPasses) {
+        runPass(passIndex);
+      }
+    }
+
+    // Stash the stencil-readiness flag for the end-of-scene composite.
+    // Using a per-frame slot on the renderer (not on `config`) because
+    // `config` is a plain struct, and multi-frustum rendering may reach
+    // this method more than once per frame — we want `true` if ANY
+    // frustum produced stencil data.
+    if (invertHasStencilData) {
+      this._invertClassStencilReady = true;
     }
   }
 
@@ -1830,6 +2539,124 @@ export class WebGPUSceneRenderer {
     }
   }
 
+  // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — `_runEdgeComposite()` was
+  // removed. The model FS inline edge stage (Batch 48) is the
+  // authoritative consumer; primitive shaders don't currently emit
+  // edges. If a future emitter adds non-model edge commands, restore
+  // the post-process composite OR ride C-R8-EDGE-INLINE-PRIMITIVES to
+  // extend the inline stage to that shader family.
+
+  // --- Translucent tile classification composite ---
+
+  /**
+   * C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — Composite the translucent
+   * classification accumulation onto scene color. Runs after the edge
+   * composite and before the invert classification composite. No-op
+   * when `hasTranslucentDepth` is false (most frames).
+   */
+  private _runTranslucentTileClassificationComposite(
+    config: WebGPURenderFrameConfig,
+  ): void {
+    const tcc = this._translucentTileClassification;
+    if (!tcc || !tcc.hasTranslucentDepth) return;
+    const { context } = config;
+
+    context.endCurrentRenderPass?.();
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const targetView: GPUTextureView | undefined =
+      colorTarget?.getColorTextureView?.(0);
+    const targetFormat: GPUTextureFormat =
+      (context as unknown as { _sceneColorFormat?: GPUTextureFormat })
+        ._sceneColorFormat ?? "bgra8unorm";
+
+    if (encoder && targetView) {
+      tcc.composite(encoder, targetView, targetFormat);
+    }
+    context.resumeDefaultRenderPass?.();
+  }
+
+  // --- InvertClassification composite ---
+
+  /**
+   * C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Pairs with the FBO
+   * redirect in {@link _execute3DTilePasses}. When the redirect is
+   * active, 3D-tile pixels go into `InvertClassification.classifiedTexture`
+   * instead of scene color; this method composites them back onto the
+   * resolved scene color view so the frame has tiles in the final image.
+   *
+   * Runs AFTER the main scene render pass ends, which is required
+   * because the composite targets the SINGLE-SAMPLE resolved view
+   * (`colorTarget.getColorTextureView(0)`) and the MSAA attachment
+   * only resolves on pass end. Wrapped in end/resume so post-process
+   * continues to see the scene pass active on resume.
+   *
+   * No-op when InvertClassification is disabled or not ready — the
+   * tile pass went to the default path and scene color already has
+   * the tiles in place.
+   */
+  private _runInvertClassificationComposite(
+    config: WebGPURenderFrameConfig,
+  ): void {
+    if (!config.useInvertClassification) {
+      return;
+    }
+    const { scene, context } = config;
+    const invertOwner = (
+      scene as unknown as {
+        _invertClassification?: CesiumObjectWithWebGPUCache;
+      }
+    )._invertClassification;
+    if (!invertOwner || !isInvertClassificationReady(invertOwner)) {
+      return;
+    }
+
+    // End the current scene pass so the MSAA color attachment resolves
+    // into the single-sample resolve view. Both the stencil-gated path
+    // (writes to MSAA + auto-resolves at pass end) and the fallback
+    // path (writes to the resolved view directly) need this.
+    context.endCurrentRenderPass?.();
+
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const resolveView: GPUTextureView | undefined =
+      colorTarget?.getColorTextureView?.(0);
+
+    // C-R8-INVERT-CLASS-STENCIL (Batch 40) — when the stencil-ready
+    // flag is set (CLASSIFICATION_IGNORE_SHOW ran and wrote stencil
+    // bits into the invert FBO), pass the MSAA scene-color attachment
+    // view so the composite can run at MSAA sample count alongside
+    // the MSAA invert depth-stencil. Otherwise fall back to the
+    // single-sample single-pass composite (Batch 39 behavior).
+    const sceneAttachmentView =
+      this._invertClassStencilReady && colorTarget?.getColorAttachments
+        ? colorTarget.getColorAttachments()[0]?.view
+        : undefined;
+
+    if (encoder && resolveView) {
+      executeInvertClassificationComposite(
+        invertOwner,
+        encoder,
+        resolveView,
+        sceneAttachmentView,
+        this._invertClassStencilReady,
+      );
+    } else {
+      //>>includeStart('debug', pragmas.debug);
+      console.warn(
+        `[WebGPU:SceneRenderer] InvertClassification composite skipped ` +
+          `— encoder=${!!encoder} resolveView=${!!resolveView}`,
+      );
+      //>>includeEnd('debug');
+    }
+
+    // Resume default scene pass for any remaining work (post-process
+    // starts by ending the pass itself, so the resume here is cheap).
+    context.resumeDefaultRenderPass?.();
+  }
+
   // --- Post-processing ---
 
   private _runPostProcessing(config: WebGPURenderFrameConfig): void {
@@ -2143,6 +2970,14 @@ export class WebGPUSceneRenderer {
       this._sceneFramebuffer.destroy();
       this._sceneFramebuffer = null;
     }
+    if (this._edgeFramebuffer) {
+      this._edgeFramebuffer.destroy();
+      this._edgeFramebuffer = null;
+    }
+    if (this._translucentTileClassification) {
+      this._translucentTileClassification.destroy();
+      this._translucentTileClassification = null;
+    }
     if (this._oit) {
       this._oit.destroy();
       this._oit = null;
@@ -2158,6 +2993,13 @@ export class WebGPUSceneRenderer {
     if (this._postProcess) {
       this._postProcess.destroy();
       this._postProcess = null;
+    }
+    // C-R12 (Batch 33) — release the context's invalidation subscriber
+    // so it doesn't outlive this SceneRenderer and keep a dead closure
+    // captured on the context's listener set.
+    if (this._deviceInvalidationUnsub) {
+      this._deviceInvalidationUnsub();
+      this._deviceInvalidationUnsub = null;
     }
     WebGPUDerivedCommand.clearCache();
     this._isDestroyed = true;

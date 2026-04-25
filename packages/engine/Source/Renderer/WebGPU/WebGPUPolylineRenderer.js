@@ -182,7 +182,8 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
   for (let i = 0; i < polylines.length; i++) {
     const pl = polylines[i];
     const baseSegments = pl.positions.length - 1;
-    totalSegments += baseSegments + (pl.loop && pl.positions.length >= 2 ? 1 : 0);
+    totalSegments +=
+      baseSegments + (pl.loop && pl.positions.length >= 2 ? 1 : 0);
   }
 
   const segmentData = new Float32Array(totalSegments * FLOATS_PER_SEGMENT);
@@ -192,8 +193,7 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
     const polyline = polylines[i];
     const positions = polyline.positions;
     const width = polyline.width || 1.0;
-    const loopClose =
-      polyline.loop === true && positions.length >= 2;
+    const loopClose = polyline.loop === true && positions.length >= 2;
 
     // Extract color from polyline (used as instance attribute for Color shader,
     // ignored by material shaders which use uniform color instead)
@@ -267,8 +267,7 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
       //   z, w: reserved
       const d = polyline._disableDepthTestDistance;
-      segmentData[offset + 20] =
-        typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
       segmentData[offset + 22] = 0.0;
       segmentData[offset + 23] = 0.0;
@@ -316,8 +315,7 @@ function buildPickSegmentData(collection, context) {
 
     const positions = polyline.positions;
     const width = polyline.width || 1.0;
-    const loopClose =
-      polyline.loop === true && positions.length >= 2;
+    const loopClose = polyline.loop === true && positions.length >= 2;
 
     // One pick ID per polyline (all segments share it)
     if (!defined(polyline._pickId)) {
@@ -360,8 +358,7 @@ function buildPickSegmentData(collection, context) {
       // Pick path inherits DP-H42 / DP-H40 so the picked region matches
       // what the user sees on screen. Same contract as the color path.
       const d = polyline._disableDepthTestDistance;
-      segmentData[offset + 20] =
-        typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
       segmentData[offset + 22] = 0.0;
       segmentData[offset + 23] = 0.0;
@@ -446,12 +443,15 @@ function computePolylineDefinesForFrame(collection, frameState) {
   }
   const polylines = collection._polylines;
   const length = collection._polylinesLength;
-  const both =
-    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {break;}
+    if ((defines & both) === both) {
+      break;
+    }
     const p = polylines[i];
-    if (!defined(p) || !p.show) {continue;}
+    if (!defined(p) || !p.show) {
+      continue;
+    }
     if (
       (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
       typeof p._disableDepthTestDistance === "number" &&
@@ -479,7 +479,9 @@ function computePolylineDefinesForFrame(collection, frameState) {
  */
 function prewarmPolylineShaders(device) {
   const cache = getPolylineShaderModuleCache(device);
-  if (cache._polylinePrewarmed) {return;}
+  if (cache._polylinePrewarmed) {
+    return;
+  }
   const D = ShaderDefine;
   const defineSets = [
     0,
@@ -496,7 +498,9 @@ function prewarmPolylineShaders(device) {
   ];
   for (const [sourceId, key] of sourceIdsAndKeys) {
     const source = getCollectionShaderSource(key);
-    if (!source) {continue;}
+    if (!source) {
+      continue;
+    }
     cache.prewarm(sourceId, source, defineSets, `Polyline ${key} shader`);
   }
   const pickSource = getCollectionShaderSource("polylinePick");
@@ -515,7 +519,15 @@ function prewarmPolylineShaders(device) {
 // Pipeline creation
 // =========================================================================
 
-function createPolylinePipeline(
+/**
+ * Build the cache-friendly descriptor for a color polyline pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58). Returns the descriptor plus the
+ * shared BGLs so the caller can build bind groups; the actual
+ * `GPURenderPipeline` is materialized by `WebGPURenderPipelineCache`.
+ * @private
+ */
+function buildPolylineColorDescriptor(
   device,
   shaderModule,
   format,
@@ -539,8 +551,8 @@ function createPolylinePipeline(
     bindGroupLayouts: [cameraBindGroupLayout, materialBindGroupLayout],
   });
 
-  const pipeline = device.createRenderPipeline({
-    label: `${label || "Polyline pipeline"} (defines=0x${defines.toString(16)})`,
+  const descriptor = {
+    name: `${label || "Polyline pipeline"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -574,17 +586,20 @@ function createPolylinePipeline(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
-  });
+  };
 
-  return { pipeline, cameraBindGroupLayout, materialBindGroupLayout };
+  return { descriptor, cameraBindGroupLayout, materialBindGroupLayout };
 }
 
 /**
- * Creates a pick pipeline for polylines — no blending, depth write enabled.
- * Pick pass is camera-only (pick color from instance data, no material UBO).
+ * Build the cache-friendly descriptor for a pick polyline pipeline. Pick
+ * is camera-only (one BGL — pick color comes from instance data, no
+ * material UBO).
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58).
  * @private
  */
-function createPolylinePickPipeline(
+function buildPolylinePickDescriptor(
   device,
   shaderModule,
   format,
@@ -597,8 +612,8 @@ function createPolylinePickPipeline(
     [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
   );
 
-  const pipeline = device.createRenderPipeline({
-    label: `Polyline pick pipeline (defines=0x${defines.toString(16)})`,
+  const descriptor = {
+    name: `Polyline pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [cameraBindGroupLayout],
     }),
@@ -618,9 +633,83 @@ function createPolylinePickPipeline(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
-  });
+  };
 
-  return { pipeline, cameraBindGroupLayout };
+  return { descriptor, cameraBindGroupLayout };
+}
+
+/**
+ * Convert a `WebGPURenderPipelineDescriptor` to a raw WebGPU descriptor
+ * for the synchronous fallback path (no central cache).
+ * @private
+ */
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve a single polyline pipeline (color or pick) through the central
+ * pipeline cache. Returns the existing GPU pipeline if cached; otherwise
+ * kicks off async creation via the cache and returns null. Falls back to
+ * direct synchronous creation when `pipelineCache` is null (legacy /
+ * WebGL contexts).
+ *
+ * The `entry` is a slot object { descriptor, pipeline, pending, ... }
+ * that gets mutated in place.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58).
+ * @private
+ */
+function tryResolvePolylinePipeline(device, pipelineCache, entry) {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          // Errors already logged by the cache; clear in-flight flag.
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  // Fallback — direct synchronous creation matches pre-migration behavior.
+  entry.pipeline = device.createRenderPipeline(
+    descriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
 }
 
 // =========================================================================
@@ -688,8 +777,7 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0;
-  const drawingBufferWidth =
-    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[29] = splitFraction * drawingBufferWidth;
   uniformData[30] = 0.0;
   uniformData[31] = 0.0;
@@ -702,10 +790,22 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   if (prevVP) {
     Matrix4.pack(prevVP, uniformData, 32);
   } else {
-    uniformData[32] = 1; uniformData[33] = 0; uniformData[34] = 0; uniformData[35] = 0;
-    uniformData[36] = 0; uniformData[37] = 1; uniformData[38] = 0; uniformData[39] = 0;
-    uniformData[40] = 0; uniformData[41] = 0; uniformData[42] = 1; uniformData[43] = 0;
-    uniformData[44] = 0; uniformData[45] = 0; uniformData[46] = 0; uniformData[47] = 1;
+    uniformData[32] = 1;
+    uniformData[33] = 0;
+    uniformData[34] = 0;
+    uniformData[35] = 0;
+    uniformData[36] = 0;
+    uniformData[37] = 1;
+    uniformData[38] = 0;
+    uniformData[39] = 0;
+    uniformData[40] = 0;
+    uniformData[41] = 0;
+    uniformData[42] = 1;
+    uniformData[43] = 0;
+    uniformData[44] = 0;
+    uniformData[45] = 0;
+    uniformData[46] = 0;
+    uniformData[47] = 1;
   }
 }
 
@@ -719,13 +819,26 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
 // =========================================================================
 
 /**
- * Gets or creates a pipeline for the given (material type, defines)
- * tuple. Pipelines are cached per collection; the first index is
- * material type, the second is the active-defines bitmask so Batch 22's
- * DP-H42 / DP-H40 variants don't collide with the baseline.
+ * Gets or creates a pipeline cache entry for the given (material type,
+ * defines) tuple. Each entry is a `{ descriptor, pipeline, pending,
+ * cameraBindGroupLayout, materialBindGroupLayout }` slot; the pipeline
+ * itself is materialized by `WebGPURenderPipelineCache` so two
+ * collections with identical (materialType, defines) share one
+ * `GPURenderPipeline`.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58). Previously this returned
+ * `{ pipeline, cameraBindGroupLayout, materialBindGroupLayout }` with an
+ * already-created pipeline; now it returns the same shape with `pipeline`
+ * possibly null until the central cache resolves it.
  * @private
  */
-function getOrCreatePipeline(cache, device, context, materialType, defines) {
+function getOrCreatePolylinePipelineEntry(
+  cache,
+  device,
+  context,
+  materialType,
+  defines,
+) {
   if (!defined(cache.pipelines)) {
     cache.pipelines = {};
   }
@@ -751,7 +864,7 @@ function getOrCreatePipeline(cache, device, context, materialType, defines) {
     defines,
     label,
   );
-  const result = createPolylinePipeline(
+  const built = buildPolylineColorDescriptor(
     device,
     shaderModule,
     format,
@@ -760,8 +873,16 @@ function getOrCreatePipeline(cache, device, context, materialType, defines) {
     defines,
   );
 
-  byDefines.set(defines, result);
-  return result;
+  const entry = {
+    descriptor: built.descriptor,
+    pipeline: null,
+    pending: false,
+    cameraBindGroupLayout: built.cameraBindGroupLayout,
+    materialBindGroupLayout: built.materialBindGroupLayout,
+  };
+
+  byDefines.set(defines, entry);
+  return entry;
 }
 
 // =========================================================================
@@ -801,14 +922,33 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   const groups = groupByMaterialType(collection);
 
   for (const [materialType, group] of groups) {
-    // Get or create pipeline for this (materialType, defines) combo.
-    const pipelineResult = getOrCreatePipeline(
+    // Get or create the descriptor-level cache entry for this
+    // (materialType, defines) combo. The actual GPU pipeline is
+    // resolved through the central pipeline cache below.
+    const pipelineEntry = getOrCreatePolylinePipelineEntry(
       cache,
       device,
       context,
       materialType,
       defines,
     );
+    const resolvedPipeline = tryResolvePolylinePipeline(
+      device,
+      context.webgpuPipelineCache ?? null,
+      pipelineEntry,
+    );
+    if (!defined(resolvedPipeline)) {
+      // Pipeline still materializing async — skip this material group's
+      // draw for this frame; subsequent frames pick it up via getPipelineSync.
+      continue;
+    }
+    // Backwards-compat shape — downstream code reads `pipelineResult.pipeline`,
+    // `pipelineResult.cameraBindGroupLayout`, `pipelineResult.materialBindGroupLayout`.
+    const pipelineResult = {
+      pipeline: resolvedPipeline,
+      cameraBindGroupLayout: pipelineEntry.cameraBindGroupLayout,
+      materialBindGroupLayout: pipelineEntry.materialBindGroupLayout,
+    };
 
     // Camera uniform buffer (shared structure, per-material-type instance)
     const camKey = `cameraBuffer_${materialType}`;
@@ -935,7 +1075,18 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     if (frameState.passes.render) {
       const polylineBlendOpt = collection._blendOption;
       const polylinePass =
-        polylineBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9 /* Pass.TRANSLUCENT */;
+        polylineBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+      // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
+      // render-state from PolylineCollection (`_opaqueRS` / `_translucentRS`,
+      // built on demand at lines 536/548 in PolylineCollection.js). The
+      // WebGL path does this inline per command at line 740 of
+      // PolylineCollection.js — without this forward, the WebGPU pass
+      // picks up encoder defaults for stencil/blend/viewport overrides
+      // instead of the polyline-specific values.
+      const polylineRS =
+        polylinePass === 8 /* Pass.OPAQUE */
+          ? collection._opaqueRS
+          : collection._translucentRS;
       const cmd = new WebGPUDrawCommand({
         pipeline: pipelineResult.pipeline,
         bindGroups: [cache[camBgKey], cache[matBgKey]],
@@ -947,6 +1098,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
         boundingVolume: collection._boundingVolume,
         modelMatrix: modelMatrix,
         cull: true,
+        renderState: polylineRS,
       });
       commandList.push(cmd);
     }
@@ -983,6 +1135,9 @@ function _pushPolylinePickCommand(
 
   // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
   // so picked regions match the visible ones.
+  // C-R7-RENDERER-MIGRATION (Batch 58) — `pickPipelines` is now a Map of
+  // `defines → { descriptor, pipeline, pending, cameraBindGroupLayout }`.
+  // The actual GPU pipeline is materialized via `context.webgpuPipelineCache`.
   const pickDefines = cache.currentDefines ?? 0;
   if (!defined(cache.pickPipelines)) {
     cache.pickPipelines = new Map();
@@ -999,19 +1154,34 @@ function _pushPolylinePickCommand(
       pickDefines,
       "Polyline pick shader",
     );
-    pickPipelineEntry = createPolylinePickPipeline(
+    const built = buildPolylinePickDescriptor(
       device,
       pickModule,
       format,
       depthFmt,
       pickDefines,
     );
+    pickPipelineEntry = {
+      descriptor: built.descriptor,
+      pipeline: null,
+      pending: false,
+      cameraBindGroupLayout: built.cameraBindGroupLayout,
+    };
     cache.pickPipelines.set(pickDefines, pickPipelineEntry);
     // When the defines rotate, the cameraBindGroupLayout is recreated —
     // drop the cached bind group so it gets rebuilt next.
     cache.pickCameraBindGroup = undefined;
   }
-  cache.pickPipeline = pickPipelineEntry.pipeline;
+  const resolvedPickPipeline = tryResolvePolylinePipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    pickPipelineEntry,
+  );
+  if (!defined(resolvedPickPipeline)) {
+    // Pick pipeline still materializing — skip this frame's pick draw.
+    return;
+  }
+  cache.pickPipeline = resolvedPickPipeline;
   cache.pickCameraBindGroupLayout = pickPipelineEntry.cameraBindGroupLayout;
 
   // Camera-only buffer for pick pass
@@ -1085,6 +1255,11 @@ function _pushPolylinePickCommand(
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
     cull: true,
+    // Pick runs in OPAQUE pass — mirror WebGL behavior by using the
+    // opaque render state (depth-test on, depth-write on, no blending
+    // relevant to pick IDs). Falls back to translucent state for
+    // TRANSLUCENT-only collections.
+    renderState: collection._opaqueRS ?? collection._translucentRS,
   });
 
   commandList.push(cache.pickCommand);

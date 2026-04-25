@@ -240,7 +240,16 @@ function createPointBindGroupLayout(device) {
   ]);
 }
 
-function createPointPipeline(
+/**
+ * Build the cache-friendly descriptor for the color pipeline. The actual
+ * `GPURenderPipeline` is materialized by the central pipeline cache so
+ * two PointPrimitiveCollections rendering with the same (format, depth
+ * format, blend, defines) tuple share one pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58).
+ * @private
+ */
+function buildPointColorDescriptor(
   device,
   shaderModule,
   format,
@@ -269,8 +278,8 @@ function createPointPipeline(
       }
     : undefined;
 
-  return device.createRenderPipeline({
-    label: `PointPrimitive pipeline (${translucent ? "translucent" : "opaque"}, defines=0x${defines.toString(16)})`,
+  return {
+    name: `PointPrimitive ${translucent ? "translucent" : "opaque"} [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -296,14 +305,16 @@ function createPointPipeline(
       depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
-  });
+  };
 }
 
 /**
- * Creates a pick-specific pipeline — no blending, depth write enabled.
+ * Build the cache-friendly descriptor for the pick pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58).
  * @private
  */
-function createPickPipeline(
+function buildPointPickDescriptor(
   device,
   shaderModule,
   format,
@@ -311,11 +322,13 @@ function createPickPipeline(
   bindGroupLayout,
   defines,
 ) {
-  return device.createRenderPipeline({
-    label: `PointPrimitive pick pipeline (defines=0x${defines.toString(16)})`,
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
-    }),
+  const pipelineLayout = device.createPipelineLayout({
+    label: "PointPrimitive pick pipeline layout",
+    bindGroupLayouts: [bindGroupLayout],
+  });
+  return {
+    name: `PointPrimitive pick [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    layout: pipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
@@ -332,7 +345,80 @@ function createPickPipeline(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
-  });
+  };
+}
+
+/**
+ * Convert a `WebGPURenderPipelineDescriptor` to a raw WebGPU descriptor
+ * for the synchronous fallback path (no central cache available).
+ * @private
+ */
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve a single pipeline (color or pick) through the central cache.
+ * Returns the existing GPU pipeline if cached, otherwise kicks off async
+ * creation via the cache and returns null. Synchronous fallback when no
+ * central cache is wired (legacy callers / WebGL).
+ *
+ * The `entry` is a slot object that gets mutated:
+ *   { pipeline: GPURenderPipeline | null, pending: boolean }
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 58).
+ * @private
+ */
+function tryResolvePointPipeline(device, pipelineCache, descriptor, entry) {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          // Errors already logged by the cache; clear in-flight flag so
+          // subsequent frames can retry.
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  // Fallback path — direct synchronous creation. Matches pre-migration
+  // behavior for WebGL contexts or when the central cache isn't wired.
+  entry.pipeline = device.createRenderPipeline(descriptorToGPU(descriptor));
+  entry.pending = false;
+  return entry.pipeline;
 }
 
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
@@ -356,7 +442,9 @@ function getPointShaderModuleCache(device) {
  */
 function prewarmPointShaders(device, colorSource, pickSource) {
   const cache = getPointShaderModuleCache(device);
-  if (cache._pointPrewarmed) {return;}
+  if (cache._pointPrewarmed) {
+    return;
+  }
   const D = ShaderDefine;
   const defineSets = [
     0,
@@ -394,12 +482,15 @@ function computePointDefinesForFrame(collection, frameState) {
   }
   const points = collection._pointPrimitives;
   const length = collection._pointPrimitivesLength;
-  const both =
-    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {break;}
+    if ((defines & both) === both) {
+      break;
+    }
     const p = points[i];
-    if (!defined(p)) {continue;}
+    if (!defined(p)) {
+      continue;
+    }
     if (
       (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
       typeof p._disableDepthTestDistance === "number" &&
@@ -473,8 +564,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0;
-  const drawingBufferWidth =
-    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[18] = splitFraction * drawingBufferWidth;
 
   // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
@@ -520,10 +610,22 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   if (prevVP) {
     Matrix4.pack(prevVP, uniformData, 28);
   } else {
-    uniformData[28] = 1; uniformData[29] = 0; uniformData[30] = 0; uniformData[31] = 0;
-    uniformData[32] = 0; uniformData[33] = 1; uniformData[34] = 0; uniformData[35] = 0;
-    uniformData[36] = 0; uniformData[37] = 0; uniformData[38] = 1; uniformData[39] = 0;
-    uniformData[40] = 0; uniformData[41] = 0; uniformData[42] = 0; uniformData[43] = 1;
+    uniformData[28] = 1;
+    uniformData[29] = 0;
+    uniformData[30] = 0;
+    uniformData[31] = 0;
+    uniformData[32] = 0;
+    uniformData[33] = 1;
+    uniformData[34] = 0;
+    uniformData[35] = 0;
+    uniformData[36] = 0;
+    uniformData[37] = 0;
+    uniformData[38] = 1;
+    uniformData[39] = 0;
+    uniformData[40] = 0;
+    uniformData[41] = 0;
+    uniformData[42] = 0;
+    uniformData[43] = 1;
   }
 }
 
@@ -572,11 +674,16 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
 
   // DP-H42 / DP-H40 — pick the right pipeline for this frame's point state.
   const defines = computePointDefinesForFrame(collection, frameState);
+  // C-R7-RENDERER-MIGRATION (Batch 58) — `cache.pipelines` is now a Map
+  // of `defines → { descriptor, pipeline, pending }`. The descriptor is
+  // built once per (defines) and passed to the central
+  // `WebGPURenderPipelineCache`; the pipeline arrives async on the first
+  // request, then synchronously on subsequent frames.
   if (!defined(cache.pipelines)) {
     cache.pipelines = new Map();
   }
-  let pipeline = cache.pipelines.get(defines);
-  if (!defined(pipeline)) {
+  let pipelineEntry = cache.pipelines.get(defines);
+  if (!defined(pipelineEntry)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPointShaderModuleCache(device);
@@ -586,16 +693,31 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       defines,
       "PointPrimitive color shader",
     );
-    pipeline = createPointPipeline(
-      device,
-      shaderModule,
-      format,
-      depthFmt,
-      true,
-      cache.bindGroupLayout,
-      defines,
-    );
-    cache.pipelines.set(defines, pipeline);
+    pipelineEntry = {
+      descriptor: buildPointColorDescriptor(
+        device,
+        shaderModule,
+        format,
+        depthFmt,
+        true,
+        cache.bindGroupLayout,
+        defines,
+      ),
+      pipeline: null,
+      pending: false,
+    };
+    cache.pipelines.set(defines, pipelineEntry);
+  }
+  const pipeline = tryResolvePointPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    pipelineEntry.descriptor,
+    pipelineEntry,
+  );
+  if (!defined(pipeline)) {
+    // Pipeline still materializing. Skip this frame's draw — the next
+    // frame picks it up synchronously via `getPipelineSync`.
+    return;
   }
   cache.pipeline = pipeline;
   cache.currentDefines = defines;
@@ -697,7 +819,9 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       // Pick by collection.blendOption — point primitives use discard-based
       // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
       pass:
-        collection._blendOption === 0 ? 8 /* Pass.OPAQUE */ : 9 /* Pass.TRANSLUCENT */,
+        collection._blendOption === 0
+          ? 8 /* Pass.OPAQUE */
+          : 9 /* Pass.TRANSLUCENT */,
       owner: collection,
       boundingVolume: collection._boundingVolume,
       modelMatrix: modelMatrix,
@@ -709,6 +833,19 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   } else if (defined(cache.colorCommand)) {
     // Only update instance count if it changed
     cache.colorCommand.instanceCount = cache.visibleCount;
+  }
+
+  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
+  // render-state (`_rsOpaque` vs `_rsTranslucent`) onto the colorCommand.
+  // PointPrimitiveCollection rebuilds these when `blendOption` changes
+  // (line 624/639 in the collection) so we write them every frame to
+  // stay in sync. The WebGL path does the equivalent at line 785 of
+  // PointPrimitiveCollection.js.
+  if (defined(cache.colorCommand)) {
+    cache.colorCommand.renderState =
+      cache.colorCommand.pass === 8 /* Pass.OPAQUE */
+        ? collection._rsOpaque
+        : collection._rsTranslucent;
   }
 
   // --- Pick pass handling ---
@@ -744,12 +881,15 @@ function _pushPickCommand(
 ) {
   // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
   // so the pick region matches what's visible on screen.
+  // C-R7-RENDERER-MIGRATION (Batch 58) — `cache.pickPipelines` is now
+  // `defines → { descriptor, pipeline, pending }` and the actual GPU
+  // pipeline is materialized via `context.webgpuPipelineCache`.
   const pickDefines = cache.currentDefines ?? 0;
   if (!defined(cache.pickPipelines)) {
     cache.pickPipelines = new Map();
   }
-  let pickPipeline = cache.pickPipelines.get(pickDefines);
-  if (!defined(pickPipeline)) {
+  let pickEntry = cache.pickPipelines.get(pickDefines);
+  if (!defined(pickEntry)) {
     const pickShader = getCollectionShaderSource("pointPick");
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -763,15 +903,19 @@ function _pushPickCommand(
     if (!defined(cache.pickBindGroupLayout)) {
       cache.pickBindGroupLayout = createPointBindGroupLayout(device);
     }
-    pickPipeline = createPickPipeline(
-      device,
-      pickModule,
-      format,
-      depthFmt,
-      cache.pickBindGroupLayout,
-      pickDefines,
-    );
-    cache.pickPipelines.set(pickDefines, pickPipeline);
+    pickEntry = {
+      descriptor: buildPointPickDescriptor(
+        device,
+        pickModule,
+        format,
+        depthFmt,
+        cache.pickBindGroupLayout,
+        pickDefines,
+      ),
+      pipeline: null,
+      pending: false,
+    };
+    cache.pickPipelines.set(pickDefines, pickEntry);
     // Pick bind group also needs (re)building on first pick pipeline
     // creation; reuses the shared uniform buffer.
     if (!defined(cache.pickBindGroup)) {
@@ -782,6 +926,16 @@ function _pushPickCommand(
         ],
       });
     }
+  }
+  const pickPipeline = tryResolvePointPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    pickEntry.descriptor,
+    pickEntry,
+  );
+  if (!defined(pickPipeline)) {
+    // Pick pipeline still materializing — skip this frame's pick draw.
+    return;
   }
   cache.pickPipeline = pickPipeline;
 
@@ -824,6 +978,10 @@ function _pushPickCommand(
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
     cull: true,
+    // Pick pass is OPAQUE — use `_rsOpaque` so pick-FBO depth behavior
+    // matches the color-opaque path. Falls back to `_rsTranslucent`
+    // when the collection is TRANSLUCENT-only.
+    renderState: collection._rsOpaque ?? collection._rsTranslucent,
   });
 
   commandList.push(cache.pickCommand);
