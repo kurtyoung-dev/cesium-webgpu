@@ -3805,3 +3805,47 @@ if (defined(Object.create)) {
 - [packages/engine/Source/DataSources/BoxGeometryUpdater.js](../packages/engine/Source/DataSources/BoxGeometryUpdater.js) (TDZ ordering fix only)
 
 **Verification:** `npx tsc --noEmit` exits 0; `node --check` clean on all 10 files; `import(...)` smoke-test confirms `DynamicGeometryUpdater` static is reachable on every parent class.
+
+---
+
+## Session 36: Sandcastle DEFINITIVE re-verification — first true WebGPU exercise (2026-04-25)
+
+**Context:** All 7 `WebGPU *.html` Sandcastle demos used synchronous `new Cesium.Viewer(container, { contextOptions: { renderer: "webgpu" } })`. The synchronous Viewer constructor delegates to the synchronous CesiumWidget constructor and **never enters the WebGPU async init path**. Probe in Batch 66 FINAL captured `rendererType: "webgl"` on every demo — meaning none of Batches 48-66 had ever been verified by these demos. This session converts the demos to `Viewer.createAsync(...)` and re-runs the runner.
+
+**Sibling work:** `ShaderStruct.generateGlslLines()` got the same empty-body filler treatment as `ShaderFunction.generateGlslLines()` (NEW-1) — empty struct bodies are illegal in GLSL ES 3.00, mirror fix to F2.
+
+**Outcome:** `rendererType: "webgpu"` now confirmed on all 7 results (probed via the runner's `Viewer.prototype.resize` hook). Three real WebGPU engine bugs surfaced — see NEW-3-A / B / C below. Per-pass detail in `migration_doc/SANDCASTLE_BATCH_66_DEFINITIVE_REPORT.md`.
+
+### NEW-3-A — `WebGPUSceneRenderer._ensureResources` references undeclared `scene`
+
+**Severity:** Critical (blocks 5 of 7 demos on frame 1)
+**File:** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:725-727`
+**Symptom:** `ReferenceError: scene is not defined` thrown during `_ensureResources` → `executeCommands` → render loop crash → "An error occurred while rendering" modal.
+**Root cause:** Batch 44's edge-FBO addition uses `scene._enableEdgeVisibility`, but the function only destructures `{ context }` from `config` (line 651). The caller `executeCommands` does destructure `scene` from the same config (line 862), so the fix is to add `scene` to the destructure on line 651.
+**Status:** Logged for follow-up — not fixed in this pass per task constraint.
+
+### NEW-3-B — `initWebGPUShadowMap` reads `device` from undefined
+
+**Severity:** High (blocks Point Light Shadows demo)
+**File:** WebGPU shadow-map init helper (`Build/CesiumUnminified/index.js:46929` — TS source: search for `initWebGPUShadowMap`)
+**Symptom:** `TypeError: Cannot read properties of undefined (reading 'device')` thrown from `Object.initWebGPUShadowMap [as init]` called from `ShadowMap.update`.
+**Root cause:** Likely a `frameState.context._device` vs `frameState.context.device` mismatch, or shadow-map init ordering vs context device handshake. Fires before `_ensureResources`, so this demo never even reaches NEW-3-A.
+**Status:** Logged for follow-up.
+
+### NEW-3-C — `Megatexture.get3DTextureDimension` is WebGL-only
+
+**Severity:** High (Voxels feature unusable on WebGPU)
+**File:** `packages/engine/Source/Scene/Megatexture.js` (`Build/CesiumUnminified/index.js:312077`)
+**Symptom:** `RuntimeError: The GL context does not support a 3D texture large enough to contain a tile with the given dimensions.`
+**Root cause:** `Megatexture` queries `MAX_3D_TEXTURE_SIZE` directly from a `WebGL2RenderingContext`-typed object. WebGPU exposes the equivalent via `device.limits.maxTextureDimension3D` but the megatexture code was never adapted. Voxels were not in scope of Batches 48-66.
+**Fix sketch:** Route the cap query through `GraphicsContext.maximum3DTextureSize` (or equivalent abstract) and have `WebGPUContext` answer with `device.limits.maxTextureDimension3D`. This is consistent with the Voxels backlog item.
+**Status:** Logged — promote to backlog as a voxel-feature port task.
+
+### NEW-1 (this session, fixed inline) — `ShaderStruct` empty-body filler
+
+**File:** `packages/engine/Source/Renderer/ShaderStruct.js:45-67`
+**Fix:** Empty `fields` array now emits a benign `float _empty;` filler so `MetadataPipelineStage`'s unconditional `SelectedFeature` / `FeatureIds` struct registrations don't produce illegal GLSL.
+
+### NEW-2 (this session, fixed inline) — Demos converted to `Viewer.createAsync`
+
+**Files:** All 7 `Apps/Sandcastle/gallery/WebGPU *.html` demos. Single-line change per file — `const viewer = new Cesium.Viewer(...)` → `const viewer = await Cesium.Viewer.createAsync(...)`. Each demo's `window.startup` is already `async function`, so `await` is in scope. `contextOptions: { renderer: "webgpu" }` was already present and is preserved.

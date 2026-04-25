@@ -43,12 +43,24 @@ class ShaderStruct {
    * @return {string[]} The generated GLSL code.
    */
   generateGlslLines() {
+    // GLSL ES 3.00 forbids empty struct bodies (`struct X { };` is a syntax
+    // error). `MetadataPipelineStage` registers `SelectedFeature` and
+    // `FeatureIds` structs unconditionally so the shader chunks
+    // `MetadataStage{VS,FS}` can name those types as no-ops when the model
+    // has no metadata. Most assets fall into the empty-fields path. Insert
+    // a benign `float _empty;` filler to keep the struct legal — the field
+    // is never referenced. Sibling fix to the empty-function lift in
+    // ShaderFunction.js (BUG-F2 closure, Batch 66).
     const lines = [];
     lines.push(`struct ${this.name}`);
     lines.push("{");
     const fieldLength = this.fields.length;
-    for (let i = 0; i < fieldLength; i++) {
-      lines.push(this.fields[i]);
+    if (fieldLength === 0) {
+      lines.push("    float _empty;");
+    } else {
+      for (let i = 0; i < fieldLength; i++) {
+        lines.push(this.fields[i]);
+      }
     }
     lines.push("};");
     lines.push("");

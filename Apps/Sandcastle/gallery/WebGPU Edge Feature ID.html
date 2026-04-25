@@ -83,14 +83,10 @@
                 value="3"
                 min="0"
                 max="255"
-                style="width: 60px;"
+                style="width: 60px"
               />
-              <button id="applyHighlight" class="cesium-button">
-                Highlight
-              </button>
-              <button id="clearHighlight" class="cesium-button">
-                Clear
-              </button>
+              <button id="applyHighlight" class="cesium-button">Highlight</button>
+              <button id="clearHighlight" class="cesium-button">Clear</button>
             </td>
           </tr>
         </tbody>
@@ -102,7 +98,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           shouldAnimate: true,
           shadows: false,
@@ -126,10 +122,7 @@
 
         const origin = Cesium.Cartesian3.fromDegrees(0.0, 0.0, 0.0);
         const hpr = new Cesium.HeadingPitchRoll(0.0, 0.0, 0.0);
-        const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(
-          origin,
-          hpr,
-        );
+        const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(origin, hpr);
 
         let modelPrimitive;
         try {
@@ -141,10 +134,8 @@
 
           modelPrimitive.readyEvent.addEventListener(() => {
             const camera = viewer.camera;
-            const r = 2.0 * Math.max(
-              modelPrimitive.boundingSphere.radius,
-              camera.frustum.near,
-            );
+            const r =
+              2.0 * Math.max(modelPrimitive.boundingSphere.radius, camera.frustum.near);
             viewer.scene.screenSpaceCameraController.minimumZoomDistance = r * 0.5;
 
             camera.lookAt(
@@ -204,10 +195,7 @@
                 `All edges (including non-highlighted) should remain visible.`;
               return;
             } catch (err) {
-              console.warn(
-                "Style API path failed; falling back to color override.",
-                err,
-              );
+              console.warn("Style API path failed; falling back to color override.", err);
             }
           }
           // Fallback: blanket model color override. Less precise but at

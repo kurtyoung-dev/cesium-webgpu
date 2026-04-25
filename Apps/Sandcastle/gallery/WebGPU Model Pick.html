@@ -79,7 +79,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           shouldAnimate: true,
           shadows: false,
@@ -95,16 +95,8 @@
 
         // Two distinct models so the user can verify pick discriminates between
         // primitives. Both are local SampleData assets so no network is needed.
-        const truckPosition = Cesium.Cartesian3.fromDegrees(
-          -123.0744619,
-          44.0503706,
-          0,
-        );
-        const manPosition = Cesium.Cartesian3.fromDegrees(
-          -123.0742619,
-          44.0503706,
-          0,
-        );
+        const truckPosition = Cesium.Cartesian3.fromDegrees(-123.0744619, 44.0503706, 0);
+        const manPosition = Cesium.Cartesian3.fromDegrees(-123.0742619, 44.0503706, 0);
 
         function makeOrientation(position, headingDeg) {
           const heading = Cesium.Math.toRadians(headingDeg);

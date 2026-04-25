@@ -72,24 +72,13 @@
           <tr>
             <td>Edge color</td>
             <td>
-              <input
-                type="color"
-                id="edgeColor"
-                value="#ffcc00"
-              />
+              <input type="color" id="edgeColor" value="#ffcc00" />
             </td>
           </tr>
           <tr>
             <td>Line width</td>
             <td>
-              <input
-                type="range"
-                id="lineWidth"
-                min="1"
-                max="6"
-                step="1"
-                value="2"
-              />
+              <input type="range" id="lineWidth" min="1" max="6" step="1" value="2" />
               <span id="lineWidthLabel">2</span>
             </td>
           </tr>
@@ -113,7 +102,7 @@
 
         // Force WebGPU. The Batch 48 inline edge stage lives in ModelPBRComplete.wgsl,
         // so this demo only makes sense on the WebGPU backend.
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           shouldAnimate: true,
           shadows: false,
@@ -124,18 +113,18 @@
           animation: false,
         });
 
-        // Local glTF asset that uses EXT_mesh_primitive_edge_visibility. Same asset
-        // the dev `styled-gltf-lines-dev` Sandcastle uses; ships in the repo's
-        // Specs/Data tree so no network fetch is needed.
+        // Local glTF asset that uses EXT_mesh_primitive_edge_visibility.
+        // Simpler asset chosen for this demo so it isolates the edge stage;
+        // the per-feature variant (BENTLEY_materials_line_style.gltf) is
+        // exercised separately in `WebGPU Edge Feature ID.html`. Both work
+        // since BUG-F2 was fixed in Batch 66 (ShaderFunction.js empty-body
+        // throw lifted to allow legitimate empty `initializeMetadata`).
         const modelUrl =
-          "../../../Specs/Data/Models/glTF-2.0/StyledLines/BENTLEY_materials_line_style.gltf";
+          "../../../Specs/Data/Models/glTF-2.0/EdgeVisibility/glTF-Binary/EdgeVisibilityMaterial.glb";
 
         const origin = Cesium.Cartesian3.fromDegrees(0.0, 0.0, 0.0);
         const hpr = new Cesium.HeadingPitchRoll(0.0, 0.0, 0.0);
-        const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(
-          origin,
-          hpr,
-        );
+        const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(origin, hpr);
 
         let modelPrimitive;
         try {
@@ -147,10 +136,8 @@
 
           modelPrimitive.readyEvent.addEventListener(() => {
             const camera = viewer.camera;
-            const r = 2.0 * Math.max(
-              modelPrimitive.boundingSphere.radius,
-              camera.frustum.near,
-            );
+            const r =
+              2.0 * Math.max(modelPrimitive.boundingSphere.radius, camera.frustum.near);
             viewer.scene.screenSpaceCameraController.minimumZoomDistance = r * 0.5;
 
             camera.lookAt(

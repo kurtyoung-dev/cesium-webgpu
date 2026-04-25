@@ -108,7 +108,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           baseLayerPicker: false,
           geocoder: false,

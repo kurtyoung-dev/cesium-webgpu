@@ -75,7 +75,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           shouldAnimate: true,
           shadows: true,
@@ -173,24 +173,16 @@
         // WebGPUEffectsBindGroup.js auto-detect path and resolves to
         // pcfRadius = 1.5 cube-face texels when true. False keeps the
         // Batch 57 hard-edged single-tap path bit-exact.
-        Sandcastle.addToggleButton(
-          "Soft shadows (5-tap PCF)",
-          false,
-          (checked) => {
-            const sm = scene.shadowMap;
-            if (Cesium.defined(sm)) {
-              sm.softShadows = checked;
-            }
-          },
-        );
+        Sandcastle.addToggleButton("Soft shadows (5-tap PCF)", false, (checked) => {
+          const sm = scene.shadowMap;
+          if (Cesium.defined(sm)) {
+            sm.softShadows = checked;
+          }
+        });
 
-        Sandcastle.addToggleButton(
-          "Shadows enabled",
-          true,
-          (checked) => {
-            viewer.shadows = checked;
-          },
-        );
+        Sandcastle.addToggleButton("Shadows enabled", true, (checked) => {
+          viewer.shadows = checked;
+        });
 
         Sandcastle.addToolbarMenu([
           {

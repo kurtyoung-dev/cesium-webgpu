@@ -75,7 +75,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           baseLayer: Cesium.ImageryLayer.fromProviderAsync(
             Cesium.TileMapServiceImageryProvider.fromUrl(
@@ -127,13 +127,10 @@
             );
           }
           const dimensions = this.dimensions;
-          const channelCount = Cesium.MetadataType.getComponentCount(
-            this.types[0],
-          );
+          const channelCount = Cesium.MetadataType.getComponentCount(this.types[0]);
           const voxelCount = dimensions.x * dimensions.y * dimensions.z;
           const data = new Float32Array(voxelCount * channelCount);
-          const seed = tileZ * dimensions.y * dimensions.x +
-            tileY * dimensions.x + tileX;
+          const seed = tileZ * dimensions.y * dimensions.x + tileY * dimensions.x + tileX;
           Cesium.Math.setRandomNumberSeed(seed);
           for (let i = 0; i < voxelCount; i++) {
             const h = Cesium.Math.nextRandomNumber();
@@ -144,9 +141,7 @@
             data[idx + 2] = color.blue;
             data[idx + 3] = 1.0;
           }
-          return Promise.resolve(
-            Cesium.VoxelContent.fromMetadataArray([data]),
-          );
+          return Promise.resolve(Cesium.VoxelContent.fromMetadataArray([data]));
         };
 
         const voxelPrimitive = new Cesium.VoxelPrimitive({
@@ -174,9 +169,7 @@
             `<span class="label">primitive:</span> ${
               isVoxel ? "VoxelPrimitive" : primitive?.constructor?.name
             }`,
-            `<span class="label">id:</span> ${
-              picked.id ?? "(no id payload)"
-            }`,
+            `<span class="label">id:</span> ${picked.id ?? "(no id payload)"}`,
             isVoxel
               ? `<span class="label">match:</span> YES (Batch 53 fragmentPickMain)`
               : `<span class="label">match:</span> not the voxel`,

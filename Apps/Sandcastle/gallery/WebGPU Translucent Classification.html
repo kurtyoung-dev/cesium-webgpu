@@ -73,7 +73,7 @@
         "use strict";
         //Sandcastle_Begin
 
-        const viewer = new Cesium.Viewer("cesiumContainer", {
+        const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: "webgpu" },
           terrain: undefined,
           baseLayerPicker: false,
@@ -182,15 +182,11 @@
           },
         ]);
 
-        Sandcastle.addToggleButton(
-          "Show classification volume",
-          true,
-          (checked) => {
-            if (Cesium.defined(classificationPrimitive)) {
-              classificationPrimitive.show = checked;
-            }
-          },
-        );
+        Sandcastle.addToggleButton("Show classification volume", true, (checked) => {
+          if (Cesium.defined(classificationPrimitive)) {
+            classificationPrimitive.show = checked;
+          }
+        });
 
         //Sandcastle_End
         Sandcastle.finishedLoading();
