@@ -306,6 +306,64 @@ function createPipeline(
 }
 
 /**
+ * C-R9-MODEL-PICK (Batch 54) — pick pipeline. Mirrors `createPipeline` for
+ * vertex stage, layout, and depth state, but the fragment entry is
+ * `fragmentPickMain` (writes `material.pickColor`) and there's no blend
+ * (pick FBO must receive byte-exact pick IDs for the readback).
+ *
+ * Depth write is forced ON for ALL alpha modes, even ALPHA_BLEND. The
+ * lit path disables depth write for blend so translucent layers
+ * composite without z-fighting; the pick path however needs depth
+ * write so the front-most fragment wins the pick (matches WebGL's
+ * `RenderState.depthMask = true` for pick passes). Translucent
+ * picking is intentionally simplified to "first non-discarded
+ * fragment wins" in this first cut — depth-correct alpha-blended
+ * picking would need OIT integration on the pick FBO and is tracked
+ * separately as `C-R9-MODEL-PICK-TRANSLUCENT`.
+ *
+ * Cull mode follows the doubleSided flag, same as the lit pipeline,
+ * so a back face that wouldn't render also wouldn't pick — matching
+ * WebGL's behaviour.
+ *
+ * @private
+ */
+function createPickPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  alphaMode,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]`;
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickMain",
+      targets: [{ format: presentationFormat }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode,
+    },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
  * WebGPUModelPipelineCache manages GPU pipeline variants for Model rendering.
  */
 class WebGPUModelPipelineCache {
@@ -319,6 +377,11 @@ class WebGPUModelPipelineCache {
     this._presentationFormat = presentationFormat;
     this._depthFormat = depthFormat;
     this._pipelines = new Map();
+    // C-R9-MODEL-PICK (Batch 54) — pick pipeline cache, keyed by the same
+    // (alphaMode, doubleSided) pair as `_pipelines`. Each pick pipeline
+    // shares the layout + vertex stage of its color sibling and only
+    // differs in the fragment entry + no-blend target state.
+    this._pickPipelines = new Map();
 
     // Create shared bind group layouts
     const bgls = createBindGroupLayouts(device);
@@ -540,6 +603,42 @@ class WebGPUModelPipelineCache {
     return pipeline;
   }
 
+  /**
+   * C-R9-MODEL-PICK (Batch 54) — gets or creates a pick pipeline for
+   * the given material configuration. Same layout + vertex stage as
+   * the matching color pipeline; the fragment entry is `fragmentPickMain`
+   * which emits `material.pickColor` instead of the lit color, and the
+   * fragment target has no blend (pick FBO must receive byte-exact pick
+   * IDs).
+   *
+   * Keyed identically to `getPipeline` so a primitive's color and pick
+   * pipelines share the same `(alphaMode, doubleSided)` identity. The
+   * pick pipeline is only built once per identity per device.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @returns {GPURenderPipeline}
+   */
+  getPickPipeline(alphaMode, doubleSided) {
+    const key = computeKey(alphaMode, doubleSided);
+    let pipeline = this._pickPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+
+    pipeline = createPickPipeline(
+      this._device,
+      this._shaderModule,
+      this._pipelineLayout,
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+    );
+    this._pickPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
   /** @returns {GPUBindGroupLayout} */
   get cameraBGL() {
     return this._cameraBGL;
@@ -747,6 +846,10 @@ class WebGPUModelPipelineCache {
    */
   destroy() {
     this._pipelines.clear();
+    // C-R9-MODEL-PICK (Batch 54) — drop pick pipelines too. GPUPipelines
+    // are released via GC once all references go away; clearing the map
+    // releases the cache's reference. Same lifecycle as `_pipelines`.
+    this._pickPipelines.clear();
     this._defaultWhiteTexture?.destroy();
     this._defaultNormalTexture?.destroy();
     this._defaultBlackTexture?.destroy();

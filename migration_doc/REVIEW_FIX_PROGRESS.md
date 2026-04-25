@@ -2450,6 +2450,49 @@ Voxel pick lands at VoxelPrimitive granularity, closing the second-to-last C-R9 
 
 ---
 
+## Batch 54 — C-R9-MODEL-PICK: glTF Model pick on WebGPU (2026-04-25)
+
+Closes the last `C-R9-MODEL-PICK-FAMILY` follow-up at primitive granularity. `scene.pick()` over a glTF Model now returns the Model itself on WebGPU, matching WebGL's primary user-facing pick contract. Per-feature picking (each `EXT_mesh_features` feature → one pick target instead of one primitive = one target) remains as a separate workstream tracked as `C-R9-MODEL-FEATURE-PICK`.
+
+### Files touched
+
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl) — added `pickColor: vec4<f32>` slot to the `MaterialUniforms` struct (after the existing `texCoordFlags` + 2 pads, so the vec4 starts at the next 16-byte boundary). Added `fragmentPickMain` entry: alpha-mask discard + batch-table feature-hide discard + return `material.pickColor`.
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.js) — auto-regenerated from the WGSL via `migration_doc/_regen_wgsl_js.py`.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js) — added `createPickPipeline()` helper, `_pickPipelines` cache map keyed identically to `_pipelines`, public `getPickPipeline(alphaMode, doubleSided)` method, and tear-down in `destroy()`.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) — `packMaterialUniforms` takes a new `pickColor` argument and writes it into floats 40-43 (byte offset 160). Per-primitive pick ID lifecycle: registered via `context.createPickId({primitive: model, id: primKey}, "primitive")` on first render-or-pick frame, cached on `cache.pickIds[primKey]`, destroyed in `destroyWebGPUModelResources`. Pick command built alongside the color command with the same vertex buffers, bind groups, index buffer, and renderState; only the pipeline differs. Wired onto `webgpuCmd.derivedCommands.picking.pickCommand` so the Batch 29 `selectCommandVariant` dispatcher routes to it during pick passes.
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R9 entry updated to "FIXED FOR PRIMITIVE-GRANULARITY PICK" with the per-feature follow-up (`C-R9-MODEL-FEATURE-PICK`) and translucent-OIT follow-up (`C-R9-MODEL-PICK-TRANSLUCENT`) called out.
+
+### Typecheck
+
+`npx tsc --noEmit` — clean. `npx tsc --project packages/engine/tsconfig.json --noEmit` — clean for `WebGPUModelRenderer.js`, `WebGPUModelPipelineCache.js`. Pre-existing parse errors in `WebGPUEdgeVisibilityEmitter.ts` (untracked, in-progress file from Batch 45 work) are not introduced by this batch.
+
+### What landed
+
+- **`fragmentPickMain` WGSL entry** — uses the same `VertexInput` / `FragmentInput` / vertex stage as `fragmentMain` (shares the morph + skinning + instancing + RTE setup). Resolves `baseColor.a` only — no PBR, no IBL, no fog, no edge stage, no lighting — and runs the alpha-mask discard so masked-out cutouts (e.g., foliage decals) don't claim the pick. Also runs the batch-table feature-hide discard (`batchColor.a < 0.004` → discard) so a feature hidden via 3D Tiles styling stays unpickable. Returns `material.pickColor` directly.
+- **`pickColor: vec4<f32>` UBO slot** — placed at byte offset 160 in `MaterialUniforms`. The struct already padded `texCoordFlags` (slot 37) + 2 floats up to slot 40, which is exactly the 16-byte boundary a vec4 needs. Existing 320-byte buffer absorbs the growth — only 4 floats further into a buffer that already had 40 floats unused at the tail.
+- **`getPickPipeline(alphaMode, doubleSided)` on `WebGPUModelPipelineCache`** — same key as `getPipeline`, separate cache map. Each pick pipeline shares the layout, vertex stage, and cullMode of its color sibling; differs in fragment entry (`fragmentPickMain`), no blend (pick FBO needs byte-exact pick IDs), and `depthWriteEnabled: true` for ALL alpha modes. Depth write forced ON even for `ALPHA_BLEND` so the front-most fragment wins the pick — translucent picking is intentionally a "first non-discarded fragment wins" first cut.
+- **Per-primitive pick ID lifecycle** — `cache.pickIds[primKey]` (where `primKey = "${nodeIdx}_${primIdx}"`) holds the `CesiumPickId` from `context.createPickId({primitive: model, id: primKey}, "primitive")`. Allocated on first render-or-pick frame; destroyed en bloc in `destroyWebGPUModelResources`. The `id` payload is the primKey string so `scene.pick()` can identify which primitive the user clicked on, even though the top-level `primitive` is the Model.
+- **Pick command wiring** — full sibling of the color command (same vertexBuffers, bindGroups, indexBuffer, indexFormat, indexCount, instanceCount, pass, owner, boundingVolume, modelMatrix, cull, renderState). Only differences: `pipeline` (pick pipeline), `pickOnly: true`. Attached to `webgpuCmd.derivedCommands.picking.pickCommand` so the Batch 29 dispatcher (`selectCommandVariant` in `WebGPUSceneRenderer.ts`) finds it during pick passes.
+
+### Scope cuts (intentional follow-ups)
+
+- **`C-R9-MODEL-FEATURE-PICK`** — per-feature pick (each glTF feature ID = one pick target). Needs reading the `EXT_mesh_features` / `EXT_structural_metadata` feature ID at the picked fragment, mapping it through the batch table, and emitting a per-feature pick color. The shader-side feature ID resolution is already in place (used by the lit path's batch-table styling); the pick FBO side needs to allocate and route per-feature pick IDs. Multi-session workstream.
+- **`C-R9-MODEL-PICK-TRANSLUCENT`** — depth-correct alpha-blended picking. Currently `depthWriteEnabled: true` is forced on for all alpha modes in the pick pipeline so the front-most fragment wins. Doing depth-correct picking through translucent layers needs OIT integration on the pick FBO. Bounded but separate.
+- **Derived-variant pick coverage** — silhouette / shadow / classification variants in `ModelDrawCommand.js` (lines 626/641/767/818/868/925/950) emit their own derived commands with distinct renderStates. Picking the silhouette outline / shadow caster is not in this cut. Each derived variant would need its own pick pipeline if picking that variant matters.
+
+### Net user-visible effect
+
+- glTF Models become pickable via `scene.pick()` on WebGPU. Previously the WebGPU Model renderer emitted exactly one color command per primitive — pick passes had nothing to render so the pick FBO was always blank for model pixels and `scene.pick()` returned undefined.
+- The `id` field in the picked object's lookup is the `"${nodeIdx}_${primIdx}"` string, not a glTF feature ID. Apps that need per-feature pick should wait for `C-R9-MODEL-FEATURE-PICK`.
+- Alpha-mask materials (foliage cutouts, decals) correctly discard at non-cutout texels for picking, matching their visual appearance.
+- Hidden features (`batchColor.a == 0` from 3D Tiles styling) correctly stay unpickable.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R9 (MODEL) | RENDERER_DEEP | Model renderer emits no pick command | `fragmentPickMain` WGSL entry runs alpha-mask + batch-table-hide discards, emits `material.pickColor`. Pick pipeline (in `WebGPUModelPipelineCache`) shares layout + vertex stage + cullMode with color pipeline; differs in fragment entry, no blend, depth write forced on. UBO gained `pickColor: vec4<f32>` at byte 160. Per-primitive pick ID via `createPickId({primitive: model, id: primKey}, "primitive")`. Pick command on `derivedCommands.picking.pickCommand`. Per-feature pick remains follow-up `C-R9-MODEL-FEATURE-PICK`. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.

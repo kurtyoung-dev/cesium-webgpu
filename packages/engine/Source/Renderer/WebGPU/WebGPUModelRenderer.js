@@ -56,6 +56,15 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
+import {
+  extractEdgeGeometry,
+  createEdgeEmitterCache,
+  destroyEdgeEmitterCache,
+  ensureEdgeEmitterPipeline,
+  createEdgePrimitiveResources,
+  destroyEdgePrimitiveResources,
+  writeEdgeEmitterUniforms,
+} from "./WebGPUEdgeVisibilityEmitter.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -175,6 +184,7 @@ function packMaterialUniforms(
   matInfo,
   hasSkinning,
   hasMorphTargets,
+  pickColor,
 ) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
@@ -257,9 +267,28 @@ function packMaterialUniforms(
   }
   flagsView.setUint32(37 * 4, tcFlags, true);
 
-  // Padding to 320 bytes (80 floats)
+  // Padding to maintain vec4 alignment for the next field (pickColor).
+  // texCoordFlags lives at slot 37; slots 38-39 pad up to the 16-byte
+  // boundary at slot 40 where pickColor (vec4) starts.
   data[38] = 0;
   data[39] = 0;
+
+  // C-R9-MODEL-PICK (Batch 54) — pickColor slot (floats 40-43). Zero
+  // when no pick ID has been registered yet (e.g., a non-pick render
+  // pass before the model first enters a pick pass). The pick command
+  // itself is only attached to derivedCommands.picking when a pick
+  // color is available, so the zeros never reach the pick FBO.
+  if (pickColor) {
+    data[40] = pickColor.red;
+    data[41] = pickColor.green;
+    data[42] = pickColor.blue;
+    data[43] = pickColor.alpha;
+  } else {
+    data[40] = 0;
+    data[41] = 0;
+    data[42] = 0;
+    data[43] = 0;
+  }
 }
 
 // ─── Light Uniform Packing ───────────────────────────────────────────────────
@@ -748,6 +777,50 @@ function updateWebGPUModel(model, frameState) {
           cascadeArrayView: csmCandidate.cascadeArrayView,
         }
       : undefined;
+  // C-R8-EDGE-INLINE — gather edge-detection inputs for the inline
+  // stage in `ModelPBRComplete.wgsl`. The scene renderer publishes
+  // resolved edge MRT views (CESIUM_3D_TILE_EDGES pass) AND the globe
+  // packed-depth view (`executeCopyDepth`) on the context each frame.
+  // Both need to be populated for the gate to flip — when either is
+  // missing we fall through to the placeholder bind group and the
+  // shader's `edgeControl.x <= 0.5` early-out keeps the stage benign.
+  const ctx = frameState.context;
+  const edgeColorView = ctx?._edgeColorView ?? null;
+  const edgeIdView = ctx?._edgeIdView ?? null;
+  const edgeDepthView = ctx?._edgeDepthView ?? null;
+  const globeDepthView = ctx?._globeDepthView ?? null;
+  const uniformState = ctx?.uniformState;
+  const currentFrustum = uniformState?.currentFrustum;
+  const viewportPx = uniformState?.viewportCartesian4;
+  const edgesReady =
+    !!edgeColorView &&
+    !!edgeDepthView &&
+    !!globeDepthView &&
+    !!currentFrustum &&
+    !!viewportPx;
+  // C-R8-EDGE-FEATURE-ID — the inline stage gates on the same flag the
+  // emitter side toggles when feature IDs are populated. The flag
+  // is set sticky-true in the per-primitive edge extraction below
+  // when at least one primitive in this model emitted a non-zero
+  // feature ID, so per-feature gating activates as soon as a model
+  // with batch-table-tagged geometry reaches this code path. Models
+  // without feature IDs leave the flag false and the inline stage
+  // falls back to "always draw on match" (WebGL fail-open).
+  const edgesPayload = edgesReady
+    ? {
+        ready: true,
+        edgeColorView,
+        edgeIdView,
+        edgeDepthView,
+        globeDepthView,
+        near: currentFrustum.x,
+        far: currentFrustum.y,
+        viewportWidth: viewportPx.z,
+        viewportHeight: viewportPx.w,
+        hasFeatureId: cache.hasEdgeFeatureIds === true,
+      }
+    : undefined;
+
   const fxRes = createEffectsBindGroup(device, frameState, {
     shadowMap: receiveShadowMap,
     csm: csmBinding,
@@ -757,6 +830,7 @@ function updateWebGPUModel(model, frameState) {
     // shader's clipping test is in eye space anyway; cameraInPlaneSpace
     // is only consumed by the globe's plane-space transform).
     cameraInPlaneSpace: frameState.context.uniformState.cameraPosition,
+    edges: edgesPayload,
   });
   cache.effectsBG = fxRes.bindGroup;
 
@@ -971,13 +1045,37 @@ function updateWebGPUModel(model, frameState) {
         }
       }
 
-      // Update material uniforms (includes skinning + morph flags)
+      // C-R9-MODEL-PICK (Batch 54) — register a per-primitive pick ID on
+      // first use; reuse across frames. Each glTF primitive of a model
+      // gets its own pick color so `scene.pick()` can resolve back to
+      // {primitive: model, id: primIndex}. Per-feature pick (each
+      // EXT_mesh_features feature → one pick target) is the larger
+      // workstream tracked as `C-R9-MODEL-FEATURE-PICK`. The cache key
+      // `nodeIdx_primIdx` matches `primKey` so pick IDs follow primitive
+      // identity stably across re-extractions.
+      const passes = frameState.passes;
+      if (passes && (passes.pick || passes.render)) {
+        if (!defined(cache.pickIds)) {
+          cache.pickIds = {};
+        }
+        if (!defined(cache.pickIds[primKey])) {
+          cache.pickIds[primKey] = context.createPickId(
+            { primitive: model, id: primKey },
+            "primitive",
+          );
+        }
+      }
+      const pickColor = cache.pickIds?.[primKey]?.color;
+
+      // Update material uniforms (includes skinning + morph flags +
+      // pick color slot).
       packMaterialUniforms(
         primCache.materialData,
         modelMatrix,
         matInfo,
         primHasSkinning,
         primHasMorphTargets,
+        pickColor,
       );
 
       // Feature ID textures + batch texture (for per-feature styling)
@@ -1053,6 +1151,21 @@ function updateWebGPUModel(model, frameState) {
           ? Pass.TRANSLUCENT
           : model.opaquePass;
 
+      // C-R1 (Batch 37) — forward the source JS-side renderState from
+      // `runtimePrimitive.drawCommand._command.renderState` so our
+      // Batch 30 `applyPerEncoderState` hook fires per-draw
+      // stencilRef / blendConstant / viewport / scissor. Model
+      // primitives set distinct renderStates for silhouette / shadow /
+      // backface / classification variants (`ModelDrawCommand.js` lines
+      // 626, 641, 767, 818, 868, 925, 950); forwarding the base-color
+      // renderState covers the primary draw. Derived-variant coverage
+      // (silhouette / shadow-receive / depth-fail) remains follow-up
+      // per the Batch 29 `selectCommandVariant` dispatcher — when
+      // populators land they'll pull renderState from their
+      // corresponding derived ModelDrawCommand slot.
+      const rpDrawCommand = rp.drawCommand;
+      const modelRenderState = rpDrawCommand?._command?.renderState;
+
       const webgpuCmd = new WebGPUDrawCommand({
         pipeline: primCache.pipeline,
         bindGroups: [
@@ -1080,6 +1193,7 @@ function updateWebGPUModel(model, frameState) {
         boundingVolume: model.boundingSphere,
         modelMatrix: modelMatrix,
         cull: model._cull ?? true,
+        renderState: modelRenderState,
       });
 
       // ── Shadow cast tagging ──
@@ -1126,10 +1240,234 @@ function updateWebGPUModel(model, frameState) {
         }
       }
 
+      // C-R9-MODEL-PICK (Batch 54) — pick command. Same layout, vertex
+      // stage, vertex buffers, bind groups, and index buffer as the
+      // color command; only the pipeline differs (pick fragment entry,
+      // no blend, depth write forced on). Wired onto the color command's
+      // `derivedCommands.picking.pickCommand` so the Batch 29 dispatcher
+      // (`selectCommandVariant` in `WebGPUSceneRenderer.ts`) routes here
+      // during pick passes. Only materialized when a pick ID exists —
+      // models in non-pick render passes (frameState.passes.pick=false
+      // and passes.render=false) skip pick-id allocation, so `pickColor`
+      // can be undefined here for an OFFSCREEN/UPDATE-only frame.
+      if (pickColor) {
+        if (!defined(primCache.pickPipeline)) {
+          primCache.pickPipeline = pipelineCache.getPickPipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+          );
+        }
+        const pickCmd = new WebGPUDrawCommand({
+          pipeline: primCache.pickPipeline,
+          bindGroups: [
+            cache.cameraBG,
+            primCache.materialBG,
+            primCache.textureBindGroup,
+            skinningBG,
+            morphTargetBG,
+            instancingBG,
+            featureIdBG,
+            cache.effectsBG,
+          ],
+          vertexBuffers: vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount: instanceCount,
+          pass: pass,
+          owner: model,
+          boundingVolume: model.boundingSphere,
+          modelMatrix: modelMatrix,
+          cull: model._cull ?? true,
+          renderState: modelRenderState,
+          pickOnly: true,
+        });
+        webgpuCmd.derivedCommands = {
+          ...(webgpuCmd.derivedCommands ?? {}),
+          picking: { pickCommand: pickCmd },
+        };
+      }
+
       commandList.push(webgpuCmd);
+
+      // C-R8-EDGE-EMITTER (Batch 45) — Emit edge visibility commands
+      // for primitives that carry `EXT_mesh_primitive_edge_visibility`
+      // data. The edges render into the WebGPUEdgeFramebuffer MRT via
+      // the redirect in `WebGPUSceneRenderer._execute3DTilePasses`,
+      // and the Batch 44 composite overlays them onto scene color.
+      //
+      // Resources are built once per primitive and reused across
+      // frames; per-frame cost is two `writeBuffer` calls for the
+      // camera + edge uniform UBs. Primitives without edge data skip
+      // the whole block (the `extractEdgeGeometry` early-returns).
+      const edgeGltfPrimitive = rp.primitive || rp._primitive;
+      if (defined(edgeGltfPrimitive?.edgeVisibility)) {
+        if (!defined(cache.edgeEmitterCache)) {
+          cache.edgeEmitterCache = createEdgeEmitterCache();
+        }
+        const sceneSampleCount = context._msaaSamples ?? 1;
+        const sceneColorFormat = context._sceneColorFormat ?? "bgra8unorm";
+        ensureEdgeEmitterPipeline(
+          cache.edgeEmitterCache,
+          device,
+          sceneColorFormat,
+          sceneSampleCount,
+        );
+
+        // Build per-primitive edge buffers lazily. If the primitive's
+        // edge data hasn't been extracted yet, do it now; otherwise
+        // reuse the cached GPUBuffers.
+        if (!defined(primCache.edgeResources)) {
+          // C-R8-EDGE-FEATURE-ID — pull per-vertex feature IDs from the
+          // glTF FEATURE_ID_0 attribute when present. Mirrors the
+          // WebGL edge stage at `EdgeVisibilityPipelineStage.js:1242-
+          // 1281` (lookup by `featureIds[0].setIndex` → matching
+          // `attributes` entry → `typedArray`). When absent, the
+          // emitter falls back to writing 0 in id.g and the consumer's
+          // gate stays off.
+          let edgeFeatureIdData = null;
+          const fidSets = edgeGltfPrimitive.featureIds;
+          if (defined(fidSets) && fidSets.length > 0) {
+            const fidSet = fidSets[0];
+            if (
+              defined(fidSet?.setIndex) &&
+              defined(edgeGltfPrimitive.attributes)
+            ) {
+              const fidAttr = edgeGltfPrimitive.attributes.find(
+                (attr) =>
+                  attr.semantic === "_FEATURE_ID" ||
+                  (attr.name && attr.name.startsWith("_FEATURE_ID_")),
+              );
+              if (defined(fidAttr) && defined(fidAttr.typedArray)) {
+                edgeFeatureIdData = fidAttr.typedArray;
+              }
+            }
+          }
+          const edgeGeom = extractEdgeGeometry(
+            edgeGltfPrimitive,
+            geometry.positionData,
+            edgeFeatureIdData,
+          );
+          if (defined(edgeGeom)) {
+            primCache.edgeResources = createEdgePrimitiveResources(
+              device,
+              cache.edgeEmitterCache,
+              edgeGeom,
+            );
+            // Track per-primitive whether feature IDs were populated;
+            // the model-FS effects bind group reads this through the
+            // model-level rollup (`cache.hasEdgeFeatureIds`) to flip
+            // the inline detection's per-feature gate.
+            if (primCache.edgeResources) {
+              primCache.edgeResources.hasFeatureIds = !!edgeGeom.hasFeatureIds;
+              if (edgeGeom.hasFeatureIds) {
+                cache.hasEdgeFeatureIds = true;
+              }
+            }
+          } else {
+            // Mark this primitive as having no edges so we don't
+            // re-extract every frame. Use `false` as a sentinel
+            // distinct from `undefined` (meaning "not yet checked").
+            primCache.edgeResources = false;
+          }
+        }
+
+        if (primCache.edgeResources) {
+          // Compute MVP = projection * view * model and MV = view * model.
+          // Both are needed: MVP for clip-space output, MV for the
+          // silhouette discard's eye-space face-normal transform.
+          // Standard RTE isn't applied — edge positions are model-
+          // space; native 32-bit precision is fine at typical edge-
+          // rendering distances. (Future: switch to RTE when an edge-
+          // enabled model gets used at planet-scale distances.)
+          const us = context.uniformState;
+          const vp = us?.viewProjection;
+          const view = us?.view;
+          let mvp;
+          if (defined(vp)) {
+            mvp = Matrix4.multiply(vp, modelMatrix, scratchEdgeMVP);
+          } else {
+            mvp = Matrix4.clone(modelMatrix, scratchEdgeMVP);
+          }
+          const mvpData = Matrix4.toArray(mvp, scratchEdgeMVPArray);
+
+          let mv;
+          if (defined(view)) {
+            mv = Matrix4.multiply(view, modelMatrix, scratchEdgeMV);
+          } else {
+            mv = Matrix4.clone(modelMatrix, scratchEdgeMV);
+          }
+          const mvData = Matrix4.toArray(mv, scratchEdgeMVArray);
+
+          // Edge color: prefer the extension's `materialColor` if set;
+          // otherwise default to black (matches the WebGL "edge color
+          // overrides fragment color" behavior when `v_edgeColor.a`
+          // is positive).
+          const matColor = edgeGltfPrimitive.edgeVisibility?.materialColor;
+          const edgeColor =
+            defined(matColor) && matColor.length >= 4
+              ? {
+                  r: matColor[0],
+                  g: matColor[1],
+                  b: matColor[2],
+                  a: matColor[3],
+                }
+              : { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+
+          // Viewport for NDC→pixel offset math in the wide-line VS.
+          const vpW = context.drawingBufferWidth ?? 1;
+          const vpH = context.drawingBufferHeight ?? 1;
+          // Line width: prefer the model's per-edge override if it
+          // ever lands on the model object; default to 2 px for a
+          // visibly-non-degenerate edge regardless of DPR.
+          const lineWidth = model._edgeLineWidth ?? 2.0;
+          // Line pattern: 0xffff = solid. Per-model override slot
+          // ready for `_edgeLinePattern` to land later.
+          const linePattern = (model._edgeLinePattern ?? 0xffff) & 0xffff;
+
+          writeEdgeEmitterUniforms(
+            device,
+            primCache.edgeResources,
+            mvpData,
+            mvData,
+            edgeColor,
+            vpW,
+            vpH,
+            lineWidth,
+            linePattern,
+          );
+
+          const edgeCmd = new WebGPUDrawCommand({
+            pipeline: cache.edgeEmitterCache.pipeline,
+            bindGroups: [
+              primCache.edgeResources.cameraBG,
+              primCache.edgeResources.edgeBG,
+            ],
+            vertexBuffers: [primCache.edgeResources.vertexBuffer],
+            indexBuffer: primCache.edgeResources.indexBuffer,
+            indexCount: primCache.edgeResources.indexCount,
+            indexFormat: "uint32",
+            instanceCount: 1,
+            pass: Pass.CESIUM_3D_TILE_EDGES,
+            owner: model,
+            boundingVolume: model.boundingSphere,
+            modelMatrix: modelMatrix,
+            cull: model._cull ?? true,
+          });
+          commandList.push(edgeCmd);
+        }
+      }
     }
   }
 }
+
+// Scratch matrices for the edge-emitter MVP/MV build (avoids per-
+// primitive allocation inside the hot loop).
+const scratchEdgeMVP = new Matrix4();
+const scratchEdgeMVPArray = new Float32Array(16);
+const scratchEdgeMV = new Matrix4();
+const scratchEdgeMVArray = new Float32Array(16);
 
 /**
  * Destroys cached WebGPU resources for a Model.
@@ -1146,6 +1484,17 @@ function destroyWebGPUModelResources(model) {
   if (defined(cache.shadowCastUB)) {
     cache.shadowCastUB.destroy();
     cache.shadowCastUB = undefined;
+  }
+
+  // C-R9-MODEL-PICK (Batch 54) — release every per-primitive pick ID
+  // back to the registry so its slot can be reused. No-op if the model
+  // never entered a render or pick pass.
+  if (defined(cache.pickIds)) {
+    const pickKeys = Object.keys(cache.pickIds);
+    for (let i = 0; i < pickKeys.length; i++) {
+      cache.pickIds[pickKeys[i]]?.destroy();
+    }
+    cache.pickIds = undefined;
   }
 
   // Destroy per-primitive resources
@@ -1178,6 +1527,19 @@ function destroyWebGPUModelResources(model) {
 
     // Destroy feature ID resources
     destroyFeatureIdResources(pc);
+
+    // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
+    // buffers. `edgeResources === false` is the sentinel for
+    // "primitive had no edges"; skip in that case.
+    if (pc.edgeResources && pc.edgeResources !== false) {
+      destroyEdgePrimitiveResources(pc.edgeResources);
+    }
+  }
+
+  // C-R8-EDGE-EMITTER (Batch 45) — destroy the shared edge pipeline
+  // cache when the model itself is torn down.
+  if (defined(cache.edgeEmitterCache)) {
+    destroyEdgeEmitterCache(cache.edgeEmitterCache);
   }
 
   // Destroy per-node skinning + instancing resources

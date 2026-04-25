@@ -105,6 +105,14 @@ struct MaterialUniforms {
   texCoordFlags: u32,
   _pad_end2: f32,
   _pad_end3: f32,
+  // C-R9-MODEL-PICK (Batch 54) — primitive-granularity pick color. The
+  // pick fragment entry (`fragmentPickMain`) writes this directly to the
+  // pick FBO color attachment so the readback maps the bytes back to the
+  // {primitive: model, id: <primitiveIndex>} target registered via
+  // `context.createPickId(...)`. Lit fragment ignores the slot. Per-
+  // feature picking (KHR_mesh_features / EXT_structural_metadata) is a
+  // separate follow-up — see `C-R9-MODEL-FEATURE-PICK`.
+  pickColor: vec4<f32>,
 };
 
 struct LightUniforms {
@@ -183,10 +191,10 @@ struct FeatureIdUniforms {
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
 // CSM Slice 2c — models now bind the effects group at @group(7) so the
 // fragment shader can sample cascaded shadows alongside PBR lighting.
-// Struct layout MUST match the 272-byte EffectsUniforms in
-// WebGPUEffectsBindGroup.js. Trailing `atmosphereLutControl` +
-// `csmControl` fields must be present even though only `csmControl` is
-// consumed here, otherwise csmControl reads from the wrong bytes.
+// Struct layout MUST match the 304-byte EffectsUniforms in
+// WebGPUEffectsBindGroup.js. Every trailing field must be present
+// (even when not consumed here) so `csmControl` / `edgeControl` /
+// `edgeViewport` read from the right bytes.
 struct EffectsUniforms {
   shadowMatrix: mat4x4<f32>,
   shadowMapSize: vec2<f32>,
@@ -202,6 +210,13 @@ struct EffectsUniforms {
   atmosphereLutControl: vec4<f32>,
   // .x = csmEnabled flag (1.0 → route through CSM path).
   csmControl: vec4<f32>,
+  // C-R8-EDGE-INLINE control. .x = edgeReady (gate the inline stage),
+  // .y = isEdgePass (always 0 from Model FS — kept for parity with
+  // future caller-driven gating), .z/.w = currentFrustum near/far.
+  edgeControl: vec4<f32>,
+  // .xy = viewport (px), .z = relative depth tolerance, .w =
+  // hasEdgeFeatureId flag.
+  edgeViewport: vec4<f32>,
 };
 
 // CSM cascade parameters (bindings 10/11). Layout matches
@@ -237,6 +252,18 @@ struct CSMParams {
 @group(7) @binding(9) var atmosphereLutSampler: sampler;
 @group(7) @binding(10) var<uniform> csmParams: CSMParams;
 @group(7) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// C-R8-EDGE-INLINE — inline edge-detection resources. The edge MRT
+// views populate at the start of `_execute3DTilePasses` (before the
+// model's OPAQUE pass); the globe packed-depth view is produced by
+// `WebGPUGlobeDepth.executeCopyDepth` even earlier. Sampler at 16 is
+// shared filtering. Gated at call site on `effects.edgeControl.x > 0.5`
+// so dead bindings (placeholder 1×1 transparent textures) never
+// influence the lit fragment.
+@group(7) @binding(12) var edgeColorTex: texture_2d<f32>;
+@group(7) @binding(13) var edgeIdTex: texture_2d<f32>;
+@group(7) @binding(14) var edgeDepthTex: texture_2d<f32>;
+@group(7) @binding(15) var globeDepthTex: texture_2d<f32>;
+@group(7) @binding(16) var edgeSampler: sampler;
 
 // ─── Vertex Shader ───────────────────────────────────────────────────────────
 
@@ -446,6 +473,7 @@ fn lookupBatchColor(fid: i32) -> vec4<f32> {
 // ─── Fragment Shader ─────────────────────────────────────────────────────────
 
 struct FragmentInput {
+  @builtin(position) fragCoord: vec4<f32>,
   @location(0) positionEC: vec3<f32>,
   @location(1) normalEC: vec3<f32>,
   @location(2) texCoord0: vec2<f32>,
@@ -544,6 +572,155 @@ fn computeShadowFactorCSM(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// ─── C-R8-EDGE-INLINE ─────────────────────────────────────────────────────
+//
+// Authoritative WGSL port of WebGL's `EdgeDetectionStageFS.glsl`. Runs
+// inline inside the model fragment shader (see `applyEdgeOverlay`
+// callsite in fragmentMain) so per-feature gating, edge color, and
+// alpha all see the correct fragment context. Replaces the post-process
+// overlay composite (`WebGPUEdgeComposite`) which couldn't access per-
+// fragment featureId at composite time.
+//
+// Math notes:
+//   * `unpackEdgeDepth` is the inverse of the WGSL `czm_packDepth`
+//     scheme used by `WebGPUEdgeVisibilityEmitter` (8-bit RGBA →
+//     normalised float). Globe depth uses the same packing scheme.
+//   * `linearizeWindowDepth` mirrors WebGL's NDC-Z → linear-eye-Z math.
+//     Geometry depth comes straight from `input.positionEC.z` (already
+//     linear), no inverse-projection needed.
+//   * `geomDepthLinear * 0.0005` relative tolerance widens the depth-
+//     equality test as fragments get further from the camera. The
+//     stage is robust against small jitter (anti-aliasing, sub-pixel
+//     offsets) without bleeding edges over geometry that's clearly
+//     in front.
+//   * Background gate: when `geomDepthLinear > globeDepthLinear`,
+//     the fragment is sky / above-globe and the edge is always drawn.
+//     Otherwise (fragment is a 3D-tile surface), the edge composites
+//     only when its depth matches the fragment's.
+//
+// Per-feature gating (C-R8-EDGE-FEATURE-ID):
+//   When `effects.edgeViewport.w > 0.5`, the edge passes only over
+//   matching feature IDs OR the background. Three drawEdge cases:
+//     - background → always draw
+//     - !hasEdgeFeature OR !hasCurrentFeature → draw (fail-open
+//       semantics matching WebGL)
+//     - featuresMatch → draw
+//     - else → skip (different feature owns the edge → it belongs
+//       to that feature, not this fragment)
+
+fn unpackEdgeDepth(p: vec4<f32>) -> f32 {
+  return dot(p, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}
+
+fn linearizeWindowDepth(d: f32, near: f32, far: f32) -> f32 {
+  let z_ndc = d * 2.0 - 1.0;
+  return (2.0 * near * far) / (far + near - z_ndc * (far - near));
+}
+
+fn applyEdgeOverlay(
+  color: vec4<f32>,
+  positionEC: vec3<f32>,
+  fragCoordXY: vec2<f32>,
+  currentFeatureId: f32,
+) -> vec4<f32> {
+  // Stage gate. `edgeControl.x` is 1.0 only when the emitter wrote MRT
+  // outputs this frame AND the host renderer plumbed valid views into
+  // the effects bind group. Otherwise the placeholder 1×1 transparent
+  // textures bound at 12-15 keep the stage benign.
+  if (effects.edgeControl.x <= 0.5) {
+    return color;
+  }
+  // Reserved reverse-gate for future caller-driven flagging (e.g.,
+  // pick passes that should skip overlay). Kept for parity with
+  // WebGL's `if (u_isEdgePass) return;`.
+  if (effects.edgeControl.y > 0.5) {
+    return color;
+  }
+
+  let viewport = effects.edgeViewport.xy;
+  if (viewport.x <= 1.0 || viewport.y <= 1.0) {
+    return color;
+  }
+  let screenCoord = fragCoordXY / viewport;
+
+  // Compute the depth derivative BEFORE the per-pixel `edgeIdSample.r`
+  // branch — `fwidth` requires uniform control flow within a fragment
+  // quad. The early-outs above are all on uniform values
+  // (edgeControl, viewport), so this point is reached uniformly when
+  // edges are enabled and the value is safe to use later inside
+  // non-uniform branches.
+  let geomDepthLinearEarly = abs(positionEC.z); // looking -Z in EC
+  let pixelStep = fwidth(geomDepthLinearEarly);
+
+  let edgeColor = textureSampleLevel(edgeColorTex, edgeSampler, screenCoord, 0.0);
+  let edgeIdSample = textureSampleLevel(edgeIdTex, edgeSampler, screenCoord, 0.0);
+  let edgeDepthPacked = textureSampleLevel(edgeDepthTex, edgeSampler, screenCoord, 0.0);
+  let globeDepthPacked = textureSampleLevel(globeDepthTex, edgeSampler, screenCoord, 0.0);
+
+  // No edge written here → leave the fragment alone. Mirrors the
+  // implicit "edgeId.r > 0.0" gate in WebGL: if no emitter touched
+  // this pixel, the rgba8 attachment is the cleared (0,0,0,0).
+  if (edgeIdSample.r <= 0.0) {
+    return color;
+  }
+
+  let near = effects.edgeControl.z;
+  let far = effects.edgeControl.w;
+  let edgeDepthWin = unpackEdgeDepth(edgeDepthPacked);
+  let edgeDepthLinear = linearizeWindowDepth(edgeDepthWin, near, far);
+  let geomDepthLinear = geomDepthLinearEarly;
+
+  let depthDelta = abs(edgeDepthLinear - geomDepthLinear);
+  let relTolerance = geomDepthLinear * effects.edgeViewport.z;
+  let eps = max(near * 1e-4, max(pixelStep * 1.5, relTolerance));
+
+  if (depthDelta >= eps) {
+    return color;
+  }
+
+  // Background gating uses globe packed depth — when no globe pixel
+  // covers this screen position the unpack returns 0 (cleared
+  // attachment). Treating "globe depth zero" as "no globe here →
+  // fragment is in front" matches the WebGL semantics: any fragment
+  // whose linear depth is past the cleared globe surface is rendered
+  // on top of the sky / outside the globe horizon.
+  let globeDepthWin = unpackEdgeDepth(globeDepthPacked);
+  let globeDepthLinear = select(
+    1.0e9,
+    linearizeWindowDepth(globeDepthWin, near, far),
+    globeDepthWin > 0.0,
+  );
+  let isBackground = geomDepthLinear > globeDepthLinear;
+
+  // C-R8-EDGE-FEATURE-ID — compare the edge's stored featureId
+  // against the current fragment's featureId. C-R8-EDGE-ID-FORMAT
+  // (Batch 49): 16-bit IDs split across `id.g` (low byte) + `id.b`
+  // (high byte), each stored 0..1 normalised. Recomposed via
+  // `low + high * 256` after denormalising both channels — round-trips
+  // integer IDs 0..65535 exactly. Beyond 65535 the emitter saturates
+  // and IDs collapse to indistinguishable; practical only for tilesets
+  // that would also strain the GPU batch-table side.
+  var drawEdge = isBackground;
+  let hasFeatureGating = effects.edgeViewport.w > 0.5;
+  if (hasFeatureGating) {
+    let edgeFidLow = round(edgeIdSample.g * 255.0);
+    let edgeFidHigh = round(edgeIdSample.b * 255.0);
+    let edgeFeatureIdN = edgeFidLow + edgeFidHigh * 256.0;
+    let curFeatureIdN = clamp(currentFeatureId, 0.0, 65535.0);
+    let hasEdgeFeature = edgeFeatureIdN > 0.0;
+    let hasCurrentFeature = curFeatureIdN > 0.0;
+    let featuresMatch = abs(edgeFeatureIdN - curFeatureIdN) < 0.5;
+    drawEdge = drawEdge || !hasEdgeFeature || !hasCurrentFeature || featuresMatch;
+  } else {
+    drawEdge = true;
+  }
+
+  if (!drawEdge) {
+    return color;
+  }
+  return edgeColor;
+}
+
 // Per-texture UV-set bit indices in material.texCoordFlags. Keep in sync
 // with the WebGPUPrimitiveCommands.js material packer which writes this
 // uniform. Using explicit bit positions (rather than raw 1u, 2u, …)
@@ -565,6 +742,22 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 
 @fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+
+  // C-R8-EDGE-FEATURE-ID — resolve the current fragment's featureId
+  // (if any) up-front so both per-feature batch styling AND the inline
+  // edge-detection stage can consume it without redundant texture
+  // samples. Stays at 0.0 when the model has no feature ID texture —
+  // both consumers correctly degrade to "no feature" in that case.
+  // Note: feature IDs are integers in glTF EXT_mesh_features but we
+  // carry as f32 here because the edge texture's `id.g` channel is
+  // an 8-bit normalised float (0..1) — matching keeps both sides of
+  // the comparison in the same encoding.
+  var currentFeatureId: f32 = 0.0;
+  if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE)) {
+    let fidSampleEarly = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+    let fidIntEarly = unpackFeatureId(fidSampleEarly, featureId.channelCount);
+    currentFeatureId = f32(fidIntEarly);
+  }
 
   // ── Base color ────────────────────────────────────────────────────────────
   var baseColor = material.baseColorFactor;
@@ -602,7 +795,13 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     var c = baseColor.rgb + material.emissiveFactor;
     c = tonemapAndGamma(c);
     let a = select(1.0, baseColor.a, hasFlag(flags, FLAG_ALPHA_MODE_BLEND));
-    return vec4<f32>(c, a);
+    let unlitColor = vec4<f32>(c, a);
+    return applyEdgeOverlay(
+      unlitColor,
+      input.positionEC,
+      input.fragCoord.xy,
+      currentFeatureId,
+    );
   }
 
   // ── Normal ────────────────────────────────────────────────────────────────
@@ -717,14 +916,12 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   }
 
   // ── Per-feature styling (3D Tiles batch table) ────────────────────────────
-  // Sample the feature ID texture to get a feature ID, then look up the batch
-  // texture to get the per-feature color. Multiply into the final color.
-  // Features with batchColor.a == 0 are hidden — discard them.
+  // Reuse `currentFeatureId` resolved up top so batch lookup and edge
+  // gating share one feature-ID texture sample. Features with
+  // `batchColor.a == 0` are hidden — discard them.
   var featureColor = vec4<f32>(1.0);
   if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
-    let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
-    let fid = unpackFeatureId(fidSample, featureId.channelCount);
-    let batchColor = lookupBatchColor(fid);
+    let batchColor = lookupBatchColor(i32(currentFeatureId));
     if (batchColor.a < 0.004) { discard; } // Feature is hidden
     featureColor = batchColor;
   } else if (hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
@@ -785,5 +982,84 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     }
   }
 
+  // C-R8-EDGE-INLINE — final overlay step, after tonemap/gamma + fog so
+  // the edge color (already authored in display space by the emitter)
+  // composites without a redundant tonemap. WebGL's stage runs in
+  // display space too. Applied here for both lit and unlit fragments
+  // (the unlit early-out above also calls applyEdgeOverlay before
+  // returning).
+  finalColor = applyEdgeOverlay(
+    finalColor,
+    input.positionEC,
+    input.fragCoord.xy,
+    currentFeatureId,
+  );
+
   return finalColor;
+}
+
+// C-R9-MODEL-PICK (Batch 54) — pick fragment entry. Shares the vertex
+// stage and bind-group layout with `fragmentMain`; the only differences
+// are the fragment entry name and the pick pipeline's blend/depth state
+// (no blend, depth write enabled — see WebGPUModelPipelineCache.js).
+//
+// Correctness:
+//   * Alpha-mask discards run (a mask hole must NOT be pickable — it's
+//     not visible, so it shouldn't claim the click). Sampled from the
+//     base-color texture × baseColorFactor, same as the lit path.
+//   * Alpha-blend primitives DO pick on any non-discarded fragment in
+//     this first cut. Transparent picking (depth-sorted alpha pick)
+//     would need OIT integration on the pick FBO and is tracked as a
+//     separate follow-up under `C-R9-MODEL-PICK-TRANSLUCENT`.
+//   * Unlit / metallic-roughness / specular-glossiness all share the
+//     same alpha-mask path so a single discard block covers them all.
+//   * Vertex colors influence baseColor.a the same way they do in the
+//     lit path, so vertex-color-driven masking applies to picking too.
+//
+// Per-feature pick (each glTF feature ID = one pick target instead of
+// one primitive = one target) is the larger workstream — picking up
+// `EXT_mesh_features` / `EXT_structural_metadata` per-fragment feature
+// IDs and rerouting the pick color through the batch table. Tracked
+// separately as `C-R9-MODEL-FEATURE-PICK`.
+@fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let flags = material.materialFlags;
+
+  // Resolve baseColor.a only — that's all the alpha-mask path needs.
+  // Skip every PBR / lighting / IBL / fog / edge stage; the pick FBO
+  // doesn't care about anything but `material.pickColor` post-discard.
+  var baseColor = material.baseColorFactor;
+
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                          material.diffuseFactor_b, material.diffuseFactor_a);
+    if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
+      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      baseColor = baseColor * tc;
+    }
+  } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
+    let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+    baseColor = baseColor * tc;
+  }
+
+  if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
+    baseColor = baseColor * input.color0;
+  }
+
+  // Alpha-mask discard — keep parity with the lit path so masked-out
+  // texels (e.g., foliage cutout, decals) never claim the pick.
+  if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
+    if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+
+  // Per-feature batch-table hide also has to gate picking — a feature
+  // hidden by `batchColor.a == 0` must not be pickable. Mirrors the
+  // discard at the same site in `fragmentMain`.
+  if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+    let fidInt = unpackFeatureId(fidSample, featureId.channelCount);
+    let batchColor = lookupBatchColor(fidInt);
+    if (batchColor.a < 0.004) { discard; }
+  }
+
+  return material.pickColor;
 }
