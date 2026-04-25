@@ -1060,7 +1060,9 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   packShadowCastUniforms(cache.uniformData, shadowMap, frameState);
   const context = frameState?.context;
   const device = context?.device ?? context?._device;
-  if (!device) return;
+  if (!device) {
+    return;
+  }
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
