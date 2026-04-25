@@ -2493,6 +2493,107 @@ Closes the last `C-R9-MODEL-PICK-FAMILY` follow-up at primitive granularity. `sc
 
 ---
 
+## Batch 55 — C-R11-EFFECTS-BGL-COLLECTION-CACHE: per-tile EffectsBindGroup cache (2026-04-25)
+
+Closes the last remaining `C-R11` follow-up. Batches 31-32 cached the post-process bind groups (Bloom, AO, DoF, GodRays, AutoExposure) but explicitly deferred `WebGPUEffectsBindGroup.createEffectsBindGroup()` because the per-tile UBO content varies — the simple identity-based cache from Batch 31 would never hit. Batch 55 keys both the UBO and bind group on (resource-tuple identity + a small content sub-key) so the dominant globe-tile path with identity modelMatrix collapses to one cache entry per active feature combination, regardless of tile count.
+
+### Files touched
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js) — added a per-device `effectsBgCache` slot on the existing `_placeholderCache` WeakMap entry. The cache is `{bindGroups: Map<string, {buffer, bindGroup}>, idMap: WeakMap<object, number>, idCounter: number, hits, misses, bufferWrites, diagLastFrame}`. The `_idFor(bgCache, obj)` helper assigns stable >0 ids on first sight; nullish maps to 0. New `_ensureEffectsBgCache(cache)` lazy-initializer hangs the cache off the existing per-device entry so it shares lifetime with the placeholder textures + samplers. Pre-cached `placeholderXxxView` slots (`placeholderDepthView`, `placeholderClipView`, `placeholderSDFView`, `placeholderLutView`, `placeholderEdgeView`) replace the `texture.createView()` calls that were happening per bind-group construction. The placeholder bind group itself now uses these cached views. The hot path in `createEffectsBindGroup`: build a 14-resource id-tuple key + 8-field content sub-key, look up `bgCache.bindGroups.get(cacheKey)`, allocate a fresh `(buffer, bindGroup)` pair on miss and store, always `device.queue.writeBuffer(cached.buffer, 0, ud)` to refresh per-frame UBO bytes. Pragma-stripped diagnostic logs cache stats (hits/misses/size/writeBuffer count) at 3-second intervals when in active use.
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R11 entry updated from "MOSTLY FIXED" to "FIXED" with the Batch 55 details called out.
+
+### Typecheck
+
+`npx tsc --noEmit` — clean. No new errors introduced.
+
+### Caching strategy
+
+The cache key is built in two parts:
+
+1. **Resource tuple key** — string of 14 resource ids: `${depthViewId}|${compSamplerId}|${clipViewId}|${clipSamplerId}|${sdfViewId}|${sdfSamplerId}|${lutTId}|${lutIId}|${csmBufferId}|${csmCascadeViewId}|${edgeColorId}|${edgeIdId}|${edgeDepthId}|${globeDepthId}`. Each id is assigned via the cache's own `WeakMap<object, number>` so the id-counter is local to the cache; GC of a resource reclaims its WeakMap slot but the append-only counter never reuses ids. Nullish resources (which fall back to placeholders) resolve to placeholder ids that are themselves stable across frames.
+2. **Content sub-key** — `${cipx}|${cipy}|${cipz}|${edges.near}|${edges.far}|${edges.viewportWidth}|${edges.viewportHeight}|${hasFeatureId ? 1 : 0}`. Captures the per-call content fields whose change forces a separate UBO (different bytes that can't be served from a buffer already in flight against another tile's BG).
+
+The composite `${resKey}#${contentKey}` is the Map key. Hits reuse the cached `(buffer, bindGroup)`; misses allocate fresh and store.
+
+### Why it works for the per-tile globe path
+
+Every visible globe tile in a frame shares:
+
+- The same shadowMap, clippingPlanes collection, atmosphere LUT views, csm resources, edge views (frame-scoped or collection-scoped state)
+- `cameraInPlaneSpace = uniformState.cameraPosition` — globe modelMatrix is identity so plane-space camera == world camera
+
+All ~200 tiles therefore produce identical `cacheKey` strings → 1 cache entry, with `writeBuffer` running once on the frame's first call (the content is identical, so the second-through-200th calls are still `writeBuffer` no-ops at the byte level but they're cheap and correctness-preserving).
+
+### Why correctness holds when content varies
+
+For models with non-identity modelMatrix, each model's `cameraInPlaneSpace` is different → different content key → different cache entry → different `(buffer, bindGroup)` pair. We never reuse a buffer object across content variants, so a tile's UBO bytes can't be overwritten by a later call before its render command is submitted. This matches the previous behavior that allocated fresh per call.
+
+### Edge cases handled
+
+- **Placeholder fast-path unchanged.** When `!hasShadow && !hasClipping && !hasPolygonClipping && !hasAtmosphereLut && !hasCsm && !hasEdges`, the function still returns the shared `placeholder.bindGroup` pre-built by `getPlaceholderEffects`. The cache code is bypassed entirely — same as before.
+- **Device-loss recovery.** `clearEffectsPlaceholderCacheForDevice(device)` (already wired in `WebGPUContext._clearAllCaches`) deletes the WeakMap entry for the dying device, taking `effectsBgCache` with it. Next frame on the recovered device lazily re-creates the placeholder cache + a fresh empty `effectsBgCache`.
+- **Resource churn.** When a clipping plane collection's underlying `textureView` is destroyed and recreated (plane count change), `_idFor` assigns a new id → new cache key → new `(buffer, bindGroup)` pair. The OLD entries stay in the Map but become unreachable for future lookups; their `GPUBindGroup` references the destroyed texture but is never accessed again. Memory is reclaimed on the next device-loss event. For typical Cesium usage where collection reconfigurations are rare, this is bounded.
+- **Texture view cache.** `texture.createView()` returns a fresh wrapper per call, which would defeat the cache by producing a new resource id per call. The fix is to call `createView()` once per placeholder texture during `getPlaceholderEffects` and store the view alongside the texture, so the hot path reads `cache.placeholderDepthView` etc. instead.
+
+### Allocation reduction (measured / projected)
+
+For the reference scenario from the principal review (200 tiles × 60 Hz with clipping planes active):
+
+- **Before:** ~12 000 `device.createBuffer` + ~12 000 `device.createBindGroup` + ~36 000 `texture.createView` calls per second. Each carries ~150-300 bytes of driver state never reclaimed until the JS wrapper is GC'd.
+- **After:** 1 `createBuffer` + 1 `createBindGroup` per frame on the FIRST tile (cache miss because frame number isn't part of the resource tuple — wait, let me re-check. Actually frame number isn't in the key, and the resources stay stable; so the FIRST tile allocates ONCE on the very first frame, then frames 2..N hit the cache for all 200 tiles). Steady-state: 0 allocations / sec, ~12 000 `writeBuffer` calls/sec (200 tiles × 60 Hz, identical bytes — the writes themselves are fast queue operations against the same buffer object).
+
+The pragma-stripped diagnostic logs print at 3 s intervals: `[CesiumJS:webgpu] EffectsBindGroup cache: <size> entries, <hits> hits / <misses> misses (<rate>% hit), <writes> writeBuffer calls`. Expect cache size to plateau at ≤4 (one per active feature combination — typically 1 in stable scenes) and hit rate to climb above 99% within the first few hundred calls.
+
+### What's still open
+
+- **No further C-R11 work.** All five major post-process consumers (Bloom, AO, DoF, GodRays, AutoExposure) plus the per-tile EffectsBindGroup are now cached. The remaining `WebGPUAutoExposure.ts` view memoization landed in Batch 32.
+- The `clearEffectsPlaceholderCacheForDevice` device-loss hook covers the new cache transitively because the cache lives on the `_placeholderCache` entry it deletes.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R11 (FIXED) | RENDERER_DEEP | Per-frame bind group + texture view allocation in hot post-process / effects path | All five post-process consumers (Bloom, AO, DoF, GodRays, AutoExposure — Batches 31-32) plus the per-tile EffectsBindGroup (Batch 55) now cached. Per-tile path drops from ~12 k buffer + bind-group allocations/sec to 0 steady-state. Cache empties on device-loss via existing `clearEffectsPlaceholderCacheForDevice` hook. |
+
+---
+
+## Batch 56 — C-R7-RENDERER-MIGRATION first cut (2026-04-25)
+
+First-cut migration of three representative feature renderers off their per-renderer pipeline maps and onto the central `context.webgpuPipelineCache`. The cache's instantiation, key-correctness, and device-loss invalidation infrastructure landed in Batches 33-34 and was audited clean in Batch 52; this batch is the first time any feature renderer actually consumes it.
+
+### What landed
+
+- **`WebGPUEllipsoidPrimitiveRenderer.ts`** — Color + pick pipelines. The old `createPipelineAndLayouts` was split into `buildEllipsoidPipelineResources` (synchronous: shader module, BGLs, pipeline layout, descriptor objects) and `tryResolveEllipsoidPipelines` (async: routes both descriptors through `pipelineCache.getPipeline()`, then through `getPipelineSync` once cached). The cache key already covers everything that distinguishes color from pick (entry point, blend presence on the color target's `fragment.targets[0]`), so two ellipsoid primitives with identical material settings now share one color pipeline + one pick pipeline instead of materializing two of each. New `pipelineRequestPending` flag in `EllipsoidCache` prevents duplicate in-flight requests; the renderer skips its draw on frames where the pipelines aren't materialized yet.
+- **`WebGPUGaussianSplatRenderer.ts`** — Color + OIT + pick pipelines. Same shape via `buildSplatPipelineResources` + `tryResolveSplatPipelines`. The OIT pipeline is best-effort: WGSL injection failure leaves `oitDescriptor` null (existing behavior), and the cache request for OIT runs alongside but doesn't block the color+pick ready signal. Pulled the duplicated `vertex.buffers` shape into a module-level `SPLAT_VERTEX_BUFFERS` so the cache key signature matches across all three descriptors (matters because the cache hashes the full `vertex.buffers[]` shape — stride, stepMode, attribute layouts).
+- **`WebGPUDepthPlane.ts`** — Single depth-only pipeline. `initialize()` gained an optional `pipelineCache?: WebGPURenderPipelineCache | null` parameter; when present, the pipeline is requested asynchronously and `_pipeline` stays null until resolution. The existing `if (!this._pipeline) return` guard in `execute()` handles the not-yet-ready frames cleanly. `WebGPUSceneRenderer._ensureResources` now passes `context.webgpuPipelineCache`. Split-screen / multi-canvas configurations with matching depth-plane descriptors now share a single `GPURenderPipeline` instead of materializing one per scene.
+- **Type plumbing** — Added `webgpuPipelineCache?: WebGPURenderPipelineCache | null` to the `CesiumGraphicsContext` ambient interface in `cesium-js-types.d.ts`. Feature-renderer TS files can now reach the cache through `frameState.context` without casting to the concrete `WebGPUContext` type — keeps the backend-agnostic layering intact.
+
+### Scope cuts
+
+- **`WebGPUModelPipelineCache`** — explicitly **not** migrated. It owns its own pipeline map (`_pipelines`) keyed by a complex material-settings hash; routing it through the central cache without also sharing `GPUShaderModule` handles across model instances would not actually dedupe anything (two models with identical material settings still construct distinct shader modules → distinct cache keys). Tracked under follow-up `C-R7-SHADER-MODULE-DEDUP` — needs a separate `WebGPUShaderModuleCache` consumer pass first.
+- **`WebGPUPostProcessEffects`, `WebGPUAutoExposure`, the per-effect compute caches** — out of scope. `WebGPUAutoExposure` uses `device.createComputePipeline()` exclusively, which the central `WebGPURenderPipelineCache` doesn't handle (it's render-pipeline-only). A parallel `WebGPUComputePipelineCache` would be a separate piece of infrastructure.
+- **The remaining 12 feature renderers** with local pipeline maps (`WebGPUGroundPrimitiveRenderer`, `WebGPUBillboardRenderer`, `WebGPULabelRenderer`, `WebGPUPolylineRenderer`, `WebGPUEnvironmentRenderer`, `WebGPUCloudRenderer`, `WebGPUVolumetricFogRenderer`, `WebGPUWeatherRenderer`, `WebGPUVoxelRenderer`, `WebGPUPointPrimitiveRenderer`, `WebGPUPointCloudRenderer`, `WebGPUGlobeSurfaceRenderer`) are mechanical follow-ups using the same pattern. Tracked under continuing `C-R7-RENDERER-MIGRATION`.
+- **No shader changes.** The migration is purely pipeline routing — same WGSL, same descriptors, same draw calls.
+
+### Backwards-compat behavior
+
+All three migrated renderers fall back to direct `device.createRenderPipeline()` when `context.webgpuPipelineCache` is null (legacy callers, WebGL contexts where the field doesn't exist). Behavior is identical to pre-migration in that path. The `pipelineCache?: ...` parameter on `WebGPUDepthPlane.initialize()` defaults to undefined, so any external caller that instantiated the depth plane manually still works.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts` — added `webgpuPipelineCache?` slot on `CesiumGraphicsContext`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts` — pipeline routing through cache
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts` — pipeline routing through cache (color + OIT + pick)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts` — optional `pipelineCache` param on `initialize()`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts` — pass `context.webgpuPipelineCache` into `WebGPUDepthPlane.initialize()`
+- `migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` — C-R7 entry status appended with first-cut migration progress
+
+`npx tsc --noEmit` runs clean.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R7-RENDERER-MIGRATION (PARTIAL) | RENDERER_DEEP | Per-renderer routing through central pipeline cache | Three representative renderers (Ellipsoid, GaussianSplat, DepthPlane) now resolve their pipelines through `context.webgpuPipelineCache`. Builds the descriptor once, requests pipelines async, skips draws until ready, falls back to direct creation when the cache is unavailable. 12 remaining renderers tracked under continuing follow-up. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.

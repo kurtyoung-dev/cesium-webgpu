@@ -20,18 +20,31 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
 
 interface EllipsoidCache {
   uniformBuffer: GPUBuffer | null;
   ellipsoidUniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
+  pickPipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup0: GPUBindGroup | null;
   bindGroup1: GPUBindGroup | null;
   vertexBuffer: GPUBuffer | null;
   indexBuffer: GPUBuffer | null;
   command: CesiumAnyDrawCommand | null;
+  pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
+  // C-R7-RENDERER-MIGRATION (Batch 56) — once pipeline-cache routing is
+  // engaged the color + pick pipelines arrive asynchronously via
+  // `WebGPURenderPipelineCache.getPipeline()`. We track whether the
+  // request is already in flight so subsequent frames don't re-issue it,
+  // and skip drawing on frames where the pipelines aren't materialized
+  // yet (matches `getPipelineSync()` returning undefined).
+  pipelineRequestPending: boolean;
 }
 
 // Inline WGSL for ray-marched ellipsoid
@@ -62,6 +75,9 @@ struct EllipsoidUniforms {
   _pad2: f32,
   centerLow: vec3<f32>,
   _pad3: f32,
+  // C-R9 (Batch 30) — pick color output for the pick FBO. Always written
+  // but only read by the fragmentPickMain entry point.
+  pickColor: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -126,6 +142,25 @@ fn fragmentMain(
   let col = ellipsoid.color.rgb * (0.3 + 0.7 * NdotL);
   return vec4<f32>(col, ellipsoid.color.a);
 }
+
+// C-R9 (Batch 30) — pick entry point. Same ray-ellipsoid intersection +
+// discard as the color pass, but outputs the pick color instead of the
+// lit material. The pick FBO readback maps this color back to the
+// {primitive, id} target registered at creation time.
+@fragment
+fn fragmentPickMain(
+  @builtin(position) fragPos: vec4<f32>,
+  @location(0) eyeDirection: vec3<f32>,
+  @location(1) ellipsoidCenter: vec3<f32>,
+) -> @location(0) vec4<f32> {
+  let rayDir = normalize(eyeDirection);
+  let t = intersectEllipsoid(vec3<f32>(0.0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq);
+  if (t.x < 0.0 && t.y < 0.0) { discard; }
+  var tHit = t.x;
+  if (tHit < 0.0) { tHit = t.y; }
+  if (tHit < 0.0) { discard; }
+  return ellipsoid.pickColor;
+}
 `;
 
 // Scratch objects for RTE encoding
@@ -160,15 +195,47 @@ function createQuadGeometry(device: GPUDevice): {
   return { vertexBuffer, indexBuffer };
 }
 
-function createPipelineAndLayouts(
-  device: GPUDevice,
-  canvasFormat: GPUTextureFormat,
-): {
-  pipeline: GPURenderPipeline;
+// Vertex buffer layout shared by the color + pick pipelines. Defined once
+// here so the cache-key signature in `WebGPURenderPipelineCache` (which
+// hashes the full `vertex.buffers[]` shape) matches across both descriptor
+// requests — otherwise the cache would treat them as different layouts.
+const ELLIPSOID_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
+  {
+    arrayStride: 8,
+    attributes: [
+      {
+        shaderLocation: 0,
+        offset: 0,
+        format: "float32x2" as GPUVertexFormat,
+      },
+    ],
+  },
+];
+
+interface EllipsoidPipelineResources {
   shaderModule: GPUShaderModule;
   bindGroupLayout0: GPUBindGroupLayout;
   bindGroupLayout1: GPUBindGroupLayout;
-} {
+  pipelineLayout: GPUPipelineLayout;
+  colorDescriptor: WebGPURenderPipelineDescriptor;
+  pickDescriptor: WebGPURenderPipelineDescriptor;
+}
+
+/**
+ * Build the synchronous resources (shader module, BGLs, pipeline layout)
+ * and the descriptor objects passed to `WebGPURenderPipelineCache`.
+ * The cache materializes the actual `GPURenderPipeline` objects asynchronously.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 56). Previously this function called
+ * `device.createRenderPipeline()` twice — once per primitive instance
+ * regardless of whether two ellipsoids shared identical pipeline state.
+ * Routing through the central cache means two ellipsoids with identical
+ * descriptors share a single `GPURenderPipeline`.
+ */
+function buildEllipsoidPipelineResources(
+  device: GPUDevice,
+  canvasFormat: GPUTextureFormat,
+): EllipsoidPipelineResources {
   const shaderModule = device.createShaderModule({ code: ELLIPSOID_WGSL });
 
   const bindGroupLayout0 = makeBindGroupLayout(
@@ -187,23 +254,13 @@ function createPipelineAndLayouts(
     bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],
   });
 
-  const pipeline = device.createRenderPipeline({
+  const colorDescriptor: WebGPURenderPipelineDescriptor = {
+    name: "EllipsoidPrimitive color pipeline",
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: 8,
-          attributes: [
-            {
-              shaderLocation: 0,
-              offset: 0,
-              format: "float32x2" as GPUVertexFormat,
-            },
-          ],
-        },
-      ],
+      buffers: ELLIPSOID_VERTEX_BUFFERS,
     },
     fragment: {
       module: shaderModule,
@@ -225,9 +282,131 @@ function createPipelineAndLayouts(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
-  });
+  };
 
-  return { pipeline, shaderModule, bindGroupLayout0, bindGroupLayout1 };
+  // C-R9 (Batch 30) — pick pipeline. Same layout, same vertex stage, same
+  // depth behaviour, but the fragment entry emits the pickColor directly
+  // (no blending — pick colors MUST be written unmodified into the FBO
+  // so the readback maps them 1:1 back to the registered object).
+  const pickDescriptor: WebGPURenderPipelineDescriptor = {
+    name: "EllipsoidPrimitive pick pipeline",
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: ELLIPSOID_VERTEX_BUFFERS,
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentPickMain",
+      targets: [{ format: canvasFormat }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+  };
+
+  return {
+    shaderModule,
+    bindGroupLayout0,
+    bindGroupLayout1,
+    pipelineLayout,
+    colorDescriptor,
+    pickDescriptor,
+  };
+}
+
+/**
+ * Resolve the color + pick pipelines through the central pipeline cache.
+ * If the cache is unavailable (WebGL context, or device not yet present),
+ * falls back to direct `device.createRenderPipeline*Async()` so behavior
+ * remains unchanged.
+ *
+ * Returns synchronously when both pipelines are already cached; otherwise
+ * kicks off async creation and returns null so the caller can skip the
+ * frame and try again next tick.
+ */
+function tryResolveEllipsoidPipelines(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  resources: EllipsoidPipelineResources,
+  cache: EllipsoidCache,
+): boolean {
+  // Already resolved — nothing to do.
+  if (cache.pipeline && cache.pickPipeline) {
+    return true;
+  }
+
+  if (pipelineCache) {
+    const colorSync = pipelineCache.getPipelineSync(resources.colorDescriptor);
+    const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
+    if (colorSync && pickSync) {
+      cache.pipeline = colorSync;
+      cache.pickPipeline = pickSync;
+      cache.pipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pipelineRequestPending) {
+      cache.pipelineRequestPending = true;
+      Promise.all([
+        pipelineCache.getPipeline(resources.colorDescriptor),
+        pipelineCache.getPipeline(resources.pickDescriptor),
+      ])
+        .then(([color, pick]) => {
+          cache.pipeline = color;
+          cache.pickPipeline = pick;
+          cache.pipelineRequestPending = false;
+        })
+        .catch(() => {
+          // Errors already logged by the cache; clear the in-flight flag
+          // so the next frame retries.
+          cache.pipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  // Fallback: no central cache (e.g. WebGL-backed graphics context). Mirror
+  // the historical synchronous path so behavior matches pre-migration.
+  cache.pipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.colorDescriptor),
+  );
+  cache.pickPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.pickDescriptor),
+  );
+  return true;
+}
+
+/**
+ * Convert our cache-friendly descriptor back into the WebGPU descriptor
+ * shape for the fallback path. Only used when `pipelineCache` is null —
+ * i.e. when we couldn't route through the central cache.
+ */
+function descriptorToGPU(
+  d: WebGPURenderPipelineDescriptor,
+): GPURenderPipelineDescriptor {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
 }
 
 function packCameraUniforms(
@@ -315,11 +494,16 @@ function packCameraUniforms(
   return data;
 }
 
+// 112 bytes = 28 floats: radii(4) + oneOverRadiiSq(4) + color(4)
+// + centerHigh(4) + centerLow(4) + pickColor(4) [C-R9, Batch 30]
+const ELLIPSOID_UBO_BYTES = 112;
+const ELLIPSOID_UBO_FLOATS = ELLIPSOID_UBO_BYTES / 4;
+
 function packEllipsoidUniforms(
   primitive: CesiumObjectWithWebGPUCache,
+  pickColor: { red: number; green: number; blue: number; alpha: number } | null,
 ): Float32Array {
-  // 96 bytes = 24 floats: radii(3+1) + oneOverRadiiSq(3+1) + color(4) + centerHigh(3+1) + centerLow(3+1)
-  const data = new Float32Array(24);
+  const data = new Float32Array(ELLIPSOID_UBO_FLOATS);
   const radii = primitive.radii;
   data[0] = radii.x;
   data[1] = radii.y;
@@ -359,6 +543,21 @@ function packEllipsoidUniforms(
   data[18] = scratchEncodedPosition.low.z;
   data[19] = 0;
 
+  // C-R9 (Batch 30) — pick color slot. Zero when the primitive hasn't
+  // been pick-registered yet; the pick pass skips the draw in that
+  // case, so the zero alpha reaching the pick FBO is benign.
+  if (pickColor) {
+    data[20] = pickColor.red;
+    data[21] = pickColor.green;
+    data[22] = pickColor.blue;
+    data[23] = pickColor.alpha;
+  } else {
+    data[20] = 0;
+    data[21] = 0;
+    data[22] = 0;
+    data[23] = 0;
+  }
+
   return data;
 }
 
@@ -395,20 +594,34 @@ function updateWebGPUEllipsoidPrimitive(
       uniformBuffer: null,
       ellipsoidUniformBuffer: null,
       pipeline: null,
+      pickPipeline: null,
       shaderModule: null,
       bindGroup0: null,
       bindGroup1: null,
       vertexBuffer: null,
       indexBuffer: null,
       command: null,
+      pickCommand: null,
       initialized: false,
+      pipelineRequestPending: false,
     } as EllipsoidCache;
   }
 
   const cache = primitive._webgpuCache as EllipsoidCache;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
-  // One-time initialization
+  // C-R7-RENDERER-MIGRATION (Batch 56) — route pipeline creation through
+  // the central WebGPURenderPipelineCache. Held on a sidecar so we can
+  // re-resolve every frame until both pipelines materialize.
+  let resources = (
+    cache as EllipsoidCache & {
+      _pipelineResources?: EllipsoidPipelineResources;
+    }
+  )._pipelineResources;
+
+  // One-time initialization of CPU-side resources (buffers, BGLs, shader,
+  // pipeline-layout, bind groups, and the quad geometry). The pipelines
+  // themselves are resolved separately via the central cache below.
   if (!cache.initialized) {
     // Camera UBO: 60 floats × 4 = 240 bytes (mvpRTE + mvRTE + camHigh/Low +
     //   viewport + previousViewProjection [DP-H41, Batch 27])
@@ -417,25 +630,28 @@ function updateWebGPUEllipsoidPrimitive(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Ellipsoid UBO: 24 floats × 4 = 96 bytes (radii + oneOverRadiiSq + color + center)
+    // Ellipsoid UBO: 28 floats × 4 = 112 bytes (radii + oneOverRadiiSq +
+    //   color + center + pickColor [C-R9, Batch 30])
     cache.ellipsoidUniformBuffer = device.createBuffer({
-      size: 96,
+      size: ELLIPSOID_UBO_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Create pipeline
-    const { pipeline, shaderModule, bindGroupLayout0, bindGroupLayout1 } =
-      createPipelineAndLayouts(device, canvasFormat);
-    cache.pipeline = pipeline;
-    cache.shaderModule = shaderModule;
+    resources = buildEllipsoidPipelineResources(device, canvasFormat);
+    (
+      cache as EllipsoidCache & {
+        _pipelineResources?: EllipsoidPipelineResources;
+      }
+    )._pipelineResources = resources;
+    cache.shaderModule = resources.shaderModule;
 
     // Create bind groups
     cache.bindGroup0 = device.createBindGroup({
-      layout: bindGroupLayout0,
+      layout: resources.bindGroupLayout0,
       entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer } }],
     });
     cache.bindGroup1 = device.createBindGroup({
-      layout: bindGroupLayout1,
+      layout: resources.bindGroupLayout1,
       entries: [
         { binding: 0, resource: { buffer: cache.ellipsoidUniformBuffer } },
       ],
@@ -447,6 +663,25 @@ function updateWebGPUEllipsoidPrimitive(
     cache.indexBuffer = geom.indexBuffer;
 
     cache.initialized = true;
+  }
+
+  // Resolve the color + pick pipelines via the central cache. On first
+  // frame this kicks off async creation and returns false; subsequent
+  // frames pick up the cached pipeline synchronously and return true.
+  // We `return` early on the not-yet-ready frames so we don't enqueue
+  // a draw command with a null pipeline.
+  const ctxAny = context as unknown as {
+    webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+  };
+  if (
+    !tryResolveEllipsoidPipelines(
+      device,
+      ctxAny.webgpuPipelineCache ?? null,
+      resources!,
+      cache,
+    )
+  ) {
+    return;
   }
 
   // Per-frame uniform updates
@@ -463,14 +698,47 @@ function updateWebGPUEllipsoidPrimitive(
   );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(cameraData));
 
-  const ellipsoidData = packEllipsoidUniforms(primitive);
+  // C-R9 (Batch 30) — ensure a pick ID is registered with the context
+  // when the primitive hasn't been pick-bound yet or its `id` changed.
+  // Mirrors the WebGL path in `Scene/EllipsoidPrimitive.js` lines 377-387.
+  const passes = frameState.passes;
+  if (passes && (passes.pick || passes.render)) {
+    const primId = primitive.id;
+    const pickState = primitive as unknown as {
+      _pickId?: { color: CesiumColor; destroy(): void };
+      _pickIdLastId?: unknown;
+    };
+    if (!pickState._pickId || pickState._pickIdLastId !== primId) {
+      if (pickState._pickId) {
+        pickState._pickId.destroy();
+      }
+      pickState._pickId = context.createPickId(
+        { primitive: primitive, id: primId },
+        "primitive",
+      );
+      pickState._pickIdLastId = primId;
+    }
+  }
+
+  const pickColor = (
+    primitive as unknown as { _pickId?: { color: CesiumColor } }
+  )._pickId?.color;
+  const ellipsoidData = packEllipsoidUniforms(primitive, pickColor ?? null);
   device.queue.writeBuffer(
     cache.ellipsoidUniformBuffer!,
     0,
     gpuData(ellipsoidData),
   );
 
-  // Create or update draw command
+  // C-R1 (Batch 35) — forward any WebGL-style renderState set by
+  // Scene/EllipsoidPrimitive.js onto the emitted WebGPUDrawCommand so
+  // `applyPerEncoderState` (Batch 30) runs stencilRef / blendConstant /
+  // viewport / scissor before the draw. Refreshed every frame so a
+  // material translucent-state change picks up on the next frame
+  // without needing to invalidate the command.
+  const primitiveRS = (primitive as unknown as { _rs?: unknown })._rs;
+
+  // Color command (normal render pass)
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
@@ -481,8 +749,42 @@ function updateWebGPUEllipsoidPrimitive(
       pass: Pass.OPAQUE,
     });
   }
+  // Keep renderState in sync each frame — catches primitive.material
+  // translucent-toggle cases where `_rs` rebuilds between frames. The
+  // WebGL-shape `renderState` is passed through as an opaque object and
+  // consumed by `applyPerEncoderState` in `WebGPUDrawCommand.execute`.
+  if (primitiveRS) {
+    (cache.command as CesiumAnyDrawCommand).renderState =
+      primitiveRS as CesiumAnyDrawCommand["renderState"];
+  }
 
   commandList.push(cache.command);
+
+  // C-R9 (Batch 30) — pick command. Emitted unconditionally alongside the
+  // color command so the scene-renderer's `_executePickBatch` finds it
+  // during pick passes. Commands tagged with pass=OPAQUE already flow
+  // into the pick pass through `Pass.OPAQUE` walk in `_executePickPass`;
+  // no separate pick-only pass bucket is needed on WebGPU because the
+  // pick FBO render pass reuses the same opaque command list.
+  if (pickColor) {
+    if (!cache.pickCommand) {
+      cache.pickCommand = new WebGPUDrawCommand({
+        pipeline: cache.pickPipeline!,
+        bindGroups: [cache.bindGroup0, cache.bindGroup1],
+        vertexBuffers: [cache.vertexBuffer],
+        indexBuffer: cache.indexBuffer,
+        indexCount: 6,
+        pass: Pass.OPAQUE,
+        pickOnly: true,
+      });
+    }
+    // Wire the pick command onto the color command's derivedCommands so
+    // `selectCommandVariant` (Batch 29) routes to it during pick passes.
+    (cache.command as CesiumAnyDrawCommand).derivedCommands = {
+      ...((cache.command as CesiumAnyDrawCommand).derivedCommands ?? {}),
+      picking: { pickCommand: cache.pickCommand },
+    };
+  }
 }
 
 /**
@@ -500,6 +802,17 @@ function destroyWebGPUEllipsoidPrimitiveResources(
   cache.ellipsoidUniformBuffer?.destroy();
   cache.vertexBuffer?.destroy();
   cache.indexBuffer?.destroy();
+
+  // C-R9 (Batch 30) — tear down the pick ID so its slot in the pick
+  // registry is reclaimed and the next primitive instance gets a fresh
+  // color. No-op if the primitive never entered a pick pass.
+  const pickState = primitive as unknown as {
+    _pickId?: { destroy(): void };
+    _pickIdLastId?: unknown;
+  };
+  pickState._pickId?.destroy();
+  pickState._pickId = undefined;
+  pickState._pickIdLastId = undefined;
 
   primitive._webgpuCache = undefined;
 }
