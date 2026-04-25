@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Translucent 3D Tile classification on the WebGPU backend; toggle between MSAA-on and MSAA-off configurations."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, 3D Tiles" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Translucent Tile Classification demo.
+
+    Exercises (Batch 47 + Batch 61):
+    - Batch 47 — first cut of `WebGPUTranslucentTileClassification.ts`. Adds a
+      depth-pre-pass over translucent contributors, packs the result into a
+      single-sample `_packedDepthTexture`, and dispatches a compare-and-pack
+      pipeline that flags pixels where translucent depth dominates opaque depth.
+      Single-sample-only (`sampleCount === 1`) at landing time.
+    - Batch 61 — `COMPARE_AND_PACK_MSAA_WGSL` variant + MSAA pack pipeline.
+      Both depth slots become `texture_depth_multisampled_2d`; reads use
+      `textureLoad(coord, 0)` (single-sample read of the multisampled source).
+      Routing logic in `executeTranslucentDepthPass` bypasses the
+      copyTextureToTexture path (illegal when source is multisampled with
+      single-sample dest) and stages the source via `_msaaSourceDepthTexture`.
+      Default 4×MSAA scenes now produce classification depth instead of
+      silently skipping the capture.
+
+    Visual verification (WebGPU only):
+    1. A `ClassificationPrimitive` (red translucent box) is added on top of a
+       3D Tiles photogrammetry tileset — the primitive should drape onto the
+       tileset's surface and produce the characteristic "paint highlight"
+       look. Pre-Batch-47 the WebGPU backend skipped translucent classification
+       entirely so the box would either render as a free-floating box (no
+       drape) or be invisible.
+    2. Toggling `viewer.scene.msaaSamples = 4` (4×MSAA, the default) vs `1`
+       should both produce equivalent draped output. Pre-Batch-61 the 4×MSAA
+       configuration silently bailed out of `executeTranslucentDepthPass` and
+       left `_hasTranslucentDepth = false`, so the classification highlight
+       would vanish in MSAA mode.
+    3. Both configurations should match WebGL's classification output to
+       eye-tolerance.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+      #toolbar {
+        background: rgba(42, 42, 42, 0.85);
+        padding: 6px;
+        border-radius: 4px;
+        color: white;
+        font-family: sans-serif;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar"></div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = new Cesium.Viewer("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          terrain: undefined,
+          baseLayerPicker: false,
+          geocoder: false,
+          timeline: false,
+          animation: false,
+        });
+
+        const scene = viewer.scene;
+        scene.globe.depthTestAgainstTerrain = true;
+
+        // Default 4×MSAA — this is what most CesiumJS scenes ship with and
+        // exactly the path Batch 61 closed.
+        scene.msaaSamples = 4;
+
+        // 3D Tiles photogrammetry classification target — the same Ion asset
+        // used by the gallery's existing "3D Tiles 1.1 Photogrammetry
+        // Classification" demo. Loads via `Cesium3DTileset.fromIonAssetId(...)`.
+        // If Ion access fails (no token configured), we fall back to a small
+        // local tileset to keep the demo functional.
+        let tileset;
+        try {
+          // Asset 40866 = Aerometrex Denver photogrammetry; same asset used in
+          // the WebGL classification gallery demo.
+          tileset = await Cesium.Cesium3DTileset.fromIonAssetId(40866);
+          scene.primitives.add(tileset);
+        } catch (err) {
+          console.warn(
+            "Ion tileset 40866 unavailable; falling back to a local tileset.",
+            err,
+          );
+          // Fallback: use any locally-served 3D tileset that ships with Specs/Data.
+          // The demo still demonstrates the WebGPU translucent path even if the
+          // tileset is small.
+          try {
+            tileset = await Cesium.Cesium3DTileset.fromUrl(
+              "../../../Specs/Data/Cesium3DTiles/Tilesets/Tileset/tileset.json",
+            );
+            scene.primitives.add(tileset);
+          } catch (fallbackErr) {
+            console.error("Fallback tileset also failed:", fallbackErr);
+          }
+        }
+
+        if (Cesium.defined(tileset)) {
+          tileset.style = new Cesium.Cesium3DTileStyle({
+            color: "color('white')",
+          });
+          await viewer.zoomTo(
+            tileset,
+            new Cesium.HeadingPitchRange(
+              Cesium.Math.toRadians(0),
+              Cesium.Math.toRadians(-30),
+              tileset.boundingSphere.radius * 2.0,
+            ),
+          );
+        }
+
+        // Translucent classification primitive: a box-shaped volume with
+        // half-alpha red. `classificationType: CESIUM_3D_TILE` makes it drape
+        // onto tileset geometry — and that's the path Batch 47 + 61 light up.
+        let classificationPrimitive;
+        if (Cesium.defined(tileset)) {
+          const center = tileset.boundingSphere.center;
+          const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+          classificationPrimitive = scene.primitives.add(
+            new Cesium.ClassificationPrimitive({
+              geometryInstances: new Cesium.GeometryInstance({
+                geometry: Cesium.BoxGeometry.fromDimensions({
+                  vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+                  dimensions: new Cesium.Cartesian3(80.0, 80.0, 40.0),
+                }),
+                modelMatrix: Cesium.Matrix4.multiplyByTranslation(
+                  modelMatrix,
+                  new Cesium.Cartesian3(0.0, 0.0, 10.0),
+                  new Cesium.Matrix4(),
+                ),
+                attributes: {
+                  color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                    new Cesium.Color(1.0, 0.2, 0.2, 0.5),
+                  ),
+                  show: new Cesium.ShowGeometryInstanceAttribute(true),
+                },
+                id: "classification-volume",
+              }),
+              classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+            }),
+          );
+        }
+
+        // Toolbar: switch between 4×MSAA (Batch 61 path) and single-sample
+        // (Batch 47 path). Both should render equivalent classification.
+        Sandcastle.addToolbarMenu([
+          {
+            text: "MSAA: 4 samples (Batch 61 path)",
+            onselect: () => {
+              scene.msaaSamples = 4;
+            },
+          },
+          {
+            text: "MSAA: off (Batch 47 single-sample path)",
+            onselect: () => {
+              scene.msaaSamples = 1;
+            },
+          },
+        ]);
+
+        Sandcastle.addToggleButton(
+          "Show classification volume",
+          true,
+          (checked) => {
+            if (Cesium.defined(classificationPrimitive)) {
+              classificationPrimitive.show = checked;
+            }
+          },
+        );
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

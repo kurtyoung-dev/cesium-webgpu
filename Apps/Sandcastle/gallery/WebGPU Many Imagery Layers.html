@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Eight imagery layers stacked on the WebGPU globe; per-layer hue / gamma / alpha verification."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Many Imagery Layers demo.
+
+    Exercises (Batch 58):
+    - Globe imagery layer cap widened from 4 → 16 in `GlobeTerrain.wgsl`. Pre-Batch-58
+      builds dropped layer #5+ entirely on the WebGPU backend.
+    - Per-layer struct widened from 12 → 24 floats with five new uniform fields
+      that the WebGL path supports but were silently no-op'd on WebGPU:
+        - `colorToAlpha: vec4<f32>` (key color RGB + threshold)
+        - `cutoutRectangle: vec4<f32>` (tile-UV space; zero-area disables)
+        - `hue: f32` (radians)
+        - `oneOverGamma: f32` (precomputed inverse for branch-free sample)
+        - `split: f32` (-1 = LEFT, 0 = NONE, +1 = RIGHT, mirrors `SplitDirection`)
+    - Effect chain matches WebGL's `sampleAndBlend` order: colorToAlpha → gamma
+      → split → cutout → brightness → contrast → hue → saturation.
+    - Bind group 1 grew from 4 textures + sampler to 16 textures + sampler at
+      binding 16. UBO grew from 400 B to 1888 B (16 × 96-byte layer struct +
+      352 B of tile-level fields). Stays well under WebGPU's 16 KiB
+      `maxUniformBufferBindingSize` floor.
+
+    This is the single most user-impactful demo: 8 layers stacked is a normal
+    real-world configuration (Bing aerial + 5 OSM-style overlays + labels +
+    political boundaries) and a pre-Batch-58 WebGPU build would render layer
+    #5 onwards as the placeholder texture, looking like the imagery system
+    was broken.
+
+    Visual verification (WebGPU only):
+    1. The globe should show all 8 layers blended; toggling any layer's
+       checkbox should immediately add/remove its contribution. If the cap
+       were still 4, layers 5-8 would never affect the rendered pixels.
+    2. The per-layer hue slider proves Batch 58's `hue` packing reaches the
+       shader and the YIQ-domain hue rotation in `applyHueShift()` runs.
+    3. The per-layer gamma slider tests the `oneOverGamma` precomputation
+       (CPU writes `1.0 / layer.gamma`; shader does `pow(color, vec3(g))`).
+    4. The per-layer alpha slider is the simplest pre-existing knob — works
+       both pre- and post-Batch-58 — included as a regression sanity check.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+      #toolbar {
+        background: rgba(42, 42, 42, 0.85);
+        padding: 6px;
+        border-radius: 4px;
+        color: white;
+        font-family: sans-serif;
+        max-height: 90vh;
+        overflow-y: auto;
+      }
+      #toolbar table {
+        font-size: 12px;
+      }
+      #toolbar table th,
+      #toolbar table td {
+        padding: 2px 4px;
+      }
+      #toolbar table th {
+        text-align: left;
+      }
+      #toolbar input[type="range"] {
+        width: 90px;
+      }
+      #toolbar input[type="checkbox"] {
+        vertical-align: middle;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table id="layerControls">
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>Show</th>
+            <th>Alpha</th>
+            <th>Hue</th>
+            <th>Gamma</th>
+          </tr>
+        </thead>
+        <tbody id="layerBody"></tbody>
+      </table>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = new Cesium.Viewer("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          baseLayerPicker: false,
+          geocoder: false,
+          timeline: false,
+          animation: false,
+          // Suppress the default base layer so we can stack custom ones.
+          baseLayer: false,
+        });
+
+        const imageryLayers = viewer.imageryLayers;
+        // Clear anything inherited.
+        imageryLayers.removeAll();
+
+        // Eight independent layers. All resolvable from local Assets/Textures
+        // bundled with CesiumJS or from network-accessible OSM-class providers.
+        // Mix of base + overlay + label + boundary stylings to mirror a real
+        // multi-layer config.
+        async function makeLayers() {
+          const specs = [
+            {
+              name: "Natural Earth II (base)",
+              alpha: 1.0,
+              providerPromise: Cesium.TileMapServiceImageryProvider.fromUrl(
+                Cesium.buildModuleUrl("Assets/Textures/NaturalEarthII"),
+              ),
+            },
+            {
+              name: "OpenStreetMap (overlay)",
+              alpha: 0.5,
+              providerPromise: Promise.resolve(
+                new Cesium.OpenStreetMapImageryProvider({
+                  url: "https://tile.openstreetmap.org/",
+                }),
+              ),
+            },
+            {
+              name: "OSM Cyclosm (overlay)",
+              alpha: 0.4,
+              providerPromise: Promise.resolve(
+                new Cesium.OpenStreetMapImageryProvider({
+                  url: "https://a.tile-cyclosm.openstreetmap.fr/cyclosm/",
+                }),
+              ),
+            },
+            {
+              name: "OSM Humanitarian (overlay)",
+              alpha: 0.4,
+              providerPromise: Promise.resolve(
+                new Cesium.OpenStreetMapImageryProvider({
+                  url: "https://a.tile.openstreetmap.fr/hot/",
+                }),
+              ),
+            },
+            {
+              name: "OSM Transport (overlay)",
+              alpha: 0.35,
+              providerPromise: Promise.resolve(
+                new Cesium.OpenStreetMapImageryProvider({
+                  url: "https://tile.openstreetmap.fr/openriverboatmap/",
+                }),
+              ),
+            },
+            {
+              name: "OSM No-labels (overlay)",
+              alpha: 0.35,
+              providerPromise: Promise.resolve(
+                new Cesium.OpenStreetMapImageryProvider({
+                  url: "https://tiles.stadiamaps.com/tiles/alidade_smooth/",
+                  fileExtension: "png",
+                }),
+              ),
+            },
+            {
+              name: "Tile Coordinates (debug labels)",
+              alpha: 0.6,
+              providerPromise: Promise.resolve(
+                new Cesium.TileCoordinatesImageryProvider(),
+              ),
+            },
+            {
+              name: "Grid (political-style boundary)",
+              alpha: 0.6,
+              providerPromise: Promise.resolve(
+                new Cesium.GridImageryProvider(),
+              ),
+            },
+          ];
+
+          for (const spec of specs) {
+            try {
+              const provider = await spec.providerPromise;
+              const layer = new Cesium.ImageryLayer(provider);
+              layer.alpha = spec.alpha;
+              layer.show = true;
+              layer.name = spec.name;
+              imageryLayers.add(layer);
+            } catch (err) {
+              console.warn(`Skipping layer "${spec.name}":`, err);
+            }
+          }
+        }
+
+        await makeLayers();
+
+        // Build the per-layer control panel. Each row gets show/alpha/hue/gamma
+        // bound to the layer's mutable properties. Hue is in radians (0-2π
+        // covers the full color wheel); gamma in the conventional 0.4-2.5 range.
+        const layerBody = document.getElementById("layerBody");
+        for (let i = 0; i < imageryLayers.length; i++) {
+          const layer = imageryLayers.get(i);
+          const tr = document.createElement("tr");
+
+          const tdName = document.createElement("td");
+          tdName.textContent = layer.name ?? `Layer ${i}`;
+          tr.appendChild(tdName);
+
+          const tdShow = document.createElement("td");
+          const showInput = document.createElement("input");
+          showInput.type = "checkbox";
+          showInput.checked = !!layer.show;
+          showInput.addEventListener("change", () => {
+            layer.show = showInput.checked;
+          });
+          tdShow.appendChild(showInput);
+          tr.appendChild(tdShow);
+
+          tr.appendChild(makeRangeCell(layer, "alpha", 0.0, 1.0, 0.05));
+          tr.appendChild(makeRangeCell(layer, "hue", -Math.PI, Math.PI, 0.1));
+          tr.appendChild(makeRangeCell(layer, "gamma", 0.4, 2.5, 0.05));
+
+          layerBody.appendChild(tr);
+        }
+
+        function makeRangeCell(layer, prop, min, max, step) {
+          const td = document.createElement("td");
+          const input = document.createElement("input");
+          input.type = "range";
+          input.min = String(min);
+          input.max = String(max);
+          input.step = String(step);
+          // Hue defaults to 0 for an unmodified appearance; gamma defaults to 1.
+          input.value = String(layer[prop] ?? (prop === "gamma" ? 1.0 : 0.0));
+          const label = document.createElement("span");
+          label.textContent = " " + Number(input.value).toFixed(2);
+          input.addEventListener("input", () => {
+            const v = Number(input.value);
+            layer[prop] = v;
+            label.textContent = " " + v.toFixed(2);
+          });
+          td.appendChild(input);
+          td.appendChild(label);
+          return td;
+        }
+
+        // Fly to a recognisable view so the layer-mixing is obvious.
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(-95.0, 40.0, 8000000.0),
+          duration: 0.0,
+        });
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

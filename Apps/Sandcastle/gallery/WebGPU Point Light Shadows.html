@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Point-light cube-shadow casting + receiving on the WebGPU backend; toggle 5-tap PCF softness."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Point Light Shadows demo.
+
+    Exercises (Batch 34 + Batch 57 + Batch 63):
+    - Batch 34 — point-light cast pipeline (6-face cube depth target). Each face
+      is rendered with a per-face perspective matrix (FOV = π/2, near = 1.0,
+      far = lightRadius) and writes window-space depth to a `depth32float` cube
+      attachment.
+    - Batch 57 — point-light receive in `ModelPBRComplete.wgsl`. Effects
+      bind-group binding 17 is a `texture_depth_cube`. Receive shader reconstructs
+      `fragWC = camera.cameraPositionWC + (modelMatrix * vec4(rteMC, 0.0)).xyz`
+      and round-trips the cast pipeline's perspective-Z formula via the
+      dominant-axis distance `max(|dx|, |dy|, |dz|)`. UBO grew 304 → 336 bytes
+      for `pointLightControl` + `pointLightPositionWC`.
+    - Batch 63 — 5-tap cross-pattern PCF. `pointLightPositionWC.w` is repurposed
+      as the soft-radius (in cube-face texels). `radius <= 0` is bit-exact to
+      Batch 57's hard-edge path; `radius > 0` averages 5 comparison samples
+      along the two minor cube-face axes.
+
+    Visual verification (WebGPU only):
+    1. A point light hovers above the model + ground plane. Shadow should fall
+       on the ground in the direction OPPOSITE the light, with the model
+       silhouette projected as a cube-mapped shadow.
+    2. With "Soft shadows: OFF" the shadow edges should be hard / aliased
+       (single cube-depth comparison per fragment — Batch 57 baseline).
+    3. With "Soft shadows: ON" `softShadows = true` resolves to `pcfRadius = 1.5`
+       cube-face texels in `WebGPUEffectsBindGroup`, and the 5-tap PCF kernel
+       smooths the shadow edges visibly. Batch 63 picked a 5-tap cross over
+       a 9-tap ring because diagonal samples land on neighboring cube faces
+       in the corner regions and compare against perspective-Z values written
+       by a different per-face camera (visible swimming during camera moves).
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+      #toolbar {
+        background: rgba(42, 42, 42, 0.85);
+        padding: 6px 10px;
+        border-radius: 4px;
+        color: white;
+        font-family: sans-serif;
+      }
+      #toolbar table td {
+        padding: 2px 6px;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar"></div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = new Cesium.Viewer("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          shouldAnimate: true,
+          shadows: true,
+          terrain: undefined,
+          baseLayerPicker: false,
+          geocoder: false,
+          timeline: false,
+          animation: false,
+        });
+
+        const scene = viewer.scene;
+
+        // Anchor everything around a flat patch — the demo's only goal is to
+        // make the cube-mapped shadow visible against a flat ground plane.
+        const center = Cesium.Cartesian3.fromDegrees(-75.59, 40.038, 0);
+        const enuTransform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+        // Ground plane: a large flat box in ENU local space so the shadow has
+        // a surface to fall onto.
+        const groundEntity = viewer.entities.add({
+          name: "Ground Plane",
+          position: center,
+          orientation: Cesium.Transforms.headingPitchRollQuaternion(
+            center,
+            new Cesium.HeadingPitchRoll(0, 0, 0),
+          ),
+          box: {
+            dimensions: new Cesium.Cartesian3(200.0, 200.0, 0.5),
+            material: new Cesium.Color(0.7, 0.7, 0.75, 1.0),
+            shadows: Cesium.ShadowMode.RECEIVE_ONLY,
+          },
+        });
+
+        // Caster: a glTF model 10m above the plane.
+        const modelPos = Cesium.Matrix4.multiplyByPoint(
+          enuTransform,
+          new Cesium.Cartesian3(0, 0, 10),
+          new Cesium.Cartesian3(),
+        );
+        const modelEntity = viewer.entities.add({
+          name: "Wood Tower",
+          position: modelPos,
+          orientation: Cesium.Transforms.headingPitchRollQuaternion(
+            modelPos,
+            new Cesium.HeadingPitchRoll(0, 0, 0),
+          ),
+          model: {
+            uri: "../../SampleData/models/WoodTower/Wood_Tower.glb",
+            shadows: Cesium.ShadowMode.CAST_ONLY,
+          },
+        });
+
+        viewer.zoomTo([groundEntity, modelEntity]);
+
+        // Point-light setup. CesiumJS exposes a ShadowMap for the sun by
+        // default; for an explicit point light we instantiate one with a
+        // Camera positioned 30m above the model (so the cube-shadow cone
+        // covers the model + plane). The Batch 34 cast pipeline detects this
+        // via `shadowMap._isPointLight`, the Batch 57 receive path consumes
+        // the published cube depth at binding 17 of the effects bind group.
+        let pointLightShadowMap;
+        const lightPosLocal = new Cesium.Cartesian3(0, 0, 30);
+        const lightPosWC = Cesium.Matrix4.multiplyByPoint(
+          enuTransform,
+          lightPosLocal,
+          new Cesium.Cartesian3(),
+        );
+
+        try {
+          const lightCamera = new Cesium.Camera(scene);
+          lightCamera.position = lightPosWC;
+          lightCamera.frustum = new Cesium.PerspectiveFrustum({
+            fov: Cesium.Math.PI_OVER_TWO,
+            aspectRatio: 1.0,
+            near: 1.0,
+            far: 100.0,
+          });
+
+          pointLightShadowMap = new Cesium.ShadowMap({
+            context: scene.context,
+            lightCamera: lightCamera,
+            isPointLight: true,
+            pointLightRadius: 100.0,
+            cascadesEnabled: false,
+            size: 1024,
+          });
+          scene.shadowMap = pointLightShadowMap;
+        } catch (err) {
+          console.error("Failed to construct point-light ShadowMap:", err);
+          // Fall back to the default sun shadow map. Demo will still render
+          // but won't exercise the cube-depth path.
+        }
+
+        // Toggle soft shadows. Batch 63 reads `shadowMap.softShadows` in the
+        // WebGPUEffectsBindGroup.js auto-detect path and resolves to
+        // pcfRadius = 1.5 cube-face texels when true. False keeps the
+        // Batch 57 hard-edged single-tap path bit-exact.
+        Sandcastle.addToggleButton(
+          "Soft shadows (5-tap PCF)",
+          false,
+          (checked) => {
+            const sm = scene.shadowMap;
+            if (Cesium.defined(sm)) {
+              sm.softShadows = checked;
+            }
+          },
+        );
+
+        Sandcastle.addToggleButton(
+          "Shadows enabled",
+          true,
+          (checked) => {
+            viewer.shadows = checked;
+          },
+        );
+
+        Sandcastle.addToolbarMenu([
+          {
+            text: "Shadow map size: 1024",
+            onselect: () => {
+              if (Cesium.defined(scene.shadowMap)) {
+                scene.shadowMap.size = 1024;
+              }
+            },
+          },
+          {
+            text: "Shadow map size: 512",
+            onselect: () => {
+              if (Cesium.defined(scene.shadowMap)) {
+                scene.shadowMap.size = 512;
+              }
+            },
+          },
+          {
+            text: "Shadow map size: 256",
+            onselect: () => {
+              if (Cesium.defined(scene.shadowMap)) {
+                scene.shadowMap.size = 256;
+              }
+            },
+          },
+        ]);
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Per-feature edge gating on the WebGPU backend: highlight a single feature and verify edges still render correctly across all features."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Edge Feature ID Gating demo.
+
+    Exercises (Batch 48 + Batch 49):
+    - Batch 48 — per-feature edge gating end-to-end. The emitter packs glTF
+      `FEATURE_ID_0` into the edge-id MRT attachment; `applyEdgeOverlay()` in
+      `ModelPBRComplete.wgsl` denormalises the channel and compares against the
+      fragment's own `currentFeatureId` with WebGL's `featuresMatch` semantics
+      (fail-open when either side has no feature).
+    - Batch 49 — 16-bit IDs split across `id.g` (low byte) + `id.b` (high byte)
+      of the rgba8unorm edge-metadata texture. Recomposed in the consumer via
+      `low + high * 256`. Lifts the 255-feature ceiling to 65 535.
+
+    Visual verification (WebGPU only):
+    1. The model should render with edges visible on all primitives initially.
+    2. Highlighting a single feature (button below) sets that feature's
+       `Cesium3DTileFeature`-equivalent color to red. Edges of THAT feature
+       should remain edge-coloured (yellow), proving the inline stage's
+       per-feature compare succeeded.
+    3. Edges of the OTHER features should also remain visible — fail-open
+       semantics: `currentFeatureId` of the body fragment is propagated to the
+       inline stage, and when the edge's feature-id channel is "no feature"
+       (id == 0) the equality short-circuits to true and the edge draws
+       unconditionally. If the gating were too strict, non-highlighted edges
+       would vanish.
+
+    Asset: `BENTLEY_materials_line_style.gltf` ships in Specs/Data and combines
+    `EXT_mesh_features` + `EXT_mesh_primitive_edge_visibility` + per-vertex
+    `_FEATURE_ID_0` (the exact triple Batch 48 was written against).
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+      #toolbar {
+        background: rgba(42, 42, 42, 0.8);
+        padding: 6px;
+        border-radius: 4px;
+        color: white;
+        font-family: sans-serif;
+      }
+      #toolbar table td {
+        padding: 2px 6px;
+      }
+      #status {
+        margin-top: 6px;
+        font-size: 12px;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <table>
+        <tbody>
+          <tr>
+            <td>Highlight feature ID</td>
+            <td>
+              <input
+                type="number"
+                id="featureIdInput"
+                value="3"
+                min="0"
+                max="255"
+                style="width: 60px;"
+              />
+              <button id="applyHighlight" class="cesium-button">
+                Highlight
+              </button>
+              <button id="clearHighlight" class="cesium-button">
+                Clear
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div id="status">Loading model...</div>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = new Cesium.Viewer("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          shouldAnimate: true,
+          shadows: false,
+          terrain: undefined,
+          baseLayerPicker: false,
+          geocoder: false,
+          timeline: false,
+          animation: false,
+        });
+
+        const statusEl = document.getElementById("status");
+        const featureIdEl = document.getElementById("featureIdInput");
+        const applyBtn = document.getElementById("applyHighlight");
+        const clearBtn = document.getElementById("clearHighlight");
+
+        // BENTLEY model has EXT_mesh_features + EXT_mesh_primitive_edge_visibility
+        // with `_FEATURE_ID_0` per-vertex — exactly the input shape Batch 48 was
+        // built against. The emitter flows FEATURE_ID_0 into id.g + id.b (Batch 49).
+        const modelUrl =
+          "../../../Specs/Data/Models/glTF-2.0/StyledLines/BENTLEY_materials_line_style.gltf";
+
+        const origin = Cesium.Cartesian3.fromDegrees(0.0, 0.0, 0.0);
+        const hpr = new Cesium.HeadingPitchRoll(0.0, 0.0, 0.0);
+        const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(
+          origin,
+          hpr,
+        );
+
+        let modelPrimitive;
+        try {
+          modelPrimitive = await Cesium.Model.fromGltfAsync({
+            url: modelUrl,
+            modelMatrix: modelMatrix,
+          });
+          viewer.scene.primitives.add(modelPrimitive);
+
+          modelPrimitive.readyEvent.addEventListener(() => {
+            const camera = viewer.camera;
+            const r = 2.0 * Math.max(
+              modelPrimitive.boundingSphere.radius,
+              camera.frustum.near,
+            );
+            viewer.scene.screenSpaceCameraController.minimumZoomDistance = r * 0.5;
+
+            camera.lookAt(
+              modelPrimitive.boundingSphere.center,
+              new Cesium.HeadingPitchRange(
+                Cesium.Math.toRadians(230.0),
+                Cesium.Math.toRadians(-20.0),
+                r * 2.0,
+              ),
+            );
+            camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+
+            // Default edge styling: yellow + 2px solid so the gating contrast
+            // is visible.
+            if ("edgeColor" in modelPrimitive) {
+              modelPrimitive.edgeColor = new Cesium.Color(1.0, 0.8, 0.0, 1.0);
+            }
+            if ("edgeWidth" in modelPrimitive) {
+              modelPrimitive.edgeWidth = 2;
+            }
+            if ("edgeLinePattern" in modelPrimitive) {
+              modelPrimitive.edgeLinePattern = 0xffff;
+            }
+
+            statusEl.textContent =
+              "Model loaded. Edges should be visible on all features. Highlight a feature ID to verify gating.";
+          });
+        } catch (err) {
+          console.error("Feature-ID model failed to load:", err);
+          window.alert(`Error loading model: ${err}`);
+          statusEl.textContent = `Failed to load: ${err}`;
+        }
+
+        // Set the model's per-feature color via its style. Sets the picked
+        // feature to red; other features keep their material colour. Edges
+        // through fail-open semantics should stay visible across all features.
+        function highlightFeature(featureId) {
+          if (!Cesium.defined(modelPrimitive) || !modelPrimitive.ready) {
+            return;
+          }
+          // Cesium.Cesium3DTileStyle works for tilesets, not bare Models, so
+          // we drive the per-feature color through the model's Style API
+          // instead. Falls back to a custom-shader approach if Style isn't
+          // available on this Model build.
+          if (typeof Cesium.Cesium3DTileStyle === "function") {
+            try {
+              modelPrimitive.style = new Cesium.Cesium3DTileStyle({
+                color: {
+                  conditions: [
+                    [`\${featureId} === ${featureId}`, "color('red')"],
+                    ["true", "color('white')"],
+                  ],
+                },
+              });
+              statusEl.textContent =
+                `Highlighted feature ID ${featureId}. ` +
+                `All edges (including non-highlighted) should remain visible.`;
+              return;
+            } catch (err) {
+              console.warn(
+                "Style API path failed; falling back to color override.",
+                err,
+              );
+            }
+          }
+          // Fallback: blanket model color override. Less precise but at
+          // least proves the edge feature-ID gating still tolerates a
+          // body color change.
+          modelPrimitive.color = Cesium.Color.RED.withAlpha(0.9);
+          statusEl.textContent =
+            "Style API unavailable; falling back to model.color override.";
+        }
+
+        function clearHighlight() {
+          if (!Cesium.defined(modelPrimitive) || !modelPrimitive.ready) {
+            return;
+          }
+          modelPrimitive.style = undefined;
+          modelPrimitive.color = Cesium.Color.WHITE;
+          statusEl.textContent = "Highlight cleared.";
+        }
+
+        applyBtn.addEventListener("click", () => {
+          const id = Number(featureIdEl.value);
+          if (Number.isFinite(id) && id >= 0) {
+            highlightFeature(id);
+          }
+        });
+        clearBtn.addEventListener("click", clearHighlight);
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>

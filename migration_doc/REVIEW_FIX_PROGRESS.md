@@ -2898,6 +2898,97 @@ The C-R sub-IDs already encode parent-finding affinity (`C-R8-*` are all translu
 
 ---
 
+## Batch 65 — Sandcastle demos for Batches 48-63 (2026-04-25)
+
+User-facing Sandcastle gallery demos for the seven Batch 48-63 features that
+landed without visual coverage. Each demo forces `renderer: "webgpu"` via
+`contextOptions` and includes a header comment citing parent batch numbers so
+the visual-regression testing agent can map demo → feature.
+
+### Demos authored
+
+| File | Batches exercised | Visual focus |
+| --- | --- | --- |
+| [Apps/Sandcastle/gallery/WebGPU Edge Visibility.html](../Apps/Sandcastle/gallery/WebGPU%20Edge%20Visibility.html) | 44, 45, 46, 48, 49, 50 | glTF edge rendering via inline `applyEdgeOverlay()`; edge color / line width / line pattern toggles |
+| [Apps/Sandcastle/gallery/WebGPU Edge Feature ID.html](../Apps/Sandcastle/gallery/WebGPU%20Edge%20Feature%20ID.html) | 48, 49 | per-feature edge gating + 16-bit feature IDs (g+b channel split) |
+| [Apps/Sandcastle/gallery/WebGPU Model Pick.html](../Apps/Sandcastle/gallery/WebGPU%20Model%20Pick.html) | 54, 59 | glTF Model `scene.pick()` at primitive granularity |
+| [Apps/Sandcastle/gallery/WebGPU Voxel Pick.html](../Apps/Sandcastle/gallery/WebGPU%20Voxel%20Pick.html) | 53, 59 | VoxelPrimitive pick via `fragmentPickMain` |
+| [Apps/Sandcastle/gallery/WebGPU Point Light Shadows.html](../Apps/Sandcastle/gallery/WebGPU%20Point%20Light%20Shadows.html) | 34, 57, 63 | cube-shadow cast + receive + 5-tap PCF toggle |
+| [Apps/Sandcastle/gallery/WebGPU Many Imagery Layers.html](../Apps/Sandcastle/gallery/WebGPU%20Many%20Imagery%20Layers.html) | 58 | 16-layer cap + per-layer hue / gamma / alpha (5 missing uniforms wired) |
+| [Apps/Sandcastle/gallery/WebGPU Translucent Classification.html](../Apps/Sandcastle/gallery/WebGPU%20Translucent%20Classification.html) | 47, 61 | translucent 3D Tile classification at `msaaSamples` 1 vs 4 |
+
+### Asset reuse
+
+All demos reference local assets already in the repo:
+
+- `Specs/Data/Models/glTF-2.0/StyledLines/BENTLEY_materials_line_style.gltf` —
+  has `EXT_mesh_features` + `EXT_mesh_primitive_edge_visibility` + per-vertex
+  `_FEATURE_ID_0`. Used by both edge demos.
+- `Apps/SampleData/models/{CesiumMilkTruck,CesiumMan,WoodTower}/*.glb` — used
+  by the Model Pick and Point Light Shadows demos.
+- `Cesium.TileMapServiceImageryProvider` rooted at `Assets/Textures/NaturalEarthII`
+  — base layer for the imagery demo, no network required.
+- Ion asset 40866 (Aerometrex Denver photogrammetry) for the classification
+  demo, with a fallback to `Specs/Data/Cesium3DTiles/Tilesets/Tileset/tileset.json`
+  when the Ion token isn't configured.
+
+### Forced WebGPU on every demo
+
+Every viewer construction passes `contextOptions: { renderer: "webgpu" }`.
+The follow-up testing agent can therefore validate via WebGPU canvas
+inspection without parsing query strings.
+
+### Header comment convention
+
+Each demo's `<!-- ... -->` header block lists:
+
+1. The parent Batch numbers from this Progress doc.
+2. The architectural mechanism each Batch landed (e.g., "Batch 48 — inline
+   `applyEdgeOverlay()` in `ModelPBRComplete.wgsl`").
+3. A numbered Visual Verification list pinning each Batch to a specific
+   observable behaviour the testing agent can check.
+
+### Files modified
+
+- [Apps/Sandcastle/gallery/WebGPU Edge Visibility.html](../Apps/Sandcastle/gallery/WebGPU%20Edge%20Visibility.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Edge Feature ID.html](../Apps/Sandcastle/gallery/WebGPU%20Edge%20Feature%20ID.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Model Pick.html](../Apps/Sandcastle/gallery/WebGPU%20Model%20Pick.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Voxel Pick.html](../Apps/Sandcastle/gallery/WebGPU%20Voxel%20Pick.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Point Light Shadows.html](../Apps/Sandcastle/gallery/WebGPU%20Point%20Light%20Shadows.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Many Imagery Layers.html](../Apps/Sandcastle/gallery/WebGPU%20Many%20Imagery%20Layers.html) — new
+- [Apps/Sandcastle/gallery/WebGPU Translucent Classification.html](../Apps/Sandcastle/gallery/WebGPU%20Translucent%20Classification.html) — new
+
+### Caveats / known limits
+
+- **No `.jpg` thumbnails authored.** The Sandcastle gallery falls back to a
+  generic placeholder when a paired thumbnail is missing. Thumbnails can be
+  generated with `Tools/visual-regression/capture-and-diff.mjs --update`
+  once the demos are wired into the regression harness, but they are not a
+  prerequisite for the demos to run.
+- **`WebGPU Translucent Classification` has a soft Ion dependency.** The
+  primary path uses Ion asset 40866 (Aerometrex Denver photogrammetry, the
+  same asset the WebGL `3D Tiles 1.1 Photogrammetry Classification` gallery
+  demo uses). When no Ion token is configured the demo falls back to a
+  small local tileset under `Specs/Data/Cesium3DTiles/Tilesets/Tileset/`.
+  Both paths exercise the Batch 47 + 61 code paths; the visual richness of
+  the photogrammetry version is the only difference.
+- **`WebGPU Many Imagery Layers` references public OSM-class tile servers**
+  for layers 2-6 (OSM, Cyclosm, Humanitarian, Transport, Stadia smooth).
+  Layer 1 (Natural Earth II) ships in `Apps/SampleData/Assets/Textures/`
+  so the demo always has at least one base layer; the OSM-class layers
+  validate the 16-layer cap when the network is available.
+- **`WebGPU Point Light Shadows` builds an explicit point-light `ShadowMap`**
+  via `new Cesium.ShadowMap({ isPointLight: true, ... })`. The CesiumJS
+  public-API surface for this constructor is intentional but lightly
+  documented; if the constructor signature changes upstream the demo will
+  need a refresh.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| BATCH-65-SANDCASTLE | self-carved | Sandcastle demos for Batches 48-63 | **NEW** — Seven gallery demos covering Batches 34, 44-50, 53, 54, 57, 58, 59, 61, 63. Each forces `renderer: "webgpu"` via `contextOptions`; each header block lists parent batches + visual verification steps for the regression-testing agent. No source-code changes; pure documentation/demo artifact addition. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.

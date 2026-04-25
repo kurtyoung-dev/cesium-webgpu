@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="Pick glTF Models on the WebGPU backend at primitive granularity."
+    />
+    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases" />
+    <title>Cesium Demo</title>
+    <script type="text/javascript" src="../Sandcastle-header.js"></script>
+    <script
+      type="text/javascript"
+      src="../../../Build/CesiumUnminified/Cesium.js"
+      nomodule
+    ></script>
+    <script type="module" src="../load-cesium-es6.js"></script>
+  </head>
+  <!--
+    WebGPU Model Pick demo.
+
+    Exercises (Batch 54 + Batch 59):
+    - Batch 54 — `fragmentPickMain` WGSL entry in `ModelPBRComplete.wgsl`. Runs
+      alpha-mask + batch-table-hide discards and returns `material.pickColor`.
+      Pick pipeline (in `WebGPUModelPipelineCache`) is keyed on
+      (alphaMode, doubleSided), shares layout + vertex stage + cullMode with
+      the color pipeline. Per-primitive pick ID is registered via
+      `context.createPickId({ primitive: model, id: primKey }, "primitive")`
+      where `primKey = "${nodeIdx}_${primIdx}"`.
+    - Batch 59 — pick lifecycle extracted to `WebGPUPickCommandHelpers.ts`
+      (`ensurePickId`, `destroyPickIds`, `attachPickToColorCommand`). Exercises
+      the multi-id mode (each glTF primitive gets its own pick id).
+
+    Visual verification (WebGPU only):
+    1. Two models load side-by-side. Click each in turn — `scene.pick(...)`
+       should return a result whose `primitive` is the corresponding Model
+       object. Pre-Batch-54 the WebGPU Model renderer emitted no pick command
+       and `scene.pick()` always returned undefined for model pixels.
+    2. Within the milk-truck model, the cab and the cargo are separate glTF
+       primitives. Picking each should report a different `id` value
+       (the `nodeIdx_primIdx` key from Batch 54), proving per-primitive
+       granularity.
+    3. The character model has multiple body-part primitives — each should
+       likewise report a distinct id when clicked.
+
+    No edge / shadow / classification work is required — this is the raw
+    pick-only path.
+  -->
+  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+    <style>
+      @import url(../templates/bucket.css);
+      #pickReadout {
+        background: rgba(42, 42, 42, 0.85);
+        color: white;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 13px;
+        max-width: 420px;
+      }
+      #pickReadout .label {
+        color: #ffcc00;
+      }
+    </style>
+    <div id="cesiumContainer" class="fullSize"></div>
+    <div id="loadingOverlay"><h1>Loading...</h1></div>
+    <div id="toolbar">
+      <div id="pickReadout">
+        Click a model to pick it. <span id="pickResult">(nothing picked yet)</span>
+      </div>
+    </div>
+    <script id="cesium_sandcastle_script">
+      window.startup = async function (Cesium) {
+        "use strict";
+        //Sandcastle_Begin
+
+        const viewer = new Cesium.Viewer("cesiumContainer", {
+          contextOptions: { renderer: "webgpu" },
+          shouldAnimate: true,
+          shadows: false,
+          terrain: undefined,
+          baseLayerPicker: false,
+          geocoder: false,
+          timeline: false,
+          animation: false,
+        });
+
+        const scene = viewer.scene;
+        const pickResultEl = document.getElementById("pickResult");
+
+        // Two distinct models so the user can verify pick discriminates between
+        // primitives. Both are local SampleData assets so no network is needed.
+        const truckPosition = Cesium.Cartesian3.fromDegrees(
+          -123.0744619,
+          44.0503706,
+          0,
+        );
+        const manPosition = Cesium.Cartesian3.fromDegrees(
+          -123.0742619,
+          44.0503706,
+          0,
+        );
+
+        function makeOrientation(position, headingDeg) {
+          const heading = Cesium.Math.toRadians(headingDeg);
+          const hpr = new Cesium.HeadingPitchRoll(heading, 0, 0);
+          return Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
+        }
+
+        const truckEntity = viewer.entities.add({
+          name: "Milk Truck",
+          position: truckPosition,
+          orientation: makeOrientation(truckPosition, 135),
+          model: {
+            uri: "../../SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
+            minimumPixelSize: 96,
+            maximumScale: 20000,
+          },
+        });
+
+        const manEntity = viewer.entities.add({
+          name: "Cesium Man",
+          position: manPosition,
+          orientation: makeOrientation(manPosition, 0),
+          model: {
+            uri: "../../SampleData/models/CesiumMan/Cesium_Man.glb",
+            minimumPixelSize: 96,
+            maximumScale: 20000,
+          },
+        });
+
+        viewer.zoomTo([truckEntity, manEntity]);
+
+        // Click handler exercises `scene.pick(...)`. The Batch 54 pick command
+        // routes through `webgpuCmd.derivedCommands.picking.pickCommand`, the
+        // Batch 29 dispatcher selects it during pick passes, and the Batch 54
+        // `createPickId` registration provides the readback target.
+        const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
+        handler.setInputAction((movement) => {
+          const picked = scene.pick(movement.position);
+          if (!Cesium.defined(picked)) {
+            pickResultEl.textContent = "(no model under cursor)";
+            return;
+          }
+
+          const primitiveLabel = describePrimitive(picked.primitive);
+          const idLabel = describeId(picked.id);
+          pickResultEl.innerHTML = [
+            `<span class="label">primitive:</span> ${primitiveLabel}`,
+            `<span class="label">id:</span> ${idLabel}`,
+          ].join("<br>");
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+        function describePrimitive(p) {
+          if (!Cesium.defined(p)) {
+            return "(undefined)";
+          }
+          if (p instanceof Cesium.Model) {
+            // Model attached as `entity.model` ends up as the underlying Model
+            // primitive; identify it via the source URL when possible.
+            return `Model[${p._resource?.url ?? "(anon)"}]`;
+          }
+          return p.constructor?.name ?? typeof p;
+        }
+
+        function describeId(id) {
+          if (!Cesium.defined(id)) {
+            return "(no id)";
+          }
+          if (id instanceof Cesium.Entity) {
+            return `Entity("${id.name ?? id.id}")`;
+          }
+          if (typeof id === "string") {
+            // Batch 54 packs the per-primitive key as the pick id payload.
+            return `"${id}" (likely "nodeIdx_primIdx" from Batch 54)`;
+          }
+          return JSON.stringify(id);
+        }
+
+        //Sandcastle_End
+        Sandcastle.finishedLoading();
+      };
+      if (typeof Cesium !== "undefined") {
+        window.startupCalled = true;
+        window.startup(Cesium).catch((error) => {
+          "use strict";
+          console.error(error);
+        });
+      }
+    </script>
+  </body>
+</html>
