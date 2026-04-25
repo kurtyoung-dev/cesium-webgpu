@@ -527,7 +527,16 @@ export class WebGPUSceneRenderer {
         context.depthFormat ?? "depth24plus-stencil8";
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
-      this._depthPlane.initialize(device, depthFormat, canvasFormat);
+      // C-R7-RENDERER-MIGRATION (Batch 56) — route the depth-plane
+      // pipeline through the central cache so split-screen / multi-canvas
+      // setups dedupe identical descriptors instead of materializing
+      // separate `GPURenderPipeline` objects per scene.
+      this._depthPlane.initialize(
+        device,
+        depthFormat,
+        canvasFormat,
+        context.webgpuPipelineCache ?? null,
+      );
     }
 
     // Post-processing pipeline

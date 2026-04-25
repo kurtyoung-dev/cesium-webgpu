@@ -31,6 +31,10 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
 
 /** Type-shape for the JS-only EncodedCartesian3.encode static. */
 interface EncodedCartesian3Statics {
@@ -253,11 +257,24 @@ export class WebGPUDepthPlane {
 
   /**
    * Initialize the depth plane pipeline (once per device).
+   *
+   * C-R7-RENDERER-MIGRATION (Batch 56). When a `pipelineCache` is supplied,
+   * the depth-only pipeline is requested through the central
+   * `WebGPURenderPipelineCache` so multiple `WebGPUDepthPlane` instances
+   * (split-screen, multi-canvas) share a single `GPURenderPipeline` if
+   * their descriptors match. Without a cache (e.g. legacy callers), falls
+   * back to the previous synchronous `device.createRenderPipeline()`.
+   *
+   * @param device The GPU device
+   * @param depthFormat Depth-stencil attachment format
+   * @param colorFormat Color attachment format (writeMask = 0; depth-only)
+   * @param pipelineCache Optional central pipeline cache for dedup
    */
   initialize(
     device: GPUDevice,
     depthFormat: GPUTextureFormat,
     colorFormat: GPUTextureFormat = "bgra8unorm",
+    pipelineCache?: WebGPURenderPipelineCache | null,
   ): void {
     if (this._pipeline) return;
 
@@ -292,8 +309,8 @@ export class WebGPUDepthPlane {
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
-    this._pipeline = device.createRenderPipeline({
-      label: "DepthPlane-Pipeline",
+    const descriptor: WebGPURenderPipelineDescriptor = {
+      name: "DepthPlane-Pipeline",
       layout: pipelineLayout,
       vertex: {
         module: this._shaderModule,
@@ -330,7 +347,49 @@ export class WebGPUDepthPlane {
         stripIndexFormat: undefined,
         cullMode: "none",
       },
-    });
+    };
+
+    if (pipelineCache) {
+      // Async path through the central cache. `_pipeline` stays null until
+      // the promise resolves; `execute()` already guards on `!_pipeline`
+      // and silently no-ops, so the depth plane just doesn't run on the
+      // first frame after construction. After that, the pipeline is
+      // cached and shared with any other depth plane instance using the
+      // same descriptor (e.g. split-screen).
+      pipelineCache
+        .getPipeline(descriptor)
+        .then((p) => {
+          // Guard against destroy() between issuing the request and its
+          // resolution — _isDestroyed clears device state.
+          if (!this._isDestroyed) {
+            this._pipeline = p;
+          }
+        })
+        .catch(() => {
+          // Cache already logs the underlying creation error. Leave
+          // `_pipeline = null` so `execute()` no-ops.
+        });
+    } else {
+      this._pipeline = device.createRenderPipeline({
+        label: descriptor.name,
+        layout: descriptor.layout ?? "auto",
+        vertex: {
+          module: descriptor.vertex.module,
+          entryPoint: descriptor.vertex.entryPoint,
+          buffers: descriptor.vertex.buffers,
+        },
+        fragment: descriptor.fragment
+          ? {
+              module: descriptor.fragment.module,
+              entryPoint: descriptor.fragment.entryPoint,
+              targets: descriptor.fragment.targets,
+            }
+          : undefined,
+        primitive: descriptor.primitive,
+        depthStencil: descriptor.depthStencil,
+        multisample: descriptor.multisample,
+      });
+    }
 
     // Pre-allocate vertex buffer for 4 corners × 24 bytes each = 96 bytes
     this._vertexBuffer = device.createBuffer({

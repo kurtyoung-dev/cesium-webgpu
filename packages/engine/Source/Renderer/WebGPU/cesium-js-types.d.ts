@@ -304,6 +304,9 @@ interface CesiumFrameState {
   maximumScreenSpaceError: number | undefined;
   pixelRatio: number;
   passes: CesiumFrameStatePasses;
+  /** True when a pick pass is collecting metadata rather than object IDs.
+   *  Set by Picking.js for metadata-picking render cycles. */
+  pickingMetadata: boolean;
   afterRender: Array<() => boolean | undefined>;
   scene3DOnly: boolean;
   fog: CesiumFrameStateFog;
@@ -472,6 +475,11 @@ interface CesiumGraphicsContext {
   readonly id: string;
   readonly rendererType: string;
   readonly isWebGPU: boolean;
+  // Backend-agnostic predicates that Scene uses instead of `isWebGPU`.
+  // Defaults (WebGL) live on `GraphicsContext`; WebGPU overrides both.
+  readonly requiresSceneRenderer: boolean;
+  readonly supportsTriangulationDebug: boolean;
+  readonly renderBundleManager: { asFreezable?: () => unknown } | null;
   readonly uniformState: CesiumUniformState;
   readonly cache: SceneGlobalCache;
   readonly defaultTexture: CesiumOpaqueTexture;
@@ -530,6 +538,14 @@ interface CesiumGraphicsContext {
     sampleCount?: number;
     label?: string;
   }): WebGPURenderTargetLike | null;
+  /** WebGPU-only: lazy-instantiated central render-pipeline cache. Feature
+   *  renderers should route their `device.createRenderPipeline()` calls
+   *  through this cache (`getPipeline(descriptor)`) so identical
+   *  descriptors dedupe across renderer instances. `null` on WebGL and
+   *  before the WebGPU device exists. See `WebGPUContext.ts:3924`. */
+  readonly webgpuPipelineCache?:
+    | import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache
+    | null;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(
@@ -1091,6 +1107,33 @@ interface CesiumAnyDrawCommand {
   }>;
   _webgpuTranslucencyDerivedCount?: number;
   _webgpuDerivedTranslucent?: boolean;
+  /**
+   * C-R1 (Batch 30) — optional WebGL-style `renderState` forwarded to
+   * `WebGPUDrawCommand.execute()` so `applyPerEncoderState()` runs
+   * stencilRef / blendConstant / viewport / scissor before the draw.
+   * Typed loose (opaque object) at the ambient boundary because
+   * CesiumJS's real `RenderState` is a JS class populated from many
+   * sources; `RenderStateToPipelineVariant.ts` defines the structural
+   * `CesiumRenderStateLike` shape that readers actually use.
+   */
+  renderState?: CesiumOpaqueRenderState;
+  /**
+   * Backend-agnostic command variants — mirrors WebGL's DerivedCommand
+   * shape so the WebGPU dispatcher can use the same selection logic as
+   * {@link Scene/SceneRenderer.js#executeCommand}. Populated by feature
+   * renderers that precompute variants (Model/Globe/Ground primitives,
+   * glTF two-pass materials). Empty for feature renderers that emit
+   * single commands per frame (Billboard, Label, Cloud, Point) — those
+   * either don't need variants or handle them through an internal path.
+   */
+  derivedCommands?: {
+    logDepth?: { command?: CesiumAnyDrawCommand };
+    hdr?: { command?: CesiumAnyDrawCommand };
+    picking?: { pickCommand?: CesiumAnyDrawCommand };
+    pickingMetadata?: { pickMetadataCommand?: CesiumAnyDrawCommand };
+    shadows?: { receiveCommand?: CesiumAnyDrawCommand };
+    depth?: { depthOnlyCommand?: CesiumAnyDrawCommand };
+  };
 }
 
 // ─── SceneGlobalCache ─────────────────────────────────────────────────
