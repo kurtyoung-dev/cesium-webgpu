@@ -2648,6 +2648,47 @@ The dominant-axis distance `max(|dx|, |dy|, |dz|)` is what each per-face camera 
 
 ---
 
+## Batch 59 — Extract WebGPUPickCommandHelpers (2026-04-25)
+
+Per the [2026-04-25 oversight audit](OVERSIGHT_AUDIT_2026_04_25.md) §6 ("Discoveries"), five renderers had converged on the same pick-command recipe (Ellipsoid B30, Ground B31, GaussianSplat B31, Voxel B53, Model B54). Five copies past the dedup threshold; this batch extracts the shared lifecycle + descriptor-derivation boilerplate into a single helper module so future pick consumers don't re-implement it.
+
+### What landed
+
+- **`packages/engine/Source/Renderer/WebGPU/WebGPUPickCommandHelpers.ts`** — new helper module exporting:
+  - `ensurePickId(target, context, cache, options?)` — allocates and caches a `CesiumPickId`. Two operating modes: single-id (`_pickId` / `_pickIdLastId` slots, used by Ellipsoid / Ground / Splat / Voxel) and multi-id (`pickIds: Record<string, CesiumPickId>`, used by Model with the per-glTF-primitive key `nodeIdx_primIdx`). The `allowAllocate` option lets callers gate registration on `passes.pick || passes.render` without duplicating the read-back path.
+  - `destroyPickIds(cache)` — bulk-destroy. Walks both single and multi shapes; safe to call against a half-populated or never-rendered cache.
+  - `buildPickPipelineDescriptor(colorDescriptor, pickFragmentEntry, options?)` — clones a color `WebGPURenderPipelineDescriptor` into a pick variant: same layout + vertex stage + depthStencil shape; fragment entry swapped to `pickFragmentEntry`; blend stripped on every color target so pick FBO readback gets byte-exact pick IDs. `forceDepthWriteEnabled` defaults to `true` (Ellipsoid pattern); pass `false` to preserve the historical setting (Splat / Voxel / Ground translucent or stencil-gated paths).
+  - `attachPickToColorCommand(colorCommand, pickCommand)` — sets `colorCommand.derivedCommands.picking ??= {}; .pickCommand = pickCommand;` so the Batch 29 `selectCommandVariant` dispatcher swaps to the pick variant during pick passes. Idempotent.
+
+- **`WebGPUEllipsoidPrimitiveRenderer.ts`** — pick descriptor build, lifecycle, wiring, and teardown all routed through the helpers. Uses `forceDepthWriteEnabled: true` to match the historical Batch 30 behaviour.
+- **`WebGPUGaussianSplatRenderer.ts`** — same treatment; uses `forceDepthWriteEnabled: false` since splats don't write depth in either color or pick path.
+- **`WebGPUGroundPrimitiveRenderer.js`** — same treatment via JS imports; the pick descriptor now derives from the color descriptor (sharing stencil settings rather than duplicating the literal). `forceDepthWriteEnabled: false` preserves the stencil-gated read.
+- **`WebGPUVoxelRenderer.ts`** — uses `ensurePickId` / `destroyPickIds` / `attachPickToColorCommand`. Voxel's pipeline path goes through `device.createRenderPipeline` directly (not the central pipeline cache) and the inline pick GPU descriptor stays per-renderer to keep the diff minimal — `buildPickPipelineDescriptor` doesn't fit cleanly into Voxel's GPU-descriptor-literal style without a wrapper round-trip.
+- **`WebGPUModelRenderer.js`** — uses `ensurePickId` (multi-id mode with `idKey: primKey`), `destroyPickIds` (multi-id), and `attachPickToColorCommand`. Pick pipeline acquisition stays on `pipelineCache.getPickPipeline(alphaMode, doubleSided)` because Model's pipelines are coalesced by alpha-mask + double-sided combinatorics rather than cloned per-instance — `buildPickPipelineDescriptor` doesn't apply here. JSDoc on the helper module flags this exemption explicitly so future readers don't try to "finish" the abstraction.
+
+### Behavior preserved
+
+Each renderer's UBO layout, WGSL pick fragment, pick-pass enum value, and pickId allocation gating (`passes.pick || passes.render`) are byte-identical to pre-refactor. The legacy cache slot names `_pickId` / `_pickIdLastId` are retained so external debug tooling (and any code that grep'd those names) keeps working. The Batch 29 dispatcher consumes `derivedCommands.picking.pickCommand` exactly as before; only the wiring code shrunk.
+
+### TSC status
+
+`npx tsc --project packages/engine/tsconfig.json --noEmit` runs clean across all six edited files. The pre-existing `WebGPUEdgeVisibilityEmitter.ts` syntax errors (called out in Batch 57) are unchanged and unrelated.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPickCommandHelpers.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPickCommandHelpers.ts) — new
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts)
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts)
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js)
+- [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts)
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js)
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R9-PICK-PATTERN-EXTRACT | OVERSIGHT_AUDIT §6 | Pick-command pattern duplicated across 5 renderers | **EXTRACTED** — `WebGPUPickCommandHelpers.ts` exports `ensurePickId` / `destroyPickIds` / `buildPickPipelineDescriptor` / `attachPickToColorCommand`. Ellipsoid + GaussianSplat + Ground + Voxel + Model migrated; Voxel keeps its inline GPU-descriptor pipeline build (helper covers lifecycle + wiring instead) and Model keeps its `pipelineCache.getPickPipeline()` route (combinatorial cache, not a clonable descriptor). |
+
+---
+
 ## Batch 61 — C-R8-TRANSLUCENT-DEPTH-MSAA: MSAA-aware translucent classification depth (2026-04-25)
 
 Closes the MSAA scope cut left over from Batch 47. Default 4×MSAA scenes now produce translucent tile classification depth instead of silently skipping the capture. The architecture replicates the Batch 43 globe-depth MSAA pattern — separate WGSL variant + bind-group layout that declares the source as `texture_depth_multisampled_2d`, sample-0 read via `textureLoad` — applied to the compare-and-pack pipeline.

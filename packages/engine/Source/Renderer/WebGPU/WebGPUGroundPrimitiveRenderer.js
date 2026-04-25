@@ -18,6 +18,12 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  attachPickToColorCommand,
+  buildPickPipelineDescriptor,
+  destroyPickIds,
+  ensurePickId,
+} from "./WebGPUPickCommandHelpers.js";
 
 const UNIFORM_BUFFER_SIZE = 256;
 const scratchModelView = new Matrix4();
@@ -177,40 +183,22 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
     },
   };
 
-  // C-R9 (Batch 31) — pick pass. Same stencil-gated read as the color
-  // pass (matches the terrain coverage marked by stencilPipeline) but
-  // the fragment emits u.pickColor without blending so the pick FBO
-  // receives byte-exact pick IDs for the readback.
-  const pickDescriptor = {
-    name: `GroundPrimitive pick [${format}/${depthFormat}]`,
-    layout,
-    vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
-    fragment: {
-      module: mod,
-      entryPoint: "pickFS",
-      targets: [{ format }],
+  // C-R9 (Batch 31 / refactored Batch 59) — pick descriptor derived from
+  // the color descriptor via {@link buildPickPipelineDescriptor}. Inherits
+  // the same stencil-gated read against the terrain coverage marked by
+  // `stencilPipeline`; the helper swaps the fragment entry to `pickFS`
+  // and strips blend so the pick FBO receives byte-exact pick IDs for the
+  // readback. `forceDepthWriteEnabled: false` preserves the historical
+  // setting (ground primitives are stencil-gated, neither color nor pick
+  // path writes depth).
+  const pickDescriptor = buildPickPipelineDescriptor(
+    colorDescriptor,
+    "pickFS",
+    {
+      name: `GroundPrimitive pick [${format}/${depthFormat}]`,
+      forceDepthWriteEnabled: false,
     },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    depthStencil: {
-      format: depthFormat,
-      depthWriteEnabled: false,
-      depthCompare: "less-equal",
-      stencilFront: {
-        compare: "equal",
-        passOp: "keep",
-        failOp: "keep",
-        depthFailOp: "keep",
-      },
-      stencilBack: {
-        compare: "equal",
-        passOp: "keep",
-        failOp: "keep",
-        depthFailOp: "keep",
-      },
-      stencilReadMask: 0xff,
-      stencilWriteMask: 0x00,
-    },
-  };
+  );
 
   return { stencilDescriptor, colorDescriptor, pickDescriptor, bgl };
 }
@@ -424,23 +412,16 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
   const color = primitive.appearance?.material?.uniforms?.color;
 
-  // C-R9 (Batch 31) — register a pick ID on first use; reuse across
-  // frames. Mirrors WebGL's `Scene/GroundPrimitive.js` pickId lifecycle.
+  // C-R9 (Batch 31 / refactored Batch 59) — pick ID lifecycle delegated
+  // to {@link ensurePickId}. Mirrors WebGL's `Scene/GroundPrimitive.js`
+  // pickId lifecycle; cache slot is the primitive itself so existing
+  // `_pickId` / `_pickIdLastId` references keep working.
   const passes = frameState.passes;
-  if (passes && (passes.pick || passes.render)) {
-    const primId = primitive.id;
-    if (!defined(primitive._pickId) || primitive._pickIdLastId !== primId) {
-      if (defined(primitive._pickId)) {
-        primitive._pickId.destroy();
-      }
-      primitive._pickId = context.createPickId(
-        { primitive: primitive, id: primId },
-        "primitive",
-      );
-      primitive._pickIdLastId = primId;
-    }
-  }
-  const pickColor = primitive._pickId?.color;
+  const allowAllocate = !!(passes && (passes.pick || passes.render));
+  const pickId = ensurePickId(primitive, context, primitive, {
+    allowAllocate,
+  });
+  const pickColor = pickId?.color;
 
   packUniforms(cache.uniformData, frameState, modelMatrix, color, pickColor);
   device.queue.writeBuffer(
@@ -550,10 +531,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
         pickOnly: true,
       });
     }
-    colorCommand.derivedCommands = {
-      ...(colorCommand.derivedCommands ?? {}),
-      picking: { pickCommand: cache.pickCommand },
-    };
+    attachPickToColorCommand(colorCommand, cache.pickCommand);
   }
 
   return {
@@ -575,12 +553,9 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
-  // C-R9 (Batch 31) — release the pick ID slot back to the registry.
-  if (defined(primitive._pickId)) {
-    primitive._pickId.destroy();
-    primitive._pickId = undefined;
-    primitive._pickIdLastId = undefined;
-  }
+  // C-R9 (Batch 31 / refactored Batch 59) — release the pick ID slot
+  // back to the registry.
+  destroyPickIds(primitive);
   primitive._webgpuCache = undefined;
 }
 

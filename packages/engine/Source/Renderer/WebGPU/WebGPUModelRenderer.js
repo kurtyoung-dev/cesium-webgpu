@@ -57,6 +57,11 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import {
+  attachPickToColorCommand,
+  destroyPickIds,
+  ensurePickId,
+} from "./WebGPUPickCommandHelpers.js";
+import {
   extractEdgeGeometry,
   createEdgeEmitterCache,
   destroyEdgeEmitterCache,
@@ -1045,27 +1050,22 @@ function updateWebGPUModel(model, frameState) {
         }
       }
 
-      // C-R9-MODEL-PICK (Batch 54) — register a per-primitive pick ID on
-      // first use; reuse across frames. Each glTF primitive of a model
+      // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — per-glTF-
+      // primitive pick ID allocation delegated to {@link ensurePickId} in
+      // multi-id mode (`idKey = primKey`). Each glTF primitive of a model
       // gets its own pick color so `scene.pick()` can resolve back to
-      // {primitive: model, id: primIndex}. Per-feature pick (each
+      // {primitive: model, id: primKey}. Per-feature pick (each
       // EXT_mesh_features feature → one pick target) is the larger
       // workstream tracked as `C-R9-MODEL-FEATURE-PICK`. The cache key
       // `nodeIdx_primIdx` matches `primKey` so pick IDs follow primitive
       // identity stably across re-extractions.
       const passes = frameState.passes;
-      if (passes && (passes.pick || passes.render)) {
-        if (!defined(cache.pickIds)) {
-          cache.pickIds = {};
-        }
-        if (!defined(cache.pickIds[primKey])) {
-          cache.pickIds[primKey] = context.createPickId(
-            { primitive: model, id: primKey },
-            "primitive",
-          );
-        }
-      }
-      const pickColor = cache.pickIds?.[primKey]?.color;
+      const allowAllocate = !!(passes && (passes.pick || passes.render));
+      const modelPickId = ensurePickId(model, context, cache, {
+        idKey: primKey,
+        allowAllocate,
+      });
+      const pickColor = modelPickId?.color;
 
       // Update material uniforms (includes skinning + morph flags +
       // pick color slot).
@@ -1283,10 +1283,7 @@ function updateWebGPUModel(model, frameState) {
           renderState: modelRenderState,
           pickOnly: true,
         });
-        webgpuCmd.derivedCommands = {
-          ...(webgpuCmd.derivedCommands ?? {}),
-          picking: { pickCommand: pickCmd },
-        };
+        attachPickToColorCommand(webgpuCmd, pickCmd);
       }
 
       commandList.push(webgpuCmd);
@@ -1486,16 +1483,10 @@ function destroyWebGPUModelResources(model) {
     cache.shadowCastUB = undefined;
   }
 
-  // C-R9-MODEL-PICK (Batch 54) — release every per-primitive pick ID
-  // back to the registry so its slot can be reused. No-op if the model
-  // never entered a render or pick pass.
-  if (defined(cache.pickIds)) {
-    const pickKeys = Object.keys(cache.pickIds);
-    for (let i = 0; i < pickKeys.length; i++) {
-      cache.pickIds[pickKeys[i]]?.destroy();
-    }
-    cache.pickIds = undefined;
-  }
+  // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — release every
+  // per-primitive pick ID back to the registry so its slot can be reused.
+  // No-op if the model never entered a render or pick pass.
+  destroyPickIds(cache);
 
   // Destroy per-primitive resources
   const primKeys = Object.keys(cache.primitives);

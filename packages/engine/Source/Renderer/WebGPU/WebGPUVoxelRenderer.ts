@@ -22,6 +22,12 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  attachPickToColorCommand,
+  destroyPickIds,
+  ensurePickId,
+  type SinglePickIdCache,
+} from "./WebGPUPickCommandHelpers.js";
 
 interface VoxelCache {
   uniformBuffer: GPUBuffer | null;
@@ -444,31 +450,19 @@ function updateWebGPUVoxelPrimitive(
   );
   EncodedCartesian3.fromCartesian(camModel, scratchEncoded);
 
-  // C-R9-VOXEL-PICK (Batch 53) — register a pick ID at VoxelPrimitive
-  // granularity on first use; refresh if `primitive.id` changes. Mirrors
-  // the WebGL pickId lifecycle on Scene/VoxelPrimitive.js. Per-cell /
-  // per-tile pick is a separate follow-up (C-R9-VOXEL-CELL-PICK).
+  // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — pick ID lifecycle
+  // delegated to {@link ensurePickId}. Per-cell / per-tile pick is a
+  // separate follow-up (C-R9-VOXEL-CELL-PICK).
   const passes = frameState.passes;
-  if (passes && (passes.pick || passes.render)) {
-    const primId = primitive.id;
-    const pickState = primitive as unknown as {
-      _pickId?: { color: CesiumColor; destroy(): void };
-      _pickIdLastId?: unknown;
-    };
-    if (!pickState._pickId || pickState._pickIdLastId !== primId) {
-      if (pickState._pickId) {
-        pickState._pickId.destroy();
-      }
-      pickState._pickId = context.createPickId(
-        { primitive: primitive, id: primId },
-        "primitive",
-      );
-      pickState._pickIdLastId = primId;
-    }
-  }
-  const pickColor = (
-    primitive as unknown as { _pickId?: { color: CesiumColor } }
-  )._pickId?.color;
+  const allowAllocate = !!(passes && (passes.pick || passes.render));
+  const pickState = primitive as unknown as SinglePickIdCache;
+  const pickId = ensurePickId(
+    primitive as unknown as import("../GraphicsContext.js").PickTarget,
+    context,
+    pickState,
+    { allowAllocate },
+  );
+  const pickColor = pickId?.color;
 
   // UBO layout (160 bytes = 40 floats):
   //   [ 0..15] mvpRelativeToEye        (mat4)
@@ -549,10 +543,10 @@ function updateWebGPUVoxelPrimitive(
         pickOnly: true,
       });
     }
-    (cache.command as CesiumAnyDrawCommand).derivedCommands = {
-      ...((cache.command as CesiumAnyDrawCommand).derivedCommands ?? {}),
-      picking: { pickCommand: cache.pickCommand },
-    };
+    attachPickToColorCommand(
+      cache.command as CesiumAnyDrawCommand,
+      cache.pickCommand,
+    );
   }
 }
 
@@ -568,16 +562,11 @@ function destroyWebGPUVoxelResources(
   cache.indexBuffer?.destroy();
   cache.voxelTexture?.destroy();
 
-  // C-R9-VOXEL-PICK (Batch 53) — release the pick ID so the registry
-  // slot is reclaimed and the next VoxelPrimitive instance gets a fresh
-  // color. No-op when the primitive never entered a render or pick pass.
-  const pickState = primitive as unknown as {
-    _pickId?: { destroy(): void };
-    _pickIdLastId?: unknown;
-  };
-  pickState._pickId?.destroy();
-  pickState._pickId = undefined;
-  pickState._pickIdLastId = undefined;
+  // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — release the pick
+  // ID so the registry slot is reclaimed and the next VoxelPrimitive
+  // instance gets a fresh color. No-op when the primitive never entered
+  // a render or pick pass.
+  destroyPickIds(primitive as unknown as SinglePickIdCache);
 
   primitive._webgpuCache = undefined;
 }

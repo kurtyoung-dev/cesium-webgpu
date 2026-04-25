@@ -24,6 +24,13 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import {
+  attachPickToColorCommand,
+  buildPickPipelineDescriptor,
+  destroyPickIds,
+  ensurePickId,
+  type SinglePickIdCache,
+} from "./WebGPUPickCommandHelpers.js";
 
 interface EllipsoidCache {
   uniformBuffer: GPUBuffer | null;
@@ -284,30 +291,17 @@ function buildEllipsoidPipelineResources(
     },
   };
 
-  // C-R9 (Batch 30) — pick pipeline. Same layout, same vertex stage, same
-  // depth behaviour, but the fragment entry emits the pickColor directly
-  // (no blending — pick colors MUST be written unmodified into the FBO
-  // so the readback maps them 1:1 back to the registered object).
-  const pickDescriptor: WebGPURenderPipelineDescriptor = {
-    name: "EllipsoidPrimitive pick pipeline",
-    layout: pipelineLayout,
-    vertex: {
-      module: shaderModule,
-      entryPoint: "vertexMain",
-      buffers: ELLIPSOID_VERTEX_BUFFERS,
-    },
-    fragment: {
-      module: shaderModule,
-      entryPoint: "fragmentPickMain",
-      targets: [{ format: canvasFormat }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    depthStencil: {
-      format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
-      depthCompare: "less-equal",
-    },
-  };
+  // C-R9 (Batch 30 / refactored Batch 59) — pick pipeline derived from the
+  // color descriptor via {@link buildPickPipelineDescriptor}. Same layout,
+  // same vertex stage, same depth behaviour; fragment entry swapped to
+  // `fragmentPickMain` and blend stripped so pick colors reach the FBO
+  // unmodified for byte-exact readback. `forceDepthWriteEnabled: true`
+  // matches the historical Batch 30 setting (color path also writes depth).
+  const pickDescriptor: WebGPURenderPipelineDescriptor =
+    buildPickPipelineDescriptor(colorDescriptor, "fragmentPickMain", {
+      name: "EllipsoidPrimitive pick pipeline",
+      forceDepthWriteEnabled: true,
+    });
 
   return {
     shaderModule,
@@ -698,31 +692,21 @@ function updateWebGPUEllipsoidPrimitive(
   );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(cameraData));
 
-  // C-R9 (Batch 30) — ensure a pick ID is registered with the context
-  // when the primitive hasn't been pick-bound yet or its `id` changed.
-  // Mirrors the WebGL path in `Scene/EllipsoidPrimitive.js` lines 377-387.
+  // C-R9 (Batch 30 / refactored Batch 59) — pick ID lifecycle delegated to
+  // {@link ensurePickId}. The helper keeps the legacy `_pickId` /
+  // `_pickIdLastId` cache slots so external debug tooling sees the same
+  // shape; allocation is gated on render/pick passes to mirror WebGL's
+  // `Scene/EllipsoidPrimitive.js` lines 377-387.
   const passes = frameState.passes;
-  if (passes && (passes.pick || passes.render)) {
-    const primId = primitive.id;
-    const pickState = primitive as unknown as {
-      _pickId?: { color: CesiumColor; destroy(): void };
-      _pickIdLastId?: unknown;
-    };
-    if (!pickState._pickId || pickState._pickIdLastId !== primId) {
-      if (pickState._pickId) {
-        pickState._pickId.destroy();
-      }
-      pickState._pickId = context.createPickId(
-        { primitive: primitive, id: primId },
-        "primitive",
-      );
-      pickState._pickIdLastId = primId;
-    }
-  }
-
-  const pickColor = (
-    primitive as unknown as { _pickId?: { color: CesiumColor } }
-  )._pickId?.color;
+  const allowAllocate = !!(passes && (passes.pick || passes.render));
+  const pickState = primitive as unknown as SinglePickIdCache;
+  const pickId = ensurePickId(
+    primitive as unknown as import("../GraphicsContext.js").PickTarget,
+    context,
+    pickState,
+    { allowAllocate },
+  );
+  const pickColor = pickId?.color;
   const ellipsoidData = packEllipsoidUniforms(primitive, pickColor ?? null);
   device.queue.writeBuffer(
     cache.ellipsoidUniformBuffer!,
@@ -778,12 +762,13 @@ function updateWebGPUEllipsoidPrimitive(
         pickOnly: true,
       });
     }
-    // Wire the pick command onto the color command's derivedCommands so
-    // `selectCommandVariant` (Batch 29) routes to it during pick passes.
-    (cache.command as CesiumAnyDrawCommand).derivedCommands = {
-      ...((cache.command as CesiumAnyDrawCommand).derivedCommands ?? {}),
-      picking: { pickCommand: cache.pickCommand },
-    };
+    // Wire onto `colorCommand.derivedCommands.picking.pickCommand` so the
+    // Batch 29 `selectCommandVariant` dispatcher swaps to this command on
+    // pick passes.
+    attachPickToColorCommand(
+      cache.command as CesiumAnyDrawCommand,
+      cache.pickCommand,
+    );
   }
 }
 
@@ -803,16 +788,10 @@ function destroyWebGPUEllipsoidPrimitiveResources(
   cache.vertexBuffer?.destroy();
   cache.indexBuffer?.destroy();
 
-  // C-R9 (Batch 30) — tear down the pick ID so its slot in the pick
-  // registry is reclaimed and the next primitive instance gets a fresh
-  // color. No-op if the primitive never entered a pick pass.
-  const pickState = primitive as unknown as {
-    _pickId?: { destroy(): void };
-    _pickIdLastId?: unknown;
-  };
-  pickState._pickId?.destroy();
-  pickState._pickId = undefined;
-  pickState._pickIdLastId = undefined;
+  // C-R9 (Batch 30 / refactored Batch 59) — tear down the pick ID so its
+  // slot in the pick registry is reclaimed and the next primitive instance
+  // gets a fresh color. No-op if the primitive never entered a pick pass.
+  destroyPickIds(primitive as unknown as SinglePickIdCache);
 
   primitive._webgpuCache = undefined;
 }

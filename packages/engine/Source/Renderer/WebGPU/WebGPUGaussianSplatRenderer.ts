@@ -24,6 +24,13 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import {
+  attachPickToColorCommand,
+  buildPickPipelineDescriptor,
+  destroyPickIds,
+  ensurePickId,
+  type SinglePickIdCache,
+} from "./WebGPUPickCommandHelpers.js";
 
 interface GaussianSplatCache {
   uniformBuffer: GPUBuffer | null;
@@ -319,29 +326,18 @@ function buildSplatPipelineResources(
     // OIT variant creation is non-fatal — falls back to standard alpha blending
   }
 
-  // C-R9 (Batch 31) — pick descriptor. Shares layout + VS module with the
-  // color pipeline; differs only in the fragment entry point (emits
-  // u.pickColor) and the lack of blending.
-  const pickDescriptor: WebGPURenderPipelineDescriptor = {
-    name: "GaussianSplat pick pipeline",
-    layout,
-    vertex: {
-      module: sm,
-      entryPoint: "vertexMain",
-      buffers: SPLAT_VERTEX_BUFFERS,
-    },
-    fragment: {
-      module: sm,
-      entryPoint: "fragmentPickMain",
-      targets: [{ format }],
-    },
-    primitive: { topology: "triangle-list", cullMode: "none" },
-    depthStencil: {
-      format: "depth24plus-stencil8",
-      depthWriteEnabled: false,
-      depthCompare: "less-equal",
-    },
-  };
+  // C-R9 (Batch 31 / refactored Batch 59) — pick descriptor derived from
+  // the color descriptor via {@link buildPickPipelineDescriptor}. Same
+  // layout + VS + depthStencil shape; fragment entry swapped to
+  // `fragmentPickMain` and blend stripped so pick colors reach the FBO
+  // unmodified. `forceDepthWriteEnabled: false` preserves the historical
+  // setting (splats are translucent — neither color nor pick path writes
+  // depth so the OIT pass behind them stays correct).
+  const pickDescriptor: WebGPURenderPipelineDescriptor =
+    buildPickPipelineDescriptor(colorDescriptor, "fragmentPickMain", {
+      name: "GaussianSplat pick pipeline",
+      forceDepthWriteEnabled: false,
+    });
 
   return {
     shaderModule: sm,
@@ -627,29 +623,21 @@ function updateWebGPUGaussianSplats(
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
   device.queue.writeBuffer(cache.uniformBuffer!, 160, vpData);
 
-  // C-R9 (Batch 31) — ensure pick ID exists for the primitive + pack
-  // its color into the UBO at offset 176. Pick IDs are per-primitive,
-  // not per-splat; the whole splat cloud reports the same owner when
-  // clicked.
+  // C-R9 (Batch 31 / refactored Batch 59) — pick ID lifecycle delegated to
+  // {@link ensurePickId}. Pick IDs are per-primitive, not per-splat; the
+  // whole splat cloud reports the same owner when clicked. UBO write at
+  // offset 176 below stays per-renderer because the layout differs from
+  // every other pick consumer.
   const passes = frameState.passes;
-  const pickState = primitive as unknown as {
-    _pickId?: { color: CesiumColor; destroy(): void };
-    _pickIdLastId?: unknown;
-  };
-  if (passes && (passes.pick || passes.render)) {
-    const primId = primitive.id;
-    if (!pickState._pickId || pickState._pickIdLastId !== primId) {
-      if (pickState._pickId) {
-        pickState._pickId.destroy();
-      }
-      pickState._pickId = context.createPickId(
-        { primitive: primitive, id: primId },
-        "primitive",
-      );
-      pickState._pickIdLastId = primId;
-    }
-  }
-  const pickColor = pickState._pickId?.color;
+  const allowAllocate = !!(passes && (passes.pick || passes.render));
+  const pickState = primitive as unknown as SinglePickIdCache;
+  const pickId = ensurePickId(
+    primitive as unknown as import("../GraphicsContext.js").PickTarget,
+    context,
+    pickState,
+    { allowAllocate },
+  );
+  const pickColor = pickId?.color;
   if (pickColor) {
     const pickData = new Float32Array(4);
     pickData[0] = pickColor.red ?? 0;
@@ -698,10 +686,10 @@ function updateWebGPUGaussianSplats(
         pickOnly: true,
       });
     }
-    (cache.command as CesiumAnyDrawCommand).derivedCommands = {
-      ...((cache.command as CesiumAnyDrawCommand).derivedCommands ?? {}),
-      picking: { pickCommand: cache.pickCommand },
-    };
+    attachPickToColorCommand(
+      cache.command as CesiumAnyDrawCommand,
+      cache.pickCommand,
+    );
   }
 
   commandList.push(cache.command);
@@ -718,14 +706,8 @@ function destroyWebGPUGaussianSplatResources(
   cache.quadVertexBuffer?.destroy();
   cache.splatBuffer?.destroy();
 
-  // C-R9 (Batch 31) — release pick ID.
-  const pickState = primitive as unknown as {
-    _pickId?: { destroy(): void };
-    _pickIdLastId?: unknown;
-  };
-  pickState._pickId?.destroy();
-  pickState._pickId = undefined;
-  pickState._pickIdLastId = undefined;
+  // C-R9 (Batch 31 / refactored Batch 59) — release pick ID.
+  destroyPickIds(primitive as unknown as SinglePickIdCache);
 
   primitive._webgpuCache = undefined;
 }
