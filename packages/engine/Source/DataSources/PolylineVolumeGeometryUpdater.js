@@ -219,73 +219,46 @@ class PolylineVolumeGeometryUpdater extends GeometryUpdater {
   }
 }
 
-PolylineVolumeGeometryUpdater.DynamicGeometryUpdater =
-  DynamicPolylineVolumeGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicPolylineVolumeGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
+class DynamicPolylineVolumeGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
 
-if (defined(Object.create)) {
-  DynamicPolylineVolumeGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicPolylineVolumeGeometryUpdater.prototype.constructor =
-    DynamicPolylineVolumeGeometryUpdater;
-}
+  _isHidden(entity, polylineVolume, time) {
+    const options = this._options;
+    return (
+      !defined(options.polylinePositions) ||
+      !defined(options.shapePositions) ||
+      super._isHidden(entity, polylineVolume, time)
+    );
+  }
 
-DynamicPolylineVolumeGeometryUpdater.prototype._isHidden = function (
-  entity,
-  polylineVolume,
-  time,
-) {
-  const options = this._options;
-  return (
-    !defined(options.polylinePositions) ||
-    !defined(options.shapePositions) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(
-      this,
-      entity,
-      polylineVolume,
+  _setOptions(entity, polylineVolume, time) {
+    const options = this._options;
+    options.polylinePositions = Property.getValueOrUndefined(
+      polylineVolume.positions,
       time,
-    )
-  );
-};
+      options.polylinePositions,
+    );
+    options.shapePositions = Property.getValueOrUndefined(
+      polylineVolume.shape,
+      time,
+    );
+    options.granularity = Property.getValueOrUndefined(
+      polylineVolume.granularity,
+      time,
+    );
+    options.cornerType = Property.getValueOrUndefined(
+      polylineVolume.cornerType,
+      time,
+    );
+  }
+}
 
-DynamicPolylineVolumeGeometryUpdater.prototype._setOptions = function (
-  entity,
-  polylineVolume,
-  time,
-) {
-  const options = this._options;
-  options.polylinePositions = Property.getValueOrUndefined(
-    polylineVolume.positions,
-    time,
-    options.polylinePositions,
-  );
-  options.shapePositions = Property.getValueOrUndefined(
-    polylineVolume.shape,
-    time,
-  );
-  options.granularity = Property.getValueOrUndefined(
-    polylineVolume.granularity,
-    time,
-  );
-  options.cornerType = Property.getValueOrUndefined(
-    polylineVolume.cornerType,
-    time,
-  );
-};
+PolylineVolumeGeometryUpdater.DynamicGeometryUpdater =
+  DynamicPolylineVolumeGeometryUpdater;
+
 export default PolylineVolumeGeometryUpdater;

@@ -266,64 +266,45 @@ class PlaneGeometryUpdater extends GeometryUpdater {
   }
 }
 
-PlaneGeometryUpdater.DynamicGeometryUpdater = DynamicPlaneGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicPlaneGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
+class DynamicPlaneGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
+
+  _isHidden(entity, plane, time) {
+    const options = this._options;
+    const position = Property.getValueOrUndefined(
+      entity.position,
+      time,
+      positionScratch,
+    );
+    return (
+      !defined(position) ||
+      !defined(options.plane) ||
+      !defined(options.dimensions) ||
+      super._isHidden(entity, plane, time)
+    );
+  }
+
+  _setOptions(entity, plane, time) {
+    const options = this._options;
+    options.plane = Property.getValueOrDefault(
+      plane.plane,
+      time,
+      options.plane,
+    );
+    options.dimensions = Property.getValueOrUndefined(
+      plane.dimensions,
+      time,
+      options.dimensions,
+    );
+  }
 }
 
-if (defined(Object.create)) {
-  DynamicPlaneGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicPlaneGeometryUpdater.prototype.constructor =
-    DynamicPlaneGeometryUpdater;
-}
-
-DynamicPlaneGeometryUpdater.prototype._isHidden = function (
-  entity,
-  plane,
-  time,
-) {
-  const options = this._options;
-  const position = Property.getValueOrUndefined(
-    entity.position,
-    time,
-    positionScratch,
-  );
-  return (
-    !defined(position) ||
-    !defined(options.plane) ||
-    !defined(options.dimensions) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(this, entity, plane, time)
-  );
-};
-
-DynamicPlaneGeometryUpdater.prototype._setOptions = function (
-  entity,
-  plane,
-  time,
-) {
-  const options = this._options;
-  options.plane = Property.getValueOrDefault(plane.plane, time, options.plane);
-  options.dimensions = Property.getValueOrUndefined(
-    plane.dimensions,
-    time,
-    options.dimensions,
-  );
-};
+PlaneGeometryUpdater.DynamicGeometryUpdater = DynamicPlaneGeometryUpdater;
 
 const scratchAxis = new Cartesian3();
 const scratchUp = new Cartesian3();

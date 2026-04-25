@@ -263,60 +263,47 @@ class BoxGeometryUpdater extends GeometryUpdater {
 BoxGeometryUpdater.prototype._onEntityPropertyChanged =
   heightReferenceOnEntityPropertyChanged;
 
-BoxGeometryUpdater.DynamicGeometryUpdater = DynamicBoxGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicBoxGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
+class DynamicBoxGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
+
+  _isHidden(entity, box, time) {
+    const position = Property.getValueOrUndefined(
+      entity.position,
+      time,
+      positionScratch,
+    );
+    const dimensions = this._options.dimensions;
+    return (
+      !defined(position) ||
+      !defined(dimensions) ||
+      super._isHidden(entity, box, time)
+    );
+  }
+
+  _setOptions(entity, box, time) {
+    const heightReference = Property.getValueOrDefault(
+      box.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    const options = this._options;
+    options.dimensions = Property.getValueOrUndefined(
+      box.dimensions,
+      time,
+      options.dimensions,
+    );
+    options.offsetAttribute =
+      heightReference !== HeightReference.NONE
+        ? GeometryOffsetAttribute.ALL
+        : undefined;
+  }
 }
 
-if (defined(Object.create)) {
-  DynamicBoxGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicBoxGeometryUpdater.prototype.constructor = DynamicBoxGeometryUpdater;
-}
+BoxGeometryUpdater.DynamicGeometryUpdater = DynamicBoxGeometryUpdater;
 
-DynamicBoxGeometryUpdater.prototype._isHidden = function (entity, box, time) {
-  const position = Property.getValueOrUndefined(
-    entity.position,
-    time,
-    positionScratch,
-  );
-  const dimensions = this._options.dimensions;
-  return (
-    !defined(position) ||
-    !defined(dimensions) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(this, entity, box, time)
-  );
-};
-
-DynamicBoxGeometryUpdater.prototype._setOptions = function (entity, box, time) {
-  const heightReference = Property.getValueOrDefault(
-    box.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  const options = this._options;
-  options.dimensions = Property.getValueOrUndefined(
-    box.dimensions,
-    time,
-    options.dimensions,
-  );
-  options.offsetAttribute =
-    heightReference !== HeightReference.NONE
-      ? GeometryOffsetAttribute.ALL
-      : undefined;
-};
 export default BoxGeometryUpdater;

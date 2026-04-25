@@ -438,147 +438,128 @@ class PolygonGeometryUpdater extends GroundGeometryUpdater {
   }
 }
 
-PolygonGeometryUpdater.DynamicGeometryUpdater = DyanmicPolygonGeometryUpdater;
-
 /**
  * @private
  */
-function DyanmicPolygonGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
+class DynamicPolygonGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
 
-if (defined(Object.create)) {
-  DyanmicPolygonGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DyanmicPolygonGeometryUpdater.prototype.constructor =
-    DyanmicPolygonGeometryUpdater;
-}
+  _isHidden(entity, polygon, time) {
+    return (
+      !defined(this._options.polygonHierarchy) ||
+      super._isHidden(entity, polygon, time)
+    );
+  }
 
-DyanmicPolygonGeometryUpdater.prototype._isHidden = function (
-  entity,
-  polygon,
-  time,
-) {
-  return (
-    !defined(this._options.polygonHierarchy) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(this, entity, polygon, time)
-  );
-};
+  _setOptions(entity, polygon, time) {
+    const options = this._options;
 
-DyanmicPolygonGeometryUpdater.prototype._setOptions = function (
-  entity,
-  polygon,
-  time,
-) {
-  const options = this._options;
+    options.polygonHierarchy = Property.getValueOrUndefined(
+      polygon.hierarchy,
+      time,
+    );
 
-  options.polygonHierarchy = Property.getValueOrUndefined(
-    polygon.hierarchy,
-    time,
-  );
+    let heightValue = Property.getValueOrUndefined(polygon.height, time);
+    const heightReferenceValue = Property.getValueOrDefault(
+      polygon.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    const extrudedHeightReferenceValue = Property.getValueOrDefault(
+      polygon.extrudedHeightReference,
+      time,
+      HeightReference.NONE,
+    );
+    let extrudedHeightValue = Property.getValueOrUndefined(
+      polygon.extrudedHeight,
+      time,
+    );
+    const perPositionHeightValue = Property.getValueOrUndefined(
+      polygon.perPositionHeight,
+      time,
+    );
 
-  let heightValue = Property.getValueOrUndefined(polygon.height, time);
-  const heightReferenceValue = Property.getValueOrDefault(
-    polygon.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  const extrudedHeightReferenceValue = Property.getValueOrDefault(
-    polygon.extrudedHeightReference,
-    time,
-    HeightReference.NONE,
-  );
-  let extrudedHeightValue = Property.getValueOrUndefined(
-    polygon.extrudedHeight,
-    time,
-  );
-  const perPositionHeightValue = Property.getValueOrUndefined(
-    polygon.perPositionHeight,
-    time,
-  );
-
-  heightValue = GroundGeometryUpdater.getGeometryHeight(
-    heightValue,
-    extrudedHeightReferenceValue,
-  );
-
-  let offsetAttribute;
-  if (perPositionHeightValue) {
-    if (defined(heightValue)) {
-      heightValue = undefined;
-      oneTimeWarning(heightAndPerPositionHeightWarning);
-    }
-    if (
-      heightReferenceValue !== HeightReference.NONE &&
-      perPositionHeightValue
-    ) {
-      heightValue = undefined;
-      oneTimeWarning(heightReferenceAndPerPositionHeightWarning);
-    }
-  } else {
-    if (defined(extrudedHeightValue) && !defined(heightValue)) {
-      heightValue = 0;
-    }
-
-    offsetAttribute = GroundGeometryUpdater.computeGeometryOffsetAttribute(
+    heightValue = GroundGeometryUpdater.getGeometryHeight(
       heightValue,
-      heightReferenceValue,
+      extrudedHeightReferenceValue,
+    );
+
+    let offsetAttribute;
+    if (perPositionHeightValue) {
+      if (defined(heightValue)) {
+        heightValue = undefined;
+        oneTimeWarning(heightAndPerPositionHeightWarning);
+      }
+      if (
+        heightReferenceValue !== HeightReference.NONE &&
+        perPositionHeightValue
+      ) {
+        heightValue = undefined;
+        oneTimeWarning(heightReferenceAndPerPositionHeightWarning);
+      }
+    } else {
+      if (defined(extrudedHeightValue) && !defined(heightValue)) {
+        heightValue = 0;
+      }
+
+      offsetAttribute = GroundGeometryUpdater.computeGeometryOffsetAttribute(
+        heightValue,
+        heightReferenceValue,
+        extrudedHeightValue,
+        extrudedHeightReferenceValue,
+      );
+    }
+
+    options.granularity = Property.getValueOrUndefined(
+      polygon.granularity,
+      time,
+    );
+    options.stRotation = Property.getValueOrUndefined(polygon.stRotation, time);
+    options.textureCoordinates = Property.getValueOrUndefined(
+      polygon.textureCoordinates,
+      time,
+    );
+    options.perPositionHeight = Property.getValueOrUndefined(
+      polygon.perPositionHeight,
+      time,
+    );
+    options.closeTop = Property.getValueOrDefault(polygon.closeTop, time, true);
+    options.closeBottom = Property.getValueOrDefault(
+      polygon.closeBottom,
+      time,
+      true,
+    );
+    options.offsetAttribute = offsetAttribute;
+    options.height = heightValue;
+    options.arcType = Property.getValueOrDefault(
+      polygon.arcType,
+      time,
+      ArcType.GEODESIC,
+    );
+
+    extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
       extrudedHeightValue,
       extrudedHeightReferenceValue,
     );
+    if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
+      const rectangle = PolygonGeometry.computeRectangleFromPositions(
+        options.polygonHierarchy.positions,
+        options.ellipsoid,
+        options.arcType,
+        scratchRectangle,
+      );
+      extrudedHeightValue =
+        ApproximateTerrainHeights.getMinimumMaximumHeights(
+          rectangle,
+        ).minimumTerrainHeight;
+    }
+
+    options.extrudedHeight = extrudedHeightValue;
   }
+}
 
-  options.granularity = Property.getValueOrUndefined(polygon.granularity, time);
-  options.stRotation = Property.getValueOrUndefined(polygon.stRotation, time);
-  options.textureCoordinates = Property.getValueOrUndefined(
-    polygon.textureCoordinates,
-    time,
-  );
-  options.perPositionHeight = Property.getValueOrUndefined(
-    polygon.perPositionHeight,
-    time,
-  );
-  options.closeTop = Property.getValueOrDefault(polygon.closeTop, time, true);
-  options.closeBottom = Property.getValueOrDefault(
-    polygon.closeBottom,
-    time,
-    true,
-  );
-  options.offsetAttribute = offsetAttribute;
-  options.height = heightValue;
-  options.arcType = Property.getValueOrDefault(
-    polygon.arcType,
-    time,
-    ArcType.GEODESIC,
-  );
+PolygonGeometryUpdater.DynamicGeometryUpdater = DynamicPolygonGeometryUpdater;
 
-  extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
-    extrudedHeightValue,
-    extrudedHeightReferenceValue,
-  );
-  if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
-    const rectangle = PolygonGeometry.computeRectangleFromPositions(
-      options.polygonHierarchy.positions,
-      options.ellipsoid,
-      options.arcType,
-      scratchRectangle,
-    );
-    extrudedHeightValue =
-      ApproximateTerrainHeights.getMinimumMaximumHeights(
-        rectangle,
-      ).minimumTerrainHeight;
-  }
-
-  options.extrudedHeight = extrudedHeightValue;
-};
 export default PolygonGeometryUpdater;

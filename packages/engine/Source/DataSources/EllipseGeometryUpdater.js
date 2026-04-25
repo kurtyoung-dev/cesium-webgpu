@@ -315,113 +315,94 @@ class EllipseGeometryUpdater extends GroundGeometryUpdater {
   }
 }
 
-EllipseGeometryUpdater.DynamicGeometryUpdater = DynamicEllipseGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicEllipseGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
-
-if (defined(Object.create)) {
-  DynamicEllipseGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicEllipseGeometryUpdater.prototype.constructor =
-    DynamicEllipseGeometryUpdater;
-}
-
-DynamicEllipseGeometryUpdater.prototype._isHidden = function (
-  entity,
-  ellipse,
-  time,
-) {
-  const options = this._options;
-  return (
-    !defined(options.center) ||
-    !defined(options.semiMajorAxis) ||
-    !defined(options.semiMinorAxis) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(this, entity, ellipse, time)
-  );
-};
-
-DynamicEllipseGeometryUpdater.prototype._setOptions = function (
-  entity,
-  ellipse,
-  time,
-) {
-  const options = this._options;
-  let heightValue = Property.getValueOrUndefined(ellipse.height, time);
-  const heightReferenceValue = Property.getValueOrDefault(
-    ellipse.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  let extrudedHeightValue = Property.getValueOrUndefined(
-    ellipse.extrudedHeight,
-    time,
-  );
-  const extrudedHeightReferenceValue = Property.getValueOrDefault(
-    ellipse.extrudedHeightReference,
-    time,
-    HeightReference.NONE,
-  );
-  if (defined(extrudedHeightValue) && !defined(heightValue)) {
-    heightValue = 0;
+class DynamicEllipseGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
   }
 
-  options.center = Property.getValueOrUndefined(
-    entity.position,
-    time,
-    options.center,
-  );
-  options.semiMajorAxis = Property.getValueOrUndefined(
-    ellipse.semiMajorAxis,
-    time,
-  );
-  options.semiMinorAxis = Property.getValueOrUndefined(
-    ellipse.semiMinorAxis,
-    time,
-  );
-  options.rotation = Property.getValueOrUndefined(ellipse.rotation, time);
-  options.granularity = Property.getValueOrUndefined(ellipse.granularity, time);
-  options.stRotation = Property.getValueOrUndefined(ellipse.stRotation, time);
-  options.numberOfVerticalLines = Property.getValueOrUndefined(
-    ellipse.numberOfVerticalLines,
-    time,
-  );
-  options.offsetAttribute =
-    GroundGeometryUpdater.computeGeometryOffsetAttribute(
+  _isHidden(entity, ellipse, time) {
+    const options = this._options;
+    return (
+      !defined(options.center) ||
+      !defined(options.semiMajorAxis) ||
+      !defined(options.semiMinorAxis) ||
+      super._isHidden(entity, ellipse, time)
+    );
+  }
+
+  _setOptions(entity, ellipse, time) {
+    const options = this._options;
+    let heightValue = Property.getValueOrUndefined(ellipse.height, time);
+    const heightReferenceValue = Property.getValueOrDefault(
+      ellipse.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    let extrudedHeightValue = Property.getValueOrUndefined(
+      ellipse.extrudedHeight,
+      time,
+    );
+    const extrudedHeightReferenceValue = Property.getValueOrDefault(
+      ellipse.extrudedHeightReference,
+      time,
+      HeightReference.NONE,
+    );
+    if (defined(extrudedHeightValue) && !defined(heightValue)) {
+      heightValue = 0;
+    }
+
+    options.center = Property.getValueOrUndefined(
+      entity.position,
+      time,
+      options.center,
+    );
+    options.semiMajorAxis = Property.getValueOrUndefined(
+      ellipse.semiMajorAxis,
+      time,
+    );
+    options.semiMinorAxis = Property.getValueOrUndefined(
+      ellipse.semiMinorAxis,
+      time,
+    );
+    options.rotation = Property.getValueOrUndefined(ellipse.rotation, time);
+    options.granularity = Property.getValueOrUndefined(
+      ellipse.granularity,
+      time,
+    );
+    options.stRotation = Property.getValueOrUndefined(ellipse.stRotation, time);
+    options.numberOfVerticalLines = Property.getValueOrUndefined(
+      ellipse.numberOfVerticalLines,
+      time,
+    );
+    options.offsetAttribute =
+      GroundGeometryUpdater.computeGeometryOffsetAttribute(
+        heightValue,
+        heightReferenceValue,
+        extrudedHeightValue,
+        extrudedHeightReferenceValue,
+      );
+    options.height = GroundGeometryUpdater.getGeometryHeight(
       heightValue,
       heightReferenceValue,
+    );
+
+    extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
       extrudedHeightValue,
       extrudedHeightReferenceValue,
     );
-  options.height = GroundGeometryUpdater.getGeometryHeight(
-    heightValue,
-    heightReferenceValue,
-  );
+    if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
+      extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
+        EllipseGeometry.computeRectangle(options, scratchRectangle),
+      ).minimumTerrainHeight;
+    }
 
-  extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
-    extrudedHeightValue,
-    extrudedHeightReferenceValue,
-  );
-  if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
-    extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
-      EllipseGeometry.computeRectangle(options, scratchRectangle),
-    ).minimumTerrainHeight;
+    options.extrudedHeight = extrudedHeightValue;
   }
+}
 
-  options.extrudedHeight = extrudedHeightValue;
-};
+EllipseGeometryUpdater.DynamicGeometryUpdater = DynamicEllipseGeometryUpdater;
+
 export default EllipseGeometryUpdater;

@@ -329,367 +329,367 @@ class EllipsoidGeometryUpdater extends GeometryUpdater {
 EllipsoidGeometryUpdater.prototype._onEntityPropertyChanged =
   heightReferenceOnEntityPropertyChanged;
 
-EllipsoidGeometryUpdater.DynamicGeometryUpdater =
-  DynamicEllipsoidGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicEllipsoidGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
+class DynamicEllipsoidGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
 
-  this._scene = geometryUpdater._scene;
-  this._modelMatrix = new Matrix4();
-  this._attributes = undefined;
-  this._outlineAttributes = undefined;
-  this._lastSceneMode = undefined;
-  this._lastShow = undefined;
-  this._lastOutlineShow = undefined;
-  this._lastOutlineWidth = undefined;
-  this._lastOutlineColor = undefined;
-  this._lastOffset = new Cartesian3();
-  this._material = {};
-}
-
-if (defined(Object.create)) {
-  DynamicEllipsoidGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicEllipsoidGeometryUpdater.prototype.constructor =
-    DynamicEllipsoidGeometryUpdater;
-}
-
-DynamicEllipsoidGeometryUpdater.prototype.update = function (time) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("time", time);
-  //>>includeEnd('debug');
-
-  const entity = this._entity;
-  const ellipsoid = entity.ellipsoid;
-  if (
-    !entity.isShowing ||
-    !entity.isAvailable(time) ||
-    !Property.getValueOrDefault(ellipsoid.show, time, true)
-  ) {
-    if (defined(this._primitive)) {
-      this._primitive.show = false;
-    }
-
-    if (defined(this._outlinePrimitive)) {
-      this._outlinePrimitive.show = false;
-    }
-    return;
+    this._scene = geometryUpdater._scene;
+    this._modelMatrix = new Matrix4();
+    this._attributes = undefined;
+    this._outlineAttributes = undefined;
+    this._lastSceneMode = undefined;
+    this._lastShow = undefined;
+    this._lastOutlineShow = undefined;
+    this._lastOutlineWidth = undefined;
+    this._lastOutlineColor = undefined;
+    this._lastOffset = new Cartesian3();
+    this._material = {};
   }
 
-  const radii = Property.getValueOrUndefined(
-    ellipsoid.radii,
-    time,
-    radiiScratch,
-  );
-  let modelMatrix = defined(radii)
-    ? entity.computeModelMatrixForHeightReference(
-        time,
-        ellipsoid.heightReference,
-        radii.z * 0.5,
-        this._scene.ellipsoid,
-        this._modelMatrix,
-      )
-    : undefined;
-  if (!defined(modelMatrix) || !defined(radii)) {
-    if (defined(this._primitive)) {
-      this._primitive.show = false;
-    }
+  update(time) {
+    //>>includeStart('debug', pragmas.debug);
+    Check.defined("time", time);
+    //>>includeEnd('debug');
 
-    if (defined(this._outlinePrimitive)) {
-      this._outlinePrimitive.show = false;
-    }
-    return;
-  }
-
-  //Compute attributes and material.
-  const showFill = Property.getValueOrDefault(ellipsoid.fill, time, true);
-  const showOutline = Property.getValueOrDefault(
-    ellipsoid.outline,
-    time,
-    false,
-  );
-  const outlineColor = Property.getValueOrClonedDefault(
-    ellipsoid.outlineColor,
-    time,
-    Color.BLACK,
-    scratchColor,
-  );
-  const material = MaterialProperty.getValue(
-    time,
-    ellipsoid.material ?? defaultMaterial,
-    this._material,
-  );
-
-  // Check properties that could trigger a primitive rebuild.
-  const innerRadii = Property.getValueOrUndefined(
-    ellipsoid.innerRadii,
-    time,
-    innerRadiiScratch,
-  );
-  const minimumClock = Property.getValueOrUndefined(
-    ellipsoid.minimumClock,
-    time,
-  );
-  const maximumClock = Property.getValueOrUndefined(
-    ellipsoid.maximumClock,
-    time,
-  );
-  const minimumCone = Property.getValueOrUndefined(ellipsoid.minimumCone, time);
-  const maximumCone = Property.getValueOrUndefined(ellipsoid.maximumCone, time);
-  const stackPartitions = Property.getValueOrUndefined(
-    ellipsoid.stackPartitions,
-    time,
-  );
-  const slicePartitions = Property.getValueOrUndefined(
-    ellipsoid.slicePartitions,
-    time,
-  );
-  const subdivisions = Property.getValueOrUndefined(
-    ellipsoid.subdivisions,
-    time,
-  );
-  const outlineWidth = Property.getValueOrDefault(
-    ellipsoid.outlineWidth,
-    time,
-    1.0,
-  );
-  const heightReference = Property.getValueOrDefault(
-    ellipsoid.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  const offsetAttribute =
-    heightReference !== HeightReference.NONE
-      ? GeometryOffsetAttribute.ALL
-      : undefined;
-
-  //In 3D we use a fast path by modifying Primitive.modelMatrix instead of regenerating the primitive every frame.
-  //Also check for height reference because this method doesn't work when the height is relative to terrain.
-  const sceneMode = this._scene.mode;
-  const in3D =
-    sceneMode === SceneMode.SCENE3D && heightReference === HeightReference.NONE;
-
-  const options = this._options;
-
-  const shadows = this._geometryUpdater.shadowsProperty.getValue(time);
-
-  const distanceDisplayConditionProperty =
-    this._geometryUpdater.distanceDisplayConditionProperty;
-  const distanceDisplayCondition =
-    distanceDisplayConditionProperty.getValue(time);
-
-  const offset = Property.getValueOrDefault(
-    this._geometryUpdater.terrainOffsetProperty,
-    time,
-    defaultOffset,
-    offsetScratch,
-  );
-
-  //We only rebuild the primitive if something other than the radii has changed
-  //For the radii, we use unit sphere and then deform it with a scale matrix.
-  const rebuildPrimitives =
-    !in3D ||
-    this._lastSceneMode !== sceneMode ||
-    !defined(this._primitive) || //
-    options.stackPartitions !== stackPartitions ||
-    options.slicePartitions !== slicePartitions || //
-    (defined(innerRadii) &&
-      !Cartesian3.equals(options.innerRadii !== innerRadii)) ||
-    options.minimumClock !== minimumClock || //
-    options.maximumClock !== maximumClock ||
-    options.minimumCone !== minimumCone || //
-    options.maximumCone !== maximumCone ||
-    options.subdivisions !== subdivisions || //
-    this._lastOutlineWidth !== outlineWidth ||
-    options.offsetAttribute !== offsetAttribute;
-
-  if (rebuildPrimitives) {
-    const primitives = this._primitives;
-    primitives.removeAndDestroy(this._primitive);
-    primitives.removeAndDestroy(this._outlinePrimitive);
-    this._primitive = undefined;
-    this._outlinePrimitive = undefined;
-    this._lastSceneMode = sceneMode;
-    this._lastOutlineWidth = outlineWidth;
-
-    options.stackPartitions = stackPartitions;
-    options.slicePartitions = slicePartitions;
-    options.subdivisions = subdivisions;
-    options.offsetAttribute = offsetAttribute;
-    options.radii = Cartesian3.clone(in3D ? unitSphere : radii, options.radii);
-    if (defined(innerRadii)) {
-      if (in3D) {
-        options.innerRadii = Cartesian3.fromElements(
-          innerRadii.x / radii.x,
-          innerRadii.y / radii.y,
-          innerRadii.z / radii.z,
-          options.innerRadii,
-        );
-      } else {
-        options.innerRadii = Cartesian3.clone(innerRadii, options.innerRadii);
-      }
-    } else {
-      options.innerRadii = undefined;
-    }
-    options.minimumClock = minimumClock;
-    options.maximumClock = maximumClock;
-    options.minimumCone = minimumCone;
-    options.maximumCone = maximumCone;
-
-    const appearance = new MaterialAppearance({
-      material: material,
-      translucent: material.isTranslucent(),
-      closed: true,
-    });
-    options.vertexFormat = appearance.vertexFormat;
-
-    const fillInstance = this._geometryUpdater.createFillGeometryInstance(
-      time,
-      in3D,
-      this._modelMatrix,
-    );
-
-    this._primitive = primitives.add(
-      new Primitive({
-        geometryInstances: fillInstance,
-        appearance: appearance,
-        asynchronous: false,
-        shadows: shadows,
-      }),
-    );
-
-    const outlineInstance = this._geometryUpdater.createOutlineGeometryInstance(
-      time,
-      in3D,
-      this._modelMatrix,
-    );
-    this._outlinePrimitive = primitives.add(
-      new Primitive({
-        geometryInstances: outlineInstance,
-        appearance: new PerInstanceColorAppearance({
-          flat: true,
-          translucent: outlineInstance.attributes.color.value[3] !== 255,
-          renderState: {
-            lineWidth:
-              this._geometryUpdater._scene.clampLineWidth(outlineWidth),
-          },
-        }),
-        asynchronous: false,
-        shadows: shadows,
-      }),
-    );
-
-    this._lastShow = showFill;
-    this._lastOutlineShow = showOutline;
-    this._lastOutlineColor = Color.clone(outlineColor, this._lastOutlineColor);
-    this._lastDistanceDisplayCondition = distanceDisplayCondition;
-    this._lastOffset = Cartesian3.clone(offset, this._lastOffset);
-  } else if (this._primitive.ready) {
-    //Update attributes only.
-    const primitive = this._primitive;
-    const outlinePrimitive = this._outlinePrimitive;
-
-    primitive.show = true;
-    outlinePrimitive.show = true;
-    primitive.appearance.material = material;
-
-    let attributes = this._attributes;
-    if (!defined(attributes)) {
-      attributes = primitive.getGeometryInstanceAttributes(entity);
-      this._attributes = attributes;
-    }
-    if (showFill !== this._lastShow) {
-      attributes.show = ShowGeometryInstanceAttribute.toValue(
-        showFill,
-        attributes.show,
-      );
-      this._lastShow = showFill;
-    }
-
-    let outlineAttributes = this._outlineAttributes;
-
-    if (!defined(outlineAttributes)) {
-      outlineAttributes =
-        outlinePrimitive.getGeometryInstanceAttributes(entity);
-      this._outlineAttributes = outlineAttributes;
-    }
-
-    if (showOutline !== this._lastOutlineShow) {
-      outlineAttributes.show = ShowGeometryInstanceAttribute.toValue(
-        showOutline,
-        outlineAttributes.show,
-      );
-      this._lastOutlineShow = showOutline;
-    }
-
-    if (!Color.equals(outlineColor, this._lastOutlineColor)) {
-      outlineAttributes.color = ColorGeometryInstanceAttribute.toValue(
-        outlineColor,
-        outlineAttributes.color,
-      );
-      Color.clone(outlineColor, this._lastOutlineColor);
-    }
-
+    const entity = this._entity;
+    const ellipsoid = entity.ellipsoid;
     if (
-      !DistanceDisplayCondition.equals(
-        distanceDisplayCondition,
-        this._lastDistanceDisplayCondition,
-      )
+      !entity.isShowing ||
+      !entity.isAvailable(time) ||
+      !Property.getValueOrDefault(ellipsoid.show, time, true)
     ) {
-      attributes.distanceDisplayCondition =
-        DistanceDisplayConditionGeometryInstanceAttribute.toValue(
-          distanceDisplayCondition,
-          attributes.distanceDisplayCondition,
-        );
-      outlineAttributes.distanceDisplayCondition =
-        DistanceDisplayConditionGeometryInstanceAttribute.toValue(
-          distanceDisplayCondition,
-          outlineAttributes.distanceDisplayCondition,
-        );
-      DistanceDisplayCondition.clone(
-        distanceDisplayCondition,
-        this._lastDistanceDisplayCondition,
-      );
+      if (defined(this._primitive)) {
+        this._primitive.show = false;
+      }
+
+      if (defined(this._outlinePrimitive)) {
+        this._outlinePrimitive.show = false;
+      }
+      return;
     }
 
-    if (!Cartesian3.equals(offset, this._lastOffset)) {
-      attributes.offset = OffsetGeometryInstanceAttribute.toValue(
-        offset,
-        attributes.offset,
+    const radii = Property.getValueOrUndefined(
+      ellipsoid.radii,
+      time,
+      radiiScratch,
+    );
+    let modelMatrix = defined(radii)
+      ? entity.computeModelMatrixForHeightReference(
+          time,
+          ellipsoid.heightReference,
+          radii.z * 0.5,
+          this._scene.ellipsoid,
+          this._modelMatrix,
+        )
+      : undefined;
+    if (!defined(modelMatrix) || !defined(radii)) {
+      if (defined(this._primitive)) {
+        this._primitive.show = false;
+      }
+
+      if (defined(this._outlinePrimitive)) {
+        this._outlinePrimitive.show = false;
+      }
+      return;
+    }
+
+    //Compute attributes and material.
+    const showFill = Property.getValueOrDefault(ellipsoid.fill, time, true);
+    const showOutline = Property.getValueOrDefault(
+      ellipsoid.outline,
+      time,
+      false,
+    );
+    const outlineColor = Property.getValueOrClonedDefault(
+      ellipsoid.outlineColor,
+      time,
+      Color.BLACK,
+      scratchColor,
+    );
+    const material = MaterialProperty.getValue(
+      time,
+      ellipsoid.material ?? defaultMaterial,
+      this._material,
+    );
+
+    // Check properties that could trigger a primitive rebuild.
+    const innerRadii = Property.getValueOrUndefined(
+      ellipsoid.innerRadii,
+      time,
+      innerRadiiScratch,
+    );
+    const minimumClock = Property.getValueOrUndefined(
+      ellipsoid.minimumClock,
+      time,
+    );
+    const maximumClock = Property.getValueOrUndefined(
+      ellipsoid.maximumClock,
+      time,
+    );
+    const minimumCone = Property.getValueOrUndefined(
+      ellipsoid.minimumCone,
+      time,
+    );
+    const maximumCone = Property.getValueOrUndefined(
+      ellipsoid.maximumCone,
+      time,
+    );
+    const stackPartitions = Property.getValueOrUndefined(
+      ellipsoid.stackPartitions,
+      time,
+    );
+    const slicePartitions = Property.getValueOrUndefined(
+      ellipsoid.slicePartitions,
+      time,
+    );
+    const subdivisions = Property.getValueOrUndefined(
+      ellipsoid.subdivisions,
+      time,
+    );
+    const outlineWidth = Property.getValueOrDefault(
+      ellipsoid.outlineWidth,
+      time,
+      1.0,
+    );
+    const heightReference = Property.getValueOrDefault(
+      ellipsoid.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    const offsetAttribute =
+      heightReference !== HeightReference.NONE
+        ? GeometryOffsetAttribute.ALL
+        : undefined;
+
+    //In 3D we use a fast path by modifying Primitive.modelMatrix instead of regenerating the primitive every frame.
+    //Also check for height reference because this method doesn't work when the height is relative to terrain.
+    const sceneMode = this._scene.mode;
+    const in3D =
+      sceneMode === SceneMode.SCENE3D &&
+      heightReference === HeightReference.NONE;
+
+    const options = this._options;
+
+    const shadows = this._geometryUpdater.shadowsProperty.getValue(time);
+
+    const distanceDisplayConditionProperty =
+      this._geometryUpdater.distanceDisplayConditionProperty;
+    const distanceDisplayCondition =
+      distanceDisplayConditionProperty.getValue(time);
+
+    const offset = Property.getValueOrDefault(
+      this._geometryUpdater.terrainOffsetProperty,
+      time,
+      defaultOffset,
+      offsetScratch,
+    );
+
+    //We only rebuild the primitive if something other than the radii has changed
+    //For the radii, we use unit sphere and then deform it with a scale matrix.
+    const rebuildPrimitives =
+      !in3D ||
+      this._lastSceneMode !== sceneMode ||
+      !defined(this._primitive) || //
+      options.stackPartitions !== stackPartitions ||
+      options.slicePartitions !== slicePartitions || //
+      (defined(innerRadii) &&
+        !Cartesian3.equals(options.innerRadii !== innerRadii)) ||
+      options.minimumClock !== minimumClock || //
+      options.maximumClock !== maximumClock ||
+      options.minimumCone !== minimumCone || //
+      options.maximumCone !== maximumCone ||
+      options.subdivisions !== subdivisions || //
+      this._lastOutlineWidth !== outlineWidth ||
+      options.offsetAttribute !== offsetAttribute;
+
+    if (rebuildPrimitives) {
+      const primitives = this._primitives;
+      primitives.removeAndDestroy(this._primitive);
+      primitives.removeAndDestroy(this._outlinePrimitive);
+      this._primitive = undefined;
+      this._outlinePrimitive = undefined;
+      this._lastSceneMode = sceneMode;
+      this._lastOutlineWidth = outlineWidth;
+
+      options.stackPartitions = stackPartitions;
+      options.slicePartitions = slicePartitions;
+      options.subdivisions = subdivisions;
+      options.offsetAttribute = offsetAttribute;
+      options.radii = Cartesian3.clone(
+        in3D ? unitSphere : radii,
+        options.radii,
       );
-      outlineAttributes.offset = OffsetGeometryInstanceAttribute.toValue(
-        offset,
-        attributes.offset,
+      if (defined(innerRadii)) {
+        if (in3D) {
+          options.innerRadii = Cartesian3.fromElements(
+            innerRadii.x / radii.x,
+            innerRadii.y / radii.y,
+            innerRadii.z / radii.z,
+            options.innerRadii,
+          );
+        } else {
+          options.innerRadii = Cartesian3.clone(innerRadii, options.innerRadii);
+        }
+      } else {
+        options.innerRadii = undefined;
+      }
+      options.minimumClock = minimumClock;
+      options.maximumClock = maximumClock;
+      options.minimumCone = minimumCone;
+      options.maximumCone = maximumCone;
+
+      const appearance = new MaterialAppearance({
+        material: material,
+        translucent: material.isTranslucent(),
+        closed: true,
+      });
+      options.vertexFormat = appearance.vertexFormat;
+
+      const fillInstance = this._geometryUpdater.createFillGeometryInstance(
+        time,
+        in3D,
+        this._modelMatrix,
       );
-      Cartesian3.clone(offset, this._lastOffset);
+
+      this._primitive = primitives.add(
+        new Primitive({
+          geometryInstances: fillInstance,
+          appearance: appearance,
+          asynchronous: false,
+          shadows: shadows,
+        }),
+      );
+
+      const outlineInstance =
+        this._geometryUpdater.createOutlineGeometryInstance(
+          time,
+          in3D,
+          this._modelMatrix,
+        );
+      this._outlinePrimitive = primitives.add(
+        new Primitive({
+          geometryInstances: outlineInstance,
+          appearance: new PerInstanceColorAppearance({
+            flat: true,
+            translucent: outlineInstance.attributes.color.value[3] !== 255,
+            renderState: {
+              lineWidth:
+                this._geometryUpdater._scene.clampLineWidth(outlineWidth),
+            },
+          }),
+          asynchronous: false,
+          shadows: shadows,
+        }),
+      );
+
+      this._lastShow = showFill;
+      this._lastOutlineShow = showOutline;
+      this._lastOutlineColor = Color.clone(
+        outlineColor,
+        this._lastOutlineColor,
+      );
+      this._lastDistanceDisplayCondition = distanceDisplayCondition;
+      this._lastOffset = Cartesian3.clone(offset, this._lastOffset);
+    } else if (this._primitive.ready) {
+      //Update attributes only.
+      const primitive = this._primitive;
+      const outlinePrimitive = this._outlinePrimitive;
+
+      primitive.show = true;
+      outlinePrimitive.show = true;
+      primitive.appearance.material = material;
+
+      let attributes = this._attributes;
+      if (!defined(attributes)) {
+        attributes = primitive.getGeometryInstanceAttributes(entity);
+        this._attributes = attributes;
+      }
+      if (showFill !== this._lastShow) {
+        attributes.show = ShowGeometryInstanceAttribute.toValue(
+          showFill,
+          attributes.show,
+        );
+        this._lastShow = showFill;
+      }
+
+      let outlineAttributes = this._outlineAttributes;
+
+      if (!defined(outlineAttributes)) {
+        outlineAttributes =
+          outlinePrimitive.getGeometryInstanceAttributes(entity);
+        this._outlineAttributes = outlineAttributes;
+      }
+
+      if (showOutline !== this._lastOutlineShow) {
+        outlineAttributes.show = ShowGeometryInstanceAttribute.toValue(
+          showOutline,
+          outlineAttributes.show,
+        );
+        this._lastOutlineShow = showOutline;
+      }
+
+      if (!Color.equals(outlineColor, this._lastOutlineColor)) {
+        outlineAttributes.color = ColorGeometryInstanceAttribute.toValue(
+          outlineColor,
+          outlineAttributes.color,
+        );
+        Color.clone(outlineColor, this._lastOutlineColor);
+      }
+
+      if (
+        !DistanceDisplayCondition.equals(
+          distanceDisplayCondition,
+          this._lastDistanceDisplayCondition,
+        )
+      ) {
+        attributes.distanceDisplayCondition =
+          DistanceDisplayConditionGeometryInstanceAttribute.toValue(
+            distanceDisplayCondition,
+            attributes.distanceDisplayCondition,
+          );
+        outlineAttributes.distanceDisplayCondition =
+          DistanceDisplayConditionGeometryInstanceAttribute.toValue(
+            distanceDisplayCondition,
+            outlineAttributes.distanceDisplayCondition,
+          );
+        DistanceDisplayCondition.clone(
+          distanceDisplayCondition,
+          this._lastDistanceDisplayCondition,
+        );
+      }
+
+      if (!Cartesian3.equals(offset, this._lastOffset)) {
+        attributes.offset = OffsetGeometryInstanceAttribute.toValue(
+          offset,
+          attributes.offset,
+        );
+        outlineAttributes.offset = OffsetGeometryInstanceAttribute.toValue(
+          offset,
+          attributes.offset,
+        );
+        Cartesian3.clone(offset, this._lastOffset);
+      }
+    }
+
+    if (in3D) {
+      //Since we are scaling a unit sphere, we can't let any of the values go to zero.
+      //Instead we clamp them to a small value.  To the naked eye, this produces the same results
+      //that you get passing EllipsoidGeometry a radii with a zero component.
+      radii.x = Math.max(radii.x, 0.001);
+      radii.y = Math.max(radii.y, 0.001);
+      radii.z = Math.max(radii.z, 0.001);
+
+      modelMatrix = Matrix4.multiplyByScale(modelMatrix, radii, modelMatrix);
+      this._primitive.modelMatrix = modelMatrix;
+      this._outlinePrimitive.modelMatrix = modelMatrix;
     }
   }
+}
 
-  if (in3D) {
-    //Since we are scaling a unit sphere, we can't let any of the values go to zero.
-    //Instead we clamp them to a small value.  To the naked eye, this produces the same results
-    //that you get passing EllipsoidGeometry a radii with a zero component.
-    radii.x = Math.max(radii.x, 0.001);
-    radii.y = Math.max(radii.y, 0.001);
-    radii.z = Math.max(radii.z, 0.001);
+EllipsoidGeometryUpdater.DynamicGeometryUpdater =
+  DynamicEllipsoidGeometryUpdater;
 
-    modelMatrix = Matrix4.multiplyByScale(modelMatrix, radii, modelMatrix);
-    this._primitive.modelMatrix = modelMatrix;
-    this._outlinePrimitive.modelMatrix = modelMatrix;
-  }
-};
 export default EllipsoidGeometryUpdater;

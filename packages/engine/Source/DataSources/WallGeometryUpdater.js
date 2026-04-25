@@ -217,59 +217,41 @@ class WallGeometryUpdater extends GeometryUpdater {
   }
 }
 
-WallGeometryUpdater.DynamicGeometryUpdater = DynamicWallGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicWallGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
+class DynamicWallGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
+
+  _isHidden(entity, wall, time) {
+    return (
+      !defined(this._options.positions) || super._isHidden(entity, wall, time)
+    );
+  }
+
+  _setOptions(entity, wall, time) {
+    const options = this._options;
+    options.positions = Property.getValueOrUndefined(
+      wall.positions,
+      time,
+      options.positions,
+    );
+    options.minimumHeights = Property.getValueOrUndefined(
+      wall.minimumHeights,
+      time,
+      options.minimumHeights,
+    );
+    options.maximumHeights = Property.getValueOrUndefined(
+      wall.maximumHeights,
+      time,
+      options.maximumHeights,
+    );
+    options.granularity = Property.getValueOrUndefined(wall.granularity, time);
+  }
 }
 
-if (defined(Object.create)) {
-  DynamicWallGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicWallGeometryUpdater.prototype.constructor = DynamicWallGeometryUpdater;
-}
+WallGeometryUpdater.DynamicGeometryUpdater = DynamicWallGeometryUpdater;
 
-DynamicWallGeometryUpdater.prototype._isHidden = function (entity, wall, time) {
-  return (
-    !defined(this._options.positions) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(this, entity, wall, time)
-  );
-};
-
-DynamicWallGeometryUpdater.prototype._setOptions = function (
-  entity,
-  wall,
-  time,
-) {
-  const options = this._options;
-  options.positions = Property.getValueOrUndefined(
-    wall.positions,
-    time,
-    options.positions,
-  );
-  options.minimumHeights = Property.getValueOrUndefined(
-    wall.minimumHeights,
-    time,
-    options.minimumHeights,
-  );
-  options.maximumHeights = Property.getValueOrUndefined(
-    wall.maximumHeights,
-    time,
-    options.maximumHeights,
-  );
-  options.granularity = Property.getValueOrUndefined(wall.granularity, time);
-};
 export default WallGeometryUpdater;

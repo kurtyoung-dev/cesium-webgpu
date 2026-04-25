@@ -3595,3 +3595,213 @@ A single wrong axis breaks the whole chain. The audit found shaders that had cor
 - `packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts` (getDepthStencilAttachment parameterized)
 - `packages/engine/Source/Renderer/WebGPU/webgpuTypeHelpers.ts` (docstring corrected)
 - `packages/engine/Source/Scene/CesiumDebug.js` (clearAllOverlays helper)
+
+---
+
+## Session 35 — Resource.parseUrl URL-resolution regression (2026-04-19)
+
+### BUG-35.1 — Relative URLs against a baseUrl lost the base's path
+
+**File:** `packages/engine/Source/Core/Resource.js`
+**Severity:** HIGH (app-breaking for every CesiumJS user with a subpath `CESIUM_BASE_URL`).
+**Symptom:** `buildModuleUrl("Assets/approximateTerrainHeights.json")` against `CESIUM_BASE_URL = "/Build/Cesium/"` resolved to `http://host/Assets/...` instead of `http://host/Build/Cesium/Assets/...`. Every Workers, Assets, IAU2006_XYS, and SkyBox fetch 404'd. Variant smoke test caught this across all 3 bundles.
+
+**Root cause:** The earlier ES6 modernization of `parseUrl` rewrote the uri.js-based implementation to use the native `URL` constructor with a placeholder base:
+
+```js
+parsed = new URL(url, "https://placeholder.invalid/"); // relative "Assets/foo" -> "/Assets/foo"
+// ... later ...
+cleanUrl = parsed.pathname;                             // "/Assets/foo" (root-relative!)
+cleanUrl = getAbsoluteUri(cleanUrl, getAbsoluteUri(baseUrl)); // resolves against "http://host/Build/Cesium/"
+```
+
+The `URL` constructor forces every relative URL to a pathname starting with `/`, which then **behaves as a root-relative path** during later `getAbsoluteUri` resolution. Root-relative paths discard the base URL's pathname, so the result loses `/Build/Cesium/`.
+
+**Fix applied:** Detect the relative-with-baseUrl case BEFORE calling `new URL`, and resolve the relative directly against the baseUrl so path preservation happens inside the URL constructor:
+
+```js
+if (!hadScheme && defined(baseUrl)) {
+  parsed = new URL(url, getAbsoluteUri(baseUrl)); // preserves base's path
+} else {
+  parsed = new URL(url, "https://placeholder.invalid/"); // original path for absolutes
+}
+```
+
+For the reconstruction step, the `hadScheme` branch and the new `defined(baseUrl)` branch both emit `${parsed.origin}${parsed.pathname}` — which is now correct because `parsed` already resolved against the real base.
+
+### BUG-35.2 — Data + blob URIs corrupted into `null<pathname>`
+
+**File:** `packages/engine/Source/Core/Resource.js` (same `parseUrl` rewrite).
+**Severity:** HIGH (silent data-URI corruption in every Resource-routed image load).
+**Symptom:** Base64 data URIs like `data:image/png;base64,iVBOR...` were ending up as `nullimage/png;base64,iVBOR...` 404 requests against the origin. Variant smoke test flagged this as a rogue `http://localhost:8080/nullimage/png;base64,...` request alongside the Assets 404s.
+
+**Root cause:** The reconstruction step used `${parsed.origin}${parsed.pathname}` for URLs with a scheme. For `data:` (and `blob:`) URIs, `new URL("data:image/png;base64,...").origin === "null"` and `.pathname === "image/png;base64,..."`. Concatenating gave `"null" + "image/..."` = `"nullimage/..."`.
+
+**Fix applied:** Short-circuit `data:` and `blob:` URIs and store them verbatim — they don't need origin/pathname reconstruction because they're opaque blobs:
+
+```js
+if (/^data:/i.test(url)) { this._url = url; this._queryParameters = {}; return; }
+if (/^blob:/i.test(url)) { this._url = url; this._queryParameters = {}; return; }
+```
+
+**Coverage:** Core/Resource spec — 119/119 pass after the fix. Variant smoke test passes all 3 bundles (dual / webgl-only / webgpu-only) with zero console errors across 5 render frames.
+
+**Files modified:**
+
+- `packages/engine/Source/Core/Resource.js` (parseUrl: +42 / -10)
+- `Tools/variant-smoke-test.mjs` (new smoke-test harness that caught both regressions)
+
+### BUG-35.3 — Sync `new Viewer()` with `renderer: "webgpu"` silently returned a WebGL context
+
+**File:** none — architectural constraint, not a bug fix. Documented here so future smoke-test authors don't repeat the misdiagnosis.
+
+**Symptom:** Passing `contextOptions: { renderer: "webgpu" }` to `new Cesium.Viewer(...)` still returned a WebGL context. In the webgpu-only bundle this caused the WebGL backend to try compiling empty-stub GLSL shaders (`ERROR: -1:-1: '' : Missing main()`).
+
+**Root cause (by design):** `Scene` constructor is synchronous and calls `new Context(canvas, contextOptions)` directly for the WebGL path. The WebGPU path requires an async device-request step (`navigator.gpu.requestAdapter → requestDevice`) that can't fit in a sync constructor. `Viewer.createAsync()` / `CesiumWidget.createAsync()` / `Scene.createAsync()` exist specifically for the WebGPU path — they pre-create the context and pass it via `options._preInitializedContext` to the sync `Scene` constructor.
+
+**Takeaway:** Smoke tests, integration tests, or demo pages that want the WebGPU backend **must** go through `Viewer.createAsync()`. The variant-smoke-test harness now branches on renderer type for this reason.
+
+
+### BUG-36.1 — CSM params UBO: splits / blendBands / biases packed at wrong byte offsets
+
+**Files:** [packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts), [packages/engine/Specs/Renderer/WebGPU/WebGPUEffectsBindGroupCSMLayoutSpec.js](../packages/engine/Specs/Renderer/WebGPU/WebGPUEffectsBindGroupCSMLayoutSpec.js), [packages/engine/Specs/Renderer/WebGPU/WebGPUCSMRendererSpec.js](../packages/engine/Specs/Renderer/WebGPU/WebGPUCSMRendererSpec.js)
+
+**Symptom:** CSM had been shipping since Session 32/33 (2026-04-13) but visual output was never validated (handoff Tier-1 item 3 left `STILL PENDING`). Surfaced during re-review of CSM Slice 2d Lit receivers — the shader layout and the JS packer disagreed on where `cascadeSplits` / `blendBands` / `cascadeMinBias` / `cascadeMaxSlopeBias` live inside the `CSMParams` UBO.
+
+**Root cause:** The WGSL struct
+```wgsl
+struct CSMParams {
+  cascadeVP0..3: mat4x4<f32>,  // 64 bytes each, natural WGSL layout
+  cascadeSplits: vec4<f32>,    // natural offset: byte 256 (float 64)
+  blendBands: vec4<f32>,       // natural offset: byte 272 (float 68)
+  cascadeMinBias: vec4<f32>,   // natural offset: byte 288 (float 72)
+  cascadeMaxSlopeBias: vec4<f32>, // natural offset: byte 304 (float 76)
+}
+```
+produces a 320-byte struct. The JS packer wrote VPs correctly at floats 0..63 but then wrote splits/blendBands/biases at floats 256/260/264/268 — a 192-float gap. A stale comment in the renderer (`// 4 × mat4 = 256 floats`) masqueraded as intentional layout, and the layout-spec re-encoded the same wrong offsets, so specs passed even though the runtime data was mislocated.
+
+**Consequence:** The shader read `(0,0,0,0)` for splits, which makes `selectCascade(viewDepth, splits)` fall through all `viewDepth < 0` checks and always return cascade 3. Depth bias also read as zero. CSM silently degraded to single-cascade-at-farthest-coverage with no depth bias — this is why near-camera shadows would have looked coarse and why a "Visual smoke test" was needed to expose it.
+
+**Fix applied:** Changed the JS pack offsets from `_cascadeParamsData[256/260/264/268 + c]` to `_cascadeParamsData[64/68/72/76 + c]`. The shader, the placeholder buffer, and the BGL all stay unchanged — only the writer moves. Buffer size stays 1088 bytes (256-aligned) so no allocation changes ripple through; bytes beyond the 320-byte struct are unwritten zeros the shader never reads. Spec comment + regression spec added.
+
+**Affects all CSM consumers** (all fixed by this change, no per-shader edits needed):
+
+- `GlobeTerrain.wgsl`
+- `PrimitivePhongColor.wgsl`, `PrimitivePhongTexturedColor.wgsl`
+- `PrimitivePBRSimple.wgsl`, `PrimitivePBRTextured.wgsl`
+- `ModelPBRComplete.wgsl`
+- All 19 `PrimitiveMat*Lit.wgsl` variants (including the 17 added in this session)
+
+---
+
+### BUG-36.2 — Material UBO packer vs WGSL struct drift (audit finding; not yet fixed)
+
+**Files affected (10 material types × 2 variants each = 20 shaders):**
+[PrimitiveMatAlphaMap{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatAlphaMapFlat.wgsl),
+[PrimitiveMatBumpMap{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatBumpMapFlat.wgsl),
+[PrimitiveMatElevContour{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatElevContourFlat.wgsl),
+[PrimitiveMatEmissionMap{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatEmissionMapFlat.wgsl),
+[PrimitiveMatFade{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatFadeFlat.wgsl),
+[PrimitiveMatImage{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatImageFlat.wgsl),
+[PrimitiveMatNormalMap{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatNormalMapFlat.wgsl),
+[PrimitiveMatSpecularMap{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatSpecularMapFlat.wgsl),
+[PrimitiveMatStripe{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatStripeFlat.wgsl),
+[PrimitiveMatWater{Flat,Lit}.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatWaterFlat.wgsl)
+
+**Audit scope:** Cross-checked every distinct material type's [Material.js](../packages/engine/Source/Scene/Material.js) fabric `uniforms` declaration order against its WGSL `struct MaterialUniforms` declaration order. The fabric is the source of truth for what gets written into `material._uniformBuffer.gpuData`; [MaterialUniformBuffer.js](../packages/engine/Source/Scene/MaterialUniformBuffer.js) `._buildLayout` iterates `templateUniforms` in declaration order, assigns numeric fields sequential float offsets (honoring WGSL `vec4`/`vec2` alignment), and skips texture/channel-string values (offset -1, not in the float buffer). The WGSL struct reads that Float32Array as-is.
+
+**Root cause:** Ten shaders' structs drifted from their corresponding fabrics. The drift falls into four failure modes:
+
+1. **Phantom `color` field** (AlphaMap, EmissionMap, SpecularMap) — WGSL declares `color: vec4<f32>` at byte 0, but the fabric only has `image`/`channel(s)`/`repeat`. The fabric never writes `color`, so byte 0 gets the fabric's first numeric field instead. Net effect: the fabric's `repeat.xy` bytes get interpreted as `color.rg`, and `repeat`+`channel` read as zero. Fragment output is a tinted gradient of the repeat vector, not an alpha-masked image.
+
+2. **Field re-ordering** (BumpMap, NormalMap, ElevationContour, Image, Stripe) — Fabric and WGSL declare the same fields but in a different order. Because the packer uses fabric order and the shader uses struct order, every field reads the wrong value:
+    - BumpMap: fabric writes `[strength, _pad, repeat.x, repeat.y]`; WGSL reads as `[repeat.x, repeat.y, channel, strength]`.
+    - ElevationContour: fabric writes `[spacing, _pad×3, color.rgba, width]`; WGSL reads as `[color.rgba, spacing, width]`. The contour `spacing` leaks into `color.r`.
+    - Image: fabric writes `[repeat.xy, _pad×2, color.rgba]`; WGSL reads as `[color.rgba, repeat.xy]`. Swapped.
+    - NormalMap: fabric writes `[strength, _pad, repeat.x, repeat.y]`; WGSL reads as `[repeat.x, repeat.y, strength, _pad, channels.xyz]` — `strength` goes to `repeat.x`.
+    - Stripe: fabric writes `[horizontal(bool), _pad×3, evenColor, oddColor, offset, repeat]`; WGSL reads `[lightColor, darkColor, repeat, offset, orientation]` — also renames `evenColor`/`oddColor` to `lightColor`/`darkColor`.
+
+3. **Missing-in-WGSL fields** (Fade `fadeDirection`, Fade `time`, Water `time`) — fabric writes fields that WGSL doesn't declare (data is ignored — harmless storage waste) or WGSL declares a field (`time`) that fabric doesn't populate (reads zero; animation freezes).
+
+4. **String uniforms expected as numeric runtime values** (AlphaMap `channel`, BumpMap `channel`, NormalMap `channels`, SpecularMap `channel`, EmissionMap `channels`) — fabric provides these as strings (e.g., `"a"`, `"rgb"`). Upstream CesiumJS bakes them into the GLSL shader at fabric assembly time. The WebGPU ports instead declare runtime `channel: f32`/`channels: vec3<f32>` uniforms with no writer — they always read zero.
+
+**What is NOT broken** (Session 36 audit clears these):
+
+- **Color, Checker, Dot, Grid, RimLighting, ElevationRamp, ElevationBand (placeholder), SlopeRamp/AspectRamp (no numerics)** — fabric order matches WGSL struct order; numeric packing lands correctly.
+- **Polyline{Arrow,Dash,Glow,Outline}** — collection-level shaders, not audited yet (different rendering path through `WebGPUPolylineRenderer`, may pack differently).
+- **PBRSimple, PBRTextured, ModelPBRComplete** — not fabric-driven (custom material pipelines), skipped.
+- **Basic{Color,Textured}, Phong{Color,TexturedColor}, Pick*** — all use `_placeholder: vec4<f32>` UBOs; no material fields, no mismatch possible.
+
+**Why specs didn't catch it:** There is no round-trip spec that `new Material({...})` + inspects `material._uniformBuffer.gpuData` + asserts the float offsets match the WGSL struct. The pipeline creates the bind-group and draws; any "it renders" smoke test would pass because the shader still produces a pixel value — just the wrong one.
+
+**Resolution (Session 36 continuation — Option B)** — the audit was followed up in the same session with a full implementation. `MaterialUniformBuffer` was extended to pack fabric channel-shorthand strings as numeric indices (r=0, g=1, b=2, a=3), and every affected shader was rewritten to match fabric declaration order:
+
+- **Packer changes** ([MaterialUniformBuffer.js](../packages/engine/Source/Scene/MaterialUniformBuffer.js)):
+    - `_classifyUniform` recognizes `name === "channel"` + 1-char r/g/b/a string → `channelIndex` (f32, size 1), and `name === "channels"` + 1-4 char swizzle string → `channelsVec3` (size 3) or `channelsVec4` (size 4).
+    - `_writeValue` handles both new types, writing 0/1/2/3 indices per character.
+    - `_readValue` round-trips to the original shorthand string through the facade getter.
+    - Fixed a separate latent packing bug exposed by NormalMap: `_buildLayout` had `offset += 1` after every vec3, which over-padded. WGSL places an f32 into the vec3's 4-byte tail (byte 12 after a vec3 at byte 0), but the packer was putting the f32 at byte 16. Removing the `+1` makes `{ vec3, f32, ... }` layouts match WGSL exactly. All existing vec3-followed-by-vec2/vec3/vec4 cases still produce the same offsets because the next-field alignment computation already handled them.
+- **Shader changes** (10 types × 2 variants = 20 files):
+    - AlphaMap, BumpMap, SpecularMap: WGSL now reads `channel: f32` at fabric-declared offset; uses a runtime `extractChannel(tex, idx)` helper.
+    - NormalMap, EmissionMap: WGSL reads `channels: vec3<f32>` and swizzles via `swizzleChannel`.
+    - Image: struct reordered to `{ repeat: vec2, color: vec4 }` to match fabric.
+    - ElevationContour: struct reordered to `{ spacing: f32, color: vec4, width: f32 }`.
+    - Stripe: field names corrected to `evenColor`/`oddColor` and order matched to fabric `{ horizontal: f32, evenColor: vec4, oddColor: vec4, offset: f32, repeat: f32 }`; shader logic brought in line with [StripeMaterial.glsl](../packages/engine/Source/Shaders/Materials/StripeMaterial.glsl).
+    - Fade: restructured to `{ fadeInColor, fadeOutColor, maximumDistance, fadeRepeat, fadeDirection: vec2, time: vec2 }`; shader logic now mirrors `FadeMaterial.glsl` (per-axis time-distance with optional wrap).
+    - Water: dropped the unused `time: f32` field (fabric never provided it). TODO remains to plumb a frame-time uniform through the camera or scene UBO so animation re-enables.
+    - NormalMap Flat fragment had a leftover reference to `normalTexture` that didn't exist as a binding — fixed to `normalMapTexture` in the same pass.
+- **New spec** — [MaterialUniformBufferSpec.js](../packages/engine/Specs/Scene/MaterialUniformBufferSpec.js) locks in the channel-string packing, the round-trip read, the vec3+f32 tail-slot layout (NormalMap), and the fabric orderings for AlphaMap / BumpMap / Image / Checkerboard / EmissionMap / Fade. Any future fabric or WGSL reshuffle that drifts from these offsets will fail the spec at run time.
+
+**Fix history superseded.** The earlier in-session note ("Fix not yet applied") no longer applies — all 10 material types and the packer bug are closed. Water time animation landed in the same session: the float-23 (Flat) and float-55 (Lit) pad slots in the camera UBO are now packed with `FrameState.frameNumber` via `getFrameTime()` in `WebGPUPrimitiveCommands.js`. Water's local `CameraUniforms` struct renames `_pad1` → `time` and drives the wave phase as `camera.time * material.animationSpeed`, matching upstream `Water.glsl`'s `czm_frameNumber * animationSpeed` semantic. No UBO size change; other shaders still declare `_pad1: f32` at the same slot and ignore the written value.
+
+**Fix history (superseded — kept for posterity).** The original writeup described three options:
+
+- **Option A (preferred):** Keep fabric as source of truth. Rewrite each of the 10 WGSL structs to declare fields in fabric order. Requires running `npx gulp buildWGSL` after each edit to regenerate the `.js` module wrappers. Side effect: for types with string uniforms (channel/channels), the shader must be changed to stop reading a runtime `material.channel` — either hardcode the channel at preprocess time (via a new `//>>ifdef CHANNEL_A` / `//>>ifdef CHANNEL_R` variant set) or add a dedicated JS writer that packs the channel index as an f32 before the rest of the fabric numeric fields.
+- **Option B:** Keep WGSL as source of truth. Add a per-material-type override table in [MaterialUniformBuffer.js](../packages/engine/Source/Scene/MaterialUniformBuffer.js) that defines the exact float layout for each named material type. Backwards-compatible for 8 material types that already match; explicit opt-in for the 10 broken ones. Downside: duplicates knowledge from the WGSL source.
+- **Option C:** Parse the WGSL struct at shader-module-creation time and drive the packer from it. Correct but high-effort (requires a WGSL struct-declaration parser).
+
+Recommended plan for the next session: take Option A for the 5 "re-ordering" cases (BumpMap, NormalMap, ElevationContour, Image, Stripe) — mechanical swap, no new infra. For AlphaMap/EmissionMap/SpecularMap (channel-string cases), take Option B — add the single `channel: f32` writer — keeps WGSL layouts stable and covers all three with one piece of JS code. Fade/Water — fix in Option A (trim unused WGSL fields; stop reading `time` that never gets written).
+
+---
+
+### BUG-F3 — ES5 prototype inheritance against ES6 parent class throws on first frame
+
+**Symptom:** Any entity with a `corridor`, `cylinder`, `ellipse`, `ellipsoid`, `plane`, `polygon`, `polylineVolume`, `rectangle`, or `wall` graphic threw `Class constructor DynamicGeometryUpdater cannot be invoked without 'new'` from the `GeometryVisualizer` hot path. Crash was deterministic: thrown the moment the visualizer constructed a `Dynamic*GeometryUpdater` for a time-dynamic geometry property.
+
+**Root cause:** The parent `DynamicGeometryUpdater` had been migrated to an ES6 `class`, but the nine children listed in the `F3` finding still used the legacy ES5 inheritance idiom:
+
+```javascript
+function DynamicXxxGeometryUpdater(geometryUpdater, primitives, groundPrimitives) {
+  DynamicGeometryUpdater.call(this, geometryUpdater, primitives, groundPrimitives);
+}
+if (defined(Object.create)) {
+  DynamicXxxGeometryUpdater.prototype = Object.create(DynamicGeometryUpdater.prototype);
+  DynamicXxxGeometryUpdater.prototype.constructor = DynamicXxxGeometryUpdater;
+}
+```
+
+`Parent.call(this, ...)` works for function-declared constructors but is forbidden against ES6 class constructors — they require `[[Construct]]` invocation. The reference completed conversion at `BoxGeometryUpdater.js` had landed earlier, and the verification report flagged the remaining 9 siblings.
+
+**Fix (Batch 66):** Mechanical rewrite of all 9 children to `class DynamicXxxGeometryUpdater extends DynamicGeometryUpdater`, with `super(...)` replacing `Parent.call(this, ...)` and `super.foo(...)` replacing `Parent.prototype.foo.call(this, ...)`. The `Object.create` polyfill block was dropped entirely — `extends` handles the prototype chain natively.
+
+**Secondary TDZ fix:** The reference `BoxGeometryUpdater.js` placed `BoxGeometryUpdater.DynamicGeometryUpdater = DynamicBoxGeometryUpdater` on the line BEFORE the `class DynamicBoxGeometryUpdater` declaration. With the original `function`-declared constructor that worked because of hoisting; with the new ES6 class declaration it raises `ReferenceError: Cannot access 'DynamicBoxGeometryUpdater' before initialization` at module load. All 10 files (the 9 newly converted + the BoxGeometryUpdater reference) now place the assignment AFTER the class declaration. Verified by `node -e "import(...)"` round-trip on all 10 modules.
+
+**Per-file surprises:**
+
+- `EllipsoidGeometryUpdater.js` — child constructor sets ten extra instance fields beyond the `super(...)` call (`_scene`, `_modelMatrix`, `_attributes`, `_outlineAttributes`, `_lastSceneMode`, `_lastShow`, `_lastOutlineShow`, `_lastOutlineWidth`, `_lastOutlineColor`, `_lastOffset`, `_material`); preserved verbatim. The 320-line `update(time)` method body migrated as-is.
+- `PolygonGeometryUpdater.js` — identifier was historically misspelled as `DyanmicPolygonGeometryUpdater` (note the swapped `n`/`a`). Confirmed via `git grep "Dyanmic"` that it had no external consumers; quietly renamed to `DynamicPolygonGeometryUpdater` as part of the conversion.
+- `OpenStreetMapImageryProvider.js` and `TileMapServiceImageryProvider.js` — listed in the verification report but are already ES6 classes per upstream commits (`4b3c0ef68f` and earlier). Load-verified with no changes.
+
+**Files modified:**
+- [packages/engine/Source/DataSources/CorridorGeometryUpdater.js](../packages/engine/Source/DataSources/CorridorGeometryUpdater.js)
+- [packages/engine/Source/DataSources/CylinderGeometryUpdater.js](../packages/engine/Source/DataSources/CylinderGeometryUpdater.js)
+- [packages/engine/Source/DataSources/EllipseGeometryUpdater.js](../packages/engine/Source/DataSources/EllipseGeometryUpdater.js)
+- [packages/engine/Source/DataSources/EllipsoidGeometryUpdater.js](../packages/engine/Source/DataSources/EllipsoidGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PlaneGeometryUpdater.js](../packages/engine/Source/DataSources/PlaneGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PolygonGeometryUpdater.js](../packages/engine/Source/DataSources/PolygonGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PolylineVolumeGeometryUpdater.js](../packages/engine/Source/DataSources/PolylineVolumeGeometryUpdater.js)
+- [packages/engine/Source/DataSources/RectangleGeometryUpdater.js](../packages/engine/Source/DataSources/RectangleGeometryUpdater.js)
+- [packages/engine/Source/DataSources/WallGeometryUpdater.js](../packages/engine/Source/DataSources/WallGeometryUpdater.js)
+- [packages/engine/Source/DataSources/BoxGeometryUpdater.js](../packages/engine/Source/DataSources/BoxGeometryUpdater.js) (TDZ ordering fix only)
+
+**Verification:** `npx tsc --noEmit` exits 0; `node --check` clean on all 10 files; `import(...)` smoke-test confirms `DynamicGeometryUpdater` static is reachable on every parent class.

@@ -312,107 +312,83 @@ class RectangleGeometryUpdater extends GroundGeometryUpdater {
   }
 }
 
-RectangleGeometryUpdater.DynamicGeometryUpdater =
-  DynamicRectangleGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicRectangleGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
-
-if (defined(Object.create)) {
-  DynamicRectangleGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicRectangleGeometryUpdater.prototype.constructor =
-    DynamicRectangleGeometryUpdater;
-}
-
-DynamicRectangleGeometryUpdater.prototype._isHidden = function (
-  entity,
-  rectangle,
-  time,
-) {
-  return (
-    !defined(this._options.rectangle) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(
-      this,
-      entity,
-      rectangle,
-      time,
-    )
-  );
-};
-
-DynamicRectangleGeometryUpdater.prototype._setOptions = function (
-  entity,
-  rectangle,
-  time,
-) {
-  const options = this._options;
-  let heightValue = Property.getValueOrUndefined(rectangle.height, time);
-  const heightReferenceValue = Property.getValueOrDefault(
-    rectangle.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  let extrudedHeightValue = Property.getValueOrUndefined(
-    rectangle.extrudedHeight,
-    time,
-  );
-  const extrudedHeightReferenceValue = Property.getValueOrDefault(
-    rectangle.extrudedHeightReference,
-    time,
-    HeightReference.NONE,
-  );
-  if (defined(extrudedHeightValue) && !defined(heightValue)) {
-    heightValue = 0;
+class DynamicRectangleGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
   }
 
-  options.rectangle = Property.getValueOrUndefined(
-    rectangle.coordinates,
-    time,
-    options.rectangle,
-  );
-  options.granularity = Property.getValueOrUndefined(
-    rectangle.granularity,
-    time,
-  );
-  options.stRotation = Property.getValueOrUndefined(rectangle.stRotation, time);
-  options.rotation = Property.getValueOrUndefined(rectangle.rotation, time);
-  options.offsetAttribute =
-    GroundGeometryUpdater.computeGeometryOffsetAttribute(
+  _isHidden(entity, rectangle, time) {
+    return (
+      !defined(this._options.rectangle) ||
+      super._isHidden(entity, rectangle, time)
+    );
+  }
+
+  _setOptions(entity, rectangle, time) {
+    const options = this._options;
+    let heightValue = Property.getValueOrUndefined(rectangle.height, time);
+    const heightReferenceValue = Property.getValueOrDefault(
+      rectangle.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    let extrudedHeightValue = Property.getValueOrUndefined(
+      rectangle.extrudedHeight,
+      time,
+    );
+    const extrudedHeightReferenceValue = Property.getValueOrDefault(
+      rectangle.extrudedHeightReference,
+      time,
+      HeightReference.NONE,
+    );
+    if (defined(extrudedHeightValue) && !defined(heightValue)) {
+      heightValue = 0;
+    }
+
+    options.rectangle = Property.getValueOrUndefined(
+      rectangle.coordinates,
+      time,
+      options.rectangle,
+    );
+    options.granularity = Property.getValueOrUndefined(
+      rectangle.granularity,
+      time,
+    );
+    options.stRotation = Property.getValueOrUndefined(
+      rectangle.stRotation,
+      time,
+    );
+    options.rotation = Property.getValueOrUndefined(rectangle.rotation, time);
+    options.offsetAttribute =
+      GroundGeometryUpdater.computeGeometryOffsetAttribute(
+        heightValue,
+        heightReferenceValue,
+        extrudedHeightValue,
+        extrudedHeightReferenceValue,
+      );
+    options.height = GroundGeometryUpdater.getGeometryHeight(
       heightValue,
       heightReferenceValue,
+    );
+
+    extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
       extrudedHeightValue,
       extrudedHeightReferenceValue,
     );
-  options.height = GroundGeometryUpdater.getGeometryHeight(
-    heightValue,
-    heightReferenceValue,
-  );
+    if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
+      extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
+        RectangleGeometry.computeRectangle(options, scratchRectangle),
+      ).minimumTerrainHeight;
+    }
 
-  extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
-    extrudedHeightValue,
-    extrudedHeightReferenceValue,
-  );
-  if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
-    extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
-      RectangleGeometry.computeRectangle(options, scratchRectangle),
-    ).minimumTerrainHeight;
+    options.extrudedHeight = extrudedHeightValue;
   }
+}
 
-  options.extrudedHeight = extrudedHeightValue;
-};
+RectangleGeometryUpdater.DynamicGeometryUpdater =
+  DynamicRectangleGeometryUpdater;
+
 export default RectangleGeometryUpdater;

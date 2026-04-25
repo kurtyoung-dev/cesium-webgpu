@@ -2989,6 +2989,44 @@ Each demo's `<!-- ... -->` header block lists:
 
 ---
 
+## Batch 66 — F3 ES5/ES6 inheritance fix (2026-04-25)
+
+**Symptom:** `class extends` parents (`DynamicGeometryUpdater`) had been migrated to ES6, but their nine `Dynamic*GeometryUpdater` children still used the legacy `Parent.call(this, ...)` + `Object.create(Parent.prototype)` chain. Calling an ES6 class without `new` throws `Class constructor X cannot be invoked without 'new'` at runtime. Any entity-driven dynamic geometry (corridor / cylinder / ellipse / ellipsoid / plane / polygon / polyline-volume / rectangle / wall) constructed through `GeometryVisualizer` would crash on first frame.
+
+**Files touched:**
+- [packages/engine/Source/DataSources/CorridorGeometryUpdater.js](../packages/engine/Source/DataSources/CorridorGeometryUpdater.js)
+- [packages/engine/Source/DataSources/CylinderGeometryUpdater.js](../packages/engine/Source/DataSources/CylinderGeometryUpdater.js)
+- [packages/engine/Source/DataSources/EllipseGeometryUpdater.js](../packages/engine/Source/DataSources/EllipseGeometryUpdater.js)
+- [packages/engine/Source/DataSources/EllipsoidGeometryUpdater.js](../packages/engine/Source/DataSources/EllipsoidGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PlaneGeometryUpdater.js](../packages/engine/Source/DataSources/PlaneGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PolygonGeometryUpdater.js](../packages/engine/Source/DataSources/PolygonGeometryUpdater.js)
+- [packages/engine/Source/DataSources/PolylineVolumeGeometryUpdater.js](../packages/engine/Source/DataSources/PolylineVolumeGeometryUpdater.js)
+- [packages/engine/Source/DataSources/RectangleGeometryUpdater.js](../packages/engine/Source/DataSources/RectangleGeometryUpdater.js)
+- [packages/engine/Source/DataSources/WallGeometryUpdater.js](../packages/engine/Source/DataSources/WallGeometryUpdater.js)
+- [packages/engine/Source/DataSources/BoxGeometryUpdater.js](../packages/engine/Source/DataSources/BoxGeometryUpdater.js) (TDZ fix on existing reference conversion)
+
+**Typecheck:** `npx tsc --noEmit` — clean (exit 0).
+
+**Pattern applied** (verbatim from the BoxGeometryUpdater reference, with one TDZ correction):
+
+- `function DynamicX(...) { Parent.call(this, ...); }` → `class DynamicX extends Parent { constructor(...) { super(...); } }`
+- `if (defined(Object.create)) { DynamicX.prototype = Object.create(Parent.prototype); ... }` → dropped entirely (ES6 `extends` handles the chain).
+- `DynamicX.prototype.foo = function (...) { ... };` → `class { foo(...) { ... } }`.
+- `Parent.prototype.foo.call(this, ...)` → `super.foo(...)`.
+
+**TDZ correction:** the original reference (`BoxGeometryUpdater.js`) placed `BoxGeometryUpdater.DynamicGeometryUpdater = DynamicBoxGeometryUpdater` BEFORE the class declaration. With `function`-declared constructors that worked because of hoisting; with ES6 class declarations it raises `ReferenceError: Cannot access 'DynamicBoxGeometryUpdater' before initialization` at module load. All ten files now place the assignment AFTER the class.
+
+**Per-file surprises:**
+- `EllipsoidGeometryUpdater.js` — child constructor sets ten extra instance fields (`_scene`, `_modelMatrix`, `_attributes`, etc.) before returning; preserved as a single `super(...)` followed by ten `this.* = ...` assignments. Single 320-line `update(time)` method body migrated as-is — only the wrapping syntax changed; method body indentation kept at 2-space (works inside class methods, no logic change).
+- `PolygonGeometryUpdater.js` — historical typo `DyanmicPolygonGeometryUpdater` (line ~446) was internal-only (`git grep "Dyanmic"` confirmed zero external consumers). Renamed to `DynamicPolygonGeometryUpdater` as part of the conversion.
+- `OpenStreetMapImageryProvider.js` and `TileMapServiceImageryProvider.js` — already in ES6 class form per upstream `4b3c0ef68f` and earlier; no work needed beyond load-verification.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| F3-INHERITANCE | self-carved | ES5 prototype inheritance throws against ES6 parent class | Converted nine `Dynamic*GeometryUpdater` children + corrected the BoxGeometryUpdater TDZ ordering. `super._isHidden(...)` replaces `DynamicGeometryUpdater.prototype._isHidden.call(this, ...)`; `super(...)` replaces `DynamicGeometryUpdater.call(this, ...)`. No behaviour changes — pure syntax migration. |
+
+---
+
 ## Cumulative status through Batch 17
 
 All 30 criticals that were OPEN at the start of the 2026-04-16 session are now either fixed or explicitly deferred with a `FOLLOW-UP <ID>` marker. High-severity and medium-severity findings are largely untouched in this session.

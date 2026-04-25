@@ -304,104 +304,80 @@ class CorridorGeometryUpdater extends GroundGeometryUpdater {
   }
 }
 
-CorridorGeometryUpdater.DynamicGeometryUpdater = DynamicCorridorGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicCorridorGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
-
-if (defined(Object.create)) {
-  DynamicCorridorGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicCorridorGeometryUpdater.prototype.constructor =
-    DynamicCorridorGeometryUpdater;
-}
-
-DynamicCorridorGeometryUpdater.prototype._isHidden = function (
-  entity,
-  corridor,
-  time,
-) {
-  const options = this._options;
-  return (
-    !defined(options.positions) ||
-    !defined(options.width) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(
-      this,
-      entity,
-      corridor,
-      time,
-    )
-  );
-};
-
-DynamicCorridorGeometryUpdater.prototype._setOptions = function (
-  entity,
-  corridor,
-  time,
-) {
-  const options = this._options;
-  let heightValue = Property.getValueOrUndefined(corridor.height, time);
-  const heightReferenceValue = Property.getValueOrDefault(
-    corridor.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  let extrudedHeightValue = Property.getValueOrUndefined(
-    corridor.extrudedHeight,
-    time,
-  );
-  const extrudedHeightReferenceValue = Property.getValueOrDefault(
-    corridor.extrudedHeightReference,
-    time,
-    HeightReference.NONE,
-  );
-  if (defined(extrudedHeightValue) && !defined(heightValue)) {
-    heightValue = 0;
+class DynamicCorridorGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
   }
 
-  options.positions = Property.getValueOrUndefined(corridor.positions, time);
-  options.width = Property.getValueOrUndefined(corridor.width, time);
-  options.granularity = Property.getValueOrUndefined(
-    corridor.granularity,
-    time,
-  );
-  options.cornerType = Property.getValueOrUndefined(corridor.cornerType, time);
-  options.offsetAttribute =
-    GroundGeometryUpdater.computeGeometryOffsetAttribute(
+  _isHidden(entity, corridor, time) {
+    const options = this._options;
+    return (
+      !defined(options.positions) ||
+      !defined(options.width) ||
+      super._isHidden(entity, corridor, time)
+    );
+  }
+
+  _setOptions(entity, corridor, time) {
+    const options = this._options;
+    let heightValue = Property.getValueOrUndefined(corridor.height, time);
+    const heightReferenceValue = Property.getValueOrDefault(
+      corridor.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    let extrudedHeightValue = Property.getValueOrUndefined(
+      corridor.extrudedHeight,
+      time,
+    );
+    const extrudedHeightReferenceValue = Property.getValueOrDefault(
+      corridor.extrudedHeightReference,
+      time,
+      HeightReference.NONE,
+    );
+    if (defined(extrudedHeightValue) && !defined(heightValue)) {
+      heightValue = 0;
+    }
+
+    options.positions = Property.getValueOrUndefined(corridor.positions, time);
+    options.width = Property.getValueOrUndefined(corridor.width, time);
+    options.granularity = Property.getValueOrUndefined(
+      corridor.granularity,
+      time,
+    );
+    options.cornerType = Property.getValueOrUndefined(
+      corridor.cornerType,
+      time,
+    );
+    options.offsetAttribute =
+      GroundGeometryUpdater.computeGeometryOffsetAttribute(
+        heightValue,
+        heightReferenceValue,
+        extrudedHeightValue,
+        extrudedHeightReferenceValue,
+      );
+    options.height = GroundGeometryUpdater.getGeometryHeight(
       heightValue,
       heightReferenceValue,
+    );
+
+    extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
       extrudedHeightValue,
       extrudedHeightReferenceValue,
     );
-  options.height = GroundGeometryUpdater.getGeometryHeight(
-    heightValue,
-    heightReferenceValue,
-  );
+    if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
+      extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
+        CorridorGeometry.computeRectangle(options, scratchRectangle),
+      ).minimumTerrainHeight;
+    }
 
-  extrudedHeightValue = GroundGeometryUpdater.getGeometryExtrudedHeight(
-    extrudedHeightValue,
-    extrudedHeightReferenceValue,
-  );
-  if (extrudedHeightValue === GroundGeometryUpdater.CLAMP_TO_GROUND) {
-    extrudedHeightValue = ApproximateTerrainHeights.getMinimumMaximumHeights(
-      CorridorGeometry.computeRectangle(options, scratchRectangle),
-    ).minimumTerrainHeight;
+    options.extrudedHeight = extrudedHeightValue;
   }
+}
 
-  options.extrudedHeight = extrudedHeightValue;
-};
+CorridorGeometryUpdater.DynamicGeometryUpdater = DynamicCorridorGeometryUpdater;
+
 export default CorridorGeometryUpdater;

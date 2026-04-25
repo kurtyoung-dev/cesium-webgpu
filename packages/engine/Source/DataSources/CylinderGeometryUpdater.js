@@ -292,82 +292,55 @@ class CylinderGeometryUpdater extends GeometryUpdater {
 CylinderGeometryUpdater.prototype._onEntityPropertyChanged =
   heightReferenceOnEntityPropertyChanged;
 
-CylinderGeometryUpdater.DynamicGeometryUpdater = DynamicCylinderGeometryUpdater;
-
 /**
  * @private
  */
-function DynamicCylinderGeometryUpdater(
-  geometryUpdater,
-  primitives,
-  groundPrimitives,
-) {
-  DynamicGeometryUpdater.call(
-    this,
-    geometryUpdater,
-    primitives,
-    groundPrimitives,
-  );
-}
+class DynamicCylinderGeometryUpdater extends DynamicGeometryUpdater {
+  constructor(geometryUpdater, primitives, groundPrimitives) {
+    super(geometryUpdater, primitives, groundPrimitives);
+  }
 
-if (defined(Object.create)) {
-  DynamicCylinderGeometryUpdater.prototype = Object.create(
-    DynamicGeometryUpdater.prototype,
-  );
-  DynamicCylinderGeometryUpdater.prototype.constructor =
-    DynamicCylinderGeometryUpdater;
-}
-
-DynamicCylinderGeometryUpdater.prototype._isHidden = function (
-  entity,
-  cylinder,
-  time,
-) {
-  const options = this._options;
-  const position = Property.getValueOrUndefined(
-    entity.position,
-    time,
-    positionScratch,
-  );
-  return (
-    !defined(position) ||
-    !defined(options.length) ||
-    !defined(options.topRadius) || //
-    !defined(options.bottomRadius) ||
-    DynamicGeometryUpdater.prototype._isHidden.call(
-      this,
-      entity,
-      cylinder,
+  _isHidden(entity, cylinder, time) {
+    const options = this._options;
+    const position = Property.getValueOrUndefined(
+      entity.position,
       time,
-    )
-  );
-};
+      positionScratch,
+    );
+    return (
+      !defined(position) ||
+      !defined(options.length) ||
+      !defined(options.topRadius) || //
+      !defined(options.bottomRadius) ||
+      super._isHidden(entity, cylinder, time)
+    );
+  }
 
-DynamicCylinderGeometryUpdater.prototype._setOptions = function (
-  entity,
-  cylinder,
-  time,
-) {
-  const heightReference = Property.getValueOrDefault(
-    cylinder.heightReference,
-    time,
-    HeightReference.NONE,
-  );
-  const options = this._options;
-  options.length = Property.getValueOrUndefined(cylinder.length, time);
-  options.topRadius = Property.getValueOrUndefined(cylinder.topRadius, time);
-  options.bottomRadius = Property.getValueOrUndefined(
-    cylinder.bottomRadius,
-    time,
-  );
-  options.slices = Property.getValueOrUndefined(cylinder.slices, time);
-  options.numberOfVerticalLines = Property.getValueOrUndefined(
-    cylinder.numberOfVerticalLines,
-    time,
-  );
-  options.offsetAttribute =
-    heightReference !== HeightReference.NONE
-      ? GeometryOffsetAttribute.ALL
-      : undefined;
-};
+  _setOptions(entity, cylinder, time) {
+    const heightReference = Property.getValueOrDefault(
+      cylinder.heightReference,
+      time,
+      HeightReference.NONE,
+    );
+    const options = this._options;
+    options.length = Property.getValueOrUndefined(cylinder.length, time);
+    options.topRadius = Property.getValueOrUndefined(cylinder.topRadius, time);
+    options.bottomRadius = Property.getValueOrUndefined(
+      cylinder.bottomRadius,
+      time,
+    );
+    options.slices = Property.getValueOrUndefined(cylinder.slices, time);
+    options.numberOfVerticalLines = Property.getValueOrUndefined(
+      cylinder.numberOfVerticalLines,
+      time,
+    );
+    options.offsetAttribute =
+      heightReference !== HeightReference.NONE
+        ? GeometryOffsetAttribute.ALL
+        : undefined;
+  }
+}
+
+CylinderGeometryUpdater.DynamicGeometryUpdater = DynamicCylinderGeometryUpdater;
+
 export default CylinderGeometryUpdater;
