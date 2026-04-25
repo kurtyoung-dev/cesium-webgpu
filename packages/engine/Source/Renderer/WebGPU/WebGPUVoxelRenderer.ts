@@ -26,6 +26,7 @@ import {
 interface VoxelCache {
   uniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
+  pickPipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   vertexBuffer: GPUBuffer | null;
@@ -34,6 +35,7 @@ interface VoxelCache {
   voxelTextureView: GPUTextureView | null;
   sampler: GPUSampler | null;
   command: CesiumAnyDrawCommand | null;
+  pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
 }
 
@@ -58,6 +60,10 @@ struct Uniforms {
   maxSteps: f32,
   cameraPositionEC: vec3<f32>,
   densityThreshold: f32,
+  // C-R9-VOXEL-PICK (Batch 53) — pick color output for the pick FBO.
+  // Always written by JS-side packing but only consumed by the
+  // fragmentPickMain entry point.
+  pickColor: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var voxelTex: texture_3d<f32>;
@@ -109,6 +115,42 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   if (accumA < 0.01) { discard; }
   return vec4<f32>(accumC, accumA);
+}
+
+// C-R9-VOXEL-PICK (Batch 53) — pick entry point.
+//
+// Runs the same AABB entry/exit clip and ray-march loop as fragmentMain,
+// but emits u.pickColor on the FIRST non-empty sample (density above
+// threshold) instead of accumulating volumetric color. The "first hit"
+// semantics give VoxelPrimitive-granularity pick (one pickId per
+// VoxelPrimitive) — per-cell / per-tile granularity is a separate
+// follow-up (C-R9-VOXEL-CELL-PICK). All shape entry/exit checks and
+// uvw bounds checks are preserved so a ray that misses the volume still
+// discards correctly.
+@fragment
+fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let rayDir = normalize(input.worldPos - u.cameraPositionEC);
+  let invDir = 1.0 / rayDir;
+  let tr = intersectAABB(u.cameraPositionEC, invDir, u.minBounds, u.maxBounds);
+  if (tr.x > tr.y) { discard; }
+  let tS = max(tr.x, 0.0);
+  let tE = tr.y;
+  let maxI = i32(u.maxSteps);
+  for (var i = 0; i < maxI; i = i + 1) {
+    let t = tS + f32(i) * u.stepSize;
+    if (t > tE) { break; }
+    let p = u.cameraPositionEC + rayDir * t;
+    let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
+    if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
+    let s = textureSample(voxelTex, voxelSamp, uvw);
+    if (s.a > u.densityThreshold) {
+      // First non-empty sample wins. Emit the pickColor unmodified —
+      // the pick FBO readback maps it back to {primitive, id}.
+      return u.pickColor;
+    }
+  }
+  // Ray traversed the whole AABB with no density hit; nothing to pick.
+  discard;
 }
 `;
 
@@ -241,6 +283,7 @@ function updateWebGPUVoxelPrimitive(
     primitive._webgpuCache = {
       uniformBuffer: null,
       pipeline: null,
+      pickPipeline: null,
       shaderModule: null,
       bindGroup: null,
       vertexBuffer: null,
@@ -249,6 +292,7 @@ function updateWebGPUVoxelPrimitive(
       voxelTextureView: null,
       sampler: null,
       command: null,
+      pickCommand: null,
       initialized: false,
     } as VoxelCache;
   }
@@ -279,29 +323,38 @@ function updateWebGPUVoxelPrimitive(
       sampler(2, Stage.FRAGMENT),
     ]);
 
+    const pipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [bgl],
+    });
+
+    // Shared vertex stage — color + pick run identical vertex work
+    // (RTE box vertex transform). Only the fragment entry differs.
+    const vertexDesc: GPUVertexState = {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: 24,
+          attributes: [
+            {
+              shaderLocation: 0,
+              offset: 0,
+              format: "float32x3" as GPUVertexFormat,
+            },
+            {
+              shaderLocation: 1,
+              offset: 12,
+              format: "float32x3" as GPUVertexFormat,
+            },
+          ],
+        },
+      ],
+    };
+
     cache.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-      vertex: {
-        module: shaderModule,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: 24,
-            attributes: [
-              {
-                shaderLocation: 0,
-                offset: 0,
-                format: "float32x3" as GPUVertexFormat,
-              },
-              {
-                shaderLocation: 1,
-                offset: 12,
-                format: "float32x3" as GPUVertexFormat,
-              },
-            ],
-          },
-        ],
-      },
+      label: "Voxel color pipeline",
+      layout: pipelineLayout,
+      vertex: vertexDesc,
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentMain",
@@ -323,6 +376,29 @@ function updateWebGPUVoxelPrimitive(
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
         // less-equal for planetary-scale precision robustness.
+        depthCompare: "less-equal",
+      },
+    });
+
+    // C-R9-VOXEL-PICK (Batch 53) — pick pipeline. Same layout, same
+    // vertex stage, same depth behaviour. Fragment entry emits
+    // u.pickColor unmodified — NO blending, so the pick FBO readback
+    // can map the color back to the registered pick target. cullMode
+    // matches the color path so picking and shading agree on which
+    // box face the ray enters from.
+    cache.pickPipeline = device.createRenderPipeline({
+      label: "Voxel pick pipeline",
+      layout: pipelineLayout,
+      vertex: vertexDesc,
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentPickMain",
+        targets: [{ format: canvasFormat }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "front" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
         depthCompare: "less-equal",
       },
     });
@@ -368,7 +444,41 @@ function updateWebGPUVoxelPrimitive(
   );
   EncodedCartesian3.fromCartesian(camModel, scratchEncoded);
 
-  const data = new Float32Array(32);
+  // C-R9-VOXEL-PICK (Batch 53) — register a pick ID at VoxelPrimitive
+  // granularity on first use; refresh if `primitive.id` changes. Mirrors
+  // the WebGL pickId lifecycle on Scene/VoxelPrimitive.js. Per-cell /
+  // per-tile pick is a separate follow-up (C-R9-VOXEL-CELL-PICK).
+  const passes = frameState.passes;
+  if (passes && (passes.pick || passes.render)) {
+    const primId = primitive.id;
+    const pickState = primitive as unknown as {
+      _pickId?: { color: CesiumColor; destroy(): void };
+      _pickIdLastId?: unknown;
+    };
+    if (!pickState._pickId || pickState._pickIdLastId !== primId) {
+      if (pickState._pickId) {
+        pickState._pickId.destroy();
+      }
+      pickState._pickId = context.createPickId(
+        { primitive: primitive, id: primId },
+        "primitive",
+      );
+      pickState._pickIdLastId = primId;
+    }
+  }
+  const pickColor = (
+    primitive as unknown as { _pickId?: { color: CesiumColor } }
+  )._pickId?.color;
+
+  // UBO layout (160 bytes = 40 floats):
+  //   [ 0..15] mvpRelativeToEye        (mat4)
+  //   [16..19] encodedCameraHigh + pad
+  //   [20..23] encodedCameraLow  + pad
+  //   [24..27] minBounds + stepSize
+  //   [28..31] maxBounds + maxSteps
+  //   [32..35] cameraPositionEC + densityThreshold
+  //   [36..39] pickColor               (C-R9-VOXEL-PICK, Batch 53)
+  const data = new Float32Array(40);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
@@ -388,15 +498,25 @@ function updateWebGPUVoxelPrimitive(
   data[29] = 0.5;
   data[30] = 0.5;
   data[31] = 128; // maxBounds + maxSteps
+  // cameraPositionEC stays zero — camera is the origin in eye space.
+  data[32] = 0;
+  data[33] = 0;
+  data[34] = 0;
+  data[35] = 0.1; // cameraEC + densityThreshold
+  // Pick color zero when pickId hasn't been assigned yet — pick command
+  // is gated by `pickColor` so the zero never reaches the pick FBO.
+  if (pickColor) {
+    data[36] = pickColor.red;
+    data[37] = pickColor.green;
+    data[38] = pickColor.blue;
+    data[39] = pickColor.alpha;
+  } else {
+    data[36] = 0;
+    data[37] = 0;
+    data[38] = 0;
+    data[39] = 0;
+  }
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
-
-  // Camera position for ray origin
-  const camData = new Float32Array(4);
-  camData[0] = 0;
-  camData[1] = 0;
-  camData[2] = 0;
-  camData[3] = 0.1; // cameraEC + densityThreshold
-  device.queue.writeBuffer(cache.uniformBuffer!, 128, camData);
 
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
@@ -410,6 +530,30 @@ function updateWebGPUVoxelPrimitive(
   }
 
   commandList.push(cache.command);
+
+  // C-R9-VOXEL-PICK (Batch 53) — pick command. Same vertex stage and
+  // bind group as the color command, different fragment entry. Wired
+  // onto the color command's derivedCommands.picking.pickCommand so the
+  // Batch 29 dispatcher (`selectCommandVariant`) routes to it during
+  // pick passes; H-R3 (Batch 35) already added Pass.VOXELS to the pick
+  // walk, so the command is reachable.
+  if (pickColor) {
+    if (!cache.pickCommand) {
+      cache.pickCommand = new WebGPUDrawCommand({
+        pipeline: cache.pickPipeline!,
+        bindGroups: [cache.bindGroup],
+        vertexBuffers: [cache.vertexBuffer],
+        indexBuffer: cache.indexBuffer,
+        indexCount: 36,
+        pass: Pass.VOXELS,
+        pickOnly: true,
+      });
+    }
+    (cache.command as CesiumAnyDrawCommand).derivedCommands = {
+      ...((cache.command as CesiumAnyDrawCommand).derivedCommands ?? {}),
+      picking: { pickCommand: cache.pickCommand },
+    };
+  }
 }
 
 function destroyWebGPUVoxelResources(
@@ -423,6 +567,18 @@ function destroyWebGPUVoxelResources(
   cache.vertexBuffer?.destroy();
   cache.indexBuffer?.destroy();
   cache.voxelTexture?.destroy();
+
+  // C-R9-VOXEL-PICK (Batch 53) — release the pick ID so the registry
+  // slot is reclaimed and the next VoxelPrimitive instance gets a fresh
+  // color. No-op when the primitive never entered a render or pick pass.
+  const pickState = primitive as unknown as {
+    _pickId?: { destroy(): void };
+    _pickIdLastId?: unknown;
+  };
+  pickState._pickId?.destroy();
+  pickState._pickId = undefined;
+  pickState._pickIdLastId = undefined;
+
   primitive._webgpuCache = undefined;
 }
 

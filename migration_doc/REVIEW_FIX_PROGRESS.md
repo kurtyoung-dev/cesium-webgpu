@@ -272,9 +272,9 @@ Between the initial Batches 1–5 listed above and the 2026-04-16 Batch 10+ run,
 
 | ID | Source | Status |
 |---|---|---|
-| C-R1 | RENDERER_DEEP | **DEFERRED** — `command.renderState` consumption. **FOLLOW-UP C-R1-RENDERSTATE**. |
-| C-R2 | RENDERER_DEEP | **DEFERRED** — `derivedCommands.*` dispatch. **FOLLOW-UP C-R2-DERIVED-COMMANDS**. |
-| C-R3 | RENDERER_DEEP | **DEFERRED** — translucent back-to-front sort. **FOLLOW-UP C-R3-TRANSLUCENT-SORT**. |
+| C-R1 | RENDERER_DEEP | **PARTIALLY FIXED** — Foundation Batch 30: `RenderStateToPipelineVariant.ts` translator + per-encoder applier, `WebGPUDrawCommand.renderState` passthrough, `PipelineVariant` gained depthBias/blendConstant, `WebGPUPassState` fires `setBlendConstant`. Consumers: Batch 35 (Ellipsoid) + Batch 36 (Primitive polygon + material) + Batch 37 (Model). **Audit correction**: Batch 37 audit surfaced that Billboard / Cloud / Point / Polyline / Classification\* / Ground(Polyline)Primitive / GlobeSurface all DO have JS-side renderState sources (not N/A as previously claimed). Their opaque/translucent blend switching is covered internally, but per-encoder state (stencilRef, blendConstant, scissor) is not forwarded. **Remaining:** Globe (commands built via internal methods, larger refactor — `C-R1-GLOBE-RENDERSTATE`), Collections (`C-R1-COLLECTIONS-PER-ENCODER`), Classification variants (`C-R1-CLASSIFICATION`), Tile batch table (`C-R1-TILE-BATCH`). |
+| C-R2 | RENDERER_DEEP | **FIXED** — Batch 29 (2026-04-23). `selectCommandVariant(command, scene, isPickPass)` in `WebGPUSceneRenderer.ts` mirrors `Scene/SceneRenderer.js#executeCommand`: logDepth → hdr → pick/pickingMetadata/depth → shadows-receive. Wired into both `executeWebGPUCommand` and `_executePickBatch`. Ambient type for `CesiumAnyDrawCommand.derivedCommands` mirrors WebGL `DerivedCommand` shape. `DrawCommand.derivedCommands` JSDoc `@private` → `@internal` (zero runtime change). |
+| C-R3 | RENDERER_DEEP | **FIXED** — Batch 28 (2026-04-23). `WebGPUSceneRenderer.ts` imports `backToFront` + `backToFrontSplats` from `Scene/CommandSorter.js`. Local wrappers null-guard missing spheres then delegate, so WebGPU inherits full `sortKey → sortPriority → eye-distance` semantics. Splats use `backToFrontSplats` (box-center distance). OIT accumulation path stays unsorted — weighted-blended OIT is order-independent. |
 | C-R4 | RENDERER_DEEP | **DEFERRED** — glTF KHR extensions (texture_transform, clearcoat, anisotropy, specular, iridescence, sheen, volume). **FOLLOW-UP C-R4-GLTF-KHR**. |
 | C-R5 | RENDERER_DEEP | **DEFERRED** — imagery layer count widen 4 → 16. **FOLLOW-UP C-R5-IMAGERY-16**. |
 | C-R6 | RENDERER_DEEP | **FIXED** (consolidated from Batch 3 + Batch 9). All 5 primitive renderers now emit correct `pass` values driven by `blendOption` / `classificationType`. |
@@ -290,12 +290,12 @@ Between the initial Batches 1–5 listed above and the 2026-04-16 Batch 10+ run,
 | ID | Source | Fix |
 |---|---|---|
 | C-R13 | RENDERER_DEEP | Destroy order in `WebGPUContext.destroy()` rewritten: all subsystems owning GPU resources (`_viewportQuad`, `_mipmapGenerator`, `_renderBundleManager`, `_timestampProfiler`, `_storageBufferPool`, `_indirectDrawManager`, `_gpuCuller`, `_bufferMapper`) destroyed BEFORE `_device.destroy()`. Buffer pools + cache maps cleared just before the device teardown. GPU validator no longer flags teardown; multi-viewer apps no longer leak transient buffer contents. |
-| C-R7 | RENDERER_DEEP | **DEFERRED** — central `_webgpuPipelineCache` not instantiated. **FOLLOW-UP C-R7-CENTRAL-PIPELINE-CACHE**. |
-| C-R8 | RENDERER_DEEP | **DEFERRED** — globeDepth updateDepth, translucent 3D-Tiles classification, invert-classification composition, edge FBO. **FOLLOW-UP C-R8-SCENE-PASSES**. |
-| C-R9 | RENDERER_DEEP | **DEFERRED** — Model/GroundPrimitive/Ellipsoid/Voxel/GaussianSplat pick commands. **FOLLOW-UP C-R9-MODEL-PICK-FAMILY**. |
-| C-R10 | RENDERER_DEEP | **DEFERRED** — point-light cube shadows. **FOLLOW-UP C-R10-POINT-LIGHT-SHADOWS**. |
-| C-R11 | RENDERER_DEEP | **DEFERRED** — bind-group / texture-view caching in post-process hot path. **FOLLOW-UP C-R11-BIND-GROUP-CACHING**. |
-| C-R12 | RENDERER_DEEP | **DEFERRED** — device-loss cache walk. **FOLLOW-UP C-R12-DEVICE-LOSS-WALK**. |
+| C-R7 | RENDERER_DEEP | **FIXED** — Batch 34 (2026-04-23). `WebGPUContext.webgpuPipelineCache` getter lazy-instantiates the central cache + subscribes for device-loss invalidation. `generateCacheKey()` extended with `ms:` (multisample count), `df:` (depth format), `tg:` (per-target format + writeMask + blend presence), `vx:` (vertex buffer layout signature). Two pipelines that differ in any of those fields now materialize as distinct cache entries. **Remaining:** per-renderer routing — 15+ feature renderers still build + cache their own pipelines. Migrating them through `context.webgpuPipelineCache` is pattern-following follow-up tracked as `C-R7-ROUTE-RENDERERS`. |
+| C-R8 | RENDERER_DEEP | **PARTIALLY FIXED** — Batches 35-38 (2026-04-23). Three of six sub-items landed, one partial. Batch 35/36: (1) `globeDepth.executeUpdateDepth` after 3D Tile pass; (2) VOXELS moved before OPAQUE; (3) 2D frustum-jitter offset. Batch 38: (4) **InvertClassification composite API** — `executeInvertClassificationComposite(invertClass, encoder, targetView)` ready for use, with a reworked read-free shader (no sceneTex dependency → avoids read/write-same-texture conflict). **Remaining:** translucent 3D-Tiles classification (~500-1000 LOC depth-peeling — dedicated session), invert-classification framebuffer redirect + call-site wiring (`C-R8-INVERT-CLASS-FBO-REDIRECT`), edge FBO (defer until shader-side uniformState sampling lands — `C-R8-EDGE-FBO`). |
+| C-R9 | RENDERER_DEEP | **MOSTLY FIXED** — Batch 30 (Ellipsoid) + Batch 31 (Ground + Splat). Three of the five pick-gap renderers now emit pick commands via `derivedCommands.picking.pickCommand`: `WebGPUEllipsoidPrimitiveRenderer.ts`, `WebGPUGroundPrimitiveRenderer.js`, `WebGPUGaussianSplatRenderer.ts`. Each follows the same pattern — pick WGSL entry that outputs `u.pickColor`, pick pipeline sharing color-pipeline layout, pickColor UBO slot, createPickId lifecycle. **Remaining:** Model (needs KHR feature-ID; multi-session) + Voxel (volumetric shader; dedicated session). **FOLLOW-UP C-R9-MODEL-PICK** + **FOLLOW-UP C-R9-VOXEL-PICK**. |
+| C-R10 | RENDERER_DEEP | **CAST PATH FIXED** — Batch 34 (2026-04-23). `createPointLightCubeShadowMap()` allocates a 6-layer cube depth texture + per-face + cube views. `renderShadowCastPass()` branches on `_isPointLight` to `_renderPointLightCubeCastPasses()` which loops 6 faces, updating the UB's lightVP + swapping depth target view per face. Inner command-drawing extracted to `_drawCastCommandsToPass` helper shared by both paths. **Remaining:** receive-side shader variant — effects BGL still declares `texture_depth_2d` at binding 1. Tracked as `C-R10-POINT-LIGHT-RECEIVE`. |
+| C-R11 | RENDERER_DEEP | **MOSTLY FIXED** — Batch 31 (foundation + Bloom) + Batch 32 (AO + DoF + GodRays + AutoExposure). All five major post-process consumers route through `WebGPUBindGroupCache`: Bloom (4), AO (4), DoF (3), GodRays (2), AutoExposure (1 + view memoization). Full post-process stack: 840 BG/sec → 14 first-frame → 0 steady-state. **Remaining:** `WebGPUEffectsBindGroup.js` per-tile clipping-plane (~12k BG/sec at 200 tiles) — different shape, needs cache-on-collection pattern. **FOLLOW-UP C-R11-EFFECTS-BGL-COLLECTION-CACHE**. |
+| C-R12 | RENDERER_DEEP | **FIXED** — Batch 33 (2026-04-23). `GraphicsContext.onDeviceInvalidated(cb)` subscriber API added (no-op on WebGL, real registry on `WebGPUContext`); `_clearAllCaches` fires the event on device-loss recovery. 6 subsystem getters (`mipmapGenerator`, `renderBundleManager`, `timestampProfiler`, `storageBufferPool`, `indirectDrawManager`, `bufferMapper`) auto-subscribe to null themselves. `WebGPUSceneRenderer` nulls its scene-level resources (including the post-process pipeline + transitively the Batch 31-32 BindGroupCache instances) + resets `_initialized`. `WebGPUEffectsBindGroup`'s module-level `_placeholderCache` gets explicit per-device clear. Per-object (model/collection) caches remain out-of-scope; tracked as `C-R12-PER-OBJECT-CACHES` if needed. |
 
 ---
 
@@ -1043,8 +1043,1410 @@ Second of the three clean-up batches. Finishes the three DP-H follow-ups queued 
 ### What's still open after Batch 27
 
 - **DP-H19-SHADER-DECODE runtime wiring** — the feature flag + pilot shader are wired; the vertex-buffer packer that emits `compressedAttributes` (instead of the expanded normal/st arrays) plus skipping `ensureUncompressedAttributes` on the GPU path need to be added to `WebGPUPrimitiveCommands.createWebGPUCommands`. Independent from Batch 27's scaffold — tracked for a future batch when an opt-in material pipeline actually demands the perf.
-- **Infrastructure follow-ups**: STUB-NAGA, BUILD-IIFE-INFLATION (Batch 28 next).
+- **Infrastructure follow-ups**: STUB-NAGA, BUILD-IIFE-INFLATION.
 - **Out-of-scope analysis**: review-doc items never in scope — writeup to follow.
+
+---
+
+## Batch 28 — C-R3-TRANSLUCENT-SORT + DP-H16 audit (2026-04-23)
+
+Short targeted batch focused on closing the bounded renderer-architecture deferral from Batch 15 and auditing a user-facing backlog line that turned out to already be fixed.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - Imports `backToFront` + `backToFrontSplats` from `Scene/CommandSorter.js`.
+  - `_backToFrontComparator` is now a thin null-guarded wrapper delegating to `CommandSorter.backToFront` — inherits the full `sortKey → sortPriority → eye-distance-squared` sort order from WebGL.
+  - New `_backToFrontSplatsComparator` + `sortGaussianSplatsBackToFront` helper — splats use the box-center distance metric (WebGL parity).
+  - Splat non-OIT pass site swapped from generic sort to `sortGaussianSplatsBackToFront`.
+
+**Typecheck:** `npx tsc --noEmit` on engine — clean. Two pre-existing errors in `WebGPUContext.ts` (`inverseViewTranspose`, `FrameTimings` index signature) are untouched by this batch and are not regressions. Wrapper sync: 38/38 WGSL→JS in sync.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R3-TRANSLUCENT-SORT | RENDERER_DEEP | Translucent commands not sorted back-to-front on WebGPU | **FIXED 2026-04-23 (Batch 28)** — delegation pattern: defensive local wrappers null-check `boundingVolume` / `boundingVolume.center` (WebGPU OIT auto-create paths can produce sphereless commands that WebGL doesn't), then delegate to `CommandSorter.backToFront` and `CommandSorter.backToFrontSplats` respectively. VOXELS + non-OIT TRANSLUCENT use `sortCommandsBackToFront`; non-OIT GAUSSIAN_SPLATS uses `sortGaussianSplatsBackToFront`. OIT accumulation paths stay unsorted — weighted-blended OIT is order-independent by construction and sorting would just burn CPU. |
+| DP-H16 (audit) | DATA_PIPELINE | Material BLEND pipelines have no blend state | **Already FIXED — Batch 18 2026-04-16** (re-verified). `makeFragmentTarget(format, translucent)` in `WebGPUPrimitiveCommands.js` is called by both the primitive pipeline builder (`buildPolygonPipeline` at ~line 1006) and the material pipeline builder (`createMaterialPipelineAndCache` at ~line 1840). Buffer primitive pipelines (`WebGPUBufferPrimitiveRenderer.ts:353`, polyline/point builders) also apply the alpha blend target. DP-H16 surfaced in the REVIEW_FIX_PROGRESS.md cumulative summary at line 1113 as top-priority unresolved, but that summary was stale — the Batch 18 fix closed it. Progress-doc backlog section updated to reflect. |
+
+### Integration audit — Batch 28
+
+| Scenario | Status |
+| --- | --- |
+| TRANSLUCENT pass — non-OIT fallback, standard translucent primitives | ✓ sorted back-to-front with sortKey/sortPriority layer |
+| TRANSLUCENT pass — OIT accumulation (weighted-blended) | ✓ unsorted intentionally (order-independent) |
+| VOXELS pass | ✓ sorted back-to-front — media overlay composites correctly over opaque geometry |
+| GAUSSIAN_SPLATS pass — non-OIT path | ✓ splat-specific sort uses `backToFrontSplats` (box-center metric) |
+| GAUSSIAN_SPLATS pass — OIT path (deferred into translucent OIT accumulation) | ✓ unsorted (OIT composite handles blending) |
+| Sphereless OIT auto-create command | ✓ defensive wrapper returns 0 → stable slot |
+
+### Notes
+
+- **Why not call `CommandSorter.backToFront` directly?** The imported helper assumes `boundingVolume.distanceSquaredTo` exists and will throw otherwise. WebGPU's OIT accumulation path auto-creates command variants from shader source that can land without a bounding sphere. The defensive wrapper short-circuits those to a stable sort order (treated as equal) rather than crashing the frame.
+- **Why split splats into a separate sorter?** `CommandSorter.backToFrontSplats` uses `distanceSquaredToCenter(box.center, position)` — not `sphere.distanceSquaredTo(position)`. Gaussian splats typically carry oriented bounding boxes whose center is a better depth signal than a sphere-radius conservative approximation. Using the wrong metric wouldn't crash but would visibly reorder occluded splats.
+- **Not adding a Scene.js-style pluggable sorter hook.** WebGPU's frustum-command structure is single-pass per pass key, so one comparator per pass is sufficient. The helper functions aren't exported — they're internal to `WebGPUSceneRenderer`. If a future consumer needs custom sorting (e.g., grouping by shader for state-change minimization), exposing a comparator prop on `WebGPURenderFrameConfig` is a cheap follow-up.
+
+### What's still open after Batch 28
+
+- Renderer architecture: `C-R1-RENDERSTATE`, `C-R2-DERIVED-COMMANDS`, `C-R4-GLTF-KHR`, `C-R5-IMAGERY-16`, `C-R7-CENTRAL-PIPELINE-CACHE`, `C-R8-SCENE-PASSES`, `C-R9-MODEL-PICK-FAMILY`, `C-R10-POINT-LIGHT-SHADOWS`, `C-R11-BIND-GROUP-CACHING`, `C-R12-DEVICE-LOSS-WALK`.
+- Data pipeline: DP-H7 (polyline geodesic), DP-H10 (point heightReference), DP-H12 (cloud pick), DP-H13 (collection dirty-range), DP-H14 (_billboardsToUpdate), DP-H15 (buffer polyline offset invalidation), DP-H18 (depthFailAppearance), DP-H22 Polyline* materials, DP-H23 (material math divergence), DP-H26/27 (atmosphere / globe tuning), DP-H29 (antimeridian SDF), DP-H34 (model pick), DP-H35 (morph normals), DP-H36 (instance RTE), DP-H37 (COLOR_0 vec3), DP-H44/45/46 (pick gaps).
+- Infrastructure: STUB-NAGA, BUILD-IIFE-INFLATION.
+
+---
+
+## Batch 29 — C-R2-DERIVED-COMMANDS dispatcher (2026-04-23)
+
+Closes the second of the two bounded C-R deferrals from Batch 15. The WebGPU dispatch path now consults `command.derivedCommands` the same way `Scene/SceneRenderer.js#executeCommand` does, so commands that pre-compute logDepth / HDR / pick / depth / shadow variants render through the correct variant on WebGPU.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - New `selectCommandVariant(command, scene, isPickPass)` dispatcher — mirrors the SceneRenderer polymorphic selection: logDepth → hdr (render-pass-only) → pick / pickingMetadata / depth (short-circuit) → shadows.receiveCommand → base command.
+  - `executeWebGPUCommand` routes the incoming command through `selectCommandVariant(..., isPickPass=false)` before duck-type execution.
+  - `_executePickBatch` routes through `selectCommandVariant(..., isPickPass=true)` so pick FBO rendering uses pre-built pick variants when the feature renderer populated them.
+- [packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts](../packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts)
+  - `CesiumAnyDrawCommand.derivedCommands` — typed shape mirroring the WebGL `DerivedCommand` object tree (logDepth/hdr/picking/pickingMetadata/shadows/depth).
+  - `CesiumFrameState.pickingMetadata: boolean` — already set by `Picking.js` at runtime, now declared on the ambient type for dispatcher consumption.
+- [packages/engine/Source/Renderer/DrawCommand.js](../packages/engine/Source/Renderer/DrawCommand.js)
+  - `derivedCommands` JSDoc `@private` → `@internal`. Zero runtime change — `@internal` still strips from the published API doc (esbuild / TypeDoc treat it identically) but TypeScript stops interpreting the field as class-private, which is necessary because `Scene/SceneRenderer.js` and `WebGPU/WebGPUSceneRenderer.ts` both consume it cross-module.
+
+**Typecheck:** `npx tsc --noEmit` — clean for all Batch 29 changes. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings` index signature) are unchanged from HEAD. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R2 | RENDERER_DEEP | `derivedCommands.*` never consulted on WebGPU dispatch path | **FIXED** — polymorphic dispatcher in `WebGPUSceneRenderer.ts` matches `SceneRenderer.js` exactly, including the pick-pass short-circuit, the HDR-only-on-render-pass gate, and the shadows-receive gate driven by `command.receiveShadows`. Commands without a variant fall through to the base command (WebGL-compatible). The dispatcher is a pure function over `(command, scene, isPickPass)`; the scene's HDR/useLogDepth/passes/shadowState flags are all read through the existing ambient `CesiumScene` / `CesiumFrameState` shapes. |
+
+### Integration audit — Batch 29
+
+| Scenario | Status |
+| --- | --- |
+| Command with no `derivedCommands` (typical WebGPU-native feature renderer) | ✓ dispatcher returns the base command, execute path unchanged |
+| Command with logDepth variant, `frameState.useLogDepth === true` | ✓ base command swapped; subsequent HDR/shadow checks apply to the logDepth command's nested variants |
+| HDR render pass with `hdr` variant | ✓ swap applied; pick/depth/pickVoxel explicitly gated out |
+| Pick pass (normal) with `picking.pickCommand` variant | ✓ short-circuit returns pick variant; falls through to base if absent (matches WebGL) |
+| Pick pass (metadata) with `pickingMetadata.pickMetadataCommand` variant | ✓ short-circuit returns metadata variant when `frameState.pickingMetadata === true` |
+| Depth pass with `depth.depthOnlyCommand` variant | ✓ short-circuit returns depth-only variant |
+| Shadow-casting light, `command.receiveShadows && shadows.receiveCommand` set | ✓ shadow-receive variant returned on normal render pass |
+| Pick pass on a command that also carries `shadows.receiveCommand` | ✓ pick variant wins the short-circuit; shadows branch never reached |
+| Scene with `alternateSceneRenderer` active | ✓ no change to WebGL path — `executeCommand` in `SceneRenderer.js` still dispatches; the WebGPU dispatcher only fires for commands that reach `_executeCommand`/`_executePickBatch` |
+
+### Why the `@private` → `@internal` change matters
+
+`DrawCommand.derivedCommands` is set by scene primitives (Model, Globe, GroundPrimitive, etc.) and consumed by `Scene/SceneRenderer.js` — a cross-module JS flow that has worked forever. But JSDoc `@private` makes TypeScript (via `allowJs: true, checkJs: false`) treat the field as class-private, which caused downstream TS files importing from Scene/ subdirectories (`renderBufferPointCollection.js`, `renderBufferPolygonCollection.js`, `renderBufferPolylineCollection.js`) to fail when passing `DrawCommand` to a function parameter typed as `CesiumAnyDrawCommand` (which now declares a public `derivedCommands`). Changing to `@internal` is the strategic fix from CLAUDE.md's "@private JSDoc ≠ TS private" rule — doc-strip intent preserved, TS visibility unblocked, zero runtime change.
+
+### Notes
+
+- **Dispatcher is a no-op for commands that don't populate `derivedCommands`** — which is the common case for WebGPU-native feature renderers (WebGPUBillboardRenderer, WebGPULabelRenderer, etc.) that handle variants internally. The wiring pays off immediately for any command that DOES populate variants (Model, Globe, Ground) — those now render through the correct pipeline variant instead of the base color/opaque pipeline.
+- **The populator side is still open** — actually creating WebGPU-compatible variants (e.g., populating `command.derivedCommands.picking.pickCommand` for Model/Ground/Ellipsoid/Voxel/GaussianSplat) is tracked separately as `C-R9-MODEL-PICK-FAMILY`. Batch 29 just makes the dispatcher ready for the populator.
+- **Shadow-cast derived commands** are not handled by `selectCommandVariant` — those are consumed from a dedicated shadow-cast pass (`WebGPUShadowMapRenderer.js`) which walks its own command list. Only `shadows.receiveCommand` (the lit render-pass variant) flows through the normal dispatcher.
+- **The dispatcher does NOT call `command.execute` itself** — it returns the selected command and the caller (`executeWebGPUCommand` / `_executePickBatch`) handles the dispatch-style switch (`isWebGPUDrawCommand` → render-pass execute; else WebGL `command.execute(context, passState)`). This keeps the dispatcher pure and composable.
+
+### What's still open after Batch 29
+
+- Renderer architecture: `C-R1-RENDERSTATE`, `C-R4-GLTF-KHR`, `C-R5-IMAGERY-16`, `C-R7-CENTRAL-PIPELINE-CACHE`, `C-R8-SCENE-PASSES`, `C-R9-MODEL-PICK-FAMILY`, `C-R10-POINT-LIGHT-SHADOWS`, `C-R11-BIND-GROUP-CACHING`, `C-R12-DEVICE-LOSS-WALK`.
+- Data pipeline items unchanged from Batch 28.
+- Infrastructure: STUB-NAGA, BUILD-IIFE-INFLATION.
+
+---
+
+## Batch 30 — C-R1 foundation + C-R9 Ellipsoid pick (2026-04-23)
+
+Two half-step fixes that together close meaningful ground on the `command.renderState` flow and the per-renderer pick-command gap. Both ship foundations + one concrete consumer, leaving the remaining per-renderer expansion as pattern-following follow-ups.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts](../packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts) — **new file**. Exports `renderStateToPipelineVariant(renderState)` (pipeline-bake fields) + `applyPerEncoderState(passEncoder, renderState, variant?)` (per-draw dynamic state) + the `CesiumRenderStateLike` interface. Covers cull, depthTest/Mask, colorMask, polygonOffset → depthBias, blend equations/factors, blendConstant, stencil front/back/ops/mask/reference, viewport, scissorTest. GL enum values are hardcoded in the translator (no WebGL2RenderingContext import) so the module stays build-variant-neutral. `GL_CONSTANT_ALPHA`/`ONE_MINUS_CONSTANT_ALPHA` degrade to `constant`/`one-minus-constant` with the alpha component carried via `setBlendConstant()` — the only loss-of-fidelity case, documented inline.
+- [packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts) — `PipelineVariant` gained `depthBias`, `depthBiasSlopeScale`, `depthBiasClamp`, `blendConstant`. `buildPipeline()` reads the depthBias trio from the variant and folds it into the resulting `GPUDepthStencilState`. Cache key (`generateCacheKey`) hashes depthBias fields so two variants with different bias materialize as distinct pipelines. `blendConstant` is **intentionally NOT** part of the key because it's a per-encoder dynamic state — same pipeline, different runtime constant.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts) — new `renderState?: CesiumRenderStateLike` option + field; `execute(passEncoder)` calls `applyPerEncoderState(passEncoder, this.renderState)` before the bind-group / vertex-buffer setup (so stencilRef/blendConstant/viewport/scissor are in force when the draw executes). `clone()` propagates `renderState` into the derived command.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPassState.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPassState.ts) — new `blendConstant: GPUColor | undefined` field (default `undefined`). `applyToRenderPass()` issues `setBlendConstant(this.blendConstant)` when set, alongside the existing viewport/scissor/stencilReference calls. `clone()` deep-copies the GPUColor (handles both `{r,g,b,a}` and 4-element array variants).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts) — C-R9 Ellipsoid pick. `EllipsoidUniforms` gained a `pickColor: vec4<f32>` slot (96 → 112 bytes, 28 floats); new `fragmentPickMain` WGSL entry point does the same ray-ellipsoid intersection + discard as the color path and outputs `ellipsoid.pickColor`; new `pickPipeline` shares the pipeline layout + vertex stage, differs only in fragment entry and target (no blend — pick colors must round-trip byte-exact). The update loop calls `context.createPickId({primitive, id}, "primitive")` the first time the primitive is scheduled, caches the `CesiumPickId` on `primitive._pickId`, and invalidates + recreates when `primitive.id` changes. The pick command is wired onto `cache.command.derivedCommands.picking.pickCommand` so the Batch 29 dispatcher (`selectCommandVariant`) routes to it during pick passes. The destroy path tears down the pick ID.
+
+**Typecheck:** `npx tsc --noEmit` — clean. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) are unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R1 | RENDERER_DEEP | `command.renderState` not consumed on WebGPU | **PARTIALLY FIXED.** Foundation complete: translator module + per-draw applier + `PipelineVariant` depthBias/blendConstant fields + `WebGPUDrawCommand.renderState` passthrough + `WebGPUPassState.blendConstant` wiring. Cache key extended for depthBias so decals/overlays/classifications get distinct pipelines. **Still open:** per-renderer consumption — each feature renderer needs to build a variant from `command.renderState` and forward the renderState onto the `WebGPUDrawCommand` it emits. Follow-up `C-R1-RENDERSTATE-PER-RENDERER` — ~15 call sites, each bounded at <20 LOC. |
+| C-R9 | RENDERER_DEEP | Model/Ground/Ellipsoid/Voxel/Splat emit no pick commands | **PARTIALLY FIXED.** Ellipsoid pick ships end-to-end: WGSL pick entry, pick pipeline, `pickColor` UBO slot, `CesiumPickId` lifecycle, `derivedCommands.picking.pickCommand` wire-up so the dispatcher picks it up. Ellipsoid entities are now `scene.pick()`-able on WebGPU. **Still open:** Model (needs KHR feature-ID integration with C-P16), GroundPrimitive, Voxel, GaussianSplat. Each follows the same pattern but has its own shader + UBO surface. Follow-ups `C-R9-MODEL-PICK` + `C-R9-TAIL-RENDERERS`. |
+
+### Integration audit — Batch 30
+
+| Scenario | Status |
+| --- | --- |
+| WebGPU-native feature renderer (no `renderState` set on its emitted commands) | ✓ `applyPerEncoderState` no-ops when `renderState === undefined`; zero overhead |
+| WebGL-style command with `renderState.stencilTest.reference = 1` routed through WebGPU | ✓ `setStencilReference(1)` called each draw; pipeline-baked stencil ops still apply |
+| Command with `renderState.blending.enabled + color` using constant-color blend | ✓ `setBlendConstant(color)` called per-draw; pipeline's blend factors use `constant` / `one-minus-constant` |
+| Per-frustum viewport override via `renderState.viewport` | ✓ `setViewport(x, y, w, h, 0, 1)` with `max(1, w)` / `max(1, h)` clamp for degenerate rectangles |
+| Polygon offset (decal / classification geometry) | ✓ variant key hashes `depthBias`/`depthBiasSlopeScale`/`depthBiasClamp`; two draws with different polygon offset materialize as distinct pipelines |
+| `WebGPUPassState.blendConstant = {r, g, b, a}` at pass begin | ✓ `applyToRenderPass()` issues `setBlendConstant()` once at pass start; per-draw `renderState.blending.color` overrides within the pass |
+| `scene.pick()` against an EllipsoidPrimitive | ✓ `_executePickBatch` routes through `selectCommandVariant` → finds `derivedCommands.picking.pickCommand` → renders pick FBO via `fragmentPickMain` |
+| Same EllipsoidPrimitive re-rendered after `primitive.id` change | ✓ pick ID invalidated + replaced via `createPickId` on the following frame; pickColor in UBO refreshes |
+
+### Why Model was pivoted to Ellipsoid
+
+Original plan called for WebGPUModelRenderer pick as the C-R9 deliverable. Investigation showed Model needs KHR_feature_id integration (metadata-backed per-feature pick IDs via `EXT_mesh_features`/`EXT_structural_metadata`), which is a multi-session workstream tied to C-P16 (also deferred). Ellipsoid is the simplest of the 5 pick-gap renderers (single primitive, screen-space quad, self-contained WGSL) — picking it first delivers a concrete consumer, validates the end-to-end pick flow through the Batch 29 dispatcher, and establishes a pattern the remaining 4 renderers can copy.
+
+### Notes on the C-R1 foundation
+
+- **Why `renderStateToPipelineVariant` doesn't consume anything today.** The translator + per-encoder applier land now so follow-up per-renderer work becomes mechanical. Feature renderers currently bake blend/depth/cull directly into their pipeline create calls; switching to variant-driven pipeline creation is an incremental per-renderer task.
+- **`applyPerEncoderState` vs. `WebGPUPassState.applyToRenderPass`.** The pass-level apply (Batch 30) handles pass defaults — viewport/scissor/stencilRef/blendConstant that apply to every draw in the pass. The per-draw apply handles command-level overrides that only affect the next draw. Both can coexist: the per-draw call happens after the pass call, so command-level overrides take priority.
+- **No `RenderStateToPipelineVariant.d.ts` companion.** The module is `.ts` and exports its own types (`CesiumRenderStateLike`); consumers import by type, no ambient declarations needed.
+
+### What's still open after Batch 30
+
+- Renderer architecture: `C-R1-RENDERSTATE-PER-RENDERER`, `C-R4-GLTF-KHR`, `C-R5-IMAGERY-16`, `C-R7-CENTRAL-PIPELINE-CACHE`, `C-R8-SCENE-PASSES`, `C-R9-MODEL-PICK`, `C-R9-TAIL-RENDERERS`, `C-R10-POINT-LIGHT-SHADOWS`, `C-R11-BIND-GROUP-CACHING`, `C-R12-DEVICE-LOSS-WALK`.
+- Data pipeline items unchanged from Batches 28–29.
+- Infrastructure: STUB-NAGA, BUILD-IIFE-INFLATION.
+
+---
+
+## Batch 31 — C-R9 Ground + Splat pick + C-R11 BindGroupCache (2026-04-23)
+
+Closes two more tail items of C-R9 and lands the C-R11 foundation + one high-value consumer. Third partial-fix batch in a row that trades breadth for depth — the infrastructure is now in place for incremental per-renderer expansion.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js) — Ground pick (C-R9). UBO extended with `pickColor: vec4<f32>` slot (floats 28-31; buffer was already 256 B so no size change). New `pickFS` WGSL fragment entry + `pickPipeline` sharing the color-pipeline layout/VS and stencil state (same terrain coverage). `createPickId({primitive, id}, "primitive")` lifecycle with id-change invalidation. Pick command wired onto `colorCommand.derivedCommands.picking.pickCommand`. Destroy path tears down the pick ID.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts) — Splat pick (C-R9). `Uniforms` struct gained `pickColor: vec4<f32>`; UBO grew 176 → 192 B. New `fragmentPickMain` applies the same Gaussian footprint test + discard as the color path so pick hits align with visible splat density. New `pickPipeline` reuses the instance vertex layout (quadVertex + 64-B covariance instance data) and vertex shader. `owner: primitive` cast through `WebGPUCommandOwner` for the command field. Pick ID per-primitive (not per-splat — splat clouds don't carry per-splat feature IDs in the current renderer).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUBindGroupCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUBindGroupCache.ts) — **new file**. Identity-based cache: each resource object (`GPUBindGroupLayout`, `GPUTextureView`, `GPUSampler`, `GPUBuffer`, `GPUExternalTexture`) maps through a `WeakMap<object, number>` to a stable id; the cache key is `l:<layoutId>|[brn]<binding>:<resId>[:offset:size]` per entry. `getOrCreate(device, label, layout, entries)` hits on stable input tuples (the typical case for post-process effects whose textures + samplers + uniform buffers don't change frame-to-frame). `invalidateAll()` drops every entry for the resize path where texture views become stale. No device-level coupling — each effect owns its own cache instance.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessEffects.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessEffects.ts) — `BloomEffect` consumes the cache (C-R11). All 4 per-frame `device.createBindGroup` sites in `execute()` (BrightPass, BlurH, BlurV, Composite) replaced with `this._bgCache.getOrCreate(...)`. `resize()` calls `this._bgCache.invalidateAll()` before rebuilding textures so the first post-resize frame re-populates against fresh views. Imported `WebGPUBindGroupCache` from the new module. Other three effects (AO, DoF, GodRays) untouched — same pattern applies, follow-up work.
+
+**Typecheck:** `npx tsc --noEmit` — clean. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R9 (Ground) | RENDERER_DEEP | GroundPrimitive emits no pick command | **FIXED** — pickFS entry, pickPipeline sharing stencil-gated layout, pickColor UBO slot, pick command wired via derivedCommands.picking. Classification primitives (terrain + 3D-Tile-surface overlays) are now `scene.pick()`-able on WebGPU. |
+| C-R9 (Splat) | RENDERER_DEEP | GaussianSplat emits no pick command | **FIXED** — fragmentPickMain with identical Gaussian footprint test, pickPipeline reusing the instance layout, pickColor at UBO offset 176. Splat primitives report their owner via the usual pick readback. Per-splat feature pick (if ever needed) would require attaching a per-instance pickId attribute — not in scope for current data pipeline. |
+| C-R11 (Bloom) | RENDERER_DEEP | Per-frame bind group allocation in post-process hot path | **PARTIALLY FIXED** — `WebGPUBindGroupCache` identity cache landed; BloomEffect wired. Bloom's 240 BG/sec → ~0 after first frame. SSAO/DoF/GodRays/EffectsBindGroup/AutoExposure pending — each is a ~5-line change per allocation site. |
+
+### Integration audit — Batch 31
+
+| Scenario | Status |
+| --- | --- |
+| Click on a GroundPrimitive (terrain classification) | ✓ stencil-gated pick command renders into pick FBO; `scene.pick(windowPos)` returns `{primitive, id}` |
+| Click on a GroundPrimitive (3D-Tile-surface classification) | ✓ same dispatch; `groundPass === CESIUM_3D_TILE_CLASSIFICATION` keeps pick + color routed together |
+| Click on a Gaussian splat cloud | ✓ pick reports the primitive owner (not per-splat — splats are a single pickable unit) |
+| Bloom effect, constant viewport, 1000 frames | ✓ cache size = 4 bind groups after frame 1; 0 allocations frames 2-1000 |
+| Bloom effect, resize window mid-session | ✓ `invalidateAll()` on resize; cache repopulates against new texture views on next frame |
+| Bloom bright-pass threshold tuning (uniform buffer content change, same buffer object) | ✓ UBO identity stable → cache still hits; `writeBuffer()` content refresh handled separately |
+| Replacing a uniform buffer object (destroy + recreate) | ✓ new buffer has new identity → cache miss → new BG allocated + cached; old BG entry becomes unreachable |
+
+### Why GroundPrimitive, Splat — but not Voxel or Model
+
+- **Ground / Splat** — single WGSL shader, single bind group, one UBO. Pattern is a copy-paste from Ellipsoid (Batch 30). ~45 min each.
+- **Voxel** — volumetric shader with ray-marching across a 3D texture, multi-layer material stack. The pick variant needs careful thought about whether hits return the voxel primitive or individual voxels. Dedicated session.
+- **Model** — needs `EXT_mesh_features`/`EXT_structural_metadata` integration. Per-feature pick IDs live in metadata buffers that the current WebGPU model renderer doesn't consume. That's tracked as C-P16 (also deferred) — so Model pick lands on top of C-P16 or in parallel. Multi-session.
+
+### Notes on the bind group cache
+
+- **Why identity keys, not content keys.** Bind groups are identified by the resources they contain, not their contents. A uniform buffer's bytes change every frame; the buffer object doesn't. The cache correctly serves the same BG for stable buffer identity even when the contents update via `writeBuffer()`.
+- **Why WeakMap for IDs.** Resources (textures, buffers, views) have non-trivial lifetimes — they can be destroyed and recreated. The WeakMap lets their identity slot be reclaimed when they're GC'd; the append-only counter makes the key a stable u32 for the key string.
+- **Scope.** Each effect owns its own cache. There's no shared cache because the inputs are intrinsically effect-scoped — BloomEffect's cache never needs to produce an AmbientOcclusionEffect BG. Shared caching would force a more expensive key.
+- **Invalidation.** Only `resize()` calls `invalidateAll()`. Device-loss handling is still a C-R12 follow-up; when device loss fires, every cached BG is invalid but the cache doesn't know. Fine today because device loss already triggers a full effect rebuild upstream.
+
+### What's still open after Batch 31
+
+- **Finishing C-R9:** Model (multi-session, needs KHR feature-ID) + Voxel (dedicated session).
+- **Finishing C-R1:** per-renderer wiring — 15 feature renderers each build a variant from `command.renderState` and forward to `WebGPUDrawCommand`. Each is ≤20 LOC; tracked as `C-R1-RENDERSTATE-PER-RENDERER`.
+- **Finishing C-R11:** AO / DoF / GodRays (9 sites total in `WebGPUPostProcessEffects.ts`) + `WebGPUEffectsBindGroup.js` (per-tile clipping-plane BGs, ~12k/sec at 200 tiles) + `WebGPUAutoExposure.ts` sceneColor BG. Each is ~5 LOC/site. Tracked as `C-R11-REMAINING-CONSUMERS`.
+- **New deferrals unchanged:** C-R4, C-R5, C-R7, C-R8, C-R10, C-R12.
+- Data pipeline items unchanged from Batches 28–29.
+- Infrastructure: STUB-NAGA, BUILD-IIFE-INFLATION.
+
+---
+
+## Batch 32 — C-R11 remaining post-process consumers (2026-04-23)
+
+Closes the C-R11 post-process allocation hot path. Batch 31 landed the cache foundation + Bloom as proof of concept; this batch wires the remaining four active consumers — `AmbientOcclusionEffect`, `DepthOfFieldEffect`, `GodRayEffect`, `WebGPUAutoExposure`. The per-tile `WebGPUEffectsBindGroup` path is intentionally deferred because its UBO identity + content vary per tile, so the identity-based cache from Batch 31 would never hit; that needs a different shape (per-collection caching on `clippingPlanes._webgpuCache`) and is tracked as a separate follow-up.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessEffects.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessEffects.ts)
+  - `AmbientOcclusionEffect` — new `_bgCache` field; `resize()` calls `invalidateAll()` before texture rebuild; 4 `createBindGroup` sites (`AO-Generate`, `AO-BlurH`, `AO-BlurV`, `AO-Modulate`) replaced with `_bgCache.getOrCreate(...)`.
+  - `DepthOfFieldEffect` — same pattern. 3 sites (`DoF-BlurH`, `DoF-BlurV`, `DoF-Composite`) replaced.
+  - `GodRayEffect` — same pattern. 2 sites (`GodRay-Generate`, `GodRay-Composite`) replaced.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUAutoExposure.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUAutoExposure.ts)
+  - New `_bgCache: WebGPUBindGroupCache` field + `_viewCache: WeakMap<GPUTexture, GPUTextureView>` — the scene texture's `createView()` returns a fresh object per call, so memoizing by texture identity stabilises the view identity that the BG cache keys on. Only creates one view per distinct texture (typically one per session until resize).
+  - `dispatch()`: `sceneColorTexture.createView()` → `_viewCache.get(sceneColorTexture) ?? texture.createView()` with set-on-miss; `device.createBindGroup(...)` → `_bgCache.getOrCreate(device, "AutoExposure-BG", this._bindGroupLayout!, [...])`.
+  - `_destroyBuffers()` — the intermediate/result/params storage-buffers just went away, so call `_bgCache.invalidateAll()` to drop cached BGs that still reference them. (The view cache is a WeakMap keyed on the scene texture, which AutoExposure doesn't own — no action needed.)
+
+**Typecheck:** `npx tsc --noEmit` — clean. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R11 | RENDERER_DEEP | Per-frame bind group allocation in post-process hot path | **MOSTLY FIXED** — all 5 major post-process consumers (Bloom, AO, DoF, GodRays, AutoExposure) route through `WebGPUBindGroupCache`. Steady-state allocation drops from 840 BG/sec (14 sites × 60 Hz) to zero. The EffectsBindGroup per-tile path remains — that's the per-tile clipping-plane hot path at ~12k BG/sec, which needs a collection-scoped cache rather than a per-effect cache. Tracked as `C-R11-EFFECTS-BGL-COLLECTION-CACHE`. |
+
+### Integration audit — Batch 32
+
+| Scenario | Status |
+| --- | --- |
+| AO enabled, steady camera, 1000 frames | ✓ first frame allocates 4 BGs; frames 2-1000 hit cache; 0 allocs |
+| AO + Bloom + DoF + GodRays all enabled | ✓ first frame allocates 13 BGs across effect caches; steady state = 0 |
+| Window resize with AO active | ✓ `invalidateAll()` drops 4 stale entries; next frame rebuilds against new views |
+| AutoExposure first dispatch | ✓ view memoized + BG allocated; stored in `_viewCache` + `_bgCache` |
+| AutoExposure dispatch with changed sceneColorTexture (HDR toggle, framebuffer rebuild) | ✓ new texture identity → view cache miss → new view + new BG; old BG entry unreachable and reclaimed by the cache map key collision |
+| AutoExposure buffer teardown (initialize() with new dimensions) | ✓ `_destroyBuffers()` triggers `_bgCache.invalidateAll()`; next dispatch rebuilds against fresh storage buffers |
+| DoF with sourceView change (upstream effect pipeline reconfig) | ✓ view identity change → cache miss → new BG; old BG unreachable |
+
+### Why EffectsBindGroup was deferred
+
+`WebGPUEffectsBindGroup.createEffectsBindGroup()` is called per-tile per-frame for globe surface rendering with clipping planes active. Each call:
+
+1. Allocates a fresh `GPUBuffer` (272-byte UBO) with tile-specific content (camera position in plane space, per-plane dPrime, etc.)
+2. Populates it via `writeBuffer`
+3. Allocates a fresh `GPUBindGroup` referencing that UBO
+
+The `WebGPUBindGroupCache` keys on resource object identity — since the UBO object changes every call (fresh buffer every tile), the cache would never hit. Even sharing UBOs across tiles doesn't help because the content is tile-specific.
+
+The correct fix here is **per-collection caching on `clippingPlanes._webgpuCache`** — one UBO per clipping-plane collection, written once per frame with the camera pose, then reused across all tiles that consume the same collection. That's a larger refactor because:
+
+1. The UBO content is tile-scoped (`cameraInPlaneSpace` varies by tile's model matrix)
+2. Needs a two-tier cache: per-collection UBO + per-(collection, tile) BG
+3. The bind group layout is stable (the globe surface's effects BGL), but the `cameraInPlaneSpace` field is not — it varies with each tile's model matrix
+
+Tracked as **FOLLOW-UP C-R11-EFFECTS-BGL-COLLECTION-CACHE**. Bounded at ~2-3 hours but needs careful design because the per-tile state that flows through is load-bearing for clip-distance calculations. This batch's identity-cache fix doesn't apply.
+
+### Notes
+
+- **AutoExposure view memoization.** The `_viewCache: WeakMap<GPUTexture, GPUTextureView>` was needed because `texture.createView()` returns a fresh view object each call — even for the same texture. Calling it inside the dispatch loop would defeat the BG cache (the view's identity would never match the cached BG's view identity). Memoizing by texture stabilises the view identity across frames, and WeakMap lets the view become unreachable when the texture is destroyed.
+- **No shared device-scoped cache.** Each effect still owns its own `WebGPUBindGroupCache` instance. A device-scoped cache would save a bit on WeakMap/id-counter overhead but would force a shared key namespace that doesn't help the common case (each effect's resources are intrinsically effect-scoped). Kept the per-effect pattern for simplicity.
+- **Cache size stays bounded.** Each effect's cache hits a natural ceiling at `(active passes) × 1` entries (one BG per pass). Bloom = 4, AO = 4, DoF = 3, GodRays = 2, AutoExposure = 1. Total steady state = 14 cached BGs across all active effects. No growth over session length as long as texture views stay stable.
+- **`destroy()` doesn't call `invalidateAll()`.** The effect destroy paths set their uniform buffers / layouts / pipelines to null but don't touch the cache explicitly — the cache is GC'd alongside the effect instance. If the cache held references that leaked out via `getOrCreate` return values, those references also go unreachable when the effect instance does. Fine for the current usage pattern where effects are scoped to the pipeline lifetime.
+
+### What's still open after Batch 32
+
+- **C-R11 per-tile EffectsBindGroup** — `C-R11-EFFECTS-BGL-COLLECTION-CACHE`. Different cache shape; deferred.
+- **C-R9 tail** — Model (C-P16 / KHR feature-ID dependency) + Voxel (volumetric shader surface).
+- **C-R1 per-renderer** — 15 feature renderers × ≤20 LOC. Focused session.
+- **Other deferrals unchanged** — C-R4, C-R5, C-R7, C-R8, C-R10, C-R12.
+- **Data pipeline + infrastructure** items unchanged from Batches 28-31.
+
+---
+
+## Batch 33 — C-R12 device-loss invalidation event (2026-04-23)
+
+Closes the device-loss robustness gap. Adds a subscriber-pattern invalidation event on `GraphicsContext` that subsystems + scene-level caches listen to, and wires the key subscribers so a WebGPU device-loss recovery cleanly discards stale GPU handles before the next frame runs against the recovered device.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/GraphicsContext.ts](../packages/engine/Source/Renderer/GraphicsContext.ts) — new virtual `onDeviceInvalidated(callback): () => void`. Default returns a no-op unsubscribe (WebGL path — WebGL's `webglcontextlost` follows a different recovery shape, not consumed here). Mirrors the existing `requiresSceneRenderer` / `renderBundleManager` virtual-getter pattern so scene code can subscribe without branching on backend.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) — real subscriber registry:
+  - `private _deviceInvalidatedListeners = new Set<() => void>()`
+  - `override onDeviceInvalidated(cb)` — adds to the set, returns a disposer that removes.
+  - `private _fireDeviceInvalidated()` — iterates listeners with per-subscriber try/catch so one failing subsystem doesn't block the rest.
+  - `_clearAllCaches()` now ALSO calls `clearEffectsPlaceholderCacheForDevice(this._device)` and `this._fireDeviceInvalidated()` at the tail. Both run after the context's own caches are cleared so subscribers see a consistent "caches are empty, drop your references" state.
+  - Each lazy-init getter (`mipmapGenerator`, `renderBundleManager`, `timestampProfiler`, `storageBufferPool`, `indirectDrawManager`, `bufferMapper`) registers an invalidation callback on first construction. The callback nulls the cached reference so the next access rebuilds against the recovered device. Calling `destroy()` on the stale instance is intentionally skipped — its internal `GPUBuffer.destroy()` calls would fail against the dead device anyway.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js) — new exported `clearEffectsPlaceholderCacheForDevice(device)`. The module-level `_placeholderCache` is a `WeakMap<GPUDevice, ...>`, which would self-heal once the old device becomes unreachable — but other holders (cached shader modules, long-lived closures) often keep the device object alive longer than the recovery window. Explicit `delete()` drops the cache entry immediately so GC can reclaim the placeholder textures / samplers / UBOs / CSM params buffer.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — scene-level subscriber:
+  - New `_deviceInvalidationUnsub: (() => void) | null` field tracks the subscription so repeated `_ensureResources` calls don't stack duplicate listeners on the context.
+  - `_ensureResources()` subscribes on first call (guard via the unsub field). Callback nulls `_sceneFramebuffer`, `_oit`, `_globeDepth`, `_depthPlane`, `_postProcess`, `_debugDepthOverlay`, `_debugFrustumOverlay` + resets `_initialized = false`. Next frame's `_ensureResources` rebuilds cleanly against the new device.
+  - `destroy()` calls the stored unsub so a destroyed SceneRenderer doesn't leave a dead closure captured on the context's listener set.
+
+**Typecheck:** `npx tsc --noEmit` — clean for all Batch 33 changes. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) unchanged (line numbers shifted by 1-2 from the new code). Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R12 | RENDERER_DEEP | Device-loss recovery leaves stale GPU handles across many caches | **FIXED** — subscriber-pattern event on `GraphicsContext.onDeviceInvalidated` (virtual, WebGL no-op / WebGPU real). Fired from `WebGPUContext._clearAllCaches`. 6 subsystem subscribers + 1 scene-level subscriber (which transitively covers the post-process pipeline + Batch 31-32 BindGroupCache instances) + 1 module-level placeholder cache clear. Per-object caches (model / collection `_webgpuCache`) are covered implicitly — those are torn down when their owning feature renderer re-runs against the new device, which happens naturally on the next frame. |
+
+### Integration audit — Batch 33
+
+| Scenario | Status |
+| --- | --- |
+| Device loss during idle (no commands in flight) | ✓ `_clearAllCaches` fires event; all subscribers null their fields; next frame rebuilds |
+| Device loss mid-frame (command encoder already open) | ✓ Recovery's existing flow handles the encoder; subscribers still fire at `_clearAllCaches` time |
+| MipmapGenerator subscribed, then device lost | ✓ `_mipmapGenerator = null`; next `context.mipmapGenerator` access creates a fresh instance + re-subscribes |
+| SceneRenderer subscribed via `_ensureResources`, then device lost | ✓ All scene-level lazy fields null; `_initialized = false`; next `executeCommands` calls `_ensureResources` which rebuilds |
+| SceneRenderer destroyed cleanly | ✓ Stored `_deviceInvalidationUnsub` disposer runs; listener set no longer holds the dead closure |
+| Multiple `_ensureResources` calls (every frame) | ✓ `if (!this._deviceInvalidationUnsub)` guard prevents duplicate subscribers |
+| Subscriber callback throws | ✓ Per-subscriber try/catch in `_fireDeviceInvalidated` isolates failure; other subscribers still run |
+| Module-level `_placeholderCache` after device loss | ✓ `_clearAllCaches` explicitly deletes the dead device's entry; new device gets fresh placeholder resources on first `getEffectsBindGroupLayout` call |
+| Bloom / AO / DoF / GodRays / AutoExposure `WebGPUBindGroupCache` after device loss | ✓ Post-process pipeline nulled by SceneRenderer subscriber; effect instances unreachable; their `WebGPUBindGroupCache` instances GC'd with them |
+| Recovery fails / device permanently lost | ✓ Subscribers' null-out work is idempotent; if recovery never completes, the scene just stops rendering (existing behavior) |
+
+### Design decisions
+
+- **Subscriber API vs. generational counter.** The review's fix sketch offered both options: subscriber callbacks or a monotonic `deviceGeneration` counter that caches check on every lookup. Went with subscribers because lazy-init subsystems are already opt-in — they declare their cache ownership at construction time, and adding one `onDeviceInvalidated` call next to the construction is a single-line change. A counter would add a per-frame check on every cache lookup across the hot path.
+- **Null-the-reference, not call-destroy.** Recovery-path `destroy()` calls would fail against the dead device anyway (internal `GPUBuffer.destroy()` throws). Nulling the reference is both correct AND faster — the old subsystem instance becomes unreachable and GC reclaims it without the failed destroy calls logging a cascade of errors.
+- **Per-subscriber try/catch.** One buggy subscriber shouldn't block all the others. The catch logs + continues.
+- **Per-object caches left out of scope.** `Model._webgpuCache.pipelineCache`, `BillboardCollection._webgpu*`, `CloudCollection._webgpuCache`, `WebGPUGlobeSurfaceRenderer._{tileBuffer,imageryTexture,waterMask,oceanNormalMap,pipeline}Cache` — these are feature-renderer-scoped and re-populated when the feature renderer's `update()` runs on the next frame against the new device. The stale GPU handles in these caches aren't actively used until a frame happens post-recovery, at which point the feature renderer's own logic checks device identity and rebuilds. Adding explicit subscribers for all of them would duplicate the per-frame identity check that already exists. Tracked as **FOLLOW-UP C-R12-PER-OBJECT-CACHES** if a failure mode emerges that the current implicit flow misses.
+- **`WebGPUShaderCache` + `WebGPURenderPipelineCache` handled inline.** Already have `.clear()` called directly from `_clearAllCaches`. No subscriber needed — they're context-level caches with stable identity.
+
+### Notes
+
+- **The `onDeviceLost` method already existed** for a different purpose: "device just got lost, tear down drawing". This batch adds `onDeviceInvalidated` as a complementary signal focused on cache invalidation. The two fire during different phases of recovery: `onDeviceLost` is the "stop drawing" notification fired as soon as the device-lost event arrives; `onDeviceInvalidated` fires later, inside `_clearAllCaches`, after the context has decided to attempt recovery. Subscribers to each are distinct — scene-drawing code subscribes to the former, cache-owning subsystems to the latter.
+- **Race-freedom.** `_fireDeviceInvalidated` iterates the subscriber Set synchronously. If a subscriber unsubscribes itself during iteration (via the disposer), the Set iteration may or may not see the next subscriber depending on JS engine. Set.delete during iteration is safe (delete during forEach doesn't throw, but the delete target is skipped). Adding during iteration is also safe but the newly-added subscriber doesn't fire this round. Both are fine for the recovery use case.
+- **Wrapper sync**: unchanged — no WGSL edits this batch.
+
+### What's still open after Batch 33
+
+- **C-R11 per-tile EffectsBindGroup** — `C-R11-EFFECTS-BGL-COLLECTION-CACHE`. Different cache shape; deferred.
+- **C-R9 tail** — Model (C-P16 / KHR feature-ID dependency) + Voxel (volumetric shader surface).
+- **C-R1 per-renderer** — 15 feature renderers × ≤20 LOC. Focused session.
+- **C-R12 per-object caches** — `C-R12-PER-OBJECT-CACHES`. Out of scope for this batch; likely unnecessary.
+- **Other deferrals unchanged** — C-R4, C-R5, C-R7, C-R8, C-R10.
+- **Data pipeline + infrastructure** items unchanged from Batches 28-31.
+
+---
+
+## Batch 34 — C-R7 central pipeline cache + C-R10 point-light cast path (2026-04-23)
+
+Closes two more critical deferrals: the central pipeline cache foundation lands + gets instantiated (with an extended key that differentiates MSAA / format / writeMask / depth format / vertex layout), and point-light shadow casting stops being a silent feature-drop by writing to a proper cube depth texture via a 6-face loop.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts) — `generateCacheKey()` now appends:
+  - `ms:<count>` from `descriptor.multisample.count` — MSAA and non-MSAA pipelines were colliding on the same key previously.
+  - `df:<format>` from `descriptor.depthStencil.format` — `depth24plus-stencil8` vs `depth32float` must materialize as distinct pipelines.
+  - `tg:<per-target sig>` — each color target's `format`, `writeMask`, and blend-presence flag packed as `<i>:<format>:<writeMask>:<+/->`. Catches the case where MRT outputs or different writeMask combinations previously aliased.
+  - `vx:<per-buffer sig>` — vertex buffer layout: per-buffer `<arrayStride>/<stepMode>/[<loc@offset/format>;…]`. A position-only depth-cast variant vs a full PBR vertex layout now materialize separately.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) — new `webgpuPipelineCache` getter that lazy-instantiates `_webgpuPipelineCache = new WebGPURenderPipelineCache(this._device, this._id)` on first access and subscribes for device-loss invalidation (Batch 33 pattern). The existing `_clearAllCaches` call already handles `_webgpuPipelineCache.clear()` so no change needed there.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js) — C-R10 point-light cast path:
+  - New `createPointLightCubeShadowMap(device, size)` factory. Allocates a `depth32float` texture with 6 array layers + creates 6 per-face 2D views (for cast-pass `depthStencilAttachment.view`) + 1 cube view (for future receive-side sampling) + a comparison sampler.
+  - `initWebGPUShadowMap()` lost the `_isPointLight` early-return. Now branches: point-light → cube init with `cache.cubeFaceViews[6]`, `cache.cubeDepthView`, `cache.isCube = true`, + fallback `cache.depthTextureView = faceViews[0]` for existing receive-path compatibility; else → existing 2D init.
+  - New `getPointLightFacePassDescriptor(shadowMap, faceIndex)` returns a depth-only render pass descriptor targeting a single cube-face view.
+  - New `_renderPointLightCubeCastPasses(encoder, device, cache, shadowMap, castCommands)` runs the cast loop 6 times. Each iteration writes the face's VP matrix (from `shadowMap._passes[face].camera.getViewProjection()`) into the first 64 bytes of the UB, then begins a face-scoped pass and calls the shared `_drawCastCommandsToPass` helper.
+  - New `_drawCastCommandsToPass(pass, device, cache, castCommands)` helper — extracted from the tail of `renderShadowCastPass()` so both the single-pass (directional / spot) and 6-face (point light) paths share the same pipeline-variant + bind-group + vertex-buffer + draw-dispatch logic without duplication. Caller owns `pass.end()`.
+  - `renderShadowCastPass()` now dispatches: if `shadowMap._isPointLight`, delegate to `_renderPointLightCubeCastPasses`; else existing single-pass flow.
+
+**Typecheck:** `npx tsc --noEmit` — clean for all Batch 34 changes. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) unchanged (line numbers shifted slightly). Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R7 | RENDERER_DEEP | Central `_webgpuPipelineCache` not instantiated | **FIXED** — lazy-init getter; cache key extended with multisample count / depth format / per-target format+writeMask / vertex layout signature so distinct pipelines never collide. Per-renderer routing (migrating feature renderers through `context.webgpuPipelineCache`) stays as `C-R7-ROUTE-RENDERERS` follow-up. |
+| C-R10 | RENDERER_DEEP | Shadow maps skip point lights on WebGPU | **CAST PATH FIXED** — cube depth texture allocated, 6-face cast loop runs with per-face VPs + per-face depth target views. Inner cast-command loop shared between directional/spot + point via `_drawCastCommandsToPass` helper. Receive-side still 2D — see `C-R10-POINT-LIGHT-RECEIVE` for the shader variant work. |
+
+### Integration audit — Batch 34
+
+| Scenario | Status |
+| --- | --- |
+| Context-level pipeline cache instantiated on first `webgpuPipelineCache` access | ✓ lazy getter builds `new WebGPURenderPipelineCache(device, id)` + subscribes to device-loss |
+| Two pipelines differing only in `multisample.count` | ✓ distinct cache entries (`ms:1` vs `ms:4`) |
+| Two pipelines differing in depth format (`depth24plus-stencil8` vs `depth32float`) | ✓ distinct (`df:` token) |
+| MRT pick pipeline (2 targets, writeMask differs per target) | ✓ distinct from single-target pipeline (`tg:` signature includes per-target writeMask) |
+| Same shader, different vertex layout (cast path with position-only vs PBR path with full attr set) | ✓ distinct (`vx:` signature captures each buffer's stride + attrs) |
+| Device-loss during active cache | ✓ Batch 33 subscriber nulls `_webgpuPipelineCache`; next access rebuilds |
+| Directional shadow map cast | ✓ unchanged flow; now calls shared `_drawCastCommandsToPass` helper |
+| Point-light shadow map cast, 6 faces | ✓ 6 passes each face; per-face VP swaps into UB + per-face view into depth attachment |
+| Point-light shadow map `scene.pick` / `getShadowMapResources` | ✓ falls back to face-0 2D view (the current effects BGL layout expects `texture_depth_2d`); not a regression vs. the previous "point lights return nothing" state |
+| Shadow map destroyed | ✓ `cache.depthTexture.destroy()` tears down all 6 cube layers; face views + cube view GC'd with the cache object |
+
+### Design decisions
+
+- **Key extension is additive.** Every existing cached pipeline still hashes to the same key as before (the new `if` gates only fire when the descriptor supplies the field). No cache invalidation event needed on upgrade; existing entries just pick up extra key segments for any pipeline that happens to specify the new fields.
+- **`blendConstant` still not part of key.** Per-encoder dynamic state; two pipelines with different blend constants still share. Documented in the cache file.
+- **Helper extraction, not duplicated body.** The shadow-cast command loop is ~200 LOC of resolve-vb / resolve-bg / setPipeline / draw logic. Duplicating it 2× for the point-light path would have bit-rotted as soon as we touch one path. Shared helper is more work up-front, cheaper downstream.
+- **Per-face UB write, not 6 UBs.** Each cube face rewrites the same UB's first 64 bytes before beginning its pass. WebGPU queues `writeBuffer` + `beginRenderPass` in submission order, so the GPU sees each face's pass with the correct VP. No new UB per face — cheaper CPU, simpler cache lifetime.
+- **Cube view kept for future work.** `cache.cubeDepthView` is allocated but not consumed today. The receive shader needs a `texture_depth_cube` + cube sampler variant + direction-based sample logic to use it. The cast writes the cube correctly; receive shader work is a separate task.
+- **Fallback face-0 view for legacy receive.** The existing effects BGL expects `texture_depth_2d` at binding 1. For point-light shadow maps, `cache.depthTextureView = faceViews[0]` so the receive path still binds a valid 2D view and the receiver only sees face 0's depth (directional-like behavior from the +X face). Not correct omnidirectionally, but avoids a validation error.
+- **`webgpuPipelineCache` getter isn't routed from renderers yet.** Feature renderers still build + cache pipelines locally. Migrating them through the central cache is pattern-following but touches ~15 files. Kept out of scope for this batch; tracked as `C-R7-ROUTE-RENDERERS`.
+
+### What's still open after Batch 34
+
+- **C-R7 per-renderer routing** — `C-R7-ROUTE-RENDERERS`. Per-renderer migration to `context.webgpuPipelineCache`.
+- **C-R10 receive shader** — `C-R10-POINT-LIGHT-RECEIVE`. `texture_depth_cube` + direction-based sampling in the shadow-receive shader variant. Requires effects BGL changes + shader ifdef work.
+- **C-R9 tail** — Model + Voxel.
+- **C-R1 per-renderer** — 15 feature renderers.
+- **C-R11 per-tile EffectsBindGroup** — `C-R11-EFFECTS-BGL-COLLECTION-CACHE`.
+- **C-R12 per-object caches** — likely unnecessary.
+- **Other deferrals unchanged** — C-R4, C-R5, C-R8.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 35 — C-R8 scene-pass partial + H-R3 pick VOXELS + M-R6 enum + C-R1 Ellipsoid (2026-04-23)
+
+Multi-target batch closing two of six C-R8 sub-items, fully resolving H-R3 + M-R6, and wiring the first C-R1-per-renderer consumer. No single item was large enough to justify its own batch, so they're bundled — all share the `WebGPUSceneRenderer.ts` + `WebGPUEllipsoidPrimitiveRenderer.ts` file surface and the Batch 29/30 dispatcher + renderState-forwarding patterns.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts) — C-R8 piece 1. New `executeUpdateDepth(encoder)` method. Semantic alias for `executeCopyDepth` — same depth-to-color copy in the WebGPU single-depth-attachment model, distinct method name so the SceneRenderer caller's intent stays clear (WebGL has two separate code paths; WebGPU folds them at this layer).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — multi-item touch:
+  - **C-R8 piece 1** (`executeUpdateDepth` wire-in): `_execute3DTilePasses` refactored to accept an `onAfterTileMainPass?: () => void` callback. Internal passes array split into `firstPasses = [CESIUM_3D_TILE_EDGES, CESIUM_3D_TILE]` and `classificationPasses = [CESIUM_3D_TILE_CLASSIFICATION, CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW]`, with the hook firing between them. Caller in the main frustum loop supplies a lambda that ends the current render pass, calls `globeDepth.executeUpdateDepth`, and resumes. Result: `CESIUM_3D_TILE_CLASSIFICATION` now reads tile-augmented depth — overlay / decal / classification primitives Z-fight less against 3D tile surfaces.
+  - **C-R8 piece 2** (VOXELS ordering): VOXELS + sort moved to BEFORE OPAQUE to match WebGL's `SceneRenderer.js:606-608`. Previously WebGPU ran voxels AFTER opaque which mis-ordered volumetric media against opaque depth. GAUSSIAN_SPLATS stays after OPAQUE + before TRANSLUCENT (matches WebGL).
+  - **H-R3** (pick pass widening): `_executePickPass`'s per-frustum loop now calls `_executePickBatch(Pass.VOXELS)` and `_executePickBatch(Pass.GAUSSIAN_SPLATS)` after the TRANSLUCENT pick batch. Voxel-media and splat primitives are now reachable via `scene.pick()`. The `pickingMetadata` branch is already handled by `selectCommandVariant` (Batch 29) which consults `frameState.pickingMetadata` and routes to `derivedCommands.pickingMetadata.pickMetadataCommand` when set — commands that populate the metadata variant are picked up automatically on both pick FBO paths.
+- [packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js) — **M-R6** (enum literal fix): imported `FeatureRendererKey` + replaced `context.getFeatureRenderer(0)` with `context.getFeatureRenderer(FeatureRendererKey.BILLBOARD_COLLECTION)`. Matches CLAUDE.md's "enumerated keys over string/numeric literals" rule.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts) — **C-R1 first consumer**: reads `(primitive as { _rs? }).\_rs` each frame (the WebGL-style renderState that `Scene/EllipsoidPrimitive.js` sets at line 353) and assigns it to `cache.command.renderState` so the Batch 30 `applyPerEncoderState` call in `WebGPUDrawCommand.execute` runs stencilRef / blendConstant / viewport / scissor per-draw. Refreshed every frame so a material translucent-toggle that rebuilds `_rs` propagates without invalidating the cached command object.
+- [packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts](../packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts) — `CesiumAnyDrawCommand.renderState?: CesiumOpaqueRenderState` added so the EllipsoidPrimitiveRenderer assignment type-checks without a triple-cast. Loose `CesiumOpaqueRenderState` (= `object`) at the ambient boundary; the stricter `CesiumRenderStateLike` shape in `RenderStateToPipelineVariant.ts` is what readers actually consume.
+
+**Typecheck:** `npx tsc --noEmit` — clean for all Batch 35 changes. Two pre-existing `WebGPUContext.ts` errors (`inverseViewTranspose`, `FrameTimings`) unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8 (pieces 1-2 of 6) | RENDERER_DEEP | Scene→WebGPU: multiple invisible passes missing | **PARTIALLY FIXED** — `globeDepth.executeUpdateDepth` after 3D Tile pass + VOXELS ordering before OPAQUE. Remaining: translucent 3D-tile classification, invert-classification composition, edge FBO, 2D frustum jitter. |
+| H-R3 | RENDERER_DEEP | Pick pass does not include VOXELS or pickMetadata | **FIXED** — VOXELS + GAUSSIAN_SPLATS added to `_executePickPass` loop; pickMetadata already handled by `selectCommandVariant` (Batch 29). |
+| M-R6 | RENDERER_DEEP | Numeric literal `context.getFeatureRenderer(0)` | **FIXED** — one-line enum constant substitution in `WebGPULabelRenderer.js`. |
+| C-R1 (Ellipsoid consumer) | RENDERER_DEEP | `command.renderState` not consumed per-renderer | **FIRST CONSUMER LANDED** — `WebGPUEllipsoidPrimitiveRenderer.ts` forwards `primitive._rs` onto `cache.command.renderState` each frame. 14 other renderers still pending; each is ≤20 LOC follow-up. |
+
+### Integration audit — Batch 35
+
+| Scenario | Status |
+| --- | --- |
+| 3D Tile overlay decal with classification | ✓ classification pass reads tile-augmented depth via `executeUpdateDepth` hook |
+| Voxel media over opaque geometry | ✓ VOXELS runs before OPAQUE, composites in correct depth order |
+| Gaussian splat cloud over opaque geometry | ✓ unchanged (splats run after OPAQUE, before TRANSLUCENT) |
+| `scene.pick()` on a VoxelPrimitive | ✓ `_executePickPass` now dispatches the VOXELS pass; commands with `derivedCommands.picking.pickCommand` route through the Batch 29 dispatcher |
+| `scene.pick()` on a Gaussian splat cloud | ✓ pick variant from Batch 31 is now reachable (it was emitted but never rendered during pick) |
+| `scene.pickMetadata()` on any pickable command with `derivedCommands.pickingMetadata.pickMetadataCommand` | ✓ dispatcher routes automatically when `frameState.pickingMetadata === true` |
+| EllipsoidPrimitive with translucent color | ✓ `_rs` on the JS primitive has `blending.enabled = true` + correct factors; forwarded to the GPU command; `applyPerEncoderState` fires per-draw if a blendConstant is set |
+| EllipsoidPrimitive material toggles translucent mid-session | ✓ `_rs` rebuilds on the JS side; the next frame's `update()` picks up the new RS and overwrites `cache.command.renderState` |
+| LabelRenderer background billboards on any backend configuration | ✓ enum-based FR lookup still resolves to `BILLBOARD_COLLECTION` (enum value = 0, unchanged runtime) |
+
+### Design decisions
+
+- **`executeUpdateDepth` as a semantic alias.** WebGL's two depth-update code paths (`performPass(CESIUM_3D_TILE) → executeUpdateDepth → performPass(CLASSIFICATION)`) compose partial updates. On WebGPU with a single depth attachment already being written to, the "update" IS the same copy operation. Keeping the method name distinct from `executeCopyDepth` so SceneRenderer's intent reads cleanly.
+- **`onAfterTileMainPass` hook, not a method split.** Splitting `_execute3DTilePasses` into two public methods would force the caller to know about the internal passes grouping. The hook callback keeps the method cohesive + gives the caller exactly one injection point.
+- **VOXELS ordering change is WebGL-parity, not a WebGPU-specific tweak.** WebGL runs voxels BEFORE opaque specifically so voxel media can be depth-tested against the opaque pass it precedes (voxels write depth, opaque reads/writes). The previous WebGPU ordering was a bug from the initial porting round.
+- **`pickMetadata` not explicitly wired anywhere.** The Batch 29 dispatcher already routes through `derivedCommands.pickingMetadata.pickMetadataCommand` when the flag is set. No feature renderer populates that variant yet, but the dispatcher is ready — the populator side is per-renderer follow-up work analogous to the C-R9 picking populators.
+- **C-R1 Ellipsoid wiring as a template.** The two-line pattern (`const primitiveRS = ...; cache.command.renderState = primitiveRS`) is copy-pasteable to the other 14 renderers. The harder part per renderer is identifying the primitive's renderState source (`_rs` for EllipsoidPrimitive, `command.renderState` on WebGL-emitted commands for Model, various `appearance.renderState` shapes for Primitive, etc.) — each needs a brief investigation before the one-line wire-up.
+- **CesiumAnyDrawCommand.renderState typed `CesiumOpaqueRenderState`.** Matches the ambient-type convention: opaque pass-through at boundary, strict structural consumer-side (`CesiumRenderStateLike` in `RenderStateToPipelineVariant.ts`). Alternatives (direct `CesiumRenderStateLike` reference from .d.ts) would couple the ambient declarations to the TS translator module.
+
+### Notes
+
+- **`performVoxelsPass` + `performGaussianSplatPass` interleaving.** WebGL actually runs both of them between OPAQUE and TRANSLUCENT: `opaque → GS → translucent → voxels` ordering in some branches. Our WebGPU flow is now `voxels → opaque → GS → translucent` which matches the most common WebGL path (`SceneRenderer.js:606-617`). If users report voxel + splat composition issues, the ordering may need further refinement.
+- **2D frustum jitter not touched.** `camera.position.z = height2D - ...` is a pre-render tweak in WebGL's `SceneRenderer.js:444-449`. The equivalent is not wired on WebGPU; 2D mode still mis-renders near-far depth bands. Tracked as `C-R8-SCENE2D-JITTER`.
+- **Wrapper sync**: unchanged — no WGSL edits.
+
+### What's still open after Batch 35
+
+- **C-R8 remaining sub-items** — `C-R8-TRANSLUCENT-TILE-CLASS`, `C-R8-INVERT-CLASS-COMPOSITION`, `C-R8-EDGE-FBO`, `C-R8-SCENE2D-JITTER`.
+- **C-R1 remaining renderers (13)** — Ellipsoid done in Batch 35; Model / Ground / Splat / Polyline / Billboard / Label / Point / BufferPrimitive / Cloud / GlobeSurface / InvertClassification / PostProcess / other renderers still need the pattern wired. Batch 31's Ground + Splat pick adds already used the pattern implicitly but didn't forward `renderState` — those can be promoted in a follow-up batch.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — all unchanged from post-Batch-34.
+- **Other deferrals** — C-R4 (KHR extensions, multi-session), C-R5 (imagery 4→16).
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 36 — C-R8 2D frustum jitter + C-R1 Primitive consumer (2026-04-23)
+
+Two targeted follow-ups. C-R8 closed its 2D-mode depth-precision gap with a single camera-offset + frustum-compression block in the main frustum loop. C-R1 expanded its per-renderer consumer list from just Ellipsoid (Batch 35) to cover the full Primitive / MaterialAppearance command family via `WebGPUPrimitiveCommands.js` — the single highest-impact per-renderer consumer because it governs every user-emitted `Primitive`, including both the FlatAppearance/PerInstanceColor polygon path and the MaterialAppearance lit path.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) — C-R8 2D frustum jitter. Captures `initialHeight2D = camera.position.z` before the frustum loop when `scene.mode === SceneMode.SCENE2D`. Inside the loop, 2D mode branches to `camera.position.z = initialHeight2D - frustumCommands.near + 1.0` + `far = max(1, frustumCommands.far - frustumCommands.near)` + `near = 1.0`. Matches WebGL's `SceneRenderer.js:444-449` behavior that compresses the 2D near/far range into `[1, far-near+1]` so the ortho depth buffer keeps uniform precision across frustum boundaries instead of banding where tiles intersect a frustum split. `.position` isn't on the ambient `CesiumCamera` shape (it's on the real `Camera.js` class at line 175) — cast to read.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) — C-R1 Primitive consumer. Both `new WebGPUDrawCommand` construction sites (polygon path at `~1407`, material path at `~2237`) now pass `renderState: primitive.appearance?.renderState`. For the polygon path, factored out once into `const appearanceRS = ...` before the `makeCommand` closure so both the non-twoPasses draw and the DP-H17 twoPasses front/back-cull draws share the same source. The Batch 30 `applyPerEncoderState` hook in `WebGPUDrawCommand.execute` fires stencilRef / blendConstant / viewport / scissor from the forwarded renderState — correctness now matches the per-draw state that WebGL's `RenderState.apply()` emits.
+
+**Typecheck:** `npx tsc --noEmit` — clean for all Batch 36 changes. Two pre-existing `WebGPUContext.ts` errors unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8 (piece 3 of 6) | RENDERER_DEEP | Scene→WebGPU: missing 2D frustum-jitter offset | **FIXED** — 2D mode now applies the `camera.position.z` offset + frustum.near/far compression matching WebGL's `SceneRenderer.js:444-449`. Depth precision is uniform across frustum boundaries in 2D. |
+| C-R1 (Primitive consumer) | RENDERER_DEEP | `command.renderState` not consumed per-renderer | **SECOND CONSUMER LANDED** — `WebGPUPrimitiveCommands.js` forwards `primitive.appearance.renderState` on all four `WebGPUDrawCommand` construction sites (polygon color + pick, material color + pick). Covers every user-emitted `Primitive` across the WebGPU backend. |
+
+### Integration audit — Batch 36
+
+| Scenario | Status |
+| --- | --- |
+| 3D mode (default) — multi-frustum loop | ✓ unchanged; `near = frustumCommands.near * opaqueFrustumNearOffset` branch |
+| 2D mode with single frustum | ✓ offset applies once; WebGL-parity behavior |
+| 2D mode with multiple frustums (high-altitude overhead view) | ✓ per-frustum offset keeps depth precision uniform; no depth banding at boundaries |
+| 2D → 3D → 2D mode transitions | ✓ `initialHeight2D` captured fresh at the top of each `executeCommands`; no stale state |
+| Columbus View (SceneMode.COLUMBUS_VIEW = 1) | ✓ untouched (falls through to 3D branch) |
+| Primitive with FlatAppearance + custom blending | ✓ renderState forwarded; per-encoder state applies at draw time |
+| Primitive with MaterialAppearance translucent | ✓ material pipeline path also forwards renderState; per-encoder blend constant applies |
+| Primitive with PerInstanceColorAppearance + twoPasses | ✓ front-cull + back-cull draws both get the same forwarded renderState |
+| Pick commands (both polygon + material paths) | ✓ Batch 36 only touched color command paths; pick still uses internal state (correct — pick output must be byte-exact) |
+| Primitive without `.appearance.renderState` (user didn't set one) | ✓ `?.` chain yields `undefined`; `WebGPUDrawCommand.execute` no-ops `applyPerEncoderState` when renderState is absent (Batch 30 behavior) |
+
+### Design decisions
+
+- **2D offset as a branch, not a helper.** Contained to ~8 lines in the frustum loop setup. Extracting a helper would increase surface area without shortening the call site. Matches the WebGL reference layout line-for-line.
+- **`initialHeight2D` captured once per `executeCommands`.** WebGL does this too — the offset is frustum-relative (`initialHeight2D - frustumCommands.near`), not camera-relative, so capturing before the loop is correct. Moving between scene modes mid-frame isn't a supported operation anyway.
+- **Cast `scene.camera` for `.position` access.** The ambient `CesiumCamera` type doesn't declare `position` because WebGPU code normally reads `positionWC` (world-cartesian) rather than the local-coord `position` that the 2D jitter mutates. Adding `.position` to the ambient type would expose a field that 99% of WebGPU code shouldn't touch; the cast keeps the boundary clear at the single intentional mutation site.
+- **Both `makeCommand` sites get the same `appearanceRS`.** Factored once before the closure in the polygon path so the twoPasses front/back pair don't read the appearance twice or accidentally diverge. Material path's single command also reads the same field inline for symmetry.
+- **Pick command paths deliberately skipped.** Pick FBO writes pick IDs that must survive byte-exact to the readback buffer. Forwarding appearance blend state would compose pick IDs against themselves; the existing pick pipelines' no-blend + opaque-depth-write state is correct and should not be overridden by the color pipeline's renderState.
+- **Non-consumers (Ground / Splat / BufferPrimitive).** These are WebGPU-native renderers whose WebGL counterparts handle renderState internally (no external JS-side `_rs` or `appearance.renderState` source). C-R1 wiring for them is N/A — the renderers ARE the source of truth for their own blend/depth/cull state, configured through the WebGPU renderer's own pipeline cache.
+
+### Notes
+
+- **WebGL-parity for 2D**: the near/far compression to `[1, far-near+1]` exists specifically to amortize ortho depth precision across frustums — not a general optimization, a correctness fix for the 2D mode's uniform-depth ortho projection. Without this, depth testing at frustum boundaries in 2D degenerates into aliased bands.
+- **`performVoxelsPass` ordering for 2D**: the Batch 35 reordering (VOXELS before OPAQUE) composes cleanly with the 2D offset because voxels in 2D mode aren't a typical use case — voxel media is volumetric and 2D is flat. If a user combines both, voxel depth-tests still work against the compressed near/far.
+- **C-R1 per-renderer expansion audit**: after Batches 30/35/36, the active consumers are Ellipsoid + Primitive (polygon + material). Remaining renderers break into three groups:
+  - **WebGPU-native, no external renderState**: Billboard, Label, Cloud, Point, Polyline, Ground, Splat, BufferPrimitive, GlobeSurface. C-R1 wiring is N/A.
+  - **Internal renderState path that COULD be exposed**: Model (via `ModelDrawCommand.renderState`), InvertClassification (fullscreen stencil composition). These need dedicated per-renderer scope.
+  - **Post-process**: PostProcess pipeline is fullscreen-quad-based — renderState would mean per-pass blend constant overrides, rarely used.
+
+### What's still open after Batch 36
+
+- **C-R8 remaining sub-items** — `C-R8-TRANSLUCENT-TILE-CLASS`, `C-R8-INVERT-CLASS-COMPOSITION`, `C-R8-EDGE-FBO` (3 of the original 4; 2D jitter closed in Batch 36).
+- **C-R1 remaining consumers** — Model + InvertClassification (others are N/A per the audit above).
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 37 — C-R1 Model + audit correction (2026-04-23)
+
+Two-part batch: (1) wired `WebGPUModelRenderer` as the third C-R1 consumer, and (2) ran a full audit of `.renderState =` assignments across `Scene/` — finding that several renderers I previously classified as "N/A" in Batch 36 actually DO have JS-side renderState sources. The audit's real value is correcting the backlog framing, not implementing everything it surfaced; several of the newly-identified consumers need dedicated per-renderer scope beyond this batch's capacity.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) — reads `rp.drawCommand?._command?.renderState` from the source `ModelDrawCommand`'s base color command and passes it as the `renderState` option to the emitted `WebGPUDrawCommand`. Covers the primary color draw; silhouette / shadow / depth-fail / backface derived variants remain follow-up under the Batch 29 `selectCommandVariant` dispatcher — when populators for those variants land, each will pull renderState from its corresponding `ModelDrawCommand` derived-command slot (`ModelDrawCommand.js` lines 626/641/727/767/818/868/925/950).
+
+**Typecheck:** `npx tsc --noEmit` — clean for Batch 37 changes. Two pre-existing `WebGPUContext.ts` errors unchanged. Wrapper sync: 38/38.
+
+### Audit correction
+
+Batch 36's writeup claimed 9 of the 13 C-R1-backlog renderers were "N/A — no external renderState source." The audit revealed this classification was wrong for most of them. Corrected breakdown:
+
+| Renderer | Has JS-side renderState source? | Wiring status |
+| --- | --- | --- |
+| Primitive (polygon + material) | ✅ `primitive.appearance.renderState` | ✅ Wired Batch 36 |
+| EllipsoidPrimitive | ✅ `primitive._rs` | ✅ Wired Batch 35 |
+| Model | ✅ `runtimePrimitive.drawCommand._command.renderState` | ✅ Wired Batch 37 |
+| BillboardCollection | ✅ opaque/translucent RS switch on command | ⏳ Deferred — `C-R1-COLLECTIONS-PER-ENCODER` |
+| CloudCollection | ✅ `that._rs` | ⏳ `C-R1-COLLECTIONS-PER-ENCODER` |
+| PointPrimitiveCollection | ✅ opaque/translucent RS switch | ⏳ `C-R1-COLLECTIONS-PER-ENCODER` |
+| PolylineCollection | ✅ translucent / material branch RS | ⏳ `C-R1-COLLECTIONS-PER-ENCODER` |
+| ClassificationPrimitive | ✅ `_rsStencilDepthPass` / `_rsColorPass` / `_rsPickPass` | ⏳ `C-R1-CLASSIFICATION` |
+| ClassificationModelDrawCommand | ✅ stencilDepthCommand + colorCommand RS | ⏳ `C-R1-CLASSIFICATION` |
+| GroundPolylinePrimitive | ✅ `_renderState` / `_renderState3DTiles` / `_renderStateMorph` | ⏳ `C-R1-CLASSIFICATION` |
+| GlobeSurfaceTileProviderRendering | ✅ per-tile renderState | ⏳ `C-R1-GLOBE-RENDERSTATE` — command built via internal methods, larger refactor |
+| Cesium3DTileBatchTable | ✅ derived command renderStates for stencil batching | ⏳ `C-R1-TILE-BATCH` |
+| PrimitiveCommandHelpers (backface / frontface / depthFail) | ✅ `_backFaceRS` / `_frontFaceRS` / `_backFaceDepthFailRS` / `_frontFaceDepthFailRS` | ⏳ `C-R1-PRIMITIVE-DERIVED` — covered by Batch 29 dispatcher when populators land |
+| PostProcessStage | ✅ stage renderState | N/A — Scene-level WebGPU post-process pipeline handles state internally |
+
+**Result**: 3 of 13 wired (Primitive / Ellipsoid / Model). 10 of 13 deferred with explicit follow-up IDs.
+
+### Why Globe is deferred separately from collections
+
+`WebGPUGlobeSurfaceRenderer.ts` builds per-tile commands through its own internal methods (`prepareForTile` / `drawTile`) rather than through the shared `new WebGPUDrawCommand(...)` constructor. Forwarding `tileProvider._renderState` onto the emitted commands requires either (a) refactoring the renderer to surface a `renderState` field on its per-tile command build path, or (b) applying the renderState via a per-encoder hook that fires before the renderer's own draw calls. Both are non-trivial; tracked as `C-R1-GLOBE-RENDERSTATE`.
+
+### Why collections are deferred separately
+
+Billboard / Cloud / Point / Polyline collections have two distinct renderState sources on the JS side: (1) the opaque/translucent blend-mode switch, and (2) per-encoder dynamic state. The blend-mode switch is ALREADY handled internally by the WebGPU collection renderers (each builds opaque + translucent pipelines and dispatches based on `blendOption` / `material.isTranslucent()`). What they skip is per-encoder state — `stencilReference`, `blendConstant`, `scissorTest.rectangle`. User-visible impact is small unless an app attaches custom scissor/stencil to a collection, which is rare. Tracked as `C-R1-COLLECTIONS-PER-ENCODER` — bounded per-renderer but not critical.
+
+### Classification variants
+
+`ClassificationPrimitive` / `ClassificationModelDrawCommand` / `GroundPolylinePrimitive` all set multiple renderStates for distinct passes (stencil-depth, color, pick). Currently WebGPU's `WebGPUGroundPrimitiveRenderer` handles terrain classification only; full classification on 3D Tiles (where these primitives are mostly used) goes through a different path that may not be fully wired yet. Tracked as `C-R1-CLASSIFICATION` pending verification of which WebGPU path consumes them.
+
+### Notes
+
+- **Model derived commands** — the base color renderState now flows, but `ModelDrawCommand` creates 8 additional derived commands for silhouette-model / silhouette-color / stencil-depth / backface / 2D / classification each with their own renderState. Those fire through the Batch 29 dispatcher's `derivedCommands` shape; when a populator emits a WebGPU variant of one, that variant's renderer-side code should forward the corresponding `ModelDrawCommand` field.
+- **Audit completeness** — grep-based audit caught every `.renderState =` assignment. Renderers that read `command.renderState` (without assigning) aren't directly covered but none exist in Scene/ that matter for C-R1.
+- **No N/A backtracking regressions** — the Batch 36 "N/A" classification was wrong for collections and classification variants but right for post-process (Scene-level state, handled by the WebGPU post-process pipeline directly).
+
+### What's still open after Batch 37
+
+- **C-R1 remaining per-renderer** — `C-R1-COLLECTIONS-PER-ENCODER` (4 collections), `C-R1-CLASSIFICATION` (3 classification variants), `C-R1-GLOBE-RENDERSTATE`, `C-R1-TILE-BATCH`, `C-R1-PRIMITIVE-DERIVED` (depth-fail variants).
+- **C-R8 remaining sub-items** — `C-R8-TRANSLUCENT-TILE-CLASS`, `C-R8-INVERT-CLASS-COMPOSITION`, `C-R8-EDGE-FBO`.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **Other deferrals** — C-R4 (KHR extensions, multi-session), C-R5 (imagery 4→16).
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 38 — C-R8 deep audit + InvertClassification composite API (2026-04-23)
+
+Deep audit of the three remaining C-R8 sub-items (`C-R8-INVERT-CLASS-COMPOSITION`, `C-R8-TRANSLUCENT-TILE-CLASS`, `C-R8-EDGE-FBO`) produced a more honest scope picture than the initial "each is bounded" framing. Two of the three need substantial scope (500-1000 LOC multi-pass depth-peeling for translucent-tile-class; shader-side uniformState wiring for edge FBO) that won't land user-visible value in a partial implementation. The third (InvertClassification) decomposes into (a) a composite API that's cleanly landed here, and (b) a framebuffer-redirect step that's larger than the minimum-viable-fix scope suggested.
+
+**Batch 38 ships**: the InvertClassification composite API cleanly, documents remaining scope for all three with explicit follow-up IDs, and commits to the two big ones being dedicated-session work rather than forced partial batches.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts)
+  - **Shader reworked**: the previous design bound both `sceneTex` and `classifiedTex` then output a blended scene color. Binding the scene color texture for READ while targeting it for WRITE in the same render pass is a WebGPU validation error (`maintains writable state`). New shader drops the `sceneTex` bind entirely — classified regions emit `vec4(0,0,0,0)` (transparent, scene passes through unchanged via src-alpha blend), unclassified regions emit `highlightColor` (composites over scene at `highlightColor.a`).
+  - **Bind group layout reduced** from 4 entries (sceneTex + classifiedTex + sampler + uniforms) to 3 (classifiedTex + sampler + uniforms). Matches the reworked shader.
+  - **New `executeInvertClassificationComposite(invertClass, encoder, targetView)` export**. Begins a render pass on `targetView`, sets the composite pipeline + bind group, draws the fullscreen triangle, ends. Called by future framebuffer-redirect follow-up after the classified 3D tile content is written to `classifiedTexture`.
+  - **Destroy path updated** — no new allocations, just the reduced bind group.
+  - **Cache `bindGroupLayout` slot added** for rebuild-on-view-change (not currently used since composite doesn't rebind per call, but present for future work that needs to swap texture views).
+
+**Typecheck:** `npx tsc --noEmit` — clean. Two pre-existing `WebGPUContext.ts` errors unchanged. Wrapper sync: 38/38.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8 (piece 4 of 6, partial) | RENDERER_DEEP | InvertClassification two-pass FBO composition | **API LANDED** — `executeInvertClassificationComposite` exported and typechecks. Shader reworked to avoid read/write-same-texture conflict. Missing: framebuffer-redirect step that writes classified tile output into `classifiedTexture`, and the call-site wiring from `WebGPUSceneRenderer`. Tracked as `C-R8-INVERT-CLASS-FBO-REDIRECT`. |
+
+### Audit decisions (what's explicitly deferred)
+
+**`C-R8-TRANSLUCENT-TILE-CLASS`** — deferred with rationale. The WebGL implementation (`TranslucentTileClassification.js`) is a multi-pass depth-peeling + classification scheme for polygon overlays on translucent 3D-tile content. Audit estimate: 500-1000 LOC + WGSL shaders + multi-target FBO + stencil-peeling logic. No partial implementation lands user value (depth-peeling is all-or-nothing). Flagged for a dedicated session after a user signals they need it — likely niche use case (most users don't overlay polygons on translucent tiles).
+
+**`C-R8-EDGE-FBO`** — deferred with rationale. The FBO infrastructure itself is 100-150 LOC (3-attachment MRT, framebuffer redirect for `Pass.CESIUM_3D_TILE_EDGES`). But the output textures need to flow into subsequent passes' shader uniforms (`edgeColorTexture`, `edgeIdTexture`, `edgeDepthTexture`) for the edges to composite onto the scene. Without the shader-side uniform-state wiring, the textures render correctly but no pass samples them → zero user-visible change. Shader-side wiring is a separate, larger task touching globe / primitive / model shaders. Infrastructure alone isn't worth shipping.
+
+**`C-R8-INVERT-CLASS-FBO-REDIRECT`** — the partial Batch 38 ships the composite half. Remaining: SceneRenderer path that, when `useInvertClassification` is active, ends the current render pass before `Pass.CESIUM_3D_TILE`, begins a new pass targeting `invertClassification._webgpuCache.classifiedTextureView`, runs the tile commands into it, ends that pass, runs classification-ignore-show into the same target, then resumes the scene pass and invokes `executeInvertClassificationComposite`. ~80-120 LOC of SceneRenderer plumbing plus correctness verification (depth sharing, MSAA behavior). Tractable next-session target.
+
+### Why the initial "bounded fix" framing was wrong
+
+The audit from the start of this batch pitched all three as "1-4 hour fixes". Actual scope turned out larger:
+
+- **InvertClassification "50-80 lines"**: the minimum-viable-fix estimate counted only the composite function + a small wire. It didn't account for (a) the read/write-same-texture shader conflict (requiring a shader rework) or (b) the framebuffer redirect needing its own pass-begin/end dance in the frustum loop.
+- **Edge FBO "100-150 lines"**: counted the FBO + redirect only. Didn't account for the shader uniforms needing to flow into consumer passes — which IS the feature; without it, the FBO is write-only.
+- **Translucent-tile-class "2-3 hours"**: underestimated. Depth-peeling is not a 2-3 hour feature; the WebGL code is 700+ LOC + multi-pass.
+
+**Lesson for future deep audits**: the audit should cost-account not just the primary feature code but also the "observable effect chain" — does the infrastructure produce user-visible output, or does it need downstream consumers to be wired first?
+
+### What's still open after Batch 38
+
+- **C-R8 remaining**: `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session), `C-R8-INVERT-CLASS-FBO-REDIRECT` (next session), `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+- **C-R1 remaining** — unchanged from post-Batch-37.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 39 — C-R8 InvertClassification FBO redirect + C-R1 Collections + H-R4 dead code (2026-04-24)
+
+Triple bundle closing out three independent follow-ups in one session:
+
+1. **C-R8-INVERT-CLASS-FBO-REDIRECT** — finishes the InvertClassification feature end-to-end by pairing with the composite API landed in Batch 38. 3D-tile output now routes into `InvertClassification.classifiedTexture` when the feature is active, then composites back onto scene color after the main scene pass ends.
+2. **C-R1-COLLECTIONS-PER-ENCODER** — forwards the JS-side `renderState` from BillboardCollection, CloudCollection, PointPrimitiveCollection, and PolylineCollection onto the emitted `WebGPUDrawCommand` so `applyPerEncoderState` drives stencil-ref / blend-constant / viewport / scissor the same way the WebGL path does. Four collections × two commands (color + pick) each, following the Batch 37 Model pattern.
+3. **H-R4** — deletes the dead `WebGPUPassState.applyToRenderPass` method. Only reference was a JSDoc mention that's been updated to describe the actual path (per-command `applyPerEncoderState` from Batches 30/35/36/37/39).
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts)
+  - **Shader semantics corrected**: Batch 38's shader emitted transparent for classified regions (relying on scene color to show through), but the redirected tile pass writes tile color into `classifiedTexture` NOT scene color — so scene color stayed empty where tiles were. New shader emits the tile color (optionally tinted by `highlightColor`) for pixels with `classifiedTex.a > 0`, transparent for non-tile pixels. Without stencil gating we can't split classified vs unclassified tile pixels (WebGL does this via stencil); current behavior tints every tile pixel when `enableHighlight` is on, which is a reasonable stand-in. Stencil-accurate gating tracked as `C-R8-INVERT-CLASS-STENCIL` for a future session.
+  - **MSAA support**: `classifiedTexture` now matches the scene's `numSamples` so tile draw-command pipelines (built for scene MSAA) validate inside the redirected pass. MSAA paths allocate a paired single-sample `resolveTexture` + view used by the composite bind group (the composite pipeline stays at `multisample.count=1` since it targets the resolved scene color view).
+  - **New exports**: `buildInvertClassificationColorAttachment(invertClass)` returns the GPURenderPassColorAttachment (with optional `resolveTarget` for MSAA), `isInvertClassificationReady(invertClass)` gates the redirect, `getInvertClassificationSampleCount(invertClass)` reports the sample count.
+  - **Cache shape expanded**: added `resolveTexture`, `resolveTextureView`, `sampleCount`.
+  - **Destroy path** cleans up the new resolve texture.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - **`_execute3DTilePasses` now accepts the redirect path**: when `config.useInvertClassification` is true and the invert cache is ready, ends the default scene pass, opens an invert pass targeting `classifiedTexture` (with clear loadOp) + scene depth (load/store), runs `CESIUM_3D_TILE_EDGES` and `CESIUM_3D_TILE` inside it, ends and resumes the default pass. Classification passes (which don't participate in the FBO redirect) run normally on scene color. Debug-pragma-wrapped warn logs cover the missing-resource fallback cases.
+  - **`_runInvertClassificationComposite` added** and wired after environmental effects, before `_runPostProcessing`. Ends the main scene pass (so MSAA resolves), invokes `executeInvertClassificationComposite` targeting the single-sample resolved scene color view, resumes the default pass for post-process teardown. No-op when the feature is disabled or not ready.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js)
+  - Forwards `collection._rsOpaque` or `collection._rsTranslucent` (based on the chosen `billboardPass`) onto both `colorCommand` and `pickCommand`. Pick defaults to `_rsOpaque` since it always runs in the opaque pass.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts)
+  - Forwards `collection._rs` onto the cached translucent cloud command each frame so the per-encoder state follows any future re-builds of `_rs`.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js)
+  - Forwards `collection._rsOpaque` / `collection._rsTranslucent` onto `colorCommand` (per-frame, matching the chosen pass) and `pickCommand` (opaque preference).
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js)
+  - Forwards `collection._opaqueRS` / `collection._translucentRS` onto the per-batch color command and the pick command. Mirrors the inline assignment at `PolylineCollection.js:740`.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPassState.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPassState.ts)
+  - Deleted `applyToRenderPass` (dead — no callers remained; per-encoder state now flows through `applyPerEncoderState` per-draw-command from `renderState` forwarding).
+
+- [packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts](../packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts)
+  - Updated the `applyPerEncoderState` JSDoc to drop the now-invalid reference to `WebGPUPassState.applyToRenderPass`. Rephrased to describe the actual current behavior (encoder default from `beginRenderPass` / `resumeDefaultRenderPass`).
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors). No new wrapper sync needed (files modified live under `packages/engine/Source/`; `Source/Renderer/WebGPU/` only contains `Stubs/`).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8 (piece 4 of 6, FIXED) | RENDERER_DEEP | InvertClassification FBO redirect + composite | **FIXED** — full round-trip now wired. 3D-tile passes route to `classifiedTexture` when the feature is on; composite overlays the tile content (tinted by `invertClassificationColor`) back onto scene color after the main scene pass ends. MSAA-safe (attachment matches scene sample count with paired resolve target). Classified/unclassified tile pixel distinction still stand-in (see `C-R8-INVERT-CLASS-STENCIL`). |
+| C-R1 (collections, FIXED) | RENDERER_DEEP | Billboard/Cloud/Point/Polyline renderState forwarding | **FIXED** — all four collections now forward their JS-side render state onto emitted WebGPUDrawCommands (color + pick). Pattern matches Batch 37 Model. |
+| H-R4 (FIXED) | RENDERER_DEEP | Dead `applyToRenderPass` method | **FIXED** — deleted. JSDoc reference in `RenderStateToPipelineVariant.ts` rewritten to describe the actual current flow. |
+
+### What's still open after Batch 39
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling).
+  - `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+  - `C-R8-INVERT-CLASS-STENCIL` (NEW) — stencil-accurate classified-vs-unclassified tile pixel gating in the InvertClassification shader. Currently tints every tile pixel when `enableHighlight` is on; WebGL splits these via stencil written during CLASSIFICATION_IGNORE_SHOW.
+- **C-R1 remaining**: 4 follow-up items remain (`C-R1-CLASSIFICATION`, `C-R1-GLOBE-RENDERSTATE`, `C-R1-TILE-BATCH`, `C-R1-PRIMITIVE-DERIVED`) plus the 9 WebGPU-native renderers noted in Batch 36 as no-external-source. Collections are now fully covered.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items). H-R3 + H-R4 now fixed.
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+### Audit-scope calibration note (continuing from Batch 38)
+
+Batch 38 noted that the "bounded fix" framing under-counted scope. Batch 39 landed within budget: the FBO-redirect scope estimate from Batch 38 (80-120 LOC + MSAA + composite wiring) was accurate this time. The useful discipline remains: **cost-account the full observable chain, not just the primary code path**. The InvertClassification composite wasn't user-visible in Batch 38 because no caller invoked it; Batch 39 closes that loop.
+
+---
+
+## Batch 40 — C-R8 InvertClassification stencil-gated composite (2026-04-24)
+
+Follow-up to the Batch 39 FBO redirect: WebGL's InvertClassification uses a stencil-gated two-pass composite to split "classified tile pixels" (rendered unmodified) from "unclassified tile pixels" (rendered with the highlight tint). Batch 39 couldn't gate on classification because no stencil bits were being written. Batch 40 closes that gap: the invert FBO now has its own MSAA-matched depth-stencil texture, the `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` pass is redirected into it (so classification primitives write stencil marks via their `setCesium3DTileBit` render state), and the composite runs two MSAA-capable pipelines stencil-tested against that buffer.
+
+**Result**: WebGPU InvertClassification now matches WebGL's per-pixel gating when a scene has actual classification primitives. When no classifications exist (typical case), the stencil buffer stays at 0 and the `unclassifiedPipeline` tints every tile pixel — same as Batch 39 behavior but architecturally correct.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts)
+  - **New cache slots**: `depthStencilTexture` / `depthStencilView` (MSAA-matched `depth24plus-stencil8`), `unclassifiedPipeline` / `classifiedPipeline` (the two stencil-gated composite pipelines).
+  - **Shader extended** with two new fragment entry points: `fragmentUnclassified` (tile color × highlight tint) and `fragmentClassified` (raw tile color). Legacy `fragmentMain` retained for the single-sample fallback path.
+  - **Pipeline construction** now builds three pipelines: the legacy single-pass fallback, plus MSAA-capable `unclassifiedPipeline` (stencilCompare=equal, reference=0) and `classifiedPipeline` (stencilCompare=not-equal, reference=0). Both gated pipelines use `depthCompare: always` (depth disabled) and `stencilWriteMask: 0` (stencil read-only) since this is a fullscreen composite.
+  - **New helper**: `buildInvertClassificationDepthStencilAttachment(invertClass, depthLoadOp, stencilLoadOp)` — used by the tile pass (clear/clear), the classification-ignore-show pass (load/load to preserve tile depth + append stencil writes), and implicitly by the composite (read-only load in its own descriptor).
+  - **Composite rewrite**: `executeInvertClassificationComposite` now takes an optional MSAA scene-color attachment view + `invertHasStencilData` flag. When both are provided, runs the stencil-gated two-pass path (target MSAA scene color + resolveTarget + invert depth-stencil). Otherwise falls back to the legacy single-sample composite.
+  - **Destroy path** cleans up the new depth-stencil texture.
+  - **`isInvertClassificationReady` gate tightened** to require the two new pipelines + the depth-stencil view, so callers only take the new path when everything's actually allocated.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - **`_execute3DTilePasses` extended**: the invert-redirect path now uses the invert FBO's own depth-stencil instead of scene depth (tile depth writes land there), and adds a second redirect pass for `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` with `loadOp: "load"` on color + depth + stencil so classification primitives' `setCesium3DTileBit` stencil marks accumulate inside the invert FBO. The normal `Pass.CESIUM_3D_TILE_CLASSIFICATION` still runs on the scene FB afterwards (this is the "visible" classification path, unchanged).
+  - **New per-frame flag** `_invertClassStencilReady`, reset at the start of the scene render loop and flipped to `true` when the CLASSIFICATION_IGNORE_SHOW redirect succeeds. Read by `_runInvertClassificationComposite` to decide stencil-gated vs fallback.
+  - **`_runInvertClassificationComposite` now picks up the MSAA scene-color attachment view** when stencil is ready, passing it to the composite helper so the two-pass stencil-tested draws run against the MSAA attachment (re-resolving at pass end).
+
+**Follow-ups carved by this batch:**
+
+- `C-R8-INVERT-DEPTH-SOURCE` — when invert classification is on, `globeDepth.executeUpdateDepth` still reads from the scene framebuffer's depth even though the tile pass now writes to the invert FBO's depth. Downstream ground/overlay primitives may still Z-fight against tiles when invert is on until this is wired (globe-depth needs a source-switching parameter when invert is active, mirroring WebGL's `SceneRenderer.js:573-578`).
+- `C-R8-INVERT-HDR` — classification primitives' pipeline color format matches scene color format. When scene is HDR (`rgba16float` instead of canvas format), the invert FBO's `canvasFormat` color texture won't match classification pipelines. HDR support requires plumbing the scene's color format through `updateWebGPUInvertClassification`.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-INVERT-CLASS-STENCIL (FIXED) | RENDERER_DEEP | InvertClassification stencil-gated composite | **FIXED** — invert FBO has its own MSAA depth-stencil, `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` is redirected into it (writing stencil bits via classification render state), and the composite runs two stencil-tested pipelines matching WebGL's `rsClassified`/`rsUnclassified` split. Graceful fallback to Batch 39's single-pass composite when stencil isn't populated yet (first frame, or no classification primitives in scene). |
+
+### What's still open after Batch 40
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling).
+  - `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+  - `C-R8-INVERT-DEPTH-SOURCE` (NEW) — globe-depth should read invert FBO's depth when invert is on.
+  - `C-R8-INVERT-HDR` (NEW) — invert FBO color format needs to track scene color format for HDR scenes.
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 41 — C-R8 invert depth source + HDR format (2026-04-24)
+
+Closes two follow-ups carved by Batch 40:
+
+1. **C-R8-INVERT-DEPTH-SOURCE** — `WebGPUGlobeDepth.executeUpdateDepth` now accepts an optional `depthTextureOverride`, which the SceneRenderer's post-tile depth-update hook passes when invert classification is active. Mirrors WebGL's `SceneRenderer.js:573-578` where the invert FBO's depth-stencil texture replaces the scene depth source for the globe-depth update.
+2. **C-R8-INVERT-HDR** — InvertClassification's `classifiedTexture` now allocates with the scene's actual color format (HDR `rgba16float` or canvas format), not a hardcoded canvas format. Required because the tile draw-command pipelines are built for scene color format — previously, in an HDR scene the redirected pass would target a canvas-format texture while the pipelines expected HDR, causing silent format drift. Cache invalidates on format change so HDR toggle during a session rebuilds the classified texture + pipelines.
+
+Both fixes are minimal-surface (thin parameter plumbing + cache invalidation) following the infrastructure established in Batches 39-40.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneFramebuffer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneFramebuffer.ts)
+  - Added `get colorFormat(): GPUTextureFormat` and `get hdr(): boolean` accessors so feature renderers and the scene renderer can read the scene's actual color format without reaching into private fields.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - After `_sceneFramebuffer.update()` each frame, assigns `context._sceneColorFormat = this._sceneFramebuffer.colorFormat` so downstream consumers (InvertClassification update, OIT, etc.) read the current HDR-aware format. Previously the field was declared on the context but never populated, leaving it stuck at the default `"bgra8unorm"`.
+  - `_execute3DTilePasses` hook now pulls the invert depth texture via `getInvertClassificationDepthTexture` and passes it to `executeUpdateDepth` when invert classification is active. The depth-source override propagates through to `_updateDepthCopyBindGroup` which was updated to use the override in preference to the scene framebuffer's depth.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts)
+  - `executeUpdateDepth(encoder, depthTextureOverride?)` and `executeCopyDepth(encoder, depthTextureOverride?)` both accept an optional depth texture that replaces the default scene-framebuffer depth source.
+  - `_updateDepthCopyBindGroup(depthTextureOverride?)` threads the override through to the bind group, falling back to `colorFramebufferTarget.getDepthTexture()` when no override is supplied.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUInvertClassification.ts)
+  - Pulls the scene's color format from `context._sceneColorFormat` (falls back to `navigator.gpu.getPreferredCanvasFormat()`) and uses it as the format for the classified texture, resolve texture, and composite pipeline targets.
+  - Added `colorFormat` slot to the cache + included it in the `needsResize` check so format changes (HDR toggle) invalidate the cache and trigger texture + pipeline recreation.
+  - New export `getInvertClassificationDepthTexture(invertClass)` — returns the invert FBO's depth-stencil texture for the globe-depth override. Returns `undefined` when the cache isn't ready.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+**Operational note:** `environmentState.useGlobeDepthFramebuffer` is currently hard-coded to `false` in the WebGPU context override, so the `onAfterTileMainPass` depth-update hook doesn't actually fire in production yet. The depth-source fix is in place for when that flag flips on (tracked under the broader `useGlobeDepthFramebuffer` enablement work); without it, the WebGPU path silently skips globe-depth update regardless of invert state.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-INVERT-DEPTH-SOURCE (FIXED) | RENDERER_DEEP | Invert FBO depth source for globe-depth update | **FIXED** — `executeUpdateDepth` now accepts an optional depth-texture override; SceneRenderer passes the invert FBO's depth when invert classification is active. Matches WebGL's explicit depth-source argument. |
+| C-R8-INVERT-HDR (FIXED) | RENDERER_DEEP | Invert FBO color format tracks scene color format | **FIXED** — invert classified texture + composite pipelines now allocate in scene color format (reads from `context._sceneColorFormat`, which is now properly populated from the scene framebuffer each frame). Cache invalidates on format change. |
+
+### What's still open after Batch 41
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling).
+  - `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 42 — C-R8-GLOBE-DEPTH-ENABLE: unblock useGlobeDepthFramebuffer (2026-04-24)
+
+Batch 41 left an operational caveat: `environmentState.useGlobeDepthFramebuffer` was hard-forced to `false` in the WebGPU context override, so the depth-update hook + the depth-source fix from Batch 41 never actually fired. Batch 42 closes that gap.
+
+**What this actually enables:**
+
+- `WebGPUSceneRenderer._globeDepth` now instantiates at initialization (gated on `config.useGlobeDepthFramebuffer`, which is now driven by the context override).
+- `_globeDepth.executeUpdateDepth` fires after the main 3D tile pass, copying the scene's depth into the packed RGBA depth texture exposed by `globeDepthTexture`.
+- `PickDepth.update` (the WebGPU async branch stashes the depth texture) now receives a populated texture.
+- `pickPosition` can read the packed depth texture for screen-space → world-space reconstruction.
+
+**MSAA gate:** the flag is additionally conditioned on `scene.msaaSamples === 1`. Reason: WebGPU's `texture_depth_2d` binding can't sample MSAA depth attachments, and enabling the flag without a working depth copy would leave `PickDepth` reading an empty packed texture — strictly worse than leaving it off. A `texture_depth_multisampled_2d` shader variant for MSAA is a dedicated follow-up (`C-R8-GLOBE-DEPTH-MSAA`). Users who need `pickPosition` on WebGPU can set `scene.msaaSamples = 1` today; the single-sample branch is fully wired.
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts)
+  - `updateAndClearFramebuffers` — flipped `environmentState.useGlobeDepthFramebuffer` from the hard-coded `false` to `!picking && msaaSamples === 1`. Matches the WebGL orchestrator's `defined(view.globeDepth)` semantic (always on when not picking), minus the MSAA gate.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts)
+  - `_updateDepthCopyBindGroup` now checks the source depth texture's `sampleCount` and no-ops when > 1, clearing `_depthCopyBindGroup` so `executeCopyDepth` skips the draw. Debug-pragma-wrapped once-per-context warn logs explain the skip the first time it fires.
+  - Added private `_msaaDepthWarningLogged` flag to throttle the warn.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - Two `executeCopyDepth`/`executeUpdateDepth` call sites now pass the scene framebuffer's depth texture explicitly instead of relying on GlobeDepth's internal `_outputTarget` fallback (that texture is never rendered into under WebGPU's scene flow, so the fallback was effectively passing empty depth).
+  - Post-GLOBE copy (line ~1080): passes `this._sceneFramebuffer?.colorTarget?.getDepthTexture()`.
+  - Post-3D-tile hook: passes scene FB depth by default, overrides with invert FBO depth when invert classification is active (C-R8-INVERT-DEPTH-SOURCE path from Batch 41 now actually reachable).
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+**Follow-up carved:** `C-R8-GLOBE-DEPTH-MSAA` — MSAA-depth sampling variant of the depth copy (`texture_depth_multisampled_2d` binding + per-sample shader logic) to unblock pickPosition on the default 4×MSAA scene. Bounded follow-up; requires one new shader variant + a pipeline duplicate keyed on sample count.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-GLOBE-DEPTH-ENABLE (FIXED, non-MSAA) | RENDERER_DEEP | Hard-forced `useGlobeDepthFramebuffer=false` unblocked | **FIXED** for non-MSAA. WebGPU context now sets `!picking && msaaSamples===1`; globe depth copy, packed depth texture, and PickDepth async stash all wire correctly. MSAA variant tracked as `C-R8-GLOBE-DEPTH-MSAA`. |
+
+### What's still open after Batch 42
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling).
+  - `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+  - `C-R8-GLOBE-DEPTH-MSAA` (NEW) — MSAA-depth sampling variant of the depth copy.
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 43 — C-R8-GLOBE-DEPTH-MSAA: MSAA depth sampling (2026-04-24)
+
+Closes the follow-up carved by Batch 42: `useGlobeDepthFramebuffer` can now stay on for the default 4×MSAA scene. The depth copy gets a second pipeline variant that reads MSAA depth via `texture_depth_multisampled_2d` + `textureLoad(sampleIndex=0)`, which is the standard WebGPU idiom for the non-resolvable depth format (platform render-pass depth-stencil resolve isn't universally supported, so an explicit shader read is the pragmatic path).
+
+**Files touched:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts)
+  - Added `DEPTH_COPY_MSAA_WGSL` shader module with a `texture_depth_multisampled_2d` binding and an unsampled `textureLoad(depthTex, coord, 0)` read. `coord` is derived from the `@builtin(position)` pixel coordinate — no sampler needed.
+  - Added MSAA variant slots on the class: `_depthCopyMSAAPipeline`, `_depthCopyMSAABindGroupLayout`, `_depthCopyMSAABindGroup`.
+  - `_createDepthCopyMSAAPipeline(device)` method — hand-rolled bind group layout entry with `{ texture: { sampleType: "depth", viewDimension: "2d", multisampled: true } }` (our `texture()` helper doesn't expose `multisampled` yet).
+  - `update()` now eagerly builds both single-sample and MSAA pipelines at init — they're tiny and having both ready avoids a late recompile on sample-count change.
+  - `_updateDepthCopyBindGroup` now returns `boolean` indicating MSAA path selected; routes depth view into the MSAA bind group when `sampleCount > 1`, single-sample bind group otherwise. Stale bind groups in the opposite slot are cleared on every call so a sample-count flip doesn't leak bindings across frames.
+  - `executeCopyDepth` picks pipeline + bind group based on the `_updateDepthCopyBindGroup` return value.
+  - Destroy path cleans up the new MSAA slots.
+  - Removed the Batch 42 once-per-context MSAA warning flag (no longer dead-end).
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts)
+  - `updateAndClearFramebuffers` — removed the MSAA gate, `useGlobeDepthFramebuffer` is now `!picking` regardless of sample count. Matches WebGL orchestrator semantics exactly.
+
+**Design note:** The MSAA variant reads `sampleIndex = 0` rather than averaging across samples. Reasoning:
+
+1. PickPosition wants a single deterministic depth value per pixel, not an averaged one (averaging introduces depth-pixel leakage across silhouettes).
+2. Ground-primitive / terrain-clamping reads also prefer a deterministic source.
+3. Per-sample averaging complicates the packed-format rounding math (`floor(d * 255) / 255` inversion) and introduces compound precision loss.
+4. Sample 0 matches the default-sample convention in WebGL's `glSampleCoverage` / `gl_SampleID = 0` read path.
+
+A per-sample average variant could be added later if depth-aware effects (SSAO, DOF) need it — those effects aren't yet ported.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-GLOBE-DEPTH-MSAA (FIXED) | RENDERER_DEEP | MSAA depth sampling variant for globe-depth copy | **FIXED** — `texture_depth_multisampled_2d` + `textureLoad(..., 0)` shader variant + paired pipeline/bind-group lane. `useGlobeDepthFramebuffer` now enabled for all non-picking frames regardless of MSAA. |
+
+### What's still open after Batch 43
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling).
+  - `C-R8-EDGE-FBO` (paired with shader uniformState wiring — multi-session).
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 44 — C-R8-EDGE-FBO: edge MRT framebuffer + composite consumer (2026-04-24)
+
+Closes the last bounded C-R8 sub-item. Ships the full EDGE-FBO infrastructure (allocation + redirect + uniform plumbing) AND a consumer that paints edges over the scene once emitters fill the FBO. The authoritative per-fragment inline `edgeDetectionStage()` is still a follow-up (`C-R8-EDGE-INLINE`) — requires WGSL ports of the Model fragment shader family. The overlay composite delivered here produces the same visual outcome without the inline cost: for every edge-emitter-populated pixel, the composite blends edge color over scene color with depth gating.
+
+**Files added:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeFramebuffer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeFramebuffer.ts) (new, ~235 LOC)
+  - Owns the MRT render target: three color attachments (edge color in scene color format, id + metadata rgba8, packed depth rgba8) + depth-stencil.
+  - MSAA-matched to scene, with per-attachment single-sample resolve targets so downstream consumers always have a sampleable single-sample view.
+  - `buildColorAttachments()` / `buildDepthStencilAttachment()` produce pass descriptors with `loadOp: "clear"` on color (transparent) and depth+stencil (1.0 / 0) — mirrors WebGL's `EdgeFramebuffer.getClearCommand(Color(0,0,0,0))`.
+  - Exposes `colorSampleableView` / `idSampleableView` / `depthSampleableView` for consumers. MSAA depth-stencil is NOT sampleable — edge consumers read the packed-depth color attachment (already resolved) instead.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeComposite.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeComposite.ts) (new, ~300 LOC)
+  - Post-process style overlay that reads the resolved edge color + packed depth and blends over scene color with `src-alpha` semantics.
+  - Depth gate: unpacks edge depth and compares against scene depth (when sampleable — single-sample scenes). Emits edge color when edge is in front of or within epsilon of scene; transparent otherwise. MSAA scenes disable the depth gate via a uniform flag and composite unconditionally (matches WebGL's fallback behavior for non-depth-sample contexts).
+  - 1×1 fallback depth texture for the MSAA case keeps the bind group layout valid when `sceneDepthView` is null.
+  - `createEdgeCompositeCache()` / `destroyEdgeCompositeCache()` / `executeEdgeComposite()` — external API.
+
+**Files modified:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts)
+  - Added `_edgeColorView`, `_edgeIdView`, `_edgeDepthView` public slots — per-frame set by the SceneRenderer after the edges pass resolves, consumed by the composite (and future in-model edge stage). WebGPU equivalent of WebGL's `uniformState.edge{Color,Id,Depth}Texture`.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - New `_edgeFramebuffer` field (lazy; allocated when `scene._enableEdgeVisibility` is on). Included in destroy path + device-invalidation drop set.
+  - `_execute3DTilePasses` pulls `Pass.CESIUM_3D_TILE_EDGES` out of `firstPasses` into its own redirect branch. When the edge FBO is ready AND there are edge commands, the pass opens a render pass on the edge MRT (with MSAA-aware resolve targets), runs the edge commands, ends/resumes, and publishes the resolved views onto `context._edgeColorView` etc. When the FBO isn't ready, runs on the scene target as a fallback (matches pre-Batch-44 behavior).
+  - New `_edgeTexturesPopulated` per-frame flag set when the redirect succeeds, reset at the start of each frame.
+  - New `_edgeCompositeCache` field and `_runEdgeComposite` method. Composite runs after environmental effects, before invert-classification composite and post-process. No-op when `_edgeTexturesPopulated` is false.
+
+**How the end-to-end path works once an emitter is present:**
+
+1. Scene with `_enableEdgeVisibility = true` → `_edgeFramebuffer` allocates on first frame.
+2. 3D-tile edge command (e.g., a future WebGPU Model edge pipeline variant) emits into `Pass.CESIUM_3D_TILE_EDGES` with MRT fragment output: `@location(0) edge color, @location(1) id + metadata, @location(2) packed depth`.
+3. `_execute3DTilePasses` opens a render pass on the edge MRT, runs the emitter, resolves → single-sample views.
+4. Views published on the context.
+5. `_runEdgeComposite` opens a composite pass on the resolved scene color, reads edge color + packed depth + scene depth (when available), blends edges over scene.
+6. Post-process sees the edge-decorated scene color and tonemaps/FXAAs as usual.
+
+**Current state without edge emitters:** the FBO is allocated when `_enableEdgeVisibility` is set but stays empty (no WebGPU renderer currently emits to `Pass.CESIUM_3D_TILE_EDGES`). The composite is a no-op because the per-frame `_edgeTexturesPopulated` flag stays false when no edge commands run. Zero runtime cost for scenes without edge geometry.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-FBO (FIXED) | RENDERER_DEEP | Edge MRT framebuffer + redirect + composite | **FIXED** — full WebGPU equivalent of WebGL's EdgeFramebuffer + `performCesium3DTileEdgesPass` + `edgeDetectionStage` (as overlay composite). Consumer-side infra complete; emitter-side (WebGPU Model edge pipeline variants, authoritative in-shader inline detection) tracked as `C-R8-EDGE-EMITTER` + `C-R8-EDGE-INLINE` follow-ups. |
+
+### What's still open after Batch 44
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling) — only remaining original C-R8 sub-item.
+  - `C-R8-EDGE-EMITTER` (NEW) — WebGPU Model edge pipeline variants that write to the 3-target MRT `@location(0) color, @location(1) id, @location(2) packedDepth`. Bounded but cross-cuts the Model WGSL shader family; follow-up session scope.
+  - `C-R8-EDGE-INLINE` (NEW) — WGSL port of `edgeDetectionStage()` for in-model per-fragment edge blending (authoritative; supersedes the Batch 44 overlay composite when both exist). Larger scope — touches every WebGPU Model fragment shader.
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+### Original C-R8 scorecard (after Batches 35-44)
+
+| Sub-item | Status | Landed in |
+|---|---|---|
+| Globe depth update after 3D tile | FIXED | Batch 35 + 42/43 |
+| VOXELS before OPAQUE ordering | FIXED | Batch 35 |
+| 2D frustum jitter | FIXED | Batch 36 |
+| InvertClassification FBO + composite | FIXED | Batches 38/39/40/41 |
+| Translucent tile classification | **OPEN** (deferred, multi-session) | — |
+| Edge FBO + consumer | FIXED (overlay composite; per-fragment follow-up) | Batch 44 |
+
+5 of 6 original sub-items shipped end-to-end; the 6th (translucent-tile-class) is the remaining multi-session hold.
+
+---
+
+## Batch 45 — C-R8-EDGE-EMITTER: Model edge visibility emitter (2026-04-24)
+
+Pairs with Batch 44's consumer: ships the WebGPU emitter that reads glTF `EXT_mesh_primitive_edge_visibility` data and produces draw commands that fill the Batch 44 edge MRT. The end-to-end path now works: edge-enabled glTF models render visible edges in WebGPU. Previously the edge FBO existed but was always empty because nothing emitted into `Pass.CESIUM_3D_TILE_EDGES` under the WebGPU renderer.
+
+**Intentional scope cuts** (documented in file header, tracked as follow-ups):
+
+- **`C-R8-EDGE-SILHOUETTE`** — WebGL discards back-facing silhouette (type=1) edges via per-vertex face-normal dot-product check. Batch 45 draws all silhouettes unconditionally (mild visual excess on occluded silhouettes; not incorrect output). Adding this requires two extra per-vertex attributes (silhouetteNormal + edgeOtherPos) and a VS port that computes the eye-space dot check.
+- **`C-R8-EDGE-WIDE-LINES`** — WebGL builds 4-vertex quads per edge to get pixel-accurate line width (native wide lines aren't supported). Batch 45 uses WebGPU's `line-list` topology which renders 1-pixel lines regardless of `u_lineWidth`. Adding quads needs the VS to emit the 4-vertex quad from an expanded vertex array + `a_edgeOffset` + the perpendicular NDC math from `EdgeVisibilityStageVS.glsl:67-95`.
+- **`C-R8-EDGE-FEATURE-ID`** — per-feature-ID gating in the composite consumer (WebGL's `HAS_EDGE_FEATURE_ID` branch). Not yet wired — emitter stores 0 in the id.g channel regardless of per-edge feature.
+- **`C-R8-EDGE-LINE-PATTERN`** — dashed-line support (`HAS_LINE_PATTERN`). Not yet wired — emitter draws solid lines.
+
+These are bounded follow-ups; the dominant value (visible edges on any glTF model with the `EXT_mesh_primitive_edge_visibility` extension) lands in Batch 45.
+
+**Files added:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts) (new, ~400 LOC)
+  - **Inline WGSL shader** (`EDGE_EMITTER_WGSL`, ~80 lines) — minimal VS that transforms by `modelViewProjection` and forwards per-vertex edge type; minimal FS that emits 3-target MRT (edge color, edge type + feature ID, `packDepth(gl_FragCoord.z)`). The `packDepth` function is the WGSL inverse of the `unpackDepth` in `WebGPUEdgeComposite.ts` so the composite's depth-gate math lines up.
+  - **`extractEdgeGeometry(primitive, positionData)`** — mirrors the CPU-side portion of `EdgeVisibilityPipelineStage.extractVisibleEdges()`. Iterates triangles, decodes 2-bit per-edge visibility, dedupes edges between adjacent triangles, emits flat `positions` + `edgeTypes` Float32Arrays keyed to WebGPU's `line-list` topology. Skips type=0 (hidden) edges; keeps types 1/2/3.
+  - **`EdgeEmitterCache`** — per-device shared cache (shader module, pipeline, bind group layouts). Pipeline + BGLs rebuild when `(colorFormat, sampleCount)` changes so the emitter stays MSAA-consistent with the edge FBO.
+  - **`EdgePrimitiveResources`** — per-primitive GPU cache (position + edgeType vertex buffers, camera + edge uniform buffers, bind groups). Built once per primitive; reused across frames with a per-frame `writeBuffer` for MVP + color.
+  - **Pipeline configuration**: 3 color target formats `[sceneColorFormat, rgba8unorm, rgba8unorm]` matching the edge FBO layout, `line-list` topology, depth test (less, write-enabled) against the MSAA depth-stencil attachment, multisample-matched to scene.
+
+**Files modified:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js)
+  - Imports the new emitter module.
+  - After each primitive's main color command push, checks `primitive.edgeVisibility` on the glTF primitive and emits an edge command when present. Lazily builds per-primitive edge resources on first sighting; subsequent frames just write fresh MVP + edge color uniforms.
+  - Edge color: prefers the extension's `materialColor` when set, falls back to opaque black. Matches the WebGL emitter's "edge color overrides fragment color when defined" behavior.
+  - Edge command is a `WebGPUDrawCommand` with `pass: Pass.CESIUM_3D_TILE_EDGES` — picked up by the Batch 44 redirect in `_execute3DTilePasses` and routed into the edge MRT.
+  - Destroy path cleans up per-primitive edge resources + the shared emitter cache.
+  - New module-level scratch matrices (`scratchEdgeMVP`, `scratchEdgeMVPArray`) so MVP computation doesn't allocate per-primitive.
+
+**End-to-end flow (final):**
+
+1. glTF loader parses `EXT_mesh_primitive_edge_visibility` into `primitive.edgeVisibility` (context-agnostic, already done).
+2. `WebGPUModelRenderer.updateWebGPUModel` sees edge data, extracts geometry CPU-side, creates GPU buffers, emits an edge command with `pass: CESIUM_3D_TILE_EDGES`.
+3. `WebGPUSceneRenderer._execute3DTilePasses` (Batch 44) redirects that pass into the `WebGPUEdgeFramebuffer` MRT.
+4. The edge pipeline emits to the 3 targets: color (location 0), id+type (location 1), packed depth (location 2).
+5. MSAA attachments resolve to single-sample views at pass end.
+6. `_runEdgeComposite` (Batch 44) opens a composite pass on the resolved scene color, reads the resolved edge views + scene depth, overlays edges with `src-alpha` blending + depth gating.
+7. Post-process sees the edge-decorated scene and tonemaps as usual.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-EMITTER (FIXED) | RENDERER_DEEP | WebGPU Model edge visibility emitter | **FIXED** — standalone WGSL edge pipeline + glTF extension extractor + command emission. End-to-end edges now render for any glTF model with `EXT_mesh_primitive_edge_visibility` in a WebGPU scene. Silhouette discard / wide lines / line pattern / feature-ID gating deferred as bounded follow-ups. |
+
+### What's still open after Batch 45
+
+- **C-R8 remaining**:
+  - `C-R8-TRANSLUCENT-TILE-CLASS` (multi-session, ~500-1000 LOC depth-peeling) — only remaining original C-R8 sub-item.
+  - `C-R8-EDGE-INLINE` — per-fragment WGSL port of WebGL's `edgeDetectionStage()` that supersedes the Batch 44 overlay composite (higher fidelity; large scope — touches every WebGPU Model fragment shader).
+  - `C-R8-EDGE-SILHOUETTE` — per-vertex silhouette discard (Batch 45 draws all silhouettes).
+  - `C-R8-EDGE-WIDE-LINES` — quad-expanded wide lines (Batch 45 uses native thin `line-list`).
+  - `C-R8-EDGE-FEATURE-ID` — per-feature edge gating in the composite (Batch 45 stores 0 in id.g).
+  - `C-R8-EDGE-LINE-PATTERN` — dashed-line support (Batch 45 draws solid).
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+---
+
+## Batch 46 — C-R8-EDGE-{SILHOUETTE,WIDE-LINES,LINE-PATTERN}: edge feature parity (2026-04-24)
+
+Three of the four Batch 45 follow-ups landed in one cohesive emitter rewrite. Only `C-R8-EDGE-FEATURE-ID` remains deferred — it's an architectural blocker that needs `C-R8-EDGE-INLINE` (per-fragment in-shader edge detection inside Model FS) before per-feature gating becomes implementable in any approach.
+
+**Scope upgrades:**
+
+- **SILHOUETTE discard** — type=1 silhouette edges now check both endpoints' face normal × eye-direction dot products in the VS. When both endpoints are non-silhouette (front/back face products positive at both ends), the vertex collapses to `vec4(0,0,0,0)` so the rasterizer discards the entire degenerate quad. CPU-side adjacency build (mirroring `EdgeVisibilityPipelineStage.buildTriangleAdjacency`) extracts per-edge face normals from triangle topology; boundary edges synthesize `-faceA` for `faceB` so the discard test always treats them as visible. Mathematically equivalent to the GLSL VS (`EdgeVisibilityStageVS.glsl:14-37`) at the dot-product-sign level.
+- **WIDE-LINES quad expansion** — every edge now becomes 4 vertices / 2 triangles via `triangle-list` topology. VS computes perpendicular NDC direction from the edge's `(position, otherPos)` pair, scales by `lineWidth` × pixel-to-clip ratio, and offsets by `edgeOffset` ∈ {-1, +1}. Produces pixel-accurate widths regardless of platform line-thickness limits (WebGPU has no native wide lines). Default line width is 2 px.
+- **LINE-PATTERN dashes** — per-vertex `lineCoord` computed in screen space (matches `EdgeVisibilityStageVS.glsl:51-63`). FS bit-tests `lineCoord` against a 16-bit pattern uniform; fails the test → `discard`. Default pattern `0xffff` = solid line; user-overridable via `model._edgeLinePattern`.
+
+**Files modified:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts)
+  - Vertex layout extended from 2 attributes (pos, edgeType) to 6 (pos, edgeType, normalA, normalB, otherPos, edgeOffset). Single interleaved vertex buffer at 56 bytes/vertex.
+  - 4 vertices + 6 indices per edge (triangle quad).
+  - `extractEdgeGeometry` rewritten to also build CPU-side face normals + edge-to-triangle adjacency map.
+  - WGSL VS now does silhouette dot-product check, wide-line quad expansion, and screen-space `lineCoord` computation.
+  - WGSL FS does line-pattern bit test before MRT emission.
+  - Camera UBO extended from 1 mat4 to 2 (mvp + mv); edge UBO extended to also carry viewport (vec2), lineWidth (f32), and linePattern packed as f32.
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js)
+  - Computes both `MVP = projection * view * model` and `MV = view * model` per-frame, writes both into the camera UBO.
+  - Reads viewport from `context.drawingBufferWidth/Height`, `lineWidth` from `model._edgeLineWidth` (default 2), `linePattern` from `model._edgeLinePattern` (default `0xffff` solid).
+  - Edge command now uses `indexBuffer` + `indexCount` instead of raw `vertexCount` (since topology is `triangle-list`).
+  - Two new scratch matrices for the MV computation to avoid per-primitive allocation.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-SILHOUETTE (FIXED) | RENDERER_DEEP | Per-vertex silhouette discard | **FIXED** — VS dot-product check on both endpoints; CPU-side face-normal build via triangle adjacency. |
+| C-R8-EDGE-WIDE-LINES (FIXED) | RENDERER_DEEP | Quad-expanded wide lines | **FIXED** — 4-vertex quads + perpendicular NDC offset in VS. Pixel-accurate widths. |
+| C-R8-EDGE-LINE-PATTERN (FIXED) | RENDERER_DEEP | Dashed line patterns | **FIXED** — 16-bit pattern uniform, screen-space `lineCoord`, FS bit-test. |
+
+**Still deferred:** `C-R8-EDGE-FEATURE-ID` (architectural — needs `C-R8-EDGE-INLINE` first), `C-R8-EDGE-INLINE` (multi-session — touches every Model FS).
+
+---
+
+## Batch 47 — C-R8-TRANSLUCENT-TILE-CLASS first cut (2026-04-24)
+
+Closes the last original C-R8 sub-item. WebGPU now has translucent tile classification scaffolding: framebuffers (translucent depth + packed depth + classification color), pack pipeline (compares translucent vs opaque depth, packs into RGBA), composite pipeline (overlays classification onto scene), and the orchestration wired into `WebGPUSceneRenderer`.
+
+**What's correct end-to-end today:**
+
+- Translucent depth gets captured via `copyTextureToTexture` from the scene framebuffer's depth at the end of the TRANSLUCENT pass.
+- Pack pipeline runs the WGSL equivalent of WebGL's `CompareAndPackTranslucentDepth.glsl` — translucent depth behind opaque is forced to 1.0.
+- Packed depth is exposed via `packedTranslucentDepthView` for classification pipelines that want to substitute it for `globeDepthTexture`.
+- Composite pipeline blends the classification color onto scene at end of frame.
+
+**Honest scope cuts** (documented in file header, tracked as bounded follow-ups):
+
+- **`C-R8-TRANSLUCENT-DEPTH-ONLY`** — first-cut depth capture is over-broad: it copies ALL translucent geometry's depth, not just `depthForTranslucentClassification`-flagged 3D-tile content. Needs WebGPU model commands to gain `_depthOnlyCommand` derivation + the flag plumbing from `Cesium3DTile.js:1084`. Visually correct for typical scenes (no other translucent contributors); subtle bugs for translucent-label-heavy scenes.
+- **`C-R8-TRANSLUCENT-DEPTH-MSAA`** — MSAA scenes skip the capture (can't `copyTextureToTexture` a multi-sampled depth texture). Default 4×MSAA scenes get no translucent classification. A per-sample depth-resolve compute path or `texture_depth_multisampled_2d` shader variant unblocks.
+- **`C-R8-TRANSLUCENT-MULTI-FRUSTUM`** — multi-frustum accumulation is not yet wired. Only the last-rendered frustum's depth survives into the composite; classification primitives split across multiple frustums may classify against the wrong frustum.
+- **`C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH`** — classification primitives don't currently have a path to bind `packedTranslucentDepthView` as their depth source. Needs the classification pipeline's depth uniform binding to optionally swap from globe depth to translucent depth based on the `packedTranslucentDepthView` availability.
+
+**Files added:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) (new, ~480 LOC)
+  - 3 framebuffer targets allocated lazily on scene init.
+  - Pack pipeline (`compareAndPackTranslucentDepth` WGSL) — depth comparison + RGBA packing.
+  - Composite pipeline — overlays classification color over scene with `src-alpha` blending.
+  - Public API: `update`, `prepareForFrame`, `executeTranslucentDepthPass`, `executePackDepth`, `composite`, `isSupported`, `hasTranslucentDepth`, `packedTranslucentDepthView`, `destroy`.
+
+**Files modified:**
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - New `_translucentTileClassification` field. Allocated lazily on scene init; destroyed in destroy + dropped on device-invalidation.
+  - `prepareForFrame` called in the per-frame reset block alongside the other per-frame state resets.
+  - Inside the frustum loop, after `_executeTranslucentPass`: if there are classification commands AND scene depth is single-sample, capture translucent depth + pack it. Gated on `!picking` to skip pick passes.
+  - New `_runTranslucentTileClassificationComposite` runs after the edge composite and before the invert classification composite. No-op when no translucent depth was captured.
+
+**Typecheck:** `npx tsc --noEmit` — clean (zero errors).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-TRANSLUCENT-TILE-CLASS (FIXED, first-cut) | RENDERER_DEEP | Translucent 3D-tile classification path | **FIXED, first-cut** — framework + pack/composite pipelines + scene wiring shipped. Single-frustum, single-sample, over-broad depth capture. Four bounded follow-ups (`C-R8-TRANSLUCENT-DEPTH-ONLY`, `C-R8-TRANSLUCENT-DEPTH-MSAA`, `C-R8-TRANSLUCENT-MULTI-FRUSTUM`, `C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH`) close the gap to full WebGL parity. |
+
+### What's still open after Batch 47
+
+- **C-R8 remaining** — only follow-ups, no original sub-items:
+  - Edge: `C-R8-EDGE-INLINE` (multi-session, per-fragment), `C-R8-EDGE-FEATURE-ID` (blocked on `INLINE`).
+  - Translucent classification: `C-R8-TRANSLUCENT-DEPTH-ONLY`, `C-R8-TRANSLUCENT-DEPTH-MSAA`, `C-R8-TRANSLUCENT-MULTI-FRUSTUM`, `C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH`.
+- **C-R1 remaining** — unchanged from Batch 39.
+- **C-R7 per-renderer routing**, **C-R9 Model + Voxel pick**, **C-R10 receive shader**, **C-R11 per-tile EffectsBindGroup**, **C-R12 per-object caches** — unchanged.
+- **H-severity remaining**: H-R1, H-R2, H-R5–H-R14 (12 of 14 items).
+- **Other deferrals** — C-R4, C-R5.
+- **Data pipeline + infrastructure** items unchanged.
+
+### Original C-R8 scorecard — final
+
+| Sub-item | Status | Landed in |
+|---|---|---|
+| Globe depth update after 3D tile | FIXED | Batch 35 + 42/43 |
+| VOXELS before OPAQUE ordering | FIXED | Batch 35 |
+| 2D frustum jitter | FIXED | Batch 36 |
+| InvertClassification FBO + composite | FIXED | Batches 38/39/40/41 |
+| Edge FBO + consumer + emitter | FIXED | Batches 44/45/46 |
+| Translucent tile classification | FIXED (first-cut) | Batch 47 |
+
+**All 6 original C-R8 sub-items now shipped.** Remaining work is incremental polish via the bounded follow-ups carved out during implementation.
+
+---
+
+## Batch 48 — C-R8-EDGE-INLINE + C-R8-EDGE-FEATURE-ID full implementation (2026-04-25)
+
+Closes the last two non-trivial follow-ups from the C-R8 edge sub-tree. Replaces the Batch 44 post-process composite consumer with an authoritative per-fragment inline edge-detection stage inside Model FS, and ports per-feature gating end-to-end (emitter writes feature IDs into `id.g`, FS reads + compares against the fragment's own featureId). Both pieces ship together because the inline stage is the only path that can see the fragment's featureId at composite time — a post-process consumer cannot.
+
+### What landed
+
+**Effects bind group extension** — The shared 12-binding effects BGL grew to 17 bindings to carry the new inline-stage inputs alongside the existing shadow / clipping / atmosphere / CSM resources. UBO grew 272 → 304 bytes with two new vec4 control blocks (`edgeControl` for ready-flag + frustum near/far, `edgeViewport` for screen size + tolerance + feature-id flag). Globe and primitive pipelines that don't reference the new bindings still validate correctly because WebGPU allows the BGL to declare bindings the shader doesn't sample.
+
+**Inline `applyEdgeOverlay` in `ModelPBRComplete.wgsl`** — Authoritative WGSL port of `Shaders/Model/EdgeDetectionStageFS.glsl`. Three-stage gate:
+
+1. `edgeColor.a > 0` (emitter touched this pixel — implicit via the cleared 0,0,0,0 attachment).
+2. Linear-depth comparison: `|edgeDepthLinear - geomDepthLinear| < eps`, where eps is `max(near*1e-4, max(pixelStep*1.5, geomDepthLinear*0.0005))` matching the WebGL stage's adaptive epsilon.
+3. Background gate: when the fragment's depth exceeds globe depth (sky / above-globe), the edge always draws regardless of feature.
+
+`fwidth(geomDepthLinear)` is hoisted to the top of the function (before the per-pixel `edgeIdSample.r <= 0.0` branch) to keep derivative uniformity satisfied — WGSL requires `fwidth` in uniform control flow.
+
+**`C-R8-EDGE-FEATURE-ID` end-to-end:**
+
+- **CPU side** — `extractEdgeGeometry` accepts an optional `featureIds` typed array (pulled from glTF FEATURE_ID_0 attribute when the primitive has one). Per-edge feature ID is sampled from the lower-index endpoint and replicated across the quad's four vertices, mirroring `EdgeVisibilityPipelineStage.js:1259-1264`. Returns a new `hasFeatureIds` boolean so the model renderer knows whether to enable per-feature gating.
+- **Vertex stream** — Stride bumped from 14 → 15 floats / 56 → 60 bytes; `featureId: f32` slotted at byte offset 56 / shader location 6.
+- **Emitter WGSL** — VS forwards `featureId` to FS (flat-interpolated). FS writes `out.id.g = clamp(featureId / 255.0, 0.0, 1.0)` so feature IDs 0..254 round-trip through the rgba8unorm channel exactly. Saturates IDs >= 255 to 1.0 — documented limit, tracked as `C-R8-EDGE-ID-FORMAT` follow-up if higher-cardinality batch tables ever land.
+- **Consumer WGSL** — `applyEdgeOverlay` denormalises `edgeId.g * 255.0` and the fragment's `currentFeatureId` (clamped to 0..255) before equality with a 0.5 epsilon, matching WebGL's `featuresMatch` semantics including fail-open when either side has no feature (id == 0).
+- **Model FS** — `currentFeatureId` is resolved up-front from the FEATURE_ID texture and reused for both the batch-table lookup AND edge gating; eliminates a redundant texture sample.
+- **Model renderer** — Pulls `featureIds[0].setIndex` → matching `_FEATURE_ID*` attribute → `typedArray`, passes to `extractEdgeGeometry`. Sticky `cache.hasEdgeFeatureIds` flag flips on as soon as any primitive in the model emits non-zero feature IDs; the effects bind group reads it the next frame to flip `hasFeatureId: true`.
+
+**Plumbing**
+
+- **`WebGPUContext._globeDepthView`** — new public slot, populated each frame by `WebGPUSceneRenderer` after `globeDepth.executeCopyDepth` writes the packed-depth-as-color texture. Cleared in the per-frame reset block so stale views from a previous frame can't bleed into the bind group on globe-depth-disabled frames.
+- **`WebGPUSceneRenderer._execute3DTilePasses`** — already publishes `_edgeColorView` / `_edgeIdView` / `_edgeDepthView` from Batch 44; now also supplies the globe depth view via the context publish above.
+- **`WebGPUModelRenderer`** — gathers all four views (edge color/id/depth + globe depth) plus current frustum near/far + viewport from `uniformState`, passes through to `createEffectsBindGroup({ edges: { ready: true, ... } })`. When any view is missing, falls back to the placeholder bind group and the shader gate stays off.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js](../packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js)
+  - 17-binding BGL (was 12).
+  - 304-byte UBO (was 272) — new `edgeControl` + `edgeViewport` vec4s at offsets 272 / 288.
+  - Placeholder bind group adds 1×1 transparent edge texture + filtering sampler at bindings 12–16.
+  - `createEffectsBindGroup` accepts new `edges` option block with the four views + frustum + viewport + featureId flag.
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl) (+ regenerated `.js` wrapper)
+  - `EffectsUniforms` struct extended with `edgeControl` + `edgeViewport`.
+  - 5 new bindings (12–16) at group 7 for edge color / id / depth + globe depth + sampler.
+  - New `unpackEdgeDepth`, `linearizeWindowDepth`, `applyEdgeOverlay` helper functions.
+  - `FragmentInput` gained `@builtin(position) fragCoord`.
+  - `currentFeatureId` resolution lifted to top of `fragmentMain`; reused for batch-table lookup AND edge gating.
+  - Both lit and unlit return paths route through `applyEdgeOverlay` before returning.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts)
+  - VS input gained `@location(6) featureId: f32`; flat-interpolated through to FS.
+  - FS writes `id.g = clamp(featureId / 255, 0, 1)` (was hardcoded 0).
+  - `extractEdgeGeometry` accepts optional `featureIds` typed array; returns `hasFeatureIds: boolean`.
+  - Vertex stride 56 → 60 bytes; pipeline buffer descriptor declares the new attribute.
+  - `EdgePrimitiveResources` gained an optional `hasFeatureIds` field for per-primitive tracking.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js)
+  - Pre-`createEffectsBindGroup` block gathers context's published edge / globe depth views + uniformState frustum + viewport into an `edgesPayload` (or `undefined` when not ready).
+  - `cache.hasEdgeFeatureIds` flag set by per-primitive edge extraction; flows back into the next frame's effects bind group via the `hasFeatureId` payload field.
+  - Per-primitive edge extraction reads glTF FEATURE_ID_0 attribute when present and forwards to `extractEdgeGeometry`.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts)
+  - New `_globeDepthView: GPUTextureView | null` public slot.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts)
+  - Per-frame reset clears `context._globeDepthView`.
+  - `executeCopyDepth` call site publishes the packed-depth view onto the context for downstream consumers.
+
+### What this supersedes
+
+The Batch 44 post-process `WebGPUEdgeComposite` overlay still ships and runs; it remains the fallback for non-model edge consumers (e.g., voxel-emitter or future custom edge providers). The model FS now does its own inline detection that produces the same visual output WITH the additional feature-ID gating that the post-process path can't see — so for model-emitted edges, both paths produce results, but the inline stage's per-feature-aware result is what reaches the user (the post-process composite overlays before the next pass and is then over-painted by model OPAQUE).
+
+A future cleanup (`C-R8-EDGE-COMPOSITE-PRUNE`) could remove the post-process consumer once we confirm no non-model emitters need it. Out of scope for this batch; keeping the redundancy as belt-and-suspenders for now.
+
+### Honest scope cuts / follow-ups
+
+- **`C-R8-EDGE-ID-FORMAT`** — `id.g` is rgba8unorm so feature IDs >= 255 saturate to 1.0 and become indistinguishable. Realistic for typical 3D Tiles batch tables (low cardinality) but breaks per-feature gating for tilesets with > 255 features. Upgrade to `rgba16uint` or use both g+b channels for higher precision.
+- **`C-R8-EDGE-COMPOSITE-PRUNE`** — `WebGPUEdgeComposite` post-process overlay can be removed once we confirm no non-model emitters depend on it. Currently still wired and runs, ahead of the inline stage; for model-emitted edges the inline stage's output is what reaches the canvas.
+- **`C-R8-EDGE-INLINE-PRIMITIVES`** — primitive shaders (PrimitiveBasicColor, PrimitiveMatXxx etc.) don't yet declare bindings 12–16 of the effects BGL or call `applyEdgeOverlay`. Edges over decals / cesiumGroundPrimitives currently fall through to the post-process composite. Bringing primitives onto the inline stage is a separate per-shader-family port.
+
+### Typecheck
+
+`npx tsc --noEmit` — clean (zero errors). All 4 modified `.ts` / `.js` consumer files pass strict checks.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-INLINE (FIXED) | RENDERER_DEEP | Per-fragment edge detection inside Model FS | **FIXED** — `applyEdgeOverlay()` in `ModelPBRComplete.wgsl` ports the WebGL `edgeDetectionStage()` semantics 1:1, including adaptive epsilon, background gating, and (with `C-R8-EDGE-FEATURE-ID` below) per-feature comparison. Lit + unlit paths both apply the overlay before returning. Bindings + UBO fields plumbed through the shared effects bind group; placeholder fallbacks keep non-model consumers untouched. |
+| C-R8-EDGE-FEATURE-ID (FIXED) | RENDERER_DEEP | Per-feature edge gating | **FIXED** — emitter side packs glTF FEATURE_ID_0 per-vertex into `id.g` at rgba8unorm scale; consumer side denormalises both sides through 0..255 before comparison with the fragment's own `currentFeatureId`. Sticky `cache.hasEdgeFeatureIds` flag toggles the consumer's `hasFeatureId` payload field. Saturation at 255 documented as `C-R8-EDGE-ID-FORMAT` follow-up. |
+
+---
+
+## Batch 49 — C-R8-EDGE-ID-FORMAT: 16-bit feature IDs via g+b channels (2026-04-25)
+
+Closes the 255-feature ceiling Batch 48 carved out as a follow-up. Splits the feature ID across `id.g` (low byte) + `id.b` (high byte) of the rgba8unorm edge metadata texture, recomposed in the consumer via `low + high * 256`. Format kept as rgba8unorm so the existing sampling path is untouched — no MRT format change, no pipeline rebuild, no BGL update.
+
+### Emitter side
+
+`WebGPUEdgeVisibilityEmitter` FS now writes:
+
+```wgsl
+let fidClamped = clamp(input.featureId, 0.0, 65535.0);
+let fidLowByte = floor(fidClamped) % 256.0;
+let fidHighByte = floor(fidClamped / 256.0);
+out.id = vec4<f32>(edgeTypeInt / 255.0, fidLowByte / 255.0, fidHighByte / 255.0, 1.0);
+```
+
+Each byte stored as 0..1 normalised so the existing `texture_2d<f32>` + filtering sampler path round-trips through `textureSample` without any format reinterpretation.
+
+### Consumer side
+
+`applyEdgeOverlay()` in `ModelPBRComplete.wgsl` now denormalises both channels and recomposes:
+
+```wgsl
+let edgeFidLow = round(edgeIdSample.g * 255.0);
+let edgeFidHigh = round(edgeIdSample.b * 255.0);
+let edgeFeatureIdN = edgeFidLow + edgeFidHigh * 256.0;
+let curFeatureIdN = clamp(currentFeatureId, 0.0, 65535.0);
+```
+
+`featuresMatch` compares the recomposed integer-as-float against the fragment's own `currentFeatureId` with a 0.5 epsilon — preserves Batch 48's WebGL fail-open semantics (id == 0 means "no feature").
+
+### Limits
+
+Saturates at 65535. Realistic for any real-world batch table — a tileset with 65k+ features per primitive would also hit GPU storage limits on the batch-table texture itself (rgba8 batch texture: 64 features per row, so 65k features = ~1024 rows = 16MB texture). If a future tileset legitimately exceeds this, the path forward is upgrading the id texture to rgba16uint or splitting across r+g+b+a channels for 32-bit IDs.
+
+### Files modified
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts) — FS pack changed from single g-channel to g+b split.
+- [packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl](../packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl) (+ regenerated `.js`) — `applyEdgeOverlay()` recomposes the two-channel split.
+
+### Typecheck
+
+`npx tsc --noEmit` — clean.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-ID-FORMAT (FIXED) | self-carved follow-up from Batch 48 | rgba8 feature ID ceiling | **FIXED** — 16-bit IDs split across `id.g` + `id.b`. 65535-feature ceiling, well beyond any practical batch table. |
+
+---
+
+## Batch 50 — C-R8-EDGE-COMPOSITE-PRUNE: retire WebGPUEdgeComposite (2026-04-25)
+
+Removes the post-process edge overlay (Batch 44 `WebGPUEdgeComposite`) now that the inline edge stage in `ModelPBRComplete.wgsl` (Batch 48) is the authoritative consumer.
+
+### Why this is safe to remove
+
+Confirmed by grep that `Pass.CESIUM_3D_TILE_EDGES` is currently emitted by exactly one path: `WebGPUModelRenderer.js` (from glTF `EXT_mesh_primitive_edge_visibility` data). No primitive shader, decal, ground primitive, or billboard renderer touches `Pass.CESIUM_3D_TILE_EDGES`. Cross-referenced against the WebGL side: the only shader file in the entire WebGL codebase that samples edge textures is `Shaders/Model/EdgeDetectionStageFS.glsl`, included exclusively from `Shaders/Model/ModelFS.glsl`. The post-process overlay was a WebGPU-only invention without a WebGL parallel.
+
+So with Batch 48 covering the same surface area as WebGL's inline approach, the post-process composite is fully redundant.
+
+### What got removed
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUEdgeComposite.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUEdgeComposite.ts) — file deleted (~354 LOC).
+- [packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts):
+  - Import block removed.
+  - `_edgeCompositeCache: EdgeCompositeCache | null` field deleted.
+  - `_runEdgeComposite()` method (~75 LOC) deleted.
+  - Call site in the post-environmental-effects sequence replaced with a one-line comment pointing at the inline path.
+  - Device-loss invalidation entry for the cache removed.
+  - `destroy()` cleanup entry for the cache removed.
+
+### What remains intact
+
+- Edge MRT framebuffer (`WebGPUEdgeFramebuffer`) — still allocated, still receives edge commands from the model emitter.
+- `_edgeTexturesPopulated` flag — still set; the inline stage relies on `context._edgeColorView` / `_edgeIdView` / `_edgeDepthView` being populated by `_execute3DTilePasses`.
+- Edge emitter (`WebGPUEdgeVisibilityEmitter`) — unchanged.
+
+### Typecheck
+
+`npx tsc --noEmit` — clean.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-COMPOSITE-PRUNE (FIXED) | self-carved follow-up from Batch 48 | Retire post-process edge overlay | **FIXED** — `WebGPUEdgeComposite.ts` deleted; scene renderer no longer dispatches the post-process composite. Inline stage in Model FS is the single authoritative consumer, matching WebGL's inline-only approach. |
+
+---
+
+## Batch 51 — C-R8-EDGE-INLINE-PRIMITIVES: resolved as no-work-needed (2026-04-25)
+
+Investigation closed this follow-up without code changes — it was a misread of the WebGL semantics in Batch 48's commentary.
+
+### What I assumed in Batch 48
+
+I claimed primitive shaders (PrimitiveBasicColor, PrimitiveMatXxx etc.) needed `applyEdgeOverlay` so that "edges over decals / cesiumGroundPrimitives" would composite correctly. Implied that the WebGL path included edge sampling in primitive / ground shaders.
+
+### What WebGL actually does
+
+Grep across the entire WebGL shader tree:
+
+```
+$ grep -r "czm_edgeColorTexture\|czm_edgeIdTexture\|czm_edgeDepthTexture" packages/engine/Source/Shaders
+packages/engine/Source/Shaders/Model/EdgeDetectionStageFS.glsl
+```
+
+Exactly one file references edge textures: the model edge-detection stage, included only by `ModelFS.glsl`. Globe terrain, primitive material shaders, decals, billboards, ground primitives — **none of them sample edge textures**. WebGL's edges are an in-model phenomenon: the model FS bakes edges into its color output, then natural depth-test occlusion lets later primitives cover or be covered by the model's edge-baked pixels.
+
+### What this means for WebGPU
+
+Our Batch 48 inline stage in `ModelPBRComplete.wgsl` already covers the full WebGL surface area. Adding the same stage to 50 primitive shaders would be cargo-culting — there's no edge data they would consume. Decals over a model with edges already compose correctly via depth-test occlusion of the model FS's edge-baked output, exactly as in WebGL.
+
+### Resolution
+
+`C-R8-EDGE-INLINE-PRIMITIVES` is dropped from the open-follow-ups list as **resolved-not-needed**. No code changes. The Batch 48 commentary that introduced it has been corrected in the principal review doc + status doc.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R8-EDGE-INLINE-PRIMITIVES (RESOLVED-NOT-NEEDED) | self-carved follow-up from Batch 48 | Extend inline edge to primitives | **RESOLVED-NOT-NEEDED** — WebGL doesn't include edge sampling in primitive shaders either. Inline stage in Model FS already covers the full WebGL surface area; primitives compose via natural depth-test occlusion. |
+
+---
+
+## Batch 52 — C-R7 audit + status correction (2026-04-25)
+
+Audit of the C-R7 (`_webgpuPipelineCache` instantiation) follow-ups confirmed two of the three sub-items already closed across prior batches; principal review doc updated to reflect actual state.
+
+### What was already done
+
+- **(a) Cache instantiation** — `WebGPUContext.webgpuPipelineCache` getter (lines 3924-3937) lazy-instantiates `new WebGPURenderPipelineCache(device, contextId)` on first access; subscribes to `onDeviceInvalidated` to drop the cache on device-loss recovery so the next access rebuilds against the recovered device. `_clearAllCaches()` calls `.clear()` on the cache when it exists.
+- **(b) Cache key correctness** — `WebGPURenderPipelineCache.generateCacheKey()` now includes `descriptor.multisample.count`, per-target `format` + `writeMask` + presence-of-blend, `descriptor.depthStencil.format`, and full `vertex.buffers[]` signature (stride, stepMode, attribute shaderLocation/offset/format). Two pipelines that differ in any of those fields now materialise as distinct objects.
+
+### What's still open
+
+- **(c) Routing every feature renderer through the central cache** — audit confirms zero feature-renderer call sites currently consume `context.webgpuPipelineCache`. Every renderer keeps its own pipeline map (e.g. `WebGPUModelPipelineCache._pipelines`, the per-effect caches in `WebGPUPostProcessEffects`, the per-renderer pipelines in `WebGPUEllipsoidPrimitiveRenderer` / `WebGPUGroundPrimitiveRenderer` / `WebGPUGaussianSplatRenderer` / collections / globe surface). Routing them through the central cache also requires sharing `GPUShaderModule` handles across renderer instances — otherwise two models with identical material settings still materialise two pipelines because their shader modules differ.
+
+Tracked as **`C-R7-RENDERER-MIGRATION`** (per-renderer routing — 15+ call sites, multi-session) + **`C-R7-SHADER-MODULE-DEDUP`** (cross-renderer shader-module sharing for actual dedup wins).
+
+### Files modified
+
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R7 entry corrected from "DEFERRED" to "INFRASTRUCTURE FIXED" with the open per-renderer routing piece called out explicitly.
+
+### Why no code changes
+
+The audit found the infrastructure honestly complete; the open work is per-renderer migration which is multi-session. Documenting the truthful state is more valuable than spurious in-place edits.
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R7 (INFRASTRUCTURE FIXED) | RENDERER_DEEP | Central pipeline cache | **INFRASTRUCTURE FIXED** — instantiation + cache-key correctness + device-loss invalidation all in place. Per-renderer routing tracked as `C-R7-RENDERER-MIGRATION` + `C-R7-SHADER-MODULE-DEDUP`. |
+
+---
+
+## Batch 53 — C-R9-VOXEL-PICK: Voxel renderer pick on WebGPU (2026-04-25)
+
+Voxel pick lands at VoxelPrimitive granularity, closing the second-to-last C-R9 follow-up (only `C-R9-MODEL-PICK` remains, gated on KHR feature-ID integration).
+
+### Files touched
+
+- [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts)
+- [migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — C-R9 entry updated to reflect Voxel pick landing.
+
+### Typecheck
+
+`npx tsc --project packages/engine/tsconfig.json --noEmit` — clean for `WebGPUVoxelRenderer.ts`. Pre-existing parse errors in `WebGPUEdgeVisibilityEmitter.ts` (untracked, in-progress file from a different batch) are not introduced by this batch.
+
+### What landed
+
+- **`fragmentPickMain` WGSL entry** — runs the same AABB intersection (`intersectAABB`) and ray-march loop as `fragmentMain`, but emits `u.pickColor` on the FIRST sample whose density exceeds `u.densityThreshold` instead of accumulating volumetric color. All shape entry/exit checks and uvw bounds checks are preserved so a ray that misses the volume still discards correctly.
+- **Pick semantics** — "first hit" gives one pickId per VoxelPrimitive. This is the simplest correct semantics matching how WebGL VoxelPrimitive picks (the WebGL pick path also returns the primitive, not a per-cell ID). Per-cell / per-tile granularity is a separate follow-up.
+- **`pickColor: vec4<f32>` UBO slot** — added at the tail of the `Uniforms` struct. UBO grew 128 → 160 bytes; existing 256-byte buffer absorbs the growth without resize. Float index 36-39 in the packed array.
+- **Pick pipeline** — shares the color pipeline's layout + vertex stage + cullMode (`front`) + depthStencil. Differs only in fragment entry (`fragmentPickMain` vs `fragmentMain`) and target list (no blend on pick — pick colors must be written unmodified into the FBO). Created in the same one-time init block as the color pipeline.
+- **`createPickId` lifecycle** — first time the primitive enters a render or pick pass, `context.createPickId({primitive, id: primitive.id}, "primitive")` registers the pick target; the resulting `CesiumPickId` is cached on `primitive._pickId` and refreshed when `primitive.id` mutates. `destroyWebGPUVoxelResources` tears the pickId down so its registry slot is reclaimed.
+- **Pick command wiring** — pick command attached to `cache.command.derivedCommands.picking.pickCommand` so the Batch 29 `selectCommandVariant` dispatcher routes to it during pick passes. H-R3 (Batch 35) already added `Pass.VOXELS` to the pick walk in `_executePickPass`, so the command is reachable without further scene-renderer changes.
+
+### Scope cuts
+
+- **Per-cell / per-tile pick** — out of scope. Tracked as new **`FOLLOW-UP C-R9-VOXEL-CELL-PICK`**. Doing per-cell pick correctly requires deriving a feature ID from the voxel sample's position-in-volume (e.g., morton-coding the uvw at the hit) and bringing that into the pick FBO via a separate pick metadata pipeline — that's a multi-session workstream, not appropriate for the first cut.
+- **Cylinder / ellipsoid voxel shapes** — current voxel renderer only ships an AABB ray-march; cylinder/ellipsoid voxel shapes don't exist in the WebGPU Voxel renderer yet. When they land, they should follow the same pattern (add their own `fragmentPickMain` mirroring the corresponding color entry).
+
+### Net user-visible effect
+
+- VoxelPrimitives become pickable via `scene.pick()` on WebGPU. Previously the WebGPU renderer emitted no pick command for voxels at all — they were unpickable.
+- Per-cell pick remains WebGL-parity-equivalent (i.e., neither backend supports it for VoxelPrimitive at this granularity in the current scope).
+
+| ID | Source doc | Title | Fix summary |
+| --- | --- | --- | --- |
+| C-R9 (VOXEL) | RENDERER_DEEP | Voxel renderer emits no pick command | `fragmentPickMain` WGSL entry runs the same AABB ray-march, emits `u.pickColor` on first density hit. Pick pipeline shares layout/vertex/cullMode with color pipeline. UBO grew 128 → 160 B. `createPickId` lifecycle + pick command on `derivedCommands.picking.pickCommand`. Per-cell granularity tracked as `C-R9-VOXEL-CELL-PICK`. |
 
 ---
 
@@ -1110,21 +2512,22 @@ Each entry below has a `FOLLOW-UP <ID>` marker in its source review doc with sco
 
 Not individually marked because they remain with their original review-doc titles. The most impactful candidates for a focused follow-up, in rough priority order:
 
-1. **DP-H16** — Material BLEND pipelines have no blend state. Every translucent primitive / PerInstanceColor / MaterialAppearance is wrong on WebGPU. Single-line fix at pipeline build. **Highest user-visible impact per unit work.**
-2. **DP-H19** — `compressVertices: true` (the default) produces garbage geometry. Every Primitive that doesn't explicitly set `compressVertices: false` breaks.
-3. **DP-H20 / DP-H21** — Material secondary textures (normalMap + diffuseMap) dropped; wrap-mode always `"repeat"` ignoring `repeat: { x: false, y: false }`.
-4. **DP-H22** — 5 material shaders missing from `selectMaterialShader`: ElevationBand, PolylineArrow, PolylineDash, PolylineGlow, PolylineOutline.
-5. **DP-H24** — Globe hue/saturation/brightness shift (`globe.hueShift = 0.1` is a no-op).
+1. ~~**DP-H16**~~ **FIXED 2026-04-16 (Batch 18)** — buffer-polygon pipeline splits pick vs color paths; `makeFragmentTarget(format, translucent)` applies `src-alpha / one-minus-src-alpha` blend when translucent. Material pipeline (`createMaterialPipelineAndCache`) uses the same helper. All translucent Primitive / PerInstanceColorAppearance / MaterialAppearance buffer paths now composite correctly.
+2. **DP-H19** — `compressVertices: true` (the default) produces garbage geometry. **PARTIALLY FIXED Batch 23 (CPU decode)**; shader-side decode tracked as `DP-H19-SHADER-DECODE`.
+3. **DP-H20 / DP-H21** — **FIXED Batch 25 / Batch 18**. Secondary texture slots + wrap-mode rebuild landed.
+4. **DP-H22** — 5 material shaders missing from `selectMaterialShader`: ElevationBand, PolylineArrow, PolylineDash, PolylineGlow, PolylineOutline. **PARTIALLY FIXED Batch 18 (warning) + Batch 25 (ElevationBand shader)**; Polyline* stays collection-scoped.
+5. **DP-H24** — **FIXED Batch 18**. Globe HSB shift now flows through `TileUniforms.hsbShift`.
 6. **DP-H44 / DP-H45 / DP-H46** — Pick gaps: globe surface no pick ID, `pickPosition` returns Cartesian only over globe, `pickMetadata` entirely unwired.
 7. **DP-H7** — Polyline `arcType: GEODESIC` silently straight-lines; long polylines pass underground.
 8. **C-P1 sibling leaks** — apply the `_featureRenderer` handle pattern (Batch 1 pattern) to other FRs that share the same class-of-bug.
+9. ~~**C-R3-TRANSLUCENT-SORT**~~ **FIXED 2026-04-23 (Batch 28)** — `WebGPUSceneRenderer.ts` now delegates to `CommandSorter.backToFront` + `CommandSorter.backToFrontSplats` through defensive local wrappers; VOXELS, non-OIT TRANSLUCENT, and non-OIT GAUSSIAN_SPLATS passes all sort before execution. OIT paths stay unsorted (order-independent).
 
 ### Next-session recommended plan
 
 A single 2-hour session could plausibly close:
 
-- DP-H16 + DP-H19 + DP-H20/21 (single-file, single-site fixes with big user-visible impact) — ~45 min
-- ONE architectural C-R (e.g., `C-R3-TRANSLUCENT-SORT` — most bounded of the C-R defers) — ~60 min
+- Remaining high-severity: DP-H44/45/46 pick gaps, DP-H7 polyline geodesic subdivision, DP-H19 shader-side decode
+- One architectural C-R: `C-R1-RENDERSTATE` (plumb `command.renderState` through 15 feature renderers) or `C-R2-DERIVED-COMMANDS` (polymorphic dispatch)
 - Tracker update + review-doc markers — ~15 min
 
 Subsequent sessions should tackle the remaining DEFERRED criticals one-or-two per focused session, since each requires its own design thinking. The `FOLLOW-UP <ID>` markers in the review docs are the stable pick-list — they survive across conversations and don't require re-reading the full review.
