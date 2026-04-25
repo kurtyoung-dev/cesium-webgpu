@@ -191,9 +191,7 @@
             {
               name: "Grid (political-style boundary)",
               alpha: 0.6,
-              providerPromise: Promise.resolve(
-                new Cesium.GridImageryProvider(),
-              ),
+              providerPromise: Promise.resolve(new Cesium.GridImageryProvider()),
             },
           ];
 
@@ -252,11 +250,11 @@
           // Hue defaults to 0 for an unmodified appearance; gamma defaults to 1.
           input.value = String(layer[prop] ?? (prop === "gamma" ? 1.0 : 0.0));
           const label = document.createElement("span");
-          label.textContent = " " + Number(input.value).toFixed(2);
+          label.textContent = ` ${Number(input.value).toFixed(2)}`;
           input.addEventListener("input", () => {
             const v = Number(input.value);
             layer[prop] = v;
-            label.textContent = " " + v.toFixed(2);
+            label.textContent = ` ${v.toFixed(2)}`;
           });
           td.appendChild(input);
           td.appendChild(label);
