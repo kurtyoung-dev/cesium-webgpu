@@ -322,22 +322,31 @@ This matched the Batch-67 prediction exactly — naga couldn't prove that `fragm
 **Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts) (3 paired `discard; return` edits + 1 trailing fallthrough return + JSDoc-style WGSL comments explaining the naga requirement).
 **Closing batch:** Batch 68.
 
-### NEW-4-G — Voxel WGSL `textureSample` not in uniform control flow (revealed by NEW-4-E fix)
+### ~~NEW-4-G — Voxel WGSL `textureSample` not in uniform control flow~~ FIXED 2026-04-26 (Batch 69)
 
-**What:** With NEW-4-E's `missing return` blocker resolved, naga now proceeds to deeper analysis and surfaces the next blocker. New verbatim error:
+**Resolution:** Took candidate (a) — replaced `textureSample(voxelTex, voxelSamp, uvw)` with `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)` in both `fragmentMain` (line 120) and `fragmentPickMain` (line 159) of [WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts). `textureSampleLevel` with explicit LOD 0 doesn't compute derivatives, so it has no uniform-control-flow requirement and naga accepts it inside the data-dependent ray-march loop. Volumetric voxel textures are single-mip, so forcing LOD 0 matches existing intent. Verified by re-running `SANDCASTLE_BASE_URL=http://localhost:8082 node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` — the `'textureSample' must only be called from uniform control flow` error is gone from the Voxel Pick demo's console. NEW-4-H (next predicted blocker) immediately surfaced as expected.
+**Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts) (2 paired textureSample → textureSampleLevel edits + WGSL comments referencing NEW-4-G).
+**Closing batch:** Batch 69.
+
+### NEW-4-H — Voxel `updateWebGPUVoxelPrimitive` calls `Matrix4.multiplyByPoint` with undefined cartesian (revealed by NEW-4-G fix)
+
+**Captured live error (verbatim, from Batch 69 re-run on port 8082):**
 
 ```text
-[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 73:13: 'textureSample' must only be called from uniform control flow
+DeveloperError: Expected cartesian to be typeof object, actual typeof was undefined
+    at Check.typeOf.object (index.js:188:15)
+    at Matrix4.multiplyByPoint (index.js:4591:28)
+    at Object.updateWebGPUVoxelPrimitive [as update] (index.js:79617:36)
+    at _VoxelPrimitive.update (index.js:329472:10)
 ```
 
-WGSL spec: `textureSample` (which auto-computes derivatives) requires uniform control flow at the call site. In `WebGPUVoxelRenderer.ts` `fragmentMain` line 120 (and `fragmentPickMain` line 159), the call is inside a `for` loop with `if (t > tE || accumA > 0.99) { break; }` — the loop iteration count is data-dependent (`accumA` accumulates from per-fragment samples), so per WGSL the loop body is not in uniform control flow.
-**Why deferred:** Was masked by NEW-4-E for the entire Batch 67 verification window. Surfaced today.
+**What:** With NEW-4-G's WGSL blocker resolved, the Voxel Pick demo now compiles its pipeline and reaches the per-frame `updateWebGPUVoxelPrimitive` path. That path calls `Matrix4.multiplyByPoint(invModel, camWorld, new Cartesian3())` at [WebGPUVoxelRenderer.ts:467-471](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts#L467-L471). The throw says the second arg (`camWorld = us.cameraPosition`) is undefined. `us.cameraPosition` is normally populated by `UniformState.update()`; this can be undefined if the renderer's update runs before the per-frame UniformState pass, OR if the voxel primitive runs in a pass that doesn't populate camera state (e.g., classification or compute pass entry).
+**Why deferred:** Was masked by NEW-4-G for the entire Batch 67-68 verification window. Surfaced in Batch 69 Voxel Pick re-run.
 **Prerequisites:** None.
-**Estimated effort:** 30 min — likely a one-line fix substituting `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)` (which doesn't compute derivatives, so it has no uniform-control-flow requirement). Volumetric textures usually don't have mipmaps anyway, so explicitly forcing LOD 0 is consistent with the intent.
-**Impact:** Voxel rendering pipeline still fails compile. Voxel Pick demo still FAIL. Demo also has a separate JS-side bug (`Matrix4.multiplyByPoint` cartesian-undefined at `updateWebGPUVoxelPrimitive` bundle line ~79617) that may be the next blocker once this WGSL one closes.
-**Predicted root cause:** The data-dependent `for` loop with `break` from `accumA` makes the loop body's control flow non-uniform per WGSL semantics. `textureSample` requires derivatives, which only make sense across a 2x2 quad of fragments — and the spec enforces the quad-uniformity via the uniform-control-flow constraint.
-**Predicted fix candidates:** (a) Replace `textureSample` with `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)` — explicit LOD 0, no derivatives, no uniform-control-flow requirement. Matches the existing volumetric texture which is single-mip. Lowest-risk. (b) Hoist the loop's break condition out so `textureSample` runs in uniform control flow — much harder, fights the algorithm.
-**Trace:** Surfaced in Batch 68 Voxel Pick re-run after NEW-4-E fix.
+**Estimated effort:** 1 session. Need to (a) confirm whether `us.cameraPosition` or `invModel` is the undefined arg (DeveloperError stacktrace doesn't disambiguate), then (b) either guard with an early-return when either is undefined, OR sync the renderer's update to run after `UniformState.update()` for that frame.
+**Predicted fix candidates:** (a) Guard at top of update path: `if (!defined(us.cameraPosition) || !defined(primitive.modelMatrix)) return;` — safe but masks any deeper ordering bug. (b) Trace the invocation order — `_VoxelPrimitive.update` is called from `PrimitiveCollection.update`, which `Scene.updateAndExecuteCommands` invokes; we likely run before UniformState's per-frustum push. Move the camera-relative math into the command's per-pass uniform pack instead of the primitive update.
+**Impact:** Voxel rendering still fails — render loop crashes with the DeveloperError at first frame. Voxel Pick demo still FAIL.
+**Trace:** Surfaced in Batch 69 Voxel Pick re-run after NEW-4-G fix; matches the secondary blocker that NEW-4-G's entry called out as predicted next failure.
 
 ---
 

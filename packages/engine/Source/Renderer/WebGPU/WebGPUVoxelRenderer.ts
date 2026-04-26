@@ -117,7 +117,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let p = u.cameraPositionEC + rayDir * t;
     let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
     if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
-    let s = textureSample(voxelTex, voxelSamp, uvw);
+    // NEW-4-G (Batch 69): WGSL requires textureSample to be called from
+    // uniform control flow (it auto-computes derivatives across a 2x2
+    // fragment quad). The enclosing for-loop has a data-dependent
+    // \`break\` on accumA, so the loop body is not in uniform control
+    // flow — naga rejects textureSample here. textureSampleLevel with
+    // explicit LOD 0.0 has no derivative requirement and no uniform-
+    // control-flow constraint. Volumetric voxel textures are single-mip
+    // anyway, so forcing LOD 0 matches existing intent.
+    let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
       let sa = s.a * u.stepSize;
       accumC = accumC + s.rgb * sa * (1.0 - accumA);
@@ -156,7 +164,11 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let p = u.cameraPositionEC + rayDir * t;
     let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);
     if (any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0))) { continue; }
-    let s = textureSample(voxelTex, voxelSamp, uvw);
+    // NEW-4-G (Batch 69): textureSampleLevel(..., 0.0) instead of
+    // textureSample — see fragmentMain for the uniform-control-flow
+    // rationale. The early-return on first hit makes the data-dependence
+    // structurally identical to the color path.
+    let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
       // First non-empty sample wins. Emit the pickColor unmodified —
       // the pick FBO readback maps it back to {primitive, id}.

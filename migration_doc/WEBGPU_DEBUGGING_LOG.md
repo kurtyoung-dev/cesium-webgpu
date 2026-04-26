@@ -4233,3 +4233,41 @@ Two infrastructure changes landed in the same commit because they were required 
 - `server.js` — `--sandcastlePort` flag added (default 8081, the historical hardcoded value). The Sandcastle mirror server now uses `argv.sandcastlePort` instead of a hardcoded `8081`, and the `buildSandcastleApp` outer/inner origin pair uses `argv.port`/`argv.sandcastlePort` instead of hardcoded `8080`/`8081`. Required so `node server.js --port 8090 --sandcastlePort 8091` doesn't EADDRINUSE on a workstation where the canonical-main server already holds 8080+8081.
 
 Neither change affects the default-port behaviour. The runner change is also needed for any future agent that runs Sandcastle from a worktree — it's strictly additive.
+
+## Session 41 — Batch 69: NEW-4-G Voxel `textureSample` non-uniform control flow (2026-04-26)
+
+Closes NEW-4-G from `DEFERRED_WORK.md`. Carried forward from Session 40's S40-T4-followup. WGSL fix only — Voxel Pick demo remains FAIL because NEW-4-G's resolution exposes the next predicted blocker (NEW-4-H, JS-side `Matrix4.multiplyByPoint` with undefined cartesian in `updateWebGPUVoxelPrimitive`). Sandcastle baseline stays at 5/7 PASS.
+
+### S41-T1 — NEW-4-G: `textureSample` rejected in data-dependent ray-march loop
+
+**Symptom:** With NEW-4-E's `missing return at end of function` resolved, the next naga compile error surfaces in `WebGPUVoxelRenderer.ts`'s embedded WGSL:
+
+```text
+[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 73:13: 'textureSample' must only be called from uniform control flow
+```
+
+**Root cause:** WGSL spec requires `textureSample` to be called from uniform control flow because it auto-computes derivatives across a 2x2 fragment quad. The call sites at `fragmentMain` line 120 and `fragmentPickMain` line 159 sit inside a `for` loop with `if (t > tE || accumA > 0.99) { break; }` (color path) and `if (t > tE) { break; }` (pick path). The color path's break is data-dependent on `accumA`, which accumulates from per-fragment samples — so the loop body is structurally non-uniform. Even though the pick path's break is parameter-driven, the WGSL spec applies the same uniformity analysis and the call still fails because naga cannot statically prove uniformity. Mirrors the GLSL constraint that derivatives are undefined when invoked from non-uniform control flow.
+
+**Fix:** Replaced both `textureSample(voxelTex, voxelSamp, uvw)` calls with `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)`. `textureSampleLevel` takes an explicit LOD argument and never computes derivatives, so it has no uniform-control-flow requirement and naga accepts the call inside the data-dependent loop. Forcing LOD 0 matches existing intent — volumetric voxel textures are single-mip so there's no LOD chain to traverse anyway. Both edits are wrapped in WGSL comments referencing NEW-4-G with the rationale.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts`
+
+**Verification:** Re-ran `SANDCASTLE_BASE_URL=http://localhost:8082 node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` after `npx gulp build`. The `'textureSample' must only be called from uniform control flow` error is gone from the Voxel Pick demo's console errors. The pipeline now compiles and the demo reaches the per-frame `_VoxelPrimitive.update` path where it hits NEW-4-H (separate JS bug, see below).
+
+### S41-T1-followup — NEW-4-H surfaced
+
+The Voxel Pick demo now reports a different error: `DeveloperError: Expected cartesian to be typeof object, actual typeof was undefined` at `Matrix4.multiplyByPoint` called from `updateWebGPUVoxelPrimitive`. Stack trace points at [WebGPUVoxelRenderer.ts:467-471](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts#L467-L471) — `Matrix4.multiplyByPoint(invModel, camWorld, new Cartesian3())` where `camWorld = us.cameraPosition`. The `us.cameraPosition` arg is undefined at this point in the lifecycle. This is a new entry (NEW-4-H) tracked in `DEFERRED_WORK.md` with predicted fix candidates. Out of scope for Batch 69 (single NEW-4-G unblock task per user direction).
+
+### Sandcastle baseline after Batch 69
+
+PASS=5, FAIL=2 (unchanged from Batch 68):
+
+- WebGPU Edge Feature ID — PASS
+- WebGPU Edge Visibility — PASS
+- WebGPU Many Imagery Layers — PASS
+- WebGPU Model Pick — PASS (note: pick returned null at canvas center — primitive may be off-center, render itself OK)
+- WebGPU Point Light Shadows — PASS
+- WebGPU Translucent Classification — FAIL (pre-existing render-loop crash, separate from voxel work)
+- WebGPU Voxel Pick — FAIL (NEW-4-G WGSL closed; NEW-4-H JS-side bug now blocking)
