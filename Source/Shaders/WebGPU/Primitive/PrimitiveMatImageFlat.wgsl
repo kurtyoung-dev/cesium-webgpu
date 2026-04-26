@@ -27,9 +27,13 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// MaterialUniforms field order must match Material.ImageType fabric
+// declaration order: { image: str, repeat: Cart2, color: Color }.
+// MaterialUniformBuffer packs numeric fields in fabric order, skipping
+// textures. Keep this struct in sync or the shader reads wrong bytes.
 struct MaterialUniforms {
-    color: vec4<f32>,
     repeat: vec2<f32>,
+    color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;

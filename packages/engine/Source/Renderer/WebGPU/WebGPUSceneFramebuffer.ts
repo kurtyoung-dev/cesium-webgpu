@@ -37,6 +37,26 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
+   * The WebGPU texture format used by the scene color target. Tracks
+   * HDR state — `rgba16float` (or the `rg11b10ufloat` fallback) when
+   * HDR is enabled, the canvas format otherwise. Feature renderers
+   * that allocate their own framebuffers which must interop with
+   * scene pipelines (e.g., InvertClassification's `classifiedTexture`,
+   * OIT accumulation targets) should read this instead of hardcoding
+   * `navigator.gpu.getPreferredCanvasFormat()`.
+   */
+  get colorFormat(): GPUTextureFormat {
+    return this._colorFormat;
+  }
+
+  /**
+   * True when the scene is currently rendering in HDR mode.
+   */
+  get hdr(): boolean {
+    return this._hdr;
+  }
+
+  /**
    * The ID render target for object picking.
    */
   get idTarget(): WebGPURenderTarget | null {

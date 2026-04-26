@@ -22,6 +22,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
 import BrightPassWGSL from "../../Shaders/WebGPU/PostProcess/BrightPass.js";
 import BloomCompositeWGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite.js";
 import AmbientOcclusionGenerateWGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.js";
@@ -189,6 +190,13 @@ export class BloomEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _compositeUniforms: GPUBuffer | null = null;
 
+  // C-R11 (Batch 31) — bind group cache. Bloom's four per-frame
+  // createBindGroup sites burn ~240 bind groups / sec at 60 Hz; the
+  // cache replays the same bind group when sourceView / samplers /
+  // intermediate views haven't changed. Invalidated on resize because
+  // texture views become stale.
+  private _bgCache = new WebGPUBindGroupCache();
+
   private _config: Required<BloomConfig>;
 
   constructor(config: BloomConfig = {}) {
@@ -223,6 +231,10 @@ export class BloomEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
+    // C-R11 (Batch 31) — texture views change on resize, so the cached
+    // bind groups reference stale views. Drop the cache so the next
+    // execute() rebuilds against the fresh views.
+    this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -234,16 +246,22 @@ export class BloomEffect implements PostProcessEffect {
   ): GPUTextureView {
     if (!this._device) return sourceView;
 
+    // C-R11 (Batch 31) — all four bind groups route through the cache.
+    // When sourceView / sampler / uniform buffers are stable (the typical
+    // case after the first frame), the cache hits and we skip the
+    // createBindGroup syscall entirely.
+
     // Pass 1: Bright pass (full-res → half-res)
-    const brightBG = this._device.createBindGroup({
-      label: "Bloom-BrightPass-BG",
-      layout: this._singleTexLayout!,
-      entries: [
+    const brightBG = this._bgCache.getOrCreate(
+      this._device,
+      "Bloom-BrightPass-BG",
+      this._singleTexLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._brightUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "Bloom-BrightPass",
@@ -253,15 +271,16 @@ export class BloomEffect implements PostProcessEffect {
     );
 
     // Pass 2: Horizontal Gaussian blur
-    const blurHBG = this._device.createBindGroup({
-      label: "Bloom-BlurH-BG",
-      layout: this._singleTexLayout!,
-      entries: [
+    const blurHBG = this._bgCache.getOrCreate(
+      this._device,
+      "Bloom-BlurH-BG",
+      this._singleTexLayout!,
+      [
         { binding: 0, resource: this._brightView! },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "Bloom-BlurH",
@@ -271,15 +290,16 @@ export class BloomEffect implements PostProcessEffect {
     );
 
     // Pass 3: Vertical Gaussian blur
-    const blurVBG = this._device.createBindGroup({
-      label: "Bloom-BlurV-BG",
-      layout: this._singleTexLayout!,
-      entries: [
+    const blurVBG = this._bgCache.getOrCreate(
+      this._device,
+      "Bloom-BlurV-BG",
+      this._singleTexLayout!,
+      [
         { binding: 0, resource: this._blurTempView! },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "Bloom-BlurV",
@@ -289,16 +309,17 @@ export class BloomEffect implements PostProcessEffect {
     );
 
     // Pass 4: Composite bloom + original scene
-    const compositeBG = this._device.createBindGroup({
-      label: "Bloom-Composite-BG",
-      layout: this._compositeLayout!,
-      entries: [
+    const compositeBG = this._bgCache.getOrCreate(
+      this._device,
+      "Bloom-Composite-BG",
+      this._compositeLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: this._blurResultView! },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._compositeUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "Bloom-Composite",
@@ -563,6 +584,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _modulateUniforms: GPUBuffer | null = null;
 
+  // C-R11 (Batch 32) — bind group cache. 4 BGs per frame → ~0 after
+  // frame 1. Invalidated on resize when texture views rotate.
+  private _bgCache = new WebGPUBindGroupCache();
+
   private _config: Required<AmbientOcclusionConfig>;
 
   constructor(config: AmbientOcclusionConfig = {}) {
@@ -600,6 +625,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
+    // C-R11 (Batch 32) — texture views change on resize.
+    this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -611,17 +638,23 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
+    // C-R11 (Batch 32) — all four bind groups cached. Depth view is
+    // stable within a frame; sourceView stability depends on whether
+    // post-process stages upstream recreated the framebuffer (rare —
+    // only on resize), so the cache steady-states at 4 entries.
+
     // Pass 1: Generate raw AO from depth
-    const genBG = this._device.createBindGroup({
-      label: "AO-Generate-BG",
-      layout: this._generateLayout!,
-      entries: [
+    const genBG = this._bgCache.getOrCreate(
+      this._device,
+      "AO-Generate-BG",
+      this._generateLayout!,
+      [
         { binding: 0, resource: depthView },
         { binding: 1, resource: this._randomView! },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._generateUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "AO-Generate",
@@ -631,15 +664,16 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     );
 
     // Pass 2: Horizontal blur on AO
-    const blurHBG = this._device.createBindGroup({
-      label: "AO-BlurH-BG",
-      layout: this._blurLayout!,
-      entries: [
+    const blurHBG = this._bgCache.getOrCreate(
+      this._device,
+      "AO-BlurH-BG",
+      this._blurLayout!,
+      [
         { binding: 0, resource: this._aoRawView! },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "AO-BlurH",
@@ -649,15 +683,16 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     );
 
     // Pass 3: Vertical blur on AO
-    const blurVBG = this._device.createBindGroup({
-      label: "AO-BlurV-BG",
-      layout: this._blurLayout!,
-      entries: [
+    const blurVBG = this._bgCache.getOrCreate(
+      this._device,
+      "AO-BlurV-BG",
+      this._blurLayout!,
+      [
         { binding: 0, resource: this._aoBlurTempView! },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "AO-BlurV",
@@ -667,16 +702,17 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     );
 
     // Pass 4: Modulate scene color with blurred AO
-    const modBG = this._device.createBindGroup({
-      label: "AO-Modulate-BG",
-      layout: this._modulateLayout!,
-      entries: [
+    const modBG = this._bgCache.getOrCreate(
+      this._device,
+      "AO-Modulate-BG",
+      this._modulateLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: this._aoBlurredView! },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._modulateUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "AO-Modulate",
@@ -930,6 +966,9 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   private _blurVUniforms: GPUBuffer | null = null;
   private _dofUniforms: GPUBuffer | null = null;
 
+  // C-R11 (Batch 32) — bind group cache.
+  private _bgCache = new WebGPUBindGroupCache();
+
   private _config: Required<DepthOfFieldConfig>;
 
   constructor(config: DepthOfFieldConfig = {}) {
@@ -960,6 +999,8 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
+    // C-R11 (Batch 32) — texture views change on resize.
+    this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -971,16 +1012,19 @@ export class DepthOfFieldEffect implements PostProcessEffect {
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
+    // C-R11 (Batch 32) — three bind groups cached.
+
     // Pass 1: Horizontal blur
-    const blurHBG = this._device.createBindGroup({
-      label: "DoF-BlurH-BG",
-      layout: this._blurLayout!,
-      entries: [
+    const blurHBG = this._bgCache.getOrCreate(
+      this._device,
+      "DoF-BlurH-BG",
+      this._blurLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurHUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "DoF-BlurH",
@@ -990,15 +1034,16 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     );
 
     // Pass 2: Vertical blur
-    const blurVBG = this._device.createBindGroup({
-      label: "DoF-BlurV-BG",
-      layout: this._blurLayout!,
-      entries: [
+    const blurVBG = this._bgCache.getOrCreate(
+      this._device,
+      "DoF-BlurV-BG",
+      this._blurLayout!,
+      [
         { binding: 0, resource: this._blurTempView! },
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: this._blurVUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "DoF-BlurV",
@@ -1008,17 +1053,18 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     );
 
     // Pass 3: DoF composite (sharp + blurred + depth → output)
-    const dofBG = this._device.createBindGroup({
-      label: "DoF-Composite-BG",
-      layout: this._dofLayout!,
-      entries: [
+    const dofBG = this._bgCache.getOrCreate(
+      this._device,
+      "DoF-Composite-BG",
+      this._dofLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: this._blurredView! },
         { binding: 2, resource: depthView },
         { binding: 3, resource: sampler },
         { binding: 4, resource: { buffer: this._dofUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "DoF-Composite",
@@ -1224,6 +1270,9 @@ export class GodRayEffect implements PostProcessEffect {
 
   private _generateUniforms: GPUBuffer | null = null;
 
+  // C-R11 (Batch 32) — bind group cache for the two per-frame sites.
+  private _bgCache = new WebGPUBindGroupCache();
+
   private _config: Required<GodRayConfig>;
 
   constructor(config: GodRayConfig = {}) {
@@ -1335,6 +1384,8 @@ export class GodRayEffect implements PostProcessEffect {
     this._outputTex = null;
     this._rayView = null;
     this._outputView = null;
+    // C-R11 (Batch 32) — texture views change on resize.
+    this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
   }
 
@@ -1349,17 +1400,20 @@ export class GodRayEffect implements PostProcessEffect {
       return sourceView;
     }
 
+    // C-R11 (Batch 32) — both bind groups cached.
+
     // Pass 1: generate rays at half-res into _rayView.
-    const genBG = this._device.createBindGroup({
-      label: "GodRay-Generate-BG",
-      layout: this._generateLayout!,
-      entries: [
+    const genBG = this._bgCache.getOrCreate(
+      this._device,
+      "GodRay-Generate-BG",
+      this._generateLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: depthView },
         { binding: 2, resource: sampler },
         { binding: 3, resource: { buffer: this._generateUniforms! } },
       ],
-    });
+    );
     executePass(
       encoder,
       "GodRay-Generate",
@@ -1369,15 +1423,16 @@ export class GodRayEffect implements PostProcessEffect {
     );
 
     // Pass 2: additive composite scene + rays → full-res output.
-    const compBG = this._device.createBindGroup({
-      label: "GodRay-Composite-BG",
-      layout: this._compositeLayout!,
-      entries: [
+    const compBG = this._bgCache.getOrCreate(
+      this._device,
+      "GodRay-Composite-BG",
+      this._compositeLayout!,
+      [
         { binding: 0, resource: sourceView },
         { binding: 1, resource: this._rayView! },
         { binding: 2, resource: sampler },
       ],
-    });
+    );
     executePass(
       encoder,
       "GodRay-Composite",

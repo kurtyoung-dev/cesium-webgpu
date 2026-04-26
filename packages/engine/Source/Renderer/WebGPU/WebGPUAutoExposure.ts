@@ -30,6 +30,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
 
 export interface AutoExposureConfig {
   minimumLuminance?: number;
@@ -61,6 +62,14 @@ export class WebGPUAutoExposure {
   private _averageLuminance = 0.5;
   private _readbackBuffer: GPUBuffer | null = null;
   private _readbackPending = false;
+
+  // C-R11 (Batch 32) — AutoExposure dispatches one bind group per frame
+  // from a stable sceneColorTexture. The naive path does
+  // `sceneColorTexture.createView()` + `device.createBindGroup()` each
+  // frame. We memoize the view by texture identity + cache the bind
+  // group by resource tuple; steady state is zero per-frame allocations.
+  private _viewCache = new WeakMap<GPUTexture, GPUTextureView>();
+  private _bgCache = new WebGPUBindGroupCache();
 
   enabled = true;
   private _initialized = false;
@@ -167,17 +176,25 @@ export class WebGPUAutoExposure {
     p[7] = 0; // pad
     device.queue.writeBuffer(this._paramsBuffer, 0, p);
 
-    // Create bind group with this frame's scene texture
-    const sceneView = sceneColorTexture.createView();
-    const bindGroup = device.createBindGroup({
-      layout: this._bindGroupLayout!,
-      entries: [
+    // C-R11 (Batch 32) — memoize createView() per sceneColorTexture so
+    // its identity is stable across frames, then route the bind group
+    // through the cache. Steady state: 0 per-frame allocations.
+    let sceneView = this._viewCache.get(sceneColorTexture);
+    if (!sceneView) {
+      sceneView = sceneColorTexture.createView();
+      this._viewCache.set(sceneColorTexture, sceneView);
+    }
+    const bindGroup = this._bgCache.getOrCreate(
+      device,
+      "AutoExposure-BG",
+      this._bindGroupLayout!,
+      [
         { binding: 0, resource: sceneView },
         { binding: 1, resource: { buffer: this._intermediateBuffer } },
         { binding: 2, resource: { buffer: this._resultBuffer } },
         { binding: 3, resource: { buffer: this._paramsBuffer } },
       ],
-    });
+    );
 
     // Pass 1: tile reduction
     const pass1 = encoder.beginComputePass({
@@ -280,6 +297,10 @@ export class WebGPUAutoExposure {
     this._readbackBuffer = null;
     this._paramsBuffer = null;
     this._bindGroup = null;
+    // C-R11 (Batch 32) — the storage/uniform buffers in the cached BG
+    // were just destroyed; drop stale entries so next dispatch rebuilds
+    // against the fresh buffers.
+    this._bgCache.invalidateAll();
   }
 
   destroy(): void {

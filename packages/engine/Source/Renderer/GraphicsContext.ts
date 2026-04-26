@@ -861,6 +861,79 @@ export abstract class GraphicsContext {
   }
 
   // ═══════════════════════════════════════════════════════════
+  // BACKEND-AGNOSTIC PREDICATES (for Scene / debug layers)
+  //
+  // Scene code MUST NOT branch on `isWebGPU`. Any behavioral divergence
+  // between backends goes through one of these virtual predicates so a
+  // future backend (e.g., a test mock, Vulkan-via-Tauri) can opt in
+  // without touching Scene code. Defaults match WebGL; WebGPU overrides.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * True if this backend requires a `SCENE_RENDERER` feature renderer to
+   * be registered for scenes to produce visible output. WebGPU needs one
+   * (it owns the canvas blit / post-process pipeline); WebGL does not —
+   * the built-in multi-frustum executor handles everything.
+   *
+   * `Scene` reads this to decide whether to log a critical error when
+   * the FR registration is missing.
+   */
+  get requiresSceneRenderer(): boolean {
+    return false;
+  }
+
+  /**
+   * True if this backend exposes the triangulation-debug helper
+   * (`scene.triangulationDebug`). Only WebGPU wires up the primitive
+   * index-utilities compute module today; WebGL returns false.
+   */
+  get supportsTriangulationDebug(): boolean {
+    return false;
+  }
+
+  /**
+   * Returns the render-bundle manager for this context, or `null` when
+   * the backend does not have one. Scene uses this to register the
+   * bundle cache as a snapshot freezable — the existing WebGL path has
+   * no equivalent, so this returns `null` by default.
+   *
+   * The return type is intentionally structural so the base contract
+   * doesn't pull in a WebGPU-specific class. Callers test for presence
+   * and then invoke `asFreezable()` / `statistics` via duck-typing.
+   */
+  get renderBundleManager(): { asFreezable?: () => unknown } | null {
+    return null;
+  }
+
+  /**
+   * Subscribe to device-invalidation events. Fires when the backing GPU
+   * device has been lost and its caches + driver-side handles need to
+   * be dropped before the next frame so the next render uses the
+   * recovered device cleanly.
+   *
+   * Subscriber callbacks should drop any cached `GPUBuffer`,
+   * `GPUTexture`, `GPUBindGroup`, `GPURenderPipeline`, `GPUQuerySet`,
+   * etc. they hold. The cache lookups repopulate lazily against the
+   * new device on first post-recovery use.
+   *
+   * Default (WebGL path) returns a no-op disposer — WebGL contexts
+   * don't emit a device-loss event with the same semantics; any
+   * recovery is handled via `webglcontextrestored` at a different
+   * layer.
+   *
+   * Mirrors the {@link WebGPUContext#onDeviceLost} callback chain but
+   * focuses on cache invalidation rather than "stop drawing" semantics.
+   * Fix sketch: **C-R12** of the Renderer-Deep principal-engineer review.
+   *
+   * @param _callback Called once per device-loss event before the
+   *   recovery path attempts to resume rendering.
+   * @returns A function that unregisters the callback.
+   */
+  onDeviceInvalidated(_callback: () => void): () => void {
+    return () => {};
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // ABSTRACT: SHARED STATE & CACHES
   // ═══════════════════════════════════════════════════════════
 

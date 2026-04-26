@@ -27,12 +27,15 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.StripeType fabric: { horizontal: bool, evenColor: Color,
+// oddColor: Color, offset: f32, repeat: f32 }. Packed in fabric
+// declaration order; `horizontal` is packed as f32 (0/1).
 struct MaterialUniforms {
-    lightColor: vec4<f32>,
-    darkColor: vec4<f32>,
-    repeat: f32,
+    horizontal: f32,
+    evenColor: vec4<f32>,
+    oddColor: vec4<f32>,
     offset: f32,
-    orientation: f32,
+    repeat: f32,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -56,7 +59,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let coord = select(input.texCoord.x, input.texCoord.y, material.orientation > 0.5);
-    let stripe = fract((coord + material.offset) * material.repeat);
-    return select(material.lightColor, material.darkColor, stripe > 0.5);
+    // `horizontal` is packed as 1.0 when the fabric bool is true. Mirrors
+    // the logic in Shaders/Materials/StripeMaterial.glsl.
+    let coord = mix(input.texCoord.x, input.texCoord.y, material.horizontal);
+    let value = fract((coord - material.offset) * (material.repeat * 0.5));
+    return select(material.evenColor, material.oddColor, value >= 0.5);
 }

@@ -130,6 +130,32 @@ export interface PipelineVariant {
    * `GPUColorWriteFlags` (RED=0x1, GREEN=0x2, BLUE=0x4, ALPHA=0x8).
    */
   colorWriteMask?: GPUColorWriteFlags;
+
+  /**
+   * Polygon-offset / depth-bias state. WebGL sets this via
+   * `gl.polygonOffset(factor, units)`; WebGPU bakes it into the
+   * pipeline's `depthStencil` descriptor as
+   * `depthBias`, `depthBiasSlopeScale`, `depthBiasClamp`. When a
+   * variant needs different depthBias (e.g. decals vs. shadow cast),
+   * the cache must materialize a separate pipeline — WebGPU has no
+   * per-draw override. Missing values default to 0 (no bias).
+   *
+   * Corresponds to WebGL `renderState.polygonOffset.{factor, units}`.
+   */
+  depthBias?: number;
+  depthBiasSlopeScale?: number;
+  depthBiasClamp?: number;
+
+  /**
+   * Constant blend color used with `src/dst-factor = constant` or
+   * `constant-alpha`. WebGPU exposes this as a per-encoder
+   * `setBlendConstant()` call; the pipeline itself doesn't bake the
+   * value. This field lives on the variant only so callers can carry
+   * the intended value from `command.renderState.blendConstant` through
+   * to `WebGPUDrawCommand.execute()` where the per-encoder call fires.
+   * Not used by `buildPipeline()`.
+   */
+  blendConstant?: GPUColor;
 }
 
 /**
@@ -413,9 +439,12 @@ export class WebGPURenderPipelineCache {
         stencilWriteMask:
           variant?.stencilWriteMask ??
           descriptor.depthStencil?.stencilWriteMask,
-        depthBias: descriptor.depthStencil?.depthBias,
-        depthBiasSlopeScale: descriptor.depthStencil?.depthBiasSlopeScale,
-        depthBiasClamp: descriptor.depthStencil?.depthBiasClamp,
+        depthBias: variant?.depthBias ?? descriptor.depthStencil?.depthBias,
+        depthBiasSlopeScale:
+          variant?.depthBiasSlopeScale ??
+          descriptor.depthStencil?.depthBiasSlopeScale,
+        depthBiasClamp:
+          variant?.depthBiasClamp ?? descriptor.depthStencil?.depthBiasClamp,
       };
     }
 
@@ -460,6 +489,69 @@ export class WebGPURenderPipelineCache {
         parts.push(`swm:${variant.stencilWriteMask}`);
       if (variant.colorWriteMask !== undefined)
         parts.push(`cwm:${variant.colorWriteMask}`);
+      if (variant.depthBias !== undefined)
+        parts.push(`db:${variant.depthBias}`);
+      if (variant.depthBiasSlopeScale !== undefined)
+        parts.push(`dbs:${variant.depthBiasSlopeScale}`);
+      if (variant.depthBiasClamp !== undefined)
+        parts.push(`dbc:${variant.depthBiasClamp}`);
+      // blendConstant intentionally NOT part of the pipeline key — it is
+      // a per-encoder dynamic state applied via setBlendConstant(), so
+      // two draws with different blend constants still share the pipeline.
+    }
+
+    // C-R7 (Batch 34) — descriptor-side fields that affect pipeline
+    // identity but are NOT part of the variant. Without these, two
+    // pipelines with different MSAA counts / color target formats /
+    // depth formats / vertex layouts would collide on the same cache
+    // key and the first one would incorrectly serve the second.
+
+    // Multisample count — MSAA pipelines are incompatible with the
+    // single-sampled render pass and vice versa.
+    if (descriptor.multisample?.count !== undefined) {
+      parts.push(`ms:${descriptor.multisample.count}`);
+    }
+    // Depth/stencil format — `depth24plus-stencil8` vs `depth32float` vs
+    // none produce different underlying GPURenderPipeline objects.
+    if (descriptor.depthStencil?.format) {
+      parts.push(`df:${descriptor.depthStencil.format}`);
+    }
+    // Per-target color format + writeMask. Two pipelines writing to
+    // `bgra8unorm` vs `rgba16float` must materialize separately; same
+    // for different writeMasks across targets (MRT pick + color writing
+    // to one attachment but not the other).
+    const targets = descriptor.fragment?.targets;
+    if (targets && targets.length > 0) {
+      const targetSig = targets
+        .map((t, i) => {
+          const fmt = t?.format ?? "";
+          const wm = t?.writeMask ?? 0xf;
+          const hasBlend = t?.blend ? "+" : "-";
+          return `${i}:${fmt}:${wm}:${hasBlend}`;
+        })
+        .join(",");
+      parts.push(`tg:${targetSig}`);
+    }
+    // Vertex buffer layout signature — stride + attribute shape. Two
+    // pipelines fed different vertex buffer arrangements have different
+    // bytecode even if every other field matches (e.g. a position-only
+    // depth-cast variant vs. the full PBR layout).
+    const vtxBuffers = descriptor.vertex?.buffers;
+    if (vtxBuffers && vtxBuffers.length > 0) {
+      const vtxSig = vtxBuffers
+        .map((b, bi) => {
+          if (!b) {
+            return `${bi}:null`;
+          }
+          const stride = b.arrayStride;
+          const step = b.stepMode ?? "vertex";
+          const attrs = (b.attributes ?? [])
+            .map((a) => `${a.shaderLocation}@${a.offset}/${a.format}`)
+            .join(";");
+          return `${bi}:${stride}/${step}/[${attrs}]`;
+        })
+        .join(",");
+      parts.push(`vx:${vtxSig}`);
     }
 
     return parts.join("|");

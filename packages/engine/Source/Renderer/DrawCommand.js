@@ -122,7 +122,12 @@ class DrawCommand {
     this.lastDirtyTime = 0;
 
     /**
-     * @private
+     * Pre-computed command variants for log-depth / HDR / pick / depth /
+     * shadow-receive dispatch. Populated by primitives (Model, Globe,
+     * Ground) that opt in; consumed by `Scene/SceneRenderer.js` and the
+     * WebGPU dispatcher in `Renderer/WebGPU/WebGPUSceneRenderer.ts`.
+     * Not part of the public API.
+     * @internal
      */
     this.derivedCommands = {};
   }

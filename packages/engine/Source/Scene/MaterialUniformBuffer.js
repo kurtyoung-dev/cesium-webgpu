@@ -104,11 +104,16 @@ class MaterialUniformBuffer {
       entries.set(name, { type: info.type, offset, size: info.size });
       offset += info.size;
 
-      // vec3 occupies 3 floats but its WGSL size is 4 floats (the trailing
-      // float is implicit padding before the next field). Advance past it.
-      if (info.size === 3) {
-        offset += 1;
-      }
+      // Do NOT pre-pad after vec3. In WGSL a vec3<f32> has size 12 bytes
+      // (3 floats) with alignment 16 — the trailing 4 bytes (1 float) are
+      // available to the NEXT field if that field's alignment allows
+      // (e.g., an f32 can fit at byte 12 after a vec3 at byte 0). The
+      // next-field alignment computation at the top of this loop handles
+      // the padding correctly for vec2/vec3/vec4 followers; only f32
+      // followers are affected, and they SHOULD use the tail slot. An
+      // earlier `offset += 1` after vec3 over-padded and broke any
+      // `{ vec3, f32, ... }` struct (e.g. Material.NormalMapType's
+      // `channels` + `strength` pair).
     }
 
     // Round total up to 4-float (16-byte) boundary — WebGPU requires
@@ -121,7 +126,7 @@ class MaterialUniformBuffer {
    * Classify a uniform value into a type with a known float count.
    * @private
    */
-  static _classifyUniform(_name, value) {
+  static _classifyUniform(name, value) {
     if (value instanceof Color) {
       return { type: "vec4", size: 4, isTexture: false };
     }
@@ -141,7 +146,32 @@ class MaterialUniformBuffer {
       return { type: "bool", size: 1, isTexture: false };
     }
     if (typeof value === "string") {
-      // Texture path or channel string
+      // Channel uniforms (AlphaMap/BumpMap/SpecularMap `channel`, NormalMap/
+      // EmissionMap/DiffuseMap `channels`) are r/g/b/a shorthand strings —
+      // upstream CesiumJS bakes them into the fabric GLSL at assembly time.
+      // The WebGPU path packs them as numeric indices so the WGSL shader
+      // can swizzle at runtime without re-generating a shader variant per
+      // channel. Mapping: r=0, g=1, b=2, a=3. Empty channels string falls
+      // back to texture classification.
+      if (name === "channel" && MaterialUniformBuffer._isChannelString(value)) {
+        return { type: "channelIndex", size: 1, isTexture: false };
+      }
+      if (
+        name === "channels" &&
+        MaterialUniformBuffer._isChannelString(value) &&
+        value.length >= 1 &&
+        value.length <= 4
+      ) {
+        // `channels: "rgb"` → vec3; `channels: "rgba"` → vec4; shorter
+        // strings pad the remaining components with 0 (.r). Size drives
+        // WGSL alignment so shaders must declare a matching vec3/vec4.
+        return {
+          type: value.length >= 4 ? "channelsVec4" : "channelsVec3",
+          size: value.length >= 4 ? 4 : 3,
+          isTexture: false,
+        };
+      }
+      // Texture path or unrecognized string — stored separately.
       return { type: "sampler2D", size: 0, isTexture: true };
     }
     if (typeof value === "object" && value !== null) {
@@ -189,6 +219,61 @@ class MaterialUniformBuffer {
   }
 
   /**
+   * True when `s` is a 1-4 character string of r/g/b/a (case-insensitive).
+   * Matches fabric channel shorthand (`"a"`, `"rgb"`, `"rgba"`, etc.).
+   * @private
+   */
+  static _isChannelString(s) {
+    if (typeof s !== "string" || s.length === 0 || s.length > 4) {
+      return false;
+    }
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c !== "r" && c !== "g" && c !== "b" && c !== "a") {
+        const lower = c.toLowerCase();
+        if (lower !== "r" && lower !== "g" && lower !== "b" && lower !== "a") {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Map a single channel char → index. r=0, g=1, b=2, a=3. Case-insensitive.
+   * Unrecognized chars default to 0 (r) to keep the shader on a valid
+   * swizzle component.
+   * @private
+   */
+  static _channelCharToIndex(c) {
+    switch (c.toLowerCase()) {
+      case "r":
+        return 0;
+      case "g":
+        return 1;
+      case "b":
+        return 2;
+      case "a":
+        return 3;
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Inverse of `_channelCharToIndex`. Used by the read-facade to return
+   * the original shorthand string.
+   * @private
+   */
+  static _channelIndexToChar(idx) {
+    const i = Math.round(idx);
+    if (i === 1) return "g";
+    if (i === 2) return "b";
+    if (i === 3) return "a";
+    return "r";
+  }
+
+  /**
    * Write a value into the backing store.
    * @param {string} name Uniform name
    * @param {*} value The value to write
@@ -209,6 +294,27 @@ class MaterialUniformBuffer {
 
     const d = this._data;
     const o = entry.offset;
+
+    // Channel-string uniforms: `channel: "a"` → write index; `channels: "rgb"`
+    // → write (0,1,2) into a vec3/vec4 slot. Must come BEFORE the generic
+    // `typeof value === "string"` fallthrough below.
+    if (entry.type === "channelIndex" && typeof value === "string") {
+      d[o] = MaterialUniformBuffer._channelCharToIndex(value[0] ?? "r");
+      this._dirty = true;
+      return;
+    }
+    if (
+      (entry.type === "channelsVec3" || entry.type === "channelsVec4") &&
+      typeof value === "string"
+    ) {
+      const count = entry.size;
+      for (let i = 0; i < count; i++) {
+        const ch = value[i] ?? "r";
+        d[o + i] = MaterialUniformBuffer._channelCharToIndex(ch);
+      }
+      this._dirty = true;
+      return;
+    }
 
     if (value instanceof Color) {
       d[o] = value.red;
@@ -328,6 +434,20 @@ class MaterialUniformBuffer {
           arr[i] = d[o + i];
         }
         return arr;
+      }
+      case "channelIndex":
+        // Reconstruct the fabric's original shorthand character so reads
+        // round-trip. Callers that expect the number can use
+        // `material._uniformBuffer._data[entry.offset]`.
+        return MaterialUniformBuffer._channelIndexToChar(d[o]);
+      case "channelsVec3":
+      case "channelsVec4": {
+        const count = entry.size;
+        let s = "";
+        for (let i = 0; i < count; i++) {
+          s += MaterialUniformBuffer._channelIndexToChar(d[o + i]);
+        }
+        return s;
       }
       default:
         return undefined;

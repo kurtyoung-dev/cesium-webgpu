@@ -29,10 +29,12 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.SpecularMapType fabric: { image: str, channel: "r", repeat: Cart2 }.
+// `channel` is packed as an f32 index by MaterialUniformBuffer
+// (r=0, g=1, b=2, a=3). Fabric order: channel, repeat.
 struct MaterialUniforms {
-    color: vec4<f32>,
+    channel: f32,
     repeat: vec2<f32>,
-    channel: f32,  // 0=r, 1=g, 2=b,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -56,9 +58,17 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+fn extractChannel(c: vec4<f32>, idx: f32) -> f32 {
+    return c[clamp(i32(idx), 0, 3)];
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Flat variant: specular map has no visible effect without lighting
-    // Output base color (specular modulation requires light direction)
-    return material.color;
+    // Flat variant: specular map has no visible effect without lighting.
+    // SpecularMap fabric has no `color` — render a grayscale
+    // visualization of the spec intensity channel.
+    let uv = input.texCoord * material.repeat;
+    let texColor = textureSample(specularTexture, textureSampler, uv);
+    let spec = extractChannel(texColor, material.channel);
+    return vec4<f32>(spec, spec, spec, 1.0);
 }

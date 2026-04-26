@@ -29,8 +29,11 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.EmissionMapType fabric: { image: str, channels: "rgb", repeat: Cart2 }.
+// `channels` packs as vec3<f32> indices (r=0, g=1, b=2, a=3) so the
+// shader can swizzle at runtime. Fabric order: channels, repeat.
 struct MaterialUniforms {
-    color: vec4<f32>,
+    channels: vec3<f32>,
     repeat: vec2<f32>,
 }
 
@@ -55,11 +58,18 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+fn swizzleChannel(c: vec4<f32>, idx: f32) -> f32 {
+    return c[clamp(i32(idx), 0, 3)];
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    // EmissionMap has no material `color` field. Emit the texture
+    // swizzled by the fabric-specified channels (default "rgb").
     let uv = input.texCoord * material.repeat;
     let texColor = textureSample(emissionTexture, textureSampler, uv);
-    // Emission: texture color tinted by material color
-    let emission = texColor.rgb * material.color.rgb;
-    return vec4<f32>(emission, texColor.a * material.color.a);
+    let ex = swizzleChannel(texColor, material.channels.x);
+    let ey = swizzleChannel(texColor, material.channels.y);
+    let ez = swizzleChannel(texColor, material.channels.z);
+    return vec4<f32>(ex, ey, ez, texColor.a);
 }

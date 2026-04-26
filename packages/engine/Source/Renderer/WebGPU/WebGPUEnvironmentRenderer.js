@@ -972,26 +972,6 @@ function getWebGPUMoonStatistics(moon) {
 }
 
 // ============================================================
-// Fog Integration
-// ============================================================
-
-/**
- * Extracts fog parameters for WebGPU shaders.
- * @param {Fog} fog
- * @param {FrameState} frameState
- * @returns {{ density: number, minimumBrightness: number }}
- */
-function getWebGPUFogParameters(fog, frameState) {
-  if (!fog || !fog.enabled) {
-    return { density: 0.0, minimumBrightness: 0.0 };
-  }
-  return {
-    density: frameState.fog.density || 0.0,
-    minimumBrightness: frameState.fog.minimumBrightness || 0.03,
-  };
-}
-
-// ============================================================
 // Cleanup
 // ============================================================
 
@@ -1051,7 +1031,6 @@ function destroyWebGPUMoonResources(moon) {
 export {
   updateWebGPUSun,
   updateWebGPUMoon,
-  getWebGPUFogParameters,
   destroyWebGPUSunResources,
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,
@@ -1061,7 +1040,6 @@ export {
 export default {
   updateWebGPUSun,
   updateWebGPUMoon,
-  getWebGPUFogParameters,
   destroyWebGPUSunResources,
   destroyWebGPUMoonResources,
   getWebGPUMoonStatistics,

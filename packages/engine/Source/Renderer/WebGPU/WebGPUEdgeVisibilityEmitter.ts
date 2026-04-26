@@ -1,0 +1,779 @@
+/// <reference types="@webgpu/types" />
+/**
+ * WebGPU Edge Visibility Emitter
+ *
+ * C-R8-EDGE-EMITTER (Batch 45) — Initial cut: native `line-list` thin
+ * lines, no silhouette discard, no wide lines, no line pattern.
+ *
+ * C-R8-EDGE-{SILHOUETTE,WIDE-LINES,LINE-PATTERN} (Batch 46) — Upgraded
+ * to feature-parity with WebGL's `EdgeVisibilityPipelineStage` for
+ * everything except per-feature ID gating (which requires the inline
+ * per-fragment edge-detection stage tracked separately as
+ * `C-R8-EDGE-INLINE`):
+ *   - **Silhouette discard** — type=1 silhouette edges are now dropped
+ *     when both endpoints are non-silhouette (front/back face products
+ *     positive at both endpoints). Discards by emitting clip-rejected
+ *     positions (`w = 0`).
+ *   - **Wide-line quad expansion** — every edge becomes 4 vertices /
+ *     2 triangles. The VS offsets vertices in NDC perpendicular to
+ *     the edge by `lineWidth * a_edgeOffset`, producing pixel-accurate
+ *     widths regardless of the platform's native line-thickness limit.
+ *   - **Line pattern (dashes)** — 16-bit pattern uniform; FS bit-tests
+ *     `lineCoord` against the pattern and discards gap fragments.
+ *     `lineCoord` is computed in screen space matching
+ *     `EdgeVisibilityStageVS.glsl:51-63`.
+ *
+ * **Still deferred** (`C-R8-EDGE-FEATURE-ID`): per-feature edge gating
+ * needs the model fragment's current featureId at composite time,
+ * which a post-process consumer can't see. Requires `C-R8-EDGE-INLINE`
+ * (in-shader per-fragment edge detection in every Model FS) before
+ * feature-ID gating becomes implementable.
+ *
+ * @module WebGPUEdgeVisibilityEmitter
+ * @private
+ */
+
+import Cartesian3 from "../../Core/Cartesian3.js";
+
+const EDGE_EMITTER_WGSL = /* wgsl */ `
+struct CameraUniforms {
+  modelViewProjection: mat4x4<f32>,
+  modelView: mat4x4<f32>,
+};
+
+struct EdgeUniforms {
+  // .rgb = edge color, .a = 1 (always-on for emitter)
+  color: vec4<f32>,
+  // .xy = viewport (px), .z = line width (px), .w = u32 pattern bits
+  // packed as f32 (emitter writes Math.fround-safe int when pattern
+  // == 0xffff i.e., solid; pattern values up to 16 bits round-trip
+  // through f32 exactly).
+  params: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(1) @binding(0) var<uniform> edge: EdgeUniforms;
+
+struct VertexInput {
+  @location(0) position: vec3<f32>,
+  @location(1) edgeType: f32,
+  @location(2) normalA: vec3<f32>,
+  @location(3) normalB: vec3<f32>,
+  @location(4) otherPos: vec3<f32>,
+  @location(5) edgeOffset: f32,
+  // C-R8-EDGE-FEATURE-ID — per-edge feature ID populated by
+  // extractEdgeGeometry from glTF FEATURE_ID_0 (or 0.0 when the
+  // primitive has no feature IDs). Both endpoints of an edge share
+  // the same feature ID; the CPU-side code samples vertex 0 of each
+  // edge so the value is consistent across the quad's four vertices.
+  // Stored as a raw integer-valued float (clamped to 0..255 at FS
+  // emit time so it fits in rgba8unorm's id.g channel — saturation
+  // beyond 255 is the documented C-R8-EDGE-ID-FORMAT limit.
+  @location(6) featureId: f32,
+};
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) edgeType: f32,
+  @location(1) lineCoord: f32,
+  @location(2) @interpolate(flat) featureId: f32,
+};
+
+const PERP_TOL: f32 = 2.5e-4;
+const LINE_PATTERN_BASE: f32 = 8192.0;
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+
+  // C-R8-EDGE-SILHOUETTE — silhouette type=1 discard. Uses model-space
+  // face normals transformed to eye space via the model-view matrix.
+  // NB: this is direction-only; for non-uniformly-scaled meshes the
+  // normalize() call after the transform compensates for the scale,
+  // and the dot-product sign is what matters (not magnitude).
+  let edgeTypeInt = input.edgeType * 255.0;
+  var shouldDiscard = false;
+  if (edgeTypeInt > 0.5 && edgeTypeInt < 1.5) {
+    let normalAEye = normalize((camera.modelView * vec4<f32>(input.normalA, 0.0)).xyz);
+    let normalBEye = normalize((camera.modelView * vec4<f32>(input.normalB, 0.0)).xyz);
+
+    let curEye = (camera.modelView * vec4<f32>(input.position, 1.0)).xyz;
+    let toEye1 = normalize(-curEye);
+    let dotA1 = dot(normalAEye, toEye1);
+    let dotB1 = dot(normalBEye, toEye1);
+
+    let otherEye = (camera.modelView * vec4<f32>(input.otherPos, 1.0)).xyz;
+    let toEye2 = normalize(-otherEye);
+    let dotA2 = dot(normalAEye, toEye2);
+    let dotB2 = dot(normalBEye, toEye2);
+
+    if (dotA1 * dotB1 > PERP_TOL || dotA2 * dotB2 > PERP_TOL) {
+      shouldDiscard = true;
+    }
+  }
+
+  out.edgeType = input.edgeType;
+  out.featureId = input.featureId;
+
+  // Base clip-space position.
+  let posClip = camera.modelViewProjection * vec4<f32>(input.position, 1.0);
+
+  // C-R8-EDGE-WIDE-LINES — quad expansion. Each edge has 4 vertices;
+  // edgeOffset is -1.0 / +1.0 (and zero for the central VS path).
+  // Project the OTHER endpoint to clip space, derive perpendicular
+  // direction in NDC, then convert to clip-space pixel offset.
+  let otherClip = camera.modelViewProjection * vec4<f32>(input.otherPos, 1.0);
+  let viewport = edge.params.xy;
+  let lineWidth = edge.params.z;
+  var posOut = posClip;
+  if (abs(input.edgeOffset) > 0.0) {
+    let curNDC = posClip.xy / posClip.w;
+    let otherNDC = otherClip.xy / otherClip.w;
+    var dirNDC = otherNDC - curNDC;
+    // Stable orientation (matches WebGL VS:80-82) so opposite vertices
+    // of the quad pick the same perpendicular sign.
+    if (dirNDC.x < 0.0 || (abs(dirNDC.x) < 0.001 && dirNDC.y < 0.0)) {
+      dirNDC = -dirNDC;
+    }
+    dirNDC = normalize(dirNDC);
+    let perpNDC = vec2<f32>(-dirNDC.y, dirNDC.x);
+    let clipPerPixel = (vec2<f32>(2.0, 2.0) / viewport) * posClip.w;
+    let offsetClip = perpNDC * lineWidth * clipPerPixel * 0.5 * input.edgeOffset;
+    posOut = vec4<f32>(posClip.x + offsetClip.x, posClip.y + offsetClip.y, posClip.z, posClip.w);
+  }
+
+  if (shouldDiscard) {
+    // Clip-reject by collapsing to (0, 0, 0, 0) so the rasterizer
+    // discards the entire degenerate triangle. Cheaper than a
+    // fragment-side discard and folds across all 4 quad vertices when
+    // any one signals discard (the vertex's own w being zero gives a
+    // degenerate triangle regardless of the other 3).
+    out.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  } else {
+    out.position = posOut;
+  }
+
+  // C-R8-EDGE-LINE-PATTERN — screen-space lineCoord (matches WebGL
+  // VS:51-63). Pixels along the major-axis projection of the edge
+  // get a monotonically-increasing coord; FS bit-tests this against
+  // the pattern.
+  let curScreen = (posClip.xy / posClip.w * 0.5 + vec2<f32>(0.5)) * viewport;
+  let otherScreen = (otherClip.xy / otherClip.w * 0.5 + vec2<f32>(0.5)) * viewport;
+  let windowDir = otherScreen - curScreen;
+  if (abs(windowDir.x) > abs(windowDir.y)) {
+    out.lineCoord = LINE_PATTERN_BASE + curScreen.x;
+  } else {
+    out.lineCoord = LINE_PATTERN_BASE + curScreen.y;
+  }
+
+  return out;
+}
+
+struct FragmentOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) id: vec4<f32>,
+  @location(2) depth: vec4<f32>,
+};
+
+fn packDepth(d: f32) -> vec4<f32> {
+  let bits = vec4<f32>(1.0, 255.0, 65025.0, 16581375.0) * d;
+  let floored = floor(bits);
+  let shifted = vec4<f32>(
+    floored.x,
+    floored.y - floored.x * 255.0,
+    floored.z - floored.y * 255.0,
+    floored.w - floored.z * 255.0,
+  );
+  return shifted / 255.0;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> FragmentOutput {
+  // C-R8-EDGE-LINE-PATTERN — 16-bit dash mask. Pattern is stored as
+  // a non-negative integer (0..65535) packed into a float. A pattern
+  // of 0xffff means "all bits set" → solid line (no discards). 0x0000
+  // means "all gaps" → entire edge invisible. Mid-range values
+  // produce dashes.
+  let pattern = u32(edge.params.w);
+  if (pattern != 0xffffu) {
+    let maskLength = 16.0;
+    let dashPosition = fract(input.lineCoord / maskLength);
+    let maskIndex = u32(floor(dashPosition * maskLength));
+    if ((pattern & (1u << maskIndex)) == 0u) {
+      discard;
+    }
+  }
+
+  var out: FragmentOutput;
+  out.color = edge.color;
+  let edgeTypeInt = input.edgeType * 255.0;
+  // C-R8-EDGE-ID-FORMAT (Batch 49) — 16-bit feature ID split across
+  // id.g (low byte) + id.b (high byte) so tilesets with > 255
+  // features per primitive round-trip exactly. Each channel stores
+  // as 0..1 normalised; consumer recomposes via
+  // low + high * 256.0 after denormalising both. Saturates at
+  // 65535 (two-channel rgba8 ceiling) — practical only for
+  // tilesets exceeding that count, where the GPU batch-table side
+  // would also strain. Format kept as rgba8unorm so the existing
+  // sampling path is untouched.
+  let fidClamped = clamp(input.featureId, 0.0, 65535.0);
+  let fidLowByte = floor(fidClamped) % 256.0;
+  let fidHighByte = floor(fidClamped / 256.0);
+  out.id = vec4<f32>(
+    edgeTypeInt / 255.0,
+    fidLowByte / 255.0,
+    fidHighByte / 255.0,
+    1.0,
+  );
+  out.depth = packDepth(input.position.z);
+  return out;
+}
+`;
+
+interface EdgeGeometry {
+  /** Interleaved Float32Array per vertex: [pos.xyz, edgeType, normalA.xyz, normalB.xyz, otherPos.xyz, edgeOffset, featureId] (15 floats / 60 bytes). */
+  vertices: Float32Array;
+  /** Uint32Array of indices: 6 per edge (2 triangles). */
+  indices: Uint32Array;
+  /** Edge count for diagnostics; vertex count is `edgeCount * 4`. */
+  edgeCount: number;
+  /** Total index count (6 * edgeCount). Used as draw indexCount. */
+  indexCount: number;
+  /** True when at least one edge had a non-zero feature ID extracted —
+   * lets the model renderer flip the consumer-side `hasFeatureId` flag
+   * so the inline edge-detection stage actually gates on feature ID
+   * instead of falling through to fail-open. False when no FEATURE_ID_0
+   * attribute was present on the primitive. */
+  hasFeatureIds: boolean;
+}
+
+// 15 floats per vertex — added `featureId` after `edgeOffset` for the
+// C-R8-EDGE-FEATURE-ID branch. Stride bumped from 56 → 60 bytes; the
+// pipeline's vertex buffer layout below picks up the new attribute at
+// shaderLocation 6.
+const FLOATS_PER_VERTEX = 15;
+const VERTEX_STRIDE_BYTES = FLOATS_PER_VERTEX * 4;
+const VERTICES_PER_EDGE = 4;
+const INDICES_PER_EDGE = 6;
+
+const _scratchA = new Cartesian3();
+const _scratchB = new Cartesian3();
+const _scratchC = new Cartesian3();
+const _scratchE1 = new Cartesian3();
+const _scratchE2 = new Cartesian3();
+const _scratchN = new Cartesian3();
+
+/**
+ * CPU-side build: face normals + edge adjacency + 4-vertex / 6-index
+ * edge geometry. Returns null when the primitive has no edge data or
+ * no usable position attribute.
+ *
+ * Layout per vertex (14 floats, 56 bytes):
+ *   [0..2]  position.xyz       — endpoint position (model space)
+ *   [3]     edgeType           — 1/2/3 normalized to /255
+ *   [4..6]  normalA.xyz        — first triangle's face normal
+ *   [7..9]  normalB.xyz        — second triangle's face normal (or -A for boundary)
+ *   [10..12] otherPos.xyz       — the OTHER endpoint's position
+ *   [13]    edgeOffset         — -1 (left) or +1 (right) for quad expansion
+ *
+ * Quad layout per edge (4 vertices indexed 0..3 within the edge,
+ * absolute index = edgeIdx*4 + local):
+ *   v0: pos=A, otherPos=B, edgeOffset=-1
+ *   v1: pos=A, otherPos=B, edgeOffset=+1
+ *   v2: pos=B, otherPos=A, edgeOffset=-1
+ *   v3: pos=B, otherPos=A, edgeOffset=+1
+ *   indices: [v0,v1,v2,  v1,v3,v2]
+ *
+ * normalA / normalB / edgeType are the same across all 4 vertices of
+ * the edge — they're per-edge attributes replicated per-vertex so the
+ * shader doesn't need a separate per-edge lookup.
+ */
+export function extractEdgeGeometry(
+  primitive: unknown,
+  positionData: Float32Array | null,
+  /**
+   * Optional per-vertex feature IDs (typically from a glTF FEATURE_ID_0
+   * attribute). Length is the vertex count. When supplied, each edge's
+   * feature ID is sampled from the lower-index endpoint and replicated
+   * across the quad's four vertices — both endpoints of an edge are
+   * required to share a feature in glTF EXT_mesh_features semantics
+   * for the edge to be valid for per-feature gating.
+   * Pass `null` (or omit) when the primitive has no feature IDs; the
+   * geometry falls back to writing 0 in the slot and `hasFeatureIds`
+   * comes back false so callers know not to enable per-feature gating.
+   */
+  featureIds?: Float32Array | Uint8Array | Uint16Array | Uint32Array | null,
+): EdgeGeometry | null {
+  const p = primitive as {
+    edgeVisibility?: { visibility?: Uint8Array };
+    indices?: { typedArray?: Uint8Array | Uint16Array | Uint32Array };
+  };
+  const edgeVis = p?.edgeVisibility;
+  if (!edgeVis || !edgeVis.visibility) return null;
+  const visibility = edgeVis.visibility;
+  const indices = p?.indices?.typedArray;
+  if (!indices || indices.length === 0) return null;
+  if (!positionData || positionData.length === 0) return null;
+  const fidSource = featureIds ?? null;
+  let sawNonZeroFeature = false;
+
+  // Build per-triangle face normals + edge adjacency. `edgeMap` maps
+  // an edge key ("min,max") to a small array of triangle indices that
+  // contain that edge. Boundary edges have one entry; interior edges
+  // have two.
+  const triangleCount = Math.floor(indices.length / 3);
+  const faceNormals = new Float32Array(triangleCount * 3);
+  const edgeMap = new Map<string, number[]>();
+
+  for (let t = 0; t < triangleCount; t++) {
+    const base = t * 3;
+    const i0 = indices[base];
+    const i1 = indices[base + 1];
+    const i2 = indices[base + 2];
+
+    const i0o = i0 * 3;
+    const i1o = i1 * 3;
+    const i2o = i2 * 3;
+    if (
+      i0o + 2 >= positionData.length ||
+      i1o + 2 >= positionData.length ||
+      i2o + 2 >= positionData.length
+    ) {
+      // Out-of-bounds index — skip this triangle but keep going.
+      continue;
+    }
+
+    _scratchA.x = positionData[i0o];
+    _scratchA.y = positionData[i0o + 1];
+    _scratchA.z = positionData[i0o + 2];
+    _scratchB.x = positionData[i1o];
+    _scratchB.y = positionData[i1o + 1];
+    _scratchB.z = positionData[i1o + 2];
+    _scratchC.x = positionData[i2o];
+    _scratchC.y = positionData[i2o + 1];
+    _scratchC.z = positionData[i2o + 2];
+
+    Cartesian3.subtract(_scratchB, _scratchA, _scratchE1);
+    Cartesian3.subtract(_scratchC, _scratchA, _scratchE2);
+    Cartesian3.cross(_scratchE1, _scratchE2, _scratchN);
+    if (Cartesian3.magnitudeSquared(_scratchN) > 0) {
+      Cartesian3.normalize(_scratchN, _scratchN);
+    }
+    faceNormals[base] = _scratchN.x;
+    faceNormals[base + 1] = _scratchN.y;
+    faceNormals[base + 2] = _scratchN.z;
+
+    const registerEdge = (a: number, b: number) => {
+      const key = a < b ? `${a},${b}` : `${b},${a}`;
+      let list = edgeMap.get(key);
+      if (!list) {
+        list = [];
+        edgeMap.set(key, list);
+      }
+      if (list.length < 2) list.push(t);
+    };
+    registerEdge(i0, i1);
+    registerEdge(i1, i2);
+    registerEdge(i2, i0);
+  }
+
+  // Decode visibility, dedupe, and emit 4 vertices + 6 indices per
+  // visible edge. Mirrors WebGL's `extractVisibleEdges` ordering so
+  // edge dedup is consistent across renderers.
+  const verts: number[] = [];
+  const idx: number[] = [];
+  const seen = new Set<string>();
+  let edgeIndex = 0;
+  let outEdge = 0;
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const v0 = indices[i];
+    const v1 = indices[i + 1];
+    const v2 = indices[i + 2];
+    for (let e = 0; e < 3; e++) {
+      let a: number;
+      let b: number;
+      if (e === 0) {
+        a = v0;
+        b = v1;
+      } else if (e === 1) {
+        a = v1;
+        b = v2;
+      } else {
+        a = v2;
+        b = v0;
+      }
+      const byteIdx = Math.floor(edgeIndex / 4);
+      const bitOff = (edgeIndex % 4) * 2;
+      edgeIndex++;
+      if (byteIdx >= visibility.length) break;
+      const v2bit = (visibility[byteIdx] >> bitOff) & 0x3;
+      if (v2bit === 0) continue;
+      const small = Math.min(a, b);
+      const big = Math.max(a, b);
+      const key = `${small},${big}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      // Look up adjacent triangles for this edge to recover faceA/B.
+      const tris = edgeMap.get(key);
+      let nAx = 0,
+        nAy = 0,
+        nAz = 0;
+      let nBx = 0,
+        nBy = 0,
+        nBz = 0;
+      if (tris && tris.length >= 1) {
+        const tA = tris[0] * 3;
+        nAx = faceNormals[tA];
+        nAy = faceNormals[tA + 1];
+        nAz = faceNormals[tA + 2];
+        if (tris.length >= 2) {
+          const tB = tris[1] * 3;
+          nBx = faceNormals[tB];
+          nBy = faceNormals[tB + 1];
+          nBz = faceNormals[tB + 2];
+        } else {
+          // Boundary edge — synthesize -A so the dot products always
+          // disagree (silhouette test treats this as "always visible").
+          nBx = -nAx;
+          nBy = -nAy;
+          nBz = -nAz;
+        }
+      }
+
+      const ai = a * 3;
+      const bi = b * 3;
+      if (
+        ai + 2 >= positionData.length ||
+        bi + 2 >= positionData.length
+      ) {
+        continue;
+      }
+      const ax = positionData[ai];
+      const ay = positionData[ai + 1];
+      const az = positionData[ai + 2];
+      const bx = positionData[bi];
+      const by = positionData[bi + 1];
+      const bz = positionData[bi + 2];
+      const typeNorm = v2bit / 255.0;
+
+      // Sample the edge's feature ID from the lower-index endpoint
+      // (mirrors WebGL `EdgeVisibilityPipelineStage.js:1259-1264` which
+      // also uses `edgeIndices[i*2]`). Both endpoints share the same
+      // ID when the edge belongs to a single feature; when they differ
+      // the edge straddles a feature boundary and per-feature gating
+      // would be ambiguous anyway.
+      let edgeFeatureId = 0;
+      if (fidSource !== null) {
+        const idxForFeature = a < b ? a : b;
+        if (idxForFeature < fidSource.length) {
+          edgeFeatureId = fidSource[idxForFeature];
+          if (edgeFeatureId > 0) sawNonZeroFeature = true;
+        }
+      }
+
+      // Push 4 vertices for the quad.
+      const pushVertex = (
+        px: number,
+        py: number,
+        pz: number,
+        ox: number,
+        oy: number,
+        oz: number,
+        offset: number,
+      ): void => {
+        verts.push(
+          px,
+          py,
+          pz,
+          typeNorm,
+          nAx,
+          nAy,
+          nAz,
+          nBx,
+          nBy,
+          nBz,
+          ox,
+          oy,
+          oz,
+          offset,
+          edgeFeatureId,
+        );
+      };
+      pushVertex(ax, ay, az, bx, by, bz, -1.0); // v0 — endpoint A, left
+      pushVertex(ax, ay, az, bx, by, bz, +1.0); // v1 — endpoint A, right
+      pushVertex(bx, by, bz, ax, ay, az, -1.0); // v2 — endpoint B, left
+      pushVertex(bx, by, bz, ax, ay, az, +1.0); // v3 — endpoint B, right
+
+      const baseV = outEdge * VERTICES_PER_EDGE;
+      idx.push(
+        baseV + 0,
+        baseV + 1,
+        baseV + 2,
+        baseV + 1,
+        baseV + 3,
+        baseV + 2,
+      );
+      outEdge++;
+    }
+  }
+
+  if (outEdge === 0) return null;
+  return {
+    vertices: new Float32Array(verts),
+    indices: new Uint32Array(idx),
+    edgeCount: outEdge,
+    indexCount: outEdge * INDICES_PER_EDGE,
+    hasFeatureIds: sawNonZeroFeature,
+  };
+}
+
+export interface EdgeEmitterCache {
+  device: GPUDevice | null;
+  pipeline: GPURenderPipeline | null;
+  cameraBGL: GPUBindGroupLayout | null;
+  edgeBGL: GPUBindGroupLayout | null;
+  shaderModule: GPUShaderModule | null;
+  colorFormat: GPUTextureFormat;
+  sampleCount: number;
+}
+
+export function createEdgeEmitterCache(): EdgeEmitterCache {
+  return {
+    device: null,
+    pipeline: null,
+    cameraBGL: null,
+    edgeBGL: null,
+    shaderModule: null,
+    colorFormat: "bgra8unorm",
+    sampleCount: 1,
+  };
+}
+
+export function destroyEdgeEmitterCache(cache: EdgeEmitterCache): void {
+  cache.device = null;
+  cache.pipeline = null;
+  cache.cameraBGL = null;
+  cache.edgeBGL = null;
+  cache.shaderModule = null;
+}
+
+export function ensureEdgeEmitterPipeline(
+  cache: EdgeEmitterCache,
+  device: GPUDevice,
+  colorFormat: GPUTextureFormat,
+  sampleCount: number,
+): void {
+  const needsRebuild =
+    !cache.pipeline ||
+    cache.device !== device ||
+    cache.colorFormat !== colorFormat ||
+    cache.sampleCount !== sampleCount;
+  if (!needsRebuild) return;
+
+  cache.device = device;
+  cache.colorFormat = colorFormat;
+  cache.sampleCount = sampleCount;
+
+  if (!cache.shaderModule) {
+    cache.shaderModule = device.createShaderModule({
+      label: "EdgeEmitter-Shader",
+      code: EDGE_EMITTER_WGSL,
+    });
+  }
+
+  cache.cameraBGL = device.createBindGroupLayout({
+    label: "EdgeEmitter-CameraBGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+  cache.edgeBGL = device.createBindGroupLayout({
+    label: "EdgeEmitter-EdgeBGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
+        buffer: { type: "uniform" },
+      },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({
+    label: "EdgeEmitter-PipelineLayout",
+    bindGroupLayouts: [cache.cameraBGL, cache.edgeBGL],
+  });
+
+  const targets: GPUColorTargetState[] = [
+    { format: colorFormat },
+    { format: "rgba8unorm" },
+    { format: "rgba8unorm" },
+  ];
+
+  cache.pipeline = device.createRenderPipeline({
+    label: "EdgeEmitter-Pipeline",
+    layout: pipelineLayout,
+    vertex: {
+      module: cache.shaderModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: VERTEX_STRIDE_BYTES,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
+            { shaderLocation: 1, offset: 12, format: "float32" }, // edgeType
+            { shaderLocation: 2, offset: 16, format: "float32x3" }, // normalA
+            { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
+            { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
+            { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
+            { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: cache.shaderModule,
+      entryPoint: "fragmentMain",
+      targets,
+    },
+    primitive: {
+      // C-R8-EDGE-WIDE-LINES — quad expansion lands as triangles, not
+      // native lines. WebGPU has no native wide-line support.
+      topology: "triangle-list",
+      cullMode: "none",
+    },
+    depthStencil: {
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: true,
+      depthCompare: "less",
+    },
+    multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
+  });
+}
+
+export interface EdgePrimitiveResources {
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  cameraBuffer: GPUBuffer;
+  edgeBuffer: GPUBuffer;
+  cameraBG: GPUBindGroup;
+  edgeBG: GPUBindGroup;
+  indexCount: number;
+  /** C-R8-EDGE-FEATURE-ID — populated post-construction by the model
+   * renderer once `extractEdgeGeometry` has reported whether any
+   * edge in this primitive carried a non-zero feature ID. The model-
+   * level rollup (`cache.hasEdgeFeatureIds`) gates the inline
+   * detection's per-feature comparison in Model FS. */
+  hasFeatureIds?: boolean;
+}
+
+export function createEdgePrimitiveResources(
+  device: GPUDevice,
+  cache: EdgeEmitterCache,
+  geometry: EdgeGeometry,
+): EdgePrimitiveResources | null {
+  if (!cache.cameraBGL || !cache.edgeBGL) return null;
+
+  const vertexBuffer = device.createBuffer({
+    label: "EdgeEmitter-Vertices",
+    size: geometry.vertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(vertexBuffer, 0, geometry.vertices);
+
+  const indexBuffer = device.createBuffer({
+    label: "EdgeEmitter-Indices",
+    size: geometry.indices.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(indexBuffer, 0, geometry.indices);
+
+  // Camera UB: 2 mat4 = 128 bytes (mvp + mv).
+  const cameraBuffer = device.createBuffer({
+    label: "EdgeEmitter-CameraUniforms",
+    size: 128,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  // Edge UB: vec4 color + vec4 params = 32 bytes.
+  const edgeBuffer = device.createBuffer({
+    label: "EdgeEmitter-EdgeUniforms",
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  const cameraBG = device.createBindGroup({
+    label: "EdgeEmitter-CameraBG",
+    layout: cache.cameraBGL,
+    entries: [{ binding: 0, resource: { buffer: cameraBuffer } }],
+  });
+  const edgeBG = device.createBindGroup({
+    label: "EdgeEmitter-EdgeBG",
+    layout: cache.edgeBGL,
+    entries: [{ binding: 0, resource: { buffer: edgeBuffer } }],
+  });
+
+  return {
+    vertexBuffer,
+    indexBuffer,
+    cameraBuffer,
+    edgeBuffer,
+    cameraBG,
+    edgeBG,
+    indexCount: geometry.indexCount,
+  };
+}
+
+export function destroyEdgePrimitiveResources(
+  resources: EdgePrimitiveResources | null | undefined,
+): void {
+  if (!resources) return;
+  resources.vertexBuffer.destroy();
+  resources.indexBuffer.destroy();
+  resources.cameraBuffer.destroy();
+  resources.edgeBuffer.destroy();
+}
+
+const _scratchCameraData = new Float32Array(32); // 2 mat4 = 32 floats
+
+/**
+ * Write per-frame camera + edge uniforms.
+ *
+ * @param mvp  4×4 column-major model-view-projection matrix
+ * @param mv   4×4 column-major model-view matrix (for silhouette eye-space normal transform)
+ * @param color  edge color (0..1 RGBA)
+ * @param viewportWidth / viewportHeight  pixel dimensions for NDC→pixel offset math
+ * @param lineWidth  pixel width for the quad expansion
+ * @param linePattern  16-bit dash mask (0xffff = solid)
+ */
+export function writeEdgeEmitterUniforms(
+  device: GPUDevice,
+  resources: EdgePrimitiveResources,
+  mvp: Float32Array,
+  mv: Float32Array,
+  color: { r: number; g: number; b: number; a: number },
+  viewportWidth: number,
+  viewportHeight: number,
+  lineWidth: number,
+  linePattern: number,
+): void {
+  // Camera UB: mvp[0..15], mv[16..31]
+  _scratchCameraData.set(mvp, 0);
+  _scratchCameraData.set(mv, 16);
+  device.queue.writeBuffer(resources.cameraBuffer, 0, _scratchCameraData);
+
+  const edgeData = new Float32Array(8);
+  edgeData[0] = color.r;
+  edgeData[1] = color.g;
+  edgeData[2] = color.b;
+  edgeData[3] = color.a;
+  edgeData[4] = viewportWidth;
+  edgeData[5] = viewportHeight;
+  edgeData[6] = lineWidth;
+  // Pattern packed as float — 0xffff fits in mantissa exactly, as do
+  // any 16-bit pattern values used in practice.
+  edgeData[7] = linePattern & 0xffff;
+  device.queue.writeBuffer(resources.edgeBuffer, 0, edgeData);
+}

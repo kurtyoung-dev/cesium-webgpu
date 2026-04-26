@@ -417,6 +417,15 @@ function updateWebGPUCloudCollection(
     });
   }
 
+  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward CloudCollection's
+  // `_rs` so the translucent cloud pass uses the same alpha-blend +
+  // depth-test configuration as the WebGL path. Written per-frame (not
+  // only at command creation) because the collection could in principle
+  // rebuild its render state if a future feature adds one.
+  (cache.command as { renderState?: unknown }).renderState = (
+    collection as unknown as { _rs?: unknown }
+  )._rs;
+
   commandList.push(cache.command);
 }
 

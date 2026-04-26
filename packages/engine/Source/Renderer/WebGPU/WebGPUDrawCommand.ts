@@ -1,6 +1,10 @@
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import {
+  applyPerEncoderState,
+  type CesiumRenderStateLike,
+} from "./RenderStateToPipelineVariant.js";
 
 /**
  * Index buffer format type for WebGPU draw commands.
@@ -124,6 +128,18 @@ interface WebGPUDrawCommandOptions {
   drawIndirectBuffer?: AnyGPUBuffer;
   /** Byte offset into `drawIndirectBuffer` for the draw args. Default 0. */
   drawIndirectOffset?: number;
+  /**
+   * Optional WebGL-style `renderState` carried through for C-R1. Feature
+   * renderers that want to honour `stencilReference`, `blendConstant`,
+   * `viewport`, or `scissorRect` on a per-command basis populate this.
+   * `WebGPUDrawCommand.execute()` forwards it to
+   * {@link applyPerEncoderState} immediately before the draw call.
+   * Pipeline-baked fields (cullMode, depthCompare, blend equations,
+   * stencil ops, colorWriteMask, depthBias) must be packed into the
+   * pipeline itself via {@link renderStateToPipelineVariant}; those
+   * cannot change per-draw.
+   */
+  renderState?: CesiumRenderStateLike;
 }
 
 /**
@@ -223,6 +239,9 @@ class WebGPUDrawCommand {
   // Pipeline config needed to recreate OIT variants
   _pipelineConfig?: WebGPUPipelineConfig;
 
+  // C-R1: WebGL-style renderState forwarded to the encoder per-draw.
+  renderState?: CesiumRenderStateLike;
+
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
 
@@ -319,6 +338,12 @@ class WebGPUDrawCommand {
     // is computed on the GPU.
     this.drawIndirectBuffer = options.drawIndirectBuffer;
     this.drawIndirectOffset = options.drawIndirectOffset ?? 0;
+
+    // C-R1: WebGL-style renderState forwarded per-draw. Undefined when the
+    // feature renderer already bakes everything into the pipeline (typical
+    // WebGPU-native case); non-null when the command came from a WebGL
+    // consumer that wants stencilRef / blendConstant / viewport / scissor.
+    this.renderState = options.renderState;
   }
 
   /**
@@ -380,6 +405,14 @@ class WebGPUDrawCommand {
 
     // Set the pipeline
     passEncoder.setPipeline(this.pipeline);
+
+    // C-R1: apply per-encoder dynamic state (stencilRef / blendConstant /
+    // viewport / scissor) from any WebGL-style renderState before the draw
+    // call. No-op when `renderState` is undefined (the WebGPU-native
+    // happy path where everything is baked into the pipeline).
+    if (this.renderState) {
+      applyPerEncoderState(passEncoder, this.renderState);
+    }
 
     // Set all bind groups
     for (let i = 0; i < this.bindGroups.length; i++) {
@@ -473,6 +506,7 @@ class WebGPUDrawCommand {
       materialSortId: this.materialSortId,
       visibilityMask: this.visibilityMask,
       isTransmissive: this.isTransmissive,
+      renderState: this.renderState,
     });
   }
 }

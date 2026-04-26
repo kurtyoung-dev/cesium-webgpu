@@ -32,17 +32,21 @@ describe("Renderer/WebGPU/WebGPUEffectsBindGroup CSM layout", function () {
     expect(endByte).toBeLessThanOrEqual(EFFECTS_UNIFORM_SIZE);
   });
 
-  it("CSM params placeholder matches the WebGPUCSMRenderer allocation (1088 bytes = 272 floats)", function () {
+  it("CSM params placeholder matches the WebGPUCSMRenderer allocation (1088 bytes)", function () {
     expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBe(1088);
-    // Current layout (272 floats = 1088B, already 256-aligned):
-    //   offset   0: 4 × mat4<f32>        cascade VP_RTE matrices  (256 floats)
-    //   offset 256: vec4<f32>            cascadeSplits            (  4 floats)
-    //   offset 260: vec4<f32>            blendBands               (  4 floats)
-    //   offset 264: vec4<f32>            cascadeMinBias           (  4 floats)
-    //   offset 268: vec4<f32>            cascadeMaxSlopeBias      (  4 floats)
-    // Total: 272 floats × 4B = 1088B. No alignment padding needed.
+    // WGSL CSMParams natural std140-style layout (float offsets):
+    //   offset  0:  4 × mat4x4<f32>  cascade VP_RTE matrices  (64 floats)
+    //   offset 64:  vec4<f32>        cascadeSplits             ( 4 floats)
+    //   offset 68:  vec4<f32>        blendBands                ( 4 floats)
+    //   offset 72:  vec4<f32>        cascadeMinBias            ( 4 floats)
+    //   offset 76:  vec4<f32>        cascadeMaxSlopeBias       ( 4 floats)
+    // Shader-visible struct: 80 floats = 320 bytes.
+    // We over-allocate the buffer to 1088 bytes so it stays
+    // 256-aligned (WebGPU UBO offset alignment) without introducing a
+    // new size constant for every CSM consumer. Bytes beyond 320 are
+    // unwritten zeros — the shader never reads them.
     expect(CSM_PARAMS_PLACEHOLDER_BYTES % 256).toBe(0);
-    // 272 floats = 1088B minimum size for the new layout.
-    expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(272 * 4);
+    // Must be at least the shader-visible struct size.
+    expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(320);
   });
 });

@@ -28,6 +28,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import SDFSettings from "../../Scene/SDFSettings.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import FeatureRendererKey from "../FeatureRendererKey.js";
 
 // Import SDF shader source
 import BillboardCollectionSDFWGSL from "../../Shaders/WebGPU/Collections/BillboardCollectionSDF.js";
@@ -596,7 +597,12 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
 
   // Background billboards: route through standard billboard renderer (used
   // for label backgrounds; they're opaque quads the SDF pass doesn't draw).
-  const billboardFR = context.getFeatureRenderer(0); // BILLBOARD_COLLECTION
+  // M-R6 (Batch 35) — replaced numeric literal `0` with enum constant
+  // per CLAUDE.md's "enumerated keys over string/numeric literal lookups"
+  // rule.
+  const billboardFR = context.getFeatureRenderer(
+    FeatureRendererKey.BILLBOARD_COLLECTION,
+  );
   if (backgroundCollection && backgroundCollection.length > 0 && billboardFR) {
     billboardFR.update(backgroundCollection, frameState, commandList);
   }

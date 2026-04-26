@@ -54,18 +54,28 @@ fn computeCov2D(
   let J11 = uniforms.focalY / t.z;
   let J12 = -(uniforms.focalY * tytz) / t.z;
 
-  // 3D covariance matrix (symmetric)
-  // [a b c]
-  // [b d e]
-  // [c e f]
-  let a = cov3D_a.x; let b = cov3D_a.y; let c = cov3D_a.z;
-  let d = cov3D_b.x; let e = cov3D_b.y; let f = cov3D_b.z;
+  // Rotate 3D covariance by the modelView 3x3 block so splats follow
+  // modelMatrix rotation/scale (Σ_view = R * Σ * R^T, matching GLSL's
+  // `mat3(czm_modelView)`). Translation column of modelViewRelativeToEye
+  // is zeroed CPU-side, so its 3x3 is the pure rotation*scale.
+  let R = mat3x3<f32>(
+    uniforms.modelViewRelativeToEye[0].xyz,
+    uniforms.modelViewRelativeToEye[1].xyz,
+    uniforms.modelViewRelativeToEye[2].xyz,
+  );
+  // Σ symmetric: covA = (Σ00, Σ01, Σ02), covB = (Σ11, Σ12, Σ22)
+  let Sigma = mat3x3<f32>(
+    vec3<f32>(cov3D_a.x, cov3D_a.y, cov3D_a.z),
+    vec3<f32>(cov3D_a.y, cov3D_b.x, cov3D_b.y),
+    vec3<f32>(cov3D_a.z, cov3D_b.y, cov3D_b.z),
+  );
+  let SV = R * Sigma * transpose(R);
+  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
+  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];
 
-  // Compute J * Sigma * J^T (only need 2x2 result)
-  // Using view-space transform: W * Sigma * W^T, then J * result * J^T
-  // Simplified: compute 2D covariance directly
+  // J * Σ_view * J^T (2x2 result). Low-rank terms 0.3 regularize.
   let cov2D_00 = J00 * J00 * a + 2.0 * J00 * J02 * c + J02 * J02 * f + 0.3;
-  let cov2D_01 = J00 * J11 * b + J00 * J12 * e + J02 * J11 * c + J02 * J12 * f;
+  let cov2D_01 = J00 * J11 * b + J02 * J11 * e + J00 * J12 * c + J02 * J12 * f;
   let cov2D_11 = J11 * J11 * d + 2.0 * J11 * J12 * e + J12 * J12 * f + 0.3;
 
   return vec3<f32>(cov2D_00, cov2D_01, cov2D_11);

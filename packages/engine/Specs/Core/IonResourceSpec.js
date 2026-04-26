@@ -16,17 +16,15 @@ describe("Core/IonResource", function () {
   };
 
   it("constructs with expected values", function () {
-    spyOn(Resource, "call").and.callThrough();
-
     const endpointResource = IonResource._createEndpointResource(assetId);
     const resource = new IonResource(endpoint, endpointResource);
     expect(resource).toBeInstanceOf(Resource);
     expect(resource._ionEndpoint).toEqual(endpoint);
-    expect(Resource.call).toHaveBeenCalledWith(resource, {
-      url: endpoint.url,
-      retryCallback: resource.retryCallback,
-      retryAttempts: 1,
-    });
+    // IonResource extends Resource via ES6 `super(options)`, so verify the
+    // parent-initialized state instead of spying on the legacy Resource.call.
+    expect(resource.url).toEqual(endpoint.url);
+    expect(resource.retryCallback).toBeDefined();
+    expect(resource.retryAttempts).toBe(1);
   });
 
   it("clone works", function () {

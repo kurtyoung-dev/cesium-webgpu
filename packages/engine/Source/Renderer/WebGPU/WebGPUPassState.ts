@@ -97,6 +97,18 @@ class WebGPUPassState {
   stencilReference: number;
 
   /**
+   * Constant blend color used when a command's pipeline blend factors
+   * reference `constant` / `one-minus-constant`. WebGPU exposes this as
+   * a per-encoder dynamic state via
+   * `GPURenderPassEncoder.setBlendConstant(color)`; this field carries
+   * the pass-level default so commands that don't override it via
+   * `WebGPUDrawCommand.renderState` still get the right value at the
+   * pass boundary. `undefined` means "don't set one" — the encoder
+   * default `(0, 0, 0, 0)` is used.
+   */
+  blendConstant: GPUColor | undefined;
+
+  /**
    * Whether this pass should clear the color buffer before rendering.
    */
   clearColor: boolean;
@@ -134,6 +146,7 @@ class WebGPUPassState {
     this.cullFaceEnabled = undefined;
     this.stencilTestEnabled = undefined;
     this.stencilReference = 0;
+    this.blendConstant = undefined;
     this.clearColor = false;
     this.clearDepth = false;
     this.clearStencil = false;
@@ -185,35 +198,13 @@ class WebGPUPassState {
     return undefined;
   }
 
-  /**
-   * Applies pass state to the current render pass encoder.
-   * Sets viewport and scissor rect on the encoder.
-   */
-  applyToRenderPass(renderPassEncoder: GPURenderPassEncoder): void {
-    const viewport = this.getEffectiveViewport();
-    renderPassEncoder.setViewport(
-      viewport.x,
-      viewport.y,
-      viewport.width,
-      viewport.height,
-      0.0, // minDepth
-      1.0, // maxDepth
-    );
-
-    const scissor = this.getEffectiveScissorRect();
-    if (scissor) {
-      renderPassEncoder.setScissorRect(
-        scissor.x,
-        scissor.y,
-        scissor.width,
-        scissor.height,
-      );
-    }
-
-    if (this.stencilReference !== 0) {
-      renderPassEncoder.setStencilReference(this.stencilReference);
-    }
-  }
+  // H-R4 (Batch 39) — Removed dead `applyToRenderPass` method. Per-
+  // encoder dynamic state (viewport, scissor, stencilReference,
+  // blendConstant) is now applied via `applyPerEncoderState` in
+  // WebGPUDrawCommand from `renderState` forwarding (C-R1 work,
+  // Batches 30/35/36/37/39), not from this pass state. No external
+  // caller remained — the only reference was a JSDoc mention in
+  // `RenderStateToPipelineVariant.ts:360`.
 
   /**
    * Creates a GPURenderPassDescriptor from this pass state.
@@ -292,6 +283,14 @@ class WebGPUPassState {
     cloned.cullFaceEnabled = this.cullFaceEnabled;
     cloned.stencilTestEnabled = this.stencilTestEnabled;
     cloned.stencilReference = this.stencilReference;
+    // GPUColor is either a GPUColorDict ({r,g,b,a}) or a 4-element array.
+    // The spread works for both — for the array variant it copies indices,
+    // which `setBlendConstant` accepts as an `Iterable<number>`.
+    cloned.blendConstant = this.blendConstant
+      ? Array.isArray(this.blendConstant)
+        ? ([...this.blendConstant] as [number, number, number, number])
+        : { ...this.blendConstant }
+      : undefined;
     cloned.clearColor = this.clearColor;
     cloned.clearDepth = this.clearDepth;
     cloned.clearStencil = this.clearStencil;

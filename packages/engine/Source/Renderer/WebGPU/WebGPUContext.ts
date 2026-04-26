@@ -649,7 +649,39 @@ export class WebGPUContext extends GraphicsContext {
 
       // Request GPU device with auto-detected optional features
       const requestedFeatures = this._buildFeatureList(this._adapter);
-      const requiredLimits = this._options.requiredLimits ?? {};
+      const requiredLimits = { ...(this._options.requiredLimits ?? {}) };
+
+      // NEW-4-F (Batch 66) — Batch 58's C-R5 expansion bumped imagery
+      // layers to 16 + 5 per-layer uniforms. Globe terrain pipelines
+      // can now exceed the default WebGPU minimum
+      // `maxSampledTexturesPerShaderStage = 16`. Request the adapter's
+      // ceiling (up to 256, the spec's "tier 1" limit) when available so
+      // the globe pipeline + effects bind group + per-imagery samplers
+      // all fit. If the adapter doesn't expose a higher limit, the
+      // requestDevice() rejects gracefully and the user sees an explicit
+      // error rather than silent pipeline-creation failures later.
+      const adapterMaxSampled =
+        this._adapter.limits?.maxSampledTexturesPerShaderStage ?? 16;
+      if (
+        requiredLimits.maxSampledTexturesPerShaderStage === undefined &&
+        adapterMaxSampled > 16
+      ) {
+        requiredLimits.maxSampledTexturesPerShaderStage = Math.min(
+          adapterMaxSampled,
+          64,
+        );
+      }
+      const adapterMaxBindings =
+        this._adapter.limits?.maxBindingsPerBindGroup ?? 640;
+      if (
+        requiredLimits.maxBindingsPerBindGroup === undefined &&
+        adapterMaxBindings > 640
+      ) {
+        requiredLimits.maxBindingsPerBindGroup = Math.min(
+          adapterMaxBindings,
+          1000,
+        );
+      }
 
       this._device = await this._adapter.requestDevice({
         requiredFeatures: requestedFeatures,

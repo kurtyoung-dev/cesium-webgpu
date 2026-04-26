@@ -29,10 +29,14 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.AlphaMapType fabric: { image: str, channel: "a", repeat: Cart2 }.
+// `image` is a texture ref (offset -1); `channel` is a 1-char swizzle
+// string that MaterialUniformBuffer packs as an f32 index (r=0, g=1,
+// b=2, a=3). Fabric declaration order determines the float layout —
+// `channel` comes before `repeat`, so the struct matches.
 struct MaterialUniforms {
-    color: vec4<f32>,
+    channel: f32,
     repeat: vec2<f32>,
-    channel: f32,  // 0=r, 1=g, 2=b, 3=a,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -56,12 +60,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-fn extractChannel(texColor: vec4<f32>, ch: f32) -> f32 {
-    let c = i32(ch);
-    if (c == 0) { return texColor.r; }
-    if (c == 1) { return texColor.g; }
-    if (c == 2) { return texColor.b; }
-    return texColor.a;
+// Dynamic subscript — WGSL allows vector indexing by a runtime i32.
+// Clamp defends against any malformed channel packing.
+fn extractChannel(c: vec4<f32>, idx: f32) -> f32 {
+    return c[clamp(i32(idx), 0, 3)];
 }
 
 @fragment
@@ -69,5 +71,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.texCoord * material.repeat;
     let texColor = textureSample(alphaTexture, textureSampler, uv);
     let alpha = extractChannel(texColor, material.channel);
-    return vec4<f32>(material.color.rgb, material.color.a * alpha);
+    // AlphaMap fabric has no `color` — emit white tint so the alpha mask
+    // is what controls transparency.
+    return vec4<f32>(1.0, 1.0, 1.0, alpha);
 }

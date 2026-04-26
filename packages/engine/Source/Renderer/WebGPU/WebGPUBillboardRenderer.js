@@ -740,6 +740,20 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   const billboardPass =
     blendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
 
+  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the source
+  // JS-side renderState from BillboardCollection (`_rsOpaque` /
+  // `_rsTranslucent`) so `applyPerEncoderState` drives the dynamic
+  // WebGPU pass state (stencil ref, blend constant, scissor,
+  // viewport) from the same values the WebGL path uses. Without this
+  // the command ran with whatever the encoder's default was for the
+  // current pass, producing subtle stencil/blend drift relative to
+  // WebGL. The `pass: OPAQUE` emit uses `_rsOpaque`; every other
+  // emit (TRANSLUCENT or OPAQUE_AND_TRANSLUCENT) uses `_rsTranslucent`.
+  const colorRenderState =
+    billboardPass === 8 /* Pass.OPAQUE */
+      ? collection._rsOpaque
+      : collection._rsTranslucent;
+
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
@@ -751,6 +765,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
     cull: true,
+    renderState: colorRenderState,
   });
 
   // Pick pass handling
@@ -849,6 +864,11 @@ function _pushBillboardPickCommand(
     pickSize,
   );
 
+  // Pick always runs in the OPAQUE pass — use `_rsOpaque` so the pick
+  // FBO sees the same depth behavior as the color opaque path. When
+  // the collection is TRANSLUCENT-only `_rsOpaque` is undefined, and
+  // the command falls back to encoder defaults (pick commands don't
+  // blend, so that's safe).
   cache.pickCommand = new WebGPUDrawCommand({
     pipeline: cache.pickPipeline,
     bindGroups: [cache.bindGroup], // Reuse color bind group (same uniforms + atlas)
@@ -860,6 +880,7 @@ function _pushBillboardPickCommand(
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
     cull: true,
+    renderState: collection._rsOpaque ?? collection._rsTranslucent,
   });
 
   commandList.push(cache.pickCommand);

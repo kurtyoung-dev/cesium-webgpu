@@ -137,6 +137,16 @@ const writeLogDepthRegex = /\s+czm_writeLogDepth\(/;
 const vertexlogDepthRegex = /\s+czm_vertexLogDepth\(/;
 
 function getLogDepthShaderProgram(context, shaderProgram) {
+  // NEW-4-C (Batch 66) — WebGPU draw commands carry GPUShaderModule
+  // pipelines that don't have a WebGL-style `fragmentShaderSource`.
+  // The log-depth wrapper is a WebGL-only transformation (it rewrites
+  // GLSL source); for WebGPU the dispatcher (`selectCommandVariant`)
+  // already routes log-depth via `derivedCommands.logDepth.command`
+  // which carries its own pre-built WGSL pipeline. Skip the wrapper
+  // when the shader program isn't a WebGL ShaderProgram.
+  if (!defined(shaderProgram?.fragmentShaderSource?.defines)) {
+    return shaderProgram;
+  }
   const disableLogDepthWrite =
     shaderProgram.fragmentShaderSource.defines.includes("LOG_DEPTH_READ_ONLY");
   if (disableLogDepthWrite) {
@@ -236,12 +246,21 @@ DerivedCommand.createLogDepthCommand = function (command, context, result) {
 
   result.command = DrawCommand.shallowClone(command, result.command);
 
-  if (!defined(shader) || result.shaderProgramId !== command.shaderProgram.id) {
-    result.command.shaderProgram = getLogDepthShaderProgram(
-      context,
-      command.shaderProgram,
-    );
-    result.shaderProgramId = command.shaderProgram.id;
+  // NEW-5-A (Batch 66) — sibling defect to NEW-4-C: WebGPU draw commands
+  // carry a GPUShaderModule-backed pipeline that doesn't have the
+  // WebGL-style `shaderProgram.id` field. Skip the log-depth derivation
+  // when the shader program isn't a WebGL ShaderProgram — the WebGPU
+  // dispatcher (`selectCommandVariant`) already routes log-depth via
+  // `derivedCommands.logDepth.command` with a pre-built WGSL pipeline.
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    result.command.shaderProgram = cmdShader;
+    return result;
+  }
+
+  if (!defined(shader) || result.shaderProgramId !== cmdShader.id) {
+    result.command.shaderProgram = getLogDepthShaderProgram(context, cmdShader);
+    result.shaderProgramId = cmdShader.id;
   } else {
     result.command.shaderProgram = shader;
   }

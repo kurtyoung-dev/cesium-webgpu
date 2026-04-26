@@ -461,4 +461,74 @@ describe("Renderer/WebGPU/WebGPUCSMRenderer", function () {
       expect(wz / ww).toBeCloseTo(2 / 3, 2);
     });
   });
+
+  describe("CSMParams UBO pack — WGSL float offsets", function () {
+    // Regression guard: `WebGPUCSMRenderer.computeCascadeVPs` writes
+    // splits/blendBands/biases into `_cascadeParamsData` at the float
+    // offsets the shader's natural WGSL layout expects. The struct is:
+    //   4 × mat4x4<f32> (offsets 0..15, 16..31, 32..47, 48..63)
+    //   vec4 cascadeSplits       @ 64..67
+    //   vec4 blendBands          @ 68..71
+    //   vec4 cascadeMinBias      @ 72..75
+    //   vec4 cascadeMaxSlopeBias @ 76..79
+    // If the JS packer drifts from these offsets, the shader reads
+    // zeros and CSM silently degrades to single-cascade / no-bias mode.
+    it("packs splits/blendBands/biases at WGSL-natural offsets (64/68/72/76)", function () {
+      const r = new WebGPUCSMRenderer({
+        cascadeCount: 4,
+        lambda: 0.5,
+        blendBand: 0.1,
+        maxShadowDistance: 10000,
+      });
+      r.computeSplits(1, 10000);
+      // Inject a fake sphereRadius per cascade so the bias scaling
+      // produces non-zero, distinguishable values.
+      const cascades = r.cascades;
+      for (let c = 0; c < cascades.length; c++) {
+        cascades[c].sphereRadius = 100 * (c + 1); // 100, 200, 300, 400
+        cascades[c].viewProjection.fill(0);
+        cascades[c].viewProjectionRTE.fill(0);
+      }
+
+      // Drive the pack via the private method. We only care about the
+      // split / blend / bias offsets here — VPs are covered elsewhere.
+      const camera = {
+        positionWC: { x: 0, y: 0, z: 0 },
+        directionWC: { x: 1, y: 0, z: 0 },
+        upWC: { x: 0, y: 0, z: 1 },
+        rightWC: { x: 0, y: -1, z: 0 },
+        frustum: { fovy: Math.PI / 2, aspectRatio: 1.0 },
+      };
+      r.enabled = true;
+      r.computeCascadeVPs(camera, { x: -1, y: 0, z: 0 });
+
+      // Cast-through access — spec needs to inspect the private buffer.
+      // eslint-disable-next-line dot-notation
+      const data = r["_cascadeParamsData"];
+
+      // cascadeSplits at floats 64..67 must match splitFar values.
+      for (let c = 0; c < 4; c++) {
+        expect(data[64 + c]).toBeCloseTo(cascades[c].splitFar, 3);
+      }
+      // blendBands at 68..71 should be non-zero (range * blendBand).
+      for (let c = 0; c < 4; c++) {
+        expect(data[68 + c]).toBeGreaterThan(0);
+      }
+      // cascadeMinBias at 72..75 should be BASE_MIN_BIAS × per-cascade scale.
+      for (let c = 0; c < 4; c++) {
+        expect(data[72 + c]).toBeGreaterThan(0);
+      }
+      // cascadeMaxSlopeBias at 76..79.
+      for (let c = 0; c < 4; c++) {
+        expect(data[76 + c]).toBeGreaterThan(0);
+      }
+
+      // Old positions (floats 256/260/264/268) MUST stay zero — that's
+      // where the old buggy packer wrote. If anything there is non-zero,
+      // the packer regressed to the pre-fix layout.
+      for (let i = 256; i < 272; i++) {
+        expect(data[i]).toBe(0);
+      }
+    });
+  });
 });

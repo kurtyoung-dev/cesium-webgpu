@@ -30,9 +30,11 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// MaterialUniforms field order must match Material.ElevationContourType
+// fabric: { spacing: f32, color: Color, width: f32 }.
 struct MaterialUniforms {
-    color: vec4<f32>,
     spacing: f32,
+    color: vec4<f32>,
     width: f32,
 }
 

@@ -59,7 +59,6 @@ import {
   updateWebGPUSun,
   updateWebGPUMoon,
   destroyWebGPUMoonResources,
-  getWebGPUFogParameters,
   getWebGPUMoonStatistics,
 } from "./WebGPUEnvironmentRenderer.js";
 import { updateWebGPUSkyAtmosphere } from "./WebGPUSkyAtmosphereRenderer.js";
@@ -288,9 +287,15 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     update: updateWebGPUSkyAtmosphere,
   });
 
-  context.registerFeatureRenderer(FeatureRendererKey.FOG, {
-    getParameters: getWebGPUFogParameters,
-  });
+  // `FeatureRendererKey.FOG` is intentionally unregistered. Classic
+  // distance-based fog is driven entirely by `frameState.fog.*` + the
+  // per-tile UB populated in `WebGPUGlobeSurfaceRenderer`, which is the
+  // only shader family that applies exponential horizon fog. An FR
+  // getParameters helper would return a strict subset of what the globe
+  // packer actually needs (missing visualDensityScalar, offset, humidity
+  // modulation), so wiring it in would regress consumers. The key itself
+  // is kept in the enum for potential future reuse (e.g., a Scene-level
+  // fog sampler that legitimately needs backend-agnostic access).
 
   context.registerFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA, {
     update: updateCubeMapPanorama,

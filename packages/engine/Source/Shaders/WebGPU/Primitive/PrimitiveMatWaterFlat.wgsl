@@ -18,12 +18,16 @@ struct VertexOutput {
     @location(1) viewDist: f32,
 }
 
+// Water Flat repurposes the float-23 camera-UBO pad slot (normally
+// `_pad1`) as a per-frame `time` value. See writeRTEUniformsFlat in
+// WebGPUPrimitiveCommands.js — frameNumber is packed there so the wave
+// phase advances each frame. Matches upstream `czm_frameNumber` semantic.
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
-    _pad1: f32,
+    time: f32,
     _pad2: vec2<f32>,
     // DP-H41 (Batch 27) — previous frame's viewProjection for
     // TAA / motion-vector reprojection. Sourced from
@@ -31,6 +35,10 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.WaterType fabric: baseWaterColor, blendColor, specularMap,
+// normalMap, frequency, animationSpeed, amplitude, specularIntensity,
+// fadeFactor. Textures live on binding slots; wave phase is driven by
+// `camera.time` (frameNumber) — see writeRTEUniformsFlat.
 struct MaterialUniforms {
     baseWaterColor: vec4<f32>,
     blendColor: vec4<f32>,
@@ -39,7 +47,6 @@ struct MaterialUniforms {
     amplitude: f32,
     specularIntensity: f32,
     fadeFactor: f32,
-    time: f32,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -68,7 +75,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    let t = material.time * material.animationSpeed;
+    // Wave phase from the per-frame camera `time` slot (frameNumber).
+    // Matches upstream Water.glsl: `time = czm_frameNumber * animationSpeed`.
+    let t = camera.time * material.animationSpeed;
     let freq = material.frequency;
 
     // Animated UV for wave sampling

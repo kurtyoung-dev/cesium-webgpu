@@ -220,14 +220,17 @@ export class WebGPUCSMRenderer {
     this._maxShadowDistance = config?.maxShadowDistance ?? 100000;
     this.enabled = config?.enabled ?? false;
 
-    // Cascade params UBO layout:
-    //   4 × mat4 (cascade VP_RTE matrices)  = 256 floats   offset 0
-    //   vec4  cascadeSplits                 =   4 floats   offset 256
-    //   vec4  blendBands                    =   4 floats   offset 260
-    //   vec4  cascadeMinBias                =   4 floats   offset 264
-    //   vec4  cascadeMaxSlopeBias           =   4 floats   offset 268
-    // Total: 272 floats = 1088 bytes (256-aligned, matches
-    // CSM_PARAMS_PLACEHOLDER_BYTES in WebGPUEffectsBindGroup).
+    // Cascade params UBO layout (float offsets, each slot is 4 floats):
+    //   4 × mat4x4<f32> cascade VP_RTE matrices = 64 floats  offset   0
+    //   vec4<f32> cascadeSplits                 =  4 floats  offset  64
+    //   vec4<f32> blendBands                    =  4 floats  offset  68
+    //   vec4<f32> cascadeMinBias                =  4 floats  offset  72
+    //   vec4<f32> cascadeMaxSlopeBias           =  4 floats  offset  76
+    // WGSL struct size: 80 floats = 320 bytes.
+    // We over-allocate to 272 floats (1088 bytes) so the buffer stays
+    // 256-aligned and matches CSM_PARAMS_PLACEHOLDER_BYTES without
+    // forcing every CSM consumer to track a new size constant. Bytes
+    // beyond 320 are unwritten zeros — the shader never reads them.
     this._cascadeParamsData = new Float32Array(272);
 
     for (let i = 0; i < this._cascadeCount; i++) {
@@ -422,26 +425,29 @@ export class WebGPUCSMRenderer {
       }
     }
 
-    // Pack split distances at offset 256 (after 4 matrices).
+    // Pack split distances at float offset 64 (byte 256, right after the
+    // 4 mat4x4<f32> VPs which occupy 64 floats total). The WGSL layout
+    // of CSMParams places cascadeSplits immediately after cascadeVP3 in
+    // natural std140-style layout; see the struct comment above.
     for (let c = 0; c < this._cascadeCount; c++) {
-      this._cascadeParamsData[256 + c] = this._cascades[c].splitFar;
+      this._cascadeParamsData[64 + c] = this._cascades[c].splitFar;
     }
 
-    // Pack blend band at offset 260.
+    // Pack blend band at float offset 68 (byte 272).
     for (let c = 0; c < this._cascadeCount; c++) {
       const range = this._cascades[c].splitFar - this._cascades[c].splitNear;
-      this._cascadeParamsData[260 + c] = range * this._blendBand;
+      this._cascadeParamsData[68 + c] = range * this._blendBand;
     }
 
-    // Pack per-cascade depth-bias constants at offsets 264 (minBias) and
-    // 268 (maxSlopeBias). Both scale with sphere-radius ratio against
+    // Pack per-cascade depth-bias constants at float offsets 72 (minBias)
+    // and 76 (maxSlopeBias). Both scale with sphere-radius ratio against
     // cascade 0, so the NDC-depth bias stays proportional to the cascade's
     // orthographic depth range (fn = 3 * r inside _computeCascadeVPMatrix).
     const refRadius = Math.max(1.0, this._cascades[0].sphereRadius);
     for (let c = 0; c < this._cascadeCount; c++) {
       const scale = Math.max(1.0, this._cascades[c].sphereRadius / refRadius);
-      this._cascadeParamsData[264 + c] = BASE_MIN_BIAS * scale;
-      this._cascadeParamsData[268 + c] = BASE_MAX_SLOPE_BIAS * scale;
+      this._cascadeParamsData[72 + c] = BASE_MIN_BIAS * scale;
+      this._cascadeParamsData[76 + c] = BASE_MAX_SLOPE_BIAS * scale;
     }
 
     // Upload to GPU.

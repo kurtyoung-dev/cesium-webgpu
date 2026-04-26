@@ -73,8 +73,10 @@ import UrlTemplateImageryProvider from "./UrlTemplateImageryProvider.js";
  *        Cesium.Math.toRadians(40.0))
  * });
  */
-function TileMapServiceImageryProvider(options) {
-  UrlTemplateImageryProvider.call(this, options);
+class TileMapServiceImageryProvider extends UrlTemplateImageryProvider {
+  constructor(options) {
+    super(options);
+  }
 }
 
 TileMapServiceImageryProvider._requestMetadata = async function (
@@ -148,14 +150,6 @@ TileMapServiceImageryProvider.fromUrl = async function (url, options) {
 
   return new TileMapServiceImageryProvider(metadata);
 };
-
-if (defined(Object.create)) {
-  TileMapServiceImageryProvider.prototype = Object.create(
-    UrlTemplateImageryProvider.prototype,
-  );
-  TileMapServiceImageryProvider.prototype.constructor =
-    TileMapServiceImageryProvider;
-}
 
 /**
  * Mutates the properties of a given rectangle so it does not extend outside of the given tiling scheme's rectangle

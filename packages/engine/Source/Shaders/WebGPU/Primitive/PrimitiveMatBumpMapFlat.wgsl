@@ -29,10 +29,13 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.BumpMapType fabric: { image: str, channel: "r", strength: f32, repeat: Cart2 }.
+// `channel` is packed as an f32 index by MaterialUniformBuffer
+// (r=0, g=1, b=2, a=3). Fabric order: channel, strength, repeat.
 struct MaterialUniforms {
-    repeat: vec2<f32>,
-    channel: f32,  // 0=r, 1=g, 2=b, 3=a,
+    channel: f32,
     strength: f32,
+    repeat: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -52,14 +55,6 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
-fn extractChannel(texColor: vec4<f32>, ch: f32) -> f32 {
-    let c = i32(ch);
-    if (c == 0) { return texColor.r; }
-    if (c == 1) { return texColor.g; }
-    if (c == 2) { return texColor.b; }
-    return texColor.a;
-}
-
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -69,10 +64,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+fn extractChannel(c: vec4<f32>, idx: f32) -> f32 {
+    return c[clamp(i32(idx), 0, 3)];
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Without lighting, bump mapping has no visible effect
-    // Show a subtle height visualization as grayscale
+    // Without lighting, bump mapping has no visible effect.
+    // Show a subtle grayscale height visualization.
     let uv = fract(input.texCoord * material.repeat);
     let texColor = textureSample(bumpTexture, textureSampler, uv);
     let h = extractChannel(texColor, material.channel);

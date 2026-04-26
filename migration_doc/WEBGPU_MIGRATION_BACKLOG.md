@@ -1,7 +1,89 @@
 # CesiumJS WebGPU Migration -- Remaining Work Backlog
 
-**Last Updated:** April 18, 2026 (Sessions 33 + 34 + CSM Slices 2a cast-variant unlock, 2b texel-snap + PhongColor receive, 2c ModelPBRComplete receive; Principal-engineer review Batches 6-27 landed)
-**Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`.
+**Last Updated:** April 25, 2026 (Batches 28-64 of the principal-engineer review remediation now landed; soft point-light shadows shipped; doc rollup pass complete)
+**Purpose:** Single source of truth for ALL remaining work — active bugs, fork tech debt, parity gaps, sorting/picking enhancements, ES6 modernization, upstream issues, dormant compute shaders, and modern WebGPU feature integrations. Items resolved through April 2026 have been moved to `WEBGPU_MIGRATION_STATUS.md`. **For the canonical list of named C-R follow-ups deferred during review remediation, see [`DEFERRED_WORK.md`](DEFERRED_WORK.md) — this backlog covers everything ELSE.**
+
+## Recent activity — Batches 28-64 (2026-04-23 → 2026-04-25)
+
+A 36-batch, 3-day burst of principal-engineer-review remediation. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md). Highlights below; the full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) so future sessions have a stable pick-list.
+
+### Critical-tier wins (C-R prefix)
+
+- **C-R2 derived-command dispatcher** (Batch 29) — `selectCommandVariant` polymorphic routing across logDepth / hdr / picking / pickingMetadata / shadows.receiveCommand / depth. Wired in both `executeWebGPUCommand` and `_executePickBatch`.
+- **C-R3 translucent back-to-front sort** (Batch 28) — `CommandSorter` integration for non-OIT TRANSLUCENT, VOXELS, GAUSSIAN_SPLATS pass loops. OIT path stays unsorted (order-independent).
+- **C-R7 pipeline cache infrastructure** (Batches 33-34) — instantiation, key correctness, device-loss invalidation. First-cut renderer migration in Batch 56 (Ellipsoid, GaussianSplat, DepthPlane). 12 renderers + ModelRenderer remain — see `C-R7-RENDERER-MIGRATION-REMAINING` + `C-R7-SHADER-MODULE-DEDUP` in DEFERRED_WORK.md.
+- **C-R8 scene passes** — globe depth update (Batches 35/42/43), 2D frustum jitter (Batch 36), InvertClassification full stack (Batches 38-41), Edge FBO + emitter + feature parity (Batches 44-46), Edge inline + feature ID + ID format + composite prune (Batches 48-51), Translucent tile classification first cut + MSAA gate (Batches 47, 61). Three classification follow-ups deferred: see `C-R8-TRANSLUCENT-DEPTH-ONLY`, `C-R8-TRANSLUCENT-MULTI-FRUSTUM`, `C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH` in DEFERRED_WORK.md.
+- **C-R9 pick path** — Ellipsoid (Batch 30), Ground+Splat (Batch 31), Voxel (Batch 53), Model (Batch 54). All five missing pick targets now ship at primitive granularity. Three follow-ups deferred for per-feature, per-cell, and OIT-translucent variants.
+- **C-R10 point-light shadows** — Cast (Batch 34), Model FS receive (Batch 57), 5-tap PCF soft shadows (Batch 63, this rollup). Globe terrain receive deferred as `C-R10-GLOBE-POINT-LIGHT`.
+- **C-R11 bind-group cache** — post-process consumers (Batches 31-32), per-tile EffectsBindGroup collection cache (Batch 55). Per-tile clipping bind-group hot path went from ~12k allocations/sec to 0 steady-state.
+- **C-R12 device-loss invalidation event** (Batch 33) — subscriber registry on `WebGPUContext`, six subsystem getters wired, scene-renderer-level `_ensureResources` rebuild on next frame. Per-object cache extension deferred as `C-R12-PER-OBJECT-CACHES`.
+
+### Doc rollup (Batch 64, this work)
+
+- New canonical follow-up inventory at [DEFERRED_WORK.md](DEFERRED_WORK.md). 14 named follow-ups grouped by parent C-R finding with What / Why / Prerequisites / Effort / Impact / Trace fields per entry.
+- This file's "Last Updated" header refreshed; recent activity section added.
+- [NEXT_SESSION_HANDOFF.md](NEXT_SESSION_HANDOFF.md) refreshed to 2026-04-25.
+
+### Soft point-light shadows (Batch 63, this work)
+
+5-tap cross PCF kernel in `samplePointShadow` of `ModelPBRComplete.wgsl`. Activated via the previously-reserved `pointLightPositionWC.w` slot — `radius=0` keeps Batch 57's hard sampling bit-exact (back-compat); `radius>0` runs cross taps along the two minor cube-face axes (the axes that aren't the dominant face axis), keeping all 5 samples on the same face's depth texels and avoiding seam artifacts. UBO size unchanged (336 bytes). `shadowMap.softShadows = true` auto-resolves to a 1.5-texel radius via `WebGPUEffectsBindGroup.js`'s auto-detect path. Cube-face edge length now flows through `effects.shadowMapSize.x` so the kernel converts texels → unit-direction offsets correctly.
+
+## 2026-04-20 — Session 37 findings (FR audit + review-doc sweep)
+
+- **`FeatureRendererKey.FOG` was a dead registration — now removed.**
+  Surfaced by the new `Tools/audit-feature-renderers.mjs` script
+  (landed this session to address review §4d). Deep trace: classic
+  distance-based fog is already driven by `frameState.fog.*` → packed
+  into the per-tile UB by `WebGPUGlobeSurfaceRenderer.ts:2539` (with
+  humidity modulation + enabled-gating) → read as `tile.fogDensity` /
+  `tile.fogVisualDensityScalar` / `tile.fogMinimumBrightness` in
+  `GlobeTerrain.wgsl:1447`. That's the only consumer. The FR wrapper
+  `getWebGPUFogParameters(fog, frameState)` returned a strict subset
+  (`{ density, minimumBrightness }`) missing `offset`,
+  `visualDensityScalar`, and humidity — wiring it in would have
+  regressed consumers. Removed this session: the registration in
+  `WebGPUFeatureRenderers.ts`, the `getWebGPUFogParameters` export
+  from `WebGPUEnvironmentRenderer.js`, and the cross-module import.
+  **Key itself retained** in `FeatureRendererKey.js` (add-only
+  discipline — reordering would renumber every later slot) with an
+  explanatory comment at the registration site so future contributors
+  know the slot is reserved but deliberately unbound.
+- **No interaction with `VOLUMETRIC_FOG`.** Verified via grep:
+  `WebGPUVolumetricFogRenderer.ts` never reads `frameState.fog.*`. The
+  two systems are orthogonal — classic fog is a per-fragment
+  exponential inside globe terrain; volumetric fog is a Phase 5
+  froxel-grid compute-pass producing a 3D LUT that composites after
+  the scene. They can coexist trivially (transmittance naturally
+  multiplies) and neither currently consumes the other's state.
+- **Retained forward-looking auto-uniforms** (`csm_fogDensity`,
+  `csm_fogMinimumBrightness`, `csm_fogVisualDensityScalar`) in
+  `WebGPUAutoUniforms.js`. These are registered in the SCENE + GLOBE
+  groupings but no WGSL shader currently references their names, so
+  they allocate zero bytes today. Keeping them preserves the OPEN-5
+  rationale comment and the design-contract shape — if a future custom
+  WGSL shader needs distance fog via auto-UB (instead of the globe's
+  tile-UB path), the plumbing is ready. Matches the CLAUDE.md "never
+  trim WIP-module interfaces" discipline.
+- **Reviewed principal-engineer review 2026-04-16 lifecycle items.**
+  §3a (ring allocator), §3c (view/bindgroup caching), §3d (device-lost
+  recovery dispose), §3e (shader-cache WGSL source attach), §4b
+  (DrawCommand `occlude`/`pickOnly` parity), and §4c (lazy FR promise
+  caching) all verified FIXED in working-tree. §5d (ShadowMap spec
+  registry pollution) and §6b (last orphan panorama `console.log`)
+  fixed this session. §6a fixed on the orphan
+  `WebGPU{Shader,Pipeline}Cache` modules (they accept `contextId` and
+  prefix logs) — still follows `C-R7-CENTRAL-PIPELINE-CACHE` for when
+  those caches actually get instantiated.
+- **Reviewed principal-engineer review 2026-04-16 lifecycle items.**
+  §3a (ring allocator), §3c (view/bindgroup caching), §3d (device-lost
+  recovery dispose), §3e (shader-cache WGSL source attach), §4b
+  (DrawCommand `occlude`/`pickOnly` parity), and §4c (lazy FR promise
+  caching) all verified FIXED in working-tree. §5d (ShadowMap spec
+  registry pollution) and §6b (last orphan panorama `console.log`)
+  fixed this session. §6a fixed on the orphan
+  `WebGPU{Shader,Pipeline}Cache` modules (they accept `contextId` and
+  prefix logs) — still follows `C-R7-CENTRAL-PIPELINE-CACHE` for when
+  those caches actually get instantiated.
 
 ## 2026-04-19 — Session 35 findings (stale specs + carry-overs)
 
@@ -672,27 +754,30 @@ These features are standard in Babylon.js / Three.js / PlayCanvas / Filament / B
 | ---- | ------ | ----------- |
 | **MaterialUniformBuffer** | Shipped — `MaterialUniformBuffer.js`, Float32Array backing, auto-layout, dirty tracking | Wired into `Material.js` via `MaterialHelpers.js`; WebGPU fast path in `WebGPUPrimitiveCommands.js` |
 
-### Material UBO Architecture (Option B) — IN PROGRESS
+### Material UBO Architecture (Option B) — Functional, field-audit outstanding
 
-**Status:** Shader split complete (49 files), renderer partially refactored, NOT yet functional end-to-end.
+**Status:** Split layout landed in Session 28 (2026-04-13). Shaders use
+`group(0)=CameraUniforms`, `group(1)=MaterialUniforms`, `group(2)=Texture`,
+`group(3)=Effects`. `WebGPUPrimitiveCommands.js` and `WebGPUPolylineRenderer.js`
+both source material data from `MaterialUniformBuffer.gpuData` directly. Billboard
+collections retain their monolithic layout by design (they don't consume the
+Material fabric).
 
 | Sub-task | Status | Effort |
 | --- | --- | --- |
 | MaterialUniformBuffer.js (Float32Array + alignment + facade) | **Done** | — |
 | WGSL shader struct split (49 shaders) | **Done** | — |
-| Field name alignment (WGSL ↔ JS fabric) | **Partially done** | ~1 day |
 | WebGPUPrimitiveCommands.js renderer refactor | **Done** | — |
-| WebGPUPolylineRenderer.js renderer refactor | Not started | ~0.5 day |
-| WebGPUBillboardRenderer.js renderer refactor | Not started | ~0.5 day |
-| Texture binding group shift | Not started | ~0.5 day |
-| Effects bind group shift | Not started | ~0.5 day |
-| .js shader wrapper regeneration | Not started | 5 min (gulp build) |
+| WebGPUPolylineRenderer.js renderer refactor | **Done (Session 28)** | — |
+| Texture binding group(2) shift | **Done (Session 28)** | — |
+| `.js` shader wrapper regeneration | **Done** (covered by `gulp build`) | — |
+| Field name alignment audit (WGSL ↔ JS fabric) | **Partially done** — material-by-material verification still needed | ~1 day |
 | Visual verification all 25 material types | Not started | ~1 day |
-| **Total remaining** | | **~3-4 days** |
+| **Total remaining** | | **~2 days** |
 
-**Architecture reference:** WebGPUModelRenderer.js already uses separate material UBO (group 1, 320 bytes). The primitive/polyline/billboard refactor follows the same pattern.
+**Architecture reference:** WebGPUModelRenderer.js uses the same separate-material-UBO pattern (group 1, 320 bytes) that the primitive/polyline refactor converged on.
 
-**Key risk:** Field name mismatches between WGSL MaterialUniforms and JS fabric templates cause silent data corruption. Each material type's shader struct must be verified against its Material.js fabric definition.
+**Key risk:** Field name mismatches between WGSL `MaterialUniforms` and JS fabric templates cause silent data corruption. Each material type's shader struct must be verified against its `Material.js` fabric definition — this is the remaining audit work.
 
 ### New Compute Shader Opportunities
 

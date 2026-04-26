@@ -773,12 +773,14 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
 
   // Push to panoramaCommandList every frame — the list is cleared each frame
   panoramaCommandList.push(state.command);
+  //>>includeStart('debug', pragmas.debug);
   if (!state._pushLogged) {
     console.log(
       `[WebGPU:SkyBox] Command pushed to panoramaCommandList (len=${panoramaCommandList.length})`,
     );
     state._pushLogged = true;
   }
+  //>>includeEnd('debug');
 }
 
 // Lazily-created box geometry (shared across all instances)

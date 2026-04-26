@@ -28,12 +28,17 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.FadeType fabric: { fadeInColor, fadeOutColor, maximumDistance,
+// repeat: bool, fadeDirection: {x,y:bool}, time: Cart2 }. Fabric order
+// is preserved here; `repeat` is packed as f32 (0.0/1.0) and
+// `fadeDirection` as vec2<f32> (0.0/1.0). Matches upstream FadeMaterial.glsl.
 struct MaterialUniforms {
     fadeInColor: vec4<f32>,
     fadeOutColor: vec4<f32>,
     maximumDistance: f32,
     fadeRepeat: f32,
-    fadeOffset: f32,
+    fadeDirection: vec2<f32>,
+    time: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -55,18 +60,25 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
+// Mirrors getTime() in Shaders/Materials/FadeMaterial.glsl — measures
+// the distance between the animation time axis-coordinate and the
+// per-texel st coord, optionally wrapping when `repeat` is on.
+fn getFadeTime(t: f32, coord: f32) -> f32 {
+    let scalar = 1.0 / max(material.maximumDistance, 0.001);
+    var q = abs(t - coord) * scalar;
+    if (material.fadeRepeat > 0.5) {
+        let r = abs(t - (coord + 1.0)) * scalar;
+        let s = abs(t - (coord - 1.0)) * scalar;
+        q = min(min(r, s), q);
+    }
+    return clamp(q, 0.0, 1.0);
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Distance-based gradient from center of UV space
-    let dist = length(input.texCoord - vec2<f32>(0.5));
-    var t = (dist + material.fadeOffset) / max(material.maximumDistance, 0.001);
-
-    // Repeat wraps the gradient when > 1.0
-    if (material.fadeRepeat > 0.5) {
-        t = fract(t);
-    } else {
-        t = clamp(t, 0.0, 1.0);
-    }
-
-    return mix(material.fadeInColor, material.fadeOutColor, vec4<f32>(t));
+    let st = input.texCoord;
+    let s = getFadeTime(material.time.x, st.x) * material.fadeDirection.x;
+    let tAxis = getFadeTime(material.time.y, st.y) * material.fadeDirection.y;
+    let u = length(vec2<f32>(s, tAxis));
+    return mix(material.fadeInColor, material.fadeOutColor, u);
 }

@@ -498,6 +498,24 @@ function computeRTEMatrices(uniformState, camera, modelMatrix) {
 }
 
 /**
+ * Per-frame `time` value for shaders that animate (currently just Water).
+ * Mirrors upstream GLSL's `czm_frameNumber` semantic so the WGSL port
+ * matches the wave phase behavior of the WebGL path. Defaults to 0 when
+ * UniformState hasn't been seeded yet (first frame).
+ * @private
+ */
+function getFrameTime(uniformState) {
+  if (
+    defined(uniformState) &&
+    defined(uniformState.frameState) &&
+    typeof uniformState.frameState.frameNumber === "number"
+  ) {
+    return uniformState.frameState.frameNumber;
+  }
+  return 0.0;
+}
+
+/**
  * Writes RTE uniform data for a flat (unlit) shader.
  * Layout: mvpRTE(16) + camHigh(3+1pad) + camLow(3+1pad) + prevVP(16)
  *       = 40 floats = 160 bytes (DP-H41, Batch 27)
@@ -512,7 +530,11 @@ function writeRTEUniformsFlat(ud, rte, uniformState) {
   ud[20] = rte.camLow.x;
   ud[21] = rte.camLow.y;
   ud[22] = rte.camLow.z;
-  ud[23] = 0.0;
+  // Float 23 is natural vec3 padding after camLow; Water Flat repurposes
+  // it as `time` (frame counter) so its animated wave pattern can advance.
+  // Other Flat shaders declare `_pad1: f32` here and ignore the value, so
+  // the write is harmless for them.
+  ud[23] = getFrameTime(uniformState);
   writePreviousViewProjection(ud, 24, uniformState);
 }
 
@@ -535,7 +557,10 @@ function writeRTEUniformsLit(ud, rte, uniformState) {
   ud[52] = rte.camLow.x;
   ud[53] = rte.camLow.y;
   ud[54] = rte.camLow.z;
-  ud[55] = 0.0;
+  // Float 55 is vec3 padding after camLow; Water Lit repurposes it as
+  // `time` (frame counter) so its waves animate. Other Lit shaders
+  // declare `_pad1: f32` here and ignore the value.
+  ud[55] = getFrameTime(uniformState);
   if (defined(uniformState) && defined(uniformState.sunDirectionEC)) {
     ud[56] = uniformState.sunDirectionEC.x;
     ud[57] = uniformState.sunDirectionEC.y;
@@ -1378,6 +1403,16 @@ function createWebGPUCommands(
     //
     // Non-twoPasses path keeps the single cullMode: "none" pipeline
     // — unchanged from before DP-H17.
+    // C-R1 (Batch 36) — forward the primitive's appearance renderState
+    // onto emitted commands so `applyPerEncoderState` (Batch 30) runs
+    // stencilRef / blendConstant / viewport / scissor per-draw. The
+    // pipeline-baked fields (depthTest, depthMask, cull, blend, colorMask)
+    // are still controlled by the Material + appearance.flat/closed
+    // signals above; the renderState passthrough is purely for the
+    // dynamic per-encoder state. Material-BLEND pipelines (DP-H16) and
+    // twoPasses front/back-cull pipelines (DP-H17) continue to drive
+    // pipeline identity.
+    const appearanceRS = primitive.appearance?.renderState;
     const makeCommand = (pipeline, label) => {
       const cmd = new WebGPUDrawCommand({
         pipeline,
@@ -1393,6 +1428,7 @@ function createWebGPUCommands(
           : undefined,
         pass: pass,
         owner: primitive,
+        renderState: appearanceRS,
       });
       cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
       cmd._webgpuShaderType = shaderInfo.type;
@@ -2198,6 +2234,7 @@ function createWebGPUMaterialCommands(
     const matEffectsPlaceholder = getPlaceholderEffects(device);
     cmdBGs.push(matEffectsPlaceholder.bindGroup);
 
+    // C-R1 (Batch 36) — forward appearance.renderState for material path too.
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: cmdBGs,
@@ -2210,6 +2247,7 @@ function createWebGPUMaterialCommands(
         : undefined,
       pass,
       owner: primitive,
+      renderState: primitive.appearance?.renderState,
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;

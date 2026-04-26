@@ -301,18 +301,18 @@ class Scene {
     if (sceneRendererFR && sceneRendererFR.RendererClass) {
       this._alternateSceneRenderer = new sceneRendererFR.RendererClass();
       console.log(
-        `[Scene:${context.isWebGPU ? "webgpu" : "webgl"}] ` +
-          `WebGPU scene renderer CREATED — ` +
+        `[Scene:${context.rendererType}] ` +
+          `alternate scene renderer CREATED — ` +
           `FR_KEY=${FeatureRendererKey.SCENE_RENDERER} ` +
           `contextId=${context.id ?? "?"}`,
       );
-    } else if (context.isWebGPU) {
-      // This is a CRITICAL error — the WebGPU context must have the
-      // SCENE_RENDERER FR registered so the alternate scene renderer can
-      // handle multi-frustum execution and the post-process canvas blit.
-      // Without it the canvas stays black.
+    } else if (context.requiresSceneRenderer) {
+      // CRITICAL error — the context's backend contract requires a
+      // `SCENE_RENDERER` FR (it owns the canvas blit / post-process
+      // composite). Without it the canvas stays black. WebGPU sets this
+      // predicate; WebGL leaves it at the default `false`.
       console.error(
-        `[Scene:webgpu] CRITICAL — WebGPU scene renderer NOT CREATED. ` +
+        `[Scene:${context.rendererType}] CRITICAL — scene renderer NOT CREATED. ` +
           `SCENE_RENDERER FR not found (key=${FeatureRendererKey.SCENE_RENDERER}). ` +
           `Canvas will be BLACK. ` +
           `getFeatureRenderer=${typeof context.getFeatureRenderer} ` +
@@ -1415,21 +1415,10 @@ class Scene {
    * @readonly
    */
   get triangulationDebugSupported() {
-    const context = this._context;
-    if (!context || !context.isWebGPU) {
-      return false;
-    }
-    const device = context.device;
-    if (!device) {
-      return false;
-    }
-    // Lazy import keeps Scene.js backend-agnostic at module load time —
-    // we only resolve the WebGPU helper if the active context is WebGPU.
-    const utilsModule = context._primitiveIndexUtilsCache;
-    if (utilsModule) {
-      return utilsModule.isSupported(device);
-    }
-    return false;
+    // Backend-neutral probe. WebGL returns false (no utils module);
+    // WebGPU reports true once both its device and primitive-index-utils
+    // cache are ready. Scene.js no longer peeks at `_primitiveIndexUtilsCache`.
+    return this._context?.supportsTriangulationDebug === true;
   }
 
   /**
@@ -3265,8 +3254,12 @@ class Scene {
       // re-registering with the same name overwrites the entry on the
       // service's Map but the freezable contract is identical so the
       // visible behavior doesn't change.
+      // `renderBundleManager` is a virtual getter on GraphicsContext —
+      // WebGL returns null, WebGPU returns its manager. No backend
+      // branch needed: if the manager is null the inner guard short-
+      // circuits, and registration is idempotent thanks to the flag.
       const ctx = frameState.context;
-      if (ctx && ctx.isWebGPU && !this._bundleManagerSnapshotRegistered) {
+      if (ctx && !this._bundleManagerSnapshotRegistered) {
         const bundleMgr = ctx.renderBundleManager;
         if (bundleMgr && typeof bundleMgr.asFreezable === "function") {
           this._snapshotMode.registerFreezable(
@@ -4588,8 +4581,15 @@ function render(scene) {
   // reconstructing world-space positions, which would lose ~1m FP32 at
   // Earth scale and produce catastrophic motion-vector errors during
   // orbital fly-to.
-  if (scene.taaEnabled && scene._context?.isWebGPU) {
-    const pipeline = scene._context?._alternateSceneRenderer?._postProcess;
+  // Only the WebGPU SCENE_RENDERER FR instantiates an alternate scene
+  // renderer with a `_postProcess` pipeline that owns the TAA effect.
+  // On WebGL `_alternateSceneRenderer` is null, so the optional chain
+  // short-circuits and no TAA state is touched — no `isWebGPU` branch
+  // needed. (Prior revision chained through `scene._context?._alternateSceneRenderer`
+  // which is undefined because the field lives on the scene, not the
+  // context — TAA jitter silently never ran.)
+  if (scene.taaEnabled) {
+    const pipeline = scene._alternateSceneRenderer?._postProcess;
     const taa = pipeline?.taaEffect;
     if (taa) {
       const frozen = scene._snapshotMode?.isFrozen === true;

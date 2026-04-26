@@ -53,7 +53,14 @@ yarn.lock
 
 # Used in the CLA checking GitHub workflow
 GoogleConfig.json
-.claude/settings.local.json
+
+# Claude Code agent scratch directory — worktrees, logs, settings.
+# Per-machine state that should never be tracked.
+.claude/
+
+# Python bytecode cache (e.g., from migration_doc/_regen_wgsl_js.py).
+__pycache__/
+*.pyc
 
 # Playwright MCP runtime artifacts (console logs, page snapshots, screenshots
 # captured by automation runs — not source).

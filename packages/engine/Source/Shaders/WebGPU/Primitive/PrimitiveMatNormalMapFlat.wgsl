@@ -31,10 +31,13 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
 }
 
+// Material.NormalMapType fabric: { image: str, channels: "rgb", strength: f32, repeat: Cart2 }.
+// `channels` packs as vec3<f32> indices (r=0, g=1, b=2, a=3) so the
+// shader can swizzle at runtime. Fabric order: channels, strength, repeat.
 struct MaterialUniforms {
-    repeat: vec2<f32>,
+    channels: vec3<f32>,
     strength: f32,
-    channels: vec3<f32>,  // swizzle indices: e.g. (0,1,2) = rgb,
+    repeat: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -54,9 +57,8 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
-// WGF-5: collapse the per-channel branch into a dynamic vector subscript.
-fn swizzleChannel(texColor: vec4<f32>, idx: f32) -> f32 {
-    return texColor[clamp(i32(idx), 0, 3)];
+fn swizzleChannel(c: vec4<f32>, idx: f32) -> f32 {
+    return c[clamp(i32(idx), 0, 3)];
 }
 
 @vertex
@@ -70,12 +72,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Without lighting, show the normal map as a color visualization
+    // Without lighting, show the normal map as a color visualization,
+    // swizzled by the fabric-specified channel indices.
     let uv = fract(input.texCoord * material.repeat);
-    let texColor = textureSample(normalTexture, textureSampler, uv);
+    let texColor = textureSample(normalMapTexture, textureSampler, uv);
     let nx = swizzleChannel(texColor, material.channels.x);
     let ny = swizzleChannel(texColor, material.channels.y);
     let nz = swizzleChannel(texColor, material.channels.z);
-    // Normal maps store values in [0,1], remap to show as colors
     return vec4<f32>(nx, ny, nz, 1.0);
 }

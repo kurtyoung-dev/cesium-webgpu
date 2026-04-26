@@ -247,7 +247,9 @@ function installCesiumDebug(viewer) {
       };
 
       // Check post-process pipeline
-      const renderer = ctx._alternateSceneRenderer;
+      // `_alternateSceneRenderer` lives on the Scene (see Scene.js:297),
+      // NOT the context. Read it off the scene.
+      const renderer = scene._alternateSceneRenderer;
       if (renderer) {
         info.postProcess = !!renderer._postProcess;
         info.sceneFramebuffer = !!renderer._sceneFramebuffer;
@@ -269,7 +271,7 @@ function installCesiumDebug(viewer) {
      * Dump post-process pipeline state.
      */
     postProcess() {
-      const renderer = scene._context?._alternateSceneRenderer;
+      const renderer = scene._alternateSceneRenderer;
       if (!renderer?._postProcess) {
         console.warn("[CesiumDebug] No post-process pipeline");
         return;
