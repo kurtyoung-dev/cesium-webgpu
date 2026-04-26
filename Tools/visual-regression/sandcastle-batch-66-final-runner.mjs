@@ -40,7 +40,10 @@ const SCREENSHOT_DIR = path.join(
 );
 const REPORT_PATH = path.join(SCREENSHOT_DIR, "report.json");
 
-const BASE_URL = "http://localhost:8080";
+// Allow overriding the dev-server URL when running from a non-canonical
+// worktree (Tier 0 agent worktrees use port 8090 to avoid clashing with
+// the user's primary server on 8080).
+const BASE_URL = process.env.SANDCASTLE_BASE_URL || "http://localhost:8080";
 
 function standaloneUrl(fileName) {
   return `${BASE_URL}/Apps/Sandcastle/gallery/${encodeURIComponent(fileName)}`;

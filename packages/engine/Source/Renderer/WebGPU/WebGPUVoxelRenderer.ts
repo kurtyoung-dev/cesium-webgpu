@@ -100,7 +100,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
   let invDir = 1.0 / rayDir;
   let tr = intersectAABB(u.cameraPositionEC, invDir, u.minBounds, u.maxBounds);
-  if (tr.x > tr.y) { discard; }
+  // NEW-4-E (Batch 68): WGSL \`discard\` does not terminate function
+  // control flow — naga requires every path to reach an explicit
+  // \`return\`. Pair each early-out \`discard\` with a fall-through return
+  // so naga can prove the function returns on every code path. The
+  // returned value is dropped by \`discard\` so the colour is irrelevant.
+  if (tr.x > tr.y) { discard; return vec4<f32>(0.0); }
   let tS = max(tr.x, 0.0);
   let tE = tr.y;
   var accumC = vec3<f32>(0.0);
@@ -119,7 +124,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       accumA = accumA + sa * (1.0 - accumA);
     }
   }
-  if (accumA < 0.01) { discard; }
+  if (accumA < 0.01) { discard; return vec4<f32>(0.0); }
   return vec4<f32>(accumC, accumA);
 }
 
@@ -138,7 +143,10 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
   let invDir = 1.0 / rayDir;
   let tr = intersectAABB(u.cameraPositionEC, invDir, u.minBounds, u.maxBounds);
-  if (tr.x > tr.y) { discard; }
+  // NEW-4-E (Batch 68): see comment in fragmentMain — every \`discard\`
+  // is paired with an explicit \`return\` so naga can prove the function
+  // terminates on every control-flow path.
+  if (tr.x > tr.y) { discard; return vec4<f32>(0.0); }
   let tS = max(tr.x, 0.0);
   let tE = tr.y;
   let maxI = i32(u.maxSteps);
@@ -157,6 +165,7 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   // Ray traversed the whole AABB with no density hit; nothing to pick.
   discard;
+  return vec4<f32>(0.0);
 }
 `;
 

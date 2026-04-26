@@ -28,6 +28,11 @@ const argv = await yargs(process.argv)
       default: 8080,
       description: "Port to listen on.",
     },
+    sandcastlePort: {
+      default: 8081,
+      description:
+        "Port for the Sandcastle mirror server (main port + 1 by convention).",
+    },
     public: {
       type: "boolean",
       description: "Run a public server that listens on all interfaces.",
@@ -129,8 +134,8 @@ const throttle = (callback) => {
       await buildSandcastleApp({
         outputToBuildDir: false,
         includeDevelopment: true,
-        outerOrigin: "http://localhost:8080",
-        innerOrigin: "http://localhost:8081",
+        outerOrigin: `http://localhost:${argv.port}`,
+        innerOrigin: `http://localhost:${argv.sandcastlePort}`,
       });
       console.log(
         `Sandcastle built in ${formatTimeSinceInSeconds(startTime)} seconds.`,
@@ -433,23 +438,29 @@ const throttle = (callback) => {
     console.log("Cesium development server stopped.");
   });
 
-  const sandcastleServer = app.listen(8081, "localhost", function () {
-    // This "mirror" server runs on a separate port to create origin separation between
-    // the main Sandcastle app and the viewer page for security
-    // We use the same express `app` to reuse the auto re-building of assets when the source changes
-    console.log("Sandcastle mirror server running on port 8081");
-  });
+  const sandcastleServer = app.listen(
+    argv.sandcastlePort,
+    "localhost",
+    function () {
+      // This "mirror" server runs on a separate port to create origin separation between
+      // the main Sandcastle app and the viewer page for security
+      // We use the same express `app` to reuse the auto re-building of assets when the source changes
+      console.log(
+        `Sandcastle mirror server running on port ${argv.sandcastlePort}`,
+      );
+    },
+  );
 
   sandcastleServer.on(
     "error",
     function (/** @type {NodeJS.ErrnoException} */ e) {
       if (e.code === "EADDRINUSE") {
         console.log(
-          "Error: Port 8081 is already in use, please free it and try again",
+          `Error: Port ${argv.sandcastlePort} is already in use, please free it and try again`,
         );
       } else if (e.code === "EACCES") {
         console.log(
-          "Error: This process does not have permission to listen on port 8081.",
+          `Error: This process does not have permission to listen on port ${argv.sandcastlePort}.`,
         );
       }
 

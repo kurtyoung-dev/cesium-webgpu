@@ -34,6 +34,7 @@ import {
   storageTexture,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type { DebugStatsObject } from "../GraphicsContext.js";
 
 /**
  * Local interface for the context fields accessed by the performance manager.
@@ -203,8 +204,13 @@ interface CachedComputeTask {
 
 /**
  * Per-frame profiling results from GPU timestamp queries.
+ *
+ * Extends {@link DebugStatsObject} so instances assign directly into
+ * `getRendererStatistics()` without a cast — every field is either a
+ * `number` or a `Record<string, number>`, both of which satisfy
+ * `DebugStatsValue`.
  */
-export interface FrameTimings {
+export interface FrameTimings extends DebugStatsObject {
   /** Total GPU time for all passes (ms) */
   totalGpuMs: number;
   /** Per-pass GPU timings (ms) */

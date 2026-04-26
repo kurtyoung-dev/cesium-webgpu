@@ -2630,10 +2630,19 @@ export class WebGPUSceneRenderer {
     // view so the composite can run at MSAA sample count alongside
     // the MSAA invert depth-stencil. Otherwise fall back to the
     // single-sample single-pass composite (Batch 39 behavior).
-    const sceneAttachmentView =
+    //
+    // `GPURenderPassColorAttachment.view` is typed `GPUTexture | GPUTextureView`
+    // by `@webgpu/types`, but our `WebGPURenderTarget` always stores a
+    // `GPUTextureView` in its `RenderTargetAttachment.view` field. Narrow
+    // here so the composite call site sees the precise type it requires.
+    const rawAttachmentView =
       this._invertClassStencilReady && colorTarget?.getColorAttachments
         ? colorTarget.getColorAttachments()[0]?.view
         : undefined;
+    const sceneAttachmentView: GPUTextureView | undefined =
+      rawAttachmentView !== undefined && "createView" in rawAttachmentView
+        ? rawAttachmentView.createView()
+        : (rawAttachmentView as GPUTextureView | undefined);
 
     if (encoder && resolveView) {
       executeInvertClassificationComposite(

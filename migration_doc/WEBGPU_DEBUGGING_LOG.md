@@ -4164,3 +4164,72 @@ can be specified in requiredLimits when calling requestDevice().
 **Root cause:** `WebGPUContext._initializeDevice` (or wherever `adapter.requestDevice` runs) doesn't pass `requiredLimits.maxSampledTexturesPerShaderStage = 48`.
 **Fix sketch:** Add `maxSampledTexturesPerShaderStage: Math.min(48, adapter.limits.maxSampledTexturesPerShaderStage)` to the `requiredLimits` object on `requestDevice`. Cap it to the adapter's reported limit so the call doesn't fail on adapters that can't go above 16 — those adapters then need a separate "fewer-sampled-textures" pipeline-layout variant, but that's a downstream concern.
 **Status:** Logged advisory — fold into the next renderer-init sweep.
+
+## Session 40 — Tier 0 follow-up: engine tsc fixes + NEW-4-E Voxel WGSL fix (2026-04-25, Batch 68)
+
+Tier-0 cleanup pass driven by the Tier-0 list at the top of `NEXT_SESSION_HANDOFF.md`. Four sequential tasks, all closed in a single commit so the worktree state matches what gets pushed.
+
+### S40-T1 — `WebGPUContext.ts:3780` — `FrameTimings` not assignable to `DebugStatsValue`
+
+**Symptom:** Engine-package `tsc --noEmit` failed with `TS2322`: `FrameTimings` lacked an index signature, so it didn't satisfy the `DebugStatsObject` shape required at the assignment site (`stats.performance = this._performanceManager.frameTimings`).
+
+**Root cause:** `FrameTimings` (in `WebGPUPerformanceManager.ts`) was declared as a plain interface with named fields. Even though every field's value type (`number` and `Record<string, number>`) is a valid `DebugStatsValue`, TypeScript's structural matching for index-signature-bearing targets requires the interface to carry the index signature itself — not just have field values that would satisfy it.
+
+**Fix:** `interface FrameTimings extends DebugStatsObject` — same pattern already used by `PassTimingResult` and `ProfilingResults` in `WebGPUTimestampProfiler.ts`. Added `import type { DebugStatsObject } from "../GraphicsContext.js"` and a JSDoc note explaining the inheritance rationale.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts`
+
+### S40-T2 — `WebGPUSceneRenderer.ts:2643` — `GPUTexture | GPUTextureView` not narrowable to `GPUTextureView`
+
+**Symptom:** Engine-package `tsc --noEmit` failed with `TS2345`: `executeInvertClassificationComposite` requires `sceneColorAttachmentView: GPUTextureView | undefined`, but the call site passed `colorTarget.getColorAttachments()[0]?.view`, whose type per `@webgpu/types` is `GPUTexture | GPUTextureView`.
+
+**Root cause:** The `@webgpu/types` declaration for `GPURenderPassColorAttachment.view` widened to `GPUTexture | GPUTextureView` to accommodate browsers that accept a raw texture and create the default view internally. Our `WebGPURenderTarget.RenderTargetAttachment.view` field is always specifically a `GPUTextureView` at runtime, but the wider WebGPU types don't propagate that.
+
+**Fix:** Narrow at the call site. If the value is a `GPUTexture` (has `createView`), call `createView()`; otherwise pass through. This satisfies the typechecker without lying about runtime semantics, and degrades gracefully if a future browser version really does pass a `GPUTexture` here.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts`
+
+### S40-T3 — Pre-existing blocker: `cesium-js-types.d.ts` `inverseViewTranspose`
+
+**Symptom:** Engine-package `tsc --noEmit` failed with `TS2741`: `Property 'inverseViewTranspose' is missing in type 'UniformState' but required in type 'CesiumUniformState'.` This was pre-existing on `origin/main` — verified with a labeled `git stash` round-trip — but the prompt requires engine tsc to be 0 errors before the rebuild step.
+
+**Root cause:** `CesiumUniformState.inverseViewTranspose` was declared `readonly inverseViewTranspose: CesiumMatrix4 | undefined` (the property MUST exist, value MAY be undefined). The actual `Renderer/UniformState.js` class doesn't define this property at all — runtime access returns `undefined`, which is what the only consumer (`WebGPUClippingPlaneCollection.ts:122`) already handles via the `if (invViewT) {...} else if (view) {...}` branching.
+
+**Fix:** Mark the field optional (`readonly inverseViewTranspose?: CesiumMatrix4 | undefined`) — aligns the type with reality (the property may be absent) and matches the existing consumer's defensive pattern. Updated the JSDoc to explain the rationale so a future merge from upstream doesn't silently re-tighten it.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts`
+
+### S40-T4 — NEW-4-E live capture and WGSL fix
+
+**Captured naga error (verbatim):**
+
+```text
+[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 113:1: missing return at end of function
+```
+
+This matched the Batch-67 prediction in `DEFERRED_WORK.md` exactly. Applied predicted candidate (a) — paired each `discard;` with an explicit `return vec4<f32>(0.0);` so naga can prove `fragmentMain` and `fragmentPickMain` return on every path. The discarded fragment ignores the returned value, so the colour is irrelevant; the explicit return is purely to satisfy WGSL's control-flow analyzer. Also added a trailing fallthrough return after the terminal `discard;` at the end of `fragmentPickMain`. The `missing return at end of function` console error is gone after the fix.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts` (3 paired `discard; return` edits + 1 trailing fallthrough return + WGSL comments)
+
+**Sandcastle re-verification status:** PASS=5, FAIL=2 (Translucent Classification = pre-existing, Voxel Pick = newly surfaced NEW-4-G — see below). The original NEW-4-E error is gone; Voxel Pick remains FAIL because resolving NEW-4-E unmasked a different WGSL error that was previously short-circuited.
+
+### S40-T4-followup — NEW-4-G surfaced
+
+The Voxel Pick demo now reports a different WGSL error: `'textureSample' must only be called from uniform control flow` at line 73:13. This is a new entry (NEW-4-G) tracked in `DEFERRED_WORK.md` with predicted root cause + fix candidates. Likely fix is replacing `textureSample` with `textureSampleLevel(..., 0.0)` since the volumetric texture is single-mip and doesn't need derivative-driven LOD selection. Out of scope for Batch 68 (Tier 0 list ended at NEW-4-E).
+
+### Worktree-runner ergonomics (incidental Batch 68 changes)
+
+Two infrastructure changes landed in the same commit because they were required to actually run Task 3/4 from a `.claude/worktrees/agent-*` directory rather than the canonical `cesium-webgpu/` root:
+
+- `Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` — `BASE_URL` now reads `process.env.SANDCASTLE_BASE_URL` (default unchanged at `http://localhost:8080`). Lets a worktree-private dev server on a non-default port serve the runner without code changes.
+- `server.js` — `--sandcastlePort` flag added (default 8081, the historical hardcoded value). The Sandcastle mirror server now uses `argv.sandcastlePort` instead of a hardcoded `8081`, and the `buildSandcastleApp` outer/inner origin pair uses `argv.port`/`argv.sandcastlePort` instead of hardcoded `8080`/`8081`. Required so `node server.js --port 8090 --sandcastlePort 8091` doesn't EADDRINUSE on a workstation where the canonical-main server already holds 8080+8081.
+
+Neither change affects the default-port behaviour. The runner change is also needed for any future agent that runs Sandcastle from a worktree — it's strictly additive.

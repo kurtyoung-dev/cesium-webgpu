@@ -309,15 +309,35 @@ The first end-to-end Sandcastle WebGPU verification (`SANDCASTLE_BATCH_66_TRULY_
 **Files touched:** [packages/engine/Source/Renderer/Texture3D.js](../packages/engine/Source/Renderer/Texture3D.js) (added import + 12-line WebGPU dispatch in constructor + factory comment).
 **Closing batch:** Batch 67. See [WEBGPU_DEBUGGING_LOG.md § Session 39](WEBGPU_DEBUGGING_LOG.md) for full root-cause + fix narrative.
 
-### NEW-4-E — Voxel color pipeline WGSL parse error at line 113
-**What:** `WebGPUVoxelRenderer.ts` `fragmentMain` WGSL fails naga parsing with "missing return at line 113". The line in question is `let uvw = (p - u.minBounds) / (u.maxBounds - u.minBounds);` — innocuous on its face. May be a downstream control-flow analysis issue (the loop's `break`/`continue` interplay or the post-loop `discard` path).
-**Why deferred:** Reproduction requires the WebGPU pipeline-creation path to actually run. NEW-4-D now FIXED (Batch 67), so the path is reachable. Live capture pending.
-**Prerequisites:** None remaining (NEW-4-D closed).
-**Estimated effort:** 30 min once live error captured.
-**Impact:** Voxel rendering pipeline fails compile. Blocks Voxel demos.
-**Predicted root cause (Batch 67 worktree analysis, not live-captured):** WGSL `discard` does NOT terminate function control flow (unlike GLSL — discard is a fragment-state mutation, the function continues until it falls off the end or hits a `return`). The two `if (...) { discard; }` early-outs in `fragmentMain` (line 91 `if (tr.x > tr.y)` and line 110 `if (accumA < 0.01)`) leave naga unable to prove the function returns on every path. The closing backtick at the end of the WGSL template literal is line 113 of the TS file, matching the reported error site.
-**Predicted fix candidates:** (a) Pair each `discard;` with `return vec4<f32>(0.0);` so naga sees an explicit terminator (preserves existing semantics most faithfully). (b) Convert the discards to `return vec4<f32>(0.0);` outright and rely on the swapchain blend / alpha to drop the fragment.
-**Trace:** [SANDCASTLE_BATCH_66_TRULY_FINAL_REPORT.md](SANDCASTLE_BATCH_66_TRULY_FINAL_REPORT.md) NEW-4-E finding; predicted analysis from Batch 67 NEW-4-D worktree.
+### ~~NEW-4-E — Voxel color pipeline WGSL parse error at line 113~~ FIXED 2026-04-25 (Batch 68)
+
+**Captured live error (verbatim, port 8090 dev server, ctx UUID redacted):**
+
+```text
+[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 113:1: missing return at end of function
+```
+
+This matched the Batch-67 prediction exactly — naga couldn't prove that `fragmentMain` returns on every control-flow path because the `if (tr.x > tr.y) { discard; }` and `if (accumA < 0.01) { discard; }` early-outs in WGSL do NOT count as function terminators. `discard` is a fragment-state mutation, not a control-flow return.
+**Resolution:** Took candidate (a) — paired each `discard;` with an explicit `return vec4<f32>(0.0);` in both `fragmentMain` and `fragmentPickMain`. The returned value is dropped by the discard so the colour is irrelevant; the explicit `return` gives naga the terminator it requires. Also added a trailing `return vec4<f32>(0.0);` after the terminal `discard;` at the end of `fragmentPickMain` (the no-hit fallthrough). Verified by re-running `node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` against a worktree-private dev server on port 8090 — the `missing return at end of function` error is gone from the Voxel Pick demo's console.
+**Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts) (3 paired `discard; return` edits + 1 trailing fallthrough return + JSDoc-style WGSL comments explaining the naga requirement).
+**Closing batch:** Batch 68.
+
+### NEW-4-G — Voxel WGSL `textureSample` not in uniform control flow (revealed by NEW-4-E fix)
+
+**What:** With NEW-4-E's `missing return` blocker resolved, naga now proceeds to deeper analysis and surfaces the next blocker. New verbatim error:
+
+```text
+[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 73:13: 'textureSample' must only be called from uniform control flow
+```
+
+WGSL spec: `textureSample` (which auto-computes derivatives) requires uniform control flow at the call site. In `WebGPUVoxelRenderer.ts` `fragmentMain` line 120 (and `fragmentPickMain` line 159), the call is inside a `for` loop with `if (t > tE || accumA > 0.99) { break; }` — the loop iteration count is data-dependent (`accumA` accumulates from per-fragment samples), so per WGSL the loop body is not in uniform control flow.
+**Why deferred:** Was masked by NEW-4-E for the entire Batch 67 verification window. Surfaced today.
+**Prerequisites:** None.
+**Estimated effort:** 30 min — likely a one-line fix substituting `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)` (which doesn't compute derivatives, so it has no uniform-control-flow requirement). Volumetric textures usually don't have mipmaps anyway, so explicitly forcing LOD 0 is consistent with the intent.
+**Impact:** Voxel rendering pipeline still fails compile. Voxel Pick demo still FAIL. Demo also has a separate JS-side bug (`Matrix4.multiplyByPoint` cartesian-undefined at `updateWebGPUVoxelPrimitive` bundle line ~79617) that may be the next blocker once this WGSL one closes.
+**Predicted root cause:** The data-dependent `for` loop with `break` from `accumA` makes the loop body's control flow non-uniform per WGSL semantics. `textureSample` requires derivatives, which only make sense across a 2x2 quad of fragments — and the spec enforces the quad-uniformity via the uniform-control-flow constraint.
+**Predicted fix candidates:** (a) Replace `textureSample` with `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)` — explicit LOD 0, no derivatives, no uniform-control-flow requirement. Matches the existing volumetric texture which is single-mip. Lowest-risk. (b) Hoist the loop's break condition out so `textureSample` runs in uniform control flow — much harder, fights the algorithm.
+**Trace:** Surfaced in Batch 68 Voxel Pick re-run after NEW-4-E fix.
 
 ---
 

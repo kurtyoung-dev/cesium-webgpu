@@ -422,9 +422,12 @@ interface CesiumUniformState {
    * Inverse-transpose of the view matrix, used to transform plane
    * equations from world to eye space (plane `n_eye = view^-T · n_world`).
    * Computed lazily by `UniformState` — may be undefined until first
-   * `update()`.
+   * `update()`. Marked optional because upstream `UniformState.js` does
+   * not declare the property at construction time; consumers handle the
+   * undefined case via the `view`-only fallback path in
+   * `WebGPUClippingPlaneCollection`.
    */
-  readonly inverseViewTranspose: CesiumMatrix4 | undefined;
+  readonly inverseViewTranspose?: CesiumMatrix4 | undefined;
   readonly viewProjection: CesiumMatrix4;
   /**
    * Last frame's `viewProjection`, cloned before current-frame state is
