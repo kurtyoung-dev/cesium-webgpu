@@ -1352,6 +1352,31 @@ function loadVertexAttribute(
   const loadTypedArrayForClassification =
     loader._loadForClassification && isFeatureIdAttribute;
 
+  // NEW-4-A (Batch 67): on WebGPU, EdgeVisibilityPipelineStage cannot fall
+  // back to Buffer.getBufferData() (the WebGL Buffer-only sync readback) so
+  // we must retain CPU-side typed arrays at upload time when the primitive
+  // carries EXT_mesh_primitive_edge_visibility. The pipeline stage reads
+  // POSITION (always), FEATURE_ID_0 (when feature IDs are present), COLOR
+  // (vertex-color override), and BENTLEY_materials_line_style:
+  // CUMULATIVE_DISTANCE (line-pattern shader input) directly off the
+  // attribute's `.typedArray` — when undefined it falls back to
+  // `ModelReader.readAttributeAsTypedArray` which calls
+  // `Buffer.getBufferData`. WebGPU buffers expose no sync readback, so the
+  // fallback would throw mid-frame. We blanket-retain every vertex
+  // attribute for affected primitives because the consuming attributes
+  // vary per-asset (e.g., assets without vertex colors skip COLOR; assets
+  // with line-style use CUMULATIVE_DISTANCE) and the attribute's modelSemantic
+  // alone does not capture the BENTLEY application-specific semantic.
+  // Scope is one primitive at a time — only primitives with the edge
+  // extension pay the memory cost. WebGL keeps the prior behaviour (typed
+  // arrays dropped after upload) since it has Buffer.getBufferData().
+  const gltfExtensions = primitive?.extensions ?? Frozen.EMPTY_OBJECT;
+  const hasEdgeVisibility = defined(
+    gltfExtensions.EXT_mesh_primitive_edge_visibility,
+  );
+  const loadTypedArrayForEdgeVisibilityWebGPU =
+    hasEdgeVisibility && frameState.context.isWebGPU === true;
+
   // Whether the final output should be a buffer or typed array
   // after loading and post-processing.
   const outputTypedArrayOnly = loader._loadAttributesAsTypedArray;
@@ -1360,7 +1385,8 @@ function loadVertexAttribute(
     outputTypedArrayOnly ||
     loadTypedArrayFor2D ||
     loadTypedArrayForPicking ||
-    loadTypedArrayForClassification;
+    loadTypedArrayForClassification ||
+    loadTypedArrayForEdgeVisibilityWebGPU;
 
   // Determine what to load right now:
   //

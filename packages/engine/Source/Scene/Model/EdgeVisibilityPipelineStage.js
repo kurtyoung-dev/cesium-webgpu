@@ -59,6 +59,40 @@ EdgeVisibilityPipelineStage.process = function (
   // Fallback request: mark that edge visibility is needed this frame.
   frameState.edgeVisibilityRequested = true;
 
+  // NEW-4-A (Batch 67): the CPU-side adjacency walk below reads the
+  // primitive's POSITION (and optional FEATURE_ID_0) typed array. On
+  // WebGL, missing typed arrays fall back to `ModelReader.
+  // readAttributeAsTypedArray` → `Buffer.getBufferData` (a sync readback
+  // implemented only on the WebGL Buffer class). WebGPU buffers expose no
+  // sync readback path, so the fallback would throw mid-frame. The
+  // glTF loader (`GltfLoader.loadVertexAttribute`) now retains the typed
+  // array on upload when `frameState.context.isWebGPU` AND the primitive
+  // has EXT_mesh_primitive_edge_visibility, so the typed-array branch
+  // hits unconditionally. This guard is a defensive safety net: if some
+  // future loader path skips the retention, we bail out cleanly instead
+  // of crashing the render loop. The WebGPU edge emitter
+  // (`WebGPUEdgeVisibilityEmitter`) has its own independent CPU-side
+  // adjacency build that the WebGPU model renderer drives directly, so
+  // the visual surface still renders edges.
+  const isWebGPU = frameState.context.isWebGPU === true;
+  if (isWebGPU) {
+    const positionAttribute = ModelUtility.getAttributeBySemantic(
+      primitive,
+      VertexAttributeSemantic.POSITION,
+    );
+    if (!defined(positionAttribute) || !defined(positionAttribute.typedArray)) {
+      // Permanent error — caller chose WebGPU but loader didn't retain the
+      // CPU-side typed array. Indicates a missing wiring update somewhere
+      // downstream of GltfLoader.loadVertexAttribute. Not throttled
+      // because each affected primitive crashes downstream silently
+      // otherwise.
+      console.error(
+        "[CesiumJS:webgpu] EdgeVisibilityPipelineStage: position typed array missing on WebGPU; loader did not retain it. Skipping edge geometry derivation for this primitive.",
+      );
+      return;
+    }
+  }
+
   const shaderBuilder = renderResources.shaderBuilder;
 
   // Add shader defines and fragment code

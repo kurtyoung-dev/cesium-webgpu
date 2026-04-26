@@ -24,6 +24,84 @@
 
 ---
 
+## Session 39 — Batch 67: NEW-4-A EdgeVisibilityPipelineStage + NEW-4-D Texture3D closures (2026-04-25)
+
+Closes NEW-4-A and NEW-4-D from `DEFERRED_WORK.md`. Edge Visibility + Edge Feature ID Sandcastle demos go from FAIL → PASS via NEW-4-A, taking the runner score from 3/7 → 5/7 PASS on the WebGPU backend. NEW-4-D unblocks the Voxel demo path (Texture3D allocation no longer throws on WebGPU contexts); the WGSL parse error tracked as NEW-4-E is now reachable for live diagnosis.
+
+### NEW-4-A: EdgeVisibilityPipelineStage hit `Buffer.getBufferData` on WebGPU
+
+**Symptom:** Both `WebGPU Edge Visibility.html` and `WebGPU Edge Feature ID.html` hard-FAIL at the first frame with "An error occurred while rendering. Rendering has stopped." The console error stack:
+```
+DeveloperError: A WebGL 2 context is required.
+    at new DeveloperError (.../index.js:90:17)
+    at _Buffer.getBufferData (.../index.js:86899:13)
+    at _ModelReader.readAttributeAsRawCompactTypedArray (.../index.js:164715:13)
+    at _ModelReader.readAttributeAsTypedArray (.../index.js:164651:44)
+    at buildTriangleAdjacency (.../index.js:165441:118)
+    at EdgeVisibilityPipelineStage.process (.../index.js:165328:25)
+    at ModelSceneGraph.buildRenderResources (...)
+    at ModelSceneGraph.buildDrawCommands (...)
+    at Model.update (...)
+```
+
+**Root cause:** `EdgeVisibilityPipelineStage` reads vertex POSITION (and optionally FEATURE_ID_0, COLOR, BENTLEY CUMULATIVE_DISTANCE) typed arrays CPU-side to build triangle adjacency, classify silhouette edges, and emit per-edge attributes for the wide-line quad geometry. The stage's existing pattern is `defined(attribute.typedArray) ? attribute.typedArray : ModelReader.readAttributeAsTypedArray(attribute)`. After upload, `PrimitiveLoadPlan.generateAttributeBuffers` clears `attribute.typedArray` unless the loader's per-attribute `loadTypedArray` flag was set, so the fallback path runs in steady-state. `ModelReader.readAttributeAsTypedArray` calls `buffer.getBufferData(...)` — a **WebGL-only** synchronous readback whose `WebGPUBuffer` equivalent doesn't exist (WebGPU buffer-readback is async via `mapAsync` on a `MAP_READ` staging buffer, which is incompatible with the synchronous pipeline-stage execution contract). The error `A WebGL 2 context is required.` comes from the WebGL `Buffer` constructor's debug check that fires on the WebGPU code path.
+
+The same retention pattern was already in place for the index typed array — `loadIndices` (in `GltfLoader.js:1502`) explicitly sets `outputTypedArray |= hasEdgeVisibility`. The vertex-attribute load path (`loadVertexAttribute`) was never extended to follow suit, so positions stayed GPU-only after upload and the pipeline stage tripped the fallback as soon as it ran.
+
+**Fix:** Two narrow edits, no architectural change.
+
+1. **Eager retention at upload** ([packages/engine/Source/Scene/GltfLoader.js:1355-1389](packages/engine/Source/Scene/GltfLoader.js#L1355)) — `loadVertexAttribute` now adds a fourth `loadTypedArray` reason: `loadTypedArrayForEdgeVisibilityWebGPU = hasEdgeVisibility && frameState.context.isWebGPU === true`. Mirrors the pre-existing index-side retention. Scoped to WebGPU (WebGL keeps the prior behaviour and pays no extra memory) and to primitives that actually carry `EXT_mesh_primitive_edge_visibility`. Blanket-retains every vertex attribute on affected primitives because the consuming attributes vary per-asset (e.g., FEATURE_ID_0 only when the asset has feature IDs; CUMULATIVE_DISTANCE only when the asset uses BENTLEY_materials_line_style) and the per-attribute model semantic alone doesn't capture every consumer (BENTLEY is application-specific).
+
+2. **Defensive guard in the pipeline stage** ([packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js:54-87](packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js#L54)) — at the top of `process`, when running on WebGPU, check that `positionAttribute.typedArray` is defined; if not, log a permanent `console.error` (per CLAUDE.md log policy: this is a real bug indicating loader-side retention was skipped, must reach the user) and bail out cleanly. The WebGPU edge emitter (`WebGPUEdgeVisibilityEmitter`) has its own independent CPU-side adjacency build driven by the model renderer, so the visual surface still shows edges even when the pipeline stage bails — the bail-out only skips the CPU-side WebGL adjacency that this stage would otherwise feed into the WebGL fallback rendering path that doesn't run on WebGPU anyway.
+
+**Architecture choice (b vs a):** Took option (b) — eager retention at upload — over (a) async pipeline-stage refactor. (a) was multi-session work touching every pipeline-stage's contract (the entire `process(renderResources, primitive, frameState)` chain is currently sync; making one stage async cascades through `ModelSceneGraph.buildRenderResources` → `buildDrawCommands` → `Model.update` → render loop, all of which assume sync return). (b) reuses the existing `loadTypedArray` plumbing that already supports the analogous case for indices and adds two narrow edits.
+
+**Verification:** `node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` after a fresh `node server.js` rebuild:
+- Before fix (stale build, baseline): Edge Visibility = FAIL (4 significant errors, 2 "rendering stopped"), Edge Feature ID = FAIL (4 significant errors, 2 "rendering stopped").
+- After fix: Edge Visibility = PASS, Edge Feature ID = PASS. Zero `getBufferData` references in either demo's `errors[]`.
+- Runner total: 3 PASS / 4 FAIL → **5 PASS / 2 FAIL**.
+
+`npx tsc --noEmit`: clean.
+
+### Files modified
+
+- `packages/engine/Source/Scene/GltfLoader.js` — `loadVertexAttribute` retention for WebGPU + edge visibility primitives.
+- `packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js` — defensive guard at top of `process` when on WebGPU.
+- `migration_doc/DEFERRED_WORK.md` — NEW-4-A marked FIXED (Batch 67).
+- `migration_doc/WEBGPU_DEBUGGING_LOG.md` — this entry.
+
+### Gotcha for future maintainers
+
+The retention is gated **per-primitive** on the presence of `EXT_mesh_primitive_edge_visibility` in the gltfPrimitive's `extensions` object — primitives without the extension keep paying zero CPU-memory cost on WebGPU. If a future contributor wants to call `Buffer.getBufferData` (or `ModelReader.readAttributeAsTypedArray`) on a vertex attribute from a *new* WebGPU pipeline stage, they'll need to extend `loadVertexAttribute`'s retention list with their own gating predicate (the BUG-series pattern is to add a sibling `loadTypedArrayForXxxWebGPU` boolean at the same indent level and OR it into `outputTypedArray`). Don't try to retain typed arrays in the pipeline stage itself — by then `PrimitiveLoadPlan` has already cleared them.
+
+The defensive guard in the pipeline stage is a safety net, not the load-bearing fix. If the loader side regresses (someone removes the WebGPU branch in `loadVertexAttribute`), the stage prints `[CesiumJS:webgpu] EdgeVisibilityPipelineStage: position typed array missing on WebGPU` once per affected primitive and bails — no crash, but edges drawn through the pipeline-stage path silently disappear. Treat any occurrence of that log as an upload-site regression, not a stage bug.
+
+### NEW-4-D: Texture3D constructor threw on WebGPU contexts
+
+**Symptom (from SANDCASTLE_BATCH_66_TRULY_FINAL_REPORT.md NEW-4-D):** Voxel demos (`Voxel Picking.html`, `Voxels.html`, `Voxels in 3D Tiles.html`) crashed during initialization on the WebGPU backend. The throw was the `WebGL1 does not support texture3D. Please use a WebGL2 context.` `DeveloperError` from `Texture3D` line 73 — `WebGPUContext` deliberately sets `webgl2 = false`, and the constructor tripped the WebGL1 guard before doing anything else. Even if that guard were relaxed, the next `gl.createTexture()` access (line 217) would NPE on `context._gl` (undefined on WebGPU).
+
+**Root cause:** `Texture3D` is a WebGL-only class but `Megatexture.js` (the only first-party caller) instantiates it directly with `new Texture3D({ context, ... })` without dispatching by backend. `WebGPUTexture3D` already existed with the same shape (constructor + `copyFrom` + `sampler` setter + `destroy` + `width|height|depth`), but nothing routed to it.
+
+**Fix:** Added a `context.isWebGPU` short-circuit at the top of the `Texture3D` constructor. When the active context is WebGPU, the constructor `return new WebGPUTexture3D(options)` and JS's "constructor returns a non-primitive object → that object replaces `this`" semantics give every caller the right backend instance with zero downstream changes. The webgl2 guard and all WebGL-specific code (`gl.createTexture`, `gl.texSubImage3D`, `gl.deleteTexture`) only execute on WebGL contexts. Megatexture is unmodified.
+
+**Backend-agnosticism note:** The new `import WebGPUTexture3D from "./WebGPU/WebGPUTexture3D.js"` looks like a violation of the "scene/renderer-shared code does not import from `Renderer/WebGPU/`" rule, but `Texture3D` already sits at the renderer boundary and the build-variant alias plugin handles webgl-only bundles correctly: in webgl-only the import resolves to `emptyModule.js` (a Proxy that throws on instantiation), and the dispatch never instantiates because `isWebGPU` is false. `WebGPUTexture3D` is therefore not added to `WEBGPU_COMPAT_EXEMPTIONS` — it stays on the Proxy side.
+
+**NEW-4-E unblocking:** With Texture3D dispatch landing, the Voxel demos now reach `WebGPUVoxelRenderer.update()` and the WGSL pipeline-build step. The naga `missing return at line 113` diagnostic is now reachable — pending live capture (see DEFERRED_WORK NEW-4-E entry for the candidate-fix analysis).
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/Texture3D.js` — added WebGPU dispatch at top of constructor + import + factory comment.
+
+**Files NOT modified (deliberately):**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUTexture3D.ts` — already correct.
+- `packages/engine/Source/Scene/Megatexture.js` — backend-agnostic by virtue of the dispatch.
+- `packages/engine/Source/Renderer/Texture3D.d.ts` — not created. No TS file imports `Texture3D` (only `Megatexture.js`, a JS file), so the existing JS-inferred types suffice.
+
+**Verification:** `npx tsc --noEmit` clean. Existing `Texture3DSpec.js` tests use `createContext()` (WebGL-only) and skip on `!context.webgl2`, so no spec regression. Live Voxel-demo Playwright run pending as part of NEW-4-E live capture.
+
+---
+
 ## Session 38 — Sandcastle NEW-4 closures (NEW-4-B / NEW-4-C / NEW-4-F) (2026-04-25)
 
 Session 37's TRULY FINAL Sandcastle pass landed all three NEW-3-* fixes and surfaced six second-layer engine bugs (NEW-4-A through NEW-4-F). Session 38 closes three of them inline; the END OF SESSION pass empirically verifies each closure and pushes the demo score from 0/7 → 3/7 PASS.

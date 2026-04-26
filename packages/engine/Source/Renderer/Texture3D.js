@@ -12,6 +12,15 @@ import PixelDatatype from "./PixelDatatype.js";
 import Sampler from "./Sampler.js";
 import TextureMagnificationFilter from "./TextureMagnificationFilter.js";
 import TextureMinificationFilter from "./TextureMinificationFilter.js";
+// NEW-4-D (Batch 67): When the active GraphicsContext is WebGPU, the
+// Texture3D constructor delegates to WebGPUTexture3D and returns that
+// instance directly. The WebGPU class exposes the same `copyFrom` /
+// `sampler` / `destroy` / `width|height|depth` surface that Megatexture
+// (the only first-party Texture3D consumer) relies on, so the swap is
+// transparent. In a webgl-only bundle the alias plugin redirects this
+// import to `emptyModule.js`; the redirect is safe because the dispatch
+// is gated on `context.isWebGPU`, which is false in those builds.
+import WebGPUTexture3D from "./WebGPU/WebGPUTexture3D.js";
 
 /**
  * @typedef {object} Texture3D.Source
@@ -67,6 +76,17 @@ class Texture3D {
       skipColorSpaceConversion = false,
       sampler = new Sampler(),
     } = options;
+
+    // NEW-4-D (Batch 67): On a WebGPU GraphicsContext, build a
+    // WebGPUTexture3D instead and return it from the constructor. Returning
+    // a non-primitive object from a JS constructor replaces `this`, so
+    // `new Texture3D({...})` from any caller (Megatexture, future
+    // volumetric features) yields a WebGPUTexture3D that exposes the same
+    // copyFrom / sampler / destroy surface. This must happen before the
+    // WebGL2 guard below — WebGPU contexts deliberately set webgl2=false.
+    if (context.isWebGPU) {
+      return new WebGPUTexture3D(options);
+    }
 
     // 3D textures are not supported in a WebGL1 context. But we allow a stub context for testing.
     if (!context.webgl2 && !defined(context.options.getWebGLStub)) {
@@ -337,6 +357,9 @@ class Texture3D {
    * @private
    */
   static create(options) {
+    // The Texture3D constructor itself returns a WebGPUTexture3D when the
+    // context is WebGPU (see NEW-4-D dispatch in constructor), so this
+    // factory inherits that backend-aware behaviour for free.
     return new Texture3D(options);
   }
 
