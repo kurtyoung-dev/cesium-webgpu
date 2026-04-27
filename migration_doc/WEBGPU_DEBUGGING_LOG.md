@@ -4271,3 +4271,62 @@ PASS=5, FAIL=2 (unchanged from Batch 68):
 - WebGPU Point Light Shadows — PASS
 - WebGPU Translucent Classification — FAIL (pre-existing render-loop crash, separate from voxel work)
 - WebGPU Voxel Pick — FAIL (NEW-4-G WGSL closed; NEW-4-H JS-side bug now blocking)
+
+## Session 42 — Batch 70: NEW-4-H UniformState.cameraPosition + DerivedCommand WebGPU guard (2026-04-26)
+
+Closes NEW-4-H from `DEFERRED_WORK.md`. Two coupled root causes flushed in one batch — both surfaced once NEW-4-G's WGSL blocker was out of the way. Sandcastle baseline jumps from 5/7 to 6/7 PASS as Voxel Pick goes green; Translucent Classification's `_cachedShader` co-failure also closes via the same DerivedCommand.js fix, leaving only its separate depth-format-copy-compat issue (NEW-4-I).
+
+### S42-T1 — Missing `UniformState.cameraPosition` getter (13 silent broken call sites)
+
+**Symptom:** Voxel Pick demo crashes the render loop on first frame:
+
+```text
+DeveloperError: Expected cartesian to be typeof object, actual typeof was undefined
+    at Check.typeOf.object (index.js:188:15)
+    at Matrix4.multiplyByPoint (index.js:4591:28)
+    at Object.updateWebGPUVoxelPrimitive [as update] (index.js:79617:36)
+```
+
+**Root cause:** `UniformState.js` initializes `this._cameraPosition = new Cartesian3()` in the constructor and `UniformStateComputations.updateCamera` populates it from `camera.positionWC` every frame — but the class never declared a public `get cameraPosition()` getter. The TS `.d.ts` companion at [UniformState.d.ts:49](../packages/engine/Source/Renderer/UniformState.d.ts) declared `readonly cameraPosition: Cartesian3` since at least the c7a502de6e WIP checkpoint, and 13 WebGPU renderer call sites consumed it (`WebGPUVoxelRenderer.ts:465`, `WebGPUCloudRenderer.ts:391`, `WebGPUEllipsoidPrimitiveRenderer.ts:441`, `WebGPUGaussianSplatRenderer.ts:589`, `WebGPUPointCloudRenderer.ts:450/718`, `WebGPUBufferPrimitiveRenderer.ts:216`, `WebGPUGlobeSurfaceRenderer.ts:1657/2141/2145`, `WebGPUUniformGroupManager.ts:269/273`, `WebGPUModelRenderer.js:837`). Every read returned `undefined`. Production builds masked this entirely because `Check.typeOf.object` debug pragmas are stripped — the unminified Sandcastle build was the first place the missing property surfaced as a hard crash, and Voxel Pick was the first demo to dereference it before any callers could have guarded.
+
+**Fix:** Added `get cameraPosition()` to `UniformState.js` next to `previousCameraPosition`. One-line addition (plus a JSDoc block referencing NEW-4-H so future maintainers don't re-remove it). All 13 call sites are now correct without any per-site changes.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/UniformState.js`
+
+### S42-T2 — `DerivedCommand.createDepthOnlyDerivedCommand` lacked WebGPU shader-program guard
+
+**Symptom:** Once T1's `cameraPosition` blocker was resolved, Voxel Pick AND Translucent Classification both crashed with:
+
+```text
+TypeError: Cannot read properties of undefined (reading '_cachedShader')
+    at ShaderCache.getDerivedShaderProgram (index.js:25790:44)
+    at getDepthOnlyShaderProgram (index.js:295577:44)
+    at DerivedCommand.createDepthOnlyDerivedCommand (index.js:295654:45)
+    at updateDerivedCommands (...)
+```
+
+**Root cause:** `DerivedCommand.createDepthOnlyDerivedCommand` is upstream WebGL-only logic that derives a depth-only shader by manipulating GLSL `fragmentShaderSource` and caching via `shaderProgram._cachedShader`. WebGPU draw commands carry a `GPUShaderModule`-backed pipeline, not a WebGL `ShaderProgram`, so `command.shaderProgram` is either undefined or an object without `id` / `_cachedShader`. The sibling `createLogDepthCommand` already had a NEW-5-A WebGPU guard from Batch 66 (`if (!defined(cmdShader?.id)) { result.command.shaderProgram = cmdShader; return result; }`) — this batch closes the symmetric defect on `createDepthOnlyDerivedCommand`.
+
+**Fix:** Added the symmetric guard at the top of `createDepthOnlyDerivedCommand` (after `result` initialization but before the cache-or-derive walk). When `command.shaderProgram?.id` is undefined, copy the WebGPU shader/renderState through unchanged and return immediately — the WebGPU dispatcher (`selectCommandVariant` from Batch 29) already routes depth-only via its own `derivedCommands.depth.command` slot with a pre-built WGSL pipeline (see `WebGPUDerivedCommand.createDepthOnlyDerivedCommand` for the WebGPU side).
+
+**Files modified:**
+
+- `packages/engine/Source/Scene/DerivedCommand.js`
+
+### Sandcastle baseline after Batch 70
+
+PASS=6, FAIL=1 (was 5/2):
+
+- WebGPU Edge Feature ID — PASS
+- WebGPU Edge Visibility — PASS
+- WebGPU Many Imagery Layers — PASS
+- WebGPU Model Pick — PASS (note: pick returns null at canvas center — primitive may be off-center, render itself OK; same pre-existing note)
+- WebGPU Point Light Shadows — PASS
+- WebGPU Translucent Classification — FAIL (NEW-4-H `_cachedShader` co-failure closed; remaining failure is NEW-4-I depth-format-copy-compat, separate root cause)
+- WebGPU Voxel Pick — PASS (was FAIL since Batch 66 — NEW-4-G + NEW-4-H both required to unblock)
+
+### S42-T3 — NEW-4-I surfaced
+
+The Translucent Classification demo now reports a single significant console error: WebGPU validation rejects the translucent-depth-pack `copyTextureToTexture` because source `SceneFramebuffer-Color_depth` is `Depth24PlusStencil8` and destination `TranslucentTileClass_TranslucentDepth_1x` is `Depth24Plus` — formats are not copy compatible per spec. New entry (NEW-4-I) tracked in `DEFERRED_WORK.md` with predicted one-line fix (allocate the destination as `Depth24PlusStencil8` to match the scene FB depth attachment). Out of scope for Batch 70.

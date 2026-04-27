@@ -1,6 +1,6 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
-**Last Updated:** 2026-04-25 (Batch 64 doc rollup)
+**Last Updated:** 2026-04-26 (Batch 70 — NEW-4-G/H fixed, NEW-4-I tracked)
 
 This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
 
@@ -328,25 +328,38 @@ This matched the Batch-67 prediction exactly — naga couldn't prove that `fragm
 **Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts) (2 paired textureSample → textureSampleLevel edits + WGSL comments referencing NEW-4-G).
 **Closing batch:** Batch 69.
 
-### NEW-4-H — Voxel `updateWebGPUVoxelPrimitive` calls `Matrix4.multiplyByPoint` with undefined cartesian (revealed by NEW-4-G fix)
+### ~~NEW-4-H — Voxel `updateWebGPUVoxelPrimitive` calls `Matrix4.multiplyByPoint` with undefined cartesian~~ FIXED 2026-04-26 (Batch 70)
 
-**Captured live error (verbatim, from Batch 69 re-run on port 8082):**
+**Resolution:** Two coupled root causes, both fixed in one batch:
+
+1. **`UniformState.cameraPosition` getter was missing.** The TS `.d.ts` companion declared `readonly cameraPosition: Cartesian3` and ~13 WebGPU renderer call sites consumed it (`WebGPUVoxelRenderer`, `WebGPUCloudRenderer`, `WebGPUEllipsoidPrimitiveRenderer`, `WebGPUGaussianSplatRenderer`, `WebGPUPointCloudRenderer`, `WebGPUBufferPrimitiveRenderer`, `WebGPUGlobeSurfaceRenderer`, `WebGPUUniformGroupManager`, `WebGPUModelRenderer`, etc.) — but the JS class only had the private `_cameraPosition` field. Reads always returned `undefined`. Production builds masked this because `Check.typeOf.object` debug pragmas are stripped; the unminified Sandcastle build surfaced the first crash on the Voxel Pick demo. **Fix:** added `get cameraPosition() { return this._cameraPosition; }` to [UniformState.js](../packages/engine/Source/Renderer/UniformState.js) next to `previousCameraPosition`. One line, restores the contract the .d.ts has always promised, fixes all 13 call sites at once.
+
+2. **`DerivedCommand.createDepthOnlyDerivedCommand` lacked the WebGPU shader-program guard** that its sibling `createLogDepthCommand` already had (NEW-5-A, Batch 66). Once Voxel Pick reached the per-frame derived-command sweep, `Scene.updateDerivedCommands → DerivedCommand.createDepthOnlyDerivedCommand` was called for every WebGPU command, and `getDepthOnlyShaderProgram → ShaderCache.getDerivedShaderProgram` dereferenced `shaderProgram._cachedShader` on a WebGPU command (which carries a `GPUShaderModule`-backed pipeline, not a WebGL `ShaderProgram` with `id` / `_cachedShader` fields). Crashed both Voxel Pick AND Translucent Classification with `Cannot read properties of undefined (reading '_cachedShader')`. **Fix:** added the symmetric `if (!defined(cmdShader?.id))` guard at the top of [DerivedCommand.createDepthOnlyDerivedCommand](../packages/engine/Source/Scene/DerivedCommand.js) — copies the WebGPU shader/renderState through unchanged, leaving the WebGPU dispatcher (`selectCommandVariant`) to route depth-only via its own `derivedCommands.depth.command` slot with a pre-built WGSL pipeline.
+
+**Files touched:** [packages/engine/Source/Renderer/UniformState.js](../packages/engine/Source/Renderer/UniformState.js) (added `cameraPosition` getter), [packages/engine/Source/Scene/DerivedCommand.js](../packages/engine/Source/Scene/DerivedCommand.js) (added NEW-4-H WebGPU guard mirroring NEW-5-A).
+
+**Sandcastle verification:** `WebGPU Voxel Pick.html` PASS (was FAIL since Batch 66). Sandcastle baseline jumped from 5/7 to 6/7 PASS in this batch alone; Translucent Classification's `_cachedShader` co-failure is also resolved by the same DerivedCommand.js fix, leaving only its separate depth-format-copy-compat issue (tracked as NEW-4-I).
+
+**Closing batch:** Batch 70.
+
+### NEW-4-I — Translucent Classification copies Depth24PlusStencil8 → Depth24Plus (incompatible formats)
+
+**Captured live error (verbatim, from Batch 70 re-run on port 8082, after NEW-4-H fix):**
 
 ```text
-DeveloperError: Expected cartesian to be typeof object, actual typeof was undefined
-    at Check.typeOf.object (index.js:188:15)
-    at Matrix4.multiplyByPoint (index.js:4591:28)
-    at Object.updateWebGPUVoxelPrimitive [as update] (index.js:79617:36)
-    at _VoxelPrimitive.update (index.js:329472:10)
+[WebGPU:GlobePass] GPU VALIDATION ERROR: Source [Texture "SceneFramebuffer-Color_depth"] format (TextureFormat::Depth24PlusStencil8) and destination [Texture "TranslucentTileClass_TranslucentDepth_1x"] format (TextureFormat::Depth24Plus) are not copy compatible.
+ - While [Failed to format error message: "encoding %s.CopyTextureToTexture(%s, %s, %s)."].
+ - While finishing [CommandEncoder "Scene Frame Command Encoder"].
 ```
 
-**What:** With NEW-4-G's WGSL blocker resolved, the Voxel Pick demo now compiles its pipeline and reaches the per-frame `updateWebGPUVoxelPrimitive` path. That path calls `Matrix4.multiplyByPoint(invModel, camWorld, new Cartesian3())` at [WebGPUVoxelRenderer.ts:467-471](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts#L467-L471). The throw says the second arg (`camWorld = us.cameraPosition`) is undefined. `us.cameraPosition` is normally populated by `UniformState.update()`; this can be undefined if the renderer's update runs before the per-frame UniformState pass, OR if the voxel primitive runs in a pass that doesn't populate camera state (e.g., classification or compute pass entry).
-**Why deferred:** Was masked by NEW-4-G for the entire Batch 67-68 verification window. Surfaced in Batch 69 Voxel Pick re-run.
+**What:** With NEW-4-H's `_cachedShader` blocker resolved, Translucent Classification reaches its translucent-depth-pack pass. The pass copies `SceneFramebuffer-Color_depth` (allocated as `Depth24PlusStencil8` because the scene FB carries stencil for InvertClassification) into `TranslucentTileClass_TranslucentDepth_1x` (allocated as `Depth24Plus`, depth-only). WebGPU spec requires `copyTextureToTexture` source/dest formats to be identical (or in the depth/stencil aspect-compatible subset). The copy is rejected, command encoder finish fails, render loop crashes.
+**Why deferred:** Was masked by NEW-4-H for the entire Batch 67-69 verification window. Surfaced in Batch 70 Translucent Classification re-run.
 **Prerequisites:** None.
-**Estimated effort:** 1 session. Need to (a) confirm whether `us.cameraPosition` or `invModel` is the undefined arg (DeveloperError stacktrace doesn't disambiguate), then (b) either guard with an early-return when either is undefined, OR sync the renderer's update to run after `UniformState.update()` for that frame.
-**Predicted fix candidates:** (a) Guard at top of update path: `if (!defined(us.cameraPosition) || !defined(primitive.modelMatrix)) return;` — safe but masks any deeper ordering bug. (b) Trace the invocation order — `_VoxelPrimitive.update` is called from `PrimitiveCollection.update`, which `Scene.updateAndExecuteCommands` invokes; we likely run before UniformState's per-frustum push. Move the camera-relative math into the command's per-pass uniform pack instead of the primitive update.
-**Impact:** Voxel rendering still fails — render loop crashes with the DeveloperError at first frame. Voxel Pick demo still FAIL.
-**Trace:** Surfaced in Batch 69 Voxel Pick re-run after NEW-4-G fix; matches the secondary blocker that NEW-4-G's entry called out as predicted next failure.
+**Estimated effort:** 30 min — likely a one-line texture-allocation flip from `Depth24Plus` to `Depth24PlusStencil8` on `TranslucentTileClass_TranslucentDepth_*` so it matches the scene FB depth attachment. Stencil aspect is unused by the translucent pack pass, so the size cost is the per-pixel stencil byte (~negligible at typical viewport sizes).
+**Predicted root cause:** Asymmetric format choice between scene FB allocator and translucent pack texture allocator. Scene FB uses depth+stencil for InvertClassification stencil writes; translucent pack chose depth-only because it doesn't read stencil. Spec didn't allow that asymmetry under copyTextureToTexture.
+**Predicted fix candidates:** (a) Allocate `TranslucentTileClass_TranslucentDepth_*` as `Depth24PlusStencil8` to match source. Smallest delta, lowest risk. (b) Use `copyTextureToTexture` aspect parameter to copy only the depth aspect — allowed when source has stencil and destination doesn't, IF the WebGPU implementation supports per-aspect copy (Chromium does as of 2024). (c) Allocate scene FB as depth-only when InvertClassification isn't active — wider blast radius.
+**Impact:** Translucent Classification demo still FAIL. Render loop crashes on first frame because the failed copy is at command-encoder finish time, not draw time.
+**Trace:** Surfaced in Batch 70 Translucent Classification re-run after NEW-4-H fix.
 
 ---
 

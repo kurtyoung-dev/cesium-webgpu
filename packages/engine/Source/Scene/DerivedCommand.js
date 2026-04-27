@@ -115,16 +115,34 @@ DerivedCommand.createDepthOnlyDerivedCommand = function (
     result.depthOnlyCommand,
   );
 
-  if (!defined(shader) || result.shaderProgramId !== command.shaderProgram.id) {
+  // NEW-4-H (Batch 70) — sibling defect to NEW-4-C / NEW-5-A: WebGPU draw
+  // commands carry a GPUShaderModule-backed pipeline that doesn't have the
+  // WebGL-style `shaderProgram.id` / `_cachedShader` fields. Skip the
+  // GLSL depth-only derivation when the shader program isn't a WebGL
+  // ShaderProgram — the WebGPU dispatcher (`selectCommandVariant`) already
+  // routes depth-only via `derivedCommands.depth.command` with a pre-built
+  // WGSL pipeline (see `WebGPUDerivedCommand.createDepthOnlyDerivedCommand`
+  // and the `WebGPUSceneRenderer` consumer at the depth-only pass).
+  // Without this guard, `getDepthOnlyShaderProgram → ShaderCache.getDerivedShaderProgram`
+  // dereferences `shaderProgram._cachedShader` on an undefined or non-WebGL
+  // shader and crashes the render loop on Voxel + Translucent Classification.
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    result.depthOnlyCommand.shaderProgram = cmdShader;
+    result.depthOnlyCommand.renderState = command.renderState;
+    return result;
+  }
+
+  if (!defined(shader) || result.shaderProgramId !== cmdShader.id) {
     result.depthOnlyCommand.shaderProgram = getDepthOnlyShaderProgram(
       context,
-      command.shaderProgram,
+      cmdShader,
     );
     result.depthOnlyCommand.renderState = getDepthOnlyRenderState(
       scene,
       command.renderState,
     );
-    result.shaderProgramId = command.shaderProgram.id;
+    result.shaderProgramId = cmdShader.id;
   } else {
     result.depthOnlyCommand.shaderProgram = shader;
     result.depthOnlyCommand.renderState = renderState;

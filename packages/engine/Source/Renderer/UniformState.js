@@ -412,6 +412,30 @@ class UniformState {
   }
 
   /**
+   * Current frame's world-space camera position (`Cartesian3`). Populated
+   * by `UniformStateComputations.updateCamera` from `camera.positionWC` on
+   * every per-frame `UniformState.update` pass. Renderer code reads this
+   * via `uniformState.cameraPosition` to encode RTE high/low pairs and to
+   * derive eye-space / model-space camera coords for shader uniforms.
+   *
+   * NEW-4-H (Batch 70): Restored after a long-standing omission. The TS
+   * `.d.ts` companion has always declared this property, and ~13 WebGPU
+   * renderer call sites have always read it; without the getter every
+   * read returned `undefined`, which the debug-only `Check.typeOf.object`
+   * pragma in callers like `EncodedCartesian3.fromCartesian` /
+   * `Matrix4.multiplyByPoint` would surface as a hard `DeveloperError`
+   * the first time a render path actually exercised the field. The Voxel
+   * Pick demo was the first Sandcastle case to hit it under the
+   * unminified debug build (where the pragmas are not stripped).
+   *
+   * @type {Cartesian3}
+   * @readonly
+   */
+  get cameraPosition() {
+    return this._cameraPosition;
+  }
+
+  /**
    * Previous frame's world-space camera position. Used with the current
    * frame's camera position to derive `cameraDelta` for TAA motion vectors.
    * @type {Cartesian3}
