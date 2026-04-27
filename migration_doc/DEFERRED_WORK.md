@@ -118,38 +118,44 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ### C-R7-RENDERER-MIGRATION-REMAINING
 
-**What:** Four feature renderers still build pipelines via local Map caches: `WebGPUEnvironmentRenderer`, `WebGPUVolumetricFogRenderer`, `WebGPUPointCloudRenderer`, `WebGPUGlobeSurfaceRenderer`. Plus `WebGPUModelRenderer` (special-case, blocked on shader-module dedup) and `WebGPUAutoExposure` (compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists).
+**What:** One feature renderer still builds pipelines via local Map caches: `WebGPUGlobeSurfaceRenderer`. Plus `WebGPUModelRenderer` (special-case, blocked on shader-module dedup) and `WebGPUAutoExposure` (compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists).
 
 **Progress:**
 
 - Batch 72 (2026-04-27) migrated `WebGPUCloudRenderer`, `WebGPUVoxelRenderer`, and the render half of `WebGPUWeatherRenderer`.
 - Batch 73 (2026-04-27) migrated `WebGPULabelRenderer` and `WebGPUBillboardRenderer` (color + pick).
+- Batch 74 (2026-04-27) migrated `WebGPUEnvironmentRenderer` (Sun + Moon), `WebGPUPointCloudRenderer` (default + LOD), and the composite half of `WebGPUVolumetricFogRenderer` (3 compute pipelines stay direct pending compute pipeline cache infra).
 
 **Why deferred:** Mechanical migration; each needs descriptor-build + dispatch reorganized to match Batch 56/62 pattern.
 
-**Prerequisites:** None - 11 renderers migrated total establish the pattern (Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, Label, Billboard) + Weather render.
+**Prerequisites:** None - 14 renderers migrated total establish the pattern (Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, Label, Billboard, Environment Sun, Environment Moon, PointCloud) + Weather render + VolumetricFog composite.
 
-**Estimated effort:** 1-2 sessions remaining. Environment + VolumetricFog + PointCloud as one batch (mid-sized, all need both gaps closed). GlobeSurface is the largest single migration (3697 LOC) and may be its own session.
+**Estimated effort:** 1 session remaining. GlobeSurface is the largest single migration (3697 LOC) and is its own session.
 
 **Impact:** Identical pipelines may be created multiple times across renderer instances. Memory + first-frame setup cost; no per-frame correctness or steady-state perf impact since each renderer's local cache hits.
 
-**Trace:** REVIEW_FIX_PROGRESS.md (Batches 56/62/72/73 lists); PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:185.
+**Trace:** REVIEW_FIX_PROGRESS.md (Batches 56/62/72/73/74 lists); PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:185.
 
 ### C-R7-SHADER-MODULE-DEDUP
 
-**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers (8 of ~17 use it today) lets identical sources actually dedupe. Status unchanged in Batch 73 — Label + Billboard already had module cache, Batch 73 only added the pipeline-cache half.
+**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers (12 of ~17 use it today) lets identical sources actually dedupe.
 
-**Progress:** Batch 72 (2026-04-27) added Cloud + Voxel + Weather (render + compute shaders). Existing adopters: Polyline, PointPrimitive, Billboard, Label, GlobeSurface.
+**Progress:**
+
+- Batch 72 (2026-04-27) added Cloud + Voxel + Weather (render + compute shaders).
+- Batch 74 (2026-04-27) added Environment (Sun + Moon), VolumetricFog (compute + composite), PointCloud (default + LOD).
+
+Existing adopters from earlier batches: Polyline, PointPrimitive, Billboard, Label, GlobeSurface.
 
 **Why deferred:** Without dedup, routing `WebGPUModelRenderer` through `webgpuPipelineCache` (Batch 56's deferred case) wouldn't actually share - two models with identical material settings still produce distinct shader modules, distinct pipeline cache keys.
 
 **Prerequisites:** None - `WebGPUShaderModuleCache.ts` exists since Batch 22.
 
-**Estimated effort:** 1 session for remaining adoption (Environment, VolumetricFog, PointCloud, ModelRenderer adoption pass).
+**Estimated effort:** 1 session for ModelRenderer adoption pass.
 
 **Impact:** Memory pressure on shader-heavy scenes (3D Tilesets with many distinct glTF assets sharing material settings).
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit), Batch 72 list; OVERSIGHT_AUDIT_2026_04_25.md s3.
+**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit), Batches 72/74 lists; OVERSIGHT_AUDIT_2026_04_25.md s3.
 
 ---
 

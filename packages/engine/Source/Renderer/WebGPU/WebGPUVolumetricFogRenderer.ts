@@ -63,6 +63,31 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+// Per-device shader module cache so two contexts with volumetric fog
+// enabled share one compiled `GPUShaderModule` per source.
+// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
+const _volumetricFogShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getVolumetricFogShaderModuleCache(
+  device: GPUDevice,
+): WebGPUShaderModuleCache {
+  let cache = _volumetricFogShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _volumetricFogShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 /** Quality preset → 3D texture resolution mapping (W × H × D). */
 const QUALITY_RESOLUTIONS = {
@@ -159,7 +184,18 @@ interface VolumetricFogResources {
   // Composite pass resources.
   compositeShaderModule: GPUShaderModule;
   compositeBindGroupLayout: GPUBindGroupLayout;
-  compositePipeline: GPURenderPipeline;
+  // C-R7-RENDERER-MIGRATION (Batch 74). The render pipeline is now
+  // materialized through `webgpuPipelineCache.getPipeline()`. On the
+  // first frame after enabling fog the pipeline kicks off async; until
+  // it lands, `composite()` early-exits (one-frame visual gap, recovers
+  // next frame). The `compositePipelineEntry` slot tracks the descriptor
+  // + in-flight state for re-resolution.
+  compositePipeline: GPURenderPipeline | null;
+  compositePipelineEntry: {
+    descriptor: WebGPURenderPipelineDescriptor;
+    pipeline: GPURenderPipeline | null;
+    pending: boolean;
+  };
   compositeUniformBuffer: GPUBuffer;
   compositeUniformData: Float32Array;
   compositeSampler: GPUSampler;
@@ -364,10 +400,17 @@ class WebGPUVolumetricFogRenderer {
     // for the SAME texture without WGSL `@binding` collisions. Each
     // pipeline gets its own BGL containing only the bindings its entry
     // point references; WebGPU validates per-entry-point.
-    const computeShaderModule = device.createShaderModule({
-      label: "VolumetricFog_Compute",
-      code: VolumetricFogComputeSource,
-    });
+    // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the compute shader
+    // through the per-device module cache. The compute pipelines
+    // themselves still use `device.createComputePipeline()` directly
+    // because no central compute-pipeline cache exists yet.
+    const moduleCache = getVolumetricFogShaderModuleCache(device);
+    const computeShaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.VOLUMETRIC_FOG_COMPUTE,
+      VolumetricFogComputeSource,
+      0,
+      "VolumetricFog_Compute",
+    );
 
     // Helper for the storage texture entries — same shape repeated.
     const writeStorageEntry = {
@@ -544,10 +587,14 @@ class WebGPUVolumetricFogRenderer {
     });
 
     // ── Composite pass resources ──
-    const compositeShaderModule = device.createShaderModule({
-      label: "VolumetricFog_Composite",
-      code: VolumetricFogCompositeSource,
-    });
+    // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the composite shader
+    // through the per-device module cache.
+    const compositeShaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.VOLUMETRIC_FOG_COMPOSITE,
+      VolumetricFogCompositeSource,
+      0,
+      "VolumetricFog_Composite",
+    );
 
     const compositeBindGroupLayout = makeBindGroupLayout(
       device,
@@ -566,8 +613,12 @@ class WebGPUVolumetricFogRenderer {
       bindGroupLayouts: [compositeBindGroupLayout],
     });
 
-    const compositePipeline = device.createRenderPipeline({
-      label: "VolumetricFog_CompositePipeline",
+    // C-R7-RENDERER-MIGRATION (Batch 74) — descriptor-only construction;
+    // the actual pipeline materializes through the central cache via
+    // `tryResolveCompositePipeline` in `composite()`. Two contexts with
+    // volumetric fog enabled share one composite pipeline.
+    const compositeDescriptor: WebGPURenderPipelineDescriptor = {
+      name: "VolumetricFog_CompositePipeline",
       layout: compositePipelineLayout,
       vertex: { module: compositeShaderModule, entryPoint: "vertexMain" },
       fragment: {
@@ -580,7 +631,12 @@ class WebGPUVolumetricFogRenderer {
         targets: [{ format: "bgra8unorm" }],
       },
       primitive: { topology: "triangle-list" },
-    });
+    };
+    const compositePipelineEntry = {
+      descriptor: compositeDescriptor,
+      pipeline: null as GPURenderPipeline | null,
+      pending: false,
+    };
 
     const compositeUniformData = new Float32Array(COMPOSITE_UNIFORMS_FLOATS);
     const compositeUniformBuffer = device.createBuffer({
@@ -629,7 +685,8 @@ class WebGPUVolumetricFogRenderer {
       paramsU32,
       compositeShaderModule,
       compositeBindGroupLayout,
-      compositePipeline,
+      compositePipeline: null,
+      compositePipelineEntry,
       compositeUniformBuffer,
       compositeUniformData,
       compositeSampler,
@@ -995,6 +1052,68 @@ class WebGPUVolumetricFogRenderer {
 
     this._composites++;
     const r = this._resources;
+
+    // C-R7-RENDERER-MIGRATION (Batch 74) — resolve the composite render
+    // pipeline through the central cache. Skip the composite this frame
+    // if the pipeline is still materializing — the integrated volume is
+    // cleared (Phase 5a no-op) so a missed frame is invisible. By next
+    // frame the pipeline is cached.
+    if (!r.compositePipeline) {
+      const pipelineCache =
+        (
+          context as unknown as {
+            webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+          }
+        ).webgpuPipelineCache ?? null;
+      const entry = r.compositePipelineEntry;
+      if (entry.pipeline) {
+        r.compositePipeline = entry.pipeline;
+      } else if (pipelineCache) {
+        const sync = pipelineCache.getPipelineSync(entry.descriptor);
+        if (sync) {
+          entry.pipeline = sync;
+          entry.pending = false;
+          r.compositePipeline = sync;
+        } else {
+          if (!entry.pending) {
+            entry.pending = true;
+            pipelineCache
+              .getPipeline(entry.descriptor)
+              .then((p) => {
+                entry.pipeline = p;
+                entry.pending = false;
+              })
+              .catch(() => {
+                entry.pending = false;
+              });
+          }
+          return;
+        }
+      } else {
+        // Fallback: no central cache.
+        const desc = entry.descriptor;
+        entry.pipeline = device.createRenderPipeline({
+          label: desc.name,
+          layout: desc.layout ?? "auto",
+          vertex: {
+            module: desc.vertex.module,
+            entryPoint: desc.vertex.entryPoint,
+            buffers: desc.vertex.buffers,
+          },
+          fragment: desc.fragment
+            ? {
+                module: desc.fragment.module,
+                entryPoint: desc.fragment.entryPoint,
+                targets: desc.fragment.targets,
+              }
+            : undefined,
+          primitive: desc.primitive,
+          depthStencil: desc.depthStencil,
+          multisample: desc.multisample,
+        });
+        r.compositePipeline = entry.pipeline;
+      }
+    }
 
     // Pack the composite uniform buffer.
     const camera = frameState.camera;

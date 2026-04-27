@@ -33,6 +33,128 @@ import {
   createEllipsoidBindGroupLayout,
   packEllipsoidBaseUniforms,
 } from "./WebGPUEllipsoidRenderer.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// Per-device shader module cache so two Sun / Moon instances on the same
+// `GPUDevice` share one compiled `GPUShaderModule`.
+// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
+const _envShaderModuleCaches = new WeakMap();
+
+function getEnvShaderModuleCache(device) {
+  let cache = _envShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _envShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
+
+// Sun WGSL hoisted out of the per-update block so the module cache can
+// dedupe it by source id. Pure relocation — content is unchanged.
+const SUN_SHADER_WGSL = `
+struct Uniforms {
+  mvpRTE: mat4x4<f32>,
+  encodedCameraHigh: vec3<f32>, _p0: f32,
+  encodedCameraLow: vec3<f32>, _p1: f32,
+  sunSize: vec2<f32>, glowFactor: f32, _p2: f32,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs(@location(0) posH: vec3<f32>, @location(1) posL: vec3<f32>, @location(2) dir: vec2<f32>) -> VOut {
+  var o: VOut;
+  let rte = (posH - u.encodedCameraHigh) + (posL - u.encodedCameraLow);
+  var cp = u.mvpRTE * vec4f(rte, 1.0);
+  cp.x += dir.x * u.sunSize.x * cp.w;
+  cp.y += dir.y * u.sunSize.y * cp.w;
+  // Clamp the sun to the far plane. Without this the sun (world-space ~1.5e11 m)
+  // gets frustum-clipped at every camera altitude whose far plane is < 1.5e11 m
+  // — which is every multi-frustum slice except possibly the last.
+  // Setting clip-z = clip-w maps to NDC z = 1.0, i.e. the far plane, so the
+  // "less-equal" depth compare still allows the sun to render against any
+  // previously-cleared depth value.
+  o.pos = vec4f(cp.x, cp.y, cp.w, cp.w);
+  o.uv = dir * 0.5 + 0.5; return o;
+}
+
+@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
+  let tc = textureSample(tex, samp, i.uv);
+  let d = length(i.uv - vec2f(0.5));
+  let g = exp(-d * d * 8.0) * u.glowFactor;
+  return vec4f(tc.rgb + vec3f(g), clamp(tc.a + g * 0.5, 0.0, 1.0));
+}`;
+
+/**
+ * Convert our cache-friendly descriptor back into the WebGPU descriptor
+ * shape for the fallback path (no central cache available).
+ * @private
+ */
+function _envDescriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve a single environment-renderer pipeline (Sun or Moon) through
+ * the central pipeline cache. Returns the pipeline if cached; otherwise
+ * kicks off async creation and returns null. Falls back to direct
+ * synchronous creation when `pipelineCache` is null.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 74). Mirrors `tryResolvePolylinePipeline`.
+ * @private
+ */
+function tryResolveEnvPipeline(device, pipelineCache, entry) {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  entry.pipeline = device.createRenderPipeline(
+    _envDescriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
+}
 
 const UNIFORM_BUFFER_SIZE = 256;
 // Moon uses a slightly larger uniform buffer to fit the full Phase 1.2c v2
@@ -225,45 +347,17 @@ function updateWebGPUSun(sun, frameState, commandList) {
     });
   }
 
-  if (!defined(cache.pipeline)) {
-    const shaderModule = device.createShaderModule({
-      label: "Sun shader",
-      code: `
-struct Uniforms {
-  mvpRTE: mat4x4<f32>,
-  encodedCameraHigh: vec3<f32>, _p0: f32,
-  encodedCameraLow: vec3<f32>, _p1: f32,
-  sunSize: vec2<f32>, glowFactor: f32, _p2: f32,
-};
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var tex: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-
-@vertex fn vs(@location(0) posH: vec3<f32>, @location(1) posL: vec3<f32>, @location(2) dir: vec2<f32>) -> VOut {
-  var o: VOut;
-  let rte = (posH - u.encodedCameraHigh) + (posL - u.encodedCameraLow);
-  var cp = u.mvpRTE * vec4f(rte, 1.0);
-  cp.x += dir.x * u.sunSize.x * cp.w;
-  cp.y += dir.y * u.sunSize.y * cp.w;
-  // Clamp the sun to the far plane. Without this the sun (world-space ~1.5e11 m)
-  // gets frustum-clipped at every camera altitude whose far plane is < 1.5e11 m
-  // \u2014 which is every multi-frustum slice except possibly the last.
-  // Setting clip-z = clip-w maps to NDC z = 1.0, i.e. the far plane, so the
-  // "less-equal" depth compare still allows the sun to render against any
-  // previously-cleared depth value.
-  o.pos = vec4f(cp.x, cp.y, cp.w, cp.w);
-  o.uv = dir * 0.5 + 0.5; return o;
-}
-
-@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
-  let tc = textureSample(tex, samp, i.uv);
-  let d = length(i.uv - vec2f(0.5));
-  let g = exp(-d * d * 8.0) * u.glowFactor;
-  return vec4f(tc.rgb + vec3f(g), clamp(tc.a + g * 0.5, 0.0, 1.0));
-}`,
-    });
+  // C-R7 (Batch 74) \u2014 descriptor + central pipeline cache. Two Sun
+  // instances on the same device share one compiled shader module + one
+  // pipeline.
+  if (!defined(cache.pipelineEntry)) {
+    const moduleCache = getEnvShaderModuleCache(device);
+    const shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.ENVIRONMENT_SUN,
+      SUN_SHADER_WGSL,
+      0,
+      "Sun shader",
+    );
 
     const bgl = makeBindGroupLayout(device, "Sun BGL", [
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
@@ -271,8 +365,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       sampler(2, Stage.FRAGMENT),
     ]);
 
-    cache.pipeline = device.createRenderPipeline({
-      label: "Sun pipeline",
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFormat = context.depthFormat || "depth24plus-stencil8";
+    const descriptor = {
+      name: `Sun pipeline [${format}/${depthFormat}]`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
         module: shaderModule,
@@ -293,7 +389,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         entryPoint: "fs",
         targets: [
           {
-            format: context.presentationFormat || "bgra8unorm",
+            format,
             blend: {
               color: {
                 srcFactor: "src-alpha",
@@ -311,13 +407,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: {
-        format: context.depthFormat || "depth24plus-stencil8",
+        format: depthFormat,
         depthWriteEnabled: false,
         depthCompare: "less-equal",
       },
-    });
+    };
+    cache.pipelineEntry = { descriptor, pipeline: null, pending: false };
     cache.bindGroupLayout = bgl;
   }
+  const sunPipeline = tryResolveEnvPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    cache.pipelineEntry,
+  );
+  if (!sunPipeline) {
+    return;
+  }
+  cache.pipeline = sunPipeline;
 
   // Prefer the live rotating sun position from UniformState. `frameState.sunPositionWC`
   // is not populated anywhere in the engine today, so without this the quad
@@ -402,23 +508,31 @@ function createMoonBoundingCube(device) {
 }
 
 /**
- * Creates the Moon rendering pipeline (textured sphere + diffuse lighting).
+ * Build the cache-friendly descriptor for the Moon rendering pipeline
+ * (textured sphere + diffuse lighting). The actual `GPURenderPipeline`
+ * is materialized through `webgpuPipelineCache.getPipeline()` so two
+ * Moon instances on the same device share one pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 74).
  * @private
  */
-function createMoonPipeline(device, format, depthFormat) {
+function buildMoonPipelineResources(device, format, depthFormat) {
   // Shader validation is handled centrally by WebGPUContext's
   // _installShaderValidation wrapper — no per-site validation needed.
-  const mod = device.createShaderModule({
-    label: "Moon shader",
-    code: MoonShaderCode,
-  });
+  const moduleCache = getEnvShaderModuleCache(device);
+  const mod = moduleCache.getOrCreate(
+    ShaderSourceId.ENVIRONMENT_MOON,
+    MoonShaderCode,
+    0,
+    "Moon shader",
+  );
 
   // Phase 1.x consolidation — use the shared bind group layout from
   // WebGPUEllipsoidRenderer so future ellipsoid bodies match exactly.
   const bgl = createEllipsoidBindGroupLayout(device);
 
-  const pipeline = device.createRenderPipeline({
-    label: "Moon pipeline",
+  const descriptor = {
+    name: `Moon pipeline [${format}/${depthFormat}]`,
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: {
       module: mod,
@@ -472,9 +586,9 @@ function createMoonPipeline(device, format, depthFormat) {
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-  });
+  };
 
-  return { pipeline, bgl };
+  return { descriptor, bgl };
 }
 
 /**
@@ -644,26 +758,35 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.geometry = createMoonBoundingCube(device);
   }
 
-  // Pipeline + bind group layout. Guarded by pushErrorScope so a shader
-  // compilation failure doesn't poison the command encoder — the moon
-  // just silently doesn't render instead of killing the whole frame.
-  if (!defined(cache.pipeline) && !cache._pipelineFailed) {
+  // C-R7 (Batch 74) — descriptor + central pipeline cache. The cache's
+  // `createRenderPipelineAsync()` path catches shader/pipeline validation
+  // errors and surfaces them through its `.catch` handler (logs + clears
+  // the in-flight flag). The previous `pushErrorScope` wrapper is
+  // redundant under that pattern, so it's been dropped — the
+  // `_pipelineFailed` sentinel is also no longer needed because the
+  // entry's own `pending` slot stays stable on failure (a retry will
+  // simply attempt creation again next frame, matching the prior
+  // behavior for transient errors).
+  if (!defined(cache.pipelineEntry)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    device.pushErrorScope("validation");
-    const result = createMoonPipeline(device, format, depthFmt);
-    device.popErrorScope().then((error) => {
-      if (error) {
-        console.error(
-          `[WebGPU:Moon] Pipeline creation failed: ${error.message}`,
-        );
-        cache._pipelineFailed = true;
-        cache.pipeline = undefined;
-      }
-    });
-    cache.pipeline = result.pipeline;
-    cache.bgl = result.bgl;
+    const built = buildMoonPipelineResources(device, format, depthFmt);
+    cache.pipelineEntry = {
+      descriptor: built.descriptor,
+      pipeline: null,
+      pending: false,
+    };
+    cache.bgl = built.bgl;
   }
+  const moonPipeline = tryResolveEnvPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    cache.pipelineEntry,
+  );
+  if (!moonPipeline) {
+    return;
+  }
+  cache.pipeline = moonPipeline;
 
   // Moon texture (placeholder until async load completes)
   if (!defined(cache.moonTexture)) {

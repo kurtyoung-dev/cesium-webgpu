@@ -1,10 +1,35 @@
-# Next Session Handoff — 2026-04-27 (Batches 72 + 73 — C-R7 paired sweep, slices 1 + 2)
+# Next Session Handoff — 2026-04-27 (Batches 72 + 73 + 74 — C-R7 paired sweep, slices 1 + 2 + 3)
 
-**Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 73 changes pending commit. No safety branches, no worktree branches, no feature branches.
+**Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 74 changes pending commit. No safety branches, no worktree branches, no feature branches.
 
-**Headline:** Two slices of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items shipped today. Cloud + Voxel + Weather (Batch 72) and Label + Billboard (Batch 73) now route through the central pipeline cache. Sandcastle baseline holds at **7/7 PASS** across both batches.
+**Headline:** Three slices of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items shipped today. Cloud + Voxel + Weather (Batch 72), Label + Billboard (Batch 73), and Environment + PointCloud + VolumetricFog (Batch 74) all route through the central pipeline cache + shader module cache. Sandcastle baseline holds at **7/7 PASS** across all three batches. Only `WebGPUGlobeSurfaceRenderer` remains for C-R7-RENDERER-MIGRATION-REMAINING (own session due to 3697 LOC scope).
 
-## What today's session landed (Batch 73)
+## What today's session landed (Batch 74)
+
+### Batch 74 — C-R7 paired sweep, slice 3 (Environment + PointCloud + VolumetricFog)
+
+Closes the third slice. Pattern: per-device `WeakMap<GPUDevice, WebGPUShaderModuleCache>` for shader dedup; descriptor-only construction + `tryResolveXxxPipeline` async resolution mirroring Batch 56's Ellipsoid template.
+
+**ShaderSourceId additions** (six entries, IDs 17-22):
+
+- `ENVIRONMENT_SUN`, `ENVIRONMENT_MOON`
+- `VOLUMETRIC_FOG_COMPUTE` (compute pipeline still direct), `VOLUMETRIC_FOG_COMPOSITE`
+- `POINT_CLOUD`, `POINT_CLOUD_LOD`
+
+**Environment** ([`WebGPUEnvironmentRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js)) — Sun WGSL hoisted to top-level const. Both Sun + Moon migrated through shared `tryResolveEnvPipeline()`. Moon's `pushErrorScope`/`_pipelineFailed` removed — central cache's async catch subsumes the error path.
+
+**PointCloud** ([`WebGPUPointCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts)) — default + LOD pipelines, both via `tryResolvePointCloudPipeline()`. LOD path skip-returns when not yet ready (matches existing `lodStorageBindGroup` not-ready behavior).
+
+**VolumetricFog** ([`WebGPUVolumetricFogRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts)) — composite render pipeline via central cache; compute pipelines stay direct. `composite()` early-exits if pipeline isn't ready (Phase 5a no-op clears mean a missed composite frame is invisible). Type field changed from `compositePipeline: GPURenderPipeline` to `... | null`.
+
+**Verification:** tsc clean, gulp build clean, Sandcastle 7/7 PASS. All baseline demos exercise the Sun + Moon environment rendering path.
+
+**Adopter counts after Batch 74:**
+
+- Pipeline cache: 14 renderers (was 11).
+- Shader module cache: 12 renderers (was 8).
+
+## Pre-Batch-74 history
 
 ### Batch 73 — C-R7 paired sweep, slice 2 (Label + Billboard)
 

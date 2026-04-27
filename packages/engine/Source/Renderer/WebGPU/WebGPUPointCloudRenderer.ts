@@ -20,6 +20,31 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 import type { WebGPUPointCloudLODProcessorInstance } from "./WebGPUPointCloudLODProcessor.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+// Per-device shader module cache so multiple PointClouds on the same
+// `GPUDevice` share one compiled `GPUShaderModule` per source.
+// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
+const _pointCloudShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getPointCloudShaderModuleCache(
+  device: GPUDevice,
+): WebGPUShaderModuleCache {
+  let cache = _pointCloudShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _pointCloudShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 /**
  * Narrowed view of the CesiumJS `PointCloud` shape that this renderer
@@ -60,6 +85,12 @@ interface PointCloudLike {
   [key: string]: unknown;
 }
 
+interface PointCloudPipelineEntry {
+  descriptor: WebGPURenderPipelineDescriptor;
+  pipeline: GPURenderPipeline | null;
+  pending: boolean;
+}
+
 interface PointCloudCache {
   uniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
@@ -71,6 +102,13 @@ interface PointCloudCache {
   command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
+
+  // C-R7-RENDERER-MIGRATION (Batch 74). Default-path pipeline now
+  // resolves through `webgpuPipelineCache`; the entry slot holds the
+  // descriptor + the in-flight tracking flag. Two PointCloud instances
+  // sharing the same canvas format now share a single pipeline.
+  pipelineEntry: PointCloudPipelineEntry | null;
+  defaultBgl: GPUBindGroupLayout | null;
 
   // ── GPU LOD path (opt-in when pointCloud.enableGPULOD === true) ──
   //
@@ -90,6 +128,12 @@ interface PointCloudCache {
   lodUploadedRevision: number;
   lodCommand: CesiumAnyDrawCommand | null;
   lodActive: boolean;
+
+  // C-R7-RENDERER-MIGRATION (Batch 74) — same pattern for the LOD
+  // pipeline. Held alongside the LOD pipeline slot so the resolve helper
+  // can re-resolve every frame until the pipeline materializes.
+  lodPipelineEntry: PointCloudPipelineEntry | null;
+  lodDefaultBgl: GPUBindGroupLayout | null;
 }
 
 const POINT_CLOUD_WGSL = `
@@ -255,19 +299,35 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
   return buf;
 }
 
-function buildPipeline(
+/**
+ * Build the cache-friendly descriptor for the default-path PointCloud
+ * pipeline. The actual `GPURenderPipeline` materializes through
+ * `webgpuPipelineCache.getPipeline()` so two PointCloud instances at the
+ * same canvas format share one pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 74).
+ * @private
+ */
+function buildPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
 ): {
-  pipeline: GPURenderPipeline;
+  descriptor: WebGPURenderPipelineDescriptor;
   shaderModule: GPUShaderModule;
   bgl: GPUBindGroupLayout;
 } {
-  const shaderModule = device.createShaderModule({ code: POINT_CLOUD_WGSL });
+  const moduleCache = getPointCloudShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    ShaderSourceId.POINT_CLOUD,
+    POINT_CLOUD_WGSL,
+    0,
+    "PointCloud shader",
+  );
   const bgl = makeBindGroupLayout(device, "PointCloud BGL", [
     uniformBuffer(0, Stage.VERTEX),
   ]);
-  const pipeline = device.createRenderPipeline({
+  const descriptor: WebGPURenderPipelineDescriptor = {
+    name: `PointCloud pipeline [${format}]`,
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: {
       module: shaderModule,
@@ -327,8 +387,81 @@ function buildPipeline(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
-  });
-  return { pipeline, shaderModule, bgl };
+  };
+  return { descriptor, shaderModule, bgl };
+}
+
+/**
+ * Convert our cache-friendly descriptor back into the WebGPU descriptor
+ * shape for the fallback path (no central cache available).
+ * @private
+ */
+function _pcDescriptorToGPU(
+  d: WebGPURenderPipelineDescriptor,
+): GPURenderPipelineDescriptor {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve a PointCloud pipeline (default or LOD) through the central
+ * pipeline cache. Returns the existing GPU pipeline if cached; otherwise
+ * kicks off async creation and returns null.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 74). Mirrors `tryResolvePolylinePipeline`.
+ * @private
+ */
+function tryResolvePointCloudPipeline(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  entry: PointCloudPipelineEntry,
+): GPURenderPipeline | null {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  entry.pipeline = device.createRenderPipeline(
+    _pcDescriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
 }
 
 function buildInstanceBuffer(
@@ -517,17 +650,42 @@ function updateWebGPUPointCloud(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    const { pipeline, shaderModule, bgl } = buildPipeline(device, canvasFormat);
-    cache.pipeline = pipeline;
-    cache.shaderModule = shaderModule;
+    // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
+    // PointCloud instances at the same canvas format share one pipeline.
+    const built = buildPipelineDescriptor(device, canvasFormat);
+    cache.pipelineEntry = {
+      descriptor: built.descriptor,
+      pipeline: null,
+      pending: false,
+    };
+    cache.shaderModule = built.shaderModule;
+    cache.defaultBgl = built.bgl;
 
     cache.bindGroup = device.createBindGroup({
-      layout: bgl,
+      layout: built.bgl,
       entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer } }],
     });
 
     cache.quadVertexBuffer = createQuadVB(device);
     cache.initialized = true;
+  }
+
+  // Resolve the default pipeline through the central cache. On the first
+  // frame this kicks off async creation and returns null; we skip the
+  // default-path draw command so it can land next frame.
+  if (!cache.pipeline && cache.pipelineEntry) {
+    const resolved = tryResolvePointCloudPipeline(
+      device,
+      (
+        context as unknown as {
+          webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+        }
+      ).webgpuPipelineCache ?? null,
+      cache.pipelineEntry,
+    );
+    if (resolved) {
+      cache.pipeline = resolved;
+    }
   }
 
   // Decide whether GPU LOD can apply this frame. Opt-in flag + lazy
@@ -601,6 +759,11 @@ function updateWebGPUPointCloud(
   }
 
   // ── Default path (current behaviour, untouched) ──
+  // C-R7 (Batch 74) — skip the draw if the pipeline is still
+  // materializing in the central cache. It'll be ready by next frame.
+  if (!cache.pipeline) {
+    return;
+  }
   if (!cache.command) {
     cache.command = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
@@ -640,19 +803,42 @@ function _runGPULODPath(
   // not per-instance, but storing them on the cache is simpler than
   // a device-keyed shared map and point cloud instances are typically
   // few enough that the duplication doesn't matter.
-  if (!cache.lodPipeline) {
-    const { pipeline, bgl, storageBGL } = _buildLODPipeline(
-      device,
-      canvasFormat,
-    );
-    cache.lodPipeline = pipeline;
-    cache.lodBindGroupLayout = storageBGL;
+  // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
+  // PointCloud instances on the same canvas format share one LOD
+  // pipeline. Returns early without rendering when the pipeline is
+  // still materializing — matches the existing `lodStorageBindGroup`
+  // not-ready behavior below (one-frame visual gap, recovers next
+  // frame).
+  if (!cache.lodPipelineEntry) {
+    const built = _buildLODPipelineDescriptor(device, canvasFormat);
+    cache.lodPipelineEntry = {
+      descriptor: built.descriptor,
+      pipeline: null,
+      pending: false,
+    };
+    cache.lodBindGroupLayout = built.storageBGL;
+    cache.lodDefaultBgl = built.bgl;
     // Rebuild the uniform bind group against the LOD pipeline's BGL too
     // so both pipelines can share the same uniform buffer.
     cache.bindGroup = device.createBindGroup({
-      layout: bgl,
+      layout: built.bgl,
       entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer! } }],
     });
+  }
+  if (!cache.lodPipeline) {
+    const resolved = tryResolvePointCloudPipeline(
+      device,
+      (
+        context as unknown as {
+          webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+        }
+      ).webgpuPipelineCache ?? null,
+      cache.lodPipelineEntry,
+    );
+    if (!resolved) {
+      return;
+    }
+    cache.lodPipeline = resolved;
   }
 
   // Upload positions once per revision. uploadPositions invalidates
@@ -769,18 +955,29 @@ function _runGPULODPath(
  *   group 0 (bgl):        uniform buffer
  *   group 1 (storageBGL): instanceData (storage, read) + visibleIndices (storage, read)
  */
-function _buildLODPipeline(
+/**
+ * Build the cache-friendly descriptor for the LOD-path PointCloud
+ * pipeline (storage-backed instance lookup via `visibleIndices`).
+ * Materializes through the central pipeline cache.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 74).
+ * @private
+ */
+function _buildLODPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
 ): {
-  pipeline: GPURenderPipeline;
+  descriptor: WebGPURenderPipelineDescriptor;
   bgl: GPUBindGroupLayout;
   storageBGL: GPUBindGroupLayout;
 } {
-  const shaderModule = device.createShaderModule({
-    label: "PointCloud LOD Shader",
-    code: POINT_CLOUD_LOD_WGSL,
-  });
+  const moduleCache = getPointCloudShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    ShaderSourceId.POINT_CLOUD_LOD,
+    POINT_CLOUD_LOD_WGSL,
+    0,
+    "PointCloud LOD shader",
+  );
   const bgl = makeBindGroupLayout(device, "PointCloud LOD uniform BGL", [
     uniformBuffer(0, Stage.VERTEX),
   ]);
@@ -801,8 +998,8 @@ function _buildLODPipeline(
       },
     ],
   });
-  const pipeline = device.createRenderPipeline({
-    label: "PointCloud LOD Pipeline",
+  const descriptor: WebGPURenderPipelineDescriptor = {
+    name: `PointCloud LOD Pipeline [${format}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bgl, storageBGL],
     }),
@@ -842,8 +1039,8 @@ function _buildLODPipeline(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
-  });
-  return { pipeline, bgl, storageBGL };
+  };
+  return { descriptor, bgl, storageBGL };
 }
 
 /**

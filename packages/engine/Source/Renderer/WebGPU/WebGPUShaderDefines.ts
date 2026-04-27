@@ -135,6 +135,22 @@ export const ShaderSourceId = Object.freeze({
    * enabled don't recompile the same WGSL.
    */
   WEATHER_PARTICLES_COMPUTE: 16,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 74. Source IDs 17-22 cover the
+  // third sweep of additional render-family adoption (Environment +
+  // VolumetricFog + PointCloud). Add-only; never renumber.
+  ENVIRONMENT_SUN: 17,
+  ENVIRONMENT_MOON: 18,
+  /**
+   * `VolumetricFog.wgsl` — single source feeding all three compute
+   * entry points (densityInjection / lightScattering / integrate). As
+   * with `WEATHER_PARTICLES_COMPUTE`, the compute pipelines stay on
+   * direct `device.createComputePipeline()` until a
+   * `WebGPUComputePipelineCache` exists; the module is deduped here.
+   */
+  VOLUMETRIC_FOG_COMPUTE: 19,
+  VOLUMETRIC_FOG_COMPOSITE: 20,
+  POINT_CLOUD: 21,
+  POINT_CLOUD_LOD: 22,
 } as const);
 
 /**

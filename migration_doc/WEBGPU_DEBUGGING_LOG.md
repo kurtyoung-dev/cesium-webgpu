@@ -4484,4 +4484,77 @@ Where Batch 72's renderers (Cloud / Voxel / Weather) had a single pipeline (or t
 - **Both gaps:** `WebGPUEnvironmentRenderer` (1047 LOC), `WebGPUVolumetricFogRenderer` (1185 LOC), `WebGPUPointCloudRenderer` (892 LOC).
 - **Blocked:** `WebGPUModelRenderer` (KHR shader-family work via C-R4-GLTF-KHR), `WebGPUAutoExposure` (compute pipeline cache infra).
 
+---
+
+## Session 46 — Batch 74: C-R7 paired sweep, slice 3 (Environment + PointCloud + VolumetricFog) (2026-04-27)
+
+Closes the third slice of paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items from `DEFERRED_WORK.md`. Three renderers — `WebGPUEnvironmentRenderer` (Sun + Moon), `WebGPUPointCloudRenderer` (default + LOD), and the composite half of `WebGPUVolumetricFogRenderer` — now route both `GPUShaderModule` compilation and `GPURenderPipeline` materialization through the central caches. Sandcastle baseline holds at 7/7 PASS.
+
+### S46-T1 — `ShaderSourceId` registry expansion
+
+Six new entries added to [`WebGPUShaderDefines.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts) (add-only, monotonic):
+
+- `ENVIRONMENT_SUN = 17`
+- `ENVIRONMENT_MOON = 18`
+- `VOLUMETRIC_FOG_COMPUTE = 19` (compute pipeline still goes direct; module is deduped)
+- `VOLUMETRIC_FOG_COMPOSITE = 20`
+- `POINT_CLOUD = 21`
+- `POINT_CLOUD_LOD = 22`
+
+### S46-T2 — Environment renderer migration
+
+[`WebGPUEnvironmentRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js):
+
+- Per-device `WebGPUShaderModuleCache` via `WeakMap<GPUDevice, WebGPUShaderModuleCache>`.
+- Sun WGSL hoisted from inline template literal to a top-level `SUN_SHADER_WGSL` const so the module cache can dedupe by source ID. Pure relocation — content unchanged.
+- `createMoonPipeline()` → `buildMoonPipelineResources()` returning the descriptor + BGL.
+- New shared `tryResolveEnvPipeline()` resolver mirroring Batch 56's Ellipsoid template.
+- Both Sun (`cache.pipelineEntry`) and Moon (`cache.pipelineEntry`) call sites use entry-based caching with skip-frame on async-pending.
+- Moon's prior `pushErrorScope`/`popErrorScope` wrapper + `_pipelineFailed` sentinel removed: the central cache's `createRenderPipelineAsync` `.catch` handler subsumes that error path. A retry simply attempts creation again next frame, matching prior behavior for transient errors.
+
+### S46-T3 — PointCloud renderer migration
+
+[`WebGPUPointCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts):
+
+- Per-device `WebGPUShaderModuleCache`.
+- `buildPipeline()` → `buildPipelineDescriptor()`. `_buildLODPipeline()` → `_buildLODPipelineDescriptor()`.
+- New shared `tryResolvePointCloudPipeline()` resolver.
+- `PointCloudCache` extended with `pipelineEntry` and `lodPipelineEntry` slots (both `{ descriptor, pipeline, pending }`).
+- Default-path call site skip-returns when central cache hasn't materialized.
+- LOD-path call site (`_runGPULODPath`) skip-returns when LOD pipeline isn't yet ready — matches the existing `lodStorageBindGroup` not-ready behavior (one-frame visual gap, recovers next frame).
+
+### S46-T4 — VolumetricFog composite migration
+
+[`WebGPUVolumetricFogRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts):
+
+- Per-device `WebGPUShaderModuleCache` covers both the compute (`VolumetricFog.wgsl`) and composite (`VolumetricFogComposite.wgsl`) shaders.
+- The three compute pipelines (densityInjection / lightScattering / integrate) still use direct `device.createComputePipeline()` because no `WebGPUComputePipelineCache` exists yet — but they share a single deduped `GPUShaderModule`.
+- Composite render pipeline routed through `webgpuPipelineCache`. The descriptor is held on `_resources.compositePipelineEntry`; `composite()` early-exits if the pipeline isn't ready (Phase 5a no-op clears the integrated volume so a missed composite frame is invisible).
+- The interface field `compositePipeline: GPURenderPipeline` was changed to `GPURenderPipeline | null` to reflect the async resolution; all in-method reads now go through the resolution path.
+
+### Verification
+
+- `npx tsc --noEmit` clean (zero errors).
+- `npx gulp build` clean.
+- Sandcastle baseline: `node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` — **PASS=7, FAIL=0, SKIP=0**. Every demo exercises Sun + Moon environment rendering, so the migration is well-covered. PointCloud + VolumetricFog have no in-baseline coverage (only WebGL Sandcastle demos exist for those primitives); their migration verification is by tsc + build success and by mirroring the established Polyline / Ellipsoid pattern verbatim.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts`
+- `migration_doc/DEFERRED_WORK.md` (counts updated; remaining renderers list shrinks 4 → 1)
+- `migration_doc/WEBGPU_DEBUGGING_LOG.md` (this entry)
+
+### Adopter counts after Batch 74
+
+- **Pipeline cache:** 14 renderers — Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, Label, Billboard, **Environment Sun** (new), **Environment Moon** (new), **PointCloud** (new) + Weather render + VolumetricFog composite.
+- **Shader module cache:** 12 renderers — Polyline, PointPrimitive, Billboard, Label, GlobeSurface, Cloud, Voxel, Weather, **Environment** (new), **VolumetricFog** (new), **PointCloud** (new).
+
+### Remaining C-R7 work (1 session)
+
+- **Pipeline cache only:** `WebGPUGlobeSurfaceRenderer` (3697 LOC — its own session because of scope; already has module cache).
+- **Blocked:** `WebGPUModelRenderer` (KHR shader-family work via C-R4-GLTF-KHR), `WebGPUAutoExposure` (compute pipeline cache infra).
+
 
