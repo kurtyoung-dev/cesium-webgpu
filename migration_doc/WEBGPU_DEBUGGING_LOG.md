@@ -4431,3 +4431,57 @@ Add-only registry rule (per `CLAUDE.md`) preserved: numbering is monotonic, no e
 - **C-R7-RENDERER-MIGRATION-REMAINING:** 6 renderers still on local Map caches — `Billboard`, `Label`, `Environment`, `VolumetricFog`, `PointCloud`, `GlobeSurface` (3697 LOC, may be its own session). Plus `ModelRenderer` (gated on full ShaderModuleCache adoption) and `AutoExposure` (gated on `WebGPUComputePipelineCache` infra).
 - **C-R7-SHADER-MODULE-DEDUP:** 4 renderers still without module cache — `Environment`, `VolumetricFog`, `PointCloud`, plus the `ModelRenderer` adoption pass.
 
+---
+
+## Session 45 — Batch 73: C-R7 paired sweep, slice 2 (Label + Billboard) (2026-04-27)
+
+Closes the second slice of **C-R7-RENDERER-MIGRATION-REMAINING** from `DEFERRED_WORK.md`. Both `WebGPULabelRenderer` and `WebGPUBillboardRenderer` already had `WebGPUShaderModuleCache` adoption (since Batch 22-era work) but were still building `GPURenderPipeline` objects directly via `device.createRenderPipeline()` keyed by a local `Map<defines, pipeline>`. Batch 73 routes both through the central `webgpuPipelineCache` so two LabelCollections / BillboardCollections with identical (defines, format, depthFormat) tuples share one `GPURenderPipeline` instead of one per collection.
+
+### S45-T1 — Label SDF pipeline migration
+
+[`WebGPULabelRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js):
+
+- `createSDFPipeline()` → `buildSDFDescriptor()` — returns the cache-friendly `WebGPURenderPipelineDescriptor` shape (with `name` carrying format + depthFormat + defines for cache-key uniqueness) instead of materializing a pipeline directly.
+- Added `tryResolveLabelSDFPipeline(device, pipelineCache, entry)` mirror of Polyline's `tryResolvePolylinePipeline` — sync-first, async-kickoff, fallback to direct creation.
+- `cache.sdfPipelines = new Map<defines, GPURenderPipeline>` → `cache.sdfPipelineEntries = new Map<defines, { descriptor, pipeline, pending }>`. Frame loop calls `tryResolveLabelSDFPipeline` and skip-returns when the resolved pipeline is null (still materializing in central cache).
+- Added `descriptorToGPU` helper for the no-central-cache fallback path.
+
+### S45-T2 — Billboard color + pick pipeline migration
+
+[`WebGPUBillboardRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js):
+
+- `createBillboardPipeline()` → `buildBillboardDescriptor()` (color, alpha-blended).
+- `createBillboardPickPipeline()` → `buildBillboardPickDescriptor()` (pick, no blend, depth-write enabled).
+- Added `tryResolveBillboardPipeline(device, pipelineCache, entry)` shared by both color and pick paths.
+- `cache.pipelines` + `cache.pickPipelines` → `cache.pipelineEntries` + `cache.pickPipelineEntries`, both keyed by defines, both holding `{ descriptor, pipeline, pending }` slots.
+- Both call sites (color in main update path, pick in `_pushBillboardPickCommand`) skip-return when resolution returns null.
+
+### Shape of the migration
+
+Where Batch 72's renderers (Cloud / Voxel / Weather) had a single pipeline (or two with one shared descriptor shape), Label + Billboard have a `Map<defines, descriptor>` pattern because they pre-generate pipelines per active-defines combination (DP-H42 DISABLE_DEPTH_DISTANCE × DP-H40 SPLIT_ENABLED × ifdef branches in their WGSL). The migration preserves the per-defines local Map but the values are now lightweight entry slots that reference the central cache's `GPURenderPipeline` rather than owning unique pipelines.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npx gulp build` clean.
+- Sandcastle baseline: `node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` — **PASS=7, FAIL=0, SKIP=0**. Edge Visibility + Edge Feature ID + Many Imagery Layers + Translucent Classification all exercise Billboard / Label / shared rendering paths — no collateral regression.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js`
+- `migration_doc/DEFERRED_WORK.md` (counts updated; remaining renderers list shrinks 6 → 4)
+- `migration_doc/WEBGPU_DEBUGGING_LOG.md` (this entry)
+
+### Adopter counts after Batch 73
+
+- **Pipeline cache:** 11 renderers — Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, **Label** (new), **Billboard** (new) + Weather render.
+- **Shader module cache:** 8 renderers (unchanged from Batch 72) — Polyline, PointPrimitive, Billboard, Label, GlobeSurface, Cloud, Voxel, Weather.
+
+### Remaining C-R7 work (1-2 sessions)
+
+- **Pipeline cache only:** `WebGPUGlobeSurfaceRenderer` (3697 LOC, own session — already has module cache).
+- **Both gaps:** `WebGPUEnvironmentRenderer` (1047 LOC), `WebGPUVolumetricFogRenderer` (1185 LOC), `WebGPUPointCloudRenderer` (892 LOC).
+- **Blocked:** `WebGPUModelRenderer` (KHR shader-family work via C-R4-GLTF-KHR), `WebGPUAutoExposure` (compute pipeline cache infra).
+
+

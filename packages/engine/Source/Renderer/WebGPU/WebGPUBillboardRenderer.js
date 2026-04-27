@@ -267,7 +267,16 @@ function createBillboardBindGroupLayout(device) {
   ]);
 }
 
-function createBillboardPipeline(
+/**
+ * Build the cache-friendly descriptor for the color (alpha-blended)
+ * billboard pipeline. The actual `GPURenderPipeline` is materialized
+ * through `webgpuPipelineCache.getPipeline()` so two BillboardCollections
+ * with identical (defines, format, depthFormat) share one pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 73).
+ * @private
+ */
+function buildBillboardDescriptor(
   device,
   shaderModule,
   format,
@@ -279,8 +288,8 @@ function createBillboardPipeline(
     bindGroupLayouts: [bindGroupLayout],
   });
 
-  return device.createRenderPipeline({
-    label: `Billboard pipeline (defines=0x${defines.toString(16)})`,
+  return {
+    name: `Billboard pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -314,15 +323,16 @@ function createBillboardPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-  });
+  };
 }
 
 /**
- * Creates a pick pipeline — no blending, depth write enabled, uses atlas
- * texture for alpha discard but outputs pick color.
+ * Build the cache-friendly descriptor for the billboard pick pipeline —
+ * no blending, depth write enabled, uses atlas texture for alpha discard
+ * but outputs pick color. C-R7-RENDERER-MIGRATION (Batch 73).
  * @private
  */
-function createBillboardPickPipeline(
+function buildBillboardPickDescriptor(
   device,
   shaderModule,
   format,
@@ -330,8 +340,8 @@ function createBillboardPickPipeline(
   bindGroupLayout,
   defines,
 ) {
-  return device.createRenderPipeline({
-    label: `Billboard pick pipeline (defines=0x${defines.toString(16)})`,
+  return {
+    name: `Billboard pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
     }),
@@ -351,7 +361,76 @@ function createBillboardPickPipeline(
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
-  });
+  };
+}
+
+/**
+ * Convert our cache-friendly descriptor back into the WebGPU descriptor
+ * shape for the fallback path (no central cache available).
+ * @private
+ */
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve a billboard pipeline (color or pick) through the central
+ * pipeline cache. Returns the existing GPU pipeline if cached; otherwise
+ * kicks off async creation and returns null so the caller skips the
+ * frame. Falls back to direct synchronous creation when `pipelineCache`
+ * is null.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 73). Mirrors `tryResolvePolylinePipeline`.
+ * @private
+ */
+function tryResolveBillboardPipeline(device, pipelineCache, entry) {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  entry.pipeline = device.createRenderPipeline(
+    descriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
 }
 
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
@@ -380,7 +459,9 @@ function getShaderModuleCache(device) {
  */
 function prewarmBillboardShaders(device, colorSource, pickSource) {
   const cache = getShaderModuleCache(device);
-  if (cache._billboardPrewarmed) {return;}
+  if (cache._billboardPrewarmed) {
+    return;
+  }
   const D = ShaderDefine;
   const defineSets = [
     0,
@@ -476,8 +557,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0;
-  const drawingBufferWidth =
-    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[45] = splitFraction * drawingBufferWidth;
   uniformData[46] = 0.0;
   uniformData[47] = 0.0;
@@ -491,10 +571,22 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   if (prevVP) {
     Matrix4.pack(prevVP, uniformData, 48);
   } else {
-    uniformData[48] = 1; uniformData[49] = 0; uniformData[50] = 0; uniformData[51] = 0;
-    uniformData[52] = 0; uniformData[53] = 1; uniformData[54] = 0; uniformData[55] = 0;
-    uniformData[56] = 0; uniformData[57] = 0; uniformData[58] = 1; uniformData[59] = 0;
-    uniformData[60] = 0; uniformData[61] = 0; uniformData[62] = 0; uniformData[63] = 1;
+    uniformData[48] = 1;
+    uniformData[49] = 0;
+    uniformData[50] = 0;
+    uniformData[51] = 0;
+    uniformData[52] = 0;
+    uniformData[53] = 1;
+    uniformData[54] = 0;
+    uniformData[55] = 0;
+    uniformData[56] = 0;
+    uniformData[57] = 0;
+    uniformData[58] = 1;
+    uniformData[59] = 0;
+    uniformData[60] = 0;
+    uniformData[61] = 0;
+    uniformData[62] = 0;
+    uniformData[63] = 1;
   }
 }
 
@@ -522,12 +614,15 @@ function computeDefinesForFrame(collection, frameState) {
   const billboards = collection._billboards;
   const length = collection.length;
   // Short-circuit the scan once both flags are set.
-  const both =
-    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {break;}
+    if ((defines & both) === both) {
+      break;
+    }
     const bb = billboards[i];
-    if (!defined(bb) || !bb.show || bb._clusterShow === false) {continue;}
+    if (!defined(bb) || !bb.show || bb._clusterShow === false) {
+      continue;
+    }
     if (
       (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
       typeof bb._disableDepthTestDistance === "number" &&
@@ -599,15 +694,19 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   // DP-H42 / DP-H40 — pick the right shader module + pipeline for the
   // current frame's billboard state. Unchanged billboard collections
   // settle to the same `defines` value every frame, so the map lookup
-  // is the hot path and pipeline creation only fires on the first
+  // is the hot path and pipeline resolution only fires on the first
   // frame that exercises a new combination.
+  // C-R7-RENDERER-MIGRATION (Batch 73) — local Map now holds entry slots
+  // `{ descriptor, pipeline, pending }`; the GPU pipeline is materialized
+  // through the central `webgpuPipelineCache` so two BillboardCollections
+  // with identical render-target shape + defines share one pipeline.
   const defines = computeDefinesForFrame(collection, frameState);
-  if (!defined(cache.pipelines)) {
-    cache.pipelines = new Map();
-    cache.pickPipelines = new Map();
+  if (!defined(cache.pipelineEntries)) {
+    cache.pipelineEntries = new Map();
+    cache.pickPipelineEntries = new Map();
   }
-  let pipeline = cache.pipelines.get(defines);
-  if (!defined(pipeline)) {
+  let entry = cache.pipelineEntries.get(defines);
+  if (!defined(entry)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getShaderModuleCache(device);
@@ -617,7 +716,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       defines,
       "Billboard shader",
     );
-    pipeline = createBillboardPipeline(
+    const descriptor = buildBillboardDescriptor(
       device,
       shaderModule,
       format,
@@ -625,7 +724,16 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       cache.bindGroupLayout,
       defines,
     );
-    cache.pipelines.set(defines, pipeline);
+    entry = { descriptor, pipeline: null, pending: false };
+    cache.pipelineEntries.set(defines, entry);
+  }
+  const pipeline = tryResolveBillboardPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    entry,
+  );
+  if (!pipeline) {
+    return;
   }
   cache.pipeline = pipeline;
   cache.currentDefines = defines;
@@ -805,9 +913,16 @@ function _pushBillboardPickCommand(
   // pipeline for this frame so the pick region exactly matches the
   // rendered region. Falls back to the baseline (0) when the color path
   // hasn't set currentDefines yet (first-ever frame).
+  // C-R7-RENDERER-MIGRATION (Batch 73) — entry-based caching via
+  // `cache.pickPipelineEntries`; pipeline resolves through the central
+  // pipeline cache. Skip the pick command if the pipeline is still
+  // materializing (a frame later it'll be ready).
   const pickDefines = cache.currentDefines ?? 0;
-  const pickPipeline = cache.pickPipelines?.get(pickDefines);
-  if (!defined(pickPipeline)) {
+  if (!defined(cache.pickPipelineEntries)) {
+    cache.pickPipelineEntries = new Map();
+  }
+  let pickEntry = cache.pickPipelineEntries.get(pickDefines);
+  if (!defined(pickEntry)) {
     const pickShader = getCollectionShaderSource("billboardPick");
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
@@ -820,10 +935,7 @@ function _pushBillboardPickCommand(
       pickDefines,
       "Billboard pick shader",
     );
-    if (!defined(cache.pickPipelines)) {
-      cache.pickPipelines = new Map();
-    }
-    cache.pickPipeline = createBillboardPickPipeline(
+    const descriptor = buildBillboardPickDescriptor(
       device,
       pickModule,
       format,
@@ -831,10 +943,18 @@ function _pushBillboardPickCommand(
       cache.bindGroupLayout,
       pickDefines,
     );
-    cache.pickPipelines.set(pickDefines, cache.pickPipeline);
-  } else {
-    cache.pickPipeline = pickPipeline;
+    pickEntry = { descriptor, pipeline: null, pending: false };
+    cache.pickPipelineEntries.set(pickDefines, pickEntry);
   }
+  const pickPipeline = tryResolveBillboardPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    pickEntry,
+  );
+  if (!pickPipeline) {
+    return;
+  }
+  cache.pickPipeline = pickPipeline;
 
   const pickResult = buildPickInstanceData(collection, context);
   if (pickResult.visibleCount === 0) {

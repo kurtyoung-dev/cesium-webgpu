@@ -1,10 +1,27 @@
-# Next Session Handoff — 2026-04-27 (Batch 72 — C-R7 paired sweep, slice 1)
+# Next Session Handoff — 2026-04-27 (Batches 72 + 73 — C-R7 paired sweep, slices 1 + 2)
 
-**Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 72 changes pending commit. No safety branches, no worktree branches, no feature branches.
+**Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 73 changes pending commit. No safety branches, no worktree branches, no feature branches.
 
-**Headline:** First slice of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items landed. Cloud + Voxel + Weather (render path) now route both shader-module compilation and pipeline materialization through the central caches. Sandcastle baseline holds at **7/7 PASS**.
+**Headline:** Two slices of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items shipped today. Cloud + Voxel + Weather (Batch 72) and Label + Billboard (Batch 73) now route through the central pipeline cache. Sandcastle baseline holds at **7/7 PASS** across both batches.
 
-## What today's session landed (Batch 72)
+## What today's session landed (Batch 73)
+
+### Batch 73 — C-R7 paired sweep, slice 2 (Label + Billboard)
+
+Both renderers already had `WebGPUShaderModuleCache` adoption (since Batch 22-era work) but were still building `GPURenderPipeline` objects directly via `device.createRenderPipeline()` keyed by a local `Map<defines, pipeline>`. Batch 73 routes both through the central `webgpuPipelineCache`.
+
+**Label** ([`WebGPULabelRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js)) — single SDF pipeline per defines combination. `createSDFPipeline()` → `buildSDFDescriptor()` + `tryResolveLabelSDFPipeline()`. `cache.sdfPipelines` Map → `cache.sdfPipelineEntries` Map of `{ descriptor, pipeline, pending }` slots.
+
+**Billboard** ([`WebGPUBillboardRenderer.js`](../packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js)) — color + pick pipelines, both per-defines. `createBillboardPipeline()` / `createBillboardPickPipeline()` → `buildBillboardDescriptor()` / `buildBillboardPickDescriptor()` + shared `tryResolveBillboardPipeline()`. Both `cache.pipelines` and `cache.pickPipelines` Maps converted to entry-based caching.
+
+**Verification:** tsc clean, gulp build clean, Sandcastle 7/7 PASS. Edge Visibility / Edge Feature ID exercise the Billboard pipeline directly.
+
+**Adopter counts after Batch 73:**
+
+- Pipeline cache: 11 renderers (was 9).
+- Shader module cache: 8 renderers (unchanged — Label + Billboard already had it).
+
+## Pre-Batch-73 history
 
 ### Batch 72 — C-R7 paired sweep, slice 1 (Cloud + Voxel + Weather)
 

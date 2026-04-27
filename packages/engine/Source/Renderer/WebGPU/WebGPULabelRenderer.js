@@ -195,12 +195,15 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
   }
   const billboards = glyphCollection._billboards;
   const length = glyphCollection.length;
-  const both =
-    ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {break;}
+    if ((defines & both) === both) {
+      break;
+    }
     const bb = billboards[i];
-    if (!defined(bb) || !bb.show) {continue;}
+    if (!defined(bb) || !bb.show) {
+      continue;
+    }
     if (
       (defines & ShaderDefine.DISABLE_DEPTH_DISTANCE) === 0 &&
       typeof bb._disableDepthTestDistance === "number" &&
@@ -239,7 +242,9 @@ function getSDFShaderModuleCache(device) {
  */
 function prewarmLabelShaders(device) {
   const cache = getSDFShaderModuleCache(device);
-  if (cache._labelPrewarmed) {return;}
+  if (cache._labelPrewarmed) {
+    return;
+  }
   const D = ShaderDefine;
   cache.prewarm(
     ShaderSourceId.BILLBOARD_COLLECTION_SDF,
@@ -302,8 +307,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
       : 0.0;
-  const drawingBufferWidth =
-    context?.drawingBufferWidth ?? canvas.width ?? 0.0;
+  const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[45] = splitFraction * drawingBufferWidth;
   uniformData[46] = 0.0;
   uniformData[47] = 0.0;
@@ -315,10 +319,22 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   if (prevVP) {
     Matrix4.pack(prevVP, uniformData, 48);
   } else {
-    uniformData[48] = 1; uniformData[49] = 0; uniformData[50] = 0; uniformData[51] = 0;
-    uniformData[52] = 0; uniformData[53] = 1; uniformData[54] = 0; uniformData[55] = 0;
-    uniformData[56] = 0; uniformData[57] = 0; uniformData[58] = 1; uniformData[59] = 0;
-    uniformData[60] = 0; uniformData[61] = 0; uniformData[62] = 0; uniformData[63] = 1;
+    uniformData[48] = 1;
+    uniformData[49] = 0;
+    uniformData[50] = 0;
+    uniformData[51] = 0;
+    uniformData[52] = 0;
+    uniformData[53] = 1;
+    uniformData[54] = 0;
+    uniformData[55] = 0;
+    uniformData[56] = 0;
+    uniformData[57] = 0;
+    uniformData[58] = 1;
+    uniformData[59] = 0;
+    uniformData[60] = 0;
+    uniformData[61] = 0;
+    uniformData[62] = 0;
+    uniformData[63] = 1;
   }
 }
 
@@ -345,7 +361,17 @@ function createSDFBindGroupLayout(device) {
   ]);
 }
 
-function createSDFPipeline(
+/**
+ * Build the cache-friendly `WebGPURenderPipelineDescriptor` for a given
+ * (defines, format, depthFormat) tuple. The actual `GPURenderPipeline`
+ * is materialized through `webgpuPipelineCache.getPipeline()` so two
+ * LabelCollections with identical render-target shape + defines share
+ * one pipeline.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 73).
+ * @private
+ */
+function buildSDFDescriptor(
   device,
   shaderModule,
   format,
@@ -357,8 +383,8 @@ function createSDFPipeline(
     bindGroupLayouts: [bindGroupLayout],
   });
 
-  return device.createRenderPipeline({
-    label: `Label SDF pipeline (defines=0x${defines.toString(16)})`,
+  return {
+    name: `Label SDF pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -392,7 +418,78 @@ function createSDFPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-  });
+  };
+}
+
+/**
+ * Convert our cache-friendly descriptor back into the WebGPU descriptor
+ * shape for the fallback path (no central cache available — typically a
+ * WebGL-backed graphics context). Mirrors the helper in Polyline / Cloud /
+ * Voxel migrations.
+ * @private
+ */
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+/**
+ * Resolve the SDF pipeline through the central pipeline cache. Returns
+ * the existing GPU pipeline if cached; otherwise kicks off async creation
+ * and returns null so the caller skips the frame.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 73). Mirrors `tryResolvePolylinePipeline`.
+ * @private
+ */
+function tryResolveLabelSDFPipeline(device, pipelineCache, entry) {
+  if (entry.pipeline) {
+    return entry.pipeline;
+  }
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(entry.descriptor);
+    if (sync) {
+      entry.pipeline = sync;
+      entry.pending = false;
+      return sync;
+    }
+    if (!entry.pending) {
+      entry.pending = true;
+      pipelineCache
+        .getPipeline(entry.descriptor)
+        .then((p) => {
+          entry.pipeline = p;
+          entry.pending = false;
+        })
+        .catch(() => {
+          // Errors already logged by the cache.
+          entry.pending = false;
+        });
+    }
+    return null;
+  }
+  // Fallback — direct synchronous creation matches pre-migration behavior.
+  entry.pipeline = device.createRenderPipeline(
+    descriptorToGPU(entry.descriptor),
+  );
+  entry.pending = false;
+  return entry.pipeline;
 }
 
 /**
@@ -428,12 +525,17 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
 
   // DP-H42 / DP-H40 — pick the right SDF pipeline for this frame's
   // glyph state. Pipeline + shader module cache by active defines.
+  // C-R7-RENDERER-MIGRATION (Batch 73) — local Map now stores entry slots
+  // `{ descriptor, pipeline, pending }`; the GPU pipeline is materialized
+  // through the central `webgpuPipelineCache` so two LabelCollections
+  // with identical (defines, render-target shape) share one
+  // `GPURenderPipeline`.
   const defines = computeLabelDefinesForFrame(glyphCollection, frameState);
-  if (!defined(cache.sdfPipelines)) {
-    cache.sdfPipelines = new Map();
+  if (!defined(cache.sdfPipelineEntries)) {
+    cache.sdfPipelineEntries = new Map();
   }
-  let sdfPipeline = cache.sdfPipelines.get(defines);
-  if (!defined(sdfPipeline)) {
+  let entry = cache.sdfPipelineEntries.get(defines);
+  if (!defined(entry)) {
     const format = context.presentationFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getSDFShaderModuleCache(device);
@@ -443,7 +545,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       defines,
       "Label SDF shader",
     );
-    sdfPipeline = createSDFPipeline(
+    const descriptor = buildSDFDescriptor(
       device,
       shaderModule,
       format,
@@ -451,7 +553,17 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       cache.sdfBindGroupLayout,
       defines,
     );
-    cache.sdfPipelines.set(defines, sdfPipeline);
+    entry = { descriptor, pipeline: null, pending: false };
+    cache.sdfPipelineEntries.set(defines, entry);
+  }
+  const sdfPipeline = tryResolveLabelSDFPipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    entry,
+  );
+  if (!sdfPipeline) {
+    // Pipeline still materializing in the central cache; skip this frame.
+    return;
   }
   cache.sdfPipeline = sdfPipeline;
 
