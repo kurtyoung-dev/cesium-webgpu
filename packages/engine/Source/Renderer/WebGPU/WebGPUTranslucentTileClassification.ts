@@ -316,10 +316,21 @@ export class WebGPUTranslucentTileClassification {
     // first-cut captures depth via copy from scene depth (over-broad);
     // when the depth-only-command derivation lands this becomes the
     // actual render target for those depth-only draws.
+    //
+    // NEW-4-I (Batch 71): format must match the scene FB depth attachment
+    // (`SceneFramebuffer-Color_depth`), which is `depth24plus-stencil8`
+    // because the scene FB carries stencil for InvertClassification. The
+    // `copyTextureToTexture` call in `executeTranslucentDepthPass` rejects
+    // mismatched formats per WebGPU spec — even when both endpoints
+    // specify `aspect: "depth-only"`, the underlying texture format must
+    // match. Stencil aspect is unused by the translucent pack pipeline
+    // (the sampleable view below pins `aspect: "depth-only"`), so the
+    // cost is one stencil byte per pixel — negligible at any practical
+    // viewport size.
     this._translucentDepthTexture = device.createTexture({
       label: "TranslucentTileClass_TranslucentDepth_1x",
       size: { width, height },
-      format: "depth24plus",
+      format: "depth24plus-stencil8",
       sampleCount: 1,
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT |

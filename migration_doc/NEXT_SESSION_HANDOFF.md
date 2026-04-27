@@ -1,4 +1,136 @@
-# Next Session Handoff — 2026-04-25 (Batch 67 — NEW-4-A + NEW-4-D closures)
+# Next Session Handoff — 2026-04-27 (Batches 69 + 70 + 71 — NEW-4-G/H/I closures, Sandcastle 5/7 → 7/7)
+
+**Branch:** `main` is the only branch (local + origin). HEAD will be the Batch 71 commit once landed (current HEAD = `cb86a5b944` "Batch 70"). Working tree dirty with the Batch 71 changes (NEW-4-I + this doc update). No safety branches, no worktree branches, no feature branches. The trunk-only workflow is now codified in `CLAUDE.md` § "Branch Transparency — CRITICAL" (local-only file, gitignored).
+
+**Headline:** All 7 WebGPU Sandcastle demos pass on real WebGPU for the first time. The NEW-4-A through NEW-4-I sweep that started in Batch 66 is fully closed.
+
+## What today's session landed (Batches 69 + 70 + 71)
+
+### Batch 69 — `c3e8446f5d` — NEW-4-G Voxel WGSL `textureSample` non-uniform-control-flow
+
+**Problem (captured live, port 8082):**
+
+```text
+[CesiumJS:webgpu:<ctx-uuid>] Shader "unlabeled" compilation ERROR at line 73:13: 'textureSample' must only be called from uniform control flow
+```
+
+**Root cause:** WGSL spec requires `textureSample` to be called from uniform control flow (the call auto-computes derivatives across a 2x2 fragment quad). The two call sites in `WebGPUVoxelRenderer.ts`'s embedded WGSL (`fragmentMain` line 120, `fragmentPickMain` line 159) sit inside a `for` loop with a data-dependent `break` on `accumA`. naga rejected the call.
+
+**Fix:** Replaced both `textureSample(voxelTex, voxelSamp, uvw)` with `textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0)`. `textureSampleLevel` takes an explicit LOD argument and never computes derivatives, so it has no uniform-control-flow constraint. Volumetric voxel textures are single-mip so forcing LOD 0 matches existing intent.
+
+**Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts).
+
+**Sandcastle delta:** WGSL error gone. Demo still FAIL because resolving NEW-4-G immediately surfaced NEW-4-H as the next predicted blocker (`Matrix4.multiplyByPoint` cartesian-undefined in `updateWebGPUVoxelPrimitive`). Tracked + closed by Batch 70.
+
+### Batch 70 — `cb86a5b944` — NEW-4-H two coupled root causes (Voxel + Translucent _cachedShader unblock)
+
+**Problem 1 (Voxel Pick):**
+
+```text
+DeveloperError: Expected cartesian to be typeof object, actual typeof was undefined
+    at Matrix4.multiplyByPoint (index.js:4591:28)
+    at Object.updateWebGPUVoxelPrimitive [as update] (index.js:79617:36)
+```
+
+**Root cause 1:** `UniformState` in JS only had the private `_cameraPosition` field. The TS `.d.ts` companion declared `readonly cameraPosition: Cartesian3` and **13 WebGPU renderer call sites** consumed it (`WebGPUVoxelRenderer`, `WebGPUCloudRenderer`, `WebGPUEllipsoidPrimitiveRenderer`, `WebGPUGaussianSplatRenderer`, `WebGPUPointCloudRenderer` (×2), `WebGPUBufferPrimitiveRenderer`, `WebGPUGlobeSurfaceRenderer` (×3), `WebGPUUniformGroupManager` (×2), `WebGPUModelRenderer`). Every read returned `undefined`. Production builds masked this entirely because the `Check.typeOf.object` debug pragmas are stripped — the unminified Sandcastle build was the first place the missing property surfaced as a hard crash, and Voxel Pick was the first demo to dereference it before any callers could have guarded.
+
+**Fix 1:** Added a one-line `get cameraPosition() { return this._cameraPosition; }` to [UniformState.js](../packages/engine/Source/Renderer/UniformState.js) next to `previousCameraPosition`, with a JSDoc block referencing NEW-4-H so future maintainers don't re-remove it. All 13 call sites are now correct without any per-site changes.
+
+**Problem 2 (Voxel + Translucent both, after Fix 1):**
+
+```text
+TypeError: Cannot read properties of undefined (reading '_cachedShader')
+    at ShaderCache.getDerivedShaderProgram (index.js:25790:44)
+    at getDepthOnlyShaderProgram (index.js:295577:44)
+    at DerivedCommand.createDepthOnlyDerivedCommand (index.js:295654:45)
+    at updateDerivedCommands (...)
+```
+
+**Root cause 2:** `DerivedCommand.createDepthOnlyDerivedCommand` is upstream WebGL-only logic that derives a depth-only shader by manipulating GLSL `fragmentShaderSource` and caching via `shaderProgram._cachedShader`. WebGPU draw commands carry a `GPUShaderModule`-backed pipeline, not a WebGL `ShaderProgram`, so `command.shaderProgram` is either undefined or an object without `id` / `_cachedShader`. The sibling `createLogDepthCommand` already had a NEW-5-A WebGPU guard from Batch 66 — this batch closes the symmetric defect.
+
+**Fix 2:** Added the symmetric `if (!defined(cmdShader?.id))` guard at the top of [DerivedCommand.createDepthOnlyDerivedCommand](../packages/engine/Source/Scene/DerivedCommand.js). Copies the WebGPU shader/renderState through unchanged; the WebGPU dispatcher (`selectCommandVariant` from Batch 29) already routes depth-only via its own `derivedCommands.depth.command` slot with a pre-built WGSL pipeline.
+
+**Files touched:** [packages/engine/Source/Renderer/UniformState.js](../packages/engine/Source/Renderer/UniformState.js), [packages/engine/Source/Scene/DerivedCommand.js](../packages/engine/Source/Scene/DerivedCommand.js).
+
+**Sandcastle delta:** PASS=5 → PASS=6. Voxel Pick green; Translucent Classification's `_cachedShader` co-failure resolved by the same DerivedCommand.js fix; the lone remaining Translucent Classification failure is NEW-4-I (a different root cause — depth texture format mismatch in `copyTextureToTexture`).
+
+### Batch 71 — NEW-4-I Translucent Classification depth-format-copy-compat → Sandcastle 7/7 PASS
+
+**Problem (captured live, port 8082):**
+
+```text
+[WebGPU:GlobePass] GPU VALIDATION ERROR: Source [Texture "SceneFramebuffer-Color_depth"] format (TextureFormat::Depth24PlusStencil8) and destination [Texture "TranslucentTileClass_TranslucentDepth_1x"] format (TextureFormat::Depth24Plus) are not copy compatible.
+ - While [Failed to format error message: "encoding %s.CopyTextureToTexture(%s, %s, %s)."].
+ - While finishing [CommandEncoder "Scene Frame Command Encoder"].
+```
+
+**Root cause:** `WebGPUTranslucentTileClassification.update` allocated `_translucentDepthTexture` as `depth24plus` (depth-only). The scene FB depth attachment (`SceneFramebuffer-Color_depth`) is allocated as `depth24plus-stencil8` because InvertClassification needs the stencil aspect. WebGPU `copyTextureToTexture` requires identical source/dest formats — the spec doesn't allow copying depth+stencil → depth-only even when both endpoints specify `aspect: "depth-only"`. The asymmetric allocation predated the InvertClassification stencil-path landing and was never reconciled.
+
+**Fix:** Single-line format change at [WebGPUTranslucentTileClassification.ts:322](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) from `"depth24plus"` to `"depth24plus-stencil8"`. The sampleable view at line 331 already pins `aspect: "depth-only"` so the pack pipeline still binds only the depth channel — the stencil aspect is allocated but never sampled. Cost: one stencil byte per pixel (~negligible at any practical viewport size).
+
+**Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts).
+
+**Sandcastle delta:** PASS=6 → **PASS=7** (FAIL=0). End of the NEW-4 sweep — all nine NEW-4-prefixed entries from the Batch 66 Sandcastle rollout are closed.
+
+### Process / rule changes
+
+- **CLAUDE.md gained "Branch Transparency — CRITICAL" section** (local-only file, gitignored — won't push to origin). Five triggers: starting a work package, creating a branch/worktree, sub-agent spawning a worktree, finishing a work package, opening a new conversation when non-main branches exist. The user explicitly asked for this rule and it's now load-bearing for every future session.
+- **No safety branches taken this session.** Both batches were small enough (single-file or two-file scoped) that the cost-benefit favored direct commits with verification at each step over the multi-layer backup ritual the prior session used.
+
+## Sandcastle baseline now (PASS=7 / FAIL=0 of 7) — first time green
+
+Source of truth: [Tools/visual-regression/screenshots/sandcastle-batch-66-final/report.json](../Tools/visual-regression/screenshots/sandcastle-batch-66-final/report.json) (re-captured this session).
+
+| Demo                              | Status | Note                                                                                                            |
+| --------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------- |
+| WebGPU Edge Feature ID            | PASS   | Closed in Batch 67 via NEW-4-A.                                                                                 |
+| WebGPU Edge Visibility            | PASS   | Closed in Batch 67 via NEW-4-A.                                                                                 |
+| WebGPU Many Imagery Layers        | PASS   | Steady-state since Batch 66.                                                                                    |
+| WebGPU Model Pick                 | PASS   | Renders correctly; pick returns null at canvas center because the model is off-center. Latent UX, not a bug.    |
+| WebGPU Point Light Shadows        | PASS   | Steady-state since Batch 63 (5-tap PCF).                                                                        |
+| WebGPU Translucent Classification | PASS   | Closed in Batch 71 via NEW-4-I. The `_cachedShader` co-failure was closed in Batch 70 via NEW-4-H.              |
+| WebGPU Voxel Pick                 | PASS   | Closed in Batch 70 via NEW-4-G + NEW-4-H combo. Was FAIL since Batch 66.                                        |
+
+The 7/7 baseline is now the floor. Future regressions that drop below 7/7 should be treated as actual regressions rather than known-failing demos.
+
+## What's next (next session pick-list)
+
+The whole NEW-4 sweep is closed. Next priorities pivot from "unblock the Sandcastle baseline" to deeper correctness / mechanical work.
+
+### Tier 1 — highest-impact correctness work (pulled from the cross-cutting priority guide in [DEFERRED_WORK.md](DEFERRED_WORK.md))
+
+1. **`C-R5-IMAGERY-16` (parent finding, not yet carved into named follow-up)** — biggest single visual-correctness gap remaining. Multi-point change but bounded; per the oversight audit (`OVERSIGHT_AUDIT_2026_04_25.md` §2) this is the highest-impact unfixed correctness bug. **Requires scoping pass first** — locate the parent finding in `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` (search "C-R5"), assess session count, then decide whether to chain or schedule.
+2. **`C-R8-TRANSLUCENT-MULTI-FRUSTUM`** — multi-frustum scenes misclassify primitives at frustum splits. Common in production scenes whenever camera height crosses a logarithmic frustum boundary. 2 sessions. Independent of NEW-4-I but could chain naturally once Translucent Classification is green.
+
+### Tier 2 — mechanical / architectural sweeps (3-4 sessions each)
+
+1. **`C-R7-RENDERER-MIGRATION-REMAINING`** + **`C-R7-SHADER-MODULE-DEDUP`** — 9 renderers + ModelRenderer routing through `context.webgpuPipelineCache`. Mechanical; no design risk. Bundles naturally.
+2. **`C-R4-GLTF-KHR`** — its own multi-week workstream. `KHR_texture_transform` is the highest-impact single extension to start with.
+
+### Operational follow-ups (recurring papercuts)
+
+- **`gh auth switch --user kurtyoung-dev` is needed at the start of every session** to push to origin (the keyring keeps `KurtTrottr` as the default active account between sessions). Worth investigating: either set kurtyoung-dev as the default via `gh auth setup-git` or document the dance in the handoff so it's not a fresh discovery each time.
+- **CLAUDE.md is gitignored**, so the new "Branch Transparency" rule lives only on this workstation. If multiple developers work on this fork, they'll each need to add the rule to their own local CLAUDE.md.
+
+## Quick state-of-migration
+
+- **~95% WebGL feature parity.** Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in the principal review.
+- **Critical-tier review work (C-R prefix):** all 13 originally-OPEN parent findings now have at least first-cut implementations shipping. Remaining work is named-follow-up scope, all enumerated in [DEFERRED_WORK.md](DEFERRED_WORK.md).
+- **NEW-4 status (Sandcastle WebGPU baseline) — FULLY CLOSED:**
+  - NEW-4-A FIXED (Batch 67) — eager typed-array retention in `GltfLoader.loadVertexAttribute`.
+  - NEW-4-D FIXED (Batch 67) — `Texture3D` constructor short-circuits to `WebGPUTexture3D` via JS constructor return-value semantics.
+  - NEW-4-E FIXED (Batch 68) — paired each `discard;` with `return vec4<f32>(0.0);` in Voxel WGSL fragment functions.
+  - NEW-4-G FIXED (Batch 69) — `textureSample` → `textureSampleLevel(..., 0.0)` in Voxel WGSL ray-march loop.
+  - NEW-4-H FIXED (Batch 70) — added missing `UniformState.cameraPosition` getter + `DerivedCommand.createDepthOnlyDerivedCommand` WebGPU guard.
+  - **NEW-4-I FIXED (Batch 71)** — `_translucentDepthTexture` allocator flipped from `depth24plus` to `depth24plus-stencil8` to match scene FB depth attachment.
+- **Sandcastle baseline:** **7/7 PASS on real WebGPU after Batch 71** (was 6/7 after Batch 70; 5/7 after Batch 67-69; 3/7 before NEW-4-A). First time all WebGPU demos green.
+- **TSC status:** root `npx tsc --noEmit` clean. Engine-package `tsconfig.json` was fixed in Batch 68 (Tier 0 — `FrameTimings extends DebugStatsObject` and GPUTextureView narrowing); `npx gulp build` runs to completion in this session.
+
+---
+
+## Pre-Batch-69 handoff (preserved below for traceability — was the canonical doc through 2026-04-25)
+
+### Original title: Next Session Handoff — 2026-04-25 (Batch 67 — NEW-4-A + NEW-4-D closures)
 
 **Branch:** `main`. Batches 28-64 already in this branch; Batch 67 (NEW-4-A + NEW-4-D) added on top this session. Batches 65-66 were the prior session's Sandcastle demo rollout + 12 inline engine fixes (see Sandcastle batch reports). The full Batch 28-62 progression is documented in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md). The full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) — that's the canonical pick-list for the next sessions.
 
@@ -9,9 +141,9 @@
 1. **`packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:3780`** — `stats.performance = this._performanceManager.frameTimings;` fails TS2322. The `FrameTimings` type lacks an index signature so it doesn't satisfy `DebugStatsObject`. Fix is one of: (a) add `[key: string]: number | Record<string, number>` to the `FrameTimings` interface, or (b) widen the assignment via cast / type guard. (a) is the right fix — `frameTimings` is genuinely a record by design.
 2. **`packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:2643`** — `executeInvertClassificationComposite(..., sceneAttachmentView, ...)` fails TS2345 because `sceneAttachmentView` is typed `GPUTexture | GPUTextureView` (the `view` field on the color attachment can be either) and the callee accepts only `GPUTextureView`. Fix is to narrow at the call site (`'createView' in v ? v.createView() : v`) or tighten the upstream `view` typing.
 
-`npx tsc --noEmit` from the repo root **passes clean** (different tsconfig); the engine-package tsconfig is stricter. Until these two are fixed, `Build/CesiumUnminified/` will stay stale and any Sandcastle / Playwright run hits the pre-Batch-67 bundle. **First-priority next-session work** — both fixes are ~5 minutes each.
+`npx tsc --noEmit` from the repo root **passes clean** (different tsconfig); the engine-package tsconfig is stricter. Until these two are fixed, `Build/CesiumUnminified/` will stay stale and any Sandcastle / Playwright run hits the pre-Batch-67 bundle. **First-priority next-session work** — both fixes are ~5 minutes each. (Resolved in Batch 68.)
 
-## Quick state-of-migration
+## Quick state-of-migration (as of Batch 67)
 
 - **~95% WebGL feature parity.** Full per-batch detail in REVIEW_FIX_PROGRESS.md; per-issue status in the principal review.
 - **Critical-tier review work (C-R prefix):** all 13 originally-OPEN parent findings now have at least first-cut implementations shipping. Remaining work is named-follow-up scope, all enumerated in DEFERRED_WORK.md.

@@ -1,6 +1,6 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
-**Last Updated:** 2026-04-26 (Batch 70 — NEW-4-G/H fixed, NEW-4-I tracked)
+**Last Updated:** 2026-04-27 (Batch 71 — NEW-4-I fixed, Sandcastle 7/7 PASS)
 
 This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
 
@@ -342,24 +342,11 @@ This matched the Batch-67 prediction exactly — naga couldn't prove that `fragm
 
 **Closing batch:** Batch 70.
 
-### NEW-4-I — Translucent Classification copies Depth24PlusStencil8 → Depth24Plus (incompatible formats)
+### ~~NEW-4-I — Translucent Classification copies Depth24PlusStencil8 → Depth24Plus (incompatible formats)~~ FIXED 2026-04-27 (Batch 71)
 
-**Captured live error (verbatim, from Batch 70 re-run on port 8082, after NEW-4-H fix):**
-
-```text
-[WebGPU:GlobePass] GPU VALIDATION ERROR: Source [Texture "SceneFramebuffer-Color_depth"] format (TextureFormat::Depth24PlusStencil8) and destination [Texture "TranslucentTileClass_TranslucentDepth_1x"] format (TextureFormat::Depth24Plus) are not copy compatible.
- - While [Failed to format error message: "encoding %s.CopyTextureToTexture(%s, %s, %s)."].
- - While finishing [CommandEncoder "Scene Frame Command Encoder"].
-```
-
-**What:** With NEW-4-H's `_cachedShader` blocker resolved, Translucent Classification reaches its translucent-depth-pack pass. The pass copies `SceneFramebuffer-Color_depth` (allocated as `Depth24PlusStencil8` because the scene FB carries stencil for InvertClassification) into `TranslucentTileClass_TranslucentDepth_1x` (allocated as `Depth24Plus`, depth-only). WebGPU spec requires `copyTextureToTexture` source/dest formats to be identical (or in the depth/stencil aspect-compatible subset). The copy is rejected, command encoder finish fails, render loop crashes.
-**Why deferred:** Was masked by NEW-4-H for the entire Batch 67-69 verification window. Surfaced in Batch 70 Translucent Classification re-run.
-**Prerequisites:** None.
-**Estimated effort:** 30 min — likely a one-line texture-allocation flip from `Depth24Plus` to `Depth24PlusStencil8` on `TranslucentTileClass_TranslucentDepth_*` so it matches the scene FB depth attachment. Stencil aspect is unused by the translucent pack pass, so the size cost is the per-pixel stencil byte (~negligible at typical viewport sizes).
-**Predicted root cause:** Asymmetric format choice between scene FB allocator and translucent pack texture allocator. Scene FB uses depth+stencil for InvertClassification stencil writes; translucent pack chose depth-only because it doesn't read stencil. Spec didn't allow that asymmetry under copyTextureToTexture.
-**Predicted fix candidates:** (a) Allocate `TranslucentTileClass_TranslucentDepth_*` as `Depth24PlusStencil8` to match source. Smallest delta, lowest risk. (b) Use `copyTextureToTexture` aspect parameter to copy only the depth aspect — allowed when source has stencil and destination doesn't, IF the WebGPU implementation supports per-aspect copy (Chromium does as of 2024). (c) Allocate scene FB as depth-only when InvertClassification isn't active — wider blast radius.
-**Impact:** Translucent Classification demo still FAIL. Render loop crashes on first frame because the failed copy is at command-encoder finish time, not draw time.
-**Trace:** Surfaced in Batch 70 Translucent Classification re-run after NEW-4-H fix.
+**Resolution:** Took candidate (a) — flipped the `_translucentDepthTexture` allocation in [WebGPUTranslucentTileClassification.update](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) from `format: "depth24plus"` to `format: "depth24plus-stencil8"` so it matches the scene FB depth attachment (`SceneFramebuffer-Color_depth`). The `copyTextureToTexture` call in `executeTranslucentDepthPass` now passes WebGPU spec validation. The sampleable view at `_translucentDepthSampleableView` already pinned `aspect: "depth-only"` so the pack pipeline still reads only the depth channel — the stencil aspect is allocated but never sampled. Cost: one stencil byte per pixel (~negligible at any practical viewport size). The unused `_translucentDepthView` (default-aspect, dead code from a prior refactor) was left in place since it's never consumed and removing it is out of scope. Verified by re-running `SANDCASTLE_BASE_URL=http://localhost:8082 node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` after `npx gulp build` — Translucent Classification went from FAIL to PASS, taking the Sandcastle baseline from 6/7 to **7/7 PASS** (first time all WebGPU demos green on real WebGPU since the Batch 66 baseline framework was introduced).
+**Files touched:** [packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) (1-line format change + NEW-4-I rationale comment).
+**Closing batch:** Batch 71.
 
 ---
 

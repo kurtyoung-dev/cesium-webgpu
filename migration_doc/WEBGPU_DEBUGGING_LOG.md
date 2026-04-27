@@ -4330,3 +4330,42 @@ PASS=6, FAIL=1 (was 5/2):
 ### S42-T3 — NEW-4-I surfaced
 
 The Translucent Classification demo now reports a single significant console error: WebGPU validation rejects the translucent-depth-pack `copyTextureToTexture` because source `SceneFramebuffer-Color_depth` is `Depth24PlusStencil8` and destination `TranslucentTileClass_TranslucentDepth_1x` is `Depth24Plus` — formats are not copy compatible per spec. New entry (NEW-4-I) tracked in `DEFERRED_WORK.md` with predicted one-line fix (allocate the destination as `Depth24PlusStencil8` to match the scene FB depth attachment). Out of scope for Batch 70.
+
+## Session 43 — Batch 71: NEW-4-I depth-format copy-compat → Sandcastle 7/7 PASS (2026-04-27)
+
+Closes NEW-4-I from `DEFERRED_WORK.md`. First time all 7 WebGPU Sandcastle demos pass on real WebGPU (Edge / Chromium with `--enable-unsafe-webgpu`). Marks the end of the NEW-4-A through NEW-4-I sequence that started in Batch 66.
+
+### S43-T1 — NEW-4-I: `_translucentDepthTexture` format mismatched scene FB depth
+
+**Symptom:** Translucent Classification demo crashes the render loop on first frame:
+
+```text
+[WebGPU:GlobePass] GPU VALIDATION ERROR: Source [Texture "SceneFramebuffer-Color_depth"] format (TextureFormat::Depth24PlusStencil8) and destination [Texture "TranslucentTileClass_TranslucentDepth_1x"] format (TextureFormat::Depth24Plus) are not copy compatible.
+ - While [Failed to format error message: "encoding %s.CopyTextureToTexture(%s, %s, %s)."].
+ - While finishing [CommandEncoder "Scene Frame Command Encoder"].
+```
+
+**Root cause:** `WebGPUTranslucentTileClassification.update` allocated `_translucentDepthTexture` as `depth24plus` (depth-only) because the translucent pack pipeline only ever reads the depth aspect via the sampleable view (which already pins `aspect: "depth-only"`). The scene FB depth attachment, however, is allocated as `depth24plus-stencil8` because InvertClassification needs the stencil aspect. WebGPU `copyTextureToTexture` requires source and destination formats to be identical — the spec doesn't allow copying depth+stencil → depth-only even when both endpoints specify `aspect: "depth-only"`. The asymmetric allocation predated the InvertClassification stencil-path landing and was never reconciled.
+
+**Fix:** Single-line format change at [WebGPUTranslucentTileClassification.ts:322](../packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts) from `"depth24plus"` to `"depth24plus-stencil8"`. The sampleable view at the next allocation (line 331) already pins `aspect: "depth-only"`, so the pack pipeline continues to bind only the depth channel — the stencil aspect is allocated but never sampled. Added an inline NEW-4-I comment explaining the rationale + cost (one stencil byte per pixel, negligible). The unused `_translucentDepthView` (private, dead-after-refactor) is left in place — never consumed externally, removing it is out of scope.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUTranslucentTileClassification.ts`
+
+**Verification:** `SANDCASTLE_BASE_URL=http://localhost:8082 node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` after `npx gulp build`. Translucent Classification flips FAIL → PASS. Final runner total: PASS=7, FAIL=0, SKIP=0.
+
+### Sandcastle baseline after Batch 71 — 7/7 PASS
+
+| Demo                              | Status | Trajectory across NEW-4 sweep                                                                                                                          |
+| --------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| WebGPU Edge Feature ID            | PASS   | Closed in Batch 67 via NEW-4-A (eager typed-array retention).                                                                                          |
+| WebGPU Edge Visibility            | PASS   | Closed in Batch 67 via NEW-4-A.                                                                                                                        |
+| WebGPU Many Imagery Layers        | PASS   | Steady-state since Batch 66.                                                                                                                           |
+| WebGPU Model Pick                 | PASS   | Renders correctly; pick returns null at canvas center (model is off-center). Latent UX issue, not a render bug.                                        |
+| WebGPU Point Light Shadows        | PASS   | Steady-state since Batch 63 (5-tap PCF).                                                                                                               |
+| WebGPU Translucent Classification | PASS   | **Closed today via NEW-4-I**. Was FAIL since Batch 66 — first the `_cachedShader` issue (closed by NEW-4-H), then this depth-format copy-compat issue. |
+| WebGPU Voxel Pick                 | PASS   | Closed in Batch 70 via NEW-4-G + NEW-4-H combo.                                                                                                        |
+
+**End of the NEW-4 sweep.** All nine NEW-4-prefixed entries that surfaced from the Batch 66 Sandcastle rollout are now closed (NEW-4-A/B/C/D/E/F/G/H/I). The Sandcastle baseline is the new floor — any future regression that drops below 7/7 is a regression to investigate, not a known-failing demo.
+
