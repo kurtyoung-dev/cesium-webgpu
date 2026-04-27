@@ -16,6 +16,26 @@ import {
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+/**
+ * Entry slot for the per-cacheKey pipeline maps. The descriptor is the
+ * stable shape submitted to the central `webgpuPipelineCache`; the
+ * pipeline is the materialized `GPURenderPipeline` (null until the
+ * central cache resolves it). `pending` tracks whether a creation
+ * promise is in-flight so we don't re-issue per frame.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 75).
+ * @private
+ */
+interface GlobePipelineEntry {
+  descriptor: WebGPURenderPipelineDescriptor;
+  pipeline: GPURenderPipeline | null;
+  pending: boolean;
+}
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -342,7 +362,17 @@ export class WebGPUGlobeSurfaceRenderer {
   // used to detect the rising edge so the probe latch resets when the
   // operator toggles the flag back on for a second sample.
   private _lastProbeFlag = false;
-  private _pipelineCache: Map<string, GPURenderPipeline> = new Map();
+  // C-R7-RENDERER-MIGRATION (Batch 75) — local Map now stores
+  // `GlobePipelineEntry` slots; the GPU pipeline materializes through
+  // `webgpuPipelineCache` so two GlobeSurfaceRenderer instances (split-
+  // screen, multi-viewer) sharing the same descriptor share one
+  // `GPURenderPipeline`.
+  private _pipelineCache: Map<string, GlobePipelineEntry> = new Map();
+  // Central pipeline cache reference, captured lazily on the first
+  // `createTileCommands` call (which has access to `frameState.context`).
+  // Stays null when the renderer's GraphicsContext doesn't expose one
+  // (WebGL fallback shouldn't reach this code path, but defensive).
+  private _centralPipelineCache: WebGPURenderPipelineCache | null = null;
   // Batch 20 — the production shader module is now resolved through the
   // `WebGPUShaderModuleCache` keyed by `(ShaderSourceId.GLOBE_TERRAIN, defines)`.
   // The cache runs the `//>>ifdef` preprocessor against `_shaderCode` on
@@ -363,7 +393,7 @@ export class WebGPUGlobeSurfaceRenderer {
     number,
     GPUShaderModule | null
   >();
-  private _debugFragmentPipelineCache: Map<string, GPURenderPipeline> =
+  private _debugFragmentPipelineCache: Map<string, GlobePipelineEntry> =
     new Map();
   // Phase 5 WGF-1: hardware clip-distances shader variant. Built lazily
   // by string-augmenting a preprocessed `_shaderCode` to (a) declare the
@@ -396,7 +426,7 @@ export class WebGPUGlobeSurfaceRenderer {
   // Wireframe pipelines — keyed by the same shape string used by
   // _selectPipeline so they share variant granularity (Q/U, N/X, M/G, stride).
   // Lazily built on first wireframe request; production cache is untouched.
-  private _wireframePipelineCache: Map<string, GPURenderPipeline> = new Map();
+  private _wireframePipelineCache: Map<string, GlobePipelineEntry> = new Map();
   private _wireframeIndexCache: Map<
     string,
     { buffer: GPUBuffer; count: number; format: GPUIndexFormat }
@@ -903,7 +933,13 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // ─── Render Pipelines (lazily created per actual vertex stride) ───
-  private _createPipelineVariant(
+  // C-R7-RENDERER-MIGRATION (Batch 75) — returns a cache-friendly
+  // `WebGPURenderPipelineDescriptor`; the actual `GPURenderPipeline` is
+  // materialized through `webgpuPipelineCache` so that two
+  // GlobeSurfaceRenderer instances (split-screen, multi-viewer) sharing
+  // the same descriptor share one pipeline. Naming preserved as a
+  // private rename: `_createPipelineVariant` → `_buildPipelineDescriptor`.
+  private _buildPipelineDescriptor(
     isQuantized: boolean,
     hasNormals: boolean,
     hasWebMercatorT: boolean,
@@ -912,9 +948,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE,
     useClipDistances: boolean = false,
     hasGeodeticSurfaceNormals: boolean = false,
-  ): GPURenderPipeline {
-    const device = this._device!;
-
+  ): WebGPURenderPipelineDescriptor {
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
 
@@ -1111,8 +1145,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       }
     }
 
-    return device.createRenderPipeline({
-      label: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel})`,
+    return {
+      name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel})`,
       layout: this._pipelineLayout!,
       vertex: {
         module: vertexModule,
@@ -1146,7 +1180,81 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         // cleared depth buffer (which starts at 1.0).
         depthCompare: "less-equal",
       },
-    });
+    };
+  }
+
+  /**
+   * Convert our cache-friendly descriptor back into the WebGPU
+   * descriptor shape for the fallback path (no central cache available).
+   * @private
+   */
+  private _descriptorToGPU(
+    d: WebGPURenderPipelineDescriptor,
+  ): GPURenderPipelineDescriptor {
+    return {
+      label: d.name,
+      layout: d.layout ?? "auto",
+      vertex: {
+        module: d.vertex.module,
+        entryPoint: d.vertex.entryPoint,
+        buffers: d.vertex.buffers,
+      },
+      fragment: d.fragment
+        ? {
+            module: d.fragment.module,
+            entryPoint: d.fragment.entryPoint,
+            targets: d.fragment.targets,
+          }
+        : undefined,
+      primitive: d.primitive,
+      depthStencil: d.depthStencil,
+      multisample: d.multisample,
+    };
+  }
+
+  /**
+   * Resolve a globe pipeline through the central pipeline cache. Returns
+   * the existing GPU pipeline if cached; otherwise kicks off async
+   * creation and returns null. Falls back to direct synchronous creation
+   * when no central cache is available.
+   *
+   * C-R7-RENDERER-MIGRATION (Batch 75). Mirrors `tryResolvePolylinePipeline`.
+   * @private
+   */
+  private _resolveGlobePipelineEntry(
+    entry: GlobePipelineEntry,
+  ): GPURenderPipeline | null {
+    if (entry.pipeline) {
+      return entry.pipeline;
+    }
+    const pipelineCache = this._centralPipelineCache;
+    if (pipelineCache) {
+      const sync = pipelineCache.getPipelineSync(entry.descriptor);
+      if (sync) {
+        entry.pipeline = sync;
+        entry.pending = false;
+        return sync;
+      }
+      if (!entry.pending) {
+        entry.pending = true;
+        pipelineCache
+          .getPipeline(entry.descriptor)
+          .then((p) => {
+            entry.pipeline = p;
+            entry.pending = false;
+          })
+          .catch(() => {
+            entry.pending = false;
+          });
+      }
+      return null;
+    }
+    // Fallback — direct synchronous creation.
+    entry.pipeline = this._device!.createRenderPipeline(
+      this._descriptorToGPU(entry.descriptor),
+    );
+    entry.pending = false;
+    return entry.pipeline;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1161,21 +1269,25 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     strideBytes: number,
     useClipDistances: boolean = false,
     hasGeodeticSurfaceNormals: boolean = false,
-  ): GPURenderPipeline {
+  ): GPURenderPipeline | null {
     // Phase 5 WGF-1: cache key includes a `C` suffix for the
     // hardware clip-distances variant so it shares the production cache
     // map cleanly without colliding with the legacy variants.
     // Batch 20: the active-defines bitmask (DP-H25's `GEODETIC_NORMAL`
     // and any future flags) appears as a `|0xNN` hex suffix so the
     // pipeline cache stays in sync with the shader module cache key.
+    // C-R7-RENDERER-MIGRATION (Batch 75): the local Map now holds entry
+    // slots; the GPU pipeline materializes through `webgpuPipelineCache`.
+    // Returns null when the central cache hasn't materialized the
+    // pipeline yet — the caller should skip this tile this frame.
     const cdSuffix = useClipDistances ? "_CD" : "";
     const defines = hasGeodeticSurfaceNormals
       ? ShaderDefine.GEODETIC_NORMAL
       : 0;
     const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}|${defines.toString(16)}`;
-    let pipeline = this._pipelineCache.get(cacheKey);
-    if (!pipeline) {
-      pipeline = this._createPipelineVariant(
+    let entry = this._pipelineCache.get(cacheKey);
+    if (!entry) {
+      const descriptor = this._buildPipelineDescriptor(
         isQuantized,
         hasNormals,
         hasWebMercatorT,
@@ -1185,9 +1297,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         useClipDistances,
         hasGeodeticSurfaceNormals,
       );
-      this._pipelineCache.set(cacheKey, pipeline);
+      entry = { descriptor, pipeline: null, pending: false };
+      this._pipelineCache.set(cacheKey, entry);
     }
-    return pipeline;
+    return this._resolveGlobePipelineEntry(entry);
   }
 
   /**
@@ -1230,9 +1343,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       return null;
     }
     const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}|${defines.toString(16)}`;
-    let pipeline = this._debugFragmentPipelineCache.get(cacheKey);
-    if (!pipeline) {
-      pipeline = this._createPipelineVariant(
+    let entry = this._debugFragmentPipelineCache.get(cacheKey);
+    if (!entry) {
+      const descriptor = this._buildPipelineDescriptor(
         isQuantized,
         hasNormals,
         hasWebMercatorT,
@@ -1242,9 +1355,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         false,
         hasGeodeticSurfaceNormals,
       );
-      this._debugFragmentPipelineCache.set(cacheKey, pipeline);
+      entry = { descriptor, pipeline: null, pending: false };
+      this._debugFragmentPipelineCache.set(cacheKey, entry);
     }
-    return pipeline;
+    return this._resolveGlobePipelineEntry(entry);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1277,6 +1391,20 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // when it already exists. Without this touch the allocator would never
     // initialize and BUG-9's per-frame buffer leak would re-emerge.
     void frameState.context?.uniformAllocator;
+
+    // C-R7-RENDERER-MIGRATION (Batch 75) — capture the central pipeline
+    // cache from the context. The select methods consult `this._centralPipelineCache`
+    // to dedupe pipelines across renderer instances. Captured here (not in
+    // `initialize()`) because `initialize()` only receives `device`,
+    // not `context`.
+    if (!this._centralPipelineCache) {
+      this._centralPipelineCache =
+        (
+          frameState.context as unknown as {
+            webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+          }
+        ).webgpuPipelineCache ?? null;
+    }
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -1432,7 +1560,14 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         isScene3D &&
         !!cp.unionClippingRegions;
 
-      let pipeline: GPURenderPipeline;
+      // C-R7-RENDERER-MIGRATION (Batch 75) — `_select*` now returns
+      // `GPURenderPipeline | null`. Null means the pipeline is still
+      // materializing in the central cache; we `continue` to skip this
+      // pass for this tile this frame. The same defines × stride × format
+      // tuple resolves once and stays cached for the lifetime of the
+      // device, so the skip only ever fires on the first frame a new
+      // variant appears.
+      let pipeline: GPURenderPipeline | null;
       // Wireframe is a structural overlay — only the first pass renders it,
       // subsequent passes are the multi-imagery overdraw which would just
       // double-rasterize the same edges.
@@ -1480,6 +1615,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           useClipDistances,
           gpuResources.hasGeodeticSurfaceNormals,
         );
+      }
+      if (!pipeline) {
+        continue;
       }
 
       const cameraUB = this._createCameraUniformBuffer(
@@ -1557,9 +1695,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         frameState as {
           context?: {
             performanceManager?: {
-              ensureAtmosphereLUTResources?: (
-                d: GPUDevice,
-              ) => {
+              ensureAtmosphereLUTResources?: (d: GPUDevice) => {
                 transmittanceView?: GPUTextureView;
                 inscatterView?: GPUTextureView;
               } | null;
@@ -2550,12 +2686,10 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         const invW = 1.0 / tw;
         const invH = 1.0 / th;
         // Convert from cartographic radians to tile-UV [0..1].
-        data[baseOffset + 12] =
-          (cutoutRect.west - tile.rectangle.west) * invW;
+        data[baseOffset + 12] = (cutoutRect.west - tile.rectangle.west) * invW;
         data[baseOffset + 13] =
           (cutoutRect.south - tile.rectangle.south) * invH;
-        data[baseOffset + 14] =
-          (cutoutRect.east - tile.rectangle.west) * invW;
+        data[baseOffset + 14] = (cutoutRect.east - tile.rectangle.west) * invW;
         data[baseOffset + 15] =
           (cutoutRect.north - tile.rectangle.south) * invH;
       } else {
@@ -2643,8 +2777,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       // half = layerCount%2 (0 → xy, 1 → zw).
       const dnVecIndex = layerCount >> 1;
       const dnHalf = layerCount & 1;
-      const dnFloatBase =
-        DAY_NIGHT_ALPHA_OFFSET + dnVecIndex * 4 + dnHalf * 2;
+      const dnFloatBase = DAY_NIGHT_ALPHA_OFFSET + dnVecIndex * 4 + dnHalf * 2;
       data[dnFloatBase + 0] = resolveImageryLayerValue(
         layer.dayAlpha,
         1.0,
@@ -3233,24 +3366,28 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     hasWebMercatorT: boolean,
     strideBytes: number,
     hasGeodeticSurfaceNormals: boolean = false,
-  ): GPURenderPipeline {
+  ): GPURenderPipeline | null {
+    // C-R7-RENDERER-MIGRATION (Batch 75) — entry-based caching; pipeline
+    // resolves through the central cache. Returns null when the pipeline
+    // hasn't materialized yet (caller should skip the wireframe overlay
+    // for this tile this frame).
     const defines = hasGeodeticSurfaceNormals
       ? ShaderDefine.GEODETIC_NORMAL
       : 0;
     const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`;
-    let pipeline = this._wireframePipelineCache.get(cacheKey);
-    if (pipeline) {
-      return pipeline;
+    let entry = this._wireframePipelineCache.get(cacheKey);
+    if (!entry) {
+      const descriptor = this._buildWireframePipelineDescriptor(
+        isQuantized,
+        hasNormals,
+        hasWebMercatorT,
+        strideBytes,
+        hasGeodeticSurfaceNormals,
+      );
+      entry = { descriptor, pipeline: null, pending: false };
+      this._wireframePipelineCache.set(cacheKey, entry);
     }
-    pipeline = this._createWireframePipelineVariant(
-      isQuantized,
-      hasNormals,
-      hasWebMercatorT,
-      strideBytes,
-      hasGeodeticSurfaceNormals,
-    );
-    this._wireframePipelineCache.set(cacheKey, pipeline);
-    return pipeline;
+    return this._resolveGlobePipelineEntry(entry);
   }
 
   /**
@@ -3261,15 +3398,16 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
    * topology applied to triangle indices produces edges automatically when
    * the IB is converted (see `_getOrCreateWireframeIndices`).
    */
-  private _createWireframePipelineVariant(
+  // C-R7-RENDERER-MIGRATION (Batch 75) — returns descriptor; pipeline
+  // materializes through `webgpuPipelineCache`. Renamed:
+  // `_createWireframePipelineVariant` → `_buildWireframePipelineDescriptor`.
+  private _buildWireframePipelineDescriptor(
     isQuantized: boolean,
     hasNormals: boolean,
     hasWebMercatorT: boolean,
     strideBytes: number,
     hasGeodeticSurfaceNormals: boolean = false,
-  ): GPURenderPipeline {
-    const device = this._device!;
-
+  ): WebGPURenderPipelineDescriptor {
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
     // Batch 20 — the production shader module + our `GEODETIC_NORMAL`
@@ -3374,8 +3512,8 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // the same `defines` used by the production pipeline for this tile,
     // so the wireframe overlay always matches its colored counterpart.
     const shaderModule = this._getProductionShaderModule(defines);
-    return device.createRenderPipeline({
-      label: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b)`,
+    return {
+      name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b)`,
       layout: this._pipelineLayout!,
       vertex: {
         module: shaderModule,
@@ -3399,7 +3537,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         depthWriteEnabled: true,
         depthCompare: "less-equal",
       },
-    });
+    };
   }
 
   /**
@@ -3477,6 +3615,17 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
 
+    // C-R7-RENDERER-MIGRATION (Batch 75) — capture the central pipeline
+    // cache from the context (same as `createTileCommands`).
+    if (!this._centralPipelineCache) {
+      this._centralPipelineCache =
+        (
+          frameState.context as unknown as {
+            webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+          }
+        ).webgpuPipelineCache ?? null;
+    }
+
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
     if (!mesh) return null;
@@ -3495,6 +3644,9 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       gpuResources.strideBytes,
       gpuResources.hasGeodeticSurfaceNormals,
     );
+    // C-R7 (Batch 75) — pipeline still resolving in the central cache.
+    // Skip the wireframe overlay this frame; next frame it'll be ready.
+    if (!pipeline) return null;
 
     // Single pass for wireframe — no multi-pass imagery needed
     const cameraUB = this._createCameraUniformBuffer(
@@ -3594,20 +3746,28 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
   // Pipeline Access
   // ═══════════════════════════════════════════════════════════════════════
 
+  // C-R7-RENDERER-MIGRATION (Batch 75) — these legacy getters look up
+  // specific pipeline variants by their hardcoded cache keys. After the
+  // migration to entry-based caching the keys also carry a `|defines`
+  // suffix; preserve the original key form (`UNO_28` etc.) by appending
+  // `|0` for the no-defines (baseline) variant. Returns `null` when the
+  // central pipeline cache hasn't yet materialized that variant —
+  // unchanged from the prior behavior, which also returned null when the
+  // variant hadn't been requested by `_selectPipeline` yet.
   get pipeline(): GPURenderPipeline | null {
-    return this._pipelineCache.get("UNO_28") ?? null;
+    return this._pipelineCache.get("UNO_28|0")?.pipeline ?? null;
   }
 
   get pipelineNoNormals(): GPURenderPipeline | null {
-    return this._pipelineCache.get("UXO_24") ?? null;
+    return this._pipelineCache.get("UXO_24|0")?.pipeline ?? null;
   }
 
   get pipelineQuantized(): GPURenderPipeline | null {
-    return this._pipelineCache.get("QNO_16") ?? null;
+    return this._pipelineCache.get("QNO_16|0")?.pipeline ?? null;
   }
 
   get pipelineQuantizedNoNormals(): GPURenderPipeline | null {
-    return this._pipelineCache.get("QXO_12") ?? null;
+    return this._pipelineCache.get("QXO_12|0")?.pipeline ?? null;
   }
 
   get bindGroupLayout0(): GPUBindGroupLayout | null {
