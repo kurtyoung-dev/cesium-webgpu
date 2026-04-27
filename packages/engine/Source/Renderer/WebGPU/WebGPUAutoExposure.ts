@@ -31,6 +31,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
+import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 
 export interface AutoExposureConfig {
   minimumLuminance?: number;
@@ -41,6 +42,10 @@ export interface AutoExposureConfig {
 
 export class WebGPUAutoExposure {
   private _device: GPUDevice | null = null;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache reference
+  // captured at `initialize()` time so `_createPipelines` can route
+  // through it.
+  private _computePipelineCache: WebGPUComputePipelineCache | null = null;
   private _pass1Pipeline: GPUComputePipeline | null = null;
   private _pass2Pipeline: GPUComputePipeline | null = null;
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
@@ -90,7 +95,17 @@ export class WebGPUAutoExposure {
     return 1.0 / Math.max(this._averageLuminance, 0.001);
   }
 
-  initialize(device: GPUDevice, width: number, height: number): void {
+  initialize(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    computePipelineCache: WebGPUComputePipelineCache | null = null,
+  ): void {
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — accept the central cache
+    // so `_createPipelines` can route through it. Default `null` keeps
+    // the constructor-injected fallback path in callers that haven't
+    // been threaded through yet.
+    this._computePipelineCache = computePipelineCache;
     if (
       this._initialized &&
       this._width === width &&
@@ -274,17 +289,33 @@ export class WebGPUAutoExposure {
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
-    this._pass1Pipeline = device.createComputePipeline({
-      label: "AutoExposure pass1",
-      layout,
-      compute: { module, entryPoint: "pass1" },
-    });
-
-    this._pass2Pipeline = device.createComputePipeline({
-      label: "AutoExposure pass2",
-      layout,
-      compute: { module, entryPoint: "pass2" },
-    });
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route both passes through
+    // the central cache. Two PostProcessPipelines (multi-viewer setup)
+    // sharing the same shader + layout will share one pipeline.
+    const computeCache = this._computePipelineCache;
+    if (computeCache) {
+      this._pass1Pipeline = computeCache.getOrCreateSync({
+        name: "AutoExposure pass1",
+        layout,
+        compute: { module, entryPoint: "pass1" },
+      });
+      this._pass2Pipeline = computeCache.getOrCreateSync({
+        name: "AutoExposure pass2",
+        layout,
+        compute: { module, entryPoint: "pass2" },
+      });
+    } else {
+      this._pass1Pipeline = device.createComputePipeline({
+        label: "AutoExposure pass1",
+        layout,
+        compute: { module, entryPoint: "pass1" },
+      });
+      this._pass2Pipeline = device.createComputePipeline({
+        label: "AutoExposure pass2",
+        layout,
+        compute: { module, entryPoint: "pass2" },
+      });
+    }
   }
 
   private _destroyBuffers(): void {

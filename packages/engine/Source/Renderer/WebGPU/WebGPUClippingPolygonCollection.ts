@@ -170,7 +170,14 @@ function updateWebGPUClippingPolygons(
   };
 
   // Dispatch compute shader to generate the SDF
-  computePolygonSDF(device, cache, allPositions, collection.length, posWidth);
+  computePolygonSDF(
+    device,
+    cache,
+    allPositions,
+    collection.length,
+    posWidth,
+    context.webgpuComputePipelineCache ?? null,
+  );
 
   cache.revision = currentRevision;
 }
@@ -191,6 +198,9 @@ function computePolygonSDF(
   allPositions: number[],
   polygonCount: number,
   positionsWidth: number,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null,
 ): void {
   if (
     !cache.positionsTexture ||
@@ -221,13 +231,25 @@ function computePolygonSDF(
       code: POLYGON_SDF_WGSL,
     });
 
-    _sdfComputePipeline = device.createComputePipeline({
-      label: "PolygonSDF-Pipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [_sdfBindGroupLayout],
-      }),
-      compute: { module: shaderModule, entryPoint: "main" },
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route through the central
+    // cache. Module-level singleton means dedup matters when two
+    // contexts on the same device both need polygon clipping.
+    const sdfPipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [_sdfBindGroupLayout],
     });
+    if (computePipelineCache) {
+      _sdfComputePipeline = computePipelineCache.getOrCreateSync({
+        name: "PolygonSDF-Pipeline",
+        layout: sdfPipelineLayout,
+        compute: { module: shaderModule, entryPoint: "main" },
+      });
+    } else {
+      _sdfComputePipeline = device.createComputePipeline({
+        label: "PolygonSDF-Pipeline",
+        layout: sdfPipelineLayout,
+        compute: { module: shaderModule, entryPoint: "main" },
+      });
+    }
   }
 
   // Create uniform buffer: { polygonsLength, extentsLength, positionsWidth, pad }

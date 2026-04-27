@@ -103,6 +103,21 @@ function sortableUintToFloat(u: number): number {
 
 class WebGPUPointCloudSortDispatcher {
   private _device: GPUDevice;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+  private _computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null;
+
+  /**
+   * Pipeline-cache injection point. C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+   */
+  _setComputePipelineCache(
+    cache:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null,
+  ): void {
+    this._computePipelineCache = cache;
+  }
   private _resources: PointCloudSortResources | null = null;
   // Diagnostic counters — exposed via getStatistics() for the central
   // debug surface so an operator can confirm "yes the GPU sort is
@@ -394,16 +409,22 @@ class WebGPUPointCloudSortDispatcher {
     }
     const cached = this._pipelines.get(entryPoint);
     if (cached) return cached;
-    const pipeline = this._device.createComputePipeline({
-      label: `PointCloudSort_${entryPoint}`,
-      layout: this._device.createPipelineLayout({
-        bindGroupLayouts: [this._resources!.bindGroupLayout],
-      }),
-      compute: {
-        module: this._shaderModule,
-        entryPoint,
-      },
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache when
+    // available, sync direct create otherwise.
+    const sortLayout = this._device.createPipelineLayout({
+      bindGroupLayouts: [this._resources!.bindGroupLayout],
     });
+    const pipeline = this._computePipelineCache
+      ? this._computePipelineCache.getOrCreateSync({
+          name: `PointCloudSort_${entryPoint}`,
+          layout: sortLayout,
+          compute: { module: this._shaderModule, entryPoint },
+        })
+      : this._device.createComputePipeline({
+          label: `PointCloudSort_${entryPoint}`,
+          layout: sortLayout,
+          compute: { module: this._shaderModule, entryPoint },
+        });
     this._pipelines.set(entryPoint, pipeline);
     return pipeline;
   }

@@ -47,8 +47,16 @@ interface IBLPipelineCache {
 
 /**
  * Creates the compute pipeline for irradiance convolution.
+ *
+ * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — routes through the central
+ * cache when supplied, sync-creates otherwise.
  */
-function createIrradiancePipeline(device: GPUDevice): {
+function createIrradiancePipeline(
+  device: GPUDevice,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null,
+): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
@@ -62,10 +70,18 @@ function createIrradiancePipeline(device: GPUDevice): {
   ]);
 
   const module = device.createShaderModule({ code: IrradianceConvolutionWGSL });
-  const pipeline = device.createComputePipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-    compute: { module, entryPoint: "main" },
-  });
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+  const pipeline = computePipelineCache
+    ? computePipelineCache.getOrCreateSync({
+        name: "IBL-Irradiance",
+        layout,
+        compute: { module, entryPoint: "main" },
+      })
+    : device.createComputePipeline({
+        label: "IBL-Irradiance",
+        layout,
+        compute: { module, entryPoint: "main" },
+      });
 
   return { pipeline, bgl };
 }
@@ -73,7 +89,12 @@ function createIrradiancePipeline(device: GPUDevice): {
 /**
  * Creates the compute pipeline for radiance prefiltering.
  */
-function createRadiancePipeline(device: GPUDevice): {
+function createRadiancePipeline(
+  device: GPUDevice,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null,
+): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
@@ -87,10 +108,18 @@ function createRadiancePipeline(device: GPUDevice): {
   ]);
 
   const module = device.createShaderModule({ code: RadiancePrefilterWGSL });
-  const pipeline = device.createComputePipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-    compute: { module, entryPoint: "main" },
-  });
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+  const pipeline = computePipelineCache
+    ? computePipelineCache.getOrCreateSync({
+        name: "IBL-Radiance",
+        layout,
+        compute: { module, entryPoint: "main" },
+      })
+    : device.createComputePipeline({
+        label: "IBL-Radiance",
+        layout,
+        compute: { module, entryPoint: "main" },
+      });
 
   return { pipeline, bgl };
 }
@@ -102,9 +131,12 @@ function dispatchIrradianceConvolution(
   device: GPUDevice,
   cache: IBLPipelineCache,
   sourceCubeView: GPUTextureView,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null,
 ): void {
   if (!cache.irradiancePipeline || !cache.irradianceBGL) {
-    const result = createIrradiancePipeline(device);
+    const result = createIrradiancePipeline(device, computePipelineCache);
     cache.irradiancePipeline = result.pipeline;
     cache.irradianceBGL = result.bgl;
   }
@@ -191,9 +223,12 @@ function dispatchRadiancePrefilter(
   device: GPUDevice,
   cache: IBLPipelineCache,
   sourceCubeView: GPUTextureView,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null,
 ): void {
   if (!cache.radiancePipeline || !cache.radianceBGL) {
-    const result = createRadiancePipeline(device);
+    const result = createRadiancePipeline(device, computePipelineCache);
     cache.radiancePipeline = result.pipeline;
     cache.radianceBGL = result.bgl;
   }
@@ -319,6 +354,9 @@ function generateIBLMaps(
   device: GPUDevice,
   cache: IBLPipelineCache,
   sourceCubeView: GPUTextureView,
+  computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null,
 ): void {
   if (!cache.sampler) {
     cache.sampler = device.createSampler({
@@ -332,14 +370,24 @@ function generateIBLMaps(
   }
 
   try {
-    dispatchIrradianceConvolution(device, cache, sourceCubeView);
+    dispatchIrradianceConvolution(
+      device,
+      cache,
+      sourceCubeView,
+      computePipelineCache,
+    );
   } catch (e) {
     // Irradiance convolution failed — fall back to default cubemap
     // The ambient term in the PBR shader will use a constant
   }
 
   try {
-    dispatchRadiancePrefilter(device, cache, sourceCubeView);
+    dispatchRadiancePrefilter(
+      device,
+      cache,
+      sourceCubeView,
+      computePipelineCache,
+    );
   } catch (e) {
     // Radiance prefilter failed — fall back to sampling source at mip 0
   }

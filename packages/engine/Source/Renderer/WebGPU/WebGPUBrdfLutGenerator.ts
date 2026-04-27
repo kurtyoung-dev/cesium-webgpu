@@ -277,13 +277,32 @@ function updateWebGPUBrdfLut(
       bindGroupLayouts: [bindGroupLayout],
     });
 
-    const computePipeline = device.createComputePipeline({
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route through the
+    // central cache. BrdfLut runs once per device but multiple Cesium
+    // viewers (multi-context) sharing the same device share one
+    // pipeline.
+    const computePipelineCache = (
+      context as unknown as {
+        webgpuComputePipelineCache?:
+          | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+          | null;
+      }
+    ).webgpuComputePipelineCache;
+    const computePipelineDescriptor = {
+      name: "BrdfLut compute",
       layout: pipelineLayout,
       compute: {
         module: computeModule,
         entryPoint: "main",
       },
-    });
+    };
+    const computePipeline = computePipelineCache
+      ? computePipelineCache.getOrCreateSync(computePipelineDescriptor)
+      : device.createComputePipeline({
+          label: computePipelineDescriptor.name,
+          layout: pipelineLayout,
+          compute: { module: computeModule, entryPoint: "main" },
+        });
 
     const bindGroup = device.createBindGroup({
       layout: bindGroupLayout,

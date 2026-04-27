@@ -355,6 +355,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       if (!_pcSortDispatcher) {
         _pcSortDispatcher = new WebGPUPointCloudSortDispatcher(context.device!);
         _pcSortDispatcher.setShaderSource(PointCloudSortSource);
+        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+        _pcSortDispatcher._setComputePipelineCache(
+          context.webgpuComputePipelineCache ?? null,
+        );
       }
       return _pcSortDispatcher.sort(encoder, distSq, count);
     },

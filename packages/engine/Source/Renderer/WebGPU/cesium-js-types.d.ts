@@ -549,6 +549,16 @@ interface CesiumGraphicsContext {
   readonly webgpuPipelineCache?:
     | import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache
     | null;
+  /** WebGPU-only: lazy-instantiated central compute-pipeline cache.
+   *  Compute-pipeline consumers (Weather, VolumetricFog, AutoExposure,
+   *  GPUCuller, PointCloudLODProcessor) route their
+   *  `device.createComputePipeline()` calls through this cache so
+   *  identical (name, layout, entryPoint) tuples dedupe across renderer
+   *  instances. `null` on WebGL and before the WebGPU device exists.
+   *  Added Batch 76. */
+  readonly webgpuComputePipelineCache?:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(

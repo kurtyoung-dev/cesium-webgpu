@@ -137,6 +137,22 @@ function computeMipLevels(
 
 class WebGPUHiZOcclusionDispatcher {
   private _device: GPUDevice;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured at init time.
+  private _computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null;
+
+  /**
+   * Pipeline-cache injection point. Set before `allocate()`.
+   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+   */
+  _setComputePipelineCache(
+    cache:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null,
+  ): void {
+    this._computePipelineCache = cache;
+  }
   private _resources: HiZOcclusionResources | null = null;
   private _hiZShaderModule: GPUShaderModule | null = null;
   private _hiZFromDepthShaderModule: GPUShaderModule | null = null;
@@ -324,16 +340,28 @@ class WebGPUHiZOcclusionDispatcher {
       uniformBuffer(2, Stage.COMPUTE),
     ]);
 
-    const hiZPipeline = device.createComputePipeline({
-      label: "HiZ_Pipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [hiZBindGroupLayout],
-      }),
-      compute: {
-        module: this._hiZShaderModule!,
-        entryPoint: "computeMain",
-      },
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache routing.
+    const computeCache = this._computePipelineCache;
+    const hiZLayout = device.createPipelineLayout({
+      bindGroupLayouts: [hiZBindGroupLayout],
     });
+    const hiZPipeline = computeCache
+      ? computeCache.getOrCreateSync({
+          name: "HiZ_Pipeline",
+          layout: hiZLayout,
+          compute: {
+            module: this._hiZShaderModule!,
+            entryPoint: "computeMain",
+          },
+        })
+      : device.createComputePipeline({
+          label: "HiZ_Pipeline",
+          layout: hiZLayout,
+          compute: {
+            module: this._hiZShaderModule!,
+            entryPoint: "computeMain",
+          },
+        });
 
     // ── Depth-format mip 0 pipeline (optional) ──
     // When the caller passes a native depth texture view (aspect
@@ -353,16 +381,26 @@ class WebGPUHiZOcclusionDispatcher {
           uniformBuffer(2, Stage.COMPUTE),
         ],
       );
-      hiZFromDepthPipeline = device.createComputePipeline({
-        label: "HiZ_FromDepth_Pipeline",
-        layout: device.createPipelineLayout({
-          bindGroupLayouts: [hiZFromDepthBindGroupLayout],
-        }),
-        compute: {
-          module: this._hiZFromDepthShaderModule,
-          entryPoint: "computeMain",
-        },
+      const hiZFromDepthLayout = device.createPipelineLayout({
+        bindGroupLayouts: [hiZFromDepthBindGroupLayout],
       });
+      hiZFromDepthPipeline = computeCache
+        ? computeCache.getOrCreateSync({
+            name: "HiZ_FromDepth_Pipeline",
+            layout: hiZFromDepthLayout,
+            compute: {
+              module: this._hiZFromDepthShaderModule,
+              entryPoint: "computeMain",
+            },
+          })
+        : device.createComputePipeline({
+            label: "HiZ_FromDepth_Pipeline",
+            layout: hiZFromDepthLayout,
+            compute: {
+              module: this._hiZFromDepthShaderModule,
+              entryPoint: "computeMain",
+            },
+          });
     }
 
     // ── Per-mip bind groups for the pyramid build ──
@@ -419,16 +457,26 @@ class WebGPUHiZOcclusionDispatcher {
       ],
     );
 
-    const occlusionPipeline = device.createComputePipeline({
-      label: "Occlusion_Pipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [occlusionBindGroupLayout],
-      }),
-      compute: {
-        module: this._occlusionShaderModule!,
-        entryPoint: "computeMain",
-      },
+    const occlusionLayout = device.createPipelineLayout({
+      bindGroupLayouts: [occlusionBindGroupLayout],
     });
+    const occlusionPipeline = computeCache
+      ? computeCache.getOrCreateSync({
+          name: "Occlusion_Pipeline",
+          layout: occlusionLayout,
+          compute: {
+            module: this._occlusionShaderModule!,
+            entryPoint: "computeMain",
+          },
+        })
+      : device.createComputePipeline({
+          label: "Occlusion_Pipeline",
+          layout: occlusionLayout,
+          compute: {
+            module: this._occlusionShaderModule!,
+            entryPoint: "computeMain",
+          },
+        });
 
     const sphereBufferBytes = maxCommands * 4;
     const makeSphereBuffer = (label: string) =>
@@ -819,13 +867,20 @@ function getOrCreateDispatcher(context: {
  * renderer registry.
  */
 function initWebGPUHiZOcclusion(
-  context: { device: GPUDevice | null | undefined },
+  context: {
+    device: GPUDevice | null | undefined;
+    webgpuComputePipelineCache?:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null;
+  },
   inputWidth: number,
   inputHeight: number,
   maxCommands: number,
 ): boolean {
   const inst = getOrCreateDispatcher(context);
   if (!inst) return false;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+  inst._setComputePipelineCache(context.webgpuComputePipelineCache ?? null);
   return inst.allocate(inputWidth, inputHeight, maxCommands);
 }
 

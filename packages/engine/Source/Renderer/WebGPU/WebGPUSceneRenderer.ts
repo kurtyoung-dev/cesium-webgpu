@@ -829,7 +829,14 @@ export class WebGPUSceneRenderer {
       // enabled alongside tonemapping). Off by default in SDR mode
       // because the scene framebuffer values are already [0,1].
       if (hdr) {
-        this._postProcess.addAutoExposure(device);
+        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pipe the central
+        // compute pipeline cache through so AutoExposure routes its two
+        // pipeline creations through it.
+        this._postProcess.addAutoExposure(
+          device,
+          undefined,
+          context?.webgpuComputePipelineCache ?? null,
+        );
       }
     }
     if (this._postProcess && needsResize) {

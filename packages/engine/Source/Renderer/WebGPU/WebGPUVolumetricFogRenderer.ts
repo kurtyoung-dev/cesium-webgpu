@@ -69,6 +69,7 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 
 // Per-device shader module cache so two contexts with volumetric fog
 // enabled share one compiled `GPUShaderModule` per source.
@@ -217,6 +218,10 @@ class WebGPUVolumetricFogRenderer {
   private _device: GPUDevice;
   private _resources: VolumetricFogResources | null = null;
   private _isDestroyed = false;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured lazily on the
+  // first `update()` call so `_ensureResources` can route the three
+  // compute pipeline creations through the central cache.
+  private _computePipelineCache: WebGPUComputePipelineCache | null = null;
   // Phase 6 audit fix — snapshot mode coordination state. The freezable
   // is registered on the scene's SnapshotModeService once on first
   // sight; it just toggles `_frozen`, which the per-frame `update()`
@@ -478,27 +483,62 @@ class WebGPUVolumetricFogRenderer {
       ],
     );
 
-    const densityPipeline = device.createComputePipeline({
-      label: "VolumetricFog_DensityPipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [densityBindGroupLayout],
-      }),
-      compute: { module: computeShaderModule, entryPoint: "densityInjection" },
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route the three compute
+    // pipelines through `webgpuComputePipelineCache` (sync path) so two
+    // contexts with volumetric fog enabled share one pipeline per
+    // (label, layout, entryPoint) tuple.
+    const computeCache = this._computePipelineCache;
+    const densityLayout = device.createPipelineLayout({
+      bindGroupLayouts: [densityBindGroupLayout],
     });
-    const scatteringPipeline = device.createComputePipeline({
-      label: "VolumetricFog_ScatteringPipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [scatteringBindGroupLayout],
-      }),
-      compute: { module: computeShaderModule, entryPoint: "lightScattering" },
+    const scatteringLayout = device.createPipelineLayout({
+      bindGroupLayouts: [scatteringBindGroupLayout],
     });
-    const integratePipeline = device.createComputePipeline({
-      label: "VolumetricFog_IntegratePipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [integrateBindGroupLayout],
-      }),
-      compute: { module: computeShaderModule, entryPoint: "integrate" },
+    const integrateLayout = device.createPipelineLayout({
+      bindGroupLayouts: [integrateBindGroupLayout],
     });
+    let densityPipeline: GPUComputePipeline;
+    let scatteringPipeline: GPUComputePipeline;
+    let integratePipeline: GPUComputePipeline;
+    if (computeCache) {
+      densityPipeline = computeCache.getOrCreateSync({
+        name: "VolumetricFog_DensityPipeline",
+        layout: densityLayout,
+        compute: {
+          module: computeShaderModule,
+          entryPoint: "densityInjection",
+        },
+      });
+      scatteringPipeline = computeCache.getOrCreateSync({
+        name: "VolumetricFog_ScatteringPipeline",
+        layout: scatteringLayout,
+        compute: { module: computeShaderModule, entryPoint: "lightScattering" },
+      });
+      integratePipeline = computeCache.getOrCreateSync({
+        name: "VolumetricFog_IntegratePipeline",
+        layout: integrateLayout,
+        compute: { module: computeShaderModule, entryPoint: "integrate" },
+      });
+    } else {
+      densityPipeline = device.createComputePipeline({
+        label: "VolumetricFog_DensityPipeline",
+        layout: densityLayout,
+        compute: {
+          module: computeShaderModule,
+          entryPoint: "densityInjection",
+        },
+      });
+      scatteringPipeline = device.createComputePipeline({
+        label: "VolumetricFog_ScatteringPipeline",
+        layout: scatteringLayout,
+        compute: { module: computeShaderModule, entryPoint: "lightScattering" },
+      });
+      integratePipeline = device.createComputePipeline({
+        label: "VolumetricFog_IntegratePipeline",
+        layout: integrateLayout,
+        compute: { module: computeShaderModule, entryPoint: "integrate" },
+      });
+    }
 
     // ── Params UBO ──
     const paramsData = new Float32Array(VOLUMETRIC_FOG_PARAMS_FLOATS);
@@ -737,6 +777,14 @@ class WebGPUVolumetricFogRenderer {
 
     const device: GPUDevice = context.device;
     if (!device) return;
+
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — capture the central cache
+    // before `_ensureResources` runs so the lazy compute-pipeline build
+    // routes through it. The compute pipeline cache is a context-level
+    // resource, so we read it on every update (cheap getter access)
+    // rather than caching the reference indefinitely — this also picks
+    // up the new cache instance after a device-loss invalidation.
+    this._computePipelineCache = context.webgpuComputePipelineCache ?? null;
 
     const quality = this._resolveQuality(vf.quality);
     const r = this._ensureResources(quality);

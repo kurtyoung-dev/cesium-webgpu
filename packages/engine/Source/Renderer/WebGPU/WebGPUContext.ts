@@ -33,6 +33,7 @@ import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
+import { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
@@ -312,6 +313,7 @@ export class WebGPUContext extends GraphicsContext {
   // WebGPU-specific caches and managers
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
   private _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
+  private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
   private _samplerCache: Map<string, GPUSampler> = new Map();
   private _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
   private _bindGroupCache: Map<string, GPUBindGroup> = new Map();
@@ -948,9 +950,7 @@ export class WebGPUContext extends GraphicsContext {
     const utils = this._primitiveIndexUtilsCache as
       | { isSupported?: (device: GPUDevice) => boolean }
       | undefined;
-    return (
-      this._device !== null && utils !== undefined && !!utils.isSupported
-    );
+    return this._device !== null && utils !== undefined && !!utils.isSupported;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -3978,6 +3978,33 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Central compute-pipeline cache — the `WebGPUComputePipelineCache`
+   * instance for this context. Compute-pipeline consumers (Weather,
+   * VolumetricFog, AutoExposure, GPUCuller, PointCloudLODProcessor)
+   * route their `device.createComputePipeline()` calls through this
+   * cache so identical (name, layout, entryPoint) tuples dedupe
+   * across renderer instances and across context reinitializations.
+   *
+   * Lazy-initialized on first access; dropped on device loss along
+   * with the render pipeline cache. Returns `null` when the device
+   * isn't yet present (early bring-up) or has been invalidated.
+   *
+   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+   */
+  get webgpuComputePipelineCache(): WebGPUComputePipelineCache | null {
+    if (!this._webgpuComputePipelineCache && this._device) {
+      this._webgpuComputePipelineCache = new WebGPUComputePipelineCache(
+        this._device,
+        this._id,
+      );
+      this.onDeviceInvalidated(() => {
+        this._webgpuComputePipelineCache = null;
+      });
+    }
+    return this._webgpuComputePipelineCache;
+  }
+
+  /**
    * GPU frustum culler for compute-shader-based visibility testing.
    * Lazy-initialized on first access. Async init loads the FrustumCull.wgsl shader.
    * @returns The culler instance (may not be initialized yet — check .initialized)
@@ -4180,6 +4207,9 @@ export class WebGPUContext extends GraphicsContext {
     }
     if (this._webgpuPipelineCache) {
       this._webgpuPipelineCache.clear();
+    }
+    if (this._webgpuComputePipelineCache) {
+      this._webgpuComputePipelineCache.clear();
     }
 
     // C-R12 (Batch 33) — drop the module-level placeholder cache for

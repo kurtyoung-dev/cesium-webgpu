@@ -216,8 +216,14 @@ function updateWebGPUImageBasedLighting(
       const sourceView = specEnvMap._texture?._webgpuTexture?.view;
 
       if (sourceView) {
-        // Run the IBL pipeline: irradiance + radiance generation
-        generateIBLMaps(device, cache, sourceView);
+        // Run the IBL pipeline: irradiance + radiance generation.
+        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pass the central cache.
+        generateIBLMaps(
+          device,
+          cache,
+          sourceView,
+          context.webgpuComputePipelineCache ?? null,
+        );
         cache.maxMipLevel = RADIANCE_MIP_LEVELS - 1;
       }
     }

@@ -67,6 +67,11 @@ class WebGPUGPUSortKeysDispatcher {
   private _device: GPUDevice;
   private _resources: GPUSortKeysResources | null = null;
   private _shaderModule: GPUShaderModule | null = null;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured on first
+  // `_ensureResources` from `frameState.context.webgpuComputePipelineCache`.
+  private _computePipelineCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null = null;
   // Diagnostic counters.
   private _dispatches = 0;
   private _lastCommandCount = 0;
@@ -129,6 +134,21 @@ class WebGPUGPUSortKeysDispatcher {
   }
   get commandIndicesBuffer(): GPUBuffer | null {
     return this._resources?.commandIndicesBuffer ?? null;
+  }
+
+  /**
+   * Pipeline-cache injection point. Set before `allocate()`. The
+   * dispatcher routes its compute pipeline through the cache when
+   * non-null, falls back to direct sync creation otherwise.
+   *
+   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+   */
+  _setComputePipelineCache(
+    cache:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null,
+  ): void {
+    this._computePipelineCache = cache;
   }
 
   /**
@@ -203,16 +223,22 @@ class WebGPUGPUSortKeysDispatcher {
       ],
     });
 
-    const pipeline = device.createComputePipeline({
-      label: "GPUSortKeys_Pipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [bindGroupLayout],
-      }),
-      compute: {
-        module: this._shaderModule!,
-        entryPoint: "computeMain",
-      },
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache when
+    // available, sync direct create otherwise.
+    const sortLayout = device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
     });
+    const pipeline = this._computePipelineCache
+      ? this._computePipelineCache.getOrCreateSync({
+          name: "GPUSortKeys_Pipeline",
+          layout: sortLayout,
+          compute: { module: this._shaderModule!, entryPoint: "computeMain" },
+        })
+      : device.createComputePipeline({
+          label: "GPUSortKeys_Pipeline",
+          layout: sortLayout,
+          compute: { module: this._shaderModule!, entryPoint: "computeMain" },
+        });
 
     this._resources = {
       capacity: maxCommands,
@@ -371,11 +397,19 @@ function getOrCreateDispatcher(context: {
 }
 
 function initWebGPUGPUSortKeys(
-  context: { device: GPUDevice | null | undefined },
+  context: {
+    device: GPUDevice | null | undefined;
+    webgpuComputePipelineCache?:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null;
+  },
   maxCommands: number,
 ): boolean {
   const inst = getOrCreateDispatcher(context);
   if (!inst) return false;
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — capture the central cache
+  // before allocate() runs so the pipeline creation routes through it.
+  inst._setComputePipelineCache(context.webgpuComputePipelineCache ?? null);
   return inst.allocate(maxCommands);
 }
 

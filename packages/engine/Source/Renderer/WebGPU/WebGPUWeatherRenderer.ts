@@ -35,6 +35,7 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 
 // Per-device shader module cache so two contexts with weather enabled
 // share a single compiled `GPUShaderModule` for both the compute and
@@ -129,6 +130,7 @@ function initializeWeatherPipelines(
   device: GPUDevice,
   cache: WeatherCache,
   maxParticles: number,
+  computePipelineCache: WebGPUComputePipelineCache | null,
 ): void {
   if (cache.initialized && cache.maxParticles === maxParticles) return;
 
@@ -160,23 +162,47 @@ function initializeWeatherPipelines(
     bindGroupLayouts: [cache.bindGroupLayout],
   });
 
-  cache.resetPipeline = device.createComputePipeline({
-    label: "Weather reset counters",
-    layout: pipelineLayout,
-    compute: { module: shaderModule, entryPoint: "resetCounters" },
-  });
-
-  cache.updatePipeline = device.createComputePipeline({
-    label: "Weather update particles",
-    layout: pipelineLayout,
-    compute: { module: shaderModule, entryPoint: "updateParticles" },
-  });
-
-  cache.emitPipeline = device.createComputePipeline({
-    label: "Weather emit particles",
-    layout: pipelineLayout,
-    compute: { module: shaderModule, entryPoint: "emitParticles" },
-  });
+  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route the three Weather
+  // compute pipelines through the central cache so two contexts (split-
+  // screen) sharing the same shader + layout dedupe. Uses the sync path
+  // (`getOrCreateSync`) so this function stays sync — the alternative
+  // is making `updateWeatherParticles` async, which would push the
+  // change through every feature-renderer dispatch site.
+  if (computePipelineCache) {
+    cache.resetPipeline = computePipelineCache.getOrCreateSync({
+      name: "Weather reset counters",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "resetCounters" },
+    });
+    cache.updatePipeline = computePipelineCache.getOrCreateSync({
+      name: "Weather update particles",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "updateParticles" },
+    });
+    cache.emitPipeline = computePipelineCache.getOrCreateSync({
+      name: "Weather emit particles",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "emitParticles" },
+    });
+  } else {
+    // Fallback path — no central cache (defensive; WebGPU contexts always
+    // expose one). Mirrors the historical sync creation pattern.
+    cache.resetPipeline = device.createComputePipeline({
+      label: "Weather reset counters",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "resetCounters" },
+    });
+    cache.updatePipeline = device.createComputePipeline({
+      label: "Weather update particles",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "updateParticles" },
+    });
+    cache.emitPipeline = device.createComputePipeline({
+      label: "Weather emit particles",
+      layout: pipelineLayout,
+      compute: { module: shaderModule, entryPoint: "emitParticles" },
+    });
+  }
 
   // Create particle storage buffer (zero-initialized = all dead)
   // STORAGE for compute, VERTEX for render pass readback
@@ -227,7 +253,12 @@ export function updateWeatherParticles(
 
   const maxParticles = weatherConfig.maxParticles ?? 50000;
   const cache = ensureWeatherCache(context);
-  initializeWeatherPipelines(device, cache, maxParticles);
+  initializeWeatherPipelines(
+    device,
+    cache,
+    maxParticles,
+    context.webgpuComputePipelineCache ?? null,
+  );
 
   // Pack weather uniforms
   const data = cache.uniformData;
