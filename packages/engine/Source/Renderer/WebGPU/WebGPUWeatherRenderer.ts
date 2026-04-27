@@ -29,6 +29,31 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+// Per-device shader module cache so two contexts with weather enabled
+// share a single compiled `GPUShaderModule` for both the compute and
+// render shaders. (C-R7-SHADER-MODULE-DEDUP, Batch 72.)
+const _weatherShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getWeatherShaderModuleCache(
+  device: GPUDevice,
+): WebGPUShaderModuleCache {
+  let cache = _weatherShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _weatherShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 const WEATHER_TYPES = { rain: 0, snow: 1, fog: 2, hail: 3 } as const;
 const PARTICLE_SIZE_BYTES = 32; // 8 floats per particle
@@ -64,6 +89,12 @@ export interface WeatherCache {
   renderUniformBuffer: GPUBuffer | null;
   renderUniformData: Float32Array;
   renderInitialized: boolean;
+  // C-R7-RENDERER-MIGRATION (Batch 72) — render pipeline arrives
+  // asynchronously from `WebGPURenderPipelineCache.getPipeline()`. The
+  // descriptor is held alongside the pipeline so re-resolution keys
+  // off a stable shape.
+  renderPipelineRequestPending: boolean;
+  renderPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
 }
 
 function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
@@ -87,6 +118,8 @@ function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
       renderUniformBuffer: null,
       renderUniformData: new Float32Array(RENDER_UNIFORM_SIZE / 4),
       renderInitialized: false,
+      renderPipelineRequestPending: false,
+      renderPipelineDescriptor: null,
     };
   }
   return context._weatherCache;
@@ -104,10 +137,18 @@ function initializeWeatherPipelines(
   cache.counterBuffer?.destroy();
   cache.uniformBuffer?.destroy();
 
-  const shaderModule = device.createShaderModule({
-    label: "WeatherParticles compute",
-    code: WeatherParticlesWGSL,
-  });
+  // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route compute shader through
+  // the per-device module cache. Compute pipelines themselves are NOT
+  // cached centrally yet (no `WebGPUComputePipelineCache`), so the three
+  // pipelines still go through `device.createComputePipeline()` directly
+  // — but they do share a single deduped `GPUShaderModule`.
+  const moduleCache = getWeatherShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    ShaderSourceId.WEATHER_PARTICLES_COMPUTE,
+    WeatherParticlesWGSL,
+    0,
+    "WeatherParticles compute",
+  );
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "Weather BGL", [
     storageBuffer(0, Stage.COMPUTE),
@@ -326,10 +367,15 @@ function initializeRenderPipeline(
 ): void {
   if (cache.renderInitialized) return;
 
-  const shaderModule = device.createShaderModule({
-    label: "WeatherParticle render",
-    code: WeatherParticleRenderWGSL,
-  });
+  // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route render shader through
+  // the per-device module cache.
+  const moduleCache = getWeatherShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    ShaderSourceId.WEATHER_PARTICLE_RENDER,
+    WeatherParticleRenderWGSL,
+    0,
+    "WeatherParticle render",
+  );
 
   cache.renderBindGroupLayout = makeBindGroupLayout(
     device,
@@ -344,8 +390,12 @@ function initializeRenderPipeline(
     bindGroupLayouts: [cache.renderBindGroupLayout],
   });
 
-  cache.renderPipeline = device.createRenderPipeline({
-    label: "Weather particle render",
+  // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
+  // pipeline is materialized below via `tryResolveWeatherRenderPipeline`
+  // through the central `webgpuPipelineCache` so two contexts with
+  // weather enabled share a single `GPURenderPipeline`.
+  cache.renderPipelineDescriptor = {
+    name: "Weather particle render",
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -378,7 +428,7 @@ function initializeRenderPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-  });
+  };
 
   cache.renderUniformBuffer = device.createBuffer({
     label: "Weather render uniforms",
@@ -387,6 +437,71 @@ function initializeRenderPipeline(
   });
 
   cache.renderInitialized = true;
+}
+
+/**
+ * Resolve the weather render pipeline through the central pipeline cache.
+ * Returns true when the pipeline is ready, false when async creation is
+ * still in flight (caller should skip the draw this frame).
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 72).
+ */
+function tryResolveWeatherRenderPipeline(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  cache: WeatherCache,
+): boolean {
+  if (cache.renderPipeline) {
+    return true;
+  }
+  const desc = cache.renderPipelineDescriptor;
+  if (!desc) {
+    return false;
+  }
+
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(desc);
+    if (sync) {
+      cache.renderPipeline = sync;
+      cache.renderPipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.renderPipelineRequestPending) {
+      cache.renderPipelineRequestPending = true;
+      pipelineCache
+        .getPipeline(desc)
+        .then((p) => {
+          cache.renderPipeline = p;
+          cache.renderPipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.renderPipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  // Fallback: no central cache.
+  cache.renderPipeline = device.createRenderPipeline({
+    label: desc.name,
+    layout: desc.layout ?? "auto",
+    vertex: {
+      module: desc.vertex.module,
+      entryPoint: desc.vertex.entryPoint,
+      buffers: desc.vertex.buffers,
+    },
+    fragment: desc.fragment
+      ? {
+          module: desc.fragment.module,
+          entryPoint: desc.fragment.entryPoint,
+          targets: desc.fragment.targets,
+        }
+      : undefined,
+    primitive: desc.primitive,
+    depthStencil: desc.depthStencil,
+    multisample: desc.multisample,
+  });
+  return true;
 }
 
 /**
@@ -414,7 +529,25 @@ export function renderWeatherParticles(
     context.depthFormat ?? "depth24plus-stencil8";
 
   initializeRenderPipeline(device, cache, format, depthFormat);
-  if (!cache.renderPipeline || !cache.renderUniformBuffer) return;
+  if (!cache.renderUniformBuffer) return;
+
+  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve the render pipeline
+  // through the central cache. Skip the draw on not-yet-ready frames so
+  // we never enqueue a draw command with a null pipeline.
+  if (!cache.renderPipeline) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    if (
+      !tryResolveWeatherRenderPipeline(
+        device,
+        ctxAny.webgpuPipelineCache ?? null,
+        cache,
+      )
+    ) {
+      return;
+    }
+  }
 
   // Pack render uniforms: CameraUniforms struct
   const data = cache.renderUniformData;
@@ -475,10 +608,22 @@ export function renderWeatherParticles(
   if (prevVP) {
     for (let i = 0; i < 16; i++) data[32 + i] = prevVP[i];
   } else {
-    data[32] = 1; data[33] = 0; data[34] = 0; data[35] = 0;
-    data[36] = 0; data[37] = 1; data[38] = 0; data[39] = 0;
-    data[40] = 0; data[41] = 0; data[42] = 1; data[43] = 0;
-    data[44] = 0; data[45] = 0; data[46] = 0; data[47] = 1;
+    data[32] = 1;
+    data[33] = 0;
+    data[34] = 0;
+    data[35] = 0;
+    data[36] = 0;
+    data[37] = 1;
+    data[38] = 0;
+    data[39] = 0;
+    data[40] = 0;
+    data[41] = 0;
+    data[42] = 1;
+    data[43] = 0;
+    data[44] = 0;
+    data[45] = 0;
+    data[46] = 0;
+    data[47] = 1;
   }
 
   device.queue.writeBuffer(cache.renderUniformBuffer, 0, data);

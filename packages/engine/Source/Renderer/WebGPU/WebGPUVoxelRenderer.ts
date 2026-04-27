@@ -28,6 +28,29 @@ import {
   ensurePickId,
   type SinglePickIdCache,
 } from "./WebGPUPickCommandHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+// Per-device shader module cache so multiple VoxelPrimitives sharing the
+// same GPUDevice reuse a single compiled `GPUShaderModule`.
+// (C-R7-SHADER-MODULE-DEDUP, Batch 72.)
+const _voxelShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getVoxelShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
+  let cache = _voxelShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _voxelShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 interface VoxelCache {
   uniformBuffer: GPUBuffer | null;
@@ -43,6 +66,12 @@ interface VoxelCache {
   command: CesiumAnyDrawCommand | null;
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
+  // C-R7-RENDERER-MIGRATION (Batch 72) — color + pick pipelines arrive
+  // asynchronously from `WebGPURenderPipelineCache.getPipeline()`. Track
+  // whether the request is in flight so we don't re-issue it every frame.
+  pipelineRequestPending: boolean;
+  colorDescriptor: WebGPURenderPipelineDescriptor | null;
+  pickDescriptor: WebGPURenderPipelineDescriptor | null;
 }
 
 const VOXEL_WGSL = `
@@ -294,6 +323,89 @@ function createPlaceholderVoxelTexture(device: GPUDevice): {
   return { texture, view: texture.createView() };
 }
 
+/**
+ * Resolve the color + pick pipelines through the central pipeline cache.
+ * If the cache is unavailable, falls back to direct
+ * `device.createRenderPipeline()` so behavior remains unchanged.
+ *
+ * Returns synchronously when both pipelines are already cached; otherwise
+ * kicks off async creation and returns false so the caller can skip the
+ * frame and try again next tick.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 72). Mirrors the
+ * `tryResolveEllipsoidPipelines` pattern from Batch 56.
+ */
+function tryResolveVoxelPipelines(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  cache: VoxelCache,
+): boolean {
+  if (cache.pipeline && cache.pickPipeline) {
+    return true;
+  }
+  const colorDesc = cache.colorDescriptor;
+  const pickDesc = cache.pickDescriptor;
+  if (!colorDesc || !pickDesc) {
+    return false;
+  }
+
+  if (pipelineCache) {
+    const colorSync = pipelineCache.getPipelineSync(colorDesc);
+    const pickSync = pipelineCache.getPipelineSync(pickDesc);
+    if (colorSync && pickSync) {
+      cache.pipeline = colorSync;
+      cache.pickPipeline = pickSync;
+      cache.pipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pipelineRequestPending) {
+      cache.pipelineRequestPending = true;
+      Promise.all([
+        pipelineCache.getPipeline(colorDesc),
+        pipelineCache.getPipeline(pickDesc),
+      ])
+        .then(([color, pick]) => {
+          cache.pipeline = color;
+          cache.pickPipeline = pick;
+          cache.pipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.pipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  // Fallback: no central cache. Mirror the historical synchronous path.
+  cache.pipeline = device.createRenderPipeline(toGPUDescriptor(colorDesc));
+  cache.pickPipeline = device.createRenderPipeline(toGPUDescriptor(pickDesc));
+  return true;
+}
+
+function toGPUDescriptor(
+  d: WebGPURenderPipelineDescriptor,
+): GPURenderPipelineDescriptor {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
 function updateWebGPUVoxelPrimitive(
   primitive: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
@@ -321,6 +433,9 @@ function updateWebGPUVoxelPrimitive(
       command: null,
       pickCommand: null,
       initialized: false,
+      pipelineRequestPending: false,
+      colorDescriptor: null,
+      pickDescriptor: null,
     } as VoxelCache;
   }
 
@@ -341,7 +456,15 @@ function updateWebGPUVoxelPrimitive(
     cache.voxelTexture = texture;
     cache.voxelTextureView = view;
 
-    const shaderModule = device.createShaderModule({ code: VOXEL_WGSL });
+    // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation
+    // through the per-device shader module cache.
+    const moduleCache = getVoxelShaderModuleCache(device);
+    const shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.VOXEL_PRIMITIVE,
+      VOXEL_WGSL,
+      0,
+      "VoxelPrimitive",
+    );
     cache.shaderModule = shaderModule;
 
     const bgl = makeBindGroupLayout(device, "Voxel BGL", [
@@ -356,32 +479,36 @@ function updateWebGPUVoxelPrimitive(
 
     // Shared vertex stage — color + pick run identical vertex work
     // (RTE box vertex transform). Only the fragment entry differs.
-    const vertexDesc: GPUVertexState = {
-      module: shaderModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: 24,
-          attributes: [
-            {
-              shaderLocation: 0,
-              offset: 0,
-              format: "float32x3" as GPUVertexFormat,
-            },
-            {
-              shaderLocation: 1,
-              offset: 12,
-              format: "float32x3" as GPUVertexFormat,
-            },
-          ],
-        },
-      ],
-    };
+    const vertexBuffers = [
+      {
+        arrayStride: 24,
+        attributes: [
+          {
+            shaderLocation: 0,
+            offset: 0,
+            format: "float32x3" as GPUVertexFormat,
+          },
+          {
+            shaderLocation: 1,
+            offset: 12,
+            format: "float32x3" as GPUVertexFormat,
+          },
+        ],
+      },
+    ];
 
-    cache.pipeline = device.createRenderPipeline({
-      label: "Voxel color pipeline",
+    // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
+    // pipelines materialize through `webgpuPipelineCache` so two
+    // VoxelPrimitives sharing the same descriptor share a single
+    // `GPURenderPipeline`.
+    cache.colorDescriptor = {
+      name: "Voxel color pipeline",
       layout: pipelineLayout,
-      vertex: vertexDesc,
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vertexMain",
+        buffers: vertexBuffers,
+      },
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentMain",
@@ -405,7 +532,7 @@ function updateWebGPUVoxelPrimitive(
         // less-equal for planetary-scale precision robustness.
         depthCompare: "less-equal",
       },
-    });
+    };
 
     // C-R9-VOXEL-PICK (Batch 53) — pick pipeline. Same layout, same
     // vertex stage, same depth behaviour. Fragment entry emits
@@ -413,10 +540,14 @@ function updateWebGPUVoxelPrimitive(
     // can map the color back to the registered pick target. cullMode
     // matches the color path so picking and shading agree on which
     // box face the ray enters from.
-    cache.pickPipeline = device.createRenderPipeline({
-      label: "Voxel pick pipeline",
+    cache.pickDescriptor = {
+      name: "Voxel pick pipeline",
       layout: pipelineLayout,
-      vertex: vertexDesc,
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vertexMain",
+        buffers: vertexBuffers,
+      },
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentPickMain",
@@ -428,7 +559,7 @@ function updateWebGPUVoxelPrimitive(
         depthWriteEnabled: false,
         depthCompare: "less-equal",
       },
-    });
+    };
 
     cache.bindGroup = device.createBindGroup({
       layout: bgl,
@@ -444,6 +575,24 @@ function updateWebGPUVoxelPrimitive(
     cache.indexBuffer = geom.indexBuffer;
 
     cache.initialized = true;
+  }
+
+  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines
+  // through the central cache. Skip the draw on not-yet-ready frames so
+  // we never enqueue commands with null pipelines.
+  if (!cache.pipeline || !cache.pickPipeline) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    if (
+      !tryResolveVoxelPipelines(
+        device,
+        ctxAny.webgpuPipelineCache ?? null,
+        cache,
+      )
+    ) {
+      return;
+    }
   }
 
   // Pack uniforms.

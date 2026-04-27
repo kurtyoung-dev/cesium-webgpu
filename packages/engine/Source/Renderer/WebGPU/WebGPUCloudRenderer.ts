@@ -21,6 +21,30 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
+
+// Per-device shader module cache so multiple CloudCollections sharing the
+// same GPUDevice reuse a single compiled `GPUShaderModule`. Mirrors the
+// per-renderer WeakMap pattern used by Polyline / Billboard / Label /
+// PointPrimitive (C-R7-SHADER-MODULE-DEDUP, Batch 72).
+const _cloudShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getCloudShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
+  let cache = _cloudShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _cloudShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 interface CloudCache {
   quadVertexBuffer: GPUBuffer | null;
@@ -36,6 +60,11 @@ interface CloudCache {
   command: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastCloudCount: number;
+  // C-R7-RENDERER-MIGRATION (Batch 72) — pipeline arrives asynchronously
+  // from `WebGPURenderPipelineCache.getPipeline()`. Tracks whether the
+  // request is in flight so we don't re-issue it every frame.
+  pipelineRequestPending: boolean;
+  pipelineDescriptor: WebGPURenderPipelineDescriptor | null;
 }
 
 const CLOUD_WGSL = /* wgsl */ `
@@ -211,6 +240,80 @@ function buildInstanceBuffer(
   return { buffer, count: visibleCount };
 }
 
+/**
+ * Resolve the cloud pipeline through the central pipeline cache. If the
+ * cache is unavailable (no WebGPU context, or device not yet present),
+ * falls back to direct `device.createRenderPipeline()` so behavior remains
+ * unchanged.
+ *
+ * Returns synchronously when the pipeline is already cached; otherwise
+ * kicks off async creation and returns false so the caller can skip the
+ * frame and try again next tick.
+ *
+ * C-R7-RENDERER-MIGRATION (Batch 72). Mirrors the
+ * `tryResolveEllipsoidPipelines` pattern from Batch 56.
+ */
+function tryResolveCloudPipeline(
+  device: GPUDevice,
+  pipelineCache: WebGPURenderPipelineCache | null | undefined,
+  cache: CloudCache,
+): boolean {
+  if (cache.pipeline) {
+    return true;
+  }
+  const desc = cache.pipelineDescriptor;
+  if (!desc) {
+    return false;
+  }
+
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(desc);
+    if (sync) {
+      cache.pipeline = sync;
+      cache.pipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pipelineRequestPending) {
+      cache.pipelineRequestPending = true;
+      pipelineCache
+        .getPipeline(desc)
+        .then((p) => {
+          cache.pipeline = p;
+          cache.pipelineRequestPending = false;
+        })
+        .catch(() => {
+          // Errors already logged by the cache; clear the in-flight flag
+          // so the next frame retries.
+          cache.pipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  // Fallback: no central cache (e.g. WebGL-backed graphics context). Mirror
+  // the historical synchronous path so behavior matches pre-migration.
+  cache.pipeline = device.createRenderPipeline({
+    label: desc.name,
+    layout: desc.layout ?? "auto",
+    vertex: {
+      module: desc.vertex.module,
+      entryPoint: desc.vertex.entryPoint,
+      buffers: desc.vertex.buffers,
+    },
+    fragment: desc.fragment
+      ? {
+          module: desc.fragment.module,
+          entryPoint: desc.fragment.entryPoint,
+          targets: desc.fragment.targets,
+        }
+      : undefined,
+    primitive: desc.primitive,
+    depthStencil: desc.depthStencil,
+    multisample: desc.multisample,
+  });
+  return true;
+}
+
 function updateWebGPUCloudCollection(
   collection: CesiumObjectWithWebGPUCache,
   frameState: CesiumFrameState,
@@ -238,6 +341,8 @@ function updateWebGPUCloudCollection(
       command: null,
       initialized: false,
       lastCloudCount: -1,
+      pipelineRequestPending: false,
+      pipelineDescriptor: null,
     } as CloudCache;
   }
 
@@ -245,7 +350,16 @@ function updateWebGPUCloudCollection(
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
   if (!cache.initialized) {
-    cache.shaderModule = device.createShaderModule({ code: CLOUD_WGSL });
+    // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation
+    // through the per-device shader module cache so two CloudCollections
+    // share a single `GPUShaderModule`.
+    const moduleCache = getCloudShaderModuleCache(device);
+    cache.shaderModule = moduleCache.getOrCreate(
+      ShaderSourceId.CLOUD_COLLECTION,
+      CLOUD_WGSL,
+      0,
+      "CloudCollection",
+    );
     cache.uniformBuffer = device.createBuffer({
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -267,7 +381,14 @@ function updateWebGPUCloudCollection(
       sampler(2, Stage.FRAGMENT),
     ]);
 
-    cache.pipeline = device.createRenderPipeline({
+    // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
+    // the pipeline itself materializes through `webgpuPipelineCache` so
+    // two CloudCollections sharing the same descriptor share a single
+    // `GPURenderPipeline`. The descriptor object is held on the cache
+    // sidecar so re-resolution attempts use a stable key (cache key
+    // hashes the full descriptor shape).
+    cache.pipelineDescriptor = {
+      name: "CloudCollection pipeline",
       layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
       vertex: {
         module: cache.shaderModule,
@@ -336,7 +457,7 @@ function updateWebGPUCloudCollection(
         // the matching comment in WebGPUBufferPrimitiveRenderer.
         depthCompare: "less-equal",
       },
-    });
+    };
 
     cache.bindGroup = device.createBindGroup({
       layout: bgl,
@@ -348,6 +469,26 @@ function updateWebGPUCloudCollection(
     });
 
     cache.initialized = true;
+  }
+
+  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve the pipeline through the
+  // central cache. On first frame this kicks off async creation and
+  // returns false; subsequent frames pick up the cached pipeline
+  // synchronously and return true. Skip the draw on not-yet-ready frames
+  // so we never enqueue a draw command with a null pipeline.
+  if (!cache.pipeline) {
+    const ctxAny = context as unknown as {
+      webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+    };
+    if (
+      !tryResolveCloudPipeline(
+        device,
+        ctxAny.webgpuPipelineCache ?? null,
+        cache,
+      )
+    ) {
+      return;
+    }
   }
 
   // Rebuild instance buffer when clouds change

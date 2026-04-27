@@ -120,6 +120,21 @@ export const ShaderSourceId = Object.freeze({
   POLYLINE_DASH: 10,
   POLYLINE_GLOW: 11,
   POLYLINE_OUTLINE: 12,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 72. Source IDs 13-15 cover the
+  // first sweep of additional render-family adoption (Cloud + Voxel +
+  // Weather render). Keep numbering monotonic; add-only.
+  CLOUD_COLLECTION: 13,
+  VOXEL_PRIMITIVE: 14,
+  WEATHER_PARTICLE_RENDER: 15,
+  /**
+   * The compute-shader source feeding `WebGPUWeatherRenderer`'s reset /
+   * update / emit pipelines. Compute pipelines themselves are NOT yet
+   * routed through a central cache (no `WebGPUComputePipelineCache`
+   * exists), but the underlying `GPUShaderModule` is still deduped via
+   * `WebGPUShaderModuleCache.getOrCreate()` so two contexts with weather
+   * enabled don't recompile the same WGSL.
+   */
+  WEATHER_PARTICLES_COMPUTE: 16,
 } as const);
 
 /**

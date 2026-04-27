@@ -118,31 +118,35 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ### C-R7-RENDERER-MIGRATION-REMAINING
 
-**What:** Nine feature renderers still build pipelines via local Map caches: `WebGPUBillboardRenderer`, `WebGPULabelRenderer`, `WebGPUEnvironmentRenderer`, `WebGPUCloudRenderer`, `WebGPUVolumetricFogRenderer`, `WebGPUWeatherRenderer`, `WebGPUVoxelRenderer`, `WebGPUPointCloudRenderer`, `WebGPUGlobeSurfaceRenderer`. Plus `WebGPUModelRenderer` (special-case, blocked on shader-module dedup) and `WebGPUAutoExposure` (compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists).
+**What:** Six feature renderers still build pipelines via local Map caches: `WebGPUBillboardRenderer`, `WebGPULabelRenderer`, `WebGPUEnvironmentRenderer`, `WebGPUVolumetricFogRenderer`, `WebGPUPointCloudRenderer`, `WebGPUGlobeSurfaceRenderer`. Plus `WebGPUModelRenderer` (special-case, blocked on shader-module dedup) and `WebGPUAutoExposure` (compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists).
+
+**Progress:** Batch 72 (2026-04-27) migrated `WebGPUCloudRenderer`, `WebGPUVoxelRenderer`, and the render half of `WebGPUWeatherRenderer` (compute pipelines stay direct pending a compute-pipeline cache).
 
 **Why deferred:** Mechanical migration; each needs descriptor-build + dispatch reorganized to match Batch 56/62 pattern.
 
-**Prerequisites:** None - 6 renderers migrated total establish the pattern.
+**Prerequisites:** None - 9 renderers migrated total establish the pattern (Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel) + Weather render.
 
-**Estimated effort:** 2-3 sessions (3-4 renderers per session).
+**Estimated effort:** 1-2 sessions remaining (3-4 renderers per session). GlobeSurface is the largest single migration (3697 LOC) and may be its own session.
 
 **Impact:** Identical pipelines may be created multiple times across renderer instances. Memory + first-frame setup cost; no per-frame correctness or steady-state perf impact since each renderer's local cache hits.
 
-**Trace:** REVIEW_FIX_PROGRESS.md (Batches 56/62 lists); PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:185.
+**Trace:** REVIEW_FIX_PROGRESS.md (Batches 56/62/72 lists); PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:185.
 
 ### C-R7-SHADER-MODULE-DEDUP
 
-**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers (5 of ~17 use it today) lets identical sources actually dedupe.
+**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers (8 of ~17 use it today) lets identical sources actually dedupe.
+
+**Progress:** Batch 72 (2026-04-27) added Cloud + Voxel + Weather (render + compute shaders). Existing adopters: Polyline, PointPrimitive, Billboard, Label, GlobeSurface.
 
 **Why deferred:** Without dedup, routing `WebGPUModelRenderer` through `webgpuPipelineCache` (Batch 56's deferred case) wouldn't actually share - two models with identical material settings still produce distinct shader modules, distinct pipeline cache keys.
 
 **Prerequisites:** None - `WebGPUShaderModuleCache.ts` exists since Batch 22.
 
-**Estimated effort:** 1-2 sessions for adoption pass + 1 for ModelRenderer migration.
+**Estimated effort:** 1 session for remaining adoption (Environment, VolumetricFog, PointCloud, ModelRenderer adoption pass).
 
 **Impact:** Memory pressure on shader-heavy scenes (3D Tilesets with many distinct glTF assets sharing material settings).
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit); OVERSIGHT_AUDIT_2026_04_25.md s3.
+**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit), Batch 72 list; OVERSIGHT_AUDIT_2026_04_25.md s3.
 
 ---
 

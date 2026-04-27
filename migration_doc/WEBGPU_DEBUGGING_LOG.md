@@ -4369,3 +4369,65 @@ Closes NEW-4-I from `DEFERRED_WORK.md`. First time all 7 WebGPU Sandcastle demos
 
 **End of the NEW-4 sweep.** All nine NEW-4-prefixed entries that surfaced from the Batch 66 Sandcastle rollout are now closed (NEW-4-A/B/C/D/E/F/G/H/I). The Sandcastle baseline is the new floor — any future regression that drops below 7/7 is a regression to investigate, not a known-failing demo.
 
+---
+
+## Session 44 — Batch 72: C-R7 paired sweep, slice 1 (Cloud + Voxel + Weather) (2026-04-27)
+
+Closes the first slice of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items from `DEFERRED_WORK.md`. Three renderers — `WebGPUCloudRenderer`, `WebGPUVoxelRenderer`, and the render half of `WebGPUWeatherRenderer` — now route both their `GPUShaderModule` compilation and their `GPURenderPipeline` materialization through the central caches. Sandcastle baseline holds at 7/7 PASS (Voxel Pick is the direct in-baseline coverage; Cloud + Weather lack WebGPU baseline demos so coverage is via tsc + build only).
+
+### S44-T1 — `ShaderSourceId` registry expansion
+
+Added four new entries to [`WebGPUShaderDefines.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts):
+
+- `CLOUD_COLLECTION = 13`
+- `VOXEL_PRIMITIVE = 14`
+- `WEATHER_PARTICLE_RENDER = 15`
+- `WEATHER_PARTICLES_COMPUTE = 16` (compute-shader source; pipeline still goes through `device.createComputePipeline()` because no `WebGPUComputePipelineCache` exists, but the `GPUShaderModule` is deduped)
+
+Add-only registry rule (per `CLAUDE.md`) preserved: numbering is monotonic, no entries renumbered or removed.
+
+### S44-T2 — Cloud renderer migration
+
+[`WebGPUCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts):
+
+- Per-device `WebGPUShaderModuleCache` via `WeakMap<GPUDevice, WebGPUShaderModuleCache>` (mirrors the Polyline / Billboard / Label / PointPrimitive pattern).
+- Pipeline construction split into descriptor-only (held on `cache.pipelineDescriptor`) + async resolution (`tryResolveCloudPipeline`) with the standard sync-first / async-kickoff / fallback shape from Batch 56's `tryResolveEllipsoidPipelines`.
+- Added `pipelineRequestPending` flag + early-return-skip-frame guard so we never enqueue a draw command with a null pipeline.
+
+### S44-T3 — Voxel renderer migration
+
+[`WebGPUVoxelRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts):
+
+- Same per-device shader module cache pattern.
+- Two pipelines (color + pick) sharing one shader module → mirrors Ellipsoid's two-pipeline `tryResolveVoxelPipelines` shape, including `Promise.all` for parallel async kickoff.
+- Vertex buffer layout extracted as a single shared array reference (was previously inlined into both pipeline descriptors with the same shape — the central cache key hashes the full vertex layout, so two literal-but-equivalent arrays would still dedupe, but using one reference is cleaner).
+
+### S44-T4 — Weather renderer migration (render path only)
+
+[`WebGPUWeatherRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts):
+
+- Per-device shader module cache covers BOTH the compute (`WeatherParticlesWGSL`) and render (`WeatherParticleRenderWGSL`) shaders. The compute pipelines themselves are still created via `device.createComputePipeline()` directly because no compute pipeline cache exists yet — but the `GPUShaderModule` is deduped, which is the load-bearing piece.
+- Render pipeline migrated to the central cache via new `tryResolveWeatherRenderPipeline` helper.
+- Compute pipeline migration deferred to a future Batch (gated on `WebGPUComputePipelineCache` infrastructure landing).
+
+### Verification
+
+- `npx tsc --noEmit` clean (zero errors).
+- `npx gulp build` clean (full WGSL compilation + esbuild bundling green).
+- Sandcastle baseline: `node Tools/visual-regression/sandcastle-batch-66-final-runner.mjs` — **PASS=7, FAIL=0, SKIP=0**. Voxel Pick is the direct exercise of the migrated voxel renderer; the rest of the demos confirm no collateral regression elsewhere in the renderer fleet.
+- Cloud + Weather have no WebGPU baseline coverage (only WebGL Sandcastle demos exist for `CloudCollection` + `scene.weather`); their migration verification is by tsc + build success and by mirroring the established Ellipsoid / Polyline pattern verbatim.
+
+### Files modified
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts`
+- `migration_doc/DEFERRED_WORK.md` (counts + Batch 72 entry)
+- `migration_doc/WEBGPU_DEBUGGING_LOG.md` (this entry)
+
+### Remaining C-R7 work
+
+- **C-R7-RENDERER-MIGRATION-REMAINING:** 6 renderers still on local Map caches — `Billboard`, `Label`, `Environment`, `VolumetricFog`, `PointCloud`, `GlobeSurface` (3697 LOC, may be its own session). Plus `ModelRenderer` (gated on full ShaderModuleCache adoption) and `AutoExposure` (gated on `WebGPUComputePipelineCache` infra).
+- **C-R7-SHADER-MODULE-DEDUP:** 4 renderers still without module cache — `Environment`, `VolumetricFog`, `PointCloud`, plus the `ModelRenderer` adoption pass.
+

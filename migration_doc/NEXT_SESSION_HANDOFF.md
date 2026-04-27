@@ -1,4 +1,59 @@
-# Next Session Handoff — 2026-04-27 (Batches 69 + 70 + 71 — NEW-4-G/H/I closures, Sandcastle 5/7 → 7/7)
+# Next Session Handoff — 2026-04-27 (Batch 72 — C-R7 paired sweep, slice 1)
+
+**Branch:** `main` is the only branch (local + origin). Working tree dirty with Batch 72 changes pending commit. No safety branches, no worktree branches, no feature branches.
+
+**Headline:** First slice of the paired **C-R7-SHADER-MODULE-DEDUP** + **C-R7-RENDERER-MIGRATION-REMAINING** items landed. Cloud + Voxel + Weather (render path) now route both shader-module compilation and pipeline materialization through the central caches. Sandcastle baseline holds at **7/7 PASS**.
+
+## What today's session landed (Batch 72)
+
+### Batch 72 — C-R7 paired sweep, slice 1 (Cloud + Voxel + Weather)
+
+Closes the first three of the paired C-R7 items from `DEFERRED_WORK.md`. Pattern: per-device `WeakMap<GPUDevice, WebGPUShaderModuleCache>` for shader dedup; descriptor-only construction + `tryResolveXxxPipeline` async resolution mirroring Batch 56's Ellipsoid template.
+
+**ShaderSourceId additions** ([`WebGPUShaderDefines.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts)):
+
+- `CLOUD_COLLECTION = 13`
+- `VOXEL_PRIMITIVE = 14`
+- `WEATHER_PARTICLE_RENDER = 15`
+- `WEATHER_PARTICLES_COMPUTE = 16` (compute pipeline still goes direct; module is deduped)
+
+**Cloud renderer** ([`WebGPUCloudRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts)) — single render pipeline; `tryResolveCloudPipeline` with sync-first / async-kickoff / fallback to direct `device.createRenderPipeline()` when no central cache.
+
+**Voxel renderer** ([`WebGPUVoxelRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts)) — color + pick pipelines sharing one shader module; `tryResolveVoxelPipelines` with `Promise.all` parallel async kickoff.
+
+**Weather renderer** ([`WebGPUWeatherRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts)) — render pipeline migrated; compute (3 pipelines) deferred until `WebGPUComputePipelineCache` lands. Both compute + render shaders are deduped at the module level.
+
+**Verification:**
+
+- `npx tsc --noEmit` clean.
+- `npx gulp build` clean.
+- Sandcastle baseline: PASS=7, FAIL=0, SKIP=0. Voxel Pick is the direct in-baseline coverage of the migrated voxel renderer; Cloud + Weather lack WebGPU baseline demos (only WebGL Sandcastle demos exist for `CloudCollection` + `scene.weather`), so their migration verification is by tsc + build success and pattern parity with Ellipsoid / Polyline.
+
+**Adopter counts after Batch 72:**
+
+- **Pipeline cache:** 9 renderers — Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, **Cloud** (new), **Voxel** (new), **Weather render** (new).
+- **Shader module cache:** 8 renderers — Polyline, PointPrimitive, Billboard, Label, GlobeSurface, **Cloud** (new), **Voxel** (new), **Weather** (new).
+
+## Remaining C-R7 work (1-2 sessions)
+
+| Renderer | LOC | Module cache | Pipeline cache | Notes |
+| --- | --- | --- | --- | --- |
+| WebGPULabelRenderer.js | 645 | ✅ | ❌ | Add pipeline cache only |
+| WebGPUBillboardRenderer.js | 916 | ✅ | ❌ | Add pipeline cache only |
+| WebGPUEnvironmentRenderer.js | 1047 | ❌ | ❌ | Both gaps |
+| WebGPUVolumetricFogRenderer.ts | 1185 | ❌ | ❌ | Both gaps |
+| WebGPUPointCloudRenderer.ts | 892 | ❌ | ❌ | Both gaps |
+| WebGPUGlobeSurfaceRenderer.ts | 3697 | ✅ | ❌ | Add pipeline cache; largest single migration, may be its own session |
+| WebGPUModelRenderer.js | — | partial | ❌ | Blocked on full ShaderModuleCache adoption + KHR-extension shader-family work (C-R4-GLTF-KHR) |
+| WebGPUAutoExposure | — | — | n/a | Compute pipeline; out of scope until `WebGPUComputePipelineCache` exists |
+
+**Suggested next slice:** Pair Label + Billboard (both already have module cache, just need pipeline cache adoption — small mechanical pass). Then Environment + VolumetricFog + PointCloud as one batch (all three need both gaps closed; mid-sized files). Save GlobeSurface for its own session because of the 3697 LOC scope.
+
+---
+
+## Pre-Batch-72 history (previously top-of-doc)
+
+### Handoff — 2026-04-27 (Batches 69 + 70 + 71 — NEW-4-G/H/I closures, Sandcastle 5/7 → 7/7)
 
 **Branch:** `main` is the only branch (local + origin). HEAD will be the Batch 71 commit once landed (current HEAD = `cb86a5b944` "Batch 70"). Working tree dirty with the Batch 71 changes (NEW-4-I + this doc update). No safety branches, no worktree branches, no feature branches. The trunk-only workflow is now codified in `CLAUDE.md` § "Branch Transparency — CRITICAL" (local-only file, gitignored).
 
