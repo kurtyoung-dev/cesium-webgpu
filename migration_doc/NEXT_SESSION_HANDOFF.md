@@ -99,8 +99,9 @@ The whole NEW-4 sweep is closed. Next priorities pivot from "unblock the Sandcas
 
 ### Tier 1 — highest-impact correctness work (pulled from the cross-cutting priority guide in [DEFERRED_WORK.md](DEFERRED_WORK.md))
 
-1. **`C-R5-IMAGERY-16` (parent finding, not yet carved into named follow-up)** — biggest single visual-correctness gap remaining. Multi-point change but bounded; per the oversight audit (`OVERSIGHT_AUDIT_2026_04_25.md` §2) this is the highest-impact unfixed correctness bug. **Requires scoping pass first** — locate the parent finding in `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` (search "C-R5"), assess session count, then decide whether to chain or schedule.
-2. **`C-R8-TRANSLUCENT-MULTI-FRUSTUM`** — multi-frustum scenes misclassify primitives at frustum splits. Common in production scenes whenever camera height crosses a logarithmic frustum boundary. 2 sessions. Independent of NEW-4-I but could chain naturally once Translucent Classification is green.
+> **Note (2026-04-27 reconciliation):** the prior version of this list led with `C-R5-IMAGERY-16`, citing the oversight audit. That work was actually closed in **Batch 58 (2026-04-25)** — see [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md § C-R5](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md). The audit's recommendation #2 was acted on; the doc trail just never reconciled the closure into the priority guide. C-R5 is no longer the lead item; `C-R8-TRANSLUCENT-MULTI-FRUSTUM` is the highest-impact correctness item still open.
+
+1. **`C-R8-TRANSLUCENT-MULTI-FRUSTUM`** — multi-frustum scenes misclassify primitives at frustum splits. `executePackDepth` runs once per frame and captures only the last-rendered frustum's depth; primitives spanning frustum boundaries get the wrong classification mask. Hits whenever camera height crosses a logarithmic split (default 4-frustum scenes). Architectural — needs per-frustum pack-depth + multi-layer texture, or per-frustum array + slice indexing at composite. 2 sessions per [DEFERRED_WORK.md C-R8-TRANSLUCENT-MULTI-FRUSTUM](DEFERRED_WORK.md).
 
 ### Tier 2 — mechanical / architectural sweeps (3-4 sessions each)
 
