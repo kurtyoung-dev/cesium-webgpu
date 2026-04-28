@@ -816,9 +816,40 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       cache.depthSampleViewRef = depthSourceView;
     }
 
+    // Migration Session 3 — bind-group resolver for slot 1 (depth
+    // source). Each frustum updates `_packedTranslucentDepthView` /
+    // `_globeDepthView` BEFORE its classification pass executes. The
+    // resolver picks up the current values at draw time and rebuilds
+    // the bind group when the source view ref has changed since the
+    // last call. Returning `null` (when neither source is published
+    // yet) lets the executor fall back to the static `bindGroups[1]`
+    // reference, which still points to a valid view (the one bound at
+    // command-creation time). Spans-frustum-boundaries primitives get
+    // re-resolved per frustum, matching WebGL's per-pass behaviour.
+    const resolveDepthSampleBindGroup = () => {
+      const currentSource =
+        context._packedTranslucentDepthView ?? context._globeDepthView;
+      if (!currentSource) {
+        return null; // fall through to static reference
+      }
+      if (cache.depthSampleViewRef !== currentSource) {
+        cache.depthSampleBindGroup = device.createBindGroup({
+          label: "GroundPrimitive depth-sample BG",
+          layout: cache._pipelineResources.depthSampleBgl,
+          entries: [
+            { binding: 0, resource: currentSource },
+            { binding: 1, resource: cache.depthSampleSampler },
+          ],
+        });
+        cache.depthSampleViewRef = currentSource;
+      }
+      return cache.depthSampleBindGroup;
+    };
+
     const depthSampleColorCommand = new WebGPUDrawCommand({
       pipeline: cache.depthSampleColorPipeline,
       bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
       vertexBuffers: [cache.vertexGPUBuffer],
       indexBuffer: cache.indexGPUBuffer || undefined,
       indexCount: cache.indexCount || 0,
@@ -835,6 +866,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       cache.pickCommand = new WebGPUDrawCommand({
         pipeline: cache.depthSamplePickPipeline,
         bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+        bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
         vertexBuffers: [cache.vertexGPUBuffer],
         indexBuffer: cache.indexGPUBuffer || undefined,
         indexCount: cache.indexCount || 0,

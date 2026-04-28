@@ -160,6 +160,19 @@ interface WebGPUDrawCommandOptions {
    * unused because depth is already written.
    */
   classificationDepthPipeline?: GPURenderPipeline;
+  /**
+   * Migration Session 3 (Batch 83) — late-bound bind-group resolvers.
+   * One slot per @group binding; entries that are `undefined` use the
+   * static `bindGroups[i]`, entries that are functions are called at
+   * execute() time and their return value overrides the static bind
+   * group for that draw. Used for resources that change per-frustum
+   * (e.g., depth-sample classifier's depth source view) — the static
+   * `bindGroups[i]` references the view from when the command was
+   * built, while the resolver fetches the current frustum's view at
+   * draw time. Returning `null` falls back to the static reference
+   * (graceful no-op when the per-frustum source isn't published yet).
+   */
+  bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
 }
 
 /**
@@ -289,6 +302,17 @@ class WebGPUDrawCommand {
    */
   classificationDepthPipeline?: GPURenderPipeline;
 
+  /**
+   * Migration Session 3 (Batch 83) — per-bind-group late-binding
+   * resolvers. See `WebGPUDrawCommandOptions.bindGroupResolvers` for
+   * the contract. Indexed by @group binding number; absent entries
+   * use the static `bindGroups[i]` reference. Resolvers run inside
+   * `execute()` between pipeline binding and vertex-buffer setup,
+   * giving consumers (e.g., depth-sample classifier) a hook to swap
+   * in a frustum-current bind group without rebuilding the command.
+   */
+  bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
+
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
 
@@ -394,6 +418,7 @@ class WebGPUDrawCommand {
     this.depthForTranslucentClassification =
       options.depthForTranslucentClassification ?? false;
     this.classificationDepthPipeline = options.classificationDepthPipeline;
+    this.bindGroupResolvers = options.bindGroupResolvers;
   }
 
   /**
@@ -478,9 +503,19 @@ class WebGPUDrawCommand {
       applyPerEncoderState(passEncoder, this.renderState);
     }
 
-    // Set all bind groups
+    // Set all bind groups. Migration Session 3 (Batch 83) — per-index
+    // resolvers, when present, are called at draw time to swap in a
+    // frustum-current bind group (e.g., the depth-sample classifier's
+    // depth source view, which can flip between globe-depth and
+    // packed-translucent-depth across frustums within the same frame).
+    // Resolvers returning `null` fall back to the static reference,
+    // keeping the command functional when the per-frustum source isn't
+    // published yet (first frame, viewport resize, no translucent
+    // tiles this frustum).
     for (let i = 0; i < this.bindGroups.length; i++) {
-      passEncoder.setBindGroup(i, this.bindGroups[i]);
+      const resolver = this.bindGroupResolvers?.[i];
+      const resolved = resolver ? resolver() : null;
+      passEncoder.setBindGroup(i, resolved ?? this.bindGroups[i]);
     }
 
     // Set all vertex buffers
