@@ -1474,10 +1474,12 @@ export class WebGPUSceneRenderer {
     // runs into the edge FBO) and remain readable from
     // `context._edge*View` for the inline stage. No call here.
 
-    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — composite translucent
-    // classification accumulation onto scene color. No-op when no
-    // translucent depth was captured this frame.
-    this._runTranslucentTileClassificationComposite(config);
+    // Migration Session 5 (Batch 85) — Batch 47's composite call removed.
+    // The depth-sample classifier (ADR-2026-04-28) draws directly into
+    // scene color during the per-frustum CESIUM_3D_TILE_CLASSIFICATION
+    // pass, so there is no separate accumulation target to composite
+    // back. The accumulation-FBO + composite pipeline scaffolding in
+    // WebGPUTranslucentTileClassification was retired in this batch.
 
     // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Composite the
     // InvertClassification classified texture back onto scene color.
@@ -2603,36 +2605,9 @@ export class WebGPUSceneRenderer {
   // the post-process composite OR ride C-R8-EDGE-INLINE-PRIMITIVES to
   // extend the inline stage to that shader family.
 
-  // --- Translucent tile classification composite ---
-
-  /**
-   * C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — Composite the translucent
-   * classification accumulation onto scene color. Runs after the edge
-   * composite and before the invert classification composite. No-op
-   * when `hasTranslucentDepth` is false (most frames).
-   */
-  private _runTranslucentTileClassificationComposite(
-    config: WebGPURenderFrameConfig,
-  ): void {
-    const tcc = this._translucentTileClassification;
-    if (!tcc || !tcc.hasTranslucentDepth) return;
-    const { context } = config;
-
-    context.endCurrentRenderPass?.();
-    const encoder: GPUCommandEncoder | undefined =
-      context._currentCommandEncoder;
-    const colorTarget = this._sceneFramebuffer?.colorTarget;
-    const targetView: GPUTextureView | undefined =
-      colorTarget?.getColorTextureView?.(0);
-    const targetFormat: GPUTextureFormat =
-      (context as unknown as { _sceneColorFormat?: GPUTextureFormat })
-        ._sceneColorFormat ?? "bgra8unorm";
-
-    if (encoder && targetView) {
-      tcc.composite(encoder, targetView, targetFormat);
-    }
-    context.resumeDefaultRenderPass?.();
-  }
+  // Migration Session 5 (Batch 85) — `_runTranslucentTileClassification-
+  // Composite` removed. The depth-sample classifier draws directly into
+  // scene color, so there's no accumulation target to composite back.
 
   // --- InvertClassification composite ---
 

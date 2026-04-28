@@ -2,46 +2,59 @@
 /**
  * WebGPU Translucent Tile Classification
  *
- * C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — WebGPU equivalent of
- * `Scene/TranslucentTileClassification.js`. Enables polygon /
- * classification overlays to clamp to translucent 3D-tile surface
- * depth (e.g., polygon draped on a translucent photogrammetry mesh)
- * instead of falling through to the opaque globe depth underneath.
+ * Original purpose (Batch 47): WebGPU equivalent of
+ * `Scene/TranslucentTileClassification.js`. Enables classification
+ * overlays to clamp to translucent 3D-tile surface depth instead of
+ * falling through to the opaque globe depth underneath.
  *
- * **What's shipped in this batch:**
- *   - Framebuffer scaffolding: translucent depth target + packed depth
- *     color target + classification accumulation target.
- *   - WGSL `compareAndPackTranslucentDepth` pipeline + composite
- *     pipeline.
- *   - Public API matching the WebGL surface
- *     (`executeTranslucentDepthPass`, `executeClassificationPass`,
- *     `composite`, `isSupported`).
- *   - Wiring into `WebGPUSceneRenderer` so the orchestration runs.
+ * **Migration Session 5 (Batch 85, ADR-2026-04-28) — current role:**
+ * the depth-sample classifier
+ * (`WebGPUGroundPrimitiveRenderer`) is the runtime consumer of this
+ * module. The depth-pack pipeline is still active and produces
+ * `_packedTranslucentDepthView` per frame; the depth-sample classifier
+ * (Migration Session 2) reads it as the source of front-most
+ * translucent surface depth. The depth-sample classifier draws
+ * directly into scene color, so the prior accumulation-FBO + composite
+ * scaffolding is no longer wired:
+ *
+ *   - `_runTranslucentTileClassificationComposite` was removed from
+ *     `WebGPUSceneRenderer`; nothing now calls `composite()`.
+ *   - `_classificationColorTexture` / `_classificationColorView` are
+ *     allocated but never written. They are inert until a future
+ *     cleanup batch removes them.
+ *   - The composite pipeline (`_compositePipeline`, `_compositeBGL`,
+ *     `_compositeBindGroup`, `_compositeShaderModule`,
+ *     `COMPOSITE_WGSL`, `_ensureCompositePipeline`) is similarly
+ *     allocated but unreferenced.
+ *
+ * Removing the unused scaffolding cleanly is a follow-up batch (~100
+ * LOC of careful surgery in this file). It was deferred from Session 5
+ * to keep the migration's runtime correctness changes isolated from
+ * code-removal churn.
  *
  * **MSAA (Batch 61, C-R8-TRANSLUCENT-DEPTH-MSAA):** scenes with
  * `sampleCount > 1` are no longer skipped. The MSAA pack pipeline
  * binds the scene depth texture as `texture_depth_multisampled_2d` on
  * both opaque and translucent slots and reads sample 0 via
  * `textureLoad`. Output is byte-equivalent to the single-sample copy +
- * pack path's output (over-broad capture, scene depth in, scene depth
- * packed out), so the downstream composite + classification pipelines
- * don't need MSAA-aware changes.
+ * pack path's output, so the downstream depth-sample classifier
+ * doesn't need MSAA-aware changes.
  *
- * **What's currently a no-op until follow-ups land:**
- *   - WebGPU `_depthOnlyCommand` derivation on translucent tile
- *     commands (tracked as `C-R8-TRANSLUCENT-DEPTH-ONLY`) —
- *     `executeTranslucentDepthPass` falls back to using the scene
- *     framebuffer's depth at end of TRANSLUCENT pass, which is
- *     over-broad (captures ALL translucent geometry, not just 3D-tile
- *     content). Visually correct for typical scenes; subtle clipping
- *     errors for scenes that mix translucent labels with translucent
- *     tiles.
- *   - Selective `depthForTranslucentClassification` flag plumbing —
- *     `Cesium3DTile.js:1084` sets it on WebGL commands; WebGPU draw
- *     commands don't currently round-trip it.
- *   - Multi-frustum accumulation — Batch 47 captures only the last
- *     frustum's translucent depth. Multi-frustum content split
- *     across far/near may classify against the wrong frustum's depth.
+ * **Current responsibilities:**
+ *   - Per-frame translucent depth capture
+ *     (`executeTranslucentDepthPass`).
+ *   - Per-frame depth pack to RGBA8 color
+ *     (`executePackDepth`).
+ *   - Per-frame view publication via the
+ *     `packedTranslucentDepthView` getter that
+ *     `WebGPUSceneRenderer` reads after `executePackDepth` and
+ *     publishes on `context._packedTranslucentDepthView`.
+ *
+ * **What's still a no-op (legacy scaffolding):**
+ *   - The accumulation target + composite pipeline (see Session 5
+ *     migration note above).
+ *   - `executeClassificationPass` — kept as part of the public surface
+ *     parity but not invoked.
  *
  * @module WebGPUTranslucentTileClassification
  * @private
