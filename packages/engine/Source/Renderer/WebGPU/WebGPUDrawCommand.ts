@@ -147,6 +147,19 @@ interface WebGPUDrawCommandOptions {
    * to false; only 3D-tile renderers should set it.
    */
   depthForTranslucentClassification?: boolean;
+  /**
+   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79). Optional sibling pipeline
+   * with `depthWriteEnabled = true` forced on for ALPHA_BLEND. When
+   * `depthForTranslucentClassification` is true and this variant is
+   * supplied, `execute()` binds it instead of the default `pipeline`,
+   * causing the translucent tile surface to populate the scene-FB
+   * depth attachment. The stencil-based GroundPrimitive classifier
+   * then clips its volumes against the tile surface (matching WebGL's
+   * `czm_globeDepthTexture` sampling behaviour without a separate
+   * depth-texture pass). For OPAQUE/MASK commands the variant is
+   * unused because depth is already written.
+   */
+  classificationDepthPipeline?: GPURenderPipeline;
 }
 
 /**
@@ -264,6 +277,18 @@ class WebGPUDrawCommand {
    */
   depthForTranslucentClassification: boolean = false;
 
+  /**
+   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79). Optional depth-write variant
+   * of `pipeline`. Bound by `execute()` in place of `pipeline` whenever
+   * `depthForTranslucentClassification` is true and this variant is set.
+   * For ALPHA_BLEND models, `WebGPUModelRenderer` builds a sibling
+   * pipeline with `depthWriteEnabled = true` and stashes it here so a
+   * translucent 3D-tile surface populates the scene-FB depth attachment.
+   * Undefined for OPAQUE/MASK paths (they already write depth) and for
+   * non-tile renderers that never receive the flag.
+   */
+  classificationDepthPipeline?: GPURenderPipeline;
+
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
 
@@ -368,6 +393,7 @@ class WebGPUDrawCommand {
     this.renderState = options.renderState;
     this.depthForTranslucentClassification =
       options.depthForTranslucentClassification ?? false;
+    this.classificationDepthPipeline = options.classificationDepthPipeline;
   }
 
   /**
@@ -427,8 +453,22 @@ class WebGPUDrawCommand {
       return;
     }
 
-    // Set the pipeline
-    passEncoder.setPipeline(this.pipeline);
+    // Set the pipeline. C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — when
+    // a translucent 3D-tile command is flagged for classification depth
+    // and a depth-write variant has been provided, bind the variant
+    // instead of the default. The variant differs only in
+    // `depthWriteEnabled = true`; layout, vertex, fragment, and blend
+    // are identical, so the bind groups / vertex buffers / draw call
+    // below remain valid. This makes the tile populate scene-FB depth
+    // so the stencil-based GroundPrimitive classifier clips against
+    // the tile surface (matching WebGL's depth-texture sampling
+    // behaviour for translucent classification).
+    const pipelineToBind =
+      this.depthForTranslucentClassification &&
+      defined(this.classificationDepthPipeline)
+        ? this.classificationDepthPipeline!
+        : this.pipeline;
+    passEncoder.setPipeline(pipelineToBind);
 
     // C-R1: apply per-encoder dynamic state (stencilRef / blendConstant /
     // viewport / scissor) from any WebGL-style renderState before the draw

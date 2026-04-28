@@ -250,6 +250,7 @@ function createPipeline(
   depthFormat,
   alphaMode,
   doubleSided,
+  forceDepthWrite,
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -270,10 +271,15 @@ function createPipeline(
     };
   }
 
-  // Depth write: disabled for transparent objects to avoid depth conflicts
-  const depthWriteEnabled = alphaMode !== ALPHA_BLEND;
+  // Depth write: disabled for transparent objects to avoid depth conflicts.
+  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — translucent 3D-tile commands
+  // tagged for classification need a depth-write variant so the existing
+  // stencil-based GroundPrimitive classifier can clip volumes against the
+  // tile surface. Caller passes forceDepthWrite=true to fetch that variant.
+  const depthWriteEnabled = forceDepthWrite || alphaMode !== ALPHA_BLEND;
 
-  const label = `Model PBR [alpha=${alphaMode},ds=${doubleSided}]`;
+  const variantTag = forceDepthWrite ? ",dwForceOn" : "";
+  const label = `Model PBR [alpha=${alphaMode},ds=${doubleSided}${variantTag}]`;
 
   return device.createRenderPipeline({
     label,
@@ -382,6 +388,15 @@ class WebGPUModelPipelineCache {
     // shares the layout + vertex stage of its color sibling and only
     // differs in the fragment entry + no-blend target state.
     this._pickPipelines = new Map();
+    // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant cache,
+    // populated lazily for translucent commands tagged with
+    // `depthForTranslucentClassification`. Same key shape as `_pipelines`
+    // (alphaMode, doubleSided), so a translucent BLEND primitive that
+    // also needs depth-write gets a separate pipeline that writes depth.
+    // The two variants share layout, vertex, fragment, and blend state;
+    // only `depthWriteEnabled` differs. We cannot reuse `_pipelines`
+    // because its key would collide for the same (alphaMode, doubleSided).
+    this._depthWritePipelines = new Map();
 
     // Create shared bind group layouts
     const bgls = createBindGroupLayouts(device);
@@ -598,8 +613,44 @@ class WebGPUModelPipelineCache {
       this._depthFormat,
       alphaMode,
       doubleSided,
+      false,
     );
     this._pipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — gets or creates a depth-write
+   * variant of the color pipeline for translucent 3D-tile commands tagged
+   * with `depthForTranslucentClassification`. The variant differs from
+   * the standard pipeline only in that `depthWriteEnabled = true` is
+   * forced even for `ALPHA_BLEND`. Used by `WebGPUDrawCommand.execute()`
+   * when the flag is set so flagged tiles populate the scene framebuffer's
+   * depth attachment, letting the stencil-based GroundPrimitive classifier
+   * clip its volumes against the tile surface instead of the globe behind it.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @returns {GPURenderPipeline}
+   */
+  getDepthWritePipeline(alphaMode, doubleSided) {
+    const key = computeKey(alphaMode, doubleSided);
+    let pipeline = this._depthWritePipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+
+    pipeline = createPipeline(
+      this._device,
+      this._shaderModule,
+      this._pipelineLayout,
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+      true,
+    );
+    this._depthWritePipelines.set(key, pipeline);
     return pipeline;
   }
 

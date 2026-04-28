@@ -593,6 +593,23 @@ function ensurePrimitiveCache(
     matInfo.isDoubleSided,
   );
 
+  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — for translucent BLEND
+  // primitives we eagerly cache the depth-write variant too. A 3D-tile
+  // model whose content carries this primitive may set
+  // `depthForTranslucentClassification = true` on its WebGPUDrawCommand
+  // (per `Cesium3DTile.update`); when that flag is set the command will
+  // bind this variant in `WebGPUDrawCommand.execute()` so the tile
+  // surface populates the scene-FB depth attachment, letting the
+  // stencil-based GroundPrimitive classifier clip against the tile.
+  // OPAQUE/MASK primitives already write depth, so the variant only
+  // matters for BLEND.
+  if (matInfo.alphaMode === AlphaModes.BLEND) {
+    primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
+      matInfo.alphaMode,
+      matInfo.isDoubleSided,
+    );
+  }
+
   // Create GPU textures from glTF image sources
   const textures = createMaterialTextures(device, pipelineCache, matInfo);
   primCache.gpuTextures = textures.created;
@@ -1194,6 +1211,12 @@ function updateWebGPUModel(model, frameState) {
         modelMatrix: modelMatrix,
         cull: model._cull ?? true,
         renderState: modelRenderState,
+        // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant
+        // pipeline for BLEND primitives. Only consumed when the command's
+        // `depthForTranslucentClassification` flag is set (forwarded by
+        // `Cesium3DTile.update` for translucent tile content). Undefined
+        // for OPAQUE/MASK because they already write depth.
+        classificationDepthPipeline: primCache.depthWritePipeline,
       });
 
       // ── Shadow cast tagging ──

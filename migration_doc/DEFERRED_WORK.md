@@ -165,55 +165,109 @@ Existing adopters from earlier batches: Polyline, PointPrimitive, Billboard, Lab
 
 ### C-R8-TRANSLUCENT-DEPTH-ONLY
 
-**Status: Partial — pack-depth gating shipped Batch 78; deeper selective render folded into C-R8-TRANSLUCENT-MULTI-FRUSTUM.**
+**Status: Resolved (different mechanism) — Batches 78–79.**
 
-**What:** Translucent depth capture is over-broad - copies ALL translucent geometry's depth, not just `depthForTranslucentClassification`-flagged 3D-tile content. WebGL's selective behavior derives a `_depthOnlyCommand` per command per `Cesium3DTile.js:1084`.
+**What (original framing):** Translucent depth capture was over-broad — `executePackDepth` copies ALL translucent geometry's depth, not just `depthForTranslucentClassification`-flagged 3D-tile content. WebGL's selective behaviour derives a `_depthOnlyCommand` per flagged command per `Cesium3DTile.js:1084`.
 
-**Batch 78 progress:**
+**Architectural reframe (audit, 2026-04-28):** WebGPU does NOT consume the packed-depth texture the way the original framing assumed. The active classification renderer (`WebGPUGroundPrimitiveRenderer`) is a stencil-based two-pass approach with no depth-texture sampling — neither `_packedDepthTexture` nor `_globeDepthTexture` is bound to any classification pipeline. Filtering the pack-depth contributors only matters once a depth-sampling classifier exists (tracked separately as **C-R8-CLASSIFICATION-DEPTH-SAMPLING** below).
+
+What the user-visible bug actually is: when a translucent 3D tile overlaps a classification volume, the scene-FB depth at translucent pixels is whatever's behind the tile (globe), so the volume draws on the globe under the tile rather than on the tile surface.
+
+**Batch 78 (gating):**
 
 - `WebGPUDrawCommand` now carries the `depthForTranslucentClassification` flag (Cesium3DTile.js:1084 lands on the WebGPU command instance; previously the assignment hit the field as `undefined` since it didn't exist on the class).
-- `WebGPUTranslucentTileClassification.executeTranslucentDepthPass` accepts a `flaggedCommandsPresent` argument and short-circuits the entire pack-depth pipeline (no copy, no MSAA source recording, no pack pass) when no commands in the frustum need translucent classification depth. Saves a full per-frustum copy when nothing reads the result.
-- `WebGPUSceneRenderer` scans the frustum's TRANSLUCENT command list before invoking the translucent-depth path; the broad copy now ONLY fires when at least one flagged command exists.
+- `WebGPUTranslucentTileClassification.executeTranslucentDepthPass` accepts a `flaggedCommandsPresent` argument and short-circuits the entire pack-depth pipeline (no copy, no MSAA source recording, no pack pass) when no commands in the frustum need translucent classification depth.
+- `WebGPUSceneRenderer` scans the frustum's TRANSLUCENT command list before invoking the translucent-depth path.
 
-**Still over-broad when active:** when at least one flagged command exists, the implementation still uses the scene-depth copy (captures ALL translucent geometry, not just 3D-tile content). The label-over-3D-tile sub-bug remains until depth-only WGSL pipeline variants per command exist.
+**Batch 79 (the actual fix — selective depth-write):**
 
-**Folded into C-R8-TRANSLUCENT-MULTI-FRUSTUM:** the per-frustum render-pass restructure that MULTI-FRUSTUM ships is the natural home for selective-render. Once we're already creating per-frustum depth attachments, narrowing the command list to flagged-only is incremental — and avoids two architectural restructures of the same code surface.
+- `WebGPUModelPipelineCache.getDepthWritePipeline(alphaMode, doubleSided)` builds a sibling pipeline of `getPipeline` with `depthWriteEnabled = true` forced on for ALPHA_BLEND. Layout, vertex, fragment, and blend state are identical to the standard variant; only the depth-write bit differs. Cached separately so the standard translucent path (no depth write, alpha-correct compositing) is unchanged for non-tile content.
+- `WebGPUModelRenderer` eagerly builds the depth-write variant for every BLEND primitive and stashes it on the `WebGPUDrawCommand` as `classificationDepthPipeline`.
+- `WebGPUDrawCommand.execute()` swaps to that variant when `depthForTranslucentClassification === true`. The bind groups, vertex buffers, and draw call are unchanged.
 
-**Prerequisites:** None for the gating work (shipped). Selective render needs MULTI-FRUSTUM's pipeline-variant infrastructure.
+Net effect: translucent 3D tile surfaces populate the scene-FB depth attachment, so the existing stencil-based GroundPrimitive classifier clips its volumes against the tile surface instead of the globe behind it — matching WebGL's user-visible behaviour without porting WebGL's depth-texture sampling architecture.
 
-**Estimated remaining effort:** 0.5 session (folded into Sessions 2-3 of the C-R8 sweep).
+**Side effect (intended):** translucent labels behind translucent 3D tiles will now be occluded (more physically correct than WebGL's "label sees through everything"). Acceptable.
 
-**Impact:** Visually correct for typical scenes (no other translucent contributors). Subtle bugs for translucent-label-heavy scenes - labels' depth contributes to classification mask when it shouldn't.
+**Coverage gaps (intentional, deferred to Path A continuation):**
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2130; Batch 78 shipped 2026-04-28.
+- PointCloud / batched primitive content does not yet have a depth-write variant — only Model (b3dm/i3dm/glb) primitives do. PointCloud translucent tiles will still mis-classify until C-R8-CLASSIFICATION-DEPTH-SAMPLING lands the cleaner architecture.
+- Multi-frustum accumulation is still single-frustum (see C-R8-TRANSLUCENT-MULTI-FRUSTUM).
+- Depth-only WGSL variants per command (mirroring WebGL's `_depthOnlyCommand`) are still not built — but their value disappears with the new architecture.
+
+**Trace:** REVIEW_FIX_PROGRESS.md:2130; Batch 78 + Batch 79 shipped 2026-04-28.
 
 ### C-R8-TRANSLUCENT-MULTI-FRUSTUM
 
-**What:** Multi-frustum accumulation not wired. `executePackDepth` runs once per frame, capturing only last-rendered frustum's depth.
+**What:** Multi-frustum accumulation not wired. `executePackDepth` runs once per frame, capturing only last-rendered frustum's depth. The Batch 47 scaffolding inside `WebGPUTranslucentTileClassification` already lays out the consumer half of the eventual pipeline (`_classificationColorTexture` allocated, `composite()` method built, `_runTranslucentTileClassificationComposite` wired into `WebGPUSceneRenderer`); the producer half — per-frustum scratch FBO redirect + accumulation pass + stencil-mask gate — has not landed yet.
 
-**Why deferred:** Architectural - needs per-frustum pack-depth + multi-layer texture, or per-frustum array + slice indexing at composite.
+**Audit reframe (2026-04-28):** the original "1 session" estimate assumed straightforward port of WebGL's `TranslucentTileClassification.js` accumulation pipeline. After the C-R8 audit, this is now scoped as three sessions of Path A work:
 
-**Prerequisites:** None.
+- **Session 2 — Per-frustum scratch FBO redirect:** classification primitives currently draw directly into the scene FB. Need to redirect them into `_classificationColorTexture` for the per-frustum pass so the accumulation step has something to add. Batch 47 scaffolding already allocates the texture; just needs the render-pass swap.
+- **Session 3 — Accumulation FBO + accumulate pipeline + stencil-mask gate:** add the `_accumulationFBO` + `_accumulateCommand` analogues, plus stencil-test gating against `CESIUM_3D_TILE_MASK` so the accumulation only sums fragments behind translucent tiles.
+- **Session 4 — Composite + pick variant + per-frustum clear:** finalize `composite()` (currently a no-op visual sink — see scaffolding notes in `WebGPUTranslucentTileClassification.ts` lines 11–19), add a pick variant, and ensure per-frustum clears don't leak between frustums.
 
-**Estimated effort:** 2 sessions.
+**Why deferred:** Architectural — needs per-frustum render-pass restructuring of the scene's classification dispatch path. Done piecemeal.
+
+**Prerequisites:** None for Session 2; Sessions 3–4 chain.
+
+**Estimated effort:** 3 sessions (Sessions 2–4 of the C-R8 sweep).
 
 **Impact:** Default 4-frustum scenes misclassify primitives spanning frustum boundaries. Hits whenever camera height crosses a logarithmic split.
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2132.
+**Trace:** REVIEW_FIX_PROGRESS.md:2132. Batch 47 scaffolding precedes this; do NOT remove `_classificationColorTexture`, `composite()`, `_runTranslucentTileClassificationComposite`, `_ensureCompositePipeline`, or `COMPOSITE_WGSL` even though they read as no-ops today — they are the consumer half of this work.
 
 ### C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH
 
-**What:** Classification primitive shaders sample `globeDepthTexture`; need option to sample `packedTranslucentDepthView` (Batch 47 pack pipeline) when translucent depth available - that's how WebGL gets translucent-on-translucent classification right.
+**What (original framing):** Classification primitive shaders sample `globeDepthTexture`; need option to sample `packedTranslucentDepthView` (Batch 47 pack pipeline) when translucent depth available — that's how WebGL gets translucent-on-translucent classification right.
 
-**Why deferred:** Single-texture binding - dynamic-swap requires either two pipeline variants (one per source) or runtime-switchable bind group.
+**Audit reframe (2026-04-28):** WebGPU's only classification primitive renderer (`WebGPUGroundPrimitiveRenderer`) is a stencil-based two-pass approach with NO depth-texture sampling. The original "swap depth source" framing assumed a port of WebGL's `ShadowVolumeAppearanceFS` / `PolylineShadowVolumeFS` depth-sampling architecture. We did not port that.
 
-**Prerequisites:** Pairs with C-R1-CLASSIFICATION.
+The framing splits into two distinct items:
 
-**Estimated effort:** 1 session.
+1. **C-R8-CLASSIFICATION-DEPTH-SAMPLING** (architectural, future) — replaces the stencil approach with a depth-sampling approach so the renderer can read `_packedDepthTexture` for translucent-on-translucent. Tracked as a separate item below.
+2. **DISPATCH proper** — the original WebGL framing isn't directly portable. Closing this item now in favour of the depth-sampling architecture follow-up.
 
-**Impact:** Translucent-on-translucent classification doesn't render. Translucent-on-opaque (common case via globe depth) works.
+**Why deferred / superseded:** Folded into C-R8-CLASSIFICATION-DEPTH-SAMPLING.
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2133.
+**Status: Superseded — closed by audit; replaced by C-R8-CLASSIFICATION-DEPTH-SAMPLING.**
+
+**Trace:** REVIEW_FIX_PROGRESS.md:2133. Audit 2026-04-28.
+
+### C-R8-CLASSIFICATION-DEPTH-SAMPLING
+
+**What:** WebGPU's `WebGPUGroundPrimitiveRenderer` uses a stencil-based two-pass classifier. WebGL's classifier (`ShadowVolumeAppearanceFS`, `PolylineShadowVolumeFS`) samples `czm_globeDepthTexture` instead. The depth-sampling approach is what enables:
+
+- Translucent-on-translucent classification (sample `_packedTranslucentDepthView` per Batch 47 pack pipeline).
+- Single-pass classification (no stencil clear / two-draw cost).
+- Cleaner shader extension surface — derived data uniforms (e.g., `czm_globeDepthTexture`-based effects) drop in naturally.
+
+**Why deferred:** Architectural rewrite of the classifier. The stencil approach is correct for opaque-tile classification (the common case) and Batch 79 patches the translucent-tile case via selective depth-write. Depth-sampling is the principled long-term architecture.
+
+**Prerequisites:** Pairs with C-R8-TRANSLUCENT-MULTI-FRUSTUM (the per-frustum FBOs MULTI-FRUSTUM ships are the natural source of `_packedTranslucentDepthView`).
+
+**Estimated effort:** 3-4 sessions. Port WGSL of `ShadowVolumeAppearanceFS` + `PolylineShadowVolumeFS`; rewire `WebGPUGroundPrimitiveRenderer` to bind depth source instead of stencil-clip; add the `(globe-depth, translucent-depth)` runtime swap MULTI-FRUSTUM enables.
+
+**Impact:**
+
+- **Without it:** PointCloud / batched-primitive translucent tiles still mis-classify (only Model path got Batch 79's selective depth-write). Translucent-on-translucent classification doesn't render.
+- **With it:** Full WebGL parity for the classification system, single architecture covering all alpha modes and all content types.
+
+**Trace:** Replaces C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH per audit 2026-04-28.
+
+### C-R8-GROUND-POLYLINE-NATIVE
+
+**What:** No WebGPU equivalent of `GroundPolylinePrimitive` exists. WebGL has `PolylineShadowVolumeVS/FS` shaders + a `GroundPolylinePrimitive` consumer that sits beside `GroundPrimitive`. WebGPU's classifier covers volumes (`GroundPrimitive`) but not polylines drawn on terrain.
+
+**Why deferred:** The polyline classification path is a separate set of shaders and a separate consumer. Worth doing once the volume classifier is finalized so the depth-sampling architecture (C-R8-CLASSIFICATION-DEPTH-SAMPLING) can absorb both at the same time.
+
+**Prerequisites:** C-R8-CLASSIFICATION-DEPTH-SAMPLING preferred (so the polyline classifier reuses the volume classifier's depth-source plumbing) but not strictly required — a stencil-based polyline first-cut would also be acceptable.
+
+**Estimated effort:** 2 sessions. Port `PolylineShadowVolumeVS` + `PolylineShadowVolumeFS` to WGSL; build `WebGPUGroundPolylineRenderer`; wire into the scene's classification dispatch alongside `WebGPUGroundPrimitiveRenderer`.
+
+**Impact:** Polylines on terrain (a common visualization for routes, borders, GPS tracks) are not classifiable on WebGPU. Apps using `GroundPolylinePrimitive` get blank output.
+
+**Trace:** Audit 2026-04-28.
 
 ---
 
