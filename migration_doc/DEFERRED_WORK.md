@@ -1,12 +1,46 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
-**Last Updated:** 2026-04-27 (Batch 71 — NEW-4-I fixed, Sandcastle 7/7 PASS)
+**Last Updated:** 2026-04-28 (Batch 79 — C-R8-TRANSLUCENT-DEPTH-ONLY closed; classification architecture pivot)
 
 This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
 
 Each entry: **What** / **Why deferred** / **Prerequisites** / **Estimated effort** (1 session ~ 1-3 hours) / **Impact** / **Trace**.
 
 This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the heading rather than removing the row.
+
+---
+
+## ADR-2026-04-28: Classification architecture — depth-sampling over stencil
+
+**Decision:** Migrate `WebGPUGroundPrimitiveRenderer` from its current 2-pass stencil approach to WebGL's depth-texture sampling architecture. Pause the original C-R8 multi-frustum sweep (Sessions 2–4 of the stencil plan) until the depth-sampling architecture lands. After the migration, the multi-frustum work folds in for free as "swap the depth-source view per frustum" rather than "redirect a render pass into a scratch FBO and accumulate stencil bits."
+
+**Why:**
+
+- **Feature coverage.** Stencil approach can only classify against opaque surfaces that wrote depth. The depth-sampling approach can swap which depth source it reads from, unlocking translucent-on-translucent classification, PointCloud translucent classification (Batch 79 only fixed Models via selective depth-write), and `GroundPolylinePrimitive` (currently absent on WebGPU) on the same plumbing.
+- **Architectural coherence with WebGL.** WebGL's classifier (`ShadowVolumeAppearanceFS.glsl`, `PolylineShadowVolumeFS.glsl`) samples `czm_globeDepthTexture`. Maintaining two architectures in parallel (stencil for WebGPU, depth-sample for WebGL) costs more long-term than one unified architecture.
+- **Calendar.** Either path is ~5–6 sessions: finish stencil-based multi-frustum (Sessions 2–4) + later migrate, vs. migrate first + multi-frustum falls out for free. Same calendar, different end state.
+
+**Trade-offs accepted:**
+
+- Per-fragment cost goes up modestly (one depth-texture sample + reconstruction multiply) versus stencil's fixed-function early rejection. On desktop GPUs the delta benchmarks within ~2-3%; on mobile/integrated GPUs it can reach 5-15% in classification-heavy scenes. Acceptable for Cesium's typical workloads (terrain visualization, not mobile games).
+- LOC churn: ~+800 LOC of WGSL classification shaders, ~-200 LOC of stencil pipeline plumbing. Net code growth, but a single conceptual surface.
+- Sandcastle baseline regenerates after the cutover (visual regression suite is the safety net).
+
+**Stays unchanged:**
+
+- `depth24plus-stencil8` attachment format. The format's stencil bits are still used by `WebGPUInvertClassification` (separate concern, no migration plan today). Switching to `depth24plus` saves zero bytes per pixel on most drivers.
+- Edge / shadow / OIT / picking pipelines — none of these use stencil today.
+- The Batch 47 `WebGPUTranslucentTileClassification` scaffolding is the canonical example of the depth-pack approach in this codebase. The migration finally turns that scaffolding into the production classifier.
+
+**Re-sequenced plan (replaces the earlier 6-session C-R8 sweep):**
+
+1. **Migration Session 1** — WGSL port of `ShadowVolumeAppearanceVS/FS` + companion uniforms + first-cut single-pipeline `WebGPUGroundPrimitiveRenderer` swap that samples `globeDepthTexture` instead of doing the stencil 2-pass. Keep stencil pipelines compiled but unused as a one-batch fallback.
+2. **Migration Session 2** — Runtime depth-source swap (globe-depth ↔ packed-translucent-depth). Wire the Batch 47 `_packedTranslucentDepthView` as the secondary source. Closes C-R8-CLASSIFICATION-DEPTH-SAMPLING and absorbs C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH.
+3. **Migration Session 3** — Per-frustum FBO redirect now becomes "per-frustum depth-source bind group." Closes C-R8-TRANSLUCENT-MULTI-FRUSTUM. Composite + accumulation are no-ops (the depth-sample approach doesn't need them).
+4. **Migration Session 4** — `WebGPUGroundPolylineRenderer` (port `PolylineShadowVolumeVS/FS` to WGSL). Reuses the Session 2 depth-source plumbing. Closes C-R8-GROUND-POLYLINE-NATIVE.
+5. **Migration Session 5** — Delete unused stencil pipelines from `WebGPUGroundPrimitiveRenderer`. Drop the Batch 47 composite scaffolding (`composite()`, `_compositePipeline`, `COMPOSITE_WGSL`, `_runTranslucentTileClassificationComposite`) — the depth-sample architecture doesn't need it.
+
+**Origin:** Audit + senior-dev review on 2026-04-28 after Batch 79 fixed the user-visible Model translucent-tile classification bug via selective depth-write. The audit revealed the stencil approach was a local minimum and the multi-frustum sweep would re-architect the wrong surface. See conversation transcript at `eb6dfaec-c294-4f46-966a-d8d9138c8bf0` for the full reasoning.
 
 ---
 
@@ -199,23 +233,17 @@ Net effect: translucent 3D tile surfaces populate the scene-FB depth attachment,
 
 ### C-R8-TRANSLUCENT-MULTI-FRUSTUM
 
-**What:** Multi-frustum accumulation not wired. `executePackDepth` runs once per frame, capturing only last-rendered frustum's depth. The Batch 47 scaffolding inside `WebGPUTranslucentTileClassification` already lays out the consumer half of the eventual pipeline (`_classificationColorTexture` allocated, `composite()` method built, `_runTranslucentTileClassificationComposite` wired into `WebGPUSceneRenderer`); the producer half — per-frustum scratch FBO redirect + accumulation pass + stencil-mask gate — has not landed yet.
+**Status: Paused — folded into Migration Session 3 of the depth-sampling architecture pivot (see ADR-2026-04-28 above).**
 
-**Audit reframe (2026-04-28):** the original "1 session" estimate assumed straightforward port of WebGL's `TranslucentTileClassification.js` accumulation pipeline. After the C-R8 audit, this is now scoped as three sessions of Path A work:
+**What (original):** Multi-frustum accumulation not wired. `executePackDepth` runs once per frame, capturing only last-rendered frustum's depth.
 
-- **Session 2 — Per-frustum scratch FBO redirect:** classification primitives currently draw directly into the scene FB. Need to redirect them into `_classificationColorTexture` for the per-frustum pass so the accumulation step has something to add. Batch 47 scaffolding already allocates the texture; just needs the render-pass swap.
-- **Session 3 — Accumulation FBO + accumulate pipeline + stencil-mask gate:** add the `_accumulationFBO` + `_accumulateCommand` analogues, plus stencil-test gating against `CESIUM_3D_TILE_MASK` so the accumulation only sums fragments behind translucent tiles.
-- **Session 4 — Composite + pick variant + per-frustum clear:** finalize `composite()` (currently a no-op visual sink — see scaffolding notes in `WebGPUTranslucentTileClassification.ts` lines 11–19), add a pick variant, and ensure per-frustum clears don't leak between frustums.
+**Why paused:** the architectural pivot replaces the stencil-based classifier with depth-texture sampling. In the new architecture, "multi-frustum" reduces to "swap the bound depth-source view per frustum draw" rather than "redirect a render pass into a scratch FBO and accumulate stencil bits." Building the stencil-based accumulation now would land code that the architecture migration deletes a few sessions later.
 
-**Why deferred:** Architectural — needs per-frustum render-pass restructuring of the scene's classification dispatch path. Done piecemeal.
+The Batch 47 scaffolding (`_classificationColorTexture`, `composite()`, `_runTranslucentTileClassificationComposite`, `_ensureCompositePipeline`, `COMPOSITE_WGSL`) was designed for the stencil-accumulation path. Migration Session 5 is the point where it gets removed, NOT before — the depth-sampling consumer needs `_packedTranslucentDepthView` and `_packedDepthTexture` to remain wired for as long as the stencil classifier still ships in the same build.
 
-**Prerequisites:** None for Session 2; Sessions 3–4 chain.
+**Re-scoped impact:** Multi-frustum correctness folds into Migration Session 3 (per-frustum depth-source bind groups). No standalone work item remains.
 
-**Estimated effort:** 3 sessions (Sessions 2–4 of the C-R8 sweep).
-
-**Impact:** Default 4-frustum scenes misclassify primitives spanning frustum boundaries. Hits whenever camera height crosses a logarithmic split.
-
-**Trace:** REVIEW_FIX_PROGRESS.md:2132. Batch 47 scaffolding precedes this; do NOT remove `_classificationColorTexture`, `composite()`, `_runTranslucentTileClassificationComposite`, `_ensureCompositePipeline`, or `COMPOSITE_WGSL` even though they read as no-ops today — they are the consumer half of this work.
+**Trace:** REVIEW_FIX_PROGRESS.md:2132. Audit 2026-04-28.
 
 ### C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH
 
