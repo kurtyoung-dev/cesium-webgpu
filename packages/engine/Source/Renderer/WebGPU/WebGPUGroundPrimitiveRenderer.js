@@ -2,9 +2,35 @@
  * @module WebGPUGroundPrimitiveRenderer
  *
  * Handles WebGPU rendering of GroundPrimitive / ClassificationPrimitive.
- * Uses two-pass stencil approach:
- *   Pass 1: Render geometry to stencil buffer only (mark terrain coverage)
- *   Pass 2: Render color only where stencil passes (paint on terrain)
+ *
+ * **Architecture pivot (ADR-2026-04-28, Migration Session 1):** This
+ * renderer is migrating from a 2-pass stencil approach (mark coverage in
+ * stencil, then paint where stencil matches) to a depth-texture sampling
+ * approach matching WebGL's `ShadowVolumeAppearanceFS.glsl`. The depth
+ * approach lets the classifier swap depth sources at runtime
+ * (globe-depth ↔ packed-translucent-depth ↔ per-frustum), unlocking
+ * translucent-on-translucent classification, PointCloud translucent
+ * tile classification (Batch 79 only fixed Models), multi-frustum
+ * correctness, and `WebGPUGroundPolylineRenderer` (currently absent) on
+ * the same plumbing.
+ *
+ * Current state:
+ *   - **Default dispatch path**: depth-sample (single pass per primitive).
+ *     Reads `WebGPUGlobeDepth.globeDepthTexture` (RGBA-packed depth) and
+ *     `discard`s where depth is 0 (sky / no surface). The volume's
+ *     rasterization handles lateral coverage; depth-clamp on the VS is
+ *     unchanged from the stencil path.
+ *   - **Compiled-but-unused fallback**: stencil 2-pass + color + pick
+ *     pipelines. Kept around for Migration Session 2-3 work as a quick
+ *     toggle if the depth-sample path needs a regression workaround.
+ *     Slated for removal in Migration Session 5.
+ *
+ * Limitations of the Session 1 first-cut (resolved in later sessions):
+ *   - Single fixed depth source (globe depth). Translucent-tile clipping
+ *     still falls back to Batch 79's selective-depth-write path —
+ *     Migration Session 2 wires the runtime depth-source swap.
+ *   - Per-instance color only. Material/textured appearance and
+ *     normal-from-depth-derivative computation are not ported yet.
  *
  * @private
  */
@@ -16,6 +42,8 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
+  sampler as samplerEntry,
+  texture as textureEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
@@ -46,12 +74,24 @@ const scratchEncodedCamera = new EncodedCartesian3();
  * @private
  */
 function buildGroundPipelineResources(device, format, depthFormat) {
-  // C-R9 (Batch 31) — UBO extended with a pickColor vec4 at offset 112
-  // (previous tail was 112 bytes / 28 floats; the new slot occupies
-  // offsets 112-128 / floats 28-31 and the UBO grows to 128 bytes).
-  // The pick fragment entry (pickFS) reuses the same stencil-gated
-  // VS (colorVS emits pos + col) so the pick pass projects onto the
-  // same terrain coverage as the color pass.
+  // UBO layout (256 bytes total — `UNIFORM_BUFFER_SIZE`):
+  //   floats   0-15 : mvpRTE                         (mat4x4<f32>)
+  //   floats  16-19 : camH + _p0                     (vec3<f32> + pad)
+  //   floats  20-23 : camL + _p1                     (vec3<f32> + pad)
+  //   floats  24-27 : color                          (vec4<f32>)
+  //   floats  28-31 : pickColor                      (vec4<f32>)  — Batch 31
+  //   floats  32-35 : viewport (x, y, w, h)          (vec4<f32>)  — Migration S1
+  //   floats  36-63 : reserved (used in later sessions for inverseProjection
+  //                   and additional depth-source uniforms)
+  //
+  // The pick fragment entry (pickFS) reuses the same stencil-gated VS
+  // (colorVS emits pos + col) so the pick pass projects onto the same
+  // terrain coverage as the color pass.
+  //
+  // Depth-sample variants (Migration Session 1) — `dsColorVS`,
+  // `dsColorFS`, `dsPickFS` — consume the same uniform layout plus a
+  // second bind group (depth texture + sampler in @group(1)). The VS is
+  // identical to `colorVS`; only the fragment side samples globe depth.
   const code = `
 struct U {
   mvpRTE: mat4x4<f32>,
@@ -59,8 +99,15 @@ struct U {
   camL: vec3<f32>, _p1: f32,
   color: vec4<f32>,
   pickColor: vec4<f32>,
+  viewport: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
+
+// Depth-sample resources (Migration Session 1). Bound only by the
+// depth-sample pipelines; the stencil/color/pick pipelines have a
+// 1-group layout and never see this group.
+@group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
+@group(1) @binding(1) var depthSampler: sampler;
 
 struct VO { @builtin(position) pos: vec4<f32> };
 struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
@@ -85,6 +132,41 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 @fragment fn colorFS(i: CO) -> @location(0) vec4<f32> { return i.col; }
 
 @fragment fn pickFS() -> @location(0) vec4<f32> { return u.pickColor; }
+
+// Reverse of WebGPUGlobeDepth's pack: each RGBA byte carries a slice of
+// the depth value. The pack writes
+//   floor(d * vec4(1, 255, 65025, 16581375)) / 255
+// so the unpack is dot(packed, vec4(1, 1/255, 1/65025, 1/16581375)).
+// Matches czm_unpackDepth in the WebGL builtins exactly.
+fn unpackDepth(packed: vec4<f32>) -> f32 {
+  return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}
+
+// Migration Session 1 — depth-sample classifier. Samples globe depth at
+// the fragment's screen-space position; discards where the globe wrote
+// no depth (sky / nothing classifiable). The volume's rasterization
+// handles lateral coverage. For the per-instance-color case this is
+// pixel-equivalent to WebGL's ShadowVolumeAppearanceFS without
+// CULL_FRAGMENTS / NORMAL_EC / TEXTURE_COORDINATES branches enabled.
+@fragment fn dsColorFS(i: CO) -> @location(0) vec4<f32> {
+  let screenUV = i.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  return i.col;
+}
+
+@fragment fn dsPickFS(i: CO) -> @location(0) vec4<f32> {
+  let screenUV = i.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  return u.pickColor;
+}
 `;
 
   const mod = device.createShaderModule({ label: "GroundPrimitive", code });
@@ -92,6 +174,25 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+
+  // Migration Session 1 — depth-sample BGL + dual-group layout. The
+  // per-primitive uniform group (group 0) is shared with the stencil
+  // path. The depth-sample group (group 1) carries the globe depth
+  // texture + sampler. Building two separate pipeline-layouts keeps the
+  // stencil pipelines validation-clean (they don't see the depth-sample
+  // group); only the depth-sample pipelines bind both groups.
+  const depthSampleBgl = makeBindGroupLayout(
+    device,
+    "GroundPrimitive DepthSample BGL",
+    [
+      textureEntry(0, Stage.FRAGMENT, { sampleType: "float" }),
+      samplerEntry(1, Stage.FRAGMENT, "filtering"),
+    ],
+  );
+  const depthSampleLayout = device.createPipelineLayout({
+    label: "GroundPrimitive DepthSample PipelineLayout",
+    bindGroupLayouts: [bgl, depthSampleBgl],
+  });
 
   const vertexBuffers = [
     {
@@ -200,7 +301,74 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
     },
   );
 
-  return { stencilDescriptor, colorDescriptor, pickDescriptor, bgl };
+  // Migration Session 1 — depth-sample variant pipelines. Single pass,
+  // no stencil interaction, samples globe-depth in the fragment shader
+  // and discards where depth is 0. Layout uses both BGLs (per-primitive
+  // uniforms in @group(0), depth-sample resources in @group(1)).
+  // depthStencil retains less-equal for early rejection of fragments
+  // beyond the volume's far face but does not configure stencil — the
+  // depth-sample path doesn't read or write the stencil bits, so the
+  // attachment's stencil aspect remains untouched (other passes still
+  // read it for InvertClassification etc.).
+  const depthSampleColorDescriptor = {
+    name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "dsColorFS",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  const depthSamplePickDescriptor = {
+    name: `GroundPrimitive depthSamplePick [${format}/${depthFormat}]`,
+    layout: depthSampleLayout,
+    vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "dsPickFS",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  return {
+    stencilDescriptor,
+    colorDescriptor,
+    pickDescriptor,
+    depthSampleColorDescriptor,
+    depthSamplePickDescriptor,
+    bgl,
+    depthSampleBgl,
+  };
 }
 
 /**
@@ -250,7 +418,13 @@ function tryResolveGroundPrimitivePipelines(
   resources,
   cache,
 ) {
-  if (cache.stencilPipeline && cache.colorPipeline && cache.pickPipeline) {
+  if (
+    cache.stencilPipeline &&
+    cache.colorPipeline &&
+    cache.pickPipeline &&
+    cache.depthSampleColorPipeline &&
+    cache.depthSamplePickPipeline
+  ) {
     return true;
   }
 
@@ -260,10 +434,18 @@ function tryResolveGroundPrimitivePipelines(
     );
     const colorSync = pipelineCache.getPipelineSync(resources.colorDescriptor);
     const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
-    if (stencilSync && colorSync && pickSync) {
+    const dsColorSync = pipelineCache.getPipelineSync(
+      resources.depthSampleColorDescriptor,
+    );
+    const dsPickSync = pipelineCache.getPipelineSync(
+      resources.depthSamplePickDescriptor,
+    );
+    if (stencilSync && colorSync && pickSync && dsColorSync && dsPickSync) {
       cache.stencilPipeline = stencilSync;
       cache.colorPipeline = colorSync;
       cache.pickPipeline = pickSync;
+      cache.depthSampleColorPipeline = dsColorSync;
+      cache.depthSamplePickPipeline = dsPickSync;
       cache.pipelineRequestPending = false;
       return true;
     }
@@ -273,11 +455,15 @@ function tryResolveGroundPrimitivePipelines(
         pipelineCache.getPipeline(resources.stencilDescriptor),
         pipelineCache.getPipeline(resources.colorDescriptor),
         pipelineCache.getPipeline(resources.pickDescriptor),
+        pipelineCache.getPipeline(resources.depthSampleColorDescriptor),
+        pipelineCache.getPipeline(resources.depthSamplePickDescriptor),
       ])
-        .then(([stencil, color, pick]) => {
+        .then(([stencil, color, pick, dsColor, dsPick]) => {
           cache.stencilPipeline = stencil;
           cache.colorPipeline = color;
           cache.pickPipeline = pick;
+          cache.depthSampleColorPipeline = dsColor;
+          cache.depthSamplePickPipeline = dsPick;
           cache.pipelineRequestPending = false;
         })
         .catch(() => {
@@ -299,6 +485,12 @@ function tryResolveGroundPrimitivePipelines(
   );
   cache.pickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.pickDescriptor),
+  );
+  cache.depthSampleColorPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.depthSampleColorDescriptor),
+  );
+  cache.depthSamplePickPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.depthSamplePickDescriptor),
   );
   return true;
 }
@@ -339,6 +531,16 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   data[29] = pickColor?.green ?? 0.0;
   data[30] = pickColor?.blue ?? 0.0;
   data[31] = pickColor?.alpha ?? 0.0;
+
+  // Migration Session 1 — viewport (floats 32-35). The depth-sample
+  // fragment shader divides `@builtin(position).xy` by the viewport
+  // (z, w) to recover the screen-space UV used to fetch globe depth.
+  // The stencil/color/pick path ignores this slot.
+  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
+  data[32] = viewport?.x ?? 0.0;
+  data[33] = viewport?.y ?? 0.0;
+  data[34] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
+  data[35] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
 }
 
 /**
@@ -432,9 +634,42 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Build actual draw commands if vertex data is available
-  const geomData = primitive._webgpuGeometryData;
-  if (!defined(geomData) || !defined(geomData.vertexBuffer)) {
+  // Build actual draw commands if vertex data is available.
+  //
+  // Migration Session 1 — the `_webgpuGeometryData` slot on the primitive
+  // is populated by `Scene/PrimitiveGeometryHelpers.js` as an array of
+  // `{ attributes, indices, primitiveType, boundingSphere }` (one entry
+  // per Geometry instance). The previous version of this renderer read
+  // `geomData.vertexBuffer` / `.indexBuffer` directly — those slots
+  // never existed, so the early-return always fired and no WebGPU
+  // commands ever reached the command list. The actual vertex / index
+  // streams live on the saved attributes (`position3DHigh.values`,
+  // `position3DLow.values`, `indices`) and need to be packed into GPU
+  // buffers on first use, mirroring `WebGPUPrimitiveCommands.js`'s
+  // `extractPositionData` + `ensureIndexBuffer` helpers.
+  //
+  // First-cut handles only `_webgpuGeometryData[0]`. Multi-geometry
+  // primitives (rare for GroundPrimitive — typically one rectangle /
+  // polygon per primitive) are tracked as a follow-up; the
+  // single-geometry path covers the common case.
+  const geomDataArray = primitive._webgpuGeometryData;
+  if (!defined(geomDataArray) || geomDataArray.length === 0) {
+    return {
+      stencilPipeline: cache.stencilPipeline,
+      colorPipeline: cache.colorPipeline,
+      bindGroup: cache.bindGroup,
+      stencilCommand: null,
+      colorCommand: null,
+    };
+  }
+  const geomData = geomDataArray[0];
+  const posHighAttr = geomData?.attributes?.position3DHigh;
+  const posLowAttr = geomData?.attributes?.position3DLow;
+  if (
+    !defined(posHighAttr?.values) ||
+    !defined(posLowAttr?.values) ||
+    posHighAttr.values.length !== posLowAttr.values.length
+  ) {
     return {
       stencilPipeline: cache.stencilPipeline,
       colorPipeline: cache.colorPipeline,
@@ -444,29 +679,55 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
 
-  // Create vertex buffer once
+  // Create vertex buffer once. Interleaves posHigh + posLow into a
+  // single 24-byte/vertex stream matching the pipeline's vertex layout
+  // (location 0 = posHigh vec3, location 1 = posLow vec3).
   if (!defined(cache.vertexGPUBuffer)) {
-    const vbData = geomData.vertexBuffer;
+    const numVerts = posHighAttr.values.length / 3;
+    const interleaved = new Float32Array(numVerts * 6);
+    for (let v = 0; v < numVerts; v++) {
+      const dst = v * 6;
+      const src = v * 3;
+      interleaved[dst] = posHighAttr.values[src];
+      interleaved[dst + 1] = posHighAttr.values[src + 1];
+      interleaved[dst + 2] = posHighAttr.values[src + 2];
+      interleaved[dst + 3] = posLowAttr.values[src];
+      interleaved[dst + 4] = posLowAttr.values[src + 1];
+      interleaved[dst + 5] = posLowAttr.values[src + 2];
+    }
     cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
       device,
-      vbData.byteLength,
+      interleaved.byteLength,
       false,
       "GroundPrimitive VB",
     );
-    device.queue.writeBuffer(cache.vertexGPUBuffer.buffer, 0, vbData);
-    cache.vertexCount = geomData.vertexCount || vbData.byteLength / 24;
+    device.queue.writeBuffer(cache.vertexGPUBuffer.buffer, 0, interleaved);
+    cache.vertexCount = numVerts;
   }
 
-  // Create index buffer if indexed geometry
-  if (defined(geomData.indexBuffer) && !defined(cache.indexGPUBuffer)) {
-    const ibData = geomData.indexBuffer;
+  // Create index buffer if indexed geometry. Auto-detect uint16 vs
+  // uint32 from the maximum index value (matches
+  // `WebGPUPrimitiveCommands.ensureIndexBuffer`).
+  const indices = geomData.indices;
+  if (defined(indices) && !defined(cache.indexGPUBuffer)) {
+    let needsU32 = false;
+    for (let i = 0; i < indices.length; i++) {
+      if (indices[i] > 0xffff) {
+        needsU32 = true;
+        break;
+      }
+    }
+    const typed = needsU32
+      ? new Uint32Array(indices)
+      : new Uint16Array(indices);
+    cache.indexFormat = needsU32 ? "uint32" : "uint16";
     cache.indexGPUBuffer = device.createBuffer({
       label: "GroundPrimitive IB",
-      size: ibData.byteLength,
+      size: typed.byteLength,
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(cache.indexGPUBuffer, 0, ibData);
-    cache.indexCount = geomData.indexCount || ibData.byteLength / 2;
+    device.queue.writeBuffer(cache.indexGPUBuffer, 0, typed);
+    cache.indexCount = indices.length;
   }
 
   // Pick the classification pass based on the primitive's classificationType.
@@ -483,6 +744,95 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       ? 3 /* TERRAIN_CLASSIFICATION */
       : 6; /* CESIUM_3D_TILE_CLASSIFICATION */
 
+  // Migration Session 1 — pick the dispatch path.
+  //
+  // Default is depth-sample (single pass per primitive). Falls back to
+  // the legacy 2-pass stencil approach when the globe-depth view isn't
+  // published yet (first frame, viewport resize, debug paths that don't
+  // run executeCopyDepth). The fallback keeps the renderer functional
+  // until the depth-source plumbing in Migration Sessions 2-3 makes the
+  // depth-sample path available unconditionally.
+  const globeDepthView = context._globeDepthView ?? null;
+  const useDepthSample = _useDepthSampleClassifier && globeDepthView !== null;
+
+  if (useDepthSample) {
+    // Build / refresh the depth-sample bind group from the current frame's
+    // globe depth view. The bind group is rebuilt every frame because the
+    // underlying view object can change on resize. The sampler is shared
+    // across frames (linear-clamped is correct for the unpacked depth).
+    if (!defined(cache.depthSampleSampler)) {
+      cache.depthSampleSampler = device.createSampler({
+        label: "GroundPrimitive depth-sample sampler",
+        magFilter: "linear",
+        minFilter: "linear",
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
+      });
+    }
+    if (
+      !defined(cache.depthSampleBindGroup) ||
+      cache.depthSampleViewRef !== globeDepthView
+    ) {
+      cache.depthSampleBindGroup = device.createBindGroup({
+        label: "GroundPrimitive depth-sample BG",
+        layout: cache._pipelineResources.depthSampleBgl,
+        entries: [
+          { binding: 0, resource: globeDepthView },
+          { binding: 1, resource: cache.depthSampleSampler },
+        ],
+      });
+      cache.depthSampleViewRef = globeDepthView;
+    }
+
+    const depthSampleColorCommand = new WebGPUDrawCommand({
+      pipeline: cache.depthSampleColorPipeline,
+      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer || undefined,
+      indexCount: cache.indexCount || 0,
+      indexFormat: cache.indexFormat || "uint16",
+      vertexCount: cache.vertexCount || 0,
+      pass: groundPass,
+      owner: primitive,
+    });
+
+    if (defined(pickColor)) {
+      // Pick command rebuilds when the depth-sample bind group does (the
+      // bind-group reference changes on view turnover). Cheaper than
+      // caching since pick is a per-frame transient anyway.
+      cache.pickCommand = new WebGPUDrawCommand({
+        pipeline: cache.depthSamplePickPipeline,
+        bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+        vertexBuffers: [cache.vertexGPUBuffer],
+        indexBuffer: cache.indexGPUBuffer || undefined,
+        indexCount: cache.indexCount || 0,
+        indexFormat: cache.indexFormat || "uint16",
+        vertexCount: cache.vertexCount || 0,
+        pass: groundPass,
+        owner: primitive,
+        pickOnly: true,
+      });
+      attachPickToColorCommand(depthSampleColorCommand, cache.pickCommand);
+    }
+
+    return {
+      stencilPipeline: cache.stencilPipeline,
+      colorPipeline: cache.depthSampleColorPipeline,
+      pickPipeline: cache.depthSamplePickPipeline,
+      bindGroup: cache.bindGroup,
+      // Sentinel — null `stencilCommand` tells the GroundPrimitive consumer
+      // to push only `colorCommand`. See `Scene/GroundPrimitive.js`
+      // delegation.
+      stencilCommand: null,
+      colorCommand: depthSampleColorCommand,
+      pickCommand: cache.pickCommand,
+    };
+  }
+
+  // Legacy stencil fallback (kept for Migration Sessions 2-3 as a quick
+  // toggle if the depth-sample path needs a regression workaround).
+  // Slated for removal in Migration Session 5.
+
   // Stencil pass draw command (mark coverage, no color output)
   const stencilCommand = new WebGPUDrawCommand({
     pipeline: cache.stencilPipeline,
@@ -490,7 +840,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     vertexBuffers: [cache.vertexGPUBuffer],
     indexBuffer: cache.indexGPUBuffer || undefined,
     indexCount: cache.indexCount || 0,
-    indexFormat: "uint16",
+    indexFormat: cache.indexFormat || "uint16",
     vertexCount: cache.vertexCount || 0,
     stencilReference: 1,
     pass: groundPass,
@@ -504,7 +854,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     vertexBuffers: [cache.vertexGPUBuffer],
     indexBuffer: cache.indexGPUBuffer || undefined,
     indexCount: cache.indexCount || 0,
-    indexFormat: "uint16",
+    indexFormat: cache.indexFormat || "uint16",
     vertexCount: cache.vertexCount || 0,
     stencilReference: 1,
     pass: groundPass,
@@ -523,7 +873,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
         vertexBuffers: [cache.vertexGPUBuffer],
         indexBuffer: cache.indexGPUBuffer || undefined,
         indexCount: cache.indexCount || 0,
-        indexFormat: "uint16",
+        indexFormat: cache.indexFormat || "uint16",
         vertexCount: cache.vertexCount || 0,
         stencilReference: 1,
         pass: groundPass,
@@ -545,6 +895,23 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   };
 }
 
+// Migration Session 1 toggle. Default `true` selects the depth-sample
+// classifier; setting to `false` routes through the legacy 2-pass
+// stencil pipelines. Exposed for debug / regression workarounds during
+// Migration Sessions 2-3; the legacy path is removed in Migration
+// Session 5 and this toggle goes away with it.
+let _useDepthSampleClassifier = true;
+
+/** @private */
+function setUseDepthSampleClassifier(value) {
+  _useDepthSampleClassifier = !!value;
+}
+
+/** @private */
+function getUseDepthSampleClassifier() {
+  return _useDepthSampleClassifier;
+}
+
 function destroyWebGPUGroundPrimitiveResources(primitive) {
   const cache = primitive._webgpuCache;
   if (!defined(cache)) {
@@ -562,8 +929,12 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
 export {
   createWebGPUGroundPrimitiveCommands,
   destroyWebGPUGroundPrimitiveResources,
+  setUseDepthSampleClassifier,
+  getUseDepthSampleClassifier,
 };
 export default {
   createWebGPUGroundPrimitiveCommands,
   destroyWebGPUGroundPrimitiveResources,
+  setUseDepthSampleClassifier,
+  getUseDepthSampleClassifier,
 };

@@ -863,14 +863,23 @@ function updateAndQueueCommands(
   debugShowBoundingVolume,
   twoPasses,
 ) {
-  // WebGPU path: delegate to the ground primitive feature renderer
-  // which uses two-pass stencil rendering with WGSL shaders
+  // WebGPU path: delegate to the ground primitive feature renderer.
+  //
+  // The renderer can emit either a 2-pass stencil pair (legacy, mark +
+  // paint) or a single depth-sample command (Migration Session 1 default
+  // — samples globe depth in the fragment shader instead of pre-marking
+  // stencil). The two paths are distinguished by `stencilCommand`:
+  // present means stencil mode, null means depth-sample. When both are
+  // present we push both; when only `colorCommand` is present we push
+  // just it. Returning neither falls through to the WebGL path.
   const context = frameState.context;
   const fr = context.getFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE);
   if (fr && fr.createCommands) {
     const result = fr.createCommands(groundPrimitive, frameState);
-    if (result && result.stencilCommand && result.colorCommand) {
-      frameState.commandList.push(result.stencilCommand);
+    if (result && result.colorCommand) {
+      if (result.stencilCommand) {
+        frameState.commandList.push(result.stencilCommand);
+      }
       frameState.commandList.push(result.colorCommand);
       return;
     }

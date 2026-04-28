@@ -283,6 +283,24 @@ The framing splits into two distinct items:
 
 **Trace:** Replaces C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH per audit 2026-04-28.
 
+### C-R8-CLASSIFICATION-PRIMITIVE-GEOM-PLUMBING
+
+**Status: Pre-existing blocker, surfaced during Migration Session 1 (2026-04-28).**
+
+**What:** `WebGPUGroundPrimitiveRenderer` reads `primitive._webgpuGeometryData[0].attributes.position3DHigh/Low` (Migration Session 1 layout) to build the vertex/index buffers it dispatches against. But neither `GroundPrimitive` nor its inner `ClassificationPrimitive` ever populates `_webgpuGeometryData`. `Scene/PrimitiveGeometryHelpers.js:788` populates it for the base `Primitive` class, but `ClassificationPrimitive` builds shadow-volume geometry through a separate dynamic-encoding pipeline that bypasses that hook.
+
+**How the gap was hidden:** the previous version of the renderer read `geomData.vertexBuffer` / `.indexBuffer` directly — slots that never existed at all. The `if (!defined(geomData.vertexBuffer)) return null` early-return therefore always fired, the consumer (`Scene/GroundPrimitive.js`) fell through to its WebGL path, and the WebGL-style `DrawCommand` that path produced got pushed to a WebGPU command list. Sandcastle baselines don't include `GroundPrimitive` content, so the visible failure (a `passEncoder.draw()` validation error) was never caught.
+
+**Why deferred:** Migration Session 1 fixes the renderer-side consumption (correct attribute extraction, correct interleaved upload, correct index-format detection) so that the moment `_webgpuGeometryData` is populated by `ClassificationPrimitive`'s update path, the renderer becomes functional. The producer-side wiring is a separate concern that touches `Scene/ClassificationPrimitive.js` and the shadow-volume geometry encoder; doing it in this session would conflate two distinct architectural surfaces.
+
+**Prerequisites:** None. Independent of the depth-sample migration — the same plumbing fix would have unblocked the legacy stencil renderer too.
+
+**Estimated effort:** 1–2 sessions. Trace `ClassificationPrimitive.update` → shadow-volume geometry creation → vertex/index encoding, and add a `_webgpuGeometryData` populator at the equivalent point that `Scene/PrimitiveGeometryHelpers.js:788` does for regular primitives.
+
+**Impact:** With this fix, the depth-sample classifier becomes runtime-validatable. Without it, Migration Sessions 2–5 ship infrastructure that compiles cleanly but cannot be exercised in-browser. Sandcastle additions covering `GroundPrimitive` are gated on this fix.
+
+**Trace:** Surfaced 2026-04-28 during Migration Session 1 smoke testing — `Apps/WebGPUTest/split-screen-comparison.html` + a programmatically added rectangle `GroundPrimitive` produces `Failed to execute 'draw' on 'GPURenderPassEncoder': Value is not of type 'unsigned long'` as the WebGL fall-through command crashes the WebGPU dispatcher.
+
 ### C-R8-GROUND-POLYLINE-NATIVE
 
 **What:** No WebGPU equivalent of `GroundPolylinePrimitive` exists. WebGL has `PolylineShadowVolumeVS/FS` shaders + a `GroundPolylinePrimitive` consumer that sits beside `GroundPrimitive`. WebGPU's classifier covers volumes (`GroundPrimitive`) but not polylines drawn on terrain.
