@@ -636,23 +636,31 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
 
   // Build actual draw commands if vertex data is available.
   //
-  // Migration Session 1 — the `_webgpuGeometryData` slot on the primitive
-  // is populated by `Scene/PrimitiveGeometryHelpers.js` as an array of
-  // `{ attributes, indices, primitiveType, boundingSphere }` (one entry
-  // per Geometry instance). The previous version of this renderer read
-  // `geomData.vertexBuffer` / `.indexBuffer` directly — those slots
-  // never existed, so the early-return always fired and no WebGPU
-  // commands ever reached the command list. The actual vertex / index
-  // streams live on the saved attributes (`position3DHigh.values`,
-  // `position3DLow.values`, `indices`) and need to be packed into GPU
-  // buffers on first use, mirroring `WebGPUPrimitiveCommands.js`'s
-  // `extractPositionData` + `ensureIndexBuffer` helpers.
+  // Migration Session 1 (Batch 81) — `_webgpuGeometryData` is populated
+  // by `Scene/PrimitiveGeometryHelpers.js:788` on the innermost Cesium
+  // `Primitive`. The wrapping chain for a GroundPrimitive is:
+  //   `_GroundPrimitive` → `._primitive` (`ClassificationPrimitive`) →
+  //   `._primitive` (`Primitive`) → `._webgpuGeometryData` (array).
+  // Walk the chain to find the slot. Direct callers that wire the
+  // renderer against a `Primitive` or `ClassificationPrimitive` work
+  // through the same lookup with shorter chains.
+  //
+  // The producer-side hook lives in the existing `Primitive.update` →
+  // `createVertexArray` flow in PrimitiveGeometryHelpers — no new
+  // populator was needed for ClassificationPrimitive because it
+  // delegates to a Primitive at construction time
+  // (`ClassificationPrimitive.js:417`). What WAS missing was the
+  // walk-the-chain lookup on the renderer side, plus the correct
+  // attribute extraction at `_webgpuGeometryData[g].attributes
+  // .position3DHigh.values` (the slot Migration Session 1 added).
   //
   // First-cut handles only `_webgpuGeometryData[0]`. Multi-geometry
   // primitives (rare for GroundPrimitive — typically one rectangle /
-  // polygon per primitive) are tracked as a follow-up; the
-  // single-geometry path covers the common case.
-  const geomDataArray = primitive._webgpuGeometryData;
+  // polygon per primitive) are tracked as a follow-up.
+  const geomDataArray =
+    primitive._webgpuGeometryData ??
+    primitive._primitive?._webgpuGeometryData ??
+    primitive._primitive?._primitive?._webgpuGeometryData;
   if (!defined(geomDataArray) || geomDataArray.length === 0) {
     return {
       stencilPipeline: cache.stencilPipeline,
@@ -695,13 +703,17 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       interleaved[dst + 4] = posLowAttr.values[src + 1];
       interleaved[dst + 5] = posLowAttr.values[src + 2];
     }
+    // `WebGPUBuffer.createVertexBuffer(device, data, label)` writes the
+    // data on its own; we don't follow up with a separate
+    // `device.queue.writeBuffer` call. The legacy renderer's call site
+    // had this wrong (passed `byteLength` as data), which contributed
+    // to the silent breakage along with the broader geometry-plumbing
+    // gap.
     cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
       device,
-      interleaved.byteLength,
-      false,
+      interleaved,
       "GroundPrimitive VB",
     );
-    device.queue.writeBuffer(cache.vertexGPUBuffer.buffer, 0, interleaved);
     cache.vertexCount = numVerts;
   }
 

@@ -283,23 +283,21 @@ The framing splits into two distinct items:
 
 **Trace:** Replaces C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH per audit 2026-04-28.
 
-### C-R8-CLASSIFICATION-PRIMITIVE-GEOM-PLUMBING
+### ~~C-R8-CLASSIFICATION-PRIMITIVE-GEOM-PLUMBING~~ FIXED 2026-04-28 (Batch 81)
 
-**Status: Pre-existing blocker, surfaced during Migration Session 1 (2026-04-28).**
+**Resolution:** Two distinct gaps that compounded into a single visible failure:
 
-**What:** `WebGPUGroundPrimitiveRenderer` reads `primitive._webgpuGeometryData[0].attributes.position3DHigh/Low` (Migration Session 1 layout) to build the vertex/index buffers it dispatches against. But neither `GroundPrimitive` nor its inner `ClassificationPrimitive` ever populates `_webgpuGeometryData`. `Scene/PrimitiveGeometryHelpers.js:788` populates it for the base `Primitive` class, but `ClassificationPrimitive` builds shadow-volume geometry through a separate dynamic-encoding pipeline that bypasses that hook.
+1. **Renderer was reading the wrong nesting level.** `_webgpuGeometryData` IS populated by `Scene/PrimitiveGeometryHelpers.js:788` on the innermost Cesium `Primitive`, but the wrapping chain for a `GroundPrimitive` is `_GroundPrimitive` → `._primitive` (`ClassificationPrimitive`) → `._primitive` (`Primitive`) → `._webgpuGeometryData`. The renderer was reading the slot off the `_GroundPrimitive` argument directly, where it never lives. **Fix:** walk-the-chain lookup at `WebGPUGroundPrimitiveRenderer.js` — try `primitive._webgpuGeometryData ?? primitive._primitive?._webgpuGeometryData ?? primitive._primitive?._primitive?._webgpuGeometryData`. Direct `Primitive` and `ClassificationPrimitive` callers work through the same lookup with shorter chains.
 
-**How the gap was hidden:** the previous version of the renderer read `geomData.vertexBuffer` / `.indexBuffer` directly — slots that never existed at all. The `if (!defined(geomData.vertexBuffer)) return null` early-return therefore always fired, the consumer (`Scene/GroundPrimitive.js`) fell through to its WebGL path, and the WebGL-style `DrawCommand` that path produced got pushed to a WebGPU command list. Sandcastle baselines don't include `GroundPrimitive` content, so the visible failure (a `passEncoder.draw()` validation error) was never caught.
+2. **`createVertexBuffer` was called with the wrong arguments.** The legacy renderer's call site was `WebGPUBuffer.createVertexBuffer(device, vbData.byteLength, false, label)` — but the API is `(device, data, label)`. Passing `byteLength` (a number) as `data` made the inner `data.byteLength` lookup return `undefined`, which the `createBuffer` validation rejected as "Value is not of type 'unsigned long long'". **Fix:** pass the typed array directly; drop the redundant `device.queue.writeBuffer` call (the helper writes data internally).
 
-**Why deferred:** Migration Session 1 fixes the renderer-side consumption (correct attribute extraction, correct interleaved upload, correct index-format detection) so that the moment `_webgpuGeometryData` is populated by `ClassificationPrimitive`'s update path, the renderer becomes functional. The producer-side wiring is a separate concern that touches `Scene/ClassificationPrimitive.js` and the shadow-volume geometry encoder; doing it in this session would conflate two distinct architectural surfaces.
+**Producer side was already correct.** `ClassificationPrimitive.js:417` constructs an internal `Primitive`, and that internal Primitive's `update` → `createVertexArray` flow runs the existing `PrimitiveGeometryHelpers.js:788` populator. No new populator was needed; the chain just needed to be walked on the renderer side.
 
-**Prerequisites:** None. Independent of the depth-sample migration — the same plumbing fix would have unblocked the legacy stencil renderer too.
+**Validation:** A programmatically added `RectangleGeometry`-backed `GroundPrimitive` now reaches the renderer with `cache.vertexCount = 384, cache.indexCount = 1716, cache.indexFormat = "uint16"` populated, the depth-sample bind group constructed, and zero console errors during dispatch. Visual output verification is gated on a separate WebGPU canvas-rendering issue (the canvas appears black even on the default CesiumViewer page without any classification primitives — surfaced 2026-04-28, separate investigation).
 
-**Estimated effort:** 1–2 sessions. Trace `ClassificationPrimitive.update` → shadow-volume geometry creation → vertex/index encoding, and add a `_webgpuGeometryData` populator at the equivalent point that `Scene/PrimitiveGeometryHelpers.js:788` does for regular primitives.
+**Files touched:** `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js`. Minor: marked the legacy stencil pipelines now compile and dispatch correctly too — both classifier paths are runtime-functional after Batch 81 modulo the canvas-rendering investigation.
 
-**Impact:** With this fix, the depth-sample classifier becomes runtime-validatable. Without it, Migration Sessions 2–5 ship infrastructure that compiles cleanly but cannot be exercised in-browser. Sandcastle additions covering `GroundPrimitive` are gated on this fix.
-
-**Trace:** Surfaced 2026-04-28 during Migration Session 1 smoke testing — `Apps/WebGPUTest/split-screen-comparison.html` + a programmatically added rectangle `GroundPrimitive` produces `Failed to execute 'draw' on 'GPURenderPassEncoder': Value is not of type 'unsigned long'` as the WebGL fall-through command crashes the WebGPU dispatcher.
+**Closing batch:** Batch 81.
 
 ### C-R8-GROUND-POLYLINE-NATIVE
 
