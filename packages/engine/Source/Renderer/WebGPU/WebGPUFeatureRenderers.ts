@@ -106,6 +106,10 @@ import {
   createWebGPUGroundPrimitiveCommands,
   destroyWebGPUGroundPrimitiveResources,
 } from "./WebGPUGroundPrimitiveRenderer.js";
+import {
+  createWebGPUGroundPolylineCommands,
+  destroyWebGPUGroundPolylineResources,
+} from "./WebGPUGroundPolylineRenderer.js";
 
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
@@ -427,6 +431,18 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE, {
     createCommands: createWebGPUGroundPrimitiveCommands,
     destroy: destroyWebGPUGroundPrimitiveResources,
+  });
+
+  // Migration Session 4 (Batch 84) — GroundPolylinePrimitive classifier.
+  // Skeleton-only registration; `createCommands` returns null until
+  // the WGSL VS/FS port lands in Session 4b. Registering the stub
+  // (not the absent slot) lets `getFeatureRenderer(GROUND_POLYLINE)`
+  // return a real handle so consumers can feature-detect the
+  // registration vs. the implementation level via
+  // `renderer.isFullyImplemented?.()`.
+  context.registerFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE, {
+    createCommands: createWebGPUGroundPolylineCommands,
+    destroy: destroyWebGPUGroundPolylineResources,
   });
 
   // ── Globe / Terrain ──

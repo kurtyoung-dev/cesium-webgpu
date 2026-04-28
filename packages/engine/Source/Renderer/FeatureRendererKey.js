@@ -122,6 +122,17 @@ const FeatureRendererKey = {
   // sorted indices don't need a readback to CPU.
   POINT_CLOUD_SORT: 40,
 
+  // ── Ground polyline classifier (Migration Session 4, 2026-04-28) ──
+  // WebGPU equivalent of GroundPolylinePrimitive's classification path.
+  // Same depth-texture sampling plumbing as GROUND_PRIMITIVE +
+  // 5-plane fragment-side intersection tests (start/end/right miter
+  // planes, plus aligned-plane checks for tex coord). Renderer
+  // skeleton lands in Batch 84; the full WGSL VS/FS port of
+  // PolylineShadowVolumeVS/FS.glsl is tracked as Session 4b in
+  // DEFERRED_WORK.md (~250 LOC of plane-distance math + per-vertex
+  // volume extrusion).
+  GROUND_POLYLINE: 41,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -134,7 +145,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 41,
+  COUNT: 42,
 };
 
 export default Object.freeze(FeatureRendererKey);
