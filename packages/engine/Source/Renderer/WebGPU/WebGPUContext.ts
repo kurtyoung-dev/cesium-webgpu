@@ -354,6 +354,17 @@ export class WebGPUContext extends GraphicsContext {
   // detection stage in Model FS) have a single, stable place to read
   // it from. `null` when globe depth wasn't computed this frame.
   public _globeDepthView: GPUTextureView | null = null;
+  // Migration Session 2 — packed translucent depth view from
+  // `WebGPUTranslucentTileClassification.executePackDepth`. Published
+  // each frame after the pack-depth pipeline runs IF translucent depth
+  // was captured this frame (gated on `tcc.hasTranslucentDepth`).
+  // `null` on frames without translucent 3D-tile content. The
+  // depth-sample classifier (`WebGPUGroundPrimitiveRenderer`) prefers
+  // this view over `_globeDepthView` when present so classification
+  // volumes clip against the front-most translucent tile surface,
+  // matching WebGL's `czm_unpackDepth(czm_globeDepthTexture)` behaviour
+  // for translucent-on-translucent classification.
+  public _packedTranslucentDepthView: GPUTextureView | null = null;
 
   // WebGL extension properties (WebGPU natively supports these as core features)
   public floatingPointTexture: boolean = true; // WebGPU always supports float textures

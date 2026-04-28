@@ -1083,6 +1083,12 @@ export class WebGPUSceneRenderer {
     // model effects bind group on frames that skip the globe-depth
     // copy (e.g., picking, debug paths, useGlobeDepthFramebuffer off).
     context._globeDepthView = null;
+    // Migration Session 2 — clear per-frame packed-translucent-depth
+    // view so a stale view from the previous frame doesn't get
+    // sampled by the classifier when this frame has no translucent
+    // tiles. Republished by `tcc.executePackDepth` below when there
+    // IS translucent depth available.
+    context._packedTranslucentDepthView = null;
     // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — clear per-frame
     // translucent-depth flag; set when the post-translucent depth
     // capture succeeds (single-sample scenes).
@@ -1415,6 +1421,18 @@ export class WebGPUSceneRenderer {
             this._sceneFramebuffer.colorTarget.getDepthSampleableView?.() ??
             null;
           tcc.executePackDepth(enc, opaqueSampleableView);
+          // Migration Session 2 — publish the packed-translucent-depth
+          // view on the context so the depth-sample classifier
+          // (`WebGPUGroundPrimitiveRenderer`) can sample it instead of
+          // `_globeDepthView` for translucent-on-translucent
+          // classification. The getter returns `undefined` when no
+          // translucent depth was captured this frame, which we
+          // normalize to `null` so the consumer's existing null-check
+          // pattern works. The view is recreated each frame from the
+          // packed-depth texture; the classifier rebuilds its bind
+          // group when the view ref changes.
+          context._packedTranslucentDepthView =
+            tcc.packedTranslucentDepthView ?? null;
           context.resumeDefaultRenderPass?.();
         }
       }

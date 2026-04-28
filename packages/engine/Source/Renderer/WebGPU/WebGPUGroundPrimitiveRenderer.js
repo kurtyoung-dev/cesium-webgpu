@@ -759,13 +759,28 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Migration Session 1 — pick the dispatch path.
   //
   // Default is depth-sample (single pass per primitive). Falls back to
-  // the legacy 2-pass stencil approach when the globe-depth view isn't
+  // the legacy 2-pass stencil approach when no depth source is
   // published yet (first frame, viewport resize, debug paths that don't
-  // run executeCopyDepth). The fallback keeps the renderer functional
-  // until the depth-source plumbing in Migration Sessions 2-3 makes the
-  // depth-sample path available unconditionally.
+  // run executeCopyDepth).
+  //
+  // Migration Session 2 (Batch 82) — depth source preference. Prefer
+  // the packed-translucent-depth view when available — it carries
+  // front-most translucent surface depth so classification volumes
+  // clip against translucent 3D-tile surfaces instead of the globe
+  // behind them. Falls through to globe depth when no translucent
+  // tiles contributed depth this frame (the typical case for scenes
+  // without translucent 3D-tile content). Both views share the same
+  // RGBA-packed format produced by `WebGPUGlobeDepth`-style packing,
+  // so the WGSL `dsColorFS` / `dsPickFS` shaders need no source-
+  // specific branching — only the bind-group view differs.
+  //
+  // Equivalent to WebGL's `czm_unpackDepth(czm_globeDepthTexture)`
+  // call which always reads the post-pack depth (translucent if
+  // captured this frame, globe-only otherwise).
+  const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
-  const useDepthSample = _useDepthSampleClassifier && globeDepthView !== null;
+  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  const useDepthSample = _useDepthSampleClassifier && depthSourceView !== null;
 
   if (useDepthSample) {
     // Build / refresh the depth-sample bind group from the current frame's
@@ -781,19 +796,24 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
         addressModeV: "clamp-to-edge",
       });
     }
+    // Bind group rebuilds when the depth source view ref changes. With
+    // Migration Session 2, the source can flip between
+    // packed-translucent depth and globe depth on a frame-by-frame
+    // basis (depending on whether translucent tiles contributed depth
+    // this frame), so the rebuild check drives both views uniformly.
     if (
       !defined(cache.depthSampleBindGroup) ||
-      cache.depthSampleViewRef !== globeDepthView
+      cache.depthSampleViewRef !== depthSourceView
     ) {
       cache.depthSampleBindGroup = device.createBindGroup({
         label: "GroundPrimitive depth-sample BG",
         layout: cache._pipelineResources.depthSampleBgl,
         entries: [
-          { binding: 0, resource: globeDepthView },
+          { binding: 0, resource: depthSourceView },
           { binding: 1, resource: cache.depthSampleSampler },
         ],
       });
-      cache.depthSampleViewRef = globeDepthView;
+      cache.depthSampleViewRef = depthSourceView;
     }
 
     const depthSampleColorCommand = new WebGPUDrawCommand({
