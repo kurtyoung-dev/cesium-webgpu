@@ -263,23 +263,29 @@ const throttle = (callback) => {
     });
 
     let jsHintOptionsCache;
+    // Watch `.js` AND `.ts` source files. Original watcher only matched
+    // `.js`, which silently masked TypeScript edits during dev — the
+    // dev server kept serving a stale in-memory bundle until restart,
+    // making it look like fixes weren't propagating. Found while
+    // debugging the Translucent Classification depth-copy validation:
+    // hours of "fix is in the bundle on disk but doesn't run" turned
+    // out to be `chokidar.watch` filtering out `.ts` change events.
+    const isWatchedSource = (filePath, stats) => {
+      if (!stats?.isFile()) {
+        return false;
+      }
+      return !(filePath.endsWith(".js") || filePath.endsWith(".ts"));
+    };
     const engineSourceWatcher = chokidar.watch(["packages/engine/Source"], {
       ignored: [
         "packages/engine/Source/Shaders",
         "packages/engine/Source/ThirdParty",
-        (path, stats) => {
-          return !!stats?.isFile() && !path.endsWith(".js");
-        },
+        isWatchedSource,
       ],
       ignoreInitial: true,
     });
     const widgetsSourceWatcher = chokidar.watch(["packages/widgets/Source"], {
-      ignored: [
-        "packages/widgets/Source/ThirdParty",
-        (path, stats) => {
-          return !!stats?.isFile() && !path.endsWith(".js");
-        },
-      ],
+      ignored: ["packages/widgets/Source/ThirdParty", isWatchedSource],
       ignoreInitial: true,
     });
 

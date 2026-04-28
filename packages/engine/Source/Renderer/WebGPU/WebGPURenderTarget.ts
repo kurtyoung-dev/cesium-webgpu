@@ -188,6 +188,13 @@ export class WebGPURenderTarget {
       let depthUsage: GPUTextureUsageFlags = GPUTextureUsage.RENDER_ATTACHMENT;
       if (wantSampleable) {
         depthUsage |= GPUTextureUsage.TEXTURE_BINDING;
+        // Sampleable depth textures are also the source of
+        // `copyTextureToTexture` in
+        // `WebGPUTranslucentTileClassification.executeTranslucentDepthPass`.
+        // WebGPU validation requires the source texture's usage to
+        // include `COPY_SRC`; without this bit the copy emits a
+        // "usage doesn't include CopySrc" validation error.
+        depthUsage |= GPUTextureUsage.COPY_SRC;
       }
 
       const depthTexture = this.device.createTexture({

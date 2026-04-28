@@ -430,25 +430,19 @@ export class WebGPUTranslucentTileClassification {
 
     // Single-sample path: copy from scene depth into our owned target
     // so the pack pipeline can sample it as `texture_depth_2d`. The
-    // scene depth is COPY_SRC by virtue of how the framebuffer is
-    // allocated; runtime mismatches surface as a validation error in
-    // the same call.
+    // scene depth has `COPY_SRC` by virtue of how the framebuffer is
+    // allocated (`WebGPURenderTarget.createTextures` adds the bit when
+    // `depthSamplable` is true); runtime mismatches surface as a
+    // validation error in the same call.
     //
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — switched both source +
-    // destination aspects from `"depth-only"` to `"all"`. The WebGPU
-    // spec rejects `aspect: "depth-only"` for `copyTextureToTexture`
-    // when the texture format carries a stencil aspect; both sides are
-    // now `Depth24PlusStencil8` (after Batch 71's depth-format alignment),
-    // so the only valid copy aspect is `"all"`. Both textures have the
-    // same format so the full copy is well-defined; the pack pipeline's
-    // sampleable view (allocated below at line ~331 with `aspect:
-    // "depth-only"`) only binds the depth channel, so the stencil bytes
-    // copied into the destination are inert. Was a flaky validation
-    // error in Batches 72-75 because the timing of GlobeSurface's
-    // pipeline materialization affected when the stencil aspect was
-    // exercised; Batch 76's compute-pipeline-cache rollout made the
-    // timing consistent enough that the spec violation surfaced every
-    // run.
+    // Aspect must be `"all"` (not `"depth-only"`) — the WebGPU spec
+    // rejects `aspect: "depth-only"` for `copyTextureToTexture` when
+    // the texture format carries a stencil aspect. Both sides are
+    // `Depth24PlusStencil8` (after Batch 71's depth-format alignment),
+    // so `"all"` is the only valid copy aspect. The pack pipeline's
+    // sampleable view (allocated above with `aspect: "depth-only"`)
+    // only binds the depth channel, so the stencil bytes copied into
+    // the destination are inert.
     encoder.copyTextureToTexture(
       { texture: sceneDepthTexture, aspect: "all" },
       { texture: this._translucentDepthTexture, aspect: "all" },
