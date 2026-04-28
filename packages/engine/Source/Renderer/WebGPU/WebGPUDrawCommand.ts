@@ -140,6 +140,13 @@ interface WebGPUDrawCommandOptions {
    * cannot change per-draw.
    */
   renderState?: CesiumRenderStateLike;
+  /**
+   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78). When true, the command
+   * contributes to translucent classification depth. Set by
+   * `Cesium3DTile.js:1084` for translucent 3D-tile commands. Defaults
+   * to false; only 3D-tile renderers should set it.
+   */
+  depthForTranslucentClassification?: boolean;
 }
 
 /**
@@ -241,6 +248,21 @@ class WebGPUDrawCommand {
 
   // C-R1: WebGL-style renderState forwarded to the encoder per-draw.
   renderState?: CesiumRenderStateLike;
+
+  /**
+   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78). Mirrors the WebGL
+   * `DrawCommand.depthForTranslucentClassification` flag (set by
+   * `Cesium3DTile.js:1084` on every translucent 3D-tile command).
+   * `WebGPUTranslucentTileClassification.executeTranslucentDepthPass`
+   * checks this flag before doing the broad scene-depth copy — when no
+   * commands in the frustum are flagged, the entire pack-depth pipeline
+   * is short-circuited.
+   *
+   * Defaults `false`. Should propagate through any per-command derived
+   * variants the renderer creates (depth-only, log-depth, pick) so the
+   * dispatcher's variant selection doesn't strip the flag mid-frame.
+   */
+  depthForTranslucentClassification: boolean = false;
 
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
@@ -344,6 +366,8 @@ class WebGPUDrawCommand {
     // WebGPU-native case); non-null when the command came from a WebGL
     // consumer that wants stencilRef / blendConstant / viewport / scissor.
     this.renderState = options.renderState;
+    this.depthForTranslucentClassification =
+      options.depthForTranslucentClassification ?? false;
   }
 
   /**

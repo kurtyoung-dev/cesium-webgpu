@@ -1373,12 +1373,44 @@ export class WebGPUSceneRenderer {
         const enc: GPUCommandEncoder | undefined =
           context._currentCommandEncoder;
         if (enc) {
+          // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78) — gate the broad
+          // scene-depth copy on whether any TRANSLUCENT command in this
+          // frustum carries `depthForTranslucentClassification === true`.
+          // `Cesium3DTile.js:1084` sets that flag on translucent 3D-tile
+          // commands; nothing else in the engine sets it. When the
+          // frustum's classification list is non-empty but no flagged
+          // commands feed into the depth, the whole pack-depth pipeline
+          // would feed off useless data (label/billboard depth, etc.) —
+          // skipping it is correct. When at least one is flagged, the
+          // broad copy still runs (truly selective rendering needs the
+          // C-R8-TRANSLUCENT-MULTI-FRUSTUM per-frustum render pass
+          // restructure, where the depth-only pipeline variants land).
+          const translucentCmds = frustumCommands.commands[Pass.TRANSLUCENT];
+          const translucentCount =
+            (frustumCommands.indices[Pass.TRANSLUCENT] ?? 0) >>> 0;
+          let flaggedCommandsPresent = false;
+          for (let i = 0; i < translucentCount; ++i) {
+            const cmd = translucentCmds[i] as unknown as
+              | {
+                  depthForTranslucentClassification?: boolean;
+                }
+              | undefined;
+            if (cmd?.depthForTranslucentClassification === true) {
+              flaggedCommandsPresent = true;
+              break;
+            }
+          }
           context.endCurrentRenderPass?.();
           const sceneDepthTex =
             this._sceneFramebuffer.colorTarget.getDepthTexture?.() ?? null;
-          tcc.executeTranslucentDepthPass(enc, sceneDepthTex);
+          tcc.executeTranslucentDepthPass(
+            enc,
+            sceneDepthTex,
+            flaggedCommandsPresent,
+          );
           // Pack the captured depth so classification pipelines can
-          // sample it as a regular texture.
+          // sample it as a regular texture. Internally early-exits when
+          // `_hasTranslucentDepth` is false (the gating above sets it).
           const opaqueSampleableView =
             this._sceneFramebuffer.colorTarget.getDepthSampleableView?.() ??
             null;

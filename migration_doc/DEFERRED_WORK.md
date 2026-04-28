@@ -165,17 +165,27 @@ Existing adopters from earlier batches: Polyline, PointPrimitive, Billboard, Lab
 
 ### C-R8-TRANSLUCENT-DEPTH-ONLY
 
+**Status: Partial — pack-depth gating shipped Batch 78; deeper selective render folded into C-R8-TRANSLUCENT-MULTI-FRUSTUM.**
+
 **What:** Translucent depth capture is over-broad - copies ALL translucent geometry's depth, not just `depthForTranslucentClassification`-flagged 3D-tile content. WebGL's selective behavior derives a `_depthOnlyCommand` per command per `Cesium3DTile.js:1084`.
 
-**Why deferred:** WebGPU model commands lack `_depthOnlyCommand` derivation; needs `WebGPUModelRenderer.js` + Batch 29 `selectCommandVariant` dispatcher to respect new derived slot.
+**Batch 78 progress:**
 
-**Prerequisites:** None.
+- `WebGPUDrawCommand` now carries the `depthForTranslucentClassification` flag (Cesium3DTile.js:1084 lands on the WebGPU command instance; previously the assignment hit the field as `undefined` since it didn't exist on the class).
+- `WebGPUTranslucentTileClassification.executeTranslucentDepthPass` accepts a `flaggedCommandsPresent` argument and short-circuits the entire pack-depth pipeline (no copy, no MSAA source recording, no pack pass) when no commands in the frustum need translucent classification depth. Saves a full per-frustum copy when nothing reads the result.
+- `WebGPUSceneRenderer` scans the frustum's TRANSLUCENT command list before invoking the translucent-depth path; the broad copy now ONLY fires when at least one flagged command exists.
 
-**Estimated effort:** 1 session.
+**Still over-broad when active:** when at least one flagged command exists, the implementation still uses the scene-depth copy (captures ALL translucent geometry, not just 3D-tile content). The label-over-3D-tile sub-bug remains until depth-only WGSL pipeline variants per command exist.
+
+**Folded into C-R8-TRANSLUCENT-MULTI-FRUSTUM:** the per-frustum render-pass restructure that MULTI-FRUSTUM ships is the natural home for selective-render. Once we're already creating per-frustum depth attachments, narrowing the command list to flagged-only is incremental — and avoids two architectural restructures of the same code surface.
+
+**Prerequisites:** None for the gating work (shipped). Selective render needs MULTI-FRUSTUM's pipeline-variant infrastructure.
+
+**Estimated remaining effort:** 0.5 session (folded into Sessions 2-3 of the C-R8 sweep).
 
 **Impact:** Visually correct for typical scenes (no other translucent contributors). Subtle bugs for translucent-label-heavy scenes - labels' depth contributes to classification mask when it shouldn't.
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2130.
+**Trace:** REVIEW_FIX_PROGRESS.md:2130; Batch 78 shipped 2026-04-28.
 
 ### C-R8-TRANSLUCENT-MULTI-FRUSTUM
 

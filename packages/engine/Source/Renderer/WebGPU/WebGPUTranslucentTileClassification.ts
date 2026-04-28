@@ -384,25 +384,42 @@ export class WebGPUTranslucentTileClassification {
   }
 
   /**
-   * **First-cut implementation** — capture translucent depth by
-   * copying from `sceneDepthTextureView` AFTER the main translucent
-   * pass ends. This is over-broad (all translucent geometry
-   * contributes, not just 3D-tile content) but produces correct
-   * depth for the typical case (scene contains globe + tiles + sky;
-   * everything translucent IS a tile).
+   * Capture translucent depth by copying from `sceneDepthTexture` AFTER
+   * the main translucent pass ends.
    *
-   * **Future:** when WebGPU model commands gain `_depthOnlyCommand`
-   * derivation + the `depthForTranslucentClassification` flag is
-   * routed, this method will iterate translucent commands flagged
-   * with that bit, fire their depth-only variants into
-   * `_translucentDepthTexture` directly, and skip the wholesale copy.
+   * **Selectivity (C-R8-TRANSLUCENT-DEPTH-ONLY, Batch 78):** the broad
+   * scene-depth copy is now gated on whether ANY command in the current
+   * frustum carries `depthForTranslucentClassification === true`. When
+   * no commands are flagged (most scenes — only 3D-tilesets ever set
+   * the flag, via `Cesium3DTile.js:1084`), the entire pack-depth
+   * pipeline is short-circuited: no copy, no MSAA source recording, no
+   * pack pass downstream. Saves a per-frustum copy when nothing reads
+   * the result.
+   *
+   * **Still over-broad when active:** when at least one flagged command
+   * exists, the implementation still uses the scene-depth copy path
+   * (captures ALL translucent geometry, not just 3D-tile content).
+   * Producing the truly selective render needs depth-only WGSL pipeline
+   * variants per command — folded into the C-R8-TRANSLUCENT-MULTI-FRUSTUM
+   * work because the per-frustum render pass restructure is the natural
+   * place for it.
    */
   executeTranslucentDepthPass(
     encoder: GPUCommandEncoder,
     sceneDepthTexture: GPUTexture | null,
+    flaggedCommandsPresent: boolean,
   ): void {
     if (!this._device || !sceneDepthTexture) return;
     if (!this._translucentDepthTexture) return;
+    if (!flaggedCommandsPresent) {
+      // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78) — no `depthForTranslucent-
+      // Classification` commands in this frustum; the captured depth
+      // would feed nothing useful. Clear the in-flight flag so
+      // `executePackDepth` is a no-op + `composite` correctly skips.
+      this._msaaSourceDepthTexture = null;
+      this._hasTranslucentDepth = false;
+      return;
+    }
 
     const sampleCount =
       (sceneDepthTexture as unknown as { sampleCount?: number }).sampleCount ??
