@@ -1380,8 +1380,14 @@ function updateWebGPUModel(model, frameState) {
         passClass,
       );
 
-      // Feature ID textures + batch texture (for per-feature styling)
+      // Feature ID textures + batch texture (for per-feature styling).
+      // C-R9-MODEL-FEATURE-PICK (Batch 101) — also threads `context` +
+      // `cache` (per-model cache) + a `pickPassActive` hint so
+      // `ensurePerFeaturePickIds` can allocate one Cesium pickId per
+      // feature on the first pick pass and rebind the feature-pick
+      // texture into the FeatureId BGL @binding(5).
       let featureIdBG = pipelineCache.defaultFeatureIdBindGroup;
+      const pickPassActive = !!(passes && passes.pick);
       const featureIdRes = ensureFeatureIdResources(
         device,
         primCache,
@@ -1389,6 +1395,9 @@ function updateWebGPUModel(model, frameState) {
         glTFPrimitive,
         runtimeNode,
         pipelineCache,
+        context,
+        cache,
+        pickPassActive,
       );
 
       // Set instancing + feature ID flags AFTER packMaterialUniforms
@@ -1595,6 +1604,125 @@ function updateWebGPUModel(model, frameState) {
       }
 
       commandList.push(webgpuCmd);
+
+      // C-R1-TILE-BATCH (Batch 101) — dual-command emission. When the
+      // primary command class is opaque (passClass === 0) AND the
+      // primitive has a batch table active, also emit a TRANSLUCENT-
+      // class derived command so per-feature styling can flip
+      // individual features to translucent without pipeline state
+      // changes. Mirrors WebGL's `deriveTranslucentCommand` at
+      // `Cesium3DTileBatchTable.js:497`. The FS uses
+      // `material.tileBatchFlags.x` (passClass) to discard the wrong-
+      // class features at each pass — see the WGSL gate added in
+      // Batch 100. Uses a SEPARATE material UB so the two commands
+      // can hold passClass = 0 / passClass = 1 independently without
+      // a per-frame second writeBuffer collision.
+      const hasBatchTable =
+        defined(featureIdRes) &&
+        (featureIdRes.flags & MaterialFlags.HAS_BATCH_TABLE) !== 0;
+      if (passClass === 0 && hasBatchTable) {
+        if (!defined(primCache.materialBufferTranslucent)) {
+          primCache.materialBufferTranslucent =
+            WebGPUBuffer.createUniformBuffer(
+              device,
+              MATERIAL_UNIFORM_SIZE,
+              `Prim material (translucent class)`,
+            );
+          primCache.materialDataTranslucent = new Float32Array(
+            MATERIAL_UNIFORM_SIZE / 4,
+          );
+          primCache.materialBGTranslucent = device.createBindGroup({
+            layout: pipelineCache.materialBGL,
+            entries: [
+              {
+                binding: 0,
+                resource: {
+                  buffer: primCache.materialBufferTranslucent.buffer,
+                },
+              },
+              {
+                binding: 1,
+                resource: { buffer: primCache.lightBuffer.buffer },
+              },
+            ],
+          });
+        }
+        // Pack with passClass=1 (the only field that differs from the
+        // primary). Re-running the full packer is the simplest path —
+        // costs ~768 B/frame extra writeBuffer per batch-table primitive,
+        // negligible vs. the per-fragment savings of correct classification.
+        packMaterialUniforms(
+          primCache.materialDataTranslucent,
+          modelMatrix,
+          matInfo,
+          primHasSkinning,
+          primHasMorphTargets,
+          pickColor,
+          cache.prevModelMatrix,
+          motionEnabled,
+          1, // passClass = translucent
+        );
+        // Mirror the post-pack instancing / featureId flag patch from
+        // the primary buffer so the translucent UB observes the same
+        // FLAG_HAS_INSTANCING / FLAG_HAS_FEATURE_ID_* / FLAG_HAS_BATCH_TABLE
+        // bits the FS gates the dual-discard branch on.
+        {
+          const flagsView = new DataView(
+            primCache.materialDataTranslucent.buffer,
+            primCache.materialDataTranslucent.byteOffset,
+          );
+          let currentFlags = flagsView.getUint32(28 * 4, true);
+          if (hasInstancing && instanceCount > 1) {
+            currentFlags |= FLAG_HAS_INSTANCING;
+          }
+          if (defined(featureIdRes)) {
+            currentFlags |= featureIdRes.flags;
+          }
+          flagsView.setUint32(28 * 4, currentFlags, true);
+        }
+        device.queue.writeBuffer(
+          primCache.materialBufferTranslucent.buffer,
+          0,
+          primCache.materialDataTranslucent.buffer,
+          0,
+          MATERIAL_UNIFORM_SIZE,
+        );
+
+        // Translucent-pass pipeline: BLEND alphaMode regardless of the
+        // primary's mode so the second draw composites properly.
+        if (!defined(primCache.translucentPipeline)) {
+          primCache.translucentPipeline = pipelineCache.getPipeline(
+            AlphaModes.BLEND,
+            matInfo.isDoubleSided,
+          );
+        }
+        const translucentCmd = new WebGPUDrawCommand({
+          pipeline: primCache.translucentPipeline,
+          bindGroups: [
+            cache.cameraBG,
+            primCache.materialBGTranslucent,
+            primCache.textureBindGroup,
+            skinningBG,
+            morphTargetBG,
+            instancingBG,
+            featureIdBG,
+            cache.effectsBG,
+          ],
+          vertexBuffers: vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount: instanceCount,
+          pass: Pass.TRANSLUCENT,
+          owner: model,
+          boundingVolume: model.boundingSphere,
+          modelMatrix: modelMatrix,
+          cull: model._cull ?? true,
+          renderState: modelRenderState,
+        });
+        commandList.push(translucentCmd);
+      }
 
       // C-R8-EDGE-EMITTER (Batch 45) — Emit edge visibility commands
       // for primitives that carry `EXT_mesh_primitive_edge_visibility`

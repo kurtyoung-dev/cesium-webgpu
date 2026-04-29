@@ -272,6 +272,9 @@ function ensureFeatureIdResources(
   primitive,
   runtimeNode,
   pipelineCache,
+  context,
+  modelCache,
+  pickPassActive,
 ) {
   // Already created — but if the batch texture values changed since last
   // frame (user called setShow / setColor on a Cesium3DTileFeature), the
@@ -392,13 +395,36 @@ function ensureFeatureIdResources(
     uniformData[8] = batchDims.x;
     uniformData[9] = batchDims.y;
   }
-  // C-R9-MODEL-FEATURE-PICK (Batch 100) — `featurePickEnabled` flag at
-  // float offset 12. Off by default; flipped on once the JS side
-  // populates a per-feature pick texture (see ensurePerFeaturePickIds
-  // — that infrastructure work is the next slice; for now the binding
-  // is plumbed and the FS branch is gated, so users opting in via a
-  // future API surface get correct routing without further FS changes).
-  uniformData[12] = 0;
+  // C-R9-MODEL-FEATURE-PICK (Batch 100/101) — `featurePickEnabled` flag
+  // at float offset 12. Flipped to 1.0 when a feature-pick texture has
+  // been allocated for this model. Allocation is eager when a batch
+  // table is present (any of the model's primitives could enter a pick
+  // pass at any time; the alternative — allocating on first pick pass —
+  // races against the bind group construction below since the BG would
+  // bind a placeholder texture that's wrong when pick fires). Cost is
+  // bounded: one Uint8Array of W*H*4 bytes (matches batch texture
+  // dimensions) + featuresLength pickId allocations, idempotent across
+  // re-renders.
+  let featurePickTex = null;
+  if (
+    defined(context) &&
+    defined(modelCache) &&
+    flags & 0x40000 // FLAG_HAS_BATCH_TABLE
+  ) {
+    featurePickTex = ensurePerFeaturePickIds(
+      device,
+      primCache,
+      modelCache,
+      context,
+      model,
+      batchTexture,
+    );
+  }
+  uniformData[12] = defined(featurePickTex) ? 1.0 : 0.0;
+  // Suppress unused-var for `pickPassActive` — kept in the signature so
+  // callers can still gate the allocation if it ever becomes too
+  // expensive (e.g., very large batch tables).
+  void pickPassActive;
 
   const featureUniformBuffer = device.createBuffer({
     label: "Feature ID uniforms",
@@ -425,16 +451,14 @@ function ensureFeatureIdResources(
       },
       { binding: 3, resource: fallbackSampler },
       { binding: 4, resource: { buffer: featureUniformBuffer } },
-      // C-R9-MODEL-FEATURE-PICK (Batch 100) — feature-pick texture
-      // bindings. Initially the placeholder white texture; when the
-      // application opts into per-feature picking, the renderer will
-      // build a feature-pick GPU texture (one row of RGBA8 entries
-      // mapping featureId → pickId color) and rebind here.
+      // C-R9-MODEL-FEATURE-PICK (Batch 100/101) — feature-pick texture
+      // bindings. Bound to the per-model feature-pick texture allocated
+      // by `ensurePerFeaturePickIds` when a batch table is present;
+      // otherwise the placeholder white texture (the FS gates on
+      // `featurePickEnabled` so the placeholder is never sampled).
       {
         binding: 5,
-        resource: (
-          primCache._featurePickGPUTexture || fallbackTex
-        ).createView(),
+        resource: (featurePickTex || fallbackTex).createView(),
       },
       { binding: 6, resource: fallbackSampler },
     ],
@@ -450,6 +474,109 @@ function ensureFeatureIdResources(
     featureIdBG: primCache._featureIdBG,
     flags: flags,
   };
+}
+
+/**
+ * C-R9-MODEL-FEATURE-PICK (Batch 101) — allocate per-feature pickIds for
+ * the model's batch table and upload an RGBA8 GPU texture mapping
+ * featureId → pickColor (the same shape as the batch styling texture).
+ *
+ * Side effects:
+ *  - On the per-PRIMITIVE cache: stamps `_featurePickGPUTexture` with the
+ *    allocated GPU texture so subsequent `ensureFeatureIdResources()`
+ *    calls bind it at @binding(5) of the FeatureId BGL.
+ *  - On the per-MODEL cache: stamps `cache._featurePickIds` (Map of
+ *    `featureId → CesiumPickId`) so allocated pickIds survive across
+ *    re-renders and pick-pass readback resolves through them.
+ *  - Flips `featureUniformData[12]` (`featurePickEnabled`) to 1.0 so the
+ *    pickFS routes through `lookupFeaturePickColor`.
+ *
+ * Idempotent: subsequent calls reuse the cached texture + pickIds. The
+ * texture only re-uploads when the batch table's featuresLength changes
+ * (rare — handled by destroying the cache slot and re-running).
+ *
+ * Allocation policy: one pickId per feature, eagerly on the FIRST pick
+ * pass that reaches a model with a batch table. The pickId target is
+ * `{primitive: model, id: featureId}` so `scene.pick()` returns the
+ * featureId of the picked feature alongside the model itself.
+ *
+ * @param {GPUDevice} device
+ * @param {object} primCache - per-primitive cache slot
+ * @param {object} cache - per-model cache slot
+ * @param {object} context - WebGPU context (provides `createPickId`)
+ * @param {object} model
+ * @param {object} batchTexture - Cesium BatchTexture instance
+ * @returns {GPUTexture|null} the cached / freshly-built feature-pick GPU texture
+ * @private
+ */
+function ensurePerFeaturePickIds(
+  device,
+  primCache,
+  cache,
+  context,
+  model,
+  batchTexture,
+) {
+  if (!defined(batchTexture)) {
+    return null;
+  }
+  const featuresLength = batchTexture.featuresLength;
+  if (!defined(featuresLength) || featuresLength === 0) {
+    return null;
+  }
+  const dimensions = batchTexture._textureDimensions;
+  if (!defined(dimensions) || dimensions.x === 0 || dimensions.y === 0) {
+    return null;
+  }
+
+  // Cache hits: reuse the prior allocation. The texture is owned by the
+  // per-MODEL cache so multi-primitive models share the same pickId set.
+  if (
+    defined(cache._featurePickGPUTexture) &&
+    cache._featurePickFeaturesLength === featuresLength
+  ) {
+    primCache._featurePickGPUTexture = cache._featurePickGPUTexture;
+    return cache._featurePickGPUTexture;
+  }
+
+  // Allocate one pickId per feature. Cesium pickIds are byte-exact RGBA
+  // colors that round-trip through the pick FBO; allocating in a
+  // contiguous block keeps the texture upload tight.
+  if (!defined(cache._featurePickIds)) {
+    cache._featurePickIds = new Map();
+  }
+  const pickIds = cache._featurePickIds;
+  const data = new Uint8Array(dimensions.x * dimensions.y * 4);
+  for (let fid = 0; fid < featuresLength; fid++) {
+    let pid = pickIds.get(fid);
+    if (!defined(pid)) {
+      pid = context.createPickId({ primitive: model, id: fid }, "feature");
+      pickIds.set(fid, pid);
+    }
+    const off = fid * 4;
+    const c = pid.color;
+    data[off] = Math.round((c.red ?? 0) * 255);
+    data[off + 1] = Math.round((c.green ?? 0) * 255);
+    data[off + 2] = Math.round((c.blue ?? 0) * 255);
+    data[off + 3] = Math.round((c.alpha ?? 1) * 255);
+  }
+
+  const tex = device.createTexture({
+    label: `Feature pick texture ${dimensions.x}x${dimensions.y}`,
+    size: [dimensions.x, dimensions.y, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: tex },
+    data,
+    { bytesPerRow: dimensions.x * 4, rowsPerImage: dimensions.y },
+    { width: dimensions.x, height: dimensions.y, depthOrArrayLayers: 1 },
+  );
+  cache._featurePickGPUTexture = tex;
+  cache._featurePickFeaturesLength = featuresLength;
+  primCache._featurePickGPUTexture = tex;
+  return tex;
 }
 
 /**
