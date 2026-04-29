@@ -115,7 +115,9 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats 132-139: iridescence (factor, ior, thickMin, thickMax, _, _, _, _)
 //   floats 140-147: sheen       (colorR, colorG, colorB, roughness, _, _, _, _)
 //   floats 148-155: volume      (thickness, attenDistance, attColorR, attColorG, attColorB, _, _, _)
-//   floats 156-191: reserved (texture transform extensions for KHR slots,
+//   floats 156-171: previousModelMatrix (mat4x4) — TAA Slice 2c (Batch 96)
+//   floats 172-175: motionFlags         (vec4: enabled, scale, _, _)
+//   floats 176-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
 // Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
@@ -225,6 +227,8 @@ function packMaterialUniforms(
   hasSkinning,
   hasMorphTargets,
   pickColor,
+  previousModelMatrix,
+  motionEnabled,
 ) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
@@ -452,8 +456,31 @@ function packMaterialUniforms(
   data[154] = 0;
   data[155] = 0;
 
-  // Reserved (slot 156-191). Zero-fill for std140 stability.
-  for (let i = 156; i < 192; i++) {
+  // TAA Slice 2c (Batch 96) — previousModelMatrix (slots 156-171). Pack
+  // the prev-frame matrix when one is provided; otherwise mirror the
+  // current matrix so a model in its first rendered frame produces
+  // zero velocity (no spurious motion blur on initial display). The
+  // WGSL VS reads this through `material.previousModelMatrix` and
+  // multiplies by `camera.previousViewProjection` for the prev clip
+  // pos.
+  if (previousModelMatrix) {
+    Matrix4.pack(previousModelMatrix, data, 156);
+  } else {
+    Matrix4.pack(modelMatrix, data, 156);
+  }
+
+  // motionFlags (slot 172-175):
+  //   x: motion-vector output enabled (0 / 1) — the WGSL FS
+  //      `computeMotionVectorScreenSpace` early-outs to zero when 0.
+  //   y: motion-vector scale (default 1.0)
+  //   z, w: reserved (sky reprojection / disocclusion params, slice 2d)
+  data[172] = motionEnabled ? 1.0 : 0.0;
+  data[173] = 1.0;
+  data[174] = 0;
+  data[175] = 0;
+
+  // Reserved (slot 176-191). Zero-fill for std140 stability.
+  for (let i = 176; i < 192; i++) {
     data[i] = 0;
   }
 }
@@ -1301,8 +1328,20 @@ function updateWebGPUModel(model, frameState) {
       });
       const pickColor = modelPickId?.color;
 
+      // TAA Slice 2c (Batch 96) — track per-model previousModelMatrix on
+      // the model's WebGPU cache (one slot for the whole model — every
+      // primitive shares the same matrix per frame). The motion-vector
+      // output gates on `frameState.taaEnabled` so static scenes don't
+      // pay the per-fragment velocity cost. Capturing the matrix on the
+      // model rather than the primitive avoids storing it once per
+      // primitive of a multi-mesh asset (ECS behavior — per model).
+      if (!defined(cache.prevModelMatrix)) {
+        cache.prevModelMatrix = Matrix4.clone(modelMatrix);
+      }
+      const motionEnabled = frameState?.taaEnabled === true;
+
       // Update material uniforms (includes skinning + morph flags +
-      // pick color slot).
+      // pick color slot + TAA per-model motion).
       packMaterialUniforms(
         primCache.materialData,
         modelMatrix,
@@ -1310,6 +1349,8 @@ function updateWebGPUModel(model, frameState) {
         primHasSkinning,
         primHasMorphTargets,
         pickColor,
+        cache.prevModelMatrix,
+        motionEnabled,
       );
 
       // Feature ID textures + batch texture (for per-feature styling)
@@ -1696,6 +1737,20 @@ function updateWebGPUModel(model, frameState) {
         }
       }
     }
+  }
+
+  // TAA Slice 2c (Batch 96) — capture this frame's modelMatrix as
+  // `prevModelMatrix` so the next frame's primitive pack reads the
+  // correct previous value. Done at the END of update so every
+  // primitive saw the same prev-frame value during its pack call.
+  // For static models the value never changes; for animated entities
+  // (transforms updated by the host app each frame) the per-frame
+  // delta drives the per-pixel velocity output gated on
+  // `frameState.taaEnabled`.
+  if (!defined(cache.prevModelMatrix)) {
+    cache.prevModelMatrix = Matrix4.clone(modelMatrix);
+  } else {
+    Matrix4.clone(modelMatrix, cache.prevModelMatrix);
   }
 }
 

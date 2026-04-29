@@ -198,13 +198,25 @@ struct MaterialUniforms {
   // attenuationColor lives in the second vec4 of this slot.
   volumeFactors0: vec4<f32>,
   volumeFactors1: vec4<f32>,
-  // Reserved (slot 156-191) — kept in the struct as 4 vec4s so std140
-  // sees the same total stride as the JS uploads (192 floats = 768 B).
-  _pad_reserved0: vec4<f32>,
-  _pad_reserved1: vec4<f32>,
-  _pad_reserved2: vec4<f32>,
-  _pad_reserved3: vec4<f32>,
-  _pad_reserved4: vec4<f32>,
+  // TAA Slice 2c (Batch 96) — previous-frame model matrix for per-model
+  // motion-vector computation. The TAA shader currently reprojects via
+  // depth + previousViewProjection alone, which treats animated /
+  // skinned / instanced geometry as static and ghosts the motion.
+  // Capturing prev-frame's modelMatrix per primitive lets the VS
+  // reconstruct the previous-frame clip-space position
+  // (`previousViewProjection * previousModelMatrix * positionMC`),
+  // which the FS can then convert to screen-space velocity. The
+  // velocity output (@location(1) MRT) is gated behind the
+  // `motionFlags.x > 0.5` toggle and currently disabled — turning it
+  // on requires the second color attachment to be added to model
+  // pipelines, which is a follow-up slice. Plumbing the data through
+  // first lets the FS-side enablement land without renderer-wide
+  // pipeline format churn.
+  previousModelMatrix: mat4x4<f32>,
+  // motionFlags.x: motion-vector output enabled (0 / 1)
+  // motionFlags.y: motion vector scale (default 1.0)
+  // motionFlags.zw: reserved for slice 2d (sky reprojection / disocclusion tweaks)
+  motionFlags: vec4<f32>,
   _pad_reserved5: vec4<f32>,
   _pad_reserved6: vec4<f32>,
   _pad_reserved7: vec4<f32>,
@@ -428,6 +440,15 @@ struct VertexOutput {
   // so interpolation stays precise at Earth scale — rotating in FS is
   // a single mat4*vec4 per fragment and preserves the RTE cancellation.
   @location(7) rteMC: vec3<f32>,
+  // TAA Slice 2c (Batch 96) — previous-frame and matched-current clip
+  // positions for per-model motion-vector reconstruction. The current
+  // clip pos is the SAME value `output.position` already holds, but
+  // duplicating it here keeps the prev-frame reprojection self-
+  // contained when MRT velocity output is enabled (so no juggle of
+  // `output.position` semantics). Both are in homogeneous clip space;
+  // FS divides by .w before the screen-space delta.
+  @location(8) previousClipPos: vec4<f32>,
+  @location(9) currentClipPosForVelocity: vec4<f32>,
 };
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -501,6 +522,24 @@ struct VertexOutput {
   let tangentEC3 = normalize((camera.normalMatrix * vec4<f32>(tangentMC.xyz, 0.0)).xyz);
   output.tangentEC = tangentEC3;
   output.bitangentEC = cross(output.normalEC, tangentEC3) * tangentMC.w;
+
+  // TAA Slice 2c (Batch 96) — previous-frame clip-space position. Uses
+  // the SAME post-skinning / post-morph / post-instancing positionMC as
+  // the current frame; pre-skinning prev-frame joint matrices are a
+  // Slice 2d concern (treats animated geometry as rigid for now). For
+  // rigid models, prev positionMC equals current positionMC and the
+  // velocity captures only the model-matrix delta plus the camera
+  // motion (`previousViewProjection * previousModelMatrix * worldPos`).
+  // Absolute world position uses positionMC directly (RTE encoding is
+  // a current-frame optimization; prev-frame uses unencoded positions
+  // applied through the prev viewProjection in world space).
+  let worldPosCurrent = material.modelMatrix * vec4<f32>(positionMC, 1.0);
+  let worldPosPrevious =
+    material.previousModelMatrix * vec4<f32>(positionMC, 1.0);
+  output.previousClipPos =
+    camera.previousViewProjection * worldPosPrevious;
+  output.currentClipPosForVelocity =
+    camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
 
   return output;
 }
@@ -609,8 +648,35 @@ struct FragmentInput {
   @location(5) bitangentEC: vec3<f32>,
   @location(6) texCoord1: vec2<f32>,
   @location(7) rteMC: vec3<f32>,
+  // TAA Slice 2c (Batch 96) — interpolated previous- and current-frame
+  // clip positions used for per-model motion-vector reconstruction.
+  @location(8) previousClipPos: vec4<f32>,
+  @location(9) currentClipPosForVelocity: vec4<f32>,
   @builtin(front_facing) frontFacing: bool,
 };
+
+// TAA Slice 2c (Batch 96) — converts the interpolated current/previous
+// clip-space positions into a screen-space velocity (NDC delta in
+// [-1, 1] × [-1, 1] units). Returns vec2(0) when motion-vector output
+// is disabled OR when either clip pos is degenerate (w <= 0). Caller
+// is responsible for the @location(1) MRT plumbing — this helper is
+// pure math, no side-effects on the FS color path.
+fn computeMotionVectorScreenSpace(input: FragmentInput) -> vec2<f32> {
+  if (material.motionFlags.x < 0.5) {
+    return vec2<f32>(0.0);
+  }
+  let cur = input.currentClipPosForVelocity;
+  let prev = input.previousClipPos;
+  if (cur.w <= 0.0 || prev.w <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = cur.xy / cur.w;
+  let prevNdc = prev.xy / prev.w;
+  // NDC delta. The TAA sampling path expects screen-space UV delta;
+  // the @location(1) MRT consumer (slice 2d) will transform NDC →
+  // [0, 1] UV with `(curNdc - prevNdc) * vec2(0.5, -0.5)`.
+  return (curNdc - prevNdc) * material.motionFlags.y;
+}
 
 // ─── CSM cascade sampling ────────────────────────────────────────────────────
 // Inlined from ShadowReceiveCSM.wgsl (the WGSL preprocessor's #include path
