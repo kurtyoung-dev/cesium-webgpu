@@ -19,7 +19,13 @@ import {
   Viewer,
   viewerCesiumInspectorMixin,
   viewerDragDropMixin,
-  CesiumDebug,
+  // Rename at import: the export is `CesiumDebug` (PascalCase, looks
+  // like a constructor) but the function is a debug-helper installer
+  // — calling it as `installCesiumDebug(viewer)` keeps the local
+  // identifier lowercase so ESLint's `new-cap` rule is satisfied
+  // without an eslint-disable, and the verb form reads more honestly
+  // (it mounts `window.CesiumDebug` and friends, it doesn't construct).
+  CesiumDebug as installCesiumDebug,
 } from "../../Build/CesiumUnminified/index.js";
 
 // ---- State ----
@@ -285,7 +291,7 @@ window.switchRenderer = async function (mode) {
       resetContainers();
       webgpuViewer = await createWebGPUViewer("cesiumContainer");
       window.viewer = webgpuViewer;
-      CesiumDebug(webgpuViewer);
+      installCesiumDebug(webgpuViewer);
       setupViewer(webgpuViewer);
       applyViewSettings(webgpuViewer);
     } else if (mode === "split") {
@@ -349,7 +355,7 @@ async function main() {
       applyViewSettings(webgpuViewer);
       setupCameraSave(webgpuViewer);
       window.viewer = webgpuViewer;
-      CesiumDebug(webgpuViewer);
+      installCesiumDebug(webgpuViewer);
     } else if (currentMode === "split") {
       // Hide main container and create split
       document.getElementById("cesiumContainer").style.display = "none";
