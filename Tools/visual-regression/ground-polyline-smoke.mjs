@@ -111,7 +111,41 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
       await new Promise((r) => requestAnimationFrame(r));
     }
 
-    // Smoke-test material variants: Dash, Glow, Outline.
+    // High-instance-count probe — exercises the storage-buffer
+    // grow path. 200 instances is well past the prior 64-cap.
+    const bigInstances = [];
+    for (let k = 0; k < 200; k++) {
+      const lonOff = k * 0.005;
+      bigInstances.push(
+        new C.GeometryInstance({
+          geometry: new C.GroundPolylineGeometry({
+            positions: C.Cartesian3.fromDegreesArray([
+              -123.0 + lonOff,
+              37.5,
+              -123.0 + lonOff,
+              37.6,
+            ]),
+            width: 4.0,
+          }),
+          attributes: {
+            color: C.ColorGeometryInstanceAttribute.fromColor(
+              C.Color.fromHsl(k / 200, 0.7, 0.5),
+            ),
+          },
+          id: `smoke-instance-${k}`,
+        }),
+      );
+    }
+    const bigPrim = new C.GroundPolylinePrimitive({
+      geometryInstances: bigInstances,
+      appearance: new C.PolylineColorAppearance(),
+      classificationType: C.ClassificationType.BOTH,
+    });
+    v.scene.groundPrimitives.add(bigPrim);
+
+    // Smoke-test material variants: Dash, Glow, Outline + new
+    // Stripe / Arrow / Image. Image uses a 1px PNG data-URL so the
+    // smoke test doesn't depend on network fetches.
     const matInst = (material) =>
       new C.GeometryInstance({
         geometry: new C.GroundPolylineGeometry({
@@ -143,13 +177,47 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
       }),
       classificationType: C.ClassificationType.BOTH,
     });
+    const arrowPrim = new C.GroundPolylinePrimitive({
+      geometryInstances: matInst({ type: "PolylineArrow" }),
+      appearance: new C.PolylineMaterialAppearance({
+        material: C.Material.fromType("PolylineArrow"),
+      }),
+      classificationType: C.ClassificationType.BOTH,
+    });
+    const stripePrim = new C.GroundPolylinePrimitive({
+      geometryInstances: matInst({ type: "Stripe" }),
+      appearance: new C.PolylineMaterialAppearance({
+        material: C.Material.fromType("Stripe"),
+      }),
+      classificationType: C.ClassificationType.BOTH,
+    });
+    // 4×4 magenta/cyan checker as a tiny inline data URL so the
+    // smoke test doesn't need network access.
+    const imageDataUrl =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAGklEQVQYV2P8z8DwHwAFBQECf3pBPwAAAABJRU5ErkJggg==";
+    const imagePrim = new C.GroundPolylinePrimitive({
+      geometryInstances: matInst({ type: "Image" }),
+      appearance: new C.PolylineMaterialAppearance({
+        material: C.Material.fromType("Image", { image: imageDataUrl }),
+      }),
+      classificationType: C.ClassificationType.BOTH,
+    });
     v.scene.groundPrimitives.add(dashPrim);
     v.scene.groundPrimitives.add(glowPrim);
     v.scene.groundPrimitives.add(outlinePrim);
+    v.scene.groundPrimitives.add(arrowPrim);
+    v.scene.groundPrimitives.add(stripePrim);
+    v.scene.groundPrimitives.add(imagePrim);
     const matStart = performance.now();
     while (
-      (!dashPrim._ready || !glowPrim._ready || !outlinePrim._ready) &&
-      performance.now() - matStart < 8000
+      (!dashPrim._ready ||
+        !glowPrim._ready ||
+        !outlinePrim._ready ||
+        !arrowPrim._ready ||
+        !stripePrim._ready ||
+        !imagePrim._ready ||
+        !bigPrim._ready) &&
+      performance.now() - matStart < 12000
     ) {
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));

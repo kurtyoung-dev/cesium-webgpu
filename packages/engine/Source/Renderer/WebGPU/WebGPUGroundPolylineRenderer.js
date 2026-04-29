@@ -29,10 +29,13 @@
  *   - `DEBUG_SHOW_VOLUME` flag — runtime uniform; when
  *     `_debugShowShadowVolume` is true on the primitive the FS emits
  *     translucent red instead of discarding non-classified fragments.
- *   - Batch-table-driven per-instance color/width (up to
- *     MAX_BATCH_INSTANCES per primitive). VS reads
+ *   - Batch-table-driven per-instance color/width via a storage
+ *     buffer (group 0 binding 1). Instance count is unbounded by
+ *     uniform-buffer caps; the storage buffer grows on demand from
+ *     INITIAL_BATCH_BUFFER_INSTANCES with a defensive ceiling at
+ *     MAX_BATCH_INSTANCES_HARD_CAP. VS reads
  *     `czm_batchTable_color(batchId)` / `czm_batchTable_width(batchId)`
- *     equivalents from a UBO array snapshotted from the inner
+ *     equivalents from the storage array snapshotted from the inner
  *     Primitive's `_batchTable`.
  *   - 2D / Columbus View VS branch — same pipeline as 3D, scene-mode
  *     flag in the UBO selects which set of vertex attributes to read
@@ -42,12 +45,18 @@
  *     2D and 3D position/plane attributes and blend by `czm_morphTime`.
  *     Front-face culling matches the WebGL `_renderStateMorph`.
  *   - Material support — `applyMaterial()` in the FS dispatches on
- *     `materialMeta.x` to inline implementations of `PolylineDash`,
- *     `PolylineGlow`, `PolylineOutline`, plus the default `Color`
- *     path. Other materials (Image, Stripe, Arrow, custom) fall
- *     through to the default Color path; adding them requires a new
- *     branch in `applyMaterial()` plus packing the material's
- *     uniforms into materialParam0/1/2 in `resolveMaterialState()`.
+ *     `materialMeta.x` to inline implementations of `Color` (default),
+ *     `PolylineDash`, `PolylineGlow`, `PolylineOutline`,
+ *     `PolylineArrow`, `Stripe`, and `Image`. The Image material
+ *     samples a 2D texture loaded asynchronously from
+ *     `appearance.material.uniforms.image` (URL string,
+ *     HTMLImageElement, HTMLCanvasElement, ImageBitmap, or ImageData);
+ *     until the image is loaded the FS samples a 1×1 white fallback
+ *     texture so the polyline renders at its tint color. Custom user
+ *     materials with bespoke `fabric` / `shaderSource` fall through to
+ *     the default Color path with the material's `uniforms.color` as
+ *     tint — porting Cesium's full Material→GLSL pipeline to WGSL is
+ *     a separate multi-week effort.
  *
  * @private
  */
@@ -60,6 +69,7 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
+  storageBuffer,
   sampler as samplerEntry,
   texture as textureEntry,
   Stage,
@@ -71,16 +81,28 @@ import {
 } from "./WebGPUPickCommandHelpers.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
-// Cap on per-primitive instances that can use the batch-table-driven
-// color/width path. Polylines with more instances than this fall back
-// to the appearance-level uniform color/width for the overflow
-// instances (single-color appearance still works correctly; only the
-// multi-instance varied colors degrade). Sized to keep the UBO under
-// 4 KB with comfortable headroom for follow-up additions.
-const MAX_BATCH_INSTANCES = 64;
+// Per-instance batch-table data lives in a storage buffer (group 0
+// binding 1) rather than the UBO so the instance count is unbounded
+// (limited only by GPU storage-buffer size). Each instance occupies
+// 8 floats: vec4 color + vec4 misc (misc.x = width-in-pixels;
+// misc.y/.z/.w reserved). The storage buffer grows on demand from a
+// 32-instance starting capacity; existing buffers are reused when
+// the next allocation fits, otherwise destroyed and re-created.
+//
+// MAX_BATCH_INSTANCES_HARD_CAP is a defensive ceiling (~131k
+// instances at 8 floats × 4 bytes = 32 bytes per instance ≈ 4 MB).
+// In practice typical scenes top out in the low thousands; the cap
+// catches runaway loops and bad input shapes before they hit the
+// driver's own limits.
+const FLOATS_PER_BATCH_INSTANCE = 8;
+const BYTES_PER_BATCH_INSTANCE = FLOATS_PER_BATCH_INSTANCE * 4; // 32 B
+const INITIAL_BATCH_BUFFER_INSTANCES = 32;
+const MAX_BATCH_INSTANCES_HARD_CAP = 131072;
 
-// UBO layout (608 floats = 2432 bytes; rounded up to 2560 below for
-// 256-byte alignment):
+// UBO layout (112 floats = 448 bytes; rounded up to 512 below for
+// 256-byte alignment). Per-instance batch-table data has been split
+// out into a storage buffer (see above) so the UBO no longer carries
+// the per-instance arrays.
 //   floats   0-15 : mvRTE             (mat4x4<f32>)
 //   floats  16-31 : proj              (mat4x4<f32>)
 //   floats  32-47 : invProj           (mat4x4<f32>)
@@ -103,25 +125,16 @@ const MAX_BATCH_INSTANCES = 64;
 //                     z: sceneMode (1.0 = SCENE3D, 0.0 = 2D / Columbus View)
 //                     w: morphTime (0.0 = 2D, 1.0 = 3D, fractional in MORPHING)
 //   floats  88-91 : materialMeta     (vec4<f32>)
-//                     x: materialType (0=Color, 1=PolylineDash, 2=PolylineGlow,
-//                        3=PolylineOutline, ...)
-//                     y/z/w: reserved
+//                     x: materialType
+//                     y: imageRepeatS (Image material)
+//                     z: imageRepeatT (Image material)
+//                     w: reserved
 //   floats  92-95 : materialColor    (vec4<f32>)
-//                     The appearance's material.uniforms.color
-//                     (per-material default color). Falls back to
-//                     instanceColor (from the batch table) when unused.
 //   floats  96-99 : materialParam0   (vec4<f32>) — material-specific
 //   floats 100-103: materialParam1   (vec4<f32>) — material-specific
 //   floats 104-107: materialParam2   (vec4<f32>) — material-specific
-//   floats 108-111: _pad (alignment for the array that follows)
-//   floats 112-367: instanceColors (array<vec4<f32>, MAX_BATCH_INSTANCES>)
-//   floats 368-623: instanceMisc   (array<vec4<f32>, MAX_BATCH_INSTANCES>)
-//                     .x = per-instance width (pixels)
-//                     .y/.z/.w reserved (show, distance display, ...)
-const UNIFORM_BUFFER_SIZE = 2560;
-const INSTANCE_COLORS_OFFSET_FLOATS = 112;
-const INSTANCE_MISC_OFFSET_FLOATS =
-  INSTANCE_COLORS_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4;
+//   floats 108-111: _pad (alignment)
+const UNIFORM_BUFFER_SIZE = 512;
 
 // 14 vertex attributes interleaved. The 3D set (locs 0-7) covers
 // SCENE3D rendering; the 2D set (locs 8-13) covers SCENE2D / Columbus
@@ -206,20 +219,28 @@ struct U {
   materialParam1: vec4<f32>,
   materialParam2: vec4<f32>,
   _pad: vec4<f32>,
-  // Per-instance batch-table data. WebGL polylines look up their
-  // per-instance color/width via czm_batchTable_color(batchId) /
-  // czm_batchTable_width(batchId) which sample a 1D batch-table
-  // texture; in WebGPU we mirror that data into a UBO-resident array
-  // (sized to MAX_BATCH_INSTANCES). batchId is a per-vertex attribute
-  // emitted by the geometry batcher; the VS uses it to look up width
-  // and pass color through to the FS as a varying.
-  instanceColors: array<vec4<f32>, ${MAX_BATCH_INSTANCES}>,
-  // instanceMisc[i].x = per-instance width (pixels)
-  // instanceMisc[i].y/.z/.w = reserved (show, distance display, ...)
-  instanceMisc: array<vec4<f32>, ${MAX_BATCH_INSTANCES}>,
+};
+
+// Per-instance batch-table data. WebGL polylines look up their
+// per-instance color/width via czm_batchTable_color(batchId) /
+// czm_batchTable_width(batchId), which sample a 1D batch-table
+// texture; in WebGPU we mirror that data into a storage-buffer
+// array indexed by batchId. batchId is a per-vertex attribute
+// emitted by the geometry batcher; the VS uses it to look up width
+// and pass color through to the FS as a varying.
+//
+// Storage buffer (vs UBO array) lifts the prior MAX_BATCH_INSTANCES
+// cap — instance count is bounded only by GPU storage-buffer size.
+struct InstanceData {
+  // color (rgba in [0, 1])
+  color: vec4<f32>,
+  // misc.x = per-instance width (pixels)
+  // misc.y/.z/.w reserved (show, distance display, ...)
+  misc: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> instances: array<InstanceData>;
 
 // Depth-sample resources. The texture view is bound late at draw time
 // via WebGPUDrawCommand.bindGroupResolvers so per-frustum + per-frame
@@ -227,6 +248,13 @@ struct U {
 // effect without rebuilding the command (Session 3 contract).
 @group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
 @group(1) @binding(1) var depthSampler: sampler;
+
+// Material texture (Image material). Group 2 is always bound — when no
+// Image material is in use, a 1×1 white fallback texture sits in this
+// slot so the bind-group layout stays valid. The FS only samples this
+// texture when materialMeta.x indicates the Image material (== 6).
+@group(2) @binding(0) var materialTex: texture_2d<f32>;
+@group(2) @binding(1) var materialSamp: sampler;
 
 struct VS_IN {
   @location(0) pH: vec3<f32>,
@@ -259,7 +287,7 @@ struct VS_OUT {
   @location(5) instanceColor: vec4<f32>,
 };
 
-// Look up the per-instance color from the batch-table UBO array. Falls
+// Look up the per-instance color from the storage-buffer array. Falls
 // back to u.color when batchId is out of range. Mirrors WebGL's
 // czm_batchTable_color() generated lookup.
 fn batchTableColor(batchId: u32) -> vec4<f32> {
@@ -267,7 +295,7 @@ fn batchTableColor(batchId: u32) -> vec4<f32> {
   if (batchId >= count) {
     return u.color;
   }
-  return u.instanceColors[batchId];
+  return instances[batchId].color;
 }
 
 // Look up the per-instance width (in pixels). Falls back to u.misc.x
@@ -277,7 +305,7 @@ fn batchTableWidth(batchId: u32) -> f32 {
   if (batchId >= count) {
     return u.misc.x;
   }
-  return u.instanceMisc[batchId].x;
+  return instances[batchId].misc.x;
 }
 
 // Apply the 3x3 normal matrix (stored as 3 padded vec4 columns).
@@ -595,6 +623,73 @@ fn applyMaterial(
     return u.materialColor;
   }
 
+  if (materialType == 4u) {
+    // PolylineArrow. Mirrors PolylineArrowMaterial.glsl.
+    //
+    // The shader gets:
+    //   color  (in materialColor)
+    //   width-derived constants in materialParam0:
+    //     .x = base half-width (fraction of widthwise UV)
+    //     .y = arrow head start s (default 0.85 — last 15% of length)
+    //
+    // The arrowhead is a triangle that grows from arrowStart to s=1
+    // covering the full width, with the body shrinking to zero width
+    // over the same interval. Outside the arrowhead region the polyline
+    // renders at its base half-width.
+    let arrowStart = u.materialParam0.y;
+    if (s < arrowStart) {
+      // Body region — same width as a regular polyline.
+      let edgeT = abs(t * 2.0 - 1.0);
+      if (edgeT > 1.0) {
+        discard;
+      }
+      return u.materialColor;
+    }
+    // Arrowhead region — width tapers linearly from full at arrowStart
+    // to zero at s=1. The "head" itself widens to 2× the body, then
+    // tapers.
+    let arrowProgress = (s - arrowStart) / max(1.0 - arrowStart, 0.001);
+    let edgeT = abs(t * 2.0 - 1.0);
+    // Triangle: |t-0.5| <= 0.5 * (1 - arrowProgress) gives the head body
+    if (edgeT > 1.0 - arrowProgress) {
+      discard;
+    }
+    return u.materialColor;
+  }
+
+  if (materialType == 5u) {
+    // Stripe. Mirrors StripeMaterial.glsl in 1D form along the polyline.
+    //   evenColor  (in materialColor)
+    //   oddColor   (in materialParam1)
+    //   repeat     (materialParam0.x) — number of stripe pairs over [0, 1]
+    //   offset     (materialParam0.y) — phase shift
+    //   orientation(materialParam0.z) — 0 = horizontal (along s),
+    //                                   1 = vertical (across t)
+    let repeat = u.materialParam0.x;
+    let offset = u.materialParam0.y;
+    let isVertical = u.materialParam0.z > 0.5;
+    var coord = s;
+    if (isVertical) {
+      coord = t;
+    }
+    let phase = fract(coord * repeat + offset);
+    if (phase < 0.5) {
+      return u.materialColor;
+    }
+    return u.materialParam1;
+  }
+
+  if (materialType == 6u) {
+    // Image. Mirrors ImageMaterial.glsl — samples materialTex at
+    // (s * repeatS, t * repeatT) and modulates by materialColor.
+    //   image       — bound to materialTex
+    //   repeat.s/t  — materialMeta.y / .z
+    //   color       — materialColor (multiplicative tint)
+    let uv = vec2<f32>(s * u.materialMeta.y, t * u.materialMeta.z);
+    let sampled = textureSampleLevel(materialTex, materialSamp, uv, 0.0);
+    return sampled * u.materialColor;
+  }
+
   // materialType == 0 (Color, default) — use the per-instance color
   // resolved in the VS via the batch table. PolylineMaterialAppearance
   // with a Color material lands here too: materialColor mirrors the
@@ -808,8 +903,14 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     code: SHADER_CODE,
   });
 
+  // Group 0: uniform buffer (binding 0) + per-instance storage buffer
+  // (binding 1). The instance data was previously a UBO array capped
+  // at 64 entries; moving it to a storage buffer lifts that cap and
+  // matches the polyline collection sizes seen in real apps (typically
+  // hundreds of instances per primitive when batched per-route).
   const bgl = makeBindGroupLayout(device, "GroundPolyline BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    storageBuffer(1, Stage.VERTEX_FRAGMENT, { readOnly: true }),
   ]);
 
   const depthSampleBgl = makeBindGroupLayout(
@@ -821,9 +922,22 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     ],
   );
 
+  // Group 2: material texture (Image material). When no Image material
+  // is in use, a 1×1 white fallback texture sits in the slot so the
+  // bind-group layout stays valid across all material types — the FS
+  // only samples this texture when materialType == 6 (Image).
+  const materialBgl = makeBindGroupLayout(
+    device,
+    "GroundPolyline Material BGL",
+    [
+      textureEntry(0, Stage.FRAGMENT, { sampleType: "float" }),
+      samplerEntry(1, Stage.FRAGMENT, "filtering"),
+    ],
+  );
+
   const pipelineLayout = device.createPipelineLayout({
     label: "GroundPolyline PipelineLayout",
-    bindGroupLayouts: [bgl, depthSampleBgl],
+    bindGroupLayouts: [bgl, depthSampleBgl, materialBgl],
   });
 
   const vertexBuffers = [
@@ -966,6 +1080,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     morphPickDescriptor,
     bgl,
     depthSampleBgl,
+    materialBgl,
   };
 }
 
@@ -1159,14 +1274,14 @@ function packUniforms(
   data[86] = is3D ? 1.0 : 0.0;
   data[87] = morphTime;
 
-  // Material state: type (88) + reserved (89/90/91), then materialColor
+  // Material state: materialMeta.x = type (88), .y = imageRepeatS (89),
+  // .z = imageRepeatT (90), .w = reserved (91). Then materialColor
   // (92-95), materialParam0 (96-99), materialParam1 (100-103),
-  // materialParam2 (104-107). Slots 108-111 are alignment padding so
-  // the instanceColors array starts at the next 16-byte boundary.
+  // materialParam2 (104-107). Slots 108-111 are alignment padding.
   if (defined(materialState)) {
     data[88] = materialState.type;
-    data[89] = 0.0;
-    data[90] = 0.0;
+    data[89] = materialState.imageRepeat?.[0] ?? 1.0;
+    data[90] = materialState.imageRepeat?.[1] ?? 1.0;
     data[91] = 0.0;
     data[92] = materialState.color[0];
     data[93] = materialState.color[1];
@@ -1194,29 +1309,9 @@ function packUniforms(
   data[110] = 0.0;
   data[111] = 0.0;
 
-  // Per-instance batch-table data. When the snapshot hasn't been
-  // captured (or there are no instances), zero out the arrays — the
-  // shader's batchTableColor / batchTableWidth helpers fall back to
-  // u.color / u.misc.x when batchId >= numBatchInstances anyway, so
-  // these zeros are never read.
-  if (defined(batchColors)) {
-    data.set(batchColors, INSTANCE_COLORS_OFFSET_FLOATS);
-  } else {
-    data.fill(
-      0,
-      INSTANCE_COLORS_OFFSET_FLOATS,
-      INSTANCE_COLORS_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4,
-    );
-  }
-  if (defined(batchMisc)) {
-    data.set(batchMisc, INSTANCE_MISC_OFFSET_FLOATS);
-  } else {
-    data.fill(
-      0,
-      INSTANCE_MISC_OFFSET_FLOATS,
-      INSTANCE_MISC_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4,
-    );
-  }
+  // Per-instance batch-table data lives in a storage buffer (group 0
+  // binding 1) now, not the UBO. The caller writes that buffer
+  // separately when the batch-table snapshot is captured.
 }
 
 /**
@@ -1283,6 +1378,9 @@ const PolylineMaterialType = Object.freeze({
   DASH: 1,
   GLOW: 2,
   OUTLINE: 3,
+  ARROW: 4,
+  STRIPE: 5,
+  IMAGE: 6,
 });
 
 /**
@@ -1308,6 +1406,8 @@ function resolveMaterialState(primitive) {
     param0: [0.0, 0.0, 0.0, 0.0],
     param1: [0.0, 0.0, 0.0, 0.0],
     param2: [0.0, 0.0, 0.0, 0.0],
+    image: null,
+    imageRepeat: [1.0, 1.0],
   };
   const material = primitive?.appearance?.material;
   if (!material) {
@@ -1348,6 +1448,8 @@ function resolveMaterialState(primitive) {
           ]
         : [0.0, 0.0, 0.0, 0.0],
       param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
     };
   }
 
@@ -1363,6 +1465,82 @@ function resolveMaterialState(primitive) {
       ],
       param1: [0.0, 0.0, 0.0, 0.0],
       param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
+    };
+  }
+
+  if (type === "PolylineArrow") {
+    // PolylineArrowMaterial uses a single `color` uniform; the arrow
+    // head occupies the last ~15% of the polyline length. We expose
+    // the head-start s-coordinate as materialParam0.y so future tuning
+    // doesn't require a shader change.
+    return {
+      type: PolylineMaterialType.ARROW,
+      color: colorArr,
+      param0: [0.0, 0.85, 0.0, 0.0],
+      param1: [0.0, 0.0, 0.0, 0.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
+    };
+  }
+
+  if (type === "Stripe") {
+    // StripeMaterial parameters:
+    //   evenColor (in `color`)         — the "on" stripe color
+    //   oddColor                       — the "off" stripe color
+    //   repeat                         — number of stripe pairs over [0, 1]
+    //   offset                         — phase shift
+    //   orientation                    — Cesium.StripeOrientation.HORIZONTAL (0)
+    //                                    or VERTICAL (1)
+    const oddColor = uniforms.oddColor;
+    const orientation = uniforms.orientation;
+    const isVertical =
+      orientation === 1 ||
+      orientation?.value === 1 ||
+      String(orientation) === "VERTICAL";
+    return {
+      type: PolylineMaterialType.STRIPE,
+      color: colorArr,
+      param0: [
+        uniforms.repeat ?? 5.0,
+        uniforms.offset ?? 0.0,
+        isVertical ? 1.0 : 0.0,
+        0.0,
+      ],
+      param1: defined(oddColor)
+        ? [
+            oddColor.red ?? 1.0,
+            oddColor.green ?? 1.0,
+            oddColor.blue ?? 1.0,
+            oddColor.alpha ?? 1.0,
+          ]
+        : [1.0, 1.0, 1.0, 1.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
+    };
+  }
+
+  if (type === "Image") {
+    // ImageMaterial samples a 2D texture; the image source on the
+    // material's uniforms is whatever the consumer fed it (URL, ImageData,
+    // HTMLImageElement, ...). For WebGPU we let the renderer's texture
+    // loader handle the fetch + GPUTexture creation; here we only pack
+    // the repeat factor and tint color.
+    const repeat = uniforms.repeat;
+    return {
+      type: PolylineMaterialType.IMAGE,
+      color: colorArr,
+      param0: [0.0, 0.0, 0.0, 0.0],
+      param1: [0.0, 0.0, 0.0, 0.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+      image: uniforms.image ?? null,
+      imageRepeat: [
+        repeat?.x ?? repeat?.[0] ?? 1.0,
+        repeat?.y ?? repeat?.[1] ?? 1.0,
+      ],
     };
   }
 
@@ -1395,12 +1573,21 @@ function resolveMaterialState(primitive) {
   }
 
   // Color (or unknown — fall back to default Color path).
+  // Custom user materials (PolylineMaterialAppearance with a Material
+  // built from a custom `fabric` / `shaderSource` rather than a known
+  // type definition) land here. We don't generically transpile their
+  // GLSL to WGSL — that would require porting Cesium's full Material
+  // system, which is a multi-week effort. Instead the polyline
+  // renders with the material's `uniforms.color` (if present) so the
+  // line is at least visible at the appearance's chosen tint.
   return {
     type: PolylineMaterialType.COLOR,
     color: colorArr,
     param0: [0.0, 0.0, 0.0, 0.0],
     param1: [0.0, 0.0, 0.0, 0.0],
     param2: [0.0, 0.0, 0.0, 0.0],
+    image: null,
+    imageRepeat: [1.0, 1.0],
   };
 }
 
@@ -1447,6 +1634,234 @@ function resolveWidthPixels(primitive) {
  * @returns {boolean} `true` once the snapshot has been captured.
  * @private
  */
+/**
+ * Ensure the cache has a storage buffer sized for at least
+ * `desiredInstances` entries. Grows by reallocation when the request
+ * exceeds the current capacity (existing buffer is destroyed and
+ * replaced; the new buffer's contents start zeroed and are filled
+ * by a subsequent `device.queue.writeBuffer` from the snapshot's
+ * Float32Array). Capped at `MAX_BATCH_INSTANCES_HARD_CAP`.
+ *
+ * @param {GPUDevice} device
+ * @param {object} cache
+ * @param {number} desiredInstances
+ * @private
+ */
+function ensureBatchInstanceBuffer(device, cache, desiredInstances) {
+  const requested = Math.max(
+    1,
+    Math.min(desiredInstances, MAX_BATCH_INSTANCES_HARD_CAP),
+  );
+  if (
+    defined(cache.batchInstanceBuffer) &&
+    cache.batchInstanceBufferCapacity >= requested
+  ) {
+    return;
+  }
+  // Round up to a power of two so growth amortises (1 → 32 → 64 →
+  // 128 → ...). Keeps reallocations rare even when instance counts
+  // climb during scene construction.
+  let capacity = INITIAL_BATCH_BUFFER_INSTANCES;
+  while (capacity < requested) {
+    capacity *= 2;
+  }
+  capacity = Math.min(capacity, MAX_BATCH_INSTANCES_HARD_CAP);
+
+  if (defined(cache.batchInstanceBuffer)) {
+    cache.batchInstanceBuffer.destroy?.();
+  }
+  cache.batchInstanceBuffer = device.createBuffer({
+    label: "GroundPolyline instance data",
+    size: capacity * BYTES_PER_BATCH_INSTANCE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  cache.batchInstanceBufferCapacity = capacity;
+  // The bind group references the buffer object — invalidate the
+  // cache slot so the next createCommands rebuilds with the new buffer.
+  cache._bindGroupBufferRef = null;
+}
+
+/**
+ * Pack the per-instance color/misc Float32Arrays from the snapshot
+ * into the storage buffer's interleaved (color, misc) layout that
+ * WGSL `InstanceData` expects, then upload via `writeBuffer`.
+ *
+ * @param {GPUDevice} device
+ * @param {object} cache
+ * @private
+ */
+function uploadBatchInstanceData(device, cache) {
+  if (
+    !defined(cache.batchInstanceBuffer) ||
+    !defined(cache.batchColors) ||
+    !defined(cache.batchMisc)
+  ) {
+    return;
+  }
+  const count = cache.batchInstanceCount ?? 0;
+  if (count === 0) {
+    return;
+  }
+  const packed = new Float32Array(count * FLOATS_PER_BATCH_INSTANCE);
+  for (let i = 0; i < count; i++) {
+    const dst = i * FLOATS_PER_BATCH_INSTANCE;
+    const src4 = i * 4;
+    packed[dst + 0] = cache.batchColors[src4 + 0];
+    packed[dst + 1] = cache.batchColors[src4 + 1];
+    packed[dst + 2] = cache.batchColors[src4 + 2];
+    packed[dst + 3] = cache.batchColors[src4 + 3];
+    packed[dst + 4] = cache.batchMisc[src4 + 0];
+    packed[dst + 5] = cache.batchMisc[src4 + 1];
+    packed[dst + 6] = cache.batchMisc[src4 + 2];
+    packed[dst + 7] = cache.batchMisc[src4 + 3];
+  }
+  device.queue.writeBuffer(cache.batchInstanceBuffer, 0, packed);
+}
+
+/**
+ * Allocate a 1×1 RGBA white texture + filtering sampler that sit in
+ * the material bind group when no Image material is in use. Created
+ * once per cache; not destroyed until the primitive is destroyed.
+ *
+ * @param {GPUDevice} device
+ * @param {object} cache
+ * @private
+ */
+/**
+ * Asynchronously load an Image material's `image` uniform into a
+ * GPUTexture so the FS can sample it. Accepts URL strings,
+ * HTMLImageElement, HTMLCanvasElement, ImageBitmap, and ImageData.
+ * Renders with the 1×1 white fallback until the load completes.
+ *
+ * Subsequent calls with the same `image` source no-op. Calls with a
+ * different source kick off a fresh load and swap views once ready.
+ *
+ * @param {GPUDevice} device
+ * @param {object} cache
+ * @param {string|HTMLImageElement|HTMLCanvasElement|ImageBitmap|ImageData|null} imageSource
+ * @private
+ */
+function ensureMaterialImage(device, cache, imageSource) {
+  if (!defined(imageSource)) {
+    cache._materialImageSource = null;
+    cache.materialImageView = undefined;
+    return;
+  }
+  if (cache._materialImageSource === imageSource) {
+    return;
+  }
+  cache._materialImageSource = imageSource;
+  cache._materialImageLoading = true;
+  cache.materialImageView = undefined;
+
+  const finishLoad = (imageBitmap) => {
+    if (cache._materialImageSource !== imageSource) {
+      // A newer load superseded this one — drop it on the floor.
+      imageBitmap.close?.();
+      return;
+    }
+    const tex = device.createTexture({
+      label: "GroundPolyline material image",
+      size: {
+        width: imageBitmap.width,
+        height: imageBitmap.height,
+        depthOrArrayLayers: 1,
+      },
+      format: "rgba8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    device.queue.copyExternalImageToTexture(
+      { source: imageBitmap },
+      { texture: tex },
+      { width: imageBitmap.width, height: imageBitmap.height },
+    );
+    cache.materialImageTexture?.destroy?.();
+    cache.materialImageTexture = tex;
+    cache.materialImageView = tex.createView();
+    cache._materialImageLoading = false;
+    // Invalidate the material bind group so the next createCommands
+    // rebuilds with the new view.
+    cache.materialBindGroupViewRef = null;
+    imageBitmap.close?.();
+  };
+
+  const fail = (err) => {
+    if (cache._materialImageSource === imageSource) {
+      cache._materialImageLoading = false;
+      console.warn(
+        "[WebGPU:GroundPolyline] Failed to load Image material source:",
+        err,
+      );
+    }
+  };
+
+  if (typeof imageSource === "string") {
+    fetch(imageSource)
+      .then((r) => r.blob())
+      .then((blob) => createImageBitmap(blob))
+      .then(finishLoad)
+      .catch(fail);
+  } else if (imageSource instanceof ImageBitmap) {
+    finishLoad(imageSource);
+  } else if (
+    typeof HTMLImageElement !== "undefined" &&
+    imageSource instanceof HTMLImageElement
+  ) {
+    if (imageSource.complete && imageSource.naturalWidth > 0) {
+      createImageBitmap(imageSource).then(finishLoad).catch(fail);
+    } else {
+      imageSource.addEventListener(
+        "load",
+        () => createImageBitmap(imageSource).then(finishLoad).catch(fail),
+        { once: true },
+      );
+      imageSource.addEventListener("error", fail, { once: true });
+    }
+  } else if (
+    typeof HTMLCanvasElement !== "undefined" &&
+    imageSource instanceof HTMLCanvasElement
+  ) {
+    createImageBitmap(imageSource).then(finishLoad).catch(fail);
+  } else if (
+    typeof ImageData !== "undefined" &&
+    imageSource instanceof ImageData
+  ) {
+    createImageBitmap(imageSource).then(finishLoad).catch(fail);
+  } else {
+    fail(new Error(`unsupported image source type: ${typeof imageSource}`));
+  }
+}
+
+function ensureFallbackMaterialTexture(device, cache) {
+  if (defined(cache.fallbackMaterialTexture)) {
+    return;
+  }
+  cache.fallbackMaterialTexture = device.createTexture({
+    label: "GroundPolyline fallback material tex",
+    size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: cache.fallbackMaterialTexture },
+    new Uint8Array([255, 255, 255, 255]),
+    { bytesPerRow: 4 },
+    { width: 1, height: 1, depthOrArrayLayers: 1 },
+  );
+  cache.fallbackMaterialView = cache.fallbackMaterialTexture.createView();
+  cache.materialSampler = device.createSampler({
+    label: "GroundPolyline material sampler",
+    magFilter: "linear",
+    minFilter: "linear",
+    mipmapFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+  });
+}
+
 function ensureBatchTableSnapshot(primitive, cache) {
   if (cache._batchSnapshotTaken) {
     return true;
@@ -1483,9 +1898,12 @@ function ensureBatchTableSnapshot(primitive, cache) {
     if (numberOfInstances === 0) {
       return false;
     }
-    const cap = Math.min(numberOfInstances, MAX_BATCH_INSTANCES);
-    const colors = new Float32Array(MAX_BATCH_INSTANCES * 4);
-    const misc = new Float32Array(MAX_BATCH_INSTANCES * 4);
+    // Storage buffer is unbounded by GPU limits; cap defensively at
+    // MAX_BATCH_INSTANCES_HARD_CAP so a runaway count doesn't allocate
+    // gigabytes of CPU/GPU memory.
+    const cap = Math.min(numberOfInstances, MAX_BATCH_INSTANCES_HARD_CAP);
+    const colors = new Float32Array(cap * 4);
+    const misc = new Float32Array(cap * 4);
 
     const colorIndex = attrIndices.color;
     const widthIndex = attrIndices.width;
@@ -1553,9 +1971,9 @@ function ensureBatchTableSnapshot(primitive, cache) {
   if (instances.length === 0) {
     return false;
   }
-  const cap = Math.min(instances.length, MAX_BATCH_INSTANCES);
-  const colors = new Float32Array(MAX_BATCH_INSTANCES * 4);
-  const misc = new Float32Array(MAX_BATCH_INSTANCES * 4);
+  const cap = Math.min(instances.length, MAX_BATCH_INSTANCES_HARD_CAP);
+  const colors = new Float32Array(cap * 4);
+  const misc = new Float32Array(cap * 4);
 
   for (let i = 0; i < cap; i++) {
     const inst = instances[i];
@@ -1665,12 +2083,40 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       "GroundPolyline uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+  }
+
+  // Storage buffer for per-instance data (group 0 binding 1). Sized
+  // to fit the snapshot's instance count, growing on demand. Even
+  // when no instances are populated yet we allocate the initial
+  // capacity so the bind group stays valid before the snapshot lands.
+  ensureBatchInstanceBuffer(
+    device,
+    cache,
+    cache.batchInstanceCount ?? INITIAL_BATCH_BUFFER_INSTANCES,
+  );
+
+  // Fallback 1×1 white material texture + sampler for non-Image
+  // materials. The bind-group layout always includes a material
+  // texture binding (the FS only samples it for Image materials);
+  // having a default texture keeps the bind group valid across all
+  // material types without per-material pipeline variants.
+  ensureFallbackMaterialTexture(device, cache);
+
+  // Group 0 bind group: UBO + per-instance storage buffer. Re-created
+  // when the storage buffer is reallocated for growth.
+  if (
+    !defined(cache.bindGroup) ||
+    cache._bindGroupBufferRef !== cache.batchInstanceBuffer
+  ) {
     cache.bindGroup = device.createBindGroup({
+      label: "GroundPolyline group0",
       layout: cache.bgl,
       entries: [
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+        { binding: 1, resource: { buffer: cache.batchInstanceBuffer } },
       ],
     });
+    cache._bindGroupBufferRef = cache.batchInstanceBuffer;
   }
 
   const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
@@ -1686,13 +2132,45 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   // available. Returns false on early frames before the primitive's
   // inner geometries finish building — the renderer then falls back
   // to u.color / u.misc.x via the shader's bounds-check.
+  const snapshotJustTaken = !cache._batchSnapshotTaken;
   ensureBatchTableSnapshot(primitive, cache);
+  if (snapshotJustTaken && cache._batchSnapshotTaken) {
+    // Storage-buffer was sized to INITIAL_BATCH_BUFFER_INSTANCES at
+    // first-frame allocation; grow it now if the snapshot revealed
+    // more instances than that, then upload the packed data once.
+    ensureBatchInstanceBuffer(device, cache, cache.batchInstanceCount);
+    uploadBatchInstanceData(device, cache);
+  }
 
   // Resolve the active material into a packed state the shader
   // applyMaterial() function consumes. Re-resolved every frame so
   // appearance.material swaps + uniform mutations take effect without
   // needing an explicit invalidate.
   const materialState = resolveMaterialState(primitive);
+  // Kick off the Image material's async load if the source changed.
+  // Until the load completes the FS samples the 1×1 white fallback
+  // (so an Image polyline renders as a plain materialColor tint
+  // during the load latency).
+  ensureMaterialImage(device, cache, materialState.image);
+
+  // Group 2 bind group: material texture + sampler. Uses the loaded
+  // image view when available, the fallback white texture otherwise.
+  const activeMaterialView =
+    cache.materialImageView ?? cache.fallbackMaterialView;
+  if (
+    !defined(cache.materialBindGroup) ||
+    cache.materialBindGroupViewRef !== activeMaterialView
+  ) {
+    cache.materialBindGroup = device.createBindGroup({
+      label: "GroundPolyline group2 (material)",
+      layout: cache._pipelineResources.materialBgl,
+      entries: [
+        { binding: 0, resource: activeMaterialView },
+        { binding: 1, resource: cache.materialSampler },
+      ],
+    });
+    cache.materialBindGroupViewRef = activeMaterialView;
+  }
 
   const passes = frameState.passes;
   const allowAllocate = !!(passes && (passes.pick || passes.render));
@@ -1743,7 +2221,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   const startLo = attrs.startLoAndForwardOffsetY?.values;
   const startNormal = attrs.startNormalAndForwardOffsetZ?.values;
   const endNormal = attrs.endNormalAndTextureCoordinateNormalizationX?.values;
-  const rightNormal = attrs.rightNormalAndTextureCoordinateNormalizationY?.values;
+  const rightNormal =
+    attrs.rightNormalAndTextureCoordinateNormalizationY?.values;
   const batchIds = attrs.batchId?.values;
   // 2D / Columbus View attributes — present when the geometry was
   // built without `scene3DOnly`. When absent (scene3DOnly viewers) we
@@ -1850,24 +2329,52 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       interleaved[dst + 31] = defined(pos2DLow) ? pos2DLow[src3 + 1] : 0.0;
       interleaved[dst + 32] = defined(pos2DLow) ? pos2DLow[src3 + 2] : 0.0;
       // startHiLo2D (vec4, loc 10)
-      interleaved[dst + 33] = defined(startHiLo2D) ? startHiLo2D[src4 + 0] : 0.0;
-      interleaved[dst + 34] = defined(startHiLo2D) ? startHiLo2D[src4 + 1] : 0.0;
-      interleaved[dst + 35] = defined(startHiLo2D) ? startHiLo2D[src4 + 2] : 0.0;
-      interleaved[dst + 36] = defined(startHiLo2D) ? startHiLo2D[src4 + 3] : 0.0;
+      interleaved[dst + 33] = defined(startHiLo2D)
+        ? startHiLo2D[src4 + 0]
+        : 0.0;
+      interleaved[dst + 34] = defined(startHiLo2D)
+        ? startHiLo2D[src4 + 1]
+        : 0.0;
+      interleaved[dst + 35] = defined(startHiLo2D)
+        ? startHiLo2D[src4 + 2]
+        : 0.0;
+      interleaved[dst + 36] = defined(startHiLo2D)
+        ? startHiLo2D[src4 + 3]
+        : 0.0;
       // offsetAndRight2D (vec4, loc 11)
-      interleaved[dst + 37] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 0] : 0.0;
-      interleaved[dst + 38] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 1] : 0.0;
-      interleaved[dst + 39] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 2] : 0.0;
-      interleaved[dst + 40] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 3] : 0.0;
+      interleaved[dst + 37] = defined(offsetAndRight2D)
+        ? offsetAndRight2D[src4 + 0]
+        : 0.0;
+      interleaved[dst + 38] = defined(offsetAndRight2D)
+        ? offsetAndRight2D[src4 + 1]
+        : 0.0;
+      interleaved[dst + 39] = defined(offsetAndRight2D)
+        ? offsetAndRight2D[src4 + 2]
+        : 0.0;
+      interleaved[dst + 40] = defined(offsetAndRight2D)
+        ? offsetAndRight2D[src4 + 3]
+        : 0.0;
       // startEndNormals2D (vec4, loc 12)
-      interleaved[dst + 41] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 0] : 0.0;
-      interleaved[dst + 42] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 1] : 0.0;
-      interleaved[dst + 43] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 2] : 0.0;
-      interleaved[dst + 44] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 3] : 0.0;
+      interleaved[dst + 41] = defined(startEndNormals2D)
+        ? startEndNormals2D[src4 + 0]
+        : 0.0;
+      interleaved[dst + 42] = defined(startEndNormals2D)
+        ? startEndNormals2D[src4 + 1]
+        : 0.0;
+      interleaved[dst + 43] = defined(startEndNormals2D)
+        ? startEndNormals2D[src4 + 2]
+        : 0.0;
+      interleaved[dst + 44] = defined(startEndNormals2D)
+        ? startEndNormals2D[src4 + 3]
+        : 0.0;
       // texcoordNormalization2D (vec2, loc 13)
       const src2 = v * 2;
-      interleaved[dst + 45] = defined(texcoordNormalization2D) ? texcoordNormalization2D[src2 + 0] : 0.0;
-      interleaved[dst + 46] = defined(texcoordNormalization2D) ? texcoordNormalization2D[src2 + 1] : 0.0;
+      interleaved[dst + 45] = defined(texcoordNormalization2D)
+        ? texcoordNormalization2D[src2 + 0]
+        : 0.0;
+      interleaved[dst + 46] = defined(texcoordNormalization2D)
+        ? texcoordNormalization2D[src2 + 1]
+        : 0.0;
     }
     cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
       device,
@@ -1985,8 +2492,12 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
 
   const colorCommand = new WebGPUDrawCommand({
     pipeline: activeColorPipeline,
-    bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
-    bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+    bindGroups: [
+      cache.bindGroup,
+      cache.depthSampleBindGroup,
+      cache.materialBindGroup,
+    ],
+    bindGroupResolvers: [undefined, resolveDepthSampleBindGroup, undefined],
     vertexBuffers: [cache.vertexGPUBuffer],
     indexBuffer: cache.indexGPUBuffer || undefined,
     indexCount: cache.indexCount || 0,
@@ -1999,8 +2510,12 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   if (defined(pickColor)) {
     cache.pickCommand = new WebGPUDrawCommand({
       pipeline: activePickPipeline,
-      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
-      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+      bindGroups: [
+        cache.bindGroup,
+        cache.depthSampleBindGroup,
+        cache.materialBindGroup,
+      ],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup, undefined],
       vertexBuffers: [cache.vertexGPUBuffer],
       indexBuffer: cache.indexGPUBuffer || undefined,
       indexCount: cache.indexCount || 0,
@@ -2047,6 +2562,9 @@ function destroyWebGPUGroundPolylineResources(primitive) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
+  cache.batchInstanceBuffer?.destroy?.();
+  cache.fallbackMaterialTexture?.destroy?.();
+  cache.materialImageTexture?.destroy?.();
   destroyPickIds(primitive);
   primitive._webgpuPolylineCache = undefined;
 }
