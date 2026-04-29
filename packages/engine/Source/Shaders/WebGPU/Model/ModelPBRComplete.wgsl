@@ -217,7 +217,24 @@ struct MaterialUniforms {
   // motionFlags.y: motion vector scale (default 1.0)
   // motionFlags.zw: reserved for slice 2d (sky reprojection / disocclusion tweaks)
   motionFlags: vec4<f32>,
-  _pad_reserved5: vec4<f32>,
+  // C-R1-TILE-BATCH (Batch 100) — Cesium3DTileBatchTable per-feature
+  // renderState support. The batch texture's per-feature RGBA carries
+  // an alpha that tile styling can flip <1 to make individual features
+  // translucent. WebGL handles this via dual-command emission
+  // (deriveOpaqueCommand + deriveTranslucentCommand at
+  // `Cesium3DTileBatchTable.js:497-507`) — the same primitive draws
+  // twice, once per pass, with each FS instance discarding the wrong-
+  // class features.
+  //
+  // tileBatchFlags layout:
+  //   x: passClass (0 = opaque pass, 1 = translucent pass). Only
+  //      consumed when FLAG_HAS_BATCH_TABLE is set; otherwise the
+  //      historical single-class behavior is preserved.
+  //   y: opaque-alpha threshold for the class discard (default 0.998
+  //      — matches Cesium 3D Tiles' "feature is translucent if
+  //      tile_translucentCommand &&  alpha < 0.998" gate).
+  //   z, w: reserved.
+  tileBatchFlags: vec4<f32>,
   _pad_reserved6: vec4<f32>,
   _pad_reserved7: vec4<f32>,
   _pad_reserved8: vec4<f32>,
@@ -287,7 +304,13 @@ struct FeatureIdUniforms {
   hasMultilineBatchTex: i32,
   textureStep: vec4<f32>,
   textureDimensions: vec2<f32>,
-  _pad0: f32,
+  // C-R9-MODEL-FEATURE-PICK (Batch 100). When > 0.5 the pickFS routes
+  // through `lookupFeaturePickColor` (the per-feature pick texture
+  // bound at @binding(5)) instead of returning `material.pickColor`.
+  // The JS side flips this on whenever it allocates per-feature pickIds
+  // (via `ensurePerFeaturePickIds`); off otherwise so we don't sample
+  // a placeholder texture and waste bandwidth.
+  featurePickEnabled: f32,
   _pad1: f32,
 };
 @group(6) @binding(0) var featureIdTexture: texture_2d<f32>;
@@ -295,6 +318,17 @@ struct FeatureIdUniforms {
 @group(6) @binding(2) var batchTexture: texture_2d<f32>;
 @group(6) @binding(3) var batchSampler: sampler;
 @group(6) @binding(4) var<uniform> featureId: FeatureIdUniforms;
+// C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup
+// table. Layout matches the batch texture (RGBA8, 1D for small feature
+// counts and 2D for >1024 features). featureId 0 maps to texel
+// (0.5 / W, 0.5 / H), featureId N maps to (N + 0.5 / W, ...). Entries
+// with alpha == 0 mean "no pickId allocated" and the pickFS falls
+// through to `material.pickColor`. Bound only when
+// `featureId.featurePickEnabled > 0.5`; the placeholder feature-id
+// bind group from Batch 53 carries a 1×1 transparent texel so the
+// binding is always valid.
+@group(6) @binding(5) var featurePickTexture: texture_2d<f32>;
+@group(6) @binding(6) var featurePickSampler: sampler;
 
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
 // CSM Slice 2c — models now bind the effects group at @group(7) so the
@@ -634,6 +668,25 @@ fn lookupBatchColor(fid: i32) -> vec4<f32> {
   // Single-line layout: feature ID maps to x coordinate
   let st = vec2<f32>(step.x * f32(fid) + step.y, 0.5);
   return textureSample(batchTexture, batchSampler, st);
+}
+
+// C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup.
+// Same layout/addressing as `lookupBatchColor` but reads from the
+// per-feature pick texture instead. The pick FS calls this when
+// `featureId.featurePickEnabled > 0.5` AND the batch table is bound.
+fn lookupFeaturePickColor(fid: i32) -> vec4<f32> {
+  let step = featureId.textureStep;
+  if (featureId.hasMultilineBatchTex != 0) {
+    let dim = featureId.textureDimensions;
+    let fidF = f32(fid);
+    let st = vec2<f32>(
+      (floor(fidF / dim.x) + 0.5) / dim.y,
+      (fidF - floor(fidF / dim.x) * dim.x + 0.5) / dim.x
+    );
+    return textureSample(featurePickTexture, featurePickSampler, st);
+  }
+  let st = vec2<f32>(step.x * f32(fid) + step.y, 0.5);
+  return textureSample(featurePickTexture, featurePickSampler, st);
 }
 
 // ─── Fragment Shader ─────────────────────────────────────────────────────────
@@ -1525,6 +1578,27 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     let batchColor = lookupBatchColor(i32(currentFeatureId));
     if (batchColor.a < 0.004) { discard; } // Feature is hidden
     featureColor = batchColor;
+
+    // C-R1-TILE-BATCH (Batch 100) — per-feature alpha-class discard.
+    // When the batch table has flipped some features to translucent
+    // (their RGBA.a in [0.004, 0.998)) and others to opaque (a >=
+    // 0.998), the JS renderer emits two commands per primitive:
+    //   - opaque pass    (passClass = 0): keep features with a >= 0.998
+    //   - translucent pass (passClass = 1): keep features with a in [0.004, 0.998)
+    // Both passes share the same vertex/index buffers and pipeline
+    // bindings; only `tileBatchFlags.x` differs. Mirrors WebGL's
+    // `tile_translucentCommand` shader uniform path at
+    // `Cesium3DTileBatchTable.js:325-326`.
+    let opaqueThreshold = max(material.tileBatchFlags.y, 0.5);
+    let isTranslucentPass = material.tileBatchFlags.x > 0.5;
+    if (isTranslucentPass && batchColor.a >= opaqueThreshold) {
+      // Feature is opaque; should land in the opaque pass instead.
+      discard;
+    }
+    if (!isTranslucentPass && batchColor.a < opaqueThreshold) {
+      // Feature is translucent; should land in the translucent pass instead.
+      discard;
+    }
   } else if (hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
     // Batch table without feature ID texture — use vertex color as proxy
     // (for feature ID attributes passed via batch texture directly)
@@ -1655,11 +1729,38 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // Per-feature batch-table hide also has to gate picking — a feature
   // hidden by `batchColor.a == 0` must not be pickable. Mirrors the
   // discard at the same site in `fragmentMain`.
+  //
+  // C-R9-MODEL-FEATURE-PICK (Batch 100) — when the batch table is
+  // active AND the JS-side allocated per-feature pickIds (signaled by
+  // featureId.featurePickEnabled > 0.5), look up the feature's pickColor
+  // from the dedicated feature-pick texture instead of returning the
+  // primitive-granular `material.pickColor`. The feature-pick texture
+  // is laid out the same as the batch texture (one row of RGBA8 entries
+  // indexed by featureId, single-line or multi-line layout); the JS
+  // renderer uploads it whenever pickIds are allocated/changed for the
+  // batch.
+  //
+  // Falls back to `material.pickColor` when:
+  //   - no batch table (single-feature primitives, glTF without
+  //     EXT_mesh_features)
+  //   - feature-pick texture not yet built (per-feature pick not
+  //     opted in by the application)
+  //   - feature ID lookup fails (current pixel has no feature ID
+  //     attribute / texture sample)
   if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
     let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
     let fidInt = unpackFeatureId(fidSample, featureId.channelCount);
     let batchColor = lookupBatchColor(fidInt);
     if (batchColor.a < 0.004) { discard; }
+    if (featureId.featurePickEnabled > 0.5) {
+      let featurePickColor = lookupFeaturePickColor(fidInt);
+      // Feature-pick texture entries with alpha == 0 mean "no pickId
+      // allocated for this feature" — fall through to the per-primitive
+      // pick color so the primitive remains pickable.
+      if (featurePickColor.a > 0.004) {
+        return featurePickColor;
+      }
+    }
   }
 
   return material.pickColor;

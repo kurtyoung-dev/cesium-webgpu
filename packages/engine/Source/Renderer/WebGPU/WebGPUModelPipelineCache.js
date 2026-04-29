@@ -93,12 +93,19 @@ function createBindGroupLayouts(device) {
   // Group 6: Feature ID texture + batch texture for per-feature styling
   // Used by EXT_mesh_features (feature ID textures) and 3D Tiles batch tables.
   // 0-1 = feature ID tex+sampler, 2-3 = batch tex+sampler, 4 = uniforms.
+  // C-R9-MODEL-FEATURE-PICK (Batch 100) — bindings 5/6 carry the
+  // per-feature pick texture + sampler. They mirror the batch texture
+  // layout (RGBA8 indexed by featureId) so per-feature pickIds reach
+  // the pickFS without rebuilding the bind group on every pick request.
+  // Off by default; the FS gates on `featureId.featurePickEnabled`.
   const featureIdBGL = makeBindGroupLayout(device, "Model FeatureId BGL", [
     texture(0, Stage.FRAGMENT),
     sampler(1, Stage.FRAGMENT),
     texture(2, Stage.FRAGMENT),
     sampler(3, Stage.FRAGMENT),
     uniformBuffer(4, Stage.FRAGMENT),
+    texture(5, Stage.FRAGMENT),
+    sampler(6, Stage.FRAGMENT),
   ]);
 
   return {
@@ -560,10 +567,12 @@ class WebGPUModelPipelineCache {
 
     // Default feature ID bind group: dummy textures + zero-length uniform
     // Used when a primitive has no feature IDs (FLAG_HAS_FEATURE_ID_TEXTURE will be false)
-    const zeroFeatureUniforms = new Float32Array(12); // 48 bytes
+    // Batch 100 — feature uniform grew to 14 floats (56 B) for the
+    // per-feature-pick `featurePickEnabled` flag at offset 12.
+    const zeroFeatureUniforms = new Float32Array(14);
     this._defaultFeatureUniformBuffer = device.createBuffer({
       label: "default-feature-uniforms",
-      size: 48,
+      size: 56,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(
@@ -588,6 +597,17 @@ class WebGPUModelPipelineCache {
           binding: 4,
           resource: { buffer: this._defaultFeatureUniformBuffer },
         },
+        // C-R9-MODEL-FEATURE-PICK (Batch 100) — bindings 5/6 carry the
+        // per-feature pick texture + sampler. The default bind group
+        // uses the placeholder white texture so pipelines created
+        // against this layout always have a valid resource bound; the
+        // FS gates on `featureId.featurePickEnabled > 0.5` so the
+        // placeholder content is never sampled in practice.
+        {
+          binding: 5,
+          resource: this._defaultWhiteTexture.createView(),
+        },
+        { binding: 6, resource: this._defaultSampler },
       ],
     });
   }

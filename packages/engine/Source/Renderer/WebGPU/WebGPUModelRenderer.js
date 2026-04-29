@@ -117,7 +117,8 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats 148-155: volume      (thickness, attenDistance, attColorR, attColorG, attColorB, _, _, _)
 //   floats 156-171: previousModelMatrix (mat4x4) — TAA Slice 2c (Batch 96)
 //   floats 172-175: motionFlags         (vec4: enabled, scale, _, _)
-//   floats 176-191: reserved (texture transform extensions for KHR slots,
+//   floats 176-179: tileBatchFlags      (vec4: passClass, opaqueThreshold, _, _) — C-R1-TILE-BATCH (Batch 100)
+//   floats 180-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
 // Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
@@ -229,6 +230,7 @@ function packMaterialUniforms(
   pickColor,
   previousModelMatrix,
   motionEnabled,
+  passClass,
 ) {
   Matrix4.pack(modelMatrix, data, 0); // [0-15]
 
@@ -479,8 +481,20 @@ function packMaterialUniforms(
   data[174] = 0;
   data[175] = 0;
 
-  // Reserved (slot 176-191). Zero-fill for std140 stability.
-  for (let i = 176; i < 192; i++) {
+  // C-R1-TILE-BATCH (Batch 100) — tileBatchFlags (slot 176-179):
+  //   x: passClass (0 = opaque pass, 1 = translucent pass) — only
+  //      consumed when the FLAG_HAS_BATCH_TABLE bit is set; otherwise
+  //      the FS branch is short-circuited.
+  //   y: opaque-alpha threshold (default 0.998) used by the FS branch
+  //      to decide which pass a given feature lands in.
+  //   z, w: reserved.
+  data[176] = passClass ? 1.0 : 0.0;
+  data[177] = 0.998;
+  data[178] = 0;
+  data[179] = 0;
+
+  // Reserved (slot 180-191). Zero-fill for std140 stability.
+  for (let i = 180; i < 192; i++) {
     data[i] = 0;
   }
 }
@@ -1340,8 +1354,20 @@ function updateWebGPUModel(model, frameState) {
       }
       const motionEnabled = frameState?.taaEnabled === true;
 
+      // C-R1-TILE-BATCH (Batch 100) — primary command class. The model
+      // emits the OPAQUE-class command first (passClass=0). When the
+      // model carries a Cesium3DTileBatchTable AND its alphaMode is
+      // OPAQUE/MASK, the renderer emits a SECOND translucent-class
+      // command (passClass=1, pass=Pass.TRANSLUCENT) so per-feature
+      // styling can flip individual features to translucent without
+      // pipeline state changes — see the dual-command emission block
+      // below for the second command. Models whose alphaMode is BLEND
+      // already land in TRANSLUCENT pass; their primary command is the
+      // translucent-class one and no derivation is needed.
+      const passClass = matInfo.alphaMode === AlphaModes.BLEND ? 1 : 0;
+
       // Update material uniforms (includes skinning + morph flags +
-      // pick color slot + TAA per-model motion).
+      // pick color slot + TAA per-model motion + tile-batch passClass).
       packMaterialUniforms(
         primCache.materialData,
         modelMatrix,
@@ -1351,6 +1377,7 @@ function updateWebGPUModel(model, frameState) {
         pickColor,
         cache.prevModelMatrix,
         motionEnabled,
+        passClass,
       );
 
       // Feature ID textures + batch texture (for per-feature styling)

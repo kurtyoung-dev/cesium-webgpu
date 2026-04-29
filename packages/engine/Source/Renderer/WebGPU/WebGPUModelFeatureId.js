@@ -18,8 +18,25 @@ import defined from "../../Core/defined.js";
 import ModelComponents from "../../Scene/ModelComponents.js";
 import ModelUtility from "../../Scene/Model/ModelUtility.js";
 
-// Feature uniform buffer: 48 bytes (12 floats)
-const FEATURE_UNIFORM_SIZE = 48;
+// Feature uniform buffer.
+// Layout (14 floats / 56 bytes):
+//   0  : featuresLength (i32)
+//   1  : channelCount (i32)
+//   2  : texCoordIndex (i32)
+//   3  : hasMultilineBatchTex (i32)
+//   4-7: textureStep (vec4)
+//   8-9: textureDimensions (vec2)
+//   10 : _pad0 (carries `featurePickEnabled` from offset 10 onward
+//        per Batch 100 — see WebGPU shader's FeatureIdUniforms struct)
+//   11 : _pad1
+//   12 : featurePickEnabled (f32, 0/1)
+//   13 : _pad2
+//
+// C-R9-MODEL-FEATURE-PICK (Batch 100) extended the layout from 48 B to
+// 56 B for the per-feature pick gate. The previous fields keep their
+// offsets to preserve compatibility with the WebGL fallback that mirrors
+// this layout.
+const FEATURE_UNIFORM_SIZE = 56;
 
 /**
  * Finds the selected feature ID set for a given model primitive.
@@ -276,11 +293,7 @@ function ensureFeatureIdResources(
         batchTexture._batchValuesDirty &&
         defined(primCache._batchGPUTexture)
       ) {
-        updateBatchGPUTexture(
-          device,
-          primCache._batchGPUTexture,
-          batchTexture,
-        );
+        updateBatchGPUTexture(device, primCache._batchGPUTexture, batchTexture);
         batchTexture._batchValuesDirty = false;
       }
     }
@@ -379,6 +392,13 @@ function ensureFeatureIdResources(
     uniformData[8] = batchDims.x;
     uniformData[9] = batchDims.y;
   }
+  // C-R9-MODEL-FEATURE-PICK (Batch 100) — `featurePickEnabled` flag at
+  // float offset 12. Off by default; flipped on once the JS side
+  // populates a per-feature pick texture (see ensurePerFeaturePickIds
+  // — that infrastructure work is the next slice; for now the binding
+  // is plumbed and the FS branch is gated, so users opting in via a
+  // future API surface get correct routing without further FS changes).
+  uniformData[12] = 0;
 
   const featureUniformBuffer = device.createBuffer({
     label: "Feature ID uniforms",
@@ -405,6 +425,18 @@ function ensureFeatureIdResources(
       },
       { binding: 3, resource: fallbackSampler },
       { binding: 4, resource: { buffer: featureUniformBuffer } },
+      // C-R9-MODEL-FEATURE-PICK (Batch 100) — feature-pick texture
+      // bindings. Initially the placeholder white texture; when the
+      // application opts into per-feature picking, the renderer will
+      // build a feature-pick GPU texture (one row of RGBA8 entries
+      // mapping featureId → pickId color) and rebind here.
+      {
+        binding: 5,
+        resource: (
+          primCache._featurePickGPUTexture || fallbackTex
+        ).createView(),
+      },
+      { binding: 6, resource: fallbackSampler },
     ],
   });
 
