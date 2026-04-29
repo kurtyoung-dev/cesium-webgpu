@@ -690,6 +690,20 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   const labelBlendOpt = labelCollection?._blendOption;
   const labelPass =
     labelBlendOpt === 0 ? 8 /* Pass.OPAQUE */ : 9; /* Pass.TRANSLUCENT */
+  // C-R1-COLLECTIONS-PER-ENCODER (Batch 98) — forward the LabelCollection's
+  // background billboard render state so `applyPerEncoderState` runs the
+  // dynamic stencilRef / blendConstant / scissor / viewport ops in the
+  // SDF label pass. Labels themselves don't expose a `_rsOpaque` /
+  // `_rsTranslucent` (only their background billboards do, via the
+  // delegated BillboardRenderer call below), but the collection's
+  // `_backgroundBillboardCollection` carries one. Use it as a proxy when
+  // present so the SDF pass picks up custom appearance state from the
+  // owning collection. Falls back to undefined (no per-encoder state)
+  // when no background billboards are wired — that's the OPAQUE-blend
+  // pipeline-baked default and is the historical behavior.
+  const labelRS =
+    labelCollection?._backgroundBillboardCollection?._rsTranslucent ??
+    labelCollection?._backgroundBillboardCollection?._rsOpaque;
   const sdfCommand = new WebGPUDrawCommand({
     pipeline: cache.sdfPipeline,
     bindGroups: [cache.sdfBindGroup],
@@ -701,6 +715,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     boundingVolume: glyphCollection._boundingVolume,
     modelMatrix: modelMatrix,
     cull: true,
+    renderState: labelRS,
   });
 
   if (frameState.passes.render) {

@@ -1512,6 +1512,16 @@ function createWebGPUCommands(
           : undefined,
         pass: pass,
         owner: primitive,
+        // C-R1-PRIMITIVE-DERIVED (Batch 98) — forward `appearance.renderState`
+        // onto the pick command too so `applyPerEncoderState` runs the
+        // dynamic stencilRef / blendConstant / scissor / viewport ops in
+        // pick passes. Pipeline-baked state (depthWrite-on, blend-off,
+        // pick-color attachment format) stays in `cache.pickPipeline`;
+        // this passthrough is purely for the per-encoder commands that
+        // can't be baked into the pipeline. Without it, primitives that
+        // declared a stencil-write or scissor in their appearance would
+        // pick incorrectly even though they render correctly.
+        renderState: appearanceRS,
       });
 
       pickCommand._webgpuCameraBuffer = cache.pickCameraBuffers[i];
@@ -2323,6 +2333,13 @@ function createWebGPUMaterialCommands(
           : undefined,
         pass,
         owner: primitive,
+        // C-R1-PRIMITIVE-DERIVED (Batch 98) — material-path pickCommand
+        // also forwards `appearance.renderState`. Same rationale as the
+        // shader-path pickCommand above (line 1498-ish): per-encoder
+        // dynamic state needs to flow even though pipeline-baked state
+        // (pick attachment format, depth-write on, no blend) lives in
+        // `cache.pickPipeline`.
+        renderState: primitive.appearance?.renderState,
       });
       pickCmd._webgpuCameraBuffer = cache.pickCameraBuffers[i];
       pickCmd._webgpuShaderType = "pick";

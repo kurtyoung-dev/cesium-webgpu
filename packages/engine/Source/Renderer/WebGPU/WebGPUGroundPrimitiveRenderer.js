@@ -686,6 +686,20 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     return cache.depthSampleBindGroup;
   };
 
+  // C-R1-CLASSIFICATION (Batch 98) — forward the ClassificationPrimitive's
+  // appearance render state so `applyPerEncoderState` runs the dynamic
+  // stencilRef / blendConstant / scissor / viewport ops on the depth-sample
+  // classifier draws. ClassificationPrimitive's `_appearance` exposes the
+  // shared 3-pass renderState set (stencilDepth, color, pick) but the
+  // depth-sample architecture (ADR-2026-04-28) collapses those into a single
+  // pipeline + classifier shader pair, so here we forward the appearance's
+  // top-level renderState (typically the color-pass state) and let the
+  // pipeline handle stencil/blend behavior. Falls through to undefined for
+  // primitives without an appearance.
+  const classificationRS =
+    primitive?.appearance?.renderState ??
+    primitive?._primitive?.appearance?.renderState;
+
   const depthSampleColorCommand = new WebGPUDrawCommand({
     pipeline: cache.depthSampleColorPipeline,
     bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
@@ -697,6 +711,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     vertexCount: cache.vertexCount || 0,
     pass: groundPass,
     owner: primitive,
+    renderState: classificationRS,
   });
 
   if (defined(pickColor)) {
@@ -712,6 +727,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       pass: groundPass,
       owner: primitive,
       pickOnly: true,
+      renderState: classificationRS,
     });
     attachPickToColorCommand(depthSampleColorCommand, cache.pickCommand);
   }
