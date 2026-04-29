@@ -271,6 +271,19 @@ struct LightUniforms {
 @group(2) @binding(7) var emissiveSampler: sampler;
 @group(2) @binding(8) var occlusionTexture: texture_2d<f32>;
 @group(2) @binding(9) var occlusionSampler: sampler;
+// C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension primary textures
+// + shared sampler. Bound to a 1×1 white placeholder when the
+// matching extension is absent; the FS gates each sample on the
+// extension's HAS_* flag so the placeholder is never sampled in
+// production. See WebGPUModelPipelineCache `textureBGL` for the
+// rationale on the shared sampler.
+@group(2) @binding(10) var clearcoatTexture: texture_2d<f32>;
+@group(2) @binding(11) var specularColorTexture: texture_2d<f32>;
+@group(2) @binding(12) var anisotropyTexture: texture_2d<f32>;
+@group(2) @binding(13) var iridescenceTexture: texture_2d<f32>;
+@group(2) @binding(14) var sheenColorTexture: texture_2d<f32>;
+@group(2) @binding(15) var thicknessTexture: texture_2d<f32>;
+@group(2) @binding(16) var khrSampler: sampler;
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(3) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
@@ -1359,8 +1372,17 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // says metallic surfaces ignore the color factor and still use
   // baseColor for F0; only the dielectric F0 component is recolored.
   if (hasFlag(flags, FLAG_HAS_SPECULAR_EXT)) {
-    let sf = material.specularExtFactors.x;
-    let sc = material.specularExtFactors.yzw;
+    var sf = material.specularExtFactors.x;
+    var sc = material.specularExtFactors.yzw;
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample specularColorTexture
+    // when the asset declares it. RGB modulates the F0 chromatic tint.
+    // The spec also defines a separate specularTexture (single channel
+    // = factor scalar) but we only support the color texture here;
+    // factor texture is a follow-up that needs another binding.
+    let scTex = textureSampleLevel(
+      specularColorTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    sc = sc * scTex.rgb;
     // Recolor the dielectric component (mix factor = 1.0 - metallic).
     let dielectricF0 = vec3<f32>(0.04) * sc * sf;
     F0 = mix(dielectricF0, baseColor.rgb, metallic);
@@ -1375,8 +1397,17 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // companion driven by `iridescenceFactor` and view angle. Visually
   // imperfect but structurally honest about which extension is firing.
   if (hasFlag(flags, FLAG_HAS_IRIDESCENCE)) {
-    let irFactor = material.iridescenceFactors.x;
+    var irFactor = material.iridescenceFactors.x;
     let irIor = material.iridescenceFactors.y;
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample iridescenceTexture
+    // (R = mask) to modulate the iridescence factor per-fragment. The
+    // spec also defines iridescenceThicknessTexture (G); we lerp
+    // between min/max thickness using the factor here as a stand-in
+    // since we don't have a separate binding for it.
+    let irTex = textureSampleLevel(
+      iridescenceTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    irFactor = irFactor * irTex.r;
     let thickness = mix(
       material.iridescenceFactors.z,
       material.iridescenceFactors.w,
@@ -1420,8 +1451,18 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // produces the streak shape brushed-metal assets expect; full per-
   // tangent BRDF lands in a follow-up once tangents are plumbed.
   if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
-    let aniStrength = material.anisotropyFactors.x;
-    let aniRotation = material.anisotropyFactors.y;
+    var aniStrength = material.anisotropyFactors.x;
+    var aniRotation = material.anisotropyFactors.y;
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample anisotropyTexture.
+    // RG carries the (cos, sin) of a per-pixel rotation offset; B
+    // scales the strength. Spec stores the trig pair as
+    // (RG * 2 - 1) so 0.5 = no rotation, 1.0 = +pi/2.
+    let aniTex = textureSampleLevel(
+      anisotropyTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    let aniRotOffset = atan2(aniTex.g * 2.0 - 1.0, aniTex.r * 2.0 - 1.0);
+    aniRotation = aniRotation + aniRotOffset;
+    aniStrength = aniStrength * aniTex.b;
     // Build an in-plane axis from the view's right vector rotated by
     // aniRotation. Stretch H along that axis for an extra GGX lobe.
     let viewRight = normalize(cross(N, V));
@@ -1443,8 +1484,17 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // attenuated by (1 - F_clearcoat) so high-glance angles bias toward
   // the coat color rather than double-bouncing.
   if (hasFlag(flags, FLAG_HAS_CLEARCOAT)) {
-    let ccFactor = material.clearcoatFactors.x;
+    var ccFactor = material.clearcoatFactors.x;
     let ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample clearcoatTexture (R)
+    // to modulate the per-pixel clearcoat intensity. The spec also
+    // defines clearcoatRoughnessTexture (G) and clearcoatNormalTexture
+    // (RGB) but we only support the intensity texture here; secondary
+    // maps are a follow-up that needs more binding budget.
+    let ccTex = textureSampleLevel(
+      clearcoatTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    ccFactor = ccFactor * ccTex.r;
     let F_cc = fresnelSchlick(VdotH, vec3<f32>(0.04)) * ccFactor;
     let D_cc = distributionGGX(NdotH, ccRough);
     let G_cc = geometrySmith(NdotV, NdotL, ccRough);
@@ -1458,8 +1508,16 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // additive on top of the base contribution; emulates fabric/velvet
   // retroreflection at grazing angles.
   if (hasFlag(flags, FLAG_HAS_SHEEN)) {
-    let sheenColor = material.sheenFactors.xyz;
+    var sheenColor = material.sheenFactors.xyz;
     let sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample sheenColorTexture
+    // (RGB) and modulate the sheen color factor per-fragment. The
+    // spec also defines sheenRoughnessTexture (A) but we only support
+    // the color texture here; roughness texture is a follow-up.
+    let sheenTex = textureSampleLevel(
+      sheenColorTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    sheenColor = sheenColor * sheenTex.rgb;
     // Charlie distribution: D_charlie(α, NdotH) = ((2 + 1/α) * (sin θ_h)^(1/α)) / (2π)
     let alpha = sheenRough * sheenRough;
     let invAlpha = 1.0 / max(alpha, 1.0e-4);
@@ -1482,9 +1540,16 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // is 0 and the surface is purely opaque, which is the common case for
   // KHR_materials_volume on glass/translucent assets in our tilesets.
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
-    let thickness = material.volumeFactors0.x;
+    var thickness = material.volumeFactors0.x;
     let attDistance = material.volumeFactors0.y;
     let attColor = material.volumeFactors1.xyz;
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample thicknessTexture (G)
+    // to modulate per-pixel thickness. Per spec the texture stores a
+    // unit-normalized thickness scaled by `thicknessFactor`.
+    let thickTex = textureSampleLevel(
+      thicknessTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    thickness = thickness * thickTex.g;
     if (attDistance > 0.0 && thickness > 0.0) {
       let attCoeff = -log(max(attColor, vec3<f32>(1.0e-3))) / attDistance;
       let attenuation = exp(-attCoeff * thickness);

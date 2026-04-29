@@ -905,6 +905,18 @@ function ensurePrimitiveCache(
       { binding: 7, resource: emissiveSampler || defSampler },
       { binding: 8, resource: textures.occlusion.createView() },
       { binding: 9, resource: occlusionSampler || defSampler },
+      // C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension primary
+      // textures. Each defaults to the white placeholder when the
+      // matching extension is absent / has no texture; the FS gates
+      // each sample on the extension's HAS_* flag so the placeholder
+      // never participates in a real lighting calculation.
+      { binding: 10, resource: textures.clearcoat.createView() },
+      { binding: 11, resource: textures.specularColor.createView() },
+      { binding: 12, resource: textures.anisotropy.createView() },
+      { binding: 13, resource: textures.iridescence.createView() },
+      { binding: 14, resource: textures.sheenColor.createView() },
+      { binding: 15, resource: textures.thickness.createView() },
+      { binding: 16, resource: defSampler },
     ],
   });
 
@@ -940,6 +952,13 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
   // Storing sRGB slots as `rgba8unorm-srgb` makes the GPU sampler auto-decode
   // gamma, which is both perceptually correct for linear filtering AND
   // removes the need for in-shader pow(2.2) approximation.
+  //
+  // C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension texture
+  // color-space defaults per the relevant Khronos extension specs:
+  //   srgb: specularColor (chromatic F0 tint), sheenColor.
+  //   linear: clearcoat (intensity scalar), anisotropy (RG = direction
+  //           encoded as f32 trig), iridescence (R = factor scalar),
+  //           thickness (G = volume thickness scalar).
   return {
     baseColor: tryCreate(
       matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
@@ -954,6 +973,20 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
     ),
     emissive: tryCreate(matInfo.emissiveTextureReader, defBlack, "srgb"),
     occlusion: tryCreate(matInfo.occlusionTextureReader, defWhite, "linear"),
+    clearcoat: tryCreate(matInfo.clearcoatTextureReader, defWhite, "linear"),
+    specularColor: tryCreate(
+      matInfo.specularExtColorTextureReader,
+      defWhite,
+      "srgb",
+    ),
+    anisotropy: tryCreate(matInfo.anisotropyTextureReader, defWhite, "linear"),
+    iridescence: tryCreate(
+      matInfo.iridescenceTextureReader,
+      defWhite,
+      "linear",
+    ),
+    sheenColor: tryCreate(matInfo.sheenColorTextureReader, defWhite, "srgb"),
+    thickness: tryCreate(matInfo.thicknessTextureReader, defWhite, "linear"),
     created,
   };
 }
