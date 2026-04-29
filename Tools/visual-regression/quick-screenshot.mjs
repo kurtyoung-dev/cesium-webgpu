@@ -26,12 +26,6 @@ const BASE = "http://localhost:8080";
   await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
-    v.scene.skyAtmosphere = undefined;
-    v.scene.skyBox = undefined;
-    v.scene.sun = undefined;
-    v.scene.moon = undefined;
-    v.scene.fog.enabled = false;
-    v.scene.globe.enableLighting = false;
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(-75.5, 40.0, 5_000_000),
     });

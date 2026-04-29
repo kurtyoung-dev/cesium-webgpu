@@ -1419,8 +1419,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // per-layer blocks below stay branch-light.
 
   // UV debug visualization: Red=U, Green=V, Blue=webMercT
-  // Triggered via tile.time > 99990.0 (debug sentinel)
-  if (tile.time > 99990.0) {
+  // Triggered via tile.time > 1.0e9 (debug sentinel — `waveTime` is
+  // `secsSinceEpoch % 1_000_000` so any threshold below 1 000 000 is
+  // hit 90 %+ of the time and silently masquerades as the production
+  // render output. Bumped to 1 e9 so a JS-side caller has to push the
+  // value WAY past the natural range to opt in.)
+  if (tile.time > 1.0e9) {
     return vec4<f32>(geoUV.x, geoUV.y, webMercT, 1.0);
   }
 
