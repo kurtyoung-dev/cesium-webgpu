@@ -82,7 +82,27 @@ const CAMERA_UNIFORM_SIZE = 320;
 // Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
 //   4f(diffuseRGBA) + 3f(padding) = 320 bytes (rounded to 16-byte alignment)
-const MATERIAL_UNIFORM_SIZE = 320;
+// 576 bytes = 144 floats. Layout:
+//   floats   0-15 : modelMatrix          (mat4x4)
+//   floats  16-19 : baseColorFactor      (vec4)
+//   floats  20-23 : emissiveFactor + metallicFactor
+//   floats  24-27 : roughness/alphaCutoff/normalScale/occlusionStrength
+//   floats  28    : materialFlags        (u32 stored as float bits)
+//   floats  29-31 : specularFactor       (vec3)
+//   floats  32    : glossinessFactor
+//   floats  33-36 : diffuseFactor        (vec4)
+//   floats  37    : texCoordFlags        (u32)
+//   floats  38-39 : padding
+//   floats  40-43 : pickColor            (vec4)
+//   floats  44-55 : baseColor texture transform (3 padded vec4 cols)
+//   floats  56-67 : normal texture transform
+//   floats  68-79 : metallicRoughness texture transform
+//   floats  80-91 : emissive texture transform
+//   floats  92-103: occlusion texture transform
+//   floats 104    : textureTransformFlags (u32)
+//   floats 105-107: padding
+//   floats 108-143: reserved
+const MATERIAL_UNIFORM_SIZE = 576;
 // Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
 //   + f(iblDiffuseFactor, iblSpecularFactor, iblMaxMipLevel, iblHasSH) = 64.
 // Keep in sync with struct LightUniforms in ModelPBRComplete.wgsl.
@@ -294,6 +314,87 @@ function packMaterialUniforms(
     data[42] = 0;
     data[43] = 0;
   }
+
+  // C-R4-GLTF-KHR (slice 1) — KHR_texture_transform per-texture 3x3.
+  // GltfLoaderUtil.createModelTextureReader extracts the
+  // `KHR_texture_transform` extension into a Matrix3 stored on the
+  // reader's `.transform` slot when the asset uses the extension.
+  // Pack each (or identity) into 3 padded vec4 columns. Bits in
+  // textureTransformFlags indicate which slots have non-identity
+  // transforms so the FS can skip the matrix multiply for the common
+  // no-extension case.
+  let ttFlags = 0;
+  ttFlags |= writeTextureTransform(data, 44, baseReader?.transform) ? 0x01 : 0;
+  ttFlags |= writeTextureTransform(data, 56, normalReader?.transform)
+    ? 0x02
+    : 0;
+  ttFlags |= writeTextureTransform(data, 68, mrReader?.transform) ? 0x04 : 0;
+  ttFlags |= writeTextureTransform(data, 80, emissiveReader?.transform)
+    ? 0x08
+    : 0;
+  ttFlags |= writeTextureTransform(data, 92, occlusionReader?.transform)
+    ? 0x10
+    : 0;
+  flagsView.setUint32(104 * 4, ttFlags, true);
+  // Padding to 16-byte boundary.
+  data[105] = 0;
+  data[106] = 0;
+  data[107] = 0;
+}
+
+/**
+ * Pack a Matrix3 into 3 padded vec4 columns starting at `offsetFloats`
+ * (12 floats consumed). Returns true when a non-identity matrix was
+ * written (signal the caller to set the corresponding "has transform"
+ * bit). When `m` is undefined or null, writes an identity matrix and
+ * returns false.
+ *
+ * The caller's UBO layout reserves 12 floats per slot for std140-
+ * compatible 3-padded-vec4 storage; the WGSL side reconstructs the
+ * mat3x3 with `mat3x3<f32>(col0.xyz, col1.xyz, col2.xyz)`.
+ *
+ * @param {Float32Array} data
+ * @param {number} offsetFloats
+ * @param {Matrix3|undefined|null} m  Cesium Matrix3 (column-major: m[0..2]=col0, m[3..5]=col1, m[6..8]=col2)
+ * @returns {boolean} true iff `m` was a defined matrix.
+ * @private
+ */
+function writeTextureTransform(data, offsetFloats, m) {
+  if (defined(m)) {
+    // Column 0
+    data[offsetFloats + 0] = m[0];
+    data[offsetFloats + 1] = m[1];
+    data[offsetFloats + 2] = m[2];
+    data[offsetFloats + 3] = 0;
+    // Column 1
+    data[offsetFloats + 4] = m[3];
+    data[offsetFloats + 5] = m[4];
+    data[offsetFloats + 6] = m[5];
+    data[offsetFloats + 7] = 0;
+    // Column 2
+    data[offsetFloats + 8] = m[6];
+    data[offsetFloats + 9] = m[7];
+    data[offsetFloats + 10] = m[8];
+    data[offsetFloats + 11] = 0;
+    return true;
+  }
+  // Identity (no transform). The FS guard skips the multiply when the
+  // slot's "has transform" bit is unset, so these slots are technically
+  // never read — but writing the identity keeps the buffer
+  // self-consistent and makes the dump readable in PIX/RenderDoc.
+  data[offsetFloats + 0] = 1;
+  data[offsetFloats + 1] = 0;
+  data[offsetFloats + 2] = 0;
+  data[offsetFloats + 3] = 0;
+  data[offsetFloats + 4] = 0;
+  data[offsetFloats + 5] = 1;
+  data[offsetFloats + 6] = 0;
+  data[offsetFloats + 7] = 0;
+  data[offsetFloats + 8] = 0;
+  data[offsetFloats + 9] = 0;
+  data[offsetFloats + 10] = 1;
+  data[offsetFloats + 11] = 0;
+  return false;
 }
 
 // ─── Light Uniform Packing ───────────────────────────────────────────────────

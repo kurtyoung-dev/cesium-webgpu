@@ -150,25 +150,22 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Parent finding:** Pipeline cache (`WebGPURenderPipelineCache`) instantiated + key-correct + device-loss-invalidated in Batches 33-34, audited Batch 52. First-cut consumer migration Batch 56, second cut Batch 62.
 
-### C-R7-RENDERER-MIGRATION-REMAINING
+### ~~C-R7-RENDERER-MIGRATION-REMAINING~~ DONE 2026-04-29 (audit)
 
-**What:** One feature renderer still builds pipelines via local Map caches: `WebGPUGlobeSurfaceRenderer`. Plus `WebGPUModelRenderer` (special-case, blocked on shader-module dedup) and `WebGPUAutoExposure` (compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists).
+**Resolution:** Audit (2026-04-29, this session) found `WebGPUGlobeSurfaceRenderer` has been routing through the central `webgpuPipelineCache` since **Batch 75** (`_resolveGlobePipelineEntry` calls `pipelineCache.getPipelineSync` / `getPipeline`; the local `_pipelineCache: Map<string, GlobePipelineEntry>` now holds DESCRIPTORS, not pipelines, with the actual `GPURenderPipeline` resolved through the central cache and a sync-fallback `device.createRenderPipeline()` only when no central cache is wired). The `WebGPUShaderModuleCache` is also already adopted (Batch 20).
 
-**Progress:**
+That leaves only:
 
-- Batch 72 (2026-04-27) migrated `WebGPUCloudRenderer`, `WebGPUVoxelRenderer`, and the render half of `WebGPUWeatherRenderer`.
-- Batch 73 (2026-04-27) migrated `WebGPULabelRenderer` and `WebGPUBillboardRenderer` (color + pick).
-- Batch 74 (2026-04-27) migrated `WebGPUEnvironmentRenderer` (Sun + Moon), `WebGPUPointCloudRenderer` (default + LOD), and the composite half of `WebGPUVolumetricFogRenderer` (3 compute pipelines stay direct pending compute pipeline cache infra).
+- **`WebGPUModelRenderer`** — special-case, blocked on the KHR-extension shader-family work (C-R4-GLTF-KHR). Its pipeline cache adoption pairs with the shader-module dedup work because two models with identical material settings need to share modules to share pipelines.
+- **`WebGPUAutoExposure`** — compute pipeline, out of scope until a `WebGPUComputePipelineCache` exists.
 
-**Why deferred:** Mechanical migration; each needs descriptor-build + dispatch reorganized to match Batch 56/62 pattern.
+Both are tracked under their own work items below; this entry is closed.
 
-**Prerequisites:** None - 14 renderers migrated total establish the pattern (Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, Label, Billboard, Environment Sun, Environment Moon, PointCloud) + Weather render + VolumetricFog composite.
+**Adopter count:** 15 renderers route through `webgpuPipelineCache` (Polyline, PointPrimitive, GroundPrimitive, GaussianSplat, EllipsoidPrimitive, BufferPrimitive, DepthPlane, Cloud, Voxel, Label, Billboard, Environment Sun, Environment Moon, PointCloud, **GlobeSurface**) + Weather render + VolumetricFog composite.
 
-**Estimated effort:** 1 session remaining. GlobeSurface is the largest single migration (3697 LOC) and is its own session.
+**Closing batch:** Audit reframe (2026-04-29) confirmed Batch 75 already shipped this for GlobeSurface; the prior wording of this entry was stale.
 
-**Impact:** Identical pipelines may be created multiple times across renderer instances. Memory + first-frame setup cost; no per-frame correctness or steady-state perf impact since each renderer's local cache hits.
-
-**Trace:** REVIEW_FIX_PROGRESS.md (Batches 56/62/72/73/74 lists); PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:185.
+**Trace:** Verified by grep of `WebGPUGlobeSurfaceRenderer.ts` for `device.createRenderPipeline` (one match — the synchronous-fallback path inside `_resolveGlobePipelineEntry`, used only when the central cache isn't available).
 
 ### C-R7-SHADER-MODULE-DEDUP
 

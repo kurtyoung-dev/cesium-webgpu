@@ -113,6 +113,35 @@ struct MaterialUniforms {
   // feature picking (KHR_mesh_features / EXT_structural_metadata) is a
   // separate follow-up — see `C-R9-MODEL-FEATURE-PICK`.
   pickColor: vec4<f32>,
+  // C-R4-GLTF-KHR (slice 1, KHR_texture_transform). Per-texture 3x3
+  // affine UV transforms (offset/rotation/scale combined into a 3x3
+  // matrix; identity when the extension is absent). Stored as 3
+  // padded vec4 columns each so std140 alignment lines up. Matches
+  // WebGL's `czm_computeTextureTransform`. Slot bits in
+  // `textureTransformFlags` indicate which slots have non-identity
+  // transforms; the FS skips the multiply for identity slots so the
+  // common no-extension case stays branch-light. Bit layout mirrors
+  // texCoordFlags above (baseColor / normal / metallicRoughness /
+  // emissive / occlusion).
+  baseColorTextureTransform0: vec4<f32>,
+  baseColorTextureTransform1: vec4<f32>,
+  baseColorTextureTransform2: vec4<f32>,
+  normalTextureTransform0: vec4<f32>,
+  normalTextureTransform1: vec4<f32>,
+  normalTextureTransform2: vec4<f32>,
+  metallicRoughnessTextureTransform0: vec4<f32>,
+  metallicRoughnessTextureTransform1: vec4<f32>,
+  metallicRoughnessTextureTransform2: vec4<f32>,
+  emissiveTextureTransform0: vec4<f32>,
+  emissiveTextureTransform1: vec4<f32>,
+  emissiveTextureTransform2: vec4<f32>,
+  occlusionTextureTransform0: vec4<f32>,
+  occlusionTextureTransform1: vec4<f32>,
+  occlusionTextureTransform2: vec4<f32>,
+  textureTransformFlags: u32,
+  _pad_tt0: f32,
+  _pad_tt1: f32,
+  _pad_tt2: f32,
 };
 
 struct LightUniforms {
@@ -944,10 +973,90 @@ const TEXCOORD_BIT_METALLIC_ROUGHNESS: u32   = 1u << 2u;
 const TEXCOORD_BIT_EMISSIVE: u32             = 1u << 3u;
 const TEXCOORD_BIT_OCCLUSION: u32            = 1u << 4u;
 
+// KHR_texture_transform "has transform" bit layout — same per-slot
+// bit positions as TEXCOORD_BIT_* so the CPU can pack both bitmasks
+// in parallel. material.textureTransformFlags is read via the same
+// shape as material.texCoordFlags.
+const TT_BIT_BASE_COLOR: u32          = 1u << 0u;
+const TT_BIT_NORMAL: u32              = 1u << 1u;
+const TT_BIT_METALLIC_ROUGHNESS: u32  = 1u << 2u;
+const TT_BIT_EMISSIVE: u32            = 1u << 3u;
+const TT_BIT_OCCLUSION: u32           = 1u << 4u;
+
+// Per-texture UV resolvers — pick UV set + apply KHR_texture_transform
+// in one call so the textureSample sites stay readable. Each wraps
+// `selectUV` then `applyTextureTransform`. Identity transforms (the
+// common no-extension case) skip the multiply via the slotBit guard
+// inside applyTextureTransform.
+fn baseColorUV(input: FragmentInput) -> vec2<f32> {
+  let uv = selectUV(input, TEXCOORD_BIT_BASE_COLOR);
+  return applyTextureTransform(
+    uv, TT_BIT_BASE_COLOR,
+    material.baseColorTextureTransform0,
+    material.baseColorTextureTransform1,
+    material.baseColorTextureTransform2,
+  );
+}
+fn normalUV(input: FragmentInput) -> vec2<f32> {
+  let uv = selectUV(input, TEXCOORD_BIT_NORMAL);
+  return applyTextureTransform(
+    uv, TT_BIT_NORMAL,
+    material.normalTextureTransform0,
+    material.normalTextureTransform1,
+    material.normalTextureTransform2,
+  );
+}
+fn metallicRoughnessUV(input: FragmentInput) -> vec2<f32> {
+  let uv = selectUV(input, TEXCOORD_BIT_METALLIC_ROUGHNESS);
+  return applyTextureTransform(
+    uv, TT_BIT_METALLIC_ROUGHNESS,
+    material.metallicRoughnessTextureTransform0,
+    material.metallicRoughnessTextureTransform1,
+    material.metallicRoughnessTextureTransform2,
+  );
+}
+fn emissiveUV(input: FragmentInput) -> vec2<f32> {
+  let uv = selectUV(input, TEXCOORD_BIT_EMISSIVE);
+  return applyTextureTransform(
+    uv, TT_BIT_EMISSIVE,
+    material.emissiveTextureTransform0,
+    material.emissiveTextureTransform1,
+    material.emissiveTextureTransform2,
+  );
+}
+fn occlusionUV(input: FragmentInput) -> vec2<f32> {
+  let uv = selectUV(input, TEXCOORD_BIT_OCCLUSION);
+  return applyTextureTransform(
+    uv, TT_BIT_OCCLUSION,
+    material.occlusionTextureTransform0,
+    material.occlusionTextureTransform1,
+    material.occlusionTextureTransform2,
+  );
+}
+
 // Pick TEXCOORD_0 or TEXCOORD_1 for a given texture slot based on the
 // bitmask uploaded by the CPU (one bit per slot). glTF textureInfos
 // each carry a `texCoord: 0|1` flag; occlusion and clearcoat-normal
 // commonly want slot 1 while base color stays on slot 0.
+// Apply a KHR_texture_transform 3x3 matrix to UVs. Mirrors WebGL's
+// czm_computeTextureTransform. The matrix is reconstructed at call
+// time from the 3 padded vec4 columns we store in the UBO. When the
+// matching slot bit in textureTransformFlags is unset, returns the
+// input UV unchanged so identity slots don't pay the multiply cost.
+fn applyTextureTransform(
+  uv: vec2<f32>,
+  slotBit: u32,
+  col0: vec4<f32>,
+  col1: vec4<f32>,
+  col2: vec4<f32>,
+) -> vec2<f32> {
+  if ((material.textureTransformFlags & slotBit) == 0u) {
+    return uv;
+  }
+  let m = mat3x3<f32>(col0.xyz, col1.xyz, col2.xyz);
+  return (m * vec3<f32>(uv, 1.0)).xy;
+}
+
 fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   let useUV1 = (material.texCoordFlags & slotBit) != 0u;
   return select(input.texCoord0, input.texCoord1, useUV1);
@@ -983,12 +1092,12 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
       baseColor = baseColor * tc;
     }
   } else {
     if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
       baseColor = baseColor * tc;
     }
   }
@@ -1021,7 +1130,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   var N = normalize(input.normalEC);
   if (hasFlag(flags, FLAG_IS_DOUBLE_SIDED) && !input.frontFacing) { N = -N; }
   if (hasFlag(flags, FLAG_HAS_NORMAL_TEXTURE)) {
-    let nm = textureSample(normalTexture, normalSampler, selectUV(input, TEXCOORD_BIT_NORMAL)).rgb;
+    let nm = textureSample(normalTexture, normalSampler, normalUV(input)).rgb;
     N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale);
   }
 
@@ -1035,7 +1144,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     var spec = vec3<f32>(material.specularFactor_r, material.specularFactor_g, material.specularFactor_b);
     var gloss = material.glossinessFactor;
     if (hasFlag(flags, FLAG_HAS_SPECGLOSS_TEXTURE)) {
-      let sg = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, selectUV(input, TEXCOORD_BIT_METALLIC_ROUGHNESS));
+      let sg = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input));
       spec = spec * srgbToLinear(sg.rgb);
       gloss = gloss * sg.a;
     }
@@ -1047,7 +1156,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     metallic = material.metallicFactor;
     roughness = material.roughnessFactor;
     if (hasFlag(flags, FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE)) {
-      let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, selectUV(input, TEXCOORD_BIT_METALLIC_ROUGHNESS));
+      let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input));
       roughness = roughness * mr.g;
       metallic = metallic * mr.b;
     }
@@ -1137,7 +1246,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
-    let ao = textureSample(occlusionTexture, occlusionSampler, selectUV(input, TEXCOORD_BIT_OCCLUSION)).r;
+    let ao = textureSample(occlusionTexture, occlusionSampler, occlusionUV(input)).r;
     ambient = mix(ambient, ambient * ao, material.occlusionStrength);
   }
 
@@ -1147,7 +1256,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // full rationale on sRGB format selection.
   var emissive = material.emissiveFactor;
   if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
-    let et = textureSample(emissiveTexture, emissiveSampler, selectUV(input, TEXCOORD_BIT_EMISSIVE)).rgb;
+    let et = textureSample(emissiveTexture, emissiveSampler, emissiveUV(input)).rgb;
     emissive = emissive * et;
   }
 
@@ -1269,11 +1378,11 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSample(baseColorTexture, baseColorSampler, selectUV(input, TEXCOORD_BIT_BASE_COLOR));
+    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
     baseColor = baseColor * tc;
   }
 
