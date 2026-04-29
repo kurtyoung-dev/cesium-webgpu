@@ -2603,7 +2603,23 @@ class Scene {
       );
     }
 
-    if (hasLogDepthDerivedCommands || needsLogDepthDerivedCommands) {
+    if (
+      (hasLogDepthDerivedCommands || needsLogDepthDerivedCommands) &&
+      !command.isWebGPUDrawCommand
+    ) {
+      // Sibling guard to the depth-only check below: WebGPU draw
+      // commands lack the WebGL-style `shaderProgram.id`, and
+      // `DerivedCommand.createLogDepthCommand` shallow-clones the
+      // command into a raw WebGL `DrawCommand` whose `execute(context,
+      // passState)` recurses through `WebGPUContext.draw` and ends up
+      // calling `passEncoder.draw(WebGLDrawCommand, PassState)` —
+      // surfaced as "Value is not of type 'unsigned long'". WebGPU
+      // commands handle log-depth via their pipeline's WGSL fragment
+      // entrypoint instead, so the WebGL helper has nothing to do
+      // here. Migration Session 4b found this when the polyline
+      // renderer started attaching a pickCommand (which sets
+      // `derivedCommands` and made the log-depth derivation start
+      // running on the colorCommand).
       derivedCommands.logDepth = DerivedCommand.createLogDepthCommand(
         command,
         context,
@@ -4378,7 +4394,20 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
         );
     }
   }
-  if (!command.pickOnly) {
+  if (!command.pickOnly && !command.isWebGPUDrawCommand) {
+    // WebGPU commands carry pre-built depth-only pipelines via
+    // `WebGPUDerivedCommand.createDepthOnlyDerivedCommand` (consumed by
+    // `WebGPUSceneRenderer.executeBatchDepthOnly`). The WebGL helper
+    // here would `DrawCommand.shallowClone` the WebGPU command into a
+    // raw `DrawCommand`, which lacks `pipeline` / `indexBuffer` and
+    // crashes when re-dispatched through `WebGPUContext.draw` (the
+    // resulting `passEncoder.draw(DrawCommand, PassState)` call fails
+    // with "Value is not of type 'unsigned long'"). The WebGPU
+    // dispatcher has its own depth-only path so the guard is a pure
+    // skip — no replacement needed here. Migration Session 4b found
+    // this when wiring `attachPickToColorCommand` on the polyline
+    // renderer (which sets `derivedCommands` and made the depth
+    // derivation start running).
     derivedCommands.depth = DerivedCommand.createDepthOnlyDerivedCommand(
       scene,
       command,

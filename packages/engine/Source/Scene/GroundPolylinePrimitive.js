@@ -8,6 +8,7 @@ import GeometryInstance from "../Core/GeometryInstance.js";
 import GeometryInstanceAttribute from "../Core/GeometryInstanceAttribute.js";
 import GroundPolylineGeometry from "../Core/GroundPolylineGeometry.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -805,6 +806,32 @@ function updateAndQueueCommands(
   debugShowBoundingVolume,
 ) {
   const primitive = groundPolylinePrimitive._primitive;
+
+  // WebGPU path: delegate to the GROUND_POLYLINE feature renderer.
+  // When the alternate renderer is active, `Primitive.update` SKIPS
+  // the WebGL `_createShaderProgramFunction` call (`!hasAlternateRenderer`
+  // guard) — the WebGL DrawCommands in `_colorCommands[]` therefore
+  // have `shaderProgram: undefined` while `_createCommandsFunction`
+  // still sets `command.pickId`. Pushing those commands to the
+  // commandList tries to derive a pick variant and crashes in
+  // `getPickShaderProgram`. So once `fr` is registered we MUST NOT
+  // fall back to queuing the WebGL commands — emit only the
+  // renderer's commands.
+  //
+  // The renderer dispatches all four scene modes (SCENE3D, SCENE2D,
+  // COLUMBUS_VIEW, MORPHING). Morph uses a separate pipeline pair
+  // built alongside the main pipelines.
+  const context = frameState.context;
+  const fr = context.getFeatureRenderer?.(FeatureRendererKey.GROUND_POLYLINE);
+  if (fr && fr.createCommands) {
+    const result = fr.createCommands(groundPolylinePrimitive, frameState);
+    if (result && result.colorCommand) {
+      frameState.commandList.push(result.colorCommand);
+    }
+    // Always return — never fall through to the WebGL queue when fr
+    // is registered, because the WebGL commands lack shaderProgram.
+    return;
+  }
 
   Primitive._updateBoundingVolumes(primitive, frameState, modelMatrix); // Expected to be identity - GroundPrimitives don't support other model matrices
 

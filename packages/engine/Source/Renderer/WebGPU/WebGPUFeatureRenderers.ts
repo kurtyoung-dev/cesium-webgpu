@@ -433,13 +433,12 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUGroundPrimitiveResources,
   });
 
-  // Migration Session 4 (Batch 84) — GroundPolylinePrimitive classifier.
-  // Skeleton-only registration; `createCommands` returns null until
-  // the WGSL VS/FS port lands in Session 4b. Registering the stub
-  // (not the absent slot) lets `getFeatureRenderer(GROUND_POLYLINE)`
-  // return a real handle so consumers can feature-detect the
-  // registration vs. the implementation level via
-  // `renderer.isFullyImplemented?.()`.
+  // Migration Session 4b — GroundPolylinePrimitive classifier with
+  // full WGSL VS/FS port (per-vertex volume extrusion, miter offset,
+  // 5-plane fragment culling, depth-sample reconstruction). 3D path
+  // only — 2D / Columbus View / Morph still fall through to WebGL.
+  // The `Scene/GroundPolylinePrimitive.js` delegation hook gates on
+  // SceneMode.SCENE3D and skips the WebGPU path otherwise.
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE, {
     createCommands: createWebGPUGroundPolylineCommands,
     destroy: destroyWebGPUGroundPolylineResources,

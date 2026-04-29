@@ -342,11 +342,14 @@ async function main() {
       setupViewer(webglViewer);
       applyViewSettings(webglViewer);
       setupCameraSave(webglViewer);
+      window.viewer = webglViewer;
     } else if (currentMode === "webgpu") {
       webgpuViewer = await createWebGPUViewer("cesiumContainer");
       setupViewer(webgpuViewer);
       applyViewSettings(webgpuViewer);
       setupCameraSave(webgpuViewer);
+      window.viewer = webgpuViewer;
+      CesiumDebug(webgpuViewer);
     } else if (currentMode === "split") {
       // Hide main container and create split
       document.getElementById("cesiumContainer").style.display = "none";

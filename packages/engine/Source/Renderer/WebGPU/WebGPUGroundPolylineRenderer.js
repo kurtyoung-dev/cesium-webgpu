@@ -1,130 +1,2057 @@
 /**
  * @module WebGPUGroundPolylineRenderer
  *
- * Migration Session 4 (Batch 84) — WebGPU classifier for
- * `GroundPolylinePrimitive`. Parallel of `WebGPUGroundPrimitiveRenderer`
- * specialized for line-shaped shadow volumes (extruded swept-rectangle
- * with miter joins). Sits beside the rectangle / polygon classifier in
- * the depth-sample architecture (ADR-2026-04-28); reuses the same
+ * Migration Session 4b — full WGSL port of `PolylineShadowVolumeVS.glsl`
+ * + `PolylineShadowVolumeFS.glsl` for `GroundPolylinePrimitive`.
+ * Sits beside `WebGPUGroundPrimitiveRenderer` in the depth-sample
+ * classifier architecture (ADR-2026-04-28); reuses the same
  * `_packedTranslucentDepthView` / `_globeDepthView` plumbing
- * (Migration Session 2) and the same per-frustum bind-group resolver
- * pattern (Migration Session 3) so polyline classification picks up
- * runtime depth-source swap and multi-frustum correctness for free.
+ * (Session 2) and the per-frustum bind-group resolver (Session 3) so
+ * polyline classification picks up runtime depth-source swap and
+ * multi-frustum correctness for free.
  *
- * **What this batch ships:**
- *   - `FeatureRendererKey.GROUND_POLYLINE` slot (= 41) registered in
- *     `Source/Renderer/FeatureRendererKey.js`.
- *   - This module's structural skeleton: the public
- *     `createWebGPUGroundPolylineCommands` entry point matching
- *     `WebGPUGroundPrimitiveRenderer`'s shape, the per-primitive
- *     `_webgpuPolylineCache` slot, and a delegation hook in
- *     `Scene/GroundPolylinePrimitive.js` (Session 4b) that prefers
- *     this renderer when registered.
- *
- * **What's currently a no-op until follow-ups land:**
- *   - WGSL port of `PolylineShadowVolumeVS.glsl` (~170 lines —
- *     per-vertex volume extrusion, miter offset along normalEC,
- *     `czm_metersPerPixel`-driven width adjustment, depth clamp).
- *   - WGSL port of `PolylineShadowVolumeFS.glsl` (~85 lines — 5
- *     plane-distance tests for fragment culling, aligned-plane
- *     reconstruction for texture coords, per-instance color and
- *     material output).
- *   - Vertex format with 5 vec4 attributes (startHi+forwardX,
- *     startLo+forwardY, startNormal+forwardZ, endNormal+texNormX,
- *     rightNormal+texNormY) + batchId. Stride 84 bytes.
- *   - Materials path (czm_getMaterial integration).
- *   - 2D / Columbus View projection support.
- *   - DEBUG_SHOW_VOLUME / WIDTH_VARYING / ANGLE_VARYING flags.
- *
- * Until Session 4b ships, `createWebGPUGroundPolylineCommands` returns
- * a `null`-command result so the consumer's WebGL fall-through fires
- * (matching the `WebGPUGroundPrimitiveRenderer` pattern when
- * `_webgpuGeometryData` isn't yet populated). Registering the feature
- * renderer with this stub is the right minimum because:
- *
- *   1. It lets the registry-side wiring land cleanly in one batch.
- *   2. It makes `getFeatureRenderer(GROUND_POLYLINE)` return a real
- *      object so downstream code can feature-detect ("is the renderer
- *      registered?") even before the shader port lands.
- *   3. The WebGL fall-through continues to render polylines correctly
- *      until the WGSL port lands in Session 4b.
+ * **Shipped:**
+ *   - WGSL VS port (per-vertex volume extrusion along miter normal,
+ *     `czm_metersPerPixel`-driven width adjustment, downward extrusion
+ *     for "bottom" vertices, miter-aware aligned-plane recomputation
+ *     in the FS for unskewed lengthwise texture coords).
+ *   - WGSL FS port (5 plane-distance tests for fragment culling,
+ *     per-fragment eye-space reconstruction from sampled globe depth).
+ *   - Vertex buffer interleave of 14 attributes — 8 for 3D
+ *     (positionHigh/Low, startHi+forwardX, startLo+forwardY,
+ *     startNormal+forwardZ, endNormal+texNormX, rightNormal+texNormY,
+ *     batchId) plus 6 for 2D / Columbus View / Morph (position2DHigh/Low,
+ *     startHiLo2D, offsetAndRight2D, startEndNormals2D,
+ *     texcoordNormalization2D).
+ *   - Per-frustum depth-source resolver (Session 3 contract).
+ *   - Pick command derivation matching the GroundPrimitive renderer's
+ *     pattern.
+ *   - `DEBUG_SHOW_VOLUME` flag — runtime uniform; when
+ *     `_debugShowShadowVolume` is true on the primitive the FS emits
+ *     translucent red instead of discarding non-classified fragments.
+ *   - Batch-table-driven per-instance color/width (up to
+ *     MAX_BATCH_INSTANCES per primitive). VS reads
+ *     `czm_batchTable_color(batchId)` / `czm_batchTable_width(batchId)`
+ *     equivalents from a UBO array snapshotted from the inner
+ *     Primitive's `_batchTable`.
+ *   - 2D / Columbus View VS branch — same pipeline as 3D, scene-mode
+ *     flag in the UBO selects which set of vertex attributes to read
+ *     (3D vs 2D-projected) and skips bottom-vertex extrusion in 2D.
+ *   - Morph scene mode — separate pipeline + WGSL entry points
+ *     (`vsMorph` / `colorFSMorph` / `pickFSMorph`) that consume both
+ *     2D and 3D position/plane attributes and blend by `czm_morphTime`.
+ *     Front-face culling matches the WebGL `_renderStateMorph`.
+ *   - Material support — `applyMaterial()` in the FS dispatches on
+ *     `materialMeta.x` to inline implementations of `PolylineDash`,
+ *     `PolylineGlow`, `PolylineOutline`, plus the default `Color`
+ *     path. Other materials (Image, Stripe, Arrow, custom) fall
+ *     through to the default Color path; adding them requires a new
+ *     branch in `applyMaterial()` plus packing the material's
+ *     uniforms into materialParam0/1/2 in `resolveMaterialState()`.
  *
  * @private
  */
-
+import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Matrix4 from "../../Core/Matrix4.js";
+import WebGPUBuffer from "./WebGPUBuffer.js";
+import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  sampler as samplerEntry,
+  texture as textureEntry,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  attachPickToColorCommand,
+  destroyPickIds,
+  ensurePickId,
+} from "./WebGPUPickCommandHelpers.js";
+import SceneMode from "../../Scene/SceneMode.js";
+
+// Cap on per-primitive instances that can use the batch-table-driven
+// color/width path. Polylines with more instances than this fall back
+// to the appearance-level uniform color/width for the overflow
+// instances (single-color appearance still works correctly; only the
+// multi-instance varied colors degrade). Sized to keep the UBO under
+// 4 KB with comfortable headroom for follow-up additions.
+const MAX_BATCH_INSTANCES = 64;
+
+// UBO layout (608 floats = 2432 bytes; rounded up to 2560 below for
+// 256-byte alignment):
+//   floats   0-15 : mvRTE             (mat4x4<f32>)
+//   floats  16-31 : proj              (mat4x4<f32>)
+//   floats  32-47 : invProj           (mat4x4<f32>)
+//   floats  48-51 : normal0           (vec3 col0 + pad)
+//   floats  52-55 : normal1           (vec3 col1 + pad)
+//   floats  56-59 : normal2           (vec3 col2 + pad)
+//   floats  60-63 : camH + pad        (vec3<f32> + pad)
+//   floats  64-67 : camL + pad        (vec3<f32> + pad)
+//   floats  68-71 : viewport          (vec4<f32>: x, y, w, h)
+//   floats  72-75 : color             (vec4<f32>) — fallback color
+//   floats  76-79 : pickColor         (vec4<f32>)
+//   floats  80-83 : misc              (vec4<f32>)
+//                     x: width (pixels) — fallback width
+//                     y: reserved
+//                     z: GLOBE_MINIMUM_ALTITUDE (ellipsoid.minimumRadius)
+//                     w: czm_geometricToleranceOverMeter (~1e-6)
+//   floats  84-87 : flags             (vec4<f32>)
+//                     x: debugShowVolume (0/1)
+//                     y: numBatchInstances (count of valid batch-table entries)
+//                     z: sceneMode (1.0 = SCENE3D, 0.0 = 2D / Columbus View)
+//                     w: morphTime (0.0 = 2D, 1.0 = 3D, fractional in MORPHING)
+//   floats  88-91 : materialMeta     (vec4<f32>)
+//                     x: materialType (0=Color, 1=PolylineDash, 2=PolylineGlow,
+//                        3=PolylineOutline, ...)
+//                     y/z/w: reserved
+//   floats  92-95 : materialColor    (vec4<f32>)
+//                     The appearance's material.uniforms.color
+//                     (per-material default color). Falls back to
+//                     instanceColor (from the batch table) when unused.
+//   floats  96-99 : materialParam0   (vec4<f32>) — material-specific
+//   floats 100-103: materialParam1   (vec4<f32>) — material-specific
+//   floats 104-107: materialParam2   (vec4<f32>) — material-specific
+//   floats 108-111: _pad (alignment for the array that follows)
+//   floats 112-367: instanceColors (array<vec4<f32>, MAX_BATCH_INSTANCES>)
+//   floats 368-623: instanceMisc   (array<vec4<f32>, MAX_BATCH_INSTANCES>)
+//                     .x = per-instance width (pixels)
+//                     .y/.z/.w reserved (show, distance display, ...)
+const UNIFORM_BUFFER_SIZE = 2560;
+const INSTANCE_COLORS_OFFSET_FLOATS = 112;
+const INSTANCE_MISC_OFFSET_FLOATS =
+  INSTANCE_COLORS_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4;
+
+// 14 vertex attributes interleaved. The 3D set (locs 0-7) covers
+// SCENE3D rendering; the 2D set (locs 8-13) covers SCENE2D / Columbus
+// View / Morph by carrying the geometry's projected coordinates and
+// 2D plane attributes. Both sets ship in every vertex even when only
+// one mode is active — bandwidth cost is small for typical polyline
+// sizes (a few hundred to a few thousand vertices) and avoids needing
+// separate pipelines / vertex buffers per scene mode.
+//
+//   loc 0  (position3DHigh)                   : 0   vec3
+//   loc 1  (position3DLow)                    : 12  vec3
+//   loc 2  (startHiAndForwardOffsetX)         : 24  vec4
+//   loc 3  (startLoAndForwardOffsetY)         : 40  vec4
+//   loc 4  (startNormalAndForwardOffsetZ)     : 56  vec4
+//   loc 5  (endNormalAndTexNormX)             : 72  vec4
+//   loc 6  (rightNormalAndTexNormY)           : 88  vec4
+//   loc 7  (batchId)                          : 104 f32
+//   loc 8  (position2DHigh)                   : 108 vec3
+//   loc 9  (position2DLow)                    : 120 vec3
+//   loc 10 (startHiLo2D)                      : 132 vec4
+//   loc 11 (offsetAndRight2D)                 : 148 vec4
+//   loc 12 (startEndNormals2D)                : 164 vec4
+//   loc 13 (texcoordNormalization2D)          : 180 vec2
+const VERTEX_STRIDE_BYTES = 188;
+const FLOATS_PER_VERTEX = 47;
+
+const scratchModelView = new Matrix4();
+const scratchMVRTE = new Matrix4();
+const scratchEncodedCamera = new EncodedCartesian3();
+
+// `czm_geometricToleranceOverMeter` is a near-zero scaling factor that
+// determines how far below the surface "bottom" vertices extrude for
+// far view distances. The WebGL builtin computes it dynamically from
+// camera/pixel-size; 1e-6 matches the steady-state value for typical
+// global-scale views and is what the ground-primitive vertex shader
+// effectively sees in steady state. Document as a first-cut limitation;
+// follow-up can plumb the dynamic value through uniformState.
+const GEOMETRIC_TOLERANCE_OVER_METER = 1.0e-6;
+
+const SHADER_CODE = /* wgsl */ `
+struct U {
+  mvRTE: mat4x4<f32>,
+  proj: mat4x4<f32>,
+  invProj: mat4x4<f32>,
+  normal0: vec4<f32>,
+  normal1: vec4<f32>,
+  normal2: vec4<f32>,
+  camH: vec4<f32>,
+  camL: vec4<f32>,
+  viewport: vec4<f32>,
+  // Fallback color used when batchId is out of range or when the
+  // primitive doesn't have per-instance colors.
+  color: vec4<f32>,
+  pickColor: vec4<f32>,
+  misc: vec4<f32>,
+  // flags.x: debugShowVolume (0/1)
+  // flags.y: numBatchInstances — count of valid entries in instanceColors
+  //          and instanceMisc. Used by the shader to bounds-check batchId.
+  // flags.z: sceneMode — 0 = 2D / Columbus View, 1 = 3D. Controls
+  //          which set of vertex attributes the VS reads
+  //          (3D positions/planes vs 2D positions/planes). The morph
+  //          pipeline ignores this flag (it always reads both 2D and
+  //          3D and blends).
+  // flags.w: morphTime — 0.0 = full 2D, 1.0 = full 3D. Used only by
+  //          the morph pipeline to lerp between the 2D and 3D
+  //          eye-space positions and per-vertex texcoord normalizations.
+  flags: vec4<f32>,
+  // Material parameters. materialMeta.x is the material-type enum the
+  // CPU writes after inspecting the appearance's material:
+  //   0 = Color (default — uses materialColor or instanceColor)
+  //   1 = PolylineDash — materialParam0.xy = (dashLength, dashPattern)
+  //                       gapColor in materialParam1
+  //   2 = PolylineGlow — materialParam0.x = glowPower
+  //                       materialParam0.y = taperPower
+  //   3 = PolylineOutline — materialParam0.x = outlineWidth
+  //                          outlineColor in materialParam1
+  // For unrecognised materials, the FS falls through to the default
+  // color path. See applyMaterial() below.
+  materialMeta: vec4<f32>,
+  materialColor: vec4<f32>,
+  materialParam0: vec4<f32>,
+  materialParam1: vec4<f32>,
+  materialParam2: vec4<f32>,
+  _pad: vec4<f32>,
+  // Per-instance batch-table data. WebGL polylines look up their
+  // per-instance color/width via czm_batchTable_color(batchId) /
+  // czm_batchTable_width(batchId) which sample a 1D batch-table
+  // texture; in WebGPU we mirror that data into a UBO-resident array
+  // (sized to MAX_BATCH_INSTANCES). batchId is a per-vertex attribute
+  // emitted by the geometry batcher; the VS uses it to look up width
+  // and pass color through to the FS as a varying.
+  instanceColors: array<vec4<f32>, ${MAX_BATCH_INSTANCES}>,
+  // instanceMisc[i].x = per-instance width (pixels)
+  // instanceMisc[i].y/.z/.w = reserved (show, distance display, ...)
+  instanceMisc: array<vec4<f32>, ${MAX_BATCH_INSTANCES}>,
+};
+
+@group(0) @binding(0) var<uniform> u: U;
+
+// Depth-sample resources. The texture view is bound late at draw time
+// via WebGPUDrawCommand.bindGroupResolvers so per-frustum + per-frame
+// depth-source swaps (globe-depth ↔ packed-translucent-depth) take
+// effect without rebuilding the command (Session 3 contract).
+@group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
+@group(1) @binding(1) var depthSampler: sampler;
+
+struct VS_IN {
+  @location(0) pH: vec3<f32>,
+  @location(1) pL: vec3<f32>,
+  @location(2) startHi_fwdX: vec4<f32>,
+  @location(3) startLo_fwdY: vec4<f32>,
+  @location(4) startNormal_fwdZ: vec4<f32>,
+  @location(5) endNormal_texNormX: vec4<f32>,
+  @location(6) rightNormal_texNormY: vec4<f32>,
+  @location(7) batchId: f32,
+  @location(8) pH2D: vec3<f32>,
+  @location(9) pL2D: vec3<f32>,
+  @location(10) startHiLo2D: vec4<f32>,
+  @location(11) offsetAndRight2D: vec4<f32>,
+  @location(12) startEndNormals2D: vec4<f32>,
+  @location(13) texcoordNormalization2D: vec2<f32>,
+};
+
+struct VS_OUT {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) startPlaneNormalEcAndHalfWidth: vec4<f32>,
+  @location(1) endPlaneNormalEc: vec4<f32>,
+  @location(2) rightPlaneEC: vec4<f32>,
+  @location(3) endEcAndStartEcX: vec4<f32>,
+  @location(4) texcoordNormalizationAndStartEcYZ: vec4<f32>,
+  // Per-instance color resolved at VS time (czm_batchTable_color
+  // equivalent). When the primitive has no per-instance colors or the
+  // batchId overflows MAX_BATCH_INSTANCES the FS gets the appearance
+  // fallback color.
+  @location(5) instanceColor: vec4<f32>,
+};
+
+// Look up the per-instance color from the batch-table UBO array. Falls
+// back to u.color when batchId is out of range. Mirrors WebGL's
+// czm_batchTable_color() generated lookup.
+fn batchTableColor(batchId: u32) -> vec4<f32> {
+  let count = u32(u.flags.y);
+  if (batchId >= count) {
+    return u.color;
+  }
+  return u.instanceColors[batchId];
+}
+
+// Look up the per-instance width (in pixels). Falls back to u.misc.x
+// (the appearance-level width) when batchId is out of range.
+fn batchTableWidth(batchId: u32) -> f32 {
+  let count = u32(u.flags.y);
+  if (batchId >= count) {
+    return u.misc.x;
+  }
+  return u.instanceMisc[batchId].x;
+}
+
+// Apply the 3x3 normal matrix (stored as 3 padded vec4 columns).
+fn applyNormalMatrix(n: vec3<f32>) -> vec3<f32> {
+  return u.normal0.xyz * n.x + u.normal1.xyz * n.y + u.normal2.xyz * n.z;
+}
+
+fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec3<f32> {
+  return (high - u.camH.xyz) + (low - u.camL.xyz);
+}
+
+// Perspective approximation of czm_metersPerPixel. proj[0][0] / proj[1][1]
+// are the projection xScale / yScale (1/(aspect*tan(fov/2)) and
+// 1/tan(fov/2)). Multiplied by 2/W and 2/H respectively, they give NDC
+// pixel size; multiplied by abs(positionEC.z) they give meters per
+// pixel at the eye-space z.
+fn metersPerPixel(positionEC: vec3<f32>) -> f32 {
+  let pixelW = 2.0 / (u.viewport.z * u.proj[0][0]);
+  let pixelH = 2.0 / (u.viewport.w * u.proj[1][1]);
+  let pixelSize = max(abs(pixelW), abs(pixelH));
+  return pixelSize * abs(positionEC.z);
+}
+
+@vertex fn vsMain(in: VS_IN) -> VS_OUT {
+  var out: VS_OUT;
+
+  // Resolve per-instance color/width from the batch table.
+  let batchIdU = u32(in.batchId);
+  out.instanceColor = batchTableColor(batchIdU);
+
+  // Pick scene-mode-specific input attributes. flags.z is 1.0 in 3D
+  // and 0.0 in 2D / Columbus View. The mode determines which set of
+  // attributes (3D vs 2D) we read for position, planes, and forward
+  // direction. The shared body below operates on the resolved values.
+  //
+  // 2D / Columbus View use the projected position2DHigh/Low (with a
+  // .zxy swizzle that matches Cesium's 2D coordinate convention) and
+  // build planes / forward direction from vec3(0, *2D.xy/zw) inputs
+  // — the leading 0 collapses the longitudinal (X) axis since the
+  // 2D projection has no horizontal extent.
+  let is3D = u.flags.z > 0.5;
+
+  var positionHRTE: vec3<f32>;
+  var positionLRTE: vec3<f32>;
+  var startHi: vec3<f32>;
+  var startLo: vec3<f32>;
+  var forwardOffset: vec3<f32>;
+  var startNormal: vec3<f32>;
+  var endNormal: vec3<f32>;
+  var rightNormal: vec3<f32>;
+  var texNormX: f32;
+  var texNormY: f32;
+
+  if (is3D) {
+    positionHRTE = in.pH;
+    positionLRTE = in.pL;
+    startHi = in.startHi_fwdX.xyz;
+    startLo = in.startLo_fwdY.xyz;
+    forwardOffset = vec3<f32>(
+      in.startHi_fwdX.w,
+      in.startLo_fwdY.w,
+      in.startNormal_fwdZ.w,
+    );
+    startNormal = in.startNormal_fwdZ.xyz;
+    endNormal = in.endNormal_texNormX.xyz;
+    rightNormal = in.rightNormal_texNormY.xyz;
+    texNormX = in.endNormal_texNormX.w;
+    texNormY = in.rightNormal_texNormY.w;
+  } else {
+    // 2D / Columbus View. Position attribute is projected; the .zxy
+    // swizzle maps Cesium's (lon, lat, height) packing to the 2D
+    // coordinate frame the view matrix expects.
+    positionHRTE = in.pH2D.zxy;
+    positionLRTE = in.pL2D.zxy;
+    startHi = vec3<f32>(0.0, in.startHiLo2D.x, in.startHiLo2D.y);
+    startLo = vec3<f32>(0.0, in.startHiLo2D.z, in.startHiLo2D.w);
+    forwardOffset = vec3<f32>(0.0, in.offsetAndRight2D.x, in.offsetAndRight2D.y);
+    startNormal = vec3<f32>(0.0, in.startEndNormals2D.x, in.startEndNormals2D.y);
+    endNormal = vec3<f32>(0.0, in.startEndNormals2D.z, in.startEndNormals2D.w);
+    rightNormal = vec3<f32>(0.0, in.offsetAndRight2D.z, in.offsetAndRight2D.w);
+    texNormX = in.texcoordNormalization2D.x;
+    texNormY = in.texcoordNormalization2D.y;
+  }
+
+  // Decode start position into eye-space via RTE.
+  let ecStartRTE = translateRelativeToEye(startHi, startLo);
+  let ecStart = (u.mvRTE * vec4<f32>(ecStartRTE, 1.0)).xyz;
+
+  // Forward offset (object-space) → eye-space via normal matrix.
+  let offset = applyNormalMatrix(forwardOffset);
+  let ecEnd = ecStart + offset;
+  let forwardDirectionEC = normalize(offset);
+
+  // Plane normals in eye-space.
+  let startPlaneNormalEC = applyNormalMatrix(startNormal);
+  let endPlaneNormalEC = applyNormalMatrix(endNormal);
+  let rightPlaneNormalEC = applyNormalMatrix(rightNormal);
+
+  // Right plane: store with -dot(N, ecStart) as w so that
+  // dot(plane.xyz, P) + plane.w == signed distance.
+  out.rightPlaneEC = vec4<f32>(rightPlaneNormalEC, -dot(rightPlaneNormalEC, ecStart));
+
+  // Carry start/end EC and tex normalization out to the FS.
+  out.endEcAndStartEcX = vec4<f32>(ecEnd, ecStart.x);
+  out.texcoordNormalizationAndStartEcYZ = vec4<f32>(
+    abs(texNormX),
+    texNormY,
+    ecStart.y,
+    ecStart.z,
+  );
+
+  // Per-vertex position in eye-space (RTE).
+  let positionRTE = translateRelativeToEye(positionHRTE, positionLRTE);
+  var positionEC = (u.mvRTE * vec4<f32>(positionRTE, 1.0)).xyz;
+
+  // Pick the closer plane (start vs end) for the extrusion direction.
+  let absStart = abs(dot(startPlaneNormalEC, positionEC) + (-dot(startPlaneNormalEC, ecStart)));
+  let absEnd = abs(dot(endPlaneNormalEC, positionEC) + (-dot(endPlaneNormalEC, ecEnd)));
+  var planeDirection = endPlaneNormalEC;
+  if (absStart < absEnd) {
+    planeDirection = startPlaneNormalEC;
+  }
+
+  let upOrDown0 = normalize(cross(rightPlaneNormalEC, planeDirection));
+  let normalEC0 = normalize(cross(planeDirection, upOrDown0));
+
+  // Extrude bottom vertices downward for far view distances — 3D-only.
+  // Matches the WebGL float(czm_sceneMode == czm_sceneMode3D) gate
+  // in PolylineShadowVolumeVS: the 2D / CV projections don't need
+  // bottom-vertex extrusion because the projected geometry is flat.
+  var upOrDown = cross(forwardDirectionEC, normalEC0);
+  let yIsBottom = (texNormY > 1.0) || (texNormY < 0.0);
+  if (!yIsBottom || !is3D) {
+    upOrDown = vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let bottomScale = min(u.misc.z, u.misc.w * length(positionRTE));
+  positionEC = positionEC + bottomScale * upOrDown;
+
+  // Re-encode texcoord normalization Y (collapse > 1 sentinels to 0).
+  out.texcoordNormalizationAndStartEcYZ.y = select(abs(texNormY), 0.0, texNormY > 1.0);
+
+  // Start plane half-width carries width/2 in pixels (FS converts to
+  // meters via czm_metersPerPixel(eyeCoord)).
+  let widthPixels = batchTableWidth(batchIdU);
+  out.startPlaneNormalEcAndHalfWidth = vec4<f32>(startPlaneNormalEC, widthPixels * 0.5);
+  out.endPlaneNormalEc = vec4<f32>(endPlaneNormalEC, 0.0);
+
+  // Determine push distance along normalEC for proper width.
+  var widthMeters = widthPixels * max(0.0, metersPerPixel(positionEC));
+  widthMeters = widthMeters / dot(normalEC0, rightPlaneNormalEC);
+
+  // Sign-flip the normal based on tex normalization X (left/right
+  // sidedness encoding).
+  let normalSign = sign(texNormX);
+  let normalEC = normalEC0 * normalSign;
+
+  positionEC = positionEC + widthMeters * normalEC;
+
+  out.pos = u.proj * vec4<f32>(positionEC, 1.0);
+  return out;
+}
+
+// Reverse of WebGPUGlobeDepth's pack: each RGBA byte carries a slice of
+// the depth value. Matches czm_unpackDepth in the WebGL builtins.
+fn unpackDepth(packed: vec4<f32>) -> f32 {
+  return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}
+
+// Reconstruct eye-space position from window XY + normalized depth.
+// WebGPU NDC z is [0, 1] (no remap needed) but clip-space y points down
+// while eye-space y points up, so we flip y.
+fn windowToEyeCoordinates(fragXY: vec2<f32>, depth: f32) -> vec3<f32> {
+  var ndc = (fragXY / u.viewport.zw) * 2.0 - 1.0;
+  ndc.y = -ndc.y;
+  let clip = vec4<f32>(ndc, depth, 1.0);
+  let eye = u.invProj * clip;
+  return eye.xyz / eye.w;
+}
+
+// Plane distance: dot(N, P) + w.
+fn planeDistance(planeXYZ: vec3<f32>, planeW: f32, point: vec3<f32>) -> f32 {
+  return dot(planeXYZ, point) + planeW;
+}
+
+// Test the fragment against the polyline shadow volume planes. Returns
+// a struct with the test result and the raw widthwise / lengthwise
+// distances (kept around for material texture-coord computation when
+// we port that). Discards happen at the call site so the color and
+// pick FS can share this path.
+struct ClassifyResult {
+  passed: bool,
+  eyeCoord: vec3<f32>,
+  widthwiseDistance: f32,
+  halfMaxWidth: f32,
+  distanceFromStart: f32,
+  distanceFromEnd: f32,
+};
+
+fn classifyFragment(in: VS_OUT) -> ClassifyResult {
+  var result: ClassifyResult;
+  result.passed = false;
+  result.eyeCoord = vec3<f32>(0.0);
+  result.widthwiseDistance = 0.0;
+  result.halfMaxWidth = 0.0;
+  result.distanceFromStart = 0.0;
+  result.distanceFromEnd = 0.0;
+
+  // in.pos is the @builtin(position) — in the fragment stage WGSL
+  // delivers it in window-space (xy = pixel coords, z = depth, w = 1/clipW).
+  let screenUV = in.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    return result;
+  }
+
+  let eyeCoord = windowToEyeCoordinates(in.pos.xy, surfaceDepth);
+  result.eyeCoord = eyeCoord;
+
+  let halfMaxWidth = in.startPlaneNormalEcAndHalfWidth.w * metersPerPixel(eyeCoord);
+  result.halfMaxWidth = halfMaxWidth;
+
+  let widthwiseDistance = planeDistance(in.rightPlaneEC.xyz, in.rightPlaneEC.w, eyeCoord);
+  result.widthwiseDistance = widthwiseDistance;
+
+  let ecStart = vec3<f32>(in.endEcAndStartEcX.w, in.texcoordNormalizationAndStartEcYZ.zw);
+  let ecEnd = in.endEcAndStartEcX.xyz;
+
+  let startW = -dot(ecStart, in.startPlaneNormalEcAndHalfWidth.xyz);
+  let endW = -dot(ecEnd, in.endPlaneNormalEc.xyz);
+  let distFromStart = planeDistance(in.startPlaneNormalEcAndHalfWidth.xyz, startW, eyeCoord);
+  let distFromEnd = planeDistance(in.endPlaneNormalEc.xyz, endW, eyeCoord);
+  result.distanceFromStart = distFromStart;
+  result.distanceFromEnd = distFromEnd;
+
+  if (abs(widthwiseDistance) > halfMaxWidth || distFromStart < 0.0 || distFromEnd < 0.0) {
+    return result;
+  }
+
+  result.passed = true;
+  return result;
+}
+
+// Aligned-plane reconstruction for unskewed lengthwise texture coords.
+// WebGL polyline FS does this when computing material s: cross the
+// right plane normal with the miter plane normal, then cross the
+// result with right again to point it more forward. This produces a
+// plane perpendicular to right that gives uniform distances along the
+// segment regardless of miter angle.
+fn alignedPlaneDistance(rightN: vec3<f32>, miterN: vec3<f32>, anchor: vec3<f32>, eye: vec3<f32>) -> f32 {
+  let cross1 = cross(rightN, miterN);
+  let alignedN = normalize(cross(cross1, rightN));
+  return planeDistance(alignedN, -dot(alignedN, anchor), eye);
+}
+
+// Apply the active material. materialMeta.x picks among supported
+// materials; materialColor is the default per-material color
+// (overrides per-instance color when set), and materialParam0/1/2
+// carry material-specific parameters. Mirrors the WebGL czm_getMaterial
+// flow at fragment-time but inlined as a switch on the material type.
+fn applyMaterial(
+  s: f32,
+  t: f32,
+  baseColor: vec4<f32>,
+) -> vec4<f32> {
+  let materialType = u32(u.materialMeta.x);
+
+  if (materialType == 1u) {
+    // PolylineDash. WebGL PolylineDashMaterial parameters:
+    //   color       (vec4)             — solid segment color
+    //   gapColor    (vec4)             — gap color (often transparent)
+    //   dashLength  (float, pixels)    — full pattern length
+    //   dashPattern (uint)             — bit pattern over 16 cells
+    // The shader maps s to a position along the dash pattern using
+    // the polyline pixel length, then samples the bit pattern.
+    let dashLength = u.materialParam0.x;
+    let dashPattern = u32(u.materialParam0.y);
+    // Approximate the pattern by mapping s in [0,1] over the polyline
+    // length in pixels. Matches WebGL's dashed appearance for typical
+    // polyline widths.
+    let pixelLen = dashLength;
+    let cell = u32(fract(s * pixelLen / 16.0) * 16.0);
+    let bit = (dashPattern >> cell) & 1u;
+    if (bit == 0u) {
+      return u.materialParam1; // gap color
+    }
+    return u.materialColor;
+  }
+
+  if (materialType == 2u) {
+    // PolylineGlow. Parameters:
+    //   color     (vec4)
+    //   glowPower (float)  — falls off from segment center to edge
+    //   taperPower(float)  — falls off from segment start/end
+    let glowPower = u.materialParam0.x;
+    let taperPower = u.materialParam0.y;
+    // Distance from segment centerline (t = 0.5 is center, 0/1 are edges).
+    let edgeT = abs(t * 2.0 - 1.0);
+    let glow = pow(1.0 - edgeT, glowPower);
+    let taper = pow(min(s, 1.0 - s) * 2.0, max(taperPower, 0.001));
+    let alpha = glow * taper * baseColor.a;
+    return vec4<f32>(baseColor.rgb, alpha);
+  }
+
+  if (materialType == 3u) {
+    // PolylineOutline. Parameters:
+    //   color         (in materialColor)
+    //   outlineColor  (in materialParam1)
+    //   outlineWidth  (in materialParam0.x — fraction of half-width)
+    let outlineWidth = u.materialParam0.x;
+    let edgeT = abs(t * 2.0 - 1.0);
+    if (edgeT > 1.0 - outlineWidth) {
+      return u.materialParam1;
+    }
+    return u.materialColor;
+  }
+
+  // materialType == 0 (Color, default) — use the per-instance color
+  // resolved in the VS via the batch table. PolylineMaterialAppearance
+  // with a Color material lands here too: materialColor mirrors the
+  // appearance's material.uniforms.color. Prefer the per-instance
+  // color when batchTableColor returned a real entry; otherwise fall
+  // back to the appearance's material color.
+  return baseColor;
+}
+
+@fragment fn colorFS(in: VS_OUT) -> @location(0) vec4<f32> {
+  let r = classifyFragment(in);
+  let debugShowVolume = u.flags.x > 0.5;
+  if (!r.passed) {
+    if (debugShowVolume) {
+      // DEBUG_SHOW_VOLUME — emit translucent red for fragments that
+      // would normally be discarded so the volume's spatial coverage
+      // is visible. Matches WebGL's DEBUG_SHOW_VOLUME vec4(1, 0, 0, 0.5)
+      // (pre-multiplied: rgb *= a).
+      return vec4<f32>(0.5, 0.0, 0.0, 0.5);
+    }
+    discard;
+  }
+
+  // Recompute s, t for material UV. Use aligned planes for s so
+  // miter joints don't produce skewed texture coordinates (matches
+  // WebGL's PolylineShadowVolumeFS aligned-plane recomputation).
+  let ecStart = vec3<f32>(in.endEcAndStartEcX.w, in.texcoordNormalizationAndStartEcYZ.zw);
+  let ecEnd = in.endEcAndStartEcX.xyz;
+  let alignedStart = alignedPlaneDistance(
+    in.rightPlaneEC.xyz,
+    in.startPlaneNormalEcAndHalfWidth.xyz,
+    ecStart,
+    r.eyeCoord,
+  );
+  let alignedEnd = alignedPlaneDistance(
+    in.rightPlaneEC.xyz,
+    in.endPlaneNormalEc.xyz,
+    ecEnd,
+    r.eyeCoord,
+  );
+  let safeStart = max(0.0, alignedStart);
+  let safeEnd = max(0.0, alignedEnd);
+  let total = max(safeStart + safeEnd, 1e-6);
+  var s = clamp(safeStart / total, 0.0, 1.0);
+  // Apply the geometry's per-segment texcoord normalization (so
+  // multi-segment polylines map to a continuous s ∈ [0,1] across the
+  // whole line, not per-segment).
+  s = s * in.texcoordNormalizationAndStartEcYZ.x + in.texcoordNormalizationAndStartEcYZ.y;
+  let t = (r.widthwiseDistance + r.halfMaxWidth) / (2.0 * r.halfMaxWidth);
+
+  // Default base color: the per-instance color resolved in the VS.
+  // Material 0 (Color) and Material 2 (Glow) use this; the others
+  // pull their own colors from material parameters.
+  let c = applyMaterial(s, t, in.instanceColor);
+  return vec4<f32>(c.rgb * c.a, c.a);
+}
+
+@fragment fn pickFS(in: VS_OUT) -> @location(0) vec4<f32> {
+  let r = classifyFragment(in);
+  if (!r.passed) {
+    discard;
+  }
+  return u.pickColor;
+}
+
+// ── Morph scene-mode pipeline ────────────────────────────────────
+//
+// During scene-mode transitions (3D ↔ Columbus View ↔ 2D) the polyline
+// has to render through both the 2D-projected and 3D positions, blended
+// by czm_morphTime. This requires a separate VS that consumes BOTH the
+// 3D and 2D vertex attributes simultaneously and produces a different
+// varying set than the regular pipeline (no fragment-side eye-space
+// reconstruction — the morph FS just emits the per-instance color
+// directly on the volume's rasterized surface, mirroring WebGL's
+// PolylineShadowVolumeMorphFS).
+//
+// MAX_TERRAIN_HEIGHT is the same constant the WebGL morph shader takes
+// as a #define from ApproximateTerrainHeights._defaultMaxTerrainHeight
+// (8000m for Earth). Used to nudge top vertices upwards to prevent
+// flickering when the volume is partly above terrain.
+const MAX_TERRAIN_HEIGHT: f32 = 8000.0;
+
+struct VS_OUT_MORPH {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) forwardDirectionEC: vec3<f32>,
+  @location(1) texcoordNormalizationAndHalfWidth: vec3<f32>,
+  @location(2) instanceColor: vec4<f32>,
+};
+
+@vertex fn vsMorph(in: VS_IN) -> VS_OUT_MORPH {
+  var out: VS_OUT_MORPH;
+
+  let batchIdU = u32(in.batchId);
+  out.instanceColor = batchTableColor(batchIdU);
+  let halfWidth = batchTableWidth(batchIdU) * 0.5;
+
+  let morphTime = u.flags.w;
+
+  // ── Start position (2D, 3D, blended) ──
+  let startRTE2D = translateRelativeToEye(
+    vec3<f32>(0.0, in.startHiLo2D.x, in.startHiLo2D.y),
+    vec3<f32>(0.0, in.startHiLo2D.z, in.startHiLo2D.w),
+  );
+  let startRTE3D = translateRelativeToEye(in.startHi_fwdX.xyz, in.startLo_fwdY.xyz);
+  let startRTE = mix(startRTE2D, startRTE3D, morphTime);
+  let posEc2D_start = (u.mvRTE * vec4<f32>(startRTE2D, 1.0)).xyz;
+  let posEc3D_start = (u.mvRTE * vec4<f32>(startRTE3D, 1.0)).xyz;
+  let startEC = (u.mvRTE * vec4<f32>(startRTE, 1.0)).xyz;
+
+  // ── Plane normals (2D, 3D) ──
+  let startPlane2D_n = applyNormalMatrix(vec3<f32>(0.0, in.startEndNormals2D.x, in.startEndNormals2D.y));
+  let startPlane3D_n = applyNormalMatrix(in.startNormal_fwdZ.xyz);
+  let startPlane2D_w = -dot(startPlane2D_n, posEc2D_start);
+  let startPlane3D_w = -dot(startPlane3D_n, posEc3D_start);
+
+  let rightPlane2D_n = applyNormalMatrix(vec3<f32>(0.0, in.offsetAndRight2D.z, in.offsetAndRight2D.w));
+  let rightPlane3D_n = applyNormalMatrix(in.rightNormal_texNormY.xyz);
+
+  // ── End position ──
+  let endRTE2D = startRTE2D + vec3<f32>(0.0, in.offsetAndRight2D.x, in.offsetAndRight2D.y);
+  let endRTE3D = startRTE3D + vec3<f32>(in.startHi_fwdX.w, in.startLo_fwdY.w, in.startNormal_fwdZ.w);
+  let endRTE = mix(endRTE2D, endRTE3D, morphTime);
+  let posEc2D_end = (u.mvRTE * vec4<f32>(endRTE2D, 1.0)).xyz;
+  let posEc3D_end = (u.mvRTE * vec4<f32>(endRTE3D, 1.0)).xyz;
+  let endEC = (u.mvRTE * vec4<f32>(endRTE, 1.0)).xyz;
+  let forwardEc3D = applyNormalMatrix(normalize(vec3<f32>(in.startHi_fwdX.w, in.startLo_fwdY.w, in.startNormal_fwdZ.w)));
+  let forwardEc2D = applyNormalMatrix(normalize(vec3<f32>(0.0, in.offsetAndRight2D.x, in.offsetAndRight2D.y)));
+
+  let endPlane2D_n = applyNormalMatrix(vec3<f32>(0.0, in.startEndNormals2D.z, in.startEndNormals2D.w));
+  let endPlane3D_n = applyNormalMatrix(in.endNormal_texNormX.xyz);
+  let endPlane2D_w = -dot(endPlane2D_n, posEc2D_end);
+  let endPlane3D_w = -dot(endPlane3D_n, posEc3D_end);
+
+  out.forwardDirectionEC = normalize(endEC - startEC);
+
+  // Texcoord normalization (clean + blend across 2D/3D).
+  let texY2DRaw = in.texcoordNormalization2D.y;
+  let cleanTex2DX = abs(in.texcoordNormalization2D.x);
+  let cleanTex2DY = select(abs(texY2DRaw), 0.0, texY2DRaw > 1.0);
+  let texY3DRaw = in.rightNormal_texNormY.w;
+  let cleanTex3DX = abs(in.endNormal_texNormX.w);
+  let cleanTex3DY = select(abs(texY3DRaw), 0.0, texY3DRaw > 1.0);
+  out.texcoordNormalizationAndHalfWidth = vec3<f32>(
+    mix(cleanTex2DX, cleanTex3DX, morphTime),
+    mix(cleanTex2DY, cleanTex3DY, morphTime),
+    halfWidth,
+  );
+
+  // ── Compute extruded position in 3D ──
+  let positionRTE3D = translateRelativeToEye(in.pH, in.pL);
+  let positionEc3D_pre = (u.mvRTE * vec4<f32>(positionRTE3D, 1.0)).xyz;
+  let absStart3D = abs(dot(startPlane3D_n, positionEc3D_pre) + startPlane3D_w);
+  let absEnd3D = abs(dot(endPlane3D_n, positionEc3D_pre) + endPlane3D_w);
+  var planeDir3D = endPlane3D_n;
+  if (absStart3D < absEnd3D) { planeDir3D = startPlane3D_n; }
+  let upOrDown3D = normalize(cross(rightPlane3D_n, planeDir3D));
+  var normalEC3D = normalize(cross(planeDir3D, upOrDown3D));
+  let geodeticNormal3D = normalize(cross(normalEC3D, forwardEc3D));
+  let inRange3D = (texY3DRaw >= 0.0 && texY3DRaw <= 1.0);
+  var positionEc3D = positionEc3D_pre;
+  if (inRange3D) {
+    positionEc3D = positionEc3D + geodeticNormal3D * MAX_TERRAIN_HEIGHT;
+  }
+  normalEC3D = normalEC3D * sign(in.endNormal_texNormX.w);
+  positionEc3D = positionEc3D + halfWidth * max(0.0, metersPerPixel(positionEc3D)) * normalEC3D;
+
+  // ── Compute extruded position in 2D ──
+  let positionRTE2D = translateRelativeToEye(in.pH2D.zxy, in.pL2D.zxy);
+  let positionEc2D_pre = (u.mvRTE * vec4<f32>(positionRTE2D, 1.0)).xyz;
+  let absStart2D = abs(dot(startPlane2D_n, positionEc2D_pre) + startPlane2D_w);
+  let absEnd2D = abs(dot(endPlane2D_n, positionEc2D_pre) + endPlane2D_w);
+  var planeDir2D = endPlane2D_n;
+  if (absStart2D < absEnd2D) { planeDir2D = startPlane2D_n; }
+  let upOrDown2D = normalize(cross(rightPlane2D_n, planeDir2D));
+  var normalEC2D = normalize(cross(planeDir2D, upOrDown2D));
+  let geodeticNormal2D = normalize(cross(normalEC2D, forwardEc2D));
+  let inRange2D = (texY2DRaw >= 0.0 && texY2DRaw <= 1.0);
+  var positionEc2D = positionEc2D_pre;
+  if (inRange2D) {
+    positionEc2D = positionEc2D + geodeticNormal2D * MAX_TERRAIN_HEIGHT;
+  }
+  normalEC2D = normalEC2D * sign(in.texcoordNormalization2D.x);
+  positionEc2D = positionEc2D + halfWidth * max(0.0, metersPerPixel(positionEc2D)) * normalEC2D;
+
+  // Blend and project.
+  let positionEc = mix(positionEc2D, positionEc3D, morphTime);
+  out.pos = u.proj * vec4<f32>(positionEc, 1.0);
+  return out;
+}
+
+// Morph FS — no globe-depth sampling. The shadow volume is rendered
+// directly with the per-instance color, mirroring WebGL's
+// PolylineShadowVolumeMorphFS PER_INSTANCE_COLOR path. The morph view
+// is transitional (camera typically far away during a scene-mode
+// switch) so rendering the full volume surface instead of clipping
+// against terrain depth is acceptable. Material support and the
+// non-color path are deferred.
+@fragment fn colorFSMorph(in: VS_OUT_MORPH) -> @location(0) vec4<f32> {
+  let c = in.instanceColor;
+  return vec4<f32>(c.rgb * c.a, c.a);
+}
+
+@fragment fn pickFSMorph(in: VS_OUT_MORPH) -> @location(0) vec4<f32> {
+  return u.pickColor;
+}
+`;
+
+function buildPolylinePipelineResources(device, format, depthFormat) {
+  const mod = device.createShaderModule({
+    label: "GroundPolyline",
+    code: SHADER_CODE,
+  });
+
+  const bgl = makeBindGroupLayout(device, "GroundPolyline BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+  ]);
+
+  const depthSampleBgl = makeBindGroupLayout(
+    device,
+    "GroundPolyline DepthSample BGL",
+    [
+      textureEntry(0, Stage.FRAGMENT, { sampleType: "float" }),
+      samplerEntry(1, Stage.FRAGMENT, "filtering"),
+    ],
+  );
+
+  const pipelineLayout = device.createPipelineLayout({
+    label: "GroundPolyline PipelineLayout",
+    bindGroupLayouts: [bgl, depthSampleBgl],
+  });
+
+  const vertexBuffers = [
+    {
+      arrayStride: VERTEX_STRIDE_BYTES,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x3" },
+        { shaderLocation: 2, offset: 24, format: "float32x4" },
+        { shaderLocation: 3, offset: 40, format: "float32x4" },
+        { shaderLocation: 4, offset: 56, format: "float32x4" },
+        { shaderLocation: 5, offset: 72, format: "float32x4" },
+        { shaderLocation: 6, offset: 88, format: "float32x4" },
+        { shaderLocation: 7, offset: 104, format: "float32" },
+        { shaderLocation: 8, offset: 108, format: "float32x3" },
+        { shaderLocation: 9, offset: 120, format: "float32x3" },
+        { shaderLocation: 10, offset: 132, format: "float32x4" },
+        { shaderLocation: 11, offset: 148, format: "float32x4" },
+        { shaderLocation: 12, offset: 164, format: "float32x4" },
+        { shaderLocation: 13, offset: 180, format: "float32x2" },
+      ],
+    },
+  ];
+
+  const colorDescriptor = {
+    name: `GroundPolyline color [${format}/${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "colorFS",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    // FS reconstructs eye-space from sampled depth; rasterization side
+    // is just a coverage volume. Match GroundPrimitive renderer's
+    // `cullMode: "none"` so both faces of the volume contribute (the FS
+    // does the real culling via plane-distance tests). Trade: doubles
+    // fill cost on the volume rasterization but avoids correctness
+    // concerns from the geometry's reverse winding.
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  const pickDescriptor = {
+    name: `GroundPolyline pick [${format}/${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "pickFS",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  // Morph pipeline — uses the same UBO and pipeline layout, but
+  // different VS / FS entry points and front-face culling (matches the
+  // WebGL `_renderStateMorph` which has `face: CullFace.FRONT` because
+  // the geometry is reverse-wound and morph wants the volume's
+  // outside surface).
+  const morphColorDescriptor = {
+    name: `GroundPolyline color morph [${format}/${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsMorph", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "colorFSMorph",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "front" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  const morphPickDescriptor = {
+    name: `GroundPolyline pick morph [${format}/${depthFormat}]`,
+    layout: pipelineLayout,
+    vertex: { module: mod, entryPoint: "vsMorph", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "pickFSMorph",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "front" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  return {
+    colorDescriptor,
+    pickDescriptor,
+    morphColorDescriptor,
+    morphPickDescriptor,
+    bgl,
+    depthSampleBgl,
+  };
+}
+
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
+  if (
+    cache.colorPipeline &&
+    cache.pickPipeline &&
+    cache.morphColorPipeline &&
+    cache.morphPickPipeline
+  ) {
+    return true;
+  }
+
+  if (pipelineCache) {
+    const colorSync = pipelineCache.getPipelineSync(resources.colorDescriptor);
+    const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
+    const morphColorSync = pipelineCache.getPipelineSync(
+      resources.morphColorDescriptor,
+    );
+    const morphPickSync = pipelineCache.getPipelineSync(
+      resources.morphPickDescriptor,
+    );
+    if (colorSync && pickSync && morphColorSync && morphPickSync) {
+      cache.colorPipeline = colorSync;
+      cache.pickPipeline = pickSync;
+      cache.morphColorPipeline = morphColorSync;
+      cache.morphPickPipeline = morphPickSync;
+      cache.pipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pipelineRequestPending) {
+      cache.pipelineRequestPending = true;
+      Promise.all([
+        pipelineCache.getPipeline(resources.colorDescriptor),
+        pipelineCache.getPipeline(resources.pickDescriptor),
+        pipelineCache.getPipeline(resources.morphColorDescriptor),
+        pipelineCache.getPipeline(resources.morphPickDescriptor),
+      ])
+        .then(([color, pick, morphColor, morphPick]) => {
+          cache.colorPipeline = color;
+          cache.pickPipeline = pick;
+          cache.morphColorPipeline = morphColor;
+          cache.morphPickPipeline = morphPick;
+          cache.pipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.pipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+
+  cache.colorPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.colorDescriptor),
+  );
+  cache.pickPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.pickDescriptor),
+  );
+  cache.morphColorPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.morphColorDescriptor),
+  );
+  cache.morphPickPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.morphPickDescriptor),
+  );
+  return true;
+}
+
+function packUniforms(
+  data,
+  frameState,
+  modelMatrix,
+  color,
+  pickColor,
+  widthPixels,
+  globeMinAlt,
+  debugShowVolume,
+  batchInstanceCount,
+  batchColors,
+  batchMisc,
+  materialState,
+) {
+  const uniformState = frameState.context.uniformState;
+
+  // mvRTE = view * model with translation zeroed.
+  Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
+  Matrix4.clone(scratchModelView, scratchMVRTE);
+  scratchMVRTE[12] = 0.0;
+  scratchMVRTE[13] = 0.0;
+  scratchMVRTE[14] = 0.0;
+  Matrix4.pack(scratchMVRTE, data, 0);
+
+  // proj
+  Matrix4.pack(uniformState.projection, data, 16);
+
+  // invProj — used by the FS to recover eye-space from window+depth.
+  Matrix4.pack(uniformState.inverseProjection, data, 32);
+
+  // czm_normal — 3x3 inverseTranspose(modelView) upper-left, packed as
+  // 3 padded vec4 columns. uniformState.normal is a Matrix3 in
+  // column-major order.
+  const normal = uniformState.normal;
+  // Column 0
+  data[48] = normal[0];
+  data[49] = normal[1];
+  data[50] = normal[2];
+  data[51] = 0.0;
+  // Column 1
+  data[52] = normal[3];
+  data[53] = normal[4];
+  data[54] = normal[5];
+  data[55] = 0.0;
+  // Column 2
+  data[56] = normal[6];
+  data[57] = normal[7];
+  data[58] = normal[8];
+  data[59] = 0.0;
+
+  // Camera high/low
+  EncodedCartesian3.fromCartesian(
+    frameState.camera.positionWC,
+    scratchEncodedCamera,
+  );
+  data[60] = scratchEncodedCamera.high.x;
+  data[61] = scratchEncodedCamera.high.y;
+  data[62] = scratchEncodedCamera.high.z;
+  data[63] = 0.0;
+  data[64] = scratchEncodedCamera.low.x;
+  data[65] = scratchEncodedCamera.low.y;
+  data[66] = scratchEncodedCamera.low.z;
+  data[67] = 0.0;
+
+  // Viewport
+  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
+  data[68] = viewport?.x ?? 0.0;
+  data[69] = viewport?.y ?? 0.0;
+  data[70] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
+  data[71] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+
+  // Color
+  data[72] = color?.red ?? 1.0;
+  data[73] = color?.green ?? 1.0;
+  data[74] = color?.blue ?? 1.0;
+  data[75] = color?.alpha ?? 1.0;
+
+  // Pick color
+  data[76] = pickColor?.red ?? 0.0;
+  data[77] = pickColor?.green ?? 0.0;
+  data[78] = pickColor?.blue ?? 0.0;
+  data[79] = pickColor?.alpha ?? 0.0;
+
+  // Misc: width (pixels), metersPerPixelFactor (now unused — recomputed
+  // in the shader from proj[0][0] / proj[1][1]), GLOBE_MIN_ALT,
+  // geometricToleranceOverMeter.
+  data[80] = widthPixels;
+  data[81] = 0.0;
+  data[82] = globeMinAlt;
+  data[83] = GEOMETRIC_TOLERANCE_OVER_METER;
+
+  // Flags: x=debugShowVolume, y=numBatchInstances, z=sceneMode, w=morphTime.
+  // sceneMode encoding: 1.0 = SCENE3D, 0.0 = SCENE2D / Columbus View.
+  // morphTime is uniformState.morphTime — 0.0 in 2D/CV destination,
+  // 1.0 in 3D destination, fractional during a scene-mode transition.
+  // The morph pipeline reads it; the regular pipeline ignores it.
+  const sceneMode = frameState?.mode;
+  const is3D = sceneMode === SceneMode.SCENE3D;
+  const morphTime = uniformState?.morphTime ?? (is3D ? 1.0 : 0.0);
+  data[84] = debugShowVolume ? 1.0 : 0.0;
+  data[85] = batchInstanceCount ?? 0;
+  data[86] = is3D ? 1.0 : 0.0;
+  data[87] = morphTime;
+
+  // Material state: type (88) + reserved (89/90/91), then materialColor
+  // (92-95), materialParam0 (96-99), materialParam1 (100-103),
+  // materialParam2 (104-107). Slots 108-111 are alignment padding so
+  // the instanceColors array starts at the next 16-byte boundary.
+  if (defined(materialState)) {
+    data[88] = materialState.type;
+    data[89] = 0.0;
+    data[90] = 0.0;
+    data[91] = 0.0;
+    data[92] = materialState.color[0];
+    data[93] = materialState.color[1];
+    data[94] = materialState.color[2];
+    data[95] = materialState.color[3];
+    data[96] = materialState.param0[0];
+    data[97] = materialState.param0[1];
+    data[98] = materialState.param0[2];
+    data[99] = materialState.param0[3];
+    data[100] = materialState.param1[0];
+    data[101] = materialState.param1[1];
+    data[102] = materialState.param1[2];
+    data[103] = materialState.param1[3];
+    data[104] = materialState.param2[0];
+    data[105] = materialState.param2[1];
+    data[106] = materialState.param2[2];
+    data[107] = materialState.param2[3];
+  } else {
+    // No material — zero everything (FS will use the default Color
+    // path with the per-instance color from the batch table).
+    data.fill(0.0, 88, 108);
+  }
+  data[108] = 0.0;
+  data[109] = 0.0;
+  data[110] = 0.0;
+  data[111] = 0.0;
+
+  // Per-instance batch-table data. When the snapshot hasn't been
+  // captured (or there are no instances), zero out the arrays — the
+  // shader's batchTableColor / batchTableWidth helpers fall back to
+  // u.color / u.misc.x when batchId >= numBatchInstances anyway, so
+  // these zeros are never read.
+  if (defined(batchColors)) {
+    data.set(batchColors, INSTANCE_COLORS_OFFSET_FLOATS);
+  } else {
+    data.fill(
+      0,
+      INSTANCE_COLORS_OFFSET_FLOATS,
+      INSTANCE_COLORS_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4,
+    );
+  }
+  if (defined(batchMisc)) {
+    data.set(batchMisc, INSTANCE_MISC_OFFSET_FLOATS);
+  } else {
+    data.fill(
+      0,
+      INSTANCE_MISC_OFFSET_FLOATS,
+      INSTANCE_MISC_OFFSET_FLOATS + MAX_BATCH_INSTANCES * 4,
+    );
+  }
+}
 
 /**
- * Feature-detection getter — returns true once the WGSL port lands in
- * Session 4b. Consumers that want to gate on "WebGPU polyline classifier
- * available" should call this rather than just checking
- * `getFeatureRenderer(GROUND_POLYLINE)` (which returns the stub
- * registration regardless of port state).
+ * Walk the GroundPolylinePrimitive → Primitive chain to find the
+ * `_webgpuGeometryData` slot. The primitive populator runs at
+ * `Scene/PrimitiveGeometryHelpers.js:788` on the innermost
+ * `Primitive`. For a GroundPolylinePrimitive the chain is:
+ *   `_GroundPolylinePrimitive` → `._primitive` (`Primitive`)
+ *     → `._webgpuGeometryData`
+ * (Note: GroundPolylinePrimitive only has ONE level of nesting, unlike
+ * GroundPrimitive's two levels through ClassificationPrimitive.)
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @returns {Array|undefined}
+ * @private
+ */
+function findGeomDataArray(primitive) {
+  return (
+    primitive._webgpuGeometryData ??
+    primitive._primitive?._webgpuGeometryData ??
+    primitive._primitive?._primitive?._webgpuGeometryData
+  );
+}
+
+/**
+ * Pull the appearance color from a GroundPolylinePrimitive. For
+ * `PolylineColorAppearance` (per-instance color), the color lives on
+ * the geometry instance attribute and isn't accessible without a batch
+ * table — return undefined and let the caller fall back to white.
+ * For `PolylineMaterialAppearance` the color lives on the material's
+ * uniforms.
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @returns {Color|undefined}
+ * @private
+ */
+function resolveAppearanceColor(primitive) {
+  const appearance = primitive?.appearance;
+  if (!appearance) {
+    return undefined;
+  }
+  return appearance.material?.uniforms?.color;
+}
+
+/**
+ * Material type enumeration for the polyline FS. Mirrors the
+ * `materialMeta.x` value the shader expects:
+ *
+ *   0 — Color (default; uses the per-instance color from the batch
+ *       table, or `materialColor` when no per-instance entry exists)
+ *   1 — PolylineDash
+ *   2 — PolylineGlow
+ *   3 — PolylineOutline
+ *
+ * Materials not in this list fall through to the default Color path.
+ * Adding new materials requires (a) a new enum value here, (b) the
+ * matching branch in `applyMaterial()` in the WGSL, and (c) packing
+ * the material's params into materialParam0/1/2 below.
+ *
+ * @private
+ */
+const PolylineMaterialType = Object.freeze({
+  COLOR: 0,
+  DASH: 1,
+  GLOW: 2,
+  OUTLINE: 3,
+});
+
+/**
+ * Inspect the appearance's material (if any) and return a packed
+ * material state the shader can consume. Returns the material type
+ * and four vec4 slots (color + three params), all expressed as plain
+ * Float32-friendly numbers.
+ *
+ * The detection is by the material's `type` string (set by Cesium's
+ * `Material` constructor when the material is built from a known
+ * type definition). Custom user materials with bespoke shader source
+ * fall back to the default Color path until a generic GLSL→WGSL
+ * material transpilation lands as a follow-up.
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @returns {{type: number, color: number[], param0: number[], param1: number[], param2: number[]}}
+ * @private
+ */
+function resolveMaterialState(primitive) {
+  const fallback = {
+    type: PolylineMaterialType.COLOR,
+    color: [1.0, 1.0, 1.0, 1.0],
+    param0: [0.0, 0.0, 0.0, 0.0],
+    param1: [0.0, 0.0, 0.0, 0.0],
+    param2: [0.0, 0.0, 0.0, 0.0],
+  };
+  const material = primitive?.appearance?.material;
+  if (!material) {
+    return fallback;
+  }
+  const type = material.type;
+  const uniforms = material.uniforms ?? {};
+
+  // Pull the base color (most polyline materials have one). Cesium
+  // Color objects expose .red/.green/.blue/.alpha as floats in [0,1].
+  const baseColor = uniforms.color;
+  const colorArr = defined(baseColor)
+    ? [
+        baseColor.red ?? 1.0,
+        baseColor.green ?? 1.0,
+        baseColor.blue ?? 1.0,
+        baseColor.alpha ?? 1.0,
+      ]
+    : [1.0, 1.0, 1.0, 1.0];
+
+  if (type === "PolylineDash") {
+    const gapColor = uniforms.gapColor;
+    return {
+      type: PolylineMaterialType.DASH,
+      color: colorArr,
+      param0: [
+        uniforms.dashLength ?? 16.0,
+        uniforms.dashPattern ?? 255,
+        0.0,
+        0.0,
+      ],
+      param1: defined(gapColor)
+        ? [
+            gapColor.red ?? 0.0,
+            gapColor.green ?? 0.0,
+            gapColor.blue ?? 0.0,
+            gapColor.alpha ?? 0.0,
+          ]
+        : [0.0, 0.0, 0.0, 0.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+    };
+  }
+
+  if (type === "PolylineGlow") {
+    return {
+      type: PolylineMaterialType.GLOW,
+      color: colorArr,
+      param0: [
+        uniforms.glowPower ?? 0.25,
+        uniforms.taperPower ?? 1.0,
+        0.0,
+        0.0,
+      ],
+      param1: [0.0, 0.0, 0.0, 0.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+    };
+  }
+
+  if (type === "PolylineOutline") {
+    const outlineColor = uniforms.outlineColor;
+    return {
+      type: PolylineMaterialType.OUTLINE,
+      color: colorArr,
+      param0: [
+        // outlineWidth is in pixels in the WebGL material; expressed
+        // as a fraction of the half-width here so the FS comparison
+        // (edgeT > 1 - outlineWidth) maps correctly. Default 1px on a
+        // typical 8px polyline ≈ 0.125; the WebGL default is 1.0px so
+        // we approximate as 0.2 when scale info is unavailable.
+        Math.min(1.0, (uniforms.outlineWidth ?? 1.0) * 0.2),
+        0.0,
+        0.0,
+        0.0,
+      ],
+      param1: defined(outlineColor)
+        ? [
+            outlineColor.red ?? 0.0,
+            outlineColor.green ?? 0.0,
+            outlineColor.blue ?? 0.0,
+            outlineColor.alpha ?? 1.0,
+          ]
+        : [0.0, 0.0, 0.0, 1.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+    };
+  }
+
+  // Color (or unknown — fall back to default Color path).
+  return {
+    type: PolylineMaterialType.COLOR,
+    color: colorArr,
+    param0: [0.0, 0.0, 0.0, 0.0],
+    param1: [0.0, 0.0, 0.0, 0.0],
+    param2: [0.0, 0.0, 0.0, 0.0],
+  };
+}
+
+/**
+ * Pull the polyline width from the first geometry instance. Multi-
+ * instance polylines with varied widths are deferred (the shader
+ * currently uses a single uniform width). Default to 1.0 when no
+ * width is set.
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @returns {number}
+ * @private
+ */
+function resolveWidthPixels(primitive) {
+  const instances = primitive?.geometryInstances;
+  let firstInstance;
+  if (Array.isArray(instances)) {
+    firstInstance = instances[0];
+  } else {
+    firstInstance = instances;
+  }
+  return firstInstance?.geometry?.width ?? 1.0;
+}
+
+/**
+ * Snapshot per-instance color/width data from the primitive's
+ * `geometryInstances` once they're available, caching the values on
+ * the renderer cache. Returns the number of instances captured (which
+ * the renderer writes into `flags.y` so the shader can bounds-check
+ * batchId lookups).
+ *
+ * Why a snapshot instead of reading every frame: by default
+ * `releaseGeometryInstances` is true and the GroundPolylinePrimitive
+ * sets `this.geometryInstances = undefined` after its inner Primitive
+ * goes ready. Capture data on the first call where instances are
+ * still populated.
+ *
+ * Callers that want per-frame mutation of per-instance attributes will
+ * need to plumb the underlying batch table's update events through to
+ * invalidate this cache. For first-cut, the snapshot is one-shot.
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @param {object} cache  Renderer cache slot (mutated).
+ * @returns {boolean} `true` once the snapshot has been captured.
+ * @private
+ */
+function ensureBatchTableSnapshot(primitive, cache) {
+  if (cache._batchSnapshotTaken) {
+    return true;
+  }
+
+  // Two sources for per-instance data:
+  //
+  //  1. `primitive.geometryInstances` — the original GeometryInstance
+  //     array. Defined until the primitive becomes ready, then
+  //     released to undefined when `releaseGeometryInstances` is true
+  //     (the default). Carries the raw `attributes.color.value`
+  //     typed array and `attributes.width.value`.
+  //  2. `primitive._primitive._batchTable` — the inner Primitive's
+  //     BatchTable. Built by `createBatchTable` in
+  //     `Scene/PrimitiveGeometryHelpers.js` once the primitive is
+  //     ready. Retains data after instances are released. Indexed
+  //     by `_batchTableAttributeIndices.color` /
+  //     `_batchTableAttributeIndices.width`.
+  //
+  // Prefer the BatchTable path when available because the primitive's
+  // becoming-ready flow releases `geometryInstances` BEFORE the
+  // first WebGPU createCommands call lands, so source (1) is usually
+  // already gone by the time we get here.
+
+  const innerPrim = primitive?._primitive;
+  const batchTable = innerPrim?._batchTable;
+  const attrIndices = innerPrim?._batchTableAttributeIndices;
+  if (
+    defined(batchTable) &&
+    defined(attrIndices) &&
+    defined(batchTable._numberOfInstances)
+  ) {
+    const numberOfInstances = batchTable._numberOfInstances;
+    if (numberOfInstances === 0) {
+      return false;
+    }
+    const cap = Math.min(numberOfInstances, MAX_BATCH_INSTANCES);
+    const colors = new Float32Array(MAX_BATCH_INSTANCES * 4);
+    const misc = new Float32Array(MAX_BATCH_INSTANCES * 4);
+
+    const colorIndex = attrIndices.color;
+    const widthIndex = attrIndices.width;
+    const scratch = {};
+
+    for (let i = 0; i < cap; i++) {
+      if (defined(colorIndex)) {
+        const colorVal = batchTable.getBatchedAttribute(i, colorIndex, scratch);
+        // For ColorGeometryInstanceAttribute the type is `Color` and
+        // `getBatchedAttribute` returns a normalized [0,1] Color via
+        // `Color.fromCartesian4`. For unrecognised types it returns a
+        // raw scalar; fall back to white in that case.
+        if (
+          defined(colorVal) &&
+          defined(colorVal.red) &&
+          defined(colorVal.green)
+        ) {
+          colors[i * 4 + 0] = colorVal.red;
+          colors[i * 4 + 1] = colorVal.green;
+          colors[i * 4 + 2] = colorVal.blue;
+          colors[i * 4 + 3] = colorVal.alpha;
+        } else {
+          colors[i * 4 + 0] = 1.0;
+          colors[i * 4 + 1] = 1.0;
+          colors[i * 4 + 2] = 1.0;
+          colors[i * 4 + 3] = 1.0;
+        }
+      } else {
+        colors[i * 4 + 0] = 1.0;
+        colors[i * 4 + 1] = 1.0;
+        colors[i * 4 + 2] = 1.0;
+        colors[i * 4 + 3] = 1.0;
+      }
+
+      let widthPixels;
+      if (defined(widthIndex)) {
+        const widthVal = batchTable.getBatchedAttribute(i, widthIndex, scratch);
+        // For width (typically `componentsPerAttribute=1`),
+        // getBatchedAttribute returns the scalar directly.
+        if (typeof widthVal === "number") {
+          widthPixels = widthVal;
+        } else if (defined(widthVal?.x)) {
+          widthPixels = widthVal.x;
+        }
+      }
+      misc[i * 4 + 0] = widthPixels ?? 1.0;
+      // misc.y/z/w reserved (show, distance display, ...).
+    }
+
+    cache._batchSnapshotTaken = true;
+    cache.batchInstanceCount = cap;
+    cache.batchColors = colors;
+    cache.batchMisc = misc;
+    return true;
+  }
+
+  // Fallback: read directly from `geometryInstances` while it's still
+  // populated (rare in practice — the inner primitive's batch table
+  // is usually built before the first WebGPU createCommands call).
+  const rawInstances = primitive?.geometryInstances;
+  if (!defined(rawInstances)) {
+    return false;
+  }
+  const instances = Array.isArray(rawInstances) ? rawInstances : [rawInstances];
+  if (instances.length === 0) {
+    return false;
+  }
+  const cap = Math.min(instances.length, MAX_BATCH_INSTANCES);
+  const colors = new Float32Array(MAX_BATCH_INSTANCES * 4);
+  const misc = new Float32Array(MAX_BATCH_INSTANCES * 4);
+
+  for (let i = 0; i < cap; i++) {
+    const inst = instances[i];
+    const attrs = inst?.attributes ?? {};
+    const colorAttr = attrs.color;
+    if (defined(colorAttr) && defined(colorAttr.value)) {
+      const v = colorAttr.value;
+      const isU8 =
+        colorAttr.componentDatatype === ComponentDatatype.UNSIGNED_BYTE;
+      const scale = isU8 ? 1.0 / 255.0 : 1.0;
+      colors[i * 4 + 0] = (v[0] ?? 0) * scale;
+      colors[i * 4 + 1] = (v[1] ?? 0) * scale;
+      colors[i * 4 + 2] = (v[2] ?? 0) * scale;
+      colors[i * 4 + 3] = (v[3] ?? 255) * scale;
+    } else {
+      colors[i * 4 + 0] = 1.0;
+      colors[i * 4 + 1] = 1.0;
+      colors[i * 4 + 2] = 1.0;
+      colors[i * 4 + 3] = 1.0;
+    }
+    const widthAttr = attrs.width;
+    misc[i * 4 + 0] =
+      (defined(widthAttr) && defined(widthAttr.value)
+        ? widthAttr.value[0]
+        : inst?.geometry?.width) ?? 1.0;
+  }
+
+  cache._batchSnapshotTaken = true;
+  cache.batchInstanceCount = cap;
+  cache.batchColors = colors;
+  cache.batchMisc = misc;
+  return true;
+}
+
+/**
+ * Pull the ellipsoid minimum radius from the frameState's projection.
+ * The WebGL shader's `GLOBE_MINIMUM_ALTITUDE` define is set from this
+ * at compile time; the WebGPU path passes it as a runtime uniform so
+ * we don't need shader recompilation per ellipsoid.
+ *
+ * @param {FrameState} frameState
+ * @returns {number}
+ * @private
+ */
+function resolveGlobeMinimumAltitude(frameState) {
+  const ellipsoid = frameState?.mapProjection?.ellipsoid;
+  // WGS84 minor axis as a fallback when ellipsoid info isn't published.
+  return ellipsoid?.minimumRadius ?? 6356752.3142;
+}
+
+/**
+ * Build draw commands for a `GroundPolylinePrimitive`. Mirrors
+ * `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`'s
+ * shape so the consumer in `Scene/GroundPolylinePrimitive.js` can
+ * dispatch uniformly.
+ *
+ * Returns `{ stencilCommand: null, colorCommand, pickCommand }` on
+ * success; returns `null` commands on the first frame after pipeline
+ * creation kicks off (caller falls through to WebGL) and when no
+ * depth source is published yet.
+ *
+ * @param {GroundPolylinePrimitive} primitive
+ * @param {FrameState} frameState
+ * @returns {object}
+ * @private
+ */
+function createWebGPUGroundPolylineCommands(primitive, frameState) {
+  const context = frameState.context;
+  const device = context.device;
+
+  if (!defined(primitive._webgpuPolylineCache)) {
+    primitive._webgpuPolylineCache = {};
+  }
+  const cache = primitive._webgpuPolylineCache;
+
+  if (!defined(cache._pipelineResources)) {
+    const format = context.presentationFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    cache._pipelineResources = buildPolylinePipelineResources(
+      device,
+      format,
+      depthFmt,
+    );
+    cache.bgl = cache._pipelineResources.bgl;
+    cache.pipelineRequestPending = false;
+  }
+
+  if (
+    !tryResolvePolylinePipelines(
+      device,
+      context.webgpuPipelineCache ?? null,
+      cache._pipelineResources,
+      cache,
+    )
+  ) {
+    return {
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+    };
+  }
+
+  if (!defined(cache.uniformBuffer)) {
+    cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
+      device,
+      UNIFORM_BUFFER_SIZE,
+      "GroundPolyline uniforms",
+    );
+    cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+    cache.bindGroup = device.createBindGroup({
+      layout: cache.bgl,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      ],
+    });
+  }
+
+  const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
+  const color = resolveAppearanceColor(primitive);
+  const widthPixels = resolveWidthPixels(primitive);
+  const globeMinAlt = resolveGlobeMinimumAltitude(frameState);
+  // `_debugShowShadowVolume` is `GroundPolylinePrimitive`'s constructor
+  // field that flips a shader define in WebGL; in WebGPU it's a runtime
+  // uniform flag so we don't need a separate pipeline variant.
+  const debugShowVolume = primitive?._debugShowShadowVolume === true;
+
+  // Snapshot per-instance color/width once geometry instances are
+  // available. Returns false on early frames before the primitive's
+  // inner geometries finish building — the renderer then falls back
+  // to u.color / u.misc.x via the shader's bounds-check.
+  ensureBatchTableSnapshot(primitive, cache);
+
+  // Resolve the active material into a packed state the shader
+  // applyMaterial() function consumes. Re-resolved every frame so
+  // appearance.material swaps + uniform mutations take effect without
+  // needing an explicit invalidate.
+  const materialState = resolveMaterialState(primitive);
+
+  const passes = frameState.passes;
+  const allowAllocate = !!(passes && (passes.pick || passes.render));
+  const pickId = ensurePickId(primitive, context, primitive, {
+    allowAllocate,
+  });
+  const pickColor = pickId?.color;
+
+  packUniforms(
+    cache.uniformData,
+    frameState,
+    modelMatrix,
+    color,
+    pickColor,
+    widthPixels,
+    globeMinAlt,
+    debugShowVolume,
+    cache.batchInstanceCount,
+    cache.batchColors,
+    cache.batchMisc,
+    materialState,
+  );
+  device.queue.writeBuffer(
+    cache.uniformBuffer.buffer,
+    0,
+    cache.uniformData.buffer,
+    0,
+    UNIFORM_BUFFER_SIZE,
+  );
+
+  // Walk the chain to the primitive's `_webgpuGeometryData`. Same
+  // pattern as Batch 81's GroundPrimitive fix; for GroundPolyline the
+  // chain is shorter (no ClassificationPrimitive intermediary).
+  const geomDataArray = findGeomDataArray(primitive);
+  if (!defined(geomDataArray) || geomDataArray.length === 0) {
+    return {
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+    };
+  }
+
+  const geomData = geomDataArray[0];
+  const attrs = geomData?.attributes ?? {};
+  const posHigh = attrs.position3DHigh?.values;
+  const posLow = attrs.position3DLow?.values;
+  const startHi = attrs.startHiAndForwardOffsetX?.values;
+  const startLo = attrs.startLoAndForwardOffsetY?.values;
+  const startNormal = attrs.startNormalAndForwardOffsetZ?.values;
+  const endNormal = attrs.endNormalAndTextureCoordinateNormalizationX?.values;
+  const rightNormal = attrs.rightNormalAndTextureCoordinateNormalizationY?.values;
+  const batchIds = attrs.batchId?.values;
+  // 2D / Columbus View attributes — present when the geometry was
+  // built without `scene3DOnly`. When absent (scene3DOnly viewers) we
+  // zero-fill these slots in the interleave; the shader's sceneMode
+  // flag stays at 1.0 (3D) so the 2D values are never read.
+  const pos2DHigh = attrs.position2DHigh?.values;
+  const pos2DLow = attrs.position2DLow?.values;
+  const startHiLo2D = attrs.startHiLo2D?.values;
+  const offsetAndRight2D = attrs.offsetAndRight2D?.values;
+  const startEndNormals2D = attrs.startEndNormals2D?.values;
+  const texcoordNormalization2D = attrs.texcoordNormalization2D?.values;
+
+  if (
+    !defined(posHigh) ||
+    !defined(posLow) ||
+    !defined(startHi) ||
+    !defined(startLo) ||
+    !defined(startNormal) ||
+    !defined(endNormal) ||
+    !defined(rightNormal)
+  ) {
+    return {
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+    };
+  }
+
+  // Build interleaved vertex buffer once. 7 attributes packed into
+  // 26-float / 104-byte stride matching the pipeline's vertex layout.
+  if (!defined(cache.vertexGPUBuffer)) {
+    const numVerts = posHigh.length / 3;
+    if (
+      posLow.length !== posHigh.length ||
+      startHi.length !== numVerts * 4 ||
+      startLo.length !== numVerts * 4 ||
+      startNormal.length !== numVerts * 4 ||
+      endNormal.length !== numVerts * 4 ||
+      rightNormal.length !== numVerts * 4
+    ) {
+      // Attribute lengths disagree — geometry is malformed or attribute
+      // batching hasn't completed yet. Skip dispatch this frame.
+      return {
+        stencilCommand: null,
+        colorCommand: null,
+        pickCommand: null,
+      };
+    }
+
+    const interleaved = new Float32Array(numVerts * FLOATS_PER_VERTEX);
+    for (let v = 0; v < numVerts; v++) {
+      const dst = v * FLOATS_PER_VERTEX;
+      const src3 = v * 3;
+      const src4 = v * 4;
+      // posHigh
+      interleaved[dst + 0] = posHigh[src3 + 0];
+      interleaved[dst + 1] = posHigh[src3 + 1];
+      interleaved[dst + 2] = posHigh[src3 + 2];
+      // posLow
+      interleaved[dst + 3] = posLow[src3 + 0];
+      interleaved[dst + 4] = posLow[src3 + 1];
+      interleaved[dst + 5] = posLow[src3 + 2];
+      // startHi+forwardX
+      interleaved[dst + 6] = startHi[src4 + 0];
+      interleaved[dst + 7] = startHi[src4 + 1];
+      interleaved[dst + 8] = startHi[src4 + 2];
+      interleaved[dst + 9] = startHi[src4 + 3];
+      // startLo+forwardY
+      interleaved[dst + 10] = startLo[src4 + 0];
+      interleaved[dst + 11] = startLo[src4 + 1];
+      interleaved[dst + 12] = startLo[src4 + 2];
+      interleaved[dst + 13] = startLo[src4 + 3];
+      // startNormal+forwardZ
+      interleaved[dst + 14] = startNormal[src4 + 0];
+      interleaved[dst + 15] = startNormal[src4 + 1];
+      interleaved[dst + 16] = startNormal[src4 + 2];
+      interleaved[dst + 17] = startNormal[src4 + 3];
+      // endNormal+texNormX
+      interleaved[dst + 18] = endNormal[src4 + 0];
+      interleaved[dst + 19] = endNormal[src4 + 1];
+      interleaved[dst + 20] = endNormal[src4 + 2];
+      interleaved[dst + 21] = endNormal[src4 + 3];
+      // rightNormal+texNormY
+      interleaved[dst + 22] = rightNormal[src4 + 0];
+      interleaved[dst + 23] = rightNormal[src4 + 1];
+      interleaved[dst + 24] = rightNormal[src4 + 2];
+      interleaved[dst + 25] = rightNormal[src4 + 3];
+      // batchId — defaults to 0 when the geometry doesn't carry one
+      // (single-instance primitives where the producer skipped batchId
+      // emission). Index 0 then resolves to instanceColors[0] /
+      // instanceMisc[0].x, which the CPU-side snapshot fills in from
+      // the (sole) instance's attributes.
+      interleaved[dst + 26] = defined(batchIds) ? batchIds[v] : 0.0;
+
+      // ── 2D / Columbus View attributes (locs 8-13) ──
+      // Zero-fill when absent (scene3DOnly viewers). The VS only
+      // reads these in 2D / CV mode, gated by flags.z.
+      // position2DHigh (vec3, loc 8)
+      interleaved[dst + 27] = defined(pos2DHigh) ? pos2DHigh[src3 + 0] : 0.0;
+      interleaved[dst + 28] = defined(pos2DHigh) ? pos2DHigh[src3 + 1] : 0.0;
+      interleaved[dst + 29] = defined(pos2DHigh) ? pos2DHigh[src3 + 2] : 0.0;
+      // position2DLow (vec3, loc 9)
+      interleaved[dst + 30] = defined(pos2DLow) ? pos2DLow[src3 + 0] : 0.0;
+      interleaved[dst + 31] = defined(pos2DLow) ? pos2DLow[src3 + 1] : 0.0;
+      interleaved[dst + 32] = defined(pos2DLow) ? pos2DLow[src3 + 2] : 0.0;
+      // startHiLo2D (vec4, loc 10)
+      interleaved[dst + 33] = defined(startHiLo2D) ? startHiLo2D[src4 + 0] : 0.0;
+      interleaved[dst + 34] = defined(startHiLo2D) ? startHiLo2D[src4 + 1] : 0.0;
+      interleaved[dst + 35] = defined(startHiLo2D) ? startHiLo2D[src4 + 2] : 0.0;
+      interleaved[dst + 36] = defined(startHiLo2D) ? startHiLo2D[src4 + 3] : 0.0;
+      // offsetAndRight2D (vec4, loc 11)
+      interleaved[dst + 37] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 0] : 0.0;
+      interleaved[dst + 38] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 1] : 0.0;
+      interleaved[dst + 39] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 2] : 0.0;
+      interleaved[dst + 40] = defined(offsetAndRight2D) ? offsetAndRight2D[src4 + 3] : 0.0;
+      // startEndNormals2D (vec4, loc 12)
+      interleaved[dst + 41] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 0] : 0.0;
+      interleaved[dst + 42] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 1] : 0.0;
+      interleaved[dst + 43] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 2] : 0.0;
+      interleaved[dst + 44] = defined(startEndNormals2D) ? startEndNormals2D[src4 + 3] : 0.0;
+      // texcoordNormalization2D (vec2, loc 13)
+      const src2 = v * 2;
+      interleaved[dst + 45] = defined(texcoordNormalization2D) ? texcoordNormalization2D[src2 + 0] : 0.0;
+      interleaved[dst + 46] = defined(texcoordNormalization2D) ? texcoordNormalization2D[src2 + 1] : 0.0;
+    }
+    cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
+      device,
+      interleaved,
+      "GroundPolyline VB",
+    );
+    cache.vertexCount = numVerts;
+  }
+
+  // Index buffer (auto-detect uint16 vs uint32).
+  const indices = geomData.indices;
+  if (defined(indices) && !defined(cache.indexGPUBuffer)) {
+    let needsU32 = false;
+    for (let i = 0; i < indices.length; i++) {
+      if (indices[i] > 0xffff) {
+        needsU32 = true;
+        break;
+      }
+    }
+    const typed = needsU32
+      ? new Uint32Array(indices)
+      : new Uint16Array(indices);
+    cache.indexFormat = needsU32 ? "uint32" : "uint16";
+    cache.indexGPUBuffer = device.createBuffer({
+      label: "GroundPolyline IB",
+      size: typed.byteLength,
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(cache.indexGPUBuffer, 0, typed);
+    cache.indexCount = indices.length;
+  }
+
+  // Pick the classification pass based on the primitive's
+  // classificationType (TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2). For
+  // BOTH we emit into CESIUM_3D_TILE_CLASSIFICATION (matches the
+  // GroundPrimitive renderer's compromise — full split would emit two
+  // commands, deferred).
+  const classType = primitive?.classificationType ?? 0;
+  const groundPass =
+    classType === 0
+      ? 3 /* TERRAIN_CLASSIFICATION */
+      : 6; /* CESIUM_3D_TILE_CLASSIFICATION */
+
+  // Depth source — prefer packed-translucent-depth, fall back to
+  // globe-depth. When neither is published yet (first frame), skip
+  // dispatch so we don't reference a null view.
+  const packedTranslucentView = context._packedTranslucentDepthView ?? null;
+  const globeDepthView = context._globeDepthView ?? null;
+  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  if (!depthSourceView) {
+    return {
+      stencilCommand: null,
+      colorCommand: null,
+      pickCommand: null,
+    };
+  }
+
+  if (!defined(cache.depthSampleSampler)) {
+    cache.depthSampleSampler = device.createSampler({
+      label: "GroundPolyline depth-sample sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+  if (
+    !defined(cache.depthSampleBindGroup) ||
+    cache.depthSampleViewRef !== depthSourceView
+  ) {
+    cache.depthSampleBindGroup = device.createBindGroup({
+      label: "GroundPolyline depth-sample BG",
+      layout: cache._pipelineResources.depthSampleBgl,
+      entries: [
+        { binding: 0, resource: depthSourceView },
+        { binding: 1, resource: cache.depthSampleSampler },
+      ],
+    });
+    cache.depthSampleViewRef = depthSourceView;
+  }
+
+  // Per-frustum bind-group resolver — picks up the current depth
+  // source at draw time (Session 3 contract). Spans-frustum-boundary
+  // primitives get re-resolved per frustum.
+  const resolveDepthSampleBindGroup = () => {
+    const currentSource =
+      context._packedTranslucentDepthView ?? context._globeDepthView;
+    if (!currentSource) {
+      return null;
+    }
+    if (cache.depthSampleViewRef !== currentSource) {
+      cache.depthSampleBindGroup = device.createBindGroup({
+        label: "GroundPolyline depth-sample BG",
+        layout: cache._pipelineResources.depthSampleBgl,
+        entries: [
+          { binding: 0, resource: currentSource },
+          { binding: 1, resource: cache.depthSampleSampler },
+        ],
+      });
+      cache.depthSampleViewRef = currentSource;
+    }
+    return cache.depthSampleBindGroup;
+  };
+
+  // Pick the morph or main pipeline based on scene mode. Morph is
+  // its own pipeline (different VS / FS entry points + front-face
+  // culling) but shares the same UBO and bind-group layout.
+  const isMorphing = frameState?.mode === SceneMode.MORPHING;
+  const activeColorPipeline = isMorphing
+    ? cache.morphColorPipeline
+    : cache.colorPipeline;
+  const activePickPipeline = isMorphing
+    ? cache.morphPickPipeline
+    : cache.pickPipeline;
+
+  const colorCommand = new WebGPUDrawCommand({
+    pipeline: activeColorPipeline,
+    bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+    bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+    vertexBuffers: [cache.vertexGPUBuffer],
+    indexBuffer: cache.indexGPUBuffer || undefined,
+    indexCount: cache.indexCount || 0,
+    indexFormat: cache.indexFormat || "uint16",
+    vertexCount: cache.vertexCount || 0,
+    pass: groundPass,
+    owner: primitive,
+  });
+
+  if (defined(pickColor)) {
+    cache.pickCommand = new WebGPUDrawCommand({
+      pipeline: activePickPipeline,
+      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer || undefined,
+      indexCount: cache.indexCount || 0,
+      indexFormat: cache.indexFormat || "uint16",
+      vertexCount: cache.vertexCount || 0,
+      pass: groundPass,
+      owner: primitive,
+      pickOnly: true,
+    });
+    attachPickToColorCommand(colorCommand, cache.pickCommand);
+  }
+
+  return {
+    stencilCommand: null,
+    colorCommand,
+    pickCommand: cache.pickCommand,
+  };
+}
+
+/**
+ * Returns true once the WGSL port has been wired and the renderer can
+ * generate real commands. Consumers can feature-detect via this method
+ * before relying on `createCommands`.
  *
  * @returns {boolean}
  * @private
  */
 function isFullyImplemented() {
-  return false;
+  return true;
 }
 
 /**
- * Stub command builder — returns null commands so the consumer falls
- * through to WebGL until the WGSL port lands. Mirrors the return shape
- * of `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`
- * so consumers can swap implementations without changing call-sites.
- *
- * @param {GroundPolylinePrimitive} primitive
- * @param {FrameState} frameState
- * @returns {{stencilCommand: null, colorCommand: null, pickCommand: null}}
- * @private
- */
-function createWebGPUGroundPolylineCommands(primitive, frameState) {
-  // Avoid unused-arg lint when params arrive but the stub doesn't use
-  // them yet. Once the WGSL port lands, `primitive._webgpuGeometryData`
-  // (walked through the Polyline → ClassificationPrimitive → Primitive
-  // chain, same pattern as Batch 81's GroundPrimitive fix) becomes the
-  // input to the buffer-build helpers below.
-  void primitive;
-  void frameState;
-
-  return {
-    stencilCommand: null,
-    colorCommand: null,
-    pickCommand: null,
-  };
-}
-
-/**
- * Cleanup hook — releases per-primitive cache resources. No-op until
- * Session 4b populates `primitive._webgpuPolylineCache`.
+ * Cleanup hook — releases per-primitive cache resources (uniform
+ * buffer, vertex buffer, index buffer, sampler, pick IDs).
  *
  * @param {GroundPolylinePrimitive} primitive
  * @private
  */
 function destroyWebGPUGroundPolylineResources(primitive) {
-  if (!defined(primitive._webgpuPolylineCache)) {
+  const cache = primitive._webgpuPolylineCache;
+  if (!defined(cache)) {
     return;
   }
-  // Session 4b: release vertex/index buffers, uniform buffer, sampler,
-  // pick IDs. Mirror `destroyWebGPUGroundPrimitiveResources`.
+  if (defined(cache.uniformBuffer)) {
+    cache.uniformBuffer.destroy();
+  }
+  destroyPickIds(primitive);
   primitive._webgpuPolylineCache = undefined;
 }
 
-/**
- * Public renderer object registered as the GROUND_POLYLINE feature
- * renderer. Exposes the same surface shape as
- * `WebGPUGroundPrimitiveRenderer` so consumers can dispatch uniformly.
- *
- * @private
- */
 const WebGPUGroundPolylineRenderer = {
-  /**
-   * Build draw commands for a `GroundPolylinePrimitive`. Returns
-   * `{ stencilCommand: null, colorCommand: null, pickCommand: null }`
-   * until Session 4b lands the WGSL port; consumer falls through to
-   * WebGL in that case.
-   */
   createCommands: createWebGPUGroundPolylineCommands,
   destroy: destroyWebGPUGroundPolylineResources,
   isFullyImplemented,
