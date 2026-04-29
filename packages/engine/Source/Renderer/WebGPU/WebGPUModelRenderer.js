@@ -81,8 +81,8 @@ import {
 const CAMERA_UNIFORM_SIZE = 320;
 // Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
-//   4f(diffuseRGBA) + 3f(padding) = 320 bytes (rounded to 16-byte alignment)
-// 576 bytes = 144 floats. Layout:
+//   4f(diffuseRGBA) + 3f(padding) + ... = expanded for KHR extensions.
+// 768 bytes = 192 floats. Layout:
 //   floats   0-15 : modelMatrix          (mat4x4)
 //   floats  16-19 : baseColorFactor      (vec4)
 //   floats  20-23 : emissiveFactor + metallicFactor
@@ -101,8 +101,23 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats  92-103: occlusion texture transform
 //   floats 104    : textureTransformFlags (u32)
 //   floats 105-107: padding
-//   floats 108-143: reserved
-const MATERIAL_UNIFORM_SIZE = 576;
+//
+// C-R4-GLTF-KHR (slices 2-7): each KHR extension occupies a contiguous
+// 8-float (32-byte) slot at a 16-byte boundary so the WGSL std140 layout
+// matches without internal padding. Factors only — texture readers are
+// resolved through the existing texture binding path in a follow-up
+// slice (bind-group restructure required to add the per-extension
+// sampled textures).
+//
+//   floats 108-115: clearcoat   (factor, roughness, normalScale, _, _, _, _, _)
+//   floats 116-123: specular    (factor, colorR, colorG, colorB, _, _, _, _)
+//   floats 124-131: anisotropy  (strength, rotation, _, _, _, _, _, _)
+//   floats 132-139: iridescence (factor, ior, thickMin, thickMax, _, _, _, _)
+//   floats 140-147: sheen       (colorR, colorG, colorB, roughness, _, _, _, _)
+//   floats 148-155: volume      (thickness, attenDistance, attColorR, attColorG, attColorB, _, _, _)
+//   floats 156-191: reserved (texture transform extensions for KHR slots,
+//                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
+const MATERIAL_UNIFORM_SIZE = 768;
 // Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
 //   + f(iblDiffuseFactor, iblSpecularFactor, iblMaxMipLevel, iblHasSH) = 64.
 // Keep in sync with struct LightUniforms in ModelPBRComplete.wgsl.
@@ -340,6 +355,107 @@ function packMaterialUniforms(
   data[105] = 0;
   data[106] = 0;
   data[107] = 0;
+
+  // C-R4-GLTF-KHR (slices 2-7) — KHR material extension factors.
+  // Each block is 8 floats (32 B); identity values for the inactive
+  // case are written so a stale buffer never stamps garbage into a
+  // newly-promoted "extension active" frame.
+
+  // Clearcoat (slot 108-115).
+  data[108] = matInfo.hasClearcoat ? matInfo.clearcoatFactor : 0.0;
+  data[109] = matInfo.hasClearcoat ? matInfo.clearcoatRoughnessFactor : 0.0;
+  data[110] = matInfo.hasClearcoat ? matInfo.clearcoatNormalScale : 1.0;
+  data[111] = 0;
+  data[112] = 0;
+  data[113] = 0;
+  data[114] = 0;
+  data[115] = 0;
+
+  // Specular ext (slot 116-123).
+  data[116] = matInfo.hasSpecularExt ? matInfo.specularExtFactor : 1.0;
+  if (matInfo.hasSpecularExt) {
+    const sec = matInfo.specularExtColorFactor;
+    data[117] = sec[0];
+    data[118] = sec[1];
+    data[119] = sec[2];
+  } else {
+    data[117] = 1;
+    data[118] = 1;
+    data[119] = 1;
+  }
+  data[120] = 0;
+  data[121] = 0;
+  data[122] = 0;
+  data[123] = 0;
+
+  // Anisotropy (slot 124-131).
+  data[124] = matInfo.hasAnisotropy ? matInfo.anisotropyStrength : 0.0;
+  data[125] = matInfo.hasAnisotropy ? matInfo.anisotropyRotation : 0.0;
+  data[126] = 0;
+  data[127] = 0;
+  data[128] = 0;
+  data[129] = 0;
+  data[130] = 0;
+  data[131] = 0;
+
+  // Iridescence (slot 132-139).
+  data[132] = matInfo.hasIridescence ? matInfo.iridescenceFactor : 0.0;
+  data[133] = matInfo.hasIridescence ? matInfo.iridescenceIor : 1.3;
+  data[134] = matInfo.hasIridescence
+    ? matInfo.iridescenceThicknessMinimum
+    : 100;
+  data[135] = matInfo.hasIridescence
+    ? matInfo.iridescenceThicknessMaximum
+    : 400;
+  data[136] = 0;
+  data[137] = 0;
+  data[138] = 0;
+  data[139] = 0;
+
+  // Sheen (slot 140-147).
+  if (matInfo.hasSheen) {
+    const sc = matInfo.sheenColorFactor;
+    data[140] = sc[0];
+    data[141] = sc[1];
+    data[142] = sc[2];
+    data[143] = matInfo.sheenRoughnessFactor;
+  } else {
+    data[140] = 0;
+    data[141] = 0;
+    data[142] = 0;
+    data[143] = 0;
+  }
+  data[144] = 0;
+  data[145] = 0;
+  data[146] = 0;
+  data[147] = 0;
+
+  // Volume (slot 148-155). attenuationDistance defaults to +Infinity in
+  // glTF spec; encode as 0 in the shader's "no attenuation" sentinel
+  // since dividing by it would NaN the FS — the FS reads `volumeFlags`
+  // (HAS_VOLUME bit) before applying Beer-Lambert anyway.
+  data[148] = matInfo.hasVolume ? matInfo.thicknessFactor : 0.0;
+  if (matInfo.hasVolume) {
+    const ad = matInfo.attenuationDistance;
+    data[149] = isFinite(ad) ? ad : 0.0;
+    const ac = matInfo.attenuationColor;
+    data[150] = ac[0];
+    data[151] = ac[1];
+    data[152] = ac[2];
+  } else {
+    data[149] = 0;
+    data[150] = 1;
+    data[151] = 1;
+    data[152] = 1;
+  }
+  data[153] = 0;
+  data[154] = 0;
+  data[155] = 0;
+
+  // Reserved (slot 156-191). Zero-fill for std140 stability.
+  for (let i = 156; i < 192; i++) {
+    data[i] = 0;
+  }
 }
 
 /**

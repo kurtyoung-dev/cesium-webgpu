@@ -37,6 +37,17 @@ const MaterialFlags = Object.freeze({
   HAS_FEATURE_ID_TEXTURE: 65536, // Bit 16 — feature IDs from texture (EXT_mesh_features)
   HAS_FEATURE_ID_ATTRIBUTE: 131072, // Bit 17 — feature IDs from vertex attribute
   HAS_BATCH_TABLE: 262144, // Bit 18 — batch texture for per-feature styling
+  // C-R4-GLTF-KHR (slices 2-7). One bit per extension enable; the FS
+  // skips each extension's lighting contribution when the bit is unset
+  // so identity-default values are branch-light. Texture availability
+  // for each extension lives in a separate per-extension flags word
+  // (extensionTextureFlags), not here.
+  HAS_CLEARCOAT: 524288, // Bit 19 — KHR_materials_clearcoat
+  HAS_SPECULAR: 1048576, // Bit 20 — KHR_materials_specular
+  HAS_ANISOTROPY: 2097152, // Bit 21 — KHR_materials_anisotropy
+  HAS_IRIDESCENCE: 4194304, // Bit 22 — KHR_materials_iridescence
+  HAS_SHEEN: 8388608, // Bit 23 — KHR_materials_sheen
+  HAS_VOLUME: 16777216, // Bit 24 — KHR_materials_volume
 });
 
 /**
@@ -102,6 +113,84 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     occlusionTextureReader: null,
     specGlossTextureReader: null,
     diffuseTextureReader: null,
+
+    // C-R4-GLTF-KHR (slices 2-7). KHR material extensions: each block is
+    // populated only when the asset advertises the corresponding
+    // extension; otherwise factors retain identity-default values and
+    // the matching `materialFlags` bit stays unset so the FS skips the
+    // extension's contribution.
+    //
+    // KHR_materials_clearcoat (slice 2, Batch 95) — second specular lobe
+    // simulating an automotive-grade clear coating over the base
+    // material. Independent roughness from the base; uses the standard
+    // F0 = 0.04 air-coat fresnel term.
+    hasClearcoat: false,
+    clearcoatFactor: 0.0,
+    clearcoatRoughnessFactor: 0.0,
+    clearcoatNormalScale: 1.0,
+    clearcoatTextureReader: null,
+    clearcoatRoughnessTextureReader: null,
+    clearcoatNormalTextureReader: null,
+    hasClearcoatTexture: false,
+    hasClearcoatRoughnessTexture: false,
+    hasClearcoatNormalTexture: false,
+
+    // KHR_materials_specular (slice 3) — overrides the dielectric F0
+    // intensity (specularFactor) and tints F0 chromatically (color).
+    // Takes precedence over the spec-gloss workflow's per-channel F0.
+    hasSpecularExt: false,
+    specularExtFactor: 1.0,
+    specularExtColorFactor: [1, 1, 1],
+    specularExtTextureReader: null,
+    specularExtColorTextureReader: null,
+    hasSpecularExtTexture: false,
+    hasSpecularExtColorTexture: false,
+
+    // KHR_materials_anisotropy (slice 4) — directional roughness for
+    // brushed-metal style materials. Strength controls the anisotropy
+    // amount; rotation rotates the tangent frame around the geometric
+    // normal. The texture (when present) carries (cos, sin, strength)
+    // in (R, G, B).
+    hasAnisotropy: false,
+    anisotropyStrength: 0.0,
+    anisotropyRotation: 0.0,
+    anisotropyTextureReader: null,
+    hasAnisotropyTexture: false,
+
+    // KHR_materials_iridescence (slice 5) — thin-film interference for
+    // soap-bubble/oil-slick effects. Modulates F0 by a wavelength-
+    // dependent term derived from film thickness × ior.
+    hasIridescence: false,
+    iridescenceFactor: 0.0,
+    iridescenceIor: 1.3,
+    iridescenceThicknessMinimum: 100.0,
+    iridescenceThicknessMaximum: 400.0,
+    iridescenceTextureReader: null,
+    iridescenceThicknessTextureReader: null,
+    hasIridescenceTexture: false,
+    hasIridescenceThicknessTexture: false,
+
+    // KHR_materials_sheen (slice 6) — Charlie BRDF lobe for fabric /
+    // velvet retroreflection. Energy-additive on top of the base lit
+    // contribution.
+    hasSheen: false,
+    sheenColorFactor: [0, 0, 0],
+    sheenRoughnessFactor: 0.0,
+    sheenColorTextureReader: null,
+    sheenRoughnessTextureReader: null,
+    hasSheenColorTexture: false,
+    hasSheenRoughnessTexture: false,
+
+    // KHR_materials_volume (slice 7) — volumetric attenuation through a
+    // refractive volume. Pairs with KHR_materials_transmission for the
+    // refraction direction; consumed here primarily as Beer-Lambert
+    // attenuation against `attenuationColor` over `attenuationDistance`.
+    hasVolume: false,
+    thicknessFactor: 0.0,
+    attenuationDistance: Number.POSITIVE_INFINITY,
+    attenuationColor: [1, 1, 1],
+    thicknessTextureReader: null,
+    hasThicknessTexture: false,
 
     // Computed flags bitfield (for shader uniform)
     materialFlags: 0,
@@ -206,6 +295,130 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     }
   }
 
+  // C-R4-GLTF-KHR (slices 2-7). The model loader (`GltfLoader`) sets the
+  // matching slot on `material.*` only when the asset declares the
+  // corresponding KHR extension; the same slot is populated for both
+  // metallic-roughness and spec-gloss workflows. We read identity
+  // defaults when an extension is absent (no flag bit set, FS branch
+  // is skipped).
+  const cc = material.clearcoat;
+  if (defined(cc) && cc.clearcoatFactor > 0.0) {
+    info.hasClearcoat = true;
+    info.clearcoatFactor = cc.clearcoatFactor;
+    info.clearcoatRoughnessFactor = cc.clearcoatRoughnessFactor ?? 0.0;
+    if (defined(cc.clearcoatTexture)) {
+      info.hasClearcoatTexture = true;
+      info.clearcoatTextureReader = cc.clearcoatTexture;
+    }
+    if (defined(cc.clearcoatRoughnessTexture)) {
+      info.hasClearcoatRoughnessTexture = true;
+      info.clearcoatRoughnessTextureReader = cc.clearcoatRoughnessTexture;
+    }
+    if (defined(cc.clearcoatNormalTexture)) {
+      info.hasClearcoatNormalTexture = true;
+      info.clearcoatNormalTextureReader = cc.clearcoatNormalTexture;
+      info.clearcoatNormalScale = cc.clearcoatNormalTexture.scale ?? 1.0;
+    }
+  }
+
+  const spx = material.specular;
+  if (defined(spx)) {
+    info.hasSpecularExt = true;
+    info.specularExtFactor = spx.specularFactor ?? 1.0;
+    const sc = spx.specularColorFactor;
+    if (defined(sc)) {
+      info.specularExtColorFactor = [
+        sc.x ?? sc.red ?? sc[0] ?? 1,
+        sc.y ?? sc.green ?? sc[1] ?? 1,
+        sc.z ?? sc.blue ?? sc[2] ?? 1,
+      ];
+    }
+    if (defined(spx.specularTexture)) {
+      info.hasSpecularExtTexture = true;
+      info.specularExtTextureReader = spx.specularTexture;
+    }
+    if (defined(spx.specularColorTexture)) {
+      info.hasSpecularExtColorTexture = true;
+      info.specularExtColorTextureReader = spx.specularColorTexture;
+    }
+  }
+
+  const an = material.anisotropy;
+  if (defined(an) && an.anisotropyStrength > 0.0) {
+    info.hasAnisotropy = true;
+    info.anisotropyStrength = an.anisotropyStrength;
+    info.anisotropyRotation = an.anisotropyRotation ?? 0.0;
+    if (defined(an.anisotropyTexture)) {
+      info.hasAnisotropyTexture = true;
+      info.anisotropyTextureReader = an.anisotropyTexture;
+    }
+  }
+
+  const ir = material.iridescence;
+  if (defined(ir) && ir.iridescenceFactor > 0.0) {
+    info.hasIridescence = true;
+    info.iridescenceFactor = ir.iridescenceFactor;
+    info.iridescenceIor = ir.iridescenceIor ?? 1.3;
+    info.iridescenceThicknessMinimum = ir.iridescenceThicknessMinimum ?? 100.0;
+    info.iridescenceThicknessMaximum = ir.iridescenceThicknessMaximum ?? 400.0;
+    if (defined(ir.iridescenceTexture)) {
+      info.hasIridescenceTexture = true;
+      info.iridescenceTextureReader = ir.iridescenceTexture;
+    }
+    if (defined(ir.iridescenceThicknessTexture)) {
+      info.hasIridescenceThicknessTexture = true;
+      info.iridescenceThicknessTextureReader = ir.iridescenceThicknessTexture;
+    }
+  }
+
+  const sh = material.sheen;
+  if (defined(sh)) {
+    const scf = sh.sheenColorFactor;
+    let scfArr = [0, 0, 0];
+    if (defined(scf)) {
+      scfArr = [
+        scf.x ?? scf.red ?? scf[0] ?? 0,
+        scf.y ?? scf.green ?? scf[1] ?? 0,
+        scf.z ?? scf.blue ?? scf[2] ?? 0,
+      ];
+    }
+    // Skip when fully default (zero color) — sheen is purely additive,
+    // so a zero color contributes nothing and the FS branch is wasted.
+    if (scfArr[0] > 0.0 || scfArr[1] > 0.0 || scfArr[2] > 0.0) {
+      info.hasSheen = true;
+      info.sheenColorFactor = scfArr;
+      info.sheenRoughnessFactor = sh.sheenRoughnessFactor ?? 0.0;
+      if (defined(sh.sheenColorTexture)) {
+        info.hasSheenColorTexture = true;
+        info.sheenColorTextureReader = sh.sheenColorTexture;
+      }
+      if (defined(sh.sheenRoughnessTexture)) {
+        info.hasSheenRoughnessTexture = true;
+        info.sheenRoughnessTextureReader = sh.sheenRoughnessTexture;
+      }
+    }
+  }
+
+  const vol = material.volume;
+  if (defined(vol) && vol.thicknessFactor > 0.0) {
+    info.hasVolume = true;
+    info.thicknessFactor = vol.thicknessFactor;
+    info.attenuationDistance =
+      vol.attenuationDistance ?? Number.POSITIVE_INFINITY;
+    const ac = vol.attenuationColor;
+    if (defined(ac)) {
+      info.attenuationColor = [
+        ac.x ?? ac.red ?? ac[0] ?? 1,
+        ac.y ?? ac.green ?? ac[1] ?? 1,
+        ac.z ?? ac.blue ?? ac[2] ?? 1,
+      ];
+    }
+    if (defined(vol.thicknessTexture)) {
+      info.hasThicknessTexture = true;
+      info.thicknessTextureReader = vol.thicknessTexture;
+    }
+  }
+
   info.materialFlags = computeFlags(info);
   return info;
 }
@@ -255,6 +468,24 @@ function computeFlags(info) {
   }
   if (info.hasDiffuseTexture) {
     flags |= MaterialFlags.HAS_DIFFUSE_TEXTURE;
+  }
+  if (info.hasClearcoat) {
+    flags |= MaterialFlags.HAS_CLEARCOAT;
+  }
+  if (info.hasSpecularExt) {
+    flags |= MaterialFlags.HAS_SPECULAR;
+  }
+  if (info.hasAnisotropy) {
+    flags |= MaterialFlags.HAS_ANISOTROPY;
+  }
+  if (info.hasIridescence) {
+    flags |= MaterialFlags.HAS_IRIDESCENCE;
+  }
+  if (info.hasSheen) {
+    flags |= MaterialFlags.HAS_SHEEN;
+  }
+  if (info.hasVolume) {
+    flags |= MaterialFlags.HAS_VOLUME;
   }
   return flags;
 }

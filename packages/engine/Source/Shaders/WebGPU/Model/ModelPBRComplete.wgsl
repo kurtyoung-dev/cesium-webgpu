@@ -57,6 +57,15 @@ const FLAG_HAS_INSTANCING: u32                 = 32768u;
 const FLAG_HAS_FEATURE_ID_TEXTURE: u32         = 65536u;  // bit 16
 const FLAG_HAS_FEATURE_ID_ATTRIBUTE: u32       = 131072u; // bit 17
 const FLAG_HAS_BATCH_TABLE: u32                = 262144u; // bit 18
+// C-R4-GLTF-KHR (slices 2-7) — KHR material extension activation bits.
+// Each block of factor reads + extension lighting is gated on the
+// matching bit so identity-default values stay branch-light.
+const FLAG_HAS_CLEARCOAT: u32                  = 524288u;  // bit 19
+const FLAG_HAS_SPECULAR_EXT: u32               = 1048576u; // bit 20
+const FLAG_HAS_ANISOTROPY: u32                 = 2097152u; // bit 21
+const FLAG_HAS_IRIDESCENCE: u32                = 4194304u; // bit 22
+const FLAG_HAS_SHEEN: u32                      = 8388608u; // bit 23
+const FLAG_HAS_VOLUME: u32                     = 16777216u; // bit 24
 
 // ─── Uniform Structures ──────────────────────────────────────────────────────
 
@@ -142,6 +151,64 @@ struct MaterialUniforms {
   _pad_tt0: f32,
   _pad_tt1: f32,
   _pad_tt2: f32,
+
+  // C-R4-GLTF-KHR (slices 2-7). Each block is 8 floats (32 B) at a
+  // 16-byte boundary so std140 sees a vec4-aligned slot. Identity
+  // values are written when the corresponding extension is absent.
+  // The FS gates each block on the matching `materialFlags` bit
+  // (HAS_CLEARCOAT, HAS_SPECULAR, ...) so identity values are
+  // branch-light: the BRDF math never runs.
+  //
+  // Slice 2 — KHR_materials_clearcoat.
+  // x: clearcoatFactor [0, 1]
+  // y: clearcoatRoughnessFactor [0, 1]
+  // z: clearcoatNormalScale (multiplier for the per-fragment normal
+  //    if a clearcoat normal map were sampled — left in the layout so
+  //    the texture-binding follow-up slice doesn't need a re-layout)
+  // w: reserved
+  clearcoatFactors: vec4<f32>,
+  _pad_cc0: vec4<f32>,
+  // Slice 3 — KHR_materials_specular.
+  // x: specularFactor (modulates F0 intensity)
+  // yzw: specularColorFactor (tints F0 chromatically)
+  specularExtFactors: vec4<f32>,
+  _pad_se0: vec4<f32>,
+  // Slice 4 — KHR_materials_anisotropy.
+  // x: strength
+  // y: rotation (radians, CCW from tangent)
+  // zw: reserved
+  anisotropyFactors: vec4<f32>,
+  _pad_an0: vec4<f32>,
+  // Slice 5 — KHR_materials_iridescence.
+  // x: factor [0, 1]
+  // y: ior
+  // z: thicknessMinimum (nm)
+  // w: thicknessMaximum (nm)
+  iridescenceFactors: vec4<f32>,
+  _pad_ir0: vec4<f32>,
+  // Slice 6 — KHR_materials_sheen.
+  // xyz: sheenColorFactor
+  // w: sheenRoughnessFactor
+  sheenFactors: vec4<f32>,
+  _pad_sh0: vec4<f32>,
+  // Slice 7 — KHR_materials_volume.
+  // x: thicknessFactor (geometry-units)
+  // y: attenuationDistance (0 = no attenuation sentinel)
+  // zw: padding into next slot
+  // attenuationColor lives in the second vec4 of this slot.
+  volumeFactors0: vec4<f32>,
+  volumeFactors1: vec4<f32>,
+  // Reserved (slot 156-191) — kept in the struct as 4 vec4s so std140
+  // sees the same total stride as the JS uploads (192 floats = 768 B).
+  _pad_reserved0: vec4<f32>,
+  _pad_reserved1: vec4<f32>,
+  _pad_reserved2: vec4<f32>,
+  _pad_reserved3: vec4<f32>,
+  _pad_reserved4: vec4<f32>,
+  _pad_reserved5: vec4<f32>,
+  _pad_reserved6: vec4<f32>,
+  _pad_reserved7: vec4<f32>,
+  _pad_reserved8: vec4<f32>,
 };
 
 struct LightUniforms {
@@ -1166,6 +1233,48 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     diffuseColor = baseColor.rgb * (1.0 - metallic);
   }
 
+  // C-R4-GLTF-KHR slice 3 — KHR_materials_specular. Modifies dielectric
+  // F0: scales intensity (specularFactor) and tints chromatically
+  // (specularColorFactor). Spec at
+  // https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_specular
+  // says metallic surfaces ignore the color factor and still use
+  // baseColor for F0; only the dielectric F0 component is recolored.
+  if (hasFlag(flags, FLAG_HAS_SPECULAR_EXT)) {
+    let sf = material.specularExtFactors.x;
+    let sc = material.specularExtFactors.yzw;
+    // Recolor the dielectric component (mix factor = 1.0 - metallic).
+    let dielectricF0 = vec3<f32>(0.04) * sc * sf;
+    F0 = mix(dielectricF0, baseColor.rgb, metallic);
+  }
+
+  // C-R4-GLTF-KHR slice 5 — KHR_materials_iridescence (factor-level
+  // approximation). Full thin-film interference requires per-wavelength
+  // optical-path-difference math that's prohibitive without a
+  // precomputed LUT — this matches the Khronos reference impl's
+  // structure (sample LUT at NdotV, lerp into F0). For Slice 5 we use
+  // a hue-shift approximation: blend baseColor toward an HSV-rotated
+  // companion driven by `iridescenceFactor` and view angle. Visually
+  // imperfect but structurally honest about which extension is firing.
+  if (hasFlag(flags, FLAG_HAS_IRIDESCENCE)) {
+    let irFactor = material.iridescenceFactors.x;
+    let irIor = material.iridescenceFactors.y;
+    let thickness = mix(
+      material.iridescenceFactors.z,
+      material.iridescenceFactors.w,
+      0.5,
+    );
+    // Phase-shift driven hue approximation. NdotV gets reused below
+    // after V is constructed; precompute here for the F0 modulation.
+    let approxNdotV = max(dot(N, normalize(-input.positionEC)), 0.001);
+    let phase = (thickness * (irIor - 1.0) * (1.0 - approxNdotV)) / 350.0;
+    let irTint = vec3<f32>(
+      0.5 + 0.5 * cos(phase * 6.2831853 + 0.0),
+      0.5 + 0.5 * cos(phase * 6.2831853 + 2.094395),
+      0.5 + 0.5 * cos(phase * 6.2831853 + 4.18879),
+    );
+    F0 = mix(F0, F0 * irTint, irFactor);
+  }
+
   // ── Cook-Torrance BRDF ────────────────────────────────────────────────────
   let V = normalize(-input.positionEC);
   let L = normalize(light.sunDirectionEC);
@@ -1182,6 +1291,87 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 
   let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
   var direct = (kD * diffuseColor / PI + specBRDF) * light.sunColor * light.sunIntensity * NdotL;
+
+  // C-R4-GLTF-KHR slice 4 — KHR_materials_anisotropy (factor-level).
+  // Full anisotropic GGX needs the tangent-frame as a per-vertex
+  // attribute (not currently passed through `FragmentInput`). For Slice
+  // 4 we approximate by stretching the GGX D term along the half-vector
+  // projection: rougher highlights along the view's right axis when
+  // strength is positive, along the up axis when negative. Visually
+  // produces the streak shape brushed-metal assets expect; full per-
+  // tangent BRDF lands in a follow-up once tangents are plumbed.
+  if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
+    let aniStrength = material.anisotropyFactors.x;
+    let aniRotation = material.anisotropyFactors.y;
+    // Build an in-plane axis from the view's right vector rotated by
+    // aniRotation. Stretch H along that axis for an extra GGX lobe.
+    let viewRight = normalize(cross(N, V));
+    let viewUp = normalize(cross(viewRight, N));
+    let cosR = cos(aniRotation);
+    let sinR = sin(aniRotation);
+    let aniDir = viewRight * cosR + viewUp * sinR;
+    let TdotH = dot(aniDir, H);
+    let aniRough = mix(roughness, 1.0, abs(TdotH) * aniStrength);
+    let Daniso = distributionGGX(NdotH, aniRough);
+    let aniBRDF = Daniso * G * F / (4.0 * NdotV * NdotL + 0.0001);
+    direct = direct + (aniBRDF - specBRDF) * light.sunColor *
+                       light.sunIntensity * NdotL * aniStrength;
+  }
+
+  // C-R4-GLTF-KHR slice 2 — KHR_materials_clearcoat. Add a second GGX
+  // specular lobe over the base contribution. Clearcoat fresnel uses a
+  // fixed F0 = 0.04 (air-coat interface). The base material is
+  // attenuated by (1 - F_clearcoat) so high-glance angles bias toward
+  // the coat color rather than double-bouncing.
+  if (hasFlag(flags, FLAG_HAS_CLEARCOAT)) {
+    let ccFactor = material.clearcoatFactors.x;
+    let ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
+    let F_cc = fresnelSchlick(VdotH, vec3<f32>(0.04)) * ccFactor;
+    let D_cc = distributionGGX(NdotH, ccRough);
+    let G_cc = geometrySmith(NdotV, NdotL, ccRough);
+    let ccBRDF = D_cc * G_cc * F_cc / (4.0 * NdotV * NdotL + 0.0001);
+    direct = direct * (vec3<f32>(1.0) - F_cc) +
+             ccBRDF * light.sunColor * light.sunIntensity * NdotL;
+  }
+
+  // C-R4-GLTF-KHR slice 6 — KHR_materials_sheen. Charlie BRDF lobe
+  // approximated with the Estevez/Kulla Charlie distribution. Energy-
+  // additive on top of the base contribution; emulates fabric/velvet
+  // retroreflection at grazing angles.
+  if (hasFlag(flags, FLAG_HAS_SHEEN)) {
+    let sheenColor = material.sheenFactors.xyz;
+    let sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
+    // Charlie distribution: D_charlie(α, NdotH) = ((2 + 1/α) * (sin θ_h)^(1/α)) / (2π)
+    let alpha = sheenRough * sheenRough;
+    let invAlpha = 1.0 / max(alpha, 1.0e-4);
+    let sin2 = max(1.0 - NdotH * NdotH, 0.0);
+    let D_sheen = (2.0 + invAlpha) * pow(sin2, invAlpha * 0.5) / (2.0 * PI);
+    // Visibility approximation (Neubelt & Pettineo) — cheap enough at
+    // factor-level; full Ashikhmin V_charlie can land with the texture
+    // slice.
+    let V_sheen = 1.0 / (4.0 * (NdotL + NdotV - NdotL * NdotV));
+    let sheenBRDF = D_sheen * V_sheen;
+    direct = direct + sheenColor * sheenBRDF * light.sunColor *
+                       light.sunIntensity * NdotL;
+  }
+
+  // C-R4-GLTF-KHR slice 7 — KHR_materials_volume. Beer-Lambert
+  // attenuation on the diffuse contribution as a stand-in for the
+  // proper transmission path (which needs KHR_materials_transmission
+  // and a refraction render target — full impl deferred). Mirrors the
+  // attenuation term of the reference implementation when transmission
+  // is 0 and the surface is purely opaque, which is the common case for
+  // KHR_materials_volume on glass/translucent assets in our tilesets.
+  if (hasFlag(flags, FLAG_HAS_VOLUME)) {
+    let thickness = material.volumeFactors0.x;
+    let attDistance = material.volumeFactors0.y;
+    let attColor = material.volumeFactors1.xyz;
+    if (attDistance > 0.0 && thickness > 0.0) {
+      let attCoeff = -log(max(attColor, vec3<f32>(1.0e-3))) / attDistance;
+      let attenuation = exp(-attCoeff * thickness);
+      direct = direct * attenuation;
+    }
+  }
 
   // C-R10-POINT-LIGHT-RECEIVE — when a point-light shadow map is bound,
   // route through cube sampling. Checked BEFORE the CSM gate (only one
