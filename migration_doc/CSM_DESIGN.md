@@ -115,7 +115,7 @@ The glTF PBR shader now receives cascaded shadows. Scope was larger than the pri
 
 ### Still pending in Slice 2d
 
-- **Material Lit variants (18 remaining)** — 2/20 Mat-Lit variants now wired (see "Mat-Lit CSM recipe" below). The remaining 18 are mechanical applications of the same recipe; each ~15 minutes to port. Candidates for a single batch-edit session or a templated Node script.
+- ~~**Material Lit variants (18 remaining)**~~ — **AUDIT 2026-04-29: ALL 19 Mat-Lit shaders are now wired.** Every `PrimitiveMat*Lit.wgsl` under `packages/engine/Source/Shaders/WebGPU/Primitive/` has `csmControl.x > 0.5` and `eyePosition` references. The 18-pending count was stale from the 2026-04-18 entry; subsequent batches landed the remaining variants. This entry is closed; the Mat-Lit CSM recipe below is preserved as documentation for any future Lit shader added to the family.
 
 ## Slice 2d progress (2026-04-18) — PBR receivers + primitive effects BG refresh
 
