@@ -1190,8 +1190,11 @@ export class WebGPUSceneRenderer {
           // End current render pass so the depth texture is available for reading
           context.endCurrentRenderPass?.();
           this._globeDepth.executeCopyDepth(encoder, depthSource);
-          // Resume default render pass for subsequent commands
-          context.resumeDefaultRenderPass?.();
+          // Resume the SCENE FRAMEBUFFER pass for subsequent commands —
+          // not the canvas pass. `resumeDefaultRenderPass` would redirect
+          // every following draw to the canvas swap-chain, leaving the
+          // scene FB empty for the post-process chain to blit.
+          this._resumeScenePass(context);
           // C-R8-EDGE-INLINE — publish the packed-depth view on the
           // context so model FS bind-group construction can sample
           // globe depth without reaching back through the renderer
@@ -1266,7 +1269,7 @@ export class WebGPUSceneRenderer {
             }
             context.endCurrentRenderPass?.();
             this._globeDepth.executeUpdateDepth(enc, depthSource);
-            context.resumeDefaultRenderPass?.();
+            this._resumeScenePass(context);
           }
         }
       });
@@ -1433,7 +1436,7 @@ export class WebGPUSceneRenderer {
           // group when the view ref changes.
           context._packedTranslucentDepthView =
             tcc.packedTranslucentDepthView ?? null;
-          context.resumeDefaultRenderPass?.();
+          this._resumeScenePass(context);
         }
       }
 
@@ -1752,6 +1755,71 @@ export class WebGPUSceneRenderer {
     }
   }
 
+  /**
+   * Resume the scene-framebuffer render pass with `loadOp: "load"` on both
+   * color and depth attachments — used after operations that must end the
+   * pass to read the underlying textures (globe-depth copy, OIT depth peel,
+   * 3D-tile depth update, edge MRT redirect, etc.). Mirrors the canvas-side
+   * `resumeDefaultRenderPass`, but targets the scene framebuffer so that
+   * downstream commands keep accumulating into the scene color + depth
+   * textures the post-process chain reads from. Without this, every
+   * intra-frame pass-end fell through to `resumeDefaultRenderPass`, which
+   * re-opens the canvas swap-chain pass — silently redirecting all
+   * subsequent draws away from the scene framebuffer and producing an
+   * all-black canvas because the post-process chain blits an empty FB.
+   */
+  private _resumeScenePass(context: WebGPUContext): void {
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    if (!colorTarget || !context._currentCommandEncoder) {
+      // No scene FB yet, or no encoder — fall back to the canvas pass.
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+    const rawColor: GPURenderPassColorAttachment[] | undefined =
+      colorTarget.getColorAttachments?.();
+    const colorAttachments = rawColor?.map((a) => ({
+      ...a,
+      loadOp: "load" as GPULoadOp,
+    }));
+    const rawDepth = colorTarget.getDepthStencilAttachment?.();
+    const depthStencilAttachment = rawDepth
+      ? ({
+          ...rawDepth,
+          depthLoadOp: "load" as GPULoadOp,
+          stencilLoadOp: "load" as GPULoadOp,
+        } as GPURenderPassDepthStencilAttachment)
+      : undefined;
+    if (!colorAttachments?.length) {
+      context.resumeDefaultRenderPass?.();
+      return;
+    }
+    if (context._currentRenderPassEncoder) {
+      context._currentRenderPassEncoder.end();
+      context._currentRenderPassEncoder = null;
+    }
+    const passDesc: GPURenderPassDescriptor = {
+      label: "Scene Framebuffer Render Pass",
+      colorAttachments,
+      depthStencilAttachment,
+    };
+    context._currentRenderPassEncoder =
+      context._currentCommandEncoder.beginRenderPass(passDesc);
+    context._currentRenderPassEncoder.setViewport(
+      0,
+      0,
+      this._width,
+      this._height,
+      0,
+      1,
+    );
+    context._currentRenderPassEncoder.setScissorRect(
+      0,
+      0,
+      this._width,
+      this._height,
+    );
+  }
+
   private _clearDepthStencil(context: WebGPUContext): void {
     // ── Multi-frustum depth clear — CRITICAL for correct rendering ──
     //
@@ -1767,14 +1835,20 @@ export class WebGPUSceneRenderer {
     // pass and open a new one with `colorLoadOp: "load"` (preserve accumulated
     // color) + `depthLoadOp: "clear"` (reset depth). `getDepthStencilAttachment`
     // already defaults to depthLoadOp="clear", so we only override color.
-    const currentPass = context._currentRenderPassEncoder;
-    const label: string = currentPass?.label ?? "";
+    //
+    // Previously the trigger was `label === "Scene Framebuffer Render Pass"`,
+    // but earlier per-frustum work (globe-depth copy, 3D-tile depth update,
+    // translucent depth capture) routes through `endCurrentRenderPass()` +
+    // `resumeDefaultRenderPass()`, which leaves the active pass label as
+    // "Scene Main Render Pass" (the canvas swap-chain pass). This made the
+    // clear silently fall through to the canvas-side `context.clear` and
+    // every subsequent draw — including the next frustum's globe pass —
+    // landed on the canvas instead of the scene framebuffer, leaving the
+    // FB empty and producing an all-black post-process blit. The trigger
+    // is now scene-framebuffer-presence-based: if we have a color target
+    // and an encoder, always open a scene-FB pass.
     const colorTarget = this._sceneFramebuffer?.colorTarget;
-    if (
-      label === "Scene Framebuffer Render Pass" &&
-      colorTarget &&
-      context._currentCommandEncoder
-    ) {
+    if (colorTarget && context._currentCommandEncoder) {
       const rawColor: GPURenderPassColorAttachment[] | undefined =
         colorTarget.getColorAttachments?.();
       const colorAttachments = rawColor?.map((a) => ({
@@ -2043,7 +2117,7 @@ export class WebGPUSceneRenderer {
           context.endCurrentRenderPass?.();
         }
       }
-      context.resumeDefaultRenderPass?.();
+      this._resumeScenePass(context);
 
       // Expose the resolved edge textures on the context for the
       // composite consumer (`_runEdgeComposite`) to pick up. Matches
@@ -2168,7 +2242,7 @@ export class WebGPUSceneRenderer {
 
         // Resume scene pass for the normal CLASSIFICATION pass which
         // runs on scene color (regular behavior, not redirected).
-        context.resumeDefaultRenderPass?.();
+        this._resumeScenePass(context);
         runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION);
       } else {
         //>>includeStart('debug', pragmas.debug);
@@ -2180,7 +2254,7 @@ export class WebGPUSceneRenderer {
             `default tile pass.`,
         );
         //>>includeEnd('debug');
-        context.resumeDefaultRenderPass?.();
+        this._resumeScenePass(context);
         for (const passIndex of firstPasses) {
           runPass(passIndex);
         }

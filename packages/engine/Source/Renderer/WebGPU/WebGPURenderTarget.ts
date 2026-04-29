@@ -121,7 +121,9 @@ export class WebGPURenderTarget {
       sampleCount: descriptor.sampleCount || 1,
       usage:
         descriptor.usage ||
-        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_SRC,
       mipLevelCount: descriptor.mipLevelCount || 1,
     };
 
