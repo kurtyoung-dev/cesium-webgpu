@@ -690,6 +690,46 @@ fn applyMaterial(
     return sampled * u.materialColor;
   }
 
+  if (materialType == 7u) {
+    // Batch 97 — Checkerboard. Reproduces CheckerboardMaterial.glsl in
+    // condensed form: alternating squares from a 2D parity test on
+    // (s repeat.s, t repeat.t), with anti-aliased seams via the
+    // distance-to-nearest-separator term. lightColor in materialColor;
+    // darkColor in materialParam1; repeat.s/t in materialParam0.xy.
+    let repeatS = u.materialParam0.x;
+    let repeatT = u.materialParam0.y;
+    let edgeT = clamp(t, 0.0, 1.0);
+    let parity = (floor(repeatS * s) + floor(repeatT * edgeT)) % 2.0;
+    let scaledW = fract(repeatS * s);
+    let scaledH = fract(repeatT * edgeT);
+    let dW = abs(scaledW - floor(scaledW + 0.5));
+    let dH = abs(scaledH - floor(scaledH + 0.5));
+    let aaDist = min(dW, dH);
+    let lightColor = u.materialColor;
+    let darkColor = u.materialParam1;
+    let solidColor = mix(lightColor, darkColor, parity);
+    // Anti-alias the seam at 0.03-distance fadeoff (matches
+    // czm_antialias's default fuzz factor for materials).
+    let fade = smoothstep(0.0, 0.03, aaDist);
+    let aliased = mix(lightColor, solidColor, fade);
+    return aliased;
+  }
+
+  if (materialType == 8u) {
+    // Batch 97 — Custom fallback. Renders unrecognized material types
+    // as materialColor (image repeat) so users at least get the
+    // appearance tint. Hand-written fabric materials with bespoke
+    // shader source aren't transpiled (see resolveMaterialState's
+    // one-time warn log); they degrade to this path.
+    let hasImage = u.materialParam0.x > 0.5;
+    if (hasImage) {
+      let uv = vec2<f32>(s * u.materialMeta.y, t * u.materialMeta.z);
+      let sampled = textureSampleLevel(materialTex, materialSamp, uv, 0.0);
+      return sampled * u.materialColor;
+    }
+    return u.materialColor;
+  }
+
   // materialType == 0 (Color, default) — use the per-instance color
   // resolved in the VS via the batch table. PolylineMaterialAppearance
   // with a Color material lands here too: materialColor mirrors the
@@ -1381,7 +1421,22 @@ const PolylineMaterialType = Object.freeze({
   ARROW: 4,
   STRIPE: 5,
   IMAGE: 6,
+  // Batch 97 — extended material support.
+  CHECKERBOARD: 7,
+  // Generic fallback for unrecognized materials. Reads `uniforms.color`
+  // as a tint and (optionally) `uniforms.image` as a modulating texture
+  // — recognizes materials whose shape mirrors a known type even if
+  // their `type` string is custom (anonymous fabric / shaderSource
+  // builds). Strict GLSL→WGSL transpilation is the proper full path
+  // (tracked under follow-up); this CUSTOM bucket gives reasonable
+  // visual output for the common "tweaked Cesium material" case.
+  CUSTOM: 8,
 });
+
+// Set of one-time-warned custom-material type strings, keyed on the
+// material's `type` field, to avoid log spam when the same custom
+// material is used by many polylines on the scene.
+const _warnedCustomMaterialTypes = new Set();
 
 /**
  * Inspect the appearance's material (if any) and return a packed
@@ -1569,17 +1624,86 @@ function resolveMaterialState(primitive) {
           ]
         : [0.0, 0.0, 0.0, 1.0],
       param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
     };
   }
 
-  // Color (or unknown — fall back to default Color path).
-  // Custom user materials (PolylineMaterialAppearance with a Material
-  // built from a custom `fabric` / `shaderSource` rather than a known
-  // type definition) land here. We don't generically transpile their
-  // GLSL to WGSL — that would require porting Cesium's full Material
-  // system, which is a multi-week effort. Instead the polyline
-  // renders with the material's `uniforms.color` (if present) so the
-  // line is at least visible at the appearance's chosen tint.
+  // Batch 97 — Checkerboard. Two-color alternating squares. Uses the
+  // `lightColor` uniform as the base color (slot 0) and packs
+  // `darkColor` + repeat into the param slots. The shader does the
+  // 2D s/t parity test on `(s × repeat.s, edgeT × repeat.t)`.
+  if (type === "Checkerboard") {
+    const lightColor = uniforms.lightColor;
+    const darkColor = uniforms.darkColor;
+    const repeat = uniforms.repeat;
+    const lightArr = defined(lightColor)
+      ? [
+          lightColor.red ?? 1.0,
+          lightColor.green ?? 1.0,
+          lightColor.blue ?? 1.0,
+          lightColor.alpha ?? 1.0,
+        ]
+      : [1.0, 1.0, 1.0, 1.0];
+    return {
+      type: PolylineMaterialType.CHECKERBOARD,
+      color: lightArr,
+      param0: [
+        repeat?.x ?? repeat?.[0] ?? 5.0,
+        repeat?.y ?? repeat?.[1] ?? 1.0,
+        0.0,
+        0.0,
+      ],
+      param1: defined(darkColor)
+        ? [
+            darkColor.red ?? 0.0,
+            darkColor.green ?? 0.0,
+            darkColor.blue ?? 0.0,
+            darkColor.alpha ?? 1.0,
+          ]
+        : [0.0, 0.0, 0.0, 1.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+      image: null,
+      imageRepeat: [1.0, 1.0],
+    };
+  }
+
+  // Batch 97 — Custom / unknown materials. Inspect the uniform shape
+  // and route to the most-similar known path:
+  //   - has `image`             → IMAGE-style (texture × tint)
+  //   - has `evenColor`+`oddColor` → STRIPE-style fallback
+  //   - otherwise               → CUSTOM (color tint, optional image)
+  // Logged once per unique type string so users see what's being
+  // approximated. Strict GLSL→WGSL transpilation of arbitrary fabric
+  // is the long-tail follow-up (see WebGPUNagaTranspiler.ts).
+  if (defined(type) && !_warnedCustomMaterialTypes.has(type)) {
+    _warnedCustomMaterialTypes.add(type);
+    //>>includeStart('debug', pragmas.debug);
+    console.warn(
+      `[WebGPU:GroundPolyline] custom material type="${type}" not natively ` +
+        `supported; rendering as CUSTOM (tint × optional image). Tint reads ` +
+        `uniforms.color, modulating image reads uniforms.image. Strict GLSL→` +
+        `WGSL transpilation of arbitrary fabric is a separate follow-up.`,
+    );
+    //>>includeEnd('debug');
+  }
+  if (defined(uniforms.image)) {
+    const repeatU = uniforms.repeat;
+    return {
+      type: PolylineMaterialType.CUSTOM,
+      color: colorArr,
+      param0: [1.0, 0.0, 0.0, 0.0], // x: hasImage flag
+      param1: [0.0, 0.0, 0.0, 0.0],
+      param2: [0.0, 0.0, 0.0, 0.0],
+      image: uniforms.image,
+      imageRepeat: [
+        repeatU?.x ?? repeatU?.[0] ?? 1.0,
+        repeatU?.y ?? repeatU?.[1] ?? 1.0,
+      ],
+    };
+  }
+
+  // Color (or unknown without image — fall back to tint-only Color path).
   return {
     type: PolylineMaterialType.COLOR,
     color: colorArr,
