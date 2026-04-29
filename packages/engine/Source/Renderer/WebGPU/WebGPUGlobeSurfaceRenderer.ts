@@ -948,6 +948,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     debugFragmentMode: DebugFragmentMode = DebugFragmentMode.NONE,
     useClipDistances: boolean = false,
     hasGeodeticSurfaceNormals: boolean = false,
+    disableCulling: boolean = false,
   ): WebGPURenderPipelineDescriptor {
     let vertexBuffers: GPUVertexBufferLayout[];
     let entryPoint: string;
@@ -1165,7 +1166,12 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       },
       primitive: {
         topology: "triangle-list",
-        cullMode: "back",
+        // C-R1-GLOBE-RENDERSTATE (Batch 99) — `disableCulling` opens
+        // up the under-the-globe / globe-translucent path which needs
+        // both faces visible. Mirrors WebGL's selection between
+        // `_renderState` (cull on) and `_disableCullingRenderState`
+        // (cull off) in `GlobeSurfaceTileProviderRendering.js:1226-1231`.
+        cullMode: disableCulling ? "none" : "back",
         frontFace: "ccw",
       },
       depthStencil: {
@@ -1269,6 +1275,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     strideBytes: number,
     useClipDistances: boolean = false,
     hasGeodeticSurfaceNormals: boolean = false,
+    disableCulling: boolean = false,
   ): GPURenderPipeline | null {
     // Phase 5 WGF-1: cache key includes a `C` suffix for the
     // hardware clip-distances variant so it shares the production cache
@@ -1280,11 +1287,22 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
     // slots; the GPU pipeline materializes through `webgpuPipelineCache`.
     // Returns null when the central cache hasn't materialized the
     // pipeline yet — the caller should skip this tile this frame.
+    //
+    // C-R1-GLOBE-RENDERSTATE (Batch 99): `disableCulling` adds a `_NC`
+    // (no-cull) suffix to the cache key so underground / globe-
+    // translucent tiles get a separate pipeline variant with
+    // `cullMode: "none"`. Mirrors WebGL's
+    // `tileProvider._disableCullingRenderState` selection at
+    // `GlobeSurfaceTileProviderRendering.js:1226-1231` — picked when
+    // `cameraUnderground || globeTranslucencyState.translucent`.
+    // Without this variant, underground tiles render with cull-back and
+    // their interior faces disappear at the rim.
     const cdSuffix = useClipDistances ? "_CD" : "";
+    const ncSuffix = disableCulling ? "_NC" : "";
     const defines = hasGeodeticSurfaceNormals
       ? ShaderDefine.GEODETIC_NORMAL
       : 0;
-    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}|${defines.toString(16)}`;
+    const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}${ncSuffix}|${defines.toString(16)}`;
     let entry = this._pipelineCache.get(cacheKey);
     if (!entry) {
       const descriptor = this._buildPipelineDescriptor(
@@ -1296,6 +1314,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
         DebugFragmentMode.NONE,
         useClipDistances,
         hasGeodeticSurfaceNormals,
+        disableCulling,
       );
       entry = { descriptor, pipeline: null, pending: false };
       this._pipelineCache.set(cacheKey, entry);
@@ -1525,6 +1544,30 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
       debugFragmentMode = DebugFragmentMode.NORMAL;
     }
 
+    // C-R1-GLOBE-RENDERSTATE (Batch 99) — derive cull-on/off from the
+    // same gates WebGL uses in
+    // `GlobeSurfaceTileProviderRendering.js:1224-1225`:
+    //   backFaceCulling = tileProvider.backFaceCulling
+    //                  && !cameraUnderground
+    //                  && !globeTranslucencyState.translucent
+    // Inverted: disable culling when underground OR translucent OR the
+    // provider has back-face culling explicitly off. The runtime variant
+    // selection feeds into `_selectPipeline`'s `disableCulling` flag.
+    const cameraUnderground =
+      (frameState as unknown as { cameraUnderground?: boolean })
+        .cameraUnderground === true;
+    const globeTranslucent =
+      (
+        frameState as unknown as {
+          globeTranslucencyState?: { translucent?: boolean };
+        }
+      ).globeTranslucencyState?.translucent === true;
+    const providerCullEnabled =
+      (tileProvider as unknown as { backFaceCulling?: boolean })
+        .backFaceCulling !== false;
+    const disableCulling =
+      !providerCullEnabled || cameraUnderground || globeTranslucent;
+
     for (let pass = 0; pass < passCount; pass++) {
       const isSubsequentPass = pass > 0;
       const layerStart = pass * MAX_IMAGERY_LAYERS;
@@ -1604,6 +1647,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
             gpuResources.strideBytes,
             false,
             gpuResources.hasGeodeticSurfaceNormals,
+            disableCulling,
           );
       } else {
         pipeline = this._selectPipeline(
@@ -1614,6 +1658,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
           gpuResources.strideBytes,
           useClipDistances,
           gpuResources.hasGeodeticSurfaceNormals,
+          disableCulling,
         );
       }
       if (!pipeline) {
