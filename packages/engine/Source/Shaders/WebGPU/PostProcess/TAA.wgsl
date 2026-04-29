@@ -180,6 +180,55 @@ fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
     return uv;
   }
 
+  // Slice 2b — strengthened disocclusion detection. The neighborhood
+  // clamp already suppresses MOST ghosting, but it operates in
+  // tonemap-color space and can pass occluded fragments whose history
+  // colors happen to fall inside the current-frame neighborhood AABB.
+  // Two extra checks catch the cases the clamp misses:
+  //
+  //   (1) Motion magnitude. If the motion vector exceeds a fraction
+  //       of the screen, reprojection is treating the pixel as
+  //       "barely visible last frame" and the history sample is
+  //       almost certainly stale. Threshold matches the Halton
+  //       jitter range — anything larger than ~10% of the screen is
+  //       indistinguishable from a teleport at the per-pixel level.
+  //
+  //   (2) Depth-based occlusion test. Sample the depth at prevUV and
+  //       reproject that sample back into eye-space. If the
+  //       reprojected previous-depth differs from eyePosCurr by more
+  //       than `disocclusionThreshold` (in eye-space units), a
+  //       different surface occupied that screen pixel last frame
+  //       and the history color is wrong. Skipped for sky pixels
+  //       since their reprojection is approximate.
+  let motion = prevUV - uv;
+  let motionLen = length(motion);
+  if (motionLen > 0.1) {
+    return uv;
+  }
+
+  if (!isSky) {
+    let prevDepthRaw = textureSampleLevel(depthTex, linearSampler, prevUV, 0.0);
+    if (prevDepthRaw < 0.99999) {
+      // Only check non-sky neighbors. Sky pixels can be near 1.0 even
+      // when the current pixel is non-sky (legitimate occlusion of
+      // sky behind near geometry), and the AABB clamp handles those.
+      let prevNdc = vec3<f32>(prevUV * 2.0 - 1.0, prevDepthRaw);
+      let prevNdcWebGPU = vec3<f32>(prevNdc.x, -prevNdc.y, prevNdc.z);
+      let prevClipFromDepth = params.inverseCurrentVpRte * vec4<f32>(prevNdcWebGPU, 1.0);
+      let prevEyePosFromDepth = prevClipFromDepth.xyz / prevClipFromDepth.w;
+      // Eye-space distance between the geometry that was at prevUV
+      // last frame and where we expected it to be (eyePosPrev). When
+      // they disagree by more than 0.1% of the eye-space depth, we
+      // saw a different surface — disocclude.
+      let expectedEyePos = eyePosPrev;
+      let depthDelta = abs(length(prevEyePosFromDepth) - length(expectedEyePos));
+      let disocclusionThreshold = abs(eyePosCurr.z) * 0.001;
+      if (depthDelta > max(disocclusionThreshold, 1.0)) {
+        return uv;
+      }
+    }
+  }
+
   return prevUV;
 }
 
