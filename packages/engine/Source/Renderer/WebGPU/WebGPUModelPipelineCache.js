@@ -71,13 +71,25 @@ function createBindGroupLayouts(device) {
   // roughness / clearcoat normal, sheen roughness, etc.) are a
   // follow-up that needs more binding budget than 16 allows.
   //
-  //   binding 10: clearcoatTexture       (R = clearcoat intensity)
-  //   binding 11: specularColorTexture   (RGB = F0 chromatic tint)
-  //   binding 12: anisotropyTexture      (RG = direction, B = strength)
-  //   binding 13: iridescenceTexture     (R = iridescence factor)
-  //   binding 14: sheenColorTexture      (RGB = sheen color)
-  //   binding 15: thicknessTexture       (G = volume thickness)
-  //   binding 16: khrSampler             (shared linear/repeat sampler)
+  //   binding 10: clearcoatTexture          (R = clearcoat intensity)
+  //   binding 11: specularColorTexture      (RGB = F0 chromatic tint)
+  //   binding 12: anisotropyTexture         (RG = direction, B = strength)
+  //   binding 13: iridescenceTexture        (R = iridescence factor)
+  //   binding 14: sheenColorTexture         (RGB = sheen color)
+  //   binding 15: thicknessTexture          (G = volume thickness)
+  //
+  // Batch 103 — KHR secondary maps (relies on the device limit request
+  // in `WebGPUContext.requestDevice` already pulling
+  // `maxSampledTexturesPerShaderStage` up to 64 when the adapter
+  // supports it, so the additional 5 sampled-texture bindings here
+  // stay under the cap):
+  //   binding 16: clearcoatRoughnessTexture (G = clearcoat roughness)
+  //   binding 17: clearcoatNormalTexture    (RGB = clearcoat normal)
+  //   binding 18: sheenRoughnessTexture     (A = sheen roughness)
+  //   binding 19: specularFactorTexture     (A = specular factor scalar)
+  //   binding 20: iridescenceThicknessTexture (G = thickness scalar)
+  //
+  //   binding 21: khrSampler                (shared linear/repeat sampler)
   //
   // The shared sampler is acceptable because every KHR extension
   // sampler defaults to linear-filter / repeat-wrap per spec; assets
@@ -100,7 +112,12 @@ function createBindGroupLayouts(device) {
     texture(13, Stage.FRAGMENT),
     texture(14, Stage.FRAGMENT),
     texture(15, Stage.FRAGMENT),
-    sampler(16, Stage.FRAGMENT),
+    texture(16, Stage.FRAGMENT),
+    texture(17, Stage.FRAGMENT),
+    texture(18, Stage.FRAGMENT),
+    texture(19, Stage.FRAGMENT),
+    texture(20, Stage.FRAGMENT),
+    sampler(21, Stage.FRAGMENT),
   ]);
 
   // Group 3: Joint matrices storage buffer (for skinning)

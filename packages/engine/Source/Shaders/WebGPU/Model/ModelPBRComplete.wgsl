@@ -283,7 +283,14 @@ struct LightUniforms {
 @group(2) @binding(13) var iridescenceTexture: texture_2d<f32>;
 @group(2) @binding(14) var sheenColorTexture: texture_2d<f32>;
 @group(2) @binding(15) var thicknessTexture: texture_2d<f32>;
-@group(2) @binding(16) var khrSampler: sampler;
+// C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Same
+// placeholder + flag-gated convention as the primary KHR slots.
+@group(2) @binding(16) var clearcoatRoughnessTexture: texture_2d<f32>;
+@group(2) @binding(17) var clearcoatNormalTexture: texture_2d<f32>;
+@group(2) @binding(18) var sheenRoughnessTexture: texture_2d<f32>;
+@group(2) @binding(19) var specularFactorTexture: texture_2d<f32>;
+@group(2) @binding(20) var iridescenceThicknessTexture: texture_2d<f32>;
+@group(2) @binding(21) var khrSampler: sampler;
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(3) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
@@ -1374,15 +1381,18 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   if (hasFlag(flags, FLAG_HAS_SPECULAR_EXT)) {
     var sf = material.specularExtFactors.x;
     var sc = material.specularExtFactors.yzw;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample specularColorTexture
-    // when the asset declares it. RGB modulates the F0 chromatic tint.
-    // The spec also defines a separate specularTexture (single channel
-    // = factor scalar) but we only support the color texture here;
-    // factor texture is a follow-up that needs another binding.
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample
+    // specularColorTexture (RGB) and specularFactorTexture (A) per
+    // spec. specularColorTexture modulates the F0 chromatic tint;
+    // specularFactorTexture's alpha channel scales the factor scalar.
     let scTex = textureSampleLevel(
       specularColorTexture, khrSampler, baseColorUV(input), 0.0,
     );
     sc = sc * scTex.rgb;
+    let sfTex = textureSampleLevel(
+      specularFactorTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    sf = sf * sfTex.a;
     // Recolor the dielectric component (mix factor = 1.0 - metallic).
     let dielectricF0 = vec3<f32>(0.04) * sc * sf;
     F0 = mix(dielectricF0, baseColor.rgb, metallic);
@@ -1399,19 +1409,19 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   if (hasFlag(flags, FLAG_HAS_IRIDESCENCE)) {
     var irFactor = material.iridescenceFactors.x;
     let irIor = material.iridescenceFactors.y;
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample iridescenceTexture
-    // (R = mask) to modulate the iridescence factor per-fragment. The
-    // spec also defines iridescenceThicknessTexture (G); we lerp
-    // between min/max thickness using the factor here as a stand-in
-    // since we don't have a separate binding for it.
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample iridescenceTexture
+    // (R = mask) and iridescenceThicknessTexture (G) per spec.
     let irTex = textureSampleLevel(
       iridescenceTexture, khrSampler, baseColorUV(input), 0.0,
     );
     irFactor = irFactor * irTex.r;
+    let thickTex = textureSampleLevel(
+      iridescenceThicknessTexture, khrSampler, baseColorUV(input), 0.0,
+    );
     let thickness = mix(
       material.iridescenceFactors.z,
       material.iridescenceFactors.w,
-      0.5,
+      thickTex.g,
     );
     // Phase-shift driven hue approximation. NdotV gets reused below
     // after V is constructed; precompute here for the F0 modulation.
@@ -1485,22 +1495,41 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // the coat color rather than double-bouncing.
   if (hasFlag(flags, FLAG_HAS_CLEARCOAT)) {
     var ccFactor = material.clearcoatFactors.x;
-    let ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample clearcoatTexture (R)
-    // to modulate the per-pixel clearcoat intensity. The spec also
-    // defines clearcoatRoughnessTexture (G) and clearcoatNormalTexture
-    // (RGB) but we only support the intensity texture here; secondary
-    // maps are a follow-up that needs more binding budget.
+    var ccRough = clamp(material.clearcoatFactors.y, 0.04, 1.0);
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample clearcoatTexture
+    // (R = intensity), clearcoatRoughnessTexture (G = roughness), and
+    // clearcoatNormalTexture (RGB = tangent-space normal) per spec.
     let ccTex = textureSampleLevel(
       clearcoatTexture, khrSampler, baseColorUV(input), 0.0,
     );
     ccFactor = ccFactor * ccTex.r;
+    let ccRoughTex = textureSampleLevel(
+      clearcoatRoughnessTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    ccRough = clamp(ccRough * ccRoughTex.g, 0.04, 1.0);
+    // Clearcoat normal: per spec, the second specular lobe uses its
+    // own normal independent of the base surface's normalTexture.
+    // Sample + perturb when the asset declares it; placeholder white
+    // texture leaves N_cc identical to N (the FS gates on the
+    // FLAG_HAS_CLEARCOAT bit, but with a 1×1 white placeholder the
+    // perturbation reduces to identity since (R,G) decode to (1,1)
+    // and `perturbNormal` outputs back the original axis).
+    let ccNormalTex = textureSampleLevel(
+      clearcoatNormalTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    let N_cc = perturbNormal(
+      input.normalEC, input.tangentEC, input.bitangentEC,
+      ccNormalTex.rgb, material.clearcoatFactors.z,
+    );
+    let NdotH_cc = max(dot(N_cc, H), 0.0);
+    let NdotV_cc = max(dot(N_cc, V), 0.001);
+    let NdotL_cc = max(dot(N_cc, L), 0.0);
     let F_cc = fresnelSchlick(VdotH, vec3<f32>(0.04)) * ccFactor;
-    let D_cc = distributionGGX(NdotH, ccRough);
-    let G_cc = geometrySmith(NdotV, NdotL, ccRough);
-    let ccBRDF = D_cc * G_cc * F_cc / (4.0 * NdotV * NdotL + 0.0001);
+    let D_cc = distributionGGX(NdotH_cc, ccRough);
+    let G_cc = geometrySmith(NdotV_cc, NdotL_cc, ccRough);
+    let ccBRDF = D_cc * G_cc * F_cc / (4.0 * NdotV_cc * NdotL_cc + 0.0001);
     direct = direct * (vec3<f32>(1.0) - F_cc) +
-             ccBRDF * light.sunColor * light.sunIntensity * NdotL;
+             ccBRDF * light.sunColor * light.sunIntensity * NdotL_cc;
   }
 
   // C-R4-GLTF-KHR slice 6 — KHR_materials_sheen. Charlie BRDF lobe
@@ -1509,15 +1538,17 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // retroreflection at grazing angles.
   if (hasFlag(flags, FLAG_HAS_SHEEN)) {
     var sheenColor = material.sheenFactors.xyz;
-    let sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
-    // C-R4-GLTF-KHR-TEXTURES (Batch 102) — sample sheenColorTexture
-    // (RGB) and modulate the sheen color factor per-fragment. The
-    // spec also defines sheenRoughnessTexture (A) but we only support
-    // the color texture here; roughness texture is a follow-up.
+    var sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
+    // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample sheenColorTexture
+    // (RGB) and sheenRoughnessTexture (A) per spec.
     let sheenTex = textureSampleLevel(
       sheenColorTexture, khrSampler, baseColorUV(input), 0.0,
     );
     sheenColor = sheenColor * sheenTex.rgb;
+    let sheenRoughTex = textureSampleLevel(
+      sheenRoughnessTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    sheenRough = clamp(sheenRough * sheenRoughTex.a, 0.07, 1.0);
     // Charlie distribution: D_charlie(α, NdotH) = ((2 + 1/α) * (sin θ_h)^(1/α)) / (2π)
     let alpha = sheenRough * sheenRough;
     let invAlpha = 1.0 / max(alpha, 1.0e-4);

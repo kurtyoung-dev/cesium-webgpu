@@ -916,7 +916,15 @@ function ensurePrimitiveCache(
       { binding: 13, resource: textures.iridescence.createView() },
       { binding: 14, resource: textures.sheenColor.createView() },
       { binding: 15, resource: textures.thickness.createView() },
-      { binding: 16, resource: defSampler },
+      // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps.
+      // Defaults to white placeholder per spec's "no texture" semantic
+      // (factor multiplied by 1.0 reduces to factor-only behavior).
+      { binding: 16, resource: textures.clearcoatRoughness.createView() },
+      { binding: 17, resource: textures.clearcoatNormal.createView() },
+      { binding: 18, resource: textures.sheenRoughness.createView() },
+      { binding: 19, resource: textures.specularFactor.createView() },
+      { binding: 20, resource: textures.iridescenceThickness.createView() },
+      { binding: 21, resource: defSampler },
     ],
   });
 
@@ -987,6 +995,36 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
     ),
     sheenColor: tryCreate(matInfo.sheenColorTextureReader, defWhite, "srgb"),
     thickness: tryCreate(matInfo.thicknessTextureReader, defWhite, "linear"),
+    // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Each
+    // is linear-encoded scalar/normal data per the relevant Khronos
+    // extension specs (clearcoat normal uses the standard normal-map
+    // default placeholder so the FS perturbNormal call passes through
+    // identity when the asset omits the texture).
+    clearcoatRoughness: tryCreate(
+      matInfo.clearcoatRoughnessTextureReader,
+      defWhite,
+      "linear",
+    ),
+    clearcoatNormal: tryCreate(
+      matInfo.clearcoatNormalTextureReader,
+      defNormal,
+      "linear",
+    ),
+    sheenRoughness: tryCreate(
+      matInfo.sheenRoughnessTextureReader,
+      defWhite,
+      "linear",
+    ),
+    specularFactor: tryCreate(
+      matInfo.specularExtTextureReader,
+      defWhite,
+      "linear",
+    ),
+    iridescenceThickness: tryCreate(
+      matInfo.iridescenceThicknessTextureReader,
+      defWhite,
+      "linear",
+    ),
     created,
   };
 }
