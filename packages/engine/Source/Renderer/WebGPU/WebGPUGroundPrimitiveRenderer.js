@@ -37,6 +37,7 @@
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -91,6 +92,7 @@ function buildGroundPipelineResources(device, format, depthFormat) {
   // no depth source is published yet (first frame, viewport resize), at
   // a cost of one missed classification frame at startup.
   const code = `
+${csm_depthClamp}
 struct U {
   mvpRTE: mat4x4<f32>,
   camH: vec3<f32>, _p0: f32,
@@ -113,7 +115,11 @@ struct CO { @builtin(position) pos: vec4<f32>, @location(0) col: vec4<f32> };
 @vertex fn colorVS(@location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>) -> CO {
   var o: CO;
   let rte = (pH - u.camH) + (pL - u.camL);
-  o.pos = u.mvpRTE * vec4f(rte, 1.0);
+  // czm_depthClamp — matches WebGL ShadowVolumeAppearanceVS.glsl which
+  // wraps the projection in czm_depthClamp(...). Ground primitive shadow
+  // volumes bracket terrain min/max; without depth clamp the upper /
+  // lower extremes get frustum-clipped at oblique viewing angles.
+  o.pos = csm_depthClamp(u.mvpRTE * vec4f(rte, 1.0));
   o.col = u.color;
   return o;
 }

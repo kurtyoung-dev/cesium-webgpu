@@ -39,6 +39,7 @@
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -81,6 +82,7 @@ const scratchVPRTE = new Matrix4();
  */
 function buildVectorTilePipelineResources(device, format, depthFormat) {
   const code = `
+${csm_depthClamp}
 struct U {
   vpRTE: mat4x4<f32>,
   centerH: vec3<f32>, _p0: f32,
@@ -112,7 +114,11 @@ fn vsMain(
   // Position is already RTC-relative to center, so the final eye-relative
   // position is centerOffsetFromCamera + position.
   let rte = (u.centerH - u.camH) + (u.centerL - u.camL) + position;
-  o.pos = u.vpRTE * vec4<f32>(rte, 1.0);
+  // czm_depthClamp — matches WebGL VectorTileVS.glsl which wraps the
+  // projection in czm_depthClamp(...). Without this, shadow-volume
+  // vertices that bracket terrain min/max can shoot past the far plane
+  // at oblique angles and get frustum-clipped, dropping the volume.
+  o.pos = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
   let bi = u32(batchId);
   o.col = batchColors[bi];
   o.pickCol = pickColors[bi];

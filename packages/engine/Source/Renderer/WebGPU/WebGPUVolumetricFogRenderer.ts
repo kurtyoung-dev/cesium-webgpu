@@ -1,21 +1,29 @@
 /**
  * @module WebGPUVolumetricFogRenderer
  *
- * **Phase 5a infrastructure** for the celestial atmosphere design's
- * froxel-grid participating media renderer (`CELESTIAL_ATMOSPHERE_DESIGN.md`
+ * Froxel-grid participating media renderer (`CELESTIAL_ATMOSPHERE_DESIGN.md`
  * §4.8). Allocates the 3D texture pair (density + scattered light + integrated
  * volume), creates compute pipelines for the three Frostbite-style passes
  * (density injection, light scattering, ray-march integration), and
  * runs a final full-screen composite pass that samples the integrated
  * volume in screen UV + linearized depth and modulates the scene color.
  *
- * Phase 5a contract — **no visual change**. The compute kernels in
- * `VolumetricFog.wgsl` are placeholders that clear their output
- * textures to zero (or `(0, 0, 0, 1)` for the integrated volume so
- * `transmittance = 1`). The composite pass samples the cleared volume
- * and applies `out = sceneColor * 1 + 0 = sceneColor`. Phase 5b/5c/5d
- * fill in the actual density / scattering / integration math without
- * touching this scaffolding.
+ * **Phase status (current — see VolumetricFog.wgsl for ground truth):**
+ *   - **Phase 5b SHIPPED** — real height-fog density (`density × exp(-h × falloff)`),
+ *     Henyey-Greenstein sun + moon in-scattering, front-to-back integration with
+ *     Beer-Lambert + alpha-over composite. Composite reads the integrated volume.
+ *   - **Phase 5c SHIPPED** — sun shadow-map sampling for in-scattering occlusion
+ *     (god-ray formation). Falls back to fully-lit when `u.occlusion.x == 0` or
+ *     no shadow map is bound.
+ *   - **Phase 5d SHIPPED** — varying-density modulation via 3-octave value-noise
+ *     FBM. Gated by `u.noise.x` (`enableVaryingDensity`).
+ *   - **C-P7-RTE (Batch 26)** — altitude reconstruction via 2nd-order Taylor
+ *     expansion around the camera; eliminates the `length(worldPos) - innerRadius`
+ *     f32 cancellation that produced fog-density banding at orbital altitudes.
+ *
+ * The kernels are NOT placeholders. Don't be misled by the prior version of
+ * this docstring (which described a Phase 5a no-op contract that no longer
+ * matches the WGSL).
  *
  * Architecture:
  *   1. `update(context, frameState, scene)` — runs the three compute

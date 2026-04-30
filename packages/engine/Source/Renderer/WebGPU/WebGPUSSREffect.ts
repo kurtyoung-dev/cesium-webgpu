@@ -37,6 +37,7 @@ export interface SSRCache {
   initialized: boolean;
   width: number;
   height: number;
+  warnedNoNormalGBuffer: boolean;
 }
 
 function ensureSSRCache(context: CesiumGraphicsContext): SSRCache {
@@ -52,6 +53,7 @@ function ensureSSRCache(context: CesiumGraphicsContext): SSRCache {
       initialized: false,
       width: 0,
       height: 0,
+      warnedNoNormalGBuffer: false,
     };
   }
   return context._ssrCache;
@@ -154,9 +156,23 @@ export function executeSSR(
   const w = canvas?.width ?? 1920;
   const h = canvas?.height ?? 1080;
 
-  // Use provided normal texture or fallback placeholder
+  // Use provided normal texture or fallback placeholder. The placeholder
+  // is uninitialized — SSR will sample garbage and produce noise rather
+  // than reflections. A real normal G-buffer is gated on FEAT-GAP-01
+  // (Phase-8a Foundation: depth prepass + normal G-buffer). Surface this
+  // once so users don't think SSR is broken — they're seeing the
+  // documented placeholder behavior.
   let normalView = normalTextureView;
   if (!normalView) {
+    if (!cache.warnedNoNormalGBuffer) {
+      cache.warnedNoNormalGBuffer = true;
+      console.warn(
+        "[CesiumJS:webgpu] Screen-space reflections enabled without a normal G-buffer. " +
+          "SSR will sample an uninitialized placeholder and produce noise. " +
+          "A real normal G-buffer is gated on FEAT-GAP-01 (Phase-8a Foundation). " +
+          "See migration_doc/DEFERRED_WORK.md.",
+      );
+    }
     ensureNormalTexture(device, cache, w, h);
     normalView = cache.normalView!;
   }

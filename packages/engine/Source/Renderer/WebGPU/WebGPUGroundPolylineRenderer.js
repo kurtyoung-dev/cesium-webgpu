@@ -1,6 +1,26 @@
 /**
  * @module WebGPUGroundPolylineRenderer
  *
+ * **C-R8-GROUND-POLYLINE-NATIVE — RESOLVED 2026-04-30.** Earlier symptom:
+ * polylines on terrain were silently invisible on WebGPU (no crash,
+ * no validation warnings). Three independent bugs combined:
+ *
+ *   1. Depth-test compare op was `less-equal` instead of `always` for a
+ *      classifier that doesn't write depth (Batch 116).
+ *   2. Per-instance color decoding read from BatchTable as Color
+ *      `{red,green,blue,alpha}` but BatchTable returns Cartesian4
+ *      `{x,y,z,w}` with UNSIGNED_BYTE values in [0,255] (Batch 116).
+ *   3. **Viewport sourced from `uniformState.viewportCartesian4` whose
+ *      `.zw` were zero at FR-update time** (FR runs during Scene
+ *      primitive update, before per-frame viewport is established on
+ *      `uniformState`). The `?? drawingBufferWidth` fallback didn't fire
+ *      because 0 is not nullish. With viewport.z = 0, the shader's
+ *      `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` returned
+ *      Infinity, the width-extrusion math pushed vertices to NaN
+ *      clip-space, and every triangle was culled. Fixed by sourcing
+ *      from `context.drawingBufferWidth/Height` directly (matches the
+ *      pattern used by Ellipsoid/BufferPrimitive/GaussianSplat/Globe).
+ *
  * Migration Session 4b — full WGSL port of `PolylineShadowVolumeVS.glsl`
  * + `PolylineShadowVolumeFS.glsl` for `GroundPolylinePrimitive`.
  * Sits beside `WebGPUGroundPrimitiveRenderer` in the depth-sample
@@ -64,6 +84,7 @@ import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -175,6 +196,7 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const GEOMETRIC_TOLERANCE_OVER_METER = 1.0e-6;
 
 const SHADER_CODE = /* wgsl */ `
+${csm_depthClamp}
 struct U {
   mvRTE: mat4x4<f32>,
   proj: mat4x4<f32>,
@@ -464,7 +486,15 @@ fn metersPerPixel(positionEC: vec3<f32>) -> f32 {
 
   positionEC = positionEC + widthMeters * normalEC;
 
-  out.pos = u.proj * vec4<f32>(positionEC, 1.0);
+  // czm_depthClamp — emulates WebGL's GL_DEPTH_CLAMP (which the upstream
+  // PolylineShadowVolumeVS.glsl wraps the projection in). When the miter
+  // compensation widthMeters / dot(normalEC0, rightPlaneNormalEC)
+  // produces an extreme value at sharp miter joints, the extruded
+  // vertex can shoot past the far plane and get frustum-clipped,
+  // dropping the entire triangle and leaving the polyline silently
+  // invisible (C-R8-GROUND-POLYLINE-NATIVE). The chunk lives at
+  // packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_depthClamp.wgsl.
+  out.pos = csm_depthClamp(u.proj * vec4<f32>(positionEC, 1.0));
   return out;
 }
 
@@ -916,7 +946,10 @@ struct VS_OUT_MORPH {
 
   // Blend and project.
   let positionEc = mix(positionEc2D, positionEc3D, morphTime);
-  out.pos = u.proj * vec4<f32>(positionEc, 1.0);
+  // czm_depthClamp — see comment in vsMain. Same fix applies in morph
+  // mode because the same width-extrusion math runs in both 2D and 3D
+  // legs of the blend.
+  out.pos = csm_depthClamp(u.proj * vec4<f32>(positionEc, 1.0));
   return out;
 }
 
@@ -1290,12 +1323,23 @@ function packUniforms(
   data[66] = scratchEncodedCamera.low.z;
   data[67] = 0.0;
 
-  // Viewport
-  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
-  data[68] = viewport?.x ?? 0.0;
-  data[69] = viewport?.y ?? 0.0;
-  data[70] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
-  data[71] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+  // Viewport. Source from `context.drawingBufferWidth/Height` instead of
+  // `uniformState.viewportCartesian4`, because the FR's `packUniforms`
+  // runs during Scene primitive update — BEFORE the per-frame viewport
+  // is established on `uniformState`. At that time `viewportCartesian4`
+  // exists as a zero-initialized Cartesian4, and `viewport?.z ?? fallback`
+  // never falls through (0 is not nullish), leaving `viewport.zw = (0,0)`.
+  // The shader's `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` then
+  // returns Infinity, the width-extrusion math pushes vertices to NaN
+  // clip-space, and every triangle is silently culled — the
+  // C-R8-GROUND-POLYLINE-NATIVE silent-invisible bug. Other renderers
+  // (Ellipsoid/BufferPrimitive/GaussianSplat/Globe) read drawingBuffer
+  // directly for the same reason.
+  const ctx = frameState.context;
+  data[68] = 0.0;
+  data[69] = 0.0;
+  data[70] = ctx?.drawingBufferWidth || 1;
+  data[71] = ctx?.drawingBufferHeight || 1;
 
   // Color
   data[72] = color?.red ?? 1.0;

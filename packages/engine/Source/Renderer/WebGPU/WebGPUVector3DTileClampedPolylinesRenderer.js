@@ -60,6 +60,7 @@
  */
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import {
@@ -86,6 +87,7 @@ const CLASSIFICATION_TYPE_BOTH = 2;
 
 function buildClampedPolylinePipelineResources(device, format, depthFormat) {
   const code = `
+${csm_depthClamp}
 struct U {
   modifiedView: mat4x4<f32>,
   projection: mat4x4<f32>,
@@ -180,13 +182,12 @@ fn vsMain(
   let signMod = sign(0.5 - cornerMod2);
   posEC = vec4<f32>(posEC.xyz + miterPushNormal * (widthOffset * signMod), 1.0);
 
-  var clip = u.projection * posEC;
-  // Manual depth clamp: WebGPU has no equivalent of WebGL's depthClamp
-  // extension. Without this, fragments past the far plane (very common
-  // for shadow volumes that bracket terrain min/max) are clipped and
-  // the volume coverage thins out near the horizon. Clamping z to
-  // [0, w] keeps the rasterized footprint at the far plane instead.
-  clip.z = clamp(clip.z, 0.0, clip.w);
+  // czm_depthClamp — WebGPU has no native depthClamp extension. Without
+  // this, fragments past the far plane (very common for shadow volumes
+  // that bracket terrain min/max) are clipped and the volume coverage
+  // thins out near the horizon. The chunk lives at
+  // packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_depthClamp.wgsl.
+  let clip = csm_depthClamp(u.projection * posEC);
 
   // Side-plane reconstruction in eye-space, per the WebGL VS.
   let startEC = u.modifiedView * vec4<f32>(startPosH.xyz, 1.0);
