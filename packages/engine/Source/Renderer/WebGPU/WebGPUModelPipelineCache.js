@@ -432,6 +432,62 @@ function createPickPipeline(
 }
 
 /**
+ * TAA Slice 2e (Batch 106) — velocity-only pipeline variant. Single
+ * `rg16float` color target matching the scene-FB velocity texture
+ * format (Batch 104). Vertex stage and bind-group layout are identical
+ * to the color pipeline; only the fragment entry (`fragmentVelocityMain`)
+ * and target format differ.
+ *
+ * Depth is bound read-only (`depthWriteEnabled: false`,
+ * `depthCompare: less-equal`) so the velocity pass shares the scene
+ * depth from the main color pass — fragments behind opaque geometry
+ * fail the depth test and don't emit velocity. The velocity pass runs
+ * AFTER the main color pass closes, so the depth attachment must be
+ * loaded with `depthLoadOp: load` at the pass level — that's a render-
+ * pass concern, not a pipeline concern.
+ *
+ * Cull mode follows the doubleSided flag (matches the color pipeline)
+ * so velocity is emitted from exactly the same fragments the color
+ * pass shaded — no risk of velocity for back-faces that weren't drawn.
+ *
+ * @private
+ */
+function createVelocityPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  depthFormat,
+  alphaMode,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model PBR velocity [alpha=${alphaMode},ds=${doubleSided}]`;
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode,
+    },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
  * WebGPUModelPipelineCache manages GPU pipeline variants for Model rendering.
  */
 class WebGPUModelPipelineCache {
@@ -459,6 +515,12 @@ class WebGPUModelPipelineCache {
     // only `depthWriteEnabled` differs. We cannot reuse `_pipelines`
     // because its key would collide for the same (alphaMode, doubleSided).
     this._depthWritePipelines = new Map();
+    // TAA Slice 2e (Batch 106) — velocity pipeline cache. Same key shape
+    // (alphaMode, doubleSided) as the color cache; entries are built on
+    // demand the first frame TAA is enabled for any primitive carrying
+    // a given (alphaMode, doubleSided) identity. Static scenes (TAA
+    // off) never construct a velocity pipeline.
+    this._velocityPipelines = new Map();
 
     // Create shared bind group layouts
     const bgls = createBindGroupLayouts(device);
@@ -762,6 +824,37 @@ class WebGPUModelPipelineCache {
       doubleSided,
     );
     this._pickPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * TAA Slice 2e (Batch 106) — gets or creates a velocity pipeline for
+   * the given material configuration. Same vertex stage and pipeline
+   * layout as the color pipeline; the fragment entry is
+   * `fragmentVelocityMain` and the target format is `rg16float` (the
+   * scene-FB velocity texture format). Depth is read-only (color pass
+   * already wrote depth; velocity pass shares the same depth view at
+   * `depthLoadOp: load`).
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @returns {GPURenderPipeline}
+   */
+  getVelocityPipeline(alphaMode, doubleSided) {
+    const key = computeKey(alphaMode, doubleSided);
+    let pipeline = this._velocityPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    pipeline = createVelocityPipeline(
+      this._device,
+      this._shaderModule,
+      this._pipelineLayout,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+    );
+    this._velocityPipelines.set(key, pipeline);
     return pipeline;
   }
 

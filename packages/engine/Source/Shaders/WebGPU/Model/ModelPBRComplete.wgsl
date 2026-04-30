@@ -1928,3 +1928,56 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 
   return material.pickColor;
 }
+
+// TAA Slice 2e (Batch 106) — velocity-only fragment entry. Writes per-
+// pixel screen-space motion to a single rg16float color attachment
+// (the scene-FB velocity texture allocated by `ensureVelocityTexture`,
+// Batch 104). Selected by the velocity pipeline variant; the velocity
+// pass runs after the main color pass and shares scene depth as a
+// read-only attachment so fragments occluded by opaque geometry don't
+// emit velocity.
+//
+// Why a separate pass (not single-pass MRT @location(1)): the main
+// scene render pass is shared by globe / primitives / billboards /
+// model commands, all of which would have to grow a second color
+// target on every pipeline variant just to satisfy WebGPU's
+// pipeline-vs-renderpass attachment-count parity rule. Routing only
+// model commands through a dedicated single-target velocity pass
+// keeps the cross-cutting cost zero — the rest of the renderer stays
+// 1-target — while still delivering the TAA shader the same per-
+// pixel velocity texture it already binds at @binding(5) (Batch 104).
+//
+// Returns NDC-space delta of (clip.xy/clip.w). The TAA shader's
+// `sampleMotionTexture` (Batch 104) converts this to UV delta via
+// `* vec2(0.5, -0.5)`. Returns vec2(0) when motion is disabled at
+// this primitive (motionFlags.x < 0.5) so static models don't emit
+// stale velocity into the texture.
+//
+// Alpha-mask discards run identical to fragmentMain so masked-out
+// texels don't leak velocity into hole pixels. Skips lighting / IBL /
+// atmosphere / edge stages — pure motion vector emission.
+@fragment fn fragmentVelocityMain(input: FragmentInput) -> @location(0) vec2<f32> {
+  let flags = material.materialFlags;
+
+  // Alpha-mask discard parity with the color pass.
+  var baseColor = material.baseColorFactor;
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                          material.diffuseFactor_b, material.diffuseFactor_a);
+    if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
+      let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+      baseColor = baseColor * tc;
+    }
+  } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
+    let tc = textureSample(baseColorTexture, baseColorSampler, baseColorUV(input));
+    baseColor = baseColor * tc;
+  }
+  if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
+    baseColor = baseColor * input.color0;
+  }
+  if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
+    if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+
+  return computeMotionVectorScreenSpace(input);
+}

@@ -1702,6 +1702,60 @@ function updateWebGPUModel(model, frameState) {
         attachPickToColorCommand(webgpuCmd, pickCmd);
       }
 
+      // TAA Slice 2e (Batch 106) — velocity command derivation. When
+      // TAA is on (frameState.taaEnabled), attach a velocity-only draw
+      // command alongside the color command. The SceneRenderer's
+      // velocity pass (`_runVelocityPass`) walks the frustum command
+      // lists, picks any command carrying a `.velocityCommand` slot,
+      // and dispatches it into a single-target rg16float render pass
+      // sharing scene depth read-only. Reuses the color command's
+      // bind groups, vertex buffers, index buffer, and instance count
+      // — the only differences are the pipeline (velocity variant)
+      // and the absence of blend / depth-write state. Materialized
+      // ONCE per primitive per frame.
+      //
+      // Translucent (BLEND) primitives skip velocity emission for now —
+      // they don't write scene depth in the color pass, so the
+      // velocity pass's read-only depth attachment can't establish
+      // visibility for them. A future follow-up could route translucent
+      // velocity through OIT-style accumulation, but that needs more
+      // architectural work (the rg16float resolve target doesn't
+      // accumulate cleanly with src-alpha blending).
+      if (motionEnabled && matInfo.alphaMode !== AlphaModes.BLEND) {
+        if (!defined(primCache.velocityPipeline)) {
+          primCache.velocityPipeline = pipelineCache.getVelocityPipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+          );
+        }
+        const velocityCmd = new WebGPUDrawCommand({
+          pipeline: primCache.velocityPipeline,
+          bindGroups: [
+            cache.cameraBG,
+            primCache.materialBG,
+            primCache.textureBindGroup,
+            skinningBG,
+            morphTargetBG,
+            instancingBG,
+            featureIdBG,
+            cache.effectsBG,
+          ],
+          vertexBuffers: vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount: instanceCount,
+          pass: pass,
+          owner: model,
+          boundingVolume: model.boundingSphere,
+          modelMatrix: modelMatrix,
+          cull: model._cull ?? true,
+          renderState: modelRenderState,
+        });
+        webgpuCmd.velocityCommand = velocityCmd;
+      }
+
       commandList.push(webgpuCmd);
 
       // C-R1-TILE-BATCH (Batch 101) — dual-command emission. When the

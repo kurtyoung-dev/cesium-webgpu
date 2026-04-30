@@ -1492,6 +1492,18 @@ export class WebGPUSceneRenderer {
     // chain sees the composited scene).
     this._runInvertClassificationComposite(config);
 
+    // TAA Slice 2e (Batch 106) — velocity pass for per-pixel motion
+    // vectors. Walks the frustum command lists, collects any
+    // `cmd.velocityCommand` (attached by the model renderer when
+    // `frameState.taaEnabled === true`), and dispatches them into a
+    // dedicated single-target rg16float render pass that shares scene
+    // depth read-only. Skipped entirely when no command carries a
+    // velocity slot — static scenes / TAA-off frames pay zero cost.
+    // Must run AFTER the main scene pass closes (so the depth values
+    // are committed) and BEFORE post-process consumes the velocity
+    // texture in TAA's `motionTex` binding (Batch 104).
+    this._runVelocityPass(config);
+
     // Post-processing (tonemapping, FXAA, etc.)
     // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
     //>>includeStart('debug', pragmas.debug);
@@ -2770,6 +2782,155 @@ export class WebGPUSceneRenderer {
     // Resume default scene pass for any remaining work (post-process
     // starts by ending the pass itself, so the resume here is cheap).
     context.resumeDefaultRenderPass?.();
+  }
+
+  // --- TAA velocity pass (Slice 2e, Batch 106) ---
+
+  /**
+   * TAA Slice 2e (Batch 106) — per-pixel motion-vector pass for models.
+   *
+   * Walks the frustum command lists, collects every command carrying a
+   * `velocityCommand` slot (attached by `WebGPUModelRenderer` when
+   * `frameState.taaEnabled === true` and the primitive is opaque/mask),
+   * and dispatches them into a dedicated `rg16float` render pass that
+   * shares the scene-FB depth attachment in read-only mode. The
+   * resulting velocity texture is consumed by the TAA effect (Batch
+   * 104) at `@binding(5) motionTex` — TAA prefers per-pixel velocity
+   * over depth reprojection when the sample is non-zero, falling back
+   * to depth reprojection for static pixels (sky, terrain).
+   *
+   * Architecture rationale: a separate pass instead of single-pass MRT
+   * because the main scene pass is shared by globe / primitive /
+   * billboard / model pipelines, all of which would need a 2nd color
+   * target slot just to satisfy WebGPU's pipeline-vs-renderpass
+   * attachment-count parity rule. Routing velocity through a
+   * model-only secondary pass keeps the cross-cutting cost zero.
+   *
+   * Translucent (BLEND) primitives are excluded by the model renderer:
+   * they don't write scene depth in the color pass, so the velocity
+   * pass's read-only depth attachment can't establish their visibility
+   * — translucent velocity needs OIT-style accumulation, deferred.
+   *
+   * Free for static scenes: when no command carries a velocityCommand
+   * (TAA off, or no models in view), the function early-exits before
+   * any GPU work is queued.
+   */
+  private _runVelocityPass(config: WebGPURenderFrameConfig): void {
+    const { context, scene } = config;
+    if (!scene?.taaEnabled || !this._sceneFramebuffer) {
+      return;
+    }
+    const view = scene._view;
+    const frustumCommandsList = view?.frustumCommandsList;
+    if (!frustumCommandsList || frustumCommandsList.length === 0) {
+      return;
+    }
+
+    let anyVelocity = false;
+    for (let f = 0; f < frustumCommandsList.length && !anyVelocity; f++) {
+      const fc = frustumCommandsList[f];
+      if (!fc) continue;
+      const passes = fc.commands;
+      const indices = fc.indices;
+      for (let p = 0; p < passes.length && !anyVelocity; p++) {
+        const arr = passes[p] as Array<{ velocityCommand?: unknown }>;
+        const cnt = indices[p] ?? 0;
+        for (let i = 0; i < cnt; i++) {
+          if (arr[i]?.velocityCommand) {
+            anyVelocity = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!anyVelocity) {
+      return;
+    }
+
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
+    const width = this._width;
+    const height = this._height;
+    const velocityView = this._sceneFramebuffer.ensureVelocityTexture(
+      device,
+      width,
+      height,
+    );
+    const colorTarget = this._sceneFramebuffer.colorTarget;
+    const depthView = colorTarget?.getDepthTextureView?.();
+    if (!velocityView || !depthView) {
+      return;
+    }
+
+    context.endCurrentRenderPass?.();
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    if (!encoder) {
+      return;
+    }
+
+    // Read-only depth + stencil so the same depth-stencil attachment
+    // the main scene pass just wrote is reusable here without a copy.
+    // The velocity pipeline declares `depthWriteEnabled: false`, so
+    // there's nothing to commit on store.
+    const passDesc: GPURenderPassDescriptor = {
+      label: "TAA Velocity Pass",
+      colorAttachments: [
+        {
+          view: velocityView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+      depthStencilAttachment: {
+        view: depthView,
+        depthReadOnly: true,
+        stencilReadOnly: true,
+      },
+    };
+
+    const passEncoder = encoder.beginRenderPass(passDesc);
+    passEncoder.setViewport(0, 0, width, height, 0, 1);
+    passEncoder.setScissorRect(0, 0, width, height);
+
+    context._currentRenderPassEncoder = passEncoder;
+
+    for (let f = 0; f < frustumCommandsList.length; f++) {
+      const fc = frustumCommandsList[f];
+      if (!fc) continue;
+      const passes = fc.commands;
+      const indices = fc.indices;
+      for (let p = 0; p < passes.length; p++) {
+        const arr = passes[p] as Array<{
+          velocityCommand?: { execute?: (e: GPURenderPassEncoder) => void };
+        }>;
+        const cnt = indices[p] ?? 0;
+        for (let i = 0; i < cnt; i++) {
+          const velocityCmd = arr[i]?.velocityCommand;
+          if (velocityCmd?.execute) {
+            try {
+              velocityCmd.execute(passEncoder);
+            } catch (e: unknown) {
+              const warned = _getWarnedCommands(context);
+              const key = `velocity:${(e as Error).message?.substring(0, 80)}`;
+              if (!warned.has(key)) {
+                warned.add(key);
+                context.log?.(
+                  "warn",
+                  `[TAA Velocity] Command failed: ${(e as Error).message}`,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
+    passEncoder.end();
+    context._currentRenderPassEncoder = null;
   }
 
   // --- Post-processing ---
