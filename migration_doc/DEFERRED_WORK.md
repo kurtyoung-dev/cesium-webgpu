@@ -296,27 +296,33 @@ The framing splits into two distinct items:
 
 **Closing batch:** Batch 81.
 
-### C-R8-GROUND-POLYLINE-NATIVE — PARTIAL (renderer scaffolded; vsMain off-screen bug)
+### C-R8-GROUND-POLYLINE-NATIVE — PARTIAL (two unrelated defects fixed; VS extrusion remains)
 
-**Status as of 2026-04-30 (Batch 111):** `WebGPUGroundPolylineRenderer` exists with full color + pick pipelines, depth-sample bind groups, batch-table snapshot, vertex/index buffer upload, and morph-mode pipeline pair. The renderer is registered with `FeatureRendererKey.GROUND_POLYLINE` and the WebGL-side `GroundPolylinePrimitive` skips `_createShaderProgramFunction` when the alternate renderer is active so the WebGL DrawCommands don't crash in pick-shader derivation. Shadow-volume geometry is dispatched and the depth-classifier fragment runs.
+**Status as of 2026-04-30 (Batch 116):** `WebGPUGroundPolylineRenderer` ships with full color + pick pipelines, depth-sample bind groups, batch-table snapshot, vertex/index buffer upload, and morph-mode pipeline pair. The Scene-side `GroundPolylinePrimitive.update()` delegates to the FR. Two real bugs were found and fixed in Batch 116; one bug remains.
 
-**Known bug:** vsMain produces vertices that fall outside NDC. Diagnostic confirmed (Batch 111 zoom test):
+**Fixed in Batch 116:**
 
-1. Override `colorFS` → solid magenta: NO magenta pixels visible (FS not running on visible fragments).
-2. Override `vsMain` with a fullscreen-NDC-quad diagnostic: magenta APPEARED.
-3. Conclusion: pipeline + bind groups + FS are correct; the vertex shader's transform produces off-screen geometry.
+- **Pipeline `depthCompare: "less-equal"` → `"always"`** (color, pick, morph color, morph pick). The WebGL `getRenderState` only sets `depthMask: false` and never enables depth test; the WebGPU pipeline was incorrectly culling fragments where the volume's geometric depth lay behind the depth buffer. The classifier samples globe depth in the FS and reconstructs the surface position itself — the volume must rasterize everywhere it covers screen-space.
+- **Per-instance color decoding** in `ensureBatchTableSnapshot`. `BatchTable.getBatchedAttribute(i, colorIndex)` returns a `Cartesian4` (`{x, y, z, w}`) for 4-component attributes, not a normalized `Color`. For UNSIGNED_BYTE color attributes (the common case via `ColorGeometryInstanceAttribute.fromColor`), values come back in [0, 255] range and need scaling by `1/255`. The previous code only handled the `{red, green, blue, alpha}` shape and fell through to the white default — every polyline's per-instance color uploaded as `(1, 1, 1, 1)` instead of the user-specified value.
 
-Likely root cause is one of: (a) RTE encoding mismatch between `positionHigh`/`positionLow` and the camera-relative transform, (b) wrong matrix selected for shadow-volume extrusion (the WebGL VS uses `czm_modelView` for prev/next neighbour expansion plus separate logic per scene mode), (c) batch instance buffer indexing off-by-one between vertex layout and the storage-buffer fetch.
+**Remaining bug:** Width extrusion in vsMain pushes vertices off-screen. Bisection confirmed:
 
-**Why still deferred:** Multi-hour vsMain bisection — not blocking anything outside `GroundPolylinePrimitive`. Ground polylines are a niche visualization (route overlays, GPS tracks); apps that need them today still get blank output but no crash, and the rest of the classification fleet (`GroundPrimitive`, `ClassificationPrimitive`) renders correctly.
+1. Replacing `out.pos` with a fullscreen-NDC fan: visible (pipeline sound).
+2. Bypassing the entire extrusion (`out.pos = u.proj * (u.mvRTE * positionRTE)`): visible thin polyline outline (RTE + projection sound).
+3. Adding a constant width offset (`positionEC + 2240.0 * normalEC`): visible wide red band (normalEC direction sound).
+4. Restoring the formula `widthMeters = widthPixels * metersPerPixel(positionEC) / dot(normalEC0, rightPlaneNormalEC)`: not visible.
 
-**Prerequisites:** None — bug fix is local to `WebGPUGroundPolylineRenderer.js` / `PolylineShadowVolumeVS.wgsl` (or the inlined VS in the renderer).
+The per-vertex `widthMeters` produces extreme magnitudes — most likely because `dot(normalEC0, rightPlaneNormalEC)` approaches zero at miter joints, blowing `widthMeters / dot` past the far plane on a subset of vertices and degenerating the triangle fan. The WebGL VS uses the identical formula and works, so something subtle in the WebGPU port is producing a different runtime value (candidate causes: vertex attribute swizzle/encoding mismatch, `czm_normal` matrix layout, `metersPerPixel` returning a different sign/magnitude under WebGPU's [0, 1] NDC z).
 
-**Estimated effort:** 1 session, focused VS bisection. Capture vsMain output for a known-good WebGL frame (pull `gl_Position` from a debug RenderDoc capture or instrument the WebGL VS), diff against WGSL, find the encoding/matrix mismatch.
+**Why still deferred:** Multi-hour focused bisection — not blocking anything outside `GroundPolylinePrimitive`. Apps that need ground polylines on WebGPU today still get blank output (no crash, no validation warnings), but with the depth-test + color fixes in place the renderer should be correct end-to-end once the VS bug is found.
 
-**Impact:** Polylines on terrain are not visible on WebGPU even though the renderer dispatches commands. No crash, no validation warnings — just invisible output.
+**Prerequisites:** None — bug fix is local to `WebGPUGroundPolylineRenderer.js`'s vsMain.
 
-**Trace:** Audit 2026-04-28; bug isolated 2026-04-30 in Batch 111 via `Tools/visual-regression/verify-ground-polyline-zoom.mjs`.
+**Estimated effort:** 1 session, focused VS bisection. Capture vsMain output for a known-good WebGL frame (pull `gl_Position` from a debug RenderDoc capture or instrument the WebGL VS), diff per-vertex against the WebGPU VS to find the divergence.
+
+**Impact:** Polylines on terrain are not visible on WebGPU even though the renderer dispatches commands. No crash, no validation warnings.
+
+**Trace:** Audit 2026-04-28; isolated 2026-04-30 in Batch 111; partially fixed (depth-test + color) 2026-04-30 in Batch 116. `Tools/visual-regression/verify-ground-polyline-zoom.mjs` reproduces.
 
 ### C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES — RESOLVED (Batch 114)
 

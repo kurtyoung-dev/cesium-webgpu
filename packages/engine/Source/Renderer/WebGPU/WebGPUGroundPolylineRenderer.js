@@ -1037,7 +1037,17 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      // The volume's geometric depth must NOT gate rasterization — the
+      // shadow-volume FS samples globe depth and reconstructs the
+      // surface position itself. A `less-equal` compare here culls
+      // fragments where the volume's depth lies behind the depth
+      // buffer (i.e., most of the volume below terrain), making the
+      // polyline invisible. WebGL's render state intentionally omits
+      // `depthTest` (only sets `depthMask: false`) so the volume
+      // rasterizes everywhere it covers screen-space; the WebGPU
+      // equivalent is `depthCompare: "always"`. Found 2026-04-30
+      // chasing C-R8-GROUND-POLYLINE-NATIVE.
+      depthCompare: "always",
     },
   };
 
@@ -1054,7 +1064,7 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      depthCompare: "always",
     },
   };
 
@@ -1092,7 +1102,10 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      // Match the main pipeline's `depthCompare: "always"` rationale —
+      // the volume's depth must not gate rasterization for the
+      // depth-sample classifier.
+      depthCompare: "always",
     },
   };
 
@@ -1109,7 +1122,10 @@ function buildPolylinePipelineResources(device, format, depthFormat) {
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      depthCompare: "less-equal",
+      // Match the main pipeline's `depthCompare: "always"` rationale —
+      // the volume's depth must not gate rasterization for the
+      // depth-sample classifier.
+      depthCompare: "always",
     },
   };
 
@@ -2033,18 +2049,35 @@ function ensureBatchTableSnapshot(primitive, cache) {
     const widthIndex = attrIndices.width;
     const scratch = {};
 
+    // BatchTable's `getBatchedAttribute` returns a `Cartesian4` for
+    // 4-component attributes (see `BatchTable.js::getAttributeType`),
+    // not the original GeometryInstanceAttribute type. For UNSIGNED_BYTE
+    // attributes the values come back in raw [0, 255] range via
+    // `Cartesian4.unpack`. We need to know the attribute's component
+    // datatype to scale to the [0, 1] range the WGSL shader expects.
+    // Tracked-down 2026-04-30 (the bug source for the prior "vsMain
+    // off-screen" misdiagnosis — geometry was on-screen all along, but
+    // colors uploaded as (1,1,1,1) due to the missing scale path here).
+    const colorAttrMeta =
+      defined(colorIndex) && defined(batchTable._attributes)
+        ? batchTable._attributes[colorIndex]
+        : undefined;
+    const colorIsU8 =
+      colorAttrMeta?.componentDatatype === ComponentDatatype.UNSIGNED_BYTE;
+    const colorScale = colorIsU8 ? 1.0 / 255.0 : 1.0;
+
     for (let i = 0; i < cap; i++) {
       if (defined(colorIndex)) {
         const colorVal = batchTable.getBatchedAttribute(i, colorIndex, scratch);
-        // For ColorGeometryInstanceAttribute the type is `Color` and
-        // `getBatchedAttribute` returns a normalized [0,1] Color via
-        // `Color.fromCartesian4`. For unrecognised types it returns a
-        // raw scalar; fall back to white in that case.
-        if (
-          defined(colorVal) &&
-          defined(colorVal.red) &&
-          defined(colorVal.green)
-        ) {
+        // Two possible shapes:
+        //   - Cartesian4: `{x, y, z, w}` (UNSIGNED_BYTE in [0, 255]).
+        //   - Color:      `{red, green, blue, alpha}` (already in [0, 1]).
+        if (defined(colorVal?.x) && defined(colorVal?.w)) {
+          colors[i * 4 + 0] = colorVal.x * colorScale;
+          colors[i * 4 + 1] = colorVal.y * colorScale;
+          colors[i * 4 + 2] = colorVal.z * colorScale;
+          colors[i * 4 + 3] = colorVal.w * colorScale;
+        } else if (defined(colorVal?.red) && defined(colorVal?.alpha)) {
           colors[i * 4 + 0] = colorVal.red;
           colors[i * 4 + 1] = colorVal.green;
           colors[i * 4 + 2] = colorVal.blue;
