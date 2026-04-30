@@ -494,11 +494,15 @@ function packUniforms(data, frameState, primitive) {
   data[58] = normal[8];
   data[59] = 0.0;
 
-  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
-  data[60] = viewport?.x ?? 0.0;
-  data[61] = viewport?.y ?? 0.0;
-  data[62] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
-  data[63] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+  // Viewport — source from context.drawingBufferWidth/Height directly.
+  // See WebGPUGroundPolylineRenderer.js packUniforms for the full
+  // explanation; same bug-pattern (uniformState.viewportCartesian4 is
+  // zero-initialized at FR-update time and `??` doesn't fall through on 0).
+  const ctx = frameState.context;
+  data[60] = 0.0;
+  data[61] = 0.0;
+  data[62] = ctx?.drawingBufferWidth || 1;
+  data[63] = ctx?.drawingBufferHeight || 1;
 
   const mmh = primitive._minimumMaximumVectorHeights;
   data[64] = mmh?.x ?? 0.0;

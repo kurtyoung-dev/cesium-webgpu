@@ -383,11 +383,18 @@ function packUniforms(data, frameState, primitive) {
   Matrix4.pack(scratchModifiedView, data, 0);
   Matrix4.pack(uniformState.projection, data, 16);
 
-  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
-  data[32] = viewport?.x ?? 0.0;
-  data[33] = viewport?.y ?? 0.0;
-  data[34] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
-  data[35] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+  // Viewport — source from context.drawingBufferWidth/Height directly.
+  // See WebGPUGroundPolylineRenderer.js packUniforms for the full
+  // explanation; same bug-pattern (uniformState.viewportCartesian4 is
+  // zero-initialized at FR-update time and `??` doesn't fall through on 0).
+  // Vector3DTilePolylines uses viewport for pixel-space line offset
+  // (offsetNDC = offsetPx / halfVP) — halfVP=0 means offsetNDC=Inf and
+  // every vertex extrudes to NaN clip-space.
+  const ctx = frameState.context;
+  data[32] = 0.0;
+  data[33] = 0.0;
+  data[34] = ctx?.drawingBufferWidth || 1;
+  data[35] = ctx?.drawingBufferHeight || 1;
 
   data[36] = uniformState.pixelRatio ?? 1.0;
 }

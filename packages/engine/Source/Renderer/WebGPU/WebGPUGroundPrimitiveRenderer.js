@@ -391,15 +391,21 @@ function packUniforms(data, frameState, modelMatrix, color, pickColor) {
   data[30] = pickColor?.blue ?? 0.0;
   data[31] = pickColor?.alpha ?? 0.0;
 
-  // Migration Session 1 — viewport (floats 32-35). The depth-sample
-  // fragment shader divides `@builtin(position).xy` by the viewport
-  // (z, w) to recover the screen-space UV used to fetch globe depth.
-  // The stencil/color/pick path ignores this slot.
-  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
-  data[32] = viewport?.x ?? 0.0;
-  data[33] = viewport?.y ?? 0.0;
-  data[34] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
-  data[35] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+  // Viewport (floats 32-35). The depth-sample FS divides
+  // `@builtin(position).xy` by viewport.zw to recover the screen-space
+  // UV used to fetch globe depth. Source from `context.drawingBufferWidth/
+  // Height` directly: `uniformState.viewportCartesian4` is zero-initialized
+  // until per-frame viewport is established, but FRs run during Scene
+  // primitive update — BEFORE that. `?? drawingBufferWidth` doesn't fall
+  // through on 0 (only nullish), so the original code shipped 0/0 viewport
+  // → screenUV = NaN → depth sample returns 0 → universal discard
+  // (silent rendering failure). Bug-pattern hunt 2026-04-30 — same root
+  // cause as the GroundPolyline silent-invisible bug fixed in Batch 117.
+  const ctx = frameState.context;
+  data[32] = 0.0;
+  data[33] = 0.0;
+  data[34] = ctx?.drawingBufferWidth || 1;
+  data[35] = ctx?.drawingBufferHeight || 1;
 }
 
 /**

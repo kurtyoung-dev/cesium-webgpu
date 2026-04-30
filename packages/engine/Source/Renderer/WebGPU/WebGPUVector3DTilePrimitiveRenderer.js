@@ -354,11 +354,18 @@ function packUniforms(data, frameState, primitive) {
   data[30] = scratchEncodedCamera.low.z;
   data[31] = 0.0;
 
-  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
-  data[32] = viewport?.x ?? 0.0;
-  data[33] = viewport?.y ?? 0.0;
-  data[34] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
-  data[35] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+  // Viewport — source from context.drawingBufferWidth/Height directly.
+  // See WebGPUGroundPolylineRenderer.js packUniforms for the full
+  // explanation; same bug-pattern (uniformState.viewportCartesian4 is
+  // zero-initialized at FR-update time and `??` doesn't fall through on 0).
+  // Vector3DTilePrimitive uses viewport in the FS for screenUV =
+  // pos.xy / viewport.zw to fetch globe depth. zw=0 → screenUV=NaN →
+  // depth sample returns 0 → universal discard (silent rendering failure).
+  const ctx = frameState.context;
+  data[32] = 0.0;
+  data[33] = 0.0;
+  data[34] = ctx?.drawingBufferWidth || 1;
+  data[35] = ctx?.drawingBufferHeight || 1;
 }
 
 function ensureGeometry(cache, primitive, device) {

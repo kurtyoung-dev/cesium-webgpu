@@ -1259,13 +1259,19 @@ function updateWebGPUModel(model, frameState) {
   const globeDepthView = ctx?._globeDepthView ?? null;
   const uniformState = ctx?.uniformState;
   const currentFrustum = uniformState?.currentFrustum;
-  const viewportPx = uniformState?.viewportCartesian4;
+  // Viewport — source from context.drawingBufferWidth/Height directly.
+  // `uniformState.viewportCartesian4` is zero-initialized at FR-update
+  // time (FR runs during Scene primitive update, before per-frame
+  // viewport is established). The bug-pattern hunt 2026-04-30 found
+  // four other classification renderers reading zero viewports through
+  // the same path; here Model uses it for edge-overlay readiness gating
+  // — `!!viewportPx` reads truthy on a zero-init Cartesian4 (the object
+  // exists), so edges shipped with zw=0 ⇒ NaN screenUV ⇒ broken edge
+  // overlay. Match the canvas dimensions instead.
+  const dbw = ctx?.drawingBufferWidth || 1;
+  const dbh = ctx?.drawingBufferHeight || 1;
   const edgesReady =
-    !!edgeColorView &&
-    !!edgeDepthView &&
-    !!globeDepthView &&
-    !!currentFrustum &&
-    !!viewportPx;
+    !!edgeColorView && !!edgeDepthView && !!globeDepthView && !!currentFrustum;
   // C-R8-EDGE-FEATURE-ID — the inline stage gates on the same flag the
   // emitter side toggles when feature IDs are populated. The flag
   // is set sticky-true in the per-primitive edge extraction below
@@ -1283,8 +1289,8 @@ function updateWebGPUModel(model, frameState) {
         globeDepthView,
         near: currentFrustum.x,
         far: currentFrustum.y,
-        viewportWidth: viewportPx.z,
-        viewportHeight: viewportPx.w,
+        viewportWidth: dbw,
+        viewportHeight: dbh,
         hasFeatureId: cache.hasEdgeFeatureIds === true,
       }
     : undefined;
