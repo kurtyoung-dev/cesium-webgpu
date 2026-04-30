@@ -118,6 +118,10 @@ import {
   createWebGPUVector3DTilePolylineCommands,
   destroyWebGPUVector3DTilePolylineResources,
 } from "./WebGPUVector3DTilePolylinesRenderer.js";
+import {
+  createWebGPUVector3DTileClampedPolylineCommands,
+  destroyWebGPUVector3DTileClampedPolylineResources,
+} from "./WebGPUVector3DTileClampedPolylinesRenderer.js";
 
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
@@ -452,12 +456,16 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUGroundPolylineResources,
   });
 
-  // Batch 112 — Vector3DTile classification family. Polygon classification
-  // ships in this batch; polyline + clamped-polyline FRs are scaffolded in
-  // the same enum slots and will be registered as their renderers land.
-  // The Scene-side `Vector3DTilePrimitive.update()` delegates here when
-  // the FR is registered; otherwise the WebGPU code path no-ops via the
-  // BUILD-VAR-HAZARD guard in `createShaders`.
+  // Batches 112-114 — Vector3DTile classification family. All three FRs
+  // live on the depth-sample classifier architecture (ADR-2026-04-28):
+  //   - VECTOR_3DTILE_PRIMITIVE        (Batch 112) — polygon classifier.
+  //   - VECTOR_3DTILE_POLYLINE         (Batch 113) — non-clamped polylines.
+  //   - VECTOR_3DTILE_CLAMPED_POLYLINE (Batch 114) — terrain-clamped
+  //     polylines with per-vertex shadow-volume extrusion + 5-plane FS
+  //     clipping.
+  // Each Scene-side `Vector3DTile*.update()` delegates here when the FR is
+  // registered; otherwise the WebGPU code path no-ops via the
+  // BUILD-VAR-HAZARD guard in the corresponding `createShaders`.
   context.registerFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE, {
     createCommands: createWebGPUVector3DTilePrimitiveCommands,
     destroy: destroyWebGPUVector3DTilePrimitiveResources,
@@ -467,6 +475,18 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     createCommands: createWebGPUVector3DTilePolylineCommands,
     destroy: destroyWebGPUVector3DTilePolylineResources,
   });
+
+  // Batch 114 — terrain-clamped 3D Tiles polylines. Depth-sample
+  // classifier with 7-attribute shadow-volume vertex layout and
+  // 5-plane FS clipping. Scene-side `Vector3DTileClampedPolylines.update()`
+  // delegates here when the FR is registered.
+  context.registerFeatureRenderer(
+    FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
+    {
+      createCommands: createWebGPUVector3DTileClampedPolylineCommands,
+      destroy: destroyWebGPUVector3DTileClampedPolylineResources,
+    },
+  );
 
   // ── Globe / Terrain ──
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE, {

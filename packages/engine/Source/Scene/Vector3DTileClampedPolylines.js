@@ -30,6 +30,7 @@ import StencilConstants from "./StencilConstants.js";
 import StencilFunction from "./StencilFunction.js";
 import StencilOperation from "./StencilOperation.js";
 import Vector3DTilePolylines from "./Vector3DTilePolylines.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * Creates a batch of polylines as volumes with shader-adjustable width.
@@ -197,6 +198,31 @@ class Vector3DTileClampedPolylines {
       return;
     }
 
+    // Batch 114 — WebGPU path delegates to the
+    // VECTOR_3DTILE_CLAMPED_POLYLINE feature renderer. The renderer
+    // reads the worker-decoded shadow-volume attribute arrays directly
+    // off the primitive — `finishVertexArray` skips the WebGL
+    // VAO/buffer construction + array-null step on WebGPU so the FR
+    // has fresh CPU arrays to upload on its first call.
+    const fr = context.getFeatureRenderer?.(
+      FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
+    );
+    if (fr && fr.createCommands) {
+      this._lastFeatureRenderer = fr;
+      const passes = frameState.passes;
+      if (passes.render) {
+        const result = fr.createCommands(this, frameState);
+        const commands = result?.colorCommands;
+        if (defined(commands)) {
+          for (let i = 0; i < commands.length; i++) {
+            frameState.commandList.push(commands[i]);
+          }
+        }
+      }
+      // Per-feature pick deferred — see WebGPUVector3DTileClampedPolylinesRenderer.js header.
+      return;
+    }
+
     createUniformMap(this, context);
     createShaders(this, context);
     createRenderStates(this);
@@ -234,6 +260,13 @@ class Vector3DTileClampedPolylines {
   destroy() {
     this._va = this._va && this._va.destroy();
     this._sp = this._sp && this._sp.destroy();
+
+    // Batch 114 — release the WebGPU FR cache. `_lastFeatureRenderer` is
+    // captured during `update()` so we don't need a context handle here.
+    if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
+      this._lastFeatureRenderer.destroy?.(this);
+    }
+
     return destroyObject(this);
   }
 
@@ -431,6 +464,43 @@ function createVertexArray(polylines, context) {
 }
 
 function finishVertexArray(polylines, context) {
+  // Batch 114 — WebGPU path skips the WebGL VAO + buffer construction
+  // entirely. The decoded shadow-volume attribute arrays stay alive on
+  // the primitive so the WebGPU FR can upload them to GPU buffers on
+  // its first `update()` tick.
+  if (context.rendererType === "webgpu") {
+    const indices = polylines._indices;
+    polylines._trianglesLength =
+      defined(indices) && indices.length > 0 ? indices.length / 3 : 0;
+    let byteLength = 0;
+    if (defined(polylines._startEllipsoidNormals)) {
+      byteLength += polylines._startEllipsoidNormals.byteLength;
+    }
+    if (defined(polylines._endEllipsoidNormals)) {
+      byteLength += polylines._endEllipsoidNormals.byteLength;
+    }
+    if (defined(polylines._startPositionAndHeights)) {
+      byteLength += polylines._startPositionAndHeights.byteLength;
+    }
+    if (defined(polylines._endPositionAndHeights)) {
+      byteLength += polylines._endPositionAndHeights.byteLength;
+    }
+    if (defined(polylines._startFaceNormalAndVertexCornerIds)) {
+      byteLength += polylines._startFaceNormalAndVertexCornerIds.byteLength;
+    }
+    if (defined(polylines._endFaceNormalAndHalfWidths)) {
+      byteLength += polylines._endFaceNormalAndHalfWidths.byteLength;
+    }
+    if (defined(polylines._vertexBatchIds)) {
+      byteLength += polylines._vertexBatchIds.byteLength;
+    }
+    if (defined(indices)) {
+      byteLength += indices.byteLength;
+    }
+    polylines._geometryByteLength = byteLength;
+    return;
+  }
+
   if (!defined(polylines._va)) {
     const startEllipsoidNormals = polylines._startEllipsoidNormals;
     const endEllipsoidNormals = polylines._endEllipsoidNormals;

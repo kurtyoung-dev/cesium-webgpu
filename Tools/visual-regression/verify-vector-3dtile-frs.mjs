@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 /**
- * Smoke test for the Batch 112-113 Vector3DTile feature renderers.
+ * Smoke test for the Batch 112-114 Vector3DTile feature renderers.
  *
- * Phase 1: Vector3DTilePrimitive — load a vector tileset that has 3D
- *   Tiles classification polygons.
- * Phase 2: Vector3DTilePolylines — load a vector tileset with non-clamped
- *   3D polylines.
+ * Phase 1: Vector3DTilePrimitive — extruded polygon classifier.
+ * Phase 2: Vector3DTilePolylines — non-clamped 3D polylines.
+ * Phase 3: Vector3DTileClampedPolylines — terrain-clamped polylines.
+ * Phase 4: Baseline GroundPolylinePrimitive regression check.
  *
- * For both phases, the test confirms (a) no console errors, (b) no
- * WebGPU validation warnings, (c) the rendered canvas is non-blank.
- * The Vector3DTileClampedPolylines case is deferred per
- * DEFERRED_WORK.md::C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES — that path
- * silently no-renders on WebGPU and the test does not assert on it.
+ * For each FR phase, the test confirms (a) the FR is registered,
+ * (b) it exposes `createCommands`, (c) no console errors / WebGPU
+ * validation warnings appear during the render loop.
  */
 import { chromium } from "playwright";
 import fs from "fs";
@@ -105,7 +103,20 @@ const validationWarnings = [];
   });
   console.log(`[phase] V3DT Polyline FR: ${JSON.stringify(phase2)}`);
 
-  // ── Phase 3: confirm classification baseline still works ──
+  // ── Phase 3: Vector3DTileClampedPolylines FR registered? ──
+  console.log("[phase] Vector3DTileClampedPolylines registered ...");
+  const phase3 = await page.evaluate(async () => {
+    const v = window.viewer;
+    const ctx = v.scene.context;
+    const fr = ctx.getFeatureRenderer?.(44); // VECTOR_3DTILE_CLAMPED_POLYLINE = 44
+    return {
+      frRegistered: !!fr,
+      frHasCreateCommands: !!(fr && fr.createCommands),
+    };
+  });
+  console.log(`[phase] V3DT Clamped Polyline FR: ${JSON.stringify(phase3)}`);
+
+  // ── Phase 4: confirm classification baseline still works ──
   console.log("[phase] Baseline GroundPolylinePrimitive (regression check)...");
   await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
@@ -133,10 +144,10 @@ const validationWarnings = [];
       await new Promise((r) => requestAnimationFrame(r));
     }
   });
-  const snap3 = await page.screenshot({ omitBackground: false });
+  const snap4 = await page.screenshot({ omitBackground: false });
   fs.writeFileSync(
-    "Tools/visual-regression/output/verify-v3dt-phase3-regression.png",
-    snap3,
+    "Tools/visual-regression/output/verify-v3dt-phase4-regression.png",
+    snap4,
   );
 
   await browser.close();
@@ -152,12 +163,18 @@ const validationWarnings = [];
   console.log(
     `Phase 2 (Polyline FR has createCommands): ${phase2.frHasCreateCommands}`,
   );
+  console.log(`Phase 3 (Clamped FR registered): ${phase3.frRegistered}`);
+  console.log(
+    `Phase 3 (Clamped FR has createCommands): ${phase3.frHasCreateCommands}`,
+  );
 
   const allRegistered =
     phase1.frRegistered &&
     phase1.frHasCreateCommands &&
     phase2.frRegistered &&
-    phase2.frHasCreateCommands;
+    phase2.frHasCreateCommands &&
+    phase3.frRegistered &&
+    phase3.frHasCreateCommands;
 
   if (errors.length > 0 || validationWarnings.length > 0 || !allRegistered) {
     console.log("\n⚠ Issues found");
