@@ -247,6 +247,23 @@ struct EffectsUniforms {
     //   .y/.z/.w reserved (cascade count, moon-light flag, etc).
     // Matches `CSM_CONTROL_OFFSET` on the JS side.
     csmControl: vec4<f32>,
+    // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light cube
+    // shadow control. Lays out IDENTICAL to the model shader's
+    // EffectsUniforms tail so both shaders read the same bytes from
+    // the shared effects UB. The globe shader previously stopped at
+    // csmControl; extending the struct here lets globe terrain
+    // receive point-light shadows without a separate UB.
+    //   .x = pointLightActive flag (>0.5 → sample binding 17 via
+    //        `globeSamplePointShadow`)
+    //   .y = far plane (light radius)
+    //   .z = near plane (typically 1.0)
+    //   .w = depth bias
+    // Matches model shader's `pointLightControl` at offset 304.
+    pointLightControl: vec4<f32>,
+    // .xyz = light position in world coords (ECEF for SCENE3D).
+    // .w = PCF radius in cube-face texels (0 → hard sampling). Matches
+    // model shader's `pointLightPositionWC` at offset 320.
+    pointLightPositionWC: vec4<f32>,
 }
 
 // CSM Slice 1 — cascade parameters UBO. Layout matches
@@ -297,6 +314,14 @@ struct CSMParams {
 // `effects.csmControl.x > 0.5` via `sampleCascadeShadow`.
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+// C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — cube depth target
+// shared with the model receive path. The shared `EffectsBindGroupLayout`
+// in WebGPUEffectsBindGroup declares this at binding 17; the globe
+// previously didn't reference it. Bound to a 1×1×6 placeholder
+// (cleared to depth=1.0) when no point light is active so the bind
+// group always validates; the `effects.pointLightControl.x > 0.5`
+// gate skips sampling in that case.
+@group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 // ─── Vertex Input / Output ───
 // DP-H25 — the `@location(2) geodeticSurfaceNormal` slot is conditionally
@@ -1362,6 +1387,87 @@ fn globeComputeShadowFactorCSM(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
+// C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — cube-shadow sample
+// adapted from `samplePointShadow` in ModelPBRComplete.wgsl. Math is
+// identical: pick the dominant cube-face axis, derive the depth value
+// the cast pipeline wrote at that axis distance, sample the cube with
+// `direction = fragWC - lightWC`. The 5-tap cross PCF runs when
+// `pointLightPositionWC.w > 0` for soft shadows; zero radius drops
+// to a single hardware-comparison sample.
+//
+// Globe-specific: `fragWC` reconstruction uses the camera high/low
+// split rather than a `cameraPositionWC` field (the globe camera UB
+// doesn't expose a single-precision world-space position). Adding
+// `encodedCameraHigh + encodedCameraLow` reconstructs camera position
+// at f32 quantization, which is fine for the light-distance comparison
+// (the comparison's resolution is bounded by `farPlane`, not by the
+// camera position's absolute precision).
+fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
+  let lightWC = effects.pointLightPositionWC.xyz;
+  let direction = fragWC - lightWC;
+  let absDir = abs(direction);
+  let axisDist = max(absDir.x, max(absDir.y, absDir.z));
+  let nearPlane = effects.pointLightControl.z;
+  let farPlane = effects.pointLightControl.y;
+  let depthBias = effects.pointLightControl.w;
+  if (axisDist >= farPlane) { return 1.0; }
+  let depthRange = farPlane - nearPlane;
+  let zNdcWebGpu =
+    farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
+  let zAttached = zNdcWebGpu * 0.5 + 0.5;
+  let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
+  let pcfRadius = effects.pointLightPositionWC.w;
+  if (pcfRadius <= 0.0) {
+    return textureSampleCompareLevel(
+      pointLightCubeDepth,
+      shadowCompSampler,
+      direction,
+      refDepth,
+    );
+  }
+  // 5-tap cross PCF — perturb along the two axes tangent to the
+  // dominant cube face so all taps stay on the same face's depth
+  // texels (cross-face perturbation would compare against texels
+  // written by a different per-face camera and produce seam banding).
+  var minorA: vec3<f32>;
+  var minorB: vec3<f32>;
+  if (absDir.x >= absDir.y && absDir.x >= absDir.z) {
+    minorA = vec3<f32>(0.0, 1.0, 0.0);
+    minorB = vec3<f32>(0.0, 0.0, 1.0);
+  } else if (absDir.y >= absDir.z) {
+    minorA = vec3<f32>(1.0, 0.0, 0.0);
+    minorB = vec3<f32>(0.0, 0.0, 1.0);
+  } else {
+    minorA = vec3<f32>(1.0, 0.0, 0.0);
+    minorB = vec3<f32>(0.0, 1.0, 0.0);
+  }
+  let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
+  let offset = pcfRadius * texelStep;
+  var sum = 0.0;
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth, shadowCompSampler, direction, refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth, shadowCompSampler, direction + minorA * offset, refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth, shadowCompSampler, direction - minorA * offset, refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth, shadowCompSampler, direction + minorB * offset, refDepth,
+  );
+  sum = sum + textureSampleCompareLevel(
+    pointLightCubeDepth, shadowCompSampler, direction - minorB * offset, refDepth,
+  );
+  return sum * 0.2;
+}
+
+fn globeComputeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+  if (effects.shadowDarkness >= 1.0) { return 1.0; }
+  let visibility = globeSamplePointShadow(fragWC);
+  return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
   let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
@@ -1438,7 +1544,22 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // looking -Z).
   var shadowFactor: f32 = 1.0;
   if (camera.enableLighting > 0.5) {
-    if (effects.csmControl.x > 0.5) {
+    if (effects.pointLightControl.x > 0.5) {
+      // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light
+      // cube-shadow path. Reconstructs world-space fragment position
+      // from the camera high/low split (the globe camera UB doesn't
+      // expose a single `cameraPositionWC` field) plus v_positionRTE
+      // which is camera-relative world space. The reconstruction
+      // loses ~1m of f32 precision at orbital camera distances, but
+      // the comparison's resolution is bounded by `farPlane`
+      // (the light radius), so this only matters for fragments
+      // within ~1m of `farPlane` — visually imperceptible. Takes
+      // priority over CSM when both are enabled (point + sun
+      // shadows together would need an OR-combine, deferred).
+      let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
+      let fragWC = cameraWC + input.v_positionRTE;
+      shadowFactor = globeComputeShadowFactorPointLight(fragWC);
+    } else if (effects.csmControl.x > 0.5) {
       // RTE precision path — feed the camera-relative position straight
       // into the RTE-aware cascade VP. No reconstruction of worldPos =
       // positionHigh + positionLow (which would lose ~1m at Earth scale
