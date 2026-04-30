@@ -366,6 +366,27 @@ export class WebGPUContext extends GraphicsContext {
   // for translucent-on-translucent classification.
   public _packedTranslucentDepthView: GPUTextureView | null = null;
 
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — set to `true` by
+  // WebGPUModelRenderer when emitting a primitive whose material
+  // declares KHR_materials_transmission. SceneRenderer reads it
+  // between OPAQUE and TRANSLUCENT passes to decide whether to
+  // run the refraction capture (copyTextureToTexture from scene
+  // color into the refraction target). Reset per-frame by the
+  // SceneRenderer at the start of the frame so stale flags from
+  // a previous render don't trigger spurious copies. The flag is
+  // a coarse "any transmissive primitive in scene"; a future
+  // refinement can scope to "transmissive primitive in this
+  // frustum's TRANSLUCENT pass".
+  public _sceneHasTransmission: boolean = false;
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — view of the scene-FB
+  // refraction capture, published by SceneRenderer at the end of
+  // the capture step. `null` until first capture; consumed by the
+  // Model textureBindGroup builder at @group(2)@binding(23). When
+  // null the bind group falls back to the white placeholder and
+  // the FS sees a constant white "background" for transmission —
+  // visually wrong but doesn't cause a binding error.
+  public _refractionSceneView: GPUTextureView | null = null;
+
   // WebGL extension properties (WebGPU natively supports these as core features)
   public floatingPointTexture: boolean = true; // WebGPU always supports float textures
   public halfFloatingPointTexture: boolean = true; // WebGPU always supports half-float textures

@@ -697,6 +697,13 @@ export class WebGPUSceneRenderer {
         numSamples,
         canvasFormat,
       );
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — `_sceneFramebuffer.update`
+      // destroys the old refraction texture (and view) on resize / HDR
+      // toggle. Clear the published view on the context so the model
+      // renderer doesn't try to bind it on the next frame; `null` here
+      // makes the model bind-group rebuild fall through to the white
+      // placeholder until the next capture pass publishes a new view.
+      context._refractionSceneView = null;
     }
     // C-R8-INVERT-HDR (Batch 41) — keep `context._sceneColorFormat`
     // in sync with the scene framebuffer's actual color format. Feature
@@ -871,6 +878,14 @@ export class WebGPUSceneRenderer {
     // --- PICK PASS: Render to pick framebuffer ---
     if (picking) {
       this._executePickPass(config);
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — pick frames also call
+      // `modelFr.update`, which sets `_sceneHasTransmission` when a
+      // transmissive primitive is in view. The pick branch doesn't run
+      // the regular capture step and exits before the end-of-frame
+      // reset, so the flag would leak into the next regular frame and
+      // trigger an unnecessary capture there. Reset here to keep the
+      // flag scoped to the frame that set it.
+      context._sceneHasTransmission = false;
       return;
     }
 
@@ -1351,6 +1366,19 @@ export class WebGPUSceneRenderer {
         );
       }
 
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — refraction capture.
+      // Snapshots opaque-only scene color (after OPAQUE/MASK passes
+      // and after voxels/splats) into a dedicated refraction target so
+      // transmissive surfaces drawn in the TRANSLUCENT pass that
+      // follows can sample "the world behind this glass" without
+      // double-counting their own contribution. Gated on
+      // `context._sceneHasTransmission` (set by the model emitter when
+      // any primitive has FLAG_HAS_TRANSMISSION) so frames with no
+      // transmissive primitives pay zero cost. Runs every frustum so
+      // each transmissive draw sees the right per-frustum opaque
+      // backdrop.
+      this._captureRefractionScene(config);
+
       // Pass 9: TRANSLUCENT (with OIT if enabled)
       this._executeTranslucentPass(frustumCommands, config);
 
@@ -1518,6 +1546,16 @@ export class WebGPUSceneRenderer {
     }
     //>>includeEnd('debug');
     this._runPostProcessing(config);
+
+    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — clear the per-frame
+    // transmission signal at the END of executeCommands. The model
+    // renderer sets this to `true` during `update()` (which runs
+    // BEFORE executeCommands as part of scene update), so resetting
+    // at the start would clobber it before the per-frustum capture
+    // step gets to read it. Resetting here means next frame's
+    // `update()` starts with a clean slate; if no model declares
+    // transmission, the capture step early-exits.
+    context._sceneHasTransmission = false;
 
     // Performance infrastructure: end frame — flush indirect draws, collect profiling
     if (perfManager) {
@@ -2782,6 +2820,67 @@ export class WebGPUSceneRenderer {
     // Resume default scene pass for any remaining work (post-process
     // starts by ending the pass itself, so the resume here is cheap).
     context.resumeDefaultRenderPass?.();
+  }
+
+  // --- KHR_materials_transmission refraction capture (Batch 107) ---
+
+  /**
+   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — captures opaque-only
+   * scene color into the scene-FB refraction target so transmissive
+   * Model primitives drawn in the TRANSLUCENT pass can sample the
+   * scene behind them without their own contribution. Runs once per
+   * frustum, between the opaque/voxels/splats passes and the
+   * TRANSLUCENT pass. Gated on `context._sceneHasTransmission` (set
+   * by `WebGPUModelRenderer` when a transmissive primitive emits a
+   * command this frame); frames with no transmissive content pay
+   * zero cost.
+   *
+   * Implementation: end the current scene render pass, copy scene
+   * color → refraction texture via `copyTextureToTexture` (same-
+   * format blit), publish the refraction view on the context for
+   * the model bind-group rebuilder to pick up, then resume the scene
+   * pass. MSAA scenes use the resolved color (returned by
+   * `colorTarget.getColorTexture` when a resolve target exists).
+   *
+   * Multi-frustum scenes capture ONCE PER FRUSTUM — each frustum's
+   * transmissive draws see that frustum's opaque backdrop. The
+   * refraction texture is overwritten between frustums so the
+   * latest capture wins; for transmission, that's correct because
+   * a glass surface in frustum N should refract content drawn up
+   * to frustum N (the per-frustum opaque writes accumulate into
+   * the same scene color across frustums in the WebGPU pipeline).
+   */
+  private _captureRefractionScene(config: WebGPURenderFrameConfig): void {
+    const { context } = config;
+    if (!context._sceneHasTransmission || !this._sceneFramebuffer) {
+      return;
+    }
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
+
+    context.endCurrentRenderPass?.();
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    if (!encoder) {
+      // Without an encoder we can't issue the copy — resume the scene
+      // pass anyway so subsequent work doesn't run into a half-closed
+      // pass.
+      this._resumeScenePass(context);
+      return;
+    }
+
+    const captured = this._sceneFramebuffer.captureRefraction(
+      device,
+      encoder,
+      this._width,
+      this._height,
+    );
+    if (captured) {
+      context._refractionSceneView = this._sceneFramebuffer.refractionView;
+    }
+    this._resumeScenePass(context);
   }
 
   // --- TAA velocity pass (Slice 2e, Batch 106) ---

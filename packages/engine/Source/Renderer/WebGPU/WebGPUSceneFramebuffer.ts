@@ -35,6 +35,19 @@ export class WebGPUSceneFramebuffer {
   // resolve pass samples the resolved color, so velocity must match).
   private _velocityTexture: GPUTexture | null = null;
   private _velocityView: GPUTextureView | null = null;
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — refraction scene-color
+  // capture target. Holds an `opaque-only` snapshot of scene color
+  // taken between OPAQUE/MASK passes and the TRANSLUCENT pass; the
+  // model FS samples it at @group(2)@binding(23) when a primitive
+  // declares KHR_materials_transmission. The capture path uses
+  // `GPUCommandEncoder.copyTextureToTexture` from scene color into
+  // this texture (scene color must therefore be RESOLVED single-
+  // sample by capture time — MSAA scenes need the resolveTarget as
+  // the source). Allocated lazily on first use; reset on resize.
+  // Format matches `_colorFormat` so the copy is a same-format blit.
+  private _refractionTexture: GPUTexture | null = null;
+  private _refractionView: GPUTextureView | null = null;
+  private _refractionFormat: GPUTextureFormat | null = null;
 
   /**
    * The main color render target (MSAA if numSamples > 1).
@@ -116,6 +129,94 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
+   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — view of the refraction
+   * capture texture (opaque-only scene color snapshot). Returns null
+   * until {@link ensureRefractionTexture} is invoked at least once
+   * (the SceneRenderer's transmission capture pass is the only caller).
+   * Bound by transmissive Model primitives at @binding(23) so the FS
+   * can sample scene color along the refracted view direction.
+   */
+  get refractionView(): GPUTextureView | null {
+    return this._refractionView;
+  }
+
+  /**
+   * Allocate (or reuse) the refraction capture texture matching scene
+   * color format and dimensions. Idempotent — only re-allocates when
+   * device, dimensions, or color format changes (the latter happens
+   * when HDR toggles flip rgba16float ↔ canvas format). Caller is the
+   * SceneRenderer at the start of the transmission capture pass.
+   */
+  ensureRefractionTexture(
+    device: GPUDevice,
+    width: number,
+    height: number,
+    format: GPUTextureFormat,
+  ): GPUTextureView | null {
+    if (
+      this._refractionTexture &&
+      this._device === device &&
+      this._refractionFormat === format &&
+      this._refractionTexture.width === width &&
+      this._refractionTexture.height === height
+    ) {
+      return this._refractionView;
+    }
+    this._refractionTexture?.destroy();
+    this._refractionTexture = device.createTexture({
+      label: "SceneFramebuffer-RefractionCapture",
+      size: [width, height, 1],
+      format,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this._refractionView = this._refractionTexture.createView();
+    this._refractionFormat = format;
+    return this._refractionView;
+  }
+
+  /**
+   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — capture the current scene
+   * color texture into the refraction target. Same-format blit via
+   * `copyTextureToTexture`; MSAA scenes use the resolved color (which
+   * `colorTarget.getColorTexture()` already prefers when a resolve
+   * target exists). Caller is the SceneRenderer between the OPAQUE
+   * passes and the TRANSLUCENT pass; after this call the texture
+   * bound to model FS @binding(23) reflects opaque-only scene color
+   * and transmissive primitives can sample it for the refraction
+   * lookup.
+   *
+   * Returns true on success, false if the source texture or target
+   * texture is missing (caller should skip the transmission pass for
+   * the current frame). The method does NOT end the current render
+   * pass — caller is responsible for that and for resuming after.
+   */
+  captureRefraction(
+    device: GPUDevice,
+    encoder: GPUCommandEncoder,
+    width: number,
+    height: number,
+  ): boolean {
+    const colorTex = this.colorTexture;
+    if (!colorTex || !this._colorFormat) {
+      return false;
+    }
+    this.ensureRefractionTexture(device, width, height, this._colorFormat);
+    if (!this._refractionTexture) {
+      return false;
+    }
+    encoder.copyTextureToTexture(
+      { texture: colorTex, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+      {
+        texture: this._refractionTexture,
+        mipLevel: 0,
+        origin: { x: 0, y: 0, z: 0 },
+      },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    return true;
+  }
+
+  /**
    * The resolved color texture (after MSAA resolve).
    */
   get colorTexture(): GPUTexture | undefined {
@@ -194,6 +295,13 @@ export class WebGPUSceneFramebuffer {
     this._velocityTexture?.destroy();
     this._velocityTexture = null;
     this._velocityView = null;
+    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — invalidate refraction
+    // capture too: the next `ensureRefractionTexture` call reallocates
+    // at the new dimensions / color format.
+    this._refractionTexture?.destroy();
+    this._refractionTexture = null;
+    this._refractionView = null;
+    this._refractionFormat = null;
 
     // Create main color target with MSAA + depth-stencil.
     //
@@ -284,10 +392,14 @@ export class WebGPUSceneFramebuffer {
     this._colorTarget?.destroy();
     this._idTarget?.destroy();
     this._velocityTexture?.destroy();
+    this._refractionTexture?.destroy();
     this._colorTarget = null;
     this._idTarget = null;
     this._velocityTexture = null;
     this._velocityView = null;
+    this._refractionTexture = null;
+    this._refractionView = null;
+    this._refractionFormat = null;
     this._isDestroyed = true;
   }
 

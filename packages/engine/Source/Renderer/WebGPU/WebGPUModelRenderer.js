@@ -902,50 +902,108 @@ function ensurePrimitiveCache(
   const occlusionSampler = pipelineCache.getSamplerForReader(
     matInfo.occlusionTextureReader,
   );
-  primCache.textureBindGroup = device.createBindGroup({
-    layout: pipelineCache.textureBGL,
-    entries: [
-      { binding: 0, resource: textures.baseColor.createView() },
-      { binding: 1, resource: baseSampler || defSampler },
-      { binding: 2, resource: textures.normal.createView() },
-      { binding: 3, resource: normalSampler || defSampler },
-      { binding: 4, resource: textures.metallicRoughness.createView() },
-      { binding: 5, resource: mrSampler || defSampler },
-      { binding: 6, resource: textures.emissive.createView() },
-      { binding: 7, resource: emissiveSampler || defSampler },
-      { binding: 8, resource: textures.occlusion.createView() },
-      { binding: 9, resource: occlusionSampler || defSampler },
-      // C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension primary
-      // textures. Each defaults to the white placeholder when the
-      // matching extension is absent / has no texture; the FS gates
-      // each sample on the extension's HAS_* flag so the placeholder
-      // never participates in a real lighting calculation.
-      { binding: 10, resource: textures.clearcoat.createView() },
-      { binding: 11, resource: textures.specularColor.createView() },
-      { binding: 12, resource: textures.anisotropy.createView() },
-      { binding: 13, resource: textures.iridescence.createView() },
-      { binding: 14, resource: textures.sheenColor.createView() },
-      { binding: 15, resource: textures.thickness.createView() },
-      // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps.
-      // Defaults to white placeholder per spec's "no texture" semantic
-      // (factor multiplied by 1.0 reduces to factor-only behavior).
-      { binding: 16, resource: textures.clearcoatRoughness.createView() },
-      { binding: 17, resource: textures.clearcoatNormal.createView() },
-      { binding: 18, resource: textures.sheenRoughness.createView() },
-      { binding: 19, resource: textures.specularFactor.createView() },
-      { binding: 20, resource: textures.iridescenceThickness.createView() },
-      { binding: 21, resource: defSampler },
-      // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor
-      // texture + refraction scene-color sample source. The
-      // refractionSceneTexture defaults to the white placeholder until
-      // the SceneRenderer's refraction MRT pass populates it.
-      { binding: 22, resource: textures.transmission.createView() },
-      { binding: 23, resource: textures.refractionScene.createView() },
-    ],
-  });
+  // Cache per-binding views + samplers on the prim cache so the
+  // texture bind group can be rebuilt cheaply when the SceneRenderer's
+  // refraction capture (Batch 107) publishes a new
+  // `_refractionSceneView`. Without this cache the rebuild would have
+  // to re-create the views every frame from `textures.*`.
+  primCache.textureViews = {
+    baseColor: textures.baseColor.createView(),
+    normal: textures.normal.createView(),
+    metallicRoughness: textures.metallicRoughness.createView(),
+    emissive: textures.emissive.createView(),
+    occlusion: textures.occlusion.createView(),
+    clearcoat: textures.clearcoat.createView(),
+    specularColor: textures.specularColor.createView(),
+    anisotropy: textures.anisotropy.createView(),
+    iridescence: textures.iridescence.createView(),
+    sheenColor: textures.sheenColor.createView(),
+    thickness: textures.thickness.createView(),
+    clearcoatRoughness: textures.clearcoatRoughness.createView(),
+    clearcoatNormal: textures.clearcoatNormal.createView(),
+    sheenRoughness: textures.sheenRoughness.createView(),
+    specularFactor: textures.specularFactor.createView(),
+    iridescenceThickness: textures.iridescenceThickness.createView(),
+    transmission: textures.transmission.createView(),
+    refractionPlaceholder: textures.refractionScene.createView(),
+  };
+  primCache.textureSamplers = {
+    base: baseSampler || defSampler,
+    normal: normalSampler || defSampler,
+    mr: mrSampler || defSampler,
+    emissive: emissiveSampler || defSampler,
+    occlusion: occlusionSampler || defSampler,
+    def: defSampler,
+  };
+  primCache.textureBindGroup = buildModelTextureBindGroup(
+    device,
+    pipelineCache,
+    primCache,
+    null,
+  );
+  primCache.refractionViewBound = null;
 
   cache.primitives[primKey] = primCache;
   return primCache;
+}
+
+/**
+ * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — builds the model texture
+ * bind group from cached views/samplers on `primCache`. When
+ * `refractionView` is non-null, binding 23 (refractionSceneTexture)
+ * uses that view; otherwise it uses the white placeholder cached as
+ * `primCache.textureViews.refractionPlaceholder`. Called once at
+ * primitive creation (with `refractionView=null`) and again from the
+ * per-frame update path when the SceneRenderer publishes a new
+ * refraction view (Batch 107 capture pass).
+ *
+ * @private
+ */
+function buildModelTextureBindGroup(
+  device,
+  pipelineCache,
+  primCache,
+  refractionView,
+) {
+  const v = primCache.textureViews;
+  const s = primCache.textureSamplers;
+  return device.createBindGroup({
+    layout: pipelineCache.textureBGL,
+    entries: [
+      { binding: 0, resource: v.baseColor },
+      { binding: 1, resource: s.base },
+      { binding: 2, resource: v.normal },
+      { binding: 3, resource: s.normal },
+      { binding: 4, resource: v.metallicRoughness },
+      { binding: 5, resource: s.mr },
+      { binding: 6, resource: v.emissive },
+      { binding: 7, resource: s.emissive },
+      { binding: 8, resource: v.occlusion },
+      { binding: 9, resource: s.occlusion },
+      { binding: 10, resource: v.clearcoat },
+      { binding: 11, resource: v.specularColor },
+      { binding: 12, resource: v.anisotropy },
+      { binding: 13, resource: v.iridescence },
+      { binding: 14, resource: v.sheenColor },
+      { binding: 15, resource: v.thickness },
+      { binding: 16, resource: v.clearcoatRoughness },
+      { binding: 17, resource: v.clearcoatNormal },
+      { binding: 18, resource: v.sheenRoughness },
+      { binding: 19, resource: v.specularFactor },
+      { binding: 20, resource: v.iridescenceThickness },
+      { binding: 21, resource: s.def },
+      { binding: 22, resource: v.transmission },
+      // Binding 23: refractionSceneTexture. When the SceneRenderer's
+      // capture pass has published a view, use it. Otherwise fall
+      // back to the cached white placeholder so the bind group still
+      // validates (the FS gates this sample on FLAG_HAS_TRANSMISSION,
+      // so the placeholder content is never sampled in production).
+      {
+        binding: 23,
+        resource: refractionView ?? v.refractionPlaceholder,
+      },
+    ],
+  });
 }
 
 /**
@@ -1361,6 +1419,28 @@ function updateWebGPUModel(model, frameState) {
         geometry,
         matInfo,
       );
+
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
+      // declares transmission AND the SceneRenderer has published a
+      // refraction view this frame, ensure the texture bind group
+      // points at the latest view. Cheap: a reference compare against
+      // the last-bound view; rebuild only on first use OR when the
+      // scene framebuffer reallocates the refraction texture (resize,
+      // HDR toggle). Also publishes the per-frame "scene has
+      // transmission" flag so the SceneRenderer's capture pass fires.
+      if (matInfo.hasTransmission) {
+        context._sceneHasTransmission = true;
+        const currentRefractionView = context._refractionSceneView ?? null;
+        if (primCache.refractionViewBound !== currentRefractionView) {
+          primCache.textureBindGroup = buildModelTextureBindGroup(
+            device,
+            pipelineCache,
+            primCache,
+            currentRefractionView,
+          );
+          primCache.refractionViewBound = currentRefractionView;
+        }
+      }
 
       // Create per-primitive material + light uniform buffers (once)
       if (!defined(primCache.materialBG)) {
