@@ -259,26 +259,39 @@ The framing splits into two distinct items:
 
 **Trace:** REVIEW_FIX_PROGRESS.md:2133. Audit 2026-04-28.
 
-### C-R8-CLASSIFICATION-DEPTH-SAMPLING
+### ~~C-R8-CLASSIFICATION-DEPTH-SAMPLING~~ — RESOLVED (Migration Sessions 1-5, Batches 80-85)
 
-**What:** WebGPU's `WebGPUGroundPrimitiveRenderer` uses a stencil-based two-pass classifier. WebGL's classifier (`ShadowVolumeAppearanceFS`, `PolylineShadowVolumeFS`) samples `czm_globeDepthTexture` instead. The depth-sampling approach is what enables:
+**Resolution (verified 2026-04-30 by Batch 117 / 118 audit):** The depth-sampling architectural rewrite shipped across Migration Sessions 1-5:
 
-- Translucent-on-translucent classification (sample `_packedTranslucentDepthView` per Batch 47 pack pipeline).
-- Single-pass classification (no stencil clear / two-draw cost).
-- Cleaner shader extension surface — derived data uniforms (e.g., `czm_globeDepthTexture`-based effects) drop in naturally.
+- **Session 1 (Batch 80):** depth-sample classifier infrastructure — `dsColorFS` / `dsPickFS` entry points sample globe-depth and discard where the surface wrote no depth.
+- **Session 2 (Batch 82):** runtime depth-source swap (globe-depth ↔ packed-translucent-depth) via `_packedTranslucentDepthView` plumbed through `WebGPUDrawCommand.bindGroupResolvers`.
+- **Session 3 (Batch 83):** per-frustum depth-source bind groups.
+- **Session 4 (Batch 84):** `WebGPUGroundPolylineRenderer` skeleton.
+- **Session 4b (Batches 86, 88, 97, 116, 117):** full WGSL port of `PolylineShadowVolumeVS/FS` + materials + per-instance color decoding + depth-test + viewport-source fixes.
+- **Session 5 (Batch 85):** retire the legacy stencil classifier path. Depth-sampling is now the only classification path.
 
-**Why deferred:** Architectural rewrite of the classifier. The stencil approach is correct for opaque-tile classification (the common case) and Batch 79 patches the translucent-tile case via selective depth-write. Depth-sampling is the principled long-term architecture.
+**Selective depth-write side (Batch 79):** Models force depth-write ON for BLEND-mode primitives via `WebGPUModelPipelineCache.depthWritePipeline` + `WebGPUDrawCommand.classificationDepthPipeline` + `Cesium3DTile.js:1084` flag plumbing.
 
-**Prerequisites:** Pairs with C-R8-TRANSLUCENT-MULTI-FRUSTUM (the per-frustum FBOs MULTI-FRUSTUM ships are the natural source of `_packedTranslucentDepthView`).
+**Verified content-type coverage:**
 
-**Estimated effort:** 3-4 sessions. Port WGSL of `ShadowVolumeAppearanceFS` + `PolylineShadowVolumeFS`; rewire `WebGPUGroundPrimitiveRenderer` to bind depth source instead of stencil-clip; add the `(globe-depth, translucent-depth)` runtime swap MULTI-FRUSTUM enables.
+- **Model (b3dm/i3dm/glb):** Selective depth-write variant shipped Batch 79.
+- **PointCloud:** Already writes depth unconditionally (`WebGPUPointCloudRenderer.ts:386` `depthWriteEnabled: true`). No variant needed.
+- **Vector3DTile* family:** These ARE classifiers (depth-sample consumers), not classified-against content.
+- **Gaussian Splat:** Pipelines have `depthWriteEnabled: false` for translucent rendering — when a translucent splat tile is the source content for ground classification, the depth buffer is empty at those pixels. Tracked as a separate small item below: **NEW-GS-CLASSIFICATION-DEPTH** (~1 session, follow-up to Batch 79's Model pattern).
 
-**Impact:**
+**Trace:** Replaces C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH per audit 2026-04-28; full closure documented 2026-04-30.
 
-- **Without it:** PointCloud / batched-primitive translucent tiles still mis-classify (only Model path got Batch 79's selective depth-write). Translucent-on-translucent classification doesn't render.
-- **With it:** Full WebGL parity for the classification system, single architecture covering all alpha modes and all content types.
+### NEW-GS-CLASSIFICATION-DEPTH
 
-**Trace:** Replaces C-R8-TRANSLUCENT-CLASSIFICATION-DISPATCH per audit 2026-04-28.
+**What:** Gaussian Splat 3D-tile content (`.spz`/`.splat`) currently has `depthWriteEnabled: false` on its translucent pipelines. When a ground primitive classifies against a region containing a translucent splat tile, the classifier samples globe-depth instead of splat-tile depth — classification "leaks through" the splat to whatever lies behind it on the globe surface.
+
+**Why deferred:** Edge case. Most production 3D Tiles content is Models / PointClouds; splat-as-classification-source is rare.
+
+**Prerequisites:** None. Mirrors the Batch 79 Model fix — sibling pipeline with `depthWriteEnabled: true`, swap via `WebGPUDrawCommand.classificationDepthPipeline` when the per-tile `depthForTranslucentClassification` flag is set.
+
+**Estimated effort:** 1 session.
+
+**Impact:** Without it: translucent splat tiles mis-classify when used as classification sources. With it: full content-type coverage for translucent-tile classification.
 
 ### ~~C-R8-CLASSIFICATION-PRIMITIVE-GEOM-PLUMBING~~ FIXED 2026-04-28 (Batch 81)
 
@@ -355,19 +368,26 @@ The per-vertex `widthMeters` produces extreme magnitudes — most likely because
 
 **Parent finding:** Five WebGPU renderers were missing pick paths. All five shipped at primitive granularity through Batches 30/31/53/54. Three named follow-ups remain.
 
-### C-R9-MODEL-FEATURE-PICK
+### C-R9-MODEL-FEATURE-PICK — CODE WIRED, BLOCKED ON UPSTREAM b3dm RENDERING GAP
 
-**What:** Per-feature pick on glTF Models. `scene.pick()` over a Model returns the Model object; per-feature pick (one target per `EXT_mesh_features` / `EXT_structural_metadata` feature) needs the pick FBO to read per-fragment featureId.
+**Status (verified 2026-04-30 via `Tools/visual-regression/verify-model-feature-pick.mjs`):** All four code-paths for per-feature pick are wired and look correct:
 
-**Why deferred:** Requires KHR feature-ID integration on pick FBO side. Color path reads featureId (Batch 48 edge-feature-id work); pick path doesn't emit it yet.
+1. **Shader pickFS routes through `lookupFeaturePickColor`** (`ModelPBRComplete.wgsl:1862–1929`) when `featureId.featurePickEnabled > 0.5` and the batch table is bound.
+2. **Per-feature pick texture allocation + upload** in `WebGPUModelFeatureId.js:512–580` (`ensurePerFeaturePickIds`) — eager allocation when batch table is present, one Cesium pickId per feature, target = `{primitive: model, id: featureId}`.
+3. **Bind group binds feature-pick texture** at `@group(6) @binding(5)` (`WebGPUModelFeatureId.js:459–462`).
+4. **Uniform flag flip** — `featureUniformData[12] = featurePickTex ? 1.0 : 0.0` (`WebGPUModelFeatureId.js:423`).
 
-**Prerequisites:** Pairs with C-R1-TILE-BATCH (both touch batch-table integration).
+**Blocking gap (discovered during verification):** The verify script loads `BatchTableHierarchy/tileset.json` (b3dm content with 30-feature batch table, `batchTextureExists: true`, `batchTextureDimensions: [30, 1]` — all the upstream metadata is correct) and confirms:
 
-**Estimated effort:** 2-3 sessions.
+- `tilesetFeaturesLoaded: 30` — Cesium loads the features.
+- `model._webgpuCache.primitives === {}` — **the WebGPU model renderer never builds primitive caches for the b3dm-tileset model.**
+- Consequently `ensureFeatureIdResources` is never invoked, `ensurePerFeaturePickIds` never runs, and no per-feature pickIds are allocated.
 
-**Impact:** 3D Tiles per-feature interactivity (clicking single building in city tileset) doesn't work on WebGPU. Workaround: client decode pick result against feature table manually.
+So the C-R9 work is functionally **un-testable** until the upstream b3dm-Model rendering path lands. Once the b3dm model populates `_webgpuCache.primitives`, the existing per-feature pick code should fire automatically — no further C-R9 work is needed in WebGPU itself. The Cesium3DTile JS-side flag-plumbing is also already done (Batch 100 — `Cesium3DTile.js:1084` sets `depthForTranslucentClassification`).
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open").
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open"); 2026-04-30 reverification confirms shader + JS code wired Batches 100/101.
+
+**Estimated remaining effort:** 0 sessions if the b3dm-Model render path lands separately; the verify script will then pass automatically.
 
 ### C-R9-MODEL-PICK-TRANSLUCENT
 
