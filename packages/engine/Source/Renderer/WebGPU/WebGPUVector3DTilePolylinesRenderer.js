@@ -35,7 +35,6 @@
  * @private
  */
 import defined from "../../Core/defined.js";
-import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -180,14 +179,10 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
     code,
   });
 
-  const sharedBgl = makeBindGroupLayout(
-    device,
-    "Vector3DTilePolylines BGL",
-    [
-      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-      storageBuffer(1, Stage.VERTEX, { readOnly: true }),
-    ],
-  );
+  const sharedBgl = makeBindGroupLayout(device, "Vector3DTilePolylines BGL", [
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    storageBuffer(1, Stage.VERTEX, { readOnly: true }),
+  ]);
 
   const layout = device.createPipelineLayout({
     label: "Vector3DTilePolylines PipelineLayout",
@@ -275,7 +270,9 @@ function descriptorToGPU(d) {
 }
 
 function tryResolvePipelines(device, pipelineCache, resources, cache) {
-  if (cache.colorPipeline) return true;
+  if (cache.colorPipeline) {
+    return true;
+  }
   if (pipelineCache) {
     const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
     if (sync) {
@@ -332,7 +329,9 @@ function packUniforms(data, frameState, primitive) {
 }
 
 function ensureVertexBuffer(cache, primitive, device) {
-  if (defined(cache.vertexGPUBuffer)) return;
+  if (defined(cache.vertexGPUBuffer)) {
+    return;
+  }
 
   const cur = primitive._currentPositions;
   const prev = primitive._previousPositions;
@@ -350,7 +349,9 @@ function ensureVertexBuffer(cache, primitive, device) {
   }
 
   const numVerts = cur.length / 3;
-  if (numVerts === 0) return;
+  if (numVerts === 0) {
+    return;
+  }
 
   // 48-byte stride: prev (12) + curr (12) + next (12) + expandAndWidth (8)
   // + batchId (4) + 0-pad. The 4-byte tail pad keeps GPU sample alignment
@@ -384,9 +385,13 @@ function ensureVertexBuffer(cache, primitive, device) {
 }
 
 function ensureIndexBuffer(cache, primitive, device) {
-  if (defined(cache.indexGPUBuffer)) return;
+  if (defined(cache.indexGPUBuffer)) {
+    return;
+  }
   const indices = primitive._indices;
-  if (!defined(indices)) return;
+  if (!defined(indices)) {
+    return;
+  }
 
   const needsU32 = indices.BYTES_PER_ELEMENT === 4;
   const typed = needsU32 ? new Uint32Array(indices) : new Uint16Array(indices);
@@ -416,7 +421,9 @@ function ensureBatchColorStorage(cache, primitive, device) {
   ) {
     return;
   }
-  if (defined(cache.batchColorBuffer)) cache.batchColorBuffer.destroy();
+  if (defined(cache.batchColorBuffer)) {
+    cache.batchColorBuffer.destroy();
+  }
   cache.batchColorBuffer = device.createBuffer({
     label: "Vector3DTilePolylines batch colors",
     size: requiredBytes,
@@ -429,7 +436,9 @@ function ensureBatchColorStorage(cache, primitive, device) {
 
 function uploadBatchColors(cache, primitive, device) {
   const scratch = cache.batchColorScratch;
-  if (!defined(scratch)) return;
+  if (!defined(scratch)) {
+    return;
+  }
 
   // Vector3DTilePolylines doesn't carry `_batchedIndices` (each polyline is
   // its own draw conceptually) — colors live on the batch table. Default
@@ -557,11 +566,21 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
 
 function destroyWebGPUVector3DTilePolylineResources(primitive) {
   const cache = primitive._webgpuCache;
-  if (!defined(cache)) return;
-  if (defined(cache.uniformBuffer)) cache.uniformBuffer.destroy();
-  if (defined(cache.batchColorBuffer)) cache.batchColorBuffer.destroy();
-  if (defined(cache.vertexGPUBuffer)) cache.vertexGPUBuffer.destroy();
-  if (defined(cache.indexGPUBuffer)) cache.indexGPUBuffer.destroy();
+  if (!defined(cache)) {
+    return;
+  }
+  if (defined(cache.uniformBuffer)) {
+    cache.uniformBuffer.destroy();
+  }
+  if (defined(cache.batchColorBuffer)) {
+    cache.batchColorBuffer.destroy();
+  }
+  if (defined(cache.vertexGPUBuffer)) {
+    cache.vertexGPUBuffer.destroy();
+  }
+  if (defined(cache.indexGPUBuffer)) {
+    cache.indexGPUBuffer.destroy();
+  }
   primitive._webgpuCache = undefined;
 }
 

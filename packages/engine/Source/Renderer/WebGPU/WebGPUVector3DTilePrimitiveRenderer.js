@@ -229,7 +229,9 @@ function descriptorToGPU(d) {
 }
 
 function tryResolvePipelines(device, pipelineCache, resources, cache) {
-  if (cache.colorPipeline) return true;
+  if (cache.colorPipeline) {
+    return true;
+  }
   if (pipelineCache) {
     const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
     if (sync) {
@@ -297,14 +299,20 @@ function packUniforms(data, frameState, primitive) {
 }
 
 function ensureGeometry(cache, primitive, device) {
-  if (defined(cache.vertexGPUBuffer)) return;
+  if (defined(cache.vertexGPUBuffer)) {
+    return;
+  }
 
   const positions = primitive._positions;
   const vertexBatchIds = primitive._vertexBatchIds;
-  if (!defined(positions) || !defined(vertexBatchIds)) return;
+  if (!defined(positions) || !defined(vertexBatchIds)) {
+    return;
+  }
 
   const numVerts = positions.length / 3;
-  if (numVerts === 0) return;
+  if (numVerts === 0) {
+    return;
+  }
 
   // Interleave position (3f) + batchId (1f) into 16-byte stride.
   // The CPU-side `_positions` and `_vertexBatchIds` arrays are released
@@ -328,10 +336,14 @@ function ensureGeometry(cache, primitive, device) {
 }
 
 function ensureIndexBuffer(cache, primitive, device) {
-  if (defined(cache.indexGPUBuffer) && !cache._indexDirty) return;
+  if (defined(cache.indexGPUBuffer) && !cache._indexDirty) {
+    return;
+  }
 
   const indices = primitive._indices;
-  if (!defined(indices)) return;
+  if (!defined(indices)) {
+    return;
+  }
 
   const max = indices.length > 0 ? primitive._positions.length / 3 : 0;
   const needsU32 = max > 0xffff || indices.BYTES_PER_ELEMENT === 4;
@@ -388,7 +400,9 @@ function ensureBatchColorStorage(cache, primitive, device) {
 
 function uploadBatchColors(cache, primitive, device) {
   const scratch = cache.batchColorScratch;
-  if (!defined(scratch)) return;
+  if (!defined(scratch)) {
+    return;
+  }
   scratch.fill(0);
 
   // Walk the batch table feature colors. For each feature, write its color
@@ -565,7 +579,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const resolveDepthSampleBindGroup = () => {
     const currentSource =
       context._packedTranslucentDepthView ?? context._globeDepthView;
-    if (!currentSource) return null;
+    if (!currentSource) {
+      return null;
+    }
     if (cache.depthSampleViewRef !== currentSource) {
       cache.depthSampleBindGroup = device.createBindGroup({
         label: "Vector3DTilePrimitive depth-sample BG",
@@ -598,8 +614,12 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     const entry = batchedIndices[i];
     const offset = entry.offset | 0;
     const count = entry.count | 0;
-    if (count <= 0) continue;
-    if (offset < 0 || offset + count > totalIndices) continue;
+    if (count <= 0) {
+      continue;
+    }
+    if (offset < 0 || offset + count > totalIndices) {
+      continue;
+    }
 
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.colorPipeline,
@@ -622,11 +642,21 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
 
 function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
   const cache = primitive._webgpuCache;
-  if (!defined(cache)) return;
-  if (defined(cache.uniformBuffer)) cache.uniformBuffer.destroy();
-  if (defined(cache.batchColorBuffer)) cache.batchColorBuffer.destroy();
-  if (defined(cache.vertexGPUBuffer)) cache.vertexGPUBuffer.destroy();
-  if (defined(cache.indexGPUBuffer)) cache.indexGPUBuffer.destroy();
+  if (!defined(cache)) {
+    return;
+  }
+  if (defined(cache.uniformBuffer)) {
+    cache.uniformBuffer.destroy();
+  }
+  if (defined(cache.batchColorBuffer)) {
+    cache.batchColorBuffer.destroy();
+  }
+  if (defined(cache.vertexGPUBuffer)) {
+    cache.vertexGPUBuffer.destroy();
+  }
+  if (defined(cache.indexGPUBuffer)) {
+    cache.indexGPUBuffer.destroy();
+  }
   primitive._webgpuCache = undefined;
 }
 

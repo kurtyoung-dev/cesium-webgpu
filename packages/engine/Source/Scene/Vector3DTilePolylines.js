@@ -441,7 +441,9 @@ function finishVertexArray(polylines, context) {
     if (defined(polylines._vertexBatchIds)) {
       byteLength += polylines._vertexBatchIds.byteLength;
     }
-    if (defined(indices)) byteLength += indices.byteLength;
+    if (defined(indices)) {
+      byteLength += indices.byteLength;
+    }
     polylines._geometryByteLength = byteLength;
     return;
   }
