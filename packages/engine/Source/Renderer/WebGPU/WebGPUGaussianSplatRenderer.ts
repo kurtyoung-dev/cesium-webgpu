@@ -489,7 +489,32 @@ function updateWebGPUGaussianSplats(
   }
 
   const cache = primitive._webgpuCache as GaussianSplatCache;
-  const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — splats draw into scene FB; use scenePipelineFormat.
+  const canvasFormat: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // Batch 110 — invalidate pipeline resources on scene format change.
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache.initialized &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    (
+      cache as GaussianSplatCache & {
+        _pipelineResources?: SplatPipelineResources;
+      }
+    )._pipelineResources = undefined;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+  }
 
   // C-R7-RENDERER-MIGRATION (Batch 56) — sidecar holds the resources we
   // built once and re-use across frames while the cache materializes

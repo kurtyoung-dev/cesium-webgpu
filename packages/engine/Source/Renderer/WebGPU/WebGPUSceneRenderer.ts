@@ -613,15 +613,15 @@ export class WebGPUSceneRenderer {
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
-  // Batch 109 — track last-applied HDR mode so a runtime
-  // `scene.useHDR` toggle without a resize triggers framebuffer
-  // recreate. Without this, the SceneFramebuffer keeps its old
-  // color format (`rgba16float` ↔ canvas format) and downstream
-  // textures that depend on `colorFormat` (OIT accumulation, edge
-  // MRT, refraction capture, velocity) drift out of sync. Initial
-  // value `null` so the first `update()` call always reaches
-  // `_sceneFramebuffer.update` regardless of the initial HDR
-  // setting.
+  // Batch 109 — track last-applied HDR mode so a runtime toggle of
+  // `scene.useHDR` triggers a framebuffer recreate even when the
+  // window dimensions don't change. Initial value `null` so the
+  // first `update()` call always reaches `_sceneFramebuffer.update`
+  // regardless of the initial HDR setting. See Batch 110 for the
+  // companion pipeline-cache invalidation that completes the
+  // runtime toggle (without it, pipelines have the old canvas
+  // format baked in and produce validation warnings against the
+  // recreated rgba16float scene FB).
   private _lastHDR: boolean | null = null;
   private _depthPlaneWarned: boolean = false;
 
@@ -652,6 +652,80 @@ export class WebGPUSceneRenderer {
   private _deviceInvalidationUnsub: (() => void) | null = null;
 
   // --- Lazy initialization ---
+
+  /**
+   * Batch 110 — early-frame hook that recreates the scene framebuffer
+   * + bumps the scene-pipeline-format generation BEFORE primitives'
+   * update methods run. Called from `Scene.render()` between
+   * `context.beginFrame()` and `scene.updateEnvironment()`.
+   *
+   * Without this hook, the framebuffer recreation lives inside
+   * `_ensureResources` which runs from `executeCommands` AFTER
+   * primitives have already populated the command list. On the
+   * runtime HDR toggle frame, primitives like SkyAtmosphere would
+   * emit commands referencing the OLD-format pipeline (because the
+   * generation hadn't bumped yet), then `_ensureResources` would
+   * bump the generation too late, producing one transient
+   * pipeline-vs-attachment validation warning per toggle direction.
+   *
+   * The function is idempotent — calling `_ensureResources` later
+   * in the same frame is a no-op for the scene-framebuffer block
+   * because `needsRecreate` is now false (HDR is the same as
+   * `_lastHDR` after this method ran).
+   *
+   * @param config Subset of WebGPURenderFrameConfig with the fields
+   *   we need (scene + context + useHDR). Full config isn't built
+   *   yet at this point in the frame.
+   */
+  prepareFrame(config: {
+    scene: CesiumScene;
+    context: WebGPUContext;
+    useHDR: boolean;
+  }): void {
+    const { context } = config;
+    const device: GPUDevice | undefined = context._device;
+    if (!device) {
+      return;
+    }
+
+    const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
+      context._canvas;
+    const width = canvas?.width ?? 1;
+    const height = canvas?.height ?? 1;
+    const needsResize = width !== this._width || height !== this._height;
+    const hdr = config.useHDR ?? false;
+    const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
+    const needsRecreate = !this._initialized || needsResize || hdrChanged;
+    this._lastHDR = hdr;
+
+    if (!this._sceneFramebuffer) {
+      this._sceneFramebuffer = new WebGPUSceneFramebuffer();
+    }
+    if (needsRecreate) {
+      const numSamples: number = context._msaaSamples ?? 1;
+      const canvasFormat: GPUTextureFormat =
+        context.presentationFormat ?? "bgra8unorm";
+      this._sceneFramebuffer.update(
+        device,
+        width,
+        height,
+        hdr,
+        numSamples,
+        canvasFormat,
+      );
+      context._refractionSceneView = null;
+    }
+
+    const previousSceneColorFormat = context._sceneColorFormat;
+    context._sceneColorFormat =
+      this._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
+    if (
+      context._sceneColorFormat !== undefined &&
+      context._sceneColorFormat !== previousSceneColorFormat
+    ) {
+      context._scenePipelineFormatGeneration += 1;
+    }
+  }
 
   /**
    * Ensure scene-level resources are created and sized.
@@ -735,8 +809,23 @@ export class WebGPUSceneRenderer {
     // on the context but never assigned, leaving it stuck at the
     // default `"bgra8unorm"` and producing format mismatches when
     // scene-facing pipelines composited against HDR targets.
+    const previousSceneColorFormat = context._sceneColorFormat;
     context._sceneColorFormat =
       this._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
+    // Batch 110 — bump the scene pipeline format generation when the
+    // scene color format actually changes. Renderers caching pipelines
+    // that target scene FB observe the bump and clear+rebuild their
+    // local caches against the new `scenePipelineFormat`. Without this,
+    // a runtime HDR toggle (rgba16float ↔ canvas format) leaves cached
+    // pipelines pointing at the OLD format, producing validation
+    // warnings + black scene-FB writes for sky / globe / model /
+    // primitive draws.
+    if (
+      context._sceneColorFormat !== undefined &&
+      context._sceneColorFormat !== previousSceneColorFormat
+    ) {
+      context._scenePipelineFormatGeneration += 1;
+    }
 
     // OIT (order-independent transparency)
     if (config.useOIT && !this._oit) {
@@ -821,6 +910,25 @@ export class WebGPUSceneRenderer {
         canvasFormat,
         context.webgpuPipelineCache ?? null,
       );
+    }
+
+    // Batch 110 (in progress) — when HDR mode toggles at runtime, the
+    // post-process pipeline's ping-pong textures (rgba16float ↔ canvas
+    // format) and every stage's pipeline target format must rebuild.
+    // The cheapest correct path is to destroy the whole pipeline and
+    // let the first-init block below recreate it with the new HDR
+    // setting + the matching stage chain (e.g., `addAutoExposure`
+    // only fires in HDR mode).
+    //
+    // Detection: the pipeline tracks its own `_hdr` mode internally
+    // and we compare against the new `hdr` argument. Skipped on
+    // initial mount so the first-init block runs normally.
+    if (
+      this._postProcess &&
+      (this._postProcess as unknown as { _hdr: boolean })._hdr !== hdr
+    ) {
+      this._postProcess.destroy();
+      this._postProcess = null;
     }
 
     // Post-processing pipeline
@@ -2048,9 +2156,14 @@ export class WebGPUSceneRenderer {
       count >= (perfMgr.config?.renderBundleThreshold ?? 8)
     ) {
       try {
+        // Batch 110 — globe terrain pipelines target the scene FB, so
+        // the bundle's `colorFormats` must mirror the scene FB color
+        // format (rgba16float in HDR, canvas format otherwise). Using
+        // `presentationFormat` here would mismatch in HDR mode and the
+        // bundle would be flagged invalid.
         const bundleEncoder = context._device.createRenderBundleEncoder({
           label: "Globe terrain bundle",
-          colorFormats: [context.presentationFormat],
+          colorFormats: [context.scenePipelineFormat],
           depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
         });
 

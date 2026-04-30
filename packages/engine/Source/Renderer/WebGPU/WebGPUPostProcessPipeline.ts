@@ -854,20 +854,40 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       return;
     }
 
-    // Ping-pong through single-pass stages
+    // Ping-pong through single-pass stages.
+    //
+    // Batch 110 (HDR fix) — every single-pass stage's pipeline is
+    // compiled with `targets: [{ format: _intermediateFormat }]` (see
+    // `_compileStage` callers). When HDR is on, intermediateFormat is
+    // `rgba16float` while the canvas swap chain stays at the canvas
+    // format. Writing the LAST stage straight to `destView` (canvas)
+    // would produce a pipeline-vs-attachment format mismatch and the
+    // canvas would render black with a validation warning.
+    //
+    // Fix: every single-pass stage writes to a ping-pong view (which
+    // matches `_intermediateFormat`), and an extra identity-blit at
+    // the end downconverts to `destView` (canvas format). The blit is
+    // a single fullscreen-triangle pass with no uniforms — cheap. In
+    // SDR mode `_intermediateFormat === canvasFormat` so the blit is
+    // an over-call, but the cost is negligible compared to one stage's
+    // worth of fragment shading.
     const views = [this._pingView!, this._pongView!];
     let viewIndex = 0;
 
     for (let i = 0; i < singlePassStages.length; i++) {
       const stage = singlePassStages[i];
-      const isLast = i === singlePassStages.length - 1;
-      const targetView = isLast ? destView : views[viewIndex];
+      const targetView = views[viewIndex];
 
       this._executeSinglePassStage(encoder, stage, currentView, targetView);
 
       currentView = targetView;
       viewIndex = (viewIndex + 1) % 2;
     }
+
+    // Final blit: ping-pong view → canvas. Uses the identity-blit
+    // pipeline which is built once at `initialize()` against the
+    // canvas format.
+    this._executeCopyStage(encoder, currentView, destView);
   }
 
   // ================================================================

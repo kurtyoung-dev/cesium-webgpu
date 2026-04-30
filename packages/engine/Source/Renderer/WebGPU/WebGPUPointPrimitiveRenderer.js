@@ -682,9 +682,16 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   if (!defined(cache.pipelines)) {
     cache.pipelines = new Map();
   }
+  // Batch 110 — invalidate cached pipelines on scene format change.
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (cache._pipelineFormatGeneration !== sceneGen) {
+    cache.pipelines.clear();
+    cache.pickPipelines?.clear();
+    cache._pipelineFormatGeneration = sceneGen;
+  }
   let pipelineEntry = cache.pipelines.get(defines);
   if (!defined(pipelineEntry)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPointShaderModuleCache(device);
     const shaderModule = moduleCache.getOrCreate(
@@ -891,7 +898,7 @@ function _pushPickCommand(
   let pickEntry = cache.pickPipelines.get(pickDefines);
   if (!defined(pickEntry)) {
     const pickShader = getCollectionShaderSource("pointPick");
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPointShaderModuleCache(device);
     const pickModule = moduleCache.getOrCreate(

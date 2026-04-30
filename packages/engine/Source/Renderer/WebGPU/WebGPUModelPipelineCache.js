@@ -500,6 +500,15 @@ class WebGPUModelPipelineCache {
     this._device = device;
     this._presentationFormat = presentationFormat;
     this._depthFormat = depthFormat;
+    // Batch 110 — track the scene pipeline format generation last
+    // applied so a runtime HDR / canvas-format change can invalidate
+    // every cached pipeline (color, pick, depth-write, velocity).
+    // Pipelines have their fragment target format baked in at
+    // creation; without invalidation the cached entries would
+    // produce validation errors against the recreated scene FB.
+    // -1 sentinel so the first call to `maybeUpdateForSceneFormat`
+    // unconditionally writes the current generation without a clear.
+    this._sceneFormatGeneration = -1;
     this._pipelines = new Map();
     // C-R9-MODEL-PICK (Batch 54) — pick pipeline cache, keyed by the same
     // (alphaMode, doubleSided) pair as `_pipelines`. Each pick pipeline
@@ -727,6 +736,41 @@ class WebGPUModelPipelineCache {
         { binding: 6, resource: this._defaultSampler },
       ],
     });
+  }
+
+  /**
+   * Batch 110 — invalidate cached pipelines when the scene pipeline
+   * format generation has changed (HDR toggle, MSAA toggle). Updates
+   * `_presentationFormat` to the new scene-pipeline format so newly
+   * created pipelines target the right fragment-output format.
+   *
+   * Caller (model renderer's update) invokes this once per frame
+   * before any `getPipeline` / `getPickPipeline` / `getVelocityPipeline`
+   * lookup. Cheap reference compare; only the first frame after a
+   * format change pays for the cache wipe.
+   *
+   * @param {object} context WebGPUContext
+   */
+  maybeUpdateForSceneFormat(context) {
+    const generation = context._scenePipelineFormatGeneration ?? 0;
+    if (this._sceneFormatGeneration === generation) {
+      return;
+    }
+    this._sceneFormatGeneration = generation;
+    const newFormat = context.scenePipelineFormat ?? this._presentationFormat;
+    if (newFormat !== this._presentationFormat) {
+      this._presentationFormat = newFormat;
+    }
+    // Wipe all cached pipelines so the next lookup creates fresh
+    // entries against the current `_presentationFormat`. The cached
+    // pipelines themselves aren't `destroy()`-ed (WebGPU has no
+    // pipeline destroy) — releasing the Map references is enough
+    // for the JS GC to collect them once any in-flight commands
+    // referencing them complete.
+    this._pipelines.clear();
+    this._pickPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
   }
 
   /**

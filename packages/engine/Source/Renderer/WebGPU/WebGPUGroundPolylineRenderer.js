@@ -2173,8 +2173,19 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   }
   const cache = primitive._webgpuPolylineCache;
 
+  // Batch 110 — invalidate cached pipeline resources on scene format
+  // change (HDR toggle).
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache._pipelineResources) &&
+    cache._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache._pipelineResources = undefined;
+    cache.bgl = undefined;
+  }
+
   if (!defined(cache._pipelineResources)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     cache._pipelineResources = buildPolylinePipelineResources(
       device,
@@ -2182,6 +2193,7 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       depthFmt,
     );
     cache.bgl = cache._pipelineResources.bgl;
+    cache._pipelineFormatGeneration = sceneGen;
     cache.pipelineRequestPending = false;
   }
 

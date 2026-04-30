@@ -778,11 +778,33 @@ function updateWebGPUBufferPolygonCollection(
   }
   const context = frameState.context;
   const device: GPUDevice = context.device;
-  const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — buffer primitives draw into scene FB; use scenePipelineFormat.
+  const format: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
   let cache = collection._webgpuCache as PolygonCache | undefined;
+  // Batch 110 — invalidate on scene format change (HDR toggle).
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache = undefined;
+    collection._webgpuCache = undefined;
+  }
   if (!cache) {
     cache = initPolygonCache(collection, context, format);
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
     collection._webgpuCache = cache;
     // First-time: pack everything as dirty.
     collection._dirtyOffset = 0;
@@ -1167,11 +1189,33 @@ function updateWebGPUBufferPolylineCollection(
   }
   const context = frameState.context;
   const device: GPUDevice = context.device;
-  const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — buffer primitives draw into scene FB; use scenePipelineFormat.
+  const format: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
   let cache = collection._webgpuCache as PolylineCache | undefined;
+  // Batch 110 — invalidate on scene format change (HDR toggle).
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache = undefined;
+    collection._webgpuCache = undefined;
+  }
   if (!cache) {
     cache = initPolylineCache(collection, context, format);
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;
@@ -1470,11 +1514,33 @@ function updateWebGPUBufferPointCollection(
   }
   const context = frameState.context;
   const device: GPUDevice = context.device;
-  const format: GPUTextureFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — buffer primitives draw into scene FB; use scenePipelineFormat.
+  const format: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
   let cache = collection._webgpuCache as PointCache | undefined;
+  // Batch 110 — invalidate on scene format change (HDR toggle).
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache = undefined;
+    collection._webgpuCache = undefined;
+  }
   if (!cache) {
     cache = initPointCache(collection, context, format);
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;

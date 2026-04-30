@@ -555,9 +555,28 @@ export function renderWeatherParticles(
   if (!device || !cache?.initialized || !cache.particleBuffer) return;
   if (!weatherConfig?.enabled) return;
 
-  const format: GPUTextureFormat = context.presentationFormat ?? "bgra8unorm";
+  // Batch 110 — weather particles draw into scene FB; use scenePipelineFormat
+  // and invalidate cache on format change.
+  const format: GPUTextureFormat =
+    (context as unknown as { scenePipelineFormat?: GPUTextureFormat })
+      .scenePipelineFormat ??
+    context.presentationFormat ??
+    "bgra8unorm";
   const depthFormat: GPUTextureFormat =
     context.depthFormat ?? "depth24plus-stencil8";
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache.renderPipeline &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache.renderPipeline = undefined;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+  }
 
   initializeRenderPipeline(device, cache, format, depthFormat);
   if (!cache.renderUniformBuffer) return;

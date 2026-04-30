@@ -25,7 +25,11 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> result: array<f32>;
 @group(0) @binding(3) var<uniform> params: Params;
 
-var<workgroup> shared: array<f32, 256>;
+// Renamed from `shared` to `tileLumens` because `shared` is a reserved
+// keyword in newer WGSL drafts (Naga / Tint enforce this — Edge's
+// shader compiler rejects the variable name with a parse error). The
+// allocation + access pattern is identical; this is a pure rename.
+var<workgroup> tileLumens: array<f32, 256>;
 
 fn luminance(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -44,13 +48,13 @@ fn pass1(
     let color = textureLoad(inputTexture, vec2<i32>(i32(gid.x), i32(gid.y)), 0).rgb;
     lum = luminance(max(color, vec3<f32>(0.0)));
   }
-  shared[lid] = lum;
+  tileLumens[lid] = lum;
   workgroupBarrier();
 
   // Tree reduction in shared memory (256 → 1)
   for (var stride: u32 = 128u; stride > 0u; stride >>= 1u) {
     if (lid < stride) {
-      shared[lid] += shared[lid + stride];
+      tileLumens[lid] += tileLumens[lid + stride];
     }
     workgroupBarrier();
   }
@@ -61,7 +65,7 @@ fn pass1(
     let tileH = min(16u, params.height - wgid.y * 16u);
     let count = f32(tileW * tileH);
     let tileIndex = wgid.y * params.tileCountX + wgid.x;
-    intermediate[tileIndex] = shared[0] / max(count, 1.0);
+    intermediate[tileIndex] = tileLumens[0] / max(count, 1.0);
   }
 }
 
@@ -80,19 +84,19 @@ fn pass2(
     sum += intermediate[idx];
     idx += 256u;
   }
-  shared[lid] = sum;
+  tileLumens[lid] = sum;
   workgroupBarrier();
 
   // Tree reduction (256 → 1)
   for (var stride: u32 = 128u; stride > 0u; stride >>= 1u) {
     if (lid < stride) {
-      shared[lid] += shared[lid + stride];
+      tileLumens[lid] += tileLumens[lid + stride];
     }
     workgroupBarrier();
   }
 
   if (lid == 0u) {
-    let avgLuminance = shared[0] / f32(max(totalTiles, 1u));
+    let avgLuminance = tileLumens[0] / f32(max(totalTiles, 1u));
 
     // Temporal smoothing: exponential moving average with the previous
     // frame's result. Matches WebGL's `previous + (current - previous)

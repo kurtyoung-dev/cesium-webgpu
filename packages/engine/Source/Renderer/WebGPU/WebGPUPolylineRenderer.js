@@ -843,6 +843,17 @@ function getOrCreatePolylinePipelineEntry(
     cache.pipelines = {};
   }
 
+  // Batch 110 — invalidate cached pipelines on scene format change
+  // (HDR toggle). The polyline cache nests Map-by-defines under each
+  // materialType key, so we drop the entire materialType-keyed object
+  // and rebuild empty maps on next access.
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (cache._pipelineFormatGeneration !== sceneGen) {
+    cache.pipelines = {};
+    cache.pickPipelines = undefined;
+    cache._pipelineFormatGeneration = sceneGen;
+  }
+
   let byDefines = cache.pipelines[materialType];
   if (!defined(byDefines)) {
     byDefines = new Map();
@@ -854,7 +865,7 @@ function getOrCreatePolylinePipelineEntry(
 
   const shaderKey = selectShaderKey(materialType);
   const shaderCode = getCollectionShaderSource(shaderKey);
-  const format = context.presentationFormat || "bgra8unorm";
+  const format = context.scenePipelineFormat || "bgra8unorm";
   const depthFmt = context.depthFormat || "depth24plus-stencil8";
   const label = `Polyline ${materialType}`;
   const moduleCache = getPolylineShaderModuleCache(device);
@@ -1145,7 +1156,7 @@ function _pushPolylinePickCommand(
   let pickPipelineEntry = cache.pickPipelines.get(pickDefines);
   if (!defined(pickPipelineEntry)) {
     const pickShader = getCollectionShaderSource("polylinePick");
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPolylineShaderModuleCache(device);
     const pickModule = moduleCache.getOrCreate(

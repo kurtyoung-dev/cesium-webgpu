@@ -347,6 +347,18 @@ function updateWebGPUSun(sun, frameState, commandList) {
     });
   }
 
+  // Batch 110 \u2014 invalidate cached pipeline when scene format changes
+  // (HDR toggle). The Sun pipeline targets the scene FB, so its
+  // fragment-output format must match the recreated scene FB.
+  const currentGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache.pipelineEntry) &&
+    cache._pipelineFormatGeneration !== currentGen
+  ) {
+    cache.pipelineEntry = undefined;
+    cache.pipeline = undefined;
+  }
+
   // C-R7 (Batch 74) \u2014 descriptor + central pipeline cache. Two Sun
   // instances on the same device share one compiled shader module + one
   // pipeline.
@@ -365,7 +377,7 @@ function updateWebGPUSun(sun, frameState, commandList) {
       sampler(2, Stage.FRAGMENT),
     ]);
 
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFormat = context.depthFormat || "depth24plus-stencil8";
     const descriptor = {
       name: `Sun pipeline [${format}/${depthFormat}]`,
@@ -414,6 +426,7 @@ function updateWebGPUSun(sun, frameState, commandList) {
     };
     cache.pipelineEntry = { descriptor, pipeline: null, pending: false };
     cache.bindGroupLayout = bgl;
+    cache._pipelineFormatGeneration = currentGen;
   }
   const sunPipeline = tryResolveEnvPipeline(
     device,
@@ -758,6 +771,21 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.geometry = createMoonBoundingCube(device);
   }
 
+  // Batch 110 — invalidate cached pipeline + bundle when scene format
+  // changes. The bundleKey includes scenePipelineFormat so a stale
+  // bundle for the old format won't match anyway, but flagging
+  // _bundleStale forces explicit invalidation in the manager so the
+  // old bundle's GPU memory is released promptly.
+  const currentMoonGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache.pipelineEntry) &&
+    cache._pipelineFormatGeneration !== currentMoonGen
+  ) {
+    cache.pipelineEntry = undefined;
+    cache.pipeline = undefined;
+    cache._bundleStale = true;
+  }
+
   // C-R7 (Batch 74) — descriptor + central pipeline cache. The cache's
   // `createRenderPipelineAsync()` path catches shader/pipeline validation
   // errors and surfaces them through its `.catch` handler (logs + clears
@@ -768,7 +796,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   // simply attempt creation again next frame, matching the prior
   // behavior for transient errors).
   if (!defined(cache.pipelineEntry)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const built = buildMoonPipelineResources(device, format, depthFmt);
     cache.pipelineEntry = {
@@ -777,6 +805,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
       pending: false,
     };
     cache.bgl = built.bgl;
+    cache._pipelineFormatGeneration = currentMoonGen;
   }
   const moonPipeline = tryResolveEnvPipeline(
     device,
@@ -878,7 +907,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   // poison the entire command encoder on executeBundles.
   const bundleMgr = context.renderBundleManager;
   if (defined(bundleMgr) && defined(cache.pipeline) && !cache._pipelineFailed) {
-    const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.presentationFormat}:${context.depthFormat}`;
+    const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.scenePipelineFormat}:${context.depthFormat}`;
     if (cache._bundleStale) {
       bundleMgr.invalidate(bundleKey);
       cache._bundleStale = false;
@@ -886,7 +915,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     const bundle = bundleMgr.getOrCreate(
       bundleKey,
       {
-        colorFormats: [context.presentationFormat || "bgra8unorm"],
+        colorFormats: [context.scenePipelineFormat || "bgra8unorm"],
         depthStencilFormat: context.depthFormat || "depth24plus-stencil8",
         label: "Moon bundle",
       },

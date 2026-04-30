@@ -440,7 +440,32 @@ function updateWebGPUVoxelPrimitive(
   }
 
   const cache = primitive._webgpuCache as VoxelCache;
-  const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — voxels draw into scene FB; use scenePipelineFormat.
+  const canvasFormat: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // Batch 110 — invalidate cached pipeline on scene format change.
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache.initialized &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache.initialized = false;
+    cache.pipeline = null;
+    cache.pickPipeline = null;
+    cache.colorDescriptor = null;
+    cache.pickDescriptor = null;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+  }
 
   if (!cache.initialized) {
     cache.uniformBuffer = device.createBuffer({

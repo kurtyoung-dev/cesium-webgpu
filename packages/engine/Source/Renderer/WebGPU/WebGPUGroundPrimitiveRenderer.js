@@ -414,8 +414,19 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // pipeline creation through `context.webgpuPipelineCache`. The
   // descriptors and shader module are stashed on the cache so the async
   // resolver can re-poll across frames until pipelines materialize.
+  // Batch 110 — invalidate cached pipeline resources on scene format
+  // change (HDR toggle).
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache._pipelineResources) &&
+    cache._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache._pipelineResources = undefined;
+    cache.bgl = undefined;
+  }
+
   if (!defined(cache._pipelineResources)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     cache._pipelineResources = buildGroundPipelineResources(
       device,
@@ -424,6 +435,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache.pipelineRequestPending = false;
+    cache._pipelineFormatGeneration = sceneGen;
   }
 
   // Resolve stencil + color + pick through the central cache. On the

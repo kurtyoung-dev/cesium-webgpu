@@ -997,8 +997,12 @@ function createWebGPUCommands(
     bindGroupLayouts.push(effectsBGL);
     cache.effectsBGL = effectsBGL;
 
+    // Batch 110 — primitive pipelines target the scene FB, so use
+    // `scenePipelineFormat` (mirrors scene FB color format, not canvas
+    // swap chain format). The legacy variable name `canvasFormat` is
+    // kept for diff hygiene but the value is now scene-pipeline-correct.
     const canvasFormat =
-      context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
+      context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
     // Build the primitive render pipeline for a given cull mode. Kept
     // as a closure so the `twoPasses` path below can create two extra
     // variants (cullMode: "front" for pass 1, cullMode: "back" for
@@ -1846,8 +1850,9 @@ function createMaterialPipelineAndCache(
   bindGroupLayouts.push(matEffectsBGL);
   cache.effectsBGL = matEffectsBGL;
 
+  // Batch 110 — color pipeline targets scene FB; use scenePipelineFormat.
   const canvasFormat =
-    context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
+    context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
   cache.pipeline = device.createRenderPipeline({
     layout: device.createPipelineLayout({ bindGroupLayouts }),
     vertex: {

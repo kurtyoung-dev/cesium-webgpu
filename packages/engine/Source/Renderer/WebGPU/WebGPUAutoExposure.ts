@@ -65,8 +65,24 @@ export class WebGPUAutoExposure {
   private _adaptationRate: number;
 
   private _averageLuminance = 0.5;
+  // Batch 110 — ring of 3 readback buffers to avoid the "used while
+  // mapped" race. A single buffer breaks because `mapAsync` resolves
+  // asynchronously (after GPU completes the copy + the JS event loop
+  // returns to microtasks); between two consecutive frames the buffer
+  // can transition into the mapped state while the next frame's
+  // `copyBufferToBuffer` is already queued for submit, and WebGPU
+  // rejects "buffer used in submit while mapped". With 3 buffers we
+  // pick whichever slot is currently idle each frame, leaving older
+  // slots to finish their mapAsync at their own pace.
+  private _readbackRing: Array<{
+    buffer: GPUBuffer;
+    state: "idle" | "queued" | "mapped";
+  }> = [];
+  // Kept for backwards compatibility with the destroy() path; points
+  // at whichever ring slot's buffer is the current "primary" one (the
+  // one most recently copied into) so older code paths that referenced
+  // `_readbackBuffer` directly still find a valid resource.
   private _readbackBuffer: GPUBuffer | null = null;
-  private _readbackPending = false;
 
   // C-R11 (Batch 32) — AutoExposure dispatches one bind group per frame
   // from a stable sceneColorTexture. The naive path does
@@ -142,11 +158,17 @@ export class WebGPUAutoExposure {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    this._readbackBuffer = device.createBuffer({
-      label: "AutoExposure readback",
-      size: 4,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
+    // Batch 110 — allocate the readback ring (3 slots).
+    this._readbackRing = [];
+    for (let i = 0; i < 3; i++) {
+      const buf = device.createBuffer({
+        label: `AutoExposure readback (slot ${i})`,
+        size: 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      this._readbackRing.push({ buffer: buf, state: "idle" });
+    }
+    this._readbackBuffer = this._readbackRing[0].buffer;
 
     this._paramsBuffer = device.createBuffer({
       label: "AutoExposure params",
@@ -229,45 +251,57 @@ export class WebGPUAutoExposure {
     pass2.dispatchWorkgroups(1, 1, 1);
     pass2.end();
 
-    // Async readback for CPU-side access (1-frame latency, non-blocking)
-    if (!this._readbackPending && this._readbackBuffer) {
-      encoder.copyBufferToBuffer(
-        this._resultBuffer,
-        0,
-        this._readbackBuffer,
-        0,
-        4,
-      );
-      this._readbackPending = true;
-      // Capture the buffer identity now so the callback can tell if the
-      // renderer was destroyed (or buffers rotated on resize) between
-      // mapAsync() and resolution. Without the identity guard, unmapping
-      // the wrong buffer leaves it permanently mapped-pending.
-      const readback = this._readbackBuffer;
-      readback
-        .mapAsync(GPUMapMode.READ)
-        .then(() => {
-          if (this._readbackBuffer === readback) {
-            const data = new Float32Array(readback.getMappedRange());
-            this._averageLuminance = data[0];
-            readback.unmap();
-          }
-          this._readbackPending = false;
-        })
-        .catch(() => {
-          this._readbackPending = false;
-          // If mapAsync rejected after the buffer was already destroyed /
-          // swapped, no unmap is needed. If it rejected while the buffer is
-          // still ours (e.g. already-mapped), attempt to free the pending
-          // mapping so the next frame doesn't permanently wedge.
-          if (this._readbackBuffer === readback) {
-            try {
-              readback.unmap();
-            } catch {
-              /* already unmapped */
+    // Batch 110 — ring-buffered async readback. Pick an idle slot, copy
+    // the current frame's result into it, queue mapAsync. Slots transition
+    // through `idle → queued → mapped → idle` over (typically) 1-2 frames;
+    // having 3 slots ensures at least one is always idle. If somehow none
+    // is idle (e.g., a slot's mapAsync stalled on a hung GPU), we skip
+    // readback this frame — the previous frame's averageLuminance is
+    // reused, which is fine for tonemap stability.
+    const slot = this._readbackRing.find((s) => s.state === "idle");
+    if (slot) {
+      encoder.copyBufferToBuffer(this._resultBuffer, 0, slot.buffer, 0, 4);
+      slot.state = "queued";
+      this._readbackBuffer = slot.buffer; // keep the back-compat handle current
+      // Capture slot reference so the callback can detect if the ring
+      // was destroyed/replaced (resize, device loss) between mapAsync()
+      // and resolution.
+      const ring = this._readbackRing;
+      // Batch 110 — defer mapAsync to a microtask so it runs AFTER the
+      // SceneRenderer's queue.submit. Calling mapAsync immediately would
+      // put the buffer into "pending-map" state, and any queued submit
+      // that references it (the copyBufferToBuffer above is part of the
+      // same encoder we're about to submit) would fail validation with
+      // "buffer used in submit while mapped". The microtask delay is
+      // free — the synchronous code above queues the copy on the
+      // encoder, the SceneRenderer's submit completes, then this
+      // microtask schedules the mapAsync.
+      Promise.resolve().then(() => {
+        if (ring !== this._readbackRing) return;
+        slot.buffer
+          .mapAsync(GPUMapMode.READ)
+          .then(() => {
+            if (ring !== this._readbackRing) {
+              return;
             }
-          }
-        });
+            slot.state = "mapped";
+            try {
+              const data = new Float32Array(slot.buffer.getMappedRange());
+              this._averageLuminance = data[0];
+            } finally {
+              try {
+                slot.buffer.unmap();
+              } catch {
+                /* already unmapped (destroy raced) */
+              }
+              slot.state = "idle";
+            }
+          })
+          .catch(() => {
+            if (ring !== this._readbackRing) return;
+            slot.state = "idle";
+          });
+      });
     }
   }
 
@@ -321,11 +355,22 @@ export class WebGPUAutoExposure {
   private _destroyBuffers(): void {
     this._intermediateBuffer?.destroy();
     this._resultBuffer?.destroy();
-    this._readbackBuffer?.destroy();
+    // Batch 110 — destroy each ring slot's buffer. Pending mapAsync
+    // promises on these buffers will reject; the .catch handler is a
+    // no-op since the ring identity check filters out resolutions
+    // against a stale ring.
+    for (const slot of this._readbackRing) {
+      try {
+        slot.buffer.destroy();
+      } catch {
+        /* already destroyed */
+      }
+    }
+    this._readbackRing = [];
+    this._readbackBuffer = null;
     this._paramsBuffer?.destroy();
     this._intermediateBuffer = null;
     this._resultBuffer = null;
-    this._readbackBuffer = null;
     this._paramsBuffer = null;
     this._bindGroup = null;
     // C-R11 (Batch 32) — the storage/uniform buffers in the cached BG

@@ -534,9 +534,15 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   if (!defined(cache.sdfPipelineEntries)) {
     cache.sdfPipelineEntries = new Map();
   }
+  // Batch 110 — invalidate cached pipeline entries on scene format change.
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (cache._pipelineFormatGeneration !== sceneGen) {
+    cache.sdfPipelineEntries.clear();
+    cache._pipelineFormatGeneration = sceneGen;
+  }
   let entry = cache.sdfPipelineEntries.get(defines);
   if (!defined(entry)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getSDFShaderModuleCache(device);
     const shaderModule = moduleCache.getOrCreate(

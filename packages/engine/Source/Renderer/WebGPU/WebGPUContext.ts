@@ -387,6 +387,37 @@ export class WebGPUContext extends GraphicsContext {
   // visually wrong but doesn't cause a binding error.
   public _refractionSceneView: GPUTextureView | null = null;
 
+  // Batch 110 — scene pipeline format generation. Bumped by
+  // `WebGPUSceneRenderer.update` whenever `_sceneColorFormat` changes
+  // (HDR toggle, MSAA toggle, canvas format change). Renderers that
+  // cache pipelines targeting scene FB (model PBR, globe terrain,
+  // sky atmosphere, billboards, polylines, ground primitives, etc.)
+  // compare against their last-built generation; when the value
+  // differs, they clear and rebuild their pipeline caches against
+  // the current `scenePipelineFormat`. This is what makes runtime
+  // HDR toggle actually work — pre-Batch 110 every cached pipeline
+  // had the canvas format baked in, producing format-mismatch
+  // validation warnings + black scene FB writes when HDR toggled.
+  public _scenePipelineFormatGeneration: number = 0;
+
+  /**
+   * Format that pipelines drawing into the scene framebuffer should
+   * target. Equivalent to `_sceneColorFormat` (the scene FB's color
+   * attachment format). Differs from `presentationFormat` (canvas
+   * swap chain format) only when HDR is on — scene FB then uses
+   * `rgba16float` or `rg11b10ufloat` while canvas stays at the
+   * platform default (typically `bgra8unorm`). Renderers should use
+   * THIS getter for fragment target formats; only the post-process
+   * final-blit pipeline + debug overlays target `presentationFormat`.
+   */
+  get scenePipelineFormat(): GPUTextureFormat {
+    return (
+      this._sceneColorFormat ??
+      this.presentationFormat ??
+      ("bgra8unorm" as GPUTextureFormat)
+    );
+  }
+
   // WebGL extension properties (WebGPU natively supports these as core features)
   public floatingPointTexture: boolean = true; // WebGPU always supports float textures
   public halfFloatingPointTexture: boolean = true; // WebGPU always supports half-float textures

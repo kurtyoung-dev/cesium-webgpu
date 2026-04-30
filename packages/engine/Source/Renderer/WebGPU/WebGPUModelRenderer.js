@@ -1152,11 +1152,42 @@ function updateWebGPUModel(model, frameState) {
 
   // Create pipeline cache (shared across all primitives of this model)
   if (!defined(cache.pipelineCache)) {
-    const fmt = context.presentationFormat || "bgra8unorm";
+    const fmt = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     cache.pipelineCache = new WebGPUModelPipelineCache(device, fmt, depthFmt);
   }
   const pipelineCache = cache.pipelineCache;
+  // Batch 110 — drop per-primitive pipeline refs when the scene
+  // pipeline format generation bumps (HDR toggle, MSAA toggle). The
+  // pipelineCache wipes its own cache via maybeUpdateForSceneFormat;
+  // the per-primitive cache holds direct references that still point
+  // at the OLD pipeline objects, so we re-fetch them from the now-
+  // empty pipelineCache below per primitive (in the per-frame loop
+  // each primitive sees `pc.pipeline = pipelineCache.getPipeline(...)`
+  // re-fired). Lazy-allocated variants (pick/velocity/translucent/
+  // depth-write) drop to undefined and are re-fetched on next use.
+  const previousGen = pipelineCache._sceneFormatGeneration;
+  pipelineCache.maybeUpdateForSceneFormat(context);
+  const sceneFormatChanged =
+    previousGen !== pipelineCache._sceneFormatGeneration;
+  if (sceneFormatChanged) {
+    const primKeys = Object.keys(cache.primitives);
+    for (let i = 0; i < primKeys.length; i++) {
+      const pc = cache.primitives[primKeys[i]];
+      if (defined(pc)) {
+        pc.pipeline = null;
+        pc.pickPipeline = undefined;
+        pc.depthWritePipeline = undefined;
+        pc.velocityPipeline = undefined;
+        pc.translucentPipeline = undefined;
+        // Tag for the per-frame loop so it re-fetches pc.pipeline
+        // before the command emission below (the initial pipeline
+        // assignment lives inside ensurePrimitiveCache which only
+        // runs once per primitive lifecycle).
+        pc._pipelineNeedsRefetch = true;
+      }
+    }
+  }
 
   // Camera uniform buffer (updated per frame)
   if (!defined(cache.cameraBuffer)) {
@@ -1419,6 +1450,31 @@ function updateWebGPUModel(model, frameState) {
         geometry,
         matInfo,
       );
+
+      // Batch 110 — re-fetch the primary color pipeline when the
+      // scene pipeline format generation has bumped since this
+      // primitive was first set up. The pipelineCache was already
+      // cleared by `maybeUpdateForSceneFormat` above, so the
+      // getPipeline call below builds a fresh pipeline against the
+      // current `_presentationFormat` (which now mirrors the scene
+      // FB color format, e.g., rgba16float in HDR). Lazy variants
+      // (pick / velocity / translucent / depth-write) refresh
+      // themselves on their next-use sites — they're already
+      // undefined-tagged for re-fetch, the existing
+      // `if (!defined(primCache.X))` gates handle them.
+      if (primCache._pipelineNeedsRefetch || primCache.pipeline === null) {
+        primCache.pipeline = pipelineCache.getPipeline(
+          matInfo.alphaMode,
+          matInfo.isDoubleSided,
+        );
+        if (matInfo.alphaMode === AlphaModes.BLEND) {
+          primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+          );
+        }
+        primCache._pipelineNeedsRefetch = false;
+      }
 
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
       // declares transmission AND the SceneRenderer has published a

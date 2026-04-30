@@ -140,6 +140,10 @@ const UNIFORM_FLOAT_COUNT = UNIFORM_BUFFER_SIZE / 4;
 // Cached per-device resources (shader module, pipeline, bind group layouts)
 let _cachedShaderModule = null;
 let _cachedPipeline = null;
+// Batch 110 — track the format the cached pipeline was built for so
+// runtime HDR toggles invalidate it (the pipeline's fragment-output
+// format must match the recreated scene FB's color format).
+let _cachedPipelineFormat = null;
 let _cachedBindGroupLayout0 = null;
 let _cachedBindGroupLayout1 = null;
 let _cachedPipelineLayout = null;
@@ -202,7 +206,16 @@ function ensureLayouts(device) {
  * @returns {GPURenderPipeline}
  */
 function getPipeline(device, format) {
-  if (_cachedPipeline && _cachedDevice === device) {
+  // Batch 110 — re-create when the requested format changes (HDR
+  // toggle flips scene FB color format between rgba16float and the
+  // canvas format). Previously the cache only checked device identity
+  // and would return a pipeline targeting the OLD format against a
+  // recreated scene FB at the new format.
+  if (
+    _cachedPipeline &&
+    _cachedDevice === device &&
+    _cachedPipelineFormat === format
+  ) {
     return _cachedPipeline;
   }
 
@@ -258,6 +271,7 @@ function getPipeline(device, format) {
       depthCompare: "less-equal",
     },
   });
+  _cachedPipelineFormat = format;
 
   return _cachedPipeline;
 }
@@ -730,6 +744,18 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     return undefined;
   }
 
+  // Batch 110 — invalidate cached draw command on scene format change
+  // (HDR toggle). The command's pipeline has the fragment-output
+  // format baked in; mismatch produces validation warnings against
+  // the recreated rgba16float scene FB.
+  const currentGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(state.command) &&
+    state._pipelineFormatGeneration !== currentGen
+  ) {
+    state.command = undefined;
+  }
+
   // --- Create bind groups + command when cubemap is ready ---
   if (!defined(state.command)) {
     const bg = createBindGroups(
@@ -741,16 +767,21 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.bindGroup0 = bg.bindGroup0;
     state.bindGroup1 = bg.bindGroup1;
 
-    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    // Batch 110 — use scenePipelineFormat instead of the canvas format.
+    // The skybox draws into the scene FB, so its fragment-output format
+    // must match the scene FB color format (rgba16float in HDR mode).
+    const sceneFormat =
+      context.scenePipelineFormat ?? navigator.gpu.getPreferredCanvasFormat();
     state.command = createDrawCommand(
       device,
-      canvasFormat,
+      sceneFormat,
       state.vertexBuffer,
       state.indexBuffer,
       state.indexCount,
       state.bindGroup0,
       state.bindGroup1,
     );
+    state._pipelineFormatGeneration = currentGen;
   }
 
   // --- Update uniforms every frame ---

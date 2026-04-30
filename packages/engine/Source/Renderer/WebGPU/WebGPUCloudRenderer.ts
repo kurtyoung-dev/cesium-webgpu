@@ -347,7 +347,37 @@ function updateWebGPUCloudCollection(
   }
 
   const cache = collection._webgpuCache as CloudCache;
-  const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — clouds draw into scene FB; use scenePipelineFormat
+  // so HDR mode targets rgba16float instead of canvas bgra8unorm.
+  const canvasFormat: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+        presentationFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (
+      context as unknown as {
+        presentationFormat?: GPUTextureFormat;
+      }
+    ).presentationFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // Batch 110 — invalidate cache on scene format change.
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache.initialized &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache.initialized = false;
+    cache.command = null;
+    cache.pipelineDescriptor = null;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+  }
 
   if (!cache.initialized) {
     // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation

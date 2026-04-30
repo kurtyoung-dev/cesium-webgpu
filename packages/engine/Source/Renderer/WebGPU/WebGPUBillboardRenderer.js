@@ -705,9 +705,17 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cache.pipelineEntries = new Map();
     cache.pickPipelineEntries = new Map();
   }
+  // Batch 110 — invalidate cached pipeline entries on scene format
+  // change (HDR toggle).
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (cache._pipelineFormatGeneration !== sceneGen) {
+    cache.pipelineEntries.clear();
+    cache.pickPipelineEntries?.clear();
+    cache._pipelineFormatGeneration = sceneGen;
+  }
   let entry = cache.pipelineEntries.get(defines);
   if (!defined(entry)) {
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getShaderModuleCache(device);
     const shaderModule = moduleCache.getOrCreate(
@@ -924,7 +932,7 @@ function _pushBillboardPickCommand(
   let pickEntry = cache.pickPipelineEntries.get(pickDefines);
   if (!defined(pickEntry)) {
     const pickShader = getCollectionShaderSource("billboardPick");
-    const format = context.presentationFormat || "bgra8unorm";
+    const format = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getShaderModuleCache(device);
     // Pick shader has its own source ID so its cache entries stay

@@ -664,16 +664,42 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
   }
   const cache = skyAtmosphere._webgpuCache;
 
+  // Batch 110 — invalidate cached pipeline when the scene pipeline
+  // format generation bumps (HDR toggle, MSAA toggle). Without this
+  // the cached pipeline keeps its old fragment target format and
+  // produces validation warnings + black sky against the recreated
+  // scene FB. The pipeline rebuild is one-time per format change;
+  // steady-state HDR-on or HDR-off frames pay zero cost.
+  const currentGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache.pipeline) &&
+    cache._pipelineFormatGeneration !== currentGen
+  ) {
+    cache.pipeline = undefined;
+    cache._pipelineFailed = false;
+    // The cached `WebGPUDrawCommand` carries a direct reference to
+    // the OLD pipeline. Drop it so it rebuilds with the new pipeline.
+    cache.command = undefined;
+    // The bind groups were built against the OLD bindGroupLayout
+    // (which is recreated alongside the pipeline). Forcing a rebuild
+    // by clearing the BGL refs below makes the existing bind-group
+    // setup branch (`if (!defined(cache.bindGroup))`) re-fire.
+    cache.bindGroup = undefined;
+    cache.bindGroupLayout = undefined;
+    cache.lutBindGroupLayout = undefined;
+  }
+
   // Create pipeline once (getShaderSource is synchronous — no await needed)
   if (!defined(cache.pipeline)) {
     try {
       const shaderCode = getShaderSource();
-      const format = context.presentationFormat || "bgra8unorm";
+      const format = context.scenePipelineFormat || "bgra8unorm";
       const depthFmt = context.depthFormat || "depth24plus-stencil8";
       const result = createPipeline(device, shaderCode, format, depthFmt);
       cache.pipeline = result.pipeline;
       cache.bindGroupLayout = result.bindGroupLayout;
       cache.lutBindGroupLayout = result.lutBindGroupLayout;
+      cache._pipelineFormatGeneration = currentGen;
     } catch (e) {
       console.error(
         `[WebGPU:SkyAtmosphere] pipeline creation failed: ${e?.message ?? e}. ` +
@@ -714,6 +740,12 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
       "SkyAtmosphere uniforms",
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+  }
+  // Batch 110 — split bindGroup creation out of the uniformBuffer init
+  // branch so a Batch 110 invalidation (which clears bindGroup but
+  // keeps uniformBuffer to avoid reallocating GPU memory) re-creates
+  // the bindGroup against the freshly recreated bindGroupLayout.
+  if (!defined(cache.bindGroup)) {
     cache.bindGroup = device.createBindGroup({
       layout: cache.bindGroupLayout,
       entries: [

@@ -4594,6 +4594,24 @@ function render(scene) {
     scene.globe.beginFrame(frameState);
   }
 
+  // Batch 110 — let the alternate scene renderer (WebGPU) recreate
+  // its framebuffer and bump the scene-pipeline-format generation
+  // BEFORE primitives' update methods run via `updateEnvironment` /
+  // the per-primitive update loop. Without this, a runtime HDR
+  // toggle (which flips scene FB between rgba16float and canvas
+  // format) wouldn't be visible to renderers like SkyAtmosphere
+  // that emit commands during the update phase — they'd cache
+  // pipelines targeting the OLD format and produce
+  // pipeline-vs-attachment mismatch warnings on the toggle frame.
+  // No-op on WebGL.
+  if (scene._alternateSceneRenderer?.prepareFrame) {
+    scene._alternateSceneRenderer.prepareFrame({
+      scene: scene,
+      context: context,
+      useHDR: scene._hdr,
+    });
+  }
+
   scene.updateEnvironment();
 
   // TAA: apply sub-pixel jitter to the projection matrix before rendering.

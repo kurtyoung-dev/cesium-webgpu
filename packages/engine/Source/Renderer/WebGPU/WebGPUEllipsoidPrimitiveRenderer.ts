@@ -602,7 +602,34 @@ function updateWebGPUEllipsoidPrimitive(
   }
 
   const cache = primitive._webgpuCache as EllipsoidCache;
-  const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+  // Batch 110 — ellipsoid primitive draws into scene FB; use
+  // scenePipelineFormat (rgba16float in HDR) instead of canvas format.
+  const canvasFormat: GPUTextureFormat =
+    (
+      context as unknown as {
+        scenePipelineFormat?: GPUTextureFormat;
+      }
+    ).scenePipelineFormat ??
+    (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // Batch 110 — invalidate cached pipeline resources on scene format
+  // change (HDR toggle).
+  const sceneGen =
+    (context as unknown as { _scenePipelineFormatGeneration?: number })
+      ._scenePipelineFormatGeneration ?? 0;
+  if (
+    cache.initialized &&
+    (cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen
+  ) {
+    (
+      cache as EllipsoidCache & {
+        _pipelineResources?: EllipsoidPipelineResources;
+      }
+    )._pipelineResources = undefined;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
+  }
 
   // C-R7-RENDERER-MIGRATION (Batch 56) — route pipeline creation through
   // the central WebGPURenderPipelineCache. Held on a sidecar so we can

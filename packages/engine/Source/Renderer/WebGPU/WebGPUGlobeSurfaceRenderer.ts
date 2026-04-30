@@ -422,6 +422,11 @@ export class WebGPUGlobeSurfaceRenderer {
   private _placeholderTexture: GPUTexture | null = null;
   private _placeholderView: GPUTextureView | null = null;
   private _canvasFormat: GPUTextureFormat = "bgra8unorm";
+  // Batch 110 — track scene-pipeline format generation last applied
+  // so a runtime HDR / canvas-format change clears the pipeline +
+  // wireframe + debug-fragment caches and rebuilds against the new
+  // scene FB color format.
+  private _scenePipelineFormatGeneration: number = -1;
 
   // Wireframe pipelines — keyed by the same shape string used by
   // _selectPipeline so they share variant granularity (Q/U, N/X, M/G, stride).
@@ -1423,6 +1428,32 @@ fn fragmentDebugNormal(input: VertexOutput) -> @location(0) vec4<f32> {
             webgpuPipelineCache?: WebGPURenderPipelineCache | null;
           }
         ).webgpuPipelineCache ?? null;
+    }
+
+    // Batch 110 — invalidate cached pipelines when the scene-pipeline
+    // format generation has changed (HDR toggle, MSAA toggle). Globe
+    // terrain pipelines target the scene FB, so they must rebuild
+    // against the new color format. Clears production, wireframe,
+    // and debug-fragment caches.
+    const ctxGen =
+      (
+        frameState.context as unknown as {
+          _scenePipelineFormatGeneration?: number;
+          scenePipelineFormat?: GPUTextureFormat;
+        }
+      )._scenePipelineFormatGeneration ?? 0;
+    if (this._scenePipelineFormatGeneration !== ctxGen) {
+      this._scenePipelineFormatGeneration = ctxGen;
+      const newFormat =
+        (
+          frameState.context as unknown as {
+            scenePipelineFormat?: GPUTextureFormat;
+          }
+        ).scenePipelineFormat ?? this._canvasFormat;
+      this._canvasFormat = newFormat;
+      this._pipelineCache.clear();
+      this._wireframePipelineCache.clear();
+      this._debugFragmentPipelineCache.clear();
     }
 
     const device = this._device;
