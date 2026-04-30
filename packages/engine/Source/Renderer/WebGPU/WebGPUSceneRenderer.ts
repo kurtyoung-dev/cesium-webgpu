@@ -613,6 +613,16 @@ export class WebGPUSceneRenderer {
   private _initialized: boolean = false;
   private _width: number = 0;
   private _height: number = 0;
+  // Batch 109 — track last-applied HDR mode so a runtime
+  // `scene.useHDR` toggle without a resize triggers framebuffer
+  // recreate. Without this, the SceneFramebuffer keeps its old
+  // color format (`rgba16float` ↔ canvas format) and downstream
+  // textures that depend on `colorFormat` (OIT accumulation, edge
+  // MRT, refraction capture, velocity) drift out of sync. Initial
+  // value `null` so the first `update()` call always reaches
+  // `_sceneFramebuffer.update` regardless of the initial HDR
+  // setting.
+  private _lastHDR: boolean | null = null;
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
@@ -680,12 +690,24 @@ export class WebGPUSceneRenderer {
     const height = canvas?.height ?? 1;
     const needsResize = width !== this._width || height !== this._height;
     const hdr = config.useHDR ?? false;
+    // Batch 109 — HDR toggle gate. A runtime change to `scene.useHDR`
+    // flips the scene-FB color format between `rgba16float` (or
+    // `rg11b10ufloat`) and the canvas format. Without this gate the
+    // outer `if (!_initialized || needsResize)` block below would
+    // never fire on a same-resolution HDR toggle, leaving the
+    // scene-FB's color format stale + the dependent textures (OIT
+    // accumulation, edge MRT, refraction capture, velocity capture)
+    // out of sync. Treat HDR change as equivalent to a resize for
+    // gating purposes.
+    const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
+    const needsRecreate = !this._initialized || needsResize || hdrChanged;
+    this._lastHDR = hdr;
 
     // Scene framebuffer (main color + depth + ID targets)
     if (!this._sceneFramebuffer) {
       this._sceneFramebuffer = new WebGPUSceneFramebuffer();
     }
-    if (!this._initialized || needsResize) {
+    if (needsRecreate) {
       const numSamples: number = context._msaaSamples ?? 1;
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
@@ -720,7 +742,7 @@ export class WebGPUSceneRenderer {
     if (config.useOIT && !this._oit) {
       this._oit = new WebGPUOIT();
     }
-    if (this._oit && (!this._initialized || needsResize)) {
+    if (this._oit && needsRecreate) {
       this._oit.update(device, width, height);
     }
 
@@ -735,7 +757,7 @@ export class WebGPUSceneRenderer {
     if (enableEdgeVisibility && !this._edgeFramebuffer) {
       this._edgeFramebuffer = new WebGPUEdgeFramebuffer();
     }
-    if (this._edgeFramebuffer && (!this._initialized || needsResize)) {
+    if (this._edgeFramebuffer && needsRecreate) {
       const numSamples: number = context._msaaSamples ?? 1;
       this._edgeFramebuffer.update(
         device,
@@ -755,10 +777,7 @@ export class WebGPUSceneRenderer {
       this._translucentTileClassification =
         new WebGPUTranslucentTileClassification();
     }
-    if (
-      this._translucentTileClassification &&
-      (!this._initialized || needsResize)
-    ) {
+    if (this._translucentTileClassification && needsRecreate) {
       this._translucentTileClassification.update(
         device,
         width,
@@ -771,7 +790,7 @@ export class WebGPUSceneRenderer {
     if (config.useGlobeDepthFramebuffer && !this._globeDepth) {
       this._globeDepth = new WebGPUGlobeDepth();
     }
-    if (this._globeDepth && (!this._initialized || needsResize)) {
+    if (this._globeDepth && needsRecreate) {
       const numSamples: number = context._msaaSamples ?? 1;
       const canvasFormat: GPUTextureFormat =
         context.presentationFormat ?? "bgra8unorm";
