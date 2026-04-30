@@ -296,19 +296,53 @@ The framing splits into two distinct items:
 
 **Closing batch:** Batch 81.
 
-### C-R8-GROUND-POLYLINE-NATIVE
+### C-R8-GROUND-POLYLINE-NATIVE — PARTIAL (renderer scaffolded; vsMain off-screen bug)
 
-**What:** No WebGPU equivalent of `GroundPolylinePrimitive` exists. WebGL has `PolylineShadowVolumeVS/FS` shaders + a `GroundPolylinePrimitive` consumer that sits beside `GroundPrimitive`. WebGPU's classifier covers volumes (`GroundPrimitive`) but not polylines drawn on terrain.
+**Status as of 2026-04-30 (Batch 111):** `WebGPUGroundPolylineRenderer` exists with full color + pick pipelines, depth-sample bind groups, batch-table snapshot, vertex/index buffer upload, and morph-mode pipeline pair. The renderer is registered with `FeatureRendererKey.GROUND_POLYLINE` and the WebGL-side `GroundPolylinePrimitive` skips `_createShaderProgramFunction` when the alternate renderer is active so the WebGL DrawCommands don't crash in pick-shader derivation. Shadow-volume geometry is dispatched and the depth-classifier fragment runs.
 
-**Why deferred:** The polyline classification path is a separate set of shaders and a separate consumer. Worth doing once the volume classifier is finalized so the depth-sampling architecture (C-R8-CLASSIFICATION-DEPTH-SAMPLING) can absorb both at the same time.
+**Known bug:** vsMain produces vertices that fall outside NDC. Diagnostic confirmed (Batch 111 zoom test):
 
-**Prerequisites:** C-R8-CLASSIFICATION-DEPTH-SAMPLING preferred (so the polyline classifier reuses the volume classifier's depth-source plumbing) but not strictly required — a stencil-based polyline first-cut would also be acceptable.
+1. Override `colorFS` → solid magenta: NO magenta pixels visible (FS not running on visible fragments).
+2. Override `vsMain` with a fullscreen-NDC-quad diagnostic: magenta APPEARED.
+3. Conclusion: pipeline + bind groups + FS are correct; the vertex shader's transform produces off-screen geometry.
 
-**Estimated effort:** 2 sessions. Port `PolylineShadowVolumeVS` + `PolylineShadowVolumeFS` to WGSL; build `WebGPUGroundPolylineRenderer`; wire into the scene's classification dispatch alongside `WebGPUGroundPrimitiveRenderer`.
+Likely root cause is one of: (a) RTE encoding mismatch between `positionHigh`/`positionLow` and the camera-relative transform, (b) wrong matrix selected for shadow-volume extrusion (the WebGL VS uses `czm_modelView` for prev/next neighbour expansion plus separate logic per scene mode), (c) batch instance buffer indexing off-by-one between vertex layout and the storage-buffer fetch.
 
-**Impact:** Polylines on terrain (a common visualization for routes, borders, GPS tracks) are not classifiable on WebGPU. Apps using `GroundPolylinePrimitive` get blank output.
+**Why still deferred:** Multi-hour vsMain bisection — not blocking anything outside `GroundPolylinePrimitive`. Ground polylines are a niche visualization (route overlays, GPS tracks); apps that need them today still get blank output but no crash, and the rest of the classification fleet (`GroundPrimitive`, `ClassificationPrimitive`) renders correctly.
 
-**Trace:** Audit 2026-04-28.
+**Prerequisites:** None — bug fix is local to `WebGPUGroundPolylineRenderer.js` / `PolylineShadowVolumeVS.wgsl` (or the inlined VS in the renderer).
+
+**Estimated effort:** 1 session, focused VS bisection. Capture vsMain output for a known-good WebGL frame (pull `gl_Position` from a debug RenderDoc capture or instrument the WebGL VS), diff against WGSL, find the encoding/matrix mismatch.
+
+**Impact:** Polylines on terrain are not visible on WebGPU even though the renderer dispatches commands. No crash, no validation warnings — just invisible output.
+
+**Trace:** Audit 2026-04-28; bug isolated 2026-04-30 in Batch 111 via `Tools/visual-regression/verify-ground-polyline-zoom.mjs`.
+
+### C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES — DEFERRED (Batch 113)
+
+**Status:** `Vector3DTileClampedPolylines` (terrain-clamped polyline volumes for 3D Tiles vector content) does NOT have a WebGPU FR yet. The BUILD-VAR-HAZARD guard at the top of `createShaders` prevents the WebGL `ShaderProgram.fromCache` call from running on WebGPU contexts; the result is silent no-render rather than a crash, but clamped vector-tile polylines (road overlays, GPS tracks coming from vector tile sources) are invisible on WebGPU.
+
+**What's shipped in Batch 113 (companions):**
+
+- `Vector3DTilePrimitive` (extruded polygon classifier) — full FR in `WebGPUVector3DTilePrimitiveRenderer.js`. Uses the depth-sample classifier architecture from `WebGPUGroundPrimitiveRenderer` (ADR-2026-04-28).
+- `Vector3DTilePolylines` (NON-clamped 3D polylines) — full FR in `WebGPUVector3DTilePolylinesRenderer.js`. Ports the screen-space miter expansion from `PolylineCommon.glsl::getPolylineWindowCoordinatesEC`. Near-plane clipping is the only deferred piece (~40 LOC).
+
+**What ClampedPolylines needs that the other two don't:**
+
+- 7-attribute vertex layout (`startEllipsoidNormal`, `endEllipsoidNormal`, `startPositionAndHeight`, `endPositionAndHeight`, `startFaceNormalAndVertexCornerIds`, `endFaceNormalAndHalfWidths`, `batchId`). The CPU side is already produced by `createVectorTileClampedPolylines` in the worker.
+- Per-vertex shadow-volume extrusion: each input segment becomes a 6-vertex prism along the ellipsoid normal. The VS reconstructs the prism corner from the `vertexCornerId` in the start-face-normal attribute and extrudes by `halfWidth` along the perpendicular face normal.
+- 5-plane fragment-side clipping (start cap, end cap, right miter, plus aligned-plane checks for tex coord). Same architecture as `WebGPUGroundPolylineRenderer` but with a different vertex-side layout.
+- Depth-sample classifier in the FS: read `czm_globeDepthTexture`, reconstruct EC position, apply the 5 plane tests, discard if outside.
+
+**Why deferred:** ~600-800 LOC port (full WGSL VS + FS + 7-attribute interleave + ensure-buffer plumbing + plane-distance tests). Realistically a 2-session effort. The polygon and non-clamped-polyline FRs cover the most common Vector3DTile scenarios already.
+
+**Prerequisites:** None — none of the other deferred items block this. Reuses the same depth-sample plumbing as `WebGPUGroundPrimitiveRenderer` (`_globeDepthView`, `_packedTranslucentDepthView`).
+
+**Estimated effort:** 2 sessions.
+
+**Impact:** Apps using `Vector3DTileClampedPolylines` (vector tile road / boundary / GPS-track overlays clamped to terrain) get blank output on WebGPU. Other vector-tile content (polygons, non-clamped polylines) renders correctly. No crash.
+
+**Trace:** Batch 113 (Polygon + Polyline FRs landed; Clamped follow-up deferred).
 
 ---
 

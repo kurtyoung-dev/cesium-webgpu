@@ -20,6 +20,7 @@ import PolylineCommon from "../Shaders/PolylineCommon.js";
 import Vector3DTilePolylinesVS from "../Shaders/Vector3DTilePolylinesVS.js";
 import BlendingState from "./BlendingState.js";
 import Cesium3DTileFeature from "./Cesium3DTileFeature.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * Creates a batch of polylines that have been subdivided to be draped on terrain.
@@ -172,6 +173,32 @@ class Vector3DTilePolylines {
       return;
     }
 
+    // Batch 113 — WebGPU path delegates to the VECTOR_3DTILE_POLYLINE
+    // feature renderer. The renderer reads the CPU-side decoded
+    // `_currentPositions` / `_previousPositions` / `_nextPositions` /
+    // `_expandAndWidth` / `_vertexBatchIds` / `_indices` arrays directly
+    // from the primitive — `finishVertexArray` skips its own arr-null
+    // step on WebGPU so the FR has these to upload to GPU buffers on
+    // its first call.
+    const fr = context.getFeatureRenderer?.(
+      FeatureRendererKey.VECTOR_3DTILE_POLYLINE,
+    );
+    if (fr && fr.createCommands) {
+      this._lastFeatureRenderer = fr;
+      const passes = frameState.passes;
+      if (passes.render) {
+        const result = fr.createCommands(this, frameState);
+        const commands = result?.colorCommands;
+        if (defined(commands)) {
+          for (let i = 0; i < commands.length; i++) {
+            frameState.commandList.push(commands[i]);
+          }
+        }
+      }
+      // Per-feature pick deferred — see WebGPUVector3DTilePolylinesRenderer.js header.
+      return;
+    }
+
     createUniformMap(this, context);
     createShaders(this, context);
     createRenderStates(this);
@@ -209,6 +236,15 @@ class Vector3DTilePolylines {
   destroy() {
     this._va = this._va && this._va.destroy();
     this._sp = this._sp && this._sp.destroy();
+
+    // Batch 113 — release the WebGPU FR cache (vertex/index buffers,
+    // UBO, batch-color storage). The Scene-side `_lastFeatureRenderer`
+    // is captured during `update()` so we don't need a context handle
+    // here.
+    if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
+      this._lastFeatureRenderer.destroy?.(this);
+    }
+
     return destroyObject(this);
   }
 
@@ -379,6 +415,37 @@ function createVertexArray(polylines, context) {
 }
 
 function finishVertexArray(polylines, context) {
+  // Batch 113 — WebGPU path skips the WebGL VAO + buffer construction
+  // entirely. The decoded `_currentPositions` / `_previousPositions` /
+  // `_nextPositions` / `_expandAndWidth` / `_vertexBatchIds` / `_indices`
+  // arrays stay alive on the primitive so the WebGPU FR can upload them
+  // to GPU buffers on its first `update()` tick. The arrays are owned by
+  // the FR cache thereafter (no second copy on WebGPU).
+  if (context.rendererType === "webgpu") {
+    const indices = polylines._indices;
+    polylines._trianglesLength =
+      defined(indices) && indices.length > 0 ? indices.length / 3 : 0;
+    let byteLength = 0;
+    if (defined(polylines._previousPositions)) {
+      byteLength += polylines._previousPositions.byteLength;
+    }
+    if (defined(polylines._currentPositions)) {
+      byteLength += polylines._currentPositions.byteLength;
+    }
+    if (defined(polylines._nextPositions)) {
+      byteLength += polylines._nextPositions.byteLength;
+    }
+    if (defined(polylines._expandAndWidth)) {
+      byteLength += polylines._expandAndWidth.byteLength;
+    }
+    if (defined(polylines._vertexBatchIds)) {
+      byteLength += polylines._vertexBatchIds.byteLength;
+    }
+    if (defined(indices)) byteLength += indices.byteLength;
+    polylines._geometryByteLength = byteLength;
+    return;
+  }
+
   if (!defined(polylines._va)) {
     const curPositions = polylines._currentPositions;
     const prevPositions = polylines._previousPositions;

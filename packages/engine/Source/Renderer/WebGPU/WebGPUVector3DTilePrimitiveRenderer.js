@@ -1,0 +1,640 @@
+/**
+ * @module WebGPUVector3DTilePrimitiveRenderer
+ *
+ * WebGPU equivalent of `Vector3DTilePrimitive` (3D Tiles vector polygon
+ * classification). Handles batched extruded polygon classification meshes
+ * generated from vector tile sources — building footprints, admin
+ * boundaries, country polygons, etc.
+ *
+ * Architecture mirrors `WebGPUGroundPrimitiveRenderer`'s depth-sample
+ * classifier (ADR-2026-04-28): the volume's rasterization handles lateral
+ * coverage; the FS samples the globe depth texture and discards where the
+ * surface wrote no depth (sky / nothing classifiable). The same depth-source
+ * resolver is reused so per-frustum + per-frame source swaps (globe-depth ↔
+ * packed-translucent-depth) take effect within a frame.
+ *
+ * **Shipped (Batch 112):**
+ *   - WGSL VS/FS port of `VectorTileVS.glsl` + `ShadowVolumeFS.glsl`
+ *     (RTE-encoded center + RTC-relative positions, batchId attribute).
+ *   - Vertex buffer interleave (positionXYZ + batchId, 16 B/vertex).
+ *   - Per-batch color via storage buffer indexed by `batchId`.
+ *   - Per-batch DrawCommand emission keyed on `_batchedIndices` (offset +
+ *     count into the shared index buffer).
+ *   - Single shared depth-sample bind group reused across all batches.
+ *   - `classificationType` routed to `Pass.TERRAIN_CLASSIFICATION` or
+ *     `Pass.CESIUM_3D_TILE_CLASSIFICATION` per the WebGL parity rule.
+ *
+ * **Deferred to follow-up:**
+ *   - Per-feature pick. WebGL writes `czm_batchTable_pickColor(batchId)`
+ *     into the pick FBO; WebGPU first-cut returns no pick commands so
+ *     `scene.pick()` over a vector tile primitive returns nothing. The
+ *     storage-buffer pattern here will absorb pick colors trivially when
+ *     wired (one extra `vec4[batchId]` storage entry).
+ *   - Per-fragment normal-from-depth-derivative + textured appearance.
+ *   - `debugWireframe` mode (the WebGL flow runs a separate
+ *     `LINES`-topology pipeline; trivial follow-up).
+ *
+ * @private
+ */
+import defined from "../../Core/defined.js";
+import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Matrix4 from "../../Core/Matrix4.js";
+import WebGPUBuffer from "./WebGPUBuffer.js";
+import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  makeBindGroupLayout,
+  uniformBuffer,
+  storageBuffer,
+  sampler as samplerEntry,
+  texture as textureEntry,
+  Stage,
+} from "./WebGPUBindGroupLayoutHelpers.js";
+
+const UNIFORM_BUFFER_SIZE = 256;
+const FLOATS_PER_BATCH_COLOR = 4;
+const BYTES_PER_BATCH_COLOR = FLOATS_PER_BATCH_COLOR * 4;
+const INITIAL_BATCH_BUFFER_FEATURES = 64;
+
+const scratchEncodedCenter = new EncodedCartesian3();
+const scratchEncodedCamera = new EncodedCartesian3();
+const scratchView = new Matrix4();
+const scratchVPRTE = new Matrix4();
+
+/**
+ * Build the WGSL pipeline resources (BGLs + shader module + descriptors).
+ * Done once per device + scene format pair; results live on the cache and
+ * are invalidated through `_scenePipelineFormatGeneration` on HDR toggle.
+ *
+ * Vertex layout: 16 B / vertex.
+ *   loc 0: position (vec3<f32>) — RTC-relative to `_center`.
+ *   loc 1: batchId (f32)        — index into the per-batch color storage buffer.
+ *
+ * UBO layout (matches `packUniforms` below):
+ *   floats   0-15 : viewProjRTE        (mat4x4<f32>)
+ *   floats  16-19 : centerHigh + pad   (vec3 + f32)
+ *   floats  20-23 : centerLow  + pad   (vec3 + f32)
+ *   floats  24-27 : camHigh    + pad   (vec3 + f32)
+ *   floats  28-31 : camLow     + pad   (vec3 + f32)
+ *   floats  32-35 : viewport (x,y,w,h) (vec4<f32>)
+ *   floats  36-63 : reserved.
+ * @private
+ */
+function buildVectorTilePipelineResources(device, format, depthFormat) {
+  const code = `
+struct U {
+  vpRTE: mat4x4<f32>,
+  centerH: vec3<f32>, _p0: f32,
+  centerL: vec3<f32>, _p1: f32,
+  camH: vec3<f32>, _p2: f32,
+  camL: vec3<f32>, _p3: f32,
+  viewport: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
+
+@group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
+@group(1) @binding(1) var depthSampler: sampler;
+
+struct VOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) col: vec4<f32>,
+};
+
+@vertex
+fn vsMain(
+  @location(0) position: vec3<f32>,
+  @location(1) batchId: f32,
+) -> VOut {
+  var o: VOut;
+  // RTE: combine the encoded center (high/low) with the camera (high/low).
+  // Position is already RTC-relative to center, so the final eye-relative
+  // position is centerOffsetFromCamera + position.
+  let rte = (u.centerH - u.camH) + (u.centerL - u.camL) + position;
+  o.pos = u.vpRTE * vec4<f32>(rte, 1.0);
+  let bi = u32(batchId);
+  o.col = batchColors[bi];
+  return o;
+}
+
+fn unpackDepth(packed: vec4<f32>) -> f32 {
+  return dot(packed, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}
+
+@fragment
+fn fsMain(i: VOut) -> @location(0) vec4<f32> {
+  let screenUV = i.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  return i.col;
+}
+`;
+
+  const mod = device.createShaderModule({
+    label: "Vector3DTilePrimitive",
+    code,
+  });
+
+  const sharedBgl = makeBindGroupLayout(
+    device,
+    "Vector3DTilePrimitive Shared BGL",
+    [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      storageBuffer(1, Stage.VERTEX, { readOnly: true }),
+    ],
+  );
+
+  const depthSampleBgl = makeBindGroupLayout(
+    device,
+    "Vector3DTilePrimitive DepthSample BGL",
+    [
+      textureEntry(0, Stage.FRAGMENT, { sampleType: "float" }),
+      samplerEntry(1, Stage.FRAGMENT, "filtering"),
+    ],
+  );
+
+  const layout = device.createPipelineLayout({
+    label: "Vector3DTilePrimitive PipelineLayout",
+    bindGroupLayouts: [sharedBgl, depthSampleBgl],
+  });
+
+  const vertexBuffers = [
+    {
+      arrayStride: 16,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32" },
+      ],
+    },
+  ];
+
+  const colorDescriptor = {
+    name: `Vector3DTilePrimitive color [${format}/${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "fsMain",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  return { colorDescriptor, sharedBgl, depthSampleBgl };
+}
+
+function descriptorToGPU(d) {
+  return {
+    label: d.name,
+    layout: d.layout ?? "auto",
+    vertex: {
+      module: d.vertex.module,
+      entryPoint: d.vertex.entryPoint,
+      buffers: d.vertex.buffers,
+    },
+    fragment: d.fragment
+      ? {
+          module: d.fragment.module,
+          entryPoint: d.fragment.entryPoint,
+          targets: d.fragment.targets,
+        }
+      : undefined,
+    primitive: d.primitive,
+    depthStencil: d.depthStencil,
+    multisample: d.multisample,
+  };
+}
+
+function tryResolvePipelines(device, pipelineCache, resources, cache) {
+  if (cache.colorPipeline) return true;
+  if (pipelineCache) {
+    const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
+    if (sync) {
+      cache.colorPipeline = sync;
+      cache.pipelineRequestPending = false;
+      return true;
+    }
+    if (!cache.pipelineRequestPending) {
+      cache.pipelineRequestPending = true;
+      pipelineCache
+        .getPipeline(resources.colorDescriptor)
+        .then((p) => {
+          cache.colorPipeline = p;
+          cache.pipelineRequestPending = false;
+        })
+        .catch(() => {
+          cache.pipelineRequestPending = false;
+        });
+    }
+    return false;
+  }
+  cache.colorPipeline = device.createRenderPipeline(
+    descriptorToGPU(resources.colorDescriptor),
+  );
+  return true;
+}
+
+function packUniforms(data, frameState, primitive) {
+  const uniformState = frameState.context.uniformState;
+  Matrix4.clone(uniformState.view, scratchView);
+  scratchView[12] = 0.0;
+  scratchView[13] = 0.0;
+  scratchView[14] = 0.0;
+  Matrix4.multiply(uniformState.projection, scratchView, scratchVPRTE);
+  Matrix4.pack(scratchVPRTE, data, 0);
+
+  EncodedCartesian3.fromCartesian(primitive._center, scratchEncodedCenter);
+  data[16] = scratchEncodedCenter.high.x;
+  data[17] = scratchEncodedCenter.high.y;
+  data[18] = scratchEncodedCenter.high.z;
+  data[19] = 0.0;
+  data[20] = scratchEncodedCenter.low.x;
+  data[21] = scratchEncodedCenter.low.y;
+  data[22] = scratchEncodedCenter.low.z;
+  data[23] = 0.0;
+
+  EncodedCartesian3.fromCartesian(
+    frameState.camera.positionWC,
+    scratchEncodedCamera,
+  );
+  data[24] = scratchEncodedCamera.high.x;
+  data[25] = scratchEncodedCamera.high.y;
+  data[26] = scratchEncodedCamera.high.z;
+  data[27] = 0.0;
+  data[28] = scratchEncodedCamera.low.x;
+  data[29] = scratchEncodedCamera.low.y;
+  data[30] = scratchEncodedCamera.low.z;
+  data[31] = 0.0;
+
+  const viewport = uniformState.viewportCartesian4 ?? uniformState.viewport;
+  data[32] = viewport?.x ?? 0.0;
+  data[33] = viewport?.y ?? 0.0;
+  data[34] = viewport?.z ?? frameState.context.drawingBufferWidth ?? 0.0;
+  data[35] = viewport?.w ?? frameState.context.drawingBufferHeight ?? 0.0;
+}
+
+function ensureGeometry(cache, primitive, device) {
+  if (defined(cache.vertexGPUBuffer)) return;
+
+  const positions = primitive._positions;
+  const vertexBatchIds = primitive._vertexBatchIds;
+  if (!defined(positions) || !defined(vertexBatchIds)) return;
+
+  const numVerts = positions.length / 3;
+  if (numVerts === 0) return;
+
+  // Interleave position (3f) + batchId (1f) into 16-byte stride.
+  // The CPU-side `_positions` and `_vertexBatchIds` arrays are released
+  // after VAO creation in the WebGL path; we cache the GPU buffer here so
+  // subsequent frames don't re-upload.
+  const interleaved = new Float32Array(numVerts * 4);
+  for (let v = 0; v < numVerts; v++) {
+    const dst = v * 4;
+    const src = v * 3;
+    interleaved[dst] = positions[src];
+    interleaved[dst + 1] = positions[src + 1];
+    interleaved[dst + 2] = positions[src + 2];
+    interleaved[dst + 3] = vertexBatchIds[v];
+  }
+  cache.vertexGPUBuffer = WebGPUBuffer.createVertexBuffer(
+    device,
+    interleaved,
+    "Vector3DTilePrimitive VB",
+  );
+  cache.vertexCount = numVerts;
+}
+
+function ensureIndexBuffer(cache, primitive, device) {
+  if (defined(cache.indexGPUBuffer) && !cache._indexDirty) return;
+
+  const indices = primitive._indices;
+  if (!defined(indices)) return;
+
+  const max = indices.length > 0 ? primitive._positions.length / 3 : 0;
+  const needsU32 = max > 0xffff || indices.BYTES_PER_ELEMENT === 4;
+  const typed = needsU32 ? new Uint32Array(indices) : new Uint16Array(indices);
+  cache.indexFormat = needsU32 ? "uint32" : "uint16";
+
+  if (defined(cache.indexGPUBuffer)) {
+    cache.indexGPUBuffer.destroy();
+  }
+  cache.indexGPUBuffer = device.createBuffer({
+    label: "Vector3DTilePrimitive IB",
+    size: typed.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(cache.indexGPUBuffer, 0, typed);
+  cache.indexBufferLength = indices.length;
+  cache._indexDirty = false;
+}
+
+function ensureBatchColorStorage(cache, primitive, device) {
+  // Storage buffer is indexed by batchId, so its capacity must cover the
+  // largest batchId in `_vertexBatchIds`. The batch table's feature count
+  // is the upper bound; fall back to scanning vertex batchIds if no
+  // batch table is wired (rare).
+  const featuresLength =
+    primitive._batchTable?.featuresLength ??
+    primitive._batchIds?.length ??
+    INITIAL_BATCH_BUFFER_FEATURES;
+
+  const requiredBytes = Math.max(
+    featuresLength * BYTES_PER_BATCH_COLOR,
+    INITIAL_BATCH_BUFFER_FEATURES * BYTES_PER_BATCH_COLOR,
+  );
+
+  if (
+    defined(cache.batchColorBuffer) &&
+    cache.batchColorBufferCapacity >= requiredBytes
+  ) {
+    return;
+  }
+
+  if (defined(cache.batchColorBuffer)) {
+    cache.batchColorBuffer.destroy();
+  }
+  cache.batchColorBuffer = device.createBuffer({
+    label: "Vector3DTilePrimitive batch colors",
+    size: requiredBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  cache.batchColorBufferCapacity = requiredBytes;
+  cache.batchColorScratch = new Float32Array(requiredBytes / 4);
+  cache._sharedBindGroupDirty = true;
+}
+
+function uploadBatchColors(cache, primitive, device) {
+  const scratch = cache.batchColorScratch;
+  if (!defined(scratch)) return;
+  scratch.fill(0);
+
+  // Walk the batch table feature colors. For each feature, write its color
+  // into `scratch[batchId * 4 .. batchId * 4 + 3]`. The batch table's
+  // `getBatchedAttributes` style API isn't uniform across consumers; the
+  // safe path is to iterate `_batchedIndices` and stamp each batch's color
+  // into all of its `batchIds`.
+  const batchedIndices = primitive._batchedIndices;
+  if (defined(batchedIndices)) {
+    for (let i = 0; i < batchedIndices.length; i++) {
+      const entry = batchedIndices[i];
+      const color = entry.color;
+      const ids = entry.batchIds ?? [];
+      const r = color.red;
+      const g = color.green;
+      const b = color.blue;
+      const a = color.alpha;
+      for (let j = 0; j < ids.length; j++) {
+        const id = ids[j];
+        const slot = id * 4;
+        if (slot + 3 < scratch.length) {
+          scratch[slot] = r;
+          scratch[slot + 1] = g;
+          scratch[slot + 2] = b;
+          scratch[slot + 3] = a;
+        }
+      }
+    }
+  }
+
+  device.queue.writeBuffer(
+    cache.batchColorBuffer,
+    0,
+    scratch.buffer,
+    scratch.byteOffset,
+    cache.batchColorBufferCapacity,
+  );
+}
+
+/**
+ * Creates per-batch DrawCommands for a Vector3DTilePrimitive.
+ * Returns `{ colorCommands: [...] }` (an array since each batch is a
+ * separate draw with its own offset+count). The Scene-side
+ * `Vector3DTilePrimitive.update` pushes each command onto `commandList`.
+ *
+ * @private
+ */
+function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
+  const context = frameState.context;
+  const device = context.device;
+
+  if (!defined(primitive._webgpuCache)) {
+    primitive._webgpuCache = {};
+  }
+  const cache = primitive._webgpuCache;
+
+  // HDR-toggle invalidation (Batch 110 pattern).
+  const sceneGen = context._scenePipelineFormatGeneration ?? 0;
+  if (
+    defined(cache._pipelineResources) &&
+    cache._pipelineFormatGeneration !== sceneGen
+  ) {
+    cache._pipelineResources = undefined;
+    cache.colorPipeline = undefined;
+    cache.sharedBindGroup = undefined;
+    cache.depthSampleBindGroup = undefined;
+  }
+
+  if (!defined(cache._pipelineResources)) {
+    const format = context.scenePipelineFormat || "bgra8unorm";
+    const depthFmt = context.depthFormat || "depth24plus-stencil8";
+    cache._pipelineResources = buildVectorTilePipelineResources(
+      device,
+      format,
+      depthFmt,
+    );
+    cache._pipelineFormatGeneration = sceneGen;
+    cache.pipelineRequestPending = false;
+  }
+
+  if (
+    !tryResolvePipelines(
+      device,
+      context.webgpuPipelineCache ?? null,
+      cache._pipelineResources,
+      cache,
+    )
+  ) {
+    return { colorCommands: [] };
+  }
+
+  // Allocate the shared UBO + storage buffer + bind group on first use.
+  if (!defined(cache.uniformBuffer)) {
+    cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
+      device,
+      UNIFORM_BUFFER_SIZE,
+      "Vector3DTilePrimitive uniforms",
+    );
+    cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+  }
+  ensureBatchColorStorage(cache, primitive, device);
+  if (cache._sharedBindGroupDirty || !defined(cache.sharedBindGroup)) {
+    cache.sharedBindGroup = device.createBindGroup({
+      label: "Vector3DTilePrimitive shared BG",
+      layout: cache._pipelineResources.sharedBgl,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+        { binding: 1, resource: { buffer: cache.batchColorBuffer } },
+      ],
+    });
+    cache._sharedBindGroupDirty = false;
+  }
+
+  // Vertex + index buffers from the primitive's CPU-side arrays.
+  ensureGeometry(cache, primitive, device);
+  ensureIndexBuffer(cache, primitive, device);
+  if (!defined(cache.vertexGPUBuffer) || !defined(cache.indexGPUBuffer)) {
+    return { colorCommands: [] };
+  }
+
+  // Per-frame uniform + per-batch color upload.
+  packUniforms(cache.uniformData, frameState, primitive);
+  device.queue.writeBuffer(
+    cache.uniformBuffer.buffer,
+    0,
+    cache.uniformData.buffer,
+    0,
+    UNIFORM_BUFFER_SIZE,
+  );
+
+  // Re-upload batch colors when the dirty flag indicates a re-batch (Vector3DTile
+  // shuffles indices on color changes; the storage-buffer contents track the
+  // current batchId → color mapping).
+  if (
+    primitive._batchDirty ||
+    primitive._batchColorsDirty ||
+    !cache._batchColorsUploaded
+  ) {
+    uploadBatchColors(cache, primitive, device);
+    cache._batchColorsUploaded = true;
+    primitive._batchColorsDirty = false;
+  }
+
+  // Depth-source resolver (per-frustum bind-group rebuild on view change).
+  const packedTranslucentView = context._packedTranslucentDepthView ?? null;
+  const globeDepthView = context._globeDepthView ?? null;
+  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  if (!depthSourceView) {
+    return { colorCommands: [] };
+  }
+  if (!defined(cache.depthSampleSampler)) {
+    cache.depthSampleSampler = device.createSampler({
+      label: "Vector3DTilePrimitive depth-sample sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+  }
+  if (
+    !defined(cache.depthSampleBindGroup) ||
+    cache.depthSampleViewRef !== depthSourceView
+  ) {
+    cache.depthSampleBindGroup = device.createBindGroup({
+      label: "Vector3DTilePrimitive depth-sample BG",
+      layout: cache._pipelineResources.depthSampleBgl,
+      entries: [
+        { binding: 0, resource: depthSourceView },
+        { binding: 1, resource: cache.depthSampleSampler },
+      ],
+    });
+    cache.depthSampleViewRef = depthSourceView;
+  }
+  const resolveDepthSampleBindGroup = () => {
+    const currentSource =
+      context._packedTranslucentDepthView ?? context._globeDepthView;
+    if (!currentSource) return null;
+    if (cache.depthSampleViewRef !== currentSource) {
+      cache.depthSampleBindGroup = device.createBindGroup({
+        label: "Vector3DTilePrimitive depth-sample BG",
+        layout: cache._pipelineResources.depthSampleBgl,
+        entries: [
+          { binding: 0, resource: currentSource },
+          { binding: 1, resource: cache.depthSampleSampler },
+        ],
+      });
+      cache.depthSampleViewRef = currentSource;
+    }
+    return cache.depthSampleBindGroup;
+  };
+
+  // Pick the classification pass based on `classificationType`.
+  // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
+  // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
+  const classType = primitive.classificationType ?? 0;
+  const groundPass = classType === 0 ? 3 : 6;
+
+  // Emit one color DrawCommand per `_batchedIndices` entry. Each entry
+  // already encodes its index `offset` (in indices) and `count`. The
+  // shared vertex/index buffers + per-batch-color storage buffer mean
+  // we don't need separate per-batch resource bindings — the only
+  // per-command state is the index range.
+  const batchedIndices = primitive._batchedIndices ?? [];
+  const totalIndices = cache.indexBufferLength ?? 0;
+  const colorCommands = [];
+  for (let i = 0; i < batchedIndices.length; i++) {
+    const entry = batchedIndices[i];
+    const offset = entry.offset | 0;
+    const count = entry.count | 0;
+    if (count <= 0) continue;
+    if (offset < 0 || offset + count > totalIndices) continue;
+
+    const cmd = new WebGPUDrawCommand({
+      pipeline: cache.colorPipeline,
+      bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
+      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
+      vertexBuffers: [cache.vertexGPUBuffer],
+      indexBuffer: cache.indexGPUBuffer,
+      indexFormat: cache.indexFormat,
+      indexCount: count,
+      firstIndex: offset,
+      vertexCount: 0,
+      pass: groundPass,
+      owner: primitive,
+    });
+    colorCommands.push(cmd);
+  }
+
+  return { colorCommands };
+}
+
+function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
+  const cache = primitive._webgpuCache;
+  if (!defined(cache)) return;
+  if (defined(cache.uniformBuffer)) cache.uniformBuffer.destroy();
+  if (defined(cache.batchColorBuffer)) cache.batchColorBuffer.destroy();
+  if (defined(cache.vertexGPUBuffer)) cache.vertexGPUBuffer.destroy();
+  if (defined(cache.indexGPUBuffer)) cache.indexGPUBuffer.destroy();
+  primitive._webgpuCache = undefined;
+}
+
+export {
+  createWebGPUVector3DTilePrimitiveCommands,
+  destroyWebGPUVector3DTilePrimitiveResources,
+};
+export default {
+  createWebGPUVector3DTilePrimitiveCommands,
+  destroyWebGPUVector3DTilePrimitiveResources,
+};

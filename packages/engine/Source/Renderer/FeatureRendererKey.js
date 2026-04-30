@@ -133,6 +133,22 @@ const FeatureRendererKey = {
   // volume extrusion).
   GROUND_POLYLINE: 41,
 
+  // ── Vector 3D Tile classification renderers (Batch 112) ──
+  // WebGPU classifiers for the three Vector3DTile* feature families that
+  // ride the depth-sample architecture (ADR-2026-04-28) alongside
+  // GROUND_PRIMITIVE / GROUND_POLYLINE:
+  //   - VECTOR_3DTILE_PRIMITIVE        — extruded polygon classification
+  //     (building footprints, admin boundaries).
+  //   - VECTOR_3DTILE_POLYLINE         — non-clamped 3D polylines.
+  //   - VECTOR_3DTILE_CLAMPED_POLYLINE — terrain-clamped polylines (uses
+  //     the same depth-source plumbing as GROUND_POLYLINE).
+  // Each renderer emits per-batch DrawCommands for the existing dispatch
+  // path; the consumer scene file delegates to the FR via the standard
+  // `getFeatureRenderer(...).createCommands(primitive, frameState)` shape.
+  VECTOR_3DTILE_PRIMITIVE: 42,
+  VECTOR_3DTILE_POLYLINE: 43,
+  VECTOR_3DTILE_CLAMPED_POLYLINE: 44,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -145,7 +161,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 42,
+  COUNT: 45,
 };
 
 export default Object.freeze(FeatureRendererKey);

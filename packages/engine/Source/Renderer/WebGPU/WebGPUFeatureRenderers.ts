@@ -110,6 +110,14 @@ import {
   createWebGPUGroundPolylineCommands,
   destroyWebGPUGroundPolylineResources,
 } from "./WebGPUGroundPolylineRenderer.js";
+import {
+  createWebGPUVector3DTilePrimitiveCommands,
+  destroyWebGPUVector3DTilePrimitiveResources,
+} from "./WebGPUVector3DTilePrimitiveRenderer.js";
+import {
+  createWebGPUVector3DTilePolylineCommands,
+  destroyWebGPUVector3DTilePolylineResources,
+} from "./WebGPUVector3DTilePolylinesRenderer.js";
 
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
@@ -442,6 +450,22 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE, {
     createCommands: createWebGPUGroundPolylineCommands,
     destroy: destroyWebGPUGroundPolylineResources,
+  });
+
+  // Batch 112 — Vector3DTile classification family. Polygon classification
+  // ships in this batch; polyline + clamped-polyline FRs are scaffolded in
+  // the same enum slots and will be registered as their renderers land.
+  // The Scene-side `Vector3DTilePrimitive.update()` delegates here when
+  // the FR is registered; otherwise the WebGPU code path no-ops via the
+  // BUILD-VAR-HAZARD guard in `createShaders`.
+  context.registerFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE, {
+    createCommands: createWebGPUVector3DTilePrimitiveCommands,
+    destroy: destroyWebGPUVector3DTilePrimitiveResources,
+  });
+
+  context.registerFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_POLYLINE, {
+    createCommands: createWebGPUVector3DTilePolylineCommands,
+    destroy: destroyWebGPUVector3DTilePolylineResources,
   });
 
   // ── Globe / Terrain ──

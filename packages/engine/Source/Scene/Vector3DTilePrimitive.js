@@ -26,6 +26,7 @@ import StencilConstants from "./StencilConstants.js";
 import StencilFunction from "./StencilFunction.js";
 import StencilOperation from "./StencilOperation.js";
 import Vector3DTileBatch from "./Vector3DTileBatch.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
  * Creates a batch of classification meshes.
@@ -319,6 +320,35 @@ class Vector3DTilePrimitive {
   update(frameState) {
     const context = frameState.context;
 
+    // Batch 112 — WebGPU path delegates to the VECTOR_3DTILE_PRIMITIVE
+    // feature renderer. The renderer reads `_positions`, `_indices`,
+    // `_vertexBatchIds`, and `_batchedIndices` directly off the primitive
+    // and emits one DrawCommand per `_batchedIndices` entry. The WebGL
+    // VAO / shader-program / render-state / uniform-map setup is
+    // unnecessary on this path (and the GLSL `ShaderProgram.fromCache`
+    // calls in `createShaders` would fail under the webgpu-only build
+    // variant where `Source/Shaders/*.js` are aliased to empty stubs).
+    const fr = context.getFeatureRenderer?.(
+      FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE,
+    );
+    if (fr && fr.createCommands) {
+      this._lastFeatureRenderer = fr;
+      const passes = frameState.passes;
+      if (passes.render) {
+        const result = fr.createCommands(this, frameState);
+        const commands = result?.colorCommands;
+        if (defined(commands)) {
+          for (let i = 0; i < commands.length; i++) {
+            frameState.commandList.push(commands[i]);
+          }
+        }
+      }
+      // Per-feature pick is a deferred follow-up (see
+      // WebGPUVector3DTilePrimitiveRenderer.js header). Until it lands the
+      // pick pass is a no-op for vector-tile features on WebGPU.
+      return;
+    }
+
     createVertexArray(this, context);
     createShaders(this, context);
     createRenderStates(this);
@@ -377,6 +407,14 @@ class Vector3DTilePrimitive {
     this._sp = this._sp && this._sp.destroy();
     this._spPick = this._spPick && this._spPick.destroy();
     this._vaSwap = this._vaSwap && this._vaSwap.destroy();
+
+    // Batch 112 — release the WebGPU FR cache (vertex/index buffers, UBO,
+    // batch-color storage). The FR's destroy hook walks the same
+    // `_webgpuCache` slot the createCommands path populates.
+    if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
+      this._lastFeatureRenderer.destroy?.(this);
+    }
+
     return destroyObject(this);
   }
 
