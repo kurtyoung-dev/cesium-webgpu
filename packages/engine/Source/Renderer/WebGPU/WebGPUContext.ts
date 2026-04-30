@@ -748,6 +748,25 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
 
+      // 2026-04-30 — Model PBR pipeline layout uses 8 bind groups (groups
+      // 0-7: camera / material / textures / instancing / skinning /
+      // morphTargets / featureId / effects). The WebGPU spec default is
+      // maxBindGroups = 4. Without this opt-in, the model pipeline build
+      // fails with "bindGroupLayoutCount (8) is larger than the maximum
+      // allowed (4)" and EVERY model command in the scene crashes with
+      // "Invalid RenderPipeline" — silently, because the pipeline-create
+      // failure surfaces async via popErrorScope, while the synchronous
+      // setPipeline() call just gets an "Invalid RenderPipeline" handle
+      // that the validation layer rejects without a JS exception. b3dm
+      // tilesets, glb models, and Sandcastle Model demos all need this.
+      const adapterMaxBindGroups = this._adapter.limits?.maxBindGroups ?? 4;
+      if (
+        requiredLimits.maxBindGroups === undefined &&
+        adapterMaxBindGroups > 4
+      ) {
+        requiredLimits.maxBindGroups = Math.min(adapterMaxBindGroups, 8);
+      }
+
       this._device = await this._adapter.requestDevice({
         requiredFeatures: requestedFeatures,
         requiredLimits,

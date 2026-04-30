@@ -363,17 +363,34 @@ DerivedCommand.createPickDerivedCommand = function (
 
   result.pickCommand = DrawCommand.shallowClone(command, result.pickCommand);
 
-  if (!defined(shader) || result.shaderProgramId !== command.shaderProgram.id) {
+  // 2026-04-30 — sibling guard to NEW-4-H (createDepthOnlyDerivedCommand)
+  // and NEW-5-A (createLogDepthCommand). WebGPU draw commands carry a
+  // GPUShaderModule-backed pipeline that has no `shaderProgram.id` field.
+  // Without this guard, `getPickShaderProgram(context, undefined, ...)`
+  // → `ShaderCache.getDerivedShaderProgram(undefined)` dereferences
+  // `undefined._cachedShader` and crashes the render loop the moment
+  // any WebGPU model command needs a pick derivation. The WebGPU
+  // dispatcher already routes pick via `WebGPUDrawCommand.pickCommand`
+  // with a pre-built WGSL pipeline (see WebGPUSceneRenderer's pick
+  // pass), so this is a clean short-circuit.
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    result.pickCommand.shaderProgram = cmdShader;
+    result.pickCommand.renderState = command.renderState;
+    return result;
+  }
+
+  if (!defined(shader) || result.shaderProgramId !== cmdShader.id) {
     result.pickCommand.shaderProgram = getPickShaderProgram(
       context,
-      command.shaderProgram,
+      cmdShader,
       command.pickId,
     );
     result.pickCommand.renderState = getPickRenderState(
       scene,
       command.renderState,
     );
-    result.shaderProgramId = command.shaderProgram.id;
+    result.shaderProgramId = cmdShader.id;
   } else {
     result.pickCommand.shaderProgram = shader;
     result.pickCommand.renderState = renderState;
@@ -658,16 +675,28 @@ DerivedCommand.createPickMetadataDerivedCommand = function (
     result.pickMetadataCommand,
   );
 
+  // 2026-04-30 — sibling guard to createPickDerivedCommand. WebGPU
+  // commands have no `shaderProgram.id` field; routing them through
+  // the GLSL-only metadata-pick derivation crashes with
+  // `_cachedShader of undefined`. Pick-metadata on WebGPU is gated
+  // separately by the WebGPU pick path; short-circuit cleanly here.
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    result.pickMetadataCommand.shaderProgram = cmdShader;
+    result.pickMetadataCommand.renderState = command.renderState;
+    return result;
+  }
+
   result.pickMetadataCommand.shaderProgram = getPickMetadataShaderProgram(
     context,
-    command.shaderProgram,
+    cmdShader,
     command.pickedMetadataInfo,
   );
   result.pickMetadataCommand.renderState = getPickRenderState(
     scene,
     command.renderState,
   );
-  result.shaderProgramId = command.shaderProgram.id;
+  result.shaderProgramId = cmdShader.id;
 
   return result;
 };
@@ -706,12 +735,20 @@ DerivedCommand.createHdrCommand = function (command, context, result) {
 
   result.command = DrawCommand.shallowClone(command, result.command);
 
-  if (!defined(shader) || result.shaderProgramId !== command.shaderProgram.id) {
-    result.command.shaderProgram = getHdrShaderProgram(
-      context,
-      command.shaderProgram,
-    );
-    result.shaderProgramId = command.shaderProgram.id;
+  // 2026-04-30 — sibling guard to createPickDerivedCommand /
+  // createDepthOnlyDerivedCommand / createLogDepthCommand. WebGPU
+  // commands route HDR through the post-process pipeline's tonemapping
+  // stage, not via per-command GLSL derivation, so this short-circuit
+  // is correct on the WebGPU path.
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    result.command.shaderProgram = cmdShader;
+    return result;
+  }
+
+  if (!defined(shader) || result.shaderProgramId !== cmdShader.id) {
+    result.command.shaderProgram = getHdrShaderProgram(context, cmdShader);
+    result.shaderProgramId = cmdShader.id;
   } else {
     result.command.shaderProgram = shader;
   }

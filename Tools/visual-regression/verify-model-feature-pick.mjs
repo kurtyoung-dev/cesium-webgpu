@@ -99,13 +99,47 @@ const BASE = "http://localhost:8080";
     const featureTables = model?.featureTables;
     const featureTable = featureTables?.[featureTableId];
     const batchTexture = featureTable?.batchTexture;
+    // Probe the b3dm Model's scene graph — the WebGPU renderer returns
+    // early if _sceneGraph._runtimeNodes is undefined (line 1344-1347
+    // of WebGPUModelRenderer.js).
+    const sg = model?._sceneGraph;
+    const runtimeNodes = sg?._runtimeNodes;
+    // Probe deeper: the renderer iterates runtimeNode.runtimePrimitives
+    // and calls extractPrimitiveGeometry(rp), which returns null if
+    // rp.renderResources / rp._renderResources is undefined. b3dm Models
+    // may use a different load flow that doesn't populate that slot.
+    const firstRP = runtimeNodes?.[0]?.runtimePrimitives?.[0];
+    const firstAttr = firstRP?.primitive?.attributes?.[0];
+    const rpInfo = firstRP ? {
+      ctor: firstRP.constructor?.name,
+      hasRenderResources: firstRP.renderResources !== undefined,
+      gltfPrimAttrCount: firstRP.primitive?.attributes?.length,
+      gltfPrimSemantics: firstRP.primitive?.attributes?.map((a) => a.semantic ?? a.name).slice(0, 10),
+      firstAttrShape: firstAttr ? {
+        keys: Object.keys(firstAttr).slice(0, 15),
+        hasTypedArray: !!firstAttr.typedArray,
+        typedArrayLen: firstAttr.typedArray?.length,
+        hasBuffer: !!firstAttr.buffer,
+        semantic: firstAttr.semantic ?? firstAttr.name,
+        componentDatatype: firstAttr.componentDatatype,
+      } : null,
+    } : { rpMissing: true };
+
+    const sceneGraphInfo = sg ? {
+      sceneGraphCtor: sg.constructor?.name,
+      hasRuntimeNodes: !!runtimeNodes,
+      runtimeNodesLength: runtimeNodes?.length,
+      runtimeNodesNonNull: runtimeNodes?.filter?.((n) => !!n).length,
+      firstNodeRuntimePrimitives: runtimeNodes?.[0]?.runtimePrimitives?.length,
+      firstRPInfo: rpInfo,
+    } : { sceneGraphMissing: true };
+
     const diagnostic = {
       hasFeatureTableId: featureTableId !== undefined,
       featureTableId,
       featureTablesLength: featureTables?.length,
       featureTableFeaturesLength: featureTable?.featuresLength,
       batchTextureExists: !!batchTexture,
-      batchTextureFeaturesLength: batchTexture?.featuresLength,
       batchTextureDimensions: batchTexture?._textureDimensions
         ? [batchTexture._textureDimensions.x, batchTexture._textureDimensions.y]
         : null,
@@ -113,12 +147,13 @@ const BASE = "http://localhost:8080";
       primCacheKeys: Object.keys(wgpuCache?.primitives ?? {}).slice(0, 3),
       primCacheFeatureIdBGExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
         ?._featureIdBG,
-      primCacheFeatureIdFlags: Object.values(wgpuCache?.primitives ?? {})[0]
-        ?._featureIdFlags,
       primCacheFeaturePickGPUTextureExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
         ?._featurePickGPUTexture,
       primCacheBatchGPUTextureExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
         ?._batchGPUTexture,
+      // Scene graph probe — the gating return at WebGPUModelRenderer.js:1344
+      sceneGraph: sceneGraphInfo,
+      modelKeys: model ? Object.keys(model).filter((k) => k.startsWith("_") || ["show", "ready"].includes(k)).slice(0, 30) : null,
     };
 
     const out = {

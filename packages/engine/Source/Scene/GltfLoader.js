@@ -1377,6 +1377,23 @@ function loadVertexAttribute(
   const loadTypedArrayForEdgeVisibilityWebGPU =
     hasEdgeVisibility && frameState.context.isWebGPU === true;
 
+  // 2026-04-30 — WebGPU Model renderer needs typed arrays for ALL vertex
+  // attributes, not just edge-visibility primitives. The b3dm load path
+  // uploads attributes to a WebGL `Buffer` (the loader's WebGL-side
+  // resource) and discards typed arrays after upload by default. The
+  // WebGPU side has no equivalent of `Buffer.getBufferData()` so it
+  // needs the typed array preserved at load time. Without this,
+  // `Scene/Model/ModelPrimitiveGeometry.extractPrimitiveGeometry()`
+  // returns null because `runtimePrimitive.renderResources` is never
+  // populated for b3dm content, and the WebGPU model FR's
+  // `cache.primitives[primKey]` stays empty — silently breaking
+  // 3D-Tiles vector / b3dm rendering AND the C-R9-MODEL-FEATURE-PICK
+  // chain that depends on it. Mirrors the rationale for the existing
+  // EdgeVisibilityWebGPU retention; broadens it to "any WebGPU primitive."
+  // WebGL keeps the prior drop-after-upload behaviour because it has
+  // `Buffer.getBufferData`.
+  const loadTypedArrayForWebGPU = frameState.context.isWebGPU === true;
+
   // Whether the final output should be a buffer or typed array
   // after loading and post-processing.
   const outputTypedArrayOnly = loader._loadAttributesAsTypedArray;
@@ -1386,7 +1403,8 @@ function loadVertexAttribute(
     loadTypedArrayFor2D ||
     loadTypedArrayForPicking ||
     loadTypedArrayForClassification ||
-    loadTypedArrayForEdgeVisibilityWebGPU;
+    loadTypedArrayForEdgeVisibilityWebGPU ||
+    loadTypedArrayForWebGPU;
 
   // Determine what to load right now:
   //
@@ -1517,6 +1535,13 @@ function loadIndices(
   // Load the index buffer as a typed array to batch features together for classification.
   const loadForClassification = loader._loadForClassification && hasFeatureIds;
 
+  // 2026-04-30 — Same WebGPU broad-retention as loadVertexAttribute.
+  // The WebGPU Model renderer reads `attribute.typedArray` to build
+  // its own GPU index buffer; without retention, b3dm content's
+  // `runtimePrimitive.renderResources.indices.typedArray` is undefined
+  // and the WebGPU primitive cache stays empty.
+  const loadTypedArrayForWebGPU = frameState.context.isWebGPU === true;
+
   // Whether the final output should be a buffer or typed array
   // after loading and post-processing.
   const outputTypedArrayOnly = loadAttributesAsTypedArray;
@@ -1525,7 +1550,8 @@ function loadIndices(
     loadAttributesAsTypedArray ||
     loadForCpuOperations ||
     loadForClassification ||
-    hasEdgeVisibility;
+    hasEdgeVisibility ||
+    loadTypedArrayForWebGPU;
 
   // Determine what to load right now:
   //

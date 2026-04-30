@@ -39,13 +39,32 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     return null;
   }
 
+  // 2026-04-30 — `runtimePrimitive.renderResources` is never assigned
+  // anywhere in the codebase (a `PrimitiveRenderResources` is built in
+  // `ModelSceneGraph.js:256` but stored on the parent's
+  // `nodeRenderResources.primitiveRenderResources[j]`, NOT mirrored back
+  // onto the runtime primitive). The original WebGPU model code assumed
+  // the slot existed, so this function unconditionally returned null —
+  // breaking ALL model rendering on WebGPU (silent: no errors, no
+  // command list entries, just an empty `cache.primitives`).
+  //
+  // Fallback path: read directly from `runtimePrimitive.primitive`
+  // (the underlying `ModelComponents.Primitive`), whose `.attributes`
+  // and `.indices` carry the same shape downstream code expects (each
+  // attribute has `.semantic`, `.typedArray`, `.buffer`,
+  // `.componentDatatype`, etc.). This pairs with the
+  // `loadTypedArrayForWebGPU` retention added to `GltfLoader.js`
+  // (2026-04-30) so the typed arrays are still present when this
+  // function runs on WebGPU.
+  const gltfPrim = runtimePrimitive.primitive || runtimePrimitive._primitive;
   const rr =
     runtimePrimitive.renderResources || runtimePrimitive._renderResources;
-  if (!defined(rr)) {
+  const source = defined(rr) ? rr : gltfPrim;
+  if (!defined(source)) {
     return null;
   }
 
-  const attrs = rr.attributes || rr._attributes || [];
+  const attrs = source.attributes || source._attributes || [];
   const result = {
     // Typed arrays for each attribute (null if not present)
     positionData: null,
@@ -179,8 +198,8 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     result.morphTargetCount = result.morphTargets.length;
   }
 
-  // Extract index data
-  const indices = rr.indices;
+  // Extract index data — same fallback as attributes above.
+  const indices = source.indices;
   if (defined(indices)) {
     const idxData = indices.typedArray || indices.buffer;
     if (defined(idxData)) {
@@ -337,7 +356,11 @@ function _flattenVector(v, nc) {
   if (!defined(v)) {
     return null;
   }
-  if (Array.isArray(v) || v instanceof Float32Array || v instanceof Float64Array) {
+  if (
+    Array.isArray(v) ||
+    v instanceof Float32Array ||
+    v instanceof Float64Array
+  ) {
     return v;
   }
   // Cartesian2 / Cartesian3 / Cartesian4 — read x, y, z, w as available

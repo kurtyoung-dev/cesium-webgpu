@@ -368,6 +368,36 @@ The per-vertex `widthMeters` produces extreme magnitudes — most likely because
 
 **Parent finding:** Five WebGPU renderers were missing pick paths. All five shipped at primitive granularity through Batches 30/31/53/54. Three named follow-ups remain.
 
+### NEW-BG-CONSOLIDATION — Model PBR pipeline uses 8 bind groups; spec default is 4
+
+**What:** `WebGPUModelPipelineCache.js:51-156` declares 8 bind group layouts (camera, material+light, textures, skinning, morphTarget, instancing, featureId, effects → groups 0-7). The WebGPU spec default `maxBindGroups = 4`. On adapters with the default limit (Edge/Vulkan, all backends without an explicit higher tier), pipeline creation fails with `bindGroupLayoutCount (8) is larger than the maximum allowed (4)` — silently, because the failure surfaces async via `popErrorScope` while the synchronous `setPipeline()` call gets an "Invalid RenderPipeline" handle that the validation layer rejects without throwing.
+
+**Discovered (2026-04-30) during the C-R9 investigation chain:**
+
+1. b3dm-Model rendering gap was NOT b3dm-specific — it affected ALL Model rendering on WebGPU.
+2. Three real bugs along the chain were fixed and shipped this session (see Batch 120):
+   - `Scene/GltfLoader.js`: typed-array retention broadened to all WebGPU contexts (mirrors NEW-4-A pattern).
+   - `Scene/Model/ModelPrimitiveGeometry.js:extractPrimitiveGeometry`: fall back to `runtimePrimitive.primitive.attributes` because `runtimePrimitive.renderResources` is never assigned anywhere.
+   - `Scene/DerivedCommand.js` + `Scene/OIT.js`: WebGPU short-circuit guards added to `createPickDerivedCommand`, `createPickMetadataDerivedCommand`, `createHdrCommand`, `OIT.createDerivedCommands` (sibling pattern to the existing guards in `createDepthOnlyDerivedCommand` + `createLogDepthCommand`).
+3. After all three fixes, `model._webgpuCache.primitives` populates correctly (5 primitives on the CesiumAir test glb), but pipeline creation fails on the bind-group-count limit.
+
+**Why deferred:** Bind-group consolidation requires:
+
+- Restructuring 8 logical groups into ≤4 physical groups in `WebGPUModelPipelineCache.js` (~60 lines of BGL construction + ~20 lines of bind group construction).
+- Updating ALL `@group(N) @binding(M)` declarations in `ModelPBRComplete.wgsl` (~200 sites).
+- Updating JS bind group factory functions (e.g., `createEffectsBindGroup` in `WebGPUEffectsBindGroup.js`).
+- Likely combination scheme:
+  - Group 0: camera + effects (read-only frame uniforms)
+  - Group 1: material + light + textures (per-material)
+  - Group 2: skinning + morphTarget + instancing (per-instance vertex data)
+  - Group 3: featureId (per-feature)
+
+**Estimated effort:** 2-3 sessions. Mechanical but extensive.
+
+**Impact:** Without it: ALL b3dm/i3dm/glb Model rendering on WebGPU is broken on adapters with the spec-default `maxBindGroups: 4` (Edge/Vulkan, most current production paths). With it: 3D Tiles vector content renders, Model demos work, C-R9-MODEL-FEATURE-PICK fires (the prerequisite chain it was blocked on).
+
+**Trace:** Discovered 2026-04-30 during the b3dm-Model rendering investigation. `Tools/visual-regression/verify-glb-renders.mjs` is the repro — load CesiumAir.glb → see "bindGroupLayoutCount (8) is larger than the maximum allowed (4)" warning.
+
 ### C-R9-MODEL-FEATURE-PICK — CODE WIRED, BLOCKED ON UPSTREAM b3dm RENDERING GAP
 
 **Status (verified 2026-04-30 via `Tools/visual-regression/verify-model-feature-pick.mjs`):** All four code-paths for per-feature pick are wired and look correct:

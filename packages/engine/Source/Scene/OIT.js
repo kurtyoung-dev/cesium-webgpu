@@ -279,6 +279,21 @@ class OIT {
       result = {};
     }
 
+    // 2026-04-30 — sibling guard to DerivedCommand's WebGPU short-circuits.
+    // WebGPU has its own OIT pipeline (`WebGPUOIT`) that runs through
+    // `WebGPUSceneRenderer`'s translucent pass. WebGPU draw commands have
+    // no `shaderProgram.id` field, so routing them through this GLSL-
+    // driven derivation crashes inside `ShaderCache.getDerivedShaderProgram`
+    // with `_cachedShader of undefined`. Short-circuit cleanly.
+    const cmdShader = command.shaderProgram;
+    if (!defined(cmdShader?.id)) {
+      result.translucentCommand = DrawCommand.shallowClone(
+        command,
+        result.translucentCommand,
+      );
+      return result;
+    }
+
     if (this._translucentMRTSupport) {
       let translucentShader;
       let translucentRenderState;
