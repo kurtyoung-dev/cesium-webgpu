@@ -91,6 +91,7 @@ struct U {
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> pickColors: array<vec4<f32>>;
 
 @group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
 @group(1) @binding(1) var depthSampler: sampler;
@@ -98,6 +99,7 @@ struct U {
 struct VOut {
   @builtin(position) pos: vec4<f32>,
   @location(0) col: vec4<f32>,
+  @location(1) pickCol: vec4<f32>,
 };
 
 @vertex
@@ -113,6 +115,7 @@ fn vsMain(
   o.pos = u.vpRTE * vec4<f32>(rte, 1.0);
   let bi = u32(batchId);
   o.col = batchColors[bi];
+  o.pickCol = pickColors[bi];
   return o;
 }
 
@@ -130,6 +133,18 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
   }
   return i.col;
 }
+
+@fragment
+fn pickFS(i: VOut) -> @location(0) vec4<f32> {
+  // Same coverage logic as fsMain — only the output channel differs.
+  let screenUV = i.pos.xy / u.viewport.zw;
+  let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
+  let surfaceDepth = unpackDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  return i.pickCol;
+}
 `;
 
   const mod = device.createShaderModule({
@@ -143,6 +158,7 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
     [
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
       storageBuffer(1, Stage.VERTEX, { readOnly: true }),
+      storageBuffer(2, Stage.VERTEX, { readOnly: true }),
     ],
   );
 
@@ -203,7 +219,25 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
     },
   };
 
-  return { colorDescriptor, sharedBgl, depthSampleBgl };
+  // Pick pipeline: same VS / depth-sample BGL / different FS entry.
+  const pickDescriptor = {
+    name: `Vector3DTilePrimitive pick [${format}/${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "pickFS",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+
+  return { colorDescriptor, pickDescriptor, sharedBgl, depthSampleBgl };
 }
 
 function descriptorToGPU(d) {
@@ -229,33 +263,56 @@ function descriptorToGPU(d) {
 }
 
 function tryResolvePipelines(device, pipelineCache, resources, cache) {
-  if (cache.colorPipeline) {
+  if (cache.colorPipeline && cache.pickPipeline) {
     return true;
   }
   if (pipelineCache) {
-    const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
-    if (sync) {
-      cache.colorPipeline = sync;
-      cache.pipelineRequestPending = false;
-      return true;
+    if (!cache.colorPipeline) {
+      const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
+      if (sync) {
+        cache.colorPipeline = sync;
+      } else if (!cache.colorRequestPending) {
+        cache.colorRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.colorDescriptor)
+          .then((p) => {
+            cache.colorPipeline = p;
+            cache.colorRequestPending = false;
+          })
+          .catch(() => {
+            cache.colorRequestPending = false;
+          });
+      }
     }
-    if (!cache.pipelineRequestPending) {
-      cache.pipelineRequestPending = true;
-      pipelineCache
-        .getPipeline(resources.colorDescriptor)
-        .then((p) => {
-          cache.colorPipeline = p;
-          cache.pipelineRequestPending = false;
-        })
-        .catch(() => {
-          cache.pipelineRequestPending = false;
-        });
+    if (!cache.pickPipeline) {
+      const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
+      if (pickSync) {
+        cache.pickPipeline = pickSync;
+      } else if (!cache.pickRequestPending) {
+        cache.pickRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.pickDescriptor)
+          .then((p) => {
+            cache.pickPipeline = p;
+            cache.pickRequestPending = false;
+          })
+          .catch(() => {
+            cache.pickRequestPending = false;
+          });
+      }
     }
-    return false;
+    return !!cache.colorPipeline;
   }
-  cache.colorPipeline = device.createRenderPipeline(
-    descriptorToGPU(resources.colorDescriptor),
-  );
+  if (!cache.colorPipeline) {
+    cache.colorPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.colorDescriptor),
+    );
+  }
+  if (!cache.pickPipeline) {
+    cache.pickPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.pickDescriptor),
+    );
+  }
   return true;
 }
 
@@ -442,6 +499,74 @@ function uploadBatchColors(cache, primitive, device) {
   );
 }
 
+function ensurePickColorStorage(cache, primitive, device) {
+  // Mirror of `ensureBatchColorStorage`. Required at @group(0) @binding(2)
+  // even when the pick pipeline isn't running this frame — WebGPU forbids
+  // partial bind groups.
+  const featuresLength =
+    primitive._batchTable?.featuresLength ??
+    primitive._batchIds?.length ??
+    INITIAL_BATCH_BUFFER_FEATURES;
+  const requiredBytes = Math.max(
+    featuresLength * BYTES_PER_BATCH_COLOR,
+    INITIAL_BATCH_BUFFER_FEATURES * BYTES_PER_BATCH_COLOR,
+  );
+
+  if (
+    defined(cache.pickColorBuffer) &&
+    cache.pickColorBufferCapacity >= requiredBytes
+  ) {
+    return;
+  }
+  if (defined(cache.pickColorBuffer)) {
+    cache.pickColorBuffer.destroy();
+  }
+  cache.pickColorBuffer = device.createBuffer({
+    label: "Vector3DTilePrimitive pick colors",
+    size: requiredBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  cache.pickColorBufferCapacity = requiredBytes;
+  cache.pickColorScratch = new Float32Array(requiredBytes / 4);
+  cache._sharedBindGroupDirty = true;
+  cache._pickColorsUploaded = false;
+}
+
+function uploadPickColors(cache, primitive, device) {
+  const scratch = cache.pickColorScratch;
+  if (!defined(scratch)) {
+    return;
+  }
+  scratch.fill(0);
+
+  const batchTable = primitive._batchTable;
+  if (defined(batchTable) && typeof batchTable.getPickColor === "function") {
+    const length = batchTable.featuresLength ?? 0;
+    for (let i = 0; i < length; i++) {
+      const pickId = batchTable.getPickColor(i);
+      const color = pickId?.color;
+      if (!defined(color)) {
+        continue;
+      }
+      const slot = i * 4;
+      if (slot + 3 < scratch.length) {
+        scratch[slot] = color.red;
+        scratch[slot + 1] = color.green;
+        scratch[slot + 2] = color.blue;
+        scratch[slot + 3] = color.alpha;
+      }
+    }
+  }
+
+  device.queue.writeBuffer(
+    cache.pickColorBuffer,
+    0,
+    scratch.buffer,
+    scratch.byteOffset,
+    cache.pickColorBufferCapacity,
+  );
+}
+
 /**
  * Creates per-batch DrawCommands for a Vector3DTilePrimitive.
  * Returns `{ colorCommands: [...] }` (an array since each batch is a
@@ -467,6 +592,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
+    cache.pickPipeline = undefined;
     cache.sharedBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
   }
@@ -480,7 +606,8 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       depthFmt,
     );
     cache._pipelineFormatGeneration = sceneGen;
-    cache.pipelineRequestPending = false;
+    cache.colorRequestPending = false;
+    cache.pickRequestPending = false;
   }
 
   if (
@@ -491,7 +618,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       cache,
     )
   ) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
 
   // Allocate the shared UBO + storage buffer + bind group on first use.
@@ -504,6 +631,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
   }
   ensureBatchColorStorage(cache, primitive, device);
+  ensurePickColorStorage(cache, primitive, device);
   if (cache._sharedBindGroupDirty || !defined(cache.sharedBindGroup)) {
     cache.sharedBindGroup = device.createBindGroup({
       label: "Vector3DTilePrimitive shared BG",
@@ -511,6 +639,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       entries: [
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
         { binding: 1, resource: { buffer: cache.batchColorBuffer } },
+        { binding: 2, resource: { buffer: cache.pickColorBuffer } },
       ],
     });
     cache._sharedBindGroupDirty = false;
@@ -520,7 +649,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   ensureGeometry(cache, primitive, device);
   ensureIndexBuffer(cache, primitive, device);
   if (!defined(cache.vertexGPUBuffer) || !defined(cache.indexGPUBuffer)) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
 
   // Per-frame uniform + per-batch color upload.
@@ -545,13 +674,17 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache._batchColorsUploaded = true;
     primitive._batchColorsDirty = false;
   }
+  if (!cache._pickColorsUploaded) {
+    uploadPickColors(cache, primitive, device);
+    cache._pickColorsUploaded = true;
+  }
 
   // Depth-source resolver (per-frustum bind-group rebuild on view change).
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
   const depthSourceView = packedTranslucentView ?? globeDepthView;
   if (!depthSourceView) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
   if (!defined(cache.depthSampleSampler)) {
     cache.depthSampleSampler = device.createSampler({
@@ -610,6 +743,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const batchedIndices = primitive._batchedIndices ?? [];
   const totalIndices = cache.indexBufferLength ?? 0;
   const colorCommands = [];
+  const pickCommands = [];
   for (let i = 0; i < batchedIndices.length; i++) {
     const entry = batchedIndices[i];
     const offset = entry.offset | 0;
@@ -621,8 +755,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       continue;
     }
 
-    const cmd = new WebGPUDrawCommand({
-      pipeline: cache.colorPipeline,
+    const drawArgs = {
       bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
       bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
       vertexBuffers: [cache.vertexGPUBuffer],
@@ -633,11 +766,22 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       vertexCount: 0,
       pass: groundPass,
       owner: primitive,
-    });
-    colorCommands.push(cmd);
+    };
+    colorCommands.push(
+      new WebGPUDrawCommand({ ...drawArgs, pipeline: cache.colorPipeline }),
+    );
+    if (defined(cache.pickPipeline)) {
+      pickCommands.push(
+        new WebGPUDrawCommand({
+          ...drawArgs,
+          pipeline: cache.pickPipeline,
+          pickOnly: true,
+        }),
+      );
+    }
   }
 
-  return { colorCommands };
+  return { colorCommands, pickCommands };
 }
 
 function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
@@ -650,6 +794,9 @@ function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
   }
   if (defined(cache.batchColorBuffer)) {
     cache.batchColorBuffer.destroy();
+  }
+  if (defined(cache.pickColorBuffer)) {
+    cache.pickColorBuffer.destroy();
   }
   if (defined(cache.vertexGPUBuffer)) {
     cache.vertexGPUBuffer.destroy();

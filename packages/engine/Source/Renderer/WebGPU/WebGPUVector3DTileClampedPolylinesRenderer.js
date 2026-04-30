@@ -100,6 +100,7 @@ struct U {
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> batchColors: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> pickColors: array<vec4<f32>>;
 
 @group(1) @binding(0) var globeDepthTex: texture_2d<f32>;
 @group(1) @binding(1) var depthSampler: sampler;
@@ -111,6 +112,7 @@ struct VOut {
   @location(2) rightPlaneEC: vec4<f32>,
   @location(3) volumeUpEC_halfWidth: vec4<f32>,
   @location(4) col: vec4<f32>,
+  @location(5) pickCol: vec4<f32>,
 };
 
 fn applyNormal(v: vec3<f32>) -> vec3<f32> {
@@ -198,7 +200,9 @@ fn vsMain(
   output.endPlaneEC = vec4<f32>(endNormalEC, -dot(endNormalEC, endEC.xyz));
   output.rightPlaneEC = vec4<f32>(rightEC, -dot(rightEC, startEC.xyz));
   output.volumeUpEC_halfWidth = vec4<f32>(volumeUpEC, endFaceNHW.w);
-  output.col = batchColors[u32(batchId)];
+  let bi = u32(batchId);
+  output.col = batchColors[bi];
+  output.pickCol = pickColors[bi];
   return output;
 }
 
@@ -220,25 +224,19 @@ fn planeDistance(plane: vec4<f32>, p: vec3<f32>) -> f32 {
   return dot(plane.xyz, p) + plane.w;
 }
 
-@fragment
-fn fsMain(in: VOut) -> @location(0) vec4<f32> {
-  // in.pos is delivered in framebuffer coordinates here (xy = pixels,
-  // z = clip-space depth, w = 1/clipW). We sample the globe-depth
-  // texture at this fragment's UV to get the surface depth, then
-  // reconstruct the eye-space surface position and test it against
-  // the per-instance polyline planes.
+// Returns true if the fragment lies inside the swept volume (and thus
+// should be drawn); returns false if it should be discarded. Centralized
+// so the color FS and pick FS share identical coverage rules.
+fn classifyFragment(in: VOut) -> bool {
   let screenUV = in.pos.xy / u.viewport.zw;
   let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
   let surfaceDepth = unpackDepth(packed);
   if (surfaceDepth == 0.0) {
-    discard;
+    return false;
   }
 
   let eyeCoord = windowToEyeCoordinates(in.pos.xy, surfaceDepth);
 
-  // Width threshold, broadened at grazing angles between the view
-  // direction and the volume's up-axis. This matches the WebGL FS
-  // which uses dot(-normalize(eyeCoord.xyz), v_volumeUpEC).
   let halfWidth = in.volumeUpEC_halfWidth.w;
   let volumeUpEC = in.volumeUpEC_halfWidth.xyz;
   var halfMaxWidth = halfWidth * metersPerPixel(eyeCoord);
@@ -250,9 +248,25 @@ fn fsMain(in: VOut) -> @location(0) vec4<f32> {
   let distFromEnd = planeDistance(in.endPlaneEC, eyeCoord);
 
   if (abs(widthwiseDistance) > halfMaxWidth || distFromStart < 0.0 || distFromEnd < 0.0) {
+    return false;
+  }
+  return true;
+}
+
+@fragment
+fn fsMain(in: VOut) -> @location(0) vec4<f32> {
+  if (!classifyFragment(in)) {
     discard;
   }
   return in.col;
+}
+
+@fragment
+fn pickFS(in: VOut) -> @location(0) vec4<f32> {
+  if (!classifyFragment(in)) {
+    discard;
+  }
+  return in.pickCol;
 }
 `;
 
@@ -267,6 +281,7 @@ fn fsMain(in: VOut) -> @location(0) vec4<f32> {
     [
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
       storageBuffer(1, Stage.VERTEX_FRAGMENT, { readOnly: true }),
+      storageBuffer(2, Stage.VERTEX_FRAGMENT, { readOnly: true }),
     ],
   );
 
@@ -343,7 +358,25 @@ fn fsMain(in: VOut) -> @location(0) vec4<f32> {
     },
   };
 
-  return { colorDescriptor, sharedBgl, depthSampleBgl };
+  // Pick pipeline: same VS / depth-sample BGL / different FS entry.
+  const pickDescriptor = {
+    name: `Vector3DTileClampedPolylines pick [${format}/${depthFormat}]`,
+    layout,
+    vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
+    fragment: {
+      module: mod,
+      entryPoint: "pickFS",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "front" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "always",
+    },
+  };
+
+  return { colorDescriptor, pickDescriptor, sharedBgl, depthSampleBgl };
 }
 
 function descriptorToGPU(d) {
@@ -369,33 +402,56 @@ function descriptorToGPU(d) {
 }
 
 function tryResolvePipelines(device, pipelineCache, resources, cache) {
-  if (cache.colorPipeline) {
+  if (cache.colorPipeline && cache.pickPipeline) {
     return true;
   }
   if (pipelineCache) {
-    const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
-    if (sync) {
-      cache.colorPipeline = sync;
-      cache.pipelineRequestPending = false;
-      return true;
+    if (!cache.colorPipeline) {
+      const sync = pipelineCache.getPipelineSync(resources.colorDescriptor);
+      if (sync) {
+        cache.colorPipeline = sync;
+      } else if (!cache.colorRequestPending) {
+        cache.colorRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.colorDescriptor)
+          .then((p) => {
+            cache.colorPipeline = p;
+            cache.colorRequestPending = false;
+          })
+          .catch(() => {
+            cache.colorRequestPending = false;
+          });
+      }
     }
-    if (!cache.pipelineRequestPending) {
-      cache.pipelineRequestPending = true;
-      pipelineCache
-        .getPipeline(resources.colorDescriptor)
-        .then((p) => {
-          cache.colorPipeline = p;
-          cache.pipelineRequestPending = false;
-        })
-        .catch(() => {
-          cache.pipelineRequestPending = false;
-        });
+    if (!cache.pickPipeline) {
+      const pickSync = pipelineCache.getPipelineSync(resources.pickDescriptor);
+      if (pickSync) {
+        cache.pickPipeline = pickSync;
+      } else if (!cache.pickRequestPending) {
+        cache.pickRequestPending = true;
+        pipelineCache
+          .getPipeline(resources.pickDescriptor)
+          .then((p) => {
+            cache.pickPipeline = p;
+            cache.pickRequestPending = false;
+          })
+          .catch(() => {
+            cache.pickRequestPending = false;
+          });
+      }
     }
-    return false;
+    return !!cache.colorPipeline;
   }
-  cache.colorPipeline = device.createRenderPipeline(
-    descriptorToGPU(resources.colorDescriptor),
-  );
+  if (!cache.colorPipeline) {
+    cache.colorPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.colorDescriptor),
+    );
+  }
+  if (!cache.pickPipeline) {
+    cache.pickPipeline = device.createRenderPipeline(
+      descriptorToGPU(resources.pickDescriptor),
+    );
+  }
   return true;
 }
 
@@ -597,6 +653,74 @@ function uploadBatchColors(cache, primitive, device) {
   );
 }
 
+function ensurePickColorStorage(cache, primitive, device) {
+  // Mirror of `ensureBatchColorStorage`. Required at @group(0) @binding(2)
+  // even when the pick pipeline isn't running this frame — WebGPU forbids
+  // partial bind groups.
+  const featuresLength =
+    primitive._batchTable?.featuresLength ??
+    primitive._batchIds?.length ??
+    INITIAL_BATCH_BUFFER_FEATURES;
+  const requiredBytes = Math.max(
+    featuresLength * BYTES_PER_BATCH_COLOR,
+    INITIAL_BATCH_BUFFER_FEATURES * BYTES_PER_BATCH_COLOR,
+  );
+
+  if (
+    defined(cache.pickColorBuffer) &&
+    cache.pickColorBufferCapacity >= requiredBytes
+  ) {
+    return;
+  }
+  if (defined(cache.pickColorBuffer)) {
+    cache.pickColorBuffer.destroy();
+  }
+  cache.pickColorBuffer = device.createBuffer({
+    label: "Vector3DTileClampedPolylines pick colors",
+    size: requiredBytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  cache.pickColorBufferCapacity = requiredBytes;
+  cache.pickColorScratch = new Float32Array(requiredBytes / 4);
+  cache._sharedBindGroupDirty = true;
+  cache._pickColorsUploaded = false;
+}
+
+function uploadPickColors(cache, primitive, device) {
+  const scratch = cache.pickColorScratch;
+  if (!defined(scratch)) {
+    return;
+  }
+  scratch.fill(0);
+
+  const batchTable = primitive._batchTable;
+  if (defined(batchTable) && typeof batchTable.getPickColor === "function") {
+    const length = batchTable.featuresLength ?? 0;
+    for (let i = 0; i < length; i++) {
+      const pickId = batchTable.getPickColor(i);
+      const color = pickId?.color;
+      if (!defined(color)) {
+        continue;
+      }
+      const slot = i * 4;
+      if (slot + 3 < scratch.length) {
+        scratch[slot] = color.red;
+        scratch[slot + 1] = color.green;
+        scratch[slot + 2] = color.blue;
+        scratch[slot + 3] = color.alpha;
+      }
+    }
+  }
+
+  device.queue.writeBuffer(
+    cache.pickColorBuffer,
+    0,
+    scratch.buffer,
+    scratch.byteOffset,
+    cache.pickColorBufferCapacity,
+  );
+}
+
 function createWebGPUVector3DTileClampedPolylineCommands(
   primitive,
   frameState,
@@ -616,6 +740,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
+    cache.pickPipeline = undefined;
     cache.sharedBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
   }
@@ -628,7 +753,8 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       depthFmt,
     );
     cache._pipelineFormatGeneration = sceneGen;
-    cache.pipelineRequestPending = false;
+    cache.colorRequestPending = false;
+    cache.pickRequestPending = false;
   }
   if (
     !tryResolvePipelines(
@@ -638,7 +764,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       cache,
     )
   ) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
 
   if (!defined(cache.uniformBuffer)) {
@@ -650,6 +776,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
   }
   ensureBatchColorStorage(cache, primitive, device);
+  ensurePickColorStorage(cache, primitive, device);
   if (cache._sharedBindGroupDirty || !defined(cache.sharedBindGroup)) {
     cache.sharedBindGroup = device.createBindGroup({
       label: "Vector3DTileClampedPolylines shared BG",
@@ -657,6 +784,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       entries: [
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
         { binding: 1, resource: { buffer: cache.batchColorBuffer } },
+        { binding: 2, resource: { buffer: cache.pickColorBuffer } },
       ],
     });
     cache._sharedBindGroupDirty = false;
@@ -665,7 +793,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   ensureVertexBuffer(cache, primitive, device);
   ensureIndexBuffer(cache, primitive, device);
   if (!defined(cache.vertexGPUBuffer) || !defined(cache.indexGPUBuffer)) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
 
   packUniforms(cache.uniformData, frameState, primitive);
@@ -681,6 +809,10 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     uploadBatchColors(cache, primitive, device);
     cache._batchColorsUploaded = true;
   }
+  if (!cache._pickColorsUploaded) {
+    uploadPickColors(cache, primitive, device);
+    cache._pickColorsUploaded = true;
+  }
 
   // Depth-source resolver. Mirrors WebGPUVector3DTilePrimitiveRenderer:
   // pick `_packedTranslucentDepthView` if present (covers both terrain
@@ -689,7 +821,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const globeDepthView = context._globeDepthView ?? null;
   const depthSourceView = packedTranslucentView ?? globeDepthView;
   if (!depthSourceView) {
-    return { colorCommands: [] };
+    return { colorCommands: [], pickCommands: [] };
   }
   if (!defined(cache.depthSampleSampler)) {
     cache.depthSampleSampler = device.createSampler({
@@ -739,8 +871,8 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const classType =
     primitive._classificationType ?? CLASSIFICATION_TYPE_TERRAIN;
   const colorCommands = [];
+  const pickCommands = [];
   const sharedDrawArgs = {
-    pipeline: cache.colorPipeline,
     bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
     bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
     vertexBuffers: [cache.vertexGPUBuffer],
@@ -750,30 +882,41 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     vertexCount: 0,
     owner: primitive,
   };
+  const passes = [];
   if (
     classType === CLASSIFICATION_TYPE_TERRAIN ||
     classType === CLASSIFICATION_TYPE_BOTH
   ) {
-    colorCommands.push(
-      new WebGPUDrawCommand({
-        ...sharedDrawArgs,
-        pass: PASS_TERRAIN_CLASSIFICATION,
-      }),
-    );
+    passes.push(PASS_TERRAIN_CLASSIFICATION);
   }
   if (
     classType === CLASSIFICATION_TYPE_3DTILE ||
     classType === CLASSIFICATION_TYPE_BOTH
   ) {
+    passes.push(PASS_CESIUM_3D_TILE_CLASSIFICATION);
+  }
+  for (let i = 0; i < passes.length; i++) {
+    const passEnum = passes[i];
     colorCommands.push(
       new WebGPUDrawCommand({
         ...sharedDrawArgs,
-        pass: PASS_CESIUM_3D_TILE_CLASSIFICATION,
+        pipeline: cache.colorPipeline,
+        pass: passEnum,
       }),
     );
+    if (defined(cache.pickPipeline)) {
+      pickCommands.push(
+        new WebGPUDrawCommand({
+          ...sharedDrawArgs,
+          pipeline: cache.pickPipeline,
+          pass: passEnum,
+          pickOnly: true,
+        }),
+      );
+    }
   }
 
-  return { colorCommands };
+  return { colorCommands, pickCommands };
 }
 
 function destroyWebGPUVector3DTileClampedPolylineResources(primitive) {
@@ -786,6 +929,9 @@ function destroyWebGPUVector3DTileClampedPolylineResources(primitive) {
   }
   if (defined(cache.batchColorBuffer)) {
     cache.batchColorBuffer.destroy();
+  }
+  if (defined(cache.pickColorBuffer)) {
+    cache.pickColorBuffer.destroy();
   }
   if (defined(cache.vertexGPUBuffer)) {
     cache.vertexGPUBuffer.destroy();

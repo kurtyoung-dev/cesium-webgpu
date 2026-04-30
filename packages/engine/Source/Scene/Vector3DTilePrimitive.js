@@ -334,18 +334,21 @@ class Vector3DTilePrimitive {
     if (fr && fr.createCommands) {
       this._lastFeatureRenderer = fr;
       const passes = frameState.passes;
-      if (passes.render) {
+      if (passes.render || passes.pick) {
         const result = fr.createCommands(this, frameState);
-        const commands = result?.colorCommands;
-        if (defined(commands)) {
-          for (let i = 0; i < commands.length; i++) {
-            frameState.commandList.push(commands[i]);
+        if (passes.render && defined(result?.colorCommands)) {
+          const colorCommands = result.colorCommands;
+          for (let i = 0; i < colorCommands.length; i++) {
+            frameState.commandList.push(colorCommands[i]);
+          }
+        }
+        if (passes.pick && defined(result?.pickCommands)) {
+          const pickCommands = result.pickCommands;
+          for (let i = 0; i < pickCommands.length; i++) {
+            frameState.commandList.push(pickCommands[i]);
           }
         }
       }
-      // Per-feature pick is a deferred follow-up (see
-      // WebGPUVector3DTilePrimitiveRenderer.js header). Until it lands the
-      // pick pass is a no-op for vector-tile features on WebGPU.
       return;
     }
 
