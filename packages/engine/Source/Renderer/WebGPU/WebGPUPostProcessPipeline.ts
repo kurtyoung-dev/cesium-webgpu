@@ -704,6 +704,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     destView: GPUTextureView,
     depthView?: GPUTextureView | null,
     sourceTexture?: GPUTexture | null,
+    motionView?: GPUTextureView | null,
   ): void {
     // Store the scene color texture for auto-exposure dispatch.
     // When sourceTexture is provided, auto-exposure can dispatch its
@@ -826,11 +827,17 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // history textures). It replaces the current view with the resolved
     // TAA output before the custom stages and FXAA.
     if (this._taaEffect?.enabled) {
+      // TAA Slice 2d (Batch 104) — pass the per-pixel motion-vector
+      // view through. When the SceneRenderer hasn't run a velocity
+      // pass (model velocity output disabled), `motionView` is null
+      // and the TAA effect binds its 1×1 zero placeholder; the FS
+      // falls through to depth reprojection for that frame.
       currentView = this._taaEffect.execute(
         encoder,
         currentView,
         depth,
         this._sampler!,
+        motionView ?? null,
       );
     }
 

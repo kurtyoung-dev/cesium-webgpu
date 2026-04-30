@@ -28,6 +28,13 @@ export class WebGPUSceneFramebuffer {
   private _hdr: boolean = false;
   private _colorFormat: GPUTextureFormat = LDR_FORMAT;
   private _isDestroyed: boolean = false;
+  // TAA Slice 2d (Batch 104) — per-pixel velocity texture written by
+  // the model FS @location(1) when MRT velocity output is enabled.
+  // Lazily allocated the first frame TAA is enabled; reset on resize.
+  // rg16float, single-sample (MSAA velocity isn't sensible — the TAA
+  // resolve pass samples the resolved color, so velocity must match).
+  private _velocityTexture: GPUTexture | null = null;
+  private _velocityView: GPUTextureView | null = null;
 
   /**
    * The main color render target (MSAA if numSamples > 1).
@@ -61,6 +68,51 @@ export class WebGPUSceneFramebuffer {
    */
   get idTarget(): WebGPURenderTarget | null {
     return this._idTarget;
+  }
+
+  /**
+   * TAA Slice 2d (Batch 104) — per-pixel motion-vector texture.
+   * `rg16float`, single-sample. Allocated on first access via
+   * {@link ensureVelocityTexture} so static scenes (TAA off) don't pay
+   * the W*H*4 bytes upfront. Returns the texture view that velocity-
+   * aware pipelines (model FS @location(1)) write into and the TAA
+   * shader samples through `motionTex` at @binding(5).
+   */
+  get velocityView(): GPUTextureView | null {
+    return this._velocityView;
+  }
+
+  /**
+   * Allocate (or reuse) the per-pixel velocity texture. Returns the
+   * view bound to TAA's `motionTex`. Idempotent — only re-allocates
+   * when device or dimensions change. Caller is the SceneRenderer at
+   * the start of the velocity pass.
+   */
+  ensureVelocityTexture(
+    device: GPUDevice,
+    width: number,
+    height: number,
+  ): GPUTextureView | null {
+    if (
+      this._velocityTexture &&
+      this._device === device &&
+      this._velocityTexture.width === width &&
+      this._velocityTexture.height === height
+    ) {
+      return this._velocityView;
+    }
+    this._velocityTexture?.destroy();
+    this._velocityTexture = device.createTexture({
+      label: "SceneFramebuffer-Velocity",
+      size: [width, height, 1],
+      format: "rg16float",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.COPY_SRC,
+    });
+    this._velocityView = this._velocityTexture.createView();
+    return this._velocityView;
   }
 
   /**
@@ -136,6 +188,12 @@ export class WebGPUSceneFramebuffer {
     // Destroy existing targets
     this._colorTarget?.destroy();
     this._idTarget?.destroy();
+    // TAA Slice 2d (Batch 104) — invalidate velocity texture too so
+    // the next `ensureVelocityTexture` call reallocates at the new
+    // dimensions.
+    this._velocityTexture?.destroy();
+    this._velocityTexture = null;
+    this._velocityView = null;
 
     // Create main color target with MSAA + depth-stencil.
     //
@@ -225,8 +283,11 @@ export class WebGPUSceneFramebuffer {
     if (this._isDestroyed) return;
     this._colorTarget?.destroy();
     this._idTarget?.destroy();
+    this._velocityTexture?.destroy();
     this._colorTarget = null;
     this._idTarget = null;
+    this._velocityTexture = null;
+    this._velocityView = null;
     this._isDestroyed = true;
   }
 

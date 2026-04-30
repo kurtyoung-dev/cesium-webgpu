@@ -2840,12 +2840,21 @@ export class WebGPUSceneRenderer {
     if (encoder && sourceView && targetView) {
       // Pass the scene color texture for auto-exposure compute dispatch.
       const sceneColorTexture = colorTarget?.getColorTexture?.(0) ?? null;
+      // TAA Slice 2d (Batch 104) — forward the per-pixel velocity
+      // texture view (when allocated). Currently null when no
+      // velocity pass populated it; the TAA effect binds its 1×1
+      // zero placeholder and the shader falls back to depth
+      // reprojection. The follow-up that wires model FS @location(1)
+      // velocity output will populate this view via
+      // `sceneFramebuffer.ensureVelocityTexture(...)`.
+      const motionView = this._sceneFramebuffer?.velocityView ?? null;
       this._postProcess.execute(
         encoder,
         sourceView,
         targetView,
         depthView,
         sceneColorTexture,
+        motionView,
       );
     } else {
       context.log(

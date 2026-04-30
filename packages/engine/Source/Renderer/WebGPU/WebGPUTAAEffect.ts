@@ -251,6 +251,11 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
+  // TAA Slice 2d (Batch 104) — 1×1 zero-RG placeholder for the motion
+  // texture binding. Used when no per-pixel velocity is available
+  // (model velocity pass inactive); the FS branch reads `(0, 0)` and
+  // falls back to the existing depth-reprojection path.
+  private _motionPlaceholderView: GPUTextureView | null = null;
   private _paramsBuffer: GPUBuffer | null = null;
   private _paramsScratch = new Float32Array(TAA_PARAMS_FLOATS);
 
@@ -325,12 +330,19 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     });
 
     // Bind group layout
+    // TAA Slice 2d (Batch 104) — adds binding 5 for the per-pixel
+    // motion-vector texture (rg16float, written by the model FS at
+    // @location(1) when MRT velocity output is enabled). Bound to a
+    // 1×1 zero placeholder when the velocity pass is inactive; the
+    // FS branch in `reprojectUV` falls back to depth-reprojection
+    // when the sample reads as zero.
     this._bindGroupLayout = makeBindGroupLayout(device, "TAA_BGL", [
       texture(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
       texture(2, Stage.FRAGMENT, { sampleType: "depth" }),
       sampler(3, Stage.FRAGMENT),
       uniformBuffer(4, Stage.FRAGMENT),
+      texture(5, Stage.FRAGMENT),
     ]);
 
     // Render pipeline
@@ -357,6 +369,27 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     });
 
     this._allocateHistoryTextures(width, height, format);
+
+    // TAA Slice 2d (Batch 104) — 1×1 zero-filled rg16float placeholder
+    // for the motion-vector binding. The FS treats (0, 0) as "no
+    // sample available" and falls back to depth reprojection, which
+    // is the correct behavior when no model velocity pass populated
+    // the real texture.
+    const placeholderTex = device.createTexture({
+      label: "TAA Motion Placeholder",
+      size: [1, 1, 1],
+      format: "rg16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // rg16float = 2 × 16-bit floats = 4 bytes; zero-fill is the bit
+    // pattern (0, 0, 0, 0).
+    device.queue.writeTexture(
+      { texture: placeholderTex },
+      new Uint8Array([0, 0, 0, 0]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    this._motionPlaceholderView = placeholderTex.createView();
   }
 
   resize(width: number, height: number): void {
@@ -375,6 +408,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     sourceView: GPUTextureView,
     depthView: GPUTextureView | null,
     _sampler: GPUSampler,
+    motionView: GPUTextureView | null = null,
   ): GPUTextureView {
     if (
       !this._device ||
@@ -445,6 +479,15 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     }
 
     // Build bind group.
+    // TAA Slice 2d (Batch 104) — binding 5 = per-pixel motion-vector
+    // texture. Falls back to the 1×1 zero placeholder when no
+    // velocity-aware geometry has populated a real texture; the FS
+    // reads zero and routes through depth reprojection.
+    const motionBindView = motionView ?? this._motionPlaceholderView;
+    if (!motionBindView) {
+      // Should never happen — placeholder is allocated at initialize().
+      return sourceView;
+    }
     const bg = this._device.createBindGroup({
       label: "TAA_BG",
       layout: this._bindGroupLayout,
@@ -454,6 +497,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
         { binding: 2, resource: depthView },
         { binding: 3, resource: this._sampler },
         { binding: 4, resource: { buffer: this._paramsBuffer } },
+        { binding: 5, resource: motionBindView },
       ],
     });
 

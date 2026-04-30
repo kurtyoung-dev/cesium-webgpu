@@ -41,6 +41,18 @@ struct TAAParams {
 @group(0) @binding(2) var depthTex: texture_depth_2d;
 @group(0) @binding(3) var linearSampler: sampler;
 @group(0) @binding(4) var<uniform> params: TAAParams;
+// TAA Slice 2d (Batch 104) — per-pixel motion-vector texture written by
+// the model FS @location(1). Bound to a 1×1 zero placeholder when the
+// model velocity pass is inactive; the FS branch in `reprojectUV` reads
+// the sample and falls back to depth-reprojection when it's zero
+// (placeholder content) or when |motion| is below a threshold.
+//
+// rg16float layout: (R, G) = NDC delta (current - previous), in [-1, 1]
+// per axis. The model FS computes this via
+// `computeMotionVectorScreenSpace` and writes it raw; the TAA shader
+// converts to UV delta via `(curNdc - prevNdc) * vec2(0.5, -0.5)` in
+// `sampleMotionTexture` below.
+@group(0) @binding(5) var motionTex: texture_2d<f32>;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -90,6 +102,27 @@ fn clampToAABB(color: vec3<f32>, aabb: ColorAABB) -> vec3<f32> {
   return clamp(color, aabb.cMin, aabb.cMax);
 }
 
+// ── Per-pixel motion-vector lookup (TAA Slice 2d / Batch 104) ──────────
+//
+// Sample `motionTex` at `uv` and convert the stored NDC delta into a UV
+// delta. The motion texture is rg16float; (R, G) carries the per-pixel
+// (currentClipPos - previousClipPos).xy / w computed by the model FS.
+// The placeholder content for non-velocity-aware geometry is (0, 0),
+// which we treat as "no motion sample available" and fall back to depth
+// reprojection. A small magnitude threshold (~1e-5 NDC ≈ 1/65535 of the
+// texture range) absorbs precision noise.
+//
+// Returns vec2(0) when no usable sample is present so the caller can
+// detect the fallback case.
+fn sampleMotionTexture(uv: vec2<f32>) -> vec2<f32> {
+  let m = textureSampleLevel(motionTex, linearSampler, uv, 0.0).rg;
+  if (abs(m.x) < 1.0e-5 && abs(m.y) < 1.0e-5) {
+    return vec2<f32>(0.0);
+  }
+  // NDC delta → UV delta. NDC.y down-flips on the way to UV.
+  return m * vec2<f32>(0.5, -0.5);
+}
+
 // ── RTE depth reprojection ─────────────────────────────────────────────
 //
 // Given a current-frame UV + depth, reproject into the previous frame's
@@ -102,9 +135,28 @@ fn clampToAABB(color: vec3<f32>, aabb: ColorAABB) -> vec3<f32> {
 // Returns previousUV. Falls back to `uv` (motion = 0) when reprojection
 // fails: history invalid, point behind previous camera, or NDC out of
 // [-1,1] which indicates the pixel wasn't visible last frame (disocclusion).
+//
+// TAA Slice 2d (Batch 104) — when the per-pixel motion-vector texture
+// has a non-zero sample for this pixel, prefer it over the depth-
+// reprojection path. Per-pixel velocity correctly handles skinned /
+// morphed / instanced / animated geometry that depth-reprojection
+// treats as static (the depth path only reverses CAMERA motion, not
+// per-vertex transform deltas).
 fn reprojectUV(uv: vec2<f32>) -> vec2<f32> {
   if (params.historyValid == 0u) {
     return uv;
+  }
+
+  // Per-pixel motion texture wins when present.
+  let motionSample = sampleMotionTexture(uv);
+  if (abs(motionSample.x) > 0.0 || abs(motionSample.y) > 0.0) {
+    let prevUV = uv - motionSample;
+    if (prevUV.x >= 0.0 && prevUV.x <= 1.0 &&
+        prevUV.y >= 0.0 && prevUV.y <= 1.0) {
+      return prevUV;
+    }
+    // Out-of-bounds motion → disocclusion; fall through to the depth-
+    // reprojection path's own out-of-bounds guard.
   }
 
   // Fetch depth at the pixel center. We sample from the depth texture
