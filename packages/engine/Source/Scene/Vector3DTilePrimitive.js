@@ -481,6 +481,19 @@ function createShaders(primitive, context) {
     return;
   }
 
+  // BUILD-VAR-HAZARD-VECTOR3DTILE — `ShaderProgram.fromCache` calls
+  // below expect real GLSL source. The webgpu-only build variant
+  // aliases every `Source/Shaders/*.js` import to an empty string
+  // stub (see `scripts/bundleVariantPlugin.js`), and WebGL would
+  // reject the empty-source compile. There is no WebGPU Vector3DTile
+  // feature renderer yet — the WebGPU code path silently renders
+  // these primitives as no-ops via the alias plugin's empty stubs.
+  // Early-return here so the webgpu-only bundle doesn't crash; on
+  // dual / webgl-only bundles this branch is never taken.
+  if (context.rendererType === "webgpu") {
+    return;
+  }
+
   const batchTable = primitive._batchTable;
   const attributeLocations =
     primitive._attributeLocations ?? defaultAttributeLocations;

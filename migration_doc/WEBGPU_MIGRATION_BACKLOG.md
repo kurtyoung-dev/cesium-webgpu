@@ -313,12 +313,12 @@ Opt-in tree-shaking variants for downstream consumers who only want one backend.
 
 ### webgpu-only bundle hazards (from scene audit)
 
-- **BUILD-VAR-HAZARD-VECTOR3DTILE** — `Vector3DTilePrimitive.js` (5 sites) + `Vector3DTilePolylines.js` (1) + `Vector3DTileClampedPolylines.js` (1) have unconditional `ShaderProgram.fromCache` calls. Webgpu-only bundle alias plugin redirects the GLSL strings to empty; WebGL would reject the empty shader at compile time → crash. Fix: per-family WebGPU feature renderer + FR intercept, or short-term `if (renderer === "webgpu") return` guard. **Affects only webgpu-only variant.**
-- **BUILD-VAR-HAZARD-CLASSIFICATION** — `ClassificationPrimitive.js` has 5 unguarded compile sites (lines 859, 880, 917, 931, 948). Same remediation options as vector tiles.
-- **BUILD-VAR-HAZARD-DEPTH-PLANE** — `DepthPlane.js:96` unguarded `ShaderProgram.replaceCache`. Used by translucent globe path.
-- **BUILD-VAR-HAZARD-GROUND-POLYLINE** — `GroundPolylinePrimitive.js:605` unguarded `ShaderProgram.replaceCache`. Used by ground-draped polylines (roads, borders).
+- ~~**BUILD-VAR-HAZARD-VECTOR3DTILE**~~ — **GUARDED 2026-04-30** (Batch 111). `if (context.rendererType === "webgpu") return;` early-returns added at the top of `Vector3DTilePrimitive.createShaders`, `Vector3DTilePolylines.createShaders`, and `Vector3DTileClampedPolylines.createShaders`. Webgpu-only bundle no longer crashes on these primitives; they silently no-op until a real WebGPU Vector3DTile feature renderer lands.
+- ~~**BUILD-VAR-HAZARD-CLASSIFICATION**~~ — **GUARDED 2026-04-30** (Batch 111). Single early-return at the top of `ClassificationPrimitive.createShaderProgram` covers all 5 internal compile sites since they all live downstream of that one entry point.
+- ~~**BUILD-VAR-HAZARD-DEPTH-PLANE**~~ — **GUARDED 2026-04-30** (Batch 111). Early-return added at the top of `DepthPlane.update` after the SCENE3D mode check. WebGPU has its own DepthPlane via `WebGPUDepthPlane`; this WebGL helper is a no-op on WebGPU contexts.
+- ~~**BUILD-VAR-HAZARD-GROUND-POLYLINE**~~ — **GUARDED 2026-04-30** (Batch 111). Early-return added at the top of `GroundPolylinePrimitive.createShaderProgram`. WebGPU has its own ground-polyline path via `WebGPUGroundPolylineRenderer`.
 
-Recommended remediation order if webgpu-only is promoted to supported: Option B defensive guards first (~30 min, ships immediately), then Option A per-family FRs as Phase 8 feature work (these are also WebGL/WebGPU parity gaps that the current implementation silently no-ops on).
+All four hazards are now resolved at the **defensive-guard** level (Option B). The webgpu-only bundle no longer crashes when a scene contains these primitives — they silently no-op. Real WebGPU feature renderers for each family (Option A) remain on the backlog as Phase 8 feature work; those would actually render the primitives instead of skipping them.
 
 ### Known limitation — WebGPU-only bundle shrinkage is gated on scene-file audit
 

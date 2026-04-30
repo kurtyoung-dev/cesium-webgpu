@@ -557,6 +557,15 @@ function createShaders(primitive, context) {
     return;
   }
 
+  // BUILD-VAR-HAZARD-VECTOR3DTILE — see Vector3DTilePrimitive.js for
+  // the full rationale. Short version: webgpu-only bundle aliases
+  // GLSL strings to empty stubs; the compile below would crash on
+  // WebGL. WebGPU has no Vector3DTilePolyline feature renderer yet,
+  // so we early-return on WebGPU contexts.
+  if (context.rendererType === "webgpu") {
+    return;
+  }
+
   const batchTable = primitive._batchTable;
 
   const vsSource = batchTable.getVertexShaderCallback(

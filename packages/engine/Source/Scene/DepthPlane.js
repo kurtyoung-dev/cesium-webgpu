@@ -41,6 +41,18 @@ class DepthPlane {
 
     const context = frameState.context;
 
+    // BUILD-VAR-HAZARD-DEPTH-PLANE — `ShaderProgram.fromCache` below
+    // expects real GLSL source. The webgpu-only build variant aliases
+    // every `Source/Shaders/*.js` import to an empty string stub
+    // (see `scripts/bundleVariantPlugin.js`), and WebGL would reject
+    // the empty-source compile here. WebGPU has its own DepthPlane
+    // path via `WebGPUDepthPlane` in `WebGPUSceneRenderer`, so this
+    // WebGL helper has nothing to do on a WebGPU context. Early-return
+    // before the compile to keep the webgpu-only bundle viable.
+    if (context.rendererType === "webgpu") {
+      return;
+    }
+
     // Allow offsetting the ellipsoid radius to address rendering artifacts below ellipsoid zero elevation.
     const radii = frameState.mapProjection.ellipsoid.radii;
     const ellipsoid = new Ellipsoid(

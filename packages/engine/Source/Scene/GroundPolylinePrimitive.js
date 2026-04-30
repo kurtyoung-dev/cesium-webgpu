@@ -532,6 +532,18 @@ GroundPolylinePrimitive.initializeTerrainHeights = function () {
 
 function createShaderProgram(groundPolylinePrimitive, frameState, appearance) {
   const context = frameState.context;
+
+  // BUILD-VAR-HAZARD-GROUND-POLYLINE — `ShaderProgram.replaceCache`
+  // below expects real GLSL source. The webgpu-only build variant
+  // aliases every `Source/Shaders/*.js` import to an empty string
+  // stub (see `scripts/bundleVariantPlugin.js`), and WebGL would
+  // reject the empty-source compile. WebGPU has its own ground-
+  // polyline path via `WebGPUGroundPolylineRenderer`, so this WebGL
+  // helper has nothing to do on a WebGPU context. Early-return.
+  if (context.rendererType === "webgpu") {
+    return;
+  }
+
   const primitive = groundPolylinePrimitive._primitive;
   const attributeLocations = primitive._attributeLocations;
 

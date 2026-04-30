@@ -814,6 +814,21 @@ function modifyForEncodedNormals(primitive, vertexShaderSource) {
 
 function createShaderProgram(classificationPrimitive, frameState) {
   const context = frameState.context;
+
+  // BUILD-VAR-HAZARD-CLASSIFICATION — `ShaderProgram.replaceCache` and
+  // `ShaderProgram.fromCache` calls below expect real GLSL source. The
+  // webgpu-only build variant aliases every `Source/Shaders/*.js`
+  // import to an empty string stub (see `scripts/bundleVariantPlugin.js`),
+  // and WebGL would reject the empty-source compile. There is no
+  // WebGPU ClassificationPrimitive feature renderer yet — the WebGPU
+  // path silently renders these primitives as no-ops via the alias
+  // plugin's empty stubs. Early-return on WebGPU so the webgpu-only
+  // bundle doesn't crash; on dual / webgl-only bundles this branch is
+  // never taken.
+  if (context.rendererType === "webgpu") {
+    return;
+  }
+
   const primitive = classificationPrimitive._primitive;
   let vs = ShadowVolumeAppearanceVS;
   vs =
