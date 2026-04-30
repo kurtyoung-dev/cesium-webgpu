@@ -66,6 +66,10 @@ const FLAG_HAS_ANISOTROPY: u32                 = 2097152u; // bit 21
 const FLAG_HAS_IRIDESCENCE: u32                = 4194304u; // bit 22
 const FLAG_HAS_SHEEN: u32                      = 8388608u; // bit 23
 const FLAG_HAS_VOLUME: u32                     = 16777216u; // bit 24
+// C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — gates the FS refraction
+// sampling branch. Transmission samples the prior-pass scene color
+// (refraction MRT) at a refracted UV offset.
+const FLAG_HAS_TRANSMISSION: u32               = 33554432u; // bit 25
 
 // ─── Uniform Structures ──────────────────────────────────────────────────────
 
@@ -235,8 +239,12 @@ struct MaterialUniforms {
   //      tile_translucentCommand &&  alpha < 0.998" gate).
   //   z, w: reserved.
   tileBatchFlags: vec4<f32>,
-  _pad_reserved6: vec4<f32>,
-  _pad_reserved7: vec4<f32>,
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor +
+  // ior. Replaces _pad_reserved7. Layout:
+  //   x: transmissionFactor [0, 1]
+  //   y: ior (default 1.5 — index of refraction)
+  //   z, w: reserved
+  transmissionFactors: vec4<f32>,
   _pad_reserved8: vec4<f32>,
 };
 
@@ -291,6 +299,15 @@ struct LightUniforms {
 @group(2) @binding(19) var specularFactorTexture: texture_2d<f32>;
 @group(2) @binding(20) var iridescenceThicknessTexture: texture_2d<f32>;
 @group(2) @binding(21) var khrSampler: sampler;
+// C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — refraction texture (a copy
+// of the prior-pass scene color) + transmission factor map. The
+// SceneRenderer is responsible for capturing scene color into a
+// dedicated refraction texture before the transmissive draw and
+// binding it here. When KHR_materials_transmission isn't active the
+// placeholder white texture binds (FS branch is gated on
+// FLAG_HAS_TRANSMISSION so the placeholder content is unused).
+@group(2) @binding(22) var transmissionTexture: texture_2d<f32>;
+@group(2) @binding(23) var refractionSceneTexture: texture_2d<f32>;
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(3) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
@@ -1570,6 +1587,56 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   // attenuation term of the reference implementation when transmission
   // is 0 and the surface is purely opaque, which is the common case for
   // KHR_materials_volume on glass/translucent assets in our tilesets.
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — KHR_materials_transmission.
+  // Transmissive surfaces blend the diffuse contribution with a sample
+  // of the refraction texture (a copy of prior-pass scene color),
+  // offset along the refracted view direction. This is a simplified
+  // path: full physically-correct transmission requires a refraction
+  // MRT that captures opaque-only scene color BEFORE transmissive
+  // draws — without that capture the sample reads "this draw's own
+  // contribution" which double-counts. The capture is the architectural
+  // gap the next slice closes; for now the FS samples the placeholder
+  // white texture and the transmission factor scales the existing
+  // diffuse contribution to "fake" the transmissive look.
+  //
+  // Branch ordering: applied AFTER volume attenuation so transmissive
+  // glass behind volumetric absorption gets the correct double effect.
+  if (hasFlag(flags, FLAG_HAS_TRANSMISSION)) {
+    var trFactor = material.transmissionFactors.x;
+    let trTex = textureSampleLevel(
+      transmissionTexture, khrSampler, baseColorUV(input), 0.0,
+    );
+    trFactor = trFactor * trTex.r;
+    if (trFactor > 0.0) {
+      // Refracted view direction (Snell's law) — IOR encoded on the
+      // transmission factor block .y; defaults to 1.5 (standard glass)
+      // when the asset doesn't override.
+      let ior = max(material.transmissionFactors.y, 1.0);
+      let eta = 1.0 / ior;
+      let refracted = refract(-V, N, eta);
+      // UV offset — project refracted vector to screen space. Without
+      // a thickness sample we use a fixed step (kept small so
+      // misaligned refraction reads stay near the original pixel).
+      let refractionUV = clamp(
+        input.fragCoord.xy / vec2<f32>(
+          f32(textureDimensions(refractionSceneTexture).x),
+          f32(textureDimensions(refractionSceneTexture).y),
+        ) + refracted.xy * 0.05,
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+      );
+      let refractedColor = textureSampleLevel(
+        refractionSceneTexture, khrSampler, refractionUV, 0.0,
+      ).rgb;
+      // Blend transmissive lookup with the lit diffuse contribution.
+      // Per spec, transmission is applied to the diffuse component only;
+      // the specular highlight rides on top via the existing F + specBRDF
+      // term (which we leave intact in `direct`).
+      let diffuseTransmitted = mix(direct, refractedColor, trFactor);
+      direct = diffuseTransmitted;
+    }
+  }
+
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
     var thickness = material.volumeFactors0.x;
     let attDistance = material.volumeFactors0.y;

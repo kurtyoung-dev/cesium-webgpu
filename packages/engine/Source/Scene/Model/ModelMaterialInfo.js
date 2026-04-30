@@ -48,6 +48,12 @@ const MaterialFlags = Object.freeze({
   HAS_IRIDESCENCE: 4194304, // Bit 22 — KHR_materials_iridescence
   HAS_SHEEN: 8388608, // Bit 23 — KHR_materials_sheen
   HAS_VOLUME: 16777216, // Bit 24 — KHR_materials_volume
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — gates the FS refraction
+  // sampling branch. Transmission samples the prior-pass scene color
+  // (see refraction MRT scaffolding in WebGPUSceneFramebuffer) at a
+  // refracted UV offset. When the bit is unset the transmission
+  // factor is 0 and the FS path is dead code.
+  HAS_TRANSMISSION: 33554432, // Bit 25 — KHR_materials_transmission
 });
 
 /**
@@ -191,6 +197,17 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     attenuationColor: [1, 1, 1],
     thicknessTextureReader: null,
     hasThicknessTexture: false,
+
+    // KHR_materials_transmission (Batch 105) — light passing through
+    // a thin or thick volume. The FS samples a copy of the prior-pass
+    // scene color (refraction MRT) at an offset based on the surface
+    // normal + IOR, then blends with the diffuse contribution by
+    // `transmissionFactor`. transmissionTexture (R) modulates the
+    // factor per-pixel.
+    hasTransmission: false,
+    transmissionFactor: 0.0,
+    transmissionTextureReader: null,
+    hasTransmissionTexture: false,
 
     // Computed flags bitfield (for shader uniform)
     materialFlags: 0,
@@ -419,6 +436,19 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     }
   }
 
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105). The loader populates
+  // `material.transmission` as a plain object with
+  // `{ transmissionFactor, transmissionTexture }`.
+  const tr = material.transmission;
+  if (defined(tr) && tr.transmissionFactor > 0.0) {
+    info.hasTransmission = true;
+    info.transmissionFactor = tr.transmissionFactor;
+    if (defined(tr.transmissionTexture)) {
+      info.hasTransmissionTexture = true;
+      info.transmissionTextureReader = tr.transmissionTexture;
+    }
+  }
+
   info.materialFlags = computeFlags(info);
   return info;
 }
@@ -486,6 +516,9 @@ function computeFlags(info) {
   }
   if (info.hasVolume) {
     flags |= MaterialFlags.HAS_VOLUME;
+  }
+  if (info.hasTransmission) {
+    flags |= MaterialFlags.HAS_TRANSMISSION;
   }
   return flags;
 }

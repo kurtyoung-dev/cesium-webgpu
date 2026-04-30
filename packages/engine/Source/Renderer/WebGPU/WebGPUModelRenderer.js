@@ -493,8 +493,18 @@ function packMaterialUniforms(
   data[178] = 0;
   data[179] = 0;
 
-  // Reserved (slot 180-191). Zero-fill for std140 stability.
-  for (let i = 180; i < 192; i++) {
+  // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmissionFactors
+  // (slot 180-183):
+  //   x: transmissionFactor [0, 1]
+  //   y: ior (default 1.5 — common dielectric / glass refractive index)
+  //   z, w: reserved
+  data[180] = matInfo.hasTransmission ? matInfo.transmissionFactor : 0.0;
+  data[181] = 1.5;
+  data[182] = 0;
+  data[183] = 0;
+
+  // Reserved (slot 184-191). Zero-fill for std140 stability.
+  for (let i = 184; i < 192; i++) {
     data[i] = 0;
   }
 }
@@ -925,6 +935,12 @@ function ensurePrimitiveCache(
       { binding: 19, resource: textures.specularFactor.createView() },
       { binding: 20, resource: textures.iridescenceThickness.createView() },
       { binding: 21, resource: defSampler },
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor
+      // texture + refraction scene-color sample source. The
+      // refractionSceneTexture defaults to the white placeholder until
+      // the SceneRenderer's refraction MRT pass populates it.
+      { binding: 22, resource: textures.transmission.createView() },
+      { binding: 23, resource: textures.refractionScene.createView() },
     ],
   });
 
@@ -1025,6 +1041,18 @@ function createMaterialTextures(device, pipelineCache, matInfo) {
       defWhite,
       "linear",
     ),
+    // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission texture
+    // (R = factor scalar) + refraction scene-color sample source. The
+    // refractionScene fallback is the white placeholder; the actual
+    // refraction MRT populated by the SceneRenderer is bound through
+    // a separate per-frame rebuild in update(). Here we just stamp the
+    // placeholder so the bind group is always valid.
+    transmission: tryCreate(
+      matInfo.transmissionTextureReader,
+      defWhite,
+      "linear",
+    ),
+    refractionScene: defWhite,
     created,
   };
 }

@@ -118,6 +118,15 @@ function createBindGroupLayouts(device) {
     texture(19, Stage.FRAGMENT),
     texture(20, Stage.FRAGMENT),
     sampler(21, Stage.FRAGMENT),
+    // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor
+    // texture + refraction-sceneColor sample source. The
+    // refractionSceneTexture is bound to the prior-pass scene color
+    // when the SceneRenderer's refraction MRT is populated; falls
+    // through to the placeholder when not (the FS branch gates on
+    // FLAG_HAS_TRANSMISSION so the placeholder is never sampled in
+    // production).
+    texture(22, Stage.FRAGMENT),
+    texture(23, Stage.FRAGMENT),
   ]);
 
   // Group 3: Joint matrices storage buffer (for skinning)

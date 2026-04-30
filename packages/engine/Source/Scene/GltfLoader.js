@@ -1747,6 +1747,114 @@ function loadAnisotropy(loader, anisotropyInfo, frameState) {
   return anisotropy;
 }
 
+// C-R4-GLTF-KHR (Batch 105) — KHR extensions added on the loader side
+// to feed `ModelMaterialInfo.extractMaterialInfo` (Batch 95). Plain
+// object literals (no dedicated ModelComponents classes) — the
+// consumers read by property name and the upstream WebGL path doesn't
+// reference these slots, so a class isn't needed for type clarity.
+
+function loadIridescence(loader, iridescenceInfo, frameState) {
+  const {
+    iridescenceFactor = 0.0,
+    iridescenceTexture,
+    iridescenceIor = 1.3,
+    iridescenceThicknessMinimum = 100.0,
+    iridescenceThicknessMaximum = 400.0,
+    iridescenceThicknessTexture,
+  } = iridescenceInfo;
+
+  const iridescence = {
+    iridescenceFactor,
+    iridescenceIor,
+    iridescenceThicknessMinimum,
+    iridescenceThicknessMaximum,
+    iridescenceTexture: undefined,
+    iridescenceThicknessTexture: undefined,
+  };
+  if (defined(iridescenceTexture)) {
+    iridescence.iridescenceTexture = loadTexture(
+      loader,
+      iridescenceTexture,
+      frameState,
+    );
+  }
+  if (defined(iridescenceThicknessTexture)) {
+    iridescence.iridescenceThicknessTexture = loadTexture(
+      loader,
+      iridescenceThicknessTexture,
+      frameState,
+    );
+  }
+  return iridescence;
+}
+
+function loadSheen(loader, sheenInfo, frameState) {
+  const {
+    sheenColorFactor = [0.0, 0.0, 0.0],
+    sheenColorTexture,
+    sheenRoughnessFactor = 0.0,
+    sheenRoughnessTexture,
+  } = sheenInfo;
+
+  const sheen = {
+    sheenColorFactor,
+    sheenRoughnessFactor,
+    sheenColorTexture: undefined,
+    sheenRoughnessTexture: undefined,
+  };
+  if (defined(sheenColorTexture)) {
+    sheen.sheenColorTexture = loadTexture(
+      loader,
+      sheenColorTexture,
+      frameState,
+    );
+  }
+  if (defined(sheenRoughnessTexture)) {
+    sheen.sheenRoughnessTexture = loadTexture(
+      loader,
+      sheenRoughnessTexture,
+      frameState,
+    );
+  }
+  return sheen;
+}
+
+function loadVolume(loader, volumeInfo, frameState) {
+  const {
+    thicknessFactor = 0.0,
+    thicknessTexture,
+    attenuationDistance = Number.POSITIVE_INFINITY,
+    attenuationColor = [1.0, 1.0, 1.0],
+  } = volumeInfo;
+
+  const volume = {
+    thicknessFactor,
+    attenuationDistance,
+    attenuationColor,
+    thicknessTexture: undefined,
+  };
+  if (defined(thicknessTexture)) {
+    volume.thicknessTexture = loadTexture(loader, thicknessTexture, frameState);
+  }
+  return volume;
+}
+
+function loadTransmission(loader, transmissionInfo, frameState) {
+  const { transmissionFactor = 0.0, transmissionTexture } = transmissionInfo;
+  const transmission = {
+    transmissionFactor,
+    transmissionTexture: undefined,
+  };
+  if (defined(transmissionTexture)) {
+    transmission.transmissionTexture = loadTexture(
+      loader,
+      transmissionTexture,
+      frameState,
+    );
+  }
+  return transmission;
+}
+
 function loadClearcoat(loader, clearcoatInfo, frameState) {
   const {
     clearcoatFactor = Clearcoat.DEFAULT_CLEARCOAT_FACTOR,
@@ -1829,6 +1937,17 @@ function loadMaterial(loader, gltfMaterial, frameState) {
   const pbrSpecular = extensions.KHR_materials_specular;
   const pbrAnisotropy = extensions.KHR_materials_anisotropy;
   const pbrClearcoat = extensions.KHR_materials_clearcoat;
+  // C-R4-GLTF-KHR (Batch 105) — additional KHR material extensions
+  // that ModelMaterialInfo.extractMaterialInfo (Batch 95) already
+  // expects on `material.iridescence` / `material.sheen` /
+  // `material.volume` / `material.transmission` but the upstream
+  // loader didn't populate. Wiring them here so factor-only support
+  // (Batch 95) and texture support (Batch 102/103) actually fire
+  // for assets that declare these extensions.
+  const pbrIridescence = extensions.KHR_materials_iridescence;
+  const pbrSheen = extensions.KHR_materials_sheen;
+  const pbrVolume = extensions.KHR_materials_volume;
+  const pbrTransmission = extensions.KHR_materials_transmission;
   const pbrMetallicRoughness = gltfMaterial.pbrMetallicRoughness;
 
   material.unlit = defined(extensions.KHR_materials_unlit);
@@ -1855,6 +1974,26 @@ function loadMaterial(loader, gltfMaterial, frameState) {
     }
     if (defined(pbrClearcoat) && !material.unlit) {
       material.clearcoat = loadClearcoat(loader, pbrClearcoat, frameState);
+    }
+    if (defined(pbrIridescence) && !material.unlit) {
+      material.iridescence = loadIridescence(
+        loader,
+        pbrIridescence,
+        frameState,
+      );
+    }
+    if (defined(pbrSheen) && !material.unlit) {
+      material.sheen = loadSheen(loader, pbrSheen, frameState);
+    }
+    if (defined(pbrVolume) && !material.unlit) {
+      material.volume = loadVolume(loader, pbrVolume, frameState);
+    }
+    if (defined(pbrTransmission) && !material.unlit) {
+      material.transmission = loadTransmission(
+        loader,
+        pbrTransmission,
+        frameState,
+      );
     }
   }
 
