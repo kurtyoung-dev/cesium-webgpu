@@ -748,23 +748,68 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
 
-      // 2026-04-30 — Model PBR pipeline layout uses 8 bind groups (groups
-      // 0-7: camera / material / textures / instancing / skinning /
-      // morphTargets / featureId / effects). The WebGPU spec default is
-      // maxBindGroups = 4. Without this opt-in, the model pipeline build
-      // fails with "bindGroupLayoutCount (8) is larger than the maximum
-      // allowed (4)" and EVERY model command in the scene crashes with
-      // "Invalid RenderPipeline" — silently, because the pipeline-create
-      // failure surfaces async via popErrorScope, while the synchronous
-      // setPipeline() call just gets an "Invalid RenderPipeline" handle
-      // that the validation layer rejects without a JS exception. b3dm
-      // tilesets, glb models, and Sandcastle Model demos all need this.
+      // 2026-04-30 — Adaptive opt-in to higher per-stage resource limits
+      // when the adapter exposes them. WebGPU spec defaults are tight:
+      //   maxBindGroups: 4
+      //   maxUniformBuffersPerShaderStage: 12
+      //   maxStorageBuffersPerShaderStage: 8
+      //   maxSampledTexturesPerShaderStage: 16
+      //   maxSamplersPerShaderStage: 16
+      // Most adapters expose ceilings well above defaults
+      // (NVIDIA Pascal: 1000 bindings/group, 48 textures/stage), but
+      // Chromium clamps maxBindGroups to 4 spec-mandated regardless of
+      // hardware. Probed across DXGI/Vulkan/HighPerf on Pascal — all
+      // returned maxBindGroups = 4 (verified via
+      // `Tools/visual-regression/probe-adapter-limits.mjs`).
+      //
+      // Strategy: pull each limit toward the adapter ceiling (capped at
+      // a reasonable upper bound to avoid pathological allocations).
+      // The Model PBR pipeline is consolidated to 4 bind groups in code
+      // and works within spec defaults for every other limit; the
+      // opt-ins are pure performance/headroom bonuses (e.g., extra KHR
+      // material textures fit when maxSampledTextures > 16).
       const adapterMaxBindGroups = this._adapter.limits?.maxBindGroups ?? 4;
       if (
         requiredLimits.maxBindGroups === undefined &&
         adapterMaxBindGroups > 4
       ) {
+        // Capped at 8 — the Model PBR pipeline needs ≤4 today; the cap
+        // documents the next-tier upper bound a future expansion could
+        // use without re-tuning per-stage budgets.
         requiredLimits.maxBindGroups = Math.min(adapterMaxBindGroups, 8);
+      }
+      const adapterMaxUniforms =
+        this._adapter.limits?.maxUniformBuffersPerShaderStage ?? 12;
+      if (
+        requiredLimits.maxUniformBuffersPerShaderStage === undefined &&
+        adapterMaxUniforms > 12
+      ) {
+        requiredLimits.maxUniformBuffersPerShaderStage = Math.min(
+          adapterMaxUniforms,
+          24,
+        );
+      }
+      const adapterMaxStorage =
+        this._adapter.limits?.maxStorageBuffersPerShaderStage ?? 8;
+      if (
+        requiredLimits.maxStorageBuffersPerShaderStage === undefined &&
+        adapterMaxStorage > 8
+      ) {
+        requiredLimits.maxStorageBuffersPerShaderStage = Math.min(
+          adapterMaxStorage,
+          16,
+        );
+      }
+      const adapterMaxSamplers =
+        this._adapter.limits?.maxSamplersPerShaderStage ?? 16;
+      if (
+        requiredLimits.maxSamplersPerShaderStage === undefined &&
+        adapterMaxSamplers > 16
+      ) {
+        requiredLimits.maxSamplersPerShaderStage = Math.min(
+          adapterMaxSamplers,
+          32,
+        );
       }
 
       this._device = await this._adapter.requestDevice({
