@@ -68,6 +68,7 @@ import { setupSceneFramebufferRenderPass } from "./WebGPUSceneRendererPassRedire
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
 import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
+import { ensureResources } from "./WebGPUSceneRendererEnsureResources.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -620,17 +621,20 @@ export class WebGPUSceneRenderer {
   // Public underscore: shared with the executeCommands frustum-loop
   // slice (Batch 140).
   public _globeDepth: WebGPUGlobeDepth | null = null;
-  private _depthPlane: WebGPUDepthPlane | null = null;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _depthPlane: WebGPUDepthPlane | null = null;
   // Public underscore: shared with the post-frustum chain slice
   // (Batch 141).
   public _postProcess: WebGPUPostProcessPipeline | null = null;
   // Tier 2 debug — fullscreen depth visualization. Lazily constructed
   // on first request so production frames pay nothing.
-  private _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
   private _depthOverlayWarningLogged: boolean = false;
   // Tier 2 debug — frustum + command tint overlay (WebGPU equivalent of
   // `debugShowFrustums` / `debugShowCommands`). Lazy.
-  private _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
   // Captured during the frustum loop so the post-process debug overlay
   // can tint pixels by which frustum drew them. Reset each frame.
   // Public underscore: shared with executeCommands slice extracts
@@ -655,7 +659,8 @@ export class WebGPUSceneRenderer {
   // Public underscore: shared with the extracted 3D-tile-passes
   // module (Batch 137).
   public _edgeTexturesPopulated: boolean = false;
-  private _initialized: boolean = false;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _initialized: boolean = false;
   // Public underscore: shared with the extracted 3D-tile-passes
   // module (Batch 137).
   public _width: number = 0;
@@ -669,7 +674,8 @@ export class WebGPUSceneRenderer {
   // runtime toggle (without it, pipelines have the old canvas
   // format baked in and produce validation warnings against the
   // recreated rgba16float scene FB).
-  private _lastHDR: boolean | null = null;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _lastHDR: boolean | null = null;
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
@@ -708,7 +714,8 @@ export class WebGPUSceneRenderer {
 
   // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
   // re-calls to `_ensureResources` don't stack duplicate subscribers.
-  private _deviceInvalidationUnsub: (() => void) | null = null;
+  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  public _deviceInvalidationUnsub: (() => void) | null = null;
 
   // --- Lazy initialization ---
 
@@ -791,273 +798,11 @@ export class WebGPUSceneRenderer {
    * Called once per frame before the frustum loop.
    */
   private _ensureResources(config: WebGPURenderFrameConfig): void {
-    const { context, scene } = config;
-    const device: GPUDevice | undefined = context._device;
-    if (!device) {
-      return;
-    }
-
-    // C-R12 (Batch 33) — subscribe once to device-invalidation events
-    // so SceneRenderer-owned resources (scene framebuffer, OIT,
-    // globeDepth, depth plane, post-process pipeline, debug overlays)
-    // are dropped during recovery. Next frame's `_ensureResources`
-    // rebuilds them against the new device.
-    if (!this._deviceInvalidationUnsub) {
-      this._deviceInvalidationUnsub = context.onDeviceInvalidated(() => {
-        this._sceneFramebuffer = null;
-        this._edgeFramebuffer = null;
-        this._translucentTileClassification = null;
-        this._oit = null;
-        this._globeDepth = null;
-        this._depthPlane = null;
-        this._postProcess = null;
-        this._debugDepthOverlay = null;
-        this._debugFrustumOverlay = null;
-        this._initialized = false;
-      });
-    }
-
-    const canvas: HTMLCanvasElement | OffscreenCanvas | undefined =
-      context._canvas;
-    const width = canvas?.width ?? 1;
-    const height = canvas?.height ?? 1;
-    const needsResize = width !== this._width || height !== this._height;
-    const hdr = config.useHDR ?? false;
-    // Batch 109 — HDR toggle gate. A runtime change to `scene.useHDR`
-    // flips the scene-FB color format between `rgba16float` (or
-    // `rg11b10ufloat`) and the canvas format. Without this gate the
-    // outer `if (!_initialized || needsResize)` block below would
-    // never fire on a same-resolution HDR toggle, leaving the
-    // scene-FB's color format stale + the dependent textures (OIT
-    // accumulation, edge MRT, refraction capture, velocity capture)
-    // out of sync. Treat HDR change as equivalent to a resize for
-    // gating purposes.
-    const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
-    const needsRecreate = !this._initialized || needsResize || hdrChanged;
-    this._lastHDR = hdr;
-
-    // Scene framebuffer (main color + depth + ID targets)
-    if (!this._sceneFramebuffer) {
-      this._sceneFramebuffer = new WebGPUSceneFramebuffer();
-    }
-    if (needsRecreate) {
-      const numSamples: number = context._msaaSamples ?? 1;
-      const canvasFormat: GPUTextureFormat =
-        context.presentationFormat ?? "bgra8unorm";
-      this._sceneFramebuffer.update(
-        device,
-        width,
-        height,
-        hdr,
-        numSamples,
-        canvasFormat,
-      );
-      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — `_sceneFramebuffer.update`
-      // destroys the old refraction texture (and view) on resize / HDR
-      // toggle. Clear the published view on the context so the model
-      // renderer doesn't try to bind it on the next frame; `null` here
-      // makes the model bind-group rebuild fall through to the white
-      // placeholder until the next capture pass publishes a new view.
-      context._refractionSceneView = null;
-    }
-    // C-R8-INVERT-HDR (Batch 41) — keep `context._sceneColorFormat`
-    // in sync with the scene framebuffer's actual color format. Feature
-    // renderers (InvertClassification, OIT) read this so their own
-    // texture allocations pick `rgba16float` when the scene is HDR and
-    // the canvas format otherwise. Previously this field was declared
-    // on the context but never assigned, leaving it stuck at the
-    // default `"bgra8unorm"` and producing format mismatches when
-    // scene-facing pipelines composited against HDR targets.
-    const previousSceneColorFormat = context._sceneColorFormat;
-    context._sceneColorFormat =
-      this._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
-    // Batch 110 — bump the scene pipeline format generation when the
-    // scene color format actually changes. Renderers caching pipelines
-    // that target scene FB observe the bump and clear+rebuild their
-    // local caches against the new `scenePipelineFormat`. Without this,
-    // a runtime HDR toggle (rgba16float ↔ canvas format) leaves cached
-    // pipelines pointing at the OLD format, producing validation
-    // warnings + black scene-FB writes for sky / globe / model /
-    // primitive draws.
-    if (
-      context._sceneColorFormat !== undefined &&
-      context._sceneColorFormat !== previousSceneColorFormat
-    ) {
-      context._scenePipelineFormatGeneration += 1;
-    }
-
-    // OIT (order-independent transparency)
-    if (config.useOIT && !this._oit) {
-      this._oit = new WebGPUOIT();
-    }
-    if (this._oit && needsRecreate) {
-      this._oit.update(device, width, height);
-    }
-
-    // C-R8-EDGE-FBO (Batch 44) — edge MRT framebuffer. Allocated only
-    // when the scene opts in via `_enableEdgeVisibility`; nothing
-    // downstream looks at it otherwise, so idle scenes don't pay for
-    // 3 color textures + depth-stencil. Lazy = first-touch, so if the
-    // flag toggles on mid-session the next update() call allocates.
-    const enableEdgeVisibility = !!(
-      scene as unknown as { _enableEdgeVisibility?: boolean }
-    )._enableEdgeVisibility;
-    if (enableEdgeVisibility && !this._edgeFramebuffer) {
-      this._edgeFramebuffer = new WebGPUEdgeFramebuffer();
-    }
-    if (this._edgeFramebuffer && needsRecreate) {
-      const numSamples: number = context._msaaSamples ?? 1;
-      this._edgeFramebuffer.update(
-        device,
-        width,
-        height,
-        numSamples,
-        this._sceneFramebuffer.colorFormat ?? "bgra8unorm",
-      );
-    }
-
-    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent classification
-    // framebuffer. Allocated lazily on first scene-init; resources are
-    // small (one depth, one packed-depth, one color — all single-sample)
-    // and the per-frame dispatch is gated on `hasTranslucentDepth` so
-    // idle scenes pay only the allocation, not the per-frame work.
-    if (!this._translucentTileClassification) {
-      this._translucentTileClassification =
-        new WebGPUTranslucentTileClassification();
-    }
-    if (this._translucentTileClassification && needsRecreate) {
-      this._translucentTileClassification.update(
-        device,
-        width,
-        height,
-        this._sceneFramebuffer.colorFormat ?? "bgra8unorm",
-      );
-    }
-
-    // Globe depth framebuffer
-    if (config.useGlobeDepthFramebuffer && !this._globeDepth) {
-      this._globeDepth = new WebGPUGlobeDepth();
-    }
-    if (this._globeDepth && needsRecreate) {
-      const numSamples: number = context._msaaSamples ?? 1;
-      const canvasFormat: GPUTextureFormat =
-        context.presentationFormat ?? "bgra8unorm";
-      this._globeDepth.update(
-        device,
-        width,
-        height,
-        hdr,
-        numSamples,
-        canvasFormat,
-      );
-    }
-
-    // Depth plane
-    if (config.useDepthPlane && !this._depthPlane) {
-      this._depthPlane = new WebGPUDepthPlane();
-      const depthFormat: GPUTextureFormat =
-        context.depthFormat ?? "depth24plus-stencil8";
-      const canvasFormat: GPUTextureFormat =
-        context.presentationFormat ?? "bgra8unorm";
-      // C-R7-RENDERER-MIGRATION (Batch 56) — route the depth-plane
-      // pipeline through the central cache so split-screen / multi-canvas
-      // setups dedupe identical descriptors instead of materializing
-      // separate `GPURenderPipeline` objects per scene.
-      this._depthPlane.initialize(
-        device,
-        depthFormat,
-        canvasFormat,
-        context.webgpuPipelineCache ?? null,
-      );
-    }
-
-    // Batch 110 (in progress) — when HDR mode toggles at runtime, the
-    // post-process pipeline's ping-pong textures (rgba16float ↔ canvas
-    // format) and every stage's pipeline target format must rebuild.
-    // The cheapest correct path is to destroy the whole pipeline and
-    // let the first-init block below recreate it with the new HDR
-    // setting + the matching stage chain (e.g., `addAutoExposure`
-    // only fires in HDR mode).
-    //
-    // Detection: the pipeline tracks its own `_hdr` mode internally
-    // and we compare against the new `hdr` argument. Skipped on
-    // initial mount so the first-init block runs normally.
-    if (
-      this._postProcess &&
-      (this._postProcess as unknown as { _hdr: boolean })._hdr !== hdr
-    ) {
-      this._postProcess.destroy();
-      this._postProcess = null;
-    }
-
-    // Post-processing pipeline
-    if (config.usePostProcess && !this._postProcess) {
-      this._postProcess = new WebGPUPostProcessPipeline();
-      const canvasFormat: GPUTextureFormat =
-        context.presentationFormat ?? "bgra8unorm";
-      // HDR pipeline fix: when `scene.highDynamicRange=true`, the
-      // ping-pong textures use `rgba16float` so the full dynamic range
-      // from the scene framebuffer survives through bloom / tonemapping
-      // / color grading. Only the final blit down-casts to the canvas
-      // swap chain format (bgra8unorm). Without this, every post-process
-      // stage was silently clamping HDR values to [0,1] and tonemapping
-      // was a mathematical no-op.
-      this._postProcess.initialize(device, width, height, canvasFormat, hdr);
-      // Add default stages
-      // Phase 5 WGF-3: pass the context f16 flag so the tonemap stage
-      // selects the hand-tuned half-precision variant when the device
-      // granted shader-f16. Default mode/exposure/gamma are unchanged.
-      this._postProcess.addTonemapping(
-        device,
-        canvasFormat,
-        undefined,
-        undefined,
-        undefined,
-        !!(context && context.useShaderF16),
-      );
-      // TAA is added lazily when scene.taaEnabled = true (not default).
-      this._postProcess.addFXAA(device, canvasFormat);
-      // Auto-exposure: add when HDR is on (matches WebGL's
-      // PostProcessStageCollection behavior where autoExposure is
-      // enabled alongside tonemapping). Off by default in SDR mode
-      // because the scene framebuffer values are already [0,1].
-      if (hdr) {
-        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pipe the central
-        // compute pipeline cache through so AutoExposure routes its two
-        // pipeline creations through it.
-        this._postProcess.addAutoExposure(
-          device,
-          undefined,
-          context?.webgpuComputePipelineCache ?? null,
-        );
-      }
-    }
-    if (this._postProcess && needsResize) {
-      this._postProcess.resize(width, height);
-    }
-
-    // Sync post-processing stage state from CesiumJS PostProcessStageCollection
-    // to the WebGPU pipeline. This lazily initializes bloom/AO/DoF on first enable
-    // and syncs enable/disable + tonemapping mode each frame.
-    if (this._postProcess && config.scene?.postProcessStages) {
-      const canvasFormat: GPUTextureFormat =
-        context.presentationFormat ?? "bgra8unorm";
-      configureWebGPUPostProcessPipeline(
-        this._postProcess,
-        config.scene.postProcessStages,
-        device,
-        canvasFormat,
-        config.scene,
-      );
-    }
-
-    this._width = width;
-    this._height = height;
-    this._initialized = true;
+    // Body extracted to `WebGPUSceneRendererEnsureResources.ts` in
+    // Batch 142. The wrapper stays so `executeCommands` keeps calling
+    // it as `this._ensureResources(config)`.
+    ensureResources(this, config);
   }
-
-  // --- Main entry point ---
-
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
 
