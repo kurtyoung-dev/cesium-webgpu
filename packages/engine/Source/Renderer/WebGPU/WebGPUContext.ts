@@ -51,6 +51,7 @@ import {
 // `WebGPUContextWebGLStubInit.ts` in Batch 129.
 import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
 import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
+import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
 import type {
   StubTextureWrapper,
   StubFramebuffer,
@@ -2943,6 +2944,12 @@ export class WebGPUContext extends GraphicsContext {
     this._bindGroupLayoutCache.clear();
     this._bindGroupCache.clear();
 
+    // Drop device-invalidation subscribers so their closures release
+    // immediately even if a long-lived holder keeps this Context
+    // reference alive. Batch 130 — explicit lifecycle cleanup that the
+    // pre-extraction `Set<() => void>` field relied on GC for.
+    this._deviceInvalidationBus.clear();
+
     // NOW destroy the device — everything that needed it has already run.
     if (this._device) {
       this._device.destroy();
@@ -4067,17 +4074,21 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   // C-R12 (Batch 33) — Device-invalidation subscriber registry.
-  private _deviceInvalidatedListeners = new Set<() => void>();
+  // Body extracted to `WebGPUDeviceInvalidationBus` in Batch 130. The
+  // public `onDeviceInvalidated` method + private
+  // `_fireDeviceInvalidated` keep the same signatures so the 8
+  // internal callsites and the one external caller
+  // (WebGPUSceneRenderer.ts:747) don't move.
+  private _deviceInvalidationBus = new WebGPUDeviceInvalidationBus(
+    () => this.id,
+  );
 
   /**
    * Subscribe to device-invalidation events.
    * @see GraphicsContext.onDeviceInvalidated
    */
   onDeviceInvalidated(callback: () => void): () => void {
-    this._deviceInvalidatedListeners.add(callback);
-    return () => {
-      this._deviceInvalidatedListeners.delete(callback);
-    };
+    return this._deviceInvalidationBus.subscribe(callback);
   }
 
   /**
@@ -4087,16 +4098,7 @@ export class WebGPUContext extends GraphicsContext {
    * @private
    */
   private _fireDeviceInvalidated(): void {
-    for (const cb of this._deviceInvalidatedListeners) {
-      try {
-        cb();
-      } catch (e) {
-        console.error(
-          `[WebGPU:ctx-${this.id ?? "?"}] Device-invalidation subscriber threw:`,
-          e,
-        );
-      }
-    }
+    this._deviceInvalidationBus.fire();
   }
 
   /**
