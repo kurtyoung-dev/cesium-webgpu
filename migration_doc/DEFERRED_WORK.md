@@ -122,27 +122,96 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ## C-R4 - glTF KHR extensions
 
-### C-R4-GLTF-KHR
+### ~~C-R4-GLTF-KHR~~ MOSTLY RESOLVED 2026-04-30 (audit)
 
-**What:** Six glTF KHR extensions silently dropped on the WebGPU model path:
+**Resolution:** Audit (2026-04-30, this session) found that **all seven**
+listed KHR extensions are wired into `ModelPBRComplete.wgsl` and
+`WebGPUModelRenderer.js` already, via Batches 102, 103, 105, and the
+"Slice 2-7" series:
 
-- **KHR_texture_transform** - affine UV transform per texture. ~10 sampling sites in `ModelPBRComplete.wgsl`.
-- **KHR_materials_clearcoat** - second specular lobe. Clearcoat normal map + roughness uniform + BRDF branch.
-- **KHR_materials_anisotropy** - anisotropic GGX roughness. Direction texture + tangent-space derivation.
-- **KHR_materials_specular** - specular factor + color tint. 2 textures + 2 uniforms.
-- **KHR_materials_iridescence** - thin-film iridescence. Thickness/IOR uniforms + texture + Fresnel modulation.
-- **KHR_materials_sheen** - fabric/cloth velvet term. Sheen color/roughness + Charlie distribution lobe.
-- **KHR_materials_volume** - transmission/volumetric attenuation. Thickness texture + IOR + attenuation distance + transmission lobe.
+| Extension | Status | Shader markers | Notes |
+| --- | --- | --- | --- |
+| KHR_texture_transform | ✅ Full | `applyTextureTransform()` at lines 1271-1283; called from `baseColorUV`, `normalUV`, `metallicRoughnessUV`, `emissiveUV`, `occlusionUV` | Per-texture 3×3 matrix uploaded as 3 padded vec4 columns; `textureTransformFlags` bitmask gates the matrix multiply per slot. |
+| KHR_materials_clearcoat | ✅ Full BRDF | "Slice 2" branch at line 1515 | Second GGX lobe with own normal/roughness textures + base-material attenuation by `(1 - F_clearcoat)`. |
+| KHR_materials_specular | ✅ Full | "Slice 3" branch at line 1400 | F0 dielectric component recoloured by specular color factor + texture; metallic surfaces use baseColor for F0 per spec. |
+| KHR_materials_anisotropy | ⚠️ Approximated | "Slice 4" branch at line 1482 | GGX D-term stretched along view-relative direction. Full per-tangent BRDF deferred (needs vertex-tangent attribute through FragmentInput; comment at line 1474 calls this out). |
+| KHR_materials_iridescence | ⚠️ Approximated | "Slice 5" branch at line 1428 | Hue-shift approximation rather than true thin-film LUT-based interference. Full Khronos reference impl needs precomputed wavelength LUT. |
+| KHR_materials_sheen | ✅ Full BRDF | "Slice 6" branch at line 1558 | Charlie distribution + Neubelt/Pettineo visibility approximation. |
+| KHR_materials_volume | ✅ Full | "Slice 7" branch at line 1642 | Beer-Lambert attenuation on diffuse. Thickness texture sampled. |
+| KHR_materials_transmission | ⚠️ Simplified | "Batch 105" branch at line 1606 | Samples a refraction texture but uses placeholder until the full opaque-only MRT is wired (Batch 107 added the capture pass; FS still reads at simple offset rather than thickness-driven path). |
 
-**Why deferred:** Major shader-family work. Each extension is a distinct BRDF branch with its own texture binding + uniform plumbing. Six sibling `Model*Stage.wgsl` files sit on disk imported by nothing.
+**Remaining work** (now scoped much more narrowly than the original
+multi-week estimate):
 
-**Prerequisites:** WGSL include strategy decision - either wire `//>>ifdef` preprocessor multi-file include (WebGL `*Stage.glsl` pattern), or fold all extensions inline behind define gates. Inline balloons file past the 1000-line CLAUDE.md threshold.
+- **NEW-KHR-ANISO-TANGENT** — wire glTF tangent attribute through to FS
+  for true per-tangent anisotropic GGX. Drops the "view-relative
+  approximation" comment at line 1474.
+- **NEW-KHR-IRIDESCENCE-LUT** — precomputed thin-film LUT + sample at
+  NdotV for true wavelength-dependent Fresnel modulation. Drops the
+  hue-shift approximation at line 1428.
+- **NEW-KHR-TRANSMISSION-THICKNESS** — couple transmission's refracted
+  UV offset to the volume thickness texture so glass-thickness varies
+  correctly. Today the offset is a fixed 0.05 step (line 1626).
 
-**Estimated effort:** 1 session per extension = 6, plus 1 for include-pipeline decision and 1 for orchestration. ~8 sessions / multi-week workstream.
+These are individual session-sized follow-ups, not the original
+multi-week workstream. Filed below.
 
-**Impact:** Production glTF models lose visual fidelity proportional to KHR extensions shipped. KHR_texture_transform is in nearly every modern glTF asset (atlased tilesets) - highest-impact single gap.
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:101-102;
+OVERSIGHT_AUDIT_2026_04_25.md s2; reconciled in Batch 128 (2026-04-30).
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:101-102; OVERSIGHT_AUDIT_2026_04_25.md s2.
+---
+
+### NEW-KHR-ANISO-TANGENT
+
+**What:** KHR_materials_anisotropy currently approximates the
+anisotropic GGX lobe by stretching the GGX D-term along a view-relative
+direction (`viewRight = cross(N, V)`). The spec defines the streak
+along the per-fragment tangent direction, which requires the glTF
+TANGENT attribute to flow through to the FS.
+
+**Why deferred:** TANGENT is already declared as a vertex attribute on
+the model pipeline layout but the FS-side `tangentEC` field has gaps
+in coverage (some pipelines elide it). Plumbing it to the anisotropy
+branch is one session; the visual delta is brushed-metal materials
+correctly streaking along the asset's authored tangent.
+
+**Trace:** `ModelPBRComplete.wgsl` line 1474 ("...full per-tangent BRDF
+lands in a follow-up").
+
+---
+
+### NEW-KHR-IRIDESCENCE-LUT
+
+**What:** KHR_materials_iridescence currently uses a hue-shift
+approximation (`0.5 + 0.5 * cos(phase * 2π + offset)` per RGB
+component) rather than a precomputed wavelength-LUT. The Khronos
+reference impl samples a 64×1 LUT keyed on
+`(NdotV, thickness, IOR)` for spectrally-correct Fresnel modulation.
+
+**Why deferred:** Bulkier than the other slices because it ships the
+LUT as a resource — needs a one-time texture upload at module init
+plus an extra sampler binding.
+
+**Trace:** `ModelPBRComplete.wgsl` line 1424 ("Full thin-film
+interference requires per-wavelength optical-path-difference math
+that's prohibitive without a precomputed LUT").
+
+---
+
+### NEW-KHR-TRANSMISSION-THICKNESS
+
+**What:** KHR_materials_transmission currently uses a fixed UV-offset
+step (0.05) when sampling the refraction scene texture. The spec
+couples the offset to KHR_materials_volume's thickness so
+glass-thickness varies correctly with the underlying asset's
+geometry. Today both extensions activate independently.
+
+**Why deferred:** Slice 7 (volume) and Batch 105 (transmission) shipped
+in different iterations without sharing the thickness sample. Full fix
+is local to the transmission branch in `ModelPBRComplete.wgsl`.
+
+**Trace:** `ModelPBRComplete.wgsl` line 1620 ("Without a thickness
+sample we use a fixed step...").
 
 ---
 
