@@ -54,17 +54,25 @@ import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js"
 import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUResourceCacheRegistry } from "./WebGPUResourceCacheRegistry.js";
 import { WebGPUFeatureFlags } from "./WebGPUFeatureFlags.js";
+import { buildDeviceLossRecoveryFor } from "./WebGPUContextDeviceLoss.js";
+import {
+  getFrameStatistics,
+  resetFrameStatistics,
+  recordDrawCall as recordDrawCallExt,
+  type WebGPUFrameStatistics,
+} from "./WebGPUFrameStatistics.js";
 import type {
   StubTextureWrapper,
   StubFramebuffer,
   StubRenderbuffer,
   StubAttachment,
 } from "./Stubs/WebGLStubTypes.js";
+// `DeviceLossRecoveryHost` no longer imported — the host literal that
+// used it moved to `WebGPUContextDeviceLoss.ts` in Batch 143.
 import {
   DeviceLossState,
   WebGPUDeviceLossRecovery,
   type DeviceLostCallback,
-  type DeviceLossRecoveryHost,
 } from "./WebGPUDeviceLossRecovery.js";
 // FORK-2 fix: WebGPUResourceManager and WebGPUPickManager were unused imports — removed.
 // They can be re-added when their intended usage is implemented.
@@ -138,15 +146,8 @@ interface PixelReadbackPBO {
   destroy: () => void;
 }
 
-/** Return type for getStatistics(). */
-interface WebGPUFrameStatistics {
-  frameCount: number;
-  drawCallCount: number;
-  triangleCount: number;
-  samplerCacheSize: number;
-  bindGroupLayoutCacheSize: number;
-  uniformBufferPoolSize: number;
-}
+// `WebGPUFrameStatistics` interface moved to `WebGPUFrameStatistics.ts`
+// in Batch 144 (audit candidate #6). Imported below.
 
 // (ViewportQuadCommandOptions shape lives in WebGPUViewportQuad.ts and is
 // imported at the top of the file.)
@@ -250,15 +251,19 @@ export class WebGPUContext extends GraphicsContext {
   // access the fields directly for performance. Marking public is honest
   // about the actual access pattern across the WebGPU renderer module.
   public _canvas: HTMLCanvasElement;
-  private _adapter: GPUAdapter | null = null;
+  // Public underscore: shared with the device-loss host-adapter
+  // builder (Batch 143).
+  public _adapter: GPUAdapter | null = null;
   public _device: GPUDevice | null = null;
   // Public underscore: shared with the WebGL-stub state proxy (Batch 129
   // extraction).
   public _context: GPUCanvasContext | null = null;
   public _presentationFormat: GPUTextureFormat = "bgra8unorm";
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
-  private _isDestroyed: boolean = false;
-  private _options: WebGPUContextOptions;
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _isDestroyed: boolean = false;
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _options: WebGPUContextOptions;
 
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
@@ -288,19 +293,22 @@ export class WebGPUContext extends GraphicsContext {
   private _webgpuShaderCache: WebGPUShaderCache | null = null;
   private _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
-  private _samplerCache: Map<string, GPUSampler> = new Map();
-  private _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
+  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  public _samplerCache: Map<string, GPUSampler> = new Map();
+  public _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
   private _bindGroupCache: Map<string, GPUBindGroup> = new Map();
 
   // Resource pools for efficient reuse
   private _bufferPool: Map<string, GPUBuffer[]> = new Map();
-  private _uniformBufferPool: GPUBuffer[] = [];
+  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  public _uniformBufferPool: GPUBuffer[] = [];
   private _mipmapGenerator: WebGPUMipmapGenerator | null = null;
 
   // GPU statistics and debugging
   public _frameCount: number = 0;
-  private _drawCallCount: number = 0;
-  private _triangleCount: number = 0;
+  // Public underscore: shared with the frame-statistics extract (Batch 144).
+  public _drawCallCount: number = 0;
+  public _triangleCount: number = 0;
 
   // WebGPU optional features that were successfully enabled.
   // Body extracted to `WebGPUFeatureFlags` in Batch 132. The Context
@@ -931,7 +939,8 @@ export class WebGPUContext extends GraphicsContext {
    * Initialize default textures (white, black, normal, cubemap)
    * @private
    */
-  private _initializeDefaultTextures(): void {
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _initializeDefaultTextures(): void {
     if (!this._device) {
       return;
     }
@@ -1703,7 +1712,8 @@ export class WebGPUContext extends GraphicsContext {
    * Initializes the global ContextLimits with values from WebGPU device limits
    * @private
    */
-  private _initializeContextLimits(): void {
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _initializeContextLimits(): void {
     initializeContextLimitsFromDevice(this._device);
   }
 
@@ -3907,23 +3917,15 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {object} Statistics object
    */
   getStatistics(): WebGPUFrameStatistics {
-    return {
-      frameCount: this._frameCount,
-      drawCallCount: this._drawCallCount,
-      triangleCount: this._triangleCount,
-      samplerCacheSize: this._samplerCache.size,
-      bindGroupLayoutCacheSize: this._bindGroupLayoutCache.size,
-      uniformBufferPoolSize: this._uniformBufferPool.length,
-    };
+    // Body extracted to `WebGPUFrameStatistics.ts` in Batch 144.
+    return getFrameStatistics(this);
   }
 
   /**
    * Reset frame statistics
    */
   resetStatistics(): void {
-    this._frameCount = 0;
-    this._drawCallCount = 0;
-    this._triangleCount = 0;
+    resetFrameStatistics(this);
   }
 
   /**
@@ -3931,8 +3933,7 @@ export class WebGPUContext extends GraphicsContext {
    * @param {number} triangles - Number of triangles drawn
    */
   recordDrawCall(triangles: number = 0): void {
-    this._drawCallCount++;
-    this._triangleCount += triangles;
+    recordDrawCallExt(this, triangles);
   }
 
   // ====================================================================================
@@ -3948,41 +3949,10 @@ export class WebGPUContext extends GraphicsContext {
    */
   private _setupDeviceLostHandler(): void {
     if (!this._device) return;
-
-    // Create the recovery host adapter that maps host interface to our methods
-    const host: DeviceLossRecoveryHost = {
-      get _adapter() {
-        return self._adapter;
-      },
-      get _device() {
-        return self._device;
-      },
-      get _isDestroyed() {
-        return self._isDestroyed;
-      },
-      set _isDestroyed(v: boolean) {
-        self._isDestroyed = v;
-      },
-      get _options() {
-        return self._options;
-      },
-      get _context() {
-        return self._context;
-      },
-      _setAdapter: (adapter: GPUAdapter) => {
-        this._adapter = adapter;
-      },
-      _setDevice: (device: GPUDevice) => {
-        this._device = device;
-      },
-      _initializeContextLimits: () => this._initializeContextLimits(),
-      _reconfigureCanvas: () => this._reconfigureCanvas(),
-      _initializeDefaultTextures: () => this._initializeDefaultTextures(),
-      _clearAllCaches: () => this._clearAllCaches(),
-    };
-    const self = this;
-
-    this._deviceLossRecovery = new WebGPUDeviceLossRecovery(host, 3);
+    // Host-adapter literal extracted to `WebGPUContextDeviceLoss.ts`
+    // in Batch 143. The wrapper stays so `_initialize` keeps calling
+    // it as `this._setupDeviceLostHandler()`.
+    this._deviceLossRecovery = buildDeviceLossRecoveryFor(this, 3);
     this._deviceLossRecovery.setupHandler(this._device);
   }
 
@@ -3991,7 +3961,8 @@ export class WebGPUContext extends GraphicsContext {
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @private
    */
-  private _reconfigureCanvas(): void {
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _reconfigureCanvas(): void {
     if (this._context && this._device) {
       this._presentationFormat = navigator.gpu.getPreferredCanvasFormat();
       this._context.configure({
@@ -4047,7 +4018,8 @@ export class WebGPUContext extends GraphicsContext {
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @private
    */
-  private _clearAllCaches(): void {
+  // Public underscore: shared with the device-loss host-adapter (Batch 143).
+  public _clearAllCaches(): void {
     // Per-cache try/catch + named error logs live inside the registry
     // (Batch 131). What stays inline:
     //   - `clearEffectsPlaceholderCacheForDevice` — needs the current
