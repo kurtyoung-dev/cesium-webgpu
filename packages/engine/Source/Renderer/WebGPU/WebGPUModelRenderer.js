@@ -1266,7 +1266,19 @@ function updateWebGPUModel(model, frameState) {
     });
   }
 
-  const modelMatrix = model.modelMatrix || Matrix4.IDENTITY;
+  // Use the scene graph's _computedModelMatrix which folds in:
+  //   model.modelMatrix * components.transform * _axisCorrectionMatrix
+  //     * scale(model.computedScale)
+  // Falling back to model.modelMatrix omits glTF root transform, axis
+  // correction (Z-up → Y-up), and the user-supplied scale — which made
+  // models render at the wrong scale (typically 1× instead of computedScale,
+  // e.g. CesiumAir.glb collapsing to a few pixels at scale=4) and with the
+  // wrong axis orientation. The same field is what the upstream WebGL
+  // ModelDrawCommand uses (see ModelSceneGraph.js:823).
+  const modelMatrix =
+    model._sceneGraph?._computedModelMatrix ||
+    model.modelMatrix ||
+    Matrix4.IDENTITY;
   packCameraUniforms(cache.cameraData, frameState, modelMatrix);
   device.queue.writeBuffer(
     cache.cameraBuffer.buffer,
