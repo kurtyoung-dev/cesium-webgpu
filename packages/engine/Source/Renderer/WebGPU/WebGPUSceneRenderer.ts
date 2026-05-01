@@ -67,6 +67,7 @@ import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
 import { setupSceneFramebufferRenderPass } from "./WebGPUSceneRendererPassRedirect.js";
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
+import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -620,7 +621,9 @@ export class WebGPUSceneRenderer {
   // slice (Batch 140).
   public _globeDepth: WebGPUGlobeDepth | null = null;
   private _depthPlane: WebGPUDepthPlane | null = null;
-  private _postProcess: WebGPUPostProcessPipeline | null = null;
+  // Public underscore: shared with the post-frustum chain slice
+  // (Batch 141).
+  public _postProcess: WebGPUPostProcessPipeline | null = null;
   // Tier 2 debug — fullscreen depth visualization. Lazily constructed
   // on first request so production frames pay nothing.
   private _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
@@ -681,7 +684,10 @@ export class WebGPUSceneRenderer {
   private _debugLogged: boolean = false;
   private _postInitDebugLogged: boolean = false;
   public _renderPassRedirectLogged: boolean = false;
-  private _ppDebugLogged: boolean = false;
+  // `public` so the post-frustum chain slice (Batch 141) can read/
+  // write through the host interface. Field declaration stays inside
+  // the surrounding pragma block.
+  public _ppDebugLogged: boolean = false;
   private _globeValidationDone: boolean = false;
   private _globePassRPLogged: boolean = false;
   private _globeCountLogged: boolean = false;
@@ -1176,82 +1182,18 @@ export class WebGPUSceneRenderer {
     // is folded into the helper since it only feeds the loop.
     executeFrustumLoop(this, config, opaqueFrustumNearOffset);
 
-    // Pass 12: OVERLAY (runs once, not per-frustum)
-    this._executeOverlayPass(frustumCommandsList, config);
-
-    // Depth plane (if enabled, renders after all frustums)
-    if (!config.clearGlobeDepth) {
-      this._renderDepthPlane(config);
-    }
-
-    // Environmental effects: procedural clouds, SSR, weather particles
-    // These are full-screen composite passes that run after all geometry
-    // but before post-processing (tonemapping, bloom, FXAA, etc.)
-    this._executeEnvironmentalEffects(config);
-
-    // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — post-process edge composite
-    // retired. Model edges now composite inline inside Model FS via
-    // `applyEdgeOverlay()` (Batch 48); primitive shaders don't currently
-    // emit edges. The edge MRT views are still produced (model emitter
-    // runs into the edge FBO) and remain readable from
-    // `context._edge*View` for the inline stage. No call here.
-
-    // Migration Session 5 (Batch 85) — Batch 47's composite call removed.
-    // The depth-sample classifier (ADR-2026-04-28) draws directly into
-    // scene color during the per-frustum CESIUM_3D_TILE_CLASSIFICATION
-    // pass, so there is no separate accumulation target to composite
-    // back. The accumulation-FBO + composite pipeline scaffolding in
-    // WebGPUTranslucentTileClassification was retired in this batch.
-
-    // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Composite the
-    // InvertClassification classified texture back onto scene color.
-    // Runs AFTER the main scene pass ends + resolves (so the target
-    // is the single-sample resolved view the composite pipeline is
-    // built for) and BEFORE post-processing (so the tonemap/FXAA
-    // chain sees the composited scene).
-    this._runInvertClassificationComposite(config);
-
-    // TAA Slice 2e (Batch 106) — velocity pass for per-pixel motion
-    // vectors. Walks the frustum command lists, collects any
-    // `cmd.velocityCommand` (attached by the model renderer when
-    // `frameState.taaEnabled === true`), and dispatches them into a
-    // dedicated single-target rg16float render pass that shares scene
-    // depth read-only. Skipped entirely when no command carries a
-    // velocity slot — static scenes / TAA-off frames pay zero cost.
-    // Must run AFTER the main scene pass closes (so the depth values
-    // are committed) and BEFORE post-process consumes the velocity
-    // texture in TAA's `motionTex` binding (Batch 104).
-    this._runVelocityPass(config);
-
-    // Post-processing (tonemapping, FXAA, etc.)
-    // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
-    //>>includeStart('debug', pragmas.debug);
-    if (!this._ppDebugLogged) {
-      this._ppDebugLogged = true;
-      console.log(
-        `[WebGPU:PostProcess] _runPostProcessing entering: ` +
-          `usePostProcess=${config.usePostProcess} ` +
-          `_postProcess=${!!this._postProcess} ` +
-          `sceneFramebuffer=${!!this._sceneFramebuffer}`,
-      );
-    }
-    //>>includeEnd('debug');
-    this._runPostProcessing(config);
-
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — clear the per-frame
-    // transmission signal at the END of executeCommands. The model
-    // renderer sets this to `true` during `update()` (which runs
-    // BEFORE executeCommands as part of scene update), so resetting
-    // at the start would clobber it before the per-frustum capture
-    // step gets to read it. Resetting here means next frame's
-    // `update()` starts with a clean slate; if no model declares
-    // transmission, the capture step early-exits.
-    context._sceneHasTransmission = false;
-
-    // Performance infrastructure: end frame — flush indirect draws, collect profiling
-    if (perfManager) {
-      perfManager.endFrame();
-    }
+    // Post-frustum chain (overlay + depth plane + env effects +
+    // invert composite + velocity pass + post-process + frame
+    // teardown) extracted to `WebGPUSceneRendererPostFrustumChain.ts`
+    // in Batch 141 (Slice D — final slice of the executeCommands
+    // decomposition).
+    executePostFrustumChain(
+      this,
+      context,
+      config,
+      frustumCommandsList,
+      perfManager,
+    );
   }
 
   // --- Pick pass: render to offscreen pick framebuffer ---
@@ -1570,7 +1512,8 @@ export class WebGPUSceneRenderer {
 
   // --- Overlay pass ---
 
-  private _executeOverlayPass(
+  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  public _executeOverlayPass(
     frustumCommandsList: CesiumFrustumCommands[],
     config: WebGPURenderFrameConfig,
   ): void {
@@ -1636,7 +1579,8 @@ export class WebGPUSceneRenderer {
    * - SSR modifies surface reflections
    * - Weather is in front (camera-relative particles)
    */
-  private _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void {
+  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  public _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void {
     // Body extracted to `WebGPUSceneRendererEnvironmentalEffects.ts` in
     // Batch 134. The wrapper stays so `executeCommands` keeps calling
     // it as `this._executeEnvironmentalEffects(config)`. The extracted
@@ -1675,7 +1619,8 @@ export class WebGPUSceneRenderer {
    * tile pass went to the default path and scene color already has
    * the tiles in place.
    */
-  private _runInvertClassificationComposite(
+  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  public _runInvertClassificationComposite(
     config: WebGPURenderFrameConfig,
   ): void {
     if (!config.useInvertClassification) {
@@ -1838,7 +1783,8 @@ export class WebGPUSceneRenderer {
    * (TAA off, or no models in view), the function early-exits before
    * any GPU work is queued.
    */
-  private _runVelocityPass(config: WebGPURenderFrameConfig): void {
+  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  public _runVelocityPass(config: WebGPURenderFrameConfig): void {
     const { context, scene } = config;
     if (!scene?.taaEnabled || !this._sceneFramebuffer) {
       return;
@@ -1958,7 +1904,8 @@ export class WebGPUSceneRenderer {
 
   // --- Post-processing ---
 
-  private _runPostProcessing(config: WebGPURenderFrameConfig): void {
+  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  public _runPostProcessing(config: WebGPURenderFrameConfig): void {
     const { context, scene } = config;
     const frameState = scene?._frameState;
     const device: GPUDevice | undefined = context._device;
