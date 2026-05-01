@@ -5,12 +5,26 @@
  * Pipelines vary by: alpha mode (OPAQUE/MASK/BLEND), cull mode (back/none),
  * and presentation format.
  *
- * All variants share the same vertex layout (7 attribute slots) and
- * bind group layouts (camera, material+light, textures, skinning).
+ * All variants share the same vertex layout (7 attribute slots) and the
+ * 4 bind group layouts produced by `createBindGroupLayouts`:
+ *   Group 0 — camera UBO (per-frame).
+ *   Group 1 — merged material UBO + light UBO + 24 PBR/KHR textures +
+ *             7 featureId entries (per-material).
+ *   Group 2 — merged joint matrices + morph deltas + morph weights +
+ *             instance transforms (per-instance vertex).
+ *   Group 3 — effects BGL shared with globe + primitive (shadow +
+ *             clipping + atmosphere + CSM + edges + globe depth).
+ *
+ * Consolidated from 8 logical groups in NEW-BG-CONSOLIDATION (Batch 122)
+ * to fit within the WebGPU spec-mandated `maxBindGroups: 4` limit
+ * (universal in Chromium, April 2026 — verified via
+ * `Tools/visual-regression/probe-adapter-limits.mjs`).
  *
  * Skinning support: joints0 (vec4<u32>) and weights0 (vec4<f32>) are always
- * present in the vertex layout. Non-skinned primitives bind default zero buffers.
- * Joint matrices are provided via a storage buffer at bind group 3.
+ * present in the vertex layout. Non-skinned primitives bind default zero
+ * buffers via the merged group 2. Joint matrices ride storage at group
+ * 2 binding 0; morph deltas at binding 1; morph weights at binding 2;
+ * instance transforms at binding 3.
  *
  * @private
  */
@@ -65,7 +79,7 @@ function computeKey(alphaMode, doubleSided) {
  *     Layout owned by `WebGPUEffectsBindGroup.getEffectsBindGroupLayout`.
  *
  * @param {GPUDevice} device
- * @returns {{ cameraBGL, materialBGL, instanceBGL }} plus aliases
+ * @returns {{ cameraBGL, materialBGL, instanceBGL }}
  */
 function createBindGroupLayouts(device) {
   // ── Group 0: CAMERA ── per-frame, shared across all models.
@@ -135,17 +149,9 @@ function createBindGroupLayouts(device) {
     storageBuffer(3, Stage.VERTEX, { readOnly: true }), // instance transforms
   ]);
 
-  // Aliases for downstream call sites that still reference the old
-  // 8-group naming. The merged BGL is the same GPU object — these
-  // accessors avoid a blast-radius rewrite of every consumer's getter.
   return {
     cameraBGL,
     materialBGL,
-    textureBGL: materialBGL, // alias → merged group 1
-    skinningBGL: instanceBGL, // alias → merged group 2
-    morphTargetBGL: instanceBGL, // alias → merged group 2
-    instancingBGL: instanceBGL, // alias → merged group 2
-    featureIdBGL: materialBGL, // alias → merged group 1
     instanceBGL,
   };
 }
@@ -512,12 +518,6 @@ class WebGPUModelPipelineCache {
     this._cameraBGL = bgls.cameraBGL;
     this._materialBGL = bgls.materialBGL; // merged: material+textures+featureId
     this._instanceBGL = bgls.instanceBGL; // merged: skinning+morph+instancing
-    // Aliases — same GPUBindGroupLayout objects under the old names.
-    this._textureBGL = bgls.textureBGL;
-    this._skinningBGL = bgls.skinningBGL;
-    this._morphTargetBGL = bgls.morphTargetBGL;
-    this._instancingBGL = bgls.instancingBGL;
-    this._featureIdBGL = bgls.featureIdBGL;
     // Effects BGL (group 3) — shared with globe + primitive via
     // `getEffectsBindGroupLayout` factory.
     this._effectsBGL = getEffectsBindGroupLayout(device);
@@ -661,11 +661,6 @@ class WebGPUModelPipelineCache {
         { binding: 3, resource: { buffer: this._defaultInstancingBuffer } },
       ],
     });
-    // Old-name aliases — same merged BG.
-    this._defaultSkinningBG = this._defaultInstanceBG;
-    this._defaultMorphTargetBG = this._defaultInstanceBG;
-    this._defaultInstancingBG = this._defaultInstanceBG;
-
     // Feature ID default UBO (14 floats — `featurePickEnabled = 0`).
     const zeroFeatureUniforms = new Float32Array(14);
     this._defaultFeatureUniformBuffer = device.createBuffer({
@@ -872,16 +867,6 @@ class WebGPUModelPipelineCache {
     return this._materialBGL;
   }
 
-  /** @returns {GPUBindGroupLayout} */
-  get textureBGL() {
-    return this._textureBGL;
-  }
-
-  /** @returns {GPUBindGroupLayout} Bind group layout for joint matrices storage buffer */
-  get skinningBGL() {
-    return this._skinningBGL;
-  }
-
   /** @returns {GPUTexture} 1×1 white (255,255,255,255) */
   get defaultWhiteTexture() {
     return this._defaultWhiteTexture;
@@ -992,36 +977,6 @@ class WebGPUModelPipelineCache {
   /** @returns {GPUBuffer} Default weights (0,0,0,0) as instance-step VB */
   get defaultWeightsBuffer() {
     return this._defaultWeightsBuffer;
-  }
-
-  /** @returns {GPUBindGroup} Default skinning bind group with identity matrix */
-  get defaultSkinningBindGroup() {
-    return this._defaultSkinningBG;
-  }
-
-  /** @returns {GPUBindGroupLayout} Bind group layout for morph target resources */
-  get morphTargetBGL() {
-    return this._morphTargetBGL;
-  }
-
-  /** @returns {GPUBindGroup} Default morph target bind group with empty deltas */
-  get defaultMorphTargetBindGroup() {
-    return this._defaultMorphTargetBG;
-  }
-
-  /** @returns {GPUBindGroupLayout} Bind group layout for instancing storage buffer */
-  get instancingBGL() {
-    return this._instancingBGL;
-  }
-
-  /** @returns {GPUBindGroup} Default instancing bind group with identity matrix */
-  get defaultInstancingBindGroup() {
-    return this._defaultInstancingBG;
-  }
-
-  /** @returns {GPUBindGroupLayout} Bind group layout for feature ID + batch textures */
-  get featureIdBGL() {
-    return this._featureIdBGL;
   }
 
   /**

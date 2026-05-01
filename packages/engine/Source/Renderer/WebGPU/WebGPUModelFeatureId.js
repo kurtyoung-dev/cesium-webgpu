@@ -263,7 +263,7 @@ function updateBatchGPUTexture(device, gpuTexture, batchTexture) {
  * @param {ModelComponents.Primitive} primitive - The glTF primitive
  * @param {ModelRuntimeNode} runtimeNode
  * @param {object} pipelineCache - WebGPUModelPipelineCache instance
- * @returns {object|undefined} { featureIdBG, flags } or undefined
+ * @returns {object|undefined} { featureIdEntries, flags } or undefined
  */
 function ensureFeatureIdResources(
   device,
@@ -282,7 +282,11 @@ function ensureFeatureIdResources(
   // `_batchValuesDirty = true` on each such mutation; we mirror the
   // WebGL updateBatchTexture() behaviour by re-uploading and clearing
   // the flag here.
-  if (defined(primCache._featureIdBG)) {
+  // NEW-BG-CONSOLIDATION (Batch 122) — early-exit cache hit. Caches
+  // the entries[] returned previously; refreshes the batch texture
+  // upload when the source data is dirty (setShow / setColor on a
+  // Cesium3DTileFeature) so per-feature styling reaches the GPU.
+  if (defined(primCache._featureIdEntries)) {
     const featureTableId = model.featureTableId;
     const featureTables = model.featureTables;
     if (
@@ -301,7 +305,7 @@ function ensureFeatureIdResources(
       }
     }
     return {
-      featureIdBG: primCache._featureIdBG,
+      featureIdEntries: primCache._featureIdEntries,
       flags: primCache._featureIdFlags || 0,
     };
   }
@@ -596,7 +600,10 @@ function destroyFeatureIdResources(primCache) {
     primCache._featureUniformBuffer.destroy();
     primCache._featureUniformBuffer = undefined;
   }
-  primCache._featureIdBG = undefined;
+  // NEW-BG-CONSOLIDATION (Batch 122) — _featureIdBG was the standalone
+  // bind group from the old layout; replaced by _featureIdEntries
+  // (resource entry array spliced into the merged group 1 BG).
+  primCache._featureIdEntries = undefined;
   primCache._featureIdFlags = undefined;
 }
 

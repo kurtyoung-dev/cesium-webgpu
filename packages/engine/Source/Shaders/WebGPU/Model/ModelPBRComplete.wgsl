@@ -283,7 +283,7 @@ struct LightUniforms {
 // + shared sampler. Bound to a 1×1 white placeholder when the
 // matching extension is absent; the FS gates each sample on the
 // extension's HAS_* flag so the placeholder is never sampled in
-// production. See WebGPUModelPipelineCache `textureBGL` for the
+// production. See WebGPUModelPipelineCache `materialBGL` for the
 // rationale on the shared sampler.
 @group(1) @binding(12) var clearcoatTexture: texture_2d<f32>;
 @group(1) @binding(13) var specularColorTexture: texture_2d<f32>;
