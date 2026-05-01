@@ -59,6 +59,7 @@ import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
 import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
+import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -120,7 +121,11 @@ function _getWarnedCommands(context: WebGPUContext): Set<string> {
  * branch so we pass the signal explicitly to keep the dispatcher a pure
  * function.
  */
-function selectCommandVariant(
+// Exported so the extracted pick-pass module
+// (`WebGPUSceneRendererPickPass.ts`, Batch 133) can call the same
+// dispatcher the in-file `executeWebGPUCommand` uses. Internal-API
+// shape preserved exactly; this is just a visibility flip.
+export function selectCommandVariant(
   command: CesiumAnyDrawCommand,
   scene: CesiumScene,
   isPickPass: boolean,
@@ -1705,210 +1710,20 @@ export class WebGPUSceneRenderer {
    * they do not generate pick IDs.
    */
   private _executePickPass(config: WebGPURenderFrameConfig): void {
-    const { scene, context, passState } = config;
-    const view = scene._view;
-    const { frustumCommandsList } = view;
-    const numFrustums: number = frustumCommandsList.length;
-    const { uniformState } = context;
-
-    if (numFrustums === 0) {
-      return;
-    }
-
-    // Get pick framebuffer from passState (set by WebGPUPickFramebuffer.begin())
-    const pickFBORaw = passState?.framebuffer;
-    const pickFBO = pickFBORaw as
-      | (CesiumOpaqueFramebuffer & {
-          _isWebGPUPickFBO?: boolean;
-          colorView?: GPUTextureView;
-          depthView?: GPUTextureView;
-        })
-      | undefined;
-    if (!pickFBO || !pickFBO._isWebGPUPickFBO) {
-      // No WebGPU pick framebuffer — fall back to rendering normally
-      // (this shouldn't happen, but be safe)
-      return;
-    }
-
-    const device: GPUDevice | undefined = context._device;
-    const encoder: GPUCommandEncoder | undefined =
-      context._currentCommandEncoder;
-    if (!device || !encoder) {
-      return;
-    }
-
-    // End the current render pass so we can start the pick render pass
-    context.endCurrentRenderPass?.();
-
-    // Create the pick render pass targeting the pick FBO textures
-    const pickPassDescriptor: GPURenderPassDescriptor = {
-      label: "Pick render pass",
-      colorAttachments: [
-        {
-          view: pickFBO.colorView as GPUTextureView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear" as GPULoadOp,
-          storeOp: "store" as GPUStoreOp,
-        },
-      ],
-      depthStencilAttachment: {
-        view: pickFBO.depthView as GPUTextureView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear" as GPULoadOp,
-        depthStoreOp: "store" as GPUStoreOp,
-        stencilClearValue: 0,
-        stencilLoadOp: "clear" as GPULoadOp,
-        stencilStoreOp: "store" as GPUStoreOp,
-      },
-    };
-
-    const pickRenderPass = encoder.beginRenderPass(pickPassDescriptor);
-
-    // Set the pick render pass as the active pass on the context so that
-    // executeWebGPUCommand() dispatches commands to it
-    const savedRenderPass = context.currentRenderPassEncoder;
-    context._currentRenderPassEncoder = pickRenderPass;
-
-    // Execute all pickable passes across all frustums
-    for (let i = 0; i < numFrustums; i++) {
-      const index = numFrustums - i - 1;
-      const frustumCommands = frustumCommandsList[index];
-
-      const near = frustumCommands.near;
-      const far = frustumCommands.far;
-      this._updateFrustumUniforms(uniformState, near, far, scene);
-
-      // Skip ENVIRONMENT pass — sky/sun/moon/atmosphere don't generate pick IDs
-
-      // GLOBE pass
-      this._executePickBatch(
-        frustumCommands,
-        Pass.GLOBE,
-        scene,
-        context,
-        passState,
-        pickRenderPass,
-      );
-
-      // 3D Tiles passes
-      const tilePasses = [
-        Pass.CESIUM_3D_TILE,
-        Pass.CESIUM_3D_TILE_CLASSIFICATION,
-      ];
-      for (const passIndex of tilePasses) {
-        this._executePickBatch(
-          frustumCommands,
-          passIndex,
-          scene,
-          context,
-          passState,
-          pickRenderPass,
-        );
-      }
-
-      // OPAQUE pass
-      this._executePickBatch(
-        frustumCommands,
-        Pass.OPAQUE,
-        scene,
-        context,
-        passState,
-        pickRenderPass,
-      );
-
-      // TRANSLUCENT pass
-      this._executePickBatch(
-        frustumCommands,
-        Pass.TRANSLUCENT,
-        scene,
-        context,
-        passState,
-        pickRenderPass,
-      );
-
-      // H-R3 (Batch 35) — VOXELS and GAUSSIAN_SPLATS pick passes. WebGL
-      // includes them in the pick-pass command list via
-      // `performIdPass`; WebGPU previously skipped them so voxel media
-      // and Gaussian splat primitives were unpickable. Commands without
-      // a pick variant fall through to the base command via
-      // `selectCommandVariant` (Batch 29), same as other passes.
-      this._executePickBatch(
-        frustumCommands,
-        Pass.VOXELS,
-        scene,
-        context,
-        passState,
-        pickRenderPass,
-      );
-      this._executePickBatch(
-        frustumCommands,
-        Pass.GAUSSIAN_SPLATS,
-        scene,
-        context,
-        passState,
-        pickRenderPass,
-      );
-    }
-
-    pickRenderPass.end();
-
-    // Restore the original render pass
-    context._currentRenderPassEncoder = savedRenderPass;
-
-    // Resume the default render pass if needed
-    context.resumeDefaultRenderPass?.();
-  }
-
-  /**
-   * Execute a batch of commands for a specific pass during pick rendering.
-   * Commands are executed on the pick render pass encoder.
-   */
-  private _executePickBatch(
-    frustumCommands: CesiumFrustumCommands,
-    passIndex: number,
-    scene: CesiumScene,
-    context: WebGPUContext,
-    passState: CesiumPassState,
-    pickRenderPass: GPURenderPassEncoder,
-  ): void {
-    const commands = frustumCommands.commands[passIndex];
-    const count: number = frustumCommands.indices[passIndex];
-    if (count === 0) {
-      return;
-    }
-    context.uniformState?.updatePass(passIndex);
-
-    for (let i = 0; i < count; i++) {
-      const command = commands[i];
-      if (!command) {
-        continue;
-      }
-
-      // Skip commands that don't participate in picking
-      if (scene.debugCommandFilter && !scene.debugCommandFilter(command)) {
-        continue;
-      }
-
-      // C-R2: pick pass consults derivedCommands.picking/pickingMetadata
-      // so commands that pre-built pick variants render those (pick color
-      // output, not base-material output) into the pick FBO. Commands
-      // without a pick variant fall through to the base command — same
-      // as WebGL. WebGPU-native feature renderers (Globe, GltfModel,
-      // GroundPrimitive) typically emit pick commands through their own
-      // path and don't populate derivedCommands.picking; those still
-      // take the fallback branch.
-      const dispatched = selectCommandVariant(command, scene, true);
-      if (dispatched.isWebGPUDrawCommand === true) {
-        dispatched.execute(pickRenderPass, context);
-      } else if (dispatched.execute) {
-        dispatched.execute(context, passState);
-      }
-    }
+    // Body extracted to `WebGPUSceneRendererPickPass.ts` in Batch 133.
+    // The wrapper stays here because `executeCommands` calls it as
+    // `this._executePickPass(config)`. `_executePickBatch` (the inner
+    // helper) moved with the body — no longer present on this class.
+    executePickPass(this, config);
   }
 
   // --- Frustum state ---
 
-  private _updateFrustumUniforms(
+  // Public underscore: shared with the extracted pick-pass module
+  // (`WebGPUSceneRendererPickPass.ts`, Batch 133). The other two
+  // callers (`executeCommands` lines 1287 + 1488) still call it as
+  // `this._updateFrustumUniforms(...)` — visibility flip only.
+  public _updateFrustumUniforms(
     uniformState: CesiumUniformState,
     near: number,
     far: number,
