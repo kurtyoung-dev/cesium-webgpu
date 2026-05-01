@@ -156,6 +156,19 @@ interface CompiledStage {
   bindGroupLayout: GPUBindGroupLayout;
   uniformBuffer: GPUBuffer | null;
   enabled: boolean;
+
+  // Cached per-frame bind group. The bind group entries are
+  // (sourceView, sampler, uniformBuffer); the only field that ever
+  // changes per-frame is the sourceView (ping/pong rotates). Cache the
+  // last `(source → bind group)` pair on the stage so a steady-state
+  // chain rebuilds nothing when the source view set is stable.
+  // Invalidates automatically when:
+  //   - the cached source view is no longer the one passed in
+  //   - the underlying ping/pong textures get reallocated (resize / HDR
+  //     toggle), since `_resizeIntermediates` recreates the views and
+  //     the new view !== cached view.
+  cachedBindGroup?: GPUBindGroup;
+  cachedSourceView?: GPUTextureView;
 }
 
 export class WebGPUPostProcessPipeline {
@@ -186,6 +199,11 @@ export class WebGPUPostProcessPipeline {
   // visible on WebGPU — without it the canvas stays black.
   private _identityPipeline: GPURenderPipeline | null = null;
   private _identityBGL: GPUBindGroupLayout | null = null;
+  // Cached BG for `_executeCopyStage` — stable as long as the source
+  // view reference matches the one we built the BG with. Identical
+  // pattern to `CompiledStage.cachedBindGroup`; see that comment.
+  private _identityCachedBindGroup: GPUBindGroup | null = null;
+  private _identityCachedSourceView: GPUTextureView | null = null;
 
   // Built-in single-pass stages
   private _tonemapStage: CompiledStage | null = null;
@@ -984,19 +1002,28 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (!this._device || !this._sampler) return;
 
-    const entries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: sourceView },
-      { binding: 1, resource: this._sampler },
-    ];
-    if (stage.uniformBuffer) {
-      entries.push({ binding: 2, resource: { buffer: stage.uniformBuffer } });
+    // Bind group cache — see CompiledStage.cachedBindGroup. Hot path:
+    // a steady chain of stages reuses the same source view across
+    // frames (ping/pong alternates per stage but is stable across
+    // frames as long as the chain shape is fixed), so a hit here saves
+    // an allocation per stage per frame.
+    let bindGroup = stage.cachedBindGroup;
+    if (!bindGroup || stage.cachedSourceView !== sourceView) {
+      const entries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: this._sampler },
+      ];
+      if (stage.uniformBuffer) {
+        entries.push({ binding: 2, resource: { buffer: stage.uniformBuffer } });
+      }
+      bindGroup = this._device.createBindGroup({
+        label: `PostProcess-${stage.name}-BindGroup`,
+        layout: stage.bindGroupLayout,
+        entries,
+      });
+      stage.cachedBindGroup = bindGroup;
+      stage.cachedSourceView = sourceView;
     }
-
-    const bindGroup = this._device.createBindGroup({
-      label: `PostProcess-${stage.name}-BindGroup`,
-      layout: stage.bindGroupLayout,
-      entries,
-    });
 
     const pass = encoder.beginRenderPass({
       label: `PostProcess-${stage.name}-Pass`,
@@ -1029,13 +1056,19 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       return;
     }
 
-    const bindGroup = this._device!.createBindGroup({
-      layout: this._identityBGL,
-      entries: [
-        { binding: 0, resource: sourceView },
-        { binding: 1, resource: this._sampler },
-      ],
-    });
+    let bindGroup = this._identityCachedBindGroup;
+    if (!bindGroup || this._identityCachedSourceView !== sourceView) {
+      bindGroup = this._device!.createBindGroup({
+        label: "PostProcess-IdentityBlit-BindGroup",
+        layout: this._identityBGL,
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: this._sampler },
+        ],
+      });
+      this._identityCachedBindGroup = bindGroup;
+      this._identityCachedSourceView = sourceView;
+    }
 
     const pass = encoder.beginRenderPass({
       label: "PostProcess-IdentityBlit",
@@ -1191,6 +1224,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // buffers — the GC handles them. Null the references for safety.
     this._identityPipeline = null;
     this._identityBGL = null;
+    this._identityCachedBindGroup = null;
+    this._identityCachedSourceView = null;
     this._isDestroyed = true;
   }
 

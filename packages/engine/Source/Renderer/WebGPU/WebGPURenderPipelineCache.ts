@@ -191,6 +191,20 @@ export interface PipelineCacheStats {
    * Cache hit rate (0-1)
    */
   hitRate: number;
+
+  /**
+   * Number of pipelines evicted by LRU policy since cache creation /
+   * last clear(). High eviction rates with healthy hit rates suggest
+   * the cap is roughly right; high eviction rates with low hit rates
+   * suggest the cap is too small for the working set.
+   */
+  evicted: number;
+
+  /**
+   * Maximum cache size (LRU cap). Pipelines beyond this count are
+   * evicted on insertion in least-recently-used order.
+   */
+  maxSize: number;
 }
 
 /**
@@ -200,8 +214,19 @@ interface PipelineCacheEntry {
   pipeline: GPURenderPipeline;
   descriptor: WebGPURenderPipelineDescriptor;
   variant: PipelineVariant;
-  created: number; // timestamp
+  created: number; // creation timestamp (Date.now())
+  lastAccessed: number; // most recent get / has hit (Date.now())
 }
+
+/**
+ * Default LRU cap. Each entry holds one `GPURenderPipeline` plus light
+ * metadata; 1024 is generous for the largest workloads we see today
+ * (full glTF + globe + post-process pipelines for a single scene
+ * typically lands around 200-400 entries) while still bounding the
+ * worst case (a misuse pattern that builds variants in a hot loop).
+ * Override per-cache via `setMaxSize()`.
+ */
+const DEFAULT_MAX_SIZE = 1024;
 
 /**
  * WebGPU Render Pipeline Cache
@@ -213,6 +238,7 @@ export class WebGPURenderPipelineCache {
   private cache: Map<string, PipelineCacheEntry>;
   private pendingPipelines: Map<string, Promise<GPURenderPipeline>>;
   private logPrefix: string;
+  private maxSize: number;
 
   // Statistics
   private stats = {
@@ -220,6 +246,7 @@ export class WebGPURenderPipelineCache {
     misses: 0,
     created: 0,
     pending: 0,
+    evicted: 0,
   };
 
   /**
@@ -227,14 +254,58 @@ export class WebGPURenderPipelineCache {
    *
    * @param device - GPUDevice for creating pipelines
    * @param contextId - Owning context's id for multi-context error attribution
+   * @param maxSize - LRU cap (defaults to DEFAULT_MAX_SIZE)
    */
-  constructor(device: GPUDevice, contextId?: string) {
+  constructor(device: GPUDevice, contextId?: string, maxSize?: number) {
     this.device = device;
     this.cache = new Map();
     this.pendingPipelines = new Map();
     this.logPrefix = contextId
       ? `[CesiumJS:webgpu:${contextId}:pipeline-cache]`
       : `[CesiumJS:webgpu:pipeline-cache]`;
+    this.maxSize = maxSize ?? DEFAULT_MAX_SIZE;
+  }
+
+  /**
+   * Set the LRU cap. Shrinking below the current size triggers
+   * immediate eviction of the oldest entries.
+   */
+  setMaxSize(maxSize: number): void {
+    this.maxSize = Math.max(1, Math.floor(maxSize));
+    this.evictIfNeeded();
+  }
+
+  /**
+   * Mark an entry as most-recently-used by re-inserting it at the end
+   * of the Map (Map preserves insertion order, so the first entry is
+   * the LRU candidate). Updates `lastAccessed` for diagnostics.
+   */
+  private touch(key: string, entry: PipelineCacheEntry): void {
+    entry.lastAccessed = Date.now();
+    // Re-insert: delete + set keeps the entry at the tail of insertion
+    // order. O(1) amortized on V8/SpiderMonkey/JSC.
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+  }
+
+  /**
+   * Evict oldest entries (front of insertion order) until the cache
+   * size is within the cap. Called after every insertion and on
+   * `setMaxSize` shrinks. GPURenderPipeline objects don't have an
+   * explicit `destroy()` in WebGPU — dropping the JS reference is what
+   * lets the implementation reclaim them, so we just delete the entry.
+   */
+  private evictIfNeeded(): void {
+    if (this.cache.size <= this.maxSize) {
+      return;
+    }
+    const it = this.cache.keys();
+    while (this.cache.size > this.maxSize) {
+      const next = it.next();
+      if (next.done) break;
+      this.cache.delete(next.value);
+      this.stats.evicted++;
+    }
   }
 
   /**
@@ -254,6 +325,7 @@ export class WebGPURenderPipelineCache {
     const cached = this.cache.get(key);
     if (cached) {
       this.stats.hits++;
+      this.touch(key, cached);
       return cached.pipeline;
     }
 
@@ -273,12 +345,15 @@ export class WebGPURenderPipelineCache {
       const pipeline = await pipelinePromise;
 
       // Cache it
+      const now = Date.now();
       this.cache.set(key, {
         pipeline,
         descriptor,
         variant: variant || {},
-        created: Date.now(),
+        created: now,
+        lastAccessed: now,
       });
+      this.evictIfNeeded();
 
       this.stats.created++;
       return pipeline;
@@ -304,6 +379,7 @@ export class WebGPURenderPipelineCache {
 
     if (cached) {
       this.stats.hits++;
+      this.touch(key, cached);
       return cached.pipeline;
     }
 
@@ -406,10 +482,10 @@ export class WebGPURenderPipelineCache {
     // WebGPUPipelineDescriptorBuilder._ensureDepthStencil.
     if (descriptor.depthStencil || variant?.depthTest !== undefined) {
       const hasStencilOps =
-        (variant?.stencilFront ??
-          descriptor.depthStencil?.stencilFront) !== undefined ||
-        (variant?.stencilBack ??
-          descriptor.depthStencil?.stencilBack) !== undefined;
+        (variant?.stencilFront ?? descriptor.depthStencil?.stencilFront) !==
+          undefined ||
+        (variant?.stencilBack ?? descriptor.depthStencil?.stencilBack) !==
+          undefined;
       let format = descriptor.depthStencil?.format || "depth24plus";
       if (
         hasStencilOps &&
@@ -591,6 +667,8 @@ export class WebGPURenderPipelineCache {
       pending: this.stats.pending,
       size: this.cache.size,
       hitRate,
+      evicted: this.stats.evicted,
+      maxSize: this.maxSize,
     };
   }
 
@@ -602,6 +680,7 @@ export class WebGPURenderPipelineCache {
     this.stats.hits = 0;
     this.stats.misses = 0;
     this.stats.created = 0;
+    this.stats.evicted = 0;
   }
 
   /**
