@@ -44,21 +44,19 @@ import {
   type ViewportQuadCommand,
   type ViewportQuadCommandOptions,
 } from "./WebGPUViewportQuad.js";
-import {
-  createWebGLCompatibilityStub,
-  type WebGLStubState,
-} from "./WebGLCompatibilityStub.js";
+// `createWebGLCompatibilityStub` import retained for the `_gl` field's
+// `ReturnType<typeof ...>` annotation. The state-literal that used to
+// live in `_initializeWebGLStub` (and the `webglToWebGPU*` /
+// `WebGLStubState` symbols it consumed) moved to
+// `WebGPUContextWebGLStubInit.ts` in Batch 129.
+import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
+import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
 import type {
   StubTextureWrapper,
   StubFramebuffer,
   StubRenderbuffer,
   StubAttachment,
 } from "./Stubs/WebGLStubTypes.js";
-import {
-  webglToWebGPUBlendFactor,
-  webglToWebGPUBlendOp,
-  webglToWebGPUCompareFunction,
-} from "./WebGLStateConverters.js";
 import {
   DeviceLossState,
   WebGPUDeviceLossRecovery,
@@ -251,7 +249,9 @@ export class WebGPUContext extends GraphicsContext {
   public _canvas: HTMLCanvasElement;
   private _adapter: GPUAdapter | null = null;
   public _device: GPUDevice | null = null;
-  private _context: GPUCanvasContext | null = null;
+  // Public underscore: shared with the WebGL-stub state proxy (Batch 129
+  // extraction).
+  public _context: GPUCanvasContext | null = null;
   public _presentationFormat: GPUTextureFormat = "bgra8unorm";
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
   private _isDestroyed: boolean = false;
@@ -488,9 +488,11 @@ export class WebGPUContext extends GraphicsContext {
   private _defaultCubeMap: CesiumOpaqueTexture | undefined;
 
   // Render state
-  private _clearColor: CesiumColor;
-  private _clearDepth: number = 1.0;
-  private _clearStencil: number = 0;
+  // Public underscore: shared with the WebGL-stub state proxy (Batch 129
+  // extraction). Same convention as `public _device`, `public _canvas`.
+  public _clearColor: CesiumColor;
+  public _clearDepth: number = 1.0;
+  public _clearStencil: number = 0;
   private _defaultPassState: CesiumPassState | undefined;
   private _defaultRenderState: CesiumOpaqueRenderState | undefined;
   private _currentRenderState: CesiumOpaqueRenderState | undefined;
@@ -504,7 +506,8 @@ export class WebGPUContext extends GraphicsContext {
     width: 0,
     height: 0,
   };
-  private _scissorTest: boolean = false;
+  // Public underscore: shared with the WebGL-stub state proxy.
+  public _scissorTest: boolean = false;
   private _scissorRect: {
     x: number;
     y: number;
@@ -512,25 +515,27 @@ export class WebGPUContext extends GraphicsContext {
     height: number;
   } = { x: 0, y: 0, width: 0, height: 0 };
 
-  // WebGPU pipeline state tracking (for creating pipelines with correct state)
-  private _depthTestEnabled: boolean = true;
-  private _depthWriteEnabled: boolean = true;
+  // WebGPU pipeline state tracking (for creating pipelines with correct
+  // state). Public underscore: shared with the WebGL-stub state proxy
+  // (Batch 129 extraction).
+  public _depthTestEnabled: boolean = true;
+  public _depthWriteEnabled: boolean = true;
   // Default depthCompare is `less-equal`, not `less`. At planetary scale
   // the projected clip-space Z can round up to exactly the far plane,
   // and `less` would discard those fragments. `less-equal` is the safe
   // default; pipelines that genuinely need strict-less can override.
-  private _depthCompare: GPUCompareFunction = "less-equal";
-  private _blendEnabled: boolean = false;
-  private _cullFaceEnabled: boolean = true;
-  private _cullMode: GPUCullMode = "back";
-  private _frontFace: GPUFrontFace = "ccw";
-  private _colorWriteMask: number = 0xf; // RGBA
-  private _blendSrc: GPUBlendFactor = "one";
-  private _blendDst: GPUBlendFactor = "zero";
-  private _blendSrcAlpha: GPUBlendFactor = "one";
-  private _blendDstAlpha: GPUBlendFactor = "zero";
-  private _blendOp: GPUBlendOperation = "add";
-  private _blendOpAlpha: GPUBlendOperation = "add";
+  public _depthCompare: GPUCompareFunction = "less-equal";
+  public _blendEnabled: boolean = false;
+  public _cullFaceEnabled: boolean = true;
+  public _cullMode: GPUCullMode = "back";
+  public _frontFace: GPUFrontFace = "ccw";
+  public _colorWriteMask: number = 0xf; // RGBA
+  public _blendSrc: GPUBlendFactor = "one";
+  public _blendDst: GPUBlendFactor = "zero";
+  public _blendSrcAlpha: GPUBlendFactor = "one";
+  public _blendDstAlpha: GPUBlendFactor = "zero";
+  public _blendOp: GPUBlendOperation = "add";
+  public _blendOpAlpha: GPUBlendOperation = "add";
 
   // Viewport quad for full-screen effects
   private _viewportQuadVertexBuffer: WebGPUBuffer | null = null;
@@ -543,19 +548,21 @@ export class WebGPUContext extends GraphicsContext {
   // Device loss recovery — delegated to WebGPUDeviceLossRecovery (FORK-1 fix)
   private _deviceLossRecovery: WebGPUDeviceLossRecovery | null = null;
 
-  // GL compatibility - bound buffer/texture tracking for legacy code
-  private _boundVertexBuffer: GPUBuffer | null = null;
-  private _boundIndexBuffer: GPUBuffer | null = null;
-  private _activeTextureUnit: number = 0;
-  private _textureBindings: Map<
+  // GL compatibility - bound buffer/texture tracking for legacy code.
+  // Public underscore: shared with the WebGL-stub state proxy
+  // (Batch 129 extraction).
+  public _boundVertexBuffer: GPUBuffer | null = null;
+  public _boundIndexBuffer: GPUBuffer | null = null;
+  public _activeTextureUnit: number = 0;
+  public _textureBindings: Map<
     number,
     { target: number; texture: StubTextureWrapper | null }
   > = new Map();
-  private _boundFramebuffer: StubFramebuffer | null = null;
-  private _boundReadFramebuffer: StubFramebuffer | null = null;
-  private _boundDrawFramebuffer: StubFramebuffer | null = null;
-  private _boundRenderbuffer: StubRenderbuffer | null = null;
-  private _framebuffers: Map<
+  public _boundFramebuffer: StubFramebuffer | null = null;
+  public _boundReadFramebuffer: StubFramebuffer | null = null;
+  public _boundDrawFramebuffer: StubFramebuffer | null = null;
+  public _boundRenderbuffer: StubRenderbuffer | null = null;
+  public _framebuffers: Map<
     StubFramebuffer,
     { colorAttachment: StubAttachment; depthAttachment: StubAttachment }
   > = new Map();
@@ -1734,240 +1741,21 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Initialize a WebGL compatibility stub that provides WebGL constants.
-   * Uses the extracted WebGLCompatibilityStub module with a state proxy that
-   * delegates reads/writes to this context's private fields.
-   *
-   * This prevents legacy Texture.js code from crashing when accessing gl.TEXTURE_2D, etc.
+   * Initialize the WebGL compatibility stub that provides WebGL
+   * constants + bound-state mirrors for legacy JS resources
+   * (Texture.js, CubeMap.js, Framebuffer.js) that read
+   * `context._gl.TEXTURE_2D` etc. Delegates to
+   * {@link buildWebGLCompatibilityStubFor} which builds the live state
+   * proxy over this context's `public _xxx` fields.
    * @private
    */
   private _initializeWebGLStub(): void {
-    // Create a state proxy that provides live access to this context's private fields.
-    // The extracted stub reads/writes through this proxy instead of using inline closures.
-    const ctx = this;
-    const state: WebGLStubState = {
-      get device() {
-        return ctx._device;
-      },
-      get context() {
-        return ctx._context;
-      },
-      get currentCommandEncoder() {
-        return ctx._currentCommandEncoder;
-      },
-      get currentRenderPassEncoder() {
-        return ctx._currentRenderPassEncoder;
-      },
-
-      get activeTextureUnit() {
-        return ctx._activeTextureUnit;
-      },
-      set activeTextureUnit(v) {
-        ctx._activeTextureUnit = v;
-      },
-      get textureBindings() {
-        return ctx._textureBindings;
-      },
-      get boundVertexBuffer() {
-        return ctx._boundVertexBuffer;
-      },
-      set boundVertexBuffer(v) {
-        ctx._boundVertexBuffer = v;
-      },
-      get boundIndexBuffer() {
-        return ctx._boundIndexBuffer;
-      },
-      set boundIndexBuffer(v) {
-        ctx._boundIndexBuffer = v;
-      },
-      get boundFramebuffer() {
-        return ctx._boundFramebuffer;
-      },
-      set boundFramebuffer(v) {
-        ctx._boundFramebuffer = v;
-      },
-      get boundReadFramebuffer() {
-        return ctx._boundReadFramebuffer;
-      },
-      set boundReadFramebuffer(v) {
-        ctx._boundReadFramebuffer = v;
-      },
-      get boundDrawFramebuffer() {
-        return ctx._boundDrawFramebuffer;
-      },
-      set boundDrawFramebuffer(v) {
-        ctx._boundDrawFramebuffer = v;
-      },
-      get boundRenderbuffer() {
-        return ctx._boundRenderbuffer;
-      },
-      set boundRenderbuffer(v) {
-        ctx._boundRenderbuffer = v;
-      },
-      get framebuffers() {
-        return ctx._framebuffers;
-      },
-
-      get clearColor() {
-        return ctx._clearColor;
-      },
-      set clearColor(v) {
-        ctx._clearColor = v;
-      },
-      get clearDepth() {
-        return ctx._clearDepth;
-      },
-      set clearDepth(v) {
-        ctx._clearDepth = v;
-      },
-      get clearStencil() {
-        return ctx._clearStencil;
-      },
-      set clearStencil(v) {
-        ctx._clearStencil = v;
-      },
-
-      get depthTestEnabled() {
-        return ctx._depthTestEnabled;
-      },
-      set depthTestEnabled(v) {
-        ctx._depthTestEnabled = v;
-      },
-      get depthWriteEnabled() {
-        return ctx._depthWriteEnabled;
-      },
-      set depthWriteEnabled(v) {
-        ctx._depthWriteEnabled = v;
-      },
-      get depthCompare() {
-        return ctx._depthCompare;
-      },
-      set depthCompare(v) {
-        ctx._depthCompare = v;
-      },
-
-      get blendEnabled() {
-        return ctx._blendEnabled;
-      },
-      set blendEnabled(v) {
-        ctx._blendEnabled = v;
-      },
-      get cullFaceEnabled() {
-        return ctx._cullFaceEnabled;
-      },
-      set cullFaceEnabled(v) {
-        ctx._cullFaceEnabled = v;
-      },
-      get cullMode() {
-        return ctx._cullMode;
-      },
-      set cullMode(v) {
-        ctx._cullMode = v;
-      },
-      get frontFace() {
-        return ctx._frontFace;
-      },
-      set frontFace(v) {
-        ctx._frontFace = v;
-      },
-      get colorWriteMask() {
-        return ctx._colorWriteMask;
-      },
-      set colorWriteMask(v) {
-        ctx._colorWriteMask = v;
-      },
-
-      get blendSrc() {
-        return ctx._blendSrc;
-      },
-      set blendSrc(v) {
-        ctx._blendSrc = v;
-      },
-      get blendDst() {
-        return ctx._blendDst;
-      },
-      set blendDst(v) {
-        ctx._blendDst = v;
-      },
-      get blendSrcAlpha() {
-        return ctx._blendSrcAlpha;
-      },
-      set blendSrcAlpha(v) {
-        ctx._blendSrcAlpha = v;
-      },
-      get blendDstAlpha() {
-        return ctx._blendDstAlpha;
-      },
-      set blendDstAlpha(v) {
-        ctx._blendDstAlpha = v;
-      },
-      get blendOp() {
-        return ctx._blendOp;
-      },
-      set blendOp(v) {
-        ctx._blendOp = v;
-      },
-      get blendOpAlpha() {
-        return ctx._blendOpAlpha;
-      },
-      set blendOpAlpha(v) {
-        ctx._blendOpAlpha = v;
-      },
-
-      get scissorTest() {
-        return ctx._scissorTest;
-      },
-      set scissorTest(v) {
-        ctx._scissorTest = v;
-      },
-
-      // ── Stub-local state (not mirrored on the context) ──
-      // Pixel-store flags consumed by the texture stub when uploading
-      // CPU pixel data via texImage2D / texSubImage2D.
-      pixelStore: {
-        unpackFlipY: false,
-        unpackPremultiplyAlpha: false,
-        unpackAlignment: 4,
-      },
-      // Stencil state mirrors WebGL defaults; tracked for future
-      // pipeline creation that needs stencil ops.
-      stencilTestEnabled: false,
-      stencilFrontCompare: "always" as GPUCompareFunction,
-      stencilBackCompare: "always" as GPUCompareFunction,
-      stencilReadMask: 0xff,
-      stencilWriteMask: 0xff,
-      stencilReference: 0,
-      stencilFailOp: "keep" as GPUStencilOperation,
-      stencilDepthFailOp: "keep" as GPUStencilOperation,
-      stencilPassOp: "keep" as GPUStencilOperation,
-      // Lazy mipmap generator — created the first time generateMipmap is
-      // called. Stored on `state` so the texture stub can dispatch a real
-      // blit-down compute pass instead of falling back to a no-op.
-      mipmapGenerator: null,
-
-      // Methods that delegate to WebGPUContext methods
-      setViewport: (x: number, y: number, w: number, h: number) =>
-        ctx.setViewport(x, y, w, h),
-      setScissorRect: (x: number, y: number, w: number, h: number) =>
-        ctx.setScissorRect(x, y, w, h),
-      disableScissorTest: () => ctx.disableScissorTest(),
-      copyTextureRegion: (
-        src: GPUTexture,
-        dst: GPUTexture,
-        sx: number,
-        sy: number,
-        dx: number,
-        dy: number,
-        w: number,
-        h: number,
-      ) => ctx.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h),
-      webglToWebGPUBlendFactor: (f: number) => ctx._webglToWebGPUBlendFactor(f),
-      webglToWebGPUBlendOp: (o: number) => ctx._webglToWebGPUBlendOp(o),
-      webglToWebGPUCompareFunction: (f: number) =>
-        ctx._webglToWebGPUCompareFunction(f),
-    };
-
-    this._gl = createWebGLCompatibilityStub(state);
+    // Live state proxy + factory call moved to
+    // `WebGPUContextWebGLStubInit.ts` (Batch 129). The 26 underscore-
+    // prefixed fields the proxy reads/writes are now `public _xxx` on
+    // this class — same convention as `public _device`, `public _canvas`,
+    // `public _frameCount`.
+    this._gl = buildWebGLCompatibilityStubFor(this);
   }
 
   /**
@@ -3172,20 +2960,12 @@ export class WebGPUContext extends GraphicsContext {
   // Delegates to standalone functions in WebGLStateConverters.ts
   // ====================================================================================
 
-  /** Convert WebGL blend factor to WebGPU blend factor. @private */
-  private _webglToWebGPUBlendFactor(f: number): GPUBlendFactor {
-    return webglToWebGPUBlendFactor(f);
-  }
-
-  /** Convert WebGL blend operation to WebGPU blend operation. @private */
-  private _webglToWebGPUBlendOp(o: number): GPUBlendOperation {
-    return webglToWebGPUBlendOp(o);
-  }
-
-  /** Convert WebGL compare function to WebGPU compare function. @private */
-  private _webglToWebGPUCompareFunction(f: number): GPUCompareFunction {
-    return webglToWebGPUCompareFunction(f);
-  }
+  // The previous `_webglToWebGPUBlendFactor` / `_webglToWebGPUBlendOp` /
+  // `_webglToWebGPUCompareFunction` wrapper methods existed only to feed
+  // the WebGL-stub state literal. After the literal moved to
+  // `WebGPUContextWebGLStubInit.ts` (Batch 129) the stub points
+  // straight at the module-level functions in `WebGLStateConverters.ts`,
+  // so the wrappers are gone.
 
   /**
    * Get current pipeline state for pipeline creation
