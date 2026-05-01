@@ -1,10 +1,76 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** April 25, 2026 (Batches 48-57 landed — see below)
+**Last Updated:** May 1, 2026 (Batches 127-153 — three large-file decomposition arcs landed)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
 **Overall Progress:** ~93% of full WebGL feature parity. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; all 36 feature renderers registered; 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
+
+---
+
+## Recent Progress (2026-05-01 — Batches 127-153: three large-file decomposition arcs)
+
+The three biggest TypeScript files in `Renderer/WebGPU/` were carved into focused per-concern modules. Zero behavior change — every batch verified by `npx tsc --project packages/engine/tsconfig.json --noEmit` clean and `npx gulp build` producing all four bundle outputs. Pure refactor; the audit-recommended `WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` candidate set is fully addressed.
+
+### Arc 1: `WebGPUContext.ts` decomposition (Batches 127-144)
+
+**Source**: 4427 → 4119 LOC (−308). 7 helper modules carved out.
+
+| Batch | Module | What |
+| --- | --- | --- |
+| 127 | `WebGPUContextLimitsInit.ts` | Device-limits initialization (104 LOC) |
+| 129 | `WebGPUContextWebGLStubInit.ts` | WebGL-compatibility stub builder (353 LOC) |
+| 130 | `WebGPUDeviceInvalidationBus.ts` | Device-loss subscription bus (87 LOC) |
+| 131 | `WebGPUResourceCacheRegistry.ts` | Cache-clear registry with try/catch (100 LOC) |
+| 132 | `WebGPUFeatureFlags.ts` | Device feature gates (142 LOC) |
+| 143 | `WebGPUContextDeviceLoss.ts` | Device-loss host adapter (115 LOC) |
+| 144 | `WebGPUFrameStatistics.ts` | Per-frame counters (83 LOC) |
+
+### Arc 2: `WebGPUSceneRenderer.ts` decomposition (Batches 133-142)
+
+**Source**: 3626 → 2111 LOC (−1515). 10 helper modules carved out — biggest decomposition arc.
+
+| Batch | Module | What |
+| --- | --- | --- |
+| 133 | `WebGPUSceneRendererPickPass.ts` | Pick-pass orchestration (280 LOC) |
+| 134 | `WebGPUSceneRendererEnvironmentalEffects.ts` | Sky/atmosphere/ground (186 LOC, pure) |
+| 135 | `WebGPUSceneRendererGlobePass.ts` | Globe-pass dispatch (126 LOC) |
+| 136 | `WebGPUSceneRendererTranslucentPass.ts` | OIT + alpha-blend fallback (212 LOC) |
+| 137 | `WebGPUSceneRenderer3DTilePasses.ts` | 3D-tile chain with FBO redirects (374 LOC) |
+| 138 | `WebGPUSceneRendererPassRedirect.ts` | Scene-FB render-pass redirect (164 LOC) |
+| 139 | `WebGPUSceneRendererFrameReset.ts` | Per-frame state reset (92 LOC) |
+| 140 | `WebGPUSceneRendererFrustumLoop.ts` | Multi-frustum dispatch loop (500 LOC) |
+| 141 | `WebGPUSceneRendererPostFrustumChain.ts` | Overlay + composite + post-process tail (161 LOC) |
+| 142 | `WebGPUSceneRendererEnsureResources.ts` | Per-frame resource allocation (359 LOC) |
+
+### Arc 3: `WebGPUGlobeSurfaceRenderer.ts` decomposition (Batches 145-153)
+
+**Source**: 3933 → 1310 LOC (**−2623, −67%**). 9 helper modules carved out — biggest single-file reduction in the migration.
+
+| Batch | Module | What | LOC |
+| --- | --- | --- | --- |
+| 145 | `WebGPUGlobeSurfaceTypes.ts` | Layout constants + interfaces + free helpers | 316 |
+| 146 | `WebGPUGlobeSurfaceShaders.ts` | Shader-module factory (production + debug + clip-distances) | 402 |
+| 147 | `WebGPUGlobeSurfaceLayouts.ts` | Bind-group + pipeline-layout + samplers + placeholder texture | 193 |
+| 148 | `WebGPUGlobeSurfaceTextures.ts` | Imagery / water-mask / image-source upload cache | 217 |
+| 149 | `WebGPUGlobeSurfaceWireframe.ts` | Wireframe pipeline + index-buffer cache | 322 |
+| 150 | `WebGPUGlobeSurfacePipelines.ts` | Pipeline construction + central-cache resolver | 531 |
+| 151 | `WebGPUGlobeSurfaceTileBuffers.ts` | Per-tile VB/IB + shadow-cast UB + eviction | 391 |
+| 152 | `WebGPUGlobeSurfaceCameraUB.ts` | 116-float camera-UB packer (RTE + center3D split) | 428 |
+| 153 | `WebGPUGlobeSurfaceTileUB.ts` | 472-float tile-UB packer (16-layer imagery + fog + ocean) | 600 |
+
+**Pattern established across all three arcs**: host-interface dependency injection. Each helper module declares an `XxxHost` interface naming the renderer fields/methods it needs; the renderer satisfies the interface via the underscore-public convention (`public _foo` with a comment marking it as helper-shared). Helpers compose via interface inheritance (e.g., `WireframeHost extends PipelineHost extends ShaderFactoryHost`). Public API surface preserved via thin delegators where the public method name is part of the contract (`evictStaleResources`, `removeImageryTexture`).
+
+**Audit discipline**: every batch closed with a byte-equivalent diff of moved method bodies against `git show HEAD:...` (modulo intended `this._XXX → host._XXX` substitutions and inter-helper call rewrites). Field-reference accounting verified `orig + N` where N = interface declarations + JSDoc references in destination modules. No behavior change in any batch.
+
+**Cumulative impact across all three arcs**:
+
+- 11,986 → 7540 LOC across the three source files (−4446, −37%)
+- 26 new focused helper modules averaging ~250 LOC each, all under the 1000-LOC CLAUDE.md guideline
+- `WebGPUSceneRenderer.ts` and `WebGPUGlobeSurfaceRenderer.ts` both now under 2500 LOC (SceneRenderer at 2111, Globe at 1310 — 1.31x guideline)
+- `WebGPUContext.ts` remains at 4119 LOC; further decomposition deferred (audit-recommended candidates exhausted; remaining bulk is per-method device/queue plumbing without natural sub-extractions)
+
+**See**: `BATCH_145_PLAN_GLOBE_SURFACE_DECOMPOSITION.md` for the full Arc 3 plan + roadmap; per-batch commit messages for the other two arcs (Batches 127-144).
 
 ---
 
