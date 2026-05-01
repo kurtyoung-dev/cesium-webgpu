@@ -53,6 +53,7 @@ import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
 import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
 import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUResourceCacheRegistry } from "./WebGPUResourceCacheRegistry.js";
+import { WebGPUFeatureFlags } from "./WebGPUFeatureFlags.js";
 import type {
   StubTextureWrapper,
   StubFramebuffer,
@@ -301,8 +302,11 @@ export class WebGPUContext extends GraphicsContext {
   private _drawCallCount: number = 0;
   private _triangleCount: number = 0;
 
-  // WebGPU optional features that were successfully enabled
-  private _enabledFeatures: Set<string> = new Set();
+  // WebGPU optional features that were successfully enabled.
+  // Body extracted to `WebGPUFeatureFlags` in Batch 132. The Context
+  // retains `hasFeature` / `enabledFeatures` as 1-line delegators so
+  // external callers and the debug snapshot don't move.
+  private _featureFlags = new WebGPUFeatureFlags();
 
   // Dynamic rendering state set by WebGPUSceneRenderer during frame execution
   public _depthStencilView: GPUTextureView | null = null;
@@ -692,8 +696,12 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
 
-      // Request GPU device with auto-detected optional features
-      const requestedFeatures = this._buildFeatureList(this._adapter);
+      // Request GPU device with auto-detected optional features.
+      // Batch 132: list-build moved to `WebGPUFeatureFlags`.
+      const requestedFeatures = this._featureFlags.buildRequestList(
+        this._adapter,
+        this._options.requiredFeatures,
+      );
       const requiredLimits = { ...(this._options.requiredLimits ?? {}) };
 
       // NEW-4-F (Batch 66) — Batch 58's C-R5 expansion bumped imagery
@@ -797,12 +805,12 @@ export class WebGPUContext extends GraphicsContext {
         requiredLimits,
       });
 
-      // Record which features were actually enabled
-      this._enabledFeatures = new Set(this._device.features);
+      // Record which features were actually enabled (Batch 132).
+      this._featureFlags.markEnabled(this._device.features);
 
       // Log enabled optional features for debugging
       const optionalEnabled = requestedFeatures.filter((f) =>
-        this._enabledFeatures.has(f),
+        this._featureFlags.has(f),
       );
       //>>includeStart('debug', pragmas.debug);
       if (optionalEnabled.length > 0) {
@@ -1604,60 +1612,12 @@ export class WebGPUContext extends GraphicsContext {
 
   // ====================================================================================
 
-  /**
-   * Optional WebGPU features that CesiumJS benefits from.
-   * Listed in priority order. Each is only requested if the adapter supports it.
-   * @private
-   */
-  private static readonly DESIRED_FEATURES: GPUFeatureName[] = [
-    // C1: Terrain heightmaps use float32 textures — enables HW bilinear filtering
-    "float32-filterable" as GPUFeatureName,
-    // C3: Native GPU clip planes for ClippingPlaneCollection (Chrome 128+)
-    "clip-distances" as GPUFeatureName,
-    // C4: Weighted-average OIT in single render pass (Chrome 128+)
-    "dual-source-blending" as GPUFeatureName,
-    // I4: HDR render targets for post-processing (Chrome 121+)
-    "rg11b10ufloat-renderable" as GPUFeatureName,
-    // I6: GPU-side performance profiling (Chrome 121+)
-    "timestamp-query" as GPUFeatureName,
-    // I5: Half-precision floats in shaders — reduce memory, faster math
-    "shader-f16" as GPUFeatureName,
-    // I1: GPU-driven rendering with indirect draw calls (Chrome 128+)
-    "indirect-first-instance" as GPUFeatureName,
-    // S4: SIMD-like subgroup operations for compute shaders (Chrome 132+)
-    "subgroups" as GPUFeatureName,
-    // BGRA8 storage textures for compute-based post-processing
-    "bgra8unorm-storage" as GPUFeatureName,
-    // Texture compression formats (requested if adapter supports them)
-    "texture-compression-bc" as GPUFeatureName,
-    "texture-compression-etc2" as GPUFeatureName,
-    "texture-compression-astc" as GPUFeatureName,
-  ];
-
-  /**
-   * Builds the list of features to request from the device.
-   * Merges user-requested features with auto-detected optional features
-   * that the adapter supports.
-   *
-   * @private
-   * @param {GPUAdapter} adapter - The GPU adapter to query
-   * @returns {GPUFeatureName[]} Features to request
-   */
-  private _buildFeatureList(adapter: GPUAdapter): GPUFeatureName[] {
-    // Start with any explicitly requested features from the user
-    const features = new Set<GPUFeatureName>(
-      this._options.requiredFeatures ?? [],
-    );
-
-    // Auto-detect and add optional features the adapter supports
-    for (const feature of WebGPUContext.DESIRED_FEATURES) {
-      if (adapter.features.has(feature)) {
-        features.add(feature);
-      }
-    }
-
-    return Array.from(features);
-  }
+  // `DESIRED_FEATURES` constant + `_buildFeatureList` wrapper moved
+  // to `WebGPUFeatureFlags.ts` in Batch 132. The Context calls
+  // `this._featureFlags.buildRequestList(adapter, userRequested)`
+  // directly from `_initialize` now; there's no longer a private
+  // method on the class for building the request list because there
+  // was only ever one caller.
 
   /**
    * Updates internal capability flags based on which features were
@@ -1668,7 +1628,7 @@ export class WebGPUContext extends GraphicsContext {
   private _updateFeatureFlags(): void {
     // C1: float32-filterable — update the textureFloatLinear flag
     // Without this feature, float32 textures require nearest-only sampling
-    if (this._enabledFeatures.has("float32-filterable")) {
+    if (this._featureFlags.has("float32-filterable")) {
       this.textureFloatLinear = true;
       this._textureFloatLinear = true;
     }
@@ -1696,17 +1656,17 @@ export class WebGPUContext extends GraphicsContext {
     // debug snapshot expose what the adapter actually granted.
 
     // Texture compression formats
-    if (this._enabledFeatures.has("texture-compression-bc")) {
+    if (this._featureFlags.has("texture-compression-bc")) {
       this._s3tc = true;
       this._bc7 = true;
       this.s3tc = true;
       this.bc7 = true;
     }
-    if (this._enabledFeatures.has("texture-compression-etc2")) {
+    if (this._featureFlags.has("texture-compression-etc2")) {
       this._etc = true;
       this.etc = true;
     }
-    if (this._enabledFeatures.has("texture-compression-astc")) {
+    if (this._featureFlags.has("texture-compression-astc")) {
       this._astc = true;
       this.astc = true;
     }
@@ -1728,7 +1688,7 @@ export class WebGPUContext extends GraphicsContext {
    * }
    */
   hasFeature(featureName: string): boolean {
-    return this._enabledFeatures.has(featureName);
+    return this._featureFlags.has(featureName);
   }
 
   /**
@@ -1736,7 +1696,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {string[]} Array of enabled feature names
    */
   get enabledFeatures(): string[] {
-    return Array.from(this._enabledFeatures);
+    return this._featureFlags.enabledList;
   }
 
   /**
@@ -2960,6 +2920,11 @@ export class WebGPUContext extends GraphicsContext {
     // don't keep this Context's own fields alive past destroy.
     // (Batch 131.)
     this._cacheRegistry.clear();
+
+    // Drop the feature-flags enabled set. (Batch 132.) The Set is
+    // small and would die with the Context anyway; explicit clear
+    // matches the lifecycle pattern used by the bus + cache registry.
+    this._featureFlags.clear();
 
     // NOW destroy the device — everything that needed it has already run.
     if (this._device) {
