@@ -25,6 +25,7 @@ import {
   _inferShadowLayoutKey,
   getShadowCastVariant,
 } from "./WebGPUShadowMapRenderer.js";
+import { renderCSMCastPass } from "./WebGPUCSMCastPass.js";
 import type { DebugStatsObject } from "../GraphicsContext.js";
 
 // Re-declare the Matrix4 / Cartesian3 shapes we actually touch so the
@@ -91,7 +92,33 @@ const _scratchSnappedCenter = new Float64Array(3);
  * pulling the entire rendering-command type surface into the CSM
  * module just for this one call site.
  */
-interface CastCommandShape {
+/**
+ * Subset of `WebGPUCSMRenderer` reached by the cast-pass helper
+ * (Batch 159). Mirrors the fields the helper needs read+write access to.
+ */
+export interface CSMCastPassHost {
+  _device: GPUDevice | null;
+  _cascadeTexture: GPUTexture | null;
+  _cascadeViews: GPUTextureView[];
+  _cascadeCount: number;
+  _cascades: {
+    sphereRadius: number;
+    viewProjectionRTE: Float32Array | number[];
+  }[];
+  _castDispatches: number;
+  _cascadeCastBuffers: GPUBuffer[] | null;
+  _cascadeCastBufferData: Float32Array[] | null;
+  _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null;
+  _sharedPipelineCache: {
+    castPipelines: Map<
+      string,
+      { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
+    >;
+  } | null;
+  enabled: boolean;
+}
+
+export interface CastCommandShape {
   vertexBuffers?: ReadonlyArray<unknown>;
   _vertexBuffer?: unknown;
   vertexBuffer?: unknown;
@@ -154,8 +181,9 @@ export const BASE_MIN_BIAS = 0.00005;
 export const BASE_MAX_SLOPE_BIAS = 0.0005;
 
 export class WebGPUCSMRenderer {
-  private _device: GPUDevice | null = null;
-  private _cascadeCount: number;
+  // Public underscore: shared with the cast-pass helper (Batch 159).
+  public _device: GPUDevice | null = null;
+  public _cascadeCount: number;
   private _resolution: number;
   private _lambda: number;
   private _blendBand: number;
@@ -163,34 +191,34 @@ export class WebGPUCSMRenderer {
   enabled: boolean;
 
   // GPU resources
-  private _cascadeTexture: GPUTexture | null = null;
-  private _cascadeViews: GPUTextureView[] = [];
+  public _cascadeTexture: GPUTexture | null = null;
+  public _cascadeViews: GPUTextureView[] = [];
   private _cascadeArrayView: GPUTextureView | null = null;
   private _cascadeSampler: GPUSampler | null = null;
 
   // Per-cascade data (recomputed per frame)
-  private _cascades: CascadeData[] = [];
+  public _cascades: CascadeData[] = [];
 
   // UBO for cascade splits + VP matrices (passed to receive shaders)
   private _cascadeParamsBuffer: GPUBuffer | null = null;
   private _cascadeParamsData: Float32Array;
 
   // Diagnostic counters
-  private _castDispatches = 0;
+  public _castDispatches = 0;
 
   // Cast-pass-specific lazy resources. Allocated on first cast pass
   // rather than in initialize() so scenes that toggle CSM on later
   // don't pay upfront.
-  private _cascadeCastBuffers: GPUBuffer[] | null = null;
-  private _cascadeCastBufferData: Float32Array[] | null = null;
-  private _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null = null;
+  public _cascadeCastBuffers: GPUBuffer[] | null = null;
+  public _cascadeCastBufferData: Float32Array[] | null = null;
+  public _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null = null;
   /**
    * Shared pipeline cache passed to the cross-module cast-pipeline
    * factory. Holds the compiled per-vertex-layout pipelines keyed by
    * layout name. Separate from `shadowMap._webgpuCache` so CSM and
    * single-shadow-map paths have independent caches.
    */
-  private _sharedPipelineCache: {
+  public _sharedPipelineCache: {
     castPipelines: Map<
       string,
       { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
@@ -534,326 +562,7 @@ export class WebGPUCSMRenderer {
     castCommands: ReadonlyArray<unknown>,
     cameraPositionWC: CesiumCartesian3,
   ): void {
-    if (
-      !this._device ||
-      !this.enabled ||
-      !this._cascadeTexture ||
-      this._cascadeViews.length !== this._cascadeCount ||
-      castCommands.length === 0
-    ) {
-      return;
-    }
-    this._castDispatches++;
-
-    // Lazy-allocate per-cascade cast UBOs the first time we cast.
-    // The layout matches WebGPUShadowMapRenderer's existing UBO
-    // (SHADOW_UNIFORM_SIZE = 128 bytes) so every registered cast
-    // pipeline's bind-group layout is compatible without a second
-    // pipeline build.
-    if (!this._cascadeCastBuffers) {
-      this._cascadeCastBuffers = [];
-      this._cascadeCastBufferData = [];
-      this._cascadeCastBindGroups = [];
-      for (let i = 0; i < this._cascadeCount; i++) {
-        const buf = WebGPUBuffer.createUniformBuffer(
-          this._device,
-          CSM_CAST_UBO_SIZE,
-          `CSM_Cascade_${i}_CastUBO`,
-        );
-        this._cascadeCastBuffers.push(buf.buffer);
-        this._cascadeCastBufferData.push(
-          new Float32Array(CSM_CAST_UBO_SIZE / 4),
-        );
-        this._cascadeCastBindGroups.push(new Map());
-      }
-    }
-
-    // A per-renderer cache object that the shared cast-pipeline factory
-    // stashes its compiled pipelines on. Using a fresh object (not
-    // `shadowMap._webgpuCache`) keeps CSM pipeline state separate from
-    // the single-shadow-map path, so flipping the scene toggle doesn't
-    // cross-contaminate caches.
-    if (!this._sharedPipelineCache) {
-      this._sharedPipelineCache = {
-        castPipelines: new Map<
-          string,
-          {
-            pipeline: GPURenderPipeline;
-            bgl: GPUBindGroupLayout;
-          }
-        >(),
-      };
-    }
-
-    // RTE-encoded camera (same as single-shadow-map path).
-    const enc = _scratchEncodedCamera;
-    enc.high = enc.high ?? new Cartesian3();
-    enc.low = enc.low ?? new Cartesian3();
-    EncodedCartesian3.fromCartesian(
-      new Cartesian3(
-        cameraPositionWC.x,
-        cameraPositionWC.y,
-        cameraPositionWC.z,
-      ),
-      enc,
-    );
-
-    const refRadius = Math.max(1.0, this._cascades[0].sphereRadius);
-    for (let ci = 0; ci < this._cascadeCount; ci++) {
-      const cascade = this._cascades[ci];
-      const data = this._cascadeCastBufferData![ci];
-      // Pack: lightVP_RTE (16) + camHigh+pad (4) + camLow+pad (4) + biases (4) = 28 floats.
-      // The cast shader multiplies this VP by the camera-relative position
-      // (posRTE = posHigh - camHigh + posLow - camLow), so the matrix MUST
-      // be the RTE-aware form, not the world-space one. See ShadowMap.wgsl.
-      for (let k = 0; k < 16; k++) {
-        data[k] = cascade.viewProjectionRTE[k];
-      }
-      data[16] = enc.high.x;
-      data[17] = enc.high.y;
-      data[18] = enc.high.z;
-      data[19] = 0;
-      data[20] = enc.low.x;
-      data[21] = enc.low.y;
-      data[22] = enc.low.z;
-      data[23] = 0;
-      // Per-cascade depth bias scales with cascade extent. Tight cascade
-      // 0 gets BASE_MIN_BIAS; larger cascades scale proportionally so the
-      // ortho-projected NDC bias tracks world-space distance uniformly.
-      const scale = Math.max(1.0, cascade.sphereRadius / refRadius);
-      data[24] = BASE_MIN_BIAS * scale;
-      data[25] = 0.0; // normalBias (reserved — slope bias lives receive-side)
-      data[26] = 0;
-      data[27] = 0;
-      this._device.queue.writeBuffer(
-        this._cascadeCastBuffers![ci],
-        0,
-        data.buffer,
-        data.byteOffset,
-        CSM_CAST_UBO_SIZE,
-      );
-
-      const pass = encoder.beginRenderPass({
-        label: `CSM_Cascade_${ci}_CastPass`,
-        colorAttachments: [],
-        depthStencilAttachment: {
-          view: this._cascadeViews[ci],
-          depthClearValue: 1.0,
-          depthLoadOp: "clear",
-          depthStoreOp: "store",
-        },
-      });
-
-      for (const rawCmd of castCommands) {
-        const cmd = rawCmd as CastCommandShape;
-        if (!cmd) continue;
-
-        // Resolve vertex buffer + stride, matching the single-shadow-
-        // map cast-pass resolution. Same shape + same fallbacks.
-        //
-        // `vertexBuffers[0]` is either a wrapper `{buffer, arrayStride}`
-        // or a bare `GPUBuffer`. Type it as the union up front so the
-        // branches narrow without repeated inline casts.
-        type VbSlot = GPUBuffer | { buffer?: GPUBuffer; arrayStride?: number };
-        let vb: GPUBuffer | undefined;
-        let vbStride: number | undefined;
-        if (cmd.vertexBuffers && cmd.vertexBuffers.length > 0) {
-          const first = cmd.vertexBuffers[0] as VbSlot;
-          if ("buffer" in first && first.buffer) {
-            vb = first.buffer;
-            vbStride = first.arrayStride ?? cmd.vertexStride;
-          } else {
-            vb = first as GPUBuffer;
-            vbStride = cmd.vertexStride;
-          }
-        } else if (cmd._vertexBuffer) {
-          const vbRef = cmd._vertexBuffer as { buffer?: GPUBuffer };
-          vb = defined(vbRef.buffer)
-            ? vbRef.buffer
-            : (cmd._vertexBuffer as GPUBuffer);
-          vbStride = cmd._vertexStride ?? cmd.vertexStride;
-        } else if (cmd.vertexBuffer) {
-          const vbRef = cmd.vertexBuffer as { buffer?: GPUBuffer };
-          vb = defined(vbRef.buffer)
-            ? vbRef.buffer
-            : (cmd.vertexBuffer as GPUBuffer);
-          vbStride = cmd.vertexStride;
-        } else {
-          continue;
-        }
-        if (!vb) continue;
-
-        // Slice 2 — accept every registered variant that the single-
-        // shadow-map path knows about. The pipeline factory (shared with
-        // WebGPUShadowMapRenderer via `_getOrCreateCastPipeline`) compiles
-        // at first use; subsequent frames hit the per-cascade bind-group
-        // cache. See SHADOW_CAST_VARIANTS in WebGPUShadowMapRenderer.js
-        // for the canonical list (rte24, p12, modelP12, modelInstanced,
-        // modelInstancedSB, quantized12, modelSkinned).
-        const layoutKey = _inferShadowLayoutKey(cmd, vbStride);
-        if (layoutKey === null) continue;
-
-        const variant = getShadowCastVariant(layoutKey);
-        if (!variant) continue;
-
-        const pipelineEntry = _getOrCreateCastPipeline(
-          this._device,
-          this._sharedPipelineCache,
-          layoutKey,
-          vbStride,
-        );
-        if (!pipelineEntry) continue;
-
-        const extraBindings = (
-          variant as {
-            extraBindings?: GPUBindGroupLayoutEntry[];
-          }
-        ).extraBindings;
-        const perCommandFields = (
-          variant as {
-            perCommandBindingFields?: string[];
-          }
-        ).perCommandBindingFields;
-        const hasExtraBindings =
-          Array.isArray(extraBindings) && extraBindings.length > 0;
-
-        // Binding 0 is always the per-cascade cast UBO. Variants with
-        // `extraBindings` add per-command buffers at bindings 1..n
-        // (modelP12: modelMatrix UB; modelInstancedSB: modelMatrix UB +
-        // instancing SB; modelSkinned: modelMatrix UB + joint-matrices
-        // SB). We cache shared bind groups on the CSM renderer and
-        // per-command bind groups on the command (indexed by cascade).
-        let bg: GPUBindGroup | undefined;
-        if (!hasExtraBindings) {
-          bg = this._cascadeCastBindGroups![ci].get(layoutKey);
-          if (!bg) {
-            bg = this._device.createBindGroup({
-              label: `CSM_Cascade_${ci}_CastBG_${layoutKey}`,
-              layout: pipelineEntry.bgl,
-              entries: [
-                {
-                  binding: 0,
-                  resource: { buffer: this._cascadeCastBuffers![ci] },
-                },
-              ],
-            });
-            this._cascadeCastBindGroups![ci].set(layoutKey, bg);
-          }
-        } else {
-          const fields = perCommandFields ?? [];
-          const extraEntries: GPUBindGroupEntry[] = [];
-          let missingBinding = false;
-          for (let fi = 0; fi < fields.length; fi++) {
-            const field = fields[fi];
-            // `field` is a runtime-provided property name from the variant's
-            // `vertexBufferSourceSlots` config; indexing by string requires
-            // a Record view but not the `unknown` intermediate.
-            const source = (cmd as Record<string, unknown>)[field];
-            const extraBinding = extraBindings![fi];
-            if (!defined(source)) {
-              missingBinding = true;
-              break;
-            }
-            const raw = defined((source as { buffer?: GPUBuffer }).buffer)
-              ? (source as { buffer: GPUBuffer }).buffer
-              : (source as GPUBuffer);
-            extraEntries.push({
-              binding: extraBinding.binding,
-              resource: { buffer: raw },
-            });
-          }
-          if (missingBinding) continue;
-
-          if (!cmd._shadowCastCSMBindGroups) {
-            cmd._shadowCastCSMBindGroups = new Array(this._cascadeCount);
-            cmd._shadowCastCSMBindGroupKeys = new Array(this._cascadeCount);
-          }
-          bg = cmd._shadowCastCSMBindGroups[ci];
-          if (!bg || cmd._shadowCastCSMBindGroupKeys![ci] !== layoutKey) {
-            bg = this._device.createBindGroup({
-              label: `CSM_Cascade_${ci}_CastBG_${layoutKey}_cmd`,
-              layout: pipelineEntry.bgl,
-              entries: [
-                {
-                  binding: 0,
-                  resource: { buffer: this._cascadeCastBuffers![ci] },
-                },
-                ...extraEntries,
-              ],
-            });
-            cmd._shadowCastCSMBindGroups[ci] = bg;
-            cmd._shadowCastCSMBindGroupKeys![ci] = layoutKey;
-          }
-        }
-
-        pass.setPipeline(pipelineEntry.pipeline);
-        pass.setBindGroup(0, bg);
-
-        // Multi-VB variants (modelSkinned pulls pos + joints + weights
-        // from slots 0/5/6 of the model's 7-buffer layout) declare
-        // `vertexBufferSourceSlots`; single-VB variants (rte24, p12,
-        // modelP12, modelInstancedSB, quantized12) fall through to the
-        // default slot-0 bind. The classic `modelInstanced` variant
-        // takes a secondary VB via `_shadowCastInstanceVB`.
-        const sourceSlots = (
-          variant as {
-            vertexBufferSourceSlots?: number[];
-          }
-        ).vertexBufferSourceSlots;
-        if (sourceSlots && sourceSlots.length > 1) {
-          let allResolved = true;
-          for (let slotIdx = 0; slotIdx < sourceSlots.length; slotIdx++) {
-            const src = sourceSlots[slotIdx];
-            const srcEntry = cmd.vertexBuffers?.[src] as
-              | { buffer?: GPUBuffer }
-              | GPUBuffer
-              | undefined;
-            if (!defined(srcEntry)) {
-              allResolved = false;
-              break;
-            }
-            const rawVb = defined((srcEntry as { buffer?: GPUBuffer }).buffer)
-              ? (srcEntry as { buffer: GPUBuffer }).buffer
-              : (srcEntry as GPUBuffer);
-            pass.setVertexBuffer(slotIdx, rawVb);
-          }
-          if (!allResolved) continue;
-        } else {
-          pass.setVertexBuffer(0, vb);
-          if (layoutKey === "modelInstanced") {
-            const instSrc =
-              cmd._shadowCastInstanceVB ??
-              (cmd.vertexBuffers && cmd.vertexBuffers[1]);
-            if (!defined(instSrc)) continue;
-            const rawInstVb = defined(
-              (instSrc as { buffer?: GPUBuffer }).buffer,
-            )
-              ? (instSrc as { buffer: GPUBuffer }).buffer
-              : (instSrc as GPUBuffer);
-            pass.setVertexBuffer(1, rawInstVb);
-          }
-        }
-
-        const ibRef = (cmd.indexBuffer ?? cmd._indexBuffer) as
-          | { buffer?: GPUBuffer }
-          | GPUBuffer
-          | undefined;
-        if (ibRef) {
-          const ib =
-            (ibRef as { buffer?: GPUBuffer }).buffer ?? (ibRef as GPUBuffer);
-          const fmt: GPUIndexFormat =
-            cmd.indexFormat ?? cmd._indexFormat ?? "uint16";
-          const count = cmd.indexCount ?? cmd._indexCount ?? 0;
-          pass.setIndexBuffer(ib, fmt);
-          pass.drawIndexed(count, cmd.instanceCount ?? 1);
-        } else {
-          const count = cmd.vertexCount ?? cmd._vertexCount ?? 0;
-          pass.draw(count, cmd.instanceCount ?? 1);
-        }
-      }
-
-      pass.end();
-    }
+    renderCSMCastPass(this, encoder, castCommands, cameraPositionWC);
   }
 
   /**
