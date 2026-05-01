@@ -62,6 +62,7 @@ import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
+import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -273,7 +274,10 @@ function _backToFrontSplatsComparator(
  * Without OIT, alpha compositing is order-dependent — overlapping translucent
  * geometry renders wrong in command-push order.
  */
-function sortCommandsBackToFront(
+// Exported so the extracted translucent-pass module
+// (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136) can call the
+// same back-to-front sorter used by the in-file alpha-blend fallback.
+export function sortCommandsBackToFront(
   commands: CesiumAnyDrawCommand[],
   count: number,
   scene: CesiumScene,
@@ -592,7 +596,9 @@ export class WebGPUSceneRenderer {
   // scene framebuffer — cheap to keep allocated.
   private _translucentTileClassification: WebGPUTranslucentTileClassification | null =
     null;
-  private _oit: WebGPUOIT | null = null;
+  // Public underscore: shared with the extracted translucent-pass
+  // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
+  public _oit: WebGPUOIT | null = null;
   private _globeDepth: WebGPUGlobeDepth | null = null;
   private _depthPlane: WebGPUDepthPlane | null = null;
   private _postProcess: WebGPUPostProcessPipeline | null = null;
@@ -652,7 +658,9 @@ export class WebGPUSceneRenderer {
 
   // ── Runtime state that was previously ad-hoc on `this as any` ──
   private _currentFrustumIndex: number = 0;
-  private _deferredOITSplats: {
+  // Public underscore: shared with the extracted translucent-pass
+  // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
+  public _deferredOITSplats: {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null = null;
@@ -2264,158 +2272,13 @@ export class WebGPUSceneRenderer {
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
-    const { scene, context, passState } = config;
-    const commands = frustumCommands.commands[Pass.TRANSLUCENT];
-    const count: number = frustumCommands.indices[Pass.TRANSLUCENT];
-    if (count === 0) {
-      return;
-    }
-
-    context.uniformState?.updatePass(Pass.TRANSLUCENT);
-
-    // OIT accumulation + composite path.
-    // Full MRT OIT (McGuire & Bavoil 2013) requires 2-target pipeline variants
-    // for each renderer (accumulation rgba16float + revealage r8unorm).
-    // Pipeline variant support is implemented per-renderer by checking
-    // command._oitPipeline. When available, we use the MRT accumulation pass;
-    // otherwise fall back to standard alpha blending.
-    if (
-      this._oit &&
-      this._oit.isSupported &&
-      config.useOIT &&
-      !config.picking
-    ) {
-      // Auto-create OIT pipeline variants for commands that have shader code
-      // but no OIT pipeline yet. This enables OIT for any command that opts in
-      // by storing its WGSL source in _shaderCode.
-      let hasOITPipelines = false;
-      for (let ci = 0; ci < count; ci++) {
-        const cmd = commands[ci];
-        if (!cmd) continue;
-        if (cmd._oitPipeline) {
-          hasOITPipelines = true;
-        } else if (cmd._shaderCode && cmd.isWebGPUDrawCommand && this._oit) {
-          const pipelineConfig = cmd._pipelineConfig as
-            | {
-                label?: string;
-                layout: GPUPipelineLayout | "auto";
-                vertexBuffers?: GPUVertexBufferLayout[];
-                vertexEntryPoint?: string;
-                fragmentEntryPoint?: string;
-                primitive?: GPUPrimitiveState;
-                depthStencil?: GPUDepthStencilState;
-                multisample?: GPUMultisampleState;
-              }
-            | undefined;
-          const oitPipeline = this._oit.createOITPipeline(
-            context.device,
-            cmd._shaderCode,
-            pipelineConfig ?? {
-              label: cmd.owner?.constructor?.name ?? "auto",
-              layout: "auto",
-              primitive: { topology: "triangle-list" },
-              depthStencil: context.depthFormat
-                ? {
-                    format: context.depthFormat,
-                    depthWriteEnabled: false,
-                    depthCompare: "less-equal" as GPUCompareFunction,
-                  }
-                : undefined,
-            },
-          );
-          if (oitPipeline) {
-            cmd._oitPipeline = oitPipeline;
-            hasOITPipelines = true;
-          }
-        }
-      }
-
-      if (hasOITPipelines) {
-        // Full OIT path: end opaque render pass → accumulation → composite
-        const encoder: GPUCommandEncoder | undefined =
-          context._currentCommandEncoder;
-        const depthView = context._depthStencilView;
-        if (encoder && depthView) {
-          context.endCurrentRenderPass?.();
-
-          // Begin OIT accumulation render pass (2 MRT targets, depth read-only)
-          const accPassDesc =
-            this._oit.getAccumulationPassDescriptor(depthView);
-          if (accPassDesc) {
-            const accPass = encoder.beginRenderPass(accPassDesc);
-            // Helper to execute a single OIT command in the accumulation pass
-            const executeOITCommand = (cmd: CesiumAnyDrawCommand) => {
-              if (!cmd?._oitPipeline) return;
-              accPass.setPipeline(cmd._oitPipeline);
-              for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
-                accPass.setBindGroup(bi, cmd.bindGroups[bi]);
-              }
-              for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
-                accPass.setVertexBuffer(
-                  vi,
-                  (cmd.vertexBuffers[vi] as { buffer: GPUBuffer })?.buffer,
-                );
-              }
-              if (cmd.indexBuffer && cmd.indexCount) {
-                accPass.setIndexBuffer(
-                  (cmd.indexBuffer as { buffer: GPUBuffer }).buffer,
-                  cmd.indexFormat ?? "uint16",
-                );
-                accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);
-              } else if (cmd.vertexCount) {
-                accPass.draw(cmd.vertexCount, cmd.instanceCount ?? 1);
-              }
-            };
-
-            // Execute translucent commands with OIT pipeline variants
-            for (let ci = 0; ci < count; ci++) {
-              const cmd = commands[ci];
-              if (cmd?.isWebGPUDrawCommand && cmd._oitPipeline) {
-                executeOITCommand(cmd);
-              }
-            }
-
-            // GS-WSR: Include deferred Gaussian splat commands in OIT accumulation
-            const deferredSplats = this._deferredOITSplats;
-            if (deferredSplats) {
-              for (let si = 0; si < deferredSplats.count; si++) {
-                executeOITCommand(deferredSplats.commands[si]);
-              }
-              this._deferredOITSplats = null;
-            }
-
-            accPass.end();
-
-            // Composite OIT result over opaque scene
-            const sceneColorView = context._sceneColorView;
-            const sceneColorFormat = context._sceneColorFormat ?? "bgra8unorm";
-            if (sceneColorView) {
-              this._oit.executeComposite(
-                encoder,
-                sceneColorView,
-                sceneColorFormat,
-              );
-            }
-          }
-
-          // Resume default render pass for subsequent passes
-          context.resumeDefaultRenderPass?.();
-          return;
-        }
-      }
-    }
-
-    // Fallback: render translucent commands with standard alpha blending.
-    // Without OIT, alpha compositing is order-dependent — commands MUST be
-    // drawn back-to-front for correct results. Without this sort, overlapping
-    // translucent UI (labels through buildings, semi-transparent layers, etc.)
-    // composites in command-push order and shows visibly wrong occlusion.
-    //
-    // We sort a slice rather than the full backing array so pooled slots at
-    // [count, length) keep their last-frame contents for the next frame's
-    // reuse logic, and `frustumCommands.indices` stays authoritative.
-    sortCommandsBackToFront(commands, count, scene);
-    executeBatch(commands, count, scene, context, passState);
+    // Body extracted to `WebGPUSceneRendererTranslucentPass.ts` in
+    // Batch 136. The wrapper stays so `executeCommands` keeps calling
+    // it as `this._executeTranslucentPass(frustumCommands, config)`.
+    // The extracted function reaches back via the `TranslucentPassHost`
+    // interface for `_oit` (read) and `_deferredOITSplats` (read +
+    // null on consume).
+    executeTranslucentPass(this, frustumCommands, config);
   }
 
   // --- Overlay pass ---
