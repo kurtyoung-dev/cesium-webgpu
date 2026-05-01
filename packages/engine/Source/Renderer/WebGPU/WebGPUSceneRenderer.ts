@@ -61,6 +61,7 @@ import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageColl
 import { WebGPUDerivedCommand } from "./WebGPUDerivedCommand.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
+import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -309,7 +310,10 @@ function sortGaussianSplatsBackToFront(
   }
 }
 
-function executeBatch(
+// Exported so the extracted globe-pass module
+// (`WebGPUSceneRendererGlobePass.ts`, Batch 135) can call the same
+// dispatcher used elsewhere in this file. Internal-API shape preserved.
+export function executeBatch(
   commands: CesiumAnyDrawCommand[],
   count: number,
   scene: CesiumScene,
@@ -535,7 +539,8 @@ function executeBatchDepthOnly(
  * Used for globe translucency — selects blend/cull/depth based on
  * the _webgpuTranslucencyDerived type marker.
  */
-function executeBatchTranslucent(
+// Exported alongside `executeBatch` for the same Batch-135 reason.
+export function executeBatchTranslucent(
   commands: CesiumAnyDrawCommand[],
   count: number,
   scene: CesiumScene,
@@ -1947,64 +1952,14 @@ export class WebGPUSceneRenderer {
     }
     //>>includeEnd('debug');
 
-    // Check if globe is translucent
-    const globe = scene.globe;
-    const isTranslucent =
-      globe &&
-      globe._surface &&
-      globe._surface._tileProvider &&
-      globe._surface._tileProvider.translucencyEnabled;
-
-    if (isTranslucent) {
-      // Globe translucency: execute with per-command blend/cull/depth state
-      // from the _webgpuTranslucencyDerived marker set by
-      // WebGPUGlobeTranslucencyState.updateDerivedCommands()
-      executeBatchTranslucent(commands, count, scene, context, passState);
-      return;
-    }
-
-    // Try render bundles for opaque terrain (reduces driver overhead)
-    const perfMgr = context.performanceManager;
-    const renderPass = context.currentRenderPassEncoder;
-    if (
-      perfMgr &&
-      renderPass &&
-      count >= (perfMgr.config?.renderBundleThreshold ?? 8)
-    ) {
-      try {
-        // Batch 110 — globe terrain pipelines target the scene FB, so
-        // the bundle's `colorFormats` must mirror the scene FB color
-        // format (rgba16float in HDR, canvas format otherwise). Using
-        // `presentationFormat` here would mismatch in HDR mode and the
-        // bundle would be flagged invalid.
-        const bundleEncoder = context._device.createRenderBundleEncoder({
-          label: "Globe terrain bundle",
-          colorFormats: [context.scenePipelineFormat],
-          depthStencilFormat: context.depthFormat ?? "depth24plus-stencil8",
-        });
-
-        let drawCalls = 0;
-        for (let i = 0; i < count; i++) {
-          const cmd = commands[i];
-          if (cmd && cmd.execute) {
-            // Ad-hoc globe commands and WebGPUDrawCommands both accept
-            // a GPURenderBundleEncoder (same API as GPURenderPassEncoder)
-            cmd.execute(bundleEncoder, context);
-            drawCalls++;
-          }
-        }
-
-        if (drawCalls > 0) {
-          const bundle = bundleEncoder.finish();
-          renderPass.executeBundles([bundle]);
-          return;
-        }
-      } catch (_e) {
-        // Fall through to unbundled execution if bundle recording fails
-      }
-    }
-
-    executeBatch(commands, count, scene, context, passState);
+    // Translucency dispatch + render-bundle attempt + fallback
+    // executeBatch were extracted to `WebGPUSceneRendererGlobePass.ts`
+    // in Batch 135. The diag prelude above (validation error scope,
+    // render-pass logging, command-count throttle) stays inline because
+    // the 5 diag fields it touches are pragma-stripped class members,
+    // and `context.uniformState?.updatePass(Pass.GLOBE)` is the
+    // load-bearing tail of the prelude that has to run before dispatch.
+    executeGlobeDispatch(commands, count, config);
   }
 
   // --- 3D Tiles passes ---
