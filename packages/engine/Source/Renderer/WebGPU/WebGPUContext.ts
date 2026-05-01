@@ -52,6 +52,7 @@ import {
 import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
 import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
 import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
+import { WebGPUResourceCacheRegistry } from "./WebGPUResourceCacheRegistry.js";
 import type {
   StubTextureWrapper,
   StubFramebuffer,
@@ -817,6 +818,11 @@ export class WebGPUContext extends GraphicsContext {
       // logged to the console immediately instead of silently poisoning
       // downstream pipelines and command buffers.
       this._installShaderValidation(this._device);
+
+      // Populate the resource-cache registry so device-loss recovery's
+      // first `_clearAllCaches()` call sees a fully-wired registry.
+      // (Batch 131.)
+      this._registerResourceCaches();
 
       // Handle device lost event with recovery strategy
       this._setupDeviceLostHandler();
@@ -2950,6 +2956,11 @@ export class WebGPUContext extends GraphicsContext {
     // pre-extraction `Set<() => void>` field relied on GC for.
     this._deviceInvalidationBus.clear();
 
+    // Drop the resource-cache registry's registered closures so they
+    // don't keep this Context's own fields alive past destroy.
+    // (Batch 131.)
+    this._cacheRegistry.clear();
+
     // NOW destroy the device — everything that needed it has already run.
     if (this._device) {
       this._device.destroy();
@@ -4028,30 +4039,59 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Register every Context-owned cache with `_cacheRegistry`. Called
+   * once from `_initialize` after the caches and pools exist. Order
+   * matches the original inline `_clearAllCaches` body so any
+   * implicit dependency between clears is preserved.
+   *
+   * Note: `clearEffectsPlaceholderCacheForDevice` is NOT registered —
+   * it needs the *current* `this._device` ref, and stays inline in
+   * `_clearAllCaches` so its ordering relative to
+   * `_fireDeviceInvalidated` is unambiguous.
+   *
+   * @private
+   */
+  private _registerResourceCaches(): void {
+    this._cacheRegistry
+      .register("samplerCache", () => this._samplerCache.clear())
+      .register("bindGroupLayoutCache", () =>
+        this._bindGroupLayoutCache.clear(),
+      )
+      .register("bindGroupCache", () => this._bindGroupCache.clear())
+      .register("bufferPool", () => this._bufferPool.clear())
+      .register("uniformBufferPool", () => {
+        this._uniformBufferPool = [];
+      })
+      .register("depthTexture", () => {
+        this._depthTexture = null;
+        this._depthTextureView = null;
+      })
+      .register("viewportQuad", () => {
+        this._viewportQuadVertexBuffer = null;
+        this._viewportQuadPipeline = null;
+      })
+      .register("shaderCache", () => this._webgpuShaderCache?.clear())
+      .register("pipelineCache", () => this._webgpuPipelineCache?.clear())
+      .register("computePipelineCache", () =>
+        this._webgpuComputePipelineCache?.clear(),
+      );
+  }
+
+  /**
    * Clear all stale GPU caches after device loss recovery.
    * Called by WebGPUDeviceLossRecovery via the DeviceLossRecoveryHost interface.
    * @private
    */
   private _clearAllCaches(): void {
-    this._samplerCache.clear();
-    this._bindGroupLayoutCache.clear();
-    this._bindGroupCache.clear();
-    this._bufferPool.clear();
-    this._uniformBufferPool = [];
-    this._depthTexture = null;
-    this._depthTextureView = null;
-    this._viewportQuadVertexBuffer = null;
-    this._viewportQuadPipeline = null;
-
-    if (this._webgpuShaderCache) {
-      this._webgpuShaderCache.clear();
-    }
-    if (this._webgpuPipelineCache) {
-      this._webgpuPipelineCache.clear();
-    }
-    if (this._webgpuComputePipelineCache) {
-      this._webgpuComputePipelineCache.clear();
-    }
+    // Per-cache try/catch + named error logs live inside the registry
+    // (Batch 131). What stays inline:
+    //   - `clearEffectsPlaceholderCacheForDevice` — needs the current
+    //     `this._device` ref and runs strictly between the cache
+    //     clears and the invalidation fire.
+    //   - `_fireDeviceInvalidated` — the side-effect that notifies
+    //     external subscribers AFTER all caches drop their stale
+    //     handles.
+    this._cacheRegistry.clearAll();
 
     // C-R12 (Batch 33) — drop the module-level placeholder cache for
     // the dead device. The WeakMap would self-heal once the device
@@ -4082,6 +4122,12 @@ export class WebGPUContext extends GraphicsContext {
   private _deviceInvalidationBus = new WebGPUDeviceInvalidationBus(
     () => this.id,
   );
+
+  // Resource-cache registry (Batch 131). Populated by
+  // `_registerResourceCaches()` during `_initialize` after the caches
+  // exist. `_clearAllCaches` walks it in registration order during
+  // device-loss recovery; each entry runs inside its own try/catch.
+  private _cacheRegistry = new WebGPUResourceCacheRegistry(() => this.id);
 
   /**
    * Subscribe to device-invalidation events.
