@@ -63,6 +63,7 @@ import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
+import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -365,7 +366,10 @@ export function executeBatch(
  * Tile pass once a consumer (3D Tiles batched-table renderer, point
  * cloud collection) opts in.
  */
-function executeBatchIndirect(
+// Exported alongside `executeBatch` so the extracted 3D-tile-passes
+// module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137) can reach
+// the indirect-draw fast path the in-file `runPass` chose.
+export function executeBatchIndirect(
   commands: CesiumAnyDrawCommand[],
   count: number,
   scene: CesiumScene,
@@ -587,7 +591,9 @@ export class WebGPUSceneRenderer {
   // stencil). Lazily allocated on first frame where
   // `scene._enableEdgeVisibility` is true; stays null otherwise to
   // avoid paying the allocation cost for scenes that don't use edges.
-  private _edgeFramebuffer: WebGPUEdgeFramebuffer | null = null;
+  // Public underscore: shared with the extracted 3D-tile-passes
+  // module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137).
+  public _edgeFramebuffer: WebGPUEdgeFramebuffer | null = null;
   // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent tile
   // classification. Allocated when a frame produces classification
   // commands AND has translucent geometry that needs depth capture.
@@ -619,17 +625,23 @@ export class WebGPUSceneRenderer {
   // bits the final composite can use to split classified vs
   // unclassified tile pixels. Reset per-frame at the start of the
   // scene render loop; consumed by `_runInvertClassificationComposite`.
-  private _invertClassStencilReady: boolean = false;
+  // Public underscore: shared with the extracted 3D-tile-passes
+  // module (Batch 137). Stencil readiness flag for invert-composite.
+  public _invertClassStencilReady: boolean = false;
 
   // C-R8-EDGE-FBO (Batch 44) — set by `_execute3DTilePasses` when the
   // CESIUM_3D_TILE_EDGES pass actually ran into the edge MRT
   // framebuffer AND produced content. Reset per-frame; the model FS
   // inline edge stage (Batch 48) reads it via `context._edge*View` to
   // decide whether to gate the overlay or skip.
-  private _edgeTexturesPopulated: boolean = false;
+  // Public underscore: shared with the extracted 3D-tile-passes
+  // module (Batch 137).
+  public _edgeTexturesPopulated: boolean = false;
   private _initialized: boolean = false;
-  private _width: number = 0;
-  private _height: number = 0;
+  // Public underscore: shared with the extracted 3D-tile-passes
+  // module (Batch 137).
+  public _width: number = 0;
+  public _height: number = 0;
   // Batch 109 — track last-applied HDR mode so a runtime toggle of
   // `scene.useHDR` triggers a framebuffer recreate even when the
   // window dimensions don't change. Initial value `null` so the
@@ -1774,7 +1786,11 @@ export class WebGPUSceneRenderer {
    * subsequent draws away from the scene framebuffer and producing an
    * all-black canvas because the post-process chain blits an empty FB.
    */
-  private _resumeScenePass(context: WebGPUContext): void {
+  // Public underscore: shared with the extracted 3D-tile-passes
+  // module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137). Other
+  // internal callers still call as `this._resumeScenePass(...)` —
+  // visibility flip only.
+  public _resumeScenePass(context: WebGPUContext): void {
     const colorTarget = this._sceneFramebuffer?.colorTarget;
     if (!colorTarget || !context._currentCommandEncoder) {
       // No scene FB yet, or no encoder — fall back to the canvas pass.
@@ -1977,277 +1993,10 @@ export class WebGPUSceneRenderer {
     config: WebGPURenderFrameConfig,
     onAfterTileMainPass?: () => void,
   ): void {
-    const { scene, context, passState } = config;
-    // C-R8 (Batch 35) — passes are split so `onAfterTileMainPass` can
-    // run between `CESIUM_3D_TILE` and `CESIUM_3D_TILE_CLASSIFICATION`.
-    // WebGL's `SceneRenderer.js:544-560` calls `globeDepth.executeUpdateDepth`
-    // at that hook so tile classification reads the updated globe depth
-    // (now including 3D-tile contributions), not the pre-tile terrain-only
-    // depth. Without it, overlay / decal / classification primitives
-    // Z-fight against 3D tile surfaces.
-    // C-R8-EDGE-FBO (Batch 44) — CESIUM_3D_TILE_EDGES is pulled out of
-    // `firstPasses` so it can route to the dedicated edge MRT
-    // framebuffer (separate color format, separate stencil reset,
-    // separate clear semantics). The main-tile pass (CESIUM_3D_TILE)
-    // continues in `firstPasses`. Edges run FIRST (matching WebGL's
-    // `SceneRenderer.js:506` which calls `performCesium3DTileEdgesPass`
-    // before OPAQUE — the edge textures are sampled by later passes).
-    const firstPasses = [Pass.CESIUM_3D_TILE];
-    const classificationPasses = [
-      Pass.CESIUM_3D_TILE_CLASSIFICATION,
-      Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW,
-    ];
-
-    // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — When the scene has
-    // invert-classification enabled, `firstPasses` must write tile
-    // color into `InvertClassification.classifiedTexture` instead of
-    // the scene color attachment. The final composite (dispatched
-    // after the scene pass ends in `_runInvertClassificationComposite`)
-    // pulls those tile pixels back onto scene color, optionally tinted
-    // by `invertClassificationColor`. Mirrors WebGL's
-    // `SceneRenderer.js:563-600`.
-    //
-    // Falls back to the default path when:
-    //  - `useInvertClassification` is false (most frames)
-    //  - `scene._invertClassification` isn't initialized
-    //  - The invert feature-renderer cache isn't ready (first frame
-    //    after enable, pre-`FramebufferOrchestrator.update`)
-    const invertOwner = (
-      scene as unknown as {
-        _invertClassification?: CesiumObjectWithWebGPUCache;
-      }
-    )._invertClassification;
-    const redirectToInvertFBO =
-      !!config.useInvertClassification &&
-      !!invertOwner &&
-      isInvertClassificationReady(invertOwner);
-    // Indirect-draw fast path. Activated automatically when a pass has
-    // enough tile commands for batching to pay off (INDIRECT_BATCH_MIN).
-    // Users can force on via `context.useIndirectDrawForTiles = true`
-    // for testing / profiling, or force off by leaving the flag at its
-    // default (auto mode still applies unless disabled explicitly).
-    //
-    // `executeBatchIndirect` falls back per-command for any run that
-    // doesn't satisfy its homogeneous-batch criteria, so enabling this
-    // on small counts is safe (just wasted overhead), which is why we
-    // gate on count rather than a hard opt-in.
-    const INDIRECT_BATCH_MIN = 32;
-    const hasIndirectInfra =
-      !!context.indirectDrawManager && !!context.currentRenderPassEncoder;
-    const explicitlyEnabled = context.useIndirectDrawForTiles === true;
-    const runPass = (passIndex: number): void => {
-      const cmds = frustumCommands.commands[passIndex];
-      const cnt: number = frustumCommands.indices[passIndex];
-      if (cnt > 0) {
-        context.uniformState?.updatePass(passIndex);
-        const useIndirect =
-          hasIndirectInfra && (explicitlyEnabled || cnt >= INDIRECT_BATCH_MIN);
-        if (useIndirect) {
-          executeBatchIndirect(cmds, cnt, scene, context, passState);
-        } else {
-          executeBatch(cmds, cnt, scene, context, passState);
-        }
-      }
-    };
-    // C-R8-EDGE-FBO (Batch 44) — Edges pass. Redirects
-    // `Pass.CESIUM_3D_TILE_EDGES` into the dedicated edge MRT
-    // framebuffer when the scene has edge visibility enabled. Mirrors
-    // WebGL's `SceneRenderer.js:242-278 performCesium3DTileEdgesPass`.
-    // When the FBO isn't allocated (no `_enableEdgeVisibility`) or
-    // there are no edge commands, this runs as a plain pass on the
-    // scene framebuffer — matches the WebGL path which also only
-    // redirects when `_enableEdgeVisibility && view.edgeFramebuffer`.
-    const edgeCommandCount = frustumCommands.indices[Pass.CESIUM_3D_TILE_EDGES];
-    const edgeFB = this._edgeFramebuffer;
-    const redirectEdgesToFBO =
-      edgeCommandCount > 0 && !!edgeFB && edgeFB.isReady;
-    if (redirectEdgesToFBO && edgeFB) {
-      context.endCurrentRenderPass?.();
-      const encoder: GPUCommandEncoder | undefined =
-        context._currentCommandEncoder;
-      if (encoder) {
-        const edgePass = context.beginRenderPass?.({
-          label: `EdgeFramebuffer tile-edges pass (${edgeFB.sampleCount}x)`,
-          colorAttachments: edgeFB.buildColorAttachments(),
-          depthStencilAttachment: edgeFB.buildDepthStencilAttachment(),
-        });
-        if (edgePass) {
-          edgePass.setViewport(0, 0, this._width, this._height, 0, 1);
-          edgePass.setScissorRect(0, 0, this._width, this._height);
-          runPass(Pass.CESIUM_3D_TILE_EDGES);
-          context.endCurrentRenderPass?.();
-        }
-      }
-      this._resumeScenePass(context);
-
-      // Expose the resolved edge textures on the context for the
-      // composite consumer (`_runEdgeComposite`) to pick up. Matches
-      // WebGL's `uniformState.edgeColorTexture = ...` assignment at
-      // `SceneRenderer.js:513-533`.
-      context._edgeColorView = edgeFB.colorSampleableView ?? null;
-      context._edgeIdView = edgeFB.idSampleableView ?? null;
-      context._edgeDepthView = edgeFB.depthSampleableView ?? null;
-      this._edgeTexturesPopulated = true;
-    } else if (edgeCommandCount > 0) {
-      // Edges present but FBO isn't ready (scene just enabled
-      // `_enableEdgeVisibility` this frame, or allocation raced with
-      // resize). Run on the current scene target — visually equivalent
-      // to the pre-Batch-44 path; no edge textures are populated.
-      runPass(Pass.CESIUM_3D_TILE_EDGES);
-      context._edgeColorView = null;
-      context._edgeIdView = null;
-      context._edgeDepthView = null;
-      this._edgeTexturesPopulated = false;
-    } else {
-      // No edge commands this frame — clear the context slots so a
-      // stale view from a previous frame doesn't leak into the
-      // composite (which gates on `_edgeTexturesPopulated`).
-      context._edgeColorView = null;
-      context._edgeIdView = null;
-      context._edgeDepthView = null;
-      this._edgeTexturesPopulated = false;
-    }
-
-    // Track whether the stencil-gated composite can run. Set to true
-    // once the CLASSIFICATION_IGNORE_SHOW pass actually ran inside the
-    // invert FBO (writing stencil bits). If false, the composite falls
-    // back to the single-pass tint (Batch 39 behavior).
-    let invertHasStencilData = false;
-
-    if (redirectToInvertFBO && invertOwner) {
-      // End the default scene render pass so the invert pass can open.
-      context.endCurrentRenderPass?.();
-
-      const colorAttachment =
-        buildInvertClassificationColorAttachment(invertOwner);
-      // C-R8-INVERT-CLASS-STENCIL (Batch 40) — use the invert FBO's own
-      // depth-stencil texture (not scene depth). Tile depth writes now
-      // land in the invert FBO; the classification-ignore-show pass
-      // tests against that depth and writes stencil bits. This matches
-      // WebGL's `SceneRenderer.js:567` which sets
-      // `passState.framebuffer = scene._invertClassification._fbo.framebuffer`
-      // whose attached depth-stencil texture is distinct from the
-      // scene's depth.
-      const depthAttachment = buildInvertClassificationDepthStencilAttachment(
-        invertOwner,
-        "clear",
-        "clear",
-      );
-      const encoder: GPUCommandEncoder | undefined =
-        context._currentCommandEncoder;
-
-      if (encoder && colorAttachment && depthAttachment) {
-        const invertSamples = getInvertClassificationSampleCount(invertOwner);
-
-        // Pass 1: tile main passes (EDGES + CESIUM_3D_TILE) into invert
-        // FBO (color + depth + stencil all clear).
-        const tilePassDesc: GPURenderPassDescriptor = {
-          label: `InvertClassification tile pass (${invertSamples}x)`,
-          colorAttachments: [colorAttachment],
-          depthStencilAttachment: depthAttachment,
-        };
-        const tilePass = context.beginRenderPass?.(tilePassDesc);
-        if (tilePass) {
-          tilePass.setViewport(0, 0, this._width, this._height, 0, 1);
-          tilePass.setScissorRect(0, 0, this._width, this._height);
-          for (const passIndex of firstPasses) {
-            runPass(passIndex);
-          }
-          context.endCurrentRenderPass?.();
-        }
-
-        // C-R8 (Batch 35) — depth update hook runs BETWEEN the tile
-        // main pass and the classification passes. It reads depth from
-        // the scene framebuffer currently, not the invert FBO's depth;
-        // tracked as `C-R8-INVERT-DEPTH-SOURCE` that for invert-on,
-        // globe-depth should sample the invert FBO's depth instead.
-        // Until that's wired, downstream ground/overlay primitives
-        // may still Z-fight against tiles when invert is on.
-        if (onAfterTileMainPass) {
-          onAfterTileMainPass();
-        }
-
-        // Pass 2: CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW redirected
-        // into invert FBO (loadOp=load for both color and depth so tile
-        // contributions are preserved; stencil is loaded too — starts
-        // at 0 from Pass 1's clear, classification primitives will write
-        // stencil bits here). The regular CESIUM_3D_TILE_CLASSIFICATION
-        // pass continues to run on the scene FB (below).
-        const ignoreShowColor =
-          buildInvertClassificationColorAttachment(invertOwner);
-        const ignoreShowDepth = buildInvertClassificationDepthStencilAttachment(
-          invertOwner,
-          "load",
-          "load",
-        );
-        // Override loadOp on the color — we want to preserve tile color
-        // (not clear it) so the composite still sees the tiles.
-        if (ignoreShowColor) {
-          ignoreShowColor.loadOp = "load";
-        }
-        if (ignoreShowColor && ignoreShowDepth) {
-          const ignoreShowDesc: GPURenderPassDescriptor = {
-            label: `InvertClassification ignore-show pass (${invertSamples}x)`,
-            colorAttachments: [ignoreShowColor],
-            depthStencilAttachment: ignoreShowDepth,
-          };
-          const ignoreShowPass = context.beginRenderPass?.(ignoreShowDesc);
-          if (ignoreShowPass) {
-            ignoreShowPass.setViewport(0, 0, this._width, this._height, 0, 1);
-            ignoreShowPass.setScissorRect(0, 0, this._width, this._height);
-            runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW);
-            context.endCurrentRenderPass?.();
-            invertHasStencilData = true;
-          }
-        }
-
-        // Resume scene pass for the normal CLASSIFICATION pass which
-        // runs on scene color (regular behavior, not redirected).
-        this._resumeScenePass(context);
-        runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION);
-      } else {
-        //>>includeStart('debug', pragmas.debug);
-        console.warn(
-          `[WebGPU:SceneRenderer] InvertClassification FBO redirect ` +
-            `missing resources — encoder=${!!encoder} ` +
-            `colorAttachment=${!!colorAttachment} ` +
-            `depthAttachment=${!!depthAttachment}. Falling back to ` +
-            `default tile pass.`,
-        );
-        //>>includeEnd('debug');
-        this._resumeScenePass(context);
-        for (const passIndex of firstPasses) {
-          runPass(passIndex);
-        }
-        if (onAfterTileMainPass) {
-          onAfterTileMainPass();
-        }
-        for (const passIndex of classificationPasses) {
-          runPass(passIndex);
-        }
-      }
-    } else {
-      for (const passIndex of firstPasses) {
-        runPass(passIndex);
-      }
-      // C-R8 (Batch 35) — depth update hook. Fires after the main 3D tile
-      // pass so classification can read tile-augmented depth.
-      if (onAfterTileMainPass) {
-        onAfterTileMainPass();
-      }
-      for (const passIndex of classificationPasses) {
-        runPass(passIndex);
-      }
-    }
-
-    // Stash the stencil-readiness flag for the end-of-scene composite.
-    // Using a per-frame slot on the renderer (not on `config`) because
-    // `config` is a plain struct, and multi-frustum rendering may reach
-    // this method more than once per frame — we want `true` if ANY
-    // frustum produced stencil data.
-    if (invertHasStencilData) {
-      this._invertClassStencilReady = true;
-    }
+    // Body extracted to `WebGPUSceneRenderer3DTilePasses.ts` in Batch 137.
+    // The wrapper stays so `executeCommands` keeps calling it as
+    // `this._execute3DTilePasses(frustumCommands, config, onAfterTileMainPass)`.
+    execute3DTilePasses(this, frustumCommands, config, onAfterTileMainPass);
   }
 
   // --- Opaque pass ---
