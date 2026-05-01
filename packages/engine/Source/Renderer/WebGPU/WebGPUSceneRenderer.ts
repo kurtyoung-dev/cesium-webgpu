@@ -65,6 +65,7 @@ import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
 import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
 import { setupSceneFramebufferRenderPass } from "./WebGPUSceneRendererPassRedirect.js";
+import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -604,7 +605,9 @@ export class WebGPUSceneRenderer {
   // Currently allocates eagerly when scene-init runs because the
   // first-cut depth-capture path uses `copyTextureToTexture` from the
   // scene framebuffer — cheap to keep allocated.
-  private _translucentTileClassification: WebGPUTranslucentTileClassification | null =
+  // Public underscore: shared with executeCommands slice extracts
+  // (Batch 139's per-frame state reset + Batch 140's per-frustum loop).
+  public _translucentTileClassification: WebGPUTranslucentTileClassification | null =
     null;
   // Public underscore: shared with the extracted translucent-pass
   // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
@@ -621,7 +624,9 @@ export class WebGPUSceneRenderer {
   private _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
   // Captured during the frustum loop so the post-process debug overlay
   // can tint pixels by which frustum drew them. Reset each frame.
-  private _capturedFrustumRanges: { near: number; far: number }[] = [];
+  // Public underscore: shared with executeCommands slice extracts
+  // (Batch 139's per-frame state reset + Batch 140's per-frustum loop).
+  public _capturedFrustumRanges: { near: number; far: number }[] = [];
 
   // C-R8-INVERT-CLASS-STENCIL (Batch 40) — set by `_execute3DTilePasses`
   // when it successfully runs the CLASSIFICATION_IGNORE_SHOW pass into
@@ -1154,35 +1159,9 @@ export class WebGPUSceneRenderer {
     // see `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
     setupSceneFramebufferRenderPass(this, context, config);
 
-    // Reset captured ranges — the debug frustum overlay reads this list
-    // in `_runPostProcessing` to tint pixels by which frustum drew them.
-    this._capturedFrustumRanges.length = 0;
-    // Reset per-frame stencil-ready flag. `_execute3DTilePasses` flips
-    // it to true when the CLASSIFICATION_IGNORE_SHOW pass runs inside
-    // the invert FBO. `_runInvertClassificationComposite` reads it to
-    // decide whether to use the stencil-gated two-pass composite or
-    // the single-pass fallback.
-    this._invertClassStencilReady = false;
-    // C-R8-EDGE-FBO (Batch 44) — reset per-frame edge-populated flag
-    // so `_runEdgeComposite` skips the overlay on frames where no
-    // edge commands ran (typical frame for scenes without model edge
-    // geometry).
-    this._edgeTexturesPopulated = false;
-    // C-R8-EDGE-INLINE — clear per-frame globe-depth view publication
-    // so a stale view from the previous frame doesn't bleed into the
-    // model effects bind group on frames that skip the globe-depth
-    // copy (e.g., picking, debug paths, useGlobeDepthFramebuffer off).
-    context._globeDepthView = null;
-    // Migration Session 2 — clear per-frame packed-translucent-depth
-    // view so a stale view from the previous frame doesn't get
-    // sampled by the classifier when this frame has no translucent
-    // tiles. Republished by `tcc.executePackDepth` below when there
-    // IS translucent depth available.
-    context._packedTranslucentDepthView = null;
-    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — clear per-frame
-    // translucent-depth flag; set when the post-translucent depth
-    // capture succeeds (single-sample scenes).
-    this._translucentTileClassification?.prepareForFrame();
+    // Per-frame state reset extracted to `WebGPUSceneRendererFrameReset.ts`
+    // in Batch 139 (Slice B of the executeCommands decomposition plan).
+    resetPerFrameState(this, context);
 
     // C-R8-SCENE2D-JITTER (Batch 36) — capture the initial 2D camera
     // altitude before the frustum loop so we can offset per-frustum
