@@ -39,10 +39,19 @@ const BASE = "http://localhost:8080";
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(-75.61, 40.04, 200.0),
-      orientation: { heading: 0, pitch: -1.5708, roll: 0 },
-    });
+    // Position camera using the model's bounding sphere.
+    const bs = model.boundingSphere;
+    if (bs) {
+      const cart = C.Cartographic.fromCartesian(bs.center);
+      v.camera.setView({
+        destination: C.Cartesian3.fromRadians(
+          cart.longitude,
+          cart.latitude,
+          cart.height + bs.radius * 4,
+        ),
+        orientation: { heading: 0, pitch: -1.0, roll: 0 },
+      });
+    }
     for (let i = 0; i < 240; i++) {
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));

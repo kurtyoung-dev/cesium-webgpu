@@ -702,12 +702,9 @@ function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     nodeCache.jointBufferSize = byteLength;
-
-    // Recreate bind group for new buffer
-    nodeCache.skinningBG = device.createBindGroup({
-      layout: pipelineCache.skinningBGL,
-      entries: [{ binding: 0, resource: { buffer: nodeCache.jointBuffer } }],
-    });
+    // NEW-BG-CONSOLIDATION (Batch 122) — no standalone skinning BG
+    // anymore. The renderer composes the merged group 2 BG per-frame
+    // using `nodeCache.jointBuffer` directly.
   }
 
   // Upload joint matrices
@@ -935,12 +932,11 @@ function ensurePrimitiveCache(
     occlusion: occlusionSampler || defSampler,
     def: defSampler,
   };
-  primCache.textureBindGroup = buildModelTextureBindGroup(
-    device,
-    pipelineCache,
-    primCache,
-    null,
-  );
+  // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries (24
+  // bindings 2-25) on the primCache. The full merged group 1 bind
+  // group is built per-frame at the draw command emission site; this
+  // is just the cached texture portion.
+  primCache.textureEntries = getModelTextureEntries(primCache, null);
   primCache.refractionViewBound = null;
 
   cache.primitives[primKey] = primCache;
@@ -948,59 +944,124 @@ function ensurePrimitiveCache(
 }
 
 /**
- * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — builds the model texture
- * bind group from cached views/samplers on `primCache`. When
- * `refractionView` is non-null, binding 23 (refractionSceneTexture)
- * uses that view; otherwise it uses the white placeholder cached as
- * `primCache.textureViews.refractionPlaceholder`. Called once at
- * primitive creation (with `refractionView=null`) and again from the
- * per-frame update path when the SceneRenderer publishes a new
- * refraction view (Batch 107 capture pass).
+ * NEW-BG-CONSOLIDATION (Batch 122) — returns the texture portion of the
+ * merged group 1 bind group as an `entries[]` array (bindings 2-25).
+ * Bindings 0-1 (material+light UBOs) and 26-32 (featureId) are spliced
+ * in at the renderer's per-frame draw-command emission site.
+ *
+ * Was the standalone "texture bind group" prior to NEW-BG-CONSOLIDATION;
+ * binding numbers are shifted by +2 because slots 0-1 are now occupied
+ * by the merged material/light UBOs.
  *
  * @private
  */
-function buildModelTextureBindGroup(
-  device,
-  pipelineCache,
-  primCache,
-  refractionView,
-) {
+function getModelTextureEntries(primCache, refractionView) {
   const v = primCache.textureViews;
   const s = primCache.textureSamplers;
+  return [
+    { binding: 2, resource: v.baseColor },
+    { binding: 3, resource: s.base },
+    { binding: 4, resource: v.normal },
+    { binding: 5, resource: s.normal },
+    { binding: 6, resource: v.metallicRoughness },
+    { binding: 7, resource: s.mr },
+    { binding: 8, resource: v.emissive },
+    { binding: 9, resource: s.emissive },
+    { binding: 10, resource: v.occlusion },
+    { binding: 11, resource: s.occlusion },
+    { binding: 12, resource: v.clearcoat },
+    { binding: 13, resource: v.specularColor },
+    { binding: 14, resource: v.anisotropy },
+    { binding: 15, resource: v.iridescence },
+    { binding: 16, resource: v.sheenColor },
+    { binding: 17, resource: v.thickness },
+    { binding: 18, resource: v.clearcoatRoughness },
+    { binding: 19, resource: v.clearcoatNormal },
+    { binding: 20, resource: v.sheenRoughness },
+    { binding: 21, resource: v.specularFactor },
+    { binding: 22, resource: v.iridescenceThickness },
+    { binding: 23, resource: s.def },
+    { binding: 24, resource: v.transmission },
+    // Binding 25: refractionSceneTexture. When the SceneRenderer's
+    // capture pass has published a view, use it. Otherwise fall back
+    // to the cached white placeholder (the FS gates this sample on
+    // FLAG_HAS_TRANSMISSION).
+    {
+      binding: 25,
+      resource: refractionView ?? v.refractionPlaceholder,
+    },
+  ];
+}
+
+/**
+ * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 1 bind
+ * group (33 entries: material UBO + light UBO + 24 texture entries +
+ * 7 featureId entries). Per-frame allocation; cheap because the entry
+ * objects are small and the underlying GPU resources are reused.
+ *
+ * @private
+ */
+function buildMergedMaterialBindGroup(
+  device,
+  pipelineCache,
+  materialBuffer,
+  lightBuffer,
+  textureEntries,
+  featureIdEntries,
+) {
   return device.createBindGroup({
-    layout: pipelineCache.textureBGL,
+    layout: pipelineCache.materialBGL,
     entries: [
-      { binding: 0, resource: v.baseColor },
-      { binding: 1, resource: s.base },
-      { binding: 2, resource: v.normal },
-      { binding: 3, resource: s.normal },
-      { binding: 4, resource: v.metallicRoughness },
-      { binding: 5, resource: s.mr },
-      { binding: 6, resource: v.emissive },
-      { binding: 7, resource: s.emissive },
-      { binding: 8, resource: v.occlusion },
-      { binding: 9, resource: s.occlusion },
-      { binding: 10, resource: v.clearcoat },
-      { binding: 11, resource: v.specularColor },
-      { binding: 12, resource: v.anisotropy },
-      { binding: 13, resource: v.iridescence },
-      { binding: 14, resource: v.sheenColor },
-      { binding: 15, resource: v.thickness },
-      { binding: 16, resource: v.clearcoatRoughness },
-      { binding: 17, resource: v.clearcoatNormal },
-      { binding: 18, resource: v.sheenRoughness },
-      { binding: 19, resource: v.specularFactor },
-      { binding: 20, resource: v.iridescenceThickness },
-      { binding: 21, resource: s.def },
-      { binding: 22, resource: v.transmission },
-      // Binding 23: refractionSceneTexture. When the SceneRenderer's
-      // capture pass has published a view, use it. Otherwise fall
-      // back to the cached white placeholder so the bind group still
-      // validates (the FS gates this sample on FLAG_HAS_TRANSMISSION,
-      // so the placeholder content is never sampled in production).
+      { binding: 0, resource: { buffer: materialBuffer.buffer } },
+      { binding: 1, resource: { buffer: lightBuffer.buffer } },
+      ...textureEntries,
+      ...(featureIdEntries ?? pipelineCache.defaultFeatureIdEntries()),
+    ],
+  });
+}
+
+/**
+ * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 2 bind
+ * group (4 entries: joint matrices + morph deltas + morph weights +
+ * instance transforms). Falls through to default placeholder buffers
+ * when a primitive has no skinning / no morph targets / no instancing
+ * — the shader gates on FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS /
+ * FLAG_HAS_INSTANCING so placeholder contents are never sampled.
+ *
+ * @private
+ */
+function buildMergedInstanceBindGroup(
+  device,
+  pipelineCache,
+  jointBuffer,
+  morphDeltaBuffer,
+  morphWeightBuffer,
+  instanceBuffer,
+) {
+  return device.createBindGroup({
+    layout: pipelineCache.instanceBGL,
+    entries: [
       {
-        binding: 23,
-        resource: refractionView ?? v.refractionPlaceholder,
+        binding: 0,
+        resource: { buffer: jointBuffer ?? pipelineCache.defaultJointBuffer },
+      },
+      {
+        binding: 1,
+        resource: {
+          buffer: morphDeltaBuffer ?? pipelineCache.defaultMorphDeltaBuffer,
+        },
+      },
+      {
+        binding: 2,
+        resource: {
+          buffer: morphWeightBuffer ?? pipelineCache.defaultMorphWeightBuffer,
+        },
+      },
+      {
+        binding: 3,
+        resource: {
+          buffer: instanceBuffer ?? pipelineCache.defaultInstancingBuffer,
+        },
       },
     ],
   });
@@ -1390,16 +1451,18 @@ function updateWebGPUModel(model, frameState) {
       }
     }
 
-    // Get skinning bind group (node-level or default)
-    const skinningBG = hasSkinning
-      ? cache.nodes[nodeIdx].skinningBG
-      : pipelineCache.defaultSkinningBindGroup;
+    // NEW-BG-CONSOLIDATION (Batch 122) — track raw GPU buffers instead
+    // of standalone bind groups. The merged group 2 bind group is built
+    // per-frame at the draw command emission site.
+    const nodeJointBuffer = hasSkinning
+      ? cache.nodes[nodeIdx].jointBuffer
+      : null;
 
     // GPU Instancing: detect from node.instances and create resources
     const nodeForInst = runtimeNode.node || runtimeNode._node;
     const hasInstancing =
       defined(nodeForInst) && defined(nodeForInst.instances);
-    let instancingBG = pipelineCache.defaultInstancingBindGroup;
+    let instanceBuffer = null;
     let instanceCount = 1;
 
     if (hasInstancing) {
@@ -1415,15 +1478,7 @@ function updateWebGPUModel(model, frameState) {
       const instRes = ensureInstancingResources(device, nodeCache, runtimeNode);
       if (defined(instRes)) {
         instanceCount = instRes.instanceCount;
-        if (!defined(nodeCache.instancingBG)) {
-          nodeCache.instancingBG = device.createBindGroup({
-            layout: pipelineCache.instancingBGL,
-            entries: [
-              { binding: 0, resource: { buffer: instRes.storageBuffer } },
-            ],
-          });
-        }
-        instancingBG = nodeCache.instancingBG;
+        instanceBuffer = instRes.storageBuffer;
       }
     }
 
@@ -1490,22 +1545,30 @@ function updateWebGPUModel(model, frameState) {
       // scene framebuffer reallocates the refraction texture (resize,
       // HDR toggle). Also publishes the per-frame "scene has
       // transmission" flag so the SceneRenderer's capture pass fires.
+      // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries (24
+      // bindings 2-25) instead of a standalone bind group. Rebuilt only
+      // when the refraction view changes (per-frame ref compare).
       if (matInfo.hasTransmission) {
         context._sceneHasTransmission = true;
         const currentRefractionView = context._refractionSceneView ?? null;
         if (primCache.refractionViewBound !== currentRefractionView) {
-          primCache.textureBindGroup = buildModelTextureBindGroup(
-            device,
-            pipelineCache,
+          primCache.textureEntries = getModelTextureEntries(
             primCache,
             currentRefractionView,
           );
           primCache.refractionViewBound = currentRefractionView;
         }
       }
+      // First-frame texture-entries build (no transmission).
+      if (!defined(primCache.textureEntries)) {
+        primCache.textureEntries = getModelTextureEntries(primCache, null);
+      }
 
-      // Create per-primitive material + light uniform buffers (once)
-      if (!defined(primCache.materialBG)) {
+      // Create per-primitive material + light uniform buffers (once).
+      // The merged group 1 bind group is built per-frame at the draw
+      // command emission site (combines material UBO + light UBO +
+      // texture entries + featureId entries into one BG).
+      if (!defined(primCache.materialBuffer)) {
         primCache.materialBuffer = WebGPUBuffer.createUniformBuffer(
           device,
           MATERIAL_UNIFORM_SIZE,
@@ -1518,17 +1581,6 @@ function updateWebGPUModel(model, frameState) {
           `Prim light`,
         );
         primCache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
-
-        primCache.materialBG = device.createBindGroup({
-          layout: pipelineCache.materialBGL,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: primCache.materialBuffer.buffer },
-            },
-            { binding: 1, resource: { buffer: primCache.lightBuffer.buffer } },
-          ],
-        });
       }
 
       // Determine if this specific primitive has skinning
@@ -1542,8 +1594,12 @@ function updateWebGPUModel(model, frameState) {
         geometry.morphTargetCount > 0 &&
         defined(morphWeights) &&
         morphWeights.length > 0;
-      let morphTargetBG = pipelineCache.defaultMorphTargetBindGroup;
-
+      // NEW-BG-CONSOLIDATION (Batch 122) — track morph target buffers
+      // instead of a standalone bind group. The merged group 2 bind
+      // group at the draw command emission site composes them with
+      // skinning + instancing into one bind group.
+      let morphDeltaBuffer = null;
+      let morphWeightBuffer = null;
       if (primHasMorphTargets) {
         const morphRes = ensureMorphTargetResources(
           device,
@@ -1552,17 +1608,8 @@ function updateWebGPUModel(model, frameState) {
           morphWeights,
         );
         if (defined(morphRes)) {
-          // Create or update the morph target bind group
-          if (!defined(primCache._morphTargetBG)) {
-            primCache._morphTargetBG = device.createBindGroup({
-              layout: pipelineCache.morphTargetBGL,
-              entries: [
-                { binding: 0, resource: { buffer: morphRes.storageBuffer } },
-                { binding: 1, resource: { buffer: morphRes.weightBuffer } },
-              ],
-            });
-          }
-          morphTargetBG = primCache._morphTargetBG;
+          morphDeltaBuffer = morphRes.storageBuffer;
+          morphWeightBuffer = morphRes.weightBuffer;
         }
       }
 
@@ -1622,12 +1669,12 @@ function updateWebGPUModel(model, frameState) {
       );
 
       // Feature ID textures + batch texture (for per-feature styling).
-      // C-R9-MODEL-FEATURE-PICK (Batch 101) — also threads `context` +
+      // C-R9-MODEL-FEATURE-PICK (Batch 101) — threads `context` +
       // `cache` (per-model cache) + a `pickPassActive` hint so
-      // `ensurePerFeaturePickIds` can allocate one Cesium pickId per
-      // feature on the first pick pass and rebind the feature-pick
-      // texture into the FeatureId BGL @binding(5).
-      let featureIdBG = pipelineCache.defaultFeatureIdBindGroup;
+      // `ensurePerFeaturePickIds` can allocate per-feature pickIds.
+      // NEW-BG-CONSOLIDATION (Batch 122) — `featureIdRes.featureIdEntries`
+      // are entries (bindings 26-32) spliced into the merged group 1.
+      let featureIdEntries = null;
       const pickPassActive = !!(passes && passes.pick);
       const featureIdRes = ensureFeatureIdResources(
         device,
@@ -1653,7 +1700,7 @@ function updateWebGPUModel(model, frameState) {
         }
         if (defined(featureIdRes)) {
           currentFlags |= featureIdRes.flags;
-          featureIdBG = featureIdRes.featureIdBG;
+          featureIdEntries = featureIdRes.featureIdEntries;
         }
         flagsView.setUint32(28 * 4, currentFlags, true);
       }
@@ -1718,21 +1765,31 @@ function updateWebGPUModel(model, frameState) {
       const rpDrawCommand = rp.drawCommand;
       const modelRenderState = rpDrawCommand?._command?.renderState;
 
+      // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
+      const mergedMaterialBG = buildMergedMaterialBindGroup(
+        device,
+        pipelineCache,
+        primCache.materialBuffer,
+        primCache.lightBuffer,
+        primCache.textureEntries,
+        featureIdEntries,
+      );
+      const mergedInstanceBG = buildMergedInstanceBindGroup(
+        device,
+        pipelineCache,
+        nodeJointBuffer,
+        morphDeltaBuffer,
+        morphWeightBuffer,
+        instanceBuffer,
+      );
+
       const webgpuCmd = new WebGPUDrawCommand({
         pipeline: primCache.pipeline,
         bindGroups: [
-          cache.cameraBG,
-          primCache.materialBG,
-          primCache.textureBindGroup,
-          skinningBG,
-          morphTargetBG,
-          instancingBG,
-          featureIdBG,
-          // Group 7 — effects (shadow receive + clipping + CSM). Shared
-          // across all primitives of this model per the per-frame update
-          // above; rebuilt each frame so scene-toggle changes (shadow
-          // darkness, CSM enable) reach the pipeline without a recompile.
-          cache.effectsBG,
+          cache.cameraBG, // group 0
+          mergedMaterialBG, // group 1 (material + light + textures + featureId)
+          mergedInstanceBG, // group 2 (skinning + morph + instancing)
+          cache.effectsBG, // group 3 (was group 7)
         ],
         vertexBuffers: vertexBuffers,
         indexBuffer: primCache.indexBuffer || undefined,
@@ -1819,12 +1876,8 @@ function updateWebGPUModel(model, frameState) {
           pipeline: primCache.pickPipeline,
           bindGroups: [
             cache.cameraBG,
-            primCache.materialBG,
-            primCache.textureBindGroup,
-            skinningBG,
-            morphTargetBG,
-            instancingBG,
-            featureIdBG,
+            mergedMaterialBG,
+            mergedInstanceBG,
             cache.effectsBG,
           ],
           vertexBuffers: vertexBuffers,
@@ -1874,12 +1927,8 @@ function updateWebGPUModel(model, frameState) {
           pipeline: primCache.velocityPipeline,
           bindGroups: [
             cache.cameraBG,
-            primCache.materialBG,
-            primCache.textureBindGroup,
-            skinningBG,
-            morphTargetBG,
-            instancingBG,
-            featureIdBG,
+            mergedMaterialBG,
+            mergedInstanceBG,
             cache.effectsBG,
           ],
           vertexBuffers: vertexBuffers,
@@ -1926,21 +1975,11 @@ function updateWebGPUModel(model, frameState) {
           primCache.materialDataTranslucent = new Float32Array(
             MATERIAL_UNIFORM_SIZE / 4,
           );
-          primCache.materialBGTranslucent = device.createBindGroup({
-            layout: pipelineCache.materialBGL,
-            entries: [
-              {
-                binding: 0,
-                resource: {
-                  buffer: primCache.materialBufferTranslucent.buffer,
-                },
-              },
-              {
-                binding: 1,
-                resource: { buffer: primCache.lightBuffer.buffer },
-              },
-            ],
-          });
+          // NEW-BG-CONSOLIDATION (Batch 122) — the translucent-class
+          // material UB is an alternate buffer; the merged group 1 BG
+          // for this pass is built per-frame at the draw command site
+          // below using `materialBufferTranslucent` instead of the
+          // primary `materialBuffer`.
         }
         // Pack with passClass=1 (the only field that differs from the
         // primary). Re-running the full packer is the simplest path —
@@ -1991,16 +2030,23 @@ function updateWebGPUModel(model, frameState) {
             matInfo.isDoubleSided,
           );
         }
+        // NEW-BG-CONSOLIDATION (Batch 122) — translucent-class merged
+        // group 1 BG. Same shape as the primary `mergedMaterialBG` but
+        // with the alternate `materialBufferTranslucent` instead.
+        const mergedMaterialBGTranslucent = buildMergedMaterialBindGroup(
+          device,
+          pipelineCache,
+          primCache.materialBufferTranslucent,
+          primCache.lightBuffer,
+          primCache.textureEntries,
+          featureIdEntries,
+        );
         const translucentCmd = new WebGPUDrawCommand({
           pipeline: primCache.translucentPipeline,
           bindGroups: [
             cache.cameraBG,
-            primCache.materialBGTranslucent,
-            primCache.textureBindGroup,
-            skinningBG,
-            morphTargetBG,
-            instancingBG,
-            featureIdBG,
+            mergedMaterialBGTranslucent,
+            mergedInstanceBG,
             cache.effectsBG,
           ],
           vertexBuffers: vertexBuffers,

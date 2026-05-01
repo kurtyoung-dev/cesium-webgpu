@@ -433,45 +433,45 @@ function ensureFeatureIdResources(
   });
   device.queue.writeBuffer(featureUniformBuffer, 0, uniformData);
 
-  // Create bind group
+  // NEW-BG-CONSOLIDATION (Batch 122) — feature ID resources moved into
+  // the merged group 1 bind group at bindings 26-32. The renderer
+  // splices the entries returned here into the merged group 1's
+  // `entries[]` array; there's no standalone feature ID bind group
+  // anymore.
   const fallbackTex = pipelineCache.defaultWhiteTexture;
   const fallbackSampler = pipelineCache.defaultSampler;
-
-  primCache._featureIdBG = device.createBindGroup({
-    layout: pipelineCache.featureIdBGL,
-    entries: [
-      {
-        binding: 0,
-        resource: (featureIdTex || fallbackTex).createView(),
-      },
-      { binding: 1, resource: fallbackSampler },
-      {
-        binding: 2,
-        resource: (batchGPUTex || fallbackTex).createView(),
-      },
-      { binding: 3, resource: fallbackSampler },
-      { binding: 4, resource: { buffer: featureUniformBuffer } },
-      // C-R9-MODEL-FEATURE-PICK (Batch 100/101) — feature-pick texture
-      // bindings. Bound to the per-model feature-pick texture allocated
-      // by `ensurePerFeaturePickIds` when a batch table is present;
-      // otherwise the placeholder white texture (the FS gates on
-      // `featurePickEnabled` so the placeholder is never sampled).
-      {
-        binding: 5,
-        resource: (featurePickTex || fallbackTex).createView(),
-      },
-      { binding: 6, resource: fallbackSampler },
-    ],
-  });
+  const featureIdEntries = [
+    {
+      binding: 26,
+      resource: (featureIdTex || fallbackTex).createView(),
+    },
+    { binding: 27, resource: fallbackSampler },
+    {
+      binding: 28,
+      resource: (batchGPUTex || fallbackTex).createView(),
+    },
+    { binding: 29, resource: fallbackSampler },
+    { binding: 30, resource: { buffer: featureUniformBuffer } },
+    // C-R9-MODEL-FEATURE-PICK — feature-pick texture + sampler.
+    // Allocated lazily by `ensurePerFeaturePickIds` when a batch table
+    // is present; otherwise placeholder white texture (the FS gates
+    // on `featurePickEnabled` so the placeholder is never sampled).
+    {
+      binding: 31,
+      resource: (featurePickTex || fallbackTex).createView(),
+    },
+    { binding: 32, resource: fallbackSampler },
+  ];
 
   // Track for cleanup
   primCache._featureIdFlags = flags;
+  primCache._featureIdEntries = featureIdEntries;
   primCache._featureIdGPUTexture = featureIdTex;
   primCache._batchGPUTexture = batchGPUTex;
   primCache._featureUniformBuffer = featureUniformBuffer;
 
   return {
-    featureIdBG: primCache._featureIdBG,
+    featureIdEntries,
     flags: flags,
   };
 }

@@ -43,134 +43,110 @@ function computeKey(alphaMode, doubleSided) {
 
 /**
  * Creates the four bind group layouts shared by all Model pipelines.
+ *
+ * **NEW-BG-CONSOLIDATION (2026-04-30, Batch 122):** Consolidated from 8
+ * logical groups to 4 physical groups so the Model PBR pipeline fits
+ * within the WebGPU spec-mandated `maxBindGroups: 4` limit (universal
+ * across Chromium configs in April 2026 — verified via
+ * `Tools/visual-regression/probe-adapter-limits.mjs`).
+ *
+ * Layout:
+ *   Group 0 — CAMERA (1 binding, V+F)
+ *   Group 1 — MATERIAL+TEXTURES+FEATURE (33 bindings, mostly fragment)
+ *     0-1   : material UBO + light UBO       (was old group 1)
+ *     2-25  : 24 PBR/KHR textures + samplers (was old group 2 +2 offset)
+ *     26-32 : featureId / batch / featurePick (was old group 6 +26)
+ *   Group 2 — INSTANCE (4 bindings, all VERTEX)
+ *     0 : joint matrices storage  (was old group 3 binding 0)
+ *     1 : morph deltas storage    (was old group 4 binding 0)
+ *     2 : morph weights UBO       (was old group 4 binding 1)
+ *     3 : instance transforms     (was old group 5 binding 0)
+ *   Group 3 — EFFECTS (shared with globe + primitive)
+ *     Layout owned by `WebGPUEffectsBindGroup.getEffectsBindGroupLayout`.
+ *
  * @param {GPUDevice} device
- * @returns {{ cameraBGL, materialBGL, textureBGL, skinningBGL }}
+ * @returns {{ cameraBGL, materialBGL, instanceBGL }} plus aliases
  */
 function createBindGroupLayouts(device) {
-  // Group 0: Camera uniforms (per-frame, shared across all models)
+  // ── Group 0: CAMERA ── per-frame, shared across all models.
   const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
 
-  // Group 1: Material + Light uniforms (per-material)
-  const materialBGL = makeBindGroupLayout(device, "Model Material+Light BGL", [
-    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-    uniformBuffer(1, Stage.FRAGMENT),
+  // ── Group 1: MATERIAL + TEXTURES + FEATURE ──
+  // 33 entries. Uses maxSampledTexturesPerShaderStage opt-in (default
+  // 16, opted up to 48 in WebGPUContext.requestDevice).
+  const materialBGL = makeBindGroupLayout(
+    device,
+    "Model Material+Textures+Feature BGL",
+    [
+      // 0-1: Material + Light UBOs
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      uniformBuffer(1, Stage.FRAGMENT),
+      // 2-11: Five PBR texture + sampler pairs (baseColor, normal,
+      // metallic-roughness, emissive, occlusion).
+      texture(2, Stage.FRAGMENT),
+      sampler(3, Stage.FRAGMENT),
+      texture(4, Stage.FRAGMENT),
+      sampler(5, Stage.FRAGMENT),
+      texture(6, Stage.FRAGMENT),
+      sampler(7, Stage.FRAGMENT),
+      texture(8, Stage.FRAGMENT),
+      sampler(9, Stage.FRAGMENT),
+      texture(10, Stage.FRAGMENT),
+      sampler(11, Stage.FRAGMENT),
+      // 12-22: 11 KHR-extension textures (clearcoat, specularColor,
+      // anisotropy, iridescence, sheenColor, thickness, clearcoat
+      // roughness, clearcoat normal, sheen roughness, specular factor,
+      // iridescence thickness).
+      texture(12, Stage.FRAGMENT),
+      texture(13, Stage.FRAGMENT),
+      texture(14, Stage.FRAGMENT),
+      texture(15, Stage.FRAGMENT),
+      texture(16, Stage.FRAGMENT),
+      texture(17, Stage.FRAGMENT),
+      texture(18, Stage.FRAGMENT),
+      texture(19, Stage.FRAGMENT),
+      texture(20, Stage.FRAGMENT),
+      texture(21, Stage.FRAGMENT),
+      texture(22, Stage.FRAGMENT),
+      // 23: shared KHR sampler.
+      sampler(23, Stage.FRAGMENT),
+      // 24-25: transmission texture + refraction scene texture
+      // (Batch 105 KHR_materials_transmission).
+      texture(24, Stage.FRAGMENT),
+      texture(25, Stage.FRAGMENT),
+      // 26-32: feature ID + batch + per-feature pick (was old group 6).
+      texture(26, Stage.FRAGMENT), // featureId
+      sampler(27, Stage.FRAGMENT),
+      texture(28, Stage.FRAGMENT), // batch
+      sampler(29, Stage.FRAGMENT),
+      uniformBuffer(30, Stage.FRAGMENT), // featureId UBO
+      texture(31, Stage.FRAGMENT), // featurePick
+      sampler(32, Stage.FRAGMENT),
+    ],
+  );
+
+  // ── Group 2: INSTANCE ── per-instance vertex stage data.
+  const instanceBGL = makeBindGroupLayout(device, "Model Instance BGL", [
+    storageBuffer(0, Stage.VERTEX, { readOnly: true }), // joint matrices
+    storageBuffer(1, Stage.VERTEX, { readOnly: true }), // morph deltas
+    uniformBuffer(2, Stage.VERTEX), // morph weights
+    storageBuffer(3, Stage.VERTEX, { readOnly: true }), // instance transforms
   ]);
 
-  // Group 2: Textures (per-material).
-  // Standard PBR pairs: (binding N = texture, binding N+1 = sampler)
-  // for baseColor, normal, metallicRoughness, emissive, occlusion
-  // (bindings 0-9).
-  //
-  // C-R4-GLTF-KHR-TEXTURES (Batch 102) — Six new texture bindings for
-  // KHR material extensions (slots 10-15) plus a single shared sampler
-  // (slot 16) so the total sampled-texture count across stages stays
-  // under the WebGPU `maxSampledTexturesPerShaderStage = 16` floor.
-  // One primary texture per extension; secondary maps (clearcoat
-  // roughness / clearcoat normal, sheen roughness, etc.) are a
-  // follow-up that needs more binding budget than 16 allows.
-  //
-  //   binding 10: clearcoatTexture          (R = clearcoat intensity)
-  //   binding 11: specularColorTexture      (RGB = F0 chromatic tint)
-  //   binding 12: anisotropyTexture         (RG = direction, B = strength)
-  //   binding 13: iridescenceTexture        (R = iridescence factor)
-  //   binding 14: sheenColorTexture         (RGB = sheen color)
-  //   binding 15: thicknessTexture          (G = volume thickness)
-  //
-  // Batch 103 — KHR secondary maps (relies on the device limit request
-  // in `WebGPUContext.requestDevice` already pulling
-  // `maxSampledTexturesPerShaderStage` up to 64 when the adapter
-  // supports it, so the additional 5 sampled-texture bindings here
-  // stay under the cap):
-  //   binding 16: clearcoatRoughnessTexture (G = clearcoat roughness)
-  //   binding 17: clearcoatNormalTexture    (RGB = clearcoat normal)
-  //   binding 18: sheenRoughnessTexture     (A = sheen roughness)
-  //   binding 19: specularFactorTexture     (A = specular factor scalar)
-  //   binding 20: iridescenceThicknessTexture (G = thickness scalar)
-  //
-  //   binding 21: khrSampler                (shared linear/repeat sampler)
-  //
-  // The shared sampler is acceptable because every KHR extension
-  // sampler defaults to linear-filter / repeat-wrap per spec; assets
-  // that override sampler config still render correctly with the
-  // fallback (just without texture-specific filtering).
-  const textureBGL = makeBindGroupLayout(device, "Model Textures BGL", [
-    texture(0, Stage.FRAGMENT),
-    sampler(1, Stage.FRAGMENT),
-    texture(2, Stage.FRAGMENT),
-    sampler(3, Stage.FRAGMENT),
-    texture(4, Stage.FRAGMENT),
-    sampler(5, Stage.FRAGMENT),
-    texture(6, Stage.FRAGMENT),
-    sampler(7, Stage.FRAGMENT),
-    texture(8, Stage.FRAGMENT),
-    sampler(9, Stage.FRAGMENT),
-    texture(10, Stage.FRAGMENT),
-    texture(11, Stage.FRAGMENT),
-    texture(12, Stage.FRAGMENT),
-    texture(13, Stage.FRAGMENT),
-    texture(14, Stage.FRAGMENT),
-    texture(15, Stage.FRAGMENT),
-    texture(16, Stage.FRAGMENT),
-    texture(17, Stage.FRAGMENT),
-    texture(18, Stage.FRAGMENT),
-    texture(19, Stage.FRAGMENT),
-    texture(20, Stage.FRAGMENT),
-    sampler(21, Stage.FRAGMENT),
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission factor
-    // texture + refraction-sceneColor sample source. The
-    // refractionSceneTexture is bound to the prior-pass scene color
-    // when the SceneRenderer's refraction MRT is populated; falls
-    // through to the placeholder when not (the FS branch gates on
-    // FLAG_HAS_TRANSMISSION so the placeholder is never sampled in
-    // production).
-    texture(22, Stage.FRAGMENT),
-    texture(23, Stage.FRAGMENT),
-  ]);
-
-  // Group 3: Joint matrices storage buffer (for skinning)
-  const skinningBGL = makeBindGroupLayout(device, "Model Skinning BGL", [
-    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
-  ]);
-
-  // Group 4: Morph targets (storage buffer for deltas + uniform for weights)
-  const morphTargetBGL = makeBindGroupLayout(device, "Model MorphTarget BGL", [
-    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
-    uniformBuffer(1, Stage.VERTEX),
-  ]);
-
-  // Group 5: Instance transforms storage buffer (for GPU instancing)
-  const instancingBGL = makeBindGroupLayout(device, "Model Instancing BGL", [
-    storageBuffer(0, Stage.VERTEX, { readOnly: true }),
-  ]);
-
-  // Group 6: Feature ID texture + batch texture for per-feature styling
-  // Used by EXT_mesh_features (feature ID textures) and 3D Tiles batch tables.
-  // 0-1 = feature ID tex+sampler, 2-3 = batch tex+sampler, 4 = uniforms.
-  // C-R9-MODEL-FEATURE-PICK (Batch 100) — bindings 5/6 carry the
-  // per-feature pick texture + sampler. They mirror the batch texture
-  // layout (RGBA8 indexed by featureId) so per-feature pickIds reach
-  // the pickFS without rebuilding the bind group on every pick request.
-  // Off by default; the FS gates on `featureId.featurePickEnabled`.
-  const featureIdBGL = makeBindGroupLayout(device, "Model FeatureId BGL", [
-    texture(0, Stage.FRAGMENT),
-    sampler(1, Stage.FRAGMENT),
-    texture(2, Stage.FRAGMENT),
-    sampler(3, Stage.FRAGMENT),
-    uniformBuffer(4, Stage.FRAGMENT),
-    texture(5, Stage.FRAGMENT),
-    sampler(6, Stage.FRAGMENT),
-  ]);
-
+  // Aliases for downstream call sites that still reference the old
+  // 8-group naming. The merged BGL is the same GPU object — these
+  // accessors avoid a blast-radius rewrite of every consumer's getter.
   return {
     cameraBGL,
     materialBGL,
-    textureBGL,
-    skinningBGL,
-    morphTargetBGL,
-    instancingBGL,
-    featureIdBGL,
+    textureBGL: materialBGL, // alias → merged group 1
+    skinningBGL: instanceBGL, // alias → merged group 2
+    morphTargetBGL: instanceBGL, // alias → merged group 2
+    instancingBGL: instanceBGL, // alias → merged group 2
+    featureIdBGL: materialBGL, // alias → merged group 1
+    instanceBGL,
   };
 }
 
@@ -531,34 +507,30 @@ class WebGPUModelPipelineCache {
     // off) never construct a velocity pipeline.
     this._velocityPipelines = new Map();
 
-    // Create shared bind group layouts
+    // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
     this._cameraBGL = bgls.cameraBGL;
-    this._materialBGL = bgls.materialBGL;
+    this._materialBGL = bgls.materialBGL; // merged: material+textures+featureId
+    this._instanceBGL = bgls.instanceBGL; // merged: skinning+morph+instancing
+    // Aliases — same GPUBindGroupLayout objects under the old names.
     this._textureBGL = bgls.textureBGL;
     this._skinningBGL = bgls.skinningBGL;
     this._morphTargetBGL = bgls.morphTargetBGL;
     this._instancingBGL = bgls.instancingBGL;
     this._featureIdBGL = bgls.featureIdBGL;
-    // CSM Slice 2c — effects group carries shadow receive, clipping,
-    // atmosphere LUT control, and cascaded-shadow-map bindings (10 +
-    // 11). Shared with the globe and primitive shaders via the
-    // `getEffectsBindGroupLayout` factory so the BGL layout stays in
-    // lockstep across every consumer.
+    // Effects BGL (group 3) — shared with globe + primitive via
+    // `getEffectsBindGroupLayout` factory.
     this._effectsBGL = getEffectsBindGroupLayout(device);
 
-    // Create pipeline layout (shared by all variants, 8 bind groups)
+    // Pipeline layout — 4 bind groups. Was 8 prior to NEW-BG-CONSOLIDATION;
+    // the spec-mandated `maxBindGroups: 4` requires the consolidation.
     this._pipelineLayout = device.createPipelineLayout({
       label: "Model PBR PipelineLayout",
       bindGroupLayouts: [
-        this._cameraBGL,
-        this._materialBGL,
-        this._textureBGL,
-        this._skinningBGL,
-        this._morphTargetBGL,
-        this._instancingBGL,
-        this._featureIdBGL,
-        this._effectsBGL,
+        this._cameraBGL, // group 0
+        this._materialBGL, // group 1 (merged material + textures + feature)
+        this._instanceBGL, // group 2 (merged skinning + morph + instance)
+        this._effectsBGL, // group 3 (shared with globe)
       ],
     });
 
@@ -648,19 +620,16 @@ class WebGPUModelPipelineCache {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this._defaultJointBuffer, 0, identityData);
-    this._defaultSkinningBG = device.createBindGroup({
-      layout: this._skinningBGL,
-      entries: [{ binding: 0, resource: { buffer: this._defaultJointBuffer } }],
-    });
+    // NEW-BG-CONSOLIDATION (Batch 122) — no standalone skinning BG.
+    // The renderer composes the merged group 2 BG per-frame from this
+    // joint buffer + morph deltas + morph weights + instance transforms.
 
-    // Default morph target bind group: 1-element storage + zero-weight uniform
-    // Used when a primitive has no morph targets (FLAG_HAS_MORPH_TARGETS will be false)
+    // Morph delta storage (1-vec4 zero), morph weight UBO (12 floats zero).
     this._defaultMorphDeltaBuffer = device.createBuffer({
       label: "default-morph-deltas",
-      size: 16, // 1 vec4 minimum
+      size: 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    // 12 floats: weights0(4) + weights1(4) + targetCount + vertexCount + pad(2)
     const zeroWeights = new Float32Array(12);
     this._defaultMorphWeightBuffer = device.createBuffer({
       label: "default-morph-weights",
@@ -668,33 +637,36 @@ class WebGPUModelPipelineCache {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this._defaultMorphWeightBuffer, 0, zeroWeights);
-    this._defaultMorphTargetBG = device.createBindGroup({
-      layout: this._morphTargetBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this._defaultMorphDeltaBuffer } },
-        { binding: 1, resource: { buffer: this._defaultMorphWeightBuffer } },
-      ],
-    });
 
-    // Default instancing bind group: 1-element identity matrix storage buffer
-    // Used when a primitive has no instancing (FLAG_HAS_INSTANCING will be false)
+    // Identity instance transform storage.
     this._defaultInstancingBuffer = device.createBuffer({
       label: "default-instance-transforms",
-      size: 64, // 1 mat4 = 64 bytes
+      size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this._defaultInstancingBuffer, 0, identityData);
-    this._defaultInstancingBG = device.createBindGroup({
-      layout: this._instancingBGL,
+
+    // NEW-BG-CONSOLIDATION (Batch 122) — merged group 2 default bind group.
+    // Used when a primitive has none of skinning / morph / instancing.
+    // All four resources are placeholder defaults; the shader checks
+    // FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS / FLAG_HAS_INSTANCING
+    // before reading any of the underlying storage so the placeholder
+    // contents are never consumed.
+    this._defaultInstanceBG = device.createBindGroup({
+      layout: this._instanceBGL,
       entries: [
-        { binding: 0, resource: { buffer: this._defaultInstancingBuffer } },
+        { binding: 0, resource: { buffer: this._defaultJointBuffer } },
+        { binding: 1, resource: { buffer: this._defaultMorphDeltaBuffer } },
+        { binding: 2, resource: { buffer: this._defaultMorphWeightBuffer } },
+        { binding: 3, resource: { buffer: this._defaultInstancingBuffer } },
       ],
     });
+    // Old-name aliases — same merged BG.
+    this._defaultSkinningBG = this._defaultInstanceBG;
+    this._defaultMorphTargetBG = this._defaultInstanceBG;
+    this._defaultInstancingBG = this._defaultInstanceBG;
 
-    // Default feature ID bind group: dummy textures + zero-length uniform
-    // Used when a primitive has no feature IDs (FLAG_HAS_FEATURE_ID_TEXTURE will be false)
-    // Batch 100 — feature uniform grew to 14 floats (56 B) for the
-    // per-feature-pick `featurePickEnabled` flag at offset 12.
+    // Feature ID default UBO (14 floats — `featurePickEnabled = 0`).
     const zeroFeatureUniforms = new Float32Array(14);
     this._defaultFeatureUniformBuffer = device.createBuffer({
       label: "default-feature-uniforms",
@@ -706,36 +678,24 @@ class WebGPUModelPipelineCache {
       0,
       zeroFeatureUniforms,
     );
-    this._defaultFeatureIdBG = device.createBindGroup({
-      layout: this._featureIdBGL,
-      entries: [
-        {
-          binding: 0,
-          resource: this._defaultWhiteTexture.createView(),
-        },
-        { binding: 1, resource: this._defaultSampler },
-        {
-          binding: 2,
-          resource: this._defaultWhiteTexture.createView(),
-        },
-        { binding: 3, resource: this._defaultSampler },
-        {
-          binding: 4,
-          resource: { buffer: this._defaultFeatureUniformBuffer },
-        },
-        // C-R9-MODEL-FEATURE-PICK (Batch 100) — bindings 5/6 carry the
-        // per-feature pick texture + sampler. The default bind group
-        // uses the placeholder white texture so pipelines created
-        // against this layout always have a valid resource bound; the
-        // FS gates on `featureId.featurePickEnabled > 0.5` so the
-        // placeholder content is never sampled in practice.
-        {
-          binding: 5,
-          resource: this._defaultWhiteTexture.createView(),
-        },
-        { binding: 6, resource: this._defaultSampler },
-      ],
-    });
+    // NEW-BG-CONSOLIDATION (Batch 122) — feature ID resources moved into
+    // the merged group 1 (bindings 26-32). The default placeholder
+    // entries are exposed as a function so callers can splice them
+    // into a merged group-1 bind group's `entries[]` array. There's no
+    // standalone feature-ID bind group anymore; the renderer always
+    // builds the merged group 1.
+    this._defaultFeatureIdEntries = () => [
+      { binding: 26, resource: this._defaultWhiteTexture.createView() },
+      { binding: 27, resource: this._defaultSampler },
+      { binding: 28, resource: this._defaultWhiteTexture.createView() },
+      { binding: 29, resource: this._defaultSampler },
+      {
+        binding: 30,
+        resource: { buffer: this._defaultFeatureUniformBuffer },
+      },
+      { binding: 31, resource: this._defaultWhiteTexture.createView() },
+      { binding: 32, resource: this._defaultSampler },
+    ];
   }
 
   /**
@@ -1064,9 +1024,46 @@ class WebGPUModelPipelineCache {
     return this._featureIdBGL;
   }
 
-  /** @returns {GPUBindGroup} Default feature ID bind group with dummy textures */
-  get defaultFeatureIdBindGroup() {
-    return this._defaultFeatureIdBG;
+  /**
+   * Returns a fresh array of `entries[]` objects (bindings 26-32) for
+   * the merged group 1 bind group when no feature ID resources are
+   * available. The renderer splices these into the merged-group-1
+   * `entries[]` so the BG validates against the materialBGL layout.
+   * @returns {Array<GPUBindGroupEntry>}
+   */
+  defaultFeatureIdEntries() {
+    return this._defaultFeatureIdEntries();
+  }
+
+  /** @returns {GPUBindGroupLayout} Merged group-2 BGL (skinning + morph + instancing) */
+  get instanceBGL() {
+    return this._instanceBGL;
+  }
+
+  /** @returns {GPUBindGroup} Default merged group-2 bind group (all-placeholder resources) */
+  get defaultInstanceBindGroup() {
+    return this._defaultInstanceBG;
+  }
+
+  // NEW-BG-CONSOLIDATION (Batch 122) — accessors for the underlying
+  // default buffers. The renderer composes merged group 2 bind groups
+  // per-frame; when a primitive lacks one of skinning / morph / instancing,
+  // the corresponding slot binds the default placeholder buffer here.
+  /** @returns {GPUBuffer} Identity 4×4 joint matrices storage buffer */
+  get defaultJointBuffer() {
+    return this._defaultJointBuffer;
+  }
+  /** @returns {GPUBuffer} Zero-filled morph deltas storage buffer */
+  get defaultMorphDeltaBuffer() {
+    return this._defaultMorphDeltaBuffer;
+  }
+  /** @returns {GPUBuffer} Zero-filled morph weights uniform buffer */
+  get defaultMorphWeightBuffer() {
+    return this._defaultMorphWeightBuffer;
+  }
+  /** @returns {GPUBuffer} Identity 4×4 instance transform storage buffer */
+  get defaultInstancingBuffer() {
+    return this._defaultInstancingBuffer;
   }
 
   /**

@@ -269,36 +269,36 @@ struct LightUniforms {
 @group(1) @binding(1) var<uniform> light: LightUniforms;
 
 // Textures — bind 1x1 default textures when not available
-@group(2) @binding(0) var baseColorTexture: texture_2d<f32>;
-@group(2) @binding(1) var baseColorSampler: sampler;
-@group(2) @binding(2) var normalTexture: texture_2d<f32>;
-@group(2) @binding(3) var normalSampler: sampler;
-@group(2) @binding(4) var metallicRoughnessTexture: texture_2d<f32>;
-@group(2) @binding(5) var metallicRoughnessSampler: sampler;
-@group(2) @binding(6) var emissiveTexture: texture_2d<f32>;
-@group(2) @binding(7) var emissiveSampler: sampler;
-@group(2) @binding(8) var occlusionTexture: texture_2d<f32>;
-@group(2) @binding(9) var occlusionSampler: sampler;
+@group(1) @binding(2) var baseColorTexture: texture_2d<f32>;
+@group(1) @binding(3) var baseColorSampler: sampler;
+@group(1) @binding(4) var normalTexture: texture_2d<f32>;
+@group(1) @binding(5) var normalSampler: sampler;
+@group(1) @binding(6) var metallicRoughnessTexture: texture_2d<f32>;
+@group(1) @binding(7) var metallicRoughnessSampler: sampler;
+@group(1) @binding(8) var emissiveTexture: texture_2d<f32>;
+@group(1) @binding(9) var emissiveSampler: sampler;
+@group(1) @binding(10) var occlusionTexture: texture_2d<f32>;
+@group(1) @binding(11) var occlusionSampler: sampler;
 // C-R4-GLTF-KHR-TEXTURES (Batch 102) — KHR extension primary textures
 // + shared sampler. Bound to a 1×1 white placeholder when the
 // matching extension is absent; the FS gates each sample on the
 // extension's HAS_* flag so the placeholder is never sampled in
 // production. See WebGPUModelPipelineCache `textureBGL` for the
 // rationale on the shared sampler.
-@group(2) @binding(10) var clearcoatTexture: texture_2d<f32>;
-@group(2) @binding(11) var specularColorTexture: texture_2d<f32>;
-@group(2) @binding(12) var anisotropyTexture: texture_2d<f32>;
-@group(2) @binding(13) var iridescenceTexture: texture_2d<f32>;
-@group(2) @binding(14) var sheenColorTexture: texture_2d<f32>;
-@group(2) @binding(15) var thicknessTexture: texture_2d<f32>;
+@group(1) @binding(12) var clearcoatTexture: texture_2d<f32>;
+@group(1) @binding(13) var specularColorTexture: texture_2d<f32>;
+@group(1) @binding(14) var anisotropyTexture: texture_2d<f32>;
+@group(1) @binding(15) var iridescenceTexture: texture_2d<f32>;
+@group(1) @binding(16) var sheenColorTexture: texture_2d<f32>;
+@group(1) @binding(17) var thicknessTexture: texture_2d<f32>;
 // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Same
 // placeholder + flag-gated convention as the primary KHR slots.
-@group(2) @binding(16) var clearcoatRoughnessTexture: texture_2d<f32>;
-@group(2) @binding(17) var clearcoatNormalTexture: texture_2d<f32>;
-@group(2) @binding(18) var sheenRoughnessTexture: texture_2d<f32>;
-@group(2) @binding(19) var specularFactorTexture: texture_2d<f32>;
-@group(2) @binding(20) var iridescenceThicknessTexture: texture_2d<f32>;
-@group(2) @binding(21) var khrSampler: sampler;
+@group(1) @binding(18) var clearcoatRoughnessTexture: texture_2d<f32>;
+@group(1) @binding(19) var clearcoatNormalTexture: texture_2d<f32>;
+@group(1) @binding(20) var sheenRoughnessTexture: texture_2d<f32>;
+@group(1) @binding(21) var specularFactorTexture: texture_2d<f32>;
+@group(1) @binding(22) var iridescenceThicknessTexture: texture_2d<f32>;
+@group(1) @binding(23) var khrSampler: sampler;
 // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — refraction texture (a copy
 // of the prior-pass scene color) + transmission factor map. The
 // SceneRenderer is responsible for capturing scene color into a
@@ -306,11 +306,11 @@ struct LightUniforms {
 // binding it here. When KHR_materials_transmission isn't active the
 // placeholder white texture binds (FS branch is gated on
 // FLAG_HAS_TRANSMISSION so the placeholder content is unused).
-@group(2) @binding(22) var transmissionTexture: texture_2d<f32>;
-@group(2) @binding(23) var refractionSceneTexture: texture_2d<f32>;
+@group(1) @binding(24) var transmissionTexture: texture_2d<f32>;
+@group(1) @binding(25) var refractionSceneTexture: texture_2d<f32>;
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
-@group(3) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
+@group(2) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
 // Storage buffer: per-target blocks of (vertexCount × vec4) position deltas
@@ -323,13 +323,13 @@ struct MorphWeightsUniforms {
   _pad0: f32,
   _pad1: f32,
 };
-@group(4) @binding(0) var<storage, read> morphDeltas: array<vec4<f32>>;
-@group(4) @binding(1) var<uniform> morphWeights: MorphWeightsUniforms;
+@group(2) @binding(1) var<storage, read> morphDeltas: array<vec4<f32>>;
+@group(2) @binding(2) var<uniform> morphWeights: MorphWeightsUniforms;
 
 // Instance transforms (bind group 5, only used when FLAG_HAS_INSTANCING is set)
 // Storage buffer: array of mat4x4 — one per instance, column-major.
 // Instance transform is applied to position/normal/tangent BEFORE morph/skin/RTE.
-@group(5) @binding(0) var<storage, read> instanceTransforms: array<mat4x4<f32>>;
+@group(2) @binding(3) var<storage, read> instanceTransforms: array<mat4x4<f32>>;
 
 // Feature ID + batch texture (bind group 6, for per-feature styling in 3D Tiles)
 // Feature ID texture: encodes integer feature IDs in RGBA channels (EXT_mesh_features)
@@ -350,11 +350,11 @@ struct FeatureIdUniforms {
   featurePickEnabled: f32,
   _pad1: f32,
 };
-@group(6) @binding(0) var featureIdTexture: texture_2d<f32>;
-@group(6) @binding(1) var featureIdSampler: sampler;
-@group(6) @binding(2) var batchTexture: texture_2d<f32>;
-@group(6) @binding(3) var batchSampler: sampler;
-@group(6) @binding(4) var<uniform> featureId: FeatureIdUniforms;
+@group(1) @binding(26) var featureIdTexture: texture_2d<f32>;
+@group(1) @binding(27) var featureIdSampler: sampler;
+@group(1) @binding(28) var batchTexture: texture_2d<f32>;
+@group(1) @binding(29) var batchSampler: sampler;
+@group(1) @binding(30) var<uniform> featureId: FeatureIdUniforms;
 // C-R9-MODEL-FEATURE-PICK (Batch 100) — per-feature pick color lookup
 // table. Layout matches the batch texture (RGBA8, 1D for small feature
 // counts and 2D for >1024 features). featureId 0 maps to texel
@@ -364,16 +364,18 @@ struct FeatureIdUniforms {
 // `featureId.featurePickEnabled > 0.5`; the placeholder feature-id
 // bind group from Batch 53 carries a 1×1 transparent texel so the
 // binding is always valid.
-@group(6) @binding(5) var featurePickTexture: texture_2d<f32>;
-@group(6) @binding(6) var featurePickSampler: sampler;
+@group(1) @binding(31) var featurePickTexture: texture_2d<f32>;
+@group(1) @binding(32) var featurePickSampler: sampler;
 
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
-// CSM Slice 2c — models now bind the effects group at @group(7) so the
-// fragment shader can sample cascaded shadows alongside PBR lighting.
-// Struct layout MUST match the 336-byte EffectsUniforms in
-// WebGPUEffectsBindGroup.js. Every trailing field must be present
-// (even when not consumed here) so `csmControl` / `edgeControl` /
-// `edgeViewport` / `pointLightControl` read from the right bytes.
+// NEW-BG-CONSOLIDATION (2026-04-30): effects binds at @group(3),
+// matching the slot the globe terrain renderer uses for the same
+// shared BGL. Was @group(7) prior; consolidation merged Model's other
+// groups (camera kept at 0; material+textures+featureId merged into 1;
+// skinning+morphTarget+instancing merged into 2; effects to 3) so the
+// pipeline layout fits within spec-default `maxBindGroups: 4`. Struct
+// layout MUST match the 336-byte EffectsUniforms in
+// WebGPUEffectsBindGroup.js.
 struct EffectsUniforms {
   shadowMatrix: mat4x4<f32>,
   shadowMapSize: vec2<f32>,
@@ -439,22 +441,22 @@ struct CSMParams {
   cascadeMaxSlopeBias: vec4<f32>,
 };
 
-@group(7) @binding(0) var<uniform> effects: EffectsUniforms;
-@group(7) @binding(1) var shadowDepthTex: texture_depth_2d;
-@group(7) @binding(2) var shadowCompSampler: sampler_comparison;
-@group(7) @binding(3) var clippingPlaneTex: texture_2d<f32>;
-@group(7) @binding(4) var clippingPlaneSampler: sampler;
+@group(3) @binding(0) var<uniform> effects: EffectsUniforms;
+@group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
+@group(3) @binding(2) var shadowCompSampler: sampler_comparison;
+@group(3) @binding(3) var clippingPlaneTex: texture_2d<f32>;
+@group(3) @binding(4) var clippingPlaneSampler: sampler;
 // FEAT-GAP-09 — Aerial-perspective LUT. Bindings 7/8/9 are populated by
 // WebGPUEffectsBindGroup.js when the atmosphere LUT is active; otherwise
 // they resolve to 1×1 placeholder textures. Gated by
 // `effects.atmosphereLutControl.x > 0.5` in fragmentMain. Note: this
 // shader's own group-2 bindings 7/8/9 are the PBR occlusion/emissive
 // textures (different group), so there's no collision.
-@group(7) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
-@group(7) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
-@group(7) @binding(9) var atmosphereLutSampler: sampler;
-@group(7) @binding(10) var<uniform> csmParams: CSMParams;
-@group(7) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
+@group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
+@group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
+@group(3) @binding(9) var atmosphereLutSampler: sampler;
+@group(3) @binding(10) var<uniform> csmParams: CSMParams;
+@group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 // C-R8-EDGE-INLINE — inline edge-detection resources. The edge MRT
 // views populate at the start of `_execute3DTilePasses` (before the
 // model's OPAQUE pass); the globe packed-depth view is produced by
@@ -462,18 +464,18 @@ struct CSMParams {
 // shared filtering. Gated at call site on `effects.edgeControl.x > 0.5`
 // so dead bindings (placeholder 1×1 transparent textures) never
 // influence the lit fragment.
-@group(7) @binding(12) var edgeColorTex: texture_2d<f32>;
-@group(7) @binding(13) var edgeIdTex: texture_2d<f32>;
-@group(7) @binding(14) var edgeDepthTex: texture_2d<f32>;
-@group(7) @binding(15) var globeDepthTex: texture_2d<f32>;
-@group(7) @binding(16) var edgeSampler: sampler;
+@group(3) @binding(12) var edgeColorTex: texture_2d<f32>;
+@group(3) @binding(13) var edgeIdTex: texture_2d<f32>;
+@group(3) @binding(14) var edgeDepthTex: texture_2d<f32>;
+@group(3) @binding(15) var globeDepthTex: texture_2d<f32>;
+@group(3) @binding(16) var edgeSampler: sampler;
 // C-R10-POINT-LIGHT-RECEIVE — 6-face cube depth populated by
 // `_renderPointLightCubeCastPasses` in WebGPUShadowMapRenderer. Sampled
 // via `samplePointShadow` below when `effects.pointLightControl.x > 0.5`.
 // Reuses `shadowCompSampler` at binding 2 for the comparison sample.
 // Placeholder is a 1×1×6 cube cleared to 1.0 (depth = far plane → no
 // occluder closer than the light radius → fragment is lit by default).
-@group(7) @binding(17) var pointLightCubeDepth: texture_depth_cube;
+@group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 // ─── Vertex Shader ───────────────────────────────────────────────────────────
 
