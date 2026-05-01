@@ -169,9 +169,27 @@ function createBatchGPUTexture(device, batchTexture) {
   const cesiumTex = batchTexture.batchTexture || batchTexture.defaultTexture;
 
   // PRIMARY PATH — per-feature RGBA byte array + declared dimensions.
-  // This is what populates on EVERY batched 3D Tile.
-  const batchValues = batchTexture._batchValues;
+  // `_batchValues` is allocated lazily by `BatchTexture.setColor` /
+  // `setShow` (see BatchTexture.js:466-474, getBatchValues), so a freshly
+  // loaded b3dm tileset whose features still carry the default white
+  // colour leaves the slot undefined. WebGL's BatchTexture.update path
+  // skips `createTexture` in that case (no upload until a colour change),
+  // but the WebGPU path needs the GPU texture to exist up front so
+  // FLAG_HAS_BATCH_TABLE gates on, the per-feature pick texture is
+  // allocated, and the merged material BG carries valid bindings.
+  // Mirror getBatchValues' default fill (255 = opaque white / show=true)
+  // so the first frame ships valid data.
+  let batchValues = batchTexture._batchValues;
   const dimensions = batchTexture._textureDimensions;
+  if (
+    !defined(batchValues) &&
+    defined(dimensions) &&
+    dimensions.x > 0 &&
+    dimensions.y > 0
+  ) {
+    batchValues = new Uint8Array(dimensions.x * dimensions.y * 4).fill(255);
+    batchTexture._batchValues = batchValues;
+  }
   if (defined(batchValues) && defined(dimensions) && dimensions.x > 0) {
     const width = dimensions.x;
     const height = dimensions.y;
@@ -524,7 +542,12 @@ function ensurePerFeaturePickIds(
   if (!defined(batchTexture)) {
     return null;
   }
-  const featuresLength = batchTexture.featuresLength;
+  // BatchTexture stores the feature count as `_featuresLength` and does
+  // not expose a public getter; reading `batchTexture.featuresLength`
+  // returned undefined, which caused this function to early-return
+  // before allocating the per-feature pickIds — silently disabling
+  // C-R9-MODEL-FEATURE-PICK on every batched 3D Tile.
+  const featuresLength = batchTexture._featuresLength;
   if (!defined(featuresLength) || featuresLength === 0) {
     return null;
   }

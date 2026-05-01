@@ -125,6 +125,48 @@ const BASE = "http://localhost:8080";
       } : null,
     } : { rpMissing: true };
 
+    // Probe featureIds on the glTF primitive — required by
+    // findSelectedFeatureId in WebGPUModelFeatureId.js
+    const featureIds = firstRP?.primitive?.featureIds;
+    const featureIdsInfo = {
+      defined: featureIds !== undefined && featureIds !== null,
+      length: featureIds?.length,
+      first: featureIds?.[0] ? {
+        ctor: featureIds[0].constructor?.name,
+        keys: Object.keys(featureIds[0]).slice(0, 12),
+        propertyTableId: featureIds[0].propertyTableId,
+        positionalLabel: featureIds[0].positionalLabel,
+        label: featureIds[0].label,
+        featureCount: featureIds[0].featureCount,
+        setIndex: featureIds[0].setIndex,
+      } : null,
+      // What does the model itself want to label?
+      modelFeatureIdLabel: model?.featureIdLabel,
+      modelInstanceFeatureIdLabel: model?.instanceFeatureIdLabel,
+      // Probe createBatchGPUTexture path — what does batchTexture have?
+      batchTextureKeys: batchTexture
+        ? Object.keys(batchTexture).filter((k) => !k.startsWith("__")).slice(0, 25)
+        : null,
+      batchValuesPresent: !!batchTexture?._batchValues,
+      batchValuesLength: batchTexture?._batchValues?.length,
+      batchValuesType: batchTexture?._batchValues?.constructor?.name,
+      batchTextureWidth: batchTexture?._textureDimensions?.x,
+      batchTextureHeight: batchTexture?._textureDimensions?.y,
+      // Probe what's actually on the WebGPU primCache after rendering
+      primCacheValAfterRender: (() => {
+        const pc = wgpuCache && Object.values(wgpuCache.primitives ?? {})[0];
+        if (!pc) return null;
+        return {
+          hasFeatureIdEntries: !!pc._featureIdEntries,
+          featureIdEntriesLen: pc._featureIdEntries?.length,
+          hasFeatureIdFlags: pc._featureIdFlags !== undefined,
+          featureIdFlags: pc._featureIdFlags,
+          hasBatchGPUTex: !!pc._batchGPUTexture,
+          hasFeaturePickGPUTex: !!pc._featurePickGPUTexture,
+          hasFeatureUniformBuffer: !!pc._featureUniformBuffer,
+        };
+      })(),
+    };
     const sceneGraphInfo = sg ? {
       sceneGraphCtor: sg.constructor?.name,
       hasRuntimeNodes: !!runtimeNodes,
@@ -132,6 +174,7 @@ const BASE = "http://localhost:8080";
       runtimeNodesNonNull: runtimeNodes?.filter?.((n) => !!n).length,
       firstNodeRuntimePrimitives: runtimeNodes?.[0]?.runtimePrimitives?.length,
       firstRPInfo: rpInfo,
+      featureIdsInfo,
     } : { sceneGraphMissing: true };
 
     const diagnostic = {
