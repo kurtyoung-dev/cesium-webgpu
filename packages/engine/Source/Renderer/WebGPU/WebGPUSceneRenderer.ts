@@ -64,6 +64,7 @@ import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalE
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
 import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
+import { setupSceneFramebufferRenderPass } from "./WebGPUSceneRendererPassRedirect.js";
 import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
@@ -585,7 +586,10 @@ export class WebGPUSceneRenderer {
   private _isDestroyed: boolean = false;
 
   // Scene-level rendering resources (lazy-initialized)
-  private _sceneFramebuffer: WebGPUSceneFramebuffer | null = null;
+  // Public underscore: shared with the executeCommands slice extracts
+  // (`WebGPUSceneRendererPassRedirect.ts`, Batch 138 — and following
+  // slices in Batches 139-141).
+  public _sceneFramebuffer: WebGPUSceneFramebuffer | null = null;
   // C-R8-EDGE-FBO (Batch 44) — MRT framebuffer for the
   // CESIUM_3D_TILE_EDGES pass (edge color + id + packed depth + depth-
   // stencil). Lazily allocated on first frame where
@@ -655,11 +659,17 @@ export class WebGPUSceneRenderer {
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
+  // `_renderPassRedirectLogged` is `public` so the extracted
+  // render-pass-redirect module (Batch 138) can read/write it via the
+  // host interface. Production builds strip the declaration along
+  // with the pragma block; the new module's reads/writes are also
+  // inside their own pragma blocks, so production never touches the
+  // field. Visibility is TS-only — no runtime cost difference.
   //>>includeStart('debug', pragmas.debug);
   private _execDebugLogged: boolean = false;
   private _debugLogged: boolean = false;
   private _postInitDebugLogged: boolean = false;
-  private _renderPassRedirectLogged: boolean = false;
+  public _renderPassRedirectLogged: boolean = false;
   private _ppDebugLogged: boolean = false;
   private _globeValidationDone: boolean = false;
   private _globePassRPLogged: boolean = false;
@@ -1138,104 +1148,11 @@ export class WebGPUSceneRenderer {
     const opaqueFrustumNearOffset: number =
       scene.opaqueFrustumNearOffset ?? 0.9999;
 
-    // ── Redirect the render pass from the canvas to the scene framebuffer ──
-    //
-    // The WebGPU context's beginFrame() opens a default render pass
-    // targeting the canvas swap chain. But we need commands to draw into
-    // the scene framebuffer's color + depth textures so the post-process
-    // pipeline can read from them and blit to the canvas later.
-    //
-    // End the default (canvas) render pass and begin a new one targeting
-    // the scene framebuffer. After the frustum loop + environment passes,
-    // _runPostProcessing will read from the scene framebuffer and write
-    // to the canvas.
-    if (this._sceneFramebuffer?.colorTarget && config.usePostProcess) {
-      context.endCurrentRenderPass?.();
-
-      const colorTarget = this._sceneFramebuffer.colorTarget;
-      const bg = config.backgroundColor;
-      const colorAttachments = colorTarget.getColorAttachments?.([
-        {
-          r: bg?.red ?? 0,
-          g: bg?.green ?? 0,
-          b: bg?.blue ?? 0,
-          a: bg?.alpha ?? 0,
-        },
-      ]);
-      const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
-
-      if (!colorAttachments?.length) {
-        context.log(
-          "error",
-          `[SceneRenderer] CRITICAL — scene framebuffer has no color ` +
-            `attachments. Commands will draw to nothing and the canvas ` +
-            `will be BLACK. Check WebGPUSceneFramebuffer.update().`,
-        );
-      }
-      if (!depthStencilAttachment) {
-        context.log(
-          "warn",
-          `[SceneRenderer] Scene framebuffer has no depth/stencil ` +
-            `attachment. Depth testing will be disabled for all commands.`,
-        );
-      }
-
-      if (colorAttachments?.length && context._currentCommandEncoder) {
-        const passDesc: GPURenderPassDescriptor = {
-          label: "Scene Framebuffer Render Pass",
-          colorAttachments,
-          depthStencilAttachment,
-        };
-        context._currentRenderPassEncoder =
-          context._currentCommandEncoder.beginRenderPass(passDesc);
-        context._currentRenderPassEncoder.setViewport(
-          0,
-          0,
-          this._width,
-          this._height,
-          0,
-          1,
-        );
-        context._currentRenderPassEncoder.setScissorRect(
-          0,
-          0,
-          this._width,
-          this._height,
-        );
-        //>>includeStart('debug', pragmas.debug);
-        if (!this._renderPassRedirectLogged) {
-          this._renderPassRedirectLogged = true;
-          const ca0 = colorAttachments[0];
-          console.warn(
-            `[WebGPU:SceneRenderer] RENDER PASS REDIRECT — ` +
-              `sceneFB pass OPENED. viewport=${this._width}x${this._height} ` +
-              `colorView=${!!ca0?.view} resolveTarget=${!!ca0?.resolveTarget} ` +
-              `depthView=${!!depthStencilAttachment?.view} ` +
-              `loadOp=${ca0?.loadOp} storeOp=${ca0?.storeOp} ` +
-              `clearColor=${JSON.stringify(ca0?.clearValue)}`,
-          );
-        }
-        //>>includeEnd('debug');
-      } else if (!this._renderPassRedirectLogged) {
-        this._renderPassRedirectLogged = true;
-        console.error(
-          `[WebGPU:SceneRenderer] RENDER PASS REDIRECT FAILED — ` +
-            `colorAttachments=${colorAttachments?.length} encoder=${!!context._currentCommandEncoder}`,
-        );
-      }
-    } else if (config.usePostProcess) {
-      // usePostProcess is true but no scene framebuffer — commands will
-      // draw to the canvas directly and the post-process blit will
-      // overwrite them with the empty scene framebuffer.
-      context.log(
-        "error",
-        `[SceneRenderer] CRITICAL — usePostProcess=true but no scene ` +
-          `framebuffer color target exists. The post-process blit will ` +
-          `overwrite the canvas with black. ` +
-          `sceneFramebuffer=${!!this._sceneFramebuffer} ` +
-          `colorTarget=${!!this._sceneFramebuffer?.colorTarget}`,
-      );
-    }
+    // ── Render-pass redirect (canvas → scene framebuffer) ──
+    // Body extracted to `WebGPUSceneRendererPassRedirect.ts` in
+    // Batch 138 (Slice A of the executeCommands decomposition plan,
+    // see `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
+    setupSceneFramebufferRenderPass(this, context, config);
 
     // Reset captured ranges — the debug frustum overlay reads this list
     // in `_runPostProcessing` to tint pixels by which frustum drew them.
