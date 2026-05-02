@@ -270,6 +270,11 @@ fn classifyFragment(in: VOut) -> bool {
 
 @fragment
 fn fsMain(in: VOut) -> @location(0) vec4<f32> {
+  // AUDIT_2026_05_02 B.1 — feature.show folded into batchColors[bi].a
+  // CPU-side. Discard hidden features.
+  if (in.col.a < 1.0e-3) {
+    discard;
+  }
   if (!classifyFragment(in)) {
     discard;
   }
@@ -278,6 +283,10 @@ fn fsMain(in: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn pickFS(in: VOut) -> @location(0) vec4<f32> {
+  // AUDIT_2026_05_02 B.1 — pick must respect feature.show too.
+  if (in.col.a < 1.0e-3) {
+    discard;
+  }
   if (!classifyFragment(in)) {
     discard;
   }
@@ -665,6 +674,21 @@ function uploadBatchColors(cache, primitive, device) {
     scratch[i + 3] = a;
   }
 
+  // AUDIT_2026_05_02 B.1 — fold per-feature `Cesium3DTileFeature.show`
+  // into batch alpha so the FS discard branch hides set-show-false
+  // features.
+  const batchTable = primitive._batchTable;
+  if (defined(batchTable) && typeof batchTable.getShow === "function") {
+    const featuresLength = batchTable.featuresLength ?? 0;
+    for (let id = 0; id < featuresLength; id++) {
+      const slot = id * 4 + 3;
+      if (slot >= scratch.length) break;
+      if (!batchTable.getShow(id)) {
+        scratch[slot] = 0.0;
+      }
+    }
+  }
+
   device.queue.writeBuffer(
     cache.batchColorBuffer,
     0,
@@ -826,7 +850,10 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     UNIFORM_BUFFER_SIZE,
   );
 
-  if (!cache._batchColorsUploaded) {
+  // AUDIT_2026_05_02 B.1 — re-upload on batch table dirty-values to
+  // pick up per-feature `show` toggles.
+  const batchValuesDirty = primitive._batchTable?._batchValuesDirty === true;
+  if (!cache._batchColorsUploaded || batchValuesDirty) {
     uploadBatchColors(cache, primitive, device);
     cache._batchColorsUploaded = true;
   }

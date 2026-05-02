@@ -146,6 +146,13 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
 
 @fragment
 fn fsMain(i: VOut) -> @location(0) vec4<f32> {
+  // AUDIT_2026_05_02 B.1 — per-feature `Cesium3DTileFeature.show` is
+  // folded into batchColors[bi].a CPU-side (uploadBatchColors). When
+  // show is false the alpha is 0; discard so hidden features don't
+  // classify against the surface.
+  if (i.col.a < 1.0e-3) {
+    discard;
+  }
   let screenUV = i.pos.xy / u.viewport.zw;
   let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
   let surfaceDepth = unpackDepth(packed);
@@ -157,6 +164,12 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn pickFS(i: VOut) -> @location(0) vec4<f32> {
+  // AUDIT_2026_05_02 B.1 — pick must respect `feature.show` too;
+  // otherwise hidden features are still pickable, which contradicts
+  // the WebGL behavior.
+  if (i.col.a < 1.0e-3) {
+    discard;
+  }
   // Same coverage logic as fsMain — only the output channel differs.
   let screenUV = i.pos.xy / u.viewport.zw;
   let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
@@ -520,6 +533,25 @@ function uploadBatchColors(cache, primitive, device) {
     }
   }
 
+  // AUDIT_2026_05_02 B.1 — honor per-feature `Cesium3DTileFeature.show`.
+  // The WebGL Vector3DTile path packs `_showAlphaProperties` and reads it
+  // in the VS via `czm_batchTable_show(batchId)`. The WebGPU path didn't
+  // consume `show` at all; setting `tileset.getFeature(i).show = false`
+  // had no visual effect. We fold show into the per-batch alpha here so
+  // the existing color-discard branch in fsMain (added below) hides the
+  // feature without needing a second storage buffer.
+  const batchTable = primitive._batchTable;
+  if (defined(batchTable) && typeof batchTable.getShow === "function") {
+    const featuresLength = batchTable.featuresLength ?? 0;
+    for (let id = 0; id < featuresLength; id++) {
+      const slot = id * 4 + 3;
+      if (slot >= scratch.length) break;
+      if (!batchTable.getShow(id)) {
+        scratch[slot] = 0.0;
+      }
+    }
+  }
+
   device.queue.writeBuffer(
     cache.batchColorBuffer,
     0,
@@ -695,9 +727,15 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // Re-upload batch colors when the dirty flag indicates a re-batch (Vector3DTile
   // shuffles indices on color changes; the storage-buffer contents track the
   // current batchId → color mapping).
+  // AUDIT_2026_05_02 B.1 — also re-upload when the batch table reports
+  // dirty values (e.g., per-feature `show` toggle); without this the
+  // upload only fires on color changes and `feature.show = false` would
+  // sit in the texture without ever reaching the storage buffer.
+  const batchValuesDirty = primitive._batchTable?._batchValuesDirty === true;
   if (
     primitive._batchDirty ||
     primitive._batchColorsDirty ||
+    batchValuesDirty ||
     !cache._batchColorsUploaded
   ) {
     uploadBatchColors(cache, primitive, device);

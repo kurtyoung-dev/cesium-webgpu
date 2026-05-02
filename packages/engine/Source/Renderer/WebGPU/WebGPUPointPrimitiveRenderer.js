@@ -25,6 +25,7 @@
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -661,6 +662,26 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
     collection._webgpuCache = {};
   }
   const cache = collection._webgpuCache;
+
+  // AUDIT_2026_05_02 A.14 — surface that distance attributes are dropped.
+  //>>includeStart('debug', pragmas.debug);
+  for (let i = 0; i < length; i++) {
+    const pp = collection.get(i);
+    if (
+      defined(pp.distanceDisplayCondition) ||
+      defined(pp.translucencyByDistance) ||
+      defined(pp.scaleByDistance)
+    ) {
+      oneTimeWarning(
+        "WebGPUPointPrimitive.distanceAttribs",
+        "PointPrimitiveCollection on WebGPU does not yet honor " +
+          "distanceDisplayCondition / translucencyByDistance / " +
+          "scaleByDistance. Track AUDIT_2026_05_02 A.14.",
+      );
+      break;
+    }
+  }
+  //>>includeEnd('debug');
 
   // Prewarm shader modules (idempotent per device).
   const colorShaderCode = getCollectionShaderSource("pointColor");

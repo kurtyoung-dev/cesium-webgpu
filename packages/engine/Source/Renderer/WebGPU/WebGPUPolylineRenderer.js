@@ -27,6 +27,7 @@
  */
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
@@ -918,6 +919,21 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
+
+  // AUDIT_2026_05_02 A.14 — surface that distance attributes are dropped.
+  //>>includeStart('debug', pragmas.debug);
+  for (let i = 0; i < length; i++) {
+    const pl = collection.get(i);
+    if (defined(pl?.distanceDisplayCondition)) {
+      oneTimeWarning(
+        "WebGPUPolyline.distanceAttribs",
+        "PolylineCollection on WebGPU does not yet honor " +
+          "distanceDisplayCondition. Track AUDIT_2026_05_02 A.14.",
+      );
+      break;
+    }
+  }
+  //>>includeEnd('debug');
 
   // Prewarm all (material × defines) shader modules on first render per
   // device so the hot path doesn't pay for `createShaderModule` cost.

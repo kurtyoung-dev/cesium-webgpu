@@ -406,6 +406,25 @@ class Picking {
   }
 
   drillPick(scene, windowPosition, limit, width, height) {
+    // AUDIT_2026_05_02 B.6 — drillPick on WebGPU returns stale prior-frame
+    // results. WebGPUPickFramebuffer.end() always returns the PREVIOUS
+    // frame's pixels (async readback by design); this loop calls pick()
+    // synchronously and the per-iteration `setShow(false)` between
+    // iterations doesn't get a chance to render before the next pick.
+    // The result is either all instances of the same feature, or empty
+    // after 1-2 iterations. Surface a one-time warning so users know to
+    // either use a future drillPickAsync API or accept the limitation.
+    //>>includeStart('debug', pragmas.debug);
+    if (scene?._context?.isWebGPU) {
+      oneTimeWarning(
+        "WebGPU.drillPick.staleResults",
+        "Scene.drillPick is unreliable on WebGPU because the pick " +
+          "framebuffer readback is asynchronous (returns previous " +
+          "frame's pixels). Each drill iteration may see the same " +
+          "feature repeatedly or return empty. Track AUDIT_2026_05_02 B.6.",
+      );
+    }
+    //>>includeEnd('debug');
     const pickCallback = (limit) => {
       const pickedObjects = this.pick(
         scene,

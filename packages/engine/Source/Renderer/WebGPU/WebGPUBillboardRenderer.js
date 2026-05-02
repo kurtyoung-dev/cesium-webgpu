@@ -23,6 +23,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
@@ -678,6 +679,38 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     collection._webgpuCache = {};
   }
   const cache = collection._webgpuCache;
+
+  // AUDIT_2026_05_02 A.14 — surface that the WebGPU BillboardCollection
+  // doesn't yet honor `distanceDisplayCondition` / `translucencyByDistance`
+  // / `pixelOffsetScaleByDistance` / `clampToGround` per-billboard distance
+  // attributes. The WebGL VS reads `EYE_DISTANCE_TRANSLUCENCY`,
+  // `EYE_DISTANCE_PIXEL_OFFSET`, `DISTANCE_DISPLAY_CONDITION`, and
+  // `VS_THREE_POINT_DEPTH_CHECK` per-instance attributes. WebGPU's
+  // BillboardCollection.wgsl currently only handles `DISABLE_DEPTH_DISTANCE`
+  // + `SPLIT_ENABLED`; the rest are silently dropped. KML/GeoJSON entities
+  // setting any distance condition render at all distances on WebGPU.
+  // Full fix requires expanding the per-instance vertex layout (~150 LOC
+  // across 4 shader files); for now warn loudly so users aren't surprised.
+  //>>includeStart('debug', pragmas.debug);
+  for (let i = 0; i < length; i++) {
+    const bb = collection.get(i);
+    if (
+      defined(bb.distanceDisplayCondition) ||
+      defined(bb.translucencyByDistance) ||
+      defined(bb.pixelOffsetScaleByDistance) ||
+      defined(bb.scaleByDistance)
+    ) {
+      oneTimeWarning(
+        "WebGPUBillboard.distanceAttribs",
+        "BillboardCollection on WebGPU does not yet honor " +
+          "distanceDisplayCondition / translucencyByDistance / " +
+          "pixelOffsetScaleByDistance / scaleByDistance. The billboard " +
+          "renders at all distances. Track AUDIT_2026_05_02 A.14.",
+      );
+      break;
+    }
+  }
+  //>>includeEnd('debug');
 
   // Shader source + prewarm (once per device; `prewarmBillboardShaders`
   // is idempotent so repeated collections on the same device no-op).
