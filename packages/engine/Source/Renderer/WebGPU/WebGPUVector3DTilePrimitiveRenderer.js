@@ -146,9 +146,9 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
 
 @fragment
 fn fsMain(i: VOut) -> @location(0) vec4<f32> {
-  // AUDIT_2026_05_02 B.1 — per-feature `Cesium3DTileFeature.show` is
+  // AUDIT_2026_05_02 B.1 -- per-feature Cesium3DTileFeature.show is
   // folded into batchColors[bi].a CPU-side (uploadBatchColors). When
-  // show is false the alpha is 0; discard so hidden features don't
+  // show is false the alpha is 0; discard so hidden features dont
   // classify against the surface.
   if (i.col.a < 1.0e-3) {
     discard;
@@ -164,7 +164,7 @@ fn fsMain(i: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn pickFS(i: VOut) -> @location(0) vec4<f32> {
-  // AUDIT_2026_05_02 B.1 — pick must respect `feature.show` too;
+  // AUDIT_2026_05_02 B.1 -- pick must respect feature.show too;
   // otherwise hidden features are still pickable, which contradicts
   // the WebGL behavior.
   if (i.col.a < 1.0e-3) {
@@ -545,7 +545,9 @@ function uploadBatchColors(cache, primitive, device) {
     const featuresLength = batchTable.featuresLength ?? 0;
     for (let id = 0; id < featuresLength; id++) {
       const slot = id * 4 + 3;
-      if (slot >= scratch.length) break;
+      if (slot >= scratch.length) {
+        break;
+      }
       if (!batchTable.getShow(id)) {
         scratch[slot] = 0.0;
       }

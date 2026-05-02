@@ -560,7 +560,9 @@ function uploadBatchColors(cache, primitive, device) {
     const featuresLength = batchTable.featuresLength ?? 0;
     for (let id = 0; id < featuresLength; id++) {
       const slot = id * 4 + 3;
-      if (slot >= scratch.length) break;
+      if (slot >= scratch.length) {
+        break;
+      }
       if (!batchTable.getShow(id)) {
         scratch[slot] = 0.0;
       }
