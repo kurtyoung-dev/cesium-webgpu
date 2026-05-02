@@ -854,7 +854,10 @@ function createWebGPUVector3DTileClampedPolylineCommands(
 
   // AUDIT_2026_05_02 B.1 — re-upload on batch table dirty-values to
   // pick up per-feature `show` toggles.
-  const batchValuesDirty = primitive._batchTable?._batchValuesDirty === true;
+  // (Audit-rereview correction: _batchValuesDirty lives on the
+  // batchTable's _batchTexture, not on _batchTable directly.)
+  const batchValuesDirty =
+    primitive._batchTable?._batchTexture?._batchValuesDirty === true;
   if (!cache._batchColorsUploaded || batchValuesDirty) {
     uploadBatchColors(cache, primitive, device);
     cache._batchColorsUploaded = true;

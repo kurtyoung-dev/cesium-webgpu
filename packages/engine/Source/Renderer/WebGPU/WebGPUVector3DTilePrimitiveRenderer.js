@@ -733,7 +733,13 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // dirty values (e.g., per-feature `show` toggle); without this the
   // upload only fires on color changes and `feature.show = false` would
   // sit in the texture without ever reaching the storage buffer.
-  const batchValuesDirty = primitive._batchTable?._batchValuesDirty === true;
+  // (Audit-rereview correction 2026-05-02: the dirty flag lives on the
+  // batchTable's _batchTexture, not on _batchTable directly. See
+  // `Cesium3DTileBatchTable.setShow → _batchTexture.setShow` and
+  // `BatchTexture._batchValuesDirty`. The earlier path always read
+  // undefined and never triggered re-upload after the first frame.)
+  const batchValuesDirty =
+    primitive._batchTable?._batchTexture?._batchValuesDirty === true;
   if (
     primitive._batchDirty ||
     primitive._batchColorsDirty ||

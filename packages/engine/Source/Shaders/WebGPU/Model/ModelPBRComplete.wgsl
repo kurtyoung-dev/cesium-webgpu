@@ -1294,8 +1294,17 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 // `clippingUnionMode` / `clippingEdgeWidth` / `clippingEdgeColor` fields
 // but never sampled them — model clipping was a complete no-op.
 //
-// Mirror of `globeClipByPlanes` in `GlobeTerrain.wgsl` adapted for the
-// Model FS:
+// CRITICAL FRAME: planes in `clippingPlaneTex` are uploaded in EYE SPACE
+// by `WebGPUClippingPlaneCollection.ts` (see its file-level comment at
+// lines 103-119: "Pack plane data transformed into EYE SPACE so the
+// fragment test `dot(eyePos, plane.xyz) + plane.w` matches the frame of
+// eyePos"). The fragment-side test must therefore consume eye-space
+// position, NOT model-space. (An earlier draft of this fix used
+// reconstructed model-space and produced silent wrong output — caught
+// by audit/rereview 2026-05-02.)
+//
+// Mirror of `globeClipByPlanes` in `GlobeTerrain.wgsl` but consuming
+// eye-space:
 //   - For each plane in [0, clippingPlaneCount), sample the plane data
 //     row-major from `clippingPlaneTex` (single-row texture, width =
 //     count) and compute fragment-side distance.
@@ -1307,7 +1316,7 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 // Returns the smallest signed distance across all planes (positive =
 // inside the kept region) so the caller can render an edge band when
 // `clippingEdgeWidth > 0`.
-fn modelClipByPlanes(positionMC: vec3<f32>) -> f32 {
+fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   let count = effects.clippingPlaneCount;
   if (count == 0u) { return 1.0; }
   let isUnion = effects.clippingUnionMode == 1u;
@@ -1320,7 +1329,7 @@ fn modelClipByPlanes(positionMC: vec3<f32>) -> f32 {
       clippingPlaneTex, clippingPlaneSampler,
       vec2<f32>(texelU, 0.5), 0.0,
     );
-    let dist = dot(positionMC, planeData.xyz) + planeData.w;
+    let dist = dot(positionEC, planeData.xyz) + planeData.w;
     if (dist < minDistance) { minDistance = dist; }
     if (dist < 0.0) {
       clippedCount++;
@@ -1334,21 +1343,17 @@ fn modelClipByPlanes(positionMC: vec3<f32>) -> f32 {
 @fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
 
-  // AUDIT_2026_05_02 A.6 — model clipping planes. Reconstruct positionMC
-  // from the RTE-encoded model-space position carried via FragmentInput:
-  // `rteMC = positionMC - cameraPositionMCHigh - cameraPositionMCLow`,
-  // so adding both high/low halves back gives the absolute model-space
-  // position for the clip-plane distance test.
+  // AUDIT_2026_05_02 A.6 — model clipping planes. Eye-space distance
+  // test: planes are uploaded eye-space transformed (see
+  // `WebGPUClippingPlaneCollection.ts:103-119`), and `input.positionEC`
+  // is already in eye space (set by VS at `output.positionEC =
+  // (camera.modelViewRelativeToEye * vec4(rte, 1.0)).xyz`).
   if (effects.clippingPlaneCount > 0u) {
-    let positionMCAbs = input.rteMC
-      + camera.encodedCameraPositionMCHigh
-      + camera.encodedCameraPositionMCLow;
-    let clipDist = modelClipByPlanes(positionMCAbs);
+    let clipDist = modelClipByPlanes(input.positionEC);
     if (clipDist < 0.0) { discard; }
     // Edge band: when the fragment is within `clippingEdgeWidth` of the
     // clip boundary, paint it with the user's edge color. Width is in
-    // the same units as `positionMC` (typically meters in model space);
-    // this matches the upstream GLSL stage's behavior.
+    // eye-space meters since both sides of the test live in eye space.
     let edgeWidth = effects.clippingEdgeWidth;
     if (edgeWidth > 0.0 && clipDist < edgeWidth) {
       return effects.clippingEdgeColor;
@@ -1564,8 +1569,23 @@ fn modelClipByPlanes(positionMC: vec3<f32>) -> f32 {
     // streak along the per-fragment tangent direction; using `cross(N, V)`
     // produced wrong streaks on brushed-metal materials with authored
     // anisotropic UVs.
-    let aniT = normalize(input.tangentEC);
-    let aniB = normalize(input.bitangentEC);
+    //
+    // Guard `normalize` against zero-length input: primitives WITHOUT an
+    // authored TANGENT attribute upload zeros into the tangent slot, and
+    // `normalize(vec3(0))` is undefined behavior in WGSL. Fall back to
+    // the view-relative basis (the previous approximation) when the
+    // tangent is degenerate so non-tangent-authored anisotropic
+    // materials still get usable streaks.
+    let tanLenSq = dot(input.tangentEC, input.tangentEC);
+    var aniT: vec3<f32>;
+    var aniB: vec3<f32>;
+    if (tanLenSq > 1.0e-6) {
+      aniT = input.tangentEC * inverseSqrt(tanLenSq);
+      aniB = normalize(input.bitangentEC);
+    } else {
+      aniT = normalize(cross(N, V));
+      aniB = normalize(cross(aniT, N));
+    }
     let cosR = cos(aniRotation);
     let sinR = sin(aniRotation);
     let aniDir = aniT * cosR + aniB * sinR;

@@ -484,6 +484,25 @@ class Model {
 
     this._classificationType = options.classificationType;
 
+    /**
+     * AUDIT_2026_05_02 B.7 — opt-in flag for the WebGPU model renderer to
+     * emit a depth-write pipeline variant for translucent (BLEND) primitives.
+     * Without this, standalone translucent Models on WebGPU don't write
+     * depth, so {@link Scene#pickPosition} over them returns the position
+     * behind the model and ground/Vector3DTile classifiers see through the
+     * model. The flag is also implicitly set when {@link Model#classificationType}
+     * is defined. WebGL ignores the flag (its pick path doesn't depend on
+     * it). Default `false` to preserve existing performance for
+     * non-pick-sensitive translucent models.
+     *
+     * @type {boolean}
+     * @default false
+     * @experimental Subject to change as the WebGPU classification
+     *   architecture stabilizes.
+     */
+    this.depthWriteForTranslucentPicking =
+      options.depthWriteForTranslucentPicking ?? false;
+
     this._statistics = new ModelStatistics();
 
     this._sceneMode = undefined;

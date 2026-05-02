@@ -732,7 +732,10 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   // values (e.g., per-feature `show` toggle). Without this trigger, the
   // initial upload runs once on first frame and `feature.show = false`
   // never reaches the storage buffer.
-  const batchValuesDirty = primitive._batchTable?._batchValuesDirty === true;
+  // (Audit-rereview correction: _batchValuesDirty lives on the
+  // batchTable's _batchTexture, not on _batchTable directly.)
+  const batchValuesDirty =
+    primitive._batchTable?._batchTexture?._batchValuesDirty === true;
   if (!cache._batchColorsUploaded || batchValuesDirty) {
     uploadBatchColors(cache, primitive, device);
     cache._batchColorsUploaded = true;
