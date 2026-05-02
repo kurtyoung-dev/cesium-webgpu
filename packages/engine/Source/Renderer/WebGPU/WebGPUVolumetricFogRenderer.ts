@@ -713,6 +713,28 @@ class WebGPUVolumetricFogRenderer {
     this._composites++;
     const r = this._resources;
 
+    // AUDIT_2026_05_02 B.17 — VolumetricFog composite was built once
+    // with `targets: [{ format: "bgra8unorm" }]` placeholder; when HDR
+    // is enabled the actual outputView is `rgba16float`, the format
+    // mismatch makes the renderpass produce a black frame plus a
+    // validation warning. Rebuild the pipeline + cached entry whenever
+    // the outputFormat changes so HDR + volumetric fog co-enabled
+    // renders correctly.
+    if (
+      r.compositePipelineEntry.descriptor.fragment?.targets?.[0]?.format !==
+      outputFormat
+    ) {
+      // Patch the descriptor in place; null the resolved pipeline so the
+      // cache lookup below materializes a fresh one keyed on the new
+      // descriptor hash.
+      const target0 = r.compositePipelineEntry.descriptor.fragment
+        ?.targets?.[0] as { format: GPUTextureFormat } | undefined;
+      if (target0) target0.format = outputFormat;
+      r.compositePipelineEntry.pipeline = null;
+      r.compositePipelineEntry.pending = false;
+      r.compositePipeline = null;
+    }
+
     // C-R7-RENDERER-MIGRATION (Batch 74) — resolve the composite render
     // pipeline through the central cache. Skip the composite this frame
     // if the pipeline is still materializing — the integrated volume is

@@ -77,6 +77,22 @@ export type CacheableBindGroupEntry =
  * }
  * ```
  */
+/**
+ * Hit/miss/invalidation counters surfaced by {@link WebGPUBindGroupCache.getStats}.
+ * Useful for confirming the dedup architecture is actually saving allocations
+ * — a 0% hit rate signals that resource identities are churning every frame
+ * (typical cause: texture views reallocated without a corresponding cache
+ * invalidation).
+ */
+export interface BindGroupCacheStats {
+  readonly size: number;
+  readonly hits: number;
+  readonly misses: number;
+  readonly invalidations: number;
+  /** Hit rate as a fraction in [0, 1]. NaN when no lookups have run. */
+  readonly hitRate: number;
+}
+
 export class WebGPUBindGroupCache {
   private _map = new Map<string, GPUBindGroup>();
   private _idCounter = 0;
@@ -85,6 +101,12 @@ export class WebGPUBindGroupCache {
   // is append-only; IDs for collected resources become unreachable as
   // the browser reclaims the WeakMap entry.
   private _idMap = new WeakMap<object, number>();
+  // AUDIT_2026_05_02 C.8 — hit/miss telemetry so PerformanceManager can
+  // surface "are we actually deduping?" Cheap counters; no allocation in
+  // the hot path.
+  private _hits = 0;
+  private _misses = 0;
+  private _invalidations = 0;
 
   /** Stable numeric ID for any GPU resource object. */
   private _idFor(obj: object): number {
@@ -139,12 +161,15 @@ export class WebGPUBindGroupCache {
 
     let bg = this._map.get(key);
     if (!bg) {
+      this._misses++;
       bg = device.createBindGroup({
         label,
         layout,
         entries: entries as GPUBindGroupEntry[],
       });
       this._map.set(key, bg);
+    } else {
+      this._hits++;
     }
     return bg;
   }
@@ -156,12 +181,37 @@ export class WebGPUBindGroupCache {
    * reconfigured.
    */
   invalidateAll(): void {
+    if (this._map.size > 0) this._invalidations++;
     this._map.clear();
   }
 
   /** Number of distinct bind groups currently cached. For diagnostics. */
   get size(): number {
     return this._map.size;
+  }
+
+  /**
+   * AUDIT_2026_05_02 C.8 — telemetry snapshot of cache effectiveness.
+   * A hitRate near 0 means the dedup architecture isn't working — typically
+   * because input texture views are recreated every frame without a
+   * matching `invalidateAll` call.
+   */
+  getStats(): BindGroupCacheStats {
+    const total = this._hits + this._misses;
+    return {
+      size: this._map.size,
+      hits: this._hits,
+      misses: this._misses,
+      invalidations: this._invalidations,
+      hitRate: total > 0 ? this._hits / total : NaN,
+    };
+  }
+
+  /** Reset hit/miss/invalidation counters without dropping cache contents. */
+  resetStats(): void {
+    this._hits = 0;
+    this._misses = 0;
+    this._invalidations = 0;
   }
 }
 

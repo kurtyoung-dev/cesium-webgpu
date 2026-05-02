@@ -23,7 +23,9 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 
-const SSR_UNIFORM_FLOATS = 44; // matches SSRUniforms struct
+// AUDIT_2026_05_02 B.15 — bumped from 44 to 48 for the new `flags: vec4`
+// trailing field in SSRUniforms (hasNormalGBuffer flag).
+const SSR_UNIFORM_FLOATS = 48; // matches SSRUniforms struct
 const SSR_UNIFORM_BYTES = SSR_UNIFORM_FLOATS * 4;
 
 export interface SSRCache {
@@ -215,6 +217,16 @@ export function executeSSR(
   data[offset++] = 1.0;
   data[offset++] = scene.ssrReflectionStrength ?? 0.5;
   data[offset++] = 5.0;
+
+  // AUDIT_2026_05_02 B.15 — flags.x = hasNormalGBuffer flag. When the
+  // caller passed a real normal G-buffer (`normalTextureView !== null`)
+  // the FS samples the texture; otherwise it falls back to depth-derived
+  // normals via `cross(dFdy, dFdx)`. Far better than the all-noise
+  // placeholder produced by sampling an uninitialized texture.
+  data[offset++] = normalTextureView ? 1.0 : 0.0;
+  data[offset++] = 0.0;
+  data[offset++] = 0.0;
+  data[offset++] = 0.0;
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

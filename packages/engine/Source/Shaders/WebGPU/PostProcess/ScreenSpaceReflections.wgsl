@@ -30,6 +30,13 @@ struct SSRUniforms {
   params: vec4<f32>,
   // x=fadeScreenEdge, y=fadeDistance, z=reflectionStrength, w=fresnelPower
   params2: vec4<f32>,
+  // AUDIT_2026_05_02 B.15 — flag indicating whether `normalTex` carries
+  // valid eye-space normals or is the placeholder. When .x < 0.5, the
+  // FS computes normals from depth derivatives instead of sampling the
+  // texture (rough approximation, but visually correct for reflective
+  // surfaces vs the all-vertical noise the placeholder produced).
+  // y/z/w reserved.
+  flags: vec4<f32>,
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -170,14 +177,44 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   let viewPos = reconstructViewPosition(uv, depth);
-  let normalEC = textureSampleLevel(normalTex, texSampler, uv, 0.0).xyz * 2.0 - 1.0;
 
-  // Skip surfaces with no valid normal
-  if (length(normalEC) < 0.1) {
-    return vec4<f32>(originalColor, 1.0);
+  // AUDIT_2026_05_02 B.15 — when the host hasn't bound a real normal
+  // G-buffer (`flags.x < 0.5`), reconstruct the surface normal from
+  // neighbor-pixel view positions. This is a coarse approximation but
+  // produces visually plausible reflections on horizontal/vertical
+  // surfaces — far better than the all-noise sampled placeholder.
+  // FEAT-GAP-01 will replace this with a real normal G-buffer.
+  var normal: vec3<f32>;
+  if (ssr.flags.x < 0.5) {
+    let invRes = ssr.resolution.zw;
+    let depthDx = textureSampleLevel(
+      depthTex, texSampler, uv + vec2<f32>(invRes.x, 0.0), 0.0,
+    ).r;
+    let depthDy = textureSampleLevel(
+      depthTex, texSampler, uv + vec2<f32>(0.0, invRes.y), 0.0,
+    ).r;
+    let viewPosDx = reconstructViewPosition(
+      uv + vec2<f32>(invRes.x, 0.0), depthDx,
+    );
+    let viewPosDy = reconstructViewPosition(
+      uv + vec2<f32>(0.0, invRes.y), depthDy,
+    );
+    let dPosDx = viewPosDx - viewPos;
+    let dPosDy = viewPosDy - viewPos;
+    let n = cross(dPosDy, dPosDx);
+    let nLenSq = dot(n, n);
+    if (nLenSq < 1.0e-8) {
+      return vec4<f32>(originalColor, 1.0);
+    }
+    normal = n * inverseSqrt(nLenSq);
+  } else {
+    let normalEC = textureSampleLevel(normalTex, texSampler, uv, 0.0).xyz * 2.0 - 1.0;
+    // Skip surfaces with no valid normal
+    if (length(normalEC) < 0.1) {
+      return vec4<f32>(originalColor, 1.0);
+    }
+    normal = normalize(normalEC);
   }
-
-  let normal = normalize(normalEC);
   let viewDir = normalize(viewPos);
   let NdotV = abs(dot(normal, -viewDir));
 
