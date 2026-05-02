@@ -1,5 +1,6 @@
 import defined from "../Core/defined.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
 
 // Shared WASM module state — loaded once, shared with other bridges.
 let _wasmModule = null;
@@ -224,7 +225,12 @@ class WasmSortBridge {
     const totalBytes = u32Bytes * 4; // indices + keysHigh + keysLow + temp
 
     try {
-      const basePtr = wasm.alloc_buffer(totalBytes);
+      // AUDIT_2026_05_02 B.19 / FORK-45 — claim the dedicated SORT
+      // arena slot so concurrent calls from other bridges (cull, RTE,
+      // matrix, etc.) don't trample each other's allocations once
+      // worker-pool work lands. Fallback path uses the legacy single
+      // arena for backwards compatibility with older WASM builds.
+      const basePtr = allocFromSlot(wasm, WasmArenaSlot.SORT, totalBytes);
       if (basePtr === 0) {
         radixSortByKey(this._indices, this._keysHigh, this._keysLow, count);
         return;

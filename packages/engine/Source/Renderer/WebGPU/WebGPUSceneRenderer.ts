@@ -570,21 +570,43 @@ export function executeBatchTranslucent(
   for (let i = 0; i < count; i++) {
     const cmd = commands[i];
     if (!cmd) continue;
-    // If the command has a translucency marker, apply the blend state
+    // AUDIT_2026_05_02 A.1 — `WebGPUGlobeTranslucencyState.update*()`
+    // populates `_webgpuTranslucencyDerived[0..N-1]` with one derived
+    // descriptor per pass (front-faces, back-faces, depth-only, etc.).
+    // Previously this loop only read `[0]`, dropping every subsequent
+    // derived pass — so any scene needing more than a single derived
+    // pass (the common case for globe translucency) rendered with
+    // incomplete blend/depth contributions. Now we iterate the full
+    // count, materializing the per-derived pipeline variant for each.
     if (cmd._webgpuTranslucencyDerived) {
+      const derivedCount =
+        cmd._webgpuTranslucencyDerivedCount ??
+        cmd._webgpuTranslucencyDerived.length ??
+        0;
+      if (derivedCount === 0) {
+        executeWebGPUCommand(cmd, scene, context, passState);
+        continue;
+      }
       const saved = {
         blend: cmd._blendEnabled,
         depthWrite: cmd._depthWriteEnabled,
         cullMode: cmd._cullMode,
       };
-      const derived = cmd._webgpuTranslucencyDerived[0];
-      cmd._blendEnabled = derived?.blendEnabled ?? saved.blend;
-      cmd._depthWriteEnabled = derived?.depthWriteEnabled ?? saved.depthWrite;
-      cmd._cullMode = derived?.cullMode ?? saved.cullMode;
-      executeWebGPUCommand(cmd, scene, context, passState);
-      cmd._blendEnabled = saved.blend;
-      cmd._depthWriteEnabled = saved.depthWrite;
-      cmd._cullMode = saved.cullMode;
+      try {
+        for (let d = 0; d < derivedCount; d++) {
+          const derived = cmd._webgpuTranslucencyDerived[d];
+          if (!derived) continue;
+          cmd._blendEnabled = derived.blendEnabled ?? saved.blend;
+          cmd._depthWriteEnabled =
+            derived.depthWriteEnabled ?? saved.depthWrite;
+          cmd._cullMode = derived.cullMode ?? saved.cullMode;
+          executeWebGPUCommand(cmd, scene, context, passState);
+        }
+      } finally {
+        cmd._blendEnabled = saved.blend;
+        cmd._depthWriteEnabled = saved.depthWrite;
+        cmd._cullMode = saved.cullMode;
+      }
     } else {
       executeWebGPUCommand(cmd, scene, context, passState);
     }

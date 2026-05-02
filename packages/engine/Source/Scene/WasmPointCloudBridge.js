@@ -1,5 +1,7 @@
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated point cloud processing.
@@ -131,7 +133,11 @@ class WasmPointCloudBridge {
     const totalBytes = arrayBytes * 4;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.POINT_CLOUD,
+        totalBytes,
+      );
       if (ptr === 0) {
         this._distJS(px, py, pz, cx, cy, cz, count, out);
         return;
@@ -199,7 +205,11 @@ class WasmPointCloudBridge {
     const totalBytes = inputBytes + outputBytes;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.POINT_CLOUD,
+        totalBytes,
+      );
       if (ptr === 0) {
         return this._lodFilterJS(distSq, thresholdSq, count, visibility);
       }
@@ -305,7 +315,11 @@ class WasmPointCloudBridge {
     const totalBytes = arrayBytes * 6 + planeBytes + visBytes;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.POINT_CLOUD,
+        totalBytes,
+      );
       if (ptr === 0) {
         return this._aabbJS(cx, cy, cz, hx, hy, hz, planes, count, vis);
       }

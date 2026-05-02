@@ -1,4 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated batch matrix operations.
@@ -121,7 +123,7 @@ class WasmMatrixBridge {
     const totalBytes = matBytes + arrayBytes * 6;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(_wasmModule, WasmArenaSlot.MATRIX, totalBytes);
       if (ptr === 0) {
         this._transformJS(matrix, px, py, pz, count, ox, oy, oz);
         return;
@@ -213,7 +215,7 @@ class WasmMatrixBridge {
     const totalBytes = matBytes + viewBytes + matBytes;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(_wasmModule, WasmArenaSlot.MATRIX, totalBytes);
       if (ptr === 0) {
         this._multiplyJS(models, view, count, out);
         return;

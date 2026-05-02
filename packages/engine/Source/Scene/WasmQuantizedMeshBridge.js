@@ -1,4 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated quantized mesh terrain decoding.
@@ -115,7 +117,11 @@ class WasmQuantizedMeshBridge {
     const totalBytes = inputBytes + outputBytes;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.QUANTIZED_MESH,
+        totalBytes,
+      );
       if (ptr === 0) {
         return this._decodeJS(eu, ev, eh, count, outU, outV, outH);
       }

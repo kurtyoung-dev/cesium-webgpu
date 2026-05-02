@@ -2100,6 +2100,24 @@ function updateWebGPUModel(model, frameState) {
           cull: model._cull ?? true,
           renderState: modelRenderState,
         });
+        // AUDIT_2026_05_02 B.7 — Batch 79's selective depth-write fix
+        // previously only fired for tile-owned models (Cesium3DTile.js sets
+        // `depthForTranslucentClassification = true`). Standalone Models —
+        // including any glTF added via `viewer.scene.primitives.add(...)` and
+        // any Model used as a classifier — also need the depth-write variant
+        // so `pickPosition` and ground/Vector3DTile classifiers don't see
+        // through them. Opt-in via `model.depthWriteForTranslucentPicking`
+        // (default false to preserve existing performance), or
+        // automatically when `model.classificationType !== undefined`.
+        if (
+          primCache.depthWritePipeline &&
+          (model.depthWriteForTranslucentPicking === true ||
+            defined(model.classificationType))
+        ) {
+          translucentCmd.depthForTranslucentClassification = true;
+          translucentCmd.classificationDepthPipeline =
+            primCache.depthWritePipeline;
+        }
         commandList.push(translucentCmd);
       }
 

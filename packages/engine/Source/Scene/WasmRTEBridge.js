@@ -1,4 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated batch RTE encoding.
@@ -89,7 +91,11 @@ class WasmRTEBridge {
     const outputBytes = total * 4 * 2;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(inputBytes + outputBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.RTE,
+        inputBytes + outputBytes,
+      );
       if (ptr === 0) {
         this._encodeJS(positions, count, outHigh, outLow);
         return;
@@ -159,7 +165,7 @@ class WasmRTEBridge {
     const totalBytes = arrayBytes * 9;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(_wasmModule, WasmArenaSlot.RTE, totalBytes);
       if (ptr === 0) {
         this._toEyeJS(posHigh, posLow, camHigh, camLow, count, out);
         return;

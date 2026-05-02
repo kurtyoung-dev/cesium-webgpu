@@ -1287,8 +1287,73 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
   return select(input.texCoord0, input.texCoord1, useUV1);
 }
 
+// AUDIT_2026_05_02 A.6 — port of `Shaders/Model/ModelClippingPlanesStageFS.glsl`
+// for the WebGPU model path. WebGL Model rendering supports
+// `model.clippingPlanes`; the WebGPU path declared `clippingPlaneTex` at
+// `@group(3) @binding(3)` and the `EffectsUniforms.clippingPlaneCount` /
+// `clippingUnionMode` / `clippingEdgeWidth` / `clippingEdgeColor` fields
+// but never sampled them — model clipping was a complete no-op.
+//
+// Mirror of `globeClipByPlanes` in `GlobeTerrain.wgsl` adapted for the
+// Model FS:
+//   - For each plane in [0, clippingPlaneCount), sample the plane data
+//     row-major from `clippingPlaneTex` (single-row texture, width =
+//     count) and compute fragment-side distance.
+//   - Intersection mode (default): discard fragment when ALL planes
+//     report negative distance (fragment inside every clip half-space).
+//   - Union mode: discard on FIRST negative-distance plane (fragment is
+//     outside any clip half-space).
+//
+// Returns the smallest signed distance across all planes (positive =
+// inside the kept region) so the caller can render an edge band when
+// `clippingEdgeWidth > 0`.
+fn modelClipByPlanes(positionMC: vec3<f32>) -> f32 {
+  let count = effects.clippingPlaneCount;
+  if (count == 0u) { return 1.0; }
+  let isUnion = effects.clippingUnionMode == 1u;
+  let texWidth = f32(count);
+  var minDistance: f32 = 1.0e30;
+  var clippedCount: u32 = 0u;
+  for (var i: u32 = 0u; i < count; i++) {
+    let texelU = (f32(i) + 0.5) / texWidth;
+    let planeData = textureSampleLevel(
+      clippingPlaneTex, clippingPlaneSampler,
+      vec2<f32>(texelU, 0.5), 0.0,
+    );
+    let dist = dot(positionMC, planeData.xyz) + planeData.w;
+    if (dist < minDistance) { minDistance = dist; }
+    if (dist < 0.0) {
+      clippedCount++;
+      if (isUnion) { return -1.0; }
+    }
+  }
+  if (!isUnion && clippedCount == count) { return -1.0; }
+  return minDistance;
+}
+
 @fragment fn fragmentMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+
+  // AUDIT_2026_05_02 A.6 — model clipping planes. Reconstruct positionMC
+  // from the RTE-encoded model-space position carried via FragmentInput:
+  // `rteMC = positionMC - cameraPositionMCHigh - cameraPositionMCLow`,
+  // so adding both high/low halves back gives the absolute model-space
+  // position for the clip-plane distance test.
+  if (effects.clippingPlaneCount > 0u) {
+    let positionMCAbs = input.rteMC
+      + camera.encodedCameraPositionMCHigh
+      + camera.encodedCameraPositionMCLow;
+    let clipDist = modelClipByPlanes(positionMCAbs);
+    if (clipDist < 0.0) { discard; }
+    // Edge band: when the fragment is within `clippingEdgeWidth` of the
+    // clip boundary, paint it with the user's edge color. Width is in
+    // the same units as `positionMC` (typically meters in model space);
+    // this matches the upstream GLSL stage's behavior.
+    let edgeWidth = effects.clippingEdgeWidth;
+    if (edgeWidth > 0.0 && clipDist < edgeWidth) {
+      return effects.clippingEdgeColor;
+    }
+  }
 
   // C-R8-EDGE-FEATURE-ID — resolve the current fragment's featureId
   // (if any) up-front so both per-feature batch styling AND the inline

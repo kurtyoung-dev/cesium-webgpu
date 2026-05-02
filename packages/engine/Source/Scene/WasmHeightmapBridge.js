@@ -1,4 +1,6 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
+// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated heightmap tessellation.
@@ -147,7 +149,11 @@ class WasmHeightmapBridge {
     const totalBytes = byteCount + sampleCount * 4;
 
     try {
-      const ptr = _wasmModule.alloc_buffer(totalBytes);
+      const ptr = allocFromSlot(
+        _wasmModule,
+        WasmArenaSlot.HEIGHTMAP,
+        totalBytes,
+      );
       if (ptr === 0) {
         return this._decodeJS(rawBytes, bpe, bigEndian, scale, offset, out);
       }
