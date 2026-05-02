@@ -37,10 +37,12 @@ import {
   createSharedCacheBase,
   createVB,
   destroyPickIds,
+  getBufferPrimitiveShaderCache,
   scratchColor,
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -177,10 +179,12 @@ function initPointCache(
     "BufferPointMaterial",
     BufferPointMaterialWGSL,
   );
-  const shaderModule = device.createShaderModule({
-    label: "BufferPointMaterial",
-    code: shaderSource,
-  });
+  const shaderModule = getBufferPrimitiveShaderCache(device).getOrCreate(
+    ShaderSourceId.BUFFER_POINT_MATERIAL,
+    shaderSource,
+    0,
+    "BufferPointMaterial",
+  );
   const bgls = makeCameraBindGroupLayout(device, true);
   const pipeline = buildPointPipeline(device, shaderModule, format, bgls);
   const pickPipeline = buildPointPipeline(

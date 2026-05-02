@@ -90,19 +90,18 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
 
-### C-R1-PRIMITIVE-DERIVED
+### ~~C-R1-PRIMITIVE-DERIVED~~ EFFECTIVELY RESOLVED (audit 2026-05-02)
 
-**What:** `WebGPUPrimitiveCommands.js` doesn't yet build pipeline variants for the derived `colorCommand` / `depthOnlyCommand` / `pickCommand` / `pickDepthCommand` paths - only the primary color command's renderState propagates.
+**Audit finding:**
 
-**Why deferred:** Each derived command needs its own variant-key contribution. The dispatcher already routes; the variant-build path needs per-derived-command branches.
+- The `pickCommand` paths (both shader-path and material-path) in `WebGPUPrimitiveCommands.js` already forward `appearance.renderState` — Batch 98 landed this. See `pickCommand` construction at `WebGPUPrimitiveCommands.js:1502-1535` (shader path) and `:2326-2354` (material path), both with `renderState: appearance?.renderState` and explanatory comments. So per-encoder dynamic state (stencilRef, scissor, viewport, blendConstant) flows through pick passes.
+- `depthOnlyCommand` and `pickDepthCommand` are NOT emitted by the WebGPU primitive flow — and **have no consumer in the WebGPU dispatch path.** WebGPU primitives use a parallel-array shape (`colorCommands[]` + `pickCommands[]`) rather than the WebGL per-command derived-dictionary shape. The dispatcher in `WebGPUSceneRenderer.ts:188` checks `derivedCommands.depth.depthOnlyCommand` as a fallback, but no Pass dispatch in the WebGPU `executeFrustumLoop` invokes primitives in depth-only mode (shadow casting goes through `executeShadowMapCastCommands` + the dedicated CSM cast pass; globeDepth uses `executeUpdateDepth` which copies post-render). Adding `depthOnlyCommand` emission would be scaffolding without a consumer.
 
-**Prerequisites:** None.
+**Status:** Pick variant renderState forwarding is complete. Depth-only variant emission has no consumer to plumb to. Per the dead-code audit rule (CLAUDE.md), not adding scaffolding without a consumer.
 
-**Estimated effort:** 1 session.
+**If/when needed:** A future depth-only primitive dispatch (e.g., a real early-z prepass landing for performance) would need both the consumer-side dispatcher hook AND the producer-side `depthOnlyCommand` emission. They should land together.
 
-**Impact:** Pick passes and depth-only passes for primitives may not honor custom blend / stencil settings. Color pass works correctly.
-
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 98 (pick variant renderState); audit 2026-05-02.
 
 ### C-R1-TILE-BATCH
 
@@ -238,24 +237,33 @@ Both are tracked under their own work items below; this entry is closed.
 
 ### C-R7-SHADER-MODULE-DEDUP
 
-**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers (12 of ~17 use it today) lets identical sources actually dedupe.
+**What:** Cross-renderer `GPUShaderModule` sharing. Wiring `WebGPUShaderModuleCache` into all renderers lets identical sources actually dedupe.
 
 **Progress:**
 
 - Batch 72 (2026-04-27) added Cloud + Voxel + Weather (render + compute shaders).
 - Batch 74 (2026-04-27) added Environment (Sun + Moon), VolumetricFog (compute + composite), PointCloud (default + LOD).
+- **Batch 162 (2026-05-02) — Model PBR adoption.** `WebGPUModelPipelineCache._shaderModule` now resolves through a per-device `WebGPUShaderModuleCache` (`MODEL_PBR_COMPLETE` source ID 23). One `WebGPUModelPipelineCache` is created per `Model` instance, so a 100-glTF tileset previously compiled the same WGSL 100 times — now shares one `GPUShaderModule` across all instances on a device. Pipelines themselves stay per-cache (per-Model formats / alphaMode / doubleSided).
+- **Batch 163 (2026-05-02) — Vector 3D Tile family adoption.** All three Vector 3D Tile renderers route through per-device caches with new source IDs 24/25/26 (`VECTOR_3DTILE_PRIMITIVE`, `VECTOR_3DTILE_POLYLINES`, `VECTOR_3DTILE_CLAMPED_POLYLINES`). WGSL is built per-`buildResources` call but is constant per build, so dense vector overlays with N visible tiles now share one module instead of compiling N times.
+- **Batch 164 (2026-05-02) — BufferPrimitive family adoption.** BufferPoint/Polyline/Polygon renderers route through a single shared per-device cache (helper exported from `WebGPUBufferPrimitiveRenderer.ts` since the 3 renderers share the parent module). New source IDs 27/28/29 (`BUFFER_POINT_MATERIAL`, `BUFFER_POLYLINE_MATERIAL`, `BUFFER_POLYGON_MATERIAL`). Each `BufferPrimitiveCollection` previously compiled its own module; now one module per `(device, materialKind)` regardless of collection count.
 
 Existing adopters from earlier batches: Polyline, PointPrimitive, Billboard, Label, GlobeSurface.
 
-**Why deferred:** Without dedup, routing `WebGPUModelRenderer` through `webgpuPipelineCache` (Batch 56's deferred case) wouldn't actually share - two models with identical material settings still produce distinct shader modules, distinct pipeline cache keys.
+**Remaining renderers (still bypass the cache, audited 2026-05-02):**
+
+| Renderer | File | Estimated impact |
+| --- | --- | --- |
+| Ground Primitive + Ground Polyline | `WebGPUGround*.js` | Typically few-per-scene. Low dedup win. |
+| SkyAtmosphere | `WebGPUSkyAtmosphereRenderer.js` | Singleton per scene. Negligible win. |
+| Ellipsoid Primitive | `WebGPUEllipsoidPrimitiveRenderer.ts` | Few-per-scene. Low win. |
 
 **Prerequisites:** None - `WebGPUShaderModuleCache.ts` exists since Batch 22.
 
-**Estimated effort:** 1 session for ModelRenderer adoption pass.
+**Estimated remaining effort:** All high-dedup-win renderers covered as of Batch 164. The 3 low-win remainders can ride along when next touched for other reasons (per "incremental upgrade" rule in CLAUDE.md). Mark this entry CLOSED if/when the low-win three are mopped up; the dedup architecture itself is fully wired.
 
-**Impact:** Memory pressure on shader-heavy scenes (3D Tilesets with many distinct glTF assets sharing material settings).
+**Impact:** Memory pressure on shader-heavy scenes — Model (Batch 162), Vector 3D Tiles (Batch 163), and BufferPrimitive (Batch 164) cover the highest instance-count cases.
 
-**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit), Batches 72/74 lists; OVERSIGHT_AUDIT_2026_04_25.md s3.
+**Trace:** REVIEW_FIX_PROGRESS.md:2399 (Batch 52 audit), Batches 72/74/162/163/164 lists; OVERSIGHT_AUDIT_2026_04_25.md s3.
 
 ---
 

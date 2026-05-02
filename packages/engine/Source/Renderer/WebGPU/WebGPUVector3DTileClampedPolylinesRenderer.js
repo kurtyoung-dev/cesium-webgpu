@@ -71,6 +71,20 @@ import {
   texture as textureEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device module cache.
+const _clampedPolylineShaderCaches = new WeakMap();
+
+function getClampedPolylineShaderCache(device) {
+  let cache = _clampedPolylineShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _clampedPolylineShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 const UNIFORM_BUFFER_SIZE = 320;
 const BYTES_PER_BATCH_COLOR = 16;
@@ -271,10 +285,12 @@ fn pickFS(in: VOut) -> @location(0) vec4<f32> {
 }
 `;
 
-  const mod = device.createShaderModule({
-    label: "Vector3DTileClampedPolylines",
+  const mod = getClampedPolylineShaderCache(device).getOrCreate(
+    ShaderSourceId.VECTOR_3DTILE_CLAMPED_POLYLINES,
     code,
-  });
+    0,
+    "Vector3DTileClampedPolylines",
+  );
 
   const sharedBgl = makeBindGroupLayout(
     device,

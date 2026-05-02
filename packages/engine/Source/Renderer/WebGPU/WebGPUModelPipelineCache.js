@@ -39,6 +39,24 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getEffectsBindGroupLayout } from "./WebGPUEffectsBindGroup.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 162) — per-device shader-module cache so
+// every `WebGPUModelPipelineCache` (one per `Model`) on the same `GPUDevice`
+// shares a single compiled `GPUShaderModule` for `ModelPBRComplete.wgsl`.
+// Pipelines themselves stay per-cache (their formats + alphaMode + doubleSided
+// keys differ); only the WGSL compilation is shared.
+const _modelShaderModuleCaches = new WeakMap();
+
+function getModelShaderModuleCache(device) {
+  let cache = _modelShaderModuleCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _modelShaderModuleCaches.set(device, cache);
+  }
+  return cache;
+}
 
 // Alpha mode constants matching glTF spec
 const ALPHA_OPAQUE = 0;
@@ -534,11 +552,17 @@ class WebGPUModelPipelineCache {
       ],
     });
 
-    // Create shader module from the combined VS+FS WGSL source
-    this._shaderModule = device.createShaderModule({
-      label: "Model PBR ShaderModule",
-      code: ModelPBRCompleteWGSL,
-    });
+    // C-R7-SHADER-MODULE-DEDUP (Batch 162) — fetch from the per-device
+    // cache so multiple `Model` instances on the same device share a
+    // single compiled `GPUShaderModule`. The pipeline cache (this class)
+    // stays per-Model because format/alphaMode/doubleSided variants are
+    // per-instance; only the WGSL compilation is amortized.
+    this._shaderModule = getModelShaderModuleCache(device).getOrCreate(
+      ShaderSourceId.MODEL_PBR_COMPLETE,
+      ModelPBRCompleteWGSL,
+      0,
+      "Model PBR ShaderModule",
+    );
 
     // Create default 1x1 textures for missing material textures
     this._defaultWhiteTexture = this._createDefaultTexture(

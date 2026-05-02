@@ -70,6 +70,10 @@ import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
 import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
 import { ensureResources } from "./WebGPUSceneRendererEnsureResources.js";
 import {
+  WebGPUCpuPassProfiler,
+  type CpuPassProfile,
+} from "./WebGPUCpuPassProfiler.js";
+import {
   buildInvertClassificationColorAttachment,
   buildInvertClassificationDepthStencilAttachment,
   isInvertClassificationReady,
@@ -717,6 +721,15 @@ export class WebGPUSceneRenderer {
   // Public underscore: shared with the _ensureResources slice (Batch 142).
   public _deviceInvalidationUnsub: (() => void) | null = null;
 
+  // R-7a (FUTURE_RESEARCH 2026-05-01) — CPU-side per-pass recording-cost
+  // profiler. Disabled by default; toggle via `setCpuPassProfiling(true)`
+  // (or `CesiumDebug.cpuPassCost(true)`). Shared with the frustum-loop
+  // slice via the host interface so per-frustum sub-passes accumulate
+  // into per-frame buckets.
+  public _cpuPassProfiler: WebGPUCpuPassProfiler = new WebGPUCpuPassProfiler(
+    false,
+  );
+
   // --- Lazy initialization ---
 
   /**
@@ -808,7 +821,9 @@ export class WebGPUSceneRenderer {
 
     // --- PICK PASS: Render to pick framebuffer ---
     if (picking) {
-      this._executePickPass(config);
+      this._cpuPassProfiler.beginFrame();
+      this._cpuPassProfiler.time("pick", () => this._executePickPass(config));
+      this._cpuPassProfiler.endFrame();
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — pick frames also call
       // `modelFr.update`, which sets `_sceneHasTransmission` when a
       // transmissive primitive is in view. The pick branch doesn't run
@@ -901,10 +916,16 @@ export class WebGPUSceneRenderer {
       perfManager.beginFrame();
     }
 
+    // R-7a CPU pass profiler — begin the per-frame bucket. No-op when
+    // profiling is disabled.
+    this._cpuPassProfiler.beginFrame();
+
     // --- Shadow cast pass (once per frame, before multi-frustum rendering) ---
     // Renders scene from light's perspective into the shadow map depth texture.
     if (!config.picking) {
-      context.executeShadowMapCastCommands(scene);
+      this._cpuPassProfiler.time("shadow", () =>
+        context.executeShadowMapCastCommands(scene),
+      );
     }
 
     // Opaque near offset to avoid tearing between adjacent frustums
@@ -932,13 +953,19 @@ export class WebGPUSceneRenderer {
     // teardown) extracted to `WebGPUSceneRendererPostFrustumChain.ts`
     // in Batch 141 (Slice D — final slice of the executeCommands
     // decomposition).
-    executePostFrustumChain(
-      this,
-      context,
-      config,
-      frustumCommandsList,
-      perfManager,
+    this._cpuPassProfiler.time("postFrustumChain", () =>
+      executePostFrustumChain(
+        this,
+        context,
+        config,
+        frustumCommandsList,
+        perfManager,
+      ),
     );
+
+    // R-7a CPU pass profiler — close out the per-frame bucket and roll
+    // into the rolling window. No-op when profiling is disabled.
+    this._cpuPassProfiler.endFrame();
   }
 
   // --- Pick pass: render to offscreen pick framebuffer ---
@@ -2107,5 +2134,25 @@ export class WebGPUSceneRenderer {
     }
 
     return commands;
+  }
+
+  // ─── R-7a CPU pass profiler accessors ──────────────────────────────────
+
+  /**
+   * Toggle the CPU-side per-pass recording-cost profiler. Off by default
+   * (zero overhead). Enable from the console via
+   * `CesiumDebug.cpuPassCost(true)` to start collecting samples.
+   */
+  setCpuPassProfiling(enabled: boolean): void {
+    this._cpuPassProfiler.setEnabled(enabled);
+  }
+
+  /**
+   * Get the rolling-window per-pass CPU recording cost profile. Returns
+   * empty `passes` until profiling has been enabled and at least one
+   * frame has run.
+   */
+  getCpuPassProfile(): CpuPassProfile {
+    return this._cpuPassProfiler.getStats();
   }
 }

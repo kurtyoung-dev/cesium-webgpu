@@ -151,6 +151,32 @@ export const ShaderSourceId = Object.freeze({
   VOLUMETRIC_FOG_COMPOSITE: 20,
   POINT_CLOUD: 21,
   POINT_CLOUD_LOD: 22,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 162 (2026-05-02). The combined
+  // glTF model VS+FS PBR shader (`ModelPBRComplete.wgsl`). One
+  // `WebGPUModelPipelineCache` is created per `Model` instance, so a
+  // 100-glTF tileset previously compiled the same WGSL 100 times — this
+  // ID reuses one `GPUShaderModule` across all model instances on a
+  // device. Pipelines themselves stay per-cache (still need per-model
+  // formats, `alphaMode`, `doubleSided` keys); only the module is shared.
+  MODEL_PBR_COMPLETE: 23,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 163 (2026-05-02). Vector 3D Tile
+  // family. WGSL is built inline in each `build*PipelineResources()`
+  // function and is constant per build (only interpolates one chunk).
+  // Each renderer creates its resources per-primitive, so a tileset
+  // with N visible vector tiles previously compiled the same WGSL N
+  // times — these IDs reuse one `GPUShaderModule` per device.
+  VECTOR_3DTILE_PRIMITIVE: 24,
+  VECTOR_3DTILE_POLYLINES: 25,
+  VECTOR_3DTILE_CLAMPED_POLYLINES: 26,
+  // C-R7-SHADER-MODULE-DEDUP — Batch 164 (2026-05-02). BufferPrimitive
+  // family. Each `BufferPrimitiveCollection` builds its own cache and
+  // compiles the same WGSL — small Sandcastle setups have multiple
+  // collections (point + polyline + polygon) and re-add them on
+  // re-bind. Deduping is a modest win per scene but free given the
+  // pattern is already established.
+  BUFFER_POINT_MATERIAL: 27,
+  BUFFER_POLYLINE_MATERIAL: 28,
+  BUFFER_POLYGON_MATERIAL: 29,
 } as const);
 
 /**

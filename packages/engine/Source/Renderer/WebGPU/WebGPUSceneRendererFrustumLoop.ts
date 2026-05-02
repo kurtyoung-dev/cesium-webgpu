@@ -46,6 +46,7 @@ import {
   sortGaussianSplatsBackToFront,
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
+import type { WebGPUCpuPassProfiler } from "./WebGPUCpuPassProfiler.js";
 
 /**
  * SceneRenderer surface the frustum-loop helper reaches back to.
@@ -57,6 +58,7 @@ export interface FrustumLoopHost {
   _sceneFramebuffer: WebGPUSceneFramebuffer | null;
   _oit: WebGPUOIT | null;
   _translucentTileClassification: WebGPUTranslucentTileClassification | null;
+  _cpuPassProfiler: WebGPUCpuPassProfiler;
 
   // ── Field writes ──
   _capturedFrustumRanges: { near: number; far: number }[];
@@ -196,17 +198,21 @@ export function executeFrustumLoop(
 
     // Pass 0: ENVIRONMENT (sky, sun, moon, atmosphere) — once in farthest frustum
     if (i === 0) {
-      host._executePassCommands(
-        frustumCommands,
-        Pass.ENVIRONMENT,
-        scene,
-        context,
-        passState,
+      host._cpuPassProfiler.time("environment", () =>
+        host._executePassCommands(
+          frustumCommands,
+          Pass.ENVIRONMENT,
+          scene,
+          context,
+          passState,
+        ),
       );
     }
 
     // Pass 2: GLOBE
-    host._executeGlobePass(frustumCommands, config);
+    host._cpuPassProfiler.time("globe", () =>
+      host._executeGlobePass(frustumCommands, config),
+    );
 
     // Copy globe depth for terrain clamping and picking.
     // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — pass the scene framebuffer
@@ -269,40 +275,42 @@ export function executeFrustumLoop(
     // THAT depth texture or downstream consumers see globe-only
     // depth and Z-fight tiles. Mirrors the WebGL `depthStencilTexture`
     // argument at `SceneRenderer.js:576`.
-    host._execute3DTilePasses(frustumCommands, config, () => {
-      if (host._globeDepth && config.useGlobeDepthFramebuffer) {
-        const enc: GPUCommandEncoder | undefined =
-          context._currentCommandEncoder;
-        if (enc) {
-          // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — default depth source
-          // is the scene framebuffer's depth (that's where scene
-          // commands actually wrote depth). When invert is on, tile
-          // depth went into the invert FBO instead, so override
-          // with the invert depth texture. Mirrors WebGL's explicit
-          // `depthStencilTexture` argument at
-          // `SceneRenderer.js:549-553` (default) and `:576` (invert).
-          let depthSource: GPUTexture | undefined =
-            host._sceneFramebuffer?.colorTarget?.getDepthTexture();
-          if (config.useInvertClassification) {
-            const invertOwner = (
-              scene as unknown as {
-                _invertClassification?: CesiumObjectWithWebGPUCache;
-              }
-            )._invertClassification;
-            if (invertOwner) {
-              const invertDepth =
-                getInvertClassificationDepthTexture(invertOwner);
-              if (invertDepth) {
-                depthSource = invertDepth;
+    host._cpuPassProfiler.time("3dTiles", () =>
+      host._execute3DTilePasses(frustumCommands, config, () => {
+        if (host._globeDepth && config.useGlobeDepthFramebuffer) {
+          const enc: GPUCommandEncoder | undefined =
+            context._currentCommandEncoder;
+          if (enc) {
+            // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — default depth source
+            // is the scene framebuffer's depth (that's where scene
+            // commands actually wrote depth). When invert is on, tile
+            // depth went into the invert FBO instead, so override
+            // with the invert depth texture. Mirrors WebGL's explicit
+            // `depthStencilTexture` argument at
+            // `SceneRenderer.js:549-553` (default) and `:576` (invert).
+            let depthSource: GPUTexture | undefined =
+              host._sceneFramebuffer?.colorTarget?.getDepthTexture();
+            if (config.useInvertClassification) {
+              const invertOwner = (
+                scene as unknown as {
+                  _invertClassification?: CesiumObjectWithWebGPUCache;
+                }
+              )._invertClassification;
+              if (invertOwner) {
+                const invertDepth =
+                  getInvertClassificationDepthTexture(invertOwner);
+                if (invertDepth) {
+                  depthSource = invertDepth;
+                }
               }
             }
+            context.endCurrentRenderPass?.();
+            host._globeDepth.executeUpdateDepth(enc, depthSource);
+            host._resumeScenePass(context);
           }
-          context.endCurrentRenderPass?.();
-          host._globeDepth.executeUpdateDepth(enc, depthSource);
-          host._resumeScenePass(context);
         }
-      }
-    });
+      }),
+    );
 
     // C-R8 (Batch 35) — VOXELS moved before OPAQUE to match WebGL.
     // `SceneRenderer.js:606` runs `performVoxelsPass` BEFORE
@@ -319,16 +327,20 @@ export function executeFrustumLoop(
         );
       }
     }
-    host._executePassCommands(
-      frustumCommands,
-      Pass.VOXELS,
-      scene,
-      context,
-      passState,
+    host._cpuPassProfiler.time("voxels", () =>
+      host._executePassCommands(
+        frustumCommands,
+        Pass.VOXELS,
+        scene,
+        context,
+        passState,
+      ),
     );
 
     // Pass 8: OPAQUE
-    host._executeOpaquePass(frustumCommands, config);
+    host._cpuPassProfiler.time("opaque", () =>
+      host._executeOpaquePass(frustumCommands, config),
+    );
 
     // Pass 11: GAUSSIAN_SPLATS
     // GS-WSR: If OIT is available and splat commands have OIT variants,
@@ -394,7 +406,9 @@ export function executeFrustumLoop(
     host._captureRefractionScene(config);
 
     // Pass 9: TRANSLUCENT (with OIT if enabled)
-    host._executeTranslucentPass(frustumCommands, config);
+    host._cpuPassProfiler.time("translucent", () =>
+      host._executeTranslucentPass(frustumCommands, config),
+    );
 
     // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — capture translucent
     // depth into the dedicated depth target so classification

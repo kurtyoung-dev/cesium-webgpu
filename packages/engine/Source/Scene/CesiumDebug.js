@@ -79,6 +79,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.postProcess()     — post-process state   ║
 ║  CesiumDebug.canvasPixels()    — sample canvas data    ║
 ║  CesiumDebug.logImageryProbe() — next 4 tile updates   ║
+║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
 ╚══════════════════════════════════════════════════════╝
       `);
     },
@@ -265,6 +266,57 @@ function installCesiumDebug(viewer) {
 
       console.table(info);
       return info;
+    },
+
+    /**
+     * Toggle and dump CPU-side per-pass recording-cost profile (R-7a).
+     * Pass `true` to enable, `false` to disable, or no argument to dump
+     * the current rolling-window stats. Useful for deciding which passes
+     * are worth GPURenderBundle expansion (>5 ms = strong candidate;
+     * <1 ms = not worth it).
+     *
+     * Usage:
+     *   CesiumDebug.cpuPassCost(true)   // enable + reset
+     *   // ... let scene run for several seconds ...
+     *   CesiumDebug.cpuPassCost()       // dump rolling-window stats
+     *   CesiumDebug.cpuPassCost(false)  // disable
+     */
+    cpuPassCost(enabled) {
+      const renderer = scene._alternateSceneRenderer;
+      if (!renderer || typeof renderer.getCpuPassProfile !== "function") {
+        console.warn(
+          "[CesiumDebug] CPU pass profiler unavailable (WebGPU only)",
+        );
+        return;
+      }
+      if (enabled === true || enabled === false) {
+        renderer.setCpuPassProfiling(enabled);
+        console.log(
+          `[CesiumDebug] CPU pass profiling ${enabled ? "ON" : "OFF"}`,
+        );
+        return;
+      }
+      const profile = renderer.getCpuPassProfile();
+      if (!profile.enabled) {
+        console.warn(
+          "[CesiumDebug] CPU pass profiling is OFF — call cpuPassCost(true) first",
+        );
+        return profile;
+      }
+      const rows = Object.values(profile.passes).map((p) => ({
+        pass: p.name,
+        avgMs: p.avgMs.toFixed(3),
+        lastMs: p.lastMs.toFixed(3),
+        minMs: p.minMs.toFixed(3),
+        maxMs: p.maxMs.toFixed(3),
+        samples: p.samples,
+      }));
+      rows.sort((a, b) => Number(b.avgMs) - Number(a.avgMs));
+      console.log(
+        `[CesiumDebug] CPU pass cost (frames=${profile.frameCount}):`,
+      );
+      console.table(rows);
+      return profile;
     },
 
     /**

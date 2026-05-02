@@ -40,10 +40,12 @@ import {
   createVB,
   createIB,
   destroyPickIds,
+  getBufferPrimitiveShaderCache,
   scratchColor,
   scratchCart,
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import type {
   BufferPrimitiveCollection,
   CesiumPickIdRef,
@@ -185,10 +187,12 @@ function initPolygonCache(
     "BufferPolygonMaterial",
     BufferPolygonMaterialWGSL,
   );
-  const shaderModule = device.createShaderModule({
-    label: "BufferPolygonMaterial",
-    code: shaderSource,
-  });
+  const shaderModule = getBufferPrimitiveShaderCache(device).getOrCreate(
+    ShaderSourceId.BUFFER_POLYGON_MATERIAL,
+    shaderSource,
+    0,
+    "BufferPolygonMaterial",
+  );
 
   const bgls = makeCameraBindGroupLayout(device, false);
   const pipeline = buildPolygonPipeline(device, shaderModule, format, bgls);

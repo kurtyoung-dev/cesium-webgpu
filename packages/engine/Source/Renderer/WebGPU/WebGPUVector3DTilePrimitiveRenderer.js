@@ -50,6 +50,21 @@ import {
   texture as textureEntry,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device cache so multiple visible
+// vector tiles share one compiled `GPUShaderModule` for the primitive shader.
+const _vectorTilePrimitiveShaderCaches = new WeakMap();
+
+function getVectorTilePrimitiveShaderCache(device) {
+  let cache = _vectorTilePrimitiveShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _vectorTilePrimitiveShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 const UNIFORM_BUFFER_SIZE = 256;
 const FLOATS_PER_BATCH_COLOR = 4;
@@ -153,10 +168,12 @@ fn pickFS(i: VOut) -> @location(0) vec4<f32> {
 }
 `;
 
-  const mod = device.createShaderModule({
-    label: "Vector3DTilePrimitive",
+  const mod = getVectorTilePrimitiveShaderCache(device).getOrCreate(
+    ShaderSourceId.VECTOR_3DTILE_PRIMITIVE,
     code,
-  });
+    0,
+    "Vector3DTilePrimitive",
+  );
 
   const sharedBgl = makeBindGroupLayout(
     device,

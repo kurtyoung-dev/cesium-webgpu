@@ -42,6 +42,27 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+
+// C-R7-SHADER-MODULE-DEDUP (Batch 164) — single per-device cache shared
+// across all 3 BufferPrimitive renderers. Each per-device cache keys by
+// (sourceId, defines), so one map is enough for Point/Polyline/Polygon —
+// the source IDs are distinct.
+const _bufferPrimitiveShaderCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+export function getBufferPrimitiveShaderCache(
+  device: GPUDevice,
+): WebGPUShaderModuleCache {
+  let cache = _bufferPrimitiveShaderCaches.get(device);
+  if (!cache) {
+    cache = new WebGPUShaderModuleCache(device);
+    _bufferPrimitiveShaderCaches.set(device, cache);
+  }
+  return cache;
+}
 
 /** Type-shape we use to call the JS-only IndexDatatype.createTypedArray. */
 export interface IndexDatatypeStatics {

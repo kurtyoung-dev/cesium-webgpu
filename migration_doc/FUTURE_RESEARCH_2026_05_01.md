@@ -12,29 +12,140 @@ These are NOT commitments — they're triaged starting points for when capacity 
 
 ---
 
-## R-1: NTC — Neural Texture Compression
+## R-1: NTC — Neural Texture Compression for 3D Tiles glTF Materials
 
-**Triage:** `Watch`
+**Triage:** `Watch` for full Inference-on-Sample (browser-gated). **`Prototype` candidates** for two near-term paths: (a) Inference-on-Load as a **download-bandwidth** optimization, and (b) a **latent-resident transcode pool** as a **VRAM-reduction** pattern — both achievable on plain WebGPU compute, both gated only on a real AEC/BIM 3D-Tiles workload showing up.
 
-**What:** NVIDIA's RTX Neural Texture Compression replaces block-compressed textures (BC1–BC7, ASTC) with a tiny MLP that decompresses on-sample. Demonstrated at GTC 2026 reducing texture VRAM by up to 85% (e.g., 6.5 GB → 970 MB for a typical AAA scene).
+**What:** NVIDIA's RTX Neural Texture Compression ([RTXNTC](https://github.com/NVIDIA-RTX/RTXNTC)) replaces a *bundle* of correlated material textures (e.g., albedo+normal+MR+AO+emissive) with a small per-material **latent feature grid + 3-4 layer MLP decoder**. The decoder runs at sample-time (Inference on Sample) or as a one-shot transcode at load (Inference on Load). Reported numbers: ~5 bpp on disk for a typical 9-channel PBR set vs ~12 MB BC7 baseline = **~4.8× over BC7/BC5** and ~2-3× over UASTC at comparable PSNR (35-50 dB).
 
-**Current state:** We support standard codecs already — KTX2/Basis (via `KhronosTextureContainer`-style loaders touched in 10+ files including `WebGPUMipmapGenerator.ts`, `WebGPUFeatureFlags.ts`), plus the underlying BC/ASTC/ETC2 GPU formats when the device exposes them. No neural decode path. Cesium's typical workload is heavily imagery-tile-bound, so VRAM pressure shows up as imagery tile thrash on long flights, not as material textures the way games experience it.
+### Where the actual fit is — 3D Tiles glTF material path, NOT photogrammetry, NOT imagery
 
-**Feasibility:**
-- **NVIDIA SDK** ([RTXNTC](https://github.com/NVIDIA-RTX/RTXNTC)) is open but Tensor-Core-bound. Without Tensor Cores, runtime decode is unviable at real-time speeds.
-- **WebGPU**: no public NTC port. The blocker is matrix-multiply primitives — WebGPU's [cooperative-matrix proposal](https://github.com/gpuweb/gpuweb/issues/4195) is still draft. Subgroups are Chrome-flagged in 2026. Without one or both, you're back to per-thread MLP eval which kills performance.
-- **Adjacent precedent**: [WebSplatter (Feb 2026)](https://arxiv.org/abs/2602.03207) shows what a fully GPU-driven WebGPU compute pipeline can do for 3DGS — wait-free hierarchical radix sort, opacity-aware culling. Same architectural shape NTC would need.
-- **PlayCanvas** comparison was a non-result — they use standard KTX2/Basis like us.
+The earlier draft of this entry assumed photogrammetry was the right target. That's wrong. NTC's win comes from packing **9-16 correlated channels** through a single MLP — the inter-channel correlation is what beats per-texture BCn. The fit shape is:
 
-**What it would take:**
-1. Wait for cooperative-matrix or production-ready subgroups in Chrome stable.
-2. Port the RTXNTC reference WGSL kernels (or wait for someone else to publish).
-3. New texture format pseudo-codec under `Source/Renderer/WebGPU/Texture/` — wraps the standard `GPUTexture` factory but registers a sampler-replacement that issues the MLP eval per-sample (or pre-decodes a tile region into a temp BC7 if real-time decode is too costly).
-4. Sit behind a feature flag in `WebGPUFeatureFlags` keyed on `cooperative-matrix` device feature. Hard fall-back to KTX2/Basis when absent.
+| Cesium texture workload | Channels per material | NTC fit |
+| --- | --- | --- |
+| **Imagery tiles** (ImageryProvider → globe surface) | 1 RGB sRGB layer, no correlation across tiles | **Bad** — Basis/UASTC already wins. NTC has nothing to amortize. |
+| **3D Tiles photogrammetry** (Reality Tiler / Google Photorealistic) | Albedo only (RGB), no normal/MR | **Bad** — single channel group. Worst case for NTC. |
+| **3D Tiles AEC/BIM** + game-quality glTF | Full PBR: baseColor + MR (G+B packed) + normal + AO ± emissive ± clearcoat = 8-12 correlated channels | **Strong** — NTC's design target. |
+| **3D Models** (`Cesium3DTileset` of glTF assets, KHR_materials_*) | Same as AEC/BIM | **Strong** — same path. |
 
-**Recommended next step:** Watch. Quarterly check on (a) WebGPU cooperative-matrix spec progress, (b) any community NTC port. Re-triage to `Prototype` when both land.
+So R-1 narrows from "neural codec for Cesium" to **"neural codec for the glTF material textures that flow through `Model3DTileContent` + the Model renderer."** The imagery tile path stays on KTX2/Basis indefinitely.
 
-**Why this isn't urgent:** Imagery tiles dominate our texture budget, not material textures. A neural codec for imagery is a research problem (the existing NTC is for tiled material textures with mipmap chains; satellite imagery has different statistics). The win for Cesium is much smaller than for a game engine.
+### Current Cesium-WebGPU texture pipeline (where NTC would plug in)
+
+The cesium-webgpu glTF texture flow already has the exact extension hook NTC would need — `KHR_texture_basisu` is the architectural template:
+
+1. **Extension negotiation**: [GltfLoaderUtil.js:49-55](../packages/engine/Source/Scene/GltfLoaderUtil.js) resolves `texture.extensions.KHR_texture_basisu.source` per-texture. Capability flows from `frameState.context.supportsBasis` ([GltfLoader.js:584-586](../packages/engine/Source/Scene/GltfLoader.js)).
+2. **Mime detection + dispatch**: [GltfImageLoader.js:253,292-298](../packages/engine/Source/Scene/GltfImageLoader.js) sniffs `image/ktx2` / `.ktx2` and calls `loadKTX2`.
+3. **Transcoder**: [Core/loadKTX2.js](../packages/engine/Source/Core/loadKTX2.js) → `KTX2Transcoder.js` → `Workers/transcodeKTX2.js` (Basis WASM) returns a `CompressedTextureBuffer` with target `internalFormat` + mip levels.
+4. **Texture creation**: [GltfTextureLoader.js:316-327](../packages/engine/Source/Scene/GltfTextureLoader.js) calls `Texture.create({ source: { arrayBufferView, mipLevels }, pixelFormat })`.
+5. **WebGPU upload**: [WebGPUTexture.ts:448,509](../packages/engine/Source/Renderer/WebGPU/WebGPUTexture.ts) `device.queue.writeTexture` + `getWebGPUCompressionFormat` ([:688-709](../packages/engine/Source/Renderer/WebGPU/WebGPUTexture.ts)) maps to BC1/2/3/7.
+6. **Capability advertisement**: [WebGPUContext.ts:2340](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) `get supportsBasis`.
+
+A hypothetical `EXT_texture_ntc` slots in identically — new mime, new loader, new worker, new context capability flag.
+
+### NTC inference modes — web feasibility per mode
+
+Three canonical NVIDIA modes plus a fourth software pattern that's specific to web (essentially a software-managed Inference-on-Feedback without sparse residency):
+
+| Mode | What runs at sample time | HW/API gating on web | Realistic 2026 status |
+| --- | --- | --- | --- |
+| **Inference on Sample** | Per-texel MLP eval; must pair with **Stochastic Texture Filtering** + temporal denoiser (NTC sample output is unfiltered single-texel — without STF+DLSS-style accumulation the image is dithered noise) | WebGPU `subgroup_matrix` (gpuweb [issue #4195](https://github.com/gpuweb/gpuweb/issues/4195)) — **status: "Needs Decision"** as of mid-2026; Dawn has a prototype on Metal/Vulkan ([dawn/docs/dawn/features/subgroup_matrix.md](https://dawn.googlesource.com/dawn/+/refs/heads/main/docs/dawn/features/subgroup_matrix.md)) but **not in Chrome stable**. Even if `subgroup_matrix` lands, we still need a temporal accumulator — Cesium has no DLSS-class denoiser. | **Blocked.** Browser-gated 12-18 mo for Chrome stable, 18-24+ for cross-browser. Our code-side effort is ~10-15 sessions plus 5-8 for TAA. |
+| **Inference on Load** | Compute-shader transcode `.ntc → BC7/BC5/BC4` at tile load; rendered as standard BCn texture afterward | **Plain WebGPU compute + storage textures.** No subgroup_matrix needed — INT8 DP4a-equivalent fallback path runs as portable WGSL. | **Achievable today.** Win is **~4-5× download bandwidth** (2.5 MB vs 12 MB on-disk) and ~2-3× over UASTC. VRAM stays at BC7 baseline. |
+| **Latent-Resident Transcode Pool** *(software pattern, web-specific)* | Latents resident in VRAM (~5 bpp); fixed-size LRU pool of decoded BC7 working set; compute-dispatch decode latents → BC7 when a tile becomes visible, evict BC7 (keep latents) when it leaves the working set | **Plain WebGPU compute** — same primitives as Inference-on-Load. Reuses Cesium's existing `TileReplacementQueue` / `Cesium3DTileset` cache plumbing for the LRU pool. | **Achievable today.** For a 1000-material scene with 50 visible at a time: 1000 × 2.5 MB latents + 50 × 12 MB working set ≈ **3.1 GB vs 12 GB BC7-only baseline (~75% VRAM reduction)**. Trade: ms-scale decode latency when a tile re-enters the working set. |
+| **Inference on Feedback** | Per-frame Sampler Feedback → decode tiles into sparse BCn pages | DX12-only on the desktop side (Vulkan has no equivalent). WebGPU has no Sampler Feedback or sparse residency. | **Not viable** on web for the foreseeable future. |
+
+**Pure-compute Inference-on-Sample WITHOUT `subgroup_matrix`** is a fifth theoretical option — write the per-thread MLP eval in plain WGSL FMAs. NVIDIA explicitly labels this "validation only — significantly slower than DP4a fallback." For Cesium fragment workloads (~1-2K multiplies per texel × anisotropic taps), expect **10-50× slower than a hardware BC7 sample**. Functionally works, not production-viable.
+
+### Two near-term paths — bandwidth (Inference-on-Load) and VRAM (Latent-Resident Pool)
+
+Both paths share the same offline encoder, on-disk format, and loader infrastructure. The difference is purely runtime: Inference-on-Load decodes once at tile-load and discards latents; the Latent-Resident Pool keeps latents resident and re-decodes on visibility transitions.
+
+**Shared infrastructure (both paths):**
+
+- **Encoder (offline)**: `ntc-cli` from RTXNTC SDK, integrated into Cesium Ion / Reality Tiler pipeline next to the existing `--color-texture-compression KTX2` step. Per [Cesium Reality Tiler V2 docs](https://cesium.com/learn/3d-tiling/on-prem/on-prem-reality-tiler/), the slot exists; ETC1S is what they emit today.
+- **Loader (web)**: `Source/Core/loadNTC.js` parallel to `loadKTX2.js`. Reads the `.ntc` Bundle Manifest, identifies target BCn formats per channel group, dispatches a WGSL compute pipeline that emits BC7/BC5/BC4 byte buffers, hands those to the existing `Texture.create({ source: { arrayBufferView } })` path.
+- **Worker shape**: WebGPU compute can't run in a Worker easily today (one device per main thread is the de facto pattern). The decode is ~ms-scale per tile so doing it on the main thread between frames is acceptable; a future Worker-WebGPU pattern would move it off-thread.
+- **Capability flag**: `context.supportsNTC` gated on `WebGPU + supportsBasis (BC7) + WGSL compute`. Hard fallback to KTX2/Basis when absent — every NTC asset would ship as a `.ntc` + a `.ktx2` fallback the same way `KHR_texture_basisu` falls back to JPEG/PNG.
+
+**Path A — Inference on Load (bandwidth optimization):**
+
+Tile streaming is bandwidth-bound on most workloads; a 4-5× reduction in `.ntc`-vs-`.ktx2` payload size meaningfully reduces time-to-textured-tile on slow networks for AEC/BIM datasets. Decoded BC7 lives in VRAM at full size; latents are discarded after decode. **No VRAM win.** Simplest version of the pattern — basically a "different transcoder for KTX2-shaped data."
+
+**Path B — Latent-Resident Transcode Pool (VRAM reduction):**
+
+Same loader, different residency policy. Keep the compact latents (~5 bpp) resident as the source of truth; allocate a fixed-size pool of BC7 working-set textures that are filled on-demand when a tile becomes visible and freed (latents kept) when it leaves visibility.
+
+- **VRAM math (1000-material AEC/BIM scene, 50 visible)**: today 12 GB BC7; with this scheme **3.1 GB total (~75% reduction)**.
+- **Cost**: re-decode latency when a tile re-enters the working set (one compute dispatch, ms-scale). Mitigated by predictive prefetch when the camera approaches a tile boundary — Cesium already does this for tile loading.
+- **Plumbing**: maps onto `TileReplacementQueue` and `Cesium3DTileset`'s existing LRU cache. The "freeze the tile but keep its source representation" pattern is already there for geometry; adding a parallel for textures is the new piece.
+- **Failure mode**: pool sized too small → thrash (constant decode/evict). Pool sized too large → diminishing VRAM returns. Needs a heuristic tuned per-device (probably tied to `device.limits.maxBufferSize` and a config knob).
+- **This is NOT an NVIDIA-blessed pattern.** It's specific to web's lack of Sampler Feedback / sparse residency. Conceptually it's a software emulation of Inference-on-Feedback's working-set semantics.
+
+### Tooling status
+
+- **`ntc-cli`** + Python wrapper + `convert_gltf_materials.py` exist (RTXNTC SDK).
+- **No KHR glTF extension for NTC.** This would be vendor-extension territory (`EXT_texture_ntc` or `NV_texture_ntc`). Cesium contributing a draft to Khronos is plausible if we go past prototype.
+- **Reference encoder** is CUDA-only (Turing+, Ada+ recommended). The web side only needs the runtime decoder, which is portable.
+- **arxiv 2506.06040** ("Hardware Accelerated Neural Block Texture Compression with Cooperative Vectors", 2025) is the canonical reference for the on-load → BCn transcoding path.
+
+### Limitations to flag up front
+
+- **Photogrammetry won't benefit** — it's the dominant 3D Tiles workload by data volume but the wrong texture shape. R-1 would need to land alongside a parallel photogrammetry-specific compression effort (or just leave photogrammetry on KTX2 ETC1S forever).
+- **Encoder is offline-only and CUDA-bound.** Cesium Ion would need a CUDA encode worker added to the Reality Tiler / 3D-Tiles asset pipeline. Not a runtime concern but a real deployment cost.
+- **Per-material training is grouping-sensitive.** AEC/BIM glTFs with one PBR set per mesh map well. Atlas-packed textures (multiple unrelated materials in one image) defeat the codec — the encoder needs material-identity grouping that photogrammetry pipelines don't preserve.
+- **No KHR extension yet** = no interop guarantee with other glTF tooling. A `.ktx2` fallback is mandatory.
+
+### Recommended next steps
+
+**Effort decomposition for the full Inference-on-Sample path (the high-VRAM-savings target):**
+
+The "12-24 month horizon" is browser-dominated, not effort-dominated. Decomposing:
+
+| Component | Owner | Effort | Status |
+| --- | --- | --- | --- |
+| WebGPU `subgroup_matrix` lands in Chrome stable | Chrome / gpuweb | 12-18 months | Browser-gated, outside our control |
+| Cross-browser parity (Firefox / Safari) | Mozilla / Apple | 18-24+ months | Browser-gated |
+| WGSL port of NTC INT8/FP8 decoder kernels | Us | 2-3 sessions | Can validate against Dawn proto today (Linux/macOS, flag-gated) |
+| Loader infrastructure (`loadNTC.js`, mime, fallback) | Us | 1-2 sessions | Achievable today |
+| Sample-time integration into the Model renderer | Us | 2-3 sessions | Achievable today |
+| Sandcastle demo + benchmarks | Us | 1-2 sessions | Achievable today |
+| **TAA / temporal denoiser** (gates sample-time output quality) | Us | 5-8 sessions | Independently useful (also needed for general AA, motion blur, SSR). `previousViewProjection` plumbing from Batch 27 is one ingredient. |
+
+Total code-side effort: **~10-15 sessions for NTC plus ~5-8 for TAA = 15-23 sessions**, spread over a few weeks of focused work. We hit the browser gate well before we hit the code gate.
+
+**Parallel work paths available today (don't need to wait):**
+
+1. Develop the WGSL kernels against Dawn's flag-gated `subgroup_matrix` prototype on Linux/macOS — validates the codec but can't ship to users until it lands in Chrome stable.
+2. Build TAA independently — useful for several other features regardless of NTC. Already in the deferred work backlog (CSM/TAA session handoff).
+3. Land `loadNTC.js` + the offline encode pipeline targeting Inference-on-Load **first**, so the asset pipeline + extension wiring is ready when sample-time becomes viable.
+
+**Concrete recommendations:**
+
+1. **Watch** the WebGPU `subgroup_matrix` proposal (gpuweb#4195). Re-triage Inference-on-Sample to `Plan` when it lands in Chrome stable.
+2. **Optional Prototype A — Inference on Load** (bandwidth optimization). ~4 sessions:
+   - 1 session: WGSL port of NTC INT8 DP4a decoder, validate against reference output for a single test material.
+   - 2 sessions: end-to-end loader (`loadNTC.js`, mime sniffing, fallback) + Sandcastle demo with one AEC glTF.
+   - 1 session: bandwidth/load-time benchmarks vs KTX2 UASTC.
+3. **Optional Prototype B — Latent-Resident Transcode Pool** (VRAM reduction, web-specific pattern). ~6-8 sessions, builds on Prototype A:
+   - 2-3 sessions: LRU pool manager parallel to `TileReplacementQueue`. Per-device size heuristic. Eviction policy + decode-on-promote.
+   - 1 session: predictive prefetch hook (decode latents into BC7 ahead of camera approach to mitigate decode-latency spikes).
+   - 1 session: Sandcastle demo with a synthetic 1000-material AEC scene to demonstrate the VRAM curve.
+   - 1-2 sessions: pool-size tuning + thrash-detection telemetry.
+4. **Both prototypes gate on the same thing**: a real AEC/BIM 3D-Tiles user with the relevant workload. Not justified by photogrammetry or imagery.
+5. **Don't pursue** Inference-on-Feedback — DX12-only, no WebGPU equivalent.
+6. **Don't pursue** pure-compute Inference-on-Sample without `subgroup_matrix` — 10-50× too slow vs hardware BC7 sample.
+
+### Bottom line
+
+NTC is real, the savings are real, and the integration shape into cesium-webgpu's texture pipeline is well-defined (`KHR_texture_basisu` is the template). The picture across the four modes:
+
+- **Inference on Sample (canonical VRAM win, ~5× over BC7)** — browser-gated 12-18 months for Chrome stable, plus we owe a TAA denoiser (~5-8 sessions, independently useful). Our code piece is small (~10-15 sessions); browser support is the long pole.
+- **Inference on Load (bandwidth win, ~4-5× over BC7 on disk)** — achievable today on plain WebGPU compute. ~4 sessions.
+- **Latent-Resident Transcode Pool (VRAM win, ~75% reduction for AEC/BIM working sets)** — also achievable today. Web-specific software pattern, not NVIDIA-blessed but maps cleanly onto Cesium's existing tile-cache plumbing. ~6-8 sessions on top of Inference-on-Load.
+- **Inference on Feedback** — not viable on web; no Sampler Feedback, no sparse residency.
+
+**The user-facing gate is "an AEC/BIM 3D-Tiles workload with VRAM or bandwidth pressure."** The dominant 3D Tiles workload (photogrammetry) is the wrong texture shape for NTC and won't benefit. Imagery tiles also won't benefit. If/when a user shows up with the right workload, all three viable paths can land in well under a quarter of focused work — and we'd start with Path B (Latent-Resident Pool) if VRAM is the bottleneck, Path A (Inference-on-Load) if bandwidth is, or both since they share the loader.
 
 ---
 
@@ -210,13 +321,52 @@ These are NOT commitments — they're triaged starting points for when capacity 
 
 **Cost:** ~1–2 sessions per renderer-site once a profile points at the highest-ROI target. The plumbing pattern (`asFreezable`, threshold gate, fallback try/catch) is already proven in the three existing sites.
 
+### Profiling infrastructure (landed 2026-05-02)
+
+CPU-side per-pass recording-cost profiler is now wired:
+
+- **Module**: [WebGPUCpuPassProfiler.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUCpuPassProfiler.ts) — rolling-window (60-frame) per-pass timer. Zero overhead when disabled (`time(name, fn)` short-circuits without touching `performance.now()`).
+- **Distinction from existing GPU profiler**: [WebGPUTimestampProfiler.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUTimestampProfiler.ts) measures GPU execution time via timestamp queries; this one measures **CPU JS-side recording cost** — the time spent walking the command list and calling `setPipeline` / `setBindGroup` / `draw` before submission. Bundles attack CPU recording cost specifically.
+- **Instrumented dispatch points** (in [WebGPUSceneRendererFrustumLoop.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts)): `environment`, `globe`, `3dTiles`, `voxels`, `opaque`, `translucent`. Plus `shadow`, `pick`, `postFrustumChain` at the SceneRenderer level. Sub-pass timings within a frustum accumulate into per-frame buckets.
+
+**To collect data:**
+
+```js
+// In the browser console on http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu
+CesiumDebug.cpuPassCost(true);          // enable + reset
+// ... navigate to a representative scene, let it run for several seconds ...
+CesiumDebug.cpuPassCost();               // dump rolling-window stats (sorted by avgMs desc)
+CesiumDebug.cpuPassCost(false);          // disable
+```
+
+**Reading the output:**
+
+| avgMs | Interpretation |
+| --- | --- |
+| < 1 ms | Bundling won't move the needle. Skip. |
+| 1–3 ms | Marginal. Bundle if the pass is also stable across frames; skip if commands churn. |
+| 3–5 ms | Worth bundling. Expect 50-80% CPU cost reduction on stable command lists. |
+| > 5 ms | Strong candidate. Globe terrain hit this range pre-bundling and was the original R-7 win. |
+
+**Suggested test scenes for the first profile pass:**
+
+- **Cesium Viewer default** (Earth + Bing imagery + no 3D Tiles) — baselines `globe` cost.
+- **Cesium Viewer + Cesium World Terrain + Cesium OSM Buildings** — stresses `3dTiles` and `opaque`.
+- **A photogrammetry tileset** (Google Photorealistic 3D Tiles or a public Reality Tiler asset) — stresses `3dTiles` with high draw-call counts.
+- **A scene with translucent geometry + OIT enabled** — stresses `translucent`.
+- **Hover-active workload** — measure `pick` separately (only fires on actual pick frames).
+
+After one collection session, this section should be replaced with measured numbers + a triaged shortlist of the 1-2 highest-ROI bundle expansion sites.
+
 ---
 
 ## Summary Triage Table
 
 | ID | Topic | Triage | Effort to first useful result |
 | --- | --- | --- | --- |
-| R-1 | Neural Texture Compression | Watch | Blocked on WebGPU cooperative-matrix |
+| R-1 | NTC — Inference on Sample (canonical VRAM win) | Watch | Browser-gated 12-18 mo; our code ~15-23 sessions including TAA |
+| R-1a | NTC — Inference on Load (bandwidth win) | Prototype (workload-gated) | ~4 sessions, achievable today |
+| R-1b | NTC — Latent-Resident Transcode Pool (VRAM win, web-specific) | Prototype (workload-gated) | ~6-8 sessions on top of R-1a, achievable today |
 | R-2a | Audit cross-source attribute unification | Plan | 1 session |
 | R-2b | Unified feature-id texture | Plan | 3 sessions |
 | R-2c | GPU-driven cross-source LOD | Plan (research) | 5+ sessions |
