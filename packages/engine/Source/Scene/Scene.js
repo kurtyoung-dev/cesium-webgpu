@@ -2185,6 +2185,20 @@ class Scene {
       );
     }
     //>>includeEnd('debug');
+    // AUDIT_2026_05_02 C.11 — WebGPU scene renderer hard-codes its viewport
+    // to the full canvas (`setViewport(0, 0, _width, _height)`) and ignores
+    // `passState.viewport`, so the per-eye viewport split that
+    // `executeWebVRCommands` performs has no effect. Until the per-eye
+    // viewport plumb lands, fail loudly on WebGPU rather than silently
+    // producing single-eye full-canvas output that masquerades as stereo.
+    if (value && this._context?.isWebGPU) {
+      throw new DeveloperError(
+        "scene.useWebVR is not yet supported on the WebGPU backend. " +
+          "The per-eye viewport split requires plumbing passState.viewport " +
+          "through the WebGPU scene renderer (currently hard-coded to the " +
+          "full canvas).",
+      );
+    }
     this._useWebVR = value;
     if (this._useWebVR) {
       this._frameState.creditDisplay.container.style.visibility = "hidden";

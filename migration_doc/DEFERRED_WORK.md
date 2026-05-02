@@ -1,12 +1,17 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
-**Last Updated:** 2026-04-28 (Batch 79 — C-R8-TRANSLUCENT-DEPTH-ONLY closed; classification architecture pivot)
+**Last Updated:** 2026-05-02 (AUDIT_2026_05_02.md cross-coupling sweep — 100+ findings across 5 clusters; this doc updated with stale-status corrections + new high-priority entries)
 
 This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
 
 Each entry: **What** / **Why deferred** / **Prerequisites** / **Estimated effort** (1 session ~ 1-3 hours) / **Impact** / **Trace**.
 
 This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the heading rather than removing the row.
+
+**Companion docs (cross-reference before scoping):**
+
+- [FEATURE_INVENTORY.md](FEATURE_INVENTORY.md) — exhaustive catalog of existing/new/WIP/future features
+- [AUDIT_2026_05_02.md](AUDIT_2026_05_02.md) — most recent cross-coupling audit; 110+ findings prioritized by severity (BREAKING / PARTIAL / LATENT / STALE STATUS)
 
 ---
 
@@ -62,19 +67,11 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 **Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
 
-### C-R1-COLLECTIONS-PER-ENCODER
+### ~~C-R1-COLLECTIONS-PER-ENCODER~~ — RESOLVED (audit 2026-05-02)
 
-**What:** Five collection renderers (Billboard, Cloud, PointPrimitive, Polyline, Label) don't call `applyPerEncoderState(passEncoder, renderState)` before draw - they rely on default-baked state. Adding the per-encoder call enables custom `setStencilReference` / `setBlendConstant` / `setScissorRect` overrides without rebuilding the pipeline.
+**Audit finding (AUDIT_2026_05_02.md D.2):** All five collection renderers forward `renderState` onto their commands today: `WebGPUBillboardRenderer.js:884`, `WebGPULabelRenderer.js:724`, `WebGPUPointPrimitiveRenderer.js:852/991`, `WebGPUPolylineRenderer.js:1112/1273`, `WebGPUCloudRenderer.ts:596`. `WebGPUDrawCommand.execute()` at `WebGPUDrawCommand.ts:500-504` automatically calls `applyPerEncoderState(passEncoder, this.renderState)` when defined. Custom stencilRef / blendConstant / scissor flow correctly.
 
-**Why deferred:** Collection draws are batched per-collection rather than per-command, so renderState has to be hoisted from a representative member or the collection's owner.
-
-**Prerequisites:** None.
-
-**Estimated effort:** 1 session.
-
-**Impact:** Custom blend constants / stencil refs set on individual entities in a collection are silently ignored. Default-baked state is correct for ~99% of uses.
-
-**Trace:** Batch 39 scope cut in REVIEW_FIX_PROGRESS.md; no explicit marker yet, adding via this entry.
+**Status:** No code change needed; entry preserved as a marker so future audits don't re-investigate.
 
 ### C-R1-GLOBE-RENDERSTATE
 
@@ -445,9 +442,15 @@ The per-vertex `widthMeters` produces extreme magnitudes — most likely because
 
 **Parent finding:** Five WebGPU renderers were missing pick paths. All five shipped at primitive granularity through Batches 30/31/53/54. Three named follow-ups remain.
 
-### NEW-BG-CONSOLIDATION — Model PBR pipeline uses 8 bind groups; spec default is 4
+### ~~NEW-BG-CONSOLIDATION~~ — RESOLVED Batch 122 (audit 2026-05-02)
 
-**What:** `WebGPUModelPipelineCache.js:51-156` declares 8 bind group layouts (camera, material+light, textures, skinning, morphTarget, instancing, featureId, effects → groups 0-7). The WebGPU spec default `maxBindGroups = 4`. On adapters with the default limit (Edge/Vulkan, all backends without an explicit higher tier), pipeline creation fails with `bindGroupLayoutCount (8) is larger than the maximum allowed (4)` — silently, because the failure surfaces async via `popErrorScope` while the synchronous `setPipeline()` call gets an "Invalid RenderPipeline" handle that the validation layer rejects without throwing.
+**Audit finding (AUDIT_2026_05_02.md D.1):** `WebGPUModelPipelineCache.js:545-553` (current line) declares 4 BGLs (camera, material, instance, effects). `ModelPBRComplete.wgsl` only uses `@group(0..3)`. The 8→4 consolidation shipped in Batch 122. The "ALL Model rendering broken on Edge/Vulkan" warning below was true pre-Batch 122 and has been moot for ~10 batches.
+
+**Status:** Resolved. C-R9-MODEL-FEATURE-PICK is no longer blocked by this — it's blocked by the per-vertex-attribute feature-ID path (see new entry NEW-FEATURE-ID-VERTEX-ATTR below).
+
+**Historical record (preserved for archaeology):**
+
+`WebGPUModelPipelineCache.js:51-156` (pre-Batch 122) declared 8 bind group layouts (camera, material+light, textures, skinning, morphTarget, instancing, featureId, effects → groups 0-7). The WebGPU spec default `maxBindGroups = 4`. On adapters with the default limit (Edge/Vulkan, all backends without an explicit higher tier), pipeline creation fails with `bindGroupLayoutCount (8) is larger than the maximum allowed (4)` — silently, because the failure surfaces async via `popErrorScope` while the synchronous `setPipeline()` call gets an "Invalid RenderPipeline" handle that the validation layer rejects without throwing.
 
 **Discovered (2026-04-30) during the C-R9 investigation chain:**
 
@@ -490,9 +493,27 @@ The per-vertex `widthMeters` produces extreme magnitudes — most likely because
 - `model._webgpuCache.primitives === {}` — **the WebGPU model renderer never builds primitive caches for the b3dm-tileset model.**
 - Consequently `ensureFeatureIdResources` is never invoked, `ensurePerFeaturePickIds` never runs, and no per-feature pickIds are allocated.
 
-So the C-R9 work is functionally **un-testable** until the upstream b3dm-Model rendering path lands. Once the b3dm model populates `_webgpuCache.primitives`, the existing per-feature pick code should fire automatically — no further C-R9 work is needed in WebGPU itself. The Cesium3DTile JS-side flag-plumbing is also already done (Batch 100 — `Cesium3DTile.js:1084` sets `depthForTranslucentClassification`).
+**SECONDARY blocking gap (discovered audit 2026-05-02):** Even when b3dm rendering lands, only the texture-based feature ID path will fire. `ModelPBRComplete.wgsl:1915-1929` gates per-feature pick on `FLAG_HAS_FEATURE_ID_TEXTURE`. B3DM tilesets predominantly carry `_BATCHID` vertex attributes, NOT textures. There's no `unpackFeatureIdFromAttribute` path in the shader and no `featureIdAttributeBuffer` binding in the pipeline cache. See new entry **NEW-FEATURE-ID-VERTEX-ATTR** below.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open"); 2026-04-30 reverification confirms shader + JS code wired Batches 100/101.
+So the C-R9 work is functionally **un-testable** until BOTH the upstream b3dm-Model rendering path AND the vertex-attribute feature-ID path land.
+
+**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open"); 2026-04-30 reverification confirms shader + JS code wired Batches 100/101; AUDIT_2026_05_02.md B.2 surfaces the secondary blocker.
+
+### NEW-FEATURE-ID-VERTEX-ATTR
+
+**What:** Per-feature pick on B3DM tilesets requires reading `_BATCHID` vertex attribute (and EXT_mesh_features ID0/ID1/ID2). The texture-based path is wired; the vertex-attribute path is missing.
+
+**Why deferred:** Surfaced by AUDIT_2026_05_02.md after the NEW-BG-CONSOLIDATION reconciliation. Most existing 3D Tiles content uses vertex-attribute feature IDs.
+
+**Prerequisites:** None on the WebGPU side; can land independently. (NEW-BG-CONSOLIDATION blocker for the broader pick chain is already lifted.)
+
+**Estimated effort:** 1 session.
+
+**Implementation:** Wire `_BATCHID` (and EXT_mesh_features ID0/ID1/ID2) vertex attribute as a vertex input slot, plumb through to FS via `@interpolate(flat) @location(N) batchId: u32` (use `flat` interpolation since per-vertex IDs are integer constants per-triangle), and route through `lookupFeaturePickColor`/`lookupBatchColor` from there as the alternative to the texture sample.
+
+**Impact:** B3DM tilesets — the most common 3D Tiles content type — get per-feature pick.
+
+**Trace:** AUDIT_2026_05_02.md B.2.
 
 **Estimated remaining effort:** 0 sessions if the b3dm-Model render path lands separately; the verify script will then pass automatically.
 

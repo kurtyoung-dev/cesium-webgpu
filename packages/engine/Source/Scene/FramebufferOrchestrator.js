@@ -39,8 +39,15 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
 
   environmentState.originalFramebuffer = passState.framebuffer;
 
+  // AUDIT_2026_05_02 C.12 — `SunPostProcess` is a WebGL-only post-process
+  // pipeline. The WebGPU scene renderer never invokes it (sun bloom on
+  // WebGPU lives inside `WebGPUPostProcessPipeline` / Bloom or LensFlare).
+  // Without this guard, every WebGPU viewer with `scene.sunBloom = true`
+  // allocated a `SunPostProcess` instance that was never used, leaking
+  // the WebGL framebuffer + shader resources on each toggle.
+  const isWebGPU = context?.isWebGPU === true;
   if (defined(scene.sun) && scene.sunBloom !== scene._sunBloom) {
-    if (scene.sunBloom && !useWebVR) {
+    if (scene.sunBloom && !useWebVR && !isWebGPU) {
       scene._sunPostProcess = new SunPostProcess();
     } else if (defined(scene._sunPostProcess)) {
       scene._sunPostProcess = scene._sunPostProcess.destroy();

@@ -803,6 +803,12 @@ export class WebGPUSceneRenderer {
       context._sceneColorFormat !== previousSceneColorFormat
     ) {
       context._scenePipelineFormatGeneration += 1;
+      // AUDIT_2026_05_02 B.20 — every cached `GPURenderBundle` bakes its
+      // pipeline's color attachment formats. When the scene color format
+      // flips (HDR toggle, MSAA toggle), bundles that reference the old
+      // pipeline are stale and produce validation errors when replayed
+      // against the new pass encoder. Wipe the bundle cache here.
+      context.renderBundleManager?.invalidateAll?.();
     }
   }
 

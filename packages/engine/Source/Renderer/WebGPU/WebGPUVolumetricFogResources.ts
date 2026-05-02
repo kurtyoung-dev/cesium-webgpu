@@ -119,9 +119,11 @@ export function buildVolumetricFogResources(
   // pipeline gets its own BGL containing only the bindings its entry
   // point references; WebGPU validates per-entry-point.
   // C-R7-SHADER-MODULE-DEDUP (Batch 74) — route the compute shader
-  // through the per-device module cache. The compute pipelines
-  // themselves still use `device.createComputePipeline()` directly
-  // because no central compute-pipeline cache exists yet.
+  // through the per-device module cache. Pipeline-level dedup is
+  // available via `context.webgpuComputePipelineCache` (Batch 76+) but
+  // VolumetricFog is a scene-singleton, so direct pipeline creation
+  // here is fine; adoption would only matter for the multi-instance
+  // case.
   const moduleCache = getVolumetricFogShaderModuleCache(device);
   const computeShaderModule = moduleCache.getOrCreate(
     ShaderSourceId.VOLUMETRIC_FOG_COMPUTE,

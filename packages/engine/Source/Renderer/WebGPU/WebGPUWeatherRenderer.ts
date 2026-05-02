@@ -140,10 +140,12 @@ function initializeWeatherPipelines(
   cache.uniformBuffer?.destroy();
 
   // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route compute shader through
-  // the per-device module cache. Compute pipelines themselves are NOT
-  // cached centrally yet (no `WebGPUComputePipelineCache`), so the three
-  // pipelines still go through `device.createComputePipeline()` directly
-  // — but they do share a single deduped `GPUShaderModule`.
+  // the per-device module cache so all three pipelines share a single
+  // deduped `GPUShaderModule`. Pipeline-level dedup is available via
+  // `context.webgpuComputePipelineCache` (Batch 76+) but the three weather
+  // pipelines are scene-singletons (one Weather instance per scene), so
+  // direct creation is fine here — adoption would only matter for the
+  // multi-instance case.
   const moduleCache = getWeatherShaderModuleCache(device);
   const shaderModule = moduleCache.getOrCreate(
     ShaderSourceId.WEATHER_PARTICLES_COMPUTE,

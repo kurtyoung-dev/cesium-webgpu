@@ -193,6 +193,9 @@ export function ensureResources(
     context._sceneColorFormat !== previousSceneColorFormat
   ) {
     context._scenePipelineFormatGeneration += 1;
+    // AUDIT_2026_05_02 B.20 — invalidate cached render bundles whose
+    // baked pipeline formats no longer match the active scene FB.
+    context.renderBundleManager?.invalidateAll?.();
   }
 
   // OIT (order-independent transparency)

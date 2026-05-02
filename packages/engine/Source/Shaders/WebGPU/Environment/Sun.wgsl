@@ -42,6 +42,28 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Offset in screen space for billboard corners
   clipPos.x += input.direction.x * u.sunSize.x * clipPos.w;
   clipPos.y += input.direction.y * u.sunSize.y * clipPos.w;
+  // AUDIT_2026_05_02 A.10 — horizon occlusion. From a surface-level
+  // camera, the Sun should disappear when below the local horizon
+  // (occluded by Earth). Approximate the local-up direction as
+  // normalize(cameraECEF); the dot of that with the sun direction is
+  // negative when the sun is below the horizon. Collapse the vertex
+  // to a degenerate position to discard the draw without touching the
+  // FS. Soft-twilight band (0.06 ≈ 3.4° below horizon) prevents an
+  // abrupt pop. Orbital cameras (high altitude) almost always satisfy
+  // dot > 0 since the local-up basis loses meaning, so this gates
+  // gracefully without a hard altitude threshold.
+  let cameraECEF = u.encodedCameraHigh + u.encodedCameraLow;
+  let cameraECEFLen = length(cameraECEF);
+  if (cameraECEFLen > 1.0) {
+    let cameraUp = cameraECEF / cameraECEFLen;
+    let sunDir = normalize(positionRTE);
+    let sunUpDot = dot(sunDir, cameraUp);
+    if (sunUpDot < -0.06) {
+      // Sun is well below horizon; collapse to clip-space corner
+      // out of [-1, 1] so all four corners are clipped.
+      clipPos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    }
+  }
   output.position = clipPos;
   output.texCoord = input.direction * 0.5 + 0.5;
   return output;
