@@ -329,20 +329,23 @@ export function ensureResources(
     );
     // TAA is added lazily when scene.taaEnabled = true (not default).
     host._postProcess.addFXAA(device, canvasFormat);
-    // Auto-exposure: add when HDR is on (matches WebGL's
-    // PostProcessStageCollection behavior where autoExposure is
-    // enabled alongside tonemapping). Off by default in SDR mode
-    // because the scene framebuffer values are already [0,1].
-    if (hdr) {
-      // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pipe the central
-      // compute pipeline cache through so AutoExposure routes its two
-      // pipeline creations through it.
-      host._postProcess.addAutoExposure(
-        device,
-        undefined,
-        context?.webgpuComputePipelineCache ?? null,
-      );
-    }
+    // AUDIT_2026_05_02 B.14 — auto-exposure was previously gated behind
+    // `if (hdr)` only, but SDR scenes still need adaptive exposure for
+    // day/night cycles (the moon → sun → night transition can take
+    // luminance from 1.0 → ~0.001 over a clock advance and an SDR
+    // viewer with `enableMoonLight = true` would go fully black with
+    // no recovery). Always-on autoexposure is cheap (one compute pass)
+    // and lets the tone-mapper see a useful exposure value regardless
+    // of HDR vs SDR.
+    //
+    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pipe the central
+    // compute pipeline cache through so AutoExposure routes its two
+    // pipeline creations through it.
+    host._postProcess.addAutoExposure(
+      device,
+      undefined,
+      context?.webgpuComputePipelineCache ?? null,
+    );
   }
   if (host._postProcess && needsResize) {
     host._postProcess.resize(width, height);

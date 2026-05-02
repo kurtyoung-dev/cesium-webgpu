@@ -26,6 +26,7 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 import {
   extractMaterialInfo,
   AlphaModes,
@@ -1193,6 +1194,31 @@ function updateWebGPUModel(model, frameState) {
   if (!model.show || !model.ready) {
     return;
   }
+
+  // AUDIT_2026_05_02 A.7 — surface silent feature gaps that the WebGPU
+  // model path doesn't yet honor. Each warning fires once per process to
+  // alert users instead of letting the feature appear "working" when it
+  // silently no-ops.
+  //>>includeStart('debug', pragmas.debug);
+  if (defined(model.customShader)) {
+    oneTimeWarning(
+      "WebGPUModel.customShader",
+      "Model.customShader is not yet supported on the WebGPU backend. " +
+        "User-supplied GLSL is silently ignored on WebGPU; the model will " +
+        "render with the standard PBR pipeline. Track AUDIT_2026_05_02 A.7.",
+    );
+  }
+  // AUDIT_2026_05_02 A.8 — Model-as-classifier path is unwired on WebGPU.
+  if (defined(model.classificationType)) {
+    oneTimeWarning(
+      "WebGPUModel.classificationType",
+      "Model.classificationType is not yet supported on the WebGPU " +
+        "backend. The model will render as a normal opaque/blended primitive " +
+        "instead of classifying onto terrain or 3D Tiles. Track " +
+        "AUDIT_2026_05_02 A.8.",
+    );
+  }
+  //>>includeEnd('debug');
 
   const commandList = frameState.commandList;
   const context = frameState.context;

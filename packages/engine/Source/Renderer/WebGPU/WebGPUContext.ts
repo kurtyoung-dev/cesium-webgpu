@@ -4010,7 +4010,33 @@ export class WebGPUContext extends GraphicsContext {
       .register("pipelineCache", () => this._webgpuPipelineCache?.clear())
       .register("computePipelineCache", () =>
         this._webgpuComputePipelineCache?.clear(),
-      );
+      )
+      // AUDIT_2026_05_02 C.3 — register orphan caches that hold GPU
+      // handles. After device-loss recovery, cached bundles / buffers /
+      // pipelines reference dead handles; not clearing them here means
+      // replay throws validation errors on the recovered device. All
+      // five `?.` chains and `null` resets are defensive — these
+      // subsystems may be lazy and not yet allocated at recovery time.
+      .register("renderBundleManager", () => {
+        this._renderBundleManager?.destroy();
+        this._renderBundleManager = null;
+      })
+      .register("storageBufferPool", () => {
+        this._storageBufferPool?.destroy?.();
+        this._storageBufferPool = null;
+      })
+      .register("mipmapGenerator", () => {
+        this._mipmapGenerator?.destroy?.();
+        this._mipmapGenerator = null;
+      })
+      .register("timestampProfiler", () => {
+        this._timestampProfiler?.destroy?.();
+        this._timestampProfiler = null;
+      })
+      .register("indirectDrawManager", () => {
+        this._indirectDrawManager?.destroy?.();
+        this._indirectDrawManager = null;
+      });
   }
 
   /**

@@ -1492,13 +1492,18 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
     let aniRotOffset = atan2(aniTex.g * 2.0 - 1.0, aniTex.r * 2.0 - 1.0);
     aniRotation = aniRotation + aniRotOffset;
     aniStrength = aniStrength * aniTex.b;
-    // Build an in-plane axis from the view's right vector rotated by
-    // aniRotation. Stretch H along that axis for an extra GGX lobe.
-    let viewRight = normalize(cross(N, V));
-    let viewUp = normalize(cross(viewRight, N));
+    // AUDIT_2026_05_02 B.5 / NEW-KHR-ANISO-TANGENT — use the authored
+    // glTF TANGENT attribute (already plumbed through FragmentInput as
+    // tangentEC + bitangentEC, see VS lines 595-597) rather than the
+    // view-relative approximation. The spec defines the anisotropy
+    // streak along the per-fragment tangent direction; using `cross(N, V)`
+    // produced wrong streaks on brushed-metal materials with authored
+    // anisotropic UVs.
+    let aniT = normalize(input.tangentEC);
+    let aniB = normalize(input.bitangentEC);
     let cosR = cos(aniRotation);
     let sinR = sin(aniRotation);
-    let aniDir = viewRight * cosR + viewUp * sinR;
+    let aniDir = aniT * cosR + aniB * sinR;
     let TdotH = dot(aniDir, H);
     let aniRough = mix(roughness, 1.0, abs(TdotH) * aniStrength);
     let Daniso = distributionGGX(NdotH, aniRough);

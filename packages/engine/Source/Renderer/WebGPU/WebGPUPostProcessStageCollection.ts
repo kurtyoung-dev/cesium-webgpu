@@ -31,6 +31,7 @@ import {
   WebGPUPostProcessPipeline,
   TonemapMode,
 } from "./WebGPUPostProcessPipeline.js";
+import oneTimeWarning from "../../Core/oneTimeWarning.js";
 
 export interface PostProcessCache {
   initialized: boolean;
@@ -129,6 +130,29 @@ function updateWebGPUPostProcessStages(
     cache.aoBias = ao?.uniforms?.bias ?? 0.1;
   }
 
+  // AUDIT_2026_05_02 A.13 — surface that user-added PostProcessStage
+  // instances aren't yet honored on WebGPU. We walk built-in named slots
+  // above; the user-added `_stages` array (where `scene.postProcessStages.add(...)`
+  // entries land) is currently silently dropped. Warn once per process.
+  //>>includeStart('debug', pragmas.debug);
+  const userStages = (collection as unknown as { _stages?: unknown[] })._stages;
+  if (Array.isArray(userStages)) {
+    let userStageCount = 0;
+    for (const s of userStages) {
+      if (s !== undefined && s !== null) userStageCount++;
+    }
+    if (userStageCount > 0) {
+      oneTimeWarning(
+        "WebGPUPostProcessStageCollection.userStages",
+        `${userStageCount} user-added PostProcessStage instance(s) detected on a ` +
+          "WebGPU scene. User custom GLSL stages are not yet executed on the WebGPU " +
+          "backend; only built-in named slots (fxaa, bloom, ambientOcclusion, " +
+          "depthOfField, tonemapping) are honored. Track AUDIT_2026_05_02 A.13.",
+      );
+    }
+  }
+  //>>includeEnd('debug');
+
   collection._activeStagesChanged = false;
   cache.initialized = true;
 }
@@ -203,7 +227,14 @@ function configureWebGPUPostProcessPipeline(
   // --- Ambient Occlusion: lazily initialize on first enable ---
   if (cache.ambientOcclusionEnabled && !cache.aoInitialized) {
     const ao = collection.ambientOcclusion;
+    // AUDIT_2026_05_02 B.13 — read `algorithm` from user uniforms so
+    // GTAO is reachable without monkey-patching. Falls back to "hbao"
+    // when unset for backwards compatibility.
+    const rawAlgo = ao?.uniforms?.algorithm;
+    const algorithm =
+      rawAlgo === "gtao" || rawAlgo === "hbao" ? rawAlgo : "hbao";
     pipeline.addAmbientOcclusion(device, canvasFormat, {
+      algorithm,
       intensity: ao?.uniforms?.intensity ?? 3.0,
       bias: ao?.uniforms?.bias ?? 0.1,
       lengthCap: ao?.uniforms?.lengthCap ?? 0.26,
