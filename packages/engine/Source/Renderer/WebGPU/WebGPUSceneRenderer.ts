@@ -691,6 +691,18 @@ export class WebGPUSceneRenderer {
   // module (Batch 137).
   public _width: number = 0;
   public _height: number = 0;
+  // Audit C.11 (Batch 132) -- per-frame viewport derived from
+  // `passState.viewport` when present, else the full canvas. Used by
+  // every `setViewport` / `setScissorRect` call in the scene-FB
+  // render-pass setup so split-screen / sub-viewport callers see
+  // their requested rectangle. WebGL takes `passState.viewport`
+  // directly via `Context.uniformState.viewport`; the WebGPU
+  // equivalent threads through this cached quad instead of accepting
+  // the BoundingRectangle each call.
+  public _viewportX: number = 0;
+  public _viewportY: number = 0;
+  public _viewportWidth: number = 0;
+  public _viewportHeight: number = 0;
   // Batch 109 — track last-applied HDR mode so a runtime toggle of
   // `scene.useHDR` triggers a framebuffer recreate even when the
   // window dimensions don't change. Initial value `null` so the
@@ -846,6 +858,34 @@ export class WebGPUSceneRenderer {
   }
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
+
+    // Audit C.11 (Batch 132) -- snapshot the requested viewport once
+    // per frame. `passState.viewport` is the BoundingRectangle the
+    // caller (Scene / pick / OIT) requested; falls back to full canvas
+    // when undefined. Bound + clamp to canvas so a stale rectangle
+    // from a previous resize doesn't blow past the texture extents.
+    const vp = (
+      passState as unknown as {
+        viewport?: { x: number; y: number; width: number; height: number };
+      }
+    ).viewport;
+    if (vp) {
+      this._viewportX = Math.max(0, vp.x | 0);
+      this._viewportY = Math.max(0, vp.y | 0);
+      this._viewportWidth = Math.min(
+        this._width - this._viewportX,
+        vp.width | 0,
+      );
+      this._viewportHeight = Math.min(
+        this._height - this._viewportY,
+        vp.height | 0,
+      );
+    } else {
+      this._viewportX = 0;
+      this._viewportY = 0;
+      this._viewportWidth = this._width;
+      this._viewportHeight = this._height;
+    }
 
     // --- PICK PASS: Render to pick framebuffer ---
     if (picking) {
@@ -1101,19 +1141,23 @@ export class WebGPUSceneRenderer {
     };
     context._currentRenderPassEncoder =
       context._currentCommandEncoder.beginRenderPass(passDesc);
+    // Audit C.11 (Batch 132) -- use the per-frame cached viewport so
+    // split-screen and sub-viewport callers see their requested
+    // rectangle. Falls through to full canvas via the snapshot in
+    // `executeCommands`.
     context._currentRenderPassEncoder.setViewport(
-      0,
-      0,
-      this._width,
-      this._height,
+      this._viewportX,
+      this._viewportY,
+      this._viewportWidth,
+      this._viewportHeight,
       0,
       1,
     );
     context._currentRenderPassEncoder.setScissorRect(
-      0,
-      0,
-      this._width,
-      this._height,
+      this._viewportX,
+      this._viewportY,
+      this._viewportWidth,
+      this._viewportHeight,
     );
   }
 
@@ -1164,19 +1208,20 @@ export class WebGPUSceneRenderer {
         };
         context._currentRenderPassEncoder =
           context._currentCommandEncoder.beginRenderPass(passDesc);
+        // Audit C.11 (Batch 132) -- per-frame viewport.
         context._currentRenderPassEncoder.setViewport(
-          0,
-          0,
-          this._width,
-          this._height,
+          this._viewportX,
+          this._viewportY,
+          this._viewportWidth,
+          this._viewportHeight,
           0,
           1,
         );
         context._currentRenderPassEncoder.setScissorRect(
-          0,
-          0,
-          this._width,
-          this._height,
+          this._viewportX,
+          this._viewportY,
+          this._viewportWidth,
+          this._viewportHeight,
         );
         return;
       }
@@ -1662,8 +1707,23 @@ export class WebGPUSceneRenderer {
     };
 
     const passEncoder = encoder.beginRenderPass(passDesc);
-    passEncoder.setViewport(0, 0, width, height, 0, 1);
-    passEncoder.setScissorRect(0, 0, width, height);
+    // Audit C.11 (Batch 132) -- per-frame viewport rather than full
+    // canvas, so the velocity pass writes only into the requested
+    // sub-rectangle (matches the main color pass).
+    passEncoder.setViewport(
+      this._viewportX,
+      this._viewportY,
+      this._viewportWidth,
+      this._viewportHeight,
+      0,
+      1,
+    );
+    passEncoder.setScissorRect(
+      this._viewportX,
+      this._viewportY,
+      this._viewportWidth,
+      this._viewportHeight,
+    );
 
     context._currentRenderPassEncoder = passEncoder;
 

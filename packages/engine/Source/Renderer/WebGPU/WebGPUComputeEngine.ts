@@ -25,6 +25,14 @@ interface CachedComputePipeline {
 class WebGPUComputeEngine {
   private _device: GPUDevice;
   private _pipelineCache: Map<string, CachedComputePipeline>;
+  // Audit B.18 (Batch 132) -- optional central pipeline cache. When
+  // set (typically via `engine.centralPipelineCache = context.webgpuComputePipelineCache`
+  // after construction), pipeline creation routes through the central
+  // cache so split-screen / multi-context scenes share a single
+  // GPUComputePipeline per shader-source + layout key.
+  private _centralCache:
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null;
   private _isDestroyed: boolean;
 
   constructor(device: GPUDevice) {
@@ -36,7 +44,28 @@ class WebGPUComputeEngine {
 
     this._device = device;
     this._pipelineCache = new Map();
+    this._centralCache = null;
     this._isDestroyed = false;
+  }
+
+  /**
+   * Audit B.18 (Batch 132) -- attach the central
+   * `WebGPUComputePipelineCache` so subsequent `createPipeline` /
+   * `getOrCreatePipeline` / `_ensurePipeline` calls dedupe across
+   * compute-engine instances on the same device. Safe to set null to
+   * detach (test reset).
+   */
+  set centralPipelineCache(
+    cache:
+      | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+      | null,
+  ) {
+    this._centralCache = cache;
+  }
+  get centralPipelineCache():
+    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
+    | null {
+    return this._centralCache;
   }
 
   /**
@@ -260,6 +289,16 @@ class WebGPUComputeEngine {
         })
       : "auto";
 
+    // Audit B.18 (Batch 132) -- prefer central cache for cross-instance
+    // dedup. Falls back to direct create when no central cache attached
+    // (tests, standalone usage).
+    if (this._centralCache && pipelineLayout !== "auto") {
+      return this._centralCache.getOrCreateSync({
+        name: label ?? "ComputePipeline",
+        layout: pipelineLayout,
+        compute: { module: shaderModule, entryPoint },
+      });
+    }
     return this._device.createComputePipeline({
       layout: pipelineLayout,
       compute: {
@@ -334,14 +373,24 @@ class WebGPUComputeEngine {
         })
       : "auto";
 
-    const pipeline = this._device.createComputePipeline({
-      layout: pipelineLayout,
-      compute: {
-        module: shaderModule,
-        entryPoint,
-      },
-      label: `${cacheKey}_Pipeline`,
-    });
+    // Audit B.18 (Batch 132) -- delegate to central cache when present.
+    let pipeline: GPUComputePipeline;
+    if (this._centralCache && pipelineLayout !== "auto") {
+      pipeline = this._centralCache.getOrCreateSync({
+        name: cacheKey,
+        layout: pipelineLayout,
+        compute: { module: shaderModule, entryPoint },
+      });
+    } else {
+      pipeline = this._device.createComputePipeline({
+        layout: pipelineLayout,
+        compute: {
+          module: shaderModule,
+          entryPoint,
+        },
+        label: `${cacheKey}_Pipeline`,
+      });
+    }
 
     this._pipelineCache.set(cacheKey, {
       pipeline,
@@ -376,14 +425,28 @@ class WebGPUComputeEngine {
           })
         : "auto";
 
-      command.computePipeline = this._device.createComputePipeline({
-        layout: pipelineLayout,
-        compute: {
-          module: command.shaderModule,
-          entryPoint: command.entryPoint,
-        },
-        label: `${command.label}_Pipeline`,
-      });
+      // Audit B.18 (Batch 132) -- central cache routing for the
+      // shader-module path too. The "auto" layout case skips the
+      // central cache because layout is required for the cache key.
+      if (this._centralCache && pipelineLayout !== "auto") {
+        command.computePipeline = this._centralCache.getOrCreateSync({
+          name: command.label,
+          layout: pipelineLayout,
+          compute: {
+            module: command.shaderModule,
+            entryPoint: command.entryPoint,
+          },
+        });
+      } else {
+        command.computePipeline = this._device.createComputePipeline({
+          layout: pipelineLayout,
+          compute: {
+            module: command.shaderModule,
+            entryPoint: command.entryPoint,
+          },
+          label: `${command.label}_Pipeline`,
+        });
+      }
     } else if (command.shaderSource) {
       // Compile from source
       command.computePipeline = this.getOrCreatePipeline(
