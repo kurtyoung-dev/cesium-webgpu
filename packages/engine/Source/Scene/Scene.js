@@ -295,7 +295,7 @@ class Scene {
     // Created from the SCENE_RENDERER feature renderer if registered (e.g., WebGPU).
     // This keeps Scene.js free of direct WebGPU imports.
     this._alternateSceneRenderer = null;
-    const sceneRendererFR = context.getFeatureRenderer?.(
+    const sceneRendererFR = context.getFeatureRenderer(
       FeatureRendererKey.SCENE_RENDERER,
     );
     if (sceneRendererFR && sceneRendererFR.RendererClass) {

@@ -539,7 +539,7 @@ function createShaderProgram(groundPolylinePrimitive, frameState, appearance) {
   // stub. The GROUND_POLYLINE feature renderer
   // (`WebGPUGroundPolylineRenderer`) takes over when registered.
   // Audit 2026-05-02: FR-key check per CLAUDE.md §2 backend-agnosticism.
-  if (context.getFeatureRenderer?.(FeatureRendererKey.GROUND_POLYLINE)) {
+  if (context.getFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE)) {
     return;
   }
 
@@ -833,7 +833,7 @@ function updateAndQueueCommands(
   // COLUMBUS_VIEW, MORPHING). Morph uses a separate pipeline pair
   // built alongside the main pipelines.
   const context = frameState.context;
-  const fr = context.getFeatureRenderer?.(FeatureRendererKey.GROUND_POLYLINE);
+  const fr = context.getFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE);
   if (fr && fr.createCommands) {
     const result = fr.createCommands(groundPolylinePrimitive, frameState);
     if (result && result.colorCommand) {

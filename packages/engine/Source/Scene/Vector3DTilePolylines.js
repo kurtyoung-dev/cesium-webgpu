@@ -180,7 +180,7 @@ class Vector3DTilePolylines {
     // from the primitive — `finishVertexArray` skips its own arr-null
     // step on WebGPU so the FR has these to upload to GPU buffers on
     // its first call.
-    const fr = context.getFeatureRenderer?.(
+    const fr = context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_POLYLINE,
     );
     if (fr && fr.createCommands) {
@@ -428,7 +428,7 @@ function finishVertexArray(polylines, context) {
   // the FR cache thereafter (no second copy on WebGPU).
   // Audit 2026-05-02: switched from `rendererType === "webgpu"` to the
   // FR-key check per CLAUDE.md §2 backend-agnosticism rule.
-  if (context.getFeatureRenderer?.(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
+  if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
     const indices = polylines._indices;
     polylines._trianglesLength =
       defined(indices) && indices.length > 0 ? indices.length / 3 : 0;
@@ -639,7 +639,7 @@ function createShaders(primitive, context) {
   // VECTOR_3DTILE_POLYLINE feature renderer (Batch 113) takes over
   // when registered. Audit 2026-05-02: use FR-key check rather than
   // rendererType per CLAUDE.md §2.
-  if (context.getFeatureRenderer?.(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
+  if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
     return;
   }
 

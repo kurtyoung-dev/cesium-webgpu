@@ -56,7 +56,7 @@ class DepthPlane {
     // (no `createCommands`) — its presence alone signals "skip the
     // WebGL-only `ShaderProgram.fromCache` setup; the active backend
     // handles depth-plane rendering itself."
-    if (context.getFeatureRenderer?.(FeatureRendererKey.DEPTH_PLANE)) {
+    if (context.getFeatureRenderer(FeatureRendererKey.DEPTH_PLANE)) {
       return;
     }
 

@@ -833,9 +833,7 @@ function createShaderProgram(classificationPrimitive, frameState) {
   // tracked in DEFERRED_WORK; until it ships, standalone
   // ClassificationPrimitive silently renders as a no-op on WebGPU
   // (same as the prior `isWebGPU` early-return behavior).
-  if (
-    context.getFeatureRenderer?.(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)
-  ) {
+  if (context.getFeatureRenderer(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)) {
     return;
   }
 

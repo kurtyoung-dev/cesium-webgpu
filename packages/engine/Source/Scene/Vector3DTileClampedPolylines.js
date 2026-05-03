@@ -204,7 +204,7 @@ class Vector3DTileClampedPolylines {
     // off the primitive — `finishVertexArray` skips the WebGL
     // VAO/buffer construction + array-null step on WebGPU so the FR
     // has fresh CPU arrays to upload on its first call.
-    const fr = context.getFeatureRenderer?.(
+    const fr = context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
     );
     if (fr && fr.createCommands) {
@@ -475,7 +475,7 @@ function finishVertexArray(polylines, context) {
   // its first `update()` tick.
   // Audit 2026-05-02: FR-key check rather than rendererType per CLAUDE.md §2.
   if (
-    context.getFeatureRenderer?.(
+    context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
     )
   ) {
@@ -745,7 +745,7 @@ function createShaders(primitive, context) {
   // over when registered. Audit 2026-05-02: FR-key check per
   // CLAUDE.md §2.
   if (
-    context.getFeatureRenderer?.(
+    context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
     )
   ) {

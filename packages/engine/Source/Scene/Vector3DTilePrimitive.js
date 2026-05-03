@@ -328,7 +328,7 @@ class Vector3DTilePrimitive {
     // unnecessary on this path (and the GLSL `ShaderProgram.fromCache`
     // calls in `createShaders` would fail under the webgpu-only build
     // variant where `Source/Shaders/*.js` are aliased to empty stubs).
-    const fr = context.getFeatureRenderer?.(
+    const fr = context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE,
     );
     if (fr && fr.createCommands) {
@@ -532,9 +532,7 @@ function createShaders(primitive, context) {
   // FR is found, so this is a defensive belt-and-suspenders check.
   // Use the FR-key shape rather than `context.rendererType === "webgpu"`
   // per CLAUDE.md §2 backend-agnosticism rule (audit 2026-05-02).
-  if (
-    context.getFeatureRenderer?.(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE)
-  ) {
+  if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE)) {
     return;
   }
 
