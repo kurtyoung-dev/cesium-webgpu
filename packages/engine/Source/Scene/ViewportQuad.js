@@ -132,6 +132,15 @@ class ViewportQuad {
           }
         }
 
+        // Audit 2026-05-02: this branch divides on the shader-source format
+        // (WGSL vs GLSL `ShaderSource`) and the uniform-map shape, not on
+        // the command-creation API itself — both branches use the same
+        // `context.createViewportQuadCommand` virtual factory. A full
+        // backend-agnostic fix would require `Material` to return per-
+        // backend shader sources via a virtual method (separate workstream;
+        // tracked under Materials API refactor in DEFERRED_WORK). Until
+        // that lands, the `isWebGPU` check here picks the correct shader
+        // source for the active backend.
         if (context.isWebGPU) {
           // WebGPU path: use WGSL viewport quad shader
           // Material uniforms are resolved per frame via the uniform map

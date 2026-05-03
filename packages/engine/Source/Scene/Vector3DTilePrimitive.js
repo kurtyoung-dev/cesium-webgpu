@@ -526,12 +526,15 @@ function createShaders(primitive, context) {
   // below expect real GLSL source. The webgpu-only build variant
   // aliases every `Source/Shaders/*.js` import to an empty string
   // stub (see `scripts/bundleVariantPlugin.js`), and WebGL would
-  // reject the empty-source compile. There is no WebGPU Vector3DTile
-  // feature renderer yet — the WebGPU code path silently renders
-  // these primitives as no-ops via the alias plugin's empty stubs.
-  // Early-return here so the webgpu-only bundle doesn't crash; on
-  // dual / webgl-only bundles this branch is never taken.
-  if (context.rendererType === "webgpu") {
+  // reject the empty-source compile. The Vector3DTile feature
+  // renderer (Batch 112, key `VECTOR_3DTILE_PRIMITIVE`) takes over
+  // when registered; `update()` above already early-returns when the
+  // FR is found, so this is a defensive belt-and-suspenders check.
+  // Use the FR-key shape rather than `context.rendererType === "webgpu"`
+  // per CLAUDE.md §2 backend-agnosticism rule (audit 2026-05-02).
+  if (
+    context.getFeatureRenderer?.(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE)
+  ) {
     return;
   }
 

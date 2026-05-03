@@ -718,6 +718,25 @@ export abstract class GraphicsContext {
     return this.rendererType === RendererType.WEBGL;
   }
 
+  /**
+   * AUDIT_2026_05_02 — capability getter for "does this backend keep
+   * vertex typed arrays alive after `Buffer.create()` so callers can
+   * read them back later via the loader, or does it discard them?"
+   *
+   * - WebGL: `false` — `Buffer.getBufferData()` exists, so the loader
+   *   discards typed arrays after the GPU upload.
+   * - WebGPU: `true` — no `getBufferData()` equivalent on `GPUBuffer`,
+   *   so consumers (Model renderer, EdgeVisibility stage, b3dm path)
+   *   need the typed array preserved at load time.
+   *
+   * Used by `GltfLoader.js` and `EdgeVisibilityPipelineStage.js` to
+   * gate the typed-array-retention path without backend identity
+   * branching. Default `false` (WebGL behavior); WebGPU overrides.
+   */
+  get requiresVertexTypedArrayRetention(): boolean {
+    return false;
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: CANVAS & DIMENSIONS
   // ═══════════════════════════════════════════════════════════

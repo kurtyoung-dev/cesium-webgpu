@@ -1374,8 +1374,13 @@ function loadVertexAttribute(
   const hasEdgeVisibility = defined(
     gltfExtensions.EXT_mesh_primitive_edge_visibility,
   );
+  // Audit 2026-05-02: switched from `context.isWebGPU` to the capability
+  // getter `requiresVertexTypedArrayRetention` per CLAUDE.md §2 backend-
+  // agnosticism rule. Same effect — WebGPU returns true (no
+  // `GPUBuffer.getBufferData` analog), WebGL returns false.
   const loadTypedArrayForEdgeVisibilityWebGPU =
-    hasEdgeVisibility && frameState.context.isWebGPU === true;
+    hasEdgeVisibility &&
+    frameState.context.requiresVertexTypedArrayRetention === true;
 
   // 2026-04-30 — WebGPU Model renderer needs typed arrays for ALL vertex
   // attributes, not just edge-visibility primitives. The b3dm load path
@@ -1392,7 +1397,9 @@ function loadVertexAttribute(
   // EdgeVisibilityWebGPU retention; broadens it to "any WebGPU primitive."
   // WebGL keeps the prior drop-after-upload behaviour because it has
   // `Buffer.getBufferData`.
-  const loadTypedArrayForWebGPU = frameState.context.isWebGPU === true;
+  // Audit 2026-05-02: see line 1379.
+  const loadTypedArrayForWebGPU =
+    frameState.context.requiresVertexTypedArrayRetention === true;
 
   // Whether the final output should be a buffer or typed array
   // after loading and post-processing.
@@ -1540,7 +1547,9 @@ function loadIndices(
   // its own GPU index buffer; without retention, b3dm content's
   // `runtimePrimitive.renderResources.indices.typedArray` is undefined
   // and the WebGPU primitive cache stays empty.
-  const loadTypedArrayForWebGPU = frameState.context.isWebGPU === true;
+  // Audit 2026-05-02: see line 1379.
+  const loadTypedArrayForWebGPU =
+    frameState.context.requiresVertexTypedArrayRetention === true;
 
   // Whether the final output should be a buffer or typed array
   // after loading and post-processing.

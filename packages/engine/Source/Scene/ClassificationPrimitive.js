@@ -825,7 +825,13 @@ function createShaderProgram(classificationPrimitive, frameState) {
   // plugin's empty stubs. Early-return on WebGPU so the webgpu-only
   // bundle doesn't crash; on dual / webgl-only bundles this branch is
   // never taken.
-  if (context.rendererType === "webgpu") {
+  // Audit 2026-05-02: no `CLASSIFICATION_PRIMITIVE` feature renderer
+  // exists yet, so no FR-key check is possible. This early-return is
+  // the documented architectural debt — ClassificationPrimitive on
+  // WebGPU silently renders as a no-op via the alias-stub mechanism.
+  // Replace with `if (context.getFeatureRenderer?.(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)) return;`
+  // once that FR is created.
+  if (context.isWebGPU) {
     return;
   }
 

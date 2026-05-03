@@ -60,22 +60,18 @@ EdgeVisibilityPipelineStage.process = function (
   frameState.edgeVisibilityRequested = true;
 
   // NEW-4-A (Batch 67): the CPU-side adjacency walk below reads the
-  // primitive's POSITION (and optional FEATURE_ID_0) typed array. On
-  // WebGL, missing typed arrays fall back to `ModelReader.
-  // readAttributeAsTypedArray` → `Buffer.getBufferData` (a sync readback
-  // implemented only on the WebGL Buffer class). WebGPU buffers expose no
-  // sync readback path, so the fallback would throw mid-frame. The
-  // glTF loader (`GltfLoader.loadVertexAttribute`) now retains the typed
-  // array on upload when `frameState.context.isWebGPU` AND the primitive
-  // has EXT_mesh_primitive_edge_visibility, so the typed-array branch
-  // hits unconditionally. This guard is a defensive safety net: if some
-  // future loader path skips the retention, we bail out cleanly instead
-  // of crashing the render loop. The WebGPU edge emitter
-  // (`WebGPUEdgeVisibilityEmitter`) has its own independent CPU-side
-  // adjacency build that the WebGPU model renderer drives directly, so
-  // the visual surface still renders edges.
-  const isWebGPU = frameState.context.isWebGPU === true;
-  if (isWebGPU) {
+  // primitive's POSITION (and optional FEATURE_ID_0) typed array.
+  // Backends without a sync GPU buffer-readback path (i.e., WebGPU)
+  // need the typed array preserved at load time; WebGL falls back to
+  // `Buffer.getBufferData` if the typed array was discarded.
+  // Audit 2026-05-02: switched the test from `context.isWebGPU` to the
+  // capability getter `requiresVertexTypedArrayRetention` per
+  // CLAUDE.md §2 backend-agnosticism rule. Same effect; the WebGPU
+  // edge emitter (`WebGPUEdgeVisibilityEmitter`) builds adjacency
+  // independently and renders edges through its own path.
+  const needsTypedArrayCheck =
+    frameState.context.requiresVertexTypedArrayRetention === true;
+  if (needsTypedArrayCheck) {
     const positionAttribute = ModelUtility.getAttributeBySemantic(
       primitive,
       VertexAttributeSemantic.POSITION,

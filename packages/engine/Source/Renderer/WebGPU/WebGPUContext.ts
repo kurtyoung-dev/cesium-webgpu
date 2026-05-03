@@ -1072,6 +1072,18 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * AUDIT_2026_05_02 — WebGPU has no `GPUBuffer.getBufferData()` analog.
+   * Consumers (Model renderer, EdgeVisibility stage, b3dm path) must
+   * read vertex data from the loader's typed-array cache rather than
+   * via a back-channel from the GPU buffer. Replaces the scattered
+   * `frameState.context.isWebGPU === true` checks in `GltfLoader.js`
+   * and `EdgeVisibilityPipelineStage.js`.
+   */
+  override get requiresVertexTypedArrayRetention(): boolean {
+    return true;
+  }
+
+  /**
    * WebGPU exposes the primitive index-utils compute module that drives
    * `scene.triangulationDebug`. True when both the device and the utils
    * module are ready; false during the pre-init window.

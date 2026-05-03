@@ -473,7 +473,12 @@ function finishVertexArray(polylines, context) {
   // entirely. The decoded shadow-volume attribute arrays stay alive on
   // the primitive so the WebGPU FR can upload them to GPU buffers on
   // its first `update()` tick.
-  if (context.rendererType === "webgpu") {
+  // Audit 2026-05-02: FR-key check rather than rendererType per CLAUDE.md §2.
+  if (
+    context.getFeatureRenderer?.(
+      FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
+    )
+  ) {
     const indices = polylines._indices;
     polylines._trianglesLength =
       defined(indices) && indices.length > 0 ? indices.length / 3 : 0;
@@ -735,10 +740,15 @@ function createShaders(primitive, context) {
 
   // BUILD-VAR-HAZARD-VECTOR3DTILE — see Vector3DTilePrimitive.js for
   // the full rationale. Short version: webgpu-only bundle aliases
-  // GLSL strings to empty stubs; the compile below would crash on
-  // WebGL. WebGPU has no Vector3DTileClampedPolyline feature renderer
-  // yet, so we early-return on WebGPU contexts.
-  if (context.rendererType === "webgpu") {
+  // GLSL strings to empty stubs; the compile below would crash. The
+  // VECTOR_3DTILE_CLAMPED_POLYLINE feature renderer (Batch 114) takes
+  // over when registered. Audit 2026-05-02: FR-key check per
+  // CLAUDE.md §2.
+  if (
+    context.getFeatureRenderer?.(
+      FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
+    )
+  ) {
     return;
   }
 

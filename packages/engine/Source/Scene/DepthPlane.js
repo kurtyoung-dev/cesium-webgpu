@@ -49,7 +49,11 @@ class DepthPlane {
     // path via `WebGPUDepthPlane` in `WebGPUSceneRenderer`, so this
     // WebGL helper has nothing to do on a WebGPU context. Early-return
     // before the compile to keep the webgpu-only bundle viable.
-    if (context.rendererType === "webgpu") {
+    // Audit 2026-05-02: no `DEPTH_PLANE` feature renderer exists; the
+    // WebGPU path uses `WebGPUDepthPlane` inside `WebGPUSceneRenderer`
+    // not via the FR pattern. Replace with FR-key check once
+    // `WebGPUDepthPlane` is registered as a FeatureRenderer.
+    if (context.isWebGPU) {
       return;
     }
 

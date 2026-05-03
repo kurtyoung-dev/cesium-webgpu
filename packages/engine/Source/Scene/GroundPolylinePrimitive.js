@@ -536,11 +536,10 @@ function createShaderProgram(groundPolylinePrimitive, frameState, appearance) {
   // BUILD-VAR-HAZARD-GROUND-POLYLINE — `ShaderProgram.replaceCache`
   // below expects real GLSL source. The webgpu-only build variant
   // aliases every `Source/Shaders/*.js` import to an empty string
-  // stub (see `scripts/bundleVariantPlugin.js`), and WebGL would
-  // reject the empty-source compile. WebGPU has its own ground-
-  // polyline path via `WebGPUGroundPolylineRenderer`, so this WebGL
-  // helper has nothing to do on a WebGPU context. Early-return.
-  if (context.rendererType === "webgpu") {
+  // stub. The GROUND_POLYLINE feature renderer
+  // (`WebGPUGroundPolylineRenderer`) takes over when registered.
+  // Audit 2026-05-02: FR-key check per CLAUDE.md §2 backend-agnosticism.
+  if (context.getFeatureRenderer?.(FeatureRendererKey.GROUND_POLYLINE)) {
     return;
   }
 

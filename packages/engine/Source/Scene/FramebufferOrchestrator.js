@@ -103,8 +103,13 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
     postProcess.ambientOcclusion.enabled ||
     postProcess.fxaa.enabled ||
     postProcess.bloom.enabled;
+  // Audit 2026-05-02: switched the second disjunct from
+  // `context.isWebGPU === true` to the existing `requiresSceneRenderer`
+  // capability getter (true on WebGPU, false on WebGL). Same semantic —
+  // backends that can't blit directly to the canvas need the post-
+  // process chain even when no effects are enabled.
   let usePostProcess = (environmentState.usePostProcess =
-    !picking && (context.isWebGPU === true || hasEffects));
+    !picking && (context.requiresSceneRenderer === true || hasEffects));
   environmentState.usePostProcessSelected = false;
   if (usePostProcess) {
     view.sceneFramebuffer.update(
@@ -118,13 +123,14 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
     postProcess.update(context, frameState.useLogDepth, scene._hdr);
     postProcess.clear(context);
 
-    // WebGPU must keep usePostProcess=true even when the WebGL
-    // PostProcessStageCollection reports ready=false (no stages active).
-    // The WebGPU scene renderer's post-process pipeline handles the
-    // canvas blit independently of the WebGL stage collection.
-    const isWebGPU = context.isWebGPU === true;
+    // Backends that own the canvas blit via their scene renderer
+    // (currently WebGPU) must keep usePostProcess=true even when the
+    // WebGL PostProcessStageCollection reports ready=false (no stages
+    // active). Audit 2026-05-02: routed through `requiresSceneRenderer`
+    // capability getter rather than `isWebGPU` per CLAUDE.md §2.
+    const requiresPostProcessForBlit = context.requiresSceneRenderer === true;
     usePostProcess = environmentState.usePostProcess =
-      isWebGPU || postProcess.ready;
+      requiresPostProcessForBlit || postProcess.ready;
     environmentState.usePostProcessSelected =
       usePostProcess && postProcess.hasSelected;
   }

@@ -3155,10 +3155,15 @@ function submitDrawCommands(model, frameState) {
       modelFr.update(model, frameState);
     }
 
-    // On WebGPU the feature renderer has already produced WebGPUDrawCommands;
-    // running the legacy pipeline-stage chain here would both duplicate work
-    // and push WebGL-shape DrawCommands the WebGPU dispatch ignores.
-    if (!context.isWebGPU) {
+    // When the MODEL feature renderer ran above, it already produced the
+    // backend-native draw commands. Running the legacy pipeline-stage
+    // chain here would duplicate work and push commands the active
+    // dispatch ignores. Audit 2026-05-02: switched the gate from
+    // `context.isWebGPU` to "did the FR run?" per CLAUDE.md §2 — the FR
+    // existence is the actual signal, not the backend identity. Same
+    // effect today (only WebGPU registers a MODEL FR) but the check
+    // generalizes if a future backend / FR is added.
+    if (!modelFr) {
       model._sceneGraph.pushDrawCommands(frameState);
     }
   }
