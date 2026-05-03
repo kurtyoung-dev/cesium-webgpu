@@ -488,6 +488,32 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
+  // ── Backend-handoff marker FRs (audit 2026-05-02) ──
+  // These two registrations exist so scene primitives can use the
+  // FR-key check pattern (CLAUDE.md §2) instead of branching on
+  // `context.isWebGPU`. Each has only the `name` field set so callers
+  // can distinguish a real renderer (has `update`/`createCommands`/
+  // `RendererClass`) from a marker via duck-typing if needed.
+  //
+  // DEPTH_PLANE: `WebGPUDepthPlane` runs inside `WebGPUSceneRenderer`
+  // not via the FR-dispatch loop. The marker's presence alone signals
+  // to `Scene/DepthPlane.js` "skip the WebGL-only `ShaderProgram.fromCache`
+  // setup; the WebGPU scene renderer handles depth-plane rendering
+  // itself."
+  context.registerFeatureRenderer(FeatureRendererKey.DEPTH_PLANE, {
+    name: "DepthPlane (marker — handled by WebGPUSceneRenderer)",
+  });
+
+  // CLASSIFICATION_PRIMITIVE: no full WebGPU renderer exists yet for
+  // standalone ClassificationPrimitive. Marker is a bridge — same
+  // visual outcome as today (WebGPU silently renders nothing for
+  // standalone ClassificationPrimitive), but the §2 violation in
+  // `Scene/ClassificationPrimitive.js` is gone. Replace with a real
+  // renderer when ported (DEFERRED_WORK).
+  context.registerFeatureRenderer(FeatureRendererKey.CLASSIFICATION_PRIMITIVE, {
+    name: "ClassificationPrimitive (marker — full renderer deferred)",
+  });
+
   // ── Globe / Terrain ──
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE, {
     RendererClass: WebGPUGlobeSurfaceRenderer,

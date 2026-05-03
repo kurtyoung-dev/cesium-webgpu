@@ -149,6 +149,27 @@ const FeatureRendererKey = {
   VECTOR_3DTILE_POLYLINE: 43,
   VECTOR_3DTILE_CLAMPED_POLYLINE: 44,
 
+  // ── Backend-handoff marker keys (audit 2026-05-02) ──
+  // These two slots host MARKER FeatureRenderers — they exist so scene
+  // primitives can use the FR-key check pattern (CLAUDE.md §2) instead
+  // of branching on `context.isWebGPU`. The marker's actual rendering
+  // happens elsewhere (or is intentionally a no-op until the full
+  // renderer ships).
+  //
+  // DEPTH_PLANE: `WebGPUDepthPlane` runs inside `WebGPUSceneRenderer`
+  // (not via the FR-dispatch loop). The marker FR lets `Scene/DepthPlane.js`
+  // skip the WebGL-only `ShaderProgram.fromCache` setup without checking
+  // backend identity.
+  //
+  // CLASSIFICATION_PRIMITIVE: no full WebGPU renderer exists yet for
+  // standalone ClassificationPrimitive (Vector3DTile classification has
+  // its own per-tile FRs above). The marker FR is a bridge — same visual
+  // outcome as today (nothing renders standalone ClassificationPrimitive
+  // on WebGPU), but the §2 violation in `Scene/ClassificationPrimitive.js`
+  // is gone. Replace with a real renderer when ported (DEFERRED_WORK).
+  DEPTH_PLANE: 45,
+  CLASSIFICATION_PRIMITIVE: 46,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -161,7 +182,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 45,
+  COUNT: 47,
 };
 
 export default Object.freeze(FeatureRendererKey);

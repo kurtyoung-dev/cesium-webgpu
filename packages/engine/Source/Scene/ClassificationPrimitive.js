@@ -6,6 +6,7 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import GeometryInstance from "../Core/GeometryInstance.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -825,13 +826,16 @@ function createShaderProgram(classificationPrimitive, frameState) {
   // plugin's empty stubs. Early-return on WebGPU so the webgpu-only
   // bundle doesn't crash; on dual / webgl-only bundles this branch is
   // never taken.
-  // Audit 2026-05-02: no `CLASSIFICATION_PRIMITIVE` feature renderer
-  // exists yet, so no FR-key check is possible. This early-return is
-  // the documented architectural debt — ClassificationPrimitive on
-  // WebGPU silently renders as a no-op via the alias-stub mechanism.
-  // Replace with `if (context.getFeatureRenderer?.(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)) return;`
-  // once that FR is created.
-  if (context.isWebGPU) {
+  // Audit 2026-05-02 follow-up: now uses the FR-key check pattern.
+  // The registered CLASSIFICATION_PRIMITIVE FR is currently a MARKER
+  // (no `createCommands`) — its presence signals "skip the WebGL-only
+  // setup". A full WebGPU `WebGPUClassificationPrimitiveRenderer` is
+  // tracked in DEFERRED_WORK; until it ships, standalone
+  // ClassificationPrimitive silently renders as a no-op on WebGPU
+  // (same as the prior `isWebGPU` early-return behavior).
+  if (
+    context.getFeatureRenderer?.(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)
+  ) {
     return;
   }
 

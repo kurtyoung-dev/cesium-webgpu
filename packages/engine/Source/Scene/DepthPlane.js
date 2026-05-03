@@ -14,6 +14,7 @@ import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import ShaderSource from "../Renderer/ShaderSource.js";
 import VertexArray from "../Renderer/VertexArray.js";
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import DepthPlaneFS from "../Shaders/DepthPlaneFS.js";
 import DepthPlaneVS from "../Shaders/DepthPlaneVS.js";
 import SceneMode from "./SceneMode.js";
@@ -49,11 +50,13 @@ class DepthPlane {
     // path via `WebGPUDepthPlane` in `WebGPUSceneRenderer`, so this
     // WebGL helper has nothing to do on a WebGPU context. Early-return
     // before the compile to keep the webgpu-only bundle viable.
-    // Audit 2026-05-02: no `DEPTH_PLANE` feature renderer exists; the
-    // WebGPU path uses `WebGPUDepthPlane` inside `WebGPUSceneRenderer`
-    // not via the FR pattern. Replace with FR-key check once
-    // `WebGPUDepthPlane` is registered as a FeatureRenderer.
-    if (context.isWebGPU) {
+    // Audit 2026-05-02 follow-up: now uses the FR-key check pattern.
+    // `WebGPUDepthPlane` runs inside `WebGPUSceneRenderer` not via the
+    // FR-dispatch loop, so the registered DEPTH_PLANE FR is a marker
+    // (no `createCommands`) — its presence alone signals "skip the
+    // WebGL-only `ShaderProgram.fromCache` setup; the active backend
+    // handles depth-plane rendering itself."
+    if (context.getFeatureRenderer?.(FeatureRendererKey.DEPTH_PLANE)) {
       return;
     }
 
