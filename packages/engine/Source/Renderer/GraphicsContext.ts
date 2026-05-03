@@ -737,6 +737,32 @@ export abstract class GraphicsContext {
     return false;
   }
 
+  /**
+   * AUDIT_2026_05_02 — capability getter for legacy `SunPostProcess`.
+   * WebGL ships a dedicated `SunPostProcess` class that allocates its
+   * own framebuffer + bloom shader chain when `scene.sunBloom = true`.
+   * WebGPU has no equivalent class — sun-bloom on WebGPU is handled
+   * inside `WebGPUPostProcessPipeline` (Bloom + LensFlare) instead.
+   * Default `true` (WebGL allocates `SunPostProcess`); WebGPU overrides
+   * to `false` so `FramebufferOrchestrator` skips the allocation.
+   */
+  get supportsLegacySunBloom(): boolean {
+    return true;
+  }
+
+  /**
+   * AUDIT_2026_05_02 — capability getter for stereo / WebVR rendering.
+   * Both backends could in theory support per-eye viewport split, but
+   * only WebGL has the matching `executeWebVRCommands` viewport-mutation
+   * path wired today; WebGPU's scene renderer hard-codes the full-canvas
+   * viewport. Default `true`; WebGPU overrides to `false` so
+   * `Scene.useWebVR` setter can throw a clear error rather than
+   * silently producing single-eye output.
+   */
+  get supportsStereoViewport(): boolean {
+    return true;
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: CANVAS & DIMENSIONS
   // ═══════════════════════════════════════════════════════════

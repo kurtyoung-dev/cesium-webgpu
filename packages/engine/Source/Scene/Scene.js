@@ -2189,14 +2189,17 @@ class Scene {
     // to the full canvas (`setViewport(0, 0, _width, _height)`) and ignores
     // `passState.viewport`, so the per-eye viewport split that
     // `executeWebVRCommands` performs has no effect. Until the per-eye
-    // viewport plumb lands, fail loudly on WebGPU rather than silently
-    // producing single-eye full-canvas output that masquerades as stereo.
-    if (value && this._context?.isWebGPU) {
+    // viewport plumb lands, fail loudly rather than silently producing
+    // single-eye full-canvas output that masquerades as stereo.
+    // Follow-up 2026-05-02: switched the gate from `isWebGPU` to the
+    // capability getter `supportsStereoViewport` (true on WebGL, false on
+    // WebGPU) per CLAUDE.md §2 backend-agnosticism rule.
+    if (value && this._context?.supportsStereoViewport === false) {
       throw new DeveloperError(
-        "scene.useWebVR is not yet supported on the WebGPU backend. " +
+        "scene.useWebVR is not yet supported on this backend. " +
           "The per-eye viewport split requires plumbing passState.viewport " +
-          "through the WebGPU scene renderer (currently hard-coded to the " +
-          "full canvas).",
+          "through the backend's scene renderer (WebGPU currently hard-codes " +
+          "the full-canvas viewport).",
       );
     }
     this._useWebVR = value;

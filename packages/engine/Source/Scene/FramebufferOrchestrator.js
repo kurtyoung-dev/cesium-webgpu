@@ -45,9 +45,12 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   // Without this guard, every WebGPU viewer with `scene.sunBloom = true`
   // allocated a `SunPostProcess` instance that was never used, leaking
   // the WebGL framebuffer + shader resources on each toggle.
-  const isWebGPU = context?.isWebGPU === true;
+  // Audit 2026-05-02 follow-up: switched the gate from `isWebGPU` to the
+  // capability getter `supportsLegacySunBloom` (true on WebGL, false on
+  // WebGPU) per CLAUDE.md §2.
+  const supportsLegacySunBloom = context?.supportsLegacySunBloom !== false;
   if (defined(scene.sun) && scene.sunBloom !== scene._sunBloom) {
-    if (scene.sunBloom && !useWebVR && !isWebGPU) {
+    if (scene.sunBloom && !useWebVR && supportsLegacySunBloom) {
       scene._sunPostProcess = new SunPostProcess();
     } else if (defined(scene._sunPostProcess)) {
       scene._sunPostProcess = scene._sunPostProcess.destroy();

@@ -1084,6 +1084,28 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * AUDIT_2026_05_02 — WebGPU has no `SunPostProcess` class.
+   * Sun bloom on WebGPU is handled by `WebGPUPostProcessPipeline`
+   * (Bloom + LensFlare). Replaces the `isWebGPU` allocation guard
+   * in `FramebufferOrchestrator.js`.
+   */
+  override get supportsLegacySunBloom(): boolean {
+    return false;
+  }
+
+  /**
+   * AUDIT_2026_05_02 — WebGPU scene renderer hard-codes the full-canvas
+   * viewport (`setViewport(0, 0, _width, _height)`); the per-eye split
+   * `executeWebVRCommands` performs has no effect. Until the per-eye
+   * viewport plumb lands, fail loudly when `scene.useWebVR = true`
+   * rather than silently producing single-eye output. Replaces the
+   * `isWebGPU` guard in `Scene.useWebVR` setter.
+   */
+  override get supportsStereoViewport(): boolean {
+    return false;
+  }
+
+  /**
    * WebGPU exposes the primitive index-utils compute module that drives
    * `scene.triangulationDebug`. True when both the device and the utils
    * module are ready; false during the pre-init window.
