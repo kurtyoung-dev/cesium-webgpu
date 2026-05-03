@@ -104,6 +104,15 @@ class Sync {
   }
 }
 
+// AUDIT_2026_05_02 C.7 — `Sync.create` stays WebGL-specific. The
+// constructor's `WebGL 2 context required` throw at line 28 already
+// handles the wrong-backend case. Backend-agnostic GPU-completion
+// fence dispatch lives on `GraphicsContext.createSync()` instead
+// (Babylon/PlayCanvas-style virtual factory): `Context.js` overrides
+// it to construct this Sync, `WebGPUContext.ts` overrides it to wrap
+// `device.queue.onSubmittedWorkDone()`. Per CLAUDE.md §2 backend-
+// agnosticism rule, scene code should call `context.createSync(...)`
+// not `Sync.create({context: ctx, ...})`.
 Sync.create = function (options) {
   return new Sync(options);
 };

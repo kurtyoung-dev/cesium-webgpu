@@ -624,6 +624,7 @@ export abstract class GraphicsContext {
       // createPickId and getObjectByPickColor are concrete on GraphicsContext
       "readPixels",
       "createViewportQuadCommand",
+      "createSync",
       "destroy",
     ];
 
@@ -1273,6 +1274,30 @@ export abstract class GraphicsContext {
       | { readonly _wgslCode?: string },
     options?: ViewportQuadCommandOptionsBase,
   ): ViewportQuadCommandHandle;
+
+  // ═══════════════════════════════════════════════════════════
+  // ABSTRACT: GPU-COMPLETION FENCE FACTORY
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * AUDIT_2026_05_02 C.7 — backend-agnostic GPU-completion fence.
+   * Mirrors the Babylon / PlayCanvas pattern: subclasses materialize
+   * the right concrete object so scene code can call
+   * `context.createSync(opts)` without branching on `isWebGPU`.
+   *
+   * - WebGL: returns a {@link Sync} wrapping `gl.fenceSync` +
+   *   `gl.clientWaitSync`.
+   * - WebGPU: returns a {@link WebGPUSync} wrapping
+   *   `device.queue.onSubmittedWorkDone()`.
+   *
+   * Both implementations expose the same `waitForSignal(scheduleFn)`
+   * promise-returning API so consumers stay backend-agnostic.
+   */
+  abstract createSync(options?: object): {
+    waitForSignal(scheduleFunction: (cb: () => void) => void): Promise<void>;
+    isDestroyed(): boolean;
+    destroy(): void;
+  };
 
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: DESTROYED STATE

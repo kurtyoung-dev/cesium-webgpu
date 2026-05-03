@@ -14,6 +14,7 @@
 /// <reference types="@webgpu/types" />
 
 import RendererType from "../RendererType.js";
+import WebGPUSync from "./WebGPUSync.js";
 import {
   GraphicsContext,
   GraphicsContextOptions,
@@ -1893,6 +1894,27 @@ export class WebGPUContext extends GraphicsContext {
       // WebGPU-specific: actual buffer for direct access
       _webgpuVertexBuffer: this._viewportQuadVertexBuffer,
     };
+  }
+
+  /**
+   * AUDIT_2026_05_02 C.7 — backend-agnostic GPU-completion fence
+   * factory. WebGPU backend wraps `device.queue.onSubmittedWorkDone()`
+   * via the `WebGPUSync` class. See `GraphicsContext.createSync` for
+   * the contract — both backends expose the same `waitForSignal` API
+   * so consumers stay backend-agnostic.
+   */
+  override createSync(options?: object) {
+    const opts = (options ?? {}) as {
+      device?: GPUDevice;
+      timeoutFrames?: number;
+    };
+    const device = opts.device ?? this._device;
+    if (!device) {
+      throw new DeveloperError(
+        "createSync called before WebGPU device is initialized.",
+      );
+    }
+    return WebGPUSync.create({ device, timeoutFrames: opts.timeoutFrames });
   }
 
   /**

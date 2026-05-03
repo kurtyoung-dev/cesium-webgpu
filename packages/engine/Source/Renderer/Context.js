@@ -1,6 +1,7 @@
 import GraphicsContext from "./GraphicsContext.js";
 import RendererType from "./RendererType.js";
 import Buffer from "./Buffer.js";
+import Sync from "./Sync.js";
 import Check from "../Core/Check.js";
 import Color from "../Core/Color.js";
 import ComponentDatatype from "../Core/ComponentDatatype.js";
@@ -1540,6 +1541,17 @@ class Context extends GraphicsContext {
       framebuffer: overrides.framebuffer,
       pass: overrides.pass,
     });
+  }
+
+  /**
+   * AUDIT_2026_05_02 C.7 — backend-agnostic GPU-completion fence
+   * factory. WebGL backend wraps `gl.fenceSync` + `gl.clientWaitSync`
+   * via the existing {@link Sync} class. See {@link GraphicsContext.createSync}
+   * for the contract.
+   */
+  createSync(options) {
+    const opts = options ?? Frozen.EMPTY_OBJECT;
+    return Sync.create({ ...opts, context: this });
   }
 
   // getObjectByPickColor() and createPickId() are inherited from
