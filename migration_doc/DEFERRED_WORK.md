@@ -194,16 +194,23 @@ that's prohibitive without a precomputed LUT").
 
 ---
 
-### NEW-DYNAMIC-ENVMAP-CAPTURE — render-to-cubemap for DynamicEnvironmentMapManager
+### NEW-DYNAMIC-ENVMAP-SCENE-CAPTURE — render-to-cubemap for atmospheric capture
 
-**What:** Audit A.12 — `WebGPUDynamicEnvironmentMapManager` allocates
-the env cubemap and fills 6 faces with mid-grey on first update; no
-scene capture pass ever runs. Models with `model.environmentMapManager`
-(automatic env capture rather than explicit IBL setup) sample flat
-50% grey for all reflections. Audit A.9 (Batch 130) wired the
-explicit-IBL consumer path so `model.imageBasedLighting =
-new ImageBasedLighting({ specularEnvironmentMaps: "..." })` works
-end-to-end; the dynamic-capture path remains unimplemented.
+**Status (Batch 131):** Procedural-sky path SHIPPED. The manager now
+runs a Hosek-Wilkie-style compute fill into the cubemap (driven by
+`frameState.context.uniformState.sunDirectionWC` + per-manager
+`skyColor` / `groundColor` overrides) and feeds the result into
+`generateIBLMaps` to produce prefiltered irradiance + radiance views.
+Models with no explicit `imageBasedLighting.specularEnvironmentMaps`
+fall back to the manager's prefiltered views via
+`buildModelIBLEntries` in `WebGPUModelRenderer`. Reflections now show
+sun-driven highlights + zenith/ground gradient even on assets that
+never authored an environment map.
+
+**What remains:** True scene-capture path. Procedural sky doesn't
+include other scene content (terrain, 3D Tiles buildings, the actual
+atmosphere/sun/moon renderers). Useful when reflections need to
+incorporate the scene's view from the camera position.
 
 **Why deferred:** Real ~250 LOC feature requiring:
 
@@ -277,41 +284,45 @@ buffer at @group(2) @binding(6) + JS swap-and-upload pattern in
 
 ---
 
-### NEW-KHR-LIGHTS-PUNCTUAL — full feature, not 100 LOC follow-on
+### NEW-KHR-LIGHTS-PUNCTUAL-GLTF-LOADER — glTF auto-import only
 
-**What:** glTF KHR_lights_punctual support — directional / point / spot
-lights authored on glTF nodes drive PBR lighting. Today
-`LightUniforms` carries only `sunDirectionEC` + `sunColor` + ambient,
-so model viewers and lit interiors render with the wrong sun-only
-lighting regardless of the asset's authored lights.
+**Status (Batch 131):** Scene-level light pipeline LANDED. Audit B.3
+shipped the WGSL struct + UBO packing + per-light Cook-Torrance
+accumulation. Users can now do:
 
-**Why deferred:** Audit B.3 (AUDIT_2026_05_02) estimated this at
-~100 LOC under the premise that "data parsed but never sent to FS." A
-follow-up grep (2026-05-03) confirmed KHR_lights_punctual is not
-parsed anywhere in the loader (no `KHR_lights_punctual` references
-outside an updateVersion comment). Real fix needs:
+```js
+scene.lights.add(new PointLight({ position, color, intensity, range }));
+scene.lights.add(new DirectionalLight({ direction, color, intensity }));
+scene.lights.add(new SpotLight({ position, direction, innerConeAngle, ... }));
+```
 
-1. `GltfLoader` extension parser for the scene-level `lights` array
-   (type, color, intensity, range, innerConeAngle, outerConeAngle) +
-   per-node `extensions.KHR_lights_punctual.light` reference (~80 LOC).
-2. Scene-tree walk to compose per-light EC matrix at draw time using
-   the camera's view + the node's world matrix (~50 LOC).
-3. JS-side packing into a `PunctualLight` array UBO with a small fixed
-   cap (typically 8) + active-count uniform (~40 LOC).
-4. WGSL `LightUniforms` struct extension + per-light accumulation
-   loop with directional / point-with-range / spot-with-cone
-   branches (~80 LOC).
-5. Mirror struct change in `Shaders/WebGPU/chunks/structs/LightUniforms.wgsl`,
-   `WGSLBuiltins.ts` packer, and `PhongLighting.wgsl` consumer (~30 LOC).
+and any PBR material rendered through `WebGPUModelRenderer` accumulates
+the light's contribution. Cap is 8 (matches `LightCollection.MAX_LIGHTS`).
 
-Net ~280 LOC across 5 files. The audit's 100-LOC budget would have
-shipped a half-baked scaffold (struct + zero-light accumulator) with
-no loader to populate it — actively misleading because asset authors
-would still see the wrong lighting AND a "lights supported" claim.
-Filed for a dedicated session.
+**What remains:** glTF asset auto-import. When a glTF carries
+`extensions.KHR_lights_punctual` at the document level + per-node
+`extensions.KHR_lights_punctual.light` references, the loader should
+materialize those lights into the model's `LightCollection`
+automatically. Today users have to manually inspect the glTF JSON and
+recreate the lights themselves.
 
-**Trace:** AUDIT_2026_05_02.md §B.3; grep on 2026-05-03 confirmed no
-`KHR_lights_punctual` parsing exists.
+**Scope (~120 LOC):**
+
+1. `GltfLoader` extension reader for `gltf.extensions.KHR_lights_punctual.lights[]` (type, color, intensity, range, spot cone angles).
+2. Per-node walk to find `node.extensions.KHR_lights_punctual.light` + compose world transform from parent chain.
+3. Materialize as `PointLight` / `DirectionalLight` / `SpotLight` instances and merge into the model's owned `LightCollection`.
+4. (Optional) Surface as `model.lights` getter so users can inspect / mutate per-asset.
+
+**Spot-light direction (~30 LOC):** Current shader treats spots as
+"point with cone in the direction of fragment-to-light" -- correct only
+for spots aimed at the fragment. Real fix: extend the JS pack to write
+the spot's direction into a separate slot (currently overlapping
+posOrDir for directional vs position for spot) so the shader can
+gate the cone against the authored direction. Filed as
+`NEW-SPOTLIGHT-DIR` inline in the shader comment.
+
+**Trace:** AUDIT_2026_05_02.md §B.3; Batch 131 commit (scene-level
+wiring); `ModelPBRComplete.wgsl` punctual loop block.
 
 ---
 

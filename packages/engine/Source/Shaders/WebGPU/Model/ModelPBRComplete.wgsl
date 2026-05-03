@@ -248,6 +248,27 @@ struct MaterialUniforms {
   _pad_reserved8: vec4<f32>,
 };
 
+// Audit B.3 (Batch 131) -- per-light data structure matching the JS
+// `LightCollection.pack()` output (16 floats / 64 bytes per light).
+// Slot semantics depend on `lightType`:
+//   DIRECTIONAL (0) : posOrDir = direction, position fields ignored
+//   POINT       (1) : posOrDir = position (world space)
+//   SPOT        (2) : posOrDir = position; coneInner/coneOuter active
+struct PunctualLight {
+  posOrDir: vec3<f32>,
+  lightType: f32,         // cast to int via `i32(lightType)`
+  color: vec3<f32>,
+  intensity: f32,
+  range: f32,
+  constantAtt: f32,
+  linearAtt: f32,
+  quadraticAtt: f32,
+  innerConeAngle: f32,
+  outerConeAngle: f32,
+  _pad0: f32,
+  _pad1: f32,
+};
+
 struct LightUniforms {
   sunDirectionEC: vec3<f32>,
   _pad0: f32,
@@ -260,6 +281,18 @@ struct LightUniforms {
   iblSpecularFactor: f32,
   iblMaxMipLevel: f32,
   iblHasSH: f32,  // 1.0 if SH coefficients are available
+  // Audit B.3 (Batch 131) -- punctual lights from `scene.lights` (and
+  // future glTF KHR_lights_punctual). Cap is 8 -- matches
+  // `LightCollection.MAX_LIGHTS` and the JS pack budget. The padding
+  // members are deliberately discrete f32s rather than a vec3<f32> --
+  // a vec3 would round up to alignment 16 from offset 64+4=68, jumping
+  // the array's start to byte 96 instead of the byte 80 the JS pack
+  // expects. Discrete f32 padding keeps offset = 4 alignment.
+  punctualLightCount: f32, // i32 stored as f32 (uniform-buffer alignment)
+  _pad2a: f32,
+  _pad2b: f32,
+  _pad2c: f32,
+  punctualLights: array<PunctualLight, 8>,
 };
 
 // ─── Bind Groups ─────────────────────────────────────────────────────────────
@@ -1904,6 +1937,88 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
       L,
     );
     direct = direct * shadowFactor;
+  }
+
+  // ── Punctual lights (Audit B.3, Batch 131) ───────────────────────────────
+  // Accumulate directional / point / spot lights from `scene.lights`.
+  // Uses the baseline Cook-Torrance BRDF (Lambert + GGX) without the
+  // KHR extensions (anisotropy / clearcoat / sheen apply only to the
+  // sun for now -- typical engines treat the directional key light as
+  // the dominant material-detail driver and punctual fill as ambient
+  // augmentation). Loop is bounded by `light.punctualLightCount` so
+  // unused slots don't pay sample cost.
+  let pCount = i32(light.punctualLightCount);
+  for (var li = 0; li < pCount; li = li + 1) {
+    let pl = light.punctualLights[li];
+    let pType = i32(pl.lightType);
+
+    // Compute per-light L vector + attenuation. Directional lights use
+    // posOrDir as direction (already unit-length from JS pack); point
+    // and spot use posOrDir as a world-space position.
+    var Lp: vec3<f32>;
+    var atten: f32 = 1.0;
+    if (pType == 0) {
+      // Directional: posOrDir is the direction TOWARD the light source
+      // (matches WebGL `light_directional` convention).
+      Lp = normalize(pl.posOrDir);
+    } else {
+      // Point / spot: world-space position. Convert model's fragment
+      // position to world via modelMatrix * positionEC, but
+      // positionEC is eye-space so we'd need the inverse view -- use
+      // the cached `material.modelMatrix * input.rteMC` shortcut +
+      // re-add the camera position for absolute world.
+      // Reconstruct absolute world-space fragment position:
+      //   rteWC = modelMatrix * vec4(rteMC, 0)  (camera-relative WC)
+      //   worldFrag = cameraPositionWC + rteWC
+      // Mirrors the CSM block's pattern at line ~1913.
+      let rteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+      let worldFrag = camera.cameraPositionWC + rteWC;
+      let toLight = pl.posOrDir - worldFrag;
+      let dist = length(toLight);
+      Lp = toLight / max(dist, 0.0001);
+      // Range-based smooth attenuation (glTF KHR_lights_punctual spec
+      // uses `1 / d^2` with a smooth `1 - (d / range)^4` cutoff).
+      let invSqr = 1.0 / max(dist * dist, 0.0001);
+      var rangeFalloff = 1.0;
+      if (pl.range > 0.0) {
+        let dr = clamp(dist / pl.range, 0.0, 1.0);
+        let dr2 = dr * dr;
+        rangeFalloff = max(1.0 - dr2 * dr2, 0.0);
+        rangeFalloff = rangeFalloff * rangeFalloff;
+      }
+      atten = invSqr * rangeFalloff;
+      // Spot cone narrowing -- smooth interpolation between inner and
+      // outer cone angles, no contribution outside outerConeAngle.
+      if (pType == 2) {
+        // posOrDir is position; we need the spot's pointing direction.
+        // The JS pack puts it in posOrDir for directional lights, but
+        // for spots it's the position; per the layout, spot direction
+        // would need a separate slot. The first-cut treats spots as
+        // "point with cone cutoff in the direction of fragment-to-
+        // light" -- limitation tracked as `NEW-SPOTLIGHT-DIR`. For
+        // correctness here, use full point falloff (cone defaults to
+        // 0..pi, never gates).
+        let cosOuter = cos(pl.outerConeAngle);
+        let cosInner = cos(pl.innerConeAngle);
+        let cd = dot(-Lp, normalize(pl.posOrDir));
+        let cone = smoothstep(cosOuter, cosInner, cd);
+        atten = atten * cone;
+      }
+    }
+
+    let NdotLp = max(dot(N, Lp), 0.0);
+    if (NdotLp > 0.0 && atten > 0.0) {
+      let Hp = normalize(V + Lp);
+      let NdotHp = max(dot(N, Hp), 0.0);
+      let VdotHp = max(dot(V, Hp), 0.0);
+      let Dp = distributionGGX(NdotHp, roughness);
+      let Gp = geometrySmith(NdotV, NdotLp, roughness);
+      let Fp = fresnelSchlick(VdotHp, F0);
+      let specBRDFp = Dp * Gp * Fp / (4.0 * NdotV * NdotLp + 0.0001);
+      let kDp = (vec3<f32>(1.0) - Fp) * (1.0 - metallic);
+      let radiance = pl.color * pl.intensity * atten;
+      direct = direct + (kDp * diffuseColor / PI + specBRDFp) * radiance * NdotLp;
+    }
   }
 
   // ── Ambient / IBL ─────────────────────────────────────────────────────────

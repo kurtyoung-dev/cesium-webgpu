@@ -122,10 +122,28 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats 180-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
-// Light uniform buffer: vec3+pad(sunDir) + vec3+f(sunCol+int) + vec3+pad(ambient)
-//   + f(iblDiffuseFactor, iblSpecularFactor, iblMaxMipLevel, iblHasSH) = 64.
-// Keep in sync with struct LightUniforms in ModelPBRComplete.wgsl.
-const LIGHT_UNIFORM_SIZE = 64;
+// Light uniform buffer layout (Audit B.3 -- Batch 131):
+//   bytes 0-63   : sun + ambient + IBL block (16 floats)
+//                  - 0-3   sunDirectionEC (vec3+pad)
+//                  - 4-7   sunColor (vec3) + sunIntensity
+//                  - 8-11  ambientColor (vec3+pad)
+//                  - 12-15 iblDiffuseFactor, iblSpecularFactor, iblMaxMipLevel, iblHasSH
+//   bytes 64-79  : punctual header (4 floats)
+//                  - 16    punctualLightCount (i32 stored as f32)
+//                  - 17-19 padding
+//   bytes 80-591 : 8 punctual lights * 16 floats = 128 floats
+//                  Per-light layout matches `LightCollection.pack()`:
+//                  - +0..2  direction OR position xyz
+//                  - +3     lightType (0=DIR, 1=POINT, 2=SPOT)
+//                  - +4..6  color rgb
+//                  - +7     intensity
+//                  - +8     range
+//                  - +9..11 const/linear/quadratic attenuation
+//                  - +12..13 inner/outer cone angles (radians)
+//                  - +14..15 padding
+// Total: 64 + 528 = 592 bytes. Keep in sync with struct LightUniforms
+// in ModelPBRComplete.wgsl.
+const LIGHT_UNIFORM_SIZE = 592;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -614,7 +632,28 @@ function packLightUniforms(data, frameState, model) {
     ibl?._specularEnvironmentMapAtlas?._maximumMipmapLevel ??
     5.0;
   data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
+
+  // Audit B.3 (Batch 131) -- punctual lights from `scene.lights`. Pack
+  // into floats 16-147 (528 bytes following the sun+ambient+IBL block).
+  // The `LightCollection.pack()` output is structured to drop directly
+  // into the shader's punctual section so we just memcpy. Renderers
+  // that haven't seen `frameState.lights` yet (or scenes with an empty
+  // collection) leave count = 0 and the FS skips the loop entirely.
+  const lights = frameState.lights;
+  if (lights && lights.length > 0) {
+    const packed = lights.pack(scratchLightPack);
+    data.set(packed, 16);
+  } else {
+    // Zero the punctual region so a previous frame's data doesn't leak
+    // when the collection is cleared mid-session.
+    data.fill(0, 16, 148);
+  }
 }
+
+// Audit B.3 (Batch 131) -- pre-allocated scratch matching
+// `LightCollection.pack()`'s output (132 floats = 528 bytes). Re-used
+// per-call to avoid GC pressure on every model draw.
+const scratchLightPack = new Float32Array(132);
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
@@ -1099,28 +1138,48 @@ function defaultIBLEntries(pipelineCache) {
  * generated mips.
  * @private
  */
-function buildModelIBLEntries(model) {
+function buildModelIBLEntries(model, pipelineCache) {
   const ibl = model?._imageBasedLighting;
-  if (!defined(ibl)) {
+  let specularView = ibl?._webgpuSpecularView;
+  let diffuseView = ibl?._webgpuDiffuseView;
+  let sampler = ibl?._webgpuSampler;
+  const shBuffer = ibl?._webgpuSHBuffer;
+
+  // Audit A.12 (Batch 131) -- when the explicit IBL hasn't generated
+  // (no `specularEnvironmentMaps` configured), fall back to the
+  // model's `environmentMapManager` procedural-sky cubemap. The
+  // manager runs a procedural sky compute pass + the same
+  // `generateIBLMaps` prefilter as explicit IBL, so the fallback views
+  // are first-class -- not a placeholder.
+  const envManager = model?.environmentMapManager;
+  if (defined(envManager)) {
+    if (!defined(diffuseView) && defined(envManager._webgpuIBLDiffuseView)) {
+      diffuseView = envManager._webgpuIBLDiffuseView;
+    }
+    if (!defined(specularView) && defined(envManager._webgpuIBLSpecularView)) {
+      specularView = envManager._webgpuIBLSpecularView;
+    }
+    if (!defined(sampler) && defined(envManager._webgpuIBLSampler)) {
+      sampler = envManager._webgpuIBLSampler;
+    }
+  }
+
+  if (!defined(specularView) || !defined(diffuseView) || !defined(sampler)) {
     return null;
   }
-  const specularView = ibl._webgpuSpecularView;
-  const diffuseView = ibl._webgpuDiffuseView;
-  const sampler = ibl._webgpuSampler;
-  const shBuffer = ibl._webgpuSHBuffer;
-  if (
-    !defined(specularView) ||
-    !defined(diffuseView) ||
-    !defined(sampler) ||
-    !defined(shBuffer)
-  ) {
-    return null;
-  }
+  // SH falls back to the cache's default (zeros + inactive flag) when
+  // neither the explicit IBL nor the env manager publishes one. The
+  // shader gates on `sh.control.w` so the default just makes the
+  // diffuse path use the irradiance cubemap (which is what we want
+  // when the env manager is the source).
+  const shResource = defined(shBuffer)
+    ? { buffer: shBuffer }
+    : { buffer: pipelineCache.defaultSHBuffer };
   return [
     { binding: 33, resource: diffuseView },
     { binding: 34, resource: specularView },
     { binding: 35, resource: sampler },
-    { binding: 36, resource: { buffer: shBuffer } },
+    { binding: 36, resource: shResource },
   ];
 }
 
@@ -1957,7 +2016,7 @@ function updateWebGPUModel(model, frameState) {
       const modelRenderState = rpDrawCommand?._command?.renderState;
 
       // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
-      const iblEntries = buildModelIBLEntries(model);
+      const iblEntries = buildModelIBLEntries(model, pipelineCache);
       const mergedMaterialBG = buildMergedMaterialBindGroup(
         device,
         pipelineCache,
