@@ -207,6 +207,59 @@ function htmlTemplate(bundlePath, rendererType) {
         }
         tick();
       });
+
+      // AUDIT_2026_05_02 C.10 — pixel-verification gate. Previously this
+      // script just counted frames and called it ready, so a black canvas
+      // (silent fallback to WebGL after WebGPU init failure, missing
+      // post-process blit, etc.) passed the smoke test. Sample a handful
+      // of canvas pixels and require non-uniform output. We sample 25
+      // points in a 5×5 grid (skipping the exact center which on the
+      // default viewer can land on the navigation widget).
+      try {
+        const canvas = viewer.scene.canvas || viewer.canvas;
+        if (!canvas) {
+          throw new Error("No canvas on viewer");
+        }
+        // Use the WebGL context for read; for WebGPU draw to a 2D canvas
+        // first since gpuCtx.canvas.toDataURL only works after a present.
+        const w = canvas.width;
+        const h = canvas.height;
+        const tmp = document.createElement("canvas");
+        tmp.width = w;
+        tmp.height = h;
+        const ctx2d = tmp.getContext("2d");
+        ctx2d.drawImage(canvas, 0, 0);
+        const pixels = [];
+        for (let i = 1; i <= 5; i++) {
+          for (let j = 1; j <= 5; j++) {
+            if (i === 3 && j === 3) continue; // skip center
+            const x = Math.floor((w * i) / 6);
+            const y = Math.floor((h * j) / 6);
+            const px = ctx2d.getImageData(x, y, 1, 1).data;
+            pixels.push([px[0], px[1], px[2]]);
+          }
+        }
+        // Non-uniform = at least 2 distinct RGB triplets in our sample
+        const unique = new Set(pixels.map((p) => p.join(",")));
+        if (unique.size < 2) {
+          throw new Error(
+            "Canvas appears uniform (" +
+              unique.size +
+              " distinct pixels in 24 samples). Likely a black canvas / " +
+              "silent backend fallback / missing post-process blit. " +
+              "First pixel: " + Array.from(unique)[0],
+          );
+        }
+        window.__smokePixelCount = unique.size;
+      } catch (pixErr) {
+        window.__smokeErrors.push(
+          "pixel-verify: " +
+            (pixErr && pixErr.stack ? pixErr.stack : String(pixErr)),
+        );
+        window.__smokeReady = "failed";
+        return;
+      }
+
       window.__smokeReady = true;
     } catch (err) {
       window.__smokeErrors.push("boot: " + (err && err.stack ? err.stack : String(err)));
@@ -313,6 +366,13 @@ async function runVariant(browserType, args, variant) {
     const ready = await readyState.jsonValue();
     const pageErrors = await page.evaluate(() => window.__smokeErrors || []);
     errors.push(...pageErrors);
+    // AUDIT_2026_05_02 C.10 — pixel-verification result. `__smokePixelCount`
+    // is the number of distinct RGB values sampled from a 5×5 grid on the
+    // canvas; under 2 means the pixel-verify gate failed (canvas appears
+    // uniform → black canvas / silent fallback).
+    const pixelCount = await page.evaluate(
+      () => window.__smokePixelCount ?? null,
+    );
     const debugInfo = await page.evaluate(() => ({
       cesiumBaseUrl: typeof window.CESIUM_BASE_URL !== "undefined" ? String(window.CESIUM_BASE_URL) : "<unset>",
       setBaseUrlCalled: window.__smokeSetBaseUrlCalled ?? "<never>",
@@ -347,6 +407,7 @@ async function runVariant(browserType, args, variant) {
     console.log(`  [debug] buildModuleUrl(Assets/approximateTerrainHeights.json)="${debugInfo.buildModuleUrlAssets}"`);
     console.log(`  [debug] getCesiumBaseUrl().url="${debugInfo.baseResourceUrl}"`);
     console.log(`  [debug] context.rendererType="${debugInfo.contextType}" navigator.gpu=${debugInfo.webgpuAvailable}`);
+    console.log(`  [debug] pixel-verify distinct samples=${pixelCount ?? "<not run>"}`);
 
     const status =
       ready === true && errors.length === 0 ? "PASS" : "FAIL";

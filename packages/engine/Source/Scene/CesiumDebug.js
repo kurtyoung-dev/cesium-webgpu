@@ -80,6 +80,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.canvasPixels()    — sample canvas data    ║
 ║  CesiumDebug.logImageryProbe() — next 4 tile updates   ║
 ║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
+║  CesiumDebug.gpuPassCost()     — GPU per-pass cost (timestamp) ║
 ╚══════════════════════════════════════════════════════╝
       `);
     },
@@ -317,6 +318,58 @@ function installCesiumDebug(viewer) {
       );
       console.table(rows);
       return profile;
+    },
+
+    /**
+     * AUDIT_2026_05_02 C.5 — dump GPU-side per-pass timing from
+     * `WebGPUTimestampProfiler`. Requires the `timestamp-query` device
+     * feature to be enabled (gated by `WebGPUFeatureFlags`); on adapters
+     * without it, the profiler still allocates but `getResults()` returns
+     * `enabled: false`.
+     *
+     * Unlike CPU pass cost, GPU timings show the actual shader-execution
+     * cost on the device — useful for deciding which passes are GPU-bound
+     * (lower values for compute or simpler shaders, higher for fillrate-
+     * bound passes like Bloom or AO).
+     *
+     * Usage:
+     *   CesiumDebug.gpuPassCost()        // dump rolling-window stats
+     */
+    gpuPassCost() {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU) {
+        console.warn("[CesiumDebug] GPU pass profiler is WebGPU-only");
+        return;
+      }
+      const profiler = ctx.timestampProfiler;
+      if (!profiler) {
+        console.warn(
+          "[CesiumDebug] timestamp-query feature not available on this adapter",
+        );
+        return;
+      }
+      const results = profiler.getResults();
+      if (!results.enabled) {
+        console.warn(
+          "[CesiumDebug] GPU pass profiler is disabled (timestamp-query " +
+            "feature not active or not yet sampled)",
+        );
+        return results;
+      }
+      const rows = Object.entries(results.passes).map(([name, p]) => ({
+        pass: name,
+        avgMs: p.avgMs.toFixed(3),
+        lastMs: p.lastMs.toFixed(3),
+        minMs: p.minMs.toFixed(3),
+        maxMs: p.maxMs.toFixed(3),
+      }));
+      rows.sort((a, b) => Number(b.avgMs) - Number(a.avgMs));
+      console.log(
+        `[CesiumDebug] GPU pass cost (frame=${results.frameMs.toFixed(3)}ms ` +
+          `avg=${results.frameAvgMs.toFixed(3)}ms frames=${results.frameCount}):`,
+      );
+      console.table(rows);
+      return results;
     },
 
     /**

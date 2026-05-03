@@ -4,6 +4,21 @@
  * Zero-copy video texture integration using GPUExternalTexture.
  * Imports video frames directly to GPU without CPU-side pixel copies.
  *
+ * **STATUS: ORPHANED (2026-05-02 audit C.6).** This module compiles
+ * into the bundle but has no consumer — never instantiated, never
+ * registered as a feature renderer, never wired through `Material`
+ * uploads. Video imagery on WebGPU today goes through
+ * `WebGPUImageUpload.ts:114-167` which DOES handle `HTMLVideoElement`
+ * via per-frame `copyExternalImageToTexture` (one CPU→GPU copy per
+ * frame). The zero-copy `importExternalTexture` path this module
+ * was built for is the perf opportunity left on the table.
+ *
+ * Wiring this in would replace the per-frame copy with `texture_external`
+ * binding in the relevant material shaders. ~80 LOC across Material
+ * upload + a new BGL slot in `WebGPUEffectsBindGroup` (or material BGL).
+ * Track in DEFERRED_WORK if an actual user shows up with a perf-bound
+ * video-on-terrain workload.
+ *
  * CesiumJS has video imagery providers that stream video overlays onto
  * terrain. With WebGL, each video frame requires readPixels + texImage2D.
  * With WebGPU's importExternalTexture(), the browser gives the GPU direct
