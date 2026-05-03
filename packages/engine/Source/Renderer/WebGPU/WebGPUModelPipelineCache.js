@@ -156,15 +156,35 @@ function createBindGroupLayouts(device) {
       uniformBuffer(30, Stage.FRAGMENT), // featureId UBO
       texture(31, Stage.FRAGMENT), // featurePick
       sampler(32, Stage.FRAGMENT),
+      // Audit A.9 (Batch 130) — IBL cubemap bindings. The
+      // WebGPUImageBasedLighting pipeline already produces irradiance +
+      // radiance cubemaps from the source environment map; this BGL
+      // exposes them so the FS can replace the hardcoded vec3(0.2)
+      // ambient with proper split-sum sampling. SH coefficients
+      // (binding 36) optionally short-circuit the irradiance cubemap
+      // sample in favor of cheap analytic evaluation.
+      texture(33, Stage.FRAGMENT, { viewDimension: "cube" }), // iblDiffuseTexture (irradiance)
+      texture(34, Stage.FRAGMENT, { viewDimension: "cube" }), // iblSpecularTexture (radiance)
+      sampler(35, Stage.FRAGMENT), // iblSampler
+      uniformBuffer(36, Stage.FRAGMENT), // sphericalHarmonics UBO
     ],
   );
 
   // ── Group 2: INSTANCE ── per-instance vertex stage data.
+  // Audit A.5 (Batch 130) — binding 4 carries the PREVIOUS frame's
+  // joint matrices so the velocity pass can compute prevPositionMC
+  // by re-running skinning with the previous-frame poses. Without it,
+  // TAA reprojects from `previousModelMatrix * currentSkinnedPosition`
+  // — phantom motion vectors that ghost across animated characters.
+  // Defaults to the identity-matrix buffer (same as binding 0's
+  // default) so non-skinned primitives degrade to "prev == current"
+  // → zero skinning velocity contribution.
   const instanceBGL = makeBindGroupLayout(device, "Model Instance BGL", [
     storageBuffer(0, Stage.VERTEX, { readOnly: true }), // joint matrices
     storageBuffer(1, Stage.VERTEX, { readOnly: true }), // morph deltas
     uniformBuffer(2, Stage.VERTEX), // morph weights
     storageBuffer(3, Stage.VERTEX, { readOnly: true }), // instance transforms
+    storageBuffer(4, Stage.VERTEX, { readOnly: true }), // PREV joint matrices (TAA velocity)
   ]);
 
   return {
@@ -289,6 +309,19 @@ function createVertexBufferLayout() {
       arrayStride: 8,
       stepMode: "vertex",
       attributes: [{ shaderLocation: 7, offset: 0, format: "float32x2" }],
+    },
+    // Slot 8: featureId0 (f32) — Audit B.2 (Batch 130). Per-vertex
+    // glTF `_FEATURE_ID_0` (or b3dm `_BATCHID`) cast to f32. The FS
+    // reads it as a `flat`-interpolated varying and indexes the batch
+    // texture / per-feature pick texture when
+    // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is set in materialFlags. Falls
+    // back to the 1-element zero default when the primitive has no
+    // feature-id attribute; the FS gates the read on the flag so the
+    // default is never consumed.
+    {
+      arrayStride: 4,
+      stepMode: "vertex",
+      attributes: [{ shaderLocation: 8, offset: 0, format: "float32" }],
     },
   ];
 }
@@ -595,6 +628,54 @@ class WebGPUModelPipelineCache {
       addressModeV: "repeat",
     });
 
+    // Audit A.9 (Batch 130) — placeholder cubemap for IBL bindings 33
+    // and 34 when a model has no `imageBasedLighting` configured. 1×1
+    // mid-grey on all 6 faces so the FS samples (0.5, 0.5, 0.5) ambient
+    // — same intensity as the previous hardcoded `vec3(0.2)` baseline,
+    // just routed through the texture path. Skinned/material code never
+    // overrides the binding when no IBL is set up; the FS doesn't gate
+    // the sample on an `iblEnabled` flag, so the placeholder must
+    // produce a sane reflection level on its own.
+    this._defaultIBLCubemap = device.createTexture({
+      label: "default-ibl-cubemap",
+      size: [1, 1, 6],
+      format: "rgba16float",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    {
+      // half-float 0.5 = 0x3800; rgba16f payload per texel = 4 × 2 bytes.
+      const halfHalf = new Uint16Array([0x3800, 0x3800, 0x3800, 0x3c00]);
+      for (let face = 0; face < 6; face++) {
+        device.queue.writeTexture(
+          { texture: this._defaultIBLCubemap, origin: [0, 0, face] },
+          halfHalf,
+          { bytesPerRow: 8 },
+          { width: 1, height: 1 },
+        );
+      }
+    }
+    this._defaultIBLCubemapView = this._defaultIBLCubemap.createView({
+      dimension: "cube",
+    });
+    this._defaultIBLSampler = device.createSampler({
+      label: "default-ibl-sampler",
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+    // SH UBO is 9 vec3 + 1 active flag = 9 × 16 + 16 = 160 bytes
+    // (vec3 in WGSL uniform layout is padded to 16). Default = all
+    // zeros + active = 0 so the shader's `useSH` branch falls back
+    // to the placeholder cubemap.
+    this._defaultSHBuffer = device.createBuffer({
+      label: "default-ibl-sh",
+      size: 160,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this._defaultSHBuffer, 0, new Float32Array(40));
+
     // Per-textureInfo sampler cache. glTF textures each carry a
     // `sampler` object with magFilter / minFilter / wrapS / wrapT values;
     // creating a new GPUSampler per distinct combination and reusing it
@@ -629,6 +710,15 @@ class WebGPUModelPipelineCache {
     this._defaultWeightsBuffer = this._createDefaultVertexBuffer(
       new Float32Array([0, 0, 0, 0]),
       "default-weights-vb",
+    );
+    // Audit B.2 (Batch 130) — single-element default for slot 8
+    // (featureId0). The FS only reads the value when
+    // FLAG_HAS_FEATURE_ID_ATTRIBUTE is set, so the zero default never
+    // reaches the batch / pick lookup paths for primitives that lack
+    // an authored feature id.
+    this._defaultFeatureIdBuffer = this._createDefaultVertexBuffer(
+      new Float32Array([0]),
+      "default-featureId-vb",
     );
 
     // Default skinning bind group: 1-element identity matrix storage buffer
@@ -683,6 +773,11 @@ class WebGPUModelPipelineCache {
         { binding: 1, resource: { buffer: this._defaultMorphDeltaBuffer } },
         { binding: 2, resource: { buffer: this._defaultMorphWeightBuffer } },
         { binding: 3, resource: { buffer: this._defaultInstancingBuffer } },
+        // Audit A.5 (Batch 130) — prev joint matrices fall back to the
+        // SAME identity buffer as binding 0 when no skinning is active.
+        // Skinned primitives override with the per-node prev-frame
+        // joint buffer in `buildMergedInstanceBindGroup`.
+        { binding: 4, resource: { buffer: this._defaultJointBuffer } },
       ],
     });
     // Feature ID default UBO (14 floats — `featurePickEnabled = 0`).
@@ -1003,6 +1098,26 @@ class WebGPUModelPipelineCache {
     return this._defaultWeightsBuffer;
   }
 
+  /** @returns {GPUBuffer} Default featureId (0) as vertex-step VB. */
+  get defaultFeatureIdBuffer() {
+    return this._defaultFeatureIdBuffer;
+  }
+
+  /** @returns {GPUTextureView} Default IBL cubemap view (mid-grey, 1x1x6). */
+  get defaultIBLCubemapView() {
+    return this._defaultIBLCubemapView;
+  }
+
+  /** @returns {GPUSampler} Default IBL sampler (linear, clamp-to-edge). */
+  get defaultIBLSampler() {
+    return this._defaultIBLSampler;
+  }
+
+  /** @returns {GPUBuffer} Default SH coefficients UBO (zeros + inactive). */
+  get defaultSHBuffer() {
+    return this._defaultSHBuffer;
+  }
+
   /**
    * Returns a fresh array of `entries[]` objects (bindings 26-32) for
    * the merged group 1 bind group when no feature ID resources are
@@ -1098,6 +1213,9 @@ class WebGPUModelPipelineCache {
     this._defaultColorBuffer?.destroy();
     this._defaultJointsBuffer?.destroy();
     this._defaultWeightsBuffer?.destroy();
+    this._defaultFeatureIdBuffer?.destroy();
+    this._defaultIBLCubemap?.destroy();
+    this._defaultSHBuffer?.destroy();
     this._defaultJointBuffer?.destroy();
     this._defaultMorphDeltaBuffer?.destroy();
     this._defaultMorphWeightBuffer?.destroy();

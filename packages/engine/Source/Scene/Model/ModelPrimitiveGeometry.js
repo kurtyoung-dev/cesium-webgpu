@@ -75,6 +75,15 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     color0Data: null,
     joints0Data: null,
     weights0Data: null,
+    // _FEATURE_ID_0 vertex attribute (b3dm `_BATCHID` is renamed to
+    // `_FEATURE_ID_0` by the loader). When the primitive carries a
+    // FeatureIdAttribute selection, the WebGPU model renderer uploads
+    // this typed array as a per-vertex f32 attribute and the FS uses
+    // it to index the batch / feature-pick textures. Audit B.2 (Batch
+    // 130) — without this the per-feature pick + batch styling paths
+    // were stuck on the texture-only branch, which b3dm tilesets never
+    // hit (they encode IDs as a vertex attribute, not a texture).
+    featureId0Data: null,
 
     // Metadata
     vertexCount: 0,
@@ -84,6 +93,7 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     hasTexCoord1: false,
     hasColor0: false,
     hasJoints: false,
+    hasFeatureId0: false,
 
     // Color component type (for proper conversion)
     color0ComponentType: null, // "FLOAT", "UNSIGNED_BYTE", "UNSIGNED_SHORT"
@@ -153,6 +163,14 @@ function extractPrimitiveGeometry(runtimePrimitive) {
         break;
       case AttributeSemantic.WEIGHTS_0:
         result.weights0Data = ensureFloat32(data, attr, 4);
+        break;
+      case AttributeSemantic._FEATURE_ID_0:
+      case "_FEATURE_ID":
+        // The loader stores b3dm's `_BATCHID` as `_FEATURE_ID_0`. Cast
+        // to f32 so the FS can read it as a flat varying without an
+        // explicit integer-attribute pipeline path.
+        result.featureId0Data = ensureFloat32(data, attr, 1);
+        result.hasFeatureId0 = true;
         break;
     }
   }

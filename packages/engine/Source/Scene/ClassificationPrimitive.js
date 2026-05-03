@@ -470,6 +470,26 @@ class ClassificationPrimitive {
     this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
     this._primitive.update(frameState);
 
+    // Audit (Batch 130) — standalone ClassificationPrimitive WebGPU
+    // dispatch. The inner Primitive ran above, populating
+    // `_webgpuGeometryData` on the chain; the WebGPU renderer's chain
+    // walk picks it up. WebGL keeps the inner Primitive's commands
+    // (pushed during `_primitive.update`); on WebGPU the inner shader-
+    // compile early-returned so those commands are no-ops, and these
+    // FR-built commands are the real classification pass.
+    const fr = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.CLASSIFICATION_PRIMITIVE,
+    );
+    if (fr?.createCommands) {
+      const result = fr.createCommands(this, frameState);
+      if (result?.colorCommand) {
+        frameState.commandList.push(result.colorCommand);
+      }
+      if (result?.pickCommand) {
+        frameState.commandList.push(result.pickCommand);
+      }
+    }
+
     frameState.afterRender.push(() => {
       if (defined(this._primitive) && this._primitive.ready) {
         this._ready = true;

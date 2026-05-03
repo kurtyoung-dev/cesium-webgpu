@@ -504,14 +504,20 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     name: "DepthPlane (marker — handled by WebGPUSceneRenderer)",
   });
 
-  // CLASSIFICATION_PRIMITIVE: no full WebGPU renderer exists yet for
-  // standalone ClassificationPrimitive. Marker is a bridge — same
-  // visual outcome as today (WebGPU silently renders nothing for
-  // standalone ClassificationPrimitive), but the §2 violation in
-  // `Scene/ClassificationPrimitive.js` is gone. Replace with a real
-  // renderer when ported (DEFERRED_WORK).
+  // CLASSIFICATION_PRIMITIVE (Batch 130) — standalone
+  // ClassificationPrimitive now reuses the same depth-sample
+  // classification pipeline as GroundPrimitive. The renderer's
+  // primitive-chain walk
+  // (`primitive._webgpuGeometryData ??
+  //   primitive._primitive?._webgpuGeometryData ??
+  //   primitive._primitive?._primitive?._webgpuGeometryData`)
+  // already handles the standalone-ClassificationPrimitive depth-2 case;
+  // wiring it as the FR's `createCommands` lets the scene-side
+  // dispatcher push commands without needing per-renderer logic.
   context.registerFeatureRenderer(FeatureRendererKey.CLASSIFICATION_PRIMITIVE, {
-    name: "ClassificationPrimitive (marker — full renderer deferred)",
+    name: "ClassificationPrimitive",
+    createCommands: createWebGPUGroundPrimitiveCommands,
+    destroy: destroyWebGPUGroundPrimitiveResources,
   });
 
   // ── Globe / Terrain ──

@@ -99,7 +99,11 @@ function createDefaultDiffuseCubemap(device: GPUDevice): {
  * Creates default SH buffer with zero coefficients (no irradiance).
  */
 function createDefaultSHBuffer(device: GPUDevice): GPUBuffer {
-  const data = new Float32Array(36); // 9 × vec4 = 36 floats, all zero
+  // Audit A.9 (Batch 130) -- 40 floats / 160 bytes total:
+  //   - 0..35  : 9 SH coefficients (vec4 padding) -- all zero
+  //   - 36..39 : control vec4 (.w == 1.0 when SH active; default 0)
+  // The shader's `SHUniforms` struct expects this exact layout.
+  const data = new Float32Array(40);
   const buffer = device.createBuffer({
     size: data.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,

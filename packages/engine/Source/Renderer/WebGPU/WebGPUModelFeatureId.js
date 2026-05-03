@@ -367,6 +367,22 @@ function ensureFeatureIdResources(
     }
   }
 
+  // Audit B.2 (Batch 130) — vertex-attribute path. Sets
+  // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` (bit 17) so the FS reads the
+  // per-vertex featureId varying (slot 8) and indexes the batch /
+  // pick textures with it. The renderer wires
+  // `geometry.featureId0Data` (typed array extracted from the
+  // primitive's `_FEATURE_ID_0` accessor by `extractPrimitiveGeometry`)
+  // into vertex slot 8 in `createPrimitiveResources`. b3dm tilesets
+  // hit this path because the loader renames `_BATCHID` to
+  // `_FEATURE_ID_0`. FeatureIdImplicitRange (no typed array, IDs
+  // synthesized from `offset + floor(vertex_index / repeat)`) is a
+  // follow-up — it needs either runtime synthesis of the buffer or
+  // additional uniform fields + an FS implicit branch.
+  if (selected.isAttribute) {
+    flags |= 0x20000; // FLAG_HAS_FEATURE_ID_ATTRIBUTE (bit 17)
+  }
+
   // Batch texture (for per-feature styling). createBatchGPUTexture now
   // returns { texture, width, height } or null. The first-upload consumes
   // the authoritative `batchTexture._batchValues` bytes via

@@ -194,6 +194,127 @@ that's prohibitive without a precomputed LUT").
 
 ---
 
+### NEW-DYNAMIC-ENVMAP-CAPTURE — render-to-cubemap for DynamicEnvironmentMapManager
+
+**What:** Audit A.12 — `WebGPUDynamicEnvironmentMapManager` allocates
+the env cubemap and fills 6 faces with mid-grey on first update; no
+scene capture pass ever runs. Models with `model.environmentMapManager`
+(automatic env capture rather than explicit IBL setup) sample flat
+50% grey for all reflections. Audit A.9 (Batch 130) wired the
+explicit-IBL consumer path so `model.imageBasedLighting =
+new ImageBasedLighting({ specularEnvironmentMaps: "..." })` works
+end-to-end; the dynamic-capture path remains unimplemented.
+
+**Why deferred:** Real ~250 LOC feature requiring:
+
+1. Atmosphere/sky renderer (`WebGPUSkyAtmosphereRenderer`,
+   `WebGPUSpaceRenderer`, `WebGPUSunRenderer`) accepting arbitrary
+   view matrices instead of the main camera (~80 LOC -- view-matrix
+   plumbing + render-target plumbing for cubemap faces).
+2. Cubemap face render pass setup with per-face view matrix and
+   color attachment as a single 2D-array slice (~40 LOC).
+3. Trigger logic: fire only when camera position changes by >N km,
+   or sun direction changes by >M degrees, or every K frames as a
+   fallback. Currently the manager has `framesSinceUpdate` but no
+   trigger threshold (~30 LOC).
+4. IBL prefilter invocation post-capture: call `generateIBLMaps()`
+   on the captured cubemap and republish the irradiance + radiance
+   views to the model material BG (~30 LOC).
+5. Mipmap generation for the captured cubemap before prefilter
+   (~30 LOC -- standard 6-face downscale compute pass).
+6. JS-side wiring through `DynamicEnvironmentMapManager.update`
+   to the WebGPU FR (~40 LOC).
+
+The audit's 150-LOC budget covers items 4-6; items 1-3 are the real
+work and are touchscreen for the atmosphere/sky stack.
+
+**Trace:** AUDIT_2026_05_02.md §A.12;
+`WebGPUDynamicEnvironmentMapManager.ts:133-154` (the placeholder fill).
+
+---
+
+### NEW-TAA-MORPH-PREV — prev-frame morph weights for velocity
+
+**What:** Audit A.5 (Batch 130) wired prev-frame joint matrices into
+the velocity pass via `previousJointMatrices` at `@group(2)
+@binding(4)`. Prev-frame morph weights are NOT yet tracked — the
+shader re-runs the morph pass with CURRENT weights when computing
+`prevPositionMC`, so models with frame-to-frame morph deltas (e.g.,
+facial blendshapes) still produce slightly off velocity at the
+morphed-only deltas.
+
+**Why deferred:** Morph weights live in the per-frame `morphWeights`
+UBO. Capturing prev requires either (a) a parallel `prevMorphWeights`
+UBO at @group(2) @binding(5) + JS-side capture (mirrors the joint
+pattern), or (b) accepting the small velocity error since morph
+deltas are typically < 5% of total per-frame motion. Estimated ~30 LOC
+across `WebGPUModelRenderer.js` (capture loop), `WebGPUModelMorphTargets.js`
+(prev UBO write), `WebGPUModelPipelineCache.js` (BGL binding 5), and
+`ModelPBRComplete.wgsl` (use prevMorphWeights in the prev branch).
+
+**Trace:** `ModelPBRComplete.wgsl` vertexMain prev-frame block,
+"Morph weights and instance transforms still use current-frame data."
+
+---
+
+### NEW-TAA-INSTANCE-PREV — prev-frame instance transforms for velocity
+
+**What:** Same shape as NEW-TAA-MORPH-PREV but for
+`instanceTransforms` (binding 3). Animated GPU instancing — e.g., a
+particle system using EXT_mesh_gpu_instancing with per-frame transform
+updates — produces wrong velocity because the prev-frame skin pass
+uses the CURRENT instance transform.
+
+**Why deferred:** GPU instancing is rare for animated content (most
+EXT_mesh_gpu_instancing assets ship static instances — trees,
+furniture, props). The fix is the same shape as the joint-matrix
+prev-frame buffer: ~40 LOC for a `prevInstanceTransforms` storage
+buffer at @group(2) @binding(6) + JS swap-and-upload pattern in
+`WebGPUModelInstancing.js`.
+
+**Trace:** `ModelPBRComplete.wgsl` vertexMain prev-frame block,
+"Morph weights and instance transforms still use current-frame data."
+
+---
+
+### NEW-KHR-LIGHTS-PUNCTUAL — full feature, not 100 LOC follow-on
+
+**What:** glTF KHR_lights_punctual support — directional / point / spot
+lights authored on glTF nodes drive PBR lighting. Today
+`LightUniforms` carries only `sunDirectionEC` + `sunColor` + ambient,
+so model viewers and lit interiors render with the wrong sun-only
+lighting regardless of the asset's authored lights.
+
+**Why deferred:** Audit B.3 (AUDIT_2026_05_02) estimated this at
+~100 LOC under the premise that "data parsed but never sent to FS." A
+follow-up grep (2026-05-03) confirmed KHR_lights_punctual is not
+parsed anywhere in the loader (no `KHR_lights_punctual` references
+outside an updateVersion comment). Real fix needs:
+
+1. `GltfLoader` extension parser for the scene-level `lights` array
+   (type, color, intensity, range, innerConeAngle, outerConeAngle) +
+   per-node `extensions.KHR_lights_punctual.light` reference (~80 LOC).
+2. Scene-tree walk to compose per-light EC matrix at draw time using
+   the camera's view + the node's world matrix (~50 LOC).
+3. JS-side packing into a `PunctualLight` array UBO with a small fixed
+   cap (typically 8) + active-count uniform (~40 LOC).
+4. WGSL `LightUniforms` struct extension + per-light accumulation
+   loop with directional / point-with-range / spot-with-cone
+   branches (~80 LOC).
+5. Mirror struct change in `Shaders/WebGPU/chunks/structs/LightUniforms.wgsl`,
+   `WGSLBuiltins.ts` packer, and `PhongLighting.wgsl` consumer (~30 LOC).
+
+Net ~280 LOC across 5 files. The audit's 100-LOC budget would have
+shipped a half-baked scaffold (struct + zero-light accumulator) with
+no loader to populate it — actively misleading because asset authors
+would still see the wrong lighting AND a "lights supported" claim.
+Filed for a dedicated session.
+
+**Trace:** AUDIT_2026_05_02.md §B.3; grep on 2026-05-03 confirmed no
+`KHR_lights_punctual` parsing exists.
+
+---
+
 ### NEW-KHR-TRANSMISSION-THICKNESS
 
 **What:** KHR_materials_transmission currently uses a fixed UV-offset

@@ -324,8 +324,12 @@ function packSphericalHarmonics(
     return null;
   }
 
-  // 9 coefficients × 4 floats (vec4 with padding) = 36 floats
-  const data = new Float32Array(36);
+  // Audit A.9 (Batch 130) -- 40 floats / 160 bytes total:
+  //   - 0..35  : 9 SH coefficients (vec4 padding)
+  //   - 36..39 : control vec4 -- .w = 1.0 marks SH active so the FS
+  //              evaluates analytically instead of sampling the
+  //              irradiance cubemap.
+  const data = new Float32Array(40);
   for (let i = 0; i < 9; i++) {
     const c = shCoefficients[i];
     data[i * 4 + 0] = c.x;
@@ -333,6 +337,7 @@ function packSphericalHarmonics(
     data[i * 4 + 2] = c.z;
     data[i * 4 + 3] = 0.0; // padding
   }
+  data[39] = 1.0; // control.w -- SH active
 
   const buffer = device.createBuffer({
     size: data.byteLength,

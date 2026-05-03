@@ -603,9 +603,16 @@ function packLightUniforms(data, frameState, model) {
   const iblFactor = ibl?._imageBasedLightingFactor; // Cartesian2 (x=diffuse, y=specular)
   data[12] = iblFactor?.x ?? 1.0;
   data[13] = iblFactor?.y ?? 1.0;
-  // Max mip level of the specular environment map. 8 is the typical prefilter
-  // chain depth (256² cubemap → 9 mips); used to drive roughness→mip mapping.
-  data[14] = ibl?._specularEnvironmentMapAtlas?._maximumMipmapLevel ?? 8.0;
+  // Audit A.9 (Batch 130) — max mip level of the prefiltered specular
+  // cubemap. The WebGPU IBL pipeline (`WebGPUImageBasedLighting`)
+  // exposes `_webgpuMaxMipLevel` after generation; falls back to the
+  // upstream `_specularEnvironmentMapAtlas` mip count for compatibility
+  // with assets that bypassed the prefilter, and finally to 5 (matches
+  // the `RADIANCE_MIP_LEVELS - 1` default in `WebGPUIBLPipeline.ts`).
+  data[14] =
+    ibl?._webgpuMaxMipLevel ??
+    ibl?._specularEnvironmentMapAtlas?._maximumMipmapLevel ??
+    5.0;
   data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
 }
 
@@ -716,6 +723,32 @@ function ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData) {
   );
 }
 
+/**
+ * Audit A.5 (Batch 130) — lazily allocates the per-node prev-frame
+ * joint matrix storage buffer that the WGSL velocity pass binds at
+ * @group(2) @binding(4). Sized to match the current `jointBuffer`
+ * (`prevPackedJointMatrices` length × 4 bytes); recreated when the
+ * skin's joint count changes (skin swaps are rare but legal in glTF).
+ *
+ * @private
+ */
+function ensurePrevJointMatricesBuffer(device, nodeCache) {
+  const byteLength = nodeCache.prevPackedJointMatrices.byteLength;
+  if (
+    !defined(nodeCache.prevJointBuffer) ||
+    nodeCache.prevJointBuffer.size !== byteLength
+  ) {
+    if (defined(nodeCache.prevJointBuffer)) {
+      nodeCache.prevJointBuffer.destroy();
+    }
+    nodeCache.prevJointBuffer = device.createBuffer({
+      label: `Prev joint matrices`,
+      size: byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+  }
+}
+
 // ─── Per-Primitive Cache ─────────────────────────────────────────────────────
 
 /**
@@ -742,6 +775,7 @@ function ensurePrimitiveCache(
     colorBuffer: null,
     jointsBuffer: null,
     weightsBuffer: null,
+    featureIdBuffer: null,
     indexBuffer: null,
     indexCount: 0,
     indexFormat: "uint16",
@@ -837,6 +871,21 @@ function ensurePrimitiveCache(
       device,
       geometry.weights0Data,
       `Prim weights`,
+    );
+  }
+
+  // Audit B.2 (Batch 130) — `_FEATURE_ID_0` (b3dm `_BATCHID`) vertex
+  // buffer. Required for per-feature pick / per-feature styling on
+  // tilesets that encode feature IDs as a vertex attribute (the
+  // dominant b3dm case). Without this slot bound, the FS pick path
+  // can only resolve features when the source uses the
+  // EXT_mesh_features texture variant — almost no production tileset
+  // does.
+  if (geometry.hasFeatureId0 && defined(geometry.featureId0Data)) {
+    primCache.featureIdBuffer = createVertexBuffer(
+      device,
+      geometry.featureId0Data,
+      `Prim featureId`,
     );
   }
 
@@ -1009,6 +1058,7 @@ function buildMergedMaterialBindGroup(
   lightBuffer,
   textureEntries,
   featureIdEntries,
+  iblEntries,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.materialBGL,
@@ -1017,8 +1067,61 @@ function buildMergedMaterialBindGroup(
       { binding: 1, resource: { buffer: lightBuffer.buffer } },
       ...textureEntries,
       ...(featureIdEntries ?? pipelineCache.defaultFeatureIdEntries()),
+      ...(iblEntries ?? defaultIBLEntries(pipelineCache)),
     ],
   });
+}
+
+/**
+ * Audit A.9 (Batch 130) -- placeholder IBL bind-group entries (33-36).
+ * Used when a model has no `imageBasedLighting` configured or its
+ * source environment cubemap hasn't generated yet. The defaults
+ * produce mid-grey ambient sampling so the FS doesn't have to gate
+ * the cubemap sample on an explicit "iblEnabled" flag.
+ * @private
+ */
+function defaultIBLEntries(pipelineCache) {
+  return [
+    { binding: 33, resource: pipelineCache.defaultIBLCubemapView },
+    { binding: 34, resource: pipelineCache.defaultIBLCubemapView },
+    { binding: 35, resource: pipelineCache.defaultIBLSampler },
+    { binding: 36, resource: { buffer: pipelineCache.defaultSHBuffer } },
+  ];
+}
+
+/**
+ * Audit A.9 (Batch 130) -- builds the per-model IBL bind-group entries
+ * from the model's `imageBasedLighting` cache, or returns null when
+ * the cache hasn't run yet (caller falls back to defaults).
+ * `WebGPUImageBasedLighting.update` populates `_webgpuSpecularView`,
+ * `_webgpuDiffuseView`, `_webgpuSampler`, `_webgpuSHBuffer` on the
+ * model's IBL instance once the radiance + irradiance prefilter has
+ * generated mips.
+ * @private
+ */
+function buildModelIBLEntries(model) {
+  const ibl = model?._imageBasedLighting;
+  if (!defined(ibl)) {
+    return null;
+  }
+  const specularView = ibl._webgpuSpecularView;
+  const diffuseView = ibl._webgpuDiffuseView;
+  const sampler = ibl._webgpuSampler;
+  const shBuffer = ibl._webgpuSHBuffer;
+  if (
+    !defined(specularView) ||
+    !defined(diffuseView) ||
+    !defined(sampler) ||
+    !defined(shBuffer)
+  ) {
+    return null;
+  }
+  return [
+    { binding: 33, resource: diffuseView },
+    { binding: 34, resource: specularView },
+    { binding: 35, resource: sampler },
+    { binding: 36, resource: { buffer: shBuffer } },
+  ];
 }
 
 /**
@@ -1038,6 +1141,7 @@ function buildMergedInstanceBindGroup(
   morphDeltaBuffer,
   morphWeightBuffer,
   instanceBuffer,
+  prevJointBuffer,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.instanceBGL,
@@ -1062,6 +1166,20 @@ function buildMergedInstanceBindGroup(
         binding: 3,
         resource: {
           buffer: instanceBuffer ?? pipelineCache.defaultInstancingBuffer,
+        },
+      },
+      {
+        // Audit A.5 (Batch 130) -- previous-frame joint matrices for
+        // TAA velocity. Falls back to the identity buffer (same as
+        // binding 0's default) so non-skinned primitives produce no
+        // skinning velocity contribution. Skinned primitives that
+        // haven't yet captured a previous frame fall back to the
+        // CURRENT joint buffer so velocity is zero on the first frame
+        // of an animation rather than wildly wrong from the identity.
+        binding: 4,
+        resource: {
+          buffer:
+            prevJointBuffer ?? jointBuffer ?? pipelineCache.defaultJointBuffer,
         },
       },
     ],
@@ -1470,6 +1588,9 @@ function updateWebGPUModel(model, frameState) {
           jointBufferSize: 0,
           skinningBG: null,
           packedJointMatrices: null,
+          // Audit A.5 (Batch 130) — prev-frame mirrors for TAA velocity.
+          prevJointBuffer: null,
+          prevPackedJointMatrices: null,
         };
       }
       const nodeCache = cache.nodes[nodeIdx];
@@ -1479,6 +1600,26 @@ function updateWebGPUModel(model, frameState) {
         nodeCache.packedJointMatrices = skinData.packedJointMatrices;
         ensureJointMatricesBuffer(device, pipelineCache, nodeCache, skinData);
       } else {
+        // Audit A.5 (Batch 130) — capture the about-to-be-overwritten
+        // current matrices as "previous" BEFORE applying this frame's
+        // pose. Reuses a persistent Float32Array to avoid per-frame
+        // allocation. The first capture (no prevPackedJointMatrices
+        // yet) lazily allocates a same-size buffer + GPU storage so
+        // the velocity pass has a real `t-1` pose to skin against;
+        // the FS would otherwise see prev == current and emit zero
+        // velocity for the first animated frame.
+        if (!defined(nodeCache.prevPackedJointMatrices)) {
+          nodeCache.prevPackedJointMatrices = new Float32Array(
+            nodeCache.packedJointMatrices.length,
+          );
+        }
+        nodeCache.prevPackedJointMatrices.set(nodeCache.packedJointMatrices);
+        ensurePrevJointMatricesBuffer(device, nodeCache);
+        device.queue.writeBuffer(
+          nodeCache.prevJointBuffer,
+          0,
+          nodeCache.prevPackedJointMatrices,
+        );
         // Update packed matrices in-place (avoids allocation)
         updatePackedJointMatrices(runtimeNode, nodeCache.packedJointMatrices);
         device.queue.writeBuffer(
@@ -1494,6 +1635,13 @@ function updateWebGPUModel(model, frameState) {
     // per-frame at the draw command emission site.
     const nodeJointBuffer = hasSkinning
       ? cache.nodes[nodeIdx].jointBuffer
+      : null;
+    // Audit A.5 (Batch 130) — prev-frame joint matrices for TAA
+    // velocity. Falls through to null on the first frame so the BG
+    // builder can substitute the current buffer (zero skinning
+    // velocity contribution, never identity which would explode).
+    const nodePrevJointBuffer = hasSkinning
+      ? cache.nodes[nodeIdx].prevJointBuffer
       : null;
 
     // GPU Instancing: detect from node.instances and create resources
@@ -1761,11 +1909,15 @@ function updateWebGPUModel(model, frameState) {
         LIGHT_UNIFORM_SIZE,
       );
 
-      // Assemble vertex buffers: [pos, normal, tangent, uv0, color, joints, weights, uv1]
+      // Assemble vertex buffers: [pos, normal, tangent, uv0, color, joints, weights, uv1, featureId]
       // Slot 7 (uv1) falls back to the uv0 default when the primitive has
       // no TEXCOORD_1 accessor — the shader is safe against that because
       // the per-texture-slot `texCoord` flag in the material UBO steers
       // sampling to uv0 unless the glTF explicitly asked for uv1.
+      // Slot 8 (featureId0) — Audit B.2 (Batch 130). Bound to the
+      // single-element zero default when the primitive carries no
+      // feature ID attribute; FS gates the read on
+      // FLAG_HAS_FEATURE_ID_ATTRIBUTE so the default is never sampled.
       const vertexBuffers = [
         primCache.positionBuffer,
         primCache.normalBuffer || pipelineCache.defaultNormalBuffer,
@@ -1777,6 +1929,7 @@ function updateWebGPUModel(model, frameState) {
         primCache.uv1Buffer ||
           primCache.uvBuffer ||
           pipelineCache.defaultUVBuffer,
+        primCache.featureIdBuffer || pipelineCache.defaultFeatureIdBuffer,
       ];
 
       // Use model.opaquePass to get the correct pass:
@@ -1804,6 +1957,7 @@ function updateWebGPUModel(model, frameState) {
       const modelRenderState = rpDrawCommand?._command?.renderState;
 
       // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
+      const iblEntries = buildModelIBLEntries(model);
       const mergedMaterialBG = buildMergedMaterialBindGroup(
         device,
         pipelineCache,
@@ -1811,6 +1965,7 @@ function updateWebGPUModel(model, frameState) {
         primCache.lightBuffer,
         primCache.textureEntries,
         featureIdEntries,
+        iblEntries,
       );
       const mergedInstanceBG = buildMergedInstanceBindGroup(
         device,
@@ -1819,6 +1974,7 @@ function updateWebGPUModel(model, frameState) {
         morphDeltaBuffer,
         morphWeightBuffer,
         instanceBuffer,
+        nodePrevJointBuffer,
       );
 
       const webgpuCmd = new WebGPUDrawCommand({
@@ -2078,6 +2234,7 @@ function updateWebGPUModel(model, frameState) {
           primCache.lightBuffer,
           primCache.textureEntries,
           featureIdEntries,
+          iblEntries,
         );
         const translucentCmd = new WebGPUDrawCommand({
           pipeline: primCache.translucentPipeline,
@@ -2351,6 +2508,7 @@ function destroyWebGPUModelResources(model) {
     pc.colorBuffer?.destroy();
     pc.jointsBuffer?.destroy();
     pc.weightsBuffer?.destroy();
+    pc.featureIdBuffer?.destroy();
     pc.indexBuffer?.destroy();
     pc.materialBuffer?.destroy();
     pc.lightBuffer?.destroy();
@@ -2389,6 +2547,9 @@ function destroyWebGPUModelResources(model) {
     }
     if (defined(nc.jointBuffer)) {
       nc.jointBuffer.destroy();
+    }
+    if (defined(nc.prevJointBuffer)) {
+      nc.prevJointBuffer.destroy();
     }
     destroyInstancingResources(nc);
   }

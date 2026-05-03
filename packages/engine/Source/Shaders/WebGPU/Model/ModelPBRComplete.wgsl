@@ -311,6 +311,12 @@ struct LightUniforms {
 
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(2) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
+// Audit A.5 (Batch 130) -- prev-frame joint matrices for TAA
+// velocity. The vertex shader re-runs skinning with these to produce
+// `prevPositionMC` (otherwise `worldPosPrevious = previousModelMatrix
+// * currentSkinnedPositionMC` produces phantom velocity that ghosts
+// across animated characters).
+@group(2) @binding(4) var<storage, read> previousJointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
 // Storage buffer: per-target blocks of (vertexCount × vec4) position deltas
@@ -366,6 +372,36 @@ struct FeatureIdUniforms {
 // binding is always valid.
 @group(1) @binding(31) var featurePickTexture: texture_2d<f32>;
 @group(1) @binding(32) var featurePickSampler: sampler;
+
+// Audit A.9 (Batch 130) -- IBL cubemap bindings. Irradiance cubemap
+// (33) for diffuse ambient, prefiltered radiance cubemap (34) for
+// specular ambient with mip-based roughness rangefinding, shared
+// sampler (35) configured linear/clamp-to-edge by the JS pipeline
+// cache. SH coefficients (36) are optional (active flag in slot 9.w);
+// when active they short-circuit the irradiance cubemap sample with
+// a 9-coefficient evaluation against the surface normal.
+@group(1) @binding(33) var iblDiffuseTexture: texture_cube<f32>;
+@group(1) @binding(34) var iblSpecularTexture: texture_cube<f32>;
+@group(1) @binding(35) var iblSampler: sampler;
+struct SHUniforms {
+  // 9 SH coefficients (L0, L1m1, L10, L11, L2m2, L2m1, L20, L21, L22)
+  // Each as vec3<f32>; uniform layout pads vec3 to vec4, so this is
+  // 9 vec4 + 1 vec4 control slot = 160 bytes total (matches the JS
+  // `defaultSHBuffer` allocation in WebGPUModelPipelineCache).
+  c0: vec4<f32>,
+  c1: vec4<f32>,
+  c2: vec4<f32>,
+  c3: vec4<f32>,
+  c4: vec4<f32>,
+  c5: vec4<f32>,
+  c6: vec4<f32>,
+  c7: vec4<f32>,
+  c8: vec4<f32>,
+  // .w == 1.0 when SH is active (model.imageBasedLighting set
+  // `sphericalHarmonicCoefficients`); else fall back to cubemap.
+  control: vec4<f32>,
+};
+@group(1) @binding(36) var<uniform> sh: SHUniforms;
 
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM) ───
 // NEW-BG-CONSOLIDATION (2026-04-30): effects binds at @group(3),
@@ -489,12 +525,20 @@ struct VertexInput {
   @location(4) color0: vec4<f32>,
   @location(5) joints0: vec4<u32>,
   @location(6) weights0: vec4<f32>,
-  // texCoord1 — glTF textures carry a per-texture `texCoord: 0|1` flag;
+  // texCoord1 -- glTF textures carry a per-texture texCoord: 0|1 flag;
   // occlusion and clearcoat-normal commonly use UV set 1. When the
   // primitive has no TEXCOORD_1 accessor, the renderer binds uv0 data
   // into this slot as a safe fallback so samplers whose texCoord flag
   // is 1 degrade to "same UV as 0" rather than failing the bind.
   @location(7) texCoord1: vec2<f32>,
+  // Audit B.2 (Batch 130) -- per-vertex feature ID (b3dm _BATCHID
+  // renamed to _FEATURE_ID_0 by the loader). f32 cast for
+  // varying-friendly transport; the FS converts back to u32 for the
+  // batch / pick texture lookup. Bound to a 1-element zero default
+  // when the primitive carries no _FEATURE_ID_0 accessor; the FS
+  // gates the read on FLAG_HAS_FEATURE_ID_ATTRIBUTE so the default
+  // never reaches the lookup.
+  @location(8) featureId0: f32,
 };
 
 struct VertexOutput {
@@ -522,6 +566,10 @@ struct VertexOutput {
   // FS divides by .w before the screen-space delta.
   @location(8) previousClipPos: vec4<f32>,
   @location(9) currentClipPosForVelocity: vec4<f32>,
+  // Audit B.2 (Batch 130) -- @interpolate(flat) so each fragment sees
+  // its provoking vertex's integer feature ID without averaging across
+  // the triangle. The FS converts back to u32 with `u32(featureId0)`.
+  @location(10) @interpolate(flat) featureId0: f32,
 };
 
 @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -596,23 +644,60 @@ struct VertexOutput {
   output.tangentEC = tangentEC3;
   output.bitangentEC = cross(output.normalEC, tangentEC3) * tangentMC.w;
 
-  // TAA Slice 2c (Batch 96) — previous-frame clip-space position. Uses
-  // the SAME post-skinning / post-morph / post-instancing positionMC as
-  // the current frame; pre-skinning prev-frame joint matrices are a
-  // Slice 2d concern (treats animated geometry as rigid for now). For
-  // rigid models, prev positionMC equals current positionMC and the
-  // velocity captures only the model-matrix delta plus the camera
-  // motion (`previousViewProjection * previousModelMatrix * worldPos`).
-  // Absolute world position uses positionMC directly (RTE encoding is
-  // a current-frame optimization; prev-frame uses unencoded positions
-  // applied through the prev viewProjection in world space).
+  // Audit A.5 (Batch 130) -- compute prevPositionMC by re-running the
+  // morph -> skin -> instance pipeline with the previous-frame joint
+  // matrices (binding 4). For rigid (non-skinned) models, prev joint
+  // matrices default to the current frame's identity buffer so
+  // prevPositionMC equals positionMC and velocity captures only the
+  // model-matrix delta + camera motion (the original Slice 2c
+  // behavior). Morph weights and instance transforms still use
+  // current-frame data -- those follow-ups are filed under
+  // NEW-TAA-MORPH-PREV / NEW-TAA-INSTANCE-PREV in DEFERRED_WORK.
+  var prevPositionMC = input.positionMC;
+  if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
+    let targetCount = u32(morphWeights.targetCount);
+    let vertexCount = u32(morphWeights.vertexCount);
+    let vid = input.vertexIndex;
+    for (var t = 0u; t < targetCount; t = t + 1u) {
+      let w = select(morphWeights.weights0[t], morphWeights.weights1[t - 4u], t >= 4u);
+      if (abs(w) > 0.0001) {
+        let idx = t * vertexCount + vid;
+        let delta = morphDeltas[idx].xyz;
+        prevPositionMC = prevPositionMC + delta * w;
+      }
+    }
+  }
+  if (hasFlag(material.materialFlags, FLAG_HAS_SKINNING)) {
+    let j = input.joints0;
+    let w = input.weights0;
+    let prevSkinMatrix = w.x * previousJointMatrices[j.x]
+                       + w.y * previousJointMatrices[j.y]
+                       + w.z * previousJointMatrices[j.z]
+                       + w.w * previousJointMatrices[j.w];
+    prevPositionMC = (prevSkinMatrix * vec4<f32>(prevPositionMC, 1.0)).xyz;
+  }
+  if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
+    let instMat = instanceTransforms[input.instanceIndex];
+    prevPositionMC = (instMat * vec4<f32>(prevPositionMC, 1.0)).xyz;
+  }
+
+  // TAA Slice 2c (Batch 96) -- previous- and current-frame world
+  // positions feed the FS reprojection. Both go through the
+  // unencoded-position * matrix path (RTE is a current-frame
+  // optimization that the prev-frame matmul doesn't share).
   let worldPosCurrent = material.modelMatrix * vec4<f32>(positionMC, 1.0);
   let worldPosPrevious =
-    material.previousModelMatrix * vec4<f32>(positionMC, 1.0);
+    material.previousModelMatrix * vec4<f32>(prevPositionMC, 1.0);
   output.previousClipPos =
     camera.previousViewProjection * worldPosPrevious;
   output.currentClipPosForVelocity =
     camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
+
+  // Audit B.2 (Batch 130) -- pass per-vertex feature ID through to
+  // FS as a flat-interpolated varying. The provoking-vertex's value
+  // wins for the entire triangle, which matches the per-feature
+  // semantics (a feature spans whole triangles, never crosses).
+  output.featureId0 = input.featureId0;
 
   return output;
 }
@@ -654,6 +739,26 @@ fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3
   let t2 = t * t;
   let oneMinusRoughness = vec3<f32>(1.0 - roughness);
   return F0 + (max(oneMinusRoughness, F0) - F0) * (t2 * t2 * t);
+}
+
+// Audit A.9 (Batch 130) -- L2 spherical-harmonic irradiance.
+// 9 coefficients (3 bands) provide a low-frequency analytic
+// approximation of diffuse irradiance from any direction; cheaper
+// than a 32x32 cubemap convolution sample, sufficient for ambient
+// lighting that doesn't carry high-frequency detail. Coefficient
+// order matches the WebGL `ImageBasedLightingPipelineStage` packing
+// so authors can supply the same SH set across both backends.
+fn evalSphericalHarmonics(N: vec3<f32>) -> vec3<f32> {
+  var c = sh.c0.xyz;
+  c = c + sh.c1.xyz * N.y;
+  c = c + sh.c2.xyz * N.z;
+  c = c + sh.c3.xyz * N.x;
+  c = c + sh.c4.xyz * (N.x * N.y);
+  c = c + sh.c5.xyz * (N.y * N.z);
+  c = c + sh.c6.xyz * (3.0 * N.z * N.z - 1.0);
+  c = c + sh.c7.xyz * (N.z * N.x);
+  c = c + sh.c8.xyz * (N.x * N.x - N.y * N.y);
+  return max(c, vec3<f32>(0.0));
 }
 
 fn srgbToLinear(srgb: vec3<f32>) -> vec3<f32> {
@@ -744,6 +849,11 @@ struct FragmentInput {
   // clip positions used for per-model motion-vector reconstruction.
   @location(8) previousClipPos: vec4<f32>,
   @location(9) currentClipPosForVelocity: vec4<f32>,
+  // Audit B.2 (Batch 130) -- flat-interpolated per-feature ID
+  // (b3dm _BATCHID). Read by fragmentMain (batch styling discard) +
+  // fragmentPickMain (per-feature pick lookup) when
+  // FLAG_HAS_FEATURE_ID_ATTRIBUTE is set.
+  @location(10) @interpolate(flat) featureId0: f32,
   @builtin(front_facing) frontFacing: bool,
 };
 
@@ -1374,6 +1484,12 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
     let fidSampleEarly = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
     let fidIntEarly = unpackFeatureId(fidSampleEarly, featureId.channelCount);
     currentFeatureId = f32(fidIntEarly);
+  } else if (hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE)) {
+    // Audit B.2 (Batch 130) -- vertex-attribute path. b3dm tilesets
+    // encode batch IDs as the per-vertex _BATCHID accessor (renamed
+    // _FEATURE_ID_0 by the loader). Flat-interpolated, so the value
+    // is exact across the triangle without rounding.
+    currentFeatureId = input.featureId0;
   }
 
   // ── Base color ────────────────────────────────────────────────────────────
@@ -1791,22 +1907,44 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   }
 
   // ── Ambient / IBL ─────────────────────────────────────────────────────────
-  // Split-sum IBL approximation using Fresnel-roughness awareness.
-  // When IBL factors are active (> 0), ambient light varies with roughness
-  // and viewing angle for more physically correct results.
+  // Audit A.9 (Batch 130) -- proper split-sum IBL sampling. Diffuse
+  // irradiance comes from either the SH analytic evaluation (when
+  // `sh.control.w > 0.5`) or the irradiance cubemap (binding 33);
+  // specular radiance comes from the prefiltered cubemap (binding 34)
+  // sampled at `roughness * iblMaxMipLevel` mip level. Replaces the
+  // pre-Batch-130 hack that approximated both with `light.ambientColor`
+  // — that produced flat ambient for every PBR material on WebGPU.
   let kS_ibl = fresnelSchlickRoughness(NdotV, F0, roughness);
   let kD_ibl = (vec3<f32>(1.0) - kS_ibl) * (1.0 - metallic);
 
-  // Diffuse IBL: ambient color modulated by diffuse reflectance
-  let diffuseIBL = light.ambientColor * diffuseColor * light.iblDiffuseFactor;
+  // Diffuse IBL irradiance. SH path is cheaper (constant-time
+  // analytic) and lower-frequency; cubemap path is ground-truth for
+  // assets without authored SH coefficients.
+  var irradiance: vec3<f32>;
+  if (sh.control.w > 0.5) {
+    irradiance = evalSphericalHarmonics(N);
+  } else {
+    irradiance = textureSample(iblDiffuseTexture, iblSampler, N).rgb;
+  }
+  let diffuseIBL = irradiance * diffuseColor * light.iblDiffuseFactor;
 
-  // Specular IBL: roughness-aware Fresnel × ambient, scaled by mip-based factor.
-  // Rougher surfaces get less specular ambient, smoother surfaces get more.
+  // Specular IBL radiance from the prefiltered cubemap. Roughness
+  // selects the mip level (mirror = mip 0, fully diffuse = max mip).
+  // `textureSampleLevel` is required for explicit lod control; the
+  // FS would otherwise get an implicit derivative-based lod that
+  // doesn't align with the prefilter's roughness convention.
+  let R = reflect(-V, N);
   let specLod = roughness * light.iblMaxMipLevel;
-  let specAttenuation = 1.0 / (1.0 + specLod * 0.5);
-  let specularIBL = light.ambientColor * kS_ibl * specAttenuation * light.iblSpecularFactor;
+  let radiance = textureSampleLevel(
+    iblSpecularTexture, iblSampler, R, specLod
+  ).rgb;
+  let specularIBL = radiance * kS_ibl * light.iblSpecularFactor;
 
-  var ambient = kD_ibl * diffuseIBL + specularIBL;
+  // Ambient floor: keep `light.ambientColor` as a constant additive
+  // term so unconfigured lighting (no IBL set up, default placeholder
+  // cubemap = mid-grey) still produces a non-black ambient consistent
+  // with the original behaviour.
+  var ambient = kD_ibl * diffuseIBL + specularIBL + light.ambientColor * diffuseColor * 0.05;
 
   // ── Occlusion ─────────────────────────────────────────────────────────────
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
@@ -1829,7 +1967,9 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   // gating share one feature-ID texture sample. Features with
   // `batchColor.a == 0` are hidden — discard them.
   var featureColor = vec4<f32>(1.0);
-  if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+  let hasFeatureIdSource = hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE)
+                        || hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE);
+  if (hasFeatureIdSource && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
     let batchColor = lookupBatchColor(i32(currentFeatureId));
     if (batchColor.a < 0.004) { discard; } // Feature is hidden
     featureColor = batchColor;
@@ -2002,15 +2142,28 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
   //     opted in by the application)
   //   - feature ID lookup fails (current pixel has no feature ID
   //     attribute / texture sample)
-  if (hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
-    let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
-    let fidInt = unpackFeatureId(fidSample, featureId.channelCount);
+  // Audit B.2 (Batch 130) -- resolve feature ID from EITHER the
+  // EXT_mesh_features texture OR the per-vertex _FEATURE_ID_0
+  // attribute (b3dm _BATCHID). The attribute branch was the missing
+  // piece that left every b3dm tileset stuck on the primitive-
+  // granular pick color (no per-feature pick lookup was possible
+  // because the texture-only gate never matched).
+  let pickHasFidTex = hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE);
+  let pickHasFidAttr = hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE);
+  if ((pickHasFidTex || pickHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    var fidInt: i32;
+    if (pickHasFidTex) {
+      let fidSample = textureSample(featureIdTexture, featureIdSampler, input.texCoord0);
+      fidInt = unpackFeatureId(fidSample, featureId.channelCount);
+    } else {
+      fidInt = i32(input.featureId0);
+    }
     let batchColor = lookupBatchColor(fidInt);
     if (batchColor.a < 0.004) { discard; }
     if (featureId.featurePickEnabled > 0.5) {
       let featurePickColor = lookupFeaturePickColor(fidInt);
       // Feature-pick texture entries with alpha == 0 mean "no pickId
-      // allocated for this feature" — fall through to the per-primitive
+      // allocated for this feature" -- fall through to the per-primitive
       // pick color so the primitive remains pickable.
       if (featurePickColor.a > 0.004) {
         return featurePickColor;
