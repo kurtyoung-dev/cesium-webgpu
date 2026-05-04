@@ -479,7 +479,188 @@ audit identified missed shader paths).
 
 ---
 
-### NEW-VS-THREE-POINT-DEPTH-CHECK — clamp-to-ground billboard / label terrain occlusion (Batch 137 plan)
+### ~~NEW-VS-THREE-POINT-DEPTH-CHECK~~ — RESOLVED (Batch 138, simplified anchor-only sampling)
+
+**Resolution:** Implemented a simplified 1-point depth check (anchor
+sampling only) instead of the full 3-point pattern. WebGL's
+`VS_THREE_POINT_DEPTH_CHECK` samples globe depth at three label-anchor
+positions (origin / top / top-right) and discards only when ALL three
+are occluded. The simplified version samples at the anchor only, which
+covers the dominant case (label centered behind a hill) but slightly
+over-discards when the anchor is occluded but the label spans high
+enough to peek over. Tracked as
+`NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING` for future refinement —
+proper 3-point sampling requires extracting `addScreenSpaceOffset`
+into a shared chunk so all 3 sample points can call it.
+
+**What landed:**
+
+- `VS_THREE_POINT_DEPTH_CHECK` ShaderDefine bit (1 << 8). Add-only.
+- `BillboardCollection.wgsl` + `BillboardCollectionSDF.wgsl` (label
+  SDF path) gained:
+  - Globe depth texture binding at `@group(0) @binding(3)` + sampler
+    at `@binding(4)`. VS-only visibility.
+  - `czm_unpackDepth(rgba) -> f32` helper (matches WebGL packDepth/
+    unpackDepth scheme).
+  - `getGlobeDepth(positionEC) -> f32` helper that projects to NDC,
+    samples the packed depth texture, unpacks, and returns clip-z
+    units for direct comparison against `clipPos.z`.
+  - Per-instance `threePointAttribs` vec4 carrying depthOrigin
+    (.xy) + enableDepthCheck flag (.z) + reserved (.w). Billboard
+    @location(10), Label SDF @location(12).
+  - 3-point check body inside `//>>ifdef VS_THREE_POINT_DEPTH_CHECK`:
+    gates on `camDistSq < threePointDepthTestDistance^2`, samples
+    globe depth at the anchor, collapses clipPos to a degenerate
+    position when occluded.
+- `WebGPUBillboardRenderer.js`:
+  - Instance buffer 40 → 44 floats (10 → 11 vec4); `threePointAttribs`
+    packed at offset 40-43 with default `(0, 0, 1.0, 0)` for plain
+    billboards (label collection overrides via its own renderer).
+  - BGL extended to 5 entries (added globe depth texture + sampler,
+    VS-only).
+  - Bind group rebuilds when `context._globeDepthView` changes
+    (placeholder bound when null).
+  - Camera UBO slot 43 (formerly `_pad2`) now carries
+    `threePointDepthTestDistance` — read from
+    `collection._threePointDepthTestDistance`.
+  - `computeDefinesForFrame` flips `VS_THREE_POINT_DEPTH_CHECK` when
+    `collection._shaderClampToGround === true` (mirrors WebGL's
+    `BillboardCollection.js:1031`).
+  - Prewarm extended with 3 new variants (3PD only, 3PD + KML,
+    full prod with 3PD).
+- `WebGPULabelRenderer.js`:
+  - Instance buffer 48 → 52 floats (12 → 13 vec4); `threePointAttribs`
+    packed at offset 48-51 with the glyph billboard's
+    `_horizontalOrigin` / `_verticalOrigin` (Label propagates from
+    parent via `_rebindAllGlyphs`).
+  - SDF BGL extended to 5 entries (matching Billboard).
+  - Bind group rebuilds with globe depth view per-frame.
+  - Camera UBO slot 43 reads `labelCollection._glyphBillboardCollection._threePointDepthTestDistance`.
+  - `computeLabelDefinesForFrame` flips the bit when
+    `glyphCollection._shaderClampToGround === true`.
+  - Prewarm extended.
+- Pick paths intentionally NOT modified — pick-through-terrain
+  matches WebGL behavior.
+
+**Files touched:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js`
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl`
+
+**Trade-offs accepted:**
+
+- Anchor-only sampling vs proper 3-point. Functional for the dominant
+  case (KML labels behind hills); subtle over-discard for very tall
+  labels that span over a peak. Future refinement tracked.
+- BGL grew to 5 entries on Billboard + Label SDF — extra placeholder
+  texture binding when feature OFF. Negligible cost.
+- Bind group rebuilds when globe depth view changes (per-frame on
+  globe scenes). One extra `createBindGroup` call per frame per
+  collection — well within WebGPU bind-group creation budgets.
+
+**Closing batch:** Batch 138.
+
+---
+
+### NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING — proper 3-point sampling for label terrain occlusion
+
+**What:** Batch 138 shipped a 1-point variant of `VS_THREE_POINT_DEPTH_CHECK`
+that samples globe depth at the label anchor only. WebGL's full
+implementation samples at 3 label-anchor key points (origin, top,
+top-right) and discards only when ALL three are occluded. This
+covers a niche case where a tall label spans over a hill: the anchor
+is behind terrain but the top of the label peeks above, and WebGL
+correctly keeps the label visible.
+
+**Why deferred:** Requires extracting `addScreenSpaceOffset(...)` into
+a shared WGSL chunk so all 3 sample points can compute their
+positions consistently. The function is currently inlined across
+multiple billboard shaders. Refactoring requires:
+
+- A new chunk file `chunks/functions/csm_billboardScreenSpaceOffset.wgsl`.
+- A WGSL `//>>include` mechanism (verify supported by the preprocessor).
+- Updating each consumer billboard shader to use the chunk instead
+  of inlining.
+
+**Estimated effort:** 1 session.
+
+**Impact:** Closes the niche case where tall labels span over peaks.
+Most labels are short enough that anchor-only sampling produces
+correct results.
+
+**Trace:** `BillboardCollection.wgsl` lines 290-330 (anchor-only
+implementation with `_depthOriginUnused` placeholder for the future
+3-point math); WebGL reference at
+`Source/Shaders/BillboardCollectionVS.glsl:294-323`.
+
+---
+
+### NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION — drop the 3-point check when disable-depth-distance is active
+
+**What:** WebGL drops `enableDepthCheck` to 0 when the camera is within
+the per-billboard `disableDepthTestDistance` (or the frame-wide
+minimum) — see `BillboardCollectionVS.glsl:266-277`. This means a
+billboard with BOTH `heightReference !== NONE` AND active
+disable-depth-distance skips the 3-point check (which would
+incorrectly hide the depth-overridden billboard behind terrain).
+
+WebGPU's Batch 138 implementation always sets `enableDepthCheck = 1.0`
+in the JS-side instance pack, so a billboard with both features active
+runs the 3-point check anyway and gets discarded.
+
+**Why deferred:** Requires per-frame computation of `enableDepthCheck`
+in the JS instance pack — the JS would need to look up the frame-wide
+minimum distance + the per-billboard distance and decide whether the
+camera is within range. Currently the JS pack runs once per visible
+billboard per frame; adding a distance check is cheap but threads
+context (camera position, frame minimum) into the pack function.
+
+**Estimated effort:** 30 minutes.
+
+**Impact:** Edge case — a billboard that has BOTH heightReference !==
+NONE AND disableDepthTestDistance is uncommon. Default Cesium
+billboards don't combine these two flags. Tracked as a follow-up to
+match WebGL exactly.
+
+**Trace:** WebGL gates at `BillboardCollectionVS.glsl:266-277` (sets
+`enableDepthCheck = 0.0` inside the disable-depth branch); WebGPU
+always writes `enableDepthCheck = 1.0` at
+`WebGPUBillboardRenderer.js:248` and `WebGPULabelRenderer.js:263`.
+
+---
+
+### NEW-LABEL-SDF-BIND-GROUP-CACHING — pre-existing per-frame bind group rebuild
+
+**What:** `WebGPULabelRenderer.update()` recreates the SDF bind group
+every frame regardless of whether the atlas view, globe depth view, or
+uniform buffer actually changed. The comment on the existing pattern
+says "recreate each frame to pick up atlas changes," but in practice
+the atlas only rotates when glyphs are added/removed — most frames
+pay the createBindGroup cost for nothing.
+
+**Status:** Pre-existing (NOT introduced by Batch 138). Surfaced
+during the Batch 138 audit as a perf concern. Billboard's
+WebGPUBillboardRenderer caches more aggressively (rebuilds only on
+atlas guid change OR globe depth view change), but Label SDF doesn't
+yet.
+
+**Why deferred:** Out of scope for the audit batches. Belongs in a
+perf-pass that tracks bind group rebuild rates for all collection
+renderers. Likely the same pattern exists on Polyline material
+variants.
+
+**Estimated effort:** 1 session for a sweep across collection
+renderers + a perf measurement to validate the savings.
+
+**Trace:** `WebGPULabelRenderer.js:847` (no `!defined` guard around
+the bind-group create call).
+
+---
+
+### ~~NEW-VS-THREE-POINT-DEPTH-CHECK~~ — original plan (now resolved above)
 
 **What:** WebGL billboards and labels with
 `heightReference !== HeightReference.NONE` (i.e., clamped to the

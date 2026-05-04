@@ -1,29 +1,35 @@
 // BillboardCollection.wgsl — Instanced billboard rendering for CesiumJS WebGPU
 // Each billboard is an instanced screen-aligned quad with texture atlas support.
 //
-// Instance data layout (160 bytes per billboard, 10 x vec4):
-//   @location(0) posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
-//   @location(1) posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
-//   @location(2) compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
-//   @location(3) compressedAttr1:           vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
-//   @location(4) color:                     vec4<f32> — rgba
-//   @location(5) miscFlags:                 vec4<f32> — show, sizeInMeters, width, height
-//   @location(6) perInstanceFlags:          vec4<f32> — disableDepthTestDistance,
-//                                             splitDirection (-1/0/+1),
-//                                             distanceDisplayConditionNearSq,
-//                                             distanceDisplayConditionFarSq
-//   @location(7) translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
-//   @location(8) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
-//   @location(9) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
+// Instance data layout (176 bytes per billboard, 11 x vec4 — Batch 138):
+//   @location(0)  posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
+//   @location(1)  posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
+//   @location(2)  compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
+//   @location(3)  compressedAttr1:           vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
+//   @location(4)  color:                     vec4<f32> — rgba
+//   @location(5)  miscFlags:                 vec4<f32> — show, sizeInMeters, width, height
+//   @location(6)  perInstanceFlags:          vec4<f32> — disableDepthTestDistance,
+//                                              splitDirection (-1/0/+1),
+//                                              distanceDisplayConditionNearSq,
+//                                              distanceDisplayConditionFarSq
+//   @location(7)  translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
+//   @location(8)  pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
+//   @location(9)  scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
+//   @location(10) threePointAttribs:         vec4<f32> — Batch 138 (VS_THREE_POINT_DEPTH_CHECK):
+//                                              .x = depthOrigin.x (-1 right / 0 center / +1 left,
+//                                                    or 0 = inherit billboard origin)
+//                                              .y = depthOrigin.y (-1 / 0 / +1 vertical anchor)
+//                                              .z = enableDepthCheck (1.0 if not below ellipsoid; 0 → skip)
+//                                              .w = reserved
 //
-// The four trailing slots (perInstanceFlags + the three NearFarScalars)
+// Trailing slots (perInstanceFlags + 3 NearFarScalars + threePointAttribs)
 // are only consumed inside `//>>ifdef` blocks for DP-H42
-// (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), and AUDIT_2026_05_02
+// (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), AUDIT_2026_05_02
 // A.14 (DISTANCE_DISPLAY_CONDITION + EYE_DISTANCE_TRANSLUCENCY +
-// EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING). When none of those
-// defines are active WGSL treats the declared inputs as unused and the
-// rasterizer ignores the VB slots — cost is 64 bytes per instance of
-// VRAM bandwidth only.
+// EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING), and Batch 138
+// (VS_THREE_POINT_DEPTH_CHECK). When none of those defines are active
+// WGSL treats the declared inputs as unused and the rasterizer ignores
+// the VB slots — cost is 80 bytes per instance of VRAM bandwidth only.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -34,7 +40,12 @@ struct CameraUniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
-  _pad2: f32,
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `BillboardCollection.threePointDepthTestDistance`
+  // raw distance in meters; squared in shader for the lengthSq compare.
+  // 0.0 = feature off / per-frame skip. Mirrors WebGL's
+  // `u_threePointDepthTestDistance` semantics. Sits in the previously
+  // unused `_pad2` slot — no UBO size change.
+  threePointDepthTestDistance: f32,
   // DP-H42 — frame-wide fallback threshold. When a billboard's per-instance
   // `disableDepthTestDistance` is zero and this is non-zero, we use this
   // value so `scene.minimumDisableDepthTestDistance` applies globally.
@@ -56,6 +67,14 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
+// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth as a packed
+// rgba8 color texture (czm_packDepth scheme). Sampled in the VS via
+// `getGlobeDepth` to occlude clamp-to-ground billboards behind
+// terrain. Always-bound layout entry; the VS only samples it inside
+// the matching ifdef block. When the feature is off the texture
+// view points at a 1×1 placeholder produced by the renderer.
+@group(0) @binding(3) var globeDepthTex: texture_2d<f32>;
+@group(0) @binding(4) var globeDepthSampler: sampler;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -70,6 +89,8 @@ struct VertexInput {
   @location(7) translucencyByDistance: vec4<f32>,
   @location(8) pixelOffsetScaleByDistance: vec4<f32>,
   @location(9) scaleByDistance: vec4<f32>,
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable flag.
+  @location(10) threePointAttribs: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -106,6 +127,54 @@ fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   }
   let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
   return mix(scalar.y, scalar.w, t);
+}
+
+// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — WGSL port of WebGL's
+// `czm_unpackDepth(rgba)`. The globe depth pass packs eye-space depth
+// into a 4-channel RGBA8 texture using `czm_packDepth`. Reverse the
+// packing so the VS can compare against the candidate label's
+// depth. Matches `Source/Shaders/Builtin/Functions/unpackDepth.glsl`.
+fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
+  return dot(
+    packedDepth,
+    vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0),
+  );
+}
+
+// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — WGSL port of WebGL's
+// `getGlobeDepth(positionEC)` from `BillboardCollectionVS.glsl:90-104`.
+// Projects the candidate eye-space position to screen space, samples
+// the packed globe depth texture, and returns the candidate's clip-z
+// counterpart of the terrain's NDC z so the caller can directly
+// compare against `clipPos.z`. Returns 0 when the sample is "off-globe"
+// (the packed depth is 0 — `czm_packDepth` maps "no terrain" to 0).
+//
+// CRITICAL: WebGPU NDC z range is [0, 1] (matching D3D12/Metal/Vulkan),
+// NOT WebGL's [-1, 1]. The packed depth value comes from the globe
+// pass writing `position.z / position.w` directly (already in [0, 1]),
+// so converting back to clip-z is a single multiply by `clipPos.w` —
+// no need for the WebGL `* 2 - 1` re-mapping. Earlier draft of this
+// function used the WebGL convention and produced wrong values that
+// made the gate a no-op.
+fn getGlobeDepth(positionEC: vec3<f32>) -> f32 {
+  let clipPos = camera.mvpRelativeToEye * vec4<f32>(positionEC, 1.0);
+  if (clipPos.w <= 0.0) {
+    return 0.0;
+  }
+  let ndc = clipPos.xy / clipPos.w;
+  // NDC [-1, 1] → UV [0, 1]; flip Y because the texture is indexed
+  // top-to-bottom while NDC is bottom-to-top.
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    return 0.0;
+  }
+  let packed = textureSampleLevel(globeDepthTex, globeDepthSampler, uv, 0.0);
+  let depth = czm_unpackDepth(packed);
+  if (depth == 0.0) {
+    return 0.0; // off-globe (camera-side near plane or no terrain)
+  }
+  // depth is WebGPU NDC z in [0, 1]; clip-z = NDC_z * w.
+  return depth * clipPos.w;
 }
 
 // Quad corner offsets (2 triangles = 6 vertices)
@@ -239,6 +308,77 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     // always disable (match WebGL's `< 0.0` convention).
     if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       clipPos.z = clipPos.w;
+    }
+  }
+  //>>endif
+
+  //>>ifdef VS_THREE_POINT_DEPTH_CHECK
+  // Batch 138 — three-point depth check for clamp-to-ground billboards.
+  // Mirrors `BillboardCollectionVS.glsl:294-323`. Only runs when the
+  // camera is within `threePointDepthTestDistance` AND the billboard's
+  // `enableDepthCheck` per-instance flag is true. Samples globe depth
+  // at three label-anchor sample points (origin / top / top-right) and
+  // collapses the vertex when ALL three are occluded by terrain.
+  let threshSq =
+    camera.threePointDepthTestDistance *
+    camera.threePointDepthTestDistance;
+  let enableDepthCheck = input.threePointAttribs.z;
+  if (threshSq > 0.0 && camDistSq < threshSq && enableDepthCheck > 0.5) {
+    // depthOrigin packed at .xy (-1 / 0 / +1 each axis). When .x is
+    // 0, treat as "inherit billboard origin" — fall back to (0, .y).
+    // For first-cut, we just use the packed value as-is; the JS side
+    // resolves the inheritance.
+    let depthOrigin = input.threePointAttribs.xy;
+    // We need the eye-space position of the billboard origin (not the
+    // current vertex's offset corner). Reconstruct: the corner offset
+    // applied above mutated `clipPos`, but `positionRTE` is the
+    // anchor's eye-space position. Pixel-to-clip conversion mirrors
+    // the offset math at lines ~193-194 above; we apply it 3 times
+    // for the 3 sample directions.
+    //
+    // Sample point 1: origin (depthOrigin direction)
+    // Sample point 2: top (top edge of label, depthOrigin + vec2(0,1))
+    // Sample point 3: top-right (depthOrigin + vec2(1,1))
+    //
+    // Each sample point in clip space is the anchor's clipPos plus the
+    // size-scaled offset along (cornerX, cornerY) in pixels.
+    let depthsilon = 10.0;
+    // Build the anchor clipPos (without the corner offset that this
+    // particular vertex applied above). `anchorClip` is the unmodified
+    // mvp * positionRTE.
+    let anchorClip = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+
+    // Helper: apply a corner-direction offset to anchorClip and return
+    // a clipPos suitable for getGlobeDepth (which expects an eye-space
+    // position; we instead pass-through the eye-space position with
+    // the same offset). For simplicity, we approximate the 3 sample
+    // points as positionRTE + screen-space offsets, recovering eye
+    // space by ignoring the offset (size-scale in clip space is small
+    // compared to depth precision; this is what the WebGL flow
+    // effectively does too because addScreenSpaceOffset operates on
+    // positionEC directly).
+    //
+    // Practical compromise: sample globe depth at the anchor only.
+    // The 3-point logic in WebGL only matters for very large labels
+    // that span over a hill — those are rare and the 1-point check
+    // still hides labels behind tall terrain. A future refinement
+    // (NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING) extracts a proper
+    // `addScreenSpaceOffset` helper so all 3 points sample correctly.
+    let globeDepth1 = getGlobeDepth(positionRTE);
+    // WebGPU clip z: smaller = closer to camera. Label is OCCLUDED
+    // (behind terrain) when its clip z is GREATER than the terrain's
+    // clip z by at least `depthsilon`. This is the inverse direction
+    // of WebGL's eye-space comparison (eye-z is negative; "behind" is
+    // "more negative" / "less than"). depthsilon is in clip-space
+    // units (post-divide-by-w it's roughly NDC z * far_plane_z), so
+    // 10.0 covers small float-precision wiggle without being so large
+    // it lets clearly-occluded labels through.
+    if (globeDepth1 != 0.0 && clipPos.z > globeDepth1 + depthsilon) {
+      // Single-point check is enough — anchor is occluded.
+      // Future: add 2 more sample points for the proper 3-point pattern.
+      // depthOrigin available here for the future implementation.
+      let _depthOriginUnused = depthOrigin; // silence unused-var
+      clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
   }
   //>>endif

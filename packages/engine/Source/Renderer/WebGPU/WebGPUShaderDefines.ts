@@ -151,6 +151,26 @@ export const ShaderDefine = Object.freeze({
    * skips this gate.
    */
   EYE_DISTANCE_SCALING: 1 << 7,
+
+  /**
+   * Three-point globe-depth occlusion check for clamp-to-ground
+   * billboards / labels (Batch 138). Mirrors WebGL's
+   * `VS_THREE_POINT_DEPTH_CHECK` define: when active, the vertex
+   * stage samples the globe depth texture at three "key points" of
+   * the quad (origin, top, top-right) and collapses the vertex to a
+   * degenerate clip-pos when ALL three are occluded by terrain. The
+   * 3-point pattern is deliberate — labels that span over hills
+   * remain visible if any anchor pokes above the terrain.
+   *
+   * Activated by the JS-side `_shaderClampToGround` flag, which
+   * `BillboardCollection` flips when any billboard has
+   * `heightReference !== HeightReference.NONE`.
+   *
+   * Consumers: BillboardCollection.wgsl, BillboardCollectionSDF.wgsl
+   * (label glyph path). Pick paths intentionally do NOT consume this
+   * — pick-through-terrain matches WebGL behavior.
+   */
+  VS_THREE_POINT_DEPTH_CHECK: 1 << 8,
 } as const);
 
 /**

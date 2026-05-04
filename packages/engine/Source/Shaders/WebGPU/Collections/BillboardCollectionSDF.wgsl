@@ -34,7 +34,10 @@ struct CameraUniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
-  _pad2: f32,
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_threePointDepthTestDistance`
+  // in meters; squared in shader. Same UBO position as base Billboard
+  // (slot 43, was `_pad2`).
+  threePointDepthTestDistance: f32,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
   _pad3: vec2<f32>,
@@ -47,6 +50,10 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
+// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth (packed-rgba)
+// + sampler for terrain occlusion of clamp-to-ground labels.
+@group(0) @binding(3) var globeDepthTex: texture_2d<f32>;
+@group(0) @binding(4) var globeDepthSampler: sampler;
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -62,6 +69,8 @@ struct VertexInput {
   @location(9) translucencyByDistance: vec4<f32>,
   @location(10) pixelOffsetScaleByDistance: vec4<f32>,
   @location(11) scaleByDistance: vec4<f32>,
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable.
+  @location(12) threePointAttribs: vec4<f32>,
 };
 
 // AUDIT_2026_05_02 A.14 (Batch 137) — `czm_nearFarScalar` for the
@@ -92,6 +101,38 @@ struct VertexOutput {
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
   return (posHigh - camHigh) + (posLow - camLow);
+}
+
+// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — see BillboardCollection.wgsl
+// for full comment block. Identical implementation copied here
+// because WGSL doesn't share helpers across files; future refactor
+// could extract to a shared chunk.
+fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
+  return dot(
+    packedDepth,
+    vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0),
+  );
+}
+
+fn getGlobeDepth(positionEC: vec3<f32>) -> f32 {
+  let clipPos = camera.mvpRelativeToEye * vec4<f32>(positionEC, 1.0);
+  if (clipPos.w <= 0.0) {
+    return 0.0;
+  }
+  let ndc = clipPos.xy / clipPos.w;
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    return 0.0;
+  }
+  let packed = textureSampleLevel(globeDepthTex, globeDepthSampler, uv, 0.0);
+  let depth = czm_unpackDepth(packed);
+  if (depth == 0.0) {
+    return 0.0;
+  }
+  // Batch 138 fix — WebGPU NDC z is [0, 1], not WebGL's [-1, 1].
+  // depth is already NDC z; clip-z = NDC_z * w. See
+  // BillboardCollection.wgsl `getGlobeDepth` for the full comment block.
+  return depth * clipPos.w;
 }
 
 const QUAD_OFFSETS = array<vec2<f32>, 6>(
@@ -207,6 +248,33 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   if (disableDepthSq != 0.0) {
     if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       clipPos.z = clipPos.w;
+    }
+  }
+  //>>endif
+
+  //>>ifdef VS_THREE_POINT_DEPTH_CHECK
+  // Batch 138 — three-point depth check for clamp-to-ground labels.
+  // Mirror of BillboardCollection.wgsl; first-cut uses anchor-only
+  // sampling. See `BillboardCollection.wgsl` for the full design note
+  // about extracting `addScreenSpaceOffset` for proper 3-point
+  // sampling. Critical for KML/GeoJSON labels with
+  // `heightReference: CLAMP_TO_GROUND` to hide behind hills.
+  let threshSqLabel =
+    camera.threePointDepthTestDistance *
+    camera.threePointDepthTestDistance;
+  let enableDepthCheckLabel = input.threePointAttribs.z;
+  if (
+    threshSqLabel > 0.0 &&
+    camDistSq < threshSqLabel &&
+    enableDepthCheckLabel > 0.5
+  ) {
+    let depthsilon = 10.0;
+    let globeDepth1 = getGlobeDepth(positionRTE);
+    // Batch 138 fix — WebGPU clip z: label OCCLUDED when clip z >
+    // terrain clip z + bias. See BillboardCollection.wgsl for the
+    // full comment about the [-1,1] → [0,1] convention flip.
+    if (globeDepth1 != 0.0 && clipPos.z > globeDepth1 + depthsilon) {
+      clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
   }
   //>>endif

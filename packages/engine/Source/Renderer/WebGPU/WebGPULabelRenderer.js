@@ -44,13 +44,14 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
-// SDF instance data: 48 floats (192 bytes) — standard 24 floats + 8 for
+// SDF instance data: 52 floats (208 bytes) — standard 24 floats + 8 for
 // outline/SDF + 4 for perInstanceFlags (DP-H42 / DP-H40 / A.14 DDC) +
 // 12 for 3 NearFarScalars (translucencyByDistance,
-// pixelOffsetScaleByDistance, scaleByDistance — Batch 137 / Audit A.14).
-// Was 36 floats (Batch 21); bumped to 48 (Batch 137) to bring labels to
-// distance-attribute parity with the base BillboardCollection path.
-const FLOATS_PER_SDF_INSTANCE = 48;
+// pixelOffsetScaleByDistance, scaleByDistance — Batch 137 / Audit A.14)
+// + 4 for threePointAttribs (depthOrigin + enableDepthCheck — Batch 138 /
+// VS_THREE_POINT_DEPTH_CHECK clamp-to-ground terrain occlusion).
+// Was 36 floats (Batch 21); 48 (Batch 137); now 52 (Batch 138).
+const FLOATS_PER_SDF_INSTANCE = 52;
 const BYTES_PER_SDF_INSTANCE = FLOATS_PER_SDF_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
@@ -107,6 +108,8 @@ const SDF_INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 9, offset: 144, format: "float32x4" }, // translucencyByDistance
     { shaderLocation: 10, offset: 160, format: "float32x4" }, // pixelOffsetScaleByDistance
     { shaderLocation: 11, offset: 176, format: "float32x4" }, // scaleByDistance
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable.
+    { shaderLocation: 12, offset: 192, format: "float32x4" }, // threePointAttribs
   ],
 };
 
@@ -237,6 +240,29 @@ function buildSDFInstanceData(collection, labelCollection) {
     );
     packNearFarScalar(instanceData, offset + 44, bb._scaleByDistance, 1.0);
 
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs.
+    //   .x: depthOrigin.x — Label-only "horizontal anchor for the
+    //        depth-check sample point." Label uses HorizontalOrigin
+    //        enum: LEFT=-1, CENTER=0, RIGHT=+1. We read from the
+    //        underlying glyph billboard's `_horizontalOrigin` (set
+    //        by `Label._rebindAllGlyphs`).
+    //   .y: depthOrigin.y — VerticalOrigin enum: TOP=-1, CENTER=0,
+    //        BOTTOM=+1.
+    //   .z: enableDepthCheck — 1.0 default; future hook for the
+    //        "label is below ellipsoid" case which WebGL detects via
+    //        scene-mode + ellipsoid intersection. For first cut we
+    //        always enable; deferred refinement matches WebGL's edge
+    //        case.
+    //   .w: reserved.
+    const horizontalOrigin =
+      typeof bb._horizontalOrigin === "number" ? bb._horizontalOrigin : 0;
+    const verticalOrigin =
+      typeof bb._verticalOrigin === "number" ? bb._verticalOrigin : 0;
+    instanceData[offset + 48] = horizontalOrigin;
+    instanceData[offset + 49] = verticalOrigin;
+    instanceData[offset + 50] = 1.0;
+    instanceData[offset + 51] = 0.0;
+
     visibleCount++;
   }
 
@@ -259,6 +285,13 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
       : 0.0;
   if (frameMin !== 0.0) {
     defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
+  }
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_shaderClampToGround`
+  // lives on the underlying glyph BillboardCollection (Label
+  // delegates clamp-to-ground propagation through the billboard
+  // collection it owns).
+  if (glyphCollection._shaderClampToGround === true) {
+    defines |= ShaderDefine.VS_THREE_POINT_DEPTH_CHECK;
   }
   const billboards = glyphCollection._billboards;
   const length = glyphCollection.length;
@@ -371,13 +404,19 @@ function prewarmLabelShaders(device) {
       D_KML,
       ALL_DDC_GATES,
       D_PROD,
+      // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — clamp-to-ground
+      // labels are very common (KML/GeoJSON) so warm the
+      // 3-point-only and 3-point + KML combos.
+      D.VS_THREE_POINT_DEPTH_CHECK,
+      D.VS_THREE_POINT_DEPTH_CHECK | D_KML,
+      D_PROD | D.VS_THREE_POINT_DEPTH_CHECK,
     ],
     "Label SDF shader",
   );
   cache._labelPrewarmed = true;
 }
 
-function packUniforms(uniformData, frameState, modelMatrix) {
+function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
   const context = frameState.context;
   const uniformState = context.uniformState;
   const canvas = context.canvas;
@@ -412,7 +451,16 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
   uniformData[42] = 1.0;
-  uniformData[43] = 0.0;
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — pull threePointDepthTestDistance
+  // from the parent LabelCollection's underlying glyph BillboardCollection.
+  // Labels delegate to BillboardCollection internally, so the value
+  // lives on the glyph collection.
+  let threePointDist = 0.0;
+  const glyphCollection = labelCollection?._glyphBillboardCollection;
+  if (typeof glyphCollection?._threePointDepthTestDistance === "number") {
+    threePointDist = glyphCollection._threePointDepthTestDistance;
+  }
+  uniformData[43] = threePointDist;
 
   // DP-H42 — frame-wide fallback threshold (meters).
   uniformData[44] =
@@ -475,6 +523,12 @@ function createSDFBindGroupLayout(device) {
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth (packed-rgba)
+    // + sampler. VS-only visibility; placeholder bound when the
+    // feature is off so the BGL is canonical across all ifdef
+    // variants.
+    texture(3, Stage.VERTEX),
+    sampler(4, Stage.VERTEX),
   ]);
 }
 
@@ -702,7 +756,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
 
   // Update uniforms
   const modelMatrix = labelCollection.modelMatrix || Matrix4.IDENTITY;
-  packUniforms(cache.uniformData, frameState, modelMatrix);
+  packUniforms(cache.uniformData, frameState, modelMatrix, labelCollection);
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
@@ -763,6 +817,32 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   cache.atlasGuid = atlasGuid;
   cache.atlasSourceTag = atlasSourceTag;
 
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth view +
+  // sampler. Mirrors WebGPUBillboardRenderer's plumbing. Placeholder
+  // bound when no globe depth is published this frame.
+  if (!defined(cache.globeDepthPlaceholder)) {
+    cache.globeDepthPlaceholder = device.createTexture({
+      label: "Label globe-depth placeholder 1x1",
+      size: [1, 1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: cache.globeDepthPlaceholder },
+      new Uint8Array([0, 0, 0, 0]),
+      { bytesPerRow: 4 },
+      [1, 1, 1],
+    );
+    cache.globeDepthPlaceholderView = cache.globeDepthPlaceholder.createView();
+    cache.globeDepthSampler = device.createSampler({
+      label: "Label globe-depth sampler",
+      minFilter: "nearest",
+      magFilter: "nearest",
+    });
+  }
+  const globeDepthView =
+    context._globeDepthView ?? cache.globeDepthPlaceholderView;
+
   // Bind group — recreate each frame to pick up atlas changes
   cache.sdfBindGroup = device.createBindGroup({
     layout: cache.sdfBindGroupLayout,
@@ -770,6 +850,8 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
       { binding: 1, resource: atlasTextureView },
       { binding: 2, resource: atlasSampler },
+      { binding: 3, resource: globeDepthView },
+      { binding: 4, resource: cache.globeDepthSampler },
     ],
   });
 

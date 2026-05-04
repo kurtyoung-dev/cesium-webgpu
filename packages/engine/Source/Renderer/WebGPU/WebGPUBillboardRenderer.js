@@ -43,10 +43,10 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // Per-instance stride. Batch 135 carried 7 vec4 (28 floats) for
 // DP-H42/H40 + DISTANCE_DISPLAY_CONDITION. Batch 136 (Audit A.14
 // finish) extends to 10 vec4 (40 floats) for the three remaining
-// NearFarScalar gates: translucencyByDistance,
-// pixelOffsetScaleByDistance, scaleByDistance. 16-byte stride
-// alignment preserved.
-const FLOATS_PER_INSTANCE = 40;
+// NearFarScalar gates. Batch 138 adds an 11th vec4
+// (`threePointAttribs`) for VS_THREE_POINT_DEPTH_CHECK clamp-to-ground
+// terrain occlusion. 16-byte stride alignment preserved.
+const FLOATS_PER_INSTANCE = 44;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
@@ -230,6 +230,24 @@ function buildInstanceData(collection) {
     );
     packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
 
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs vec4:
+    //   .x = depthOrigin.x (-1 / 0 / +1, label horizontal anchor; 0 means
+    //         "inherit billboard origin" per WebGL convention).
+    //   .y = depthOrigin.y (-1 / 0 / +1, vertical anchor).
+    //   .z = enableDepthCheck (1.0 default; 0.0 means "skip the 3-point
+    //         check on this billboard" — used by WebGL when the billboard
+    //         is below the ellipsoid surface so the depth-check would
+    //         occlude it incorrectly).
+    //   .w = reserved.
+    // The Billboard primitive itself doesn't expose `depthOrigin` —
+    // it's a Label-only attribute. Default to (0, 0) so plain
+    // Billboards take the "inherit origin" path. Labels override via
+    // the LabelRenderer's instance data builder.
+    instanceData[offset + 40] = 0.0;
+    instanceData[offset + 41] = 0.0;
+    instanceData[offset + 42] = 1.0;
+    instanceData[offset + 43] = 0.0;
+
     visibleCount++;
   }
 
@@ -343,6 +361,15 @@ function buildPickInstanceData(collection, context) {
     );
     packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
 
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — pick path mirrors the
+    // color path layout. Pick shader doesn't read these slots
+    // (pick-through-terrain is intentional, matching WebGL), but the
+    // buffer layout must include all attributes.
+    instanceData[offset + 40] = 0.0;
+    instanceData[offset + 41] = 0.0;
+    instanceData[offset + 42] = 1.0;
+    instanceData[offset + 43] = 0.0;
+
     visibleCount++;
   }
 
@@ -369,6 +396,11 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 7, offset: 112, format: "float32x4" },
     { shaderLocation: 8, offset: 128, format: "float32x4" },
     { shaderLocation: 9, offset: 144, format: "float32x4" },
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin +
+    // enableDepthCheck. Pick shader keeps its existing 10-attribute
+    // VertexInput; the WebGPU spec allows a buffer layout to declare
+    // more attributes than the shader reads.
+    { shaderLocation: 10, offset: 160, format: "float32x4" },
   ],
 };
 
@@ -377,6 +409,14 @@ function createBillboardBindGroupLayout(device) {
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
+    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth packed-rgba
+    // texture + sampler. VS-only visibility: the 3-point check
+    // sampling happens in `getGlobeDepth(positionEC)` from vertexMain;
+    // FS doesn't need access. Placeholder 1×1 texture is bound when
+    // the feature is off so the BGL stays a single canonical layout
+    // across all `//>>ifdef` variants.
+    texture(3, Stage.VERTEX),
+    sampler(4, Stage.VERTEX),
   ]);
 }
 
@@ -602,6 +642,12 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
     D.DISABLE_DEPTH_DISTANCE | D_KML,
     ALL_DDC_GATES,
     D_PROD,
+    // Batch 138 — VS_THREE_POINT_DEPTH_CHECK common combos. KML
+    // labels with `heightReference: CLAMP_TO_GROUND` typically also
+    // set DDC + translucency, so we prewarm that combo + standalone.
+    D.VS_THREE_POINT_DEPTH_CHECK,
+    D.VS_THREE_POINT_DEPTH_CHECK | D_KML,
+    D_PROD | D.VS_THREE_POINT_DEPTH_CHECK,
   ];
   cache.prewarm(
     ShaderSourceId.BILLBOARD_COLLECTION,
@@ -620,7 +666,7 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
   cache._billboardPrewarmed = true;
 }
 
-function packUniforms(uniformData, frameState, modelMatrix) {
+function packUniforms(uniformData, frameState, modelMatrix, collection) {
   const context = frameState.context;
   const uniformState = context.uniformState;
   const canvas = context.canvas;
@@ -672,7 +718,17 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
   uniformData[42] = 1.0; // highResMultiplier
-  uniformData[43] = 0.0;
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointDepthTestDistance
+  // populated from `BillboardCollection.threePointDepthTestDistance`
+  // when the collection has clamp-to-ground billboards. WebGL stores
+  // this on the collection (not frame-state) and computes a default
+  // when unset, so we read it directly from the collection. 0 (default)
+  // means the WGSL gate evaluates `threshSq > 0` to false → skips.
+  const threePointDist =
+    typeof collection?._threePointDepthTestDistance === "number"
+      ? collection._threePointDepthTestDistance
+      : 0.0;
+  uniformData[43] = threePointDist;
 
   // DP-H42 — frame-wide minimum disable-depth-test distance in meters.
   // `frameState.minimumDisableDepthTestDistance` is populated by Scene.js
@@ -745,9 +801,18 @@ function computeDefinesForFrame(collection, frameState) {
   if (frameMin !== 0.0) {
     defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
   }
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_shaderClampToGround` is
+  // set true by `BillboardCollection.update()` when ANY billboard in the
+  // collection has `heightReference !== HeightReference.NONE`. Mirrors
+  // the WebGL define-flip at `BillboardCollection.js:1031`.
+  if (collection._shaderClampToGround === true) {
+    defines |= ShaderDefine.VS_THREE_POINT_DEPTH_CHECK;
+  }
   const billboards = collection._billboards;
   const length = collection.length;
-  // Short-circuit the scan once all six flags are set.
+  // Short-circuit the scan once all seven flags are set. (Six A.14
+  // gates + clamp-to-ground; clamp-to-ground is set above
+  // collection-wide so doesn't participate in the per-billboard scan.)
   const all =
     ShaderDefine.DISABLE_DEPTH_DISTANCE |
     ShaderDefine.SPLIT_ENABLED |
@@ -940,7 +1005,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
 
   // Update uniforms
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
-  packUniforms(cache.uniformData, frameState, modelMatrix);
+  packUniforms(cache.uniformData, frameState, modelMatrix, collection);
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,
@@ -985,7 +1050,43 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     });
   }
 
-  // Bind group \u2014 (re)created when the atlas view rotates.
+  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) \u2014 globe depth view + sampler.
+  // Pulls from `context._globeDepthView` (published by the scene
+  // renderer's frustum loop after the globe pass). Falls back to a
+  // 1\u00d71 placeholder when the globe didn't render this frame, which
+  // makes the bind group always valid; the VS just gets a depth=0
+  // sample that `getGlobeDepth` interprets as "off-globe / skip the
+  // occlusion test."
+  const globeDepthView = context._globeDepthView ?? null;
+  if (!defined(cache.globeDepthPlaceholder)) {
+    cache.globeDepthPlaceholder = device.createTexture({
+      label: "Billboard globe-depth placeholder 1x1",
+      size: [1, 1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: cache.globeDepthPlaceholder },
+      new Uint8Array([0, 0, 0, 0]),
+      { bytesPerRow: 4 },
+      [1, 1, 1],
+    );
+    cache.globeDepthPlaceholderView = cache.globeDepthPlaceholder.createView();
+    cache.globeDepthSampler = device.createSampler({
+      label: "Billboard globe-depth sampler",
+      minFilter: "nearest",
+      magFilter: "nearest",
+    });
+  }
+  const effectiveGlobeDepthView =
+    globeDepthView ?? cache.globeDepthPlaceholderView;
+  if (cache.lastGlobeDepthView !== effectiveGlobeDepthView) {
+    cache.lastGlobeDepthView = effectiveGlobeDepthView;
+    cache.bindGroup = undefined;
+  }
+
+  // Bind group \u2014 (re)created when the atlas view rotates or the
+  // globe depth view changes (per-frame on globe scenes).
   if (!defined(cache.bindGroup)) {
     cache.bindGroup = device.createBindGroup({
       layout: cache.bindGroupLayout,
@@ -993,6 +1094,8 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
         { binding: 1, resource: cache.atlasTextureView },
         { binding: 2, resource: cache.sampler },
+        { binding: 3, resource: effectiveGlobeDepthView },
+        { binding: 4, resource: cache.globeDepthSampler },
       ],
     });
   }
