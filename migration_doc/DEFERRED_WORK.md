@@ -862,56 +862,68 @@ mountains on WebGPU, matching WebGL behavior.
 
 ---
 
-### NEW-MODEL-AS-CLASSIFIER — `model.classificationType` end-to-end on WebGPU
+### ~~NEW-MODEL-AS-CLASSIFIER~~ — RESOLVED (Batch 142)
 
-**What:** WebGL supports `new Model({ classificationType: ClassificationType.TERRAIN })`
-(or `CESIUM_3D_TILE`, or `BOTH`) — the model's geometry is treated as
-a classification volume (drape/dye terrain or 3D Tile surfaces in the
-shape of the model). WebGPU currently ignores the field entirely:
-`WebGPUModelRenderer.js` emits a one-time warning and falls through
-to the standard PBR pipeline so the model renders as a floating
-opaque/blended primitive instead of classifying.
+**Resolution:** `model.classificationType` now drapes the model's geometry
+onto terrain / 3D-Tile surfaces using the depth-sample classifier
+architecture shared with the four ground-classifier renderers. The
+implementation reuses the existing model pipeline layout (4 bind groups,
+including the effects bind group that already binds globe depth at
+`@group(3) @binding(15)`) — no new bind group layout, no new pipeline
+layout, no separate `WebGPUClassificationModelRenderer.js`. The original
+~300 LOC estimate assumed a parallel renderer; the realized solution is
+~80 LOC across four files because the bind group reuse collapses most
+of the scaffolding work.
 
-**Why deferred:** Real ~300 LOC feature. Requires:
+**What landed:**
 
-1. **New WGSL classification shader** — strip ModelPBRComplete down
-   to position-only VS + depth-sample FS. The FS samples
-   `globeDepthTex` (already bound on @group(3) @binding(15)),
-   reconstructs the depth-sample world position, discards when the
-   model's fragment is in front of the globe-depth surface, and
-   emits the classification color (taken from `material.baseColorFactor`
-   or a dedicated classification color uniform).
-2. **New `WebGPUClassificationModelRenderer.js`** — analogous to
-   `WebGPUVector3DTilePrimitiveRenderer.js`. Owns its own pipeline
-   cache + bind groups for the stripped classification variant.
-   Iterates the model's primitives, builds per-primitive
-   classification commands at the right `Pass.TERRAIN_CLASSIFICATION`
-   / `Pass.CESIUM_3D_TILE_CLASSIFICATION` slot.
-3. **Dispatch wiring in `WebGPUModelRenderer.js`** — when
-   `model.classificationType !== undefined`, route through the new
-   classifier instead of the standard PBR path. Mirror the
-   `redirectClassificationsTo` pattern from
-   `WebGPUVector3DTilePrimitive*Renderer.js`.
-4. **`Model.js:3095-3098`** — already gates classification command
-   construction on `defined(classificationType)`; the WebGPU
-   classifier just needs to consume the SAME `_commandList`
-   construction the WebGL `ClassificationModelDrawCommand` populates.
-   May need a parallel WebGPU-aware command-emitter or a `pass`
-   parameter passed to the FR dispatch.
+- New `fragmentClassificationMain` entry point in
+  `Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`. Reuses the
+  existing `vertexMain` (animated models classify correctly because
+  skinning / morph / instancing transforms are already applied). The
+  FS samples `globeDepthTex` (group 3 binding 15), discards where
+  surface depth is 0 (sky), and emits `material.baseColorFactor` —
+  or `material.diffuseFactor_rgba` for KHR_materials_pbrSpecularGlossiness
+  models. Viewport size is recovered from `textureDimensions(globeDepthTex)`
+  rather than a UBO field, since globe depth is sized to the drawing
+  buffer (same space as fragment coordinates).
+- New `getClassificationPipeline(alphaMode, doubleSided)` on
+  `WebGPUModelPipelineCache` plus a private `createClassificationPipeline`
+  helper. The pipeline reuses the model PBR layout and shader module;
+  only the fragment entry point + standard src-alpha blend differ.
+  Cache wipe on HDR / scene-format change wired via
+  `maybeUpdateForSceneFormat`.
+- Dispatch wiring in `WebGPUModelRenderer.js`: when
+  `defined(model.classificationType)`, the per-primitive command
+  emission swaps to the classification pipeline, routes the command
+  to `Pass.TERRAIN_CLASSIFICATION` (3) for `ClassificationType.TERRAIN`
+  or `Pass.CESIUM_3D_TILE_CLASSIFICATION` (6) for `CESIUM_3D_TILE` /
+  `BOTH`, and skips the pick / velocity / tile-batch dual / translucent
+  depth-write / edge variants (none of which apply to a classifier).
+- Replaced the `WebGPUModel.classificationType` one-time warning with
+  a Batch 142 resolution comment.
 
-**Prerequisites:** None — depth-sample classifier infrastructure
-shipped (ADR-2026-04-28), globe depth texture is already bound on
-the model effects BGL.
+**Architectural notes (verified during scope):**
 
-**Estimated effort:** 2-3 sessions.
+- RTE precision: the classification pipeline reuses the existing
+  `vertexMain`, which already handles the model's RTE encoding. No
+  RTE math change needed.
+- Same-cycle globe depth: globe depth is published to
+  `context._globeDepthView` by the frustum loop BEFORE classification
+  passes run (publication site
+  `WebGPUSceneRendererFrustumLoop.ts:251`). Model classifier commands
+  dispatched at TERRAIN/3D-Tile pass slots see this-frame's globe depth.
+- BOTH classification compromise: `ClassificationType.BOTH` routes into
+  `CESIUM_3D_TILE_CLASSIFICATION` only (mirrors
+  `WebGPUGroundPrimitiveRenderer`'s same compromise — a full BOTH split
+  would emit two commands per primitive). Terrain-only emission for
+  BOTH classifiers is tracked as a follow-up if scenes need it.
+- Animation gate: `Model.js:3095-3098` already disables animations on
+  classification models, so the morph / skinning paths run at zero
+  weight; the classifier's skinning-aware VS dispatches correctly
+  even though the animated state is frozen.
 
-**Impact:** Closes A.8 from AUDIT_2026_05_02. Unlocks user-driven
-"drape model onto terrain" workflows that ship in the WebGL
-backend today.
-
-**Trace:** AUDIT_2026_05_02.md A.8;
-`WebGPUModelRenderer.js:1514-1523` (current warning);
-`Model.js:485` / `:2495` (classificationType property).
+**Closing batch:** Batch 142.
 
 ---
 

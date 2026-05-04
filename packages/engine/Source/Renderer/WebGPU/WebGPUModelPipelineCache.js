@@ -532,6 +532,68 @@ function createVelocityPipeline(
 }
 
 /**
+ * AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
+ * classification pipeline variant for `Model.classificationType`. Same
+ * vertex stage and pipeline layout as the lit color pipeline (so the
+ * model's existing skinning / morph / instancing transforms apply
+ * unchanged), but the fragment entry is `fragmentClassificationMain`
+ * which samples the globe-depth texture (already bound on
+ * `@group(3) @binding(15)` via the effects bind group) and discards
+ * pixels that don't have a classifiable surface (sky / no globe data).
+ *
+ * Depth state mirrors the regular GroundPrimitive classifier:
+ * `depthWriteEnabled: false`, `depthCompare: less-equal`. Standard
+ * src-alpha blend so the model's `baseColorFactor.a` controls the
+ * classification opacity.
+ *
+ * @private
+ */
+function createClassificationPipeline(
+  device,
+  shaderModule,
+  pipelineLayout,
+  presentationFormat,
+  depthFormat,
+  alphaMode,
+  doubleSided,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
+  const blend = {
+    color: {
+      srcFactor: "src-alpha",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+    alpha: {
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+  };
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentClassificationMain",
+      targets: [{ format: presentationFormat, blend }],
+    },
+    primitive: { topology: "triangle-list", cullMode },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
  * WebGPUModelPipelineCache manages GPU pipeline variants for Model rendering.
  */
 class WebGPUModelPipelineCache {
@@ -574,6 +636,12 @@ class WebGPUModelPipelineCache {
     // a given (alphaMode, doubleSided) identity. Static scenes (TAA
     // off) never construct a velocity pipeline.
     this._velocityPipelines = new Map();
+    // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
+    // classification pipeline cache. Built on demand the first frame a
+    // model with `classificationType !== undefined` reaches the FR;
+    // models without classificationType (the common case) never
+    // construct a classification pipeline.
+    this._classificationPipelines = new Map();
 
     // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
     const bgls = createBindGroupLayouts(device);
@@ -862,6 +930,7 @@ class WebGPUModelPipelineCache {
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
   }
 
   /**
@@ -990,6 +1059,43 @@ class WebGPUModelPipelineCache {
       doubleSided,
     );
     this._velocityPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) — gets or
+   * creates a classification pipeline for the given material configuration.
+   * Same vertex stage and pipeline layout as the lit color pipeline; the
+   * fragment entry is `fragmentClassificationMain` which samples the
+   * globe-depth texture (already bound on the effects bind group at
+   * `@group(3) @binding(15)`) and emits `material.baseColorFactor` only
+   * where a classifiable surface exists.
+   *
+   * Used by `WebGPUModelRenderer` when `model.classificationType !==
+   * undefined`. Routed in place of the standard color command at
+   * `Pass.TERRAIN_CLASSIFICATION` or `Pass.CESIUM_3D_TILE_CLASSIFICATION`
+   * per the model's classificationType setting.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @returns {GPURenderPipeline}
+   */
+  getClassificationPipeline(alphaMode, doubleSided) {
+    const key = computeKey(alphaMode, doubleSided);
+    let pipeline = this._classificationPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+    pipeline = createClassificationPipeline(
+      this._device,
+      this._shaderModule,
+      this._pipelineLayout,
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+    );
+    this._classificationPipelines.set(key, pipeline);
     return pipeline;
   }
 

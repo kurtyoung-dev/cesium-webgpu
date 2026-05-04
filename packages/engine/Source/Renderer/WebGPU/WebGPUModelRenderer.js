@@ -1511,16 +1511,13 @@ function updateWebGPUModel(model, frameState) {
         "render with the standard PBR pipeline. Track AUDIT_2026_05_02 A.7.",
     );
   }
-  // AUDIT_2026_05_02 A.8 — Model-as-classifier path is unwired on WebGPU.
-  if (defined(model.classificationType)) {
-    oneTimeWarning(
-      "WebGPUModel.classificationType",
-      "Model.classificationType is not yet supported on the WebGPU " +
-        "backend. The model will render as a normal opaque/blended primitive " +
-        "instead of classifying onto terrain or 3D Tiles. Track " +
-        "AUDIT_2026_05_02 A.8.",
-    );
-  }
+  // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER — resolved):
+  // model.classificationType now routes through
+  // `pipelineCache.getClassificationPipeline` and emits at the matching
+  // TERRAIN/3D-Tile classification pass. The depth-sample classifier
+  // FS samples the same `globeDepthTex` (group 3 binding 15) the four
+  // classifier renderers use, so model classifiers participate in the
+  // shared depth-sample architecture without per-renderer plumbing.
   //>>includeEnd('debug');
 
   const commandList = frameState.commandList;
@@ -2144,10 +2141,31 @@ function updateWebGPUModel(model, frameState) {
       //   - Pass.CESIUM_3D_TILE for 3D Tiles content (set by Model3DTileContent)
       //   - Pass.OPAQUE for standalone models
       // Alpha blend primitives override to TRANSLUCENT
-      const pass =
-        matInfo.alphaMode === AlphaModes.BLEND
-          ? Pass.TRANSLUCENT
-          : model.opaquePass;
+      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
+      // when `model.classificationType` is set, the model becomes a
+      // classification volume: route the command into the appropriate
+      // classifier pass and use the depth-sample classifier pipeline
+      // instead of the lit PBR pipeline. Mirrors WebGL's
+      // `ClassificationModelDrawCommand` pass routing
+      // (`Source/Scene/Model/ClassificationModelDrawCommand.js`).
+      const isClassifier = defined(model.classificationType);
+      let pass;
+      if (isClassifier) {
+        const classType = model.classificationType;
+        // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
+        // BOTH falls into CESIUM_3D_TILE_CLASSIFICATION so the model
+        // still classifies tiles (terrain-only emission for BOTH is a
+        // minor compromise mirroring `WebGPUGroundPrimitiveRenderer`).
+        pass =
+          classType === 0
+            ? Pass.TERRAIN_CLASSIFICATION
+            : Pass.CESIUM_3D_TILE_CLASSIFICATION;
+      } else {
+        pass =
+          matInfo.alphaMode === AlphaModes.BLEND
+            ? Pass.TRANSLUCENT
+            : model.opaquePass;
+      }
 
       // C-R1 (Batch 37) — forward the source JS-side renderState from
       // `runtimePrimitive.drawCommand._command.renderState` so our
@@ -2191,8 +2209,20 @@ function updateWebGPUModel(model, frameState) {
         instanceBuffer,
       );
 
+      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
+      // route through the classification pipeline when the model is a
+      // classifier. Same vertex stage / bind groups / vertex buffers /
+      // index buffer; only the fragment entry differs (samples globe
+      // depth, discards on sky, emits `material.baseColorFactor`).
+      const activePipeline = isClassifier
+        ? pipelineCache.getClassificationPipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+          )
+        : primCache.pipeline;
+
       const webgpuCmd = new WebGPUDrawCommand({
-        pipeline: primCache.pipeline,
+        pipeline: activePipeline,
         bindGroups: [
           cache.cameraBG, // group 0
           mergedMaterialBG, // group 1 (material + light + textures + featureId)
@@ -2273,7 +2303,11 @@ function updateWebGPUModel(model, frameState) {
       // models in non-pick render passes (frameState.passes.pick=false
       // and passes.render=false) skip pick-id allocation, so `pickColor`
       // can be undefined here for an OFFSCREEN/UPDATE-only frame.
-      if (pickColor) {
+      // AUDIT_2026_05_02 A.8 (Batch 142) — classifiers don't pick. The
+      // WebGL `ClassificationModelDrawCommand` doesn't allocate a pick
+      // command either; classifier draws into TERRAIN/3D-Tile pass on
+      // the scene FB, not the pick FBO.
+      if (pickColor && !isClassifier) {
         if (!defined(primCache.pickPipeline)) {
           primCache.pickPipeline = pipelineCache.getPickPipeline(
             matInfo.alphaMode,
@@ -2324,7 +2358,11 @@ function updateWebGPUModel(model, frameState) {
       // velocity through OIT-style accumulation, but that needs more
       // architectural work (the rg16float resolve target doesn't
       // accumulate cleanly with src-alpha blending).
-      if (motionEnabled && matInfo.alphaMode !== AlphaModes.BLEND) {
+      if (
+        motionEnabled &&
+        matInfo.alphaMode !== AlphaModes.BLEND &&
+        !isClassifier
+      ) {
         if (!defined(primCache.velocityPipeline)) {
           primCache.velocityPipeline = pipelineCache.getVelocityPipeline(
             matInfo.alphaMode,
@@ -2356,6 +2394,20 @@ function updateWebGPUModel(model, frameState) {
       }
 
       commandList.push(webgpuCmd);
+
+      // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
+      // when the model is a classifier, we've already pushed the
+      // classification command. The remaining variants (tile-batch
+      // dual command, translucent depth-write, edge emitter) don't
+      // apply: classifiers don't pick (no pick FBO entry needed —
+      // ClassificationModelDrawCommand on WebGL also skips pick),
+      // they don't emit velocity (no TAA on classified content),
+      // and they don't run the edge stage (the classifier FS is a
+      // depth-sample emit, not the lit PBR FS that hosts the edge
+      // overlay). Skip the rest of this primitive's emission.
+      if (isClassifier) {
+        continue;
+      }
 
       // C-R1-TILE-BATCH (Batch 101) — dual-command emission. When the
       // primary command class is opaque (passClass === 0) AND the

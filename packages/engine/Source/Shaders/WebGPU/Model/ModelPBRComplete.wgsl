@@ -2439,3 +2439,40 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
 
   return computeMotionVectorScreenSpace(input);
 }
+
+// AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) — classifier
+// fragment entry point. Drape the model's shape onto terrain or 3D-Tile
+// surfaces by sampling the same packed globe-depth texture the depth-sample
+// classifier renderers use (group 3 binding 15) and discarding where the
+// sampled depth is 0 (sky / no surface). Color comes from
+// `material.baseColorFactor` so the user can tune the drape tint via the
+// model's primary material.
+//
+// Unlike `fragmentMain`, this entry skips PBR / IBL / lighting / shadows /
+// edges / atmosphere — it produces a single classification color per pixel.
+// The pipeline pairs it with `vertexMain` (existing — the model's geometry
+// IS the classifier volume; no separate shadow-volume extrusion is needed
+// because the model's mesh already encodes the desired drape shape).
+//
+// Viewport size is recovered from `textureDimensions(globeDepthTex)`
+// instead of a UBO field — the globe depth texture is sized to the
+// drawing buffer, identical to the fragment-coordinate space.
+@fragment fn fragmentClassificationMain(input: FragmentInput) -> @location(0) vec4<f32> {
+  let dims = textureDimensions(globeDepthTex);
+  let screenUV = input.position.xy / vec2<f32>(f32(dims.x), f32(dims.y));
+  let packed = textureSampleLevel(globeDepthTex, edgeSampler, screenUV, 0.0);
+  let surfaceDepth = unpackEdgeDepth(packed);
+  if (surfaceDepth == 0.0) {
+    discard;
+  }
+  // Honor the model's base color factor as the classification tint.
+  // KHR_materials_pbrSpecularGlossiness uses `diffuseFactor` instead, so
+  // mirror the same fallback the lit FS does when the flag is set.
+  let flags = material.materialFlags;
+  var tint = material.baseColorFactor;
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    tint = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                     material.diffuseFactor_b, material.diffuseFactor_a);
+  }
+  return tint;
+}
