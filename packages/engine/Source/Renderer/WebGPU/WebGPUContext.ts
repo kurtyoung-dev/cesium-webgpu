@@ -55,6 +55,7 @@ import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js"
 import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUResourceCacheRegistry } from "./WebGPUResourceCacheRegistry.js";
 import { WebGPUFeatureFlags } from "./WebGPUFeatureFlags.js";
+import { WebGPUDevicePool } from "./WebGPUDevicePool.js";
 import { buildDeviceLossRecoveryFor } from "./WebGPUContextDeviceLoss.js";
 import {
   getFrameStatistics,
@@ -229,6 +230,28 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
   requiredLimits?: Record<string, number>;
 
   /**
+   * AUDIT_2026_05_02 C.1 (Batch 135) — when true (default), route
+   * adapter + device acquisition through `WebGPUDevicePool` so multi-
+   * canvas scenarios (split-screen, multi-monitor, picture-in-picture)
+   * share a single GPUDevice. Set to false to force a fresh device for
+   * this context regardless of what the pool has cached. Useful for:
+   *
+   *   - Tests that need an isolated device (no resource bleed-through
+   *     from a previous test's device).
+   *   - Benchmarking specific limit / feature configurations that must
+   *     not be conflated with the primary device's negotiated state.
+   *   - Recovery scenarios where the shared device is suspect and the
+   *     caller wants a fresh negotiation.
+   *
+   * The pool path keeps adaptive limit negotiation (scaling against
+   * adapter ceilings) — the user-supplied `requiredLimits` are still
+   * honored verbatim and never lowered.
+   *
+   * @default true
+   */
+  useDevicePool?: boolean;
+
+  /**
    * When true, the per-context point-cloud LOD processor compacts its
    * visible-index buffer with a parallel prefix scan instead of the
    * default per-workgroup atomicAdd. Output ordering becomes
@@ -256,6 +279,17 @@ export class WebGPUContext extends GraphicsContext {
   // builder (Batch 143).
   public _adapter: GPUAdapter | null = null;
   public _device: GPUDevice | null = null;
+  /**
+   * AUDIT_2026_05_02 C.1 (Batch 135) — true when `_device` was acquired
+   * via `WebGPUDevicePool.acquireDevice`, false when an external caller
+   * supplied the device directly (e.g., the recovery path that hands a
+   * fresh device into the existing context). The destroy path uses this
+   * to decide between `pool.releaseDevice` (refcount-aware; the right
+   * call when the device may be shared with other contexts) and a
+   * direct `device.destroy()` (only safe when this context owns the
+   * device exclusively).
+   */
+  public _deviceFromPool: boolean = false;
   // Public underscore: shared with the WebGL-stub state proxy (Batch 129
   // extraction).
   public _context: GPUCanvasContext | null = null;
@@ -686,17 +720,40 @@ export class WebGPUContext extends GraphicsContext {
    */
   private async _initialize(): Promise<void> {
     try {
-      // Request GPU adapter
-      // featureLevel "compatibility" runs WebGPU on WebGL2 hardware
-      const adapterOptions: GPURequestAdapterOptions = {
+      // AUDIT_2026_05_02 C.1 (Batch 135) — adapter + device acquisition
+      // routes through `WebGPUDevicePool`. The pool owns the adaptive
+      // limit + feature negotiation that used to live inline here:
+      // it inspects the adapter's exposed ceilings, scales requested
+      // limits up (capped at sane upper bounds), merges
+      // `WebGPUFeatureFlags.DESIRED_FEATURES` with user-supplied
+      // `requiredFeatures`, and returns the freshly-created (or shared)
+      // device.
+      //
+      // Multi-canvas scenarios (split-screen, multi-monitor,
+      // picture-in-picture) automatically share a GPUDevice when their
+      // feature + limit requirements are compatible — saving ~50% of
+      // VRAM on duplicated pipelines / textures. Single-context users
+      // get the same code path; the pool just creates a fresh device
+      // and hands it back.
+      //
+      // Set `options.useDevicePool = false` to opt out (forces a fresh
+      // device for this context regardless of pool state). Default true.
+      const useDevicePool = this._options.useDevicePool !== false;
+      const acquired = await WebGPUDevicePool.instance.acquireDevice({
         powerPreference: this._options.powerPreference ?? "high-performance",
-      };
-      if (this._options.featureLevel === "compatibility") {
-        (
-          adapterOptions as GPURequestAdapterOptions & { featureLevel?: string }
-        ).featureLevel = "compatibility";
-      }
-      this._adapter = await navigator.gpu.requestAdapter(adapterOptions);
+        featureLevel: this._options.featureLevel,
+        requiredFeatures: this._options.requiredFeatures,
+        requiredLimits: this._options.requiredLimits,
+        forceNewDevice: !useDevicePool,
+      });
+
+      this._adapter = acquired.adapter;
+      this._device = acquired.device;
+      // Track whether we pulled a shared device or got our own — this
+      // flag drives the destroy path's choice between `pool.releaseDevice`
+      // (refcount-aware) and a direct `device.destroy()` (only safe if
+      // we own the device exclusively).
+      this._deviceFromPool = true;
 
       if (!this._adapter) {
         throw new RuntimeError(
@@ -705,126 +762,20 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
 
-      // Request GPU device with auto-detected optional features.
-      // Batch 132: list-build moved to `WebGPUFeatureFlags`.
-      const requestedFeatures = this._featureFlags.buildRequestList(
-        this._adapter,
-        this._options.requiredFeatures,
-      );
-      const requiredLimits = { ...(this._options.requiredLimits ?? {}) };
-
-      // NEW-4-F (Batch 66) — Batch 58's C-R5 expansion bumped imagery
-      // layers to 16 + 5 per-layer uniforms. Globe terrain pipelines
-      // can now exceed the default WebGPU minimum
-      // `maxSampledTexturesPerShaderStage = 16`. Request the adapter's
-      // ceiling (up to 256, the spec's "tier 1" limit) when available so
-      // the globe pipeline + effects bind group + per-imagery samplers
-      // all fit. If the adapter doesn't expose a higher limit, the
-      // requestDevice() rejects gracefully and the user sees an explicit
-      // error rather than silent pipeline-creation failures later.
-      const adapterMaxSampled =
-        this._adapter.limits?.maxSampledTexturesPerShaderStage ?? 16;
-      if (
-        requiredLimits.maxSampledTexturesPerShaderStage === undefined &&
-        adapterMaxSampled > 16
-      ) {
-        requiredLimits.maxSampledTexturesPerShaderStage = Math.min(
-          adapterMaxSampled,
-          64,
-        );
-      }
-      const adapterMaxBindings =
-        this._adapter.limits?.maxBindingsPerBindGroup ?? 640;
-      if (
-        requiredLimits.maxBindingsPerBindGroup === undefined &&
-        adapterMaxBindings > 640
-      ) {
-        requiredLimits.maxBindingsPerBindGroup = Math.min(
-          adapterMaxBindings,
-          1000,
-        );
-      }
-
-      // 2026-04-30 — Adaptive opt-in to higher per-stage resource limits
-      // when the adapter exposes them. WebGPU spec defaults are tight:
-      //   maxBindGroups: 4
-      //   maxUniformBuffersPerShaderStage: 12
-      //   maxStorageBuffersPerShaderStage: 8
-      //   maxSampledTexturesPerShaderStage: 16
-      //   maxSamplersPerShaderStage: 16
-      // Most adapters expose ceilings well above defaults
-      // (NVIDIA Pascal: 1000 bindings/group, 48 textures/stage), but
-      // Chromium clamps maxBindGroups to 4 spec-mandated regardless of
-      // hardware. Probed across DXGI/Vulkan/HighPerf on Pascal — all
-      // returned maxBindGroups = 4 (verified via
-      // `Tools/visual-regression/probe-adapter-limits.mjs`).
-      //
-      // Strategy: pull each limit toward the adapter ceiling (capped at
-      // a reasonable upper bound to avoid pathological allocations).
-      // The Model PBR pipeline is consolidated to 4 bind groups in code
-      // and works within spec defaults for every other limit; the
-      // opt-ins are pure performance/headroom bonuses (e.g., extra KHR
-      // material textures fit when maxSampledTextures > 16).
-      const adapterMaxBindGroups = this._adapter.limits?.maxBindGroups ?? 4;
-      if (
-        requiredLimits.maxBindGroups === undefined &&
-        adapterMaxBindGroups > 4
-      ) {
-        // Capped at 8 — the Model PBR pipeline needs ≤4 today; the cap
-        // documents the next-tier upper bound a future expansion could
-        // use without re-tuning per-stage budgets.
-        requiredLimits.maxBindGroups = Math.min(adapterMaxBindGroups, 8);
-      }
-      const adapterMaxUniforms =
-        this._adapter.limits?.maxUniformBuffersPerShaderStage ?? 12;
-      if (
-        requiredLimits.maxUniformBuffersPerShaderStage === undefined &&
-        adapterMaxUniforms > 12
-      ) {
-        requiredLimits.maxUniformBuffersPerShaderStage = Math.min(
-          adapterMaxUniforms,
-          24,
-        );
-      }
-      const adapterMaxStorage =
-        this._adapter.limits?.maxStorageBuffersPerShaderStage ?? 8;
-      if (
-        requiredLimits.maxStorageBuffersPerShaderStage === undefined &&
-        adapterMaxStorage > 8
-      ) {
-        requiredLimits.maxStorageBuffersPerShaderStage = Math.min(
-          adapterMaxStorage,
-          16,
-        );
-      }
-      const adapterMaxSamplers =
-        this._adapter.limits?.maxSamplersPerShaderStage ?? 16;
-      if (
-        requiredLimits.maxSamplersPerShaderStage === undefined &&
-        adapterMaxSamplers > 16
-      ) {
-        requiredLimits.maxSamplersPerShaderStage = Math.min(
-          adapterMaxSamplers,
-          32,
-        );
-      }
-
-      this._device = await this._adapter.requestDevice({
-        requiredFeatures: requestedFeatures,
-        requiredLimits,
-      });
-
       // Record which features were actually enabled (Batch 132).
       this._featureFlags.markEnabled(this._device.features);
 
-      // Log enabled optional features for debugging
-      const optionalEnabled = requestedFeatures.filter((f) =>
-        this._featureFlags.has(f),
-      );
+      // Log enabled optional features for debugging. Pull the list from
+      // the device's actual `features` set so the message reflects what
+      // the pool's negotiator + adapter granted (which may differ from
+      // user-requested features when the adapter doesn't support all of
+      // them).
+      const enabledFeatures = Array.from(this._device.features) as string[];
       //>>includeStart('debug', pragmas.debug);
-      if (optionalEnabled.length > 0) {
+      if (enabledFeatures.length > 0) {
         console.log(
-          `[WebGPU] Enabled optional features: ${optionalEnabled.join(", ")}`,
+          `[WebGPU] Enabled optional features: ${enabledFeatures.join(", ")}` +
+            (acquired.isShared ? " (shared device)" : " (own device)"),
         );
       }
       //>>includeEnd('debug');
@@ -932,8 +883,13 @@ export class WebGPUContext extends GraphicsContext {
       }
     }
 
-    // Trigger async GPU culler initialization (loads FrustumCull.wgsl + compiles compute pipeline)
-    void this.gpuCuller;
+    // AUDIT_2026_05_02 C.2 (Batch 135) — eager `void this.gpuCuller`
+    // trigger removed. `gpuCullCommands()` (defined on WebGPUSceneRenderer)
+    // has no production consumers, so the eager init burned ~256KB of
+    // SOA buffers per context permanently. The lazy getter remains, so
+    // any future caller that wires `gpuCullCommands` into the frustum
+    // loop will trigger initialization on first use. Tracked as
+    // NEW-GPU-CULLER-CONSUME-OR-DELETE in DEFERRED_WORK.
   }
 
   /**
@@ -2993,9 +2949,20 @@ export class WebGPUContext extends GraphicsContext {
     this._featureFlags.clear();
 
     // NOW destroy the device — everything that needed it has already run.
+    // AUDIT_2026_05_02 C.1 (Batch 135) — when the device came from the
+    // pool, release the reference so refcount drops; the pool destroys
+    // the underlying GPUDevice only when the last context releases it.
+    // When the device was supplied externally (e.g., legacy direct
+    // injection or the recovery path before it switches to the pool),
+    // call `destroy()` directly because no pool refcount exists for it.
     if (this._device) {
-      this._device.destroy();
+      if (this._deviceFromPool) {
+        WebGPUDevicePool.instance.releaseDevice(this._device);
+      } else {
+        this._device.destroy();
+      }
       this._device = null;
+      this._deviceFromPool = false;
     }
 
     // Clear references

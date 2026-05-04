@@ -141,15 +141,32 @@ function buildInstanceData(collection) {
     instanceData[offset + 22] = bb.width || 32.0;
     instanceData[offset + 23] = bb.height || 32.0;
 
-    // perInstanceFlags — DP-H42 / DP-H40 per-billboard state.
+    // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-billboard state.
     //   x: disableDepthTestDistance (raw meters; squared in shader)
     //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-    //   z, w: reserved for future per-instance flags
+    //   z: distanceDisplayCondition.near^2 (squared meters; 0 if unset)
+    //   w: distanceDisplayCondition.far^2 (squared meters; +Inf if unset)
     const d = bb._disableDepthTestDistance;
     instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
     instanceData[offset + 25] = bb._splitDirection ?? 0.0;
-    instanceData[offset + 26] = 0.0;
-    instanceData[offset + 27] = 0.0;
+    // AUDIT_2026_05_02 A.14 (Batch 135) — pack the squared near/far
+    // distance display window. WGSL gate compares squared eye distance
+    // against [near^2, far^2] (no sqrt). Default values match WebGL's
+    // `czm_nearFarScalar` semantics: near=0 / far=Infinity → always
+    // visible. The renderer also flips DISTANCE_DISPLAY_CONDITION on
+    // the pipeline key so the gate's runtime cost is paid only when
+    // any billboard in the collection actually sets a window.
+    const ddc = bb._distanceDisplayCondition;
+    if (ddc) {
+      const near = typeof ddc.near === "number" ? ddc.near : 0.0;
+      const far =
+        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+      instanceData[offset + 26] = near * near;
+      instanceData[offset + 27] = isFinite(far) ? far * far : Number.MAX_VALUE;
+    } else {
+      instanceData[offset + 26] = 0.0;
+      instanceData[offset + 27] = Number.MAX_VALUE;
+    }
 
     visibleCount++;
   }
@@ -228,15 +245,25 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 23] = bb.height || 32.0;
 
     // Same perInstanceFlags as the color path — the pick pipeline obeys
-    // DP-H42 and DP-H40 too so the picked region matches what the user
-    // sees on screen (a clicked pixel below the camera's DepthDistance
-    // threshold should still pick the billboard above terrain; a pixel
-    // outside the split-cutoff should not pick a billboard it can't see).
+    // DP-H42, DP-H40, and A.14 too so the picked region matches what
+    // the user sees on screen (a clicked pixel below the camera's
+    // DepthDistance threshold should still pick the billboard above
+    // terrain; a pixel outside the split-cutoff or distance window
+    // should not pick a billboard it can't see).
     const d = bb._disableDepthTestDistance;
     instanceData[offset + 24] = typeof d === "number" && isFinite(d) ? d : 0.0;
     instanceData[offset + 25] = bb._splitDirection ?? 0.0;
-    instanceData[offset + 26] = 0.0;
-    instanceData[offset + 27] = 0.0;
+    const ddc = bb._distanceDisplayCondition;
+    if (ddc) {
+      const near = typeof ddc.near === "number" ? ddc.near : 0.0;
+      const far =
+        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+      instanceData[offset + 26] = near * near;
+      instanceData[offset + 27] = isFinite(far) ? far * far : Number.MAX_VALUE;
+    } else {
+      instanceData[offset + 26] = 0.0;
+      instanceData[offset + 27] = Number.MAX_VALUE;
+    }
 
     visibleCount++;
   }
@@ -464,11 +491,22 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
     return;
   }
   const D = ShaderDefine;
+  // AUDIT_2026_05_02 A.14 (Batch 135) — added DISTANCE_DISPLAY_CONDITION
+  // variants to the prewarm set. Most production scenes that use KML /
+  // GeoJSON entities also set distance windows, so warming the gated
+  // variant on first frame avoids a stutter when the user interacts
+  // with the entity afterwards.
+  const D_PROD =
+    D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | D.DISTANCE_DISPLAY_CONDITION;
   const defineSets = [
     0,
     D.DISABLE_DEPTH_DISTANCE,
     D.SPLIT_ENABLED,
+    D.DISTANCE_DISPLAY_CONDITION,
     D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+    D.DISABLE_DEPTH_DISTANCE | D.DISTANCE_DISPLAY_CONDITION,
+    D.SPLIT_ENABLED | D.DISTANCE_DISPLAY_CONDITION,
+    D_PROD,
   ];
   cache.prewarm(
     ShaderSourceId.BILLBOARD_COLLECTION,
@@ -614,10 +652,13 @@ function computeDefinesForFrame(collection, frameState) {
   }
   const billboards = collection._billboards;
   const length = collection.length;
-  // Short-circuit the scan once both flags are set.
-  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  // Short-circuit the scan once all three flags are set.
+  const all =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE |
+    ShaderDefine.SPLIT_ENABLED |
+    ShaderDefine.DISTANCE_DISPLAY_CONDITION;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {
+    if ((defines & all) === all) {
       break;
     }
     const bb = billboards[i];
@@ -637,6 +678,16 @@ function computeDefinesForFrame(collection, frameState) {
       bb._splitDirection !== 0.0
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+    // AUDIT_2026_05_02 A.14 (Batch 135) — DISTANCE_DISPLAY_CONDITION
+    // gate. Flip the bit so the baseline pipeline stays the fast
+    // path; collections that never set a window pay zero shader cost
+    // for the gate.
+    if (
+      (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
+      defined(bb._distanceDisplayCondition)
+    ) {
+      defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
     }
   }
   return defines;
@@ -680,32 +731,29 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
 
-  // AUDIT_2026_05_02 A.14 — surface that the WebGPU BillboardCollection
-  // doesn't yet honor `distanceDisplayCondition` / `translucencyByDistance`
-  // / `pixelOffsetScaleByDistance` / `clampToGround` per-billboard distance
-  // attributes. The WebGL VS reads `EYE_DISTANCE_TRANSLUCENCY`,
-  // `EYE_DISTANCE_PIXEL_OFFSET`, `DISTANCE_DISPLAY_CONDITION`, and
-  // `VS_THREE_POINT_DEPTH_CHECK` per-instance attributes. WebGPU's
-  // BillboardCollection.wgsl currently only handles `DISABLE_DEPTH_DISTANCE`
-  // + `SPLIT_ENABLED`; the rest are silently dropped. KML/GeoJSON entities
-  // setting any distance condition render at all distances on WebGPU.
-  // Full fix requires expanding the per-instance vertex layout (~150 LOC
-  // across 4 shader files); for now warn loudly so users aren't surprised.
+  // AUDIT_2026_05_02 A.14 — `distanceDisplayCondition` is now wired
+  // (Batch 135) via the DISTANCE_DISPLAY_CONDITION shader define +
+  // `perInstanceFlags.zw` near^2/far^2 packing. The remaining three
+  // gates — `translucencyByDistance`, `pixelOffsetScaleByDistance`,
+  // and `scaleByDistance` — still silently no-op on WebGPU. Each
+  // would slot into `perInstanceFlags` (or a new vec4) using the
+  // same nearFarScalar pattern; tracked as
+  // NEW-COLLECTIONS-DISTANCE-ATTRIBS in DEFERRED_WORK.
   //>>includeStart('debug', pragmas.debug);
   for (let i = 0; i < length; i++) {
     const bb = collection.get(i);
     if (
-      defined(bb.distanceDisplayCondition) ||
       defined(bb.translucencyByDistance) ||
       defined(bb.pixelOffsetScaleByDistance) ||
       defined(bb.scaleByDistance)
     ) {
       oneTimeWarning(
         "WebGPUBillboard.distanceAttribs",
-        "BillboardCollection on WebGPU does not yet honor " +
-          "distanceDisplayCondition / translucencyByDistance / " +
-          "pixelOffsetScaleByDistance / scaleByDistance. The billboard " +
-          "renders at all distances. Track AUDIT_2026_05_02 A.14.",
+        "BillboardCollection on WebGPU now honors " +
+          "`distanceDisplayCondition` (Batch 135) but does not yet " +
+          "honor `translucencyByDistance` / `pixelOffsetScaleByDistance` / " +
+          "`scaleByDistance`. The billboard renders/scales as if those " +
+          "are unset. Track NEW-COLLECTIONS-DISTANCE-ATTRIBS.",
       );
       break;
     }

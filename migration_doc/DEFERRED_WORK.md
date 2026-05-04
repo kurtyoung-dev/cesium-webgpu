@@ -157,6 +157,385 @@ OVERSIGHT_AUDIT_2026_04_25.md s2; reconciled in Batch 128 (2026-04-30).
 
 ---
 
+### NEW-GPU-CULLER-CONSUME-OR-DELETE — `gpuCullCommands` orphan dispatcher decision
+
+**What:** `WebGPUSceneRenderer.gpuCullCommands()` (defined in
+`WebGPUSceneRenderer.ts:2171`) is a working compute-shader frustum
+culler with bounding-sphere SoA + 6-plane test, threshold-gated at
+256 commands. The dispatcher (`WebGPUGPUCuller`) lazy-loads its WGSL
+plus the compute pipeline on first `context.gpuCuller` access. It has
+**zero callers**. The frustum loop in
+`WebGPUSceneRendererFrustumLoop.ts` runs CPU-side culling via the
+standard `BoundingSphere.intersect` inline, never delegating to GPU.
+
+**Status (Batch 135):** Eager initialization trigger
+(`void this.gpuCuller` in `WebGPUContext._warmUpPipelines`) removed
+so the ~256KB SOA buffers don't allocate when nobody uses them. The
+getter stays lazy; the dispatcher will instantiate on first call to
+`gpuCullCommands()` from any future consumer.
+
+**Why deferred:** Two valid paths:
+
+(a) **Consume from `executeFrustumLoop`.** Wire
+    `gpuCullCommands(commands, context, cullingVolume)` into the
+    pre-pass-execution hook so commands are filtered before
+    dispatch. Low-LOC integration but needs benchmark data: the
+    256-command threshold was a guess; real workloads (Sandcastle
+    mid-complexity scenes ~50-200 commands per frustum) probably
+    don't exceed it, so the win is small / negative for most users.
+
+(b) **Delete `gpuCullCommands` + `WebGPUGPUCuller`.** Remove the
+    method, the file, the lazy getter, and the FrustumCull.wgsl
+    compute. Saves the indirection and the cognitive load of
+    "is this the producer or consumer?"
+
+(c) **Hybrid: keep the dispatcher, expose a `scene.useGPUCommandCulling`
+    opt-in.** Power users with very-high command counts (heavy 3D Tile
+    workflows) can enable it, default is off. Requires (a) wiring
+    plus a config knob.
+
+Picking (a) without benchmarks is premature optimization; (b) is
+honest and aligned with the current code paths; (c) is the most
+flexible. Decision belongs in a render-perf review, not in an audit
+remediation batch.
+
+**Estimated effort:** 1 session for (a) or (c); 30 min for (b).
+
+**Impact:** Closes C.2 from AUDIT_2026_05_02 (gpuCullCommands part).
+Either deletes ~250 LOC or activates GPU-side culling for high-command
+scenes.
+
+**Trace:** AUDIT_2026_05_02.md C.2;
+`WebGPUSceneRenderer.ts:2171` (orphan method);
+`WebGPUContext.ts:923-937` (eager-init removed in Batch 135).
+
+---
+
+### NEW-HIZ-SORT-CONSUME-OR-DELETE — HiZ + GPUSortKeys orphan dispatchers
+
+**What:** Two more dispatchers registered as feature renderers but
+never invoked from a render path:
+
+- `WebGPUHiZOcclusionDispatcher` — full hierarchical-Z occlusion
+  query with depth-pyramid build + per-bounding-sphere readback.
+- `WebGPUGPUSortKeysDispatcher` — radix sort for command back-to-front
+  ordering, mirrors `CommandSorter.backToFront` pattern.
+
+Both have `getStatistics()` hooked into `context.getDebugSnapshot()`
+but no `dispatch()` consumer. `WebGPUPointCloudSortDispatcher` is the
+exception — actively consumed by `WasmPointCloudBridge` for splat /
+point-cloud sort.
+
+**Why deferred:** Same shape as NEW-GPU-CULLER-CONSUME-OR-DELETE —
+each needs a render-path wire-in (plus benchmark data) OR a clean
+removal. HiZ is the higher-value of the two for very dense 3D Tile
+workflows (would meaningfully cull occluded models). GPUSortKeys
+overlaps with the existing CPU sort and probably loses on most
+workloads given the readback cost.
+
+**Estimated effort:** 1-2 sessions per dispatcher (depending on
+consume-vs-delete decision).
+
+**Impact:** Closes C.2 from AUDIT_2026_05_02 (HiZ + sort parts).
+Either retires unused infra or activates GPU-side occlusion / sort.
+
+**Trace:** AUDIT_2026_05_02.md C.2;
+`WebGPUFeatureRenderers.ts:340-435` (FR registrations);
+`WebGPUHiZOcclusionDispatcher.ts`, `WebGPUGPUSortKeysDispatcher.ts`.
+
+---
+
+### ~~NEW-DEVICE-POOL-ADOPT~~ — RESOLVED (Batch 135, design choice (a) hoist-negotiation)
+
+**Resolution:** Design (a) chosen — adaptive limit + feature negotiation
+moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
+`pool.acquireDevice(...)` for adapter + device acquisition.
+
+**What landed:**
+
+- `WebGPUDevicePool` gained `_negotiate(adapter, opts)` which inspects
+  the adapter's `limits.*` ceilings and scales the requested limits
+  up using `ADAPTIVE_LIMIT_CAPS` (the same `Math.min(adapterValue, cap)`
+  logic that used to live inline in `WebGPUContext._initialize`). The
+  cap table is exported as a module constant so future tuning lands in
+  one place. Feature negotiation merges `WebGPUFeatureFlags.DESIRED_FEATURES`
+  with `opts.requiredFeatures`.
+- Compatibility check extended: `acquireDevice` verifies the primary
+  device's enabled limits are >= the new context's required limits in
+  addition to the existing feature-subset check. A second context with
+  stricter limit requirements gets its own device instead of silently
+  sharing one that doesn't meet them. Tracked limits include the six
+  adaptive ones plus `maxBufferSize`, `maxStorageBufferBindingSize`,
+  `maxComputeWorkgroupStorageSize` (the commonly-customized ones).
+- `WebGPUContextOptions.useDevicePool` added (default true). Setting
+  false forces a fresh device by passing `forceNewDevice: true` through
+  to the pool — used for tests / benchmarks / recovery scenarios.
+- `WebGPUContext._deviceFromPool` flag tracks whether the device came
+  from the pool. The destroy path calls `pool.releaseDevice` when true
+  (refcount-aware) and `device.destroy()` directly when false (legacy
+  direct-injection / recovery paths).
+- `featureLevel: "compatibility"` plumbed through to the pool so
+  WebGL2-on-WebGPU adapters still work end-to-end.
+
+**Files touched:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUDevicePool.ts` —
+  hoisted negotiation, added limits-compatibility check, added
+  `featureLevel`, added `enabledLimits` snapshot.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` —
+  `_initialize` now calls `pool.acquireDevice`, destroy calls
+  `pool.releaseDevice` when `_deviceFromPool` is true, `useDevicePool`
+  option added.
+
+**Trade-offs accepted:**
+
+- The pool now knows about Cesium's render-feature requirements
+  (which limits to scale, the cap values). This is the design choice
+  for (a) — concentrating policy in one place vs distributing it
+  across renderers. A future fork that needs different caps overrides
+  `ADAPTIVE_LIMIT_CAPS` (currently a module-level frozen object — if
+  override becomes common, expose a setter).
+- Per-context limit overrides still work via
+  `WebGPUContextOptions.requiredLimits` — those values are never
+  lowered by the negotiator. Power users get full control without
+  forking the pool.
+
+**Closing batch:** Batch 135.
+
+---
+
+### NEW-COLLECTIONS-MOTION-VECTORS — per-pixel velocity emission for animated collections / advanced primitives
+
+**What:** TAA Slice 2c (Batch 96) wired full per-pixel motion-vector
+emission for `WebGPUModelRenderer`: `ModelPBRComplete.wgsl` carries
+`previousClipPos` + `currentClipPosForVelocity` interpolants and the
+`fragmentMotionVector` FS variant emits screen-space NDC delta. This
+gives ghost-free TAA on animated character / vehicle models.
+
+The other renderers — Billboard, Label, Polyline, PointPrimitive,
+Cloud, PointCloud, GaussianSplat, Voxel, GroundPrimitive,
+Vector3DTile* — do NOT emit per-pixel velocity. TAA falls back to
+**camera-only reprojection** for those pixels (depth + camera-delta
+reconstruction; the velocity placeholder texture stays at zero), so
+camera moves work correctly but per-instance / per-vertex animation
+ghosts on the temporal history.
+
+**Effect on user-facing behavior:** Animated billboards (e.g.,
+sprite animations cycling), moving polylines (path animation),
+particle clouds, and time-evolving voxels show subtle smear /
+ghosting trails behind moving features when TAA is on. Static
+content is unaffected.
+
+**Why deferred:** Each renderer needs:
+
+1. **Previous-frame per-instance / per-vertex data uploaded** —
+   either an additional VB slot mirroring the current data with one
+   frame of lag, or a uniform/storage buffer indexed by instance
+   (Billboard / Polyline / Point) or by per-particle ID (Cloud /
+   Particle).
+2. **VS additions** — read previous-frame data + project with the
+   `previousViewProjection` already on every camera UBO (DP-H41 /
+   Batch 27 — prerequisite shipped). Emit `previousClipPos` +
+   `currentClipPosForVelocity` interpolants.
+3. **FS MRT velocity output** — return `(curNdc - prevNdc) * scale`
+   as `@location(1)` when running the velocity-emitting variant.
+4. **Pipeline variant key** — extend the renderer's pipeline cache
+   to compile the velocity variant when TAA is active and the
+   current pass is the velocity pass.
+5. **Renderer dispatch** — emit a second draw command with the
+   velocity variant at the appropriate pass slot.
+
+Mechanical per-renderer; ~50 LOC × 5+ renderers = 250+ LOC. None of
+it touches Cesium architecture; it's the same pattern Model already
+uses, scaled across the rest.
+
+**Prerequisites:** None — `previousViewProjection` is already on
+every camera UBO (Batch 27 / DP-H41), TAA's velocity-aware
+reprojection branch already consumes per-pixel velocity when
+present, and the placeholder fallback is the safe default.
+
+**Estimated effort:** 2-3 sessions per family (Collections =
+1 session of work spanning Billboard/Polyline/Point/Label;
+Advanced primitives = 1-2 sessions; classifiers = 1 session
+since they don't typically animate per-frame anyway).
+
+**Impact:** Closes B.10 from AUDIT_2026_05_02. Ghost-free TAA on
+all animated content matching the WebGL backend.
+
+**Trace:** AUDIT_2026_05_02.md B.10;
+`WebGPUTAAEffect.ts:_motionVectorsValid` (camera-only fallback path);
+`ModelPBRComplete.wgsl:computeMotionVectorScreenSpace` (template
+implementation).
+
+---
+
+### NEW-COLLECTIONS-DISTANCE-ATTRIBS — port the remaining 3 distance attribs across collections
+
+**What:** WebGL collection vertex shaders gate visibility / pixel
+offset / scale / opacity on per-instance distance windows via 4
+defines:
+
+- `DISTANCE_DISPLAY_CONDITION` — show/hide outside `[near, far]`.
+- `EYE_DISTANCE_TRANSLUCENCY` — opacity ramps with `czm_nearFarScalar`.
+- `EYE_DISTANCE_PIXEL_OFFSET` — pixel offset scales with distance.
+- `EYE_DISTANCE_SCALING` (`scaleByDistance`) — quad scale ramps with distance.
+
+**Status (Batch 135):** `DISTANCE_DISPLAY_CONDITION` is SHIPPED for
+`BillboardCollection` only. The remaining three gates and the
+parallel ports for `PolylineCollection`, `PointPrimitiveCollection`,
+and `LabelCollection` (handled through Billboard + a label-glyph
+gating path) still silently no-op on WebGPU.
+
+**Why deferred:** Each gate adds:
+
+- Another bit on `ShaderDefine` (registry already has
+  `DISTANCE_DISPLAY_CONDITION` at `1 << 4` — add 5/6/7 next; bits
+  are add-only).
+- Per-instance attribute floats packed into the existing
+  `perInstanceFlags` vec4 (or a new vec4 if 4 floats run out).
+- A WGSL `//>>ifdef` block per collection shader (4 × 3 = 12 small
+  edits).
+- JS-side define computation in each renderer's `computeDefinesForFrame`
+  (4 small edits).
+
+Mechanical but tedious: ~150 LOC across shaders + JS, plus prewarm
+table extension. None of it touches Cesium architecture; it's a
+pure parity fill-in.
+
+**Prerequisites:** None — `ShaderDefine` slots 5/6/7 are reserved by
+default (no consumers yet); per-instance vec4 layouts have spare
+floats in the existing slots for most collections.
+
+**Estimated effort:** 1-2 sessions (full sweep across all 4 gates ×
+4 collections; can ship per-gate batches if smaller PRs are needed).
+
+**Impact:** Closes A.14 from AUDIT_2026_05_02 fully. KML / GeoJSON /
+CZML entities behave per-spec on WebGPU.
+
+**Trace:** AUDIT_2026_05_02.md A.14;
+`WebGPUShaderDefines.ts:DISTANCE_DISPLAY_CONDITION` (Batch 135 reservation);
+`WebGPUBillboardRenderer.js` (DDC pattern as the template for the rest).
+
+---
+
+### NEW-MODEL-AS-CLASSIFIER — `model.classificationType` end-to-end on WebGPU
+
+**What:** WebGL supports `new Model({ classificationType: ClassificationType.TERRAIN })`
+(or `CESIUM_3D_TILE`, or `BOTH`) — the model's geometry is treated as
+a classification volume (drape/dye terrain or 3D Tile surfaces in the
+shape of the model). WebGPU currently ignores the field entirely:
+`WebGPUModelRenderer.js` emits a one-time warning and falls through
+to the standard PBR pipeline so the model renders as a floating
+opaque/blended primitive instead of classifying.
+
+**Why deferred:** Real ~300 LOC feature. Requires:
+
+1. **New WGSL classification shader** — strip ModelPBRComplete down
+   to position-only VS + depth-sample FS. The FS samples
+   `globeDepthTex` (already bound on @group(3) @binding(15)),
+   reconstructs the depth-sample world position, discards when the
+   model's fragment is in front of the globe-depth surface, and
+   emits the classification color (taken from `material.baseColorFactor`
+   or a dedicated classification color uniform).
+2. **New `WebGPUClassificationModelRenderer.js`** — analogous to
+   `WebGPUVector3DTilePrimitiveRenderer.js`. Owns its own pipeline
+   cache + bind groups for the stripped classification variant.
+   Iterates the model's primitives, builds per-primitive
+   classification commands at the right `Pass.TERRAIN_CLASSIFICATION`
+   / `Pass.CESIUM_3D_TILE_CLASSIFICATION` slot.
+3. **Dispatch wiring in `WebGPUModelRenderer.js`** — when
+   `model.classificationType !== undefined`, route through the new
+   classifier instead of the standard PBR path. Mirror the
+   `redirectClassificationsTo` pattern from
+   `WebGPUVector3DTilePrimitive*Renderer.js`.
+4. **`Model.js:3095-3098`** — already gates classification command
+   construction on `defined(classificationType)`; the WebGPU
+   classifier just needs to consume the SAME `_commandList`
+   construction the WebGL `ClassificationModelDrawCommand` populates.
+   May need a parallel WebGPU-aware command-emitter or a `pass`
+   parameter passed to the FR dispatch.
+
+**Prerequisites:** None — depth-sample classifier infrastructure
+shipped (ADR-2026-04-28), globe depth texture is already bound on
+the model effects BGL.
+
+**Estimated effort:** 2-3 sessions.
+
+**Impact:** Closes A.8 from AUDIT_2026_05_02. Unlocks user-driven
+"drape model onto terrain" workflows that ship in the WebGL
+backend today.
+
+**Trace:** AUDIT_2026_05_02.md A.8;
+`WebGPUModelRenderer.js:1514-1523` (current warning);
+`Model.js:485` / `:2495` (classificationType property).
+
+---
+
+### NEW-INVERT-CLASS-STENCIL-CLASSIFIER — restore per-pixel classified-region masking for invert classification
+
+**What:** WebGL's invert-classification flow uses three classification
+passes:
+
+1. `CESIUM_3D_TILE_CLASSIFICATION` — color writes through stencil-volume
+   to the scene framebuffer (regular classification).
+2. `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` — same volume rasterization
+   but writes only stencil bits (color disabled), marking which pixels
+   were touched by classification primitives. Runs against the invert
+   FBO's depth-stencil so the composite can read the marks.
+3. The composite then has two stencil-gated draws: stencil != 0 emits
+   raw tile color (classified region — visible through the tint),
+   stencil == 0 emits `tileColor * highlightColor` (unclassified
+   region — gets the invert tint).
+
+After ADR-2026-04-28 (depth-sample classifier), WebGPU's classifier
+renderers (`WebGPUGroundPrimitiveRenderer`, `WebGPUVector3DTilePrimitiveRenderer`,
+`WebGPUVector3DTilePolylineRenderer`, `WebGPUVector3DTileClampedPolylinesRenderer`)
+collapse the three passes into one and only handle CLASSIFICATION (no
+IGNORE_SHOW). They have no stencil-write pipeline variant.
+
+**Effect on user-facing behavior:** When `scene.invertClassification.enabled`
+is true on WebGPU, the composite always falls through to the
+single-pass tint path — every tile pixel receives `highlightColor *`
+modulation. For scenes WITHOUT classification primitives this matches
+WebGL exactly (the common case). For scenes WITH classification
+primitives, the masked region distinction is lost — classified pixels
+also get tinted (visible regression). Surfaced as a one-time warning
+from `WebGPUSceneRenderer._runInvertClassificationComposite`.
+
+**Why deferred:** Restoring the IGNORE_SHOW stencil-mark pass means:
+
+1. Each classifier renderer (4 files) emits a SECOND command per
+   primitive with `pass = CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`.
+2. A new "stencil-write" pipeline variant on each classifier:
+   color-write disabled, depth-write disabled, stencil-test
+   `compare: always`, `passOp: replace`, `stencilWriteMask: 0xff`,
+   `stencilReference: 0xff` (or any non-zero).
+3. `RenderStateToPipelineVariant.ts` already supports all these
+   stencil fields, so no infrastructure work — just per-classifier
+   wiring.
+
+Estimated ~150 LOC across the 4 classifier renderers + plumbing in
+the IGNORE_SHOW pass redirect (`WebGPUSceneRenderer3DTilePasses.ts`)
+to also flip `invertHasStencilData = true` based on the actual command
+count. Practical follow-up; not architecturally novel since the
+stencil-gated composite pipelines (`unclassifiedPipeline` /
+`classifiedPipeline`) already exist in `WebGPUInvertClassification.ts`.
+
+**Prerequisites:** None — depth-sample classifier already shipped, and
+the composite is already prepared to consume stencil data.
+
+**Estimated effort:** 1-2 sessions.
+
+**Impact:** Closes A.2 from AUDIT_2026_05_02. Makes invert
+classification per-pixel-correct for scenes with classification
+primitives (currently intermittent regression vs WebGL).
+
+**Trace:** AUDIT_2026_05_02.md A.2; honest-flag fix in
+`WebGPUSceneRenderer3DTilePasses.ts:310-340` and one-time-warning in
+`WebGPUSceneRenderer.ts:1490-1510`.
+
+---
+
 ### NEW-KHR-ANISO-TANGENT
 
 **What:** KHR_materials_anisotropy currently approximates the

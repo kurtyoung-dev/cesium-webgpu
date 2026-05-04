@@ -97,6 +97,23 @@ export const ShaderDefine = Object.freeze({
    * `//>>ifdef COMPRESSED_VERTICES` branches).
    */
   COMPRESSED_VERTICES: 1 << 3,
+
+  /**
+   * Per-primitive distance display gating (AUDIT_2026_05_02 A.14, Batch 135).
+   * When active, the vertex stage reads a per-instance
+   * `distanceDisplayCondition` (nearSq, farSq) and pushes the vertex
+   * behind the near plane (`positionEC.xyz = vec3(0.0)`) when the
+   * camera-to-primitive squared eye distance falls outside the
+   * configured `[nearSq, farSq]` window. Mirrors WebGL's
+   * `#ifdef DISTANCE_DISPLAY_CONDITION` branch in
+   * BillboardCollectionVS / LabelCollectionVS / PointPrimitiveCollectionVS.
+   *
+   * First consumer: BillboardCollection.wgsl (Batch 135).
+   * Pending consumers (NEW-COLLECTIONS-DISTANCE-ATTRIBS): Polyline,
+   * Point, Label, plus EYE_DISTANCE_TRANSLUCENCY +
+   * EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING bits below.
+   */
+  DISTANCE_DISPLAY_CONDITION: 1 << 4,
 } as const);
 
 /**

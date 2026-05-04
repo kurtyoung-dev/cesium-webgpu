@@ -9,12 +9,15 @@
 //   @location(4) color:              vec4<f32> — rgba
 //   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
 //   @location(6) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
-//                                     splitDirection (-1/0/+1), _pad, _pad
+//                                     splitDirection (-1/0/+1),
+//                                     distanceDisplayConditionNearSq,
+//                                     distanceDisplayConditionFarSq
 //
 // The `perInstanceFlags` attribute is read only inside `//>>ifdef` blocks
-// for DP-H42 (DISABLE_DEPTH_DISTANCE) and DP-H40 (SPLIT_ENABLED). When
-// neither define is active WGSL treats the declared input as unused and
-// the rasterizer ignores the VB slot — cost is 16 bytes per instance of
+// for DP-H42 (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), and
+// AUDIT_2026_05_02 A.14 (DISTANCE_DISPLAY_CONDITION). When none of those
+// defines are active WGSL treats the declared input as unused and the
+// rasterizer ignores the VB slot — cost is 16 bytes per instance of
 // VRAM bandwidth only.
 
 struct CameraUniforms {
@@ -144,6 +147,23 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let pixelToClip = 2.0 / camera.viewportSize;
   clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  // AUDIT_2026_05_02 A.14 (Batch 135) — gate visibility by camera-to-
+  // billboard squared eye distance against the per-instance
+  // `[nearSq, farSq]` window packed into `perInstanceFlags.zw`. When
+  // outside the window, push the vertex behind the near plane so all
+  // 6 quad corners clip — same trick the WebGL VS uses at
+  // BillboardCollectionVS.glsl:254-261. `positionRTE` is the eye-
+  // space offset from the camera so its dot-self IS the squared
+  // eye distance (no sqrt needed; matches WebGL's lengthSq path).
+  let distSqDDC = dot(positionRTE, positionRTE);
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (distSqDDC < nearSqDDC || distSqDDC > farSqDDC) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — override depth when the camera is within the configured

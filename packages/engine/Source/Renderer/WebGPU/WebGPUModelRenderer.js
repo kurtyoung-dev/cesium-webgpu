@@ -1697,14 +1697,33 @@ function updateWebGPUModel(model, frameState) {
       }
     : undefined;
 
+  // AUDIT_2026_05_02 A.6 — wire model.clippingPlanes / model.clippingPolygons
+  // through to the effects bind group. The previous comment claimed
+  // "Models don't carry their own clipping-plane set" but
+  // `Model.js:369-388` shows both APIs are supported. Without this
+  // wiring, `model.clippingPlanes = …` produced no visual change
+  // (the scene-wide clipping never applied to models) and
+  // `model.clippingPolygons = …` was a complete no-op. The model's
+  // collections also need their per-frame `update(frameState)` to
+  // run so `_webgpuCache` is populated; that already happens inside
+  // `Model.update()` (lines 2774-2775 / 917-924).
+  const modelClippingPlanes = model._clippingPlanes;
+  const modelClippingPolygons = model._clippingPolygons;
   const fxRes = createEffectsBindGroup(device, frameState, {
     shadowMap: receiveShadowMap,
     csm: csmBinding,
-    // Models don't carry their own clipping-plane set — clipping in
-    // glTF flows through the scene-wide ClippingPlaneCollection if
-    // any. Use the scene's camera position for in-plane-space (the
-    // shader's clipping test is in eye space anyway; cameraInPlaneSpace
-    // is only consumed by the globe's plane-space transform).
+    clippingPlanes:
+      modelClippingPlanes !== undefined &&
+      modelClippingPlanes.enabled &&
+      modelClippingPlanes.length !== 0
+        ? modelClippingPlanes
+        : undefined,
+    clippingPolygons:
+      modelClippingPolygons !== undefined &&
+      modelClippingPolygons.enabled &&
+      modelClippingPolygons.length !== 0
+        ? modelClippingPolygons
+        : undefined,
     cameraInPlaneSpace: frameState.context.uniformState.cameraPosition,
     edges: edgesPayload,
   });

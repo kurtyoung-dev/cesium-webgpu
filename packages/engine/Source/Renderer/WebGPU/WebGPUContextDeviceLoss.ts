@@ -41,6 +41,14 @@ export interface WebGPUDeviceLossHost {
   // Read access (the host adapter exposes these via getters)
   _adapter: GPUAdapter | null;
   _device: GPUDevice | null;
+  /**
+   * AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — read by the
+   * recovery class to decide between pool-routed recovery (when true)
+   * and the legacy direct `adapter.requestDevice` path (when false).
+   * Recovery's `_setDevice` callback updates this flag based on which
+   * path was taken so the destroy path consults it correctly.
+   */
+  _deviceFromPool: boolean;
   _isDestroyed: boolean;
   // Subset of `WebGPUContextOptions` the recovery class actually
   // reads. Structural-typed here so this module doesn't need to
@@ -49,8 +57,10 @@ export interface WebGPUDeviceLossHost {
   // `WebGPUContext.ts`).
   _options: {
     powerPreference?: GPUPowerPreference;
+    featureLevel?: "core" | "compatibility";
     requiredFeatures?: GPUFeatureName[];
     requiredLimits?: Record<string, number>;
+    useDevicePool?: boolean;
   };
   _context: GPUCanvasContext | null;
 
@@ -104,6 +114,25 @@ export function buildDeviceLossRecoveryFor(
     },
     _setDevice: (d: GPUDevice) => {
       host._device = d;
+      // AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — recovery now
+      // routes through `WebGPUDevicePool` when the original device
+      // was pool-managed (the common case). The pool's `acquireDevice`
+      // handles the dedup of concurrent per-context recoveries: the
+      // first recovering context creates the new shared primary;
+      // others await the in-flight Promise and increment refcount on
+      // the same new device. Result: cross-context sharing is
+      // preserved across the loss event.
+      //
+      // The recovery class's `_attemptRecovery` flips
+      // `host._deviceFromPool` itself based on whether it took the
+      // pool path or the legacy direct-request path. This callback
+      // just plumbs the new device handle.
+    },
+    get _deviceFromPool() {
+      return host._deviceFromPool;
+    },
+    set _deviceFromPool(v: boolean) {
+      host._deviceFromPool = v;
     },
     _initializeContextLimits: () => host._initializeContextLimits(),
     _reconfigureCanvas: () => host._reconfigureCanvas(),

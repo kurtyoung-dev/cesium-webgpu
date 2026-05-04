@@ -13,6 +13,8 @@
 
 /// <reference types="@webgpu/types" />
 
+import { WebGPUDevicePool } from "./WebGPUDevicePool.js";
+
 // ============================================================================
 // Types & Enums
 // ============================================================================
@@ -53,9 +55,22 @@ export interface DeviceLossRecoveryHost {
   /** Context options (power preference, features, limits) */
   readonly _options: {
     powerPreference?: GPUPowerPreference;
+    featureLevel?: "core" | "compatibility";
     requiredFeatures?: GPUFeatureName[];
     requiredLimits?: Record<string, number>;
+    useDevicePool?: boolean;
   };
+  /**
+   * AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — true when the
+   * pre-loss device came from `WebGPUDevicePool`. The recovery path
+   * routes through the pool when this is set so concurrent per-context
+   * recoveries dedup to a single new shared primary, preserving
+   * cross-context sharing across the loss event. False contexts
+   * recover via the legacy `adapter.requestDevice` direct path.
+   * Writable because the recovery class flips it based on which path
+   * was actually taken (pool fallback to direct on pool failure).
+   */
+  _deviceFromPool: boolean;
   /** Canvas context for reconfiguration */
   readonly _context: GPUCanvasContext | null;
 
@@ -262,28 +277,81 @@ export class WebGPUDeviceLossRecovery {
           setTimeout(resolve, 500 * Math.pow(2, attempt - 1)),
         );
 
-        // Re-request adapter
-        const adapter = await navigator.gpu.requestAdapter({
-          powerPreference:
-            this._host._options.powerPreference ?? "high-performance",
-        });
+        let adapter: GPUAdapter;
+        let device: GPUDevice;
+        let recoveredViaPool = false;
 
-        if (!adapter) {
-          console.warn(
-            `[WebGPU] Recovery attempt ${attempt}: No adapter available`,
-          );
-          continue;
+        // AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — route through
+        // `WebGPUDevicePool.recoverDevice` when the lost device was
+        // pool-managed. This dedups concurrent per-context recoveries
+        // (multi-context sharing scenarios where N contexts shared the
+        // lost device fire N recovery attempts simultaneously; the
+        // pool's `_pendingPrimary` Promise serializes them to a single
+        // underlying `requestDevice` and all N receive the same new
+        // shared primary). Falls back to the legacy direct
+        // `adapter.requestDevice` path if the pool throws (e.g., the
+        // pool's `useDevicePool=false` path or a runtime error during
+        // pool acquisition) — recovery is best-effort and an isolated
+        // device is better than no recovery at all.
+        if (
+          this._host._deviceFromPool &&
+          this._host._options.useDevicePool !== false
+        ) {
+          try {
+            const acquired = await WebGPUDevicePool.instance.recoverDevice({
+              powerPreference: this._host._options.powerPreference,
+              featureLevel: this._host._options.featureLevel,
+              requiredFeatures: this._host._options.requiredFeatures,
+              requiredLimits: this._host._options.requiredLimits,
+            });
+            adapter = acquired.adapter;
+            device = acquired.device;
+            recoveredViaPool = true;
+          } catch (poolError) {
+            console.warn(
+              `[WebGPU] Pool-routed recovery failed, falling back to direct: ${(poolError as Error).message}`,
+            );
+            // Fall through to the direct path below.
+            adapter = null as unknown as GPUAdapter;
+            device = null as unknown as GPUDevice;
+          }
+        } else {
+          adapter = null as unknown as GPUAdapter;
+          device = null as unknown as GPUDevice;
         }
 
-        // Re-request device
-        const device = await adapter.requestDevice({
-          requiredFeatures: this._host._options.requiredFeatures ?? [],
-          requiredLimits: this._host._options.requiredLimits ?? {},
-        });
+        if (!recoveredViaPool) {
+          // Direct path — used either because the lost device wasn't
+          // pool-managed, the user opted out via useDevicePool=false,
+          // or the pool path failed and we're falling back.
+          const directAdapter = await navigator.gpu.requestAdapter({
+            powerPreference:
+              this._host._options.powerPreference ?? "high-performance",
+          });
+
+          if (!directAdapter) {
+            console.warn(
+              `[WebGPU] Recovery attempt ${attempt}: No adapter available`,
+            );
+            continue;
+          }
+
+          const directDevice = await directAdapter.requestDevice({
+            requiredFeatures: this._host._options.requiredFeatures ?? [],
+            requiredLimits: this._host._options.requiredLimits ?? {},
+          });
+
+          adapter = directAdapter;
+          device = directDevice;
+        }
 
         // Store new references via host interface
         this._host._setAdapter(adapter);
         this._host._setDevice(device);
+        // Track which path produced the recovered device so the destroy
+        // path picks the right teardown (pool-released vs directly
+        // destroyed). Audit fix #5 (Batch 135).
+        this._host._deviceFromPool = recoveredViaPool;
         this._host._isDestroyed = false;
 
         // Set up handler for the NEW device
@@ -296,7 +364,10 @@ export class WebGPUDeviceLossRecovery {
         this._host._clearAllCaches();
 
         //>>includeStart('debug', pragmas.debug);
-        console.log(`[WebGPU] Recovery attempt ${attempt}: SUCCESS`);
+        console.log(
+          `[WebGPU] Recovery attempt ${attempt}: SUCCESS ` +
+            `(${recoveredViaPool ? "pool-shared" : "isolated"} device)`,
+        );
         //>>includeEnd('debug');
         return true;
       } catch (error) {
