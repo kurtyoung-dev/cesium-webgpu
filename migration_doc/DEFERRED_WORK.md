@@ -601,42 +601,32 @@ and discards only when ALL three are occluded.
 
 ---
 
-### NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT — extend Batch 139 sentinel fix to Polyline + Point renderers
+### ~~NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT~~ — RESOLVED (Batch 140)
 
-**What:** Batch 139 fixed two coupled bugs on Billboard + Label SDF:
+**Resolution:** Mechanical sweep across the 2 remaining renderers + 8
+shader variants. Both `WebGPUPolylineRenderer.js` and
+`WebGPUPointPrimitiveRenderer.js` gained the
+`encodeDisableDepthTestDistance(value)` helper (matching the
+Billboard + Label implementation): maps `Number.POSITIVE_INFINITY` to
+`-1.0` for the WGSL `<0` sentinel, returns `value` for finite
+positives, and `0.0` for `NaN` / negative / non-number inputs. Pack
+sites (4 total — color + pick on each renderer) updated to call the
+helper.
 
-1. JS pack collapsed `Number.POSITIVE_INFINITY` to 0.0 (the `isFinite`
-   branch returned the default), losing WebGL's "always disable depth
-   test" sentinel.
-2. WGSL squared the per-instance value before checking the `< 0`
-   sentinel, killing the negation.
+WGSL pattern swap applied to all 8 affected shaders:
+`PolylineCollection.wgsl`, `PolylineCollectionPick.wgsl`,
+`PolylineArrow.wgsl`, `PolylineDash.wgsl`, `PolylineGlow.wgsl`,
+`PolylineOutline.wgsl`, `PointPrimitiveColor.wgsl`,
+`PointPrimitivePick.wgsl`. Each now uses the raw-sentinel
+cascade — read `perInstanceFlags.x`, check `<0` BEFORE squaring,
+fall through to per-instance squared compare, then to frame-wide
+minimum compare. Pre-fix the squaring step killed the sign on the
+sentinel branch, making the WebGL-parity "always disable" mode dead
+code.
 
-`WebGPUPolylineRenderer.js` and `WebGPUPointPrimitiveRenderer.js` have
-the same JS pack pattern (`isFinite(d) ? d : 0.0`) and the same
-WGSL squaring-before-sentinel bug. PointPrimitive's WebGL counterpart
-DOES use the Infinity → -1 sentinel (`PointPrimitiveCollection.js:1102`),
-so the latent bug surfaces if a user sets
-`pointPrimitive.disableDepthTestDistance = Infinity`. Polyline's
-WebGL doesn't appear to use the sentinel, so the gap is benign there
-but the pattern should still match for consistency.
+**Files touched:** 2 JS renderers + 8 WGSL shaders.
 
-**Why deferred:** Pre-existing latent bug (predates Batch 138 / 139).
-Scope of Batch 139 was VS_THREE_POINT_DEPTH_CHECK; the Billboard +
-Label fixes are tightly coupled to that feature. Sweeping the
-remaining renderers belongs in a follow-up that audits the
-DISABLE_DEPTH_DISTANCE feature uniformly across all collection
-renderers.
-
-**Estimated effort:** 30 minutes (mechanical: extract
-`encodeDisableDepthTestDistance` to a shared utility, swap the
-WGSL block for the raw-sentinel pattern in 6 shaders).
-
-**Trace:** Pre-fix pattern `WebGPUPolylineRenderer.js:302`,
-`:416`; `WebGPUPointPrimitiveRenderer.js:157`, `:245`. Same WGSL
-squaring-first pattern in `PolylineCollection.wgsl`,
-`PolylineCollectionPick.wgsl`, `PolylineArrow.wgsl`,
-`PolylineDash.wgsl`, `PolylineGlow.wgsl`, `PolylineOutline.wgsl`,
-`PointPrimitiveColor.wgsl`, `PointPrimitivePick.wgsl`.
+**Closing batch:** Batch 140.
 
 ---
 

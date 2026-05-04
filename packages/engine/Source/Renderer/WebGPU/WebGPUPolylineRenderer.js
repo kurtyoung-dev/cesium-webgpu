@@ -54,6 +54,27 @@ const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
 
 /**
+ * Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT) —
+ * mirrors `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
+ * Maps `Number.POSITIVE_INFINITY` to `-1.0` so the WGSL `<0` always-
+ * disable sentinel fires (matching WebGL `BillboardCollection.js:1798-1799`).
+ * Earlier the JS pack collapsed Infinity to 0.0 (the `isFinite` branch
+ * returned the default), which made the WGSL sentinel branch dead code.
+ */
+function encodeDisableDepthTestDistance(value) {
+  if (typeof value !== "number") {
+    return 0.0;
+  }
+  if (value === Number.POSITIVE_INFINITY) {
+    return -1.0;
+  }
+  if (isFinite(value) && value > 0.0) {
+    return value;
+  }
+  return 0.0;
+}
+
+/**
  * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
  * (near, nearValue, far, farValue) into 4 contiguous floats. Mirrors
  * `WebGPUBillboardRenderer.packNearFarScalar`. Identity-NFS written
@@ -299,8 +320,9 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
       //   z: distanceDisplayCondition.near^2 (Batch 136)
       //   w: distanceDisplayCondition.far^2 (Batch 136)
-      const d = polyline._disableDepthTestDistance;
-      segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 20] = encodeDisableDepthTestDistance(
+        polyline._disableDepthTestDistance,
+      );
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
       const ddc = polyline._distanceDisplayCondition;
       if (ddc) {
@@ -413,8 +435,9 @@ function buildPickSegmentData(collection, context) {
       // Pick path inherits DP-H42 / DP-H40 / A.14 so the picked region
       // matches what the user sees on screen. Same contract as the
       // color path.
-      const d = polyline._disableDepthTestDistance;
-      segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
+      segmentData[offset + 20] = encodeDisableDepthTestDistance(
+        polyline._disableDepthTestDistance,
+      );
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
       const ddc = polyline._distanceDisplayCondition;
       if (ddc) {

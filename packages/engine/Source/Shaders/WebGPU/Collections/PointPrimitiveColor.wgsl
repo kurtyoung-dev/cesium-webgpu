@@ -177,15 +177,22 @@ fn vertexMain(
 
     //>>ifdef DISABLE_DEPTH_DISTANCE
     // DP-H42 — override depth when within the per-instance or frame-wide
-    // `disableDepthTestDistance`.
-    var disableDepthSq = perInstanceFlags.x * perInstanceFlags.x;
-    if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-        disableDepthSq =
+    // `disableDepthTestDistance`. Batch 140 — raw-sentinel pattern (see
+    // BillboardCollection.wgsl). Pre-fix the squaring step killed the
+    // sign on the `-1` "always disable" sentinel.
+    let disableRawDP = perInstanceFlags.x;
+    if (disableRawDP < 0.0) {
+        clipPos.z = clipPos.w;
+    } else if (disableRawDP != 0.0) {
+        let disableDepthSqDP = disableRawDP * disableRawDP;
+        if (camDistSq < disableDepthSqDP) {
+            clipPos.z = clipPos.w;
+        }
+    } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+        let frameMinSqDP =
             camera.minimumDisableDepthTestDistance *
             camera.minimumDisableDepthTestDistance;
-    }
-    if (disableDepthSq != 0.0) {
-        if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+        if (camDistSq < frameMinSqDP) {
             clipPos.z = clipPos.w;
         }
     }

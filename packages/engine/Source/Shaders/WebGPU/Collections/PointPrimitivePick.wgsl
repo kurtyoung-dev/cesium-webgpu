@@ -150,14 +150,20 @@ fn vertexMain(
     //>>endif
 
     //>>ifdef DISABLE_DEPTH_DISTANCE
-    var disableDepthSq = perInstanceFlags.x * perInstanceFlags.x;
-    if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-        disableDepthSq =
+    // Batch 140 — raw-sentinel pattern (see PointPrimitiveColor.wgsl).
+    let disableRawDP = perInstanceFlags.x;
+    if (disableRawDP < 0.0) {
+        clipPos.z = clipPos.w;
+    } else if (disableRawDP != 0.0) {
+        let disableDepthSqDP = disableRawDP * disableRawDP;
+        if (camDistSq < disableDepthSqDP) {
+            clipPos.z = clipPos.w;
+        }
+    } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+        let frameMinSqDP =
             camera.minimumDisableDepthTestDistance *
             camera.minimumDisableDepthTestDistance;
-    }
-    if (disableDepthSq != 0.0) {
-        if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+        if (camDistSq < frameMinSqDP) {
             clipPos.z = clipPos.w;
         }
     }

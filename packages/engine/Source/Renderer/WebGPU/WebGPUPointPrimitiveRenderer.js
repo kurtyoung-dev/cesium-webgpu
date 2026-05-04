@@ -72,6 +72,28 @@ const scratchEncodedPosition = new EncodedCartesian3();
 // =========================================================================
 
 /**
+ * Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT) —
+ * mirrors `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
+ * Maps `Number.POSITIVE_INFINITY` to `-1.0` so the WGSL `<0` always-
+ * disable sentinel fires (matching WebGL
+ * `PointPrimitiveCollection.js:1102` Infinity → -1 substitution).
+ * Earlier the JS pack collapsed Infinity to 0.0 (the `isFinite` branch
+ * returned the default), making the WGSL sentinel branch dead.
+ */
+function encodeDisableDepthTestDistance(value) {
+  if (typeof value !== "number") {
+    return 0.0;
+  }
+  if (value === Number.POSITIVE_INFINITY) {
+    return -1.0;
+  }
+  if (isFinite(value) && value > 0.0) {
+    return value;
+  }
+  return 0.0;
+}
+
+/**
  * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
  * (near, nearValue, far, farValue) into 4 contiguous floats. Identity-NFS
  * written when `scalar` is undefined so the shader's gate produces the
@@ -154,8 +176,9 @@ function buildInstanceData(collection) {
     //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
     //   z: distanceDisplayCondition.near^2 (Batch 136)
     //   w: distanceDisplayCondition.far^2 (Batch 136)
-    const d = point._disableDepthTestDistance;
-    instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 16] = encodeDisableDepthTestDistance(
+      point._disableDepthTestDistance,
+    );
     instanceData[offset + 17] = point._splitDirection ?? 0.0;
     const ddc = point._distanceDisplayCondition;
     if (ddc) {
@@ -242,8 +265,9 @@ function buildPickInstanceData(collection, context) {
     // Same perInstanceFlags as the color path so pick obeys DP-H42 /
     // DP-H40 / A.14 DDC. Pick must mirror color visibility exactly so
     // an invisible point is also unpickable.
-    const d = point._disableDepthTestDistance;
-    instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
+    instanceData[offset + 16] = encodeDisableDepthTestDistance(
+      point._disableDepthTestDistance,
+    );
     instanceData[offset + 17] = point._splitDirection ?? 0.0;
     const ddc = point._distanceDisplayCondition;
     if (ddc) {

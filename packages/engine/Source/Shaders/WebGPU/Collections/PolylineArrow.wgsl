@@ -155,14 +155,20 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — depth override; same contract as PolylineCollection.wgsl.
-  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
-  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-    disableDepthSq =
+  // Batch 140 — raw-sentinel pattern.
+  let disableRawDP = input.perInstanceFlags.x;
+  if (disableRawDP < 0.0) {
+    finalPos.z = finalPos.w;
+  } else if (disableRawDP != 0.0) {
+    let disableDepthSqDP = disableRawDP * disableRawDP;
+    if (camDistSq < disableDepthSqDP) {
+      finalPos.z = finalPos.w;
+    }
+  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+    let frameMinSqDP =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
-  }
-  if (disableDepthSq != 0.0) {
-    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+    if (camDistSq < frameMinSqDP) {
       finalPos.z = finalPos.w;
     }
   }

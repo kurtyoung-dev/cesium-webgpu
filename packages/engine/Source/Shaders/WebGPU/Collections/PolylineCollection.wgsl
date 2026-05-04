@@ -171,14 +171,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // frame-wide fallback. Forcing `finalPos.z = finalPos.w` maps to
   // NDC z = 1 so the rasterizer's less-equal depth compare always
   // passes. Mirrors BillboardCollection.wgsl.
-  var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
-  if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
-    disableDepthSq =
+  //
+  // Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT)
+  // — raw-sentinel pattern. Pre-fix the squaring step killed the sign
+  // on the `-1` "always disable" sentinel, so the WebGL-parity branch
+  // was dead code.
+  let disableRawDP = input.perInstanceFlags.x;
+  if (disableRawDP < 0.0) {
+    finalPos.z = finalPos.w;
+  } else if (disableRawDP != 0.0) {
+    let disableDepthSqDP = disableRawDP * disableRawDP;
+    if (camDistSq < disableDepthSqDP) {
+      finalPos.z = finalPos.w;
+    }
+  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+    let frameMinSqDP =
       camera.minimumDisableDepthTestDistance *
       camera.minimumDisableDepthTestDistance;
-  }
-  if (disableDepthSq != 0.0) {
-    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
+    if (camDistSq < frameMinSqDP) {
       finalPos.z = finalPos.w;
     }
   }
