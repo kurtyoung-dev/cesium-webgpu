@@ -876,11 +876,27 @@ function updateAndQueueCommands(
   const fr = context.getFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE);
   if (fr && fr.createCommands) {
     const result = fr.createCommands(groundPrimitive, frameState);
-    if (result && result.colorCommand) {
+    // AUDIT_2026_05_02 A.3 (Batch 146) — prefer the new
+    // `colorCommands[]` array shape so `classificationType: BOTH`
+    // primitives push both the TERRAIN_CLASSIFICATION and
+    // CESIUM_3D_TILE_CLASSIFICATION commands. Falls back to the
+    // legacy singular `colorCommand` slot for backwards compatibility
+    // with any future / external feature renderer that hasn't migrated.
+    const hasArrayShape =
+      result &&
+      Array.isArray(result.colorCommands) &&
+      result.colorCommands.length > 0;
+    if (result && (hasArrayShape || result.colorCommand)) {
       if (result.stencilCommand) {
         frameState.commandList.push(result.stencilCommand);
       }
-      frameState.commandList.push(result.colorCommand);
+      if (hasArrayShape) {
+        for (let i = 0; i < result.colorCommands.length; i++) {
+          frameState.commandList.push(result.colorCommands[i]);
+        }
+      } else {
+        frameState.commandList.push(result.colorCommand);
+      }
       // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
       // push the IGNORE_SHOW stencil-write command when invert classification
       // is enabled this frame. The renderer only emits this for 3D Tile
@@ -889,10 +905,7 @@ function updateAndQueueCommands(
       // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW pass, so the command is
       // a no-op anyway, but skipping the push avoids an unused command-
       // list entry.
-      if (
-        result.ignoreShowCommand &&
-        frameState.invertClassification
-      ) {
+      if (result.ignoreShowCommand && frameState.invertClassification) {
         frameState.commandList.push(result.ignoreShowCommand);
       }
       return;

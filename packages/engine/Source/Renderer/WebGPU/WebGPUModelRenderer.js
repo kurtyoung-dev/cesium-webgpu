@@ -2148,23 +2148,30 @@ function updateWebGPUModel(model, frameState) {
       // instead of the lit PBR pipeline. Mirrors WebGL's
       // `ClassificationModelDrawCommand` pass routing
       // (`Source/Scene/Model/ClassificationModelDrawCommand.js`).
+      // AUDIT_2026_05_02 A.3 (Batch 146) — `classificationType: BOTH`
+      // now emits TWO commands per primitive (one for TERRAIN, one for
+      // 3D Tile) instead of collapsing to a single 3D Tile pass. The
+      // non-classifier path still emits a single command. Both paths
+      // run through the same `passes` loop below.
       const isClassifier = defined(model.classificationType);
-      let pass;
+      const drawPasses = [];
       if (isClassifier) {
         const classType = model.classificationType;
-        // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
-        // BOTH falls into CESIUM_3D_TILE_CLASSIFICATION so the model
-        // still classifies tiles (terrain-only emission for BOTH is a
-        // minor compromise mirroring `WebGPUGroundPrimitiveRenderer`).
-        pass =
-          classType === 0
-            ? Pass.TERRAIN_CLASSIFICATION
-            : Pass.CESIUM_3D_TILE_CLASSIFICATION;
+        if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
+          drawPasses.push(Pass.TERRAIN_CLASSIFICATION);
+        }
+        if (
+          classType === 1 /* CESIUM_3D_TILE */ ||
+          classType === 2 /* BOTH */
+        ) {
+          drawPasses.push(Pass.CESIUM_3D_TILE_CLASSIFICATION);
+        }
       } else {
-        pass =
+        drawPasses.push(
           matInfo.alphaMode === AlphaModes.BLEND
             ? Pass.TRANSLUCENT
-            : model.opaquePass;
+            : model.opaquePass,
+        );
       }
 
       // C-R1 (Batch 37) — forward the source JS-side renderState from
@@ -2221,7 +2228,16 @@ function updateWebGPUModel(model, frameState) {
           )
         : primCache.pipeline;
 
-      const webgpuCmd = new WebGPUDrawCommand({
+      // AUDIT_2026_05_02 A.3 (Batch 146) — `passes[0]` is the primary
+      // pass. The non-classifier path always has length 1, so the
+      // existing pick/velocity/dual/translucent/edge code below operates
+      // on `webgpuCmd` (the primary command). The classifier path may
+      // have length 2 for BOTH; the second command is built from the
+      // same args after the primary push and goes straight onto the
+      // commandList without pick/velocity attachments (classifier
+      // doesn't pick or emit velocity).
+      const primaryPass = drawPasses[0];
+      const webgpuCmdArgs = {
         pipeline: activePipeline,
         bindGroups: [
           cache.cameraBG, // group 0
@@ -2235,7 +2251,7 @@ function updateWebGPUModel(model, frameState) {
         indexFormat: primCache.indexFormat || "uint16",
         vertexCount: primCache.vertexCount || 0,
         instanceCount: instanceCount,
-        pass: pass,
+        pass: primaryPass,
         owner: model,
         boundingVolume: model.boundingSphere,
         modelMatrix: modelMatrix,
@@ -2247,7 +2263,8 @@ function updateWebGPUModel(model, frameState) {
         // `Cesium3DTile.update` for translucent tile content). Undefined
         // for OPAQUE/MASK because they already write depth.
         classificationDepthPipeline: primCache.depthWritePipeline,
-      });
+      };
+      const webgpuCmd = new WebGPUDrawCommand(webgpuCmdArgs);
 
       // ── Shadow cast tagging ──
       //
@@ -2328,7 +2345,7 @@ function updateWebGPUModel(model, frameState) {
           indexFormat: primCache.indexFormat || "uint16",
           vertexCount: primCache.vertexCount || 0,
           instanceCount: instanceCount,
-          pass: pass,
+          pass: primaryPass,
           owner: model,
           boundingVolume: model.boundingSphere,
           modelMatrix: modelMatrix,
@@ -2383,7 +2400,7 @@ function updateWebGPUModel(model, frameState) {
           indexFormat: primCache.indexFormat || "uint16",
           vertexCount: primCache.vertexCount || 0,
           instanceCount: instanceCount,
-          pass: pass,
+          pass: primaryPass,
           owner: model,
           boundingVolume: model.boundingSphere,
           modelMatrix: modelMatrix,
@@ -2395,9 +2412,27 @@ function updateWebGPUModel(model, frameState) {
 
       commandList.push(webgpuCmd);
 
+      // AUDIT_2026_05_02 A.3 (Batch 146) — for `classificationType: BOTH`
+      // emit a SECOND command targeting the second pass. Same args as
+      // the primary command except the `pass` field. Both commands share
+      // the same pipeline / bind groups / vertex buffers — the renderer
+      // already computed those for the primary command and they're
+      // identical for the second pass (depth-sample classifier doesn't
+      // distinguish TERRAIN vs 3D Tile in its pipeline state, only in
+      // the pass enum the dispatcher routes through).
+      if (isClassifier && drawPasses.length > 1) {
+        for (let p = 1; p < drawPasses.length; p++) {
+          const extraCmd = new WebGPUDrawCommand({
+            ...webgpuCmdArgs,
+            pass: drawPasses[p],
+          });
+          commandList.push(extraCmd);
+        }
+      }
+
       // AUDIT_2026_05_02 A.8 (Batch 142, NEW-MODEL-AS-CLASSIFIER) —
       // when the model is a classifier, we've already pushed the
-      // classification command. The remaining variants (tile-batch
+      // classification command(s). The remaining variants (tile-batch
       // dual command, translucent depth-write, edge emitter) don't
       // apply: classifiers don't pick (no pick FBO entry needed —
       // ClassificationModelDrawCommand on WebGL also skips pick),

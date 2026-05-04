@@ -686,19 +686,23 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.indexCount = indices.length;
   }
 
-  // Pick the classification pass based on the primitive's classificationType.
+  // Pick the classification pass(es) based on `classificationType`.
   // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
   // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
-  // For BOTH we route the command into CESIUM_3D_TILE_CLASSIFICATION so it
-  // still projects onto 3D Tiles — terrain-only emission is a minor
-  // compromise (a second command per ground primitive would fix that).
-  // Without this, ground primitives with classificationType: CESIUM_3D_TILE
-  // silently degraded to terrain-only on WebGPU.
+  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one command per relevant
+  // pass. Pre-fix, BOTH collapsed to CESIUM_3D_TILE_CLASSIFICATION only
+  // (the comment in this file from Batch 81 acknowledged this as a
+  // compromise). Now mirrors the same pass-list pattern used in
+  // `WebGPUVector3DTilePrimitiveRenderer.js` (Batch 145) and
+  // `WebGPUVector3DTileClampedPolylinesRenderer.js` (Batch 141 era).
   const classType = primitive?.classificationType ?? 0;
-  const groundPass =
-    classType === 0
-      ? 3 /* TERRAIN_CLASSIFICATION */
-      : 6; /* CESIUM_3D_TILE_CLASSIFICATION */
+  const groundPasses = [];
+  if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
+    groundPasses.push(3 /* TERRAIN_CLASSIFICATION */);
+  }
+  if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
+    groundPasses.push(6 /* CESIUM_3D_TILE_CLASSIFICATION */);
+  }
 
   // Migration Session 5 — depth-sample is now the only classifier path.
   // Pick a depth source: prefer packed-translucent-depth (front-most
@@ -724,6 +728,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       stencilCommand: null,
       colorCommand: null,
       pickCommand: null,
+      // AUDIT_2026_05_02 A.3 (Batch 146) — array fields for BOTH support.
+      // Empty arrays = no commands this frame (depth source not yet
+      // published).
+      colorCommands: [],
+      pickCommands: [],
+      ignoreShowCommand: null,
     };
   }
 
@@ -791,8 +801,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     primitive?.appearance?.renderState ??
     primitive?._primitive?.appearance?.renderState;
 
-  const depthSampleColorCommand = new WebGPUDrawCommand({
-    pipeline: cache.depthSampleColorPipeline,
+  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one color (and optional
+  // pick) command per relevant pass. The shared draw args are
+  // identical across passes; only the `pass` enum differs. Each pick
+  // command is attached to its sibling color command via
+  // `attachPickToColorCommand` so the dispatcher's pick-pass swap
+  // routes correctly. For BOTH (groundPasses.length === 2), this emits
+  // two color and two pick commands per primitive.
+  const sharedDrawArgs = {
     bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
     bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
     vertexBuffers: [cache.vertexGPUBuffer],
@@ -800,28 +816,34 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     indexCount: cache.indexCount || 0,
     indexFormat: cache.indexFormat || "uint16",
     vertexCount: cache.vertexCount || 0,
-    pass: groundPass,
     owner: primitive,
     renderState: classificationRS,
-  });
-
-  if (defined(pickColor)) {
-    cache.pickCommand = new WebGPUDrawCommand({
-      pipeline: cache.depthSamplePickPipeline,
-      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
-      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
-      vertexBuffers: [cache.vertexGPUBuffer],
-      indexBuffer: cache.indexGPUBuffer || undefined,
-      indexCount: cache.indexCount || 0,
-      indexFormat: cache.indexFormat || "uint16",
-      vertexCount: cache.vertexCount || 0,
-      pass: groundPass,
-      owner: primitive,
-      pickOnly: true,
-      renderState: classificationRS,
+  };
+  const colorCommands = [];
+  const pickCommands = [];
+  for (let p = 0; p < groundPasses.length; p++) {
+    const passEnum = groundPasses[p];
+    const colorCmd = new WebGPUDrawCommand({
+      ...sharedDrawArgs,
+      pipeline: cache.depthSampleColorPipeline,
+      pass: passEnum,
     });
-    attachPickToColorCommand(depthSampleColorCommand, cache.pickCommand);
+    if (defined(pickColor)) {
+      const pickCmd = new WebGPUDrawCommand({
+        ...sharedDrawArgs,
+        pipeline: cache.depthSamplePickPipeline,
+        pass: passEnum,
+        pickOnly: true,
+      });
+      attachPickToColorCommand(colorCmd, pickCmd);
+      pickCommands.push(pickCmd);
+    }
+    colorCommands.push(colorCmd);
   }
+  // Stash the most-recent pick command for backwards compatibility with
+  // any consumers that read `cache.pickCommand` directly.
+  cache.pickCommand =
+    pickCommands.length > 0 ? pickCommands[pickCommands.length - 1] : undefined;
 
   // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
   // emit a CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW command alongside the
@@ -830,21 +852,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // pass; this command writes stencil=0xff on every classified-surface pixel
   // the volume covers so the stencil-gated composite can distinguish
   // classified vs unclassified regions. TERRAIN_CLASSIFICATION-only
-  // primitives don't participate in invert classification, so we skip
-  // emission when groundPass === 3.
+  // primitives don't participate in invert classification — only emit
+  // when 3D Tile classification is active (BOTH or CESIUM_3D_TILE).
   let ignoreShowCommand = null;
-  if (groundPass === 6) {
+  if (groundPasses.includes(6)) {
     ignoreShowCommand = new WebGPUDrawCommand({
+      ...sharedDrawArgs,
       pipeline: cache.depthSampleStencilPipeline,
-      bindGroups: [cache.bindGroup, cache.depthSampleBindGroup],
-      bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
-      vertexBuffers: [cache.vertexGPUBuffer],
-      indexBuffer: cache.indexGPUBuffer || undefined,
-      indexCount: cache.indexCount || 0,
-      indexFormat: cache.indexFormat || "uint16",
-      vertexCount: cache.vertexCount || 0,
       pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
-      owner: primitive,
       // Stencil reference 0xff — `applyPerEncoderState` reads
       // `stencilTest.reference` and calls `passEncoder.setStencilReference`
       // before the draw. Combined with the pipeline's `passOp: replace`,
@@ -858,14 +873,26 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     pickPipeline: cache.depthSamplePickPipeline,
     bindGroup: cache.bindGroup,
     // Sentinel — null `stencilCommand` tells the GroundPrimitive consumer
-    // to push only `colorCommand`. The legacy stencil 2-pass dispatch
+    // to push only `colorCommand(s)`. The legacy stencil 2-pass dispatch
     // shape is kept in the consumer for backwards-compat with any
     // future renderer that wants to emit a stencil pre-pass; in the
     // current depth-sample architecture it's always null.
     stencilCommand: null,
-    colorCommand: depthSampleColorCommand,
+    // Backwards-compatible singular slots — point at the first / last
+    // entry of the new arrays so any consumer still reading these keeps
+    // working. `colorCommand` mirrors the FIRST color command (matches
+    // the historical "single pass per primitive" shape for non-BOTH
+    // cases, and is the TERRAIN command for BOTH if present, else the
+    // 3D Tile command).
+    colorCommand: colorCommands.length > 0 ? colorCommands[0] : null,
     pickCommand: cache.pickCommand,
     ignoreShowCommand,
+    // AUDIT_2026_05_02 A.3 (Batch 146) — array-shaped slots. The
+    // GroundPrimitive dispatch site iterates these so BOTH
+    // classification primitives push two commands (TERRAIN + 3D Tile)
+    // instead of one.
+    colorCommands,
+    pickCommands,
   };
 }
 
