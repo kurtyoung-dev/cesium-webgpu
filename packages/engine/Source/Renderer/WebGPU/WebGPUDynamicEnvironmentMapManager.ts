@@ -64,6 +64,15 @@ interface DynEnvMapCache {
   mipmapLevels: number;
   needsUpdate: boolean;
   framesSinceUpdate: number;
+  // Audit re-review (Batch 134) -- last sun direction the procedural
+  // sky was rendered against. The update path re-runs the sky +
+  // prefilter when the current sun direction differs from this by
+  // more than `SUN_REFRESH_EPSILON` so day/night cycles refresh the
+  // cubemap without burning compute every frame. NaN sentinel forces
+  // the first-frame re-run.
+  lastSunDirX: number;
+  lastSunDirY: number;
+  lastSunDirZ: number;
   // Audit A.12 (Batch 131) -- compute pipeline for procedural sky
   // fill + uniform buffer + bind group. Kept on the cache so device
   // creation costs are paid once.
@@ -114,6 +123,9 @@ function updateWebGPUDynamicEnvironmentMap(
       mipmapLevels: 0,
       needsUpdate: true,
       framesSinceUpdate: 0,
+      lastSunDirX: NaN,
+      lastSunDirY: NaN,
+      lastSunDirZ: NaN,
       skyPipeline: null,
       skyBGL: null,
       skyUniformBuffer: null,
@@ -197,16 +209,32 @@ function updateWebGPUDynamicEnvironmentMap(
     });
   }
 
-  // Audit A.12 (Batch 131) -- procedural sky compute pass + IBL
-  // prefilter. Runs only when the cubemap was just (re)created or
-  // when the user has flipped `manager.shouldUpdate` (sun moved,
-  // settings changed). Once the prefilter completes, the result
-  // views are exposed for `WebGPUModelRenderer` to bind via the
-  // material BG.
-  if (cache.needsUpdate) {
+  // Audit A.12 (Batch 131) + re-review (Batch 134) -- procedural sky
+  // compute pass + IBL prefilter. Runs when:
+  //   1. cubemap was just (re)created (`cache.needsUpdate`), OR
+  //   2. sun direction has moved by more than `SUN_REFRESH_EPSILON`
+  //      since the last fill (day/night cycle refresh).
+  // The squared-distance check is cheap (3 mults + 2 adds + sqrt-skip)
+  // so this runs every frame; the actual compute + prefilter is
+  // gated by the threshold.
+  const sunDir = (
+    frameState.context as unknown as {
+      uniformState?: { sunDirectionWC?: { x: number; y: number; z: number } };
+    }
+  ).uniformState?.sunDirectionWC ?? { x: 0.3, y: 0.0, z: 0.95 };
+  const dx = sunDir.x - cache.lastSunDirX;
+  const dy = sunDir.y - cache.lastSunDirY;
+  const dz = sunDir.z - cache.lastSunDirZ;
+  // NaN-against-anything is NaN -> coerces > epsilon, so the first
+  // frame always runs.
+  const sunMoved = !(dx * dx + dy * dy + dz * dz < SUN_REFRESH_EPSILON_SQ);
+  if (cache.needsUpdate || sunMoved) {
     runProceduralSkyFill(device, cache, manager, frameState);
     runIBLPrefilter(device, cache, frameState);
     cache.needsUpdate = false;
+    cache.lastSunDirX = sunDir.x;
+    cache.lastSunDirY = sunDir.y;
+    cache.lastSunDirZ = sunDir.z;
   }
 
   // Expose cubemap + prefiltered IBL views for shader consumption.
@@ -225,6 +253,13 @@ function updateWebGPUDynamicEnvironmentMap(
 
   cache.framesSinceUpdate++;
 }
+
+// Audit re-review (Batch 134) -- minimum sun-direction movement that
+// triggers a sky + IBL refresh. (0.005)^2 ~= 0.3 degrees of arc on the
+// unit sphere; small enough that day/night progressions feel smooth,
+// large enough that a stationary scene doesn't burn a compute pass +
+// IBL prefilter on every frame.
+const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
 
 // ─── Procedural sky compute pass (Audit A.12, Batch 131) ─────────────────
 //
@@ -371,8 +406,13 @@ function runIBLPrefilter(
       sourceVersion: -1,
     };
   }
-  // Bump source version so generateIBLMaps treats the cubemap as new.
-  cache.iblCache.sourceVersion = (cache.iblCache.sourceVersion ?? 0) + 1;
+  // Audit re-review (Batch 134) -- `generateIBLMaps` itself doesn't
+  // read `sourceVersion` (only the explicit-IBL `WebGPUImageBasedLighting`
+  // caller uses it as a regen gate), so the previous bump here was
+  // dead. Existing C-P17 cleanup at `WebGPUIBLPipeline.ts:149/239`
+  // destroys the old irradiance + radiance textures before recreating
+  // them, so re-running prefilter on each sun-direction refresh does
+  // not leak GPU memory.
   generateIBLMaps(
     device,
     cache.iblCache,

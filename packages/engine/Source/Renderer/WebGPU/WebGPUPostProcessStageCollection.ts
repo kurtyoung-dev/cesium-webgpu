@@ -288,7 +288,12 @@ function configureWebGPUPostProcessPipeline(
     pipeline.addGodRay(device, canvasFormat, cfg);
     cache.godRayInitialized = true;
   }
-  pipeline.setStageEnabled("GodRay", false); // GodRay isn't a `_stage` slot
+  // Audit re-review (Batch 134) -- GodRay enable rides
+  // `pipeline.godRayEffect.enabled` directly; `setStageEnabled` only
+  // recognizes the named slot stages (TAA, FXAA, Bloom, Tonemap, etc.)
+  // and falls through to a no-op for unknown names. The previous
+  // `setStageEnabled("GodRay", false)` call was dead and misleading
+  // -- removed to keep the enable surface single-source.
   if (cache.godRayEnabled && pipeline.godRayEffect) {
     pipeline.godRayEffect.enabled = true;
     updateGodRaySunUV(pipeline, scene);
@@ -319,6 +324,13 @@ function updateGodRaySunUV(
         viewProjection?: number[] | Float64Array;
         sunPositionWC?: { x: number; y: number; z: number };
         sunDirectionWC?: { x: number; y: number; z: number };
+        // Audit re-review (Batch 134) -- `currentFrustum` is set
+        // per-frustum during the multi-frustum command-list traversal,
+        // so by the time the post-process configure runs it carries
+        // whichever frustum's near/far was last applied (typically the
+        // far one). The full-scene depth-linearization for GodRay
+        // needs the camera's overall near + far, not the last per-
+        // frustum slice.
         currentFrustum?: { x: number; y: number };
       }
     | undefined;
@@ -352,8 +364,24 @@ function updateGodRaySunUV(
   const u = ndcX * 0.5 + 0.5;
   const v = -ndcY * 0.5 + 0.5;
   fx.setSunScreenUV(u, v);
-  if (us.currentFrustum) {
-    fx.setFrustum(us.currentFrustum.x, us.currentFrustum.y);
+  // Audit re-review (Batch 134) -- pull the frustum span from the
+  // camera object, not `uniformState.currentFrustum`. The latter is
+  // mutated per-frustum during command execution and by the time the
+  // configure pass runs it reflects the LAST per-frustum slice (the
+  // far one), so the GodRay generate pass would linearize depth
+  // against the far slice's near/far -- foreground geometry depths
+  // would all collapse to ~0 and gate every sample as "sky", letting
+  // shafts leak through occluders. The camera's overall near/far
+  // bracket the entire scene depth range correctly.
+  const cam = (
+    scene as unknown as {
+      camera?: { frustum?: { near?: number; far?: number } };
+    }
+  )?.camera;
+  const near = cam?.frustum?.near;
+  const far = cam?.frustum?.far;
+  if (typeof near === "number" && typeof far === "number" && far > near) {
+    fx.setFrustum(near, far);
   }
   // Touch the scratch slot so esbuild can't tree-shake the alloc that
   // future versions may use for SIMD-aware projection.

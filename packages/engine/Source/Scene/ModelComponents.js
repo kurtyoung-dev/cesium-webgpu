@@ -840,6 +840,19 @@ export class Node {
     this.articulationName = undefined;
 
     /**
+     * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- index into the asset's
+     * KHR_lights_punctual lights array. Set when the node carries
+     * `extensions.KHR_lights_punctual.light`. Resolved by
+     * `materializeKhrLightsPunctual` at parse end into entries on
+     * `components.lights` with the node's world matrix already
+     * baked in.
+     *
+     * @type {number | undefined}
+     * @ignore
+     */
+    this.lightIndex = undefined;
+
+    /**
      * The CESIUM_mesh_vector extension data for this node.
      *
      * @type {object}
@@ -1141,6 +1154,29 @@ export class Components {
      * @type {Articulation[]}
      */
     this.articulations = [];
+
+    /**
+     * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- KHR_lights_punctual lights
+     * resolved into MODEL-space (node hierarchy applied at load time).
+     * Each entry is `{ type, color: {red, green, blue}, intensity,
+     * range, innerConeAngle, outerConeAngle, position?: vec3,
+     * direction?: vec3 }`. The renderer transforms position/direction
+     * by `model.modelMatrix` at pack time to produce world-space
+     * values for the punctual light UBO. Empty when the asset has no
+     * KHR_lights_punctual extension.
+     *
+     * @type {Array<{
+     *   type: number,
+     *   color: { red: number, green: number, blue: number },
+     *   intensity: number,
+     *   range: number,
+     *   innerConeAngle: number,
+     *   outerConeAngle: number,
+     *   position?: { x: number, y: number, z: number },
+     *   direction?: { x: number, y: number, z: number },
+     * }>}
+     */
+    this.lights = [];
 
     /**
      * Structural metadata containing the schema, property tables, property

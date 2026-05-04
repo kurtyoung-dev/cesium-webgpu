@@ -35,7 +35,20 @@ class WebGPUComputeEngine {
     | null;
   private _isDestroyed: boolean;
 
-  constructor(device: GPUDevice) {
+  /**
+   * @param device - The GPUDevice to compile pipelines against.
+   * @param centralCache - Audit B.18 (Batch 132/134) -- optional
+   *   `WebGPUComputePipelineCache`. When supplied, pipeline creation
+   *   routes through the central cache for cross-instance dedup.
+   *   Production instantiation sites SHOULD pass
+   *   `context.webgpuComputePipelineCache` here (or set
+   *   `engine.centralPipelineCache = ...` afterward) -- the field is
+   *   `null` by default so unit-test instantiations stay isolated.
+   */
+  constructor(
+    device: GPUDevice,
+    centralCache?: import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(device)) {
       throw new DeveloperError("device is required.");
@@ -44,7 +57,7 @@ class WebGPUComputeEngine {
 
     this._device = device;
     this._pipelineCache = new Map();
-    this._centralCache = null;
+    this._centralCache = centralCache ?? null;
     this._isDestroyed = false;
   }
 

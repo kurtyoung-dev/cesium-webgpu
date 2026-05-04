@@ -66,6 +66,32 @@ function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
     );
     primCache._morphWeightData = new Float32Array(MORPH_UNIFORM_SIZE / 4);
   }
+  // NEW-TAA-MORPH-PREV (Batch 134) -- prev-frame weights mirror for
+  // TAA velocity. The shader runs morph twice in vertexMain (once
+  // current, once prev) and needs the prev weights to compute the
+  // correct prevPositionMC. First-frame: alias prev = current so
+  // velocity is zero on the first morphed frame rather than wildly
+  // wrong from zero deltas.
+  if (!defined(primCache._morphWeightBufferPrev)) {
+    primCache._morphWeightBufferPrev = WebGPUBuffer.createUniformBuffer(
+      device,
+      MORPH_UNIFORM_SIZE,
+      "MorphTarget weights (prev)",
+    );
+    primCache._morphWeightDataPrev = new Float32Array(MORPH_UNIFORM_SIZE / 4);
+  }
+
+  // NEW-TAA-MORPH-PREV (Batch 134) -- save current weights as prev
+  // BEFORE overwriting with this frame's weights. Same swap pattern
+  // as `prevPackedJointMatrices` in `WebGPUModelRenderer.js`.
+  primCache._morphWeightDataPrev.set(primCache._morphWeightData);
+  device.queue.writeBuffer(
+    primCache._morphWeightBufferPrev.buffer,
+    0,
+    primCache._morphWeightDataPrev.buffer,
+    0,
+    MORPH_UNIFORM_SIZE,
+  );
 
   // Pack weights into uniform buffer
   const weightData = primCache._morphWeightData;
@@ -92,6 +118,7 @@ function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
   return {
     storageBuffer: primCache._morphStorageBuffer,
     weightBuffer: primCache._morphWeightBuffer.buffer,
+    weightBufferPrev: primCache._morphWeightBufferPrev.buffer,
     targetCount: targetCount,
   };
 }
@@ -142,6 +169,10 @@ function destroyMorphTargetResources(primCache) {
   if (defined(primCache._morphStorageBuffer)) {
     primCache._morphStorageBuffer.destroy();
     primCache._morphStorageBuffer = undefined;
+  }
+  if (defined(primCache._morphWeightBufferPrev)) {
+    primCache._morphWeightBufferPrev.destroy();
+    primCache._morphWeightBufferPrev = undefined;
   }
   if (defined(primCache._morphWeightBuffer)) {
     primCache._morphWeightBuffer.destroy();

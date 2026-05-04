@@ -248,12 +248,20 @@ struct MaterialUniforms {
   _pad_reserved8: vec4<f32>,
 };
 
-// Audit B.3 (Batch 131) -- per-light data structure matching the JS
-// `LightCollection.pack()` output (16 floats / 64 bytes per light).
-// Slot semantics depend on `lightType`:
-//   DIRECTIONAL (0) : posOrDir = direction, position fields ignored
-//   POINT       (1) : posOrDir = position (world space)
-//   SPOT        (2) : posOrDir = position; coneInner/coneOuter active
+// Audit B.3 (Batch 131) + re-review (Batch 134) -- per-light data
+// structure matching the JS `LightCollection.pack()` output (20 floats
+// / 80 bytes per light). Slot semantics depend on `lightType`:
+//   DIRECTIONAL (0) : posOrDir = direction; spotDirection ignored
+//   POINT       (1) : posOrDir = position; spotDirection ignored
+//   SPOT        (2) : posOrDir = position; spotDirection = forward
+//                     (the direction the spot is aimed); inner/outer
+//                     cone angles active
+//
+// Slots 16-18 carry the spot direction at vec3 alignment (the next
+// 16-byte boundary after slot 15). Pre-Batch-134 the record was 16
+// floats and spot lights had no direction slot -- the cone math fell
+// back to point falloff. With direction packed, spot cone gating is
+// fully correct.
 struct PunctualLight {
   posOrDir: vec3<f32>,
   lightType: f32,         // cast to int via `i32(lightType)`
@@ -267,6 +275,8 @@ struct PunctualLight {
   outerConeAngle: f32,
   _pad0: f32,
   _pad1: f32,
+  spotDirection: vec3<f32>,
+  _pad2: f32,
 };
 
 struct LightUniforms {
@@ -369,6 +379,21 @@ struct MorphWeightsUniforms {
 // Storage buffer: array of mat4x4 — one per instance, column-major.
 // Instance transform is applied to position/normal/tangent BEFORE morph/skin/RTE.
 @group(2) @binding(3) var<storage, read> instanceTransforms: array<mat4x4<f32>>;
+
+// NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph weights for
+// the velocity pass. The vertex shader runs morph twice (current +
+// prev) so animated facial blendshapes / lipsync produce correct
+// per-vertex velocity instead of stretching whatever the current
+// pose happens to be against the previous-frame model matrix.
+@group(2) @binding(5) var<uniform> previousMorphWeights: MorphWeightsUniforms;
+// NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
+// transforms. For static GPU instancing (today's only case) this
+// aliases the current `instanceTransforms` buffer in JS, so the prev
+// pass produces the same world-space position as the current pass and
+// velocity collapses to camera/model-matrix delta only. Animated
+// EXT_mesh_gpu_instancing assets would publish a separate prev
+// buffer for per-frame per-instance velocity.
+@group(2) @binding(6) var<storage, read> previousInstanceTransforms: array<mat4x4<f32>>;
 
 // Feature ID + batch texture (bind group 6, for per-feature styling in 3D Tiles)
 // Feature ID texture: encodes integer feature IDs in RGBA channels (EXT_mesh_features)
@@ -677,22 +702,31 @@ struct VertexOutput {
   output.tangentEC = tangentEC3;
   output.bitangentEC = cross(output.normalEC, tangentEC3) * tangentMC.w;
 
-  // Audit A.5 (Batch 130) -- compute prevPositionMC by re-running the
-  // morph -> skin -> instance pipeline with the previous-frame joint
-  // matrices (binding 4). For rigid (non-skinned) models, prev joint
-  // matrices default to the current frame's identity buffer so
+  // Audit A.5 (Batch 130) + re-review (Batch 134) -- compute
+  // prevPositionMC by re-running the morph -> skin -> instance
+  // pipeline with PREV-FRAME data on every stage:
+  //   - morph weights from `previousMorphWeights` (binding 5,
+  //     NEW-TAA-MORPH-PREV)
+  //   - joint matrices from `previousJointMatrices` (binding 4)
+  //   - instance transforms from `previousInstanceTransforms`
+  //     (binding 6, NEW-TAA-INSTANCE-PREV)
+  // For rigid (non-skinned, non-morphed, non-instanced) models, all
+  // three prev buffers default to their CURRENT counterparts so
   // prevPositionMC equals positionMC and velocity captures only the
-  // model-matrix delta + camera motion (the original Slice 2c
-  // behavior). Morph weights and instance transforms still use
-  // current-frame data -- those follow-ups are filed under
-  // NEW-TAA-MORPH-PREV / NEW-TAA-INSTANCE-PREV in DEFERRED_WORK.
+  // model-matrix delta + camera motion. Animated rigs now produce
+  // the correct per-vertex motion vector across the full deformation
+  // pipeline.
   var prevPositionMC = input.positionMC;
   if (hasFlag(material.materialFlags, FLAG_HAS_MORPH_TARGETS)) {
-    let targetCount = u32(morphWeights.targetCount);
-    let vertexCount = u32(morphWeights.vertexCount);
+    let targetCount = u32(previousMorphWeights.targetCount);
+    let vertexCount = u32(previousMorphWeights.vertexCount);
     let vid = input.vertexIndex;
     for (var t = 0u; t < targetCount; t = t + 1u) {
-      let w = select(morphWeights.weights0[t], morphWeights.weights1[t - 4u], t >= 4u);
+      let w = select(
+        previousMorphWeights.weights0[t],
+        previousMorphWeights.weights1[t - 4u],
+        t >= 4u,
+      );
       if (abs(w) > 0.0001) {
         let idx = t * vertexCount + vid;
         let delta = morphDeltas[idx].xyz;
@@ -710,8 +744,8 @@ struct VertexOutput {
     prevPositionMC = (prevSkinMatrix * vec4<f32>(prevPositionMC, 1.0)).xyz;
   }
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
-    let instMat = instanceTransforms[input.instanceIndex];
-    prevPositionMC = (instMat * vec4<f32>(prevPositionMC, 1.0)).xyz;
+    let prevInstMat = previousInstanceTransforms[input.instanceIndex];
+    prevPositionMC = (prevInstMat * vec4<f32>(prevPositionMC, 1.0)).xyz;
   }
 
   // TAA Slice 2c (Batch 96) -- previous- and current-frame world
@@ -1987,20 +2021,20 @@ fn modelClipByPlanes(positionEC: vec3<f32>) -> f32 {
         rangeFalloff = rangeFalloff * rangeFalloff;
       }
       atten = invSqr * rangeFalloff;
-      // Spot cone narrowing -- smooth interpolation between inner and
-      // outer cone angles, no contribution outside outerConeAngle.
+      // Audit re-review (Batch 134) -- spot cone narrowing using the
+      // authored forward direction packed into the per-light record's
+      // slot 16-18 (vec3-aligned). `pl.spotDirection` is the spot's
+      // pointing vector in world space (normalized at JS construction
+      // time). Cosine of the angle between the spot's forward and the
+      // direction TO the fragment (-Lp = light->fragment) gives the
+      // smoothstep gate between cosOuter and cosInner. Outside the
+      // outer cone the result clamps to 0; inside the inner cone it
+      // clamps to 1; in between, linear interpolation in cos space.
       if (pType == 2) {
-        // posOrDir is position; we need the spot's pointing direction.
-        // The JS pack puts it in posOrDir for directional lights, but
-        // for spots it's the position; per the layout, spot direction
-        // would need a separate slot. The first-cut treats spots as
-        // "point with cone cutoff in the direction of fragment-to-
-        // light" -- limitation tracked as `NEW-SPOTLIGHT-DIR`. For
-        // correctness here, use full point falloff (cone defaults to
-        // 0..pi, never gates).
         let cosOuter = cos(pl.outerConeAngle);
         let cosInner = cos(pl.innerConeAngle);
-        let cd = dot(-Lp, normalize(pl.posOrDir));
+        let spotFwd = normalize(pl.spotDirection);
+        let cd = dot(-Lp, spotFwd);
         let cone = smoothstep(cosOuter, cosInner, cd);
         atten = atten * cone;
       }

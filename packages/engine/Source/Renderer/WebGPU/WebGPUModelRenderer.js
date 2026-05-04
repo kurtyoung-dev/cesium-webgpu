@@ -122,7 +122,8 @@ const CAMERA_UNIFORM_SIZE = 320;
 //   floats 180-191: reserved (texture transform extensions for KHR slots,
 //                             KHR_materials_pbrSpecularGlossiness lookups, etc.)
 const MATERIAL_UNIFORM_SIZE = 768;
-// Light uniform buffer layout (Audit B.3 -- Batch 131):
+// Light uniform buffer layout (Audit B.3 -- Batch 131; Batch 134
+// bumped per-light record from 16 to 20 floats for spot direction):
 //   bytes 0-63   : sun + ambient + IBL block (16 floats)
 //                  - 0-3   sunDirectionEC (vec3+pad)
 //                  - 4-7   sunColor (vec3) + sunIntensity
@@ -131,7 +132,7 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //   bytes 64-79  : punctual header (4 floats)
 //                  - 16    punctualLightCount (i32 stored as f32)
 //                  - 17-19 padding
-//   bytes 80-591 : 8 punctual lights * 16 floats = 128 floats
+//   bytes 80-719 : 8 punctual lights * 20 floats = 160 floats
 //                  Per-light layout matches `LightCollection.pack()`:
 //                  - +0..2  direction OR position xyz
 //                  - +3     lightType (0=DIR, 1=POINT, 2=SPOT)
@@ -141,9 +142,11 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //                  - +9..11 const/linear/quadratic attenuation
 //                  - +12..13 inner/outer cone angles (radians)
 //                  - +14..15 padding
-// Total: 64 + 528 = 592 bytes. Keep in sync with struct LightUniforms
+//                  - +16..18 spotDirection xyz (spot lights only)
+//                  - +19    padding
+// Total: 64 + 656 = 720 bytes. Keep in sync with struct LightUniforms
 // in ModelPBRComplete.wgsl.
-const LIGHT_UNIFORM_SIZE = 592;
+const LIGHT_UNIFORM_SIZE = 720;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -633,27 +636,122 @@ function packLightUniforms(data, frameState, model) {
     5.0;
   data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
 
-  // Audit B.3 (Batch 131) -- punctual lights from `scene.lights`. Pack
-  // into floats 16-147 (528 bytes following the sun+ambient+IBL block).
-  // The `LightCollection.pack()` output is structured to drop directly
-  // into the shader's punctual section so we just memcpy. Renderers
-  // that haven't seen `frameState.lights` yet (or scenes with an empty
-  // collection) leave count = 0 and the FS skips the loop entirely.
-  const lights = frameState.lights;
-  if (lights && lights.length > 0) {
-    const packed = lights.pack(scratchLightPack);
-    data.set(packed, 16);
-  } else {
-    // Zero the punctual region so a previous frame's data doesn't leak
-    // when the collection is cleared mid-session.
-    data.fill(0, 16, 148);
-  }
+  // Audit B.3 (Batch 131) + re-review (Batch 134) -- punctual lights.
+  // Merges `frameState.lights` (scene-level, world-space) with
+  // `model.lightsFromGltf` (KHR_lights_punctual asset lights, model
+  // space transformed through `model.modelMatrix` here). Caps at 8
+  // total -- scene lights win when the union exceeds the cap so
+  // user-added lights aren't silently dropped by a noisy asset.
+  packPunctualLights(data, 16, frameState.lights, model);
 }
 
-// Audit B.3 (Batch 131) -- pre-allocated scratch matching
-// `LightCollection.pack()`'s output (132 floats = 528 bytes). Re-used
-// per-call to avoid GC pressure on every model draw.
-const scratchLightPack = new Float32Array(132);
+// Audit B.3 (Batch 131) + re-review (Batch 134) -- pre-allocated
+// scratch matching `LightCollection.pack()`'s output (164 floats =
+// 656 bytes; 4-float header + 8 lights × 20 floats). Re-used per-
+// call to avoid GC pressure on every model draw.
+const scratchLightPack = new Float32Array(164);
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- pack scene-level
+// `LightCollection` lights AND glTF KHR_lights_punctual lights
+// (model-space, transformed by model.modelMatrix here) into the
+// per-model UBO's punctual region starting at `floatOffset`. Scene
+// lights take priority when the combined count exceeds MAX_LIGHTS=8.
+const MAX_PUNCTUAL_LIGHTS = 8;
+const FLOATS_PER_PUNCTUAL_LIGHT = 20;
+function packPunctualLights(data, floatOffset, sceneLights, model) {
+  // Header (4 floats: lightCount + 3 pad) followed by 8 light slots.
+  // Total region = 4 + 8 * 20 = 164 floats. Always zero the entire
+  // region first so previous frame's data doesn't leak when light
+  // counts shrink.
+  const regionEnd =
+    floatOffset + 4 + MAX_PUNCTUAL_LIGHTS * FLOATS_PER_PUNCTUAL_LIGHT;
+  data.fill(0, floatOffset, regionEnd);
+
+  let writeIndex = 0;
+
+  // 1. Scene lights -- already world-space, use the existing pack().
+  if (sceneLights && sceneLights.length > 0) {
+    const packed = sceneLights.pack(scratchLightPack);
+    const sceneCount = packed[0] | 0;
+    const sceneSlots = Math.min(sceneCount, MAX_PUNCTUAL_LIGHTS);
+    for (let i = 0; i < sceneSlots; i++) {
+      const srcOffset = 4 + i * FLOATS_PER_PUNCTUAL_LIGHT;
+      const dstOffset =
+        floatOffset + 4 + writeIndex * FLOATS_PER_PUNCTUAL_LIGHT;
+      for (let f = 0; f < FLOATS_PER_PUNCTUAL_LIGHT; f++) {
+        data[dstOffset + f] = packed[srcOffset + f];
+      }
+      writeIndex++;
+    }
+  }
+
+  // 2. glTF KHR_lights_punctual lights -- model space, transform with
+  // model.modelMatrix to get world space. Each entry's
+  // position/direction is already model-space (node hierarchy applied
+  // at parse time); we just multiply by the model matrix to lift to
+  // world coords.
+  const gltfLights = model?.lightsFromGltf;
+  if (
+    Array.isArray(gltfLights) &&
+    gltfLights.length > 0 &&
+    writeIndex < MAX_PUNCTUAL_LIGHTS
+  ) {
+    const mm = model.modelMatrix;
+    const remaining = MAX_PUNCTUAL_LIGHTS - writeIndex;
+    const gltfCount = Math.min(gltfLights.length, remaining);
+    for (let i = 0; i < gltfCount; i++) {
+      const lt = gltfLights[i];
+      const dst = floatOffset + 4 + writeIndex * FLOATS_PER_PUNCTUAL_LIGHT;
+      // Resolve world position / direction. Directional: posOrDir
+      // holds direction; point/spot: posOrDir holds position.
+      const wp = lt.position
+        ? mm
+          ? Matrix4.multiplyByPoint(mm, lt.position, scratchLightVec3a)
+          : lt.position
+        : null;
+      const wd = lt.direction
+        ? mm
+          ? Matrix4.multiplyByPointAsVector(mm, lt.direction, scratchLightVec3b)
+          : lt.direction
+        : null;
+      // Slots 0-2: posOrDir (directional uses direction; others use position).
+      if (lt.type === 0 /* DIR */) {
+        data[dst + 0] = wd?.x ?? 0;
+        data[dst + 1] = wd?.y ?? 0;
+        data[dst + 2] = wd?.z ?? 0;
+      } else {
+        data[dst + 0] = wp?.x ?? 0;
+        data[dst + 1] = wp?.y ?? 0;
+        data[dst + 2] = wp?.z ?? 0;
+      }
+      data[dst + 3] = lt.type;
+      data[dst + 4] = lt.color?.red ?? 1;
+      data[dst + 5] = lt.color?.green ?? 1;
+      data[dst + 6] = lt.color?.blue ?? 1;
+      data[dst + 7] = lt.intensity ?? 1;
+      data[dst + 8] = lt.range ?? 0;
+      // Const/linear/quadratic atten unused for spec-compliant range
+      // attenuation; leave zero.
+      data[dst + 12] = lt.innerConeAngle ?? 0;
+      data[dst + 13] = lt.outerConeAngle ?? 0;
+      // Spot direction at slots 16-18 (when applicable).
+      if (lt.type === 2 /* SPOT */ && wd) {
+        data[dst + 16] = wd.x;
+        data[dst + 17] = wd.y;
+        data[dst + 18] = wd.z;
+      }
+      writeIndex++;
+    }
+  }
+
+  // Header: total lightCount.
+  data[floatOffset] = writeIndex;
+}
+
+// Scratch Cartesians for the matrix-multiply in `packPunctualLights`
+// (avoid per-frame allocation).
+const scratchLightVec3a = new Cartesian3();
+const scratchLightVec3b = new Cartesian3();
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
@@ -1201,6 +1299,8 @@ function buildMergedInstanceBindGroup(
   morphWeightBuffer,
   instanceBuffer,
   prevJointBuffer,
+  prevMorphWeightBuffer,
+  prevInstanceBuffer,
 ) {
   return device.createBindGroup({
     layout: pipelineCache.instanceBGL,
@@ -1239,6 +1339,32 @@ function buildMergedInstanceBindGroup(
         resource: {
           buffer:
             prevJointBuffer ?? jointBuffer ?? pipelineCache.defaultJointBuffer,
+        },
+      },
+      {
+        // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph
+        // weights uniform. Falls back to the CURRENT weights when no
+        // prev mirror exists yet (first morphed frame); zero-weights
+        // default when no morph at all.
+        binding: 5,
+        resource: {
+          buffer:
+            prevMorphWeightBuffer ??
+            morphWeightBuffer ??
+            pipelineCache.defaultMorphWeightBuffer,
+        },
+      },
+      {
+        // NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
+        // transforms. Static GPU instancing (today's only case) aliases
+        // the current buffer for zero velocity contribution. Animated
+        // EXT_mesh_gpu_instancing assets would override.
+        binding: 6,
+        resource: {
+          buffer:
+            prevInstanceBuffer ??
+            instanceBuffer ??
+            pipelineCache.defaultInstancingBuffer,
         },
       },
     ],
@@ -1845,6 +1971,9 @@ function updateWebGPUModel(model, frameState) {
       // skinning + instancing into one bind group.
       let morphDeltaBuffer = null;
       let morphWeightBuffer = null;
+      // NEW-TAA-MORPH-PREV (Batch 134) -- prev-frame mirror for TAA
+      // velocity. Same swap pattern as `prevPackedJointMatrices`.
+      let prevMorphWeightBuffer = null;
       if (primHasMorphTargets) {
         const morphRes = ensureMorphTargetResources(
           device,
@@ -1855,6 +1984,7 @@ function updateWebGPUModel(model, frameState) {
         if (defined(morphRes)) {
           morphDeltaBuffer = morphRes.storageBuffer;
           morphWeightBuffer = morphRes.weightBuffer;
+          prevMorphWeightBuffer = morphRes.weightBufferPrev;
         }
       }
 
@@ -2034,6 +2164,12 @@ function updateWebGPUModel(model, frameState) {
         morphWeightBuffer,
         instanceBuffer,
         nodePrevJointBuffer,
+        prevMorphWeightBuffer,
+        // NEW-TAA-INSTANCE-PREV (Batch 134) -- static GPU instancing
+        // (today's only case) aliases the current buffer for zero
+        // velocity contribution. When animated instancing lands the
+        // node cache will hold a separate `prevInstancingBuffer`.
+        instanceBuffer,
       );
 
       const webgpuCmd = new WebGPUDrawCommand({

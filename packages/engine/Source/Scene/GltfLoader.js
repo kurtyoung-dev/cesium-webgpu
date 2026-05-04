@@ -2889,6 +2889,14 @@ function loadNode(loader, gltfNode, frameState) {
   const instancingExtension = nodeExtensions.EXT_mesh_gpu_instancing;
   const articulationsExtension = nodeExtensions.AGI_articulations;
   const meshVectorExtension = nodeExtensions.CESIUM_mesh_vector;
+  // NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- per-node light reference.
+  // Stores just the index here; the position/direction resolution
+  // (via node world matrix) happens after `loadNodes` returns and the
+  // hierarchy is walkable.
+  const lightExtension = nodeExtensions.KHR_lights_punctual;
+  if (defined(lightExtension) && typeof lightExtension.light === "number") {
+    node.lightIndex = lightExtension.light;
+  }
 
   if (defined(instancingExtension)) {
     if (loader._loadForClassification) {
@@ -3177,6 +3185,176 @@ function loadScene(gltf, nodes) {
   return scene;
 }
 
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- glTF light type strings -> the
+// `LightType` numeric enum used by `LightCollection.pack`.
+const KHR_LIGHT_TYPE_DIRECTIONAL = 0;
+const KHR_LIGHT_TYPE_POINT = 1;
+const KHR_LIGHT_TYPE_SPOT = 2;
+function khrLightTypeToEnum(typeString) {
+  if (typeString === "point") {
+    return KHR_LIGHT_TYPE_POINT;
+  }
+  if (typeString === "spot") {
+    return KHR_LIGHT_TYPE_SPOT;
+  }
+  // Unknown / "directional" / undefined -> directional (spec default).
+  return KHR_LIGHT_TYPE_DIRECTIONAL;
+}
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- compose the per-node TRS into
+// a 4x4 matrix in column-major order. glTF `node.matrix` (when present)
+// already supplies this; otherwise build from translation / rotation /
+// scale (TRS order, applied as T * R * S to a column-vector point).
+const _scratchLocalMatrix = new Array(16);
+function composeLocalMatrix(node) {
+  if (defined(node.matrix)) {
+    return Matrix4.toArray(node.matrix, _scratchLocalMatrix);
+  }
+  const translation = node.translation ?? Cartesian3.ZERO;
+  const rotation = node.rotation ?? Quaternion.IDENTITY;
+  const scale = node.scale ?? new Cartesian3(1, 1, 1);
+  // Column-major mat4 = T * R * S. Build via Matrix4 for correctness.
+  const m4 = Matrix4.fromTranslationQuaternionRotationScale(
+    translation,
+    rotation,
+    scale,
+    new Matrix4(),
+  );
+  return Matrix4.toArray(m4, _scratchLocalMatrix);
+}
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- multiply two column-major
+// 4x4 mat arrays into `out`. Returns `out`. Uses local Matrix4 so the
+// math matches the rest of the loader's matrix usage.
+function multiplyMat4Arrays(parent, local, out) {
+  const a = Matrix4.fromColumnMajorArray(parent);
+  const b = Matrix4.fromColumnMajorArray(local);
+  const c = Matrix4.multiply(a, b, new Matrix4());
+  return Matrix4.toArray(c, out);
+}
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- transform a vec3 point by a
+// column-major 4x4 (treats input as a position with w=1).
+function transformPoint(matArray, vec3) {
+  const x = vec3.x ?? 0;
+  const y = vec3.y ?? 0;
+  const z = vec3.z ?? 0;
+  return {
+    x: matArray[0] * x + matArray[4] * y + matArray[8] * z + matArray[12],
+    y: matArray[1] * x + matArray[5] * y + matArray[9] * z + matArray[13],
+    z: matArray[2] * x + matArray[6] * y + matArray[10] * z + matArray[14],
+  };
+}
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- transform a vec3 direction by
+// a column-major 4x4 (w=0; ignores translation). Result is normalized.
+function transformDirection(matArray, vec3) {
+  const x = vec3.x ?? 0;
+  const y = vec3.y ?? 0;
+  const z = vec3.z ?? 0;
+  let dx = matArray[0] * x + matArray[4] * y + matArray[8] * z;
+  let dy = matArray[1] * x + matArray[5] * y + matArray[9] * z;
+  let dz = matArray[2] * x + matArray[6] * y + matArray[10] * z;
+  const len = Math.hypot(dx, dy, dz);
+  if (len > 1e-9) {
+    dx /= len;
+    dy /= len;
+    dz /= len;
+  }
+  return { x: dx, y: dy, z: dz };
+}
+
+// NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- recursive walk over the glTF
+// node tree, accumulating world matrices. Calls `visitor(node, mat)`
+// for each node with its model-space (root-relative) transform.
+function walkNodeTree(gltf, nodes, parentMat, sceneNodeIds, visitor) {
+  for (let i = 0; i < sceneNodeIds.length; i++) {
+    const idx = sceneNodeIds[i];
+    const node = nodes[idx];
+    if (!defined(node)) {
+      continue;
+    }
+    const local = composeLocalMatrix(node);
+    const world = new Array(16);
+    multiplyMat4Arrays(parentMat, local, world);
+    visitor(node, world);
+    const gltfNode = gltf.nodes?.[idx];
+    if (gltfNode?.children?.length) {
+      walkNodeTree(gltf, nodes, world, gltfNode.children, visitor);
+    }
+  }
+}
+
+/**
+ * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- read the asset's
+ * `extensions.KHR_lights_punctual.lights[]` array, walk the node
+ * hierarchy applying TRS so each per-node light reference resolves
+ * to a model-space position + direction, and emit a flat array of
+ * resolved light defs for `Components.lights`.
+ *
+ * The glTF spec puts a light at the origin of its node's local
+ * space, pointing along -Z (the standard glTF camera convention).
+ * Position transforms with the world matrix; direction transforms
+ * with just the rotation (we do this via w=0 transform).
+ *
+ * @param {object} gltf
+ * @param {ModelComponents.Node[]} nodes - already-loaded nodes (with
+ *   `lightIndex` set on those that carry KHR_lights_punctual).
+ * @returns {Array<object>} resolved light entries (may be empty).
+ * @private
+ */
+function materializeKhrLightsPunctual(gltf, nodes) {
+  const ext = gltf.extensions?.KHR_lights_punctual;
+  const sceneLights = ext?.lights;
+  if (!Array.isArray(sceneLights) || sceneLights.length === 0) {
+    return [];
+  }
+  const sceneNodeIds = getSceneNodeIds(gltf);
+  const identity = Matrix4.toArray(Matrix4.IDENTITY, new Array(16));
+  const result = [];
+  walkNodeTree(gltf, nodes, identity, sceneNodeIds, (node, worldMat) => {
+    const lightIdx = node.lightIndex;
+    if (typeof lightIdx !== "number") {
+      return;
+    }
+    const def = sceneLights[lightIdx];
+    if (!defined(def)) {
+      return;
+    }
+    const type = khrLightTypeToEnum(def.type);
+    const color =
+      Array.isArray(def.color) && def.color.length >= 3
+        ? { red: def.color[0], green: def.color[1], blue: def.color[2] }
+        : { red: 1, green: 1, blue: 1 };
+    // glTF spec: lights at node origin (0,0,0), aimed at -Z.
+    const position = transformPoint(worldMat, { x: 0, y: 0, z: 0 });
+    const direction = transformDirection(worldMat, { x: 0, y: 0, z: -1 });
+    const entry = {
+      type,
+      color,
+      intensity: def.intensity ?? 1.0,
+      range: def.range ?? 0.0,
+      innerConeAngle: 0,
+      outerConeAngle: Math.PI / 4,
+    };
+    if (type === KHR_LIGHT_TYPE_DIRECTIONAL) {
+      // Directional lights only carry the direction.
+      entry.direction = direction;
+    } else if (type === KHR_LIGHT_TYPE_POINT) {
+      entry.position = position;
+    } else {
+      // Spot
+      entry.position = position;
+      entry.direction = direction;
+      const spot = def.spot ?? {};
+      entry.innerConeAngle = spot.innerConeAngle ?? 0;
+      entry.outerConeAngle = spot.outerConeAngle ?? Math.PI / 4;
+    }
+    result.push(entry);
+  });
+  return result;
+}
+
 const scratchCenter = new Cartesian3();
 
 /**
@@ -3223,6 +3401,12 @@ function parse(loader, frameState) {
   const animations = loadAnimations(loader, nodes);
   const articulations = loadArticulations(gltf);
   const scene = loadScene(gltf, nodes);
+  // NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- read scene-level lights
+  // + walk the node tree to resolve each per-node light reference's
+  // model-space position/direction. Result lands on
+  // `components.lights` for the renderer to pack into the per-model
+  // light UBO. Empty array when the asset declares no extension.
+  const lights = materializeKhrLightsPunctual(gltf, nodes);
 
   const components = new Components();
   const asset = new Asset();
@@ -3240,6 +3424,7 @@ function parse(loader, frameState) {
   components.skins = skins;
   components.animations = animations;
   components.articulations = articulations;
+  components.lights = lights;
   components.upAxis = loader._upAxis;
   components.forwardAxis = loader._forwardAxis;
 

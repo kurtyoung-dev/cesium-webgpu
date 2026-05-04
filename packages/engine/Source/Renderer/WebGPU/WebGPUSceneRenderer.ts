@@ -872,13 +872,19 @@ export class WebGPUSceneRenderer {
     if (vp) {
       this._viewportX = Math.max(0, vp.x | 0);
       this._viewportY = Math.max(0, vp.y | 0);
-      this._viewportWidth = Math.min(
-        this._width - this._viewportX,
-        vp.width | 0,
+      // Audit re-review (Batch 134) -- Math.max(0, ...) outer clamp
+      // prevents negative width/height when a stale split-screen rect
+      // has its origin past the just-shrunk canvas. Negative
+      // dimensions trip a WebGPU validation error and drop the frame;
+      // clamping to 0 produces a degenerate-but-valid pass that
+      // writes nothing this frame and recovers next.
+      this._viewportWidth = Math.max(
+        0,
+        Math.min(this._width - this._viewportX, vp.width | 0),
       );
-      this._viewportHeight = Math.min(
-        this._height - this._viewportY,
-        vp.height | 0,
+      this._viewportHeight = Math.max(
+        0,
+        Math.min(this._height - this._viewportY, vp.height | 0),
       );
     } else {
       this._viewportX = 0;

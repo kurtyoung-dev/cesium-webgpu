@@ -413,27 +413,34 @@ export class LightCollection {
 
   /**
    * Pack all enabled lights into a Float32Array suitable for a
-   * WebGPU uniform buffer. Each light occupies 16 floats (64 bytes):
+   * WebGPU uniform buffer. Each light occupies 20 floats (80 bytes):
    *
-   * Layout per light (64 bytes, 16 floats):
+   * Layout per light (80 bytes, 20 floats):
    *   [0-2]  direction/position xyz  [3] lightType
    *   [4-6]  color rgb               [7] intensity
    *   [8]    range                   [9] constantAtt
    *   [10]   linearAtt               [11] quadraticAtt
    *   [12]   innerConeAngle          [13] outerConeAngle
    *   [14-15] padding
+   *   [16-18] spotDirection xyz (spot lights only)  [19] padding
    *
    * Buffer header (16 bytes, 4 floats):
    *   [0] lightCount  [1-3] padding
    *
-   * Total: 4 + MAX_LIGHTS * 16 = 132 floats = 528 bytes
+   * Total: 4 + MAX_LIGHTS * 20 = 164 floats = 656 bytes
+   *
+   * Audit re-review (Batch 134) -- bumped per-light record from 16
+   * to 20 floats so spot lights can carry their forward direction in
+   * a vec3-aligned slot (offset 16). Pre-Batch-134 spots had no
+   * direction slot and the WGSL cone gate fell back to point
+   * falloff.
    *
    * @param result - Optional pre-allocated Float32Array
    * @returns Packed light data
    */
   pack(result?: Float32Array): Float32Array {
     const headerSize = 4; // lightCount + 3 padding
-    const lightsPerSlot = 16; // floats per light
+    const lightsPerSlot = 20; // floats per light (Batch 134)
     const totalSize = headerSize + MAX_LIGHTS * lightsPerSlot;
 
     if (!defined(result) || result!.length < totalSize) {
@@ -482,13 +489,20 @@ export class LightCollection {
         result![offset + 11] = pl.quadraticAttenuation;
       }
 
-      // Spot light cone angles
+      // Spot light cone angles + forward direction
       if (light instanceof SpotLight) {
         const sl = light as SpotLight;
-        // For spot lights, we also need the direction in a secondary slot
-        // Pack direction into [12-14] for spot lights
         result![offset + 12] = sl.innerConeAngle;
         result![offset + 13] = sl.outerConeAngle;
+        // Audit re-review (Batch 134) -- spotDirection at offset
+        // 16-18 (vec3-aligned slot per WGSL uniform layout). Previous
+        // 16-float record had only two `_pad` slots at 14/15 -- not
+        // enough for a vec3 -- so the WGSL cone gate fell back to
+        // point falloff. Direction is normalized at construction
+        // time, so just copy.
+        result![offset + 16] = sl.direction.x;
+        result![offset + 17] = sl.direction.y;
+        result![offset + 18] = sl.direction.z;
       }
 
       enabledIndex++;

@@ -194,23 +194,27 @@ that's prohibitive without a precomputed LUT").
 
 ---
 
-### NEW-DYNAMIC-ENVMAP-SCENE-CAPTURE — render-to-cubemap for atmospheric capture
+### NEW-DYNAMIC-ENVMAP-FULL-SCENE — true scene render-to-cubemap (terrain + 3D Tiles in reflections)
 
-**Status (Batch 131):** Procedural-sky path SHIPPED. The manager now
-runs a Hosek-Wilkie-style compute fill into the cubemap (driven by
-`frameState.context.uniformState.sunDirectionWC` + per-manager
-`skyColor` / `groundColor` overrides) and feeds the result into
-`generateIBLMaps` to produce prefiltered irradiance + radiance views.
-Models with no explicit `imageBasedLighting.specularEnvironmentMaps`
-fall back to the manager's prefiltered views via
-`buildModelIBLEntries` in `WebGPUModelRenderer`. Reflections now show
-sun-driven highlights + zenith/ground gradient even on assets that
-never authored an environment map.
+**Status (Batch 131 + Batch 134):** Procedural-sky path with proper
+Rayleigh + Mie atmospheric scattering SHIPPED. The manager runs an
+inline Bruneton-Neyret-style scattering compute into the cubemap
+(driven by `uniformState.sunDirectionWC` + per-manager `skyColor` /
+`groundColor` overrides) and feeds the result into `generateIBLMaps`
+to produce prefiltered irradiance + radiance views. Sun-driven sky
+colors at any time of day, sun-position-tracked refresh
+(`SUN_REFRESH_EPSILON_SQ` debounce), and prefilter cleanup (existing
+C-P17 path) all wired. Models with no explicit
+`imageBasedLighting.specularEnvironmentMaps` fall back to the
+manager's prefiltered views via `buildModelIBLEntries` in
+`WebGPUModelRenderer`.
 
-**What remains:** True scene-capture path. Procedural sky doesn't
-include other scene content (terrain, 3D Tiles buildings, the actual
-atmosphere/sun/moon renderers). Useful when reflections need to
-incorporate the scene's view from the camera position.
+**What remains:** True scene-capture path. The procedural sky now
+correctly captures atmosphere + sun, but doesn't include OTHER scene
+content (terrain elevation, 3D Tiles buildings, glTF model geometry).
+Useful when reflections must show the scene's actual surroundings.
+
+**Why deferred:** Real ~250 LOC feature requiring:
 
 **Why deferred:** Real ~250 LOC feature requiring:
 
@@ -240,7 +244,19 @@ work and are touchscreen for the atmosphere/sky stack.
 
 ---
 
-### NEW-TAA-MORPH-PREV — prev-frame morph weights for velocity
+### ~~NEW-TAA-MORPH-PREV~~ — RESOLVED (Batch 134)
+
+**Resolution:** Prev-frame morph weights now tracked via
+`primCache._morphWeightBufferPrev` (uniform mirror of the current
+weights buffer, same swap-and-upload pattern as
+`prevPackedJointMatrices`). Bound to `@group(2) @binding(5)` as
+`previousMorphWeights`. The vertex shader's prev-frame branch reads
+from this when computing `prevPositionMC`, so facial blendshapes /
+lip-sync produce correct per-vertex velocity.
+
+---
+
+### ~~ORIGINAL-NEW-TAA-MORPH-PREV~~ (kept for archaeology)
 
 **What:** Audit A.5 (Batch 130) wired prev-frame joint matrices into
 the velocity pass via `previousJointMatrices` at `@group(2)
@@ -264,7 +280,19 @@ across `WebGPUModelRenderer.js` (capture loop), `WebGPUModelMorphTargets.js`
 
 ---
 
-### NEW-TAA-INSTANCE-PREV — prev-frame instance transforms for velocity
+### ~~NEW-TAA-INSTANCE-PREV~~ — RESOLVED (Batch 134)
+
+**Resolution:** Bound `previousInstanceTransforms` at `@group(2)
+@binding(6)` as a separate storage slot. For static GPU instancing
+(today's only case) it aliases the current `instancingBuffer` so
+`prevPositionMC == positionMC` from the instance step (zero velocity
+contribution). When animated EXT_mesh_gpu_instancing assets land,
+the renderer can publish a separate `nodeCache.prevInstancingBuffer`
+and the shader will pick it up automatically.
+
+---
+
+### ~~ORIGINAL-NEW-TAA-INSTANCE-PREV~~ (kept for archaeology)
 
 **What:** Same shape as NEW-TAA-MORPH-PREV but for
 `instanceTransforms` (binding 3). Animated GPU instancing — e.g., a
@@ -284,7 +312,32 @@ buffer at @group(2) @binding(6) + JS swap-and-upload pattern in
 
 ---
 
-### NEW-KHR-LIGHTS-PUNCTUAL-GLTF-LOADER — glTF auto-import only
+### ~~NEW-KHR-LIGHTS-PUNCTUAL-GLTF-LOADER~~ — RESOLVED (Batch 134)
+
+**Resolution:** glTF asset auto-import shipped. `GltfLoader.parse()`
+reads `gltf.extensions.KHR_lights_punctual.lights[]` (scene-level
+array of light defs). `loadNode()` records the per-node
+`extensions.KHR_lights_punctual.light` index on `node.lightIndex`.
+After `loadNodes()` returns, `materializeKhrLightsPunctual()` walks
+the node tree composing world matrices, then resolves each per-node
+light reference's MODEL-space position + direction (lights live at
+node origin pointing -Z per glTF spec). The flat array lands on
+`components.lights`, exposed as `model.lightsFromGltf`.
+`WebGPUModelRenderer.packPunctualLights()` merges these with
+`scene.lights` (scene-level wins on overflow), transforming each
+glTF light's position/direction by `model.modelMatrix` to lift to
+world coords before packing into the per-model UBO.
+
+**Spot-light direction (RESOLVED in Batch 134, CONCERN #6):**
+`LightCollection.pack()` and the WGSL `PunctualLight` struct now
+carry a `spotDirection: vec3<f32>` at slot 16-18 (per-light record
+bumped from 16 to 20 floats). The shader's cone narrowing uses the
+authored direction, not the meaningless `normalize(position)` from
+the pre-Batch-134 placeholder.
+
+---
+
+### ~~ORIGINAL-NEW-KHR-LIGHTS-PUNCTUAL-GLTF-LOADER~~ (kept for archaeology)
 
 **Status (Batch 131):** Scene-level light pipeline LANDED. Audit B.3
 shipped the WGSL struct + UBO packing + per-light Cook-Torrance

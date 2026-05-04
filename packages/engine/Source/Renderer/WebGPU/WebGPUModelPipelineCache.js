@@ -185,6 +185,17 @@ function createBindGroupLayouts(device) {
     uniformBuffer(2, Stage.VERTEX), // morph weights
     storageBuffer(3, Stage.VERTEX, { readOnly: true }), // instance transforms
     storageBuffer(4, Stage.VERTEX, { readOnly: true }), // PREV joint matrices (TAA velocity)
+    // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph weights
+    // for the velocity pass. Defaults to the current weights buffer
+    // when no morph history is established (first frame), producing
+    // zero velocity contribution from morph deltas.
+    uniformBuffer(5, Stage.VERTEX),
+    // NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
+    // transforms. Today's GPU instancing is static (uploaded once,
+    // never updated), so the prev buffer aliases the current one and
+    // adds zero velocity contribution from instance deltas. Animated
+    // EXT_mesh_gpu_instancing assets would override the alias.
+    storageBuffer(6, Stage.VERTEX, { readOnly: true }),
   ]);
 
   return {
@@ -778,6 +789,12 @@ class WebGPUModelPipelineCache {
         // Skinned primitives override with the per-node prev-frame
         // joint buffer in `buildMergedInstanceBindGroup`.
         { binding: 4, resource: { buffer: this._defaultJointBuffer } },
+        // NEW-TAA-MORPH-PREV (Batch 134) -- prev morph weights default
+        // to the same zero-weights buffer as binding 2.
+        { binding: 5, resource: { buffer: this._defaultMorphWeightBuffer } },
+        // NEW-TAA-INSTANCE-PREV (Batch 134) -- prev instance transforms
+        // default to the same identity buffer as binding 3.
+        { binding: 6, resource: { buffer: this._defaultInstancingBuffer } },
       ],
     });
     // Feature ID default UBO (14 floats — `featurePickEnabled = 0`).

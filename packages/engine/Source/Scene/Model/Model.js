@@ -1343,6 +1343,22 @@ class Model {
   }
 
   /**
+   * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- KHR_lights_punctual lights
+   * loaded from the asset, in MODEL space (node hierarchy already
+   * applied at parse time). The renderer transforms each entry's
+   * position / direction by `model.modelMatrix` to get world-space
+   * values. Empty when the asset declares no extension.
+   *
+   * @memberof Model.prototype
+   * @type {Array<object>}
+   * @readonly
+   * @private
+   */
+  get lightsFromGltf() {
+    return this._sceneGraph?.components?.lights ?? [];
+  }
+
+  /**
    * The tile content this model belongs to, if it is loaded as part of a {@link Cesium3DTileset}.
    *
    * @memberof Model.prototype
