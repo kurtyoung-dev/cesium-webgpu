@@ -888,27 +888,44 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     return cache.depthSampleBindGroup;
   };
 
-  // Pick the classification pass based on `classificationType`.
+  // Pick the classification pass(es) based on `classificationType`.
   // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
   // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
+  // AUDIT_2026_05_02 A.3 (Batch 145) — emit one command per relevant
+  // pass. Pre-fix, BOTH collapsed to pass 6 so a tile primitive set to
+  // BOTH classified 3D Tiles but never terrain (or vice versa for the
+  // earlier code that used pass 3). Mirror the
+  // `WebGPUVector3DTileClampedPolylinesRenderer.js` pass-list pattern
+  // so BOTH emits TWO commands per batch — one to pass 3, one to pass
+  // 6 — and the existing IGNORE_SHOW emission only fires for the 3D
+  // Tile half (invert classification doesn't apply to terrain).
   const classType = primitive.classificationType ?? 0;
-  const groundPass = classType === 0 ? 3 : 6;
+  const groundPasses = [];
+  if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
+    groundPasses.push(3 /* TERRAIN_CLASSIFICATION */);
+  }
+  if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
+    groundPasses.push(6 /* CESIUM_3D_TILE_CLASSIFICATION */);
+  }
 
-  // Emit one color DrawCommand per `_batchedIndices` entry. Each entry
-  // already encodes its index `offset` (in indices) and `count`. The
-  // shared vertex/index buffers + per-batch-color storage buffer mean
-  // we don't need separate per-batch resource bindings — the only
-  // per-command state is the index range.
+  // Emit one color DrawCommand per `_batchedIndices` entry × per
+  // requested pass. Each entry already encodes its index `offset` (in
+  // indices) and `count`. The shared vertex/index buffers + per-batch-
+  // color storage buffer mean we don't need separate per-batch resource
+  // bindings — the only per-command state is the index range and pass.
   const batchedIndices = primitive._batchedIndices ?? [];
   const totalIndices = cache.indexBufferLength ?? 0;
   const colorCommands = [];
   const pickCommands = [];
   // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-  // IGNORE_SHOW stencil-write commands, one per batch. Only emitted for
-  // 3D-Tile classification (groundPass === 6). The Vector3DTilePrimitive
-  // dispatch site pushes these alongside `colorCommands` when
-  // `frameState.invertClassification` is true.
+  // IGNORE_SHOW stencil-write commands, one per batch. Only emitted when
+  // the primitive participates in 3D Tile classification (BOTH or
+  // CESIUM_3D_TILE — captured by the `groundPasses.includes(6)` check
+  // below). The Vector3DTilePrimitive dispatch site pushes these
+  // alongside `colorCommands` when `frameState.invertClassification` is
+  // true.
   const ignoreShowCommands = [];
+  const emitsThreeDTileClassification = groundPasses.includes(6);
   for (let i = 0; i < batchedIndices.length; i++) {
     const entry = batchedIndices[i];
     const offset = entry.offset | 0;
@@ -920,7 +937,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       continue;
     }
 
-    const drawArgs = {
+    const sharedDrawArgs = {
       bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
       bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
       vertexBuffers: [cache.vertexGPUBuffer],
@@ -929,25 +946,32 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       indexCount: count,
       firstIndex: offset,
       vertexCount: 0,
-      pass: groundPass,
       owner: primitive,
     };
-    colorCommands.push(
-      new WebGPUDrawCommand({ ...drawArgs, pipeline: cache.colorPipeline }),
-    );
-    if (defined(cache.pickPipeline)) {
-      pickCommands.push(
+    for (let p = 0; p < groundPasses.length; p++) {
+      const passEnum = groundPasses[p];
+      colorCommands.push(
         new WebGPUDrawCommand({
-          ...drawArgs,
-          pipeline: cache.pickPipeline,
-          pickOnly: true,
+          ...sharedDrawArgs,
+          pipeline: cache.colorPipeline,
+          pass: passEnum,
         }),
       );
+      if (defined(cache.pickPipeline)) {
+        pickCommands.push(
+          new WebGPUDrawCommand({
+            ...sharedDrawArgs,
+            pipeline: cache.pickPipeline,
+            pass: passEnum,
+            pickOnly: true,
+          }),
+        );
+      }
     }
-    if (groundPass === 6 && defined(cache.stencilPipeline)) {
+    if (emitsThreeDTileClassification && defined(cache.stencilPipeline)) {
       ignoreShowCommands.push(
         new WebGPUDrawCommand({
-          ...drawArgs,
+          ...sharedDrawArgs,
           pipeline: cache.stencilPipeline,
           pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */,
           renderState: { stencilTest: { reference: 0xff } },
