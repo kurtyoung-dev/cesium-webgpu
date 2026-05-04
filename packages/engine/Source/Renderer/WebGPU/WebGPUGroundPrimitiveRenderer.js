@@ -165,9 +165,8 @@ fn unpackDepth(packed: vec4<f32>) -> f32 {
 // as the color path; the pipeline disables color writes (writeMask=0) and
 // enables stencil-write so the only side-effect is marking stencil=0xff
 // on every classified-surface pixel the volume covers. The composite
-// (`WebGPUInvertClassification.classifiedPipeline` /
-// `unclassifiedPipeline`) reads those bits to gate which tile pixels
-// get the invert tint.
+// (WebGPUInvertClassification's classifiedPipeline / unclassifiedPipeline)
+// reads those bits to gate which tile pixels get the invert tint.
 @fragment fn dsStencilFS(i: CO) -> @location(0) vec4<f32> {
   let screenUV = i.pos.xy / u.viewport.zw;
   let packed = textureSampleLevel(globeDepthTex, depthSampler, screenUV, 0.0);
