@@ -304,13 +304,40 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
-### NEW-COLLECTIONS-MOTION-VECTORS — partial: Billboard SHIPPED (Batch 143); Label / Polyline / Point follow-up
+### NEW-COLLECTIONS-MOTION-VECTORS — partial: Billboard + Label SHIPPED (Batch 143/144); Polyline / Point follow-up
 
-**Status:** Billboard collection now emits per-pixel motion vectors
-when TAA is enabled (Batch 143). The pattern is established and
-replicable across the remaining collection renderers; each follow-up
-is mechanical (~120 LOC per file pair) and described in the
-"Pattern" section below.
+**Status:** Billboard collection (Batch 143) and Label collection
+(Batch 144) now emit per-pixel motion vectors when TAA is enabled.
+The pattern is established and replicable across the remaining
+collection renderers; each follow-up is mechanical (~120 LOC per
+file pair) and described in the "Pattern" section below.
+
+**What landed for Label (Batch 144):**
+
+- `BillboardCollectionSDF.wgsl` gained `vertexVelocityMain` +
+  `fragmentVelocityMain` entry points mirroring the Billboard
+  pattern. SDF instance stride uses locations 0-12, so prev-
+  position locations are 13 (high) / 14 (low). Center-only delta;
+  glyph corner offsets / pixel offsets / rotation cancel between
+  frames for moving labels. The shared velocity FS guards against
+  `w <= 0` and returns `vec2(0)` so TAA falls back to camera-only
+  reprojection on near-plane clips.
+- `WebGPULabelRenderer.js`:
+  - `VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT` + `buildSDFVelocityDescriptor`
+    helpers paralleling Billboard's. Velocity pipeline targets
+    `rg16float`, depth read-only.
+  - `cache.sdfVelocityPipelineEntries` Map keyed identically to
+    `cache.sdfPipelineEntries` and cleared in lockstep on
+    HDR / scene-format change.
+  - `cache.sdfPrevInstanceBuffer` GPU buffer +
+    `cache.sdfPrevInstanceData` CPU stash. Same first-frame
+    initialization (prev = current → zero velocity), same
+    pad-tail-with-current-data behavior on glyph count growth, same
+    TAA-off → on transition resilience.
+  - `sdfCommand.velocityCommand` set when TAA is on; the existing
+    `_runVelocityPass` already walks the command list for this slot.
+  - `sdfPrevInstanceBuffer` released in
+    `destroyWebGPULabelResources`.
 
 **What landed for Billboard (Batch 143):**
 
@@ -409,10 +436,7 @@ GaussianSplat / PointCloud / Cloud):**
 
 **Remaining follow-ups (each ~120 LOC):**
 
-- **Label** (`BillboardCollectionSDF.wgsl` +
-  `WebGPULabelRenderer.js`) — same pattern as Billboard, plus the
-  glyph billboards inside a label use the SDF instance buffer (Batch
-  137 sized at 13 vec4 / 52 floats, prev-locations would start at 13).
+- ~~**Label**~~ — SHIPPED (Batch 144).
 - **Polyline** (`PolylineCollection.wgsl` +
   `WebGPUPolylineRenderer.js`) — per-vertex (not per-instance)
   prev-position data on the segment vertex buffer. Velocity emerges
@@ -436,7 +460,8 @@ GaussianSplat / PointCloud / Cloud):**
 `WebGPUTAAEffect.ts:_motionVectorsValid` (camera-only fallback path);
 `ModelPBRComplete.wgsl:computeMotionVectorScreenSpace` (template
 implementation, Batch 96); `BillboardCollection.wgsl:545-665`
-(reference implementation, Batch 143).
+(reference implementation, Batch 143);
+`BillboardCollectionSDF.wgsl` velocity entries (Batch 144).
 
 ---
 

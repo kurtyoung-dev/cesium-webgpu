@@ -613,6 +613,70 @@ function buildSDFDescriptor(
 }
 
 /**
+ * AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * second VB layout for the velocity pipeline. Same per-instance stride
+ * as the SDF instance buffer (the renderer keeps a one-frame-lagged
+ * mirror of the same data); the velocity VS only reads positions via
+ * locations 13 (high) + 14 (low), the next free slots after the SDF
+ * VS's existing 0-12 attribute set.
+ * @private
+ */
+const VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT = {
+  arrayStride: BYTES_PER_SDF_INSTANCE,
+  stepMode: "instance",
+  attributes: [
+    // prevPosHighAndScale at byte 0 — mirrors SDF location 0.
+    { shaderLocation: 13, offset: 0, format: "float32x4" },
+    // prevPosLowAndRotation at byte 16 — mirrors SDF location 1.
+    { shaderLocation: 14, offset: 16, format: "float32x4" },
+  ],
+};
+
+/**
+ * AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * descriptor for the SDF velocity pipeline variant. Same VS layout /
+ * shader module / pipeline layout as the regular SDF pipeline; the
+ * fragment entry is `fragmentVelocityMain` and the target format is
+ * `rg16float` (the scene-FB velocity texture format). Depth is read-
+ * only so fragments behind opaque geometry fail the depth test.
+ * Mirrors `WebGPUBillboardRenderer.buildBillboardVelocityDescriptor`.
+ * @private
+ */
+function buildSDFVelocityDescriptor(
+  device,
+  shaderModule,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
+  return {
+    name: `Label SDF velocity pipeline [${depthFormat}/defines=0x${defines.toString(16)}]`,
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMain",
+      buffers: [
+        SDF_INSTANCE_BUFFER_LAYOUT,
+        VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT,
+      ],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+}
+
+/**
  * Convert our cache-friendly descriptor back into the WebGPU descriptor
  * shape for the fallback path (no central cache available — typically a
  * WebGL-backed graphics context). Mirrors the helper in Polyline / Cloud /
@@ -724,11 +788,16 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
   const defines = computeLabelDefinesForFrame(glyphCollection, frameState);
   if (!defined(cache.sdfPipelineEntries)) {
     cache.sdfPipelineEntries = new Map();
+    // AUDIT_2026_05_02 B.10 (Batch 144) — velocity pipeline cache.
+    // Same (defines) keying as the regular pipeline so a label
+    // collection's color and velocity pipelines stay in lockstep.
+    cache.sdfVelocityPipelineEntries = new Map();
   }
   // Batch 110 — invalidate cached pipeline entries on scene format change.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (cache._pipelineFormatGeneration !== sceneGen) {
     cache.sdfPipelineEntries.clear();
+    cache.sdfVelocityPipelineEntries?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
   let entry = cache.sdfPipelineEntries.get(defines);
@@ -763,6 +832,41 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     return;
   }
   cache.sdfPipeline = sdfPipeline;
+
+  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // resolve the velocity pipeline lazily, gated on TAA being enabled
+  // this frame. Static label scenes (TAA off) never construct a
+  // velocity pipeline. Reuses the same shader module + bind group
+  // layout as the color SDF pipeline.
+  let velocityPipeline = null;
+  if (frameState.scene?.taaEnabled === true) {
+    let velEntry = cache.sdfVelocityPipelineEntries.get(defines);
+    if (!defined(velEntry)) {
+      const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
+      const moduleCache2 = getSDFShaderModuleCache(device);
+      const shaderModule2 = moduleCache2.getOrCreate(
+        ShaderSourceId.BILLBOARD_COLLECTION_SDF,
+        BillboardCollectionSDFWGSL,
+        defines,
+        "Label SDF shader",
+      );
+      const velDescriptor = buildSDFVelocityDescriptor(
+        device,
+        shaderModule2,
+        depthFmt2,
+        cache.sdfBindGroupLayout,
+        defines,
+      );
+      velEntry = { descriptor: velDescriptor, pipeline: null, pending: false };
+      cache.sdfVelocityPipelineEntries.set(defines, velEntry);
+    }
+    velocityPipeline = tryResolveLabelSDFPipeline(
+      device,
+      context.webgpuPipelineCache ?? null,
+      velEntry,
+    );
+  }
+  cache.sdfVelocityPipeline = velocityPipeline;
 
   // Uniform buffer (once)
   if (!defined(cache.uniformBuffer)) {
@@ -934,6 +1038,54 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
       "Label SDF instances",
     );
   }
+
+  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // before overwriting the GPU instance buffer with this frame's data,
+  // upload the PREVIOUS frame's data to the prev-instance buffer so
+  // the velocity VS reads both streams at slot 0 and slot 1. See
+  // `WebGPUBillboardRenderer.js`'s prev-instance pattern for the full
+  // design notes — this mirror is identical except for the SDF
+  // per-instance stride.
+  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  if (taaEnabledThisFrame || defined(cache.sdfPrevInstanceBuffer)) {
+    if (
+      !defined(cache.sdfPrevInstanceBuffer) ||
+      cache.sdfPrevInstanceBuffer.size < requiredSize
+    ) {
+      if (defined(cache.sdfPrevInstanceBuffer)) {
+        cache.sdfPrevInstanceBuffer.destroy();
+      }
+      cache.sdfPrevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
+        device,
+        requiredSize,
+        true,
+        "Label SDF prev instances",
+      );
+    }
+    const prevSource = cache.sdfPrevInstanceData ?? instanceData;
+    let prevPayload = prevSource;
+    const expectedFloats = visibleCount * FLOATS_PER_SDF_INSTANCE;
+    if (prevSource.length < expectedFloats) {
+      // Last frame had fewer glyphs — pad the tail with current data so
+      // newly-spawned glyphs see prev = current → zero velocity.
+      prevPayload = new Float32Array(expectedFloats);
+      prevPayload.set(prevSource);
+      prevPayload.set(
+        instanceData.subarray(prevSource.length, expectedFloats),
+        prevSource.length,
+      );
+    } else if (prevSource.length > expectedFloats) {
+      prevPayload = prevSource.subarray(0, expectedFloats);
+    }
+    device.queue.writeBuffer(
+      cache.sdfPrevInstanceBuffer.buffer,
+      0,
+      prevPayload.buffer,
+      prevPayload.byteOffset,
+      requiredSize,
+    );
+  }
+
   device.queue.writeBuffer(
     cache.sdfInstanceBuffer.buffer,
     0,
@@ -941,6 +1093,11 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     0,
     requiredSize,
   );
+
+  // Stash this frame's data so next frame's velocity pass has prev
+  // available. Always done — even when TAA is off — so a TAA off → on
+  // transition doesn't lose a frame of history.
+  cache.sdfPrevInstanceData = instanceData;
 
   // Create SDF draw command. Labels are alpha-blended via the SDF shader, so
   // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
@@ -976,6 +1133,32 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     cull: true,
     renderState: labelRS,
   });
+
+  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // attach the velocity command. The TAA pass walks the command list
+  // for `cmd.velocityCommand` and dispatches it into the rg16float
+  // velocity texture. Mirrors the Billboard attachment pattern from
+  // Batch 143. Only emitted when TAA is enabled this frame AND the
+  // velocity pipeline resolved (it can be null on the first frame
+  // after TAA enables, while async pipeline creation is in flight).
+  if (taaEnabledThisFrame && velocityPipeline && cache.sdfPrevInstanceBuffer) {
+    const sdfVelocityCommand = new WebGPUDrawCommand({
+      pipeline: velocityPipeline,
+      bindGroups: [cache.sdfBindGroup],
+      vertexBuffers: [cache.sdfInstanceBuffer, cache.sdfPrevInstanceBuffer],
+      vertexCount: VERTICES_PER_QUAD,
+      instanceCount: visibleCount,
+      pass: labelPass,
+      owner: labelCollection,
+      boundingVolume: glyphCollection._boundingVolume,
+      modelMatrix: modelMatrix,
+      cull: true,
+      renderState: labelRS,
+    });
+    sdfCommand.velocityCommand = sdfVelocityCommand;
+  } else {
+    sdfCommand.velocityCommand = undefined;
+  }
 
   if (frameState.passes.render) {
     commandList.push(sdfCommand);
@@ -1017,6 +1200,9 @@ function destroyWebGPULabelResources(labelCollection) {
   }
   if (defined(cache.sdfInstanceBuffer)) {
     cache.sdfInstanceBuffer.destroy();
+  }
+  if (defined(cache.sdfPrevInstanceBuffer)) {
+    cache.sdfPrevInstanceBuffer.destroy();
   }
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
