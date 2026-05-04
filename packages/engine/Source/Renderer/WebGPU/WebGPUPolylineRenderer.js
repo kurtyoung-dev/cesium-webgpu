@@ -489,6 +489,34 @@ const SEGMENT_BUFFER_LAYOUT = {
 };
 
 /**
+ * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * second VB layout for the velocity pipeline. Same per-instance stride
+ * as the regular segment buffer (the renderer keeps a one-frame-lagged
+ * mirror of the same data); the velocity VS only reads the four
+ * position fields via locations 7-10, the next free slots after the
+ * current VS's 0-6 attribute set.
+ *
+ * Polyline differs from Billboard / Label / Point in that each
+ * instance carries TWO positions (start + end), so prev needs four
+ * vec4 slots instead of two.
+ * @private
+ */
+const VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT = {
+  arrayStride: BYTES_PER_SEGMENT,
+  stepMode: "instance",
+  attributes: [
+    // prevStartPosHighAndWidth at byte 0 — mirrors location 0.
+    { shaderLocation: 7, offset: 0, format: "float32x4" },
+    // prevStartPosLow at byte 16 — mirrors location 1.
+    { shaderLocation: 8, offset: 16, format: "float32x4" },
+    // prevEndPosHighAndMiter at byte 32 — mirrors location 2.
+    { shaderLocation: 9, offset: 32, format: "float32x4" },
+    // prevEndPosLow at byte 48 — mirrors location 3.
+    { shaderLocation: 10, offset: 48, format: "float32x4" },
+  ],
+};
+
+/**
  * Maps a material-type string to the `ShaderSourceId` it resolves to.
  * Used so the shader-module cache key stays stable even when callers
  * pass different source strings for the same material type.
@@ -726,6 +754,52 @@ function buildPolylineColorDescriptor(
  * C-R7-RENDERER-MIGRATION (Batch 58).
  * @private
  */
+/**
+ * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * descriptor for the polyline velocity pipeline variant. Same VS
+ * layout / shader module / pipeline layout as the regular polyline
+ * pipeline; the fragment entry is `fragmentVelocityMain` and the
+ * target format is `rg16float` (the scene-FB velocity texture format).
+ * Depth is read-only so fragments behind opaque geometry fail the
+ * depth test. Mirrors `buildBillboardVelocityDescriptor` (Batch 143).
+ * @private
+ */
+function buildPolylineVelocityDescriptor(
+  device,
+  shaderModule,
+  depthFormat,
+  defines,
+) {
+  const cameraBindGroupLayout = makeBindGroupLayout(
+    device,
+    "Polyline velocity camera BGL",
+    [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+  );
+  const descriptor = {
+    name: `Polyline velocity pipeline [${depthFormat}/defines=0x${defines.toString(16)}]`,
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [cameraBindGroupLayout],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMain",
+      buffers: [SEGMENT_BUFFER_LAYOUT, VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+  return { descriptor, cameraBindGroupLayout };
+}
+
 function buildPolylinePickDescriptor(
   device,
   shaderModule,
@@ -974,10 +1048,14 @@ function getOrCreatePolylinePipelineEntry(
   // (HDR toggle). The polyline cache nests Map-by-defines under each
   // materialType key, so we drop the entire materialType-keyed object
   // and rebuild empty maps on next access.
+  // Batch 148 (NEW-COLLECTIONS-MOTION-VECTORS) — also drop the velocity
+  // pipeline cache so the next-frame velocity emission rebuilds against
+  // the current scene format.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (cache._pipelineFormatGeneration !== sceneGen) {
     cache.pipelines = {};
     cache.pickPipelines = undefined;
+    cache.velocityPipelines = undefined;
     cache._pipelineFormatGeneration = sceneGen;
   }
 
@@ -1019,6 +1097,71 @@ function getOrCreatePolylinePipelineEntry(
     materialBindGroupLayout: built.materialBindGroupLayout,
   };
 
+  byDefines.set(defines, entry);
+  return entry;
+}
+
+/**
+ * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * gets or creates the velocity pipeline entry for the given (material,
+ * defines) tuple. Lazily populated only when TAA is enabled this
+ * frame; static scenes never construct a velocity pipeline. The
+ * cache is keyed identically to the regular pipeline cache so a
+ * polyline collection's color and velocity pipelines stay in lockstep.
+ *
+ * NOTE — only the base PolylineCollection shader currently exposes
+ * `vertexVelocityMain` / `fragmentVelocityMain`. The PolylineArrow /
+ * PolylineDash / PolylineGlow / PolylineOutline material variants
+ * don't have velocity entry points yet, so velocity emission is
+ * skipped for those materials (camera-only TAA fallback continues
+ * to work). Tracked as a follow-up for the rare animated-material
+ * case.
+ * @private
+ */
+function getOrCreatePolylineVelocityPipelineEntry(
+  cache,
+  device,
+  context,
+  materialType,
+  defines,
+) {
+  // Velocity entries currently exist only for the base color shader.
+  if (materialType !== "polylineColor") {
+    return null;
+  }
+  if (!defined(cache.velocityPipelines)) {
+    cache.velocityPipelines = {};
+  }
+  let byDefines = cache.velocityPipelines[materialType];
+  if (!defined(byDefines)) {
+    byDefines = new Map();
+    cache.velocityPipelines[materialType] = byDefines;
+  }
+  if (byDefines.has(defines)) {
+    return byDefines.get(defines);
+  }
+  const shaderKey = selectShaderKey(materialType);
+  const shaderCode = getCollectionShaderSource(shaderKey);
+  const depthFmt = context.depthFormat || "depth24plus-stencil8";
+  const label = `Polyline ${materialType} velocity`;
+  const moduleCache = getPolylineShaderModuleCache(device);
+  const shaderModule = moduleCache.getOrCreate(
+    sourceIdForMaterialType(materialType),
+    shaderCode,
+    defines,
+    label,
+  );
+  const built = buildPolylineVelocityDescriptor(
+    device,
+    shaderModule,
+    depthFmt,
+    defines,
+  );
+  const entry = {
+    descriptor: built.descriptor,
+    pipeline: null,
+    pending: false,
+  };
   byDefines.set(defines, entry);
   return entry;
 }
@@ -1199,6 +1342,49 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
         `Polyline ${materialType} segments`,
       );
     }
+
+    // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+    // before overwriting the GPU segment buffer with this frame's data,
+    // upload the PREVIOUS frame's data to the prev-segment buffer so
+    // the velocity VS reads both streams at slot 0 and slot 1. Mirrors
+    // the Billboard / Label pattern from Batches 143/144.
+    const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+    const prevSbKey = `prevSegmentBuffer_${materialType}`;
+    const prevDataKey = `prevSegmentData_${materialType}`;
+    if (taaEnabledThisFrame || defined(cache[prevSbKey])) {
+      if (!defined(cache[prevSbKey]) || cache[prevSbKey].size < requiredSize) {
+        if (defined(cache[prevSbKey])) {
+          cache[prevSbKey].destroy();
+        }
+        cache[prevSbKey] = WebGPUBuffer.createVertexBuffer(
+          device,
+          requiredSize,
+          true,
+          `Polyline ${materialType} prev segments`,
+        );
+      }
+      const prevSource = cache[prevDataKey] ?? segmentData;
+      let prevPayload = prevSource;
+      const expectedFloats = segmentCount * FLOATS_PER_SEGMENT;
+      if (prevSource.length < expectedFloats) {
+        prevPayload = new Float32Array(expectedFloats);
+        prevPayload.set(prevSource);
+        prevPayload.set(
+          segmentData.subarray(prevSource.length, expectedFloats),
+          prevSource.length,
+        );
+      } else if (prevSource.length > expectedFloats) {
+        prevPayload = prevSource.subarray(0, expectedFloats);
+      }
+      device.queue.writeBuffer(
+        cache[prevSbKey].buffer,
+        0,
+        prevPayload.buffer,
+        prevPayload.byteOffset,
+        requiredSize,
+      );
+    }
+
     device.queue.writeBuffer(
       cache[sbKey].buffer,
       0,
@@ -1206,6 +1392,11 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       0,
       requiredSize,
     );
+
+    // Stash this frame's data so next frame's velocity pass has prev
+    // available. Always done — even when TAA is off — so a TAA off → on
+    // transition doesn't lose a frame of history.
+    cache[prevDataKey] = segmentData;
 
     // Create draw command for render pass. Pick the pass from the
     // collection's blendOption so translucent polylines composite
@@ -1242,6 +1433,47 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
         cull: true,
         renderState: polylineRS,
       });
+
+      // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+      // attach velocity command. Only emitted when TAA is on, the
+      // material has a velocity entry point (currently base color
+      // only), and the velocity pipeline resolved this tick. The TAA
+      // pass walks `cmd.velocityCommand` and dispatches into the
+      // rg16float velocity texture. Velocity uses ONLY the camera
+      // bind group (slot 0); the material BG is unused by the
+      // velocity FS, so we omit it entirely from the velocity command.
+      if (taaEnabledThisFrame && defined(cache[prevSbKey])) {
+        const velEntry = getOrCreatePolylineVelocityPipelineEntry(
+          cache,
+          device,
+          context,
+          materialType,
+          defines,
+        );
+        const velocityPipeline = defined(velEntry)
+          ? tryResolvePolylinePipeline(
+              device,
+              context.webgpuPipelineCache ?? null,
+              velEntry,
+            )
+          : null;
+        if (velocityPipeline) {
+          cmd.velocityCommand = new WebGPUDrawCommand({
+            pipeline: velocityPipeline,
+            bindGroups: [cache[camBgKey]],
+            vertexBuffers: [cache[sbKey], cache[prevSbKey]],
+            vertexCount: VERTICES_PER_SEGMENT,
+            instanceCount: segmentCount,
+            pass: polylinePass,
+            owner: collection,
+            boundingVolume: collection._boundingVolume,
+            modelMatrix: modelMatrix,
+            cull: true,
+            renderState: polylineRS,
+          });
+        }
+      }
+
       commandList.push(cmd);
     }
   }
@@ -1413,10 +1645,13 @@ function destroyWebGPUPolylineResources(collection) {
     return;
   }
 
-  // Destroy all segment buffers (per-material and pick)
+  // Destroy all segment buffers (per-material and pick).
+  // Batch 148 (NEW-COLLECTIONS-MOTION-VECTORS) — also release per-
+  // material `prevSegmentBuffer_*` GPU buffers.
   for (const key of Object.keys(cache)) {
     if (
       key.startsWith("segmentBuffer_") ||
+      key.startsWith("prevSegmentBuffer_") ||
       key.startsWith("cameraBuffer_") ||
       key.startsWith("materialBuffer_")
     ) {

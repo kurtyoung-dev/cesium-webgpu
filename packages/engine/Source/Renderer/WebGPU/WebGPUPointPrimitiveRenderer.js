@@ -326,6 +326,26 @@ const INSTANCE_BUFFER_LAYOUT = {
 };
 
 /**
+ * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * second VB layout for the velocity pipeline. Same per-instance stride
+ * as the regular instance buffer (the renderer keeps a one-frame-lagged
+ * mirror of the same data); the velocity VS only reads positions via
+ * locations 7-8, the next free slots after the current VS's 0-6
+ * attribute set.
+ * @private
+ */
+const VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT = {
+  arrayStride: BYTES_PER_INSTANCE,
+  stepMode: "instance",
+  attributes: [
+    // prevPosHighAndSize at byte 0 — mirrors location 0.
+    { shaderLocation: 7, offset: 0, format: "float32x4" },
+    // prevPosLowAndOutline at byte 16 — mirrors location 1.
+    { shaderLocation: 8, offset: 16, format: "float32x4" },
+  ],
+};
+
+/**
  * Creates the render pipeline for point primitive rendering.
  *
  * @param {GPUDevice} device - The WebGPU device
@@ -405,6 +425,49 @@ function buildPointColorDescriptor(
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: !translucent,
+      depthCompare: "less-equal",
+    },
+  };
+}
+
+/**
+ * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * descriptor for the velocity pipeline variant. Same VS layout /
+ * shader module / pipeline layout as the regular point pipeline;
+ * the fragment entry is `fragmentVelocityMain` and the target format
+ * is `rg16float` (the scene-FB velocity texture format). Depth is
+ * read-only so fragments behind opaque geometry fail the depth test.
+ * Mirrors `buildBillboardVelocityDescriptor` (Batch 143).
+ * @private
+ */
+function buildPointVelocityDescriptor(
+  device,
+  shaderModule,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
+  const pipelineLayout = device.createPipelineLayout({
+    label: "PointPrimitive velocity pipeline layout",
+    bindGroupLayouts: [bindGroupLayout],
+  });
+  return {
+    name: `PointPrimitive velocity [${depthFormat}/defines=0x${defines.toString(16)}]`,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMain",
+      buffers: [INSTANCE_BUFFER_LAYOUT, VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
   };
@@ -829,12 +892,18 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   // request, then synchronously on subsequent frames.
   if (!defined(cache.pipelines)) {
     cache.pipelines = new Map();
+    // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS)
+    // — velocity pipeline cache. Same (defines) keying as the regular
+    // pipeline so a point collection's color and velocity pipelines
+    // stay in lockstep.
+    cache.velocityPipelines = new Map();
   }
   // Batch 110 — invalidate cached pipelines on scene format change.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (cache._pipelineFormatGeneration !== sceneGen) {
     cache.pipelines.clear();
     cache.pickPipelines?.clear();
+    cache.velocityPipelines?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
   let pipelineEntry = cache.pipelines.get(defines);
@@ -924,6 +993,11 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   }
 
   // --- Instance buffer (rebuilt when points change) ---
+  // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // hoist the TAA flag so both the rebuild path and the velocity-command
+  // attachment below can read it. Used to gate prev-instance buffer
+  // allocation + velocity emission.
+  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
   if (needsRebuild) {
     const { instanceData, visibleCount } = buildInstanceData(collection);
 
@@ -950,6 +1024,47 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       );
     }
 
+    // AUDIT_2026_05_02 B.10 (Batch 148) — before overwriting the GPU
+    // instance buffer with this frame's data, upload the PREVIOUS
+    // frame's data to the prev-instance buffer so the velocity VS reads
+    // both streams. Mirrors the Billboard pattern (Batch 143).
+    if (taaEnabledThisFrame || defined(cache.prevInstanceBuffer)) {
+      if (
+        !defined(cache.prevInstanceBuffer) ||
+        cache.prevInstanceBuffer.size < requiredSize
+      ) {
+        if (defined(cache.prevInstanceBuffer)) {
+          cache.prevInstanceBuffer.destroy();
+        }
+        cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
+          device,
+          requiredSize,
+          true,
+          "PointPrimitive prev instances",
+        );
+      }
+      const prevSource = cache.prevInstanceData ?? instanceData;
+      let prevPayload = prevSource;
+      const expectedFloats = visibleCount * FLOATS_PER_INSTANCE;
+      if (prevSource.length < expectedFloats) {
+        prevPayload = new Float32Array(expectedFloats);
+        prevPayload.set(prevSource);
+        prevPayload.set(
+          instanceData.subarray(prevSource.length, expectedFloats),
+          prevSource.length,
+        );
+      } else if (prevSource.length > expectedFloats) {
+        prevPayload = prevSource.subarray(0, expectedFloats);
+      }
+      device.queue.writeBuffer(
+        cache.prevInstanceBuffer.buffer,
+        0,
+        prevPayload.buffer,
+        prevPayload.byteOffset,
+        requiredSize,
+      );
+    }
+
     device.queue.writeBuffer(
       cache.instanceBuffer.buffer,
       0,
@@ -957,6 +1072,11 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       0,
       requiredSize,
     );
+
+    // Stash this frame's data so next frame's velocity pass has prev
+    // available. Always done — even when TAA is off — so a TAA off → on
+    // transition doesn't lose a frame of history.
+    cache.prevInstanceData = instanceData;
 
     cache.visibleCount = visibleCount;
     cache.lastLength = length;
@@ -1001,6 +1121,69 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
       cache.colorCommand.pass === 8 /* Pass.OPAQUE */
         ? collection._rsOpaque
         : collection._rsTranslucent;
+  }
+
+  // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // attach velocity command. The TAA pass walks the command list for
+  // `cmd.velocityCommand` and dispatches it into the rg16float velocity
+  // texture. Mirrors the Billboard pattern from Batch 143. Re-attached
+  // every frame (cheap reference assignment) so it picks up changes to
+  // visible count or pipeline resolution without a full rebuild.
+  if (defined(cache.colorCommand)) {
+    if (
+      taaEnabledThisFrame &&
+      defined(cache.prevInstanceBuffer) &&
+      defined(cache.instanceBuffer)
+    ) {
+      // Resolve the velocity pipeline lazily.
+      let velEntry = cache.velocityPipelines.get(cache.currentDefines ?? 0);
+      if (!defined(velEntry)) {
+        const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
+        const moduleCache2 = getPointShaderModuleCache(device);
+        const shaderModule2 = moduleCache2.getOrCreate(
+          ShaderSourceId.POINT_PRIMITIVE_COLOR,
+          colorShaderCode,
+          cache.currentDefines ?? 0,
+          "PointPrimitive color shader",
+        );
+        velEntry = {
+          descriptor: buildPointVelocityDescriptor(
+            device,
+            shaderModule2,
+            depthFmt2,
+            cache.bindGroupLayout,
+            cache.currentDefines ?? 0,
+          ),
+          pipeline: null,
+          pending: false,
+        };
+        cache.velocityPipelines.set(cache.currentDefines ?? 0, velEntry);
+      }
+      const velocityPipeline = tryResolvePointPipeline(
+        device,
+        context.webgpuPipelineCache ?? null,
+        velEntry.descriptor,
+        velEntry,
+      );
+      if (defined(velocityPipeline)) {
+        cache.colorCommand.velocityCommand = new WebGPUDrawCommand({
+          pipeline: velocityPipeline,
+          bindGroups: [cache.bindGroup],
+          vertexBuffers: [cache.instanceBuffer, cache.prevInstanceBuffer],
+          vertexCount: VERTICES_PER_QUAD,
+          instanceCount: cache.visibleCount,
+          pass: cache.colorCommand.pass,
+          owner: collection,
+          boundingVolume: collection._boundingVolume,
+          modelMatrix: modelMatrix,
+          cull: true,
+        });
+      } else {
+        cache.colorCommand.velocityCommand = undefined;
+      }
+    } else {
+      cache.colorCommand.velocityCommand = undefined;
+    }
   }
 
   // --- Pick pass handling ---
@@ -1157,6 +1340,9 @@ function destroyWebGPUPointResources(collection) {
 
   if (defined(cache.instanceBuffer)) {
     cache.instanceBuffer.destroy();
+  }
+  if (defined(cache.prevInstanceBuffer)) {
+    cache.prevInstanceBuffer.destroy();
   }
   if (defined(cache.pickInstanceBuffer)) {
     cache.pickInstanceBuffer.destroy();

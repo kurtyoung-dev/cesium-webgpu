@@ -304,13 +304,66 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
-### NEW-COLLECTIONS-MOTION-VECTORS — partial: Billboard + Label SHIPPED (Batch 143/144); Polyline / Point follow-up
+### ~~NEW-COLLECTIONS-MOTION-VECTORS~~ — Collections sweep RESOLVED (Batches 143/144/148); advanced primitives remain
 
-**Status:** Billboard collection (Batch 143) and Label collection
-(Batch 144) now emit per-pixel motion vectors when TAA is enabled.
-The pattern is established and replicable across the remaining
-collection renderers; each follow-up is mechanical (~120 LOC per
-file pair) and described in the "Pattern" section below.
+**Status:** All four Collections renderers (Billboard, Label,
+Polyline, Point) now emit per-pixel motion vectors when TAA is
+enabled. Animated content (entity tracking, moving sprite labels,
+path animations, moving points) no longer ghosts on the temporal
+history. Static content emits zero velocity (prev = current) — no
+behavior change for the common case.
+
+Beyond Collections, advanced primitives (GaussianSplat / PointCloud /
+Cloud / Voxel) and classifiers (GroundPrimitive / Vector3DTile*)
+still rely on TAA's camera-only fallback; that's correct for the
+static case but ghosts on per-instance / per-particle / per-cell
+animation. See the "Beyond Collections" section below.
+
+**What landed for Polyline + Point (Batch 148):**
+
+- `PolylineCollection.wgsl` gained `vertexVelocityMain` +
+  `fragmentVelocityMain` entry points at the next free locations
+  (7-10 for prev start/end positions). Center delta interpolated
+  via `mix(prevClipStart, prevClipEnd, isEnd)` — same `isEnd`
+  vertex-index switch the regular VS uses for current-frame
+  interpolation. Velocity = `mix`ed current NDC − `mix`ed prev NDC.
+  PolylineArrow / PolylineDash / PolylineGlow / PolylineOutline
+  material variants do NOT have velocity entry points yet —
+  velocity emission for those is skipped (camera-only fallback
+  continues).
+- `PointPrimitiveColor.wgsl` gained the velocity entries at
+  locations 7-8 (single position per instance, mirrors Billboard).
+- `WebGPUPolylineRenderer.js`:
+  - `VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT` (4 slot — start/end high/low).
+  - `buildPolylineVelocityDescriptor` + `getOrCreatePolylineVelocityPipelineEntry`
+    (gated on `materialType === "polylineColor"` since only the base
+    shader has velocity entries).
+  - Per-material `prevSegmentBuffer_*` GPU buffers + `prevSegmentData_*`
+    CPU stash, mirroring the segment buffer keying.
+  - Velocity command attached to color command via
+    `cmd.velocityCommand` only when TAA is on AND the velocity
+    pipeline resolved this tick. Velocity uses ONLY the camera bind
+    group (slot 0); the material BG is unused by the velocity FS,
+    so it's omitted to keep the bind group count down.
+  - Per-material `prevSegmentBuffer_*` released in
+    `destroyWebGPUPolylineResources`.
+- `WebGPUPointPrimitiveRenderer.js`:
+  - `VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT` (2 slots — high/low).
+  - `buildPointVelocityDescriptor`.
+  - `cache.velocityPipelines` Map keyed identically to the color
+    cache; cleared in lockstep on HDR / scene-format change.
+  - `cache.prevInstanceBuffer` + `cache.prevInstanceData` stash.
+  - Per-frame writeBuffer of prev BEFORE current — gated on the
+    existing `needsRebuild` flag so static point collections don't
+    re-upload buffers for nothing. Velocity command re-attached
+    every frame (cheap reference assignment) so it picks up changes
+    to visible count without a full rebuild.
+  - `prevInstanceBuffer` released in `destroyWebGPUPointResources`.
+
+**What landed for Billboard (Batch 143):**
+
+The Collections sweep started here. See Batch 143 for the full
+design notes — Polyline + Point + Label all mirror this pattern:
 
 **What landed for Label (Batch 144):**
 
@@ -434,16 +487,16 @@ GaussianSplat / PointCloud / Cloud):**
      undefined` so a stale prior-frame velocity command doesn't
      leak.
 
-**Remaining follow-ups (each ~120 LOC):**
+**Collections follow-ups — all SHIPPED:**
 
 - ~~**Label**~~ — SHIPPED (Batch 144).
-- **Polyline** (`PolylineCollection.wgsl` +
-  `WebGPUPolylineRenderer.js`) — per-vertex (not per-instance)
-  prev-position data on the segment vertex buffer. Velocity emerges
-  from segment endpoints' delta between frames.
-- **PointPrimitive** (`PointPrimitiveColor.wgsl` +
-  `WebGPUPointPrimitiveRenderer.js`) — same as Billboard, just
-  smaller per-instance stride (5 vec4 / 20 floats per Batch 136).
+- ~~**Polyline**~~ — SHIPPED (Batch 148). Per-instance prev start/end
+  positions at locations 7-10. Center delta interpolated via
+  `mix(prevClipStart, prevClipEnd, isEnd)`. Material variants
+  (Arrow/Dash/Glow/Outline) skip velocity emission since they don't
+  yet have velocity entry points.
+- ~~**PointPrimitive**~~ — SHIPPED (Batch 148). Per-instance prev
+  position at locations 7-8. Mirrors Billboard exactly.
 
 **Beyond Collections (out of "1 session" scope):**
 
@@ -459,9 +512,10 @@ GaussianSplat / PointCloud / Cloud):**
 **Trace:** AUDIT_2026_05_02.md B.10;
 `WebGPUTAAEffect.ts:_motionVectorsValid` (camera-only fallback path);
 `ModelPBRComplete.wgsl:computeMotionVectorScreenSpace` (template
-implementation, Batch 96); `BillboardCollection.wgsl:545-665`
-(reference implementation, Batch 143);
-`BillboardCollectionSDF.wgsl` velocity entries (Batch 144).
+implementation, Batch 96); `BillboardCollection.wgsl` velocity
+entries (Batch 143); `BillboardCollectionSDF.wgsl` velocity
+entries (Batch 144); `PolylineCollection.wgsl` +
+`PointPrimitiveColor.wgsl` velocity entries (Batch 148).
 
 ---
 

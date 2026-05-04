@@ -248,3 +248,123 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   return color;
 }
+
+// AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+// per-pixel velocity emission for animated polylines. Mirrors the
+// Billboard / Label pattern from Batches 143/144; see
+// `BillboardCollection.wgsl` for the full design notes.
+//
+// Polyline differs from Billboard in that each instance carries TWO
+// positions (start + end). The velocity VS computes both prev and
+// current clip positions for both endpoints, then `mix`es them by the
+// vertex's `isEnd` (0=start, 1=end) — same pattern the regular VS
+// already uses for current-frame interpolation. Per-fragment velocity
+// = interpolated current NDC − interpolated prev NDC.
+//
+// Prev-instance VB (slot 1 on the velocity pipeline) carries
+// `(prevStartHigh, _, prevStartLow, _, prevEndHigh, _, prevEndLow, _)`
+// at locations 7-10. The renderer maintains it as a CPU-side mirror
+// of the previous frame's instance buffer; on the first frame it's
+// initialized to the current data so velocity = 0 (no history).
+
+struct VelocityVertexInput {
+  @builtin(vertex_index) vertexIndex: u32,
+  // Slot 0: current instance data (mirrors VertexInput).
+  @location(0) startPosHighAndWidth: vec4<f32>,
+  @location(1) startPosLow: vec4<f32>,
+  @location(2) endPosHighAndMiter: vec4<f32>,
+  @location(3) endPosLow: vec4<f32>,
+  @location(4) color: vec4<f32>,
+  @location(5) perInstanceFlags: vec4<f32>,
+  @location(6) translucencyByDistance: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions matter.
+  @location(7) prevStartPosHighAndWidth: vec4<f32>,
+  @location(8) prevStartPosLow: vec4<f32>,
+  @location(9) prevEndPosHighAndMiter: vec4<f32>,
+  @location(10) prevEndPosLow: vec4<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currentBaseClip: vec4<f32>,
+  @location(1) prevBaseClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+
+  let lineWidth = input.startPosHighAndWidth.w;
+  let halfWidth = lineWidth * 0.5 + 0.5;
+
+  // Current-frame clip endpoints (RTE).
+  let startRTE = translateRelativeToEye(
+    input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
+    camera.encodedCameraHigh, camera.encodedCameraLow,
+  );
+  let endRTE = translateRelativeToEye(
+    input.endPosHighAndMiter.xyz, input.endPosLow.xyz,
+    camera.encodedCameraHigh, camera.encodedCameraLow,
+  );
+  let curClipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
+  let curClipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
+
+  // Previous-frame clip endpoints — full mat4 multiply of unencoded
+  // world position (precision loss at planet scale acceptable for
+  // NDC delta magnitudes; matches the Model + Billboard patterns).
+  let prevStartWorld = vec4<f32>(
+    input.prevStartPosHighAndWidth.xyz + input.prevStartPosLow.xyz,
+    1.0,
+  );
+  let prevEndWorld = vec4<f32>(
+    input.prevEndPosHighAndMiter.xyz + input.prevEndPosLow.xyz,
+    1.0,
+  );
+  let prevClipStart = camera.previousViewProjection * prevStartWorld;
+  let prevClipEnd = camera.previousViewProjection * prevEndWorld;
+
+  // Rasterize the segment quad at the CURRENT-frame position so the
+  // velocity texture covers the same pixels the color pass touched.
+  // Same vertex_index → (isEnd, side) mapping as `vertexMain`.
+  let screenStart = toScreenSpace(curClipStart, camera.viewportSize);
+  let screenEnd = toScreenSpace(curClipEnd, camera.viewportSize);
+  let lineDir = normalize(screenEnd - screenStart);
+  let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
+
+  let vertexIdx = input.vertexIndex % 6u;
+  var isEnd: f32;
+  var side: f32;
+  switch vertexIdx {
+    case 0u: { isEnd = 0.0; side = -1.0; }
+    case 1u: { isEnd = 1.0; side = -1.0; }
+    case 2u: { isEnd = 1.0; side = 1.0; }
+    case 3u: { isEnd = 0.0; side = -1.0; }
+    case 4u: { isEnd = 1.0; side = 1.0; }
+    case 5u: { isEnd = 0.0; side = 1.0; }
+    default: { isEnd = 0.0; side = -1.0; }
+  }
+
+  let baseClip = mix(curClipStart, curClipEnd, isEnd);
+  let baseScreen = mix(screenStart, screenEnd, isEnd);
+  let offsetScreen = baseScreen + lineNormal * side * halfWidth;
+  let finalPos = fromScreenSpace(
+    offsetScreen, baseClip.z, baseClip.w, camera.viewportSize,
+  );
+
+  output.position = finalPos;
+  output.currentBaseClip = baseClip;
+  output.prevBaseClip = mix(prevClipStart, prevClipEnd, isEnd);
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currentBaseClip.w;
+  let prevW = input.prevBaseClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currentBaseClip.xy / curW;
+  let prevNdc = input.prevBaseClip.xy / prevW;
+  return curNdc - prevNdc;
+}

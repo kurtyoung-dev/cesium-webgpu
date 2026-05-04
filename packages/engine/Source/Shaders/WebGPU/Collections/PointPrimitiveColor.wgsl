@@ -260,3 +260,95 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     return color;
 }
+
+// AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
+// per-pixel velocity emission for animated points. Mirrors the
+// Billboard pattern from Batch 143; see `BillboardCollection.wgsl`
+// for the full design notes (center-only delta, prev-instance VB at
+// slot 1, w<=0 fallback).
+//
+// Point's instance buffer uses locations 0-6 (7 vec4 / 28 floats);
+// prev-position locations are 7 (high+_) and 8 (low+_).
+
+struct VelocityVertexInput {
+  @builtin(vertex_index) vertexIndex: u32,
+  // Slot 0: current instance data (mirrors regular VS attributes).
+  @location(0) posHighAndSize: vec4<f32>,
+  @location(1) posLowAndOutline: vec4<f32>,
+  @location(2) pointColor: vec4<f32>,
+  @location(3) outColorAndShow: vec4<f32>,
+  @location(4) perInstanceFlags: vec4<f32>,
+  @location(5) translucencyByDistance: vec4<f32>,
+  @location(6) scaleByDistance: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions matter.
+  @location(7) prevPosHighAndSize: vec4<f32>,
+  @location(8) prevPosLowAndOutline: vec4<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currentCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+
+  let show = input.outColorAndShow.w;
+  if (show < 0.5) {
+    output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+    output.currentCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    output.prevCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return output;
+  }
+
+  let posHigh = input.posHighAndSize.xyz;
+  let posLow = input.posLowAndOutline.xyz;
+  let basePixelSize = input.posHighAndSize.w;
+  let outlineWidth = input.posLowAndOutline.w;
+
+  // Current-frame center clip via RTE.
+  let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
+  let currentCenterClip = camera.mvpRelativeToEye * eyeRelativePos;
+
+  // Previous-frame center clip via full mat4.
+  let prevPosHigh = input.prevPosHighAndSize.xyz;
+  let prevPosLow = input.prevPosLowAndOutline.xyz;
+  let prevWorldPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
+  let prevCenterClip = camera.previousViewProjection * prevWorldPos;
+
+  // Rasterize the point quad at the CURRENT-frame position so the
+  // velocity texture covers the same pixels the color pass touched.
+  // Same QUAD_CORNERS expansion as `vertexMain`.
+  var clipPos = currentCenterClip;
+  let totalSize = max(basePixelSize + 2.0 * outlineWidth, 1.0);
+  let corner = QUAD_CORNERS[input.vertexIndex % 6u];
+  let ndcOffset = vec2<f32>(
+    corner.x * totalSize * 2.0 / camera.viewportSize.x,
+    corner.y * totalSize * 2.0 / camera.viewportSize.y,
+  );
+  clipPos = vec4<f32>(
+    clipPos.x + ndcOffset.x * clipPos.w,
+    clipPos.y + ndcOffset.y * clipPos.w,
+    clipPos.z,
+    clipPos.w,
+  );
+
+  output.position = clipPos;
+  output.currentCenterClip = currentCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  let curW = input.currentCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currentCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
+}
