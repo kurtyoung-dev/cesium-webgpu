@@ -1161,6 +1161,13 @@ function getOrCreatePolylineVelocityPipelineEntry(
     descriptor: built.descriptor,
     pipeline: null,
     pending: false,
+    // The velocity pipeline builds its own `cameraBindGroupLayout` so
+    // the dispatch site can create a dedicated bind group against it
+    // (rather than reusing the color pipeline's bind group, which was
+    // built against a structurally-equivalent but distinct layout
+    // object). Mirrors the existing pick pipeline pattern in this
+    // file.
+    cameraBindGroupLayout: built.cameraBindGroupLayout,
   };
   byDefines.set(defines, entry);
   return entry;
@@ -1442,6 +1449,10 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
       // rg16float velocity texture. Velocity uses ONLY the camera
       // bind group (slot 0); the material BG is unused by the
       // velocity FS, so we omit it entirely from the velocity command.
+      // Each velocity pipeline owns its own `cameraBindGroupLayout`,
+      // so we build a dedicated `velCamBg` against that layout rather
+      // than reusing the color pipeline's bind group (mirrors the
+      // pick pattern in `_pushPolylinePickCommand`).
       if (taaEnabledThisFrame && defined(cache[prevSbKey])) {
         const velEntry = getOrCreatePolylineVelocityPipelineEntry(
           cache,
@@ -1458,9 +1469,18 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
             )
           : null;
         if (velocityPipeline) {
+          const velCamBgKey = `velCamBindGroup_${materialType}`;
+          if (!defined(cache[velCamBgKey])) {
+            cache[velCamBgKey] = device.createBindGroup({
+              layout: velEntry.cameraBindGroupLayout,
+              entries: [
+                { binding: 0, resource: { buffer: cameraBuffer.buffer } },
+              ],
+            });
+          }
           cmd.velocityCommand = new WebGPUDrawCommand({
             pipeline: velocityPipeline,
-            bindGroups: [cache[camBgKey]],
+            bindGroups: [cache[velCamBgKey]],
             vertexBuffers: [cache[sbKey], cache[prevSbKey]],
             vertexCount: VERTICES_PER_SEGMENT,
             instanceCount: segmentCount,
