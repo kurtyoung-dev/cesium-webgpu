@@ -369,52 +369,80 @@ implementation).
 
 ---
 
-### NEW-COLLECTIONS-DISTANCE-ATTRIBS — port the remaining 3 distance attribs across collections
+### ~~NEW-COLLECTIONS-DISTANCE-ATTRIBS~~ — RESOLVED (Batch 136)
 
-**What:** WebGL collection vertex shaders gate visibility / pixel
-offset / scale / opacity on per-instance distance windows via 4
-defines:
+**Resolution:** All four distance gates now wired across every
+collection where they apply. WebGL feature parity reached.
 
-- `DISTANCE_DISPLAY_CONDITION` — show/hide outside `[near, far]`.
-- `EYE_DISTANCE_TRANSLUCENCY` — opacity ramps with `czm_nearFarScalar`.
-- `EYE_DISTANCE_PIXEL_OFFSET` — pixel offset scales with distance.
-- `EYE_DISTANCE_SCALING` (`scaleByDistance`) — quad scale ramps with distance.
+**What landed:**
 
-**Status (Batch 135):** `DISTANCE_DISPLAY_CONDITION` is SHIPPED for
-`BillboardCollection` only. The remaining three gates and the
-parallel ports for `PolylineCollection`, `PointPrimitiveCollection`,
-and `LabelCollection` (handled through Billboard + a label-glyph
-gating path) still silently no-op on WebGPU.
+- 3 new `ShaderDefine` bits added (add-only, sequential after the
+  Batch 135 `DISTANCE_DISPLAY_CONDITION`):
+  `EYE_DISTANCE_TRANSLUCENCY (1<<5)`,
+  `EYE_DISTANCE_PIXEL_OFFSET (1<<6)`,
+  `EYE_DISTANCE_SCALING (1<<7)`.
+- Each ramp uses a WGSL `czm_nearFarScalar` helper that mirrors
+  `Source/Shaders/Builtin/Functions/nearFarScalar.glsl` — packed vec4
+  layout `(near, nearValue, far, farValue)` so the JS side just
+  passes the upstream `NearFarScalar` directly through a shared
+  `packNearFarScalar(out, offset, scalar, identity)` helper.
+- `BillboardCollection.wgsl` now wires all 4 gates. Instance buffer
+  bumped from 7 vec4 (28 floats) to 10 vec4 (40 floats) — three new
+  per-instance NearFarScalars at locations 7/8/9. The pick variant
+  mirrors the layout so a fading / hidden / shrunk billboard is also
+  unpickable.
+- `PolylineCollection.wgsl` wires DDC + EYE_DISTANCE_TRANSLUCENCY (no
+  pixelOffset, no quad-scale on polylines). Instance buffer 6 → 7
+  vec4 with translucencyByDistance at @location(6); DDC packed into
+  `perInstanceFlags.zw` (previously `_pad`).
+- `PointPrimitiveColor.wgsl` + `PointPrimitivePick.wgsl` wire DDC +
+  EYE_DISTANCE_TRANSLUCENCY + EYE_DISTANCE_SCALING (no pixelOffset on
+  points). Instance buffer 5 → 7 vec4 with translucencyByDistance +
+  scaleByDistance at @locations 5/6.
+- `LabelCollection` inherits the Billboard fix automatically — its
+  glyph + background billboards already propagate distance attribs
+  via the Label setters (lines 884-1344 of `Scene/Label.js`). No
+  separate WGSL or JS work needed for Label.
+- Per-frame `computeDefinesForFrame` in every renderer now scans
+  for the new gates and only flips bits when at least one
+  primitive sets the corresponding property — collections that
+  don't use distance attribs stay on the baseline pipeline.
+- Prewarm tables extended with the most common production combos
+  (KML / GeoJSON entities typically combine DDC + translucency).
+- One-time warnings (`WebGPUBillboard.distanceAttribs`,
+  `WebGPUPolyline.distanceAttribs`, `WebGPUPointPrimitive.distanceAttribs`)
+  retired.
 
-**Why deferred:** Each gate adds:
+**Files touched:**
 
-- Another bit on `ShaderDefine` (registry already has
-  `DISTANCE_DISPLAY_CONDITION` at `1 << 4` — add 5/6/7 next; bits
-  are add-only).
-- Per-instance attribute floats packed into the existing
-  `perInstanceFlags` vec4 (or a new vec4 if 4 floats run out).
-- A WGSL `//>>ifdef` block per collection shader (4 × 3 = 12 small
-  edits).
-- JS-side define computation in each renderer's `computeDefinesForFrame`
-  (4 small edits).
+- `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts` —
+  3 new define bits.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js` —
+  layout extension, packing helper, define scan, prewarm, warning
+  retirement.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js` —
+  DDC + translucency wiring.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js` —
+  DDC + translucency + scaling wiring.
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl` —
+  4-gate VS + `czm_nearFarScalar`.
+- `packages/engine/Source/Shaders/WebGPU/Collections/PolylineCollection.wgsl` —
+  2-gate VS + `czm_nearFarScalar`.
+- `packages/engine/Source/Shaders/WebGPU/Collections/PointPrimitiveColor.wgsl` —
+  3-gate VS + `czm_nearFarScalar`.
+- `packages/engine/Source/Shaders/WebGPU/Collections/PointPrimitivePick.wgsl` —
+  pick path mirrors color visibility.
 
-Mechanical but tedious: ~150 LOC across shaders + JS, plus prewarm
-table extension. None of it touches Cesium architecture; it's a
-pure parity fill-in.
+**Trade-offs accepted:**
 
-**Prerequisites:** None — `ShaderDefine` slots 5/6/7 are reserved by
-default (no consumers yet); per-instance vec4 layouts have spare
-floats in the existing slots for most collections.
+- Instance buffer stride grew on each renderer to make room for the
+  always-present NearFarScalar vec4s. The shader gates ifdef-out
+  reads when the corresponding define isn't set, so the cost is
+  upload bandwidth only (negligible for typical scene sizes).
+- Prewarm tables grew to ~10 variants per renderer. Cold-path
+  variants compile lazily through the shader-module cache.
 
-**Estimated effort:** 1-2 sessions (full sweep across all 4 gates ×
-4 collections; can ship per-gate batches if smaller PRs are needed).
-
-**Impact:** Closes A.14 from AUDIT_2026_05_02 fully. KML / GeoJSON /
-CZML entities behave per-spec on WebGPU.
-
-**Trace:** AUDIT_2026_05_02.md A.14;
-`WebGPUShaderDefines.ts:DISTANCE_DISPLAY_CONDITION` (Batch 135 reservation);
-`WebGPUBillboardRenderer.js` (DDC pattern as the template for the rest).
+**Closing batch:** Batch 136.
 
 ---
 

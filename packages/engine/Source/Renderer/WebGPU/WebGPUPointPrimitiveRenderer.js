@@ -44,11 +44,15 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // =========================================================================
 
 /**
- * Floats per instance: 5 vec4 = 20 floats (Batch 21 extends from 4→5 for
- * DP-H42 / DP-H40 `perInstanceFlags` at @location(4)).
+ * Floats per instance: 7 vec4 = 28 floats. Batch 21 extended from 4→5
+ * for DP-H42 / DP-H40 `perInstanceFlags`. Batch 136 (Audit A.14) added
+ * `translucencyByDistance` (slot 5) and `scaleByDistance` (slot 6) for
+ * the EYE_DISTANCE_TRANSLUCENCY / EYE_DISTANCE_SCALING gates. Point
+ * primitives have no pixelOffset attribute, so the
+ * EYE_DISTANCE_PIXEL_OFFSET gate doesn't apply here.
  */
-const FLOATS_PER_INSTANCE = 20;
-/** Bytes per instance: 20 * 4 = 80 bytes */
+const FLOATS_PER_INSTANCE = 28;
+/** Bytes per instance: 28 * 4 = 112 bytes */
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 /** Vertices per quad: 6 (2 triangles, no index buffer needed) */
 const VERTICES_PER_QUAD = 6;
@@ -67,6 +71,29 @@ const scratchEncodedPosition = new EncodedCartesian3();
 // =========================================================================
 // Instance Data Building
 // =========================================================================
+
+/**
+ * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
+ * (near, nearValue, far, farValue) into 4 contiguous floats. Identity-NFS
+ * written when `scalar` is undefined so the shader's gate produces the
+ * unchanged baseline for points with no per-distance ramp configured.
+ * Mirrors `WebGPUBillboardRenderer.packNearFarScalar`.
+ */
+function packNearFarScalar(out, offset, scalar, identity) {
+  if (scalar) {
+    out[offset + 0] = typeof scalar.near === "number" ? scalar.near : 0.0;
+    out[offset + 1] =
+      typeof scalar.nearValue === "number" ? scalar.nearValue : identity;
+    out[offset + 2] = typeof scalar.far === "number" ? scalar.far : 1.0e8;
+    out[offset + 3] =
+      typeof scalar.farValue === "number" ? scalar.farValue : identity;
+  } else {
+    out[offset + 0] = 0.0;
+    out[offset + 1] = identity;
+    out[offset + 2] = 1.0e8;
+    out[offset + 3] = identity;
+  }
+}
 
 /**
  * Builds a Float32Array of per-instance data from the collection's point primitives.
@@ -123,15 +150,39 @@ function buildInstanceData(collection) {
     instanceData[offset + 14] = outlineColor.blue;
     instanceData[offset + 15] = point._show ? 1.0 : 0.0;
 
-    // perInstanceFlags — DP-H42 / DP-H40.
+    // perInstanceFlags — DP-H42 / DP-H40 / A.14 DDC.
     //   x: disableDepthTestDistance (raw meters; squared in shader)
     //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-    //   z, w: reserved
+    //   z: distanceDisplayCondition.near^2 (Batch 136)
+    //   w: distanceDisplayCondition.far^2 (Batch 136)
     const d = point._disableDepthTestDistance;
     instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
     instanceData[offset + 17] = point._splitDirection ?? 0.0;
-    instanceData[offset + 18] = 0.0;
-    instanceData[offset + 19] = 0.0;
+    const ddc = point._distanceDisplayCondition;
+    if (ddc) {
+      const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+      const ddcFar =
+        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+      instanceData[offset + 18] = ddcNear * ddcNear;
+      instanceData[offset + 19] = isFinite(ddcFar)
+        ? ddcFar * ddcFar
+        : Number.MAX_VALUE;
+    } else {
+      instanceData[offset + 18] = 0.0;
+      instanceData[offset + 19] = Number.MAX_VALUE;
+    }
+
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
+    // scaleByDistance NearFarScalars. Identity = 1.0 for both
+    // (multiplicative). EYE_DISTANCE_PIXEL_OFFSET doesn't apply here
+    // (Point has no pixelOffset attribute).
+    packNearFarScalar(
+      instanceData,
+      offset + 20,
+      point._translucencyByDistance,
+      1.0,
+    );
+    packNearFarScalar(instanceData, offset + 24, point._scaleByDistance, 1.0);
 
     visibleCount++;
   }
@@ -189,12 +240,33 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 14] = 0.0;
     instanceData[offset + 15] = 0.0;
 
-    // Same perInstanceFlags as the color path so pick obeys DP-H42/H40.
+    // Same perInstanceFlags as the color path so pick obeys DP-H42 /
+    // DP-H40 / A.14 DDC. Pick must mirror color visibility exactly so
+    // an invisible point is also unpickable.
     const d = point._disableDepthTestDistance;
     instanceData[offset + 16] = typeof d === "number" && isFinite(d) ? d : 0.0;
     instanceData[offset + 17] = point._splitDirection ?? 0.0;
-    instanceData[offset + 18] = 0.0;
-    instanceData[offset + 19] = 0.0;
+    const ddc = point._distanceDisplayCondition;
+    if (ddc) {
+      const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+      const ddcFar =
+        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+      instanceData[offset + 18] = ddcNear * ddcNear;
+      instanceData[offset + 19] = isFinite(ddcFar)
+        ? ddcFar * ddcFar
+        : Number.MAX_VALUE;
+    } else {
+      instanceData[offset + 18] = 0.0;
+      instanceData[offset + 19] = Number.MAX_VALUE;
+    }
+    // AUDIT_2026_05_02 A.14 (Batch 136) — pick path's NearFarScalars.
+    packNearFarScalar(
+      instanceData,
+      offset + 20,
+      point._translucencyByDistance,
+      1.0,
+    );
+    packNearFarScalar(instanceData, offset + 24, point._scaleByDistance, 1.0);
 
     visibleCount++;
   }
@@ -207,7 +279,9 @@ function buildPickInstanceData(collection, context) {
 // =========================================================================
 
 /**
- * Instance vertex buffer layout — step mode = instance, 64 bytes stride.
+ * Instance vertex buffer layout — step mode = instance, 112 bytes
+ * stride (Batch 136). Bumped from 80 bytes to fit the two NearFarScalar
+ * gates added by Audit A.14.
  * @private
  */
 const INSTANCE_BUFFER_LAYOUT = {
@@ -218,9 +292,13 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 1, offset: 16, format: "float32x4" }, // posLowAndOutline
     { shaderLocation: 2, offset: 32, format: "float32x4" }, // color
     { shaderLocation: 3, offset: 48, format: "float32x4" }, // outColorAndShow
-    // DP-H42 / DP-H40 — perInstanceFlags (same contract as Billboard
-    // @location(6) / Label @location(8)).
+    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags.
     { shaderLocation: 4, offset: 64, format: "float32x4" },
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
+    // scaleByDistance. Always declared so a single layout serves all
+    // ifdef variants without rebuilding.
+    { shaderLocation: 5, offset: 80, format: "float32x4" },
+    { shaderLocation: 6, offset: 96, format: "float32x4" },
   ],
 };
 
@@ -447,11 +525,27 @@ function prewarmPointShaders(device, colorSource, pickSource) {
     return;
   }
   const D = ShaderDefine;
+  // AUDIT_2026_05_02 A.14 (Batch 136) — added DDC + translucency + scaling
+  // variants. Point consumes 5 distance-related defines; we seed the
+  // most common scenarios.
+  const D_DDC_TRANS =
+    D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
+  const D_ALL_DIST =
+    D.DISTANCE_DISPLAY_CONDITION |
+    D.EYE_DISTANCE_TRANSLUCENCY |
+    D.EYE_DISTANCE_SCALING;
+  const D_PROD = D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | D_ALL_DIST;
   const defineSets = [
     0,
     D.DISABLE_DEPTH_DISTANCE,
     D.SPLIT_ENABLED,
+    D.DISTANCE_DISPLAY_CONDITION,
+    D.EYE_DISTANCE_TRANSLUCENCY,
+    D.EYE_DISTANCE_SCALING,
     D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+    D_DDC_TRANS,
+    D_ALL_DIST,
+    D_PROD,
   ];
   cache.prewarm(
     ShaderSourceId.POINT_PRIMITIVE_COLOR,
@@ -470,6 +564,7 @@ function prewarmPointShaders(device, colorSource, pickSource) {
 
 /**
  * Per-frame scan for the active defines. Mirrors Billboard/Label.
+ * Point consumes 5 of the 6 distance-related defines (no pixelOffset).
  * @private
  */
 function computePointDefinesForFrame(collection, frameState) {
@@ -483,9 +578,14 @@ function computePointDefinesForFrame(collection, frameState) {
   }
   const points = collection._pointPrimitives;
   const length = collection._pointPrimitivesLength;
-  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  const all =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE |
+    ShaderDefine.SPLIT_ENABLED |
+    ShaderDefine.DISTANCE_DISPLAY_CONDITION |
+    ShaderDefine.EYE_DISTANCE_TRANSLUCENCY |
+    ShaderDefine.EYE_DISTANCE_SCALING;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {
+    if ((defines & all) === all) {
       break;
     }
     const p = points[i];
@@ -505,6 +605,25 @@ function computePointDefinesForFrame(collection, frameState) {
       p._splitDirection !== 0.0
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+    // AUDIT_2026_05_02 A.14 (Batch 136) — DDC + translucency + scaling.
+    if (
+      (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
+      defined(p._distanceDisplayCondition)
+    ) {
+      defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_TRANSLUCENCY) === 0 &&
+      defined(p._translucencyByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_TRANSLUCENCY;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_SCALING) === 0 &&
+      defined(p._scaleByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_SCALING;
     }
   }
   return defines;
@@ -663,25 +782,10 @@ function updateWebGPUPointPrimitives(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
 
-  // AUDIT_2026_05_02 A.14 — surface that distance attributes are dropped.
-  //>>includeStart('debug', pragmas.debug);
-  for (let i = 0; i < length; i++) {
-    const pp = collection.get(i);
-    if (
-      defined(pp.distanceDisplayCondition) ||
-      defined(pp.translucencyByDistance) ||
-      defined(pp.scaleByDistance)
-    ) {
-      oneTimeWarning(
-        "WebGPUPointPrimitive.distanceAttribs",
-        "PointPrimitiveCollection on WebGPU does not yet honor " +
-          "distanceDisplayCondition / translucencyByDistance / " +
-          "scaleByDistance. Track AUDIT_2026_05_02 A.14.",
-      );
-      break;
-    }
-  }
-  //>>includeEnd('debug');
+  // AUDIT_2026_05_02 A.14 (Batch 136) — all three Point distance gates
+  // (DDC + translucencyByDistance + scaleByDistance) are wired. Point
+  // has no pixelOffset attribute, so EYE_DISTANCE_PIXEL_OFFSET doesn't
+  // apply here. Previous one-time warning retired.
 
   // Prewarm shader modules (idempotent per device).
   const colorShaderCode = getCollectionShaderSource("pointColor");

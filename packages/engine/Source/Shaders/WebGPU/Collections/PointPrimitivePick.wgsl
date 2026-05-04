@@ -60,6 +60,20 @@ fn translateRelativeToEye(
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
+// AUDIT_2026_05_02 A.14 (Batch 136) — czm_nearFarScalar helper for the
+// pick path so picked pixels respect the same distance-aware visibility
+// gates as color (a translucency=0 or scale=0 point should not pick).
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+    let nearDistSq = scalar.x * scalar.x;
+    let farDistSq = scalar.z * scalar.z;
+    let denom = farDistSq - nearDistSq;
+    if (denom <= 0.0) {
+        return scalar.y;
+    }
+    let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+    return mix(scalar.y, scalar.w, t);
+}
+
 @vertex
 fn vertexMain(
     @builtin(vertex_index) vertexIndex: u32,
@@ -67,7 +81,15 @@ fn vertexMain(
     @location(1) posLowAndOutline: vec4<f32>,   // positionLow.xyz, outlineWidth
     @location(2) pickColorIn: vec4<f32>,         // pick color rgba
     @location(3) showVec: vec4<f32>,             // show in .x, rest unused
-    @location(4) perInstanceFlags: vec4<f32>,    // DP-H42/H40 (same contract as color)
+    // DP-H42 / DP-H40 / A.14 perInstanceFlags. Same contract as color path:
+    //   x = disableDepthTestDistance, y = splitDirection,
+    //   z = ddcNearSq, w = ddcFarSq (Batch 136).
+    @location(4) perInstanceFlags: vec4<f32>,
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance + scaleByDistance
+    // mirror the color path's slots so a point that's invisible to color
+    // is also invisible to picking.
+    @location(5) translucencyByDistance: vec4<f32>,
+    @location(6) scaleByDistance: vec4<f32>,
 ) -> VertexOutput {
     var output: VertexOutput;
 
@@ -85,15 +107,27 @@ fn vertexMain(
 
     let posHigh = posHighAndSize.xyz;
     let posLow = posLowAndOutline.xyz;
-    let pixelSize = posHighAndSize.w;
+    let basePixelSize = posHighAndSize.w;
     let outlineWidth = posLowAndOutline.w;
-    let totalSize = max(pixelSize + 2.0 * outlineWidth, 1.0);
-
-    let corner = QUAD_CORNERS[vertexIndex % 6u];
 
     // RTE: compute eye-relative position with emulated 64-bit precision
     let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
+    let camDistSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
     var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
+
+    // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
+    // before quad expansion. Same contract as color path.
+    var pixelSize: f32 = basePixelSize;
+    //>>ifdef EYE_DISTANCE_SCALING
+    let distScale = czm_nearFarScalar(scaleByDistance, camDistSq);
+    pixelSize = pixelSize * distScale;
+    if (distScale == 0.0) {
+        clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
+
+    let totalSize = max(pixelSize + 2.0 * outlineWidth, 1.0);
+    let corner = QUAD_CORNERS[vertexIndex % 6u];
 
     let ndcOffset = vec2<f32>(
         corner.x * totalSize * 2.0 / camera.viewportSize.x,
@@ -107,6 +141,14 @@ fn vertexMain(
         clipPos.w,
     );
 
+    //>>ifdef DISTANCE_DISPLAY_CONDITION
+    let nearSqDDC = perInstanceFlags.z;
+    let farSqDDC = perInstanceFlags.w;
+    if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+        clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
+
     //>>ifdef DISABLE_DEPTH_DISTANCE
     var disableDepthSq = perInstanceFlags.x * perInstanceFlags.x;
     if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
@@ -115,14 +157,21 @@ fn vertexMain(
             camera.minimumDisableDepthTestDistance;
     }
     if (disableDepthSq != 0.0) {
-        let distSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
-        if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+        if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
             clipPos.z = clipPos.w;
         }
     }
     //>>endif
 
     output.position = clipPos;
+
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucency=0 → kill pick.
+    //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+    let translucency = czm_nearFarScalar(translucencyByDistance, camDistSq);
+    if (translucency == 0.0) {
+        output.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
 
     output.uv = corner;
     output.pickColor = pickColorIn;

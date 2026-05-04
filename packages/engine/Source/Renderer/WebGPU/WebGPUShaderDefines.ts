@@ -108,12 +108,49 @@ export const ShaderDefine = Object.freeze({
    * `#ifdef DISTANCE_DISPLAY_CONDITION` branch in
    * BillboardCollectionVS / LabelCollectionVS / PointPrimitiveCollectionVS.
    *
-   * First consumer: BillboardCollection.wgsl (Batch 135).
-   * Pending consumers (NEW-COLLECTIONS-DISTANCE-ATTRIBS): Polyline,
-   * Point, Label, plus EYE_DISTANCE_TRANSLUCENCY +
-   * EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING bits below.
+   * Consumers: BillboardCollection.wgsl (Batch 135),
+   * PolylineCollection.wgsl + PointPrimitiveColor.wgsl (Batch 136).
+   * Label inherits via Billboard (LabelCollection renders glyphs as
+   * billboards under the hood).
    */
   DISTANCE_DISPLAY_CONDITION: 1 << 4,
+
+  /**
+   * Per-primitive `translucencyByDistance` ramp (AUDIT_2026_05_02 A.14,
+   * Batch 136). Reads a per-instance NearFarScalar
+   * (`(near, nearAlpha, far, farAlpha)`) and computes
+   * `czm_nearFarScalar(translucencyByDistance, lengthSq)` to scale
+   * the fragment alpha. Vertex pushed behind near plane when result
+   * is exactly 0 (matches WebGL's `if (translucency == 0.0)` clip).
+   *
+   * Consumers: BillboardCollection.wgsl, PolylineCollection.wgsl,
+   * PointPrimitiveColor.wgsl. Label inherits via Billboard.
+   */
+  EYE_DISTANCE_TRANSLUCENCY: 1 << 5,
+
+  /**
+   * Per-primitive `pixelOffsetScaleByDistance` ramp (AUDIT_2026_05_02
+   * A.14, Batch 136). Reads a per-instance NearFarScalar and scales
+   * the per-billboard pixelOffset by the resulting scalar. Used by
+   * KML/GeoJSON entities that want labels to drift toward / away from
+   * their pinned position based on camera distance.
+   *
+   * Consumers: BillboardCollection.wgsl. Label inherits via Billboard.
+   * Polyline + Point have no pixelOffset attribute and skip this gate.
+   */
+  EYE_DISTANCE_PIXEL_OFFSET: 1 << 6,
+
+  /**
+   * Per-primitive `scaleByDistance` ramp (AUDIT_2026_05_02 A.14, Batch
+   * 136). Reads a per-instance NearFarScalar and scales the
+   * billboard / point quad size by the resulting scalar. Vertex pushed
+   * behind near plane when scale is exactly 0.
+   *
+   * Consumers: BillboardCollection.wgsl, PointPrimitiveColor.wgsl.
+   * Label inherits via Billboard. Polyline has no quad scale and
+   * skips this gate.
+   */
+  EYE_DISTANCE_SCALING: 1 << 7,
 } as const);
 
 /**

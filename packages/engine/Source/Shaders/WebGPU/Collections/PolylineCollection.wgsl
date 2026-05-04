@@ -2,14 +2,23 @@
 // Renders screen-space thick lines using instanced quads per segment.
 //
 // Each segment is two triangles forming a screen-space quad along the line.
-// Instance data per segment (96 bytes, 6 x vec4):
-//   @location(0) startPosHighAndWidth:  vec4<f32> — start.high.xyz, lineWidth
-//   @location(1) startPosLow:           vec4<f32> — start.low.xyz, _pad
-//   @location(2) endPosHighAndMiter:    vec4<f32> — end.high.xyz, miterLimit
-//   @location(3) endPosLow:             vec4<f32> — end.low.xyz, _pad
-//   @location(4) color:                 vec4<f32> — rgba
-//   @location(5) perInstanceFlags:      vec4<f32> — disableDepthTestDistance,
-//                                        splitDirection, _pad, _pad (DP-H42/H40, Batch 22)
+// Instance data per segment (112 bytes, 7 x vec4):
+//   @location(0) startPosHighAndWidth:    vec4<f32> — start.high.xyz, lineWidth
+//   @location(1) startPosLow:             vec4<f32> — start.low.xyz, _pad
+//   @location(2) endPosHighAndMiter:      vec4<f32> — end.high.xyz, miterLimit
+//   @location(3) endPosLow:               vec4<f32> — end.low.xyz, _pad
+//   @location(4) color:                   vec4<f32> — rgba
+//   @location(5) perInstanceFlags:        vec4<f32> — disableDepthTestDistance,
+//                                          splitDirection,
+//                                          distanceDisplayConditionNearSq,
+//                                          distanceDisplayConditionFarSq
+//   @location(6) translucencyByDistance:  vec4<f32> — near, nearAlpha, far, farAlpha
+//                                          (AUDIT_2026_05_02 A.14, Batch 136)
+//
+// Polyline has no pixelOffset or quad-scale, so EYE_DISTANCE_PIXEL_OFFSET
+// and EYE_DISTANCE_SCALING gates are not consumed here. The remaining
+// two gates (DISTANCE_DISPLAY_CONDITION + EYE_DISTANCE_TRANSLUCENCY)
+// match the WebGL `PolylineVS.glsl` ifdef set.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -41,6 +50,7 @@ struct VertexInput {
   @location(3) endPosLow: vec4<f32>,
   @location(4) color: vec4<f32>,
   @location(5) perInstanceFlags: vec4<f32>,
+  @location(6) translucencyByDistance: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -64,6 +74,19 @@ fn toScreenSpace(clipPos: vec4<f32>, viewportSize: vec2<f32>) -> vec2<f32> {
 fn fromScreenSpace(screen: vec2<f32>, depth: f32, w: f32, viewportSize: vec2<f32>) -> vec4<f32> {
   let ndc = (screen / viewportSize) * 2.0 - 1.0;
   return vec4<f32>(ndc * w, depth, w);
+}
+
+// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of `czm_nearFarScalar`.
+// See `BillboardCollection.wgsl` for the canonical comment block.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
 }
 
 @vertex
@@ -119,16 +142,35 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Convert back to clip space
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
+  // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance. The
+  // segment's logical position is the per-vertex interpolated RTE
+  // (start endpoint, end endpoint, or midpoint depending on `isEnd`).
+  // Each fragment of the segment then sees the interpolated value,
+  // which is what WebGL's PolylineVS does for distance gates.
+  let baseRTE = mix(startRTE, endRTE, isEnd);
+  let camDistSq = dot(baseRTE, baseRTE);
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  // AUDIT_2026_05_02 A.14 (Batch 136) — gate visibility by squared
+  // eye distance against the per-instance `[nearSq, farSq]` window
+  // packed into `perInstanceFlags.zw`. Polylines push BOTH endpoints
+  // to a degenerate clip position when out of range so the segment
+  // never rasterizes. (Pushing only the current vertex would still
+  // leave a degenerate sliver visible because the other endpoint
+  // could remain on-screen.)
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+    finalPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — override depth when the camera is within the configured
   // per-instance `disableDepthTestDistance` (perInstanceFlags.x) or the
-  // frame-wide fallback. Uses the segment's base RTE position (midpoint
-  // between start / end endpoints, weighted by `isEnd`) for the distance
-  // compare — matches the semantics of treating the whole segment as a
-  // single logical primitive against the threshold. Forcing
-  // `finalPos.z = finalPos.w` maps to NDC z = 1 so the rasterizer's
-  // less-equal depth compare always passes. Mirrors BillboardCollection.wgsl.
-  let baseRTE = mix(startRTE, endRTE, isEnd);
+  // frame-wide fallback. Forcing `finalPos.z = finalPos.w` maps to
+  // NDC z = 1 so the rasterizer's less-equal depth compare always
+  // passes. Mirrors BillboardCollection.wgsl.
   var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
   if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
     disableDepthSq =
@@ -136,15 +178,27 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    let distSq = dot(baseRTE, baseRTE);
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       finalPos.z = finalPos.w;
     }
   }
   //>>endif
 
   output.position = finalPos;
-  output.color = input.color;
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance ramp.
+  // Multiplied into the propagated alpha; clipping to a degenerate
+  // position when translucency is exactly 0 matches WebGL's "if
+  // (translucency == 0.0) positionEC = vec3(0.0)" pattern.
+  var effectiveAlpha: f32 = input.color.a;
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  effectiveAlpha = effectiveAlpha * translucency;
+  if (translucency == 0.0) {
+    output.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+  output.color = vec4<f32>(input.color.rgb, effectiveAlpha);
   output.distFromCenter = side; // For AA
 
   //>>ifdef SPLIT_ENABLED

@@ -7,11 +7,12 @@
  * Supports material types: Color (default), PolylineArrow, PolylineDash,
  * PolylineGlow, PolylineOutline.
  *
- * Instance data per segment (96 bytes, 6 x vec4):
+ * Instance data per segment (112 bytes, 7 x vec4 = 28 floats):
  *   startPosHighAndWidth(4) + startPosLow(3)+sStart(1) +
  *   endPosHighAndMiter(4) + endPosLow(3)+sEnd(1) + color(4) +
- *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection, pad, pad)
- *   = 24 floats
+ *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection,
+ *                    distanceDisplayConditionNearSq, distanceDisplayConditionFarSq) +
+ *   translucencyByDistance(4 = near, nearAlpha, far, farAlpha)
  *
  * The .w padding slots of startPosLow and endPosLow carry normalized
  * texture coordinates (sStart/sEnd) along the polyline for material shaders.
@@ -20,8 +21,13 @@
  *
  * Batch 22 appended `perInstanceFlags` at @location(5) carrying DP-H42's
  * per-polyline `disableDepthTestDistance` and DP-H40's `splitDirection`.
- * All 6 polyline shaders (base color + pick + 4 material variants) read
- * the same slot so switching materials doesn't require re-packing.
+ * Batch 136 (Audit A.14) added DDC near^2/far^2 to perInstanceFlags.zw
+ * (previously _pad/_pad) and translucencyByDistance at @location(6).
+ * Polyline does not have pixelOffset or quad-scale, so the
+ * EYE_DISTANCE_PIXEL_OFFSET / EYE_DISTANCE_SCALING gates are not
+ * consumed here. All 6 polyline shaders (base color + pick + 4 material
+ * variants) read the same slots so switching materials doesn't require
+ * re-packing.
  *
  * @private
  */
@@ -41,10 +47,36 @@ import {
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
-// Instance buffer: 6 × vec4 = 24 floats (96 bytes).
-const FLOATS_PER_SEGMENT = 24;
+// Instance buffer: 7 × vec4 = 28 floats (112 bytes).
+// Was 24 floats (Batch 22); bumped in Batch 136 to add the
+// translucencyByDistance gate.
+const FLOATS_PER_SEGMENT = 28;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
+
+/**
+ * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
+ * (near, nearValue, far, farValue) into 4 contiguous floats. Mirrors
+ * `WebGPUBillboardRenderer.packNearFarScalar`. Identity-NFS written
+ * when `scalar` is undefined so the shader's gate produces the
+ * unchanged baseline for polylines with no `translucencyByDistance`
+ * configured.
+ */
+function packNearFarScalar(out, offset, scalar, identity) {
+  if (scalar) {
+    out[offset + 0] = typeof scalar.near === "number" ? scalar.near : 0.0;
+    out[offset + 1] =
+      typeof scalar.nearValue === "number" ? scalar.nearValue : identity;
+    out[offset + 2] = typeof scalar.far === "number" ? scalar.far : 1.0e8;
+    out[offset + 3] =
+      typeof scalar.farValue === "number" ? scalar.farValue : identity;
+  } else {
+    out[offset + 0] = 0.0;
+    out[offset + 1] = identity;
+    out[offset + 2] = 1.0e8;
+    out[offset + 3] = identity;
+  }
+}
 
 // Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8)
 //   + minimumDisableDepthTestDistance(4) + splitPosition(4) + pad(8)
@@ -261,17 +293,40 @@ function buildSegmentDataForGroup(polylineGroup, computeST) {
       segmentData[offset + 18] = b;
       segmentData[offset + 19] = a;
 
-      // perInstanceFlags — DP-H42 / DP-H40 per-polyline state, shared by
-      // every segment of that polyline so the depth override and the
-      // split direction are coherent across the line.
+      // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-polyline state,
+      // shared by every segment of that polyline so the depth override,
+      // split direction, and DDC window are coherent across the line.
       //   x: disableDepthTestDistance (raw meters; squared in shader)
       //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-      //   z, w: reserved
+      //   z: distanceDisplayCondition.near^2 (Batch 136)
+      //   w: distanceDisplayCondition.far^2 (Batch 136)
       const d = polyline._disableDepthTestDistance;
       segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
-      segmentData[offset + 22] = 0.0;
-      segmentData[offset + 23] = 0.0;
+      const ddc = polyline._distanceDisplayCondition;
+      if (ddc) {
+        const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+        const ddcFar =
+          typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+        segmentData[offset + 22] = ddcNear * ddcNear;
+        segmentData[offset + 23] = isFinite(ddcFar)
+          ? ddcFar * ddcFar
+          : Number.MAX_VALUE;
+      } else {
+        segmentData[offset + 22] = 0.0;
+        segmentData[offset + 23] = Number.MAX_VALUE;
+      }
+
+      // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance.
+      // Identity = 1.0 (multiplicative onto alpha). Polyline doesn't
+      // expose pixelOffset or per-quad scale, so the other two
+      // NearFarScalar gates aren't packed.
+      packNearFarScalar(
+        segmentData,
+        offset + 24,
+        polyline._translucencyByDistance,
+        1.0,
+      );
 
       segmentCount++;
     }
@@ -356,13 +411,31 @@ function buildPickSegmentData(collection, context) {
       segmentData[offset + 18] = pc.blue;
       segmentData[offset + 19] = pc.alpha;
 
-      // Pick path inherits DP-H42 / DP-H40 so the picked region matches
-      // what the user sees on screen. Same contract as the color path.
+      // Pick path inherits DP-H42 / DP-H40 / A.14 so the picked region
+      // matches what the user sees on screen. Same contract as the
+      // color path.
       const d = polyline._disableDepthTestDistance;
       segmentData[offset + 20] = typeof d === "number" && isFinite(d) ? d : 0.0;
       segmentData[offset + 21] = polyline._splitDirection ?? 0.0;
-      segmentData[offset + 22] = 0.0;
-      segmentData[offset + 23] = 0.0;
+      const ddc = polyline._distanceDisplayCondition;
+      if (ddc) {
+        const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+        const ddcFar =
+          typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+        segmentData[offset + 22] = ddcNear * ddcNear;
+        segmentData[offset + 23] = isFinite(ddcFar)
+          ? ddcFar * ddcFar
+          : Number.MAX_VALUE;
+      } else {
+        segmentData[offset + 22] = 0.0;
+        segmentData[offset + 23] = Number.MAX_VALUE;
+      }
+      packNearFarScalar(
+        segmentData,
+        offset + 24,
+        polyline._translucencyByDistance,
+        1.0,
+      );
 
       segmentCount++;
     }
@@ -384,10 +457,12 @@ const SEGMENT_BUFFER_LAYOUT = {
     { shaderLocation: 2, offset: 32, format: "float32x4" },
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
-    // DP-H42 / DP-H40 perInstanceFlags (Batch 22). Same slot in every
+    // DP-H42 / DP-H40 / A.14 DDC perInstanceFlags. Same slot in every
     // polyline shader variant so per-polyline state can flow through
     // regardless of material type.
     { shaderLocation: 5, offset: 80, format: "float32x4" },
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance.
+    { shaderLocation: 6, offset: 96, format: "float32x4" },
   ],
 };
 
@@ -428,9 +503,9 @@ function getPolylineShaderModuleCache(device) {
 }
 
 /**
- * Scan the collection for the DP-H42 / DP-H40 defines that apply this
- * frame. Short-circuits once both bits are set. Baseline (no features)
- * stays the hot path.
+ * Scan the collection for the DP-H42 / DP-H40 / A.14 defines that
+ * apply this frame. Short-circuits once all four bits are set.
+ * Baseline (no features) stays the hot path.
  * @private
  */
 function computePolylineDefinesForFrame(collection, frameState) {
@@ -444,9 +519,15 @@ function computePolylineDefinesForFrame(collection, frameState) {
   }
   const polylines = collection._polylines;
   const length = collection._polylinesLength;
-  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  // Polyline consumes 4 of the 6 distance defines (no pixelOffset, no
+  // quad scale).
+  const all =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE |
+    ShaderDefine.SPLIT_ENABLED |
+    ShaderDefine.DISTANCE_DISPLAY_CONDITION |
+    ShaderDefine.EYE_DISTANCE_TRANSLUCENCY;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {
+    if ((defines & all) === all) {
       break;
     }
     const p = polylines[i];
@@ -467,6 +548,19 @@ function computePolylineDefinesForFrame(collection, frameState) {
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
     }
+    // AUDIT_2026_05_02 A.14 (Batch 136) — DDC + translucencyByDistance.
+    if (
+      (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
+      defined(p._distanceDisplayCondition)
+    ) {
+      defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_TRANSLUCENCY) === 0 &&
+      defined(p._translucencyByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_TRANSLUCENCY;
+    }
   }
   return defines;
 }
@@ -484,11 +578,21 @@ function prewarmPolylineShaders(device) {
     return;
   }
   const D = ShaderDefine;
+  // AUDIT_2026_05_02 A.14 (Batch 136) — added DDC + translucencyByDistance
+  // variants. Polyline consumes 4 distance-related defines, but the
+  // most common production combos are: baseline, DDC alone (KML),
+  // DDC + translucency (animated KML lines), and the all-active set.
+  const D_KML = D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
+  const D_PROD = D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | D_KML;
   const defineSets = [
     0,
     D.DISABLE_DEPTH_DISTANCE,
     D.SPLIT_ENABLED,
+    D.DISTANCE_DISPLAY_CONDITION,
+    D.EYE_DISTANCE_TRANSLUCENCY,
     D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+    D_KML,
+    D_PROD,
   ];
   const sourceIdsAndKeys = [
     [ShaderSourceId.POLYLINE_COLLECTION, "polylineColor"],
@@ -920,20 +1024,9 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
   const cache = collection._webgpuCache;
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
 
-  // AUDIT_2026_05_02 A.14 — surface that distance attributes are dropped.
-  //>>includeStart('debug', pragmas.debug);
-  for (let i = 0; i < length; i++) {
-    const pl = collection.get(i);
-    if (defined(pl?.distanceDisplayCondition)) {
-      oneTimeWarning(
-        "WebGPUPolyline.distanceAttribs",
-        "PolylineCollection on WebGPU does not yet honor " +
-          "distanceDisplayCondition. Track AUDIT_2026_05_02 A.14.",
-      );
-      break;
-    }
-  }
-  //>>includeEnd('debug');
+  // AUDIT_2026_05_02 A.14 (Batch 136) — both Polyline distance gates
+  // (DDC + translucencyByDistance) are wired. Polyline has no
+  // pixelOffset or quad-scale, so those gates don't apply here.
 
   // Prewarm all (material × defines) shader modules on first render per
   // device so the hot path doesn't pay for `createShaderModule` cost.

@@ -68,6 +68,19 @@ fn translateRelativeToEye(
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
+// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of `czm_nearFarScalar`.
+// See `BillboardCollection.wgsl` for the canonical comment block.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+    let nearDistSq = scalar.x * scalar.x;
+    let farDistSq = scalar.z * scalar.z;
+    let denom = farDistSq - nearDistSq;
+    if (denom <= 0.0) {
+        return scalar.y;
+    }
+    let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+    return mix(scalar.y, scalar.w, t);
+}
+
 @vertex
 fn vertexMain(
     @builtin(vertex_index) vertexIndex: u32,
@@ -76,11 +89,18 @@ fn vertexMain(
     @location(1) posLowAndOutline: vec4<f32>,   // positionLow.xyz, outlineWidth
     @location(2) pointColor: vec4<f32>,          // color rgba
     @location(3) outColorAndShow: vec4<f32>,     // outlineColor.rgb, show (0/1)
-    // DP-H42 / DP-H40 — perInstanceFlags. Same contract as Billboard:
+    // DP-H42 / DP-H40 / A.14 perInstanceFlags. Same contract as Billboard:
     //   x = disableDepthTestDistance (meters; squared in shader)
     //   y = splitDirection (-1 / 0 / +1)
-    //   z, w = reserved
+    //   z = distanceDisplayCondition.near^2 (Batch 136)
+    //   w = distanceDisplayCondition.far^2 (Batch 136)
     @location(4) perInstanceFlags: vec4<f32>,
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance + scaleByDistance
+    // NearFarScalars (near, nearValue, far, farValue). Point has no
+    // pixelOffset attribute, so the EYE_DISTANCE_PIXEL_OFFSET gate is
+    // not consumed here.
+    @location(5) translucencyByDistance: vec4<f32>,
+    @location(6) scaleByDistance: vec4<f32>,
 ) -> VertexOutput {
     var output: VertexOutput;
 
@@ -100,19 +120,35 @@ fn vertexMain(
 
     let posHigh = posHighAndSize.xyz;
     let posLow = posLowAndOutline.xyz;
-    let pixelSize = posHighAndSize.w;
+    let basePixelSize = posHighAndSize.w;
     let outlineWidth = posLowAndOutline.w;
+
+    // RTE: compute eye-relative position with emulated 64-bit precision
+    // This eliminates jittering at planetary-scale coordinates
+    let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
+    // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance, hoisted
+    // for use by DDC + DISABLE_DEPTH + the two NearFarScalar gates.
+    let camDistSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
+    var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
+
+    // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
+    // before the quad expansion so scale=0 collapses the quad to a
+    // point and the DDC clip-pos override doesn't fight the size
+    // calculation.
+    var pixelSize: f32 = basePixelSize;
+    //>>ifdef EYE_DISTANCE_SCALING
+    let distScale = czm_nearFarScalar(scaleByDistance, camDistSq);
+    pixelSize = pixelSize * distScale;
+    if (distScale == 0.0) {
+        clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
 
     // Total rendered size including outline on both sides
     let totalSize = max(pixelSize + 2.0 * outlineWidth, 1.0);
 
     // Quad corner from vertex index (0-5)
     let corner = QUAD_CORNERS[vertexIndex % 6u];
-
-    // RTE: compute eye-relative position with emulated 64-bit precision
-    // This eliminates jittering at planetary-scale coordinates
-    let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
-    var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
 
     // Screen-space offset: corner * totalSize pixels → NDC offset
     let ndcOffset = vec2<f32>(
@@ -128,10 +164,20 @@ fn vertexMain(
         clipPos.w,
     );
 
+    //>>ifdef DISTANCE_DISPLAY_CONDITION
+    // AUDIT_2026_05_02 A.14 (Batch 136) — gate visibility by squared
+    // eye distance against the per-instance `[nearSq, farSq]` window
+    // packed into `perInstanceFlags.zw`.
+    let nearSqDDC = perInstanceFlags.z;
+    let farSqDDC = perInstanceFlags.w;
+    if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+        clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
+
     //>>ifdef DISABLE_DEPTH_DISTANCE
     // DP-H42 — override depth when within the per-instance or frame-wide
-    // `disableDepthTestDistance`. See BillboardCollection.wgsl for
-    // derivation; eye-relative distance squared is `dot(rte, rte)`.
+    // `disableDepthTestDistance`.
     var disableDepthSq = perInstanceFlags.x * perInstanceFlags.x;
     if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
         disableDepthSq =
@@ -139,8 +185,7 @@ fn vertexMain(
             camera.minimumDisableDepthTestDistance;
     }
     if (disableDepthSq != 0.0) {
-        let distSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
-        if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+        if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
             clipPos.z = clipPos.w;
         }
     }
@@ -149,8 +194,20 @@ fn vertexMain(
     output.position = clipPos;
 
     output.uv = corner;
-    output.color = pointColor;
-    output.outlineColor = vec4<f32>(outColorAndShow.xyz, pointColor.a);
+
+    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance ramp
+    // applied to both the fill (pointColor) and outline alpha so the
+    // point fades coherently under camera distance changes.
+    var effectiveAlpha: f32 = pointColor.a;
+    //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+    let translucency = czm_nearFarScalar(translucencyByDistance, camDistSq);
+    effectiveAlpha = effectiveAlpha * translucency;
+    if (translucency == 0.0) {
+        output.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    //>>endif
+    output.color = vec4<f32>(pointColor.rgb, effectiveAlpha);
+    output.outlineColor = vec4<f32>(outColorAndShow.xyz, effectiveAlpha);
     output.innerPercent = select(0.0, pixelSize / totalSize, totalSize > 0.0);
     output.pixelDistance = select(0.0, 1.0 / totalSize, totalSize > 0.0);
 

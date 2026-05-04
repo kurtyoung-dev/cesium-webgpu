@@ -4,17 +4,21 @@
  * Handles WebGPU rendering of BillboardCollection.
  * Billboards are rendered as instanced screen-aligned quads with texture atlas.
  *
- * Instance data layout (112 bytes per billboard, 7 x vec4):
+ * Instance data layout (160 bytes per billboard, 10 x vec4 = 40 floats):
  *   posHighAndScale(4) + posLowAndRotation(4) + compressedAttr0(4) +
  *   compressedAttr1(4) + color(4) + miscFlags(4) +
- *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection, pad, pad)
- *   = 28 floats
+ *   perInstanceFlags(4 = disableDepthTestDistance, splitDirection,
+ *                    distanceDisplayConditionNearSq, distanceDisplayConditionFarSq) +
+ *   translucencyByDistance(4 = near, nearAlpha, far, farAlpha) +
+ *   pixelOffsetScaleByDistance(4 = near, nearScale, far, farScale) +
+ *   scaleByDistance(4 = near, nearScale, far, farScale)
  *
- * The `perInstanceFlags` slot is always present (16-byte alignment +
- * future-proofing for per-instance flags DP-H42/H40 consume). The shader
- * only reads it inside `//>>ifdef DISABLE_DEPTH_DISTANCE` / `//>>ifdef
- * SPLIT_ENABLED` blocks — when both features are off, the attribute is
- * declared-unused and the rasterizer ignores the slot.
+ * The four trailing slots (perInstanceFlags + 3 NearFarScalars) are
+ * always present (16-byte alignment for `arrayStride`). The shader only
+ * reads them inside the matching `//>>ifdef` blocks — when none of those
+ * defines are active for the frame, the attributes are declared-unused
+ * and the rasterizer ignores the slots. Cost is 64 bytes per instance
+ * of upload bandwidth (negligible for typical Cesium scenes).
  *
  * @private
  */
@@ -37,10 +41,13 @@ import {
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
-// Per-instance stride now carries a 7th vec4 for the DP-H42/H40 flags.
-// Bumping from 24 → 28 floats keeps the stride a multiple of 16 bytes
-// (WebGPU requirement for `arrayStride`).
-const FLOATS_PER_INSTANCE = 28;
+// Per-instance stride. Batch 135 carried 7 vec4 (28 floats) for
+// DP-H42/H40 + DISTANCE_DISPLAY_CONDITION. Batch 136 (Audit A.14
+// finish) extends to 10 vec4 (40 floats) for the three remaining
+// NearFarScalar gates: translucencyByDistance,
+// pixelOffsetScaleByDistance, scaleByDistance. 16-byte stride
+// alignment preserved.
+const FLOATS_PER_INSTANCE = 40;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
@@ -52,6 +59,41 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
+
+/**
+ * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
+ * into the (near, nearValue, far, farValue) layout the WGSL helper
+ * `czm_nearFarScalar` expects. Returns the same layout the WebGL
+ * upstream uses; the shader squares the near/far values internally so
+ * we pack raw distances, not squared. When `scalar` is undefined, we
+ * write a "no-op" identity (near=0, value=`identity`, far=Infinity,
+ * value=`identity`) — czm_nearFarScalar against that returns
+ * `identity` for any camDistSq, so the shader's existing baseline
+ * behavior is preserved when the user didn't set the property.
+ *
+ * @param {Float32Array} out - Destination buffer.
+ * @param {number} offset - First slot index in `out`.
+ * @param {object|undefined} scalar - The NearFarScalar object
+ *   ({near, nearValue, far, farValue}) or undefined.
+ * @param {number} identity - The shader-side identity for this gate
+ *   (1.0 for translucency / pixel-offset / scale — all multiplicative).
+ */
+function packNearFarScalar(out, offset, scalar, identity) {
+  if (scalar) {
+    out[offset + 0] = typeof scalar.near === "number" ? scalar.near : 0.0;
+    out[offset + 1] =
+      typeof scalar.nearValue === "number" ? scalar.nearValue : identity;
+    out[offset + 2] = typeof scalar.far === "number" ? scalar.far : 1.0e8;
+    out[offset + 3] =
+      typeof scalar.farValue === "number" ? scalar.farValue : identity;
+  } else {
+    // Identity NearFarScalar: clamp returns identity at every distance.
+    out[offset + 0] = 0.0;
+    out[offset + 1] = identity;
+    out[offset + 2] = 1.0e8;
+    out[offset + 3] = identity;
+  }
+}
 
 let _cachedShaderSource = null;
 async function getShaderSource() {
@@ -168,6 +210,27 @@ function buildInstanceData(collection) {
       instanceData[offset + 27] = Number.MAX_VALUE;
     }
 
+    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates
+    // packed into vec4 slots 7/8/9. Identity is 1.0 for all three (each
+    // is multiplicative — alpha, pixel-offset scale, quad scale). The
+    // `packNearFarScalar` helper writes an identity-NFS when the user
+    // didn't set the property, so the shader's gate produces the
+    // unchanged baseline (alpha=1, scale=1) without needing a separate
+    // sentinel check.
+    packNearFarScalar(
+      instanceData,
+      offset + 28,
+      bb._translucencyByDistance,
+      1.0,
+    );
+    packNearFarScalar(
+      instanceData,
+      offset + 32,
+      bb._pixelOffsetScaleByDistance,
+      1.0,
+    );
+    packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
+
     visibleCount++;
   }
 
@@ -265,6 +328,22 @@ function buildPickInstanceData(collection, context) {
       instanceData[offset + 27] = Number.MAX_VALUE;
     }
 
+    // AUDIT_2026_05_02 A.14 (Batch 136) — same NearFarScalar packing as
+    // the color path so the pick pipeline gates pixels identically.
+    packNearFarScalar(
+      instanceData,
+      offset + 28,
+      bb._translucencyByDistance,
+      1.0,
+    );
+    packNearFarScalar(
+      instanceData,
+      offset + 32,
+      bb._pixelOffsetScaleByDistance,
+      1.0,
+    );
+    packNearFarScalar(instanceData, offset + 36, bb._scaleByDistance, 1.0);
+
     visibleCount++;
   }
 
@@ -281,9 +360,16 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
     { shaderLocation: 5, offset: 80, format: "float32x4" },
-    // DP-H42 / DP-H40 — perInstanceFlags. Always declared in the layout;
-    // the shader only reads it inside the matching `//>>ifdef` blocks.
+    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags. Always declared in
+    // the layout; the shader only reads it inside the matching
+    // `//>>ifdef` blocks.
     { shaderLocation: 6, offset: 96, format: "float32x4" },
+    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates.
+    // Always declared so a single pipeline layout serves all 8
+    // ifdef variants without rebuilding.
+    { shaderLocation: 7, offset: 112, format: "float32x4" },
+    { shaderLocation: 8, offset: 128, format: "float32x4" },
+    { shaderLocation: 9, offset: 144, format: "float32x4" },
   ],
 };
 
@@ -491,21 +577,31 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
     return;
   }
   const D = ShaderDefine;
-  // AUDIT_2026_05_02 A.14 (Batch 135) — added DISTANCE_DISPLAY_CONDITION
-  // variants to the prewarm set. Most production scenes that use KML /
-  // GeoJSON entities also set distance windows, so warming the gated
-  // variant on first frame avoids a stutter when the user interacts
-  // with the entity afterwards.
-  const D_PROD =
-    D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | D.DISTANCE_DISPLAY_CONDITION;
+  // AUDIT_2026_05_02 A.14 (Batches 135 + 136) — billboard-relevant
+  // defines now total 6: DISABLE_DEPTH_DISTANCE, SPLIT_ENABLED,
+  // DISTANCE_DISPLAY_CONDITION, EYE_DISTANCE_TRANSLUCENCY,
+  // EYE_DISTANCE_PIXEL_OFFSET, EYE_DISTANCE_SCALING. Full Cartesian
+  // product is 64 variants — too many to prewarm. We seed the most
+  // common production scenarios; cold-path variants compile lazily
+  // through the shader-module cache on first use.
+  const ALL_DDC_GATES =
+    D.DISTANCE_DISPLAY_CONDITION |
+    D.EYE_DISTANCE_TRANSLUCENCY |
+    D.EYE_DISTANCE_PIXEL_OFFSET |
+    D.EYE_DISTANCE_SCALING;
+  const D_KML = D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
+  const D_PROD = D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | ALL_DDC_GATES;
   const defineSets = [
     0,
     D.DISABLE_DEPTH_DISTANCE,
     D.SPLIT_ENABLED,
     D.DISTANCE_DISPLAY_CONDITION,
+    D.EYE_DISTANCE_TRANSLUCENCY,
+    D.EYE_DISTANCE_SCALING,
     D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
-    D.DISABLE_DEPTH_DISTANCE | D.DISTANCE_DISPLAY_CONDITION,
-    D.SPLIT_ENABLED | D.DISTANCE_DISPLAY_CONDITION,
+    D_KML,
+    D.DISABLE_DEPTH_DISTANCE | D_KML,
+    ALL_DDC_GATES,
     D_PROD,
   ];
   cache.prewarm(
@@ -652,11 +748,14 @@ function computeDefinesForFrame(collection, frameState) {
   }
   const billboards = collection._billboards;
   const length = collection.length;
-  // Short-circuit the scan once all three flags are set.
+  // Short-circuit the scan once all six flags are set.
   const all =
     ShaderDefine.DISABLE_DEPTH_DISTANCE |
     ShaderDefine.SPLIT_ENABLED |
-    ShaderDefine.DISTANCE_DISPLAY_CONDITION;
+    ShaderDefine.DISTANCE_DISPLAY_CONDITION |
+    ShaderDefine.EYE_DISTANCE_TRANSLUCENCY |
+    ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET |
+    ShaderDefine.EYE_DISTANCE_SCALING;
   for (let i = 0; i < length; i++) {
     if ((defines & all) === all) {
       break;
@@ -688,6 +787,29 @@ function computeDefinesForFrame(collection, frameState) {
       defined(bb._distanceDisplayCondition)
     ) {
       defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
+    }
+    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates.
+    // Same opt-in semantics as DDC: bit only flips when at least one
+    // billboard sets the property, so collections that don't use
+    // distance-aware translucency / pixel-offset / scaling stay on
+    // the baseline shader.
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_TRANSLUCENCY) === 0 &&
+      defined(bb._translucencyByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_TRANSLUCENCY;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET) === 0 &&
+      defined(bb._pixelOffsetScaleByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_SCALING) === 0 &&
+      defined(bb._scaleByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_SCALING;
     }
   }
   return defines;
@@ -731,34 +853,14 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   }
   const cache = collection._webgpuCache;
 
-  // AUDIT_2026_05_02 A.14 — `distanceDisplayCondition` is now wired
-  // (Batch 135) via the DISTANCE_DISPLAY_CONDITION shader define +
-  // `perInstanceFlags.zw` near^2/far^2 packing. The remaining three
-  // gates — `translucencyByDistance`, `pixelOffsetScaleByDistance`,
-  // and `scaleByDistance` — still silently no-op on WebGPU. Each
-  // would slot into `perInstanceFlags` (or a new vec4) using the
-  // same nearFarScalar pattern; tracked as
-  // NEW-COLLECTIONS-DISTANCE-ATTRIBS in DEFERRED_WORK.
-  //>>includeStart('debug', pragmas.debug);
-  for (let i = 0; i < length; i++) {
-    const bb = collection.get(i);
-    if (
-      defined(bb.translucencyByDistance) ||
-      defined(bb.pixelOffsetScaleByDistance) ||
-      defined(bb.scaleByDistance)
-    ) {
-      oneTimeWarning(
-        "WebGPUBillboard.distanceAttribs",
-        "BillboardCollection on WebGPU now honors " +
-          "`distanceDisplayCondition` (Batch 135) but does not yet " +
-          "honor `translucencyByDistance` / `pixelOffsetScaleByDistance` / " +
-          "`scaleByDistance`. The billboard renders/scales as if those " +
-          "are unset. Track NEW-COLLECTIONS-DISTANCE-ATTRIBS.",
-      );
-      break;
-    }
-  }
-  //>>includeEnd('debug');
+  // AUDIT_2026_05_02 A.14 (Batch 136) — all four billboard distance
+  // gates are now wired: `distanceDisplayCondition` (Batch 135),
+  // `translucencyByDistance`, `pixelOffsetScaleByDistance`, and
+  // `scaleByDistance` (Batch 136). Each ramps via the WGSL helper
+  // `czm_nearFarScalar` and gates the shader behind a per-feature
+  // ShaderDefine bit so collections that don't use a given gate stay
+  // on the baseline pipeline. The previous one-time warning is
+  // retired.
 
   // Shader source + prewarm (once per device; `prewarmBillboardShaders`
   // is idempotent so repeated collections on the same device no-op).

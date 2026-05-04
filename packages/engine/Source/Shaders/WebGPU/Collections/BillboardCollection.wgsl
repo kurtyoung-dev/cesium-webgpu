@@ -1,23 +1,28 @@
 // BillboardCollection.wgsl — Instanced billboard rendering for CesiumJS WebGPU
 // Each billboard is an instanced screen-aligned quad with texture atlas support.
 //
-// Instance data layout (112 bytes per billboard, 7 x vec4):
-//   @location(0) posHighAndScale:    vec4<f32> — encodedPosition.high.xyz, uniformScale
-//   @location(1) posLowAndRotation:  vec4<f32> — encodedPosition.low.xyz, rotation
-//   @location(2) compressedAttr0:    vec4<f32> — pixelOffset.xy, alignedAxis.xy
-//   @location(3) compressedAttr1:    vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
-//   @location(4) color:              vec4<f32> — rgba
-//   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
-//   @location(6) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
-//                                     splitDirection (-1/0/+1),
-//                                     distanceDisplayConditionNearSq,
-//                                     distanceDisplayConditionFarSq
+// Instance data layout (160 bytes per billboard, 10 x vec4):
+//   @location(0) posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
+//   @location(1) posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
+//   @location(2) compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
+//   @location(3) compressedAttr1:           vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
+//   @location(4) color:                     vec4<f32> — rgba
+//   @location(5) miscFlags:                 vec4<f32> — show, sizeInMeters, width, height
+//   @location(6) perInstanceFlags:          vec4<f32> — disableDepthTestDistance,
+//                                             splitDirection (-1/0/+1),
+//                                             distanceDisplayConditionNearSq,
+//                                             distanceDisplayConditionFarSq
+//   @location(7) translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
+//   @location(8) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
+//   @location(9) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
 //
-// The `perInstanceFlags` attribute is read only inside `//>>ifdef` blocks
-// for DP-H42 (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), and
-// AUDIT_2026_05_02 A.14 (DISTANCE_DISPLAY_CONDITION). When none of those
-// defines are active WGSL treats the declared input as unused and the
-// rasterizer ignores the VB slot — cost is 16 bytes per instance of
+// The four trailing slots (perInstanceFlags + the three NearFarScalars)
+// are only consumed inside `//>>ifdef` blocks for DP-H42
+// (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), and AUDIT_2026_05_02
+// A.14 (DISTANCE_DISPLAY_CONDITION + EYE_DISTANCE_TRANSLUCENCY +
+// EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING). When none of those
+// defines are active WGSL treats the declared inputs as unused and the
+// rasterizer ignores the VB slots — cost is 64 bytes per instance of
 // VRAM bandwidth only.
 
 struct CameraUniforms {
@@ -62,6 +67,9 @@ struct VertexInput {
   @location(4) color: vec4<f32>,
   @location(5) miscFlags: vec4<f32>,
   @location(6) perInstanceFlags: vec4<f32>,
+  @location(7) translucencyByDistance: vec4<f32>,
+  @location(8) pixelOffsetScaleByDistance: vec4<f32>,
+  @location(9) scaleByDistance: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -79,6 +87,25 @@ struct VertexOutput {
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
   return (posHigh - camHigh) + (posLow - camLow);
+}
+
+// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of
+// `Source/Shaders/Builtin/Functions/nearFarScalar.glsl`'s
+// `czm_nearFarScalar`. Linearly interpolates `nearValue` → `farValue`
+// over `[near, far]` using squared distances to avoid the sqrt that
+// would otherwise be needed to express the eye-to-primitive distance.
+// The packed vec4 is `(near, nearValue, far, farValue)` matching the
+// WebGL convention. When `near == far` we return `nearValue` to avoid
+// division-by-zero — matches WebGL's clamp-then-mix semantics.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
 }
 
 // Quad corner offsets (2 triangles = 6 vertices)
@@ -115,9 +142,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let posHigh = input.posHighAndScale.xyz;
   let posLow = input.posLowAndRotation.xyz;
-  let scale = input.posHighAndScale.w;
+  let baseScale = input.posHighAndScale.w;
   let rotation = input.posLowAndRotation.w;
-  let pixelOffset = input.compressedAttr0.xy;
+  let basePixelOffset = input.compressedAttr0.xy;
   let imageRect = input.compressedAttr1; // x,y,w,h in atlas (normalized)
   let billboardWidth = input.miscFlags.z;
   let billboardHeight = input.miscFlags.w;
@@ -125,6 +152,38 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // RTE position to clip space
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance, hoisted
+  // here because four distinct gates (DDC, DISABLE_DEPTH, and the
+  // three nearFarScalar gates) all consume it. Computing once avoids
+  // four redundant dot products in the hot path. `positionRTE` is
+  // already the camera-relative offset, so dot-self IS the squared
+  // eye-space distance.
+  let camDistSq = dot(positionRTE, positionRTE);
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
+  // before the corner expansion. WebGL's `BillboardCollectionVS.glsl:228-236`
+  // multiplies `scale *= distanceScale` and pushes the vertex behind
+  // the near plane when the result is exactly 0 (matching that path).
+  // `effectiveScale` is the post-gate value used downstream.
+  var effectiveScale: f32 = baseScale;
+  //>>ifdef EYE_DISTANCE_SCALING
+  let distScale = czm_nearFarScalar(input.scaleByDistance, camDistSq);
+  effectiveScale = effectiveScale * distScale;
+  if (distScale == 0.0) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_PIXEL_OFFSET
+  // before the pixel-offset-to-clip-space conversion. Mirrors WebGL's
+  // `pixelOffset *= czm_nearFarScalar(pixelOffsetScaleByDistance, lengthSq)`
+  // at `BillboardCollectionVS.glsl:249-252`.
+  var effectivePixelOffset: vec2<f32> = basePixelOffset;
+  //>>ifdef EYE_DISTANCE_PIXEL_OFFSET
+  let pxScale = czm_nearFarScalar(input.pixelOffsetScaleByDistance, camDistSq);
+  effectivePixelOffset = effectivePixelOffset * pxScale;
+  //>>endif
 
   // Corner offset
   let cornerIndex = input.vertexIndex % 6u;
@@ -140,13 +199,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     );
   }
 
-  // Billboard size in pixels
-  let size = vec2<f32>(billboardWidth, billboardHeight) * scale;
+  // Billboard size in pixels (post-distance-scaling)
+  let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
   // Convert pixel offset to clip space
   let pixelToClip = 2.0 / camera.viewportSize;
-  clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
-  clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
+  clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
+  clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
   // AUDIT_2026_05_02 A.14 (Batch 135) — gate visibility by camera-to-
@@ -154,13 +213,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // `[nearSq, farSq]` window packed into `perInstanceFlags.zw`. When
   // outside the window, push the vertex behind the near plane so all
   // 6 quad corners clip — same trick the WebGL VS uses at
-  // BillboardCollectionVS.glsl:254-261. `positionRTE` is the eye-
-  // space offset from the camera so its dot-self IS the squared
-  // eye distance (no sqrt needed; matches WebGL's lengthSq path).
-  let distSqDDC = dot(positionRTE, positionRTE);
+  // BillboardCollectionVS.glsl:254-261.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
-  if (distSqDDC < nearSqDDC || distSqDDC > farSqDDC) {
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
     clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
   //>>endif
@@ -179,12 +235,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    // `positionRTE` is the eye-space offset from the camera; its squared
-    // length is the squared eye-distance to the billboard center.
-    let distSq = dot(positionRTE, positionRTE);
     // Negative `disableDepthTestDistanceSq` is a sentinel for infinity —
     // always disable (match WebGL's `< 0.0` convention).
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       clipPos.z = clipPos.w;
     }
   }
@@ -208,7 +261,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     imageRect.y + baseUV.y * imageRect.w
   );
 
-  output.color = input.color;
+  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_TRANSLUCENCY
+  // to the propagated alpha. WebGL's `BillboardCollectionVS.glsl:240-247`
+  // pushes the vertex behind the near plane when translucency is
+  // exactly 0; intermediate values just scale the fragment alpha (the
+  // FS multiplies texColor.a by input.color.a downstream).
+  var effectiveAlpha: f32 = input.color.a;
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  effectiveAlpha = effectiveAlpha * translucency;
+  if (translucency == 0.0) {
+    output.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+  output.color = vec4<f32>(input.color.rgb, effectiveAlpha);
+
   return output;
 }
 
