@@ -399,10 +399,17 @@ collection where they apply. WebGL feature parity reached.
   EYE_DISTANCE_TRANSLUCENCY + EYE_DISTANCE_SCALING (no pixelOffset on
   points). Instance buffer 5 → 7 vec4 with translucencyByDistance +
   scaleByDistance at @locations 5/6.
-- `LabelCollection` inherits the Billboard fix automatically — its
-  glyph + background billboards already propagate distance attribs
-  via the Label setters (lines 884-1344 of `Scene/Label.js`). No
-  separate WGSL or JS work needed for Label.
+- `LabelCollection` ~~inherits the Billboard fix automatically~~
+  needed its OWN wiring (Batch 137 correction). Although Label
+  setters propagate distance attribs to glyph billboards, those
+  glyphs render through a SEPARATE shader path —
+  `BillboardCollectionSDF.wgsl` driven by `WebGPULabelRenderer.js`,
+  not `BillboardCollection.wgsl` driven by `WebGPUBillboardRenderer.js`.
+  Batch 137 added the gates to the SDF shader + extended the
+  Label renderer's instance buffer (36 → 48 floats) so
+  `label.distanceDisplayCondition` / `translucencyByDistance` /
+  `pixelOffsetScaleByDistance` / `scaleByDistance` now actually
+  affect labels on WebGPU.
 - Per-frame `computeDefinesForFrame` in every renderer now scans
   for the new gates and only flips bits when at least one
   primitive sets the corresponding property — collections that
@@ -433,6 +440,28 @@ collection where they apply. WebGL feature parity reached.
 - `packages/engine/Source/Shaders/WebGPU/Collections/PointPrimitivePick.wgsl` —
   pick path mirrors color visibility.
 
+**Batch 137 audit follow-up — shader variants the original Batch 136
+missed:**
+
+- `BillboardCollectionPick.wgsl` — pick path needed all 4 gates so an
+  invisible billboard (translucency=0 / scale=0 / out-of-DDC-window)
+  is also unpickable. Pre-Batch-137 the pick variant only had
+  DISABLE_DEPTH + SPLIT, so a hidden-by-distance billboard remained
+  pickable.
+- `BillboardCollectionSDF.wgsl` + `WebGPULabelRenderer.js` — labels
+  render through this SDF path, not through the base BillboardCollection
+  shader. Both the WGSL and the renderer's instance buffer (36 → 48
+  floats) needed the same 4-gate extension. Without this fix Batch
+  136's claim "Label inherits via Billboard" was visibly wrong: setting
+  `label.translucencyByDistance` had no effect.
+- `PolylineCollectionPick.wgsl` — same parity issue as Billboard pick
+  (DDC + translucency).
+- `PolylineArrow.wgsl` + `PolylineDash.wgsl` + `PolylineGlow.wgsl` +
+  `PolylineOutline.wgsl` — material variants of polyline. Each gained
+  a `v_alphaScale` varying that propagates `translucencyByDistance` to
+  the FS where the material's final color alpha is multiplied. DDC +
+  DISABLE_DEPTH + SPLIT also added.
+
 **Trade-offs accepted:**
 
 - Instance buffer stride grew on each renderer to make room for the
@@ -441,8 +470,201 @@ collection where they apply. WebGL feature parity reached.
   upload bandwidth only (negligible for typical scene sizes).
 - Prewarm tables grew to ~10 variants per renderer. Cold-path
   variants compile lazily through the shader-module cache.
+- The Polyline SDF Label instance buffer grew 36 → 48 floats; for a
+  typical 10k-glyph label scene that's an extra 480 KB of
+  per-frame upload — negligible.
 
-**Closing batch:** Batch 136.
+**Closing batch:** Batch 136 + Batch 137 (variant follow-up after
+audit identified missed shader paths).
+
+---
+
+### NEW-VS-THREE-POINT-DEPTH-CHECK — clamp-to-ground billboard / label terrain occlusion (Batch 137 plan)
+
+**What:** WebGL billboards and labels with
+`heightReference !== HeightReference.NONE` (i.e., clamped to the
+terrain surface) participate in a 3-point depth check that hides them
+when occluded by terrain. The vertex stage samples the globe depth
+texture at three "key points" of the quad (origin, top, top-right). If
+ALL three fail the depth comparison vs the label's eye-space depth,
+the vertex is collapsed to a degenerate position so the rasterizer
+discards it. The 3-point pattern is intentional — labels that span over
+hills should remain visible if any anchor point pokes above the
+terrain.
+
+WebGL gates the entire feature behind a `u_threePointDepthTestDistance`
+uniform: outside that distance, the check is skipped (perf optimization
+for far zooms where labels can't realistically be terrain-occluded).
+Activated via the `VS_THREE_POINT_DEPTH_CHECK` define when
+`BillboardCollection._shaderClampToGround === true` (i.e., any billboard
+in the collection has a non-NONE heightReference).
+
+**Status (WebGPU, Batch 137):** Not implemented. Clamp-to-ground
+billboards / labels render through terrain on WebGPU — visible
+regression for any KML / GeoJSON dataset that anchors labels to
+ground (a very common case). Tracked here as the next item to plan
+after audit A.14 close-out.
+
+**Why deferred:** Multi-session feature with several non-trivial
+prerequisites:
+
+1. **`VS_THREE_POINT_DEPTH_CHECK` ShaderDefine bit** — add `1 << 8` to
+   the registry (add-only, sequential after Batch 137's bit 7).
+
+2. **Globe depth texture binding on Billboard / Label BGLs**:
+   - Already shipped on the Model effects BGL at @group(3) @binding(15)
+     (`globeDepthTex`).
+   - Billboard / Label / SDF BGLs need it added. Recommendation:
+     extend the camera BGL with two new bindings (depth texture +
+     sampler) at @group(0) @binding(3..4). Keeps it on the always-bound
+     camera group rather than introducing a new group.
+   - Sample type: `unfilterable-float` (the depth texture is packed via
+     `czm_packDepth` into RGBA8). NEAREST sampler.
+
+3. **Camera UBO extension**:
+   - Add `threePointDepthTestDistance: f32` slot.
+   - Optionally add `inverseProjection: mat4x4<f32>` if depth unpacking
+     needs it (probably not — the WebGL flow projects forward and
+     samples NDC, which is what the WGSL port should mirror).
+   - Total UBO growth: ~16-80 bytes.
+
+4. **Per-instance `depthOrigin` attribute**:
+   - WebGL packs label horizontal/vertical origin into
+     `compressedAttribute2.w`. Two enum values (-1 / 0 / +1 each axis,
+     plus the "billboard inherits regular origin" sentinel) → 4 bits
+     each, fits in a u8.
+   - WebGPU options:
+     - **(a) Pack into existing `compressedAttr0.zw`** (currently
+       alignedAxis.xy on Billboard). Tight but doable.
+     - **(b) Add a new vec4 slot** for label-specific data
+       (depthOrigin + heightReference flag + sdfParams overflow).
+       Cleaner but bumps stride.
+   - Recommendation: (b). Stride growth is negligible at typical
+     label counts; clarity wins.
+
+5. **WGSL helpers**:
+   - `getGlobeDepth(positionEC) -> f32`: project to NDC, sample globe
+     depth texture, unpack via `czm_unpackDepth` equivalent. ~15 LOC.
+   - `addScreenSpaceOffset(positionEC, ...) -> vec4<f32>`: existing
+     inline corner expansion needs extraction as a function so the
+     three sample points can call it with different `(direction,
+     origin)` pairs. Currently inlined in the VS body of every
+     billboard variant — would need to live in a shared helper file
+     (`chunks/functions/csm_addScreenSpaceOffset.wgsl`?) and be
+     `//>>include`-d. Module cache key needs to handle this. ~50 LOC.
+   - `czm_unpackDepth(rgba) -> f32`: standard 4-byte → float decode.
+     Already inline in some shaders; worth extracting. ~5 LOC.
+
+6. **VS three-point check body**:
+   - Mirror the WebGL conditional structure: `if (lengthSq < dist^2 &&
+     enableDepthCheck == 1.0)`.
+   - Compute three sample points: `pEC1 = origin`, `pEC2 = top`,
+     `pEC3 = top-right`.
+   - Depth comparison: `pEC.z + depthsilon < globeDepth` for each
+     (depthsilon = 10.0 from WebGL).
+   - If all three fail: `positionEC = vec3(0.0)`.
+   - ~30 LOC per shader.
+
+7. **Frame-state bit detection in `computeDefinesForFrame`**:
+   - Set `VS_THREE_POINT_DEPTH_CHECK` when
+     `collection._shaderClampToGround === true` (mirrors
+     `BillboardCollection.js:1031`).
+   - Flag flips when a billboard's `heightReference !==
+     HeightReference.NONE` is added to the collection.
+   - ~10 LOC per renderer.
+
+8. **Per-shader port**:
+   - `BillboardCollection.wgsl` (color) — primary consumer.
+   - `BillboardCollectionSDF.wgsl` (label glyph SDF path) —
+     critical, this is what most labels render through.
+   - **Pick paths**: WebGL does NOT enable the check on pick. WebGPU
+     should match — pick-through-terrain is acceptable.
+   - **Polyline / Point**: don't apply, no clamp-to-ground heightRef.
+
+9. **Backwards compatibility**:
+   - The `_shaderClampToGround` flag already exists on
+     `BillboardCollection`; WebGPU's `computeDefinesForFrame` just
+     needs to read it.
+   - Existing billboards without a heightReference stay on the
+     baseline shader (zero new perf cost).
+
+**Architectural decisions to make before implementing:**
+
+- (Q1) Bind globe depth on the camera BGL or introduce a new BGL?
+  - **Recommendation**: camera BGL extension. One bind cost,
+    available everywhere.
+- (Q2) Extract `addScreenSpaceOffset` to a chunk file?
+  - **Recommendation**: yes. The inline duplication across 7
+    Billboard / Polyline shaders is already a maintenance burden;
+    this feature is the right time to extract.
+- (Q3) Keep the per-instance `depthOrigin` packing tight or split
+  into a new vec4?
+  - **Recommendation**: new vec4 slot. ~64 bytes per visible
+    label of bandwidth; negligible.
+- (Q4) Should the SDF / Label path also pay this cost when no
+  labels are clamped?
+  - **No.** The bit is per-collection; labels-without-clamp don't
+    pay anything beyond the baseline shader.
+
+**Performance profile:**
+
+- 3 globe-depth texture samples per visible vertex when active.
+- 6 vertices × 3 samples × 1k labels = ~18k texture samples per
+  frame. Globe depth texture is small (~512×512), well within
+  texture cache. Negligible.
+- Cost when feature OFF: zero (the bit isn't flipped, the gate
+  ifdef-blocks compile out).
+
+**Estimated effort:** 2-3 sessions, broken roughly as:
+
+- Session 1: Camera BGL extension + globe depth wiring + helper
+  extraction (`addScreenSpaceOffset`, `getGlobeDepth`) + ShaderDefine
+  bit.
+- Session 2: 3-point check body in `BillboardCollection.wgsl` +
+  `BillboardCollectionSDF.wgsl`. JS-side `computeDefinesForFrame`
+  detection + `depthOrigin` per-instance attribute packing.
+- Session 3: Audit pass (similar shape to Batch 137 — verify pick
+  variants intentionally don't gate, verify renderer instance
+  buffer layouts match WGSL @location bindings, verify
+  `_shaderClampToGround` flag flips correctly when heightReference
+  changes mid-session).
+
+**Estimated LOC:** ~300-400, distributed:
+
+- ShaderDefine + bit: 5
+- Camera UBO + BGL extensions: ~50
+- WGSL helpers (extracted): ~70
+- VS check body × 2 shaders: ~60
+- JS instance packing + detection × 2 renderers: ~50
+- Tests / pre-warm tables: ~30
+- DEFERRED_WORK + comments: ~30
+
+**Prerequisites:**
+
+- None blocking — globe depth texture is already produced by
+  `WebGPUGlobeDepth.executeCopyDepth`, sampled by the model PBR
+  shader via `globeDepthTex`. Reusing the same texture view + a
+  filtering-compatible sampler is straightforward.
+
+**Impact:** Closes the WS_THREE_POINT_DEPTH_CHECK feature gap. KML
+/ GeoJSON / CZML labels with heightReference of CLAMP_TO_GROUND or
+CLAMP_TO_TERRAIN will visually correctly hide behind hills and
+mountains on WebGPU, matching WebGL behavior.
+
+**Trace:**
+
+- WebGL VS: `Source/Shaders/BillboardCollectionVS.glsl:294-324`
+  (the `#ifdef VS_THREE_POINT_DEPTH_CHECK` block).
+- WebGL helper: `Source/Shaders/BillboardCollectionVS.glsl:89-104`
+  (`getGlobeDepth`).
+- Define enablement: `Source/Scene/BillboardCollection.js:1031`
+  (`_shaderClampToGround` flag).
+- Uniform setter:
+  `Source/Scene/BillboardCollection.js:336-338`
+  (`u_threePointDepthTestDistance`).
+- Frontend property:
+  `Source/Scene/BillboardCollection.js:472-481`
+  (`get/set threePointDepthTestDistance`).
 
 ---
 

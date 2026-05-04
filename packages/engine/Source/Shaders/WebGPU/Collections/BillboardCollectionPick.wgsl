@@ -1,20 +1,28 @@
 // BillboardCollectionPick.wgsl — Pick shader for instanced billboard rendering
 // Same vertex logic as BillboardCollection.wgsl but outputs pick color instead of texture.
 //
-// Instance data layout (112 bytes per billboard, 7 x vec4):
-//   @location(0) posHighAndScale:    vec4<f32> — encodedPosition.high.xyz, uniformScale
-//   @location(1) posLowAndRotation:  vec4<f32> — encodedPosition.low.xyz, rotation
-//   @location(2) compressedAttr0:    vec4<f32> — pixelOffset.xy, alignedAxis.xy
-//   @location(3) compressedAttr1:    vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
-//   @location(4) pickColor:          vec4<f32> — pick ID rgba
-//   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
-//   @location(6) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
-//                                     splitDirection, _pad, _pad
+// Instance data layout (160 bytes per billboard, 10 x vec4 — Batch 137):
+//   @location(0) posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
+//   @location(1) posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
+//   @location(2) compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
+//   @location(3) compressedAttr1:           vec4<f32> — imageRect (x,y,w,h in atlas, normalized)
+//   @location(4) pickColor:                 vec4<f32> — pick ID rgba
+//   @location(5) miscFlags:                 vec4<f32> — show, sizeInMeters, width, height
+//   @location(6) perInstanceFlags:          vec4<f32> — disableDepthTestDistance,
+//                                            splitDirection,
+//                                            distanceDisplayConditionNearSq,
+//                                            distanceDisplayConditionFarSq
+//   @location(7) translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
+//   @location(8) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
+//   @location(9) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
 //
-// The pick path applies DP-H42 + DP-H40 the same way the color path does
-// so the picked region matches the visible one (can't pick a billboard
-// that isn't on-screen due to the split cutoff; CAN pick a billboard
-// that only renders because its depth test was suppressed).
+// The pick path applies DP-H42 + DP-H40 + AUDIT_2026_05_02 A.14 (DDC +
+// translucency + pixelOffset + scaling) the same way the color path
+// does so the picked region matches the visible one. Batch 136
+// extended the color path; Batch 137 brings pick to parity (a
+// translucency=0 / scale=0 / out-of-DDC-window billboard must NOT
+// pick — `clipPos = (0,0,0,1)` collapses the quad to a degenerate
+// point that the depth-clip rejects).
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -49,7 +57,24 @@ struct VertexInput {
   @location(4) pickColor: vec4<f32>,
   @location(5) miscFlags: vec4<f32>,
   @location(6) perInstanceFlags: vec4<f32>,
+  @location(7) translucencyByDistance: vec4<f32>,
+  @location(8) pixelOffsetScaleByDistance: vec4<f32>,
+  @location(9) scaleByDistance: vec4<f32>,
 };
+
+// AUDIT_2026_05_02 A.14 (Batch 137) — `czm_nearFarScalar` for the pick
+// path. Identical implementation to the color path so a primitive's
+// distance-aware visibility is mirrored exactly.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
+}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -98,9 +123,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let posHigh = input.posHighAndScale.xyz;
   let posLow = input.posLowAndRotation.xyz;
-  let scale = input.posHighAndScale.w;
+  let baseScale = input.posHighAndScale.w;
   let rotation = input.posLowAndRotation.w;
-  let pixelOffset = input.compressedAttr0.xy;
+  let basePixelOffset = input.compressedAttr0.xy;
   let imageRect = input.compressedAttr1;
   let billboardWidth = input.miscFlags.z;
   let billboardHeight = input.miscFlags.w;
@@ -108,6 +133,29 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // RTE position to clip space
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+
+  // Hoisted: squared eye distance, consumed by 4 gates below.
+  let camDistSq = dot(positionRTE, positionRTE);
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_SCALING
+  // before the corner expansion so a `scaleByDistance.farValue=0`
+  // billboard collapses and is unpickable. Mirrors the color path.
+  var effectiveScale: f32 = baseScale;
+  //>>ifdef EYE_DISTANCE_SCALING
+  let distScale = czm_nearFarScalar(input.scaleByDistance, camDistSq);
+  effectiveScale = effectiveScale * distScale;
+  if (distScale == 0.0) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_PIXEL_OFFSET
+  // before the pixel-to-clip conversion. Pick parity with color path.
+  var effectivePixelOffset: vec2<f32> = basePixelOffset;
+  //>>ifdef EYE_DISTANCE_PIXEL_OFFSET
+  let pxScale = czm_nearFarScalar(input.pixelOffsetScaleByDistance, camDistSq);
+  effectivePixelOffset = effectivePixelOffset * pxScale;
+  //>>endif
 
   // Corner offset
   let cornerIndex = input.vertexIndex % 6u;
@@ -123,13 +171,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     );
   }
 
-  // Billboard size in pixels
-  let size = vec2<f32>(billboardWidth, billboardHeight) * scale;
+  // Billboard size in pixels (post-distance-scaling)
+  let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
   // Convert pixel offset to clip space
   let pixelToClip = 2.0 / camera.viewportSize;
-  clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
-  clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
+  clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
+  clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  // AUDIT_2026_05_02 A.14 (Batch 137) — DDC gate. Out-of-window
+  // billboards collapse to a degenerate clip-pos so the pick fragment
+  // never rasterizes.
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
   var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
@@ -139,10 +198,19 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    let distSq = dot(positionRTE, positionRTE);
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       clipPos.z = clipPos.w;
     }
+  }
+  //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — translucency=0 → unpickable.
+  // For partial translucency (0 < t < 1) the pick still fires because
+  // the user can still see and interact with the billboard.
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  if (translucency == 0.0) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
   //>>endif
 

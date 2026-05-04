@@ -40,6 +40,7 @@ struct VertexInput {
   @location(3) endPosLow: vec4<f32>,
   @location(4) color: vec4<f32>,
   @location(5) perInstanceFlags: vec4<f32>,
+  @location(6) translucencyByDistance: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -47,10 +48,23 @@ struct VertexOutput {
   @location(0) v_st: vec2<f32>,
   @location(1) v_width: f32,
   @location(2) v_distFromCenter: f32,
+  // AUDIT_2026_05_02 A.14 (Batch 137) — see PolylineArrow.wgsl notes.
+  @location(3) v_alphaScale: f32,
   //>>ifdef SPLIT_ENABLED
-  @location(3) splitDirection: f32,
+  @location(4) splitDirection: f32,
   //>>endif
 };
+
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
+}
 
 fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>,
                           camHigh: vec3<f32>, camLow: vec3<f32>) -> vec3<f32> {
@@ -115,8 +129,19 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
-  //>>ifdef DISABLE_DEPTH_DISTANCE
+  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance hoisted.
   let baseRTE = mix(startRTE, endRTE, isEnd);
+  let camDistSq = dot(baseRTE, baseRTE);
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+    finalPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
+  //>>ifdef DISABLE_DEPTH_DISTANCE
   var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
   if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
     disableDepthSq =
@@ -124,12 +149,22 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    let distSq = dot(baseRTE, baseRTE);
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       finalPos.z = finalPos.w;
     }
   }
   //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — translucencyByDistance ramp.
+  var alphaScale: f32 = 1.0;
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  alphaScale = translucency;
+  if (translucency == 0.0) {
+    finalPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+  output.v_alphaScale = alphaScale;
 
   output.position = finalPos;
 
@@ -194,6 +229,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let edgeDist = abs(input.v_distFromCenter);
   let edgeAlpha = 1.0 - smoothstep(0.8, 1.0, edgeDist);
   finalColor.a *= edgeAlpha;
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — apply translucencyByDistance.
+  finalColor.a *= input.v_alphaScale;
 
   if (finalColor.a < 0.005) {
     discard;

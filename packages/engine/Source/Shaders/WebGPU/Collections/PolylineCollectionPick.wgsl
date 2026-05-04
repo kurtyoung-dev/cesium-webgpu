@@ -1,13 +1,23 @@
 // PolylineCollectionPick.wgsl — Pick shader for polyline rendering
-// Same vertex logic as PolylineCollection.wgsl but outputs pick color instead of line color.
+// Same vertex logic as PolylineCollection.wgsl but outputs pick color
+// instead of line color.
 //
-// Instance data per segment (96 bytes, 6 x vec4) — matches PolylineCollection.wgsl.
-//   @location(0) startPosHighAndWidth:  vec4<f32>
-//   @location(1) startPosLow:           vec4<f32>
-//   @location(2) endPosHighAndMiter:    vec4<f32>
-//   @location(3) endPosLow:             vec4<f32>
-//   @location(4) pickColor:             vec4<f32>
-//   @location(5) perInstanceFlags:      vec4<f32> — DP-H42 / DP-H40 (Batch 22)
+// Instance data per segment (112 bytes, 7 x vec4) — Batch 137 finishes
+// audit A.14 by matching the color path's distance-attribute layout.
+//   @location(0) startPosHighAndWidth:    vec4<f32>
+//   @location(1) startPosLow:             vec4<f32>
+//   @location(2) endPosHighAndMiter:      vec4<f32>
+//   @location(3) endPosLow:               vec4<f32>
+//   @location(4) pickColor:               vec4<f32>
+//   @location(5) perInstanceFlags:        vec4<f32> — DP-H42 / DP-H40 (Batch 22)
+//                                          + DDC nearSq / farSq (Batch 137)
+//   @location(6) translucencyByDistance:  vec4<f32> — Batch 137
+//
+// Pick parity: a polyline that's invisible due to DDC or
+// translucency=0 must NOT pick. Pre-Batch-137 it would still pick
+// because pick didn't read these slots. Polyline has no pixelOffset
+// or quad-scale, so EYE_DISTANCE_PIXEL_OFFSET / EYE_DISTANCE_SCALING
+// don't apply.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -36,7 +46,22 @@ struct VertexInput {
   @location(3) endPosLow: vec4<f32>,
   @location(4) pickColor: vec4<f32>,
   @location(5) perInstanceFlags: vec4<f32>,
+  @location(6) translucencyByDistance: vec4<f32>,
 };
+
+// AUDIT_2026_05_02 A.14 (Batch 137) — czm_nearFarScalar for the
+// polyline pick path. translucency=0 must collapse the pick quad to
+// a degenerate clip-pos so the user can't pick an invisible polyline.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
+}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -112,10 +137,23 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Convert back to clip space
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
+  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance, used
+  // by DDC + DISABLE_DEPTH + translucency below.
+  let baseRTE = mix(startRTE, endRTE, isEnd);
+  let camDistSq = dot(baseRTE, baseRTE);
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  // AUDIT_2026_05_02 A.14 (Batch 137) — pick parity for DDC.
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+    finalPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — pick pipeline obeys the same depth override as the color
   // pipeline so the picked region matches what the user sees.
-  let baseRTE = mix(startRTE, endRTE, isEnd);
   var disableDepthSq = input.perInstanceFlags.x * input.perInstanceFlags.x;
   if (disableDepthSq == 0.0 && camera.minimumDisableDepthTestDistance != 0.0) {
     disableDepthSq =
@@ -123,10 +161,17 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    let distSq = dot(baseRTE, baseRTE);
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       finalPos.z = finalPos.w;
     }
+  }
+  //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — translucency=0 → unpickable.
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  if (translucency == 0.0) {
+    finalPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
   //>>endif
 

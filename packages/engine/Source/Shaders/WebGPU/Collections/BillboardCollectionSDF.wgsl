@@ -2,22 +2,28 @@
 // Extends BillboardCollection.wgsl with signed distance field rendering
 // for antialiased text with outlines (used by LabelCollection).
 //
-// Instance data layout (144 bytes per billboard, 9 x vec4):
-//   @location(0) posHighAndScale:    vec4<f32>
-//   @location(1) posLowAndRotation:  vec4<f32>
-//   @location(2) compressedAttr0:    vec4<f32> — pixelOffset.xy, alignedAxis.xy
-//   @location(3) compressedAttr1:    vec4<f32> — imageRect (x,y,w,h normalized)
-//   @location(4) color:              vec4<f32> — fill color rgba
-//   @location(5) miscFlags:          vec4<f32> — show, sizeInMeters, width, height
-//   @location(6) outlineColor:       vec4<f32> — outline color rgba
-//   @location(7) sdfParams:          vec4<f32> — outlineWidth, sdfEdge, 0, 0
-//   @location(8) perInstanceFlags:   vec4<f32> — disableDepthTestDistance,
-//                                     splitDirection, _pad, _pad
+// Instance data layout (192 bytes per billboard, 12 x vec4 — Batch 137):
+//   @location(0)  posHighAndScale:           vec4<f32>
+//   @location(1)  posLowAndRotation:         vec4<f32>
+//   @location(2)  compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
+//   @location(3)  compressedAttr1:           vec4<f32> — imageRect (x,y,w,h normalized)
+//   @location(4)  color:                     vec4<f32> — fill color rgba
+//   @location(5)  miscFlags:                 vec4<f32> — show, sizeInMeters, width, height
+//   @location(6)  outlineColor:              vec4<f32> — outline color rgba
+//   @location(7)  sdfParams:                 vec4<f32> — outlineWidth, sdfEdge, 0, 0
+//   @location(8)  perInstanceFlags:          vec4<f32> — disableDepthTestDistance,
+//                                              splitDirection,
+//                                              distanceDisplayConditionNearSq,
+//                                              distanceDisplayConditionFarSq
+//   @location(9)  translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
+//   @location(10) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
+//   @location(11) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
 //
-// The `perInstanceFlags` slot mirrors the one on BillboardCollection.wgsl
-// but lives at @location(8) because the SDF layout already uses 6 & 7 for
-// outline/SDF params. Read only inside `//>>ifdef` blocks for DP-H42 and
-// DP-H40 so the SDF fast path pays nothing when those features are off.
+// Batch 21 added @location(8) `perInstanceFlags` for DP-H42 / DP-H40.
+// Batch 137 (Audit A.14 finish) extended with DDC packed into
+// `perInstanceFlags.zw` plus three NearFarScalars at @locations 9/10/11.
+// All gates are read only inside `//>>ifdef` blocks so the SDF fast
+// path pays nothing when those features are off.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -53,7 +59,25 @@ struct VertexInput {
   @location(6) outlineColor: vec4<f32>,
   @location(7) sdfParams: vec4<f32>,
   @location(8) perInstanceFlags: vec4<f32>,
+  @location(9) translucencyByDistance: vec4<f32>,
+  @location(10) pixelOffsetScaleByDistance: vec4<f32>,
+  @location(11) scaleByDistance: vec4<f32>,
 };
+
+// AUDIT_2026_05_02 A.14 (Batch 137) — `czm_nearFarScalar` for the
+// SDF / Label path. Identical implementation to the base Billboard
+// shader so labels behave consistently with point/billboard primitives
+// under camera-distance ramps.
+fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
+  let nearDistSq = scalar.x * scalar.x;
+  let farDistSq = scalar.z * scalar.z;
+  let denom = farDistSq - nearDistSq;
+  if (denom <= 0.0) {
+    return scalar.y;
+  }
+  let t = clamp((distSq - nearDistSq) / denom, 0.0, 1.0);
+  return mix(scalar.y, scalar.w, t);
+}
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -109,15 +133,40 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let posHigh = input.posHighAndScale.xyz;
   let posLow = input.posLowAndRotation.xyz;
-  let scale = input.posHighAndScale.w;
+  let baseScale = input.posHighAndScale.w;
   let rotation = input.posLowAndRotation.w;
-  let pixelOffset = input.compressedAttr0.xy;
+  let basePixelOffset = input.compressedAttr0.xy;
   let imageRect = input.compressedAttr1;
   let billboardWidth = input.miscFlags.z;
   let billboardHeight = input.miscFlags.w;
 
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance, hoisted
+  // for the four distance-aware gates below.
+  let camDistSq = dot(positionRTE, positionRTE);
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_SCALING
+  // BEFORE the corner expansion so the label glyph collapses cleanly
+  // when the user's `label.scaleByDistance.farValue=0`. Mirrors the
+  // base BillboardCollection.wgsl path.
+  var effectiveScale: f32 = baseScale;
+  //>>ifdef EYE_DISTANCE_SCALING
+  let distScale = czm_nearFarScalar(input.scaleByDistance, camDistSq);
+  effectiveScale = effectiveScale * distScale;
+  if (distScale == 0.0) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+
+  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_PIXEL_OFFSET
+  // before the offset is added to clip space.
+  var effectivePixelOffset: vec2<f32> = basePixelOffset;
+  //>>ifdef EYE_DISTANCE_PIXEL_OFFSET
+  let pxScale = czm_nearFarScalar(input.pixelOffsetScaleByDistance, camDistSq);
+  effectivePixelOffset = effectivePixelOffset * pxScale;
+  //>>endif
 
   let cornerIndex = input.vertexIndex % 6u;
   var corner = QUAD_OFFSETS[cornerIndex];
@@ -131,10 +180,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     );
   }
 
-  let size = vec2<f32>(billboardWidth, billboardHeight) * scale;
+  let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
   let pixelToClip = 2.0 / camera.viewportSize;
-  clipPos.x += (corner.x * size.x + pixelOffset.x) * pixelToClip.x * clipPos.w;
-  clipPos.y += (corner.y * size.y + pixelOffset.y) * pixelToClip.y * clipPos.w;
+  clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
+  clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
+
+  //>>ifdef DISTANCE_DISPLAY_CONDITION
+  // AUDIT_2026_05_02 A.14 (Batch 137) — DDC gate. Out-of-window
+  // labels collapse to a degenerate clip-pos. Critical for KML labels
+  // that should disappear at far zoom.
+  let nearSqDDC = input.perInstanceFlags.z;
+  let farSqDDC = input.perInstanceFlags.w;
+  if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
+    clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // DP-H42 — same logic as BillboardCollection.wgsl.
@@ -145,8 +205,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
       camera.minimumDisableDepthTestDistance;
   }
   if (disableDepthSq != 0.0) {
-    let distSq = dot(positionRTE, positionRTE);
-    if (disableDepthSq < 0.0 || distSq < disableDepthSq) {
+    if (disableDepthSq < 0.0 || camDistSq < disableDepthSq) {
       clipPos.z = clipPos.w;
     }
   }
@@ -164,8 +223,24 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     imageRect.y + baseUV.y * imageRect.w
   );
 
-  output.fillColor = input.color;
-  output.outlineColor = input.outlineColor;
+  // AUDIT_2026_05_02 A.14 (Batch 137) — translucencyByDistance ramp
+  // applied to BOTH fill and outline alpha so the label fades
+  // coherently. translucency=0 → vertex pushed behind the near plane
+  // (matches WebGL) and the FS will discard via the smoothstep alpha
+  // anyway when the per-vertex alpha is zero.
+  var alphaMultiplier: f32 = 1.0;
+  //>>ifdef EYE_DISTANCE_TRANSLUCENCY
+  let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
+  alphaMultiplier = translucency;
+  if (translucency == 0.0) {
+    output.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  //>>endif
+  output.fillColor = vec4<f32>(input.color.rgb, input.color.a * alphaMultiplier);
+  output.outlineColor = vec4<f32>(
+    input.outlineColor.rgb,
+    input.outlineColor.a * alphaMultiplier,
+  );
   output.sdfParams = input.sdfParams.xy; // outlineWidth, sdfEdge
   return output;
 }

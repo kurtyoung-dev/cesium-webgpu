@@ -44,12 +44,39 @@ import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
-// SDF instance data: 36 floats (144 bytes) — standard 24 floats + 8 for
-// outline/SDF + 4 for perInstanceFlags (DP-H42 / DP-H40, Batch 21).
-const FLOATS_PER_SDF_INSTANCE = 36;
+// SDF instance data: 48 floats (192 bytes) — standard 24 floats + 8 for
+// outline/SDF + 4 for perInstanceFlags (DP-H42 / DP-H40 / A.14 DDC) +
+// 12 for 3 NearFarScalars (translucencyByDistance,
+// pixelOffsetScaleByDistance, scaleByDistance — Batch 137 / Audit A.14).
+// Was 36 floats (Batch 21); bumped to 48 (Batch 137) to bring labels to
+// distance-attribute parity with the base BillboardCollection path.
+const FLOATS_PER_SDF_INSTANCE = 48;
 const BYTES_PER_SDF_INSTANCE = FLOATS_PER_SDF_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
+
+/**
+ * AUDIT_2026_05_02 A.14 (Batch 137) — pack a CesiumJS NearFarScalar
+ * into 4 contiguous floats, mirroring `WebGPUBillboardRenderer.packNearFarScalar`.
+ * Identity-NFS written when `scalar` is undefined so the WGSL gate
+ * produces the unchanged baseline for labels with no per-distance ramp
+ * configured.
+ */
+function packNearFarScalar(out, offset, scalar, identity) {
+  if (scalar) {
+    out[offset + 0] = typeof scalar.near === "number" ? scalar.near : 0.0;
+    out[offset + 1] =
+      typeof scalar.nearValue === "number" ? scalar.nearValue : identity;
+    out[offset + 2] = typeof scalar.far === "number" ? scalar.far : 1.0e8;
+    out[offset + 3] =
+      typeof scalar.farValue === "number" ? scalar.farValue : identity;
+  } else {
+    out[offset + 0] = 0.0;
+    out[offset + 1] = identity;
+    out[offset + 2] = 1.0e8;
+    out[offset + 3] = identity;
+  }
+}
 
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
@@ -71,9 +98,15 @@ const SDF_INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 5, offset: 80, format: "float32x4" }, // miscFlags
     { shaderLocation: 6, offset: 96, format: "float32x4" }, // outlineColor
     { shaderLocation: 7, offset: 112, format: "float32x4" }, // sdfParams
-    // DP-H42 / DP-H40 — perInstanceFlags. Same contract as Billboard's
-    // @location(6): x=disableDepthTestDistance, y=splitDirection, zw=pad.
+    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags.
+    //   x: disableDepthTestDistance, y: splitDirection,
+    //   z: ddcNearSq, w: ddcFarSq (Batch 137).
     { shaderLocation: 8, offset: 128, format: "float32x4" },
+    // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalars for
+    // distance-aware translucency / pixel-offset / scale ramps.
+    { shaderLocation: 9, offset: 144, format: "float32x4" }, // translucencyByDistance
+    { shaderLocation: 10, offset: 160, format: "float32x4" }, // pixelOffsetScaleByDistance
+    { shaderLocation: 11, offset: 176, format: "float32x4" }, // scaleByDistance
   ],
 };
 
@@ -158,17 +191,51 @@ function buildSDFInstanceData(collection, labelCollection) {
     instanceData[offset + 30] = 0.0;
     instanceData[offset + 31] = 0.0;
 
-    // DP-H42 / DP-H40 — perInstanceFlags. Labels inherit the
-    // `disableDepthTestDistance` and `splitDirection` from the parent
-    // Label; the glyph billboards have these fields propagated from the
-    // label via `Label._rebindAllGlyphs` → glyph.disableDepthTestDistance,
-    // glyph.splitDirection, so reading from the billboard object is
-    // equivalent to reading the parent label's property.
+    // DP-H42 / DP-H40 / A.14 — perInstanceFlags. Labels inherit
+    // `disableDepthTestDistance`, `splitDirection`, and
+    // `distanceDisplayCondition` from the parent Label; the glyph
+    // billboards have these fields propagated from the label via
+    // `Label.set distanceDisplayCondition` → `glyph.billboard.distanceDisplayCondition`.
+    //   x: disableDepthTestDistance (raw meters; squared in shader)
+    //   y: splitDirection
+    //   z: distanceDisplayCondition.near^2 (Batch 137)
+    //   w: distanceDisplayCondition.far^2 (Batch 137)
     const d = bb._disableDepthTestDistance;
     instanceData[offset + 32] = typeof d === "number" && isFinite(d) ? d : 0.0;
     instanceData[offset + 33] = bb._splitDirection ?? 0.0;
-    instanceData[offset + 34] = 0.0;
-    instanceData[offset + 35] = 0.0;
+    const ddc = bb._distanceDisplayCondition;
+    if (ddc) {
+      const ddcNear = typeof ddc.near === "number" ? ddc.near : 0.0;
+      const ddcFar =
+        typeof ddc.far === "number" ? ddc.far : Number.POSITIVE_INFINITY;
+      instanceData[offset + 34] = ddcNear * ddcNear;
+      instanceData[offset + 35] = isFinite(ddcFar)
+        ? ddcFar * ddcFar
+        : Number.MAX_VALUE;
+    } else {
+      instanceData[offset + 34] = 0.0;
+      instanceData[offset + 35] = Number.MAX_VALUE;
+    }
+
+    // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalar gates
+    // packed into vec4 slots 9/10/11. Identity = 1.0 for all (each is
+    // multiplicative onto alpha / pixel-offset / scale). The labels
+    // propagate their parent's properties to glyph billboards via
+    // `Label.set translucencyByDistance` etc., so reading from the
+    // billboard's `_translucencyByDistance` etc. gives the right value.
+    packNearFarScalar(
+      instanceData,
+      offset + 36,
+      bb._translucencyByDistance,
+      1.0,
+    );
+    packNearFarScalar(
+      instanceData,
+      offset + 40,
+      bb._pixelOffsetScaleByDistance,
+      1.0,
+    );
+    packNearFarScalar(instanceData, offset + 44, bb._scaleByDistance, 1.0);
 
     visibleCount++;
   }
@@ -195,9 +262,18 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
   }
   const billboards = glyphCollection._billboards;
   const length = glyphCollection.length;
-  const both = ShaderDefine.DISABLE_DEPTH_DISTANCE | ShaderDefine.SPLIT_ENABLED;
+  // AUDIT_2026_05_02 A.14 (Batch 137) — labels participate in all 6
+  // distance-related defines (Billboard's full set, since labels render
+  // through the SDF Billboard variant).
+  const all =
+    ShaderDefine.DISABLE_DEPTH_DISTANCE |
+    ShaderDefine.SPLIT_ENABLED |
+    ShaderDefine.DISTANCE_DISPLAY_CONDITION |
+    ShaderDefine.EYE_DISTANCE_TRANSLUCENCY |
+    ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET |
+    ShaderDefine.EYE_DISTANCE_SCALING;
   for (let i = 0; i < length; i++) {
-    if ((defines & both) === both) {
+    if ((defines & all) === all) {
       break;
     }
     const bb = billboards[i];
@@ -217,6 +293,31 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
       bb._splitDirection !== 0.0
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
+    }
+    // AUDIT_2026_05_02 A.14 (Batch 137) — DDC + 3 NearFarScalar gates.
+    if (
+      (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
+      defined(bb._distanceDisplayCondition)
+    ) {
+      defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_TRANSLUCENCY) === 0 &&
+      defined(bb._translucencyByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_TRANSLUCENCY;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET) === 0 &&
+      defined(bb._pixelOffsetScaleByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_PIXEL_OFFSET;
+    }
+    if (
+      (defines & ShaderDefine.EYE_DISTANCE_SCALING) === 0 &&
+      defined(bb._scaleByDistance)
+    ) {
+      defines |= ShaderDefine.EYE_DISTANCE_SCALING;
     }
   }
   return defines;
@@ -246,6 +347,17 @@ function prewarmLabelShaders(device) {
     return;
   }
   const D = ShaderDefine;
+  // AUDIT_2026_05_02 A.14 (Batch 137) — extend prewarm with the 4
+  // new distance gates. Most KML / GeoJSON labels combine DDC +
+  // translucency; some additionally use scale-by-distance for
+  // zoom-aware UI labels.
+  const D_KML = D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
+  const ALL_DDC_GATES =
+    D.DISTANCE_DISPLAY_CONDITION |
+    D.EYE_DISTANCE_TRANSLUCENCY |
+    D.EYE_DISTANCE_PIXEL_OFFSET |
+    D.EYE_DISTANCE_SCALING;
+  const D_PROD = D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED | ALL_DDC_GATES;
   cache.prewarm(
     ShaderSourceId.BILLBOARD_COLLECTION_SDF,
     BillboardCollectionSDFWGSL,
@@ -253,7 +365,12 @@ function prewarmLabelShaders(device) {
       0,
       D.DISABLE_DEPTH_DISTANCE,
       D.SPLIT_ENABLED,
+      D.DISTANCE_DISPLAY_CONDITION,
+      D.EYE_DISTANCE_TRANSLUCENCY,
       D.DISABLE_DEPTH_DISTANCE | D.SPLIT_ENABLED,
+      D_KML,
+      ALL_DDC_GATES,
+      D_PROD,
     ],
     "Label SDF shader",
   );
