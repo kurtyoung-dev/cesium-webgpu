@@ -304,68 +304,139 @@ moved into `WebGPUDevicePool`, and `WebGPUContext._initialize` now calls
 
 ---
 
-### NEW-COLLECTIONS-MOTION-VECTORS — per-pixel velocity emission for animated collections / advanced primitives
+### NEW-COLLECTIONS-MOTION-VECTORS — partial: Billboard SHIPPED (Batch 143); Label / Polyline / Point follow-up
 
-**What:** TAA Slice 2c (Batch 96) wired full per-pixel motion-vector
-emission for `WebGPUModelRenderer`: `ModelPBRComplete.wgsl` carries
-`previousClipPos` + `currentClipPosForVelocity` interpolants and the
-`fragmentMotionVector` FS variant emits screen-space NDC delta. This
-gives ghost-free TAA on animated character / vehicle models.
+**Status:** Billboard collection now emits per-pixel motion vectors
+when TAA is enabled (Batch 143). The pattern is established and
+replicable across the remaining collection renderers; each follow-up
+is mechanical (~120 LOC per file pair) and described in the
+"Pattern" section below.
 
-The other renderers — Billboard, Label, Polyline, PointPrimitive,
-Cloud, PointCloud, GaussianSplat, Voxel, GroundPrimitive,
-Vector3DTile* — do NOT emit per-pixel velocity. TAA falls back to
-**camera-only reprojection** for those pixels (depth + camera-delta
-reconstruction; the velocity placeholder texture stays at zero), so
-camera moves work correctly but per-instance / per-vertex animation
-ghosts on the temporal history.
+**What landed for Billboard (Batch 143):**
 
-**Effect on user-facing behavior:** Animated billboards (e.g.,
-sprite animations cycling), moving polylines (path animation),
-particle clouds, and time-evolving voxels show subtle smear /
-ghosting trails behind moving features when TAA is on. Static
-content is unaffected.
+- `BillboardCollection.wgsl` gained `vertexVelocityMain` +
+  `fragmentVelocityMain` entry points plus `VelocityVertexInput` /
+  `VelocityVertexOutput` structs. The velocity VS reads the regular
+  instance buffer at slot 0 and a one-frame-lagged prev-instance
+  buffer at slot 1 (locations 11/12 carry prev posHigh / posLow).
+  Center-only delta — corner offsets / rotation / pixel offsets
+  cancel between frames for moving billboards, so the FS emits
+  `(currentCenterNdc - prevCenterNdc)` directly. Degenerate
+  `clip.w <= 0` returns `vec2(0)` so TAA falls back to camera-only
+  reprojection on near-plane clips.
+- `WebGPUBillboardRenderer.js`:
+  - `VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT` + `buildBillboardVelocityDescriptor`
+    helpers. Velocity pipeline targets `rg16float` matching the
+    scene-FB velocity texture format; depth is read-only
+    (`depthCompare: less-equal`, `depthWriteEnabled: false`) so
+    fragments behind opaque geometry fail the depth test.
+  - `cache.velocityPipelineEntries` Map keyed on the same `defines`
+    bitmask as the color pipeline cache; lazily populated when
+    `frameState.scene.taaEnabled === true`.
+  - `cache.prevInstanceBuffer` GPU buffer + `cache.prevInstanceData`
+    CPU-side typed-array stash. Each frame, the renderer uploads
+    last frame's data to the prev buffer BEFORE overwriting the
+    current buffer with this frame's data. First-frame fallback
+    initializes prev = current (zero velocity, equivalent to "no
+    history"). Buffer lifecycle outlives a single TAA off-toggle so
+    a TAA off → on transition doesn't drop a frame of velocity.
+  - Resize-and-pad logic for visibleCount changes between frames:
+    if last frame had fewer billboards, the tail is filled with
+    current data so newly-spawned billboards see prev = current
+    (born this frame, no apparent motion).
+  - `cache.colorCommand.velocityCommand` set to the velocity command
+    when TAA is on; `WebGPUSceneRenderer._runVelocityPass` already
+    walks the command list for this slot and dispatches the
+    velocity command into the rg16float velocity texture.
+- `cache.prevInstanceBuffer` released in
+  `destroyWebGPUBillboardResources`.
 
-**Why deferred:** Each renderer needs:
+**Pattern for follow-up renderers (Label / Polyline / Point /
+GaussianSplat / PointCloud / Cloud):**
 
-1. **Previous-frame per-instance / per-vertex data uploaded** —
-   either an additional VB slot mirroring the current data with one
-   frame of lag, or a uniform/storage buffer indexed by instance
-   (Billboard / Polyline / Point) or by per-particle ID (Cloud /
-   Particle).
-2. **VS additions** — read previous-frame data + project with the
-   `previousViewProjection` already on every camera UBO (DP-H41 /
-   Batch 27 — prerequisite shipped). Emit `previousClipPos` +
-   `currentClipPosForVelocity` interpolants.
-3. **FS MRT velocity output** — return `(curNdc - prevNdc) * scale`
-   as `@location(1)` when running the velocity-emitting variant.
-4. **Pipeline variant key** — extend the renderer's pipeline cache
-   to compile the velocity variant when TAA is active and the
-   current pass is the velocity pass.
-5. **Renderer dispatch** — emit a second draw command with the
-   velocity variant at the appropriate pass slot.
+1. **Shader (`*Collection.wgsl` / `BillboardCollectionSDF.wgsl`):**
+   - Add `VelocityVertexInput` mirroring the regular `VertexInput`
+     plus prev-position locations starting at the next free
+     `@location(N)`. Locations 11+ for Billboard; pick the next free
+     slot for each shader (Label SDF uses 0-12 already, so prev
+     starts at 13).
+   - Add `VelocityVertexOutput` carrying `currentCenterClip` +
+     `prevCenterClip` as `vec4<f32>` varyings.
+   - Add `vertexVelocityMain` that projects current via
+     `mvpRelativeToEye` and prev via `previousViewProjection` (full
+     mat4 multiply of `prevPosHigh + prevPosLow` — precision loss at
+     planet scale is acceptable for NDC delta magnitudes).
+     Rasterize the quad / line / point at the CURRENT-frame position
+     so the velocity texture covers the right pixels.
+   - Add `fragmentVelocityMain` returning
+     `(currentCenterClip.xy/curW) - (prevCenterClip.xy/prevW)` as
+     `vec2<f32>` to `@location(0)`. Guard against `w <= 0` with
+     `vec2(0)` fallback.
+2. **Pipeline cache (`WebGPU*Renderer.js`):**
+   - Add `VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT` describing the
+     prev-position attribute slots (use the same per-instance stride
+     so the renderer can upload the entire prev buffer wholesale).
+   - Add `buildXVelocityDescriptor` helper paralleling
+     `buildXDescriptor` but with `entryPoint: "vertexVelocityMain" /
+     "fragmentVelocityMain"`, `targets: [{ format: "rg16float" }]`,
+     and the two-VB `buffers` array.
+   - Add `cache.velocityPipelineEntries` Map keyed identically to
+     the color cache; clear it on HDR / scene-format change in the
+     same spot the color cache gets cleared.
+   - Resolve velocity pipeline only when
+     `frameState.scene.taaEnabled === true`.
+3. **Prev-instance buffer management:**
+   - Add `cache.prevInstanceBuffer` (GPU) + `cache.prevInstanceData`
+     (CPU Float32Array stash).
+   - Per-frame: before `device.queue.writeBuffer` of new instance
+     data, write LAST frame's data to `prevInstanceBuffer`. On the
+     first frame `prevInstanceData` is undefined — fall back to
+     using current data (zero velocity).
+   - Visible-count changes: pad/truncate the prev payload so
+     newly-spawned instances see prev = current.
+   - Stash this frame's typed array into `cache.prevInstanceData`
+     for next frame's use.
+   - Free `prevInstanceBuffer` in the renderer's destroy path.
+4. **Velocity command attachment:**
+   - When `taaEnabledThisFrame && velocityPipeline &&
+     prevInstanceBuffer`, build a `WebGPUDrawCommand` mirroring the
+     color command except for `pipeline: velocityPipeline` and
+     `vertexBuffers: [instanceBuffer, prevInstanceBuffer]`. Attach
+     it as `cache.colorCommand.velocityCommand`.
+   - When TAA is off, set `cache.colorCommand.velocityCommand =
+     undefined` so a stale prior-frame velocity command doesn't
+     leak.
 
-Mechanical per-renderer; ~50 LOC × 5+ renderers = 250+ LOC. None of
-it touches Cesium architecture; it's the same pattern Model already
-uses, scaled across the rest.
+**Remaining follow-ups (each ~120 LOC):**
 
-**Prerequisites:** None — `previousViewProjection` is already on
-every camera UBO (Batch 27 / DP-H41), TAA's velocity-aware
-reprojection branch already consumes per-pixel velocity when
-present, and the placeholder fallback is the safe default.
+- **Label** (`BillboardCollectionSDF.wgsl` +
+  `WebGPULabelRenderer.js`) — same pattern as Billboard, plus the
+  glyph billboards inside a label use the SDF instance buffer (Batch
+  137 sized at 13 vec4 / 52 floats, prev-locations would start at 13).
+- **Polyline** (`PolylineCollection.wgsl` +
+  `WebGPUPolylineRenderer.js`) — per-vertex (not per-instance)
+  prev-position data on the segment vertex buffer. Velocity emerges
+  from segment endpoints' delta between frames.
+- **PointPrimitive** (`PointPrimitiveColor.wgsl` +
+  `WebGPUPointPrimitiveRenderer.js`) — same as Billboard, just
+  smaller per-instance stride (5 vec4 / 20 floats per Batch 136).
 
-**Estimated effort:** 2-3 sessions per family (Collections =
-1 session of work spanning Billboard/Polyline/Point/Label;
-Advanced primitives = 1-2 sessions; classifiers = 1 session
-since they don't typically animate per-frame anyway).
+**Beyond Collections (out of "1 session" scope):**
 
-**Impact:** Closes B.10 from AUDIT_2026_05_02. Ghost-free TAA on
-all animated content matching the WebGL backend.
+- GaussianSplat / PointCloud / Cloud — per-particle prev-state
+  needed; estimated 1-2 sessions per family.
+- Voxel — time-evolving voxels need per-voxel-grid-cell prev
+  state; architectural design needed first (out of scope).
+- GroundPrimitive / Vector3DTile* classifiers — typically don't
+  animate per-frame, so velocity emission is low-priority. Camera-
+  only reprojection (existing fallback) is correct for the static
+  case.
 
 **Trace:** AUDIT_2026_05_02.md B.10;
 `WebGPUTAAEffect.ts:_motionVectorsValid` (camera-only fallback path);
 `ModelPBRComplete.wgsl:computeMotionVectorScreenSpace` (template
-implementation).
+implementation, Batch 96); `BillboardCollection.wgsl:545-665`
+(reference implementation, Batch 143).
 
 ---
 

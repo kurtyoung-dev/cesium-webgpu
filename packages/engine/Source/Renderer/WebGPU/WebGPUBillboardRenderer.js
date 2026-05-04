@@ -519,6 +519,69 @@ function buildBillboardDescriptor(
 }
 
 /**
+ * AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * second VB layout for the velocity pipeline. Same per-instance stride
+ * as the regular instance buffer (the renderer keeps a one-frame-lagged
+ * mirror of the same data), but the velocity VS only reads positions
+ * via two locations, 11 (high) + 12 (low).
+ * @private
+ */
+const VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT = {
+  arrayStride: 176, // FLOATS_PER_INSTANCE (44) * 4
+  stepMode: "instance",
+  attributes: [
+    // prevPosHighAndScale at byte 0 — mirrors location 0 of the current
+    // instance buffer.
+    { shaderLocation: 11, offset: 0, format: "float32x4" },
+    // prevPosLowAndRotation at byte 16 — mirrors location 1.
+    { shaderLocation: 12, offset: 16, format: "float32x4" },
+  ],
+};
+
+/**
+ * AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+ * descriptor for the velocity pipeline variant. Same VS layout / shader
+ * module / pipeline layout as the regular billboard pipeline; the
+ * fragment entry is `fragmentVelocityMain` and the target format is
+ * `rg16float` (the scene-FB velocity texture format). Depth is bound
+ * read-only (`depthCompare: less-equal`, `depthWriteEnabled: false`)
+ * so the velocity pass shares the scene depth from the main color
+ * pass — fragments behind opaque geometry fail the depth test and
+ * don't emit velocity.
+ * @private
+ */
+function buildBillboardVelocityDescriptor(
+  device,
+  shaderModule,
+  depthFormat,
+  bindGroupLayout,
+  defines,
+) {
+  return {
+    name: `Billboard velocity pipeline [${depthFormat}/defines=0x${defines.toString(16)}]`,
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexVelocityMain",
+      buffers: [INSTANCE_BUFFER_LAYOUT, VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentVelocityMain",
+      targets: [{ format: "rg16float" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+}
+
+/**
  * Build the cache-friendly descriptor for the billboard pick pipeline —
  * no blending, depth write enabled, uses atlas texture for alpha discard
  * but outputs pick color. C-R7-RENDERER-MIGRATION (Batch 73).
@@ -990,6 +1053,10 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   if (!defined(cache.pipelineEntries)) {
     cache.pipelineEntries = new Map();
     cache.pickPipelineEntries = new Map();
+    // AUDIT_2026_05_02 B.10 (Batch 143) — velocity pipeline cache. Same
+    // (defines) keying as the regular pipeline cache so a billboard
+    // collection's color and velocity pipelines stay in lockstep.
+    cache.velocityPipelineEntries = new Map();
   }
   // Batch 110 — invalidate cached pipeline entries on scene format
   // change (HDR toggle).
@@ -997,6 +1064,7 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   if (cache._pipelineFormatGeneration !== sceneGen) {
     cache.pipelineEntries.clear();
     cache.pickPipelineEntries?.clear();
+    cache.velocityPipelineEntries?.clear();
     cache._pipelineFormatGeneration = sceneGen;
   }
   let entry = cache.pipelineEntries.get(defines);
@@ -1031,6 +1099,41 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
   }
   cache.pipeline = pipeline;
   cache.currentDefines = defines;
+
+  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // resolve the velocity pipeline lazily, gated on TAA being enabled
+  // this frame. Static scenes (TAA off) never construct a velocity
+  // pipeline. Reuses the same shader module + bind group layout as the
+  // color pipeline.
+  let velocityPipeline = null;
+  if (frameState.scene?.taaEnabled === true) {
+    let velEntry = cache.velocityPipelineEntries.get(defines);
+    if (!defined(velEntry)) {
+      const depthFmt2 = context.depthFormat || "depth24plus-stencil8";
+      const moduleCache2 = getShaderModuleCache(device);
+      const shaderModule2 = moduleCache2.getOrCreate(
+        ShaderSourceId.BILLBOARD_COLLECTION,
+        shaderCode,
+        defines,
+        "Billboard shader",
+      );
+      const velDescriptor = buildBillboardVelocityDescriptor(
+        device,
+        shaderModule2,
+        depthFmt2,
+        cache.bindGroupLayout,
+        defines,
+      );
+      velEntry = { descriptor: velDescriptor, pipeline: null, pending: false };
+      cache.velocityPipelineEntries.set(defines, velEntry);
+    }
+    velocityPipeline = tryResolveBillboardPipeline(
+      device,
+      context.webgpuPipelineCache ?? null,
+      velEntry,
+    );
+  }
+  cache.velocityPipeline = velocityPipeline;
 
   // Uniform buffer (once)
   if (!defined(cache.uniformBuffer)) {
@@ -1166,6 +1269,62 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
       "Billboard instances",
     );
   }
+
+  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // before we overwrite the GPU instance buffer with this frame's data,
+  // upload the PREVIOUS frame's data to the prev-instance buffer so the
+  // velocity VS can read both streams. `cache.prevInstanceData` is the
+  // CPU-side typed array we stashed at the end of the LAST frame; on
+  // the very first frame it's undefined, in which case we initialize
+  // prev = current (velocity = 0, equivalent to "no history").
+  // Allocated lazily — only if TAA is enabled this frame OR was enabled
+  // in a prior frame (the buffer outlives a single TAA toggle so a TAA
+  // off → on transition doesn't drop a frame of velocity).
+  const taaEnabledThisFrame = frameState.scene?.taaEnabled === true;
+  if (taaEnabledThisFrame || defined(cache.prevInstanceBuffer)) {
+    if (
+      !defined(cache.prevInstanceBuffer) ||
+      cache.prevInstanceBuffer.size < requiredSize
+    ) {
+      if (defined(cache.prevInstanceBuffer)) {
+        cache.prevInstanceBuffer.destroy();
+      }
+      cache.prevInstanceBuffer = WebGPUBuffer.createVertexBuffer(
+        device,
+        requiredSize,
+        true,
+        "Billboard prev instances",
+      );
+    }
+    const prevSource = cache.prevInstanceData ?? instanceData;
+    // The previous frame's typed array may be sized for a different
+    // visibleCount; truncate or pad against the current `requiredSize`
+    // so the writeBuffer payload matches the GPU buffer's used range.
+    // For an undersized prev (fewer billboards last frame), pad the
+    // tail with current data so newly-spawned billboards see prev =
+    // current → zero velocity, as expected for "born this frame".
+    let prevPayload = prevSource;
+    const expectedFloats = visibleCount * FLOATS_PER_INSTANCE;
+    if (prevSource.length < expectedFloats) {
+      prevPayload = new Float32Array(expectedFloats);
+      prevPayload.set(prevSource);
+      // Tail: copy current data so prev == current for newcomers.
+      prevPayload.set(
+        instanceData.subarray(prevSource.length, expectedFloats),
+        prevSource.length,
+      );
+    } else if (prevSource.length > expectedFloats) {
+      prevPayload = prevSource.subarray(0, expectedFloats);
+    }
+    device.queue.writeBuffer(
+      cache.prevInstanceBuffer.buffer,
+      0,
+      prevPayload.buffer,
+      prevPayload.byteOffset,
+      requiredSize,
+    );
+  }
+
   device.queue.writeBuffer(
     cache.instanceBuffer.buffer,
     0,
@@ -1173,6 +1332,11 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     0,
     requiredSize,
   );
+
+  // Stash THIS frame's data so next frame's velocity pass has prev
+  // available. Always done — even when TAA is off — so a TAA off → on
+  // transition doesn't lose a frame of history.
+  cache.prevInstanceData = instanceData;
 
   // Pick the command pass from the collection's blendOption so translucent
   // billboards composite in the back-to-front translucent pass rather than
@@ -1213,6 +1377,33 @@ async function updateWebGPUBillboards(collection, frameState, commandList) {
     cull: true,
     renderState: colorRenderState,
   });
+
+  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+  // attach velocity command. The TAA pass walks the command list for
+  // `cmd.velocityCommand` and dispatches it into the rg16float velocity
+  // texture. Mirrors `WebGPUModelRenderer.js`'s velocity attachment
+  // pattern (Batch 106). Only emitted when TAA is enabled this frame
+  // AND the velocity pipeline resolved this tick (it can be null on
+  // the first frame after TAA enables, while async pipeline creation
+  // is in flight; the next frame will pick up the resolved pipeline).
+  if (taaEnabledThisFrame && velocityPipeline && cache.prevInstanceBuffer) {
+    cache.velocityCommand = new WebGPUDrawCommand({
+      pipeline: velocityPipeline,
+      bindGroups: [cache.bindGroup],
+      vertexBuffers: [cache.instanceBuffer, cache.prevInstanceBuffer],
+      vertexCount: VERTICES_PER_QUAD,
+      instanceCount: visibleCount,
+      pass: billboardPass,
+      owner: collection,
+      boundingVolume: collection._boundingVolume,
+      modelMatrix: modelMatrix,
+      cull: true,
+      renderState: colorRenderState,
+    });
+    cache.colorCommand.velocityCommand = cache.velocityCommand;
+  } else {
+    cache.colorCommand.velocityCommand = undefined;
+  }
 
   // Pick pass handling
   if (frameState.passes.pick) {
@@ -1351,6 +1542,9 @@ function destroyWebGPUBillboardResources(collection) {
   }
   if (defined(cache.instanceBuffer)) {
     cache.instanceBuffer.destroy();
+  }
+  if (defined(cache.prevInstanceBuffer)) {
+    cache.prevInstanceBuffer.destroy();
   }
   if (defined(cache.pickInstanceBuffer)) {
     cache.pickInstanceBuffer.destroy();

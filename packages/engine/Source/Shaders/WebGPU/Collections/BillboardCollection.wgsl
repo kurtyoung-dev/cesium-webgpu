@@ -543,3 +543,128 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   }
   return color;
 }
+
+// AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
+// per-pixel velocity emission for animated billboards.
+//
+// Problem: TAA's camera-only fallback (depth + camera-delta reprojection)
+// is correct for STATIC billboards but ghosts on ANIMATED billboards
+// where per-instance position changes between frames (entity tracking,
+// moving labels). The velocity emission here closes that gap.
+//
+// Approach: rasterize the billboard quad the same way the color VS does
+// (so the velocity texture covers the right pixels), but emit the
+// CENTER-ONLY position delta as the velocity. Per-pixel rotation /
+// per-pixel size deltas are intentionally ignored — for moving
+// billboards (the common animated case), corner-induced offsets cancel
+// (same corner relative to the moving center), so center-delta is the
+// correct velocity for every fragment.
+//
+// Prev-instance VB (slot 1 on the velocity pipeline) carries
+// `(prevPosHigh, _, prevPosLow, _)` at locations 11-12. The renderer
+// maintains it as a CPU-side mirror of the previous frame's instance
+// buffer; on the first frame it's zero-initialized and `prevPosHigh ==
+// prevPosLow == 0`, so velocity emerges as `currentNdc - 0` — equivalent
+// to "no prior history" which TAA's first-frame logic already handles.
+
+struct VelocityVertexInput {
+  @builtin(vertex_index) vertexIndex: u32,
+  // Slot 0: current instance data (mirrors regular VertexInput)
+  @location(0) posHighAndScale: vec4<f32>,
+  @location(1) posLowAndRotation: vec4<f32>,
+  @location(2) compressedAttr0: vec4<f32>,
+  @location(3) compressedAttr1: vec4<f32>,
+  @location(4) color: vec4<f32>,
+  @location(5) miscFlags: vec4<f32>,
+  @location(6) perInstanceFlags: vec4<f32>,
+  @location(7) translucencyByDistance: vec4<f32>,
+  @location(8) pixelOffsetScaleByDistance: vec4<f32>,
+  @location(9) scaleByDistance: vec4<f32>,
+  @location(10) threePointAttribs: vec4<f32>,
+  // Slot 1: prev-frame instance data — only positions matter for
+  // center-delta velocity. The renderer binds the same per-instance
+  // buffer as slot 1 with one frame of lag.
+  @location(11) prevPosHighAndScale: vec4<f32>,
+  @location(12) prevPosLowAndRotation: vec4<f32>,
+};
+
+struct VelocityVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) currentCenterClip: vec4<f32>,
+  @location(1) prevCenterClip: vec4<f32>,
+};
+
+@vertex
+fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
+  var output: VelocityVertexOutput;
+
+  let show = input.miscFlags.x;
+  if (show < 0.5) {
+    output.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+    output.currentCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    output.prevCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return output;
+  }
+
+  let posHigh = input.posHighAndScale.xyz;
+  let posLow = input.posLowAndRotation.xyz;
+  let baseScale = input.posHighAndScale.w;
+  let rotation = input.posLowAndRotation.w;
+  let basePixelOffset = input.compressedAttr0.xy;
+  let billboardWidth = input.miscFlags.z;
+  let billboardHeight = input.miscFlags.w;
+
+  // Current-frame center clip (RTE).
+  let positionRTE = translateRelativeToEye(
+    posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
+  let currentCenterClip = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
+
+  // Previous-frame center clip — full-mat4 multiply of the world-space
+  // position. Precision loss at planet scale is acceptable here because
+  // the resulting NDC delta is small and TAA's velocity scale tolerates
+  // it. (Model uses the same pattern at ModelPBRComplete.wgsl:769-770.)
+  let prevPosHigh = input.prevPosHighAndScale.xyz;
+  let prevPosLow = input.prevPosLowAndRotation.xyz;
+  let prevWorldPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
+  let prevCenterClip = camera.previousViewProjection * prevWorldPos;
+
+  // Rasterize the quad at the CURRENT-frame position so the velocity
+  // texture covers the same pixels the color pass touched. (Sampling
+  // velocity at the current pixel returns this fragment's NDC delta.)
+  var clipPos = currentCenterClip;
+
+  let cornerIndex = input.vertexIndex % 6u;
+  var corner = QUAD_OFFSETS[cornerIndex];
+  if (abs(rotation) > 0.001) {
+    let cosR = cos(rotation);
+    let sinR = sin(rotation);
+    corner = vec2<f32>(
+      corner.x * cosR - corner.y * sinR,
+      corner.x * sinR + corner.y * cosR
+    );
+  }
+  let size = vec2<f32>(billboardWidth, billboardHeight) * baseScale;
+  let pixelToClip = 2.0 / camera.viewportSize;
+  clipPos.x += (corner.x * size.x + basePixelOffset.x) * pixelToClip.x * clipPos.w;
+  clipPos.y += (corner.y * size.y + basePixelOffset.y) * pixelToClip.y * clipPos.w;
+
+  output.position = clipPos;
+  output.currentCenterClip = currentCenterClip;
+  output.prevCenterClip = prevCenterClip;
+  return output;
+}
+
+@fragment
+fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  // Guard against degenerate clip-space w (off-screen / behind camera).
+  // When prev or current is degenerate, emit zero velocity so TAA falls
+  // back to camera-only reprojection for this fragment.
+  let curW = input.currentCenterClip.w;
+  let prevW = input.prevCenterClip.w;
+  if (curW <= 0.0 || prevW <= 0.0) {
+    return vec2<f32>(0.0);
+  }
+  let curNdc = input.currentCenterClip.xy / curW;
+  let prevNdc = input.prevCenterClip.xy / prevW;
+  return curNdc - prevNdc;
+}
