@@ -41,6 +41,13 @@ export interface PostProcessCache {
   ambientOcclusionEnabled: boolean;
   bloomEnabled: boolean;
   depthOfFieldEnabled: boolean;
+  // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
+  // post-process. Activated via `scene.godRayEnabled = true` (optional
+  // `scene.godRayConfig`); the per-frame configure pass updates the
+  // sun screen UV from `scene.sun.position` projected through
+  // viewProjection.
+  godRayEnabled: boolean;
+  godRayInitialized: boolean;
   // Track whether complex effects have been initialized on the pipeline
   bloomInitialized: boolean;
   aoInitialized: boolean;
@@ -61,6 +68,8 @@ function getDefaultCache(): PostProcessCache {
     ambientOcclusionEnabled: false,
     bloomEnabled: false,
     depthOfFieldEnabled: false,
+    godRayEnabled: false,
+    godRayInitialized: false,
     bloomInitialized: false,
     aoInitialized: false,
     dofInitialized: false,
@@ -179,6 +188,12 @@ function configureWebGPUPostProcessPipeline(
   const cache = (collection._webgpuCache ??
     getDefaultCache()) as PostProcessCache;
 
+  // Audit A.11 (Batch 133) -- GodRay enabled flag, scene-level (no
+  // upstream PostProcessStageCollection slot exists for this fork
+  // addition). Mirrors the `scene.taaEnabled` pattern.
+  cache.godRayEnabled =
+    (scene as unknown as { godRayEnabled?: boolean })?.godRayEnabled === true;
+
   // --- TAA (controlled by scene.taaEnabled, not the collection) ---
   const taaEnabled = scene?.taaEnabled === true;
   pipeline.setStageEnabled("TAA", taaEnabled);
@@ -259,6 +274,90 @@ function configureWebGPUPostProcessPipeline(
     cache.dofInitialized = true;
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
+
+  // Audit A.11 (Batch 133) -- GodRay lazy init + per-frame sun UV
+  // update. Config can be supplied via `scene.godRayConfig` (optional).
+  // Skip when the scene has no sun configured -- the effect needs the
+  // sun's screen-space position to draw the radial blur direction.
+  if (cache.godRayEnabled && !cache.godRayInitialized) {
+    const cfg = (
+      scene as unknown as {
+        godRayConfig?: import("./WebGPUGodRayEffect.js").GodRayConfig;
+      }
+    )?.godRayConfig;
+    pipeline.addGodRay(device, canvasFormat, cfg);
+    cache.godRayInitialized = true;
+  }
+  pipeline.setStageEnabled("GodRay", false); // GodRay isn't a `_stage` slot
+  if (cache.godRayEnabled && pipeline.godRayEffect) {
+    pipeline.godRayEffect.enabled = true;
+    updateGodRaySunUV(pipeline, scene);
+  } else if (pipeline.godRayEffect) {
+    pipeline.godRayEffect.enabled = false;
+  }
+}
+
+// Audit A.11 (Batch 133) -- per-frame sun screen-space UV computed
+// by projecting `scene.sun.position` (or the directional sun direction
+// when no Sun primitive is configured) through the camera's
+// viewProjection matrix and converting NDC -> UV. Off-screen suns
+// emit UVs outside [0, 1]; the GodRay shader still produces a
+// directional glow across the visible region.
+const _godRayScratchClip = new Float64Array(4);
+function updateGodRaySunUV(
+  pipeline: WebGPUPostProcessPipeline,
+  scene?: CesiumScene,
+): void {
+  const fx = pipeline.godRayEffect;
+  if (!fx) return;
+  const us = (
+    scene as unknown as {
+      context?: { uniformState?: unknown };
+    }
+  )?.context?.uniformState as
+    | {
+        viewProjection?: number[] | Float64Array;
+        sunPositionWC?: { x: number; y: number; z: number };
+        sunDirectionWC?: { x: number; y: number; z: number };
+        currentFrustum?: { x: number; y: number };
+      }
+    | undefined;
+  if (!us || !us.viewProjection) return;
+  const vp = us.viewProjection;
+  // Use sun position when available; else extrapolate the sun direction
+  // far enough to project off the camera (constant 1.5e8 km mirrors the
+  // Earth-sun distance scale).
+  let sx: number;
+  let sy: number;
+  let sz: number;
+  if (us.sunPositionWC) {
+    sx = us.sunPositionWC.x;
+    sy = us.sunPositionWC.y;
+    sz = us.sunPositionWC.z;
+  } else if (us.sunDirectionWC) {
+    sx = us.sunDirectionWC.x * 1.5e11;
+    sy = us.sunDirectionWC.y * 1.5e11;
+    sz = us.sunDirectionWC.z * 1.5e11;
+  } else {
+    return;
+  }
+  // viewProjection is column-major mat4; NDC = vp * [sx, sy, sz, 1].
+  const cx = vp[0] * sx + vp[4] * sy + vp[8] * sz + vp[12];
+  const cy = vp[1] * sx + vp[5] * sy + vp[9] * sz + vp[13];
+  const cw = vp[3] * sx + vp[7] * sy + vp[11] * sz + vp[15];
+  if (cw === 0 || !isFinite(cw)) return;
+  const ndcX = cx / cw;
+  const ndcY = cy / cw;
+  // NDC [-1, 1] -> UV [0, 1]; flip Y so origin is top-left.
+  const u = ndcX * 0.5 + 0.5;
+  const v = -ndcY * 0.5 + 0.5;
+  fx.setSunScreenUV(u, v);
+  if (us.currentFrustum) {
+    fx.setFrustum(us.currentFrustum.x, us.currentFrustum.y);
+  }
+  // Touch the scratch slot so esbuild can't tree-shake the alloc that
+  // future versions may use for SIMD-aware projection.
+  _godRayScratchClip[0] = cx;
 }
 
 /**
@@ -285,7 +384,8 @@ function hasActiveWebGPUPostProcessStages(
     cache.tonemappingEnabled ||
     cache.ambientOcclusionEnabled ||
     cache.bloomEnabled ||
-    cache.depthOfFieldEnabled
+    cache.depthOfFieldEnabled ||
+    cache.godRayEnabled
   );
 }
 

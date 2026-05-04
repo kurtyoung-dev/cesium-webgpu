@@ -43,6 +43,8 @@ import {
   type DepthOfFieldConfig,
 } from "./WebGPUPostProcessEffects.js";
 import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
+// Audit A.11 (Batch 133) -- pipeline-level GodRay registration.
+import { GodRayEffect, type GodRayConfig } from "./WebGPUGodRayEffect.js";
 import {
   WebGPUAutoExposure,
   type AutoExposureConfig,
@@ -220,6 +222,11 @@ export class WebGPUPostProcessPipeline {
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
+  // Audit A.11 (Batch 133) -- GodRay (volumetric light scattering)
+  // post-process. Activated through `addGodRay` + the configure-pipeline
+  // sync; per-frame sun screen UV updated via
+  // `setSunScreenUV` from the scene-level configure pass.
+  private _godRayEffect: GodRayEffect | null = null;
   // HDR auto-exposure: compute-based luminance reduction that feeds
   // the tonemapping stage's exposure multiplier. Dispatched before
   // tonemapping in the execute chain.
@@ -246,6 +253,7 @@ export class WebGPUPostProcessPipeline {
     if (this._bloomEffect?.enabled) return true;
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
+    if (this._godRayEffect?.enabled) return true;
     return this._customStages.some((s) => s.enabled);
   }
 
@@ -263,6 +271,11 @@ export class WebGPUPostProcessPipeline {
 
   get depthOfFieldEffect(): DepthOfFieldEffect | null {
     return this._dofEffect;
+  }
+
+  /** Audit A.11 (Batch 133) -- GodRay effect or null if not added. */
+  get godRayEffect(): GodRayEffect | null {
+    return this._godRayEffect;
   }
 
   // ================================================================
@@ -679,6 +692,30 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._dofEffect.initialize(device, this._width, this._height, canvasFormat);
   }
 
+  /**
+   * Audit A.11 (Batch 133) -- Add GodRay effect (radial blur toward
+   * sun + composite). Two-pass: half-res ray generate -> full-res
+   * composite. Caller is expected to feed the per-frame sun screen UV
+   * via `pipeline.godRayEffect.setSunScreenUV(u, v)` (the
+   * `WebGPUPostProcessStageCollection` configure path does this when
+   * the scene has a sun configured). Requires depth texture to
+   * function (the generate pass uses depth as a sky/geometry gate).
+   */
+  addGodRay(
+    device: GPUDevice,
+    canvasFormat: GPUTextureFormat,
+    config?: GodRayConfig,
+  ): void {
+    if (this._godRayEffect) return;
+    this._godRayEffect = new GodRayEffect(config);
+    this._godRayEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      canvasFormat,
+    );
+  }
+
   // ================================================================
   //  Custom stages
   // ================================================================
@@ -770,6 +807,20 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // 2. Bloom
     if (this._bloomEffect?.enabled) {
       currentView = this._bloomEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+      );
+    }
+
+    // 2.5 GodRays (Audit A.11, Batch 133) -- placed after Bloom so
+    // bright shaft pixels participate in the bloom; if a future
+    // Sandcastle wants crisp rays, the placement can flip via a
+    // per-effect "renderAfterBloom" flag (not yet exposed). Needs
+    // depth to gate the radial blur on sky vs. geometry.
+    if (this._godRayEffect?.enabled && depth) {
+      currentView = this._godRayEffect.execute(
         encoder,
         currentView,
         depth,
@@ -925,6 +976,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._bloomEffect?.resize(width, height);
     this._aoEffect?.resize(width, height);
     this._dofEffect?.resize(width, height);
+    this._godRayEffect?.resize(width, height);
 
     // Update FXAA texel size
     if (this._fxaaStage?.uniformBuffer && this._device) {
@@ -1212,10 +1264,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._bloomEffect?.destroy();
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
+    this._godRayEffect?.destroy();
     this._autoExposure?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;
+    this._godRayEffect = null;
     this._autoExposure = null;
 
     this._tonemapStage = null;
